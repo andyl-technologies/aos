@@ -30,7 +30,7 @@ use crucible_cas::content_store::ImmutableBlobBackend;
 use crucible_qemu::{LinuxQemuAttemptHostConfig, QemuVmRealizationError};
 
 use crate::{
-    AssignmentLedger, AssignmentLedgerError, AttemptAdmissionValidator, AttemptExecutionContext,
+    AssignmentLedgerError, AttemptAdmissionValidator, AttemptExecutionContext,
     CompletionValidationFailure, ComposedQemuAttemptResourceGuardFactory, CrucibleArtifactError,
     CrucibleExecutionModel, DirectoryAssignmentLedger, ExactCheckpointStore,
     ExactCheckpointStoreError, ExecutionCancellation, ExecutionCheckpointRequest, ExecutorCapacity,
@@ -49,8 +49,14 @@ use crate::{
     capture_production_baked_genesis, decode_crucible_scenario_artifact,
 };
 
+mod exact_pin_materializer;
 #[cfg(test)]
 mod tests;
+
+pub use exact_pin_materializer::PackagedExactPinMaterializerError;
+use exact_pin_materializer::{
+    PackagedExactPinMaterializerOwner, prepare_packaged_exact_pin_materializer,
+};
 
 /// Maximum aggregate canonical bytes in one packaged scenario catalog.
 ///
@@ -160,6 +166,11 @@ impl PackagedQemuExecutorConfig {
         &self.ledger_root
     }
 
+    fn exact_pin_materialization_root(&self) -> PathBuf {
+        self.ledger_root
+            .with_file_name(crate::EXACT_PIN_MATERIALIZATION_DIRECTORY)
+    }
+
     /// Returns the fixed modeled-worker count.
     #[must_use]
     pub const fn worker_count(&self) -> usize {
@@ -199,6 +210,7 @@ pub struct PackagedQemuExecutor {
     admitted_scenarios: BTreeSet<ScenarioArtifactId>,
     endpoint: PathBuf,
     service: ExecutorLocalService<DirectoryAssignmentLedger, PackagedAttemptAdmission>,
+    exact_pin_materializer: PackagedExactPinMaterializerOwner,
 }
 
 /// Running packaged executor-pool thread coupled to one daemon service lifecycle.
@@ -208,7 +220,7 @@ pub struct AttachedPackagedQemuExecutor {
     endpoint: PathBuf,
     shutdown: ExecutorLocalServiceShutdown<DirectoryAssignmentLedger, PackagedAttemptAdmission>,
     completion: Arc<(Mutex<bool>, Condvar)>,
-    thread: Option<JoinHandle<Result<ExecutorLocalServiceReport, ExecutorLocalServiceError>>>,
+    thread: Option<JoinHandle<Result<ExecutorLocalServiceReport, PackagedQemuExecutorJoinError>>>,
 }
 
 impl AttachedPackagedQemuExecutor {
@@ -224,6 +236,7 @@ impl AttachedPackagedQemuExecutor {
             admitted_scenarios,
             endpoint,
             service,
+            exact_pin_materializer,
         } = service;
         let shutdown = service.shutdown_handle();
         let completion = Arc::new((Mutex::new(false), Condvar::new()));
@@ -232,7 +245,14 @@ impl AttachedPackagedQemuExecutor {
             .name(String::from("crucible-packaged-qemu-executor"))
             .spawn(move || {
                 let _completion = PackagedQemuExecutorCompletionGuard(thread_completion);
-                service.serve()
+                let service = service.serve();
+                exact_pin_materializer.request_shutdown();
+                match exact_pin_materializer.join() {
+                    Ok(()) => service.map_err(PackagedQemuExecutorJoinError::Service),
+                    Err(source) => Err(PackagedQemuExecutorJoinError::ExactPinMaterializer(
+                        Box::new(source),
+                    )),
+                }
             })
             .map_err(|source| PackagedQemuExecutorStartError::Spawn { source })?;
         Ok(Self {
@@ -292,7 +312,6 @@ impl AttachedPackagedQemuExecutor {
         thread
             .join()
             .map_err(|_| PackagedQemuExecutorJoinError::ThreadPanicked)?
-            .map_err(Into::into)
     }
 }
 
@@ -368,6 +387,9 @@ pub enum PackagedQemuExecutorJoinError {
     /// The listener or semantic pool returned a terminal failure.
     #[error(transparent)]
     Service(#[from] ExecutorLocalServiceError),
+    /// Exact-pin materialization failed and stopped the executor.
+    #[error(transparent)]
+    ExactPinMaterializer(Box<PackagedExactPinMaterializerError>),
 }
 
 /// Opens every durable/host owner and starts one packaged local QEMU executor.
@@ -660,12 +682,19 @@ where
     ) -> Vec<P>,
 {
     let ledger = DirectoryAssignmentLedger::open(&config.ledger_root)?;
-    ledger.visit_checkpoint_roots(&mut |_| {})?;
     reconcile_packaged_native_catalogs(config.lifecycle.run_state_root())?;
     let checkpoints = Arc::new(ExactCheckpointStore::new(
         checkpoint_backend,
         config.maximum_checkpoint_bytes,
     )?);
+    let exact_pin_root = config.exact_pin_materialization_root();
+    let (prepared_exact_pins, checkpoint_observer) = prepare_packaged_exact_pin_materializer(
+        Arc::clone(&repository),
+        Arc::clone(&checkpoints),
+        config.campaigns.clone(),
+        &ledger,
+        &exact_pin_root,
+    )?;
     let resource_ceiling = packaged_resource_ceiling(&config)?;
     let store = CampaignExecutorStore::new(Arc::clone(&repository));
     let worker_state_root = config.lifecycle.run_state_root().join("campaign-workers");
@@ -733,16 +762,25 @@ where
         })
         .collect();
     let pool = if promotion_enabled {
-        LocalExecutorWorkerPool::start_with_checkpoint_promotions(
+        LocalExecutorWorkerPool::start_with_checkpoint_promotions_and_observer(
             executor,
             store,
             checkpoints,
             workers,
             promotion_workers,
+            checkpoint_observer,
         )?
     } else {
-        LocalExecutorWorkerPool::start(executor, store, checkpoints, workers)?
+        LocalExecutorWorkerPool::start_with_checkpoint_observer(
+            executor,
+            store,
+            checkpoints,
+            workers,
+            checkpoint_observer,
+        )?
     };
+    let pool_shutdown = pool.shutdown_handle();
+    let exact_pin_materializer = prepared_exact_pins.start(move || pool_shutdown.shutdown())?;
     let endpoint = config.endpoint.path().to_owned();
     let listener = config.endpoint.bind()?;
     let service = ExecutorLocalService::from_managed_listener(
@@ -759,6 +797,7 @@ where
         admitted_scenarios: basis.scenarios,
         endpoint,
         service,
+        exact_pin_materializer,
     })
 }
 
@@ -972,6 +1011,9 @@ pub enum PackagedQemuExecutorError {
     /// Durable exact-checkpoint store construction failed.
     #[error(transparent)]
     Checkpoints(#[from] ExactCheckpointStoreError),
+    /// Exact-pin journal acquisition or startup reconciliation failed.
+    #[error(transparent)]
+    ExactPinMaterializer(Box<PackagedExactPinMaterializerError>),
     /// Linux process/storage resource ownership could not be acquired.
     #[error(transparent)]
     Host(#[from] QemuVmRealizationError),
@@ -987,6 +1029,12 @@ pub enum PackagedQemuExecutorError {
     /// Fixed listener construction failed.
     #[error(transparent)]
     Listener(#[from] ExecutorLoopbackListenerError),
+}
+
+impl From<PackagedExactPinMaterializerError> for PackagedQemuExecutorError {
+    fn from(source: PackagedExactPinMaterializerError) -> Self {
+        Self::ExactPinMaterializer(Box::new(source))
+    }
 }
 
 /// Failure to reconcile abandoned packaged-worker native checkpoint state.

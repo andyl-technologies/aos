@@ -18,7 +18,7 @@ use crucible_api::{
 };
 use crucible_campaign::{
     CampaignExecutorStore, CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
-    CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse,
+    CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, ExactCheckpointId,
     ExecutorCapabilityService, ExecutorCapacityReport, ExecutorControlService, ExecutorDescription,
     ExecutorRejection, ExecutorResumeService, ExecutorService, ExecutorStatusService,
     GetAttemptExecutionRequest, GetAttemptExecutionResponse, ResumeAttemptExecutionRequest,
@@ -73,6 +73,15 @@ const WORKER_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 const POOL_RUNNING: u8 = 0;
 const POOL_SHUTTING_DOWN: u8 = 1;
 const POOL_POISONED: u8 = 2;
+
+/// Receives exact roots only after the durable supervisor state is paused.
+///
+/// Implementations must provide bounded backpressure. Returning an error
+/// poisons the pool because an exact checkpoint would otherwise become
+/// invisible to its operational retention owner.
+pub(crate) trait PausedCheckpointObserver: Send + Sync {
+    fn checkpoint_paused(&self, checkpoint: ExactCheckpointId) -> Result<(), ()>;
+}
 
 /// Cloneable checked component service backed by one fixed worker pool.
 pub struct LocalExecutorPoolService<L, V> {
@@ -313,6 +322,28 @@ where
             checkpoints,
             workers,
             Vec::<DisabledCheckpointPromotionWorker>::new(),
+            None,
+        )
+    }
+
+    /// Starts fixed semantic workers with one durable paused-root owner.
+    pub(crate) fn start_with_checkpoint_observer<W>(
+        executor: LocalExecutorCapabilityService<L, V>,
+        store: CampaignExecutorStore,
+        checkpoints: Arc<ExactCheckpointStore>,
+        workers: Vec<W>,
+        checkpoint_observer: Arc<dyn PausedCheckpointObserver>,
+    ) -> Result<Self, LocalExecutorPoolConfigError>
+    where
+        W: LocalAttemptWorker + Send + 'static,
+    {
+        Self::start_inner(
+            executor,
+            store,
+            checkpoints,
+            workers,
+            Vec::<DisabledCheckpointPromotionWorker>::new(),
+            Some(checkpoint_observer),
         )
     }
 
@@ -342,7 +373,40 @@ where
         if promotion_workers.is_empty() {
             return Err(LocalExecutorPoolConfigError::ZeroPromotionWorkers);
         }
-        Self::start_inner(executor, store, checkpoints, workers, promotion_workers)
+        Self::start_inner(
+            executor,
+            store,
+            checkpoints,
+            workers,
+            promotion_workers,
+            None,
+        )
+    }
+
+    /// Starts fixed semantic and promotion workers with one paused-root owner.
+    pub(crate) fn start_with_checkpoint_promotions_and_observer<W, P>(
+        executor: LocalExecutorCapabilityService<L, V>,
+        store: CampaignExecutorStore,
+        checkpoints: Arc<ExactCheckpointStore>,
+        workers: Vec<W>,
+        promotion_workers: Vec<P>,
+        checkpoint_observer: Arc<dyn PausedCheckpointObserver>,
+    ) -> Result<Self, LocalExecutorPoolConfigError>
+    where
+        W: LocalAttemptWorker + Send + 'static,
+        P: LocalCheckpointPromotionWorker + Send + 'static,
+    {
+        if promotion_workers.is_empty() {
+            return Err(LocalExecutorPoolConfigError::ZeroPromotionWorkers);
+        }
+        Self::start_inner(
+            executor,
+            store,
+            checkpoints,
+            workers,
+            promotion_workers,
+            Some(checkpoint_observer),
+        )
     }
 
     fn start_inner<W, P>(
@@ -351,6 +415,7 @@ where
         checkpoints: Arc<ExactCheckpointStore>,
         workers: Vec<W>,
         promotion_workers: Vec<P>,
+        checkpoint_observer: Option<Arc<dyn PausedCheckpointObserver>>,
     ) -> Result<Self, LocalExecutorPoolConfigError>
     where
         W: LocalAttemptWorker + Send + 'static,
@@ -406,6 +471,7 @@ where
             worker_count,
             promotion_worker_count,
             restart_work,
+            checkpoint_observer,
         ));
         let total_workers = worker_count
             .checked_add(promotion_worker_count)
@@ -797,6 +863,7 @@ struct SharedExecutor<L, V> {
     state: AtomicU8,
     worker_count: usize,
     promotion_worker_count: usize,
+    checkpoint_observer: Option<Arc<dyn PausedCheckpointObserver>>,
     completion: Arc<PoolCompletionState>,
     counters: PoolCounters,
 }
@@ -808,6 +875,7 @@ impl<L, V> SharedExecutor<L, V> {
         worker_count: usize,
         promotion_worker_count: usize,
         restart_work: Vec<crate::CheckpointPromotionRestartWork>,
+        checkpoint_observer: Option<Arc<dyn PausedCheckpointObserver>>,
     ) -> Self {
         let validator = executor.supervisor().admission_validator();
         Self {
@@ -819,6 +887,7 @@ impl<L, V> SharedExecutor<L, V> {
             state: AtomicU8::new(POOL_RUNNING),
             worker_count,
             promotion_worker_count,
+            checkpoint_observer,
             completion: Arc::new(PoolCompletionState::new(
                 worker_count.saturating_add(promotion_worker_count),
             )),
@@ -1283,11 +1352,13 @@ fn reconcile_checkpoint_result<L, V>(
         match stage_prepared_checkpoint_result(executor.supervisor_mut(), prepared) {
             Ok(CheckpointResultStageOutcome::Publish(staged)) => break staged,
             Ok(CheckpointResultStageOutcome::Finished {
-                prepared, outcome, ..
+                prepared,
+                checkpoint,
+                outcome,
             }) => {
                 drop(executor);
                 retire_native_checkpoint_source(shared, prepared.native_retirement());
-                record_checkpoint_stage_outcome(shared, outcome);
+                record_checkpoint_stage_outcome(shared, checkpoint, outcome);
                 return;
             }
             Err(error) if supervisor_error_is_retryable(&error.source) => {
@@ -1332,12 +1403,16 @@ fn reconcile_checkpoint_result<L, V>(
             published.queued().request().lineage(),
             published.queued().request().attempt(),
         );
+        let checkpoint = published.root();
         let mut executor = lock_or_retain(shared, &published);
         match reconcile_published_checkpoint_result(executor.supervisor_mut(), *published) {
             Ok(crate::CheckpointCompletionOutcome::Paused)
             | Ok(crate::CheckpointCompletionOutcome::AlreadyPaused) => {
                 increment(&shared.counters.checkpoints_paused);
                 drop(executor);
+                if !observe_paused_checkpoint(shared, checkpoint) {
+                    return;
+                }
                 enqueue_paused_checkpoint_promotion(shared, key);
                 return;
             }
@@ -1465,11 +1540,13 @@ fn retire_native_checkpoint_source<L, V>(
 
 fn record_checkpoint_stage_outcome<L, V>(
     shared: &SharedExecutor<L, V>,
+    checkpoint: ExactCheckpointId,
     outcome: crate::CheckpointPublicationOutcome,
 ) {
     match outcome {
         crate::CheckpointPublicationOutcome::AlreadyPaused => {
             increment(&shared.counters.checkpoints_paused);
+            let _ = observe_paused_checkpoint(shared, checkpoint);
         }
         crate::CheckpointPublicationOutcome::NotCurrent => {
             increment(&shared.counters.checkpoints_discarded);
@@ -1479,6 +1556,20 @@ fn record_checkpoint_stage_outcome<L, V>(
             shared.poison();
         }
     }
+}
+
+fn observe_paused_checkpoint<L, V>(
+    shared: &SharedExecutor<L, V>,
+    checkpoint: ExactCheckpointId,
+) -> bool {
+    let Some(observer) = shared.checkpoint_observer.as_ref() else {
+        return true;
+    };
+    if observer.checkpoint_paused(checkpoint).is_err() {
+        shared.poison();
+        return false;
+    }
+    true
 }
 
 enum StageDisposition {

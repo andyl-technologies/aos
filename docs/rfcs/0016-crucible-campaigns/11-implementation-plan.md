@@ -1007,6 +1007,11 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   against the current exact pin fact and modeled configuration. GC consumes it
   under the authoritative ref and selection fences, rejects missing or stale
   current selections, and revalidates the exact root manifest before apply.
+  Packaged startup now rebuilds the bounded checkpoint catalog from its durable
+  ledger, owns that journal for the executor lifetime, receives every later
+  paused root through bounded backpressure, and periodically reconciles pins
+  accepted before or after checkpoint publication. Offline GC derives and
+  locks the same canonical journal path.
 - [ ] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
   minimization integration.
   The execution-model bridge now normalizes one bounded, homogeneous
@@ -1533,9 +1538,13 @@ ledger, pin, publication, and transfer roots. The prepared service now exposes
 one lifetime-borrowed GC boundary only before endpoint bind. The shipped
 `crucible store gc` porcelain acquires that stopped-owner state lock, derives
 the non-substitutable `STATE/executor-ledger`, persists or exactly reopens the
-bounded external journal during non-destructive plan, and revalidates every
-generation before apply. It fails closed on live exact semantic pins until the
-packaged exact-pin materialization owner is wired. Adjacent read-only porcelain
+non-substitutable `STATE/exact-pin-materializations` owner, persists or exactly
+reopens the bounded external GC journal during non-destructive plan, and
+revalidates every generation before apply. The packaged executor rebuilds a
+65,536-root checkpoint catalog from its ledger, receives later paused roots
+through bounded backpressure, and reprojects up to 65,536 current exact pins on
+a fixed cadence outside the supervisor actor. A missing current-fact selection
+fails GC closed. Adjacent read-only porcelain
 reports the exact admitted graph and streams one requested content ID through
 deferred EOF authentication without borrowing ref or delete authority. It also
 authenticates a fixed-bound physical inventory under an opening/closing

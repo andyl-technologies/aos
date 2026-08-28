@@ -817,10 +817,13 @@ composed campaign graph that this command inventories; its public deployment
 configuration has no independent checkpoint-store path. Assignment-ledger
 checkpoint roots are therefore authenticated and marked against the exact
 physical inventory rather than a parallel store.
-The current production owner has not yet wired an exact-pin materialization
-journal; if any current semantic pin requires exact retention, root inventory
-fails before the external GC journal is created. It never silently treats a
-caller-selected empty pin directory as authoritative.
+The packaged executor and offline command both derive the non-substitutable
+exact-pin journal at `STATE/exact-pin-materializations`. The live owner holds
+its lifetime writer lock; offline plan/apply must acquire that same lock and
+therefore cannot race selection. If a current exact semantic pin has no
+matching current-fact selection, root inventory fails before the external GC
+journal is created. It never silently substitutes a caller-selected empty pin
+directory.
 
 `plan` is non-destructive. It inventories every generation under the existing
 fixed bounds and durably creates, or exactly reopens, the external plan/root/
@@ -1627,6 +1630,18 @@ modeled configuration identity to equal the pin target before the first journal
 write. The selected value binds the campaign name, configuration, latest
 accepted pin fact, and exact-checkpoint root. It is operational owner state and
 does not advance the campaign ref or alter modeled campaign identity.
+
+The packaged owner authenticates at most 65,536 distinct checkpoint roots from
+the durable assignment ledger before executor admission and retains the
+content-address-least root for each modeled configuration. Every later durable
+`Paused` transition sends its exact root through a 256-entry bounded channel;
+the semantic worker backpressures rather than dropping retention evidence. A
+fixed one-second reconciliation cadence reprojects at most 65,536 current exact
+pins across the configured campaign set, so a pin accepted after its checkpoint
+is still selected. Repository/checkpoint I/O and journal writes occur outside
+the supervisor actor. Catalog, projection, journal, or worker failure stops the
+packaged executor visibly; restart rebuilds the catalog from the durable ledger
+and exactly reopens prior selections.
 
 Resume treats that record as a selection, not as timeless authorization. It
 loads the record under the journal fence, releases the fence before blob I/O,

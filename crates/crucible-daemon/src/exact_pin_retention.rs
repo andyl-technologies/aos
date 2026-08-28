@@ -50,6 +50,8 @@ pub const EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA_VERSION: u32 = 1;
 pub const MAX_EXACT_PIN_MATERIALIZATION_SELECTIONS: u64 = 64_000_000;
 /// Maximum authenticated exact checkpoints considered for one finding.
 pub const MAX_FINDING_EXACT_PIN_CANDIDATES: usize = 4_096;
+/// Canonical sibling directory of the packaged assignment ledger.
+pub const EXACT_PIN_MATERIALIZATION_DIRECTORY: &str = "exact-pin-materializations";
 
 const SELECTION_MAGIC: &[u8] = b"crucible.executor.exact-pin-materialization-selection.v1\0";
 const SELECTION_KEY_DOMAIN: &str = "crucible.executor.exact-pin-materialization-selection-key.v1";

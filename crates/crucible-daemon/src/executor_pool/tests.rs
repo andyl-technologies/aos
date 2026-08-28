@@ -288,6 +288,21 @@ struct CheckpointWorker {
     entered: Arc<AtomicUsize>,
 }
 
+#[derive(Default)]
+struct RecordingPausedCheckpointObserver {
+    checkpoints: Mutex<Vec<ExactCheckpointId>>,
+}
+
+impl PausedCheckpointObserver for RecordingPausedCheckpointObserver {
+    fn checkpoint_paused(&self, checkpoint: ExactCheckpointId) -> Result<(), ()> {
+        self.checkpoints
+            .lock()
+            .expect("paused-checkpoint observer lock")
+            .push(checkpoint);
+        Ok(())
+    }
+}
+
 struct UnsolicitedCheckpointWorker;
 
 impl LocalAttemptWorker for UnsolicitedCheckpointWorker {
@@ -556,12 +571,18 @@ fn blocking_worker_does_not_block_service_and_shutdown_cancels_it() {
 fn checkpoint_capture_publishes_once_and_reconciles_paused_without_rerun() {
     let epoch = DaemonEpoch::from_bytes([0x37; 16]).expect("epoch");
     let entered = Arc::new(AtomicUsize::new(0));
-    let pool = pool(
-        epoch,
+    let observer = Arc::new(RecordingPausedCheckpointObserver::default());
+    let checkpoint_observer: Arc<dyn PausedCheckpointObserver> = observer.clone();
+    let pool = LocalExecutorWorkerPool::start_with_checkpoint_observer(
+        capability(epoch),
+        store(),
+        checkpoint_store(),
         vec![CheckpointWorker {
             entered: Arc::clone(&entered),
         }],
-    );
+        checkpoint_observer,
+    )
+    .expect("checkpoint-observing worker pool");
     let assignment = request(epoch, 0x49);
     let mut service = pool.service();
     let accepted = service
@@ -611,6 +632,14 @@ fn checkpoint_capture_publishes_once_and_reconciles_paused_without_rerun() {
     assert_eq!(loaded.snapshot(), &expected_snapshot);
     assert_eq!(loaded.scheduler(), Some(&expected_scheduler));
     assert_eq!(loaded.vmstate_bytes(), 512);
+    assert_eq!(
+        observer
+            .checkpoints
+            .lock()
+            .expect("paused-checkpoint observer lock")
+            .as_slice(),
+        &[checkpoint]
+    );
 
     let report = service.report().expect("checkpoint pool report");
     assert_eq!(report.executions(), 1);
