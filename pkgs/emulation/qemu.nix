@@ -283,6 +283,8 @@ in
             then ''
               build/tests/unit/test-rcu-list --tap -p /rcu/hot-fork/barrier
               build/tests/unit/test-aio --tap -p /aio/hot-fork/bh-timer-barrier
+              build/tests/unit/test-block-backend --tap -p /block-backend/hot_fork_barrier
+              build/tests/unit/test-block-backend --tap -p /block-backend/hot_fork_graph_writer_waits
             ''
             else ''
               true

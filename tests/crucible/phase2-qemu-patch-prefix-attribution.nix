@@ -595,6 +595,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0131-crucible-hot-fork-block-graph-barrier.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

@@ -470,10 +470,18 @@ normal main-loop QMP command:
 CrucibleHotForkBlockBarrierAction = hold | query | release
 
 CrucibleHotForkBlockBarrierState {
-    schema-version: u32 = 1,
+    schema-version: u32 = 2,
     generation: u64,
     owner-thread-id: i64,
+    graph-barrier-generation: u64,
+    graph-mutation-generation: u64,
+    held-graph-mutation-generation: u64,
+    graph-owner-thread-id: i64,
     held: bool,
+    graph-held: bool,
+    graph-writer-active: bool,
+    graph-waiting-writers: u32,
+    graph-stable: bool,
     complete: bool,
     backend-count: u32,
     rooted-backends: u32,
@@ -484,26 +492,46 @@ CrucibleHotForkBlockBarrierState {
 }
 ```
 
-`crucible-hot-fork-block-barrier` retains QEMU's native all-block drain
-section. `hold` MUST start only at the authenticated exact paused/device-flush
-boundary, on the main AioContext, and outside replay-events mode. It quiesces
-new external block clients and permits already-issued I/O to complete while a
-later `query` observes the retained section. `release` ends the native drain.
-The command uses normal `execute`, not negotiated `exec-oob`, because native
-drain acquire/release requires the BQL and main AioContext.
+`crucible-hot-fork-block-barrier` closes block-graph writer admission and
+retains QEMU's native all-block drain section. `hold` MUST start only at the
+authenticated exact paused/device-flush boundary, on the main AioContext, and
+outside replay-events mode. It first rejects any active graph writer, closes
+later graph-writer admission, and captures the latest completed graph-mutation
+generation before beginning native drain. It then quiesces new external block
+clients and permits already-issued I/O to complete while a later OOB `query`
+observes the retained section. Every writer is counted in
+`graph-waiting-writers` from admission until it enters its critical section, so
+`hold` cannot race an admitted writer that has not yet become active. A writer
+arriving after the hold remains parked until release. `release` reopens graph
+admission immediately before ending native drain in the same main-loop
+callback. No parked writer can enter before that callback returns, and this
+ordering lets native drain cleanup perform nested graph operations without
+deadlock. The command uses normal `execute`, not negotiated `exec-oob`, because
+hold and release require the BQL and main AioContext. The query operation
+performs no main-loop-only drain transition, so the OOB template coordinator
+can safely compose it; the standalone command remains in-band.
 
-All counts MUST be bounded by 65,536 and match the block-backend registry:
+All backend counts MUST be bounded by 65,536 and match the block-backend registry:
 `rooted-backends` and `writable-backends` are at most `backend-count`, and
-`quiesced-rooted-backends` is at most `rooted-backends`. `quiescent` is true
-exactly when the barrier is held, the registry is complete, aggregate
-`in-flight` is zero, and every rooted backend is quiesced. A held state has a
-positive generation and owner; a released state has owner zero and is not
-quiescent.
+`quiesced-rooted-backends` is at most `rooted-backends`.
+`graph-mutation-generation` advances after every completed graph-write critical
+section, while `graph-barrier-generation` advances on each hold and release.
+`graph-stable` equals `graph-held && !graph-writer-active &&
+graph-mutation-generation == held-graph-mutation-generation`.
+`complete` additionally requires the native and graph barriers to agree about
+whether they are held and, while held, to name the same positive owner and have
+a stable graph generation. `quiescent` is true exactly when the barrier is
+held, the combined registry/barrier state is complete, aggregate `in-flight`
+is zero, and every rooted backend is quiesced. A released state has both owners
+and `held-graph-mutation-generation` zero and is not quiescent. Waiting writers
+may be nonzero during a released observation immediately after admission
+reopens; they are not inside a graph critical section.
 
-This retained drain is still not proof bit 5. It does not freeze block-graph
-mutation, authenticate the immutable external-snapshot root, rotate or bind
-writable overlays, retain child root identity, or define child reconstruction.
-The future coordinator MUST establish those invariants while the drain is held.
+This retained drain and graph-writer barrier are still not proof bit 5. They do
+not authenticate an immutable external-snapshot root, rotate or bind writable
+overlays, retain child root identity, or define child reconstruction. The
+future coordinator MUST establish those remaining invariants while the drain
+and graph barrier are held.
 It MUST acquire the block drain before the asynchronous-source barrier, because
 draining may require AIO progress, and release the asynchronous-source barrier
 before releasing the block drain. Until that composition exists, the standalone
@@ -674,7 +702,7 @@ races and is sufficient for proof bit 3 while retained and quiescent. It does
 not choose child-side descriptor, context, coroutine, or clock disposition;
 those obligations remain separately represented by proof bits 7 and 8.
 
-The retained `PrepareForkTemplate` checkpoint is the version-5 OOB
+The retained `PrepareForkTemplate` checkpoint is the version-6 OOB
 `crucible-hot-fork-template` coordinator:
 
 ```text
@@ -684,7 +712,7 @@ CrucibleHotForkTemplateOutcome =
     idle | draining | blocked | prepared | aborted
 
 CrucibleHotForkTemplateState {
-    schema-version: u32 = 5,
+    schema-version: u32 = 6,
     generation: u64,
     outcome: CrucibleHotForkTemplateOutcome,
     transaction-active: bool,
@@ -701,9 +729,10 @@ CrucibleHotForkTemplateState {
 ```
 
 `prepare` starts only at the authenticated exact paused/device-flush boundary.
-QEMU serializes the transaction and schedules native all-block drain acquisition
-on the main AioContext. OOB calls observe `draining` while that transition is
-pending. Once block roots are quiesced, the coordinator acquires the RCU
+QEMU serializes the transaction and schedules block-graph writer exclusion and
+native all-block drain acquisition on the main AioContext. OOB calls observe
+`draining` while that transition is pending. Once the graph generation is
+stable and block roots are quiesced, the coordinator acquires the RCU
 admission barrier, the bottom-half/timer source barrier, and the plugin callback
 barrier, and retains all four while previously admitted work drains. A repeated
 `prepare` reevaluates the retained transaction. Once all four barriers are
@@ -711,9 +740,11 @@ quiescent, QEMU
 either reports `prepared` only when all nine required bits are present in the
 same transaction, or releases every acquired barrier and reports `blocked`.
 Rollback releases plugin, asynchronous-source, and RCU admission before it
-schedules native block release on the main AioContext; this ordering prevents
-new AIO work from entering while the block layer is still drained. `query` is
-observational. `abort` requests rollback and eventually reports `aborted`;
+schedules graph and native block release on the main AioContext; this ordering
+prevents new AIO work from entering while the block layer is still drained.
+Graph admission reopens immediately before native drain cleanup inside that one
+main-loop callback, so a parked outer writer cannot interleave with the cleanup.
+`query` is observational. `abort` requests rollback and eventually reports `aborted`;
 aborting an idle coordinator reports `idle`. Standalone mutation of any one of
 the four barriers is rejected while any asynchronous transaction phase is
 reserved. A failed release does not discard coordinator ownership: later
@@ -728,10 +759,11 @@ quiescent and whose missing bitmap is zero.
 Proof bit 4 is present exactly while the transaction remains active and its
 complete RCU barrier is quiescent. Proof bit 3 is present exactly while the
 transaction remains active and its complete asynchronous-source barrier is
-quiescent. Native block quiescence is a prerequisite, not proof of an immutable
-block snapshot: version 5 MUST keep proof bit 5 clear until the coordinator also
-authenticates an immutable external-snapshot root and child root identity.
-Version 5 still does not compose that snapshot proof or the remaining
+quiescent. Native block and graph quiescence are prerequisites, not proof of an
+immutable block snapshot: version 6 MUST keep proof bit 5 clear until the
+coordinator also authenticates an immutable external-snapshot root and child
+root identity.
+Version 6 still does not compose that snapshot proof or the remaining
 plugin-ring, descriptor/mapping, or child-reinitialization barriers; therefore
 it rolls a drained transaction back as `blocked` and cannot advertise a usable
 hot-fork template.
@@ -740,8 +772,9 @@ The standalone AioContext, AIO-handler, and block-backend responses remain
 observational. The retained asynchronous-source barrier composes the context,
 handler, coroutine, bottom-half, and timer admission classes and derives proof
 bit 3 only while they are complete and quiescent. The coordinator now composes
-the retained native block drain only as QEMU-native I/O quiescence; it must still
-compose immutable block write-root identity, descriptor/mapping, and
+the retained native block drain and graph-writer barrier only as QEMU-native
+I/O and graph quiescence; it must still compose immutable block write-root
+identity, descriptor/mapping, and
 child-reinitialization proofs before a retained template can authorize
 `fork(2)`.
 
@@ -837,7 +870,7 @@ before the inventory entry is removed.
 This response is still observational. It does not prevent a timer from being
 armed, canceled, or fired after the query, retain a timer-list or AIO barrier
 across `fork(2)`, select a child disposition, or reinitialize clock state. It
-therefore MUST NOT acknowledge proof bit 3. The version-5 coordinator supplies
+therefore MUST NOT acknowledge proof bit 3. The version-6 coordinator supplies
 the required retained timer and AIO/BH composition; this standalone inventory
 still cannot promote the proof by itself.
 

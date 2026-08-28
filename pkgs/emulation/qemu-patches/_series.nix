@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "8405c3a82418d3c2ece83cb8dd92421a95c14d3bddcc26111ac1726d32391431";
+  patchBranchBundleSha256 = "b3b318644ad31607a1de4ba5a5ea77180fb47d26c0f3622968942d4e965b422f";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "a1f44c51a961b0c4672b9c402bdd9990b10e4584";
+  patchBranchHeadCommit = "7901cc52c2a248f2d8e5e3ed1ac6f55236b8573c";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1235,6 +1235,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "the version-5 template coordinator asynchronously acquires QEMU's native all-block drain on the main AioContext before parking asynchronous sources, releases asynchronous sources before scheduling main-loop block release, rejects standalone barrier mutation while any transaction phase is reserved, and keeps block proof bit 5 clear until an immutable external-snapshot root is authenticated";
+    }
+    {
+      file = "0131-crucible-hot-fork-block-graph-barrier.patch";
+      branchSubject = "crucible: retain block graph barrier for hot fork";
+      branchCommit = "7901cc52c2a248f2d8e5e3ed1ac6f55236b8573c";
+      branchTree = "83cd169f85445660b8e2fe7a6e4d4fb98db9ad7f";
+      catalogName = "crucible-hot-fork-block-graph-barrier";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "the retained native block barrier also closes block-graph writer admission, parks later main-loop writers until release, binds the exact completed-mutation generation captured at hold, and reports active or waiting writers without acknowledging immutable-snapshot proof bit 5";
     }
   ];
   catalogOnlyCapabilities = [

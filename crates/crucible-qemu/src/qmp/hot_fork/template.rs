@@ -15,7 +15,7 @@ use crate::qmp::{QmpCommandKind, QmpError};
 /// QMP command name used for QEMU's retained template-preparation coordinator.
 pub const QMP_HOT_FORK_TEMPLATE_COMMAND: &str = "crucible-hot-fork-template";
 /// Version of the QEMU-owned template-preparation transaction contract.
-pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 5;
+pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 6;
 
 const QMP_HOT_FORK_AIO_PROOF: u64 = 1_u64 << 3;
 const QMP_HOT_FORK_RCU_PROOF: u64 = 1_u64 << 4;
@@ -107,7 +107,7 @@ impl QmpHotForkTemplateState {
         self.bh_timer_barrier
     }
 
-    /// Returns the retained native all-block drain state.
+    /// Returns the retained block-graph writer and native drain state.
     #[must_use]
     pub const fn block_barrier(self) -> QmpHotForkBlockBarrierState {
         self.block_barrier
