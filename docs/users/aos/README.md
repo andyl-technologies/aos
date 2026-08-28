@@ -79,6 +79,14 @@ multicall binary, so `aos package` is equivalent to `apm` and
   resource contribution.
 - [Configure Longhorn](longhorn.md) covers its authenticated CSI and
   Kubernetes resource contribution.
+- Package-owned service guides cover the
+  [registry server](registry-server.md), [containerd](containerd.md),
+  [etcd](etcd.md), [PostgreSQL](postgresql.md), [MariaDB](mariadb.md),
+  [Garage](garage.md), [OpenLDAP](openldap.md),
+  [Kerberos KDC](krb5-kdc.md), [conntrackd](conntrackd.md), and
+  [rsync daemon](rsyncd.md).
+- KubeEdge operators can configure [CloudCore](cloudcore.md) and
+  [EdgeCore](edgecore.md) through their package-owned typed interfaces.
 - [Deploy AOS in production](deployment.md) covers golden-image qualification,
   platform import, bare metal, and fleet promotion.
 - [Maintain the source tree](../../maintainers/) covers Nix builds, image
