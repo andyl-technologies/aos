@@ -298,6 +298,98 @@ in
           test '${evaluated.config."krb5-kdc".credentials.master-password.ref}' = 'system-credential:krb5-master'
           touch "$out"
         '';
+
+      config-lifecycle = let
+        evaluated = lib.evalModules {
+          inherit lib;
+          modules = [
+            ({lib, ...}: {
+              options = {
+                assertions = lib.mkOption {
+                  type = lib.types.listOf lib.types.attrs;
+                  default = [];
+                };
+                "krb5-kdc".config = lib.mkOption {
+                  type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
+                  default = {};
+                };
+                "krb5-kdc".credentials = lib.mkOption {
+                  type = lib.types.attrsOf lib.types.attrs;
+                  default = {};
+                };
+                environment.etc = lib.mkOption {
+                  type = lib.types.attrsOf lib.types.attrs;
+                  default = {};
+                };
+                users.users = lib.mkOption {
+                  type = lib.types.attrsOf lib.types.attrs;
+                  default = {};
+                };
+                users.groups = lib.mkOption {
+                  type = lib.types.attrsOf lib.types.attrs;
+                  default = {};
+                };
+              };
+            })
+            ./_krb5-kdc-config/module.nix
+            {
+              krb5Kdc = {
+                enable = true;
+                realm = "EXAMPLE.TEST";
+                kdcServers = ["127.0.0.1"];
+                adminServer = "127.0.0.1";
+                masterPassword.ref = "system-credential:krb5-master";
+              };
+            }
+          ];
+        };
+        krb5Conf = builtins.toFile "krb5-lifecycle.conf" evaluated.config.environment.etc."aos/packages/krb5-kdc/krb5.conf".text;
+        kdcConf = builtins.toFile "kdc-lifecycle.conf" evaluated.config.environment.etc."aos/packages/krb5-kdc/kdc.conf".text;
+        acl = builtins.toFile "kadm5-lifecycle.acl" evaluated.config.environment.etc."aos/packages/krb5-kdc/kadm5.acl".text;
+      in
+        testing.mkVMTest {
+          name = "security-krb5-kdc-config-lifecycle";
+          rootfsDeps = [self krb5Conf kdcConf acl pkgs.grep pkgs.iproute2];
+          testScript = ''
+            ${pkgs.iproute2}/sbin/ip link set lo up
+            mkdir -p /etc/aos/packages/krb5-kdc /var/lib/aos-pkg-krb5-kdc /var/log/krb5-kdc
+            cp ${krb5Conf} /etc/aos/packages/krb5-kdc/krb5.conf
+            cp ${kdcConf} /etc/aos/packages/krb5-kdc/kdc.conf
+            cp ${acl} /etc/aos/packages/krb5-kdc/kadm5.acl
+            export KRB5_CONFIG=/etc/aos/packages/krb5-kdc/krb5.conf
+            export KRB5_KDC_PROFILE=/etc/aos/packages/krb5-kdc/kdc.conf
+
+            ${self}/sbin/kdb5_util create -s -P aos-master-password -r EXAMPLE.TEST
+            ${self}/sbin/kadmin.local -q 'addprinc -pw aos-client-password client@EXAMPLE.TEST'
+
+            start_kdc() {
+              ${self}/sbin/krb5kdc -n >/tmp/krb5kdc.log 2>&1 &
+              kdc_pid=$!
+              sleep 1
+              if ! kill -0 "$kdc_pid" 2>/dev/null; then
+                cat /tmp/krb5kdc.log >&2
+                exit 1
+              fi
+            }
+
+            acquire_ticket() {
+              printf '%s\n' aos-client-password \
+                | ${self}/bin/kinit client@EXAMPLE.TEST
+              ${self}/bin/klist | ${pkgs.grep}/bin/grep -F 'client@EXAMPLE.TEST'
+              ${self}/bin/kdestroy
+            }
+
+            start_kdc
+            acquire_ticket
+            kill "$kdc_pid"
+            wait "$kdc_pid" || true
+            start_kdc
+            acquire_ticket
+            kill "$kdc_pid"
+            wait "$kdc_pid" || true
+            echo 'Kerberos KDC typed config and real-binary lifecycle: PASS'
+          '';
+        };
     };
 
     meta = {
