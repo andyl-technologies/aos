@@ -37,6 +37,7 @@
   capabilityRouteNameType = "^[A-Za-z0-9_.-]+$";
   packageNameType = "^[A-Za-z0-9][A-Za-z0-9+._=-]*$";
   overlayTokenType = "^[A-Za-z0-9][A-Za-z0-9+._=@-]*$";
+  synthesizedServiceRootUnitType = "^aos-pkg-.*-service-roots[.]service$";
   credentialNameType = "^[A-Za-z0-9_.-]+$";
   hostPathType = "^[A-Za-z0-9_./+=@-]+$";
   kernelModuleType = "^[A-Za-z0-9_-]+$";
@@ -68,6 +69,7 @@
       builtins.isString unit
       && unit != ""
       && builtins.match overlayTokenType unit != null
+      && builtins.match synthesizedServiceRootUnitType unit == null
       && hasKnownSuffix unit
     )
     "expose.units contains invalid systemd unit name '${builtins.toString unit}'"

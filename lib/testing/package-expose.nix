@@ -246,6 +246,7 @@
         "bad,unit.service"
         "bad:unit.service"
         "bad\\unit.service"
+        "aos-pkg-victim-service-roots.service"
       ])
     "expose renderer accepted an overlay-unsafe unit token"
     true;

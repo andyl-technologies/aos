@@ -295,8 +295,24 @@ pub struct UnitMap {
 /// The computed reconciliation plan. Action lists are disjoint; `blanket_targets`
 /// is an annotation (a subset of `to_restart`/`to_reload`) naming the units that
 /// reconcile only because one of their `X-Reload-Triggers` paths changed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServiceRootBarrier {
+    /// Owning package target stopped while the old helper is still loaded.
+    pub target: String,
+    /// Units controlled by the live target and therefore stopped with it.
+    pub live_members: BTreeSet<String>,
+    /// Units controlled by the candidate target and started with it.
+    pub candidate_members: BTreeSet<String>,
+    /// Whether the owning target remains present in the candidate.
+    pub candidate_target_present: bool,
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct UnitDiff {
+    /// Authenticated generated roots helpers and their target membership.
+    pub service_root_barriers: BTreeMap<String, ServiceRootBarrier>,
+    /// Stops that must complete successfully before the generation can swap.
+    pub required_stops: BTreeSet<String>,
     /// Present live, gone in candidate → stop (minus `X-StopOnRemoval=false`).
     pub to_stop: Vec<String>,
     /// Absent live, present in candidate → start (minus `X-OnlyManualStart=true`).
@@ -689,6 +705,8 @@ pub fn compute_diff(live_etc_root: &Path, candidate_etc_root: &Path) -> UnitDiff
 
     let mut diff = UnitDiff::default();
 
+    diff.service_root_barriers = build_service_root_barriers(&live, &candidate);
+
     let names: BTreeSet<&String> = live.units.keys().chain(candidate.units.keys()).collect();
 
     for name in names {
@@ -717,6 +735,81 @@ pub fn compute_diff(live_etc_root: &Path, candidate_etc_root: &Path) -> UnitDiff
     order_sockets_first(&mut diff.to_start);
 
     diff
+}
+
+fn build_service_root_barriers(
+    live: &UnitMap,
+    candidate: &UnitMap,
+) -> BTreeMap<String, ServiceRootBarrier> {
+    let helper_names = live
+        .units
+        .keys()
+        .chain(candidate.units.keys())
+        .filter(|name| service_root_target(name).is_some())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+
+    helper_names
+        .into_iter()
+        .filter_map(|helper| {
+            let target = service_root_target(&helper)?;
+            let live_helper = live.units.get(&helper).filter(|unit| unit.is_present());
+            let candidate_helper = candidate
+                .units
+                .get(&helper)
+                .filter(|unit| unit.is_present());
+            let helper_is_bound = live_helper
+                .into_iter()
+                .chain(candidate_helper)
+                .all(|unit| unit_section_words(unit, "PartOf") == BTreeSet::from([target.clone()]));
+            if !helper_is_bound || (live_helper.is_none() && candidate_helper.is_none()) {
+                return None;
+            }
+
+            Some((
+                helper,
+                ServiceRootBarrier {
+                    live_members: target_members(live, &target),
+                    candidate_members: target_members(candidate, &target),
+                    candidate_target_present: candidate
+                        .units
+                        .get(&target)
+                        .is_some_and(LogicalUnit::is_present),
+                    target,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn target_members(units: &UnitMap, target: &str) -> BTreeSet<String> {
+    let wanted = units
+        .units
+        .get(target)
+        .filter(|unit| unit.is_present())
+        .map(|unit| unit_section_words(unit, "Wants"))
+        .unwrap_or_default();
+
+    units
+        .units
+        .iter()
+        .filter(|(name, unit)| {
+            unit.is_present()
+                && (wanted.contains(*name) || unit_section_words(unit, "PartOf").contains(target))
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+fn unit_section_words(unit: &LogicalUnit, key: &str) -> BTreeSet<String> {
+    unit.merged()
+        .get("Unit")
+        .and_then(|section| section.get(key))
+        .into_iter()
+        .flatten()
+        .flat_map(|value| value.split_ascii_whitespace())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Route a unit present live but gone in the candidate: stop it, unless it
@@ -1026,6 +1119,77 @@ mod tests {
         );
         assert_eq!(service_root_target("web.service"), None);
         assert_eq!(service_root_target("aos-pkg--service-roots.service"), None);
+    }
+
+    #[test]
+    fn diff_carries_bound_root_target_members_across_socket_only_transition() {
+        let live = TempDir::new().unwrap();
+        let candidate = TempDir::new().unwrap();
+        let live_units = units_dir(live.path());
+        let candidate_units = units_dir(candidate.path());
+        let helper = "aos-pkg-web-service-roots.service";
+
+        write(
+            &live_units,
+            helper,
+            "[Unit]\nPartOf=aos-pkg-web.target\n[Service]\nType=oneshot\n",
+        );
+        write(
+            &live_units,
+            "aos-pkg-web.target",
+            "[Unit]\nWants=web.service wanted-only.service\n",
+        );
+        write(
+            &live_units,
+            "web.service",
+            "[Unit]\nPartOf=aos-pkg-web.target\n[Service]\nExecStart=/bin/old\n",
+        );
+        write(
+            &live_units,
+            "socket-activated.service",
+            "[Unit]\nPartOf=aos-pkg-web.target\n[Service]\nExecStart=/bin/socket-activated\n",
+        );
+        write(
+            &live_units,
+            "wanted-only.service",
+            "[Service]\nExecStart=/bin/wanted-only\n",
+        );
+        write(
+            &candidate_units,
+            "aos-pkg-web.target",
+            "[Unit]\nWants=web.socket\n",
+        );
+        write(
+            &candidate_units,
+            "web.socket",
+            "[Unit]\nPartOf=aos-pkg-web.target\n[Socket]\nListenStream=8080\n",
+        );
+
+        let diff = compute_diff(live.path(), candidate.path());
+        let barrier = &diff.service_root_barriers[helper];
+
+        assert_eq!(barrier.target, "aos-pkg-web.target");
+        assert!(barrier.live_members.contains("web.service"));
+        assert!(barrier.live_members.contains("socket-activated.service"));
+        assert!(barrier.live_members.contains("wanted-only.service"));
+        assert!(barrier.candidate_members.contains("web.socket"));
+        assert!(barrier.candidate_target_present);
+        assert!(diff.to_stop.contains(&helper.to_string()));
+    }
+
+    #[test]
+    fn diff_does_not_authorize_foreign_root_target_binding() {
+        let live = TempDir::new().unwrap();
+        let candidate = TempDir::new().unwrap();
+        write(
+            &units_dir(live.path()),
+            "aos-pkg-victim-service-roots.service",
+            "[Unit]\nPartOf=aos-pkg-attacker.target\n[Service]\nType=oneshot\n",
+        );
+
+        let diff = compute_diff(live.path(), candidate.path());
+
+        assert!(diff.service_root_barriers.is_empty());
     }
 
     #[test]

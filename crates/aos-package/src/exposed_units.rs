@@ -309,6 +309,17 @@ fn exposed_packages_from_expose_dir(
         let artifact_root = expose_dir.join(&artifact_hash).join("units");
         let mut units = expose.units.iter().cloned().collect::<BTreeSet<_>>();
         units.insert(expose.target.clone());
+        for unit in &units {
+            if let Some(target) = unit_diff::service_root_target(unit)
+                && target != expose.target
+            {
+                bail!(
+                    "package '{}' declares foreign synthesized service-root unit '{}'",
+                    apm.name,
+                    unit
+                );
+            }
+        }
         validate_network_policy_artifact(
             &apm.name,
             Path::new(&artifact.store_path),
@@ -3814,6 +3825,34 @@ mod tests {
 
         assert!(
             format!("{err:#}").contains("reading service-root preparation unit"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_foreign_service_root_helper_shape() {
+        let tmp = TempDir::new().unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkgwebhash11", "artifactweb11");
+        installed
+            .apm
+            .as_mut()
+            .unwrap()
+            .expose
+            .as_mut()
+            .unwrap()
+            .units
+            .push("aos-pkg-victim-service-roots.service".into());
+        let profile = Profile {
+            path: tmp.path().join("profile-foreign-service-root"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("foreign synthesized service-root unit"),
             "{err:#}"
         );
     }

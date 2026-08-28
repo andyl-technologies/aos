@@ -109,7 +109,15 @@ mkDerivation {
           echo "invalid package token accepted" >&2
           exit 1
         fi
-        for unsafe_unit in 'bad,unit.service' 'bad:unit.service' 'bad\unit.service'; do
+        for unsafe_package in '+bad' '=bad' '_bad'; do
+          if "$helper" prepare "$unsafe_package" "$fixture" bad.service; then
+            echo "invalid leading package token accepted: $unsafe_package" >&2
+            exit 1
+          fi
+        done
+        for unsafe_unit in \
+          '+bad.service' '=bad.service' '_bad.service' '@bad.service' \
+          'bad,unit.service' 'bad:unit.service' 'bad\unit.service'; do
           if "$helper" prepare demo "$fixture" "$unsafe_unit"; then
             echo "unsafe unit token accepted: $unsafe_unit" >&2
             exit 1
