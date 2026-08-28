@@ -540,6 +540,7 @@ in
             mkdir -p "$artifact_dir" "$store_dir"
             set +e
             CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+              CRUCIBLE_RUN_STATE_ROOT="$TMPDIR/crucible-live-replay-producer-state" \
               "${pkgs.crucible}/bin/crucible" \
               --backend qemu \
               --seed 42 \
@@ -557,18 +558,20 @@ in
             test "$producer_status" -eq 2
             artifact=$(find "$artifact_dir" -type f -name 'repro-timeout-*.crucible' -print -quit)
             test -n "$artifact"
-            checkpoint=$(
-              sed -n \
-                's/.*checkpoint=\(blake3:[0-9a-f]*\).*/\1/p' \
-                "$TMPDIR/crucible-live-replay-producer.out"
-            )
-            test -n "$checkpoint"
-            # The artifact-owned canonical log ends before the CLI's
-            # self-referential final-outcome line, which names the completed
-            # artifact digest.
-            sed '$d' "$producer_log" > "$TMPDIR/crucible-live-replay-check.jsonl"
+            checkpoint_candidates="$TMPDIR/crucible-live-replay-checkpoints"
+            sed -n \
+              's/.*checkpoint=\(blake3:[0-9a-f]*\).*/\1/p' \
+              "$TMPDIR/crucible-live-replay-producer.out" \
+              | sort -u > "$checkpoint_candidates"
+            test "$(wc -l < "$checkpoint_candidates")" -eq 1
+            checkpoint=$(cat "$checkpoint_candidates")
+            # Trace files contain only the artifact-owned canonical log. The
+            # CLI emits its self-referential final outcome to stdout after the
+            # artifact digest is known, so it is deliberately absent here.
+            cp "$producer_log" "$TMPDIR/crucible-live-replay-check.jsonl"
 
             CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+              CRUCIBLE_RUN_STATE_ROOT="$TMPDIR/crucible-live-replay-ordinary-state" \
               "${pkgs.crucible}/bin/crucible" \
               --backend qemu \
               --format jsonl \
@@ -576,6 +579,7 @@ in
               replay "$artifact" \
               > "$TMPDIR/crucible-live-replay.out"
             CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+              CRUCIBLE_RUN_STATE_ROOT="$TMPDIR/crucible-live-replay-check-state" \
               "${pkgs.crucible}/bin/crucible" \
               --backend qemu \
               --format jsonl \
@@ -584,6 +588,7 @@ in
               --check "$TMPDIR/crucible-live-replay-check.jsonl" \
               > "$TMPDIR/crucible-live-replay-check.out"
             CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+              CRUCIBLE_RUN_STATE_ROOT="$TMPDIR/crucible-live-replay-bisect-state" \
               "${pkgs.crucible}/bin/crucible" \
               --backend qemu \
               --format jsonl \
@@ -592,6 +597,7 @@ in
               --bisect "$artifact" \
               > "$TMPDIR/crucible-live-replay-bisect.out"
             CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+              CRUCIBLE_RUN_STATE_ROOT="$TMPDIR/crucible-live-replay-to-state" \
               "${pkgs.crucible}/bin/crucible" \
               --backend qemu \
               --format jsonl \
@@ -602,7 +608,7 @@ in
 
             grep -q '"kind":"replay_reduction".*status=reexecuted' \
               "$TMPDIR/crucible-live-replay.out"
-            grep -q '"kind":"replay_live_qemu".*status=validated.*producer=run' \
+            grep -q '"kind":"replay_live_qemu".*validation=passed.*producer=run' \
               "$TMPDIR/crucible-live-replay.out"
             grep -q '"kind":"replay_check".*status=byte-identical' \
               "$TMPDIR/crucible-live-replay-check.out"
