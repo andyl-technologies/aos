@@ -4,8 +4,8 @@
   self,
   renderedFile,
   coreutils,
+  grep,
   iproute2,
-  util-linux,
 }:
 testing.mkVMTest {
   name = "storage-mariadb-runtime-contract";
@@ -13,8 +13,8 @@ testing.mkVMTest {
     self
     renderedFile
     coreutils
+    grep
     iproute2
-    util-linux
   ];
   memory = 1536;
   testScript = ''
@@ -36,11 +36,11 @@ testing.mkVMTest {
     fi
     grep -q 'unknown-aos-option' /tmp/invalid.out
 
-    setpriv --reuid=803 --regid=803 --clear-groups \
+    chroot --userspec=803:803 / \
       mariadb-install-db --defaults-file=${renderedFile}/my.cnf \
         --auth-root-authentication-method=socket --skip-test-db
 
-    setpriv --reuid=803 --regid=803 --clear-groups \
+    chroot --userspec=803:803 / \
       mariadbd --defaults-file=${renderedFile}/my.cnf >/tmp/mariadb.log 2>&1 &
     server_pid=$!
     cleanup() {
@@ -74,7 +74,7 @@ testing.mkVMTest {
     wait "$server_pid"
     trap - EXIT
 
-    setpriv --reuid=803 --regid=803 --clear-groups \
+    chroot --userspec=803:803 / \
       mariadbd --defaults-file=${renderedFile}/my.cnf >/tmp/mariadb-restart.log 2>&1 &
     server_pid=$!
     trap cleanup EXIT

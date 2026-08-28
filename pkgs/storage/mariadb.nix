@@ -516,8 +516,8 @@ in
       config-module-lifecycle = import ./_mariadb-tests/lifecycle.nix {
         inherit testing self renderedFile;
         coreutils = pkgs.coreutils;
+        grep = pkgs.grep;
         iproute2 = pkgs.iproute2;
-        util-linux = pkgs.util-linux;
       };
     };
   }
