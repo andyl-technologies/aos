@@ -158,6 +158,8 @@ int main(int argc, char **argv) {
 
   CFTypeID arrayType = CFArrayGetTypeID();
   CFTypeID dictionaryType = CFDictionaryGetTypeID();
+  CFAbsoluteTime cfAbsoluteTime = CFDateGetAbsoluteTime((CFDateRef)date);
+  CFDateRef cfDate = CFDateCreate(kCFAllocatorDefault, cfAbsoluteTime);
   UInt8 cfByte = 0;
   CFDataRef cfData = CFDataCreate(kCFAllocatorNull, &cfByte, 1);
   CFArrayRef languageCodes = CFLocaleCopyISOLanguageCodes();
@@ -239,5 +241,6 @@ int main(int argc, char **argv) {
   [condition release];
   if (observer != NULL) CFRelease(observer);
   if (cfData != NULL) CFRelease(cfData);
-  return argv == NULL || character == 0 || absoluteInterval < NSTimeIntervalSince1970 || number == nil || data.length == 0 || objectEnumerator == nil || keyEnumerator == nil || setEnumerator == nil || keys.count == 0 || set == nil || roundTrip == nil || returnValue == NULL || size.width != point.x || range.length == rect.size.height || indexed == nil || keyword == 0 || aeDesc == NULL || descriptorData == nil || integer == 0 || boolean || itemCount < 0 || descriptorType == 0 || tiff == nil || !propertyRetained || dataSymbols[0] == NULL || arrayType == 0 || dictionaryType == 0 || languageCodes == NULL || mainRunLoop == NULL || runtimeObject == nil || runtimeValue == nil || fromFile == single || !contained || resource == nil || processIdentifier == 0 || stack == nil || !mainThread || url == nil || keyed == nil || unsignedNumber == nil || !changed || scriptResult == nil || !locked || !recycled || !selected || operationTag == 0;
+  if (cfDate != NULL) CFRelease(cfDate);
+  return argv == NULL || character == 0 || absoluteInterval < NSTimeIntervalSince1970 || cfAbsoluteTime == 0 || cfDate == NULL || number == nil || data.length == 0 || objectEnumerator == nil || keyEnumerator == nil || setEnumerator == nil || keys.count == 0 || set == nil || roundTrip == nil || returnValue == NULL || size.width != point.x || range.length == rect.size.height || indexed == nil || keyword == 0 || aeDesc == NULL || descriptorData == nil || integer == 0 || boolean || itemCount < 0 || descriptorType == 0 || tiff == nil || !propertyRetained || dataSymbols[0] == NULL || arrayType == 0 || dictionaryType == 0 || languageCodes == NULL || mainRunLoop == NULL || runtimeObject == nil || runtimeValue == nil || fromFile == single || !contained || resource == nil || processIdentifier == 0 || stack == nil || !mainThread || url == nil || keyed == nil || unsignedNumber == nil || !changed || scriptResult == nil || !locked || !recycled || !selected || operationTag == 0;
 }
