@@ -290,6 +290,8 @@ in {
             --name runtime-reg \
             --version '=${pkgs.nginx.version}' \
             --trust-key "$PUBKEY"
+          printf 'root_owner_signers = ["release"]\n' \
+            >> /var/lib/apm/config/registries.d/runtime-reg.toml
           HOME=/tmp USER=root {APM} update \
             --system --registry runtime-reg
 
