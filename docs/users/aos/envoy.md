@@ -41,6 +41,10 @@ StatsD sink are typed. A filter chain selects exactly one HTTP virtual-host set
 or TCP proxy cluster, and each HTTP route selects exactly one match and action.
 Cross-references and duplicate listener sockets fail evaluation.
 
+The administration access log defaults to
+`/var/log/aos-pkg-envoy/admin-access.log`, in Envoy's systemd-managed log
+directory. Set `envoy.admin.accessLogPath` to `/dev/null` to disable it.
+
 Listener ports are runtime values and do not silently expand the package's
 signed network permissions. Add externally reachable ports explicitly through
 the AOS firewall module, as in the example.

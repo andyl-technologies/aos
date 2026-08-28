@@ -185,9 +185,12 @@ in {
             description = "The administration API port.";
           };
           accessLogPath = lib.mkOption {
-            type = lib.types.enum ["/dev/null" "/dev/stderr" "/dev/stdout"];
-            default = "/dev/stderr";
-            description = "The administration access-log sink.";
+            type = lib.types.enum [
+              "/dev/null"
+              "/var/log/aos-pkg-envoy/admin-access.log"
+            ];
+            default = "/var/log/aos-pkg-envoy/admin-access.log";
+            description = "The administration access-log sink; the default is the service-owned log directory.";
           };
         };
       };
