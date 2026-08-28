@@ -7171,6 +7171,7 @@ mod tests {
                     live_members: BTreeSet::from(["web.service".to_string()]),
                     candidate_members: BTreeSet::from(["web.service".to_string()]),
                     candidate_target_present: true,
+                    ..Default::default()
                 },
             )]),
             to_restart: vec![
@@ -7217,6 +7218,7 @@ mod tests {
                     live_members: BTreeSet::from(["web.service".to_string()]),
                     candidate_members: BTreeSet::from(["web.service".to_string()]),
                     candidate_target_present: true,
+                    ..Default::default()
                 },
             )]),
             to_restart: vec![helper.to_string(), "web.service".to_string()],
@@ -7256,6 +7258,7 @@ mod tests {
                     live_members: BTreeSet::from(["web.service".to_string()]),
                     candidate_members: BTreeSet::from(["web.socket".to_string()]),
                     candidate_target_present: true,
+                    ..Default::default()
                 },
             )]),
             to_stop: vec![root_unit.to_string(), "web.service".to_string()],
