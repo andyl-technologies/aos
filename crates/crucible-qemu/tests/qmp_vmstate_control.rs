@@ -11,15 +11,16 @@ use std::time::Duration;
 
 use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
-    QMP_CAPABILITIES_COMMAND, QMP_CONT_COMMAND, QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND,
-    QMP_HOT_FORK_RCU_BARRIER_COMMAND, QMP_HOT_FORK_TEMPLATE_COMMAND,
-    QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_READINESS_COMMAND,
-    QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND,
-    QMP_QUERY_JOBS_COMMAND, QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_LOAD_COMMAND,
-    QMP_SNAPSHOT_SAVE_COMMAND, QemuExactSnapshotPolicy, QemuQmpVmStateControlChannel,
-    QmpCommandKind, QmpHotForkProof, QmpHotForkTemplateOutcome, QmpSnapshotTag, QmpTimeoutStream,
+    QMP_CAPABILITIES_COMMAND, QMP_CONT_COMMAND, QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND,
+    QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND, QMP_HOT_FORK_RCU_BARRIER_COMMAND,
+    QMP_HOT_FORK_TEMPLATE_COMMAND, QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUIT_COMMAND_NAME,
+    QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND, QemuExactSnapshotPolicy,
+    QemuQmpVmStateControlChannel, QmpCommandKind, QmpHotForkProof, QmpHotForkTemplateOutcome,
+    QmpSnapshotTag, QmpTimeoutStream,
 };
 use serde_json::Value;
 
@@ -167,11 +168,42 @@ fn vmstate_control_forwards_rcu_barrier_operations() -> Result<(), Box<dyn Error
 }
 
 #[test]
+fn vmstate_control_forwards_bh_timer_barrier_operations() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"owner-thread-id":44,"held":true,"complete":true,"bottom-halves-complete":true,"timers-complete":true,"admissions-in-flight":0,"bottom-half-count":4,"pending-bottom-halves":2,"scheduled-bottom-halves":1,"active-bottom-half-callbacks":0,"pending-timers":3,"active-timer-callbacks":0,"quiescent":true}}"#,
+        r#"{"return":{"schema-version":1,"generation":3,"owner-thread-id":0,"held":false,"complete":true,"bottom-halves-complete":true,"timers-complete":true,"admissions-in-flight":0,"bottom-half-count":4,"pending-bottom-halves":2,"scheduled-bottom-halves":1,"active-bottom-half-callbacks":0,"pending-timers":3,"active-timer-callbacks":0,"quiescent":false}}"#,
+    ]);
+    let written = Arc::clone(&stream.written);
+    let mut control = QemuQmpVmStateControlChannel::connect(stream)?;
+
+    assert!(control.hold_hot_fork_bh_timer_barrier()?.quiescent());
+    assert!(!control.release_hot_fork_bh_timer_barrier()?.held());
+
+    drop(control);
+    let lines = written_json_lines(
+        &written
+            .lock()
+            .expect("scripted QMP write audit should remain available"),
+    )?;
+    assert_eq!(
+        oob_execute_name(json_line(&lines, 1)),
+        Some(QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND)
+    );
+    assert_eq!(
+        oob_execute_name(json_line(&lines, 2)),
+        Some(QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND)
+    );
+    Ok(())
+}
+
+#[test]
 fn vmstate_control_forwards_hot_fork_template_coordination() -> Result<(), Box<dyn Error>> {
     let stream = scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
-        r#"{"return":{"schema-version":2,"generation":3,"outcome":"blocked","transaction-active":false,"required-proofs":511,"acknowledged-proofs":7,"missing-proofs":504,"plugin-barrier":{"schema-version":1,"generation":6,"registered":true,"manifest-consistent":true,"held":false,"teardown-closed":false,"in-flight":0,"quiescent":false},"rcu-barrier":{"schema-version":1,"generation":7,"owner-thread-id":0,"held":false,"complete":true,"registered-readers":2,"active-readers":0,"admissions-in-flight":0,"pending-callbacks":0,"drain-active":false,"quiescent":false},"rollback-complete":true,"ready":false}}"#,
+        r#"{"return":{"schema-version":3,"generation":3,"outcome":"blocked","transaction-active":false,"required-proofs":511,"acknowledged-proofs":7,"missing-proofs":504,"plugin-barrier":{"schema-version":1,"generation":6,"registered":true,"manifest-consistent":true,"held":false,"teardown-closed":false,"in-flight":0,"quiescent":false},"rcu-barrier":{"schema-version":1,"generation":7,"owner-thread-id":0,"held":false,"complete":true,"registered-readers":2,"active-readers":0,"admissions-in-flight":0,"pending-callbacks":0,"drain-active":false,"quiescent":false},"bh-timer-barrier":{"schema-version":1,"generation":7,"owner-thread-id":0,"held":false,"complete":true,"bottom-halves-complete":true,"timers-complete":true,"admissions-in-flight":0,"bottom-half-count":4,"pending-bottom-halves":2,"scheduled-bottom-halves":1,"active-bottom-half-callbacks":0,"pending-timers":3,"active-timer-callbacks":0,"quiescent":false},"rollback-complete":true,"ready":false}}"#,
     ]);
     let written = Arc::clone(&stream.written);
     let mut control = QemuQmpVmStateControlChannel::connect(stream)?;

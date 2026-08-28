@@ -1571,10 +1571,21 @@ QEMU now additionally owns a process-lifetime reversible RCU admission/drain
 barrier. Holding at the exact paused/device-flush boundary gates every new
 outer reader and callback submission through a race-closed
 two-phase admission, retains the exact reader/admission/callback/drain state,
-and parks rejected entrants until release. The version-2 template coordinator
+and parks rejected entrants until release. The version-3 template coordinator
 holds this barrier with the plugin callback barrier and acknowledges readiness
 bit 4 only while the complete retained RCU state is quiescent. The RCU worker
 still needs an exact child disposition/reinitializer, so bit 8 remains clear.
+QEMU now additionally owns a process-lifetime reversible bottom-half and
+timer-source barrier. A race-closed two-phase admission gate covers source
+creation, mutation, and callback dispatch. Holding at the exact
+paused/device-flush boundary parks later producers, lets already-admitted work
+and its nested mutations finish, leaves queued sources parked, and keeps OOB
+QMP responsive through nonblocking event-loop admission. The version-3
+template coordinator retains this barrier with the plugin and RCU barriers,
+and the typed client validates its exact bounded inventory and derived
+quiescence. This closes a real source-race prerequisite, but `AioHandler`,
+coroutine, complete `AioContext`, and child-reinitialization admission remain
+open. Readiness bit 3 and T-CAM-6.2 therefore remain unchecked.
 QEMU now also exposes a version-1, 65,536-context AioContext inventory with
 stable process-local identities, exact home-thread ownership, active poll and
 GLib dispatch counts, queued and active bottom halves, queued coroutines, and
@@ -1647,15 +1658,18 @@ template transaction, or reconstruct child resources. Readiness bit 6 therefore
 remains clear and T-CAM-6.2 remains unchecked.
 Patched QEMU now also owns the versioned `PrepareForkTemplate`
 transaction. Its serialized OOB coordinator starts only at the exact
-paused/device-flush boundary, retains the plugin callback and RCU barriers while
-admitted work drains, and lets the Apache client query or abort that retained
-state without blocking QMP. A quiescent transaction is reported as `prepared`
+paused/device-flush boundary, retains the plugin callback, RCU, and
+bottom-half/timer source barriers while admitted work drains, and lets the
+Apache client query or abort that retained state without blocking QMP. A
+quiescent transaction is reported as `prepared`
 only when all nine readiness bits are present in the same generation; otherwise
 QEMU releases every acquired barrier and reports exact rollback as `blocked`.
-Standalone plugin or RCU hold/release cannot steal coordinator-owned state, and
-a plugin release failure leaves both barriers retained for a later query/abort
-retry. The current coordinator acknowledges RCU bit 4 only while its retained
-barrier is quiescent. Plugin-ring bit 6, AIO, block, mapping/descriptor, and child
+Standalone plugin, RCU, or bottom-half/timer hold/release cannot steal
+coordinator-owned state, and a plugin release failure leaves every barrier
+retained for a later query/abort retry. The current coordinator acknowledges
+RCU bit 4 only while its retained barrier is quiescent. The source barrier does
+not acknowledge AIO bit 3 until handlers, coroutines, and context disposition
+are also covered. Plugin-ring bit 6, AIO, block, mapping/descriptor, and child
 reinitialization proofs remain clear, every fully drained preparation rolls
 back, no fork operation exists, and T-CAM-6.2 remains unchecked.
 QEMU now also exposes a version-1, 65,536-entry POSIX `QemuMutex` and
@@ -1672,9 +1686,10 @@ timer-list identities, exact clock, expiry, scale, attributes, pending state,
 callback state, and checked aggregates. The host brackets procfs capture with
 identical timer reports and rejects changed state. Inert initialized timers are
 intentionally absent, while callback entries retain copied metadata so a
-callback may safely free its enclosing timer. This is observational and does
-not retain the AIO/BH/timer barrier across `fork(2)` or choose child clock
-reinitializers, so readiness bit 3 remains clear.
+callback may safely free its enclosing timer. The report is observational. The
+separate retained source barrier covers bottom-half/timer admission and
+dispatch but not the complete `AioContext`, handler, coroutine, or
+child-reinitialization contract, so readiness bit 3 remains clear.
 These are executable T-CAM-6.1 audit prerequisites, not completion of the task:
 the internal registry identifies two non-coordinator subsystem owners but has
 no safe non-coordinator child disposition, and none of the views can prove a

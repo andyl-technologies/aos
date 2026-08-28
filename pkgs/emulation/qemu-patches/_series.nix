@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "690d23a1b35f8b1e9494070eae4bb3c770a76f5cedca5c6439691b72eee1e0e9";
+  patchBranchBundleSha256 = "ca4bf9007cd2fffe28ef2eb1ab6f93a68e13c9940683e26f6d8e4c838c641ae5";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "e7ff1dc4c3be44cdbeb4835389145089f0400336";
+  patchBranchHeadCommit = "b3e787fe19caebe4ebed1a14a3db4e2e67edc0df";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1195,6 +1195,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "a process-lifetime reversible RCU barrier gates every new outer read-side entry and callback submission, retains exact admission, reader, callback, and drain state, wakes parked submitters only on release, and lets the template coordinator acknowledge proof bit 4 only while the complete held barrier is quiescent";
+    }
+    {
+      file = "0127-crucible-hot-fork-bh-timer-barrier.patch";
+      branchSubject = "crucible: park BH and timer sources for hot fork";
+      branchCommit = "b3e787fe19caebe4ebed1a14a3db4e2e67edc0df";
+      branchTree = "a4323ea0508efb9370771d2fe05d313d30ebe842";
+      catalogName = "crucible-hot-fork-bh-timer-barrier";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "a process-lifetime reversible source barrier race-closes bottom-half and timer creation, mutation, and callback dispatch; drains already-admitted work while retaining queued sources as parked state; remains queryable over OOB QMP; and is retained by the template coordinator without acknowledging AIO proof bit 3 until handler and coroutine admission are also closed";
     }
   ];
   catalogOnlyCapabilities = [

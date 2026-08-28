@@ -579,6 +579,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0127-crucible-hot-fork-bh-timer-barrier.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

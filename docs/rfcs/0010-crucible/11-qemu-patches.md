@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **118 patches**. This count is checked against
+The carried series contains **119 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -1922,10 +1922,11 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 
 - **Patch:** `0125-crucible-hot-fork-template-coordinator.patch`.
 - **Enforces:** RFC-0016 [HFORK-3], [HFORK-4], [HFORK-5].
-- **Mechanism:** a serialized version-1 OOB QMP coordinator owns one retained
+- **Mechanism:** a serialized version-3 OOB QMP coordinator owns one retained
   template-preparation generation. `prepare` begins only at the authenticated
-  exact paused/device-flush boundary, acquires the plugin callback barrier, and
-  reports `draining` while already-admitted callbacks finish. A later prepare
+  exact paused/device-flush boundary, acquires the plugin callback, RCU, and
+  bottom-half/timer source barriers, and reports `draining` while
+  already-admitted work finishes. A later prepare
   reports `prepared` only when all nine readiness bits are present in that same
   retained transaction. If the acquired barrier is quiescent but any proof is
   missing, QEMU releases every acquired barrier and reports exact `blocked`
@@ -1934,15 +1935,17 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   failure retains ownership for retry.
 - **Micro-test:** strict Rust decoding binds the action-specific outcome,
   generation, active/rollback state, exact proof and missing bitmaps, and nested
-  plugin-barrier state; it rejects changed schemas, unknown fields,
+  plugin, RCU, and bottom-half/timer barrier state; it rejects changed schemas,
+  unknown fields,
   contradictory readiness, forged rollback, and wrong-action outcomes. The
   live patched-QEMU gate requires stable exact idle state, rejects preparation
   outside the exact boundary without acquiring state, and requires stock QEMU
   not to expose the command.
-- **Inertness:** version 1 composes only the plugin callback barrier. It does
-  not freeze host ring writers, drain AIO/RCU/block owners, retain mapping or
-  descriptor dispositions, run child reinitializers, or call `fork(2)`.
-  Readiness bit 6 and every other unresolved bit remain clear, so a drained
+- **Inertness:** version 3 composes the plugin callback, RCU, and
+  bottom-half/timer source barriers. It does not freeze host ring writers,
+  drain the remaining AIO or block owners, retain mapping or descriptor
+  dispositions, run child reinitializers, or call `fork(2)`. Plugin-ring bit 6,
+  AIO bit 3, and every other unresolved bit remain clear, so a drained
   transaction rolls back as `blocked` and no template can become usable.
 - **Risk:** F.
 
@@ -1957,16 +1960,17 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   or callback counters or park until release. The retained state reports the
   complete bounded reader registry, active readers, admission transitions,
   pending callbacks, synchronous drains, owner thread, and hold generation.
-  The template coordinator acquires this barrier with the plugin callback
+  The template coordinator acquires this barrier with the plugin callback and
+  bottom-half/timer source
   barrier and acknowledges readiness bit 4 only while the complete held RCU
-  state is quiescent. Abort and blocked preparation release both barriers.
+  state is quiescent. Abort and blocked preparation release every barrier.
 - **Micro-test:** strict Rust decoding rejects unknown fields, changed schemas,
   invalid owner/hold generations, reader-count overflow, contradictory drain
   state, and an RCU proof detached from a retained quiescent transaction. A
   QEMU unit test, executed by the patched package build, proves a registered
   reader cannot cross an acquired barrier until release. The live patched-QEMU
   gate requires exact stable released state, rejection of a hold outside the
-  authenticated boundary, template-version-2 nesting, and absence of the
+  authenticated boundary, template-version-3 nesting, and absence of the
   command in stock QEMU. Patch regeneration compiles the QAPI schema and C
   barrier into the full patched emulator.
 - **Inertness:** the gate is dormant until an authorized OOB caller holds it at
@@ -1974,6 +1978,32 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   reconstruct the retained RCU worker thread in a child, drain AIO or block
   owners, freeze plugin rings, close mapping/descriptor dispositions, or call
   `fork(2)`. Those missing proofs keep template preparation blocked.
+- **Risk:** F.
+
+### crucible-hot-fork-bh-timer-barrier — park asynchronous sources
+
+- **Patch:** `0127-crucible-hot-fork-bh-timer-barrier.patch`.
+- **Enforces:** RFC-0016 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** a process-lifetime reversible barrier uses race-closed
+  two-phase admission for bottom-half and timer creation, mutation, and
+  callback dispatch. `hold` parks later producers and nonblocking event-loop
+  dispatch while already-admitted work and its nested source mutations drain.
+  Queued bottom halves and armed timers remain retained parked state. The
+  exact version-1 response reports owner/generation, admission count, bounded
+  inventory completeness, queued sources, active callbacks, and derived
+  quiescence. The version-3 template coordinator retains this barrier with
+  the plugin and RCU barriers while OOB QMP stays live.
+- **Micro-test:** strict Rust decoding rejects unknown fields, changed schemas,
+  invalid owner/hold generations, count overflow, contradictory completeness,
+  and forged quiescence. The QEMU unit test proves nested source mutation may
+  finish under a hold, pending bottom halves and timers do not dispatch while
+  retained, and release runs both. The live patched-QEMU gate requires exact
+  stable released state, rejection of hold outside the authenticated boundary,
+  template-version-3 nesting, and absence of the command in stock QEMU.
+- **Inertness:** this prerequisite does not park `AioHandler` callbacks,
+  coroutine admission, the complete `AioContext`, block owners, or child clock
+  and context reconstruction. It cannot acknowledge AIO proof bit 3 and does
+  not call `fork(2)`.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

@@ -282,6 +282,7 @@ in
             if applyCruciblePatches
             then ''
               build/tests/unit/test-rcu-list --tap -p /rcu/hot-fork/barrier
+              build/tests/unit/test-aio --tap -p /aio/hot-fork/bh-timer-barrier
             ''
             else ''
               true
