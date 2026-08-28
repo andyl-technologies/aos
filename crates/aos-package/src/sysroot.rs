@@ -7188,14 +7188,21 @@ mod tests {
         diff.normalize_service_root_lifecycle();
         let plan = plan_from_diff(8, diff);
 
-        assert_eq!(plan.stopped, vec!["aos-pkg-web.target", helper]);
+        assert_eq!(
+            plan.stopped,
+            vec!["web.service", helper, "aos-pkg-web.target"]
+        );
         assert_eq!(plan.to_restart, vec!["ordinary.service"]);
         assert!(plan.to_reload.is_empty());
         assert!(plan.blanket_targets.is_empty());
         assert_eq!(plan.to_start, vec!["aos-pkg-web.target"]);
         assert_eq!(
             plan.required_stops,
-            BTreeSet::from(["aos-pkg-web.target".to_string(), helper.to_string(),])
+            BTreeSet::from([
+                "web.service".to_string(),
+                helper.to_string(),
+                "aos-pkg-web.target".to_string(),
+            ])
         );
     }
 
@@ -7220,13 +7227,21 @@ mod tests {
 
         assert_eq!(
             diff.to_stop,
-            vec!["aos-pkg-web.target", "aos-pkg-web-service-roots.service"]
+            vec![
+                "web.service",
+                "aos-pkg-web-service-roots.service",
+                "aos-pkg-web.target",
+            ]
         );
         assert_eq!(diff.to_start, vec!["aos-pkg-web.target"]);
         assert!(diff.to_restart.is_empty());
         assert_eq!(
             diff.required_stops,
-            BTreeSet::from(["aos-pkg-web.target".to_string(), helper.to_string(),])
+            BTreeSet::from([
+                "web.service".to_string(),
+                helper.to_string(),
+                "aos-pkg-web.target".to_string(),
+            ])
         );
     }
 
@@ -7252,7 +7267,10 @@ mod tests {
         diff.normalize_service_root_lifecycle();
         let plan = plan_from_diff(9, diff);
 
-        assert_eq!(plan.stopped, vec!["aos-pkg-web.target", root_unit]);
+        assert_eq!(
+            plan.stopped,
+            vec!["web.service", root_unit, "aos-pkg-web.target"]
+        );
         assert_eq!(plan.to_start, vec!["aos-pkg-web.target"]);
     }
 
@@ -7276,7 +7294,10 @@ mod tests {
         diff.normalize_service_root_lifecycle();
         let plan = plan_from_diff(10, diff);
 
-        assert_eq!(plan.stopped, vec!["aos-pkg-web.target", root_unit]);
+        assert_eq!(
+            plan.stopped,
+            vec!["web.service", root_unit, "aos-pkg-web.target"]
+        );
         assert!(plan.to_start.is_empty());
     }
 
@@ -7305,9 +7326,10 @@ mod tests {
 
         let target = "aos-pkg-web.target".to_string();
         let helper = "aos-pkg-web-service-roots.service".to_string();
-        let ordered = vec![target.clone(), helper.clone()];
+        let member = "web.service".to_string();
+        let ordered = vec![member.clone(), helper.clone(), target.clone()];
         let expected = ordered.clone();
-        let required = BTreeSet::from([target, helper.clone()]);
+        let required = BTreeSet::from([member, helper.clone(), target]);
         let calls = Arc::new(Mutex::new(Vec::new()));
         let helper_started = Arc::new(Notify::new());
         let helper_release = Arc::new(Notify::new());
@@ -7341,6 +7363,11 @@ mod tests {
             !task.is_finished(),
             "barrier returned before helper cleanup"
         );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec!["web.service".to_string(), helper.clone()],
+            "target stop raced PartOf-propagated helper cleanup"
+        );
         helper_release.notify_one();
         task.await.unwrap().unwrap();
         assert_eq!(*calls.lock().unwrap(), expected);
@@ -7352,8 +7379,9 @@ mod tests {
 
         let target = "aos-pkg-web.target".to_string();
         let helper = "aos-pkg-web-service-roots.service".to_string();
-        let ordered = vec![target.clone(), helper.clone()];
-        let required = BTreeSet::from([target, helper.clone()]);
+        let member = "web.service".to_string();
+        let ordered = vec![member.clone(), helper.clone(), target.clone()];
+        let required = BTreeSet::from([member.clone(), helper.clone(), target]);
         let calls = Arc::new(Mutex::new(Vec::new()));
 
         let err = await_required_stops(&ordered, &required, {
@@ -7376,7 +7404,7 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains(&helper));
-        assert_eq!(*calls.lock().unwrap(), ordered);
+        assert_eq!(*calls.lock().unwrap(), vec![member, helper]);
     }
 
     #[test]

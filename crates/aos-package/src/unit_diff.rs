@@ -336,7 +336,7 @@ pub struct UnitDiff {
 
 impl UnitDiff {
     /// Replaces affected service-root member actions with an ordered, required
-    /// owning-target and old-helper stop barrier.
+    /// old-member, old-helper, and owning-target stop barrier.
     pub fn normalize_service_root_lifecycle(&mut self) {
         let affected_helpers = self
             .to_restart
@@ -361,15 +361,24 @@ impl UnitDiff {
             self.install_only.retain(|unit| !members.contains(unit));
             self.blanket_targets.retain(|unit| !members.contains(unit));
 
-            if !self.to_stop.contains(&barrier.target) {
-                self.to_stop.push(barrier.target.clone());
+            // Stop every authenticated old member explicitly so the later
+            // target stop cannot race PartOf-propagated helper cleanup.
+            for member in barrier
+                .live_members
+                .iter()
+                .filter(|member| *member != &helper && *member != &barrier.target)
+            {
+                self.to_stop.push(member.clone());
+                self.required_stops.insert(member.clone());
             }
-            self.required_stops.insert(barrier.target.clone());
 
-            // Stopping the target waits for its own job only. An explicit old
-            // helper stop after it is the cleanup completion barrier.
+            // The helper is now independent of propagation, so this job result
+            // is the authoritative old-overlay cleanup outcome.
             self.to_stop.push(helper.clone());
             self.required_stops.insert(helper);
+
+            self.to_stop.push(barrier.target.clone());
+            self.required_stops.insert(barrier.target.clone());
 
             if barrier.candidate_target_present && !self.to_start.contains(&barrier.target) {
                 self.to_start.push(barrier.target);
@@ -1223,7 +1232,13 @@ mod tests {
         diff.normalize_service_root_lifecycle();
         assert_eq!(
             diff.to_stop,
-            vec!["aos-pkg-web.target", "aos-pkg-web-service-roots.service"]
+            vec![
+                "socket-activated.service",
+                "wanted-only.service",
+                "web.service",
+                "aos-pkg-web-service-roots.service",
+                "aos-pkg-web.target",
+            ]
         );
         assert_eq!(diff.to_start, vec!["aos-pkg-web.target"]);
         assert!(diff.to_restart.is_empty());
