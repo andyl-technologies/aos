@@ -1145,7 +1145,6 @@ fn validate_workload_roots(
     }
 
     for unit in &workload_units {
-
         let path = artifact_root.join(unit);
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading exposed unit {}", path.display()))?;
@@ -1177,16 +1176,8 @@ fn validate_workload_roots(
                 package_name
             );
         } else if uses_overlay_roots {
-            let expected_root = format!(
-                "/run/aos/service-roots/{package_name}/{unit}/merged"
-            );
-            require_service_value(
-                package_name,
-                unit,
-                service,
-                "RootDirectory",
-                &expected_root,
-            )?;
+            let expected_root = format!("/run/aos/service-roots/{package_name}/{unit}/merged");
+            require_service_value(package_name, unit, service, "RootDirectory", &expected_root)?;
             if Path::new(&expected_root) == runtime_store_path
                 || expected_root.starts_with(artifact_store_path.to_string_lossy().as_ref())
             {
@@ -1279,7 +1270,14 @@ fn validate_service_root_preparation(
     require_service_value(package_name, root_unit, service, "UMask", "0077")?;
     let target = format!("aos-pkg-{package_name}.target");
     require_section_word(package_name, root_unit, &parsed, "Unit", "PartOf", &target)?;
-    require_section_word(package_name, root_unit, &parsed, "Install", "WantedBy", &target)?;
+    require_section_word(
+        package_name,
+        root_unit,
+        &parsed,
+        "Install",
+        "WantedBy",
+        &target,
+    )?;
     for unit in workload_units {
         require_section_word(package_name, root_unit, &parsed, "Unit", "Before", unit)?;
     }
@@ -2126,9 +2124,7 @@ fn trusted_service_root_helper_path() -> Result<String> {
             bail!("{SERVICE_ROOT_HELPER_ENV} must not be empty");
         }
         if !path.starts_with('/') || !path.ends_with("/bin/aos-service-root") {
-            bail!(
-                "{SERVICE_ROOT_HELPER_ENV} must point to an absolute aos-service-root binary"
-            );
+            bail!("{SERVICE_ROOT_HELPER_ENV} must point to an absolute aos-service-root binary");
         }
         return Ok(path);
     }
@@ -3510,13 +3506,15 @@ mod tests {
         artifact_hash: &str,
     ) -> InstalledMeta {
         let artifact = tmp.path().join(format!("{artifact_hash}-expose-{name}"));
+        let runtime_store_path = format!("/var/lib/store/{package_hash}-{name}-1.0");
+        let service_root_unit = format!("aos-pkg-{name}-service-roots.service");
         std::fs::create_dir_all(artifact.join("units")).unwrap();
         std::fs::write(
             artifact
                 .join("units")
                 .join(format!("aos-pkg-{name}.target")),
             format!(
-                "[Unit]\nWants=aos-pkg-{name}.slice {name}.service aos-pkg-{name}-mac.service aos-pkg-{name}-ebpf.service\n"
+                "[Unit]\nWants=aos-pkg-{name}.slice {name}.service aos-pkg-{name}-mac.service aos-pkg-{name}-ebpf.service {service_root_unit}\n"
             ),
         )
         .unwrap();
@@ -3540,7 +3538,11 @@ mod tests {
         );
         std::fs::write(
             artifact.join("units").join(format!("{name}.service")),
-            workload_service_text(name, &format!("[Service]\nSlice=aos-pkg-{name}.slice\n")),
+            workload_service_text(
+                name,
+                &format!("{name}.service"),
+                &format!("[Service]\nSlice=aos-pkg-{name}.slice\n"),
+            ),
         )
         .unwrap();
         std::fs::write(
@@ -3557,9 +3559,14 @@ mod tests {
             ebpf_policy_service_text(name, &ebpf_exec_start),
         )
         .unwrap();
+        std::fs::write(
+            artifact.join("units").join(&service_root_unit),
+            service_root_unit_text(name, &runtime_store_path, &[format!("{name}.service")]),
+        )
+        .unwrap();
 
         let installed = InstalledMeta {
-            store_path: format!("/var/lib/store/{package_hash}-{name}-1.0"),
+            store_path: runtime_store_path,
             pushed_at: 1,
             pushed_by: "apm".into(),
             expires_at: None,
@@ -3582,6 +3589,7 @@ mod tests {
                         format!("aos-pkg-{name}.slice"),
                         format!("aos-pkg-{name}-mac.service"),
                         format!("aos-pkg-{name}-ebpf.service"),
+                        service_root_unit,
                     ],
                     images: Vec::new(),
                     requires: Vec::new(),
@@ -3737,6 +3745,67 @@ mod tests {
 
         assert!(
             format!("{err:#}").contains("expected 'aos-pkg-web.target'"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_missing_service_root_preparation() {
+        let tmp = TempDir::new().unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkgwebhash11", "artifactweb11");
+        let apm = installed.apm.as_mut().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        let root_unit = "aos-pkg-web-service-roots.service";
+        apm.expose
+            .as_mut()
+            .unwrap()
+            .units
+            .retain(|unit| unit != root_unit);
+        std::fs::remove_file(Path::new(&artifact).join("units").join(root_unit)).unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile-missing-service-root"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("reading service-root preparation unit"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_malformed_service_root_preparation() {
+        let tmp = TempDir::new().unwrap();
+        let installed = installed_with_expose(&tmp, "web", "pkgwebhash11", "artifactweb11");
+        let artifact = installed
+            .apm
+            .as_ref()
+            .unwrap()
+            .expose_artifact
+            .as_ref()
+            .unwrap()
+            .store_path
+            .clone();
+        let root_unit = Path::new(&artifact).join("units/aos-pkg-web-service-roots.service");
+        let text = std::fs::read_to_string(&root_unit)
+            .unwrap()
+            .replace(" prepare web ", " prepare other ");
+        std::fs::write(root_unit, text).unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile-malformed-service-root"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("invalid trusted-helper prepare command"),
             "{err:#}"
         );
     }
@@ -3947,7 +4016,21 @@ mod tests {
         } else {
             format!("{text}Slice=aos-pkg-{}.slice\n", apm.name)
         };
-        let text = workload_service_text(&apm.name, &text);
+        let uses_overlay_root = !apm
+            .expose
+            .as_ref()
+            .unwrap()
+            .images
+            .iter()
+            .any(is_verity_root_image)
+            && normalized_permissions(&apm.name, &apm.permissions)
+                .confinement
+                .is_some_and(|confinement| confinement.class != ConfinementClass::Unconfined);
+        let text = if uses_overlay_root {
+            workload_service_text(&apm.name, &format!("{}.service", apm.name), &text)
+        } else {
+            text
+        };
         std::fs::write(
             Path::new(&artifact)
                 .join("units")
@@ -3985,6 +4068,7 @@ mod tests {
             ),
             root_hash_sig: Some("root.roothash.p7s".to_string()),
         }];
+        remove_service_root_preparation(installed);
     }
 
     fn verity_workload_service_text(
@@ -4017,14 +4101,80 @@ mod tests {
             + "\n"
     }
 
-    fn workload_service_text(package_name: &str, text: &str) -> String {
-        if text.contains("[Unit]") {
-            text.to_string()
+    fn workload_service_text(package_name: &str, unit_name: &str, text: &str) -> String {
+        let root_unit = format!("aos-pkg-{package_name}-service-roots.service");
+        let text = if text.contains("[Unit]") {
+            text.replacen(
+                "[Unit]\n",
+                &format!("[Unit]\nAfter={root_unit}\nRequires={root_unit}\n"),
+                1,
+            )
         } else {
             format!(
-                "[Unit]\nAfter=aos-pkg-{package_name}-mac.service aos-pkg-{package_name}-ebpf.service\nRequires=aos-pkg-{package_name}-mac.service aos-pkg-{package_name}-ebpf.service\n{text}"
+                "[Unit]\nAfter=aos-pkg-{package_name}-mac.service aos-pkg-{package_name}-ebpf.service {root_unit}\nRequires=aos-pkg-{package_name}-mac.service aos-pkg-{package_name}-ebpf.service {root_unit}\n{text}"
+            )
+        };
+        if text.contains("RootDirectory=") {
+            text
+        } else {
+            text.replacen(
+                "[Service]\n",
+                &format!(
+                    "[Service]\nRootDirectory=/run/aos/service-roots/{package_name}/{unit_name}/merged\n"
+                ),
+                1,
             )
         }
+    }
+
+    fn service_root_unit_text(
+        package_name: &str,
+        runtime_store_path: &str,
+        workload_units: &[String],
+    ) -> String {
+        let helper = trusted_service_root_helper_path().unwrap();
+        let target = format!("aos-pkg-{package_name}.target");
+        let workloads = workload_units.join(" ");
+        let command = format!("{package_name} {runtime_store_path} {workloads}");
+        format!(
+            "[Unit]\nPartOf={target}\nBefore={workloads}\n[Service]\nType=oneshot\nRemainAfterExit=true\nExecStart={helper} prepare {command}\nExecStop={helper} cleanup {command}\nExecStopPost={helper} cleanup {command}\nCapabilityBoundingSet=CAP_SYS_ADMIN\nAmbientCapabilities=CAP_SYS_ADMIN\nPrivateMounts=false\nNoNewPrivileges=false\nRestrictAddressFamilies=AF_UNIX\nUMask=0077\n[Install]\nWantedBy={target}\n"
+        )
+    }
+
+    fn rewrite_service_root_preparation(installed: &InstalledMeta) {
+        let apm = installed.apm.as_ref().unwrap();
+        let expose = apm.expose.as_ref().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        let workloads = expose
+            .units
+            .iter()
+            .filter(|unit| {
+                unit.ends_with(".service")
+                    && !is_generated_expose_side_effect_service(&apm.name, unit)
+            })
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        std::fs::write(
+            Path::new(&artifact)
+                .join("units")
+                .join(format!("aos-pkg-{}-service-roots.service", apm.name)),
+            service_root_unit_text(&apm.name, &installed.store_path, &workloads),
+        )
+        .unwrap();
+    }
+
+    fn remove_service_root_preparation(installed: &mut InstalledMeta) {
+        let apm = installed.apm.as_mut().unwrap();
+        let root_unit = format!("aos-pkg-{}-service-roots.service", apm.name);
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        apm.expose
+            .as_mut()
+            .unwrap()
+            .units
+            .retain(|unit| unit != &root_unit);
+        std::fs::remove_file(Path::new(&artifact).join("units").join(root_unit)).unwrap();
     }
 
     fn trusted_landlock_wrapper_for_test() -> String {
@@ -5122,7 +5272,7 @@ mod tests {
         let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
         std::fs::write(
             Path::new(&artifact).join("units/web.service"),
-            "[Unit]\nAfter=aos-pkg-web-ebpf.service\nRequires=aos-pkg-web-mac.service aos-pkg-web-ebpf.service\n[Service]\nSlice=aos-pkg-web.slice\n",
+            "[Unit]\nAfter=aos-pkg-web-ebpf.service aos-pkg-web-service-roots.service\nRequires=aos-pkg-web-mac.service aos-pkg-web-ebpf.service aos-pkg-web-service-roots.service\n[Service]\nRootDirectory=/run/aos/service-roots/web/web.service/merged\nSlice=aos-pkg-web.slice\n",
         )
         .unwrap();
         link_expose_artifact(&profile, &installed);
@@ -5258,7 +5408,7 @@ mod tests {
         let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
         std::fs::write(
             Path::new(&artifact).join("units/web.service"),
-            "[Unit]\nRequires=aos-pkg-web-ebpf.service\n[Service]\nSlice=aos-pkg-web.slice\n",
+            "[Unit]\nAfter=aos-pkg-web-service-roots.service\nRequires=aos-pkg-web-ebpf.service aos-pkg-web-service-roots.service\n[Service]\nRootDirectory=/run/aos/service-roots/web/web.service/merged\nSlice=aos-pkg-web.slice\n",
         )
         .unwrap();
         link_expose_artifact(&profile, &installed);
@@ -5281,7 +5431,7 @@ mod tests {
         let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
         std::fs::write(
             Path::new(&artifact).join("units/web.service"),
-            "[Unit]\nAfter=aos-pkg-web-ebpf.service\n[Service]\nSlice=aos-pkg-web.slice\n",
+            "[Unit]\nAfter=aos-pkg-web-ebpf.service aos-pkg-web-service-roots.service\nRequires=aos-pkg-web-service-roots.service\n[Service]\nRootDirectory=/run/aos/service-roots/web/web.service/merged\nSlice=aos-pkg-web.slice\n",
         )
         .unwrap();
         link_expose_artifact(&profile, &installed);
@@ -5309,7 +5459,11 @@ mod tests {
         );
         std::fs::write(
             Path::new(&artifact).join("units/web.service"),
-            workload_service_text("web", &format!("[Service]\nExecStart={exec_start}\n")),
+            workload_service_text(
+                "web",
+                "web.service",
+                &format!("[Service]\nExecStart={exec_start}\n"),
+            ),
         )
         .unwrap();
         link_expose_artifact(&profile, &installed);
@@ -5339,6 +5493,7 @@ mod tests {
             Path::new(&artifact).join("units/web-worker.service"),
             workload_service_text(
                 "web",
+                "web-worker.service",
                 "[Service]\nStateDirectory=aos-pkg-web-worker\nSlice=aos-pkg-web.slice\n",
             ),
         )
@@ -5355,12 +5510,14 @@ mod tests {
             Path::new(&artifact).join("units/web-worker.service"),
             workload_service_text(
                 "web",
+                "web-worker.service",
                 &format!(
                     "[Service]\nStateDirectory=aos-pkg-web-worker\nSlice=aos-pkg-web.slice\nExecStart={exec_start}\n"
                 ),
             ),
         )
         .unwrap();
+        rewrite_service_root_preparation(&installed);
         link_expose_artifact(&profile, &installed);
 
         let packages = exposed_packages(&profile, &[installed]).unwrap();
@@ -5500,6 +5657,7 @@ mod tests {
         write_mac_profile_file(&installed);
         remove_mac_policy_service(&mut installed);
         remove_ebpf_policy_service(&mut installed);
+        remove_service_root_preparation(&mut installed);
         write_service_unit(
             &installed,
             "[Unit]\n[Service]\nSlice=aos-pkg-web.slice\nExecStart=/bin/true\n",
