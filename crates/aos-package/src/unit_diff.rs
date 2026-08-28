@@ -318,6 +318,22 @@ pub struct UnitDiff {
     pub warnings: Vec<String>,
 }
 
+/// Returns the package target owning a generated service-root preparation unit.
+///
+/// The expose renderer reserves this exact name. Keeping the derivation here
+/// lets both generation activation and attached-unit reconciliation establish
+/// the same pre-reload stop barrier while the old strict cleanup command is
+/// still loaded.
+pub(crate) fn service_root_target(unit: &str) -> Option<String> {
+    let package = unit
+        .strip_prefix("aos-pkg-")?
+        .strip_suffix("-service-roots.service")?;
+    if package.is_empty() {
+        return None;
+    }
+    Some(format!("aos-pkg-{package}.target"))
+}
+
 // ---------------------------------------------------------------------------
 // Unit-type policy
 // ---------------------------------------------------------------------------
@@ -1000,6 +1016,16 @@ mod tests {
         let diff = compute_diff(live.path(), cand.path());
         assert_eq!(diff.to_start, vec!["new.service"]);
         assert!(diff.to_stop.is_empty() && diff.to_restart.is_empty());
+    }
+
+    #[test]
+    fn generated_service_root_name_maps_to_owning_target() {
+        assert_eq!(
+            service_root_target("aos-pkg-libc++=debug-service-roots.service"),
+            Some("aos-pkg-libc++=debug.target".to_string())
+        );
+        assert_eq!(service_root_target("web.service"), None);
+        assert_eq!(service_root_target("aos-pkg--service-roots.service"), None);
     }
 
     #[test]

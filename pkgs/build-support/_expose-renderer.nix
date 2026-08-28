@@ -36,6 +36,7 @@
   capabilityType = "^CAP_[A-Z0-9_]+$";
   capabilityRouteNameType = "^[A-Za-z0-9_.-]+$";
   packageNameType = "^[A-Za-z0-9][A-Za-z0-9+._=-]*$";
+  overlayTokenType = "^[A-Za-z0-9][A-Za-z0-9+._=@-]*$";
   credentialNameType = "^[A-Za-z0-9_.-]+$";
   hostPathType = "^[A-Za-z0-9_./+=@-]+$";
   kernelModuleType = "^[A-Za-z0-9_-]+$";
@@ -66,8 +67,7 @@
     (
       builtins.isString unit
       && unit != ""
-      && builtins.match ".*/.*" unit == null
-      && builtins.match ".*[[:space:]].*" unit == null
+      && builtins.match overlayTokenType unit != null
       && hasKnownSuffix unit
     )
     "expose.units contains invalid systemd unit name '${builtins.toString unit}'"

@@ -103,6 +103,18 @@ mkDerivation {
           echo "unsafe package token accepted" >&2
           exit 1
         fi
+        "$helper" prepare 'demo+=1' "$fixture" 'alpha+blue=@.service'
+        "$helper" cleanup 'demo+=1' "$fixture" 'alpha+blue=@.service'
+        if "$helper" prepare 'bad@package' "$fixture" bad.service; then
+          echo "invalid package token accepted" >&2
+          exit 1
+        fi
+        for unsafe_unit in 'bad,unit.service' 'bad:unit.service' 'bad\unit.service'; do
+          if "$helper" prepare demo "$fixture" "$unsafe_unit"; then
+            echo "unsafe unit token accepted: $unsafe_unit" >&2
+            exit 1
+          fi
+        done
         if "$helper" prepare bad "$fixture/share" bad.service; then
           echo "nested store payload accepted" >&2
           exit 1

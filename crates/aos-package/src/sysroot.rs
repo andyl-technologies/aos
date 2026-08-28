@@ -4160,6 +4160,26 @@ async fn activate_post_etc_swap_inner(plan_path: &Path, printer: &Printer) -> Re
 /// Convert a [`UnitDiff`] into a serializable [`Plan`], folding install-only
 /// units and newly enabled targets into the start list.
 fn plan_from_diff(generation: u32, mut diff: UnitDiff) -> Plan {
+    // A generated roots unit embeds the authenticated payload path in both
+    // ExecStart and strict ExecStop. Stop its owning target before /etc is
+    // swapped so systemd necessarily executes the old cleanup identity, then
+    // start the target after daemon-reload to prepare the new lowerdir.
+    let changed_root_targets = diff
+        .to_restart
+        .iter()
+        .filter_map(|unit| unit_diff::service_root_target(unit))
+        .collect::<BTreeSet<_>>();
+    diff.to_restart
+        .retain(|unit| unit_diff::service_root_target(unit).is_none());
+    for target in changed_root_targets {
+        if !diff.to_stop.contains(&target) {
+            diff.to_stop.push(target.clone());
+        }
+        if !diff.to_start.contains(&target) {
+            diff.to_start.push(target);
+        }
+    }
+
     let install_only = std::mem::take(&mut diff.install_only);
     for unit in install_only {
         if !diff.to_start.contains(&unit) {
@@ -7112,6 +7132,23 @@ mod tests {
             ]
         );
         assert_eq!(plan.generation, 7);
+    }
+
+    #[test]
+    fn plan_stops_old_service_root_target_before_generation_swap() {
+        let diff = UnitDiff {
+            to_restart: vec![
+                "aos-pkg-web-service-roots.service".to_string(),
+                "ordinary.service".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        let plan = plan_from_diff(8, diff);
+
+        assert_eq!(plan.stopped, vec!["aos-pkg-web.target"]);
+        assert_eq!(plan.to_restart, vec!["ordinary.service"]);
+        assert_eq!(plan.to_start, vec!["aos-pkg-web.target"]);
     }
 
     #[test]

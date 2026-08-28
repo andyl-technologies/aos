@@ -209,6 +209,8 @@ pub(crate) async fn reconcile_system_profile(config: &ApmConfig, printer: &Print
         .collect::<Vec<_>>();
     let attached_diff = compute_attached_unit_diff(&root, &packages)?;
 
+    stop_changed_service_root_targets_before_swap(&root, &attached_diff).await?;
+
     let had_attached_units = has_attached_units(&root)?;
     if packages.is_empty() && removed_targets.is_empty() {
         write_attached_units(&root, &packages)?;
@@ -1119,7 +1121,6 @@ fn validate_workload_roots(
         .confinement
         .context("normalized permissions have no confinement summary")?
         .class;
-    let uses_overlay_roots = expected.is_none() && confinement != ConfinementClass::Unconfined;
     let root_unit = format!("aos-pkg-{package_name}-service-roots.service");
     let workload_units = units
         .iter()
@@ -1129,6 +1130,9 @@ fn validate_workload_roots(
         })
         .cloned()
         .collect::<Vec<_>>();
+    let uses_overlay_roots = expected.is_none()
+        && confinement != ConfinementClass::Unconfined
+        && !workload_units.is_empty();
 
     if uses_overlay_roots {
         validate_service_root_preparation(
@@ -3132,6 +3136,43 @@ async fn apply_systemd_changes(
     Ok(())
 }
 
+async fn stop_changed_service_root_targets_before_swap(
+    root: &Path,
+    attached_diff: &UnitDiff,
+) -> Result<()> {
+    if root != Path::new("/") {
+        return Ok(());
+    }
+
+    let targets = service_root_targets_requiring_preswap_stop(attached_diff);
+    if targets.is_empty() {
+        return Ok(());
+    }
+
+    let client = SystemdClient::connect().await?;
+    for target in targets {
+        match client.stop_unit(&target).await {
+            Ok(outcome) => ensure_job_done("stop", &target, outcome)?,
+            Err(err) if err.is_no_such_unit() => {}
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("stopping exposed package target {target} before attached-unit swap")
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn service_root_targets_requiring_preswap_stop(attached_diff: &UnitDiff) -> BTreeSet<String> {
+    attached_diff
+        .to_restart
+        .iter()
+        .chain(&attached_diff.to_stop)
+        .filter_map(|unit| unit_diff::service_root_target(unit))
+        .collect()
+}
+
 fn try_restart_changed_credential_units(root: &Path, units: &BTreeSet<String>) -> Result<()> {
     if units.is_empty() || root != Path::new("/") {
         return Ok(());
@@ -3775,6 +3816,46 @@ mod tests {
             format!("{err:#}").contains("reading service-root preparation unit"),
             "{err:#}"
         );
+    }
+
+    #[test]
+    fn exposed_packages_accepts_confined_socket_only_package_without_service_roots() {
+        let tmp = TempDir::new().unwrap();
+        let mut installed =
+            installed_with_expose(&tmp, "listener", "pkglistener1", "artifactlistener1");
+        let apm = installed.apm.as_mut().unwrap();
+        let artifact = PathBuf::from(&apm.expose_artifact.as_ref().unwrap().store_path);
+        let expose = apm.expose.as_mut().unwrap();
+        let root_unit = "aos-pkg-listener-service-roots.service";
+
+        expose
+            .units
+            .retain(|unit| unit != "listener.service" && unit != root_unit);
+        expose.units.push("listener.socket".into());
+        std::fs::remove_file(artifact.join("units/listener.service")).unwrap();
+        std::fs::remove_file(artifact.join("units").join(root_unit)).unwrap();
+        std::fs::write(
+            artifact.join("units/listener.socket"),
+            "[Unit]\nPartOf=aos-pkg-listener.target\n[Socket]\nListenStream=127.0.0.1:18080\n",
+        )
+        .unwrap();
+        std::fs::write(
+            artifact.join("units/aos-pkg-listener.target"),
+            "[Unit]\nWants=aos-pkg-listener.slice listener.socket aos-pkg-listener-mac.service aos-pkg-listener-ebpf.service\n",
+        )
+        .unwrap();
+        grant_tcp_bind(&mut installed, 18080);
+        write_network_policy_file(&installed, &[18080], &[]);
+
+        let profile = Profile {
+            path: tmp.path().join("profile-socket-only"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let packages = exposed_packages(&profile, &[installed]).unwrap();
+        assert_eq!(packages.len(), 1);
     }
 
     #[test]
@@ -6770,6 +6851,26 @@ mod tests {
         let diff = compute_attached_unit_diff(&root, &[]).unwrap();
 
         assert_eq!(diff.to_stop, vec!["web.service"]);
+    }
+
+    #[test]
+    fn changed_or_removed_service_roots_require_old_target_stop() {
+        let diff = UnitDiff {
+            to_restart: vec![
+                "aos-pkg-web-service-roots.service".to_string(),
+                "web.service".to_string(),
+            ],
+            to_stop: vec!["aos-pkg-api-service-roots.service".to_string()],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            service_root_targets_requiring_preswap_stop(&diff),
+            BTreeSet::from([
+                "aos-pkg-api.target".to_string(),
+                "aos-pkg-web.target".to_string(),
+            ])
+        );
     }
 
     #[test]
