@@ -213,18 +213,24 @@ in
         command = "rsync --version";
       };
 
-      config = testing.mkBuildTest {
-        name = "rsyncd-config-module";
-        script = ''
+      config = pkgs.runCommand "rsyncd-config-module" {} ''
           config=${builtins.toFile "rsyncd.conf" evaluated.config.environment.etc."aos/packages/rsyncd/rsyncd.conf".text}
+          cp "$config" ./rsyncd.conf
+          config=./rsyncd.conf
+          mkdir -p "$TMPDIR/exports/public" "$TMPDIR/log" "$TMPDIR/run"
+          sed -i \
+            -e "s#/run/aos-pkg-rsyncd#$TMPDIR/run#g" \
+            -e "s#/var/log/rsyncd#$TMPDIR/log#g" \
+            -e "s#/var/lib/aos-pkg-rsyncd/exports#$TMPDIR/exports#g" \
+            "$config"
           grep -F '[public]' "$config"
-          grep -F 'path = /var/lib/aos-pkg-rsyncd/exports/public' "$config"
-          ${self}/bin/rsync --daemon --config="$config" --address=127.0.0.1 --port=18730 --no-detach &
-          pid=$!
-          sleep 1
-          kill "$pid"
-          wait "$pid" || true
-        '';
-      };
+          grep -F "path = $TMPDIR/exports/public" "$config"
+        ${self}/bin/rsync --daemon --config="$config" --address=127.0.0.1 --port=18730 --no-detach &
+        pid=$!
+        sleep 1
+        kill "$pid"
+        wait "$pid" || true
+        touch "$out"
+      '';
     };
   }

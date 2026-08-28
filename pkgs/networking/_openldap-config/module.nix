@@ -6,6 +6,7 @@
 }: let
   cfg = config.openldap;
   inherit (lib) mkOption types;
+  positiveInt = types.addCheck types.int (value: value > 0);
   secretRef = types.submodule ({...}: {
     config._module.strict = true;
     options.ref = mkOption {
@@ -58,7 +59,7 @@ in {
       description = "Opaque reference to the directory administrator password.";
     };
     database.maxBytes = mkOption {
-      type = types.ints.positive;
+      type = positiveInt;
       default = 1073741824;
     };
     tls = {

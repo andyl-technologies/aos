@@ -6,6 +6,7 @@
 }: let
   cfg = config.rsyncd;
   inherit (lib) mkOption types;
+  positiveInt = types.addCheck types.int (value: value > 0);
   moduleName = types.strMatching "[A-Za-z0-9][A-Za-z0-9_.-]*";
   secretRef = types.submodule ({...}: {
     config._module.strict = true;
@@ -36,7 +37,7 @@
         default = [];
       };
       maxConnections = mkOption {
-        type = types.ints.positive;
+        type = positiveInt;
         default = 8;
       };
     };
