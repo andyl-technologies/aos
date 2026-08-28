@@ -812,6 +812,11 @@ policy and composed-store deployment, takes the service state lock, and then
 opens the packaged executor's one canonical assignment ledger at
 `STATE/executor-ledger`. There is no flag that can substitute another ledger.
 An active service or packaged executor therefore excludes both plan and apply.
+The packaged executor publishes every exact-checkpoint object through the same
+composed campaign graph that this command inventories; its public deployment
+configuration has no independent checkpoint-store path. Assignment-ledger
+checkpoint roots are therefore authenticated and marked against the exact
+physical inventory rather than a parallel store.
 The current production owner has not yet wired an exact-pin materialization
 journal; if any current semantic pin requires exact retention, root inventory
 fails before the external GC journal is created. It never silently treats a

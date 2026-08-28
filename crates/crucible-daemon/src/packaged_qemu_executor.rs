@@ -26,7 +26,7 @@ use crucible_campaign::{
     ExecutorMaterializationCapability, ExecutorRejection, ObservationId, ScenarioArtifactId,
     SubmitAttemptRequest,
 };
-use crucible_cas::content_store::{DirectoryBlobBackend, ImmutableBlobBackend};
+use crucible_cas::content_store::ImmutableBlobBackend;
 use crucible_qemu::{LinuxQemuAttemptHostConfig, QemuVmRealizationError};
 
 use crate::{
@@ -59,14 +59,18 @@ mod tests;
 /// both hostile immutable-store work and retained decoded scenario state.
 pub const MAX_PACKAGED_SCENARIO_CATALOG_BYTES: usize = 128 * 1024 * 1024;
 
-/// Complete deployment contract for one packaged local QEMU executor pool.
+/// Complete operational deployment contract for one packaged local QEMU executor pool.
+///
+/// Exact checkpoint objects are deliberately absent from this configuration:
+/// the prepared campaign-service owner supplies its already-authenticated
+/// composed immutable store so checkpoints, campaign closure authentication,
+/// and stopped-owner GC share one physical graph.
 #[derive(Clone, Debug)]
 pub struct PackagedQemuExecutorConfig {
     campaigns: BTreeSet<CampaignName>,
     endpoint: ExecutorLoopbackEndpointConfig,
     server: ExecutorLoopbackServerConfig,
     ledger_root: PathBuf,
-    checkpoint_root: PathBuf,
     maximum_checkpoint_bytes: u64,
     daemon_epoch: DaemonEpoch,
     capacity: ExecutorCapacity,
@@ -94,7 +98,6 @@ impl PackagedQemuExecutorConfig {
         endpoint: ExecutorLoopbackEndpointConfig,
         server: ExecutorLoopbackServerConfig,
         ledger_root: impl Into<PathBuf>,
-        checkpoint_root: impl Into<PathBuf>,
         maximum_checkpoint_bytes: u64,
         daemon_epoch: DaemonEpoch,
         capacity: ExecutorCapacity,
@@ -127,7 +130,6 @@ impl PackagedQemuExecutorConfig {
             endpoint,
             server,
             ledger_root: ledger_root.into(),
-            checkpoint_root: checkpoint_root.into(),
             maximum_checkpoint_bytes,
             daemon_epoch,
             capacity,
@@ -156,12 +158,6 @@ impl PackagedQemuExecutorConfig {
     #[must_use]
     pub fn ledger_root(&self) -> &Path {
         &self.ledger_root
-    }
-
-    /// Returns the durable exact-checkpoint object root.
-    #[must_use]
-    pub fn checkpoint_root(&self) -> &Path {
-        &self.checkpoint_root
     }
 
     /// Returns the fixed modeled-worker count.
@@ -386,11 +382,12 @@ pub enum PackagedQemuExecutorJoinError {
 /// # Errors
 ///
 /// Returns [`PackagedQemuExecutorError`] when a campaign or lineage cannot be
-/// authenticated, configured campaign bases differ, a durable or host owner
-/// cannot be acquired, capabilities do not encode, workers cannot start, or
-/// the managed endpoint cannot bind.
-pub fn prepare_packaged_qemu_executor(
+/// authenticated, configured campaign bases differ, the supplied checkpoint
+/// store or another durable or host owner cannot be acquired, capabilities do
+/// not encode, workers cannot start, or the managed endpoint cannot bind.
+pub(crate) fn prepare_packaged_qemu_executor(
     repository: Arc<CampaignRepository>,
+    checkpoint_backend: Arc<dyn ImmutableBlobBackend>,
     config: PackagedQemuExecutorConfig,
 ) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError> {
     let basis = authenticate_packaged_campaigns(&repository, &config.campaigns)?;
@@ -426,7 +423,14 @@ pub fn prepare_packaged_qemu_executor(
                 })?;
         baked.insert(scenario_id, checkpoint);
     }
-    compose_packaged_qemu_executor_with_baked_genesis(repository, basis, config, host, baked)
+    compose_packaged_qemu_executor_with_baked_genesis(
+        repository,
+        checkpoint_backend,
+        basis,
+        config,
+        host,
+        baked,
+    )
 }
 
 fn preflight_packaged_scenario_catalog(
@@ -503,6 +507,7 @@ fn authenticate_packaged_campaigns(
 #[cfg(test)]
 pub(crate) fn compose_packaged_qemu_executor<H>(
     repository: Arc<CampaignRepository>,
+    checkpoint_backend: Arc<dyn ImmutableBlobBackend>,
     profile: ExecutorCompatibilityProfile,
     scenario: ScenarioArtifactId,
     config: PackagedQemuExecutorConfig,
@@ -516,6 +521,7 @@ where
 {
     compose_packaged_qemu_executor_for_scenarios(
         repository,
+        checkpoint_backend,
         profile,
         BTreeSet::from([scenario]),
         config,
@@ -526,6 +532,7 @@ where
 #[cfg(test)]
 pub(crate) fn compose_packaged_qemu_executor_for_scenarios<H>(
     repository: Arc<CampaignRepository>,
+    checkpoint_backend: Arc<dyn ImmutableBlobBackend>,
     profile: ExecutorCompatibilityProfile,
     scenarios: BTreeSet<ScenarioArtifactId>,
     config: PackagedQemuExecutorConfig,
@@ -539,6 +546,7 @@ where
 {
     compose_packaged_qemu_executor_with_checkpoint_promotions(
         repository,
+        checkpoint_backend,
         PackagedCampaignBasis { profile, scenarios },
         config,
         host,
@@ -566,6 +574,7 @@ impl LocalCheckpointPromotionWorker for DisabledPackagedCheckpointPromotionWorke
 #[cfg(test)]
 fn compose_packaged_qemu_executor_with_checkpoint_promotions<H, P>(
     repository: Arc<CampaignRepository>,
+    checkpoint_backend: Arc<dyn ImmutableBlobBackend>,
     basis: PackagedCampaignBasis,
     config: PackagedQemuExecutorConfig,
     host: H,
@@ -581,6 +590,7 @@ where
     let shared = SharedQemuAttemptHostResourceFactory::new(host);
     compose_packaged_qemu_executor_with_promotion_builder(
         repository,
+        checkpoint_backend,
         basis,
         config,
         shared,
@@ -590,6 +600,7 @@ where
 
 fn compose_packaged_qemu_executor_with_baked_genesis<H>(
     repository: Arc<CampaignRepository>,
+    checkpoint_backend: Arc<dyn ImmutableBlobBackend>,
     basis: PackagedCampaignBasis,
     config: PackagedQemuExecutorConfig,
     shared: SharedQemuAttemptHostResourceFactory<H>,
@@ -607,6 +618,7 @@ where
     )?;
     compose_packaged_qemu_executor_with_promotion_builder(
         repository,
+        checkpoint_backend,
         basis,
         config,
         shared,
@@ -627,6 +639,7 @@ where
 
 fn compose_packaged_qemu_executor_with_promotion_builder<H, P, B>(
     repository: Arc<CampaignRepository>,
+    checkpoint_backend: Arc<dyn ImmutableBlobBackend>,
     basis: PackagedCampaignBasis,
     config: PackagedQemuExecutorConfig,
     shared: SharedQemuAttemptHostResourceFactory<H>,
@@ -649,10 +662,6 @@ where
     let ledger = DirectoryAssignmentLedger::open(&config.ledger_root)?;
     ledger.visit_checkpoint_roots(&mut |_| {})?;
     reconcile_packaged_native_catalogs(config.lifecycle.run_state_root())?;
-    let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
-        "campaign-exact-checkpoints",
-        &config.checkpoint_root,
-    ));
     let checkpoints = Arc::new(ExactCheckpointStore::new(
         checkpoint_backend,
         config.maximum_checkpoint_bytes,

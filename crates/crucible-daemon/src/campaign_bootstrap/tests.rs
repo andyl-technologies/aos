@@ -778,7 +778,6 @@ fn packaged_executor_pool_serves_and_joins_two_campaign_runtimes() {
         executor_endpoint.clone(),
         ExecutorLoopbackServerConfig::default(),
         directory.path().join("executor-ledger"),
-        directory.path().join("executor-checkpoints"),
         1024 * 1024,
         DaemonEpoch::from_bytes([0x61; 16]).expect("daemon epoch"),
         ExecutorCapacity::new(2, 2, 512 * 1024 * 1024, 1024 * 1024 * 1024, 50_000)
@@ -793,6 +792,12 @@ fn packaged_executor_pool_serves_and_joins_two_campaign_runtimes() {
     .expect("packaged executor configuration");
     let packaged = crate::packaged_qemu_executor::compose_packaged_qemu_executor_for_scenarios(
         Arc::clone(&prepared.repository),
+        prepared
+            .maintenance
+            .as_ref()
+            .expect("composed store maintenance")
+            .store
+            .clone(),
         ExecutorCompatibilityProfile::from_lineage(&alpha_lineage),
         BTreeSet::from([
             alpha_lineage.scenario_content(),

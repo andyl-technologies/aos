@@ -519,9 +519,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   ordinary listener result. The unserved-owner drop backstop also joins the
   semantic pool before releasing the endpoint namespace. The daemon now also
   composes the concrete fresh/thin-replay QEMU worker, shared aggregate host
-  allocator, disjoint stable per-worker recovery roots, durable assignment and
-  checkpoint stores, managed endpoint, runtime, and campaign service from one
-  strict owner-only deployment file. Worker count is fixed at startup and
+  allocator, disjoint stable per-worker recovery roots, durable assignment
+  ledger, managed endpoint, runtime, and campaign service from one strict
+  owner-only deployment file. Exact checkpoint objects are published through
+  the exact composed campaign store retained by that service owner; no second
+  checkpoint-backend path can diverge from campaign closure authentication or
+  physical GC inventory. Worker count is fixed at startup and
   cannot exceed the admitted slot ceiling. Exact-resume worker selection and
   its concrete modeled driver remain open and are not advertised.
   A bounded `CampaignSupervisor` now composes one planner driver and one
@@ -1613,7 +1616,7 @@ namespace-scan, corruption, restart, and failure-atomicity tests. Production
 exact checkpoints also cross that immutable seam: the daemon authenticates a
 native version-seven closure, streams every object into domain-separated CAS
 placements, publishes bounded canonical index pages and the exact root last,
-then reloads the closure lazily through the same backend as a portable
+then reloads the closure lazily through the same composed campaign backend as a portable
 `ProductionExactCheckpointSource`. The durable operational ledger retains that
 root across restart without granting the immutable backend mutable-ref
 authority. This completes T-CAM-5.1.

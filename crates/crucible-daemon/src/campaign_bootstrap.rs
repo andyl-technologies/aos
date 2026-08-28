@@ -40,7 +40,7 @@ use crate::{
     MAX_CAMPAIGN_POLICY_BYTES, PackagedQemuExecutor, PackagedQemuExecutorConfig,
     PackagedQemuExecutorError, PackagedQemuExecutorJoinError, PackagedQemuExecutorStartError,
     PreparedCanonicalCampaignRuntime, UnixPeerCampaignPolicy, UnixPeerCampaignPolicyLoadError,
-    prepare_canonical_campaign_runtime, prepare_packaged_qemu_executor,
+    prepare_canonical_campaign_runtime,
 };
 
 const STATE_LOCK_FILE: &str = ".crucible-campaign-repository.lock";
@@ -679,7 +679,9 @@ impl PreparedCampaignLocalService {
     /// # Errors
     ///
     /// Returns [`CampaignLocalServiceError::RuntimeReadOnly`] in read-only
-    /// mode or [`CampaignLocalServiceError::PackagedExecutor`] when durable,
+    /// mode, [`CampaignLocalServiceError::StoreMaintenanceUnavailable`] when
+    /// the owner does not retain the exact composed store, or
+    /// [`CampaignLocalServiceError::PackagedExecutor`] when durable,
     /// host-resource, worker, or endpoint preparation fails.
     pub fn prepare_packaged_executor(
         &self,
@@ -688,7 +690,17 @@ impl PreparedCampaignLocalService {
         if self.mode == CampaignLocalServiceMode::ReadOnly {
             return Err(CampaignLocalServiceError::RuntimeReadOnly);
         }
-        prepare_packaged_qemu_executor(Arc::clone(&self.repository), config).map_err(Into::into)
+        let maintenance = self
+            .maintenance
+            .as_ref()
+            .ok_or(CampaignLocalServiceError::StoreMaintenanceUnavailable)?;
+        let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = maintenance.store.clone();
+        crate::packaged_qemu_executor::prepare_packaged_qemu_executor(
+            Arc::clone(&self.repository),
+            checkpoint_backend,
+            config,
+        )
+        .map_err(Into::into)
     }
 
     /// Discovers the complete bounded set of authenticated campaign heads.
