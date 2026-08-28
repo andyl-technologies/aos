@@ -1811,7 +1811,7 @@ in
           grep -q 'Where=/var/lib/exposesmoke' "$exposePath/units/var-lib-exposesmoke.mount"
 
           grep -q 'Description=Activation target for expose-smoke' "$target"
-          grep -q 'Wants=aos-pkg-expose-smoke.slice expose-smoke.service var-lib-exposesmoke.mount aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' "$target"
+          grep -q 'Wants=aos-pkg-expose-smoke.slice expose-smoke.service var-lib-exposesmoke.mount aos-pkg-expose-smoke-service-roots.service aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' "$target"
           test ! -e "$exposePath/units/multi-user.target.wants/aos-pkg-expose-smoke.target"
           test -L "$exposePath/units/aos-pkg-expose-smoke.target.wants/aos-pkg-expose-smoke.slice"
           test -L "$exposePath/units/aos-pkg-expose-smoke.target.wants/expose-smoke.service"
@@ -2101,7 +2101,7 @@ in
             echo "manual-start services must not be enabled by the package target preset" >&2
             exit 1
           fi
-          if grep -q 'Wants=.*expose-manual-start.service' "$manual_start_target"; then
+          if grep -Eq '^Wants=(.* )?expose-manual-start\.service( |$)' "$manual_start_target"; then
             echo "manual-start services must not be target members" >&2
             exit 1
           fi
@@ -2296,9 +2296,9 @@ in
           test -f "$private_outbound_mac"
           test -f "$private_outbound_ebpf"
           test -f "$private_outbound_policy"
-          grep -q 'After=aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' \
+          grep -q 'After=aos-pkg-expose-smoke-service-roots.service aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' \
             "$private_outbound_unit"
-          grep -q 'Requires=aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' \
+          grep -q 'Requires=aos-pkg-expose-smoke-service-roots.service aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' \
             "$private_outbound_unit"
           grep -q 'Slice=aos-pkg-expose-smoke.slice' "$private_outbound_unit"
           grep -q 'PrivateNetwork=false' "$private_outbound_unit"
@@ -2308,7 +2308,7 @@ in
           grep -q 'ExecReload=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-expose-smoke --tcp-bind 8000 --tcp-connect 443 -- ${pkgs.bash}/bin/bash -c true' \
             "$private_outbound_unit"
           grep -q 'aos-landlock' "$private_outbound_unit"
-          grep -q 'Wants=aos-pkg-expose-smoke.slice expose-smoke-private-outbound.service aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' \
+          grep -q 'Wants=aos-pkg-expose-smoke.slice expose-smoke-private-outbound.service aos-pkg-expose-smoke-service-roots.service aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' \
             "$private_outbound_target"
           grep -q 'Description=Create outbound network namespace for expose-smoke' \
             "$private_outbound_netns"
