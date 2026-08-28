@@ -33,6 +33,7 @@
       - _CFRunLoopTimerCreate
       - _CFStringAppendCString
       - _CFStringAppendCharacters
+      - _CFStringCreateWithBytesNoCopy
       - _CFStringCreateMutable
       - _CFStringCreateWithCharacters
       - _CFStringCreateWithFormat

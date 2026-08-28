@@ -910,8 +910,12 @@
               '  SecTrustRef certificateTrust = NULL;' \
               '  OSStatus createdTrust = SecTrustCreateWithCertificates(subjectCertificates, policy, &certificateTrust);' \
               '  bool trusted = certificateTrust != NULL && SecTrustEvaluateWithError(certificateTrust, NULL);' \
+              '  const UInt8 securityTextBytes[] = { 97, 111, 115 };' \
+              '  CFStringRef noCopyText = CFStringCreateWithBytesNoCopy(kCFAllocatorDefault, securityTextBytes, 3, kCFStringEncodingUTF8, false, kCFAllocatorNull);' \
               '  CFArrayRef trustSettings = NULL;' \
               '  OSStatus copiedTrustSettings = SecTrustSettingsCopyTrustSettings(certificate, kSecTrustSettingsDomainUser, &trustSettings);' \
+              '  CFArrayRef trustCertificates = NULL;' \
+              '  OSStatus copiedTrustCertificates = SecTrustSettingsCopyCertificates(kSecTrustSettingsDomainUser, &trustCertificates);' \
               '  const void *policyConstants[] = { kSecPolicyAppleSSL, kSecPolicyOid };' \
               '  const void *trustSettingKeys[] = { kSecTrustSettingsApplication, kSecTrustSettingsPolicy, kSecTrustSettingsPolicyString, kSecTrustSettingsResult };' \
               '  const void *queryKeys[] = { kSecClass, kSecMatchLimit, kSecReturnRef };' \
@@ -936,7 +940,9 @@
               '  SSLClose(context);' \
               '  if (queryResult != NULL) CFRelease(queryResult);' \
               '  if (query != NULL) CFRelease(query);' \
+              '  if (trustCertificates != NULL) CFRelease(trustCertificates);' \
               '  if (trustSettings != NULL) CFRelease(trustSettings);' \
+              '  if (noCopyText != NULL) CFRelease(noCopyText);' \
               '  if (certificateTrust != NULL) CFRelease(certificateTrust);' \
               '  if (subjectCertificates != NULL) CFRelease(subjectCertificates);' \
               '  if (policyProperties != NULL) CFRelease(policyProperties);' \
@@ -945,7 +951,7 @@
               '  if (certificateData != NULL) CFRelease(certificateData);' \
               '  if (trust != NULL) CFRelease(trust);' \
               '  if (context != NULL) CFRelease(context);' \
-              '  return trustResult == kSecTrustResultOtherError && processed == (size_t)-1 && sessionStatus == errSecItemNotFound && exportStatus == errSecItemNotFound && importStatus == errSecItemNotFound && externalFormat == kSecFormatX509Cert && externalType == kSecItemTypeCertificate && exportedData == NULL && importedItems == NULL && session == callerSecuritySession && attributes == sessionHasGraphicAccess && createdTrust == copiedTrustSettings && copiedItems == errSecItemNotFound && policyConstants[0] == NULL && trustSettingKeys[0] == NULL && policyScoped && sslPolicy && trusted && kSecTrustSettingsResultTrustRoot != 1 && kSecTrustSettingsResultTrustAsRoot != 2 && kSecTrustSettingsResultDeny != 3 && kSecTrustSettingsDomainAdmin != 1 && copiedKeychain == addedPassword && foundPassword == modifiedPassword && freedPassword == deletedPassword;' \
+              '  return trustResult == kSecTrustResultOtherError && processed == (size_t)-1 && sessionStatus == errSecItemNotFound && exportStatus == errSecItemNotFound && importStatus == errSecItemNotFound && externalFormat == kSecFormatX509Cert && externalType == kSecItemTypeCertificate && exportedData == NULL && importedItems == NULL && session == callerSecuritySession && attributes == sessionHasGraphicAccess && createdTrust == copiedTrustSettings && copiedTrustCertificates == errSecItemNotFound && noCopyText == NULL && copiedItems == errSecItemNotFound && policyConstants[0] == NULL && trustSettingKeys[0] == NULL && policyScoped && sslPolicy && trusted && kSecTrustSettingsResultTrustRoot != 1 && kSecTrustSettingsResultTrustAsRoot != 2 && kSecTrustSettingsResultDeny != 3 && kSecTrustSettingsDomainAdmin != 1 && copiedKeychain == addedPassword && foundPassword == modifiedPassword && freedPassword == deletedPassword;' \
               '}' \
               > security-smoke.c
             "$CC" security-smoke.c \

@@ -59,6 +59,7 @@ exports:
       - _SecTrustGetCertificateAtIndex
       - _SecTrustGetResult
       - _SecTrustSetAnchorCertificates
+      - _SecTrustSettingsCopyCertificates
       - _SecTrustSettingsCopyTrustSettings
       - _kSecClass
       - _kSecClassCertificate
