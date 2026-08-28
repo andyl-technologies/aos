@@ -569,7 +569,9 @@ in {
           f"{APM} rollback --system --generation {configured}", timeout=600
       )
       assert current_generation() == configured
-      rollback_manifest = json.loads(runtime.succeed("cat /run/aos/manifest.json"))
+      rollback_manifest = json.loads(runtime.succeed(
+          f"cat /var/lib/profiles/system/gen-{configured}/manifest.json"
+      ))
       assert rollback_manifest["inputs"]["runtime_modules"] == runtime_input
       assert rollback_manifest["inputs"]["host_nix"] == platform_host_input
       assert rollback_manifest["inputs"]["instance_facts"] == platform_facts_input
