@@ -7,7 +7,7 @@
 name = "crucible-shmem"
 kind = "process-shared-memory"
 license = "MIT OR Apache-2.0"
-abi_version = 19
+abi_version = 20
 magic_ascii = "CRUCSHM1"
 target = "x86_64-unknown-linux-gnu"
 byte_order = "little"
@@ -49,6 +49,9 @@ selectable_reply_direction = "host-to-plugin"
 selectable_reply_queue_capacity = 1
 selectable_reply_record_protocol = "SelectionReplyV1-in-whitebox-envelope"
 selectable_reply_full_queue = "bounded-backpressure-no-overwrite"
+hot_fork_ring_producer_admission = "reversible-held-bit+in-flight-count"
+hot_fork_ring_consumer_admission = "reversible-held-bit+in-flight-count"
+hot_fork_ring_snapshot_precondition = "all-producers-and-consumers-held-and-drained"
 
 [representation]
 allowed = [

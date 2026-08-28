@@ -217,7 +217,7 @@ process-local pointer or host-layout fact crosses the ABI.
 The region header carries the identity and shape of the region: a magic number,
 the ABI version, the configured node count and queue capacity, the computed
 frame sub-region offsets, the global control flags, and the per-direction fault
-payload-arena size. ABI v19 mappers derive the coverage, fingerprint-sample,
+payload-arena size. ABI v20 mappers derive the coverage, fingerprint-sample,
 white-box marker, device-I/O, guest-introspection, and fault transport tail
 sections from that validated frame extent, the VM count, and fixed ABI
 constants. The header is the first thing a mapper reads and the thing
@@ -230,7 +230,7 @@ touches a slot.
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 
 /// Current ABI version. Bumped on any layout or semantics change (§13.6).
-pub const ABI_VERSION: u32 = 19;
+pub const ABI_VERSION: u32 = 20;
 
 /// Compile-time maximum number of node slots in the region.
 /// An ABI detail (§13.5); the engine's topology model MUST NOT depend on it.
@@ -490,7 +490,10 @@ pub struct RingHeader {
     /// Consumer-owned read index, monotonically increasing (never wraps in the
     /// counter; the slot is `read_idx % capacity`). On its own cache line.
     pub read_idx: AtomicU64, // @ 0
-    pub(crate) _pad_read: [u8; 56], // @ 8..64  (fill the consumer cache line)
+    /// High bit: reversible hot-fork consumer hold. Low bits: consumers that
+    /// passed admission and have not yet returned.
+    pub(crate) consumer_state: AtomicU64, // @ 8
+    pub(crate) _pad_read: [u8; 48], // @ 16..64 (fill the consumer cache line)
     /// Producer-owned write index, monotonically increasing. On its own cache
     /// line so the producer's store never invalidates the consumer's line.
     pub write_idx: AtomicU64, // @ 64
@@ -847,7 +850,8 @@ NodeSlot      (size 128, align 128)
 
 RingHeader    (size 128, align 128)
   @  0  read_idx           u64
-  @  8  _pad_read[56]
+  @  8  consumer_state     u64
+  @ 16  _pad_read[48]
   @ 64  write_idx          u64
   @ 72  producer_state     u64
   @ 80  _pad_write[48]
@@ -973,6 +977,12 @@ Both are monotonically increasing 64-bit counters that never wrap in practice
 `entries[i % capacity]`, and because `capacity` is a power of two the modulo is a
 mask. The queue holds `write_idx - read_idx` entries; it is empty when
 `read_idx == write_idx` and full when `write_idx - read_idx == capacity`.
+
+ABI v20 wraps every operation that can advance `read_idx` in consumer
+admission, just as ABI v19 wraps producer publication. A held high bit rejects
+later consumers; low bits count consumers admitted before the hold until their
+operation returns. Read-only peeks do not mutate queue content and need not
+enter consumer admission.
 
 The operations the ABI defines:
 
@@ -1239,9 +1249,11 @@ single-entry selectable-reply rings after the complete v17 region. ABI v19
 replaces eight bytes of the producer cache-line padding in every `RingHeader`
 with an atomic reversible producer-admission state. Its high bit rejects later
 producer publications while its low bits count publications admitted before
-the hold. A hot-fork barrier holds every ring and waits for every count to drain
-before reporting the ring transport quiescent. Older peers are rejected rather
-than inferred or supported through a compatibility path. The handshake
+the hold. ABI v20 likewise replaces eight bytes of the consumer cache-line
+padding with a reversible consumer-admission state. A hot-fork barrier holds
+both endpoints of every ring and waits for both counts to drain before
+reporting the ring transport quiescent. Older peers are rejected rather than
+inferred or supported through a compatibility path. The handshake
 ([`14-protocol.md`](14-protocol.md)) validates it before any node trusts a byte of
 the region. ABI v2 is intentionally incompatible with v1 because v2 adds the
 coverage tail: a v2 host rejects a v1 plugin/region, and a v2 plugin rejects a

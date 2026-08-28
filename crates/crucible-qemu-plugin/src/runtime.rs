@@ -1065,7 +1065,7 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
     let (snapshot, rings, workers) = match action {
         crate::QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD => {
             let snapshot = state.quiescence.hold_hot_fork();
-            let Ok(rings) = state.setup.mapped_region().hold_hot_fork_ring_producers() else {
+            let Ok(rings) = state.setup.mapped_region().hold_hot_fork_ring_io() else {
                 return -libc::EPROTO;
             };
             let workers = state.workers.hold();
@@ -1073,22 +1073,14 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
         }
         crate::QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY => {
             let snapshot = state.quiescence.snapshot();
-            let Ok(rings) = state
-                .setup
-                .mapped_region()
-                .hot_fork_ring_producer_snapshot()
-            else {
+            let Ok(rings) = state.setup.mapped_region().hot_fork_ring_io_snapshot() else {
                 return -libc::EPROTO;
             };
             let workers = state.workers.snapshot();
             (snapshot, rings, workers)
         }
         crate::QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE => {
-            let Ok(rings) = state
-                .setup
-                .mapped_region()
-                .release_hot_fork_ring_producers()
-            else {
+            let Ok(rings) = state.setup.mapped_region().release_hot_fork_ring_io() else {
                 return -libc::EPROTO;
             };
             let snapshot = state.quiescence.release_hot_fork();
@@ -1119,6 +1111,7 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
             ring_count: rings.ring_count(),
             rings_held: rings.held_rings(),
             ring_producers_in_flight: rings.producers_in_flight(),
+            ring_consumers_in_flight: rings.consumers_in_flight(),
             worker_mask: workers.worker_mask,
             parked_worker_mask: workers.parked_mask,
             worker_operations_in_flight: workers.operations_in_flight,

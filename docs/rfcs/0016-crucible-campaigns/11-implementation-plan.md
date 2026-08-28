@@ -1824,15 +1824,15 @@ freeze, callback barrier, process-lifetime heap disposition, or child
 reinitializer; readiness bit 6 remains clear and the GPL/Apache process
 boundary is unchanged.
 The GPL plugin now also registers one process-lifetime reversible callback,
-shared-ring producer, and sealed-worker barrier. A version-3 OOB QMP operation
+shared-ring I/O, and sealed-worker barrier. A version-4 OOB QMP operation
 holds, observes, and releases that barrier. Holding is accepted only at the
 exact paused/device-flush boundary, rejects later live device and coverage
-callbacks, holds producer admission in every ABI-v19 shared-memory ring, and
-closes later operations by the RUN-control, teardown, and optional fingerprint
-workers without blocking QMP. The response exposes exact callback and
-aggregate ring-producer counts plus sealed, parked, and active worker state
-until all admitted work drains. Release reopens rings and callbacks before
-waking workers and cannot reopen permanent teardown closure. This is a
+callbacks, holds producer and consumer admission in every ABI-v20 shared-memory
+ring, and closes later operations by the RUN-control, teardown, and optional
+fingerprint workers without blocking QMP. The response exposes exact callback
+and aggregate ring-producer and ring-consumer counts plus sealed, parked, and
+active worker state until all admitted work drains. Release reopens rings and
+callbacks before waking workers and cannot reopen permanent teardown closure. This is a
 retained T-CAM-6.2 subsystem barrier, but it still does not clone retained ring
 bytes or worker-local queued work, retain a complete child disposition, or
 reconstruct child resources. Readiness bit 6 therefore remains clear and

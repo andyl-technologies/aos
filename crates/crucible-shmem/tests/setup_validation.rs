@@ -342,24 +342,34 @@ fn mmap_setup_region_exposes_node_slot_and_distinct_directed_rings() {
 
 #[test]
 #[cfg(unix)]
-fn mapped_hot_fork_barrier_holds_and_releases_every_ring_producer() {
+fn mapped_hot_fork_barrier_holds_and_releases_every_ring_endpoint() {
     let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
         Ok(allocation) => allocation,
         Err(error) => panic!("valid region allocation should build: {error}"),
     };
     let mut mapped = mapped_region_from_allocation(&allocation);
+    let frame = FrameEntry::new(11, 0, 1, b"packet")
+        .unwrap_or_else(|error| panic!("valid frame should build: {error}"));
+    {
+        let view = mapped
+            .node_directed_ring_pair_mut(0, SLOT_NET_ROUTER as u32, 0, 0, SLOT_NET_ROUTER as u32)
+            .unwrap_or_else(|error| panic!("mapped node/ring view should bind: {error}"));
+        view.second
+            .header
+            .enqueue(view.second.entries, &frame)
+            .unwrap_or_else(|error| panic!("open mapped ring should enqueue: {error}"));
+    }
 
     let held = mapped
-        .hold_hot_fork_ring_producers()
+        .hold_hot_fork_ring_io()
         .unwrap_or_else(|error| panic!("complete mapped ring geometry should hold: {error}"));
     assert!(held.ring_count() > 0);
     assert_eq!(held.held_rings(), held.ring_count());
     assert_eq!(held.producers_in_flight(), 0);
+    assert_eq!(held.consumers_in_flight(), 0);
     assert!(held.quiescent());
-    assert_eq!(mapped.hot_fork_ring_producer_snapshot(), Ok(held));
+    assert_eq!(mapped.hot_fork_ring_io_snapshot(), Ok(held));
 
-    let frame = FrameEntry::new(11, 0, 1, b"packet")
-        .unwrap_or_else(|error| panic!("valid frame should build: {error}"));
     {
         let view = mapped
             .node_directed_ring_pair_mut(0, SLOT_NET_ROUTER as u32, 0, 0, SLOT_NET_ROUTER as u32)
@@ -368,22 +378,27 @@ fn mapped_hot_fork_barrier_holds_and_releases_every_ring_producer() {
             view.second.header.enqueue(view.second.entries, &frame),
             Err(SpscRingError::ProducerBarrierHeld)
         );
+        assert_eq!(
+            view.second.header.dequeue(view.second.entries),
+            Err(SpscRingError::ConsumerBarrierHeld)
+        );
     }
 
     let released = mapped
-        .release_hot_fork_ring_producers()
+        .release_hot_fork_ring_io()
         .unwrap_or_else(|error| panic!("complete mapped ring geometry should release: {error}"));
     assert_eq!(released.ring_count(), held.ring_count());
     assert_eq!(released.held_rings(), 0);
     assert_eq!(released.producers_in_flight(), 0);
+    assert_eq!(released.consumers_in_flight(), 0);
     assert!(!released.quiescent());
 
     let view = mapped
         .node_directed_ring_pair_mut(0, SLOT_NET_ROUTER as u32, 0, 0, SLOT_NET_ROUTER as u32)
         .unwrap_or_else(|error| panic!("mapped node/ring view should rebind: {error}"));
     assert_eq!(
-        view.second.header.enqueue(view.second.entries, &frame),
-        Ok(())
+        view.second.header.dequeue(view.second.entries),
+        Ok(Some(frame))
     );
 }
 

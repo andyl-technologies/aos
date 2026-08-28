@@ -106,8 +106,12 @@
         needle = "const _: () = assert!(RING_HEADER_READ_IDX_OFFSET == 0);";
       }
       {
+        label = "ring header consumer-state Rust static assertion";
+        needle = "const _: () = assert!(RING_HEADER_CONSUMER_STATE_OFFSET == 8);";
+      }
+      {
         label = "ring header read padding Rust static assertion";
-        needle = "const _: () = assert!(RING_HEADER_PAD_READ_OFFSET == 8);";
+        needle = "const _: () = assert!(RING_HEADER_PAD_READ_OFFSET == 16);";
       }
       {
         label = "ring header write index Rust static assertion";
@@ -417,7 +421,7 @@
     ++ failuresFor "crates/crucible-shmem/tests/fixtures/shmem_abi_golden.fixture" goldenFixture [
       {
         label = "ABI version";
-        needle = "abi_version=19";
+        needle = "abi_version=20";
       }
       {
         label = "total serialized length";
@@ -459,7 +463,7 @@
     ++ failuresFor "crates/crucible-shmem/interface/crucible-shmem-abi.toml" interfaceManifest [
       {
         label = "machine-readable ABI version";
-        needle = "abi_version = 19";
+        needle = "abi_version = 20";
       }
       {
         label = "selectable reply direction";

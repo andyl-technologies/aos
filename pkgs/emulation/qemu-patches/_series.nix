@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "f268092e17c55698d7f7b2aacb73d38f8d7b5505b2e17ba009cfea616c5d41cf";
+  patchBranchBundleSha256 = "09ecc8d5bd66afb1b63fb1e80c137e6f4959cd44c72779d8ae1ee2a68cb56f61";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "351bfffb69e5d37102f79da02e021af121adaf75";
+  patchBranchHeadCommit = "c4bf833e5bb035892c17e5c27a35329800f70e8e";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1305,6 +1305,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "the version-3 plugin barrier reports the sealed worker mask, exact parked worker classes, and bounded operations admitted before the hold, and requires every worker to park before subsystem quiescence without yet cloning queued work or acknowledging proof bit 6";
+    }
+    {
+      file = "0138-crucible-drain-hot-fork-ring-consumers.patch";
+      branchSubject = "crucible: drain hot-fork ring consumers";
+      branchCommit = "c4bf833e5bb035892c17e5c27a35329800f70e8e";
+      branchTree = "72c6cac2eea42490875a94011ff40fd1d72b07ce";
+      catalogName = "crucible-hot-fork-ring-consumer-barrier";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "the version-4 plugin barrier reports shared-ring consumers admitted before the hold and requires every producer and consumer to drain before subsystem quiescence without yet cloning queued bytes or acknowledging proof bit 6";
     }
   ];
   catalogOnlyCapabilities = [

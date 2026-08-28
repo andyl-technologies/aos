@@ -48,6 +48,10 @@
         needle = "RING_HEADER_PRODUCER_STATE_OFFSET";
       }
       {
+        label = "ring consumer-state offset derived from Rust";
+        needle = "RING_HEADER_CONSUMER_STATE_OFFSET";
+      }
+      {
         label = "frame entry offset derived from Rust";
         needle = "FRAME_ENTRY_DATA_OFFSET";
       }
@@ -106,6 +110,10 @@
       {
         label = "ring producer-state offset static assert";
         needle = "offsetof(crucible_shmem_ring_header, producer_state) == CRUCIBLE_SHMEM_RING_HEADER_PRODUCER_STATE_OFFSET";
+      }
+      {
+        label = "ring consumer-state offset static assert";
+        needle = "offsetof(crucible_shmem_ring_header, consumer_state) == CRUCIBLE_SHMEM_RING_HEADER_CONSUMER_STATE_OFFSET";
       }
       {
         label = "frame entry delivery-state offset static assert";
