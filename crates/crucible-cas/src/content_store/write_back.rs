@@ -24,7 +24,7 @@ use rustix::fs::{FlockOperation, flock};
 use super::directory::create_dir_all_durable;
 use super::{
     BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, PutReceipt,
-    StoreError,
+    StoreError, StoreNamespaceAuthorizer, StoreNamespaceOperation,
 };
 
 const JOURNAL_MAGIC: &[u8] = b"crucible.content-store.write-back-transfer.v1\0";
@@ -606,11 +606,15 @@ impl WriteBackStore {
         Arc::clone(&self.journal)
     }
 
-    pub(crate) fn flush_one(&self) -> Result<bool, StoreError> {
+    pub(crate) fn flush_one(
+        &self,
+        authorize: &mut dyn FnMut(ContentId) -> Result<(), StoreError>,
+    ) -> Result<bool, StoreError> {
         let _lifecycle = self.journal.acquire_shared_lifecycle()?;
         let Some((id, logical_length)) = self.journal.next_pending()? else {
             return Ok(false);
         };
+        authorize(id)?;
         let source = match self.staging.read(id, None) {
             Ok(source) => source,
             Err(StoreError::NotFound { .. }) => self.destination.read(id, None)?,
@@ -680,18 +684,23 @@ impl ImmutableBlobBackend for WriteBackStore {
 
 pub(crate) struct StoreGraphWriteBackFence {
     journals: Vec<(String, Arc<WriteBackJournal>, File)>,
+    namespace_authorizer: Option<Arc<dyn StoreNamespaceAuthorizer>>,
 }
 
 impl StoreGraphWriteBackFence {
     pub(crate) fn acquire(
         journals: &BTreeMap<String, Arc<WriteBackJournal>>,
+        namespace_authorizer: Option<Arc<dyn StoreNamespaceAuthorizer>>,
     ) -> Result<Self, StoreError> {
         let mut held = Vec::with_capacity(journals.len());
         for (node, journal) in journals {
             let lock = journal.acquire_exclusive_lifecycle()?;
             held.push((node.clone(), Arc::clone(journal), lock));
         }
-        Ok(Self { journals: held })
+        Ok(Self {
+            journals: held,
+            namespace_authorizer,
+        })
     }
 }
 
@@ -706,6 +715,9 @@ impl WriteBackRetentionFence for StoreGraphWriteBackFence {
         let mut logical_bytes = 0_u64;
         for (node, journal, _lock) in &self.journals {
             let (node_roots, node_bytes) = journal.inventory(&mut |root| {
+                if let Some(authorizer) = &self.namespace_authorizer {
+                    authorizer.authorize(StoreNamespaceOperation::Read, root.id())?;
+                }
                 hasher.update(&(node.len() as u64).to_be_bytes());
                 hasher.update(node.as_bytes());
                 hasher.update(root.id().to_string().as_bytes());

@@ -12,6 +12,7 @@ const GRAPH_CONFIGURATION_V3_MAGIC: &[u8] = b"crucible.content-store.graph-confi
 const GRAPH_CONFIGURATION_V4_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v4\0";
 const GRAPH_CONFIGURATION_V5_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v5\0";
 const GRAPH_CONFIGURATION_V6_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v6\0";
+const GRAPH_CONFIGURATION_V7_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v7\0";
 
 pub(super) fn canonical_graph_configuration(
     config: &StoreGraphConfig,
@@ -37,7 +38,13 @@ pub(super) fn canonical_graph_configuration(
         .nodes
         .values()
         .any(|node| matches!(node, StoreNodeSpec::DurabilityPolicy { .. }));
-    bytes.extend_from_slice(if has_durability_policy {
+    let has_namespaced = config
+        .nodes
+        .values()
+        .any(|node| matches!(node, StoreNodeSpec::Namespaced { .. }));
+    bytes.extend_from_slice(if has_namespaced {
+        GRAPH_CONFIGURATION_V7_MAGIC
+    } else if has_durability_policy {
         GRAPH_CONFIGURATION_V6_MAGIC
     } else if has_compressed_encrypted_directory {
         GRAPH_CONFIGURATION_V5_MAGIC
@@ -195,6 +202,11 @@ pub(super) fn canonical_graph_configuration(
                 encode_path(&mut bytes, state_root)?;
                 bytes.extend_from_slice(&maximum_objects.to_be_bytes());
                 bytes.extend_from_slice(&maximum_logical_bytes.to_be_bytes());
+            }
+            StoreNodeSpec::Namespaced { child, namespace } => {
+                bytes.push(16);
+                encode_node_id(&mut bytes, child)?;
+                encode_string(&mut bytes, namespace.as_str())?;
             }
         }
     }

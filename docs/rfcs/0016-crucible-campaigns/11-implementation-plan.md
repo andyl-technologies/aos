@@ -1412,10 +1412,22 @@ therefore cannot collect a children-before-journal publication. Tests cover
 restart, torn-tail recovery, corrupt-journal rejection, count/byte limits,
 durable-child and non-overlapping-path admission, lifecycle exclusion,
 single-pass staging authentication, transfer completion, and stale GC plans.
+The graph now also admits a version-seven namespaced authorization node. It
+binds one bounded slash-separated deployment namespace into graph identity,
+resolves the corresponding non-serializable authorization capability before
+construction succeeds, and checks every exact `contains`, `read`, and `put`
+before the child observes the object ID. Graph admission requires the namespace
+boundary to be the graph's sole root boundary, so an unprotected cache, mirror,
+or sibling path cannot act first. Deferred write-back transfer and pending-root
+inventory recheck the same capability before reading or moving an ID. Missing
+or mismatched capabilities fail closed, credentials and mutable policy remain
+absent from identity and introspection, and the separate physical
+administration capability does not expose the authorizer. Tests cover namespace
+grammar, capability mismatch and duplication, denial before child access, all
+three operation classes, identity sensitivity, and path-free introspection.
 Canonical object-profile sensitivity and retention validation, broader layered
-transforms, physical-filesystem quota, namespaced
-authorization, and S3 remain open; therefore T-CAM-5.5 is not checked by this
-checkpoint.
+transforms, physical-filesystem quota, and S3 remain open; therefore T-CAM-5.5
+is not checked by this checkpoint.
 
 The packed leaf now provides immutable bounded multi-object pack files, a
 checksummed persistent logical index with monotonic generations, full logical
@@ -1969,7 +1981,7 @@ area mapping ensures that no part of the RFC is merely aspirational:
 | `LAZY-1..51` | 4 | lazy frontier, attempt idempotence, campaign replay |
 | `CCOMP-1..24` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
-| `CSTORE-1..25` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |
+| `CSTORE-1..26` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |
 | `CAPI-1..14` | 8 | CLI/API contracts, continuity, campaign replay |
 | `CMEAS-1..14` | 3, 8 | campaign model, replay, ABI conformance |
 | `CSEC-1..12` | 1–9 | license boundary, ABI conformance, isolation, store equivalence |

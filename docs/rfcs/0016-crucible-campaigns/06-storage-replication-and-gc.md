@@ -628,8 +628,28 @@ demand propagation before constructing the root:
   physical leaf, and uses a non-overlapping absolute state directory;
 - an encrypted directory has a nonzero plaintext-object limit no greater than
   64 MiB and resolves its non-secret key ID through a separate key capability;
+- a namespaced node carries a bounded canonical deployment namespace and
+  resolves its exact authorization capability before the graph is returned;
 - public introspection returns only node ID, built-in kind, and derived
   capabilities, never a directory root, endpoint, or credential.
+
+`NamespacedStore(child, namespace)` checks `Contains`, `Read`, or `Put` for the
+exact logical `ContentId` before the child can observe that request. Namespace
+IDs are 1 through 512 ASCII bytes split on `/`; every segment is 1 through 255
+bytes, is neither `.` nor `..`, and contains only ASCII alphanumeric, `.`, `_`,
+or `-`. The graph configuration commits to this non-secret ID. A separately
+supplied `StoreNamespaceAuthorizer` capability owns mutable policy and
+credentials, does not enter graph identity or introspection, and is required at
+construction even if the child happens to be locally accessible. Missing or
+mismatched capability resolution fails with `Unauthorized` rather than
+silently constructing an unprotected graph. Physical inventory/delete
+administration remains a distinct maintenance authority and does not expose the
+namespace authorizer. When a graph contains any namespaced node, its root MUST
+be its only namespaced node; this dominating boundary prevents a mirror, cache,
+verification pass, metrics wrapper, or other sibling path from touching object
+state before authorization. Deployments requiring a distinct authorization
+domain construct a distinct graph capability rather than layering ambiguous
+partially authorized domains inside one graph.
 
 `ReadThroughStore(cache, source)` reads the cache first and falls through only
 on exact `NotFound`. Corruption, authorization, and availability failures from
@@ -670,20 +690,22 @@ construct a deletion fence. Both values retain the same content-derived
 cannot pair independently supplied leaves with an unrelated graph hash.
 
 The registered `crucible.content-store.graph-configuration` schemas v1 through
-v6 freeze that identity basis. New writers retain the byte-for-byte v1 body
+v7 freeze that identity basis. New writers retain the byte-for-byte v1 body
 when the graph has no compressed-directory, logical-quota, encrypted,
-compressed-encrypted, or durability-policy nodes,
+compressed-encrypted, durability-policy, or namespaced nodes,
 emit v2 when it has a compressed-directory node but no logical quota or
 encryption, emit v3 when it has a logical-quota node but no encryption, and
 emit v4 when it has any encrypted-directory node but no compressed-encrypted
 node. A graph with any compressed-encrypted-directory node but no durability
-policy emits v5. A graph with any durability-policy node emits v6. V2 uses
+policy emits v5. A graph with any durability-policy node but no namespaced node
+emits v6. A graph with any namespaced node emits v7. V2 uses
 the same grammar and existing tags as v1, changes the magic suffix from `v1`
 to `v2`, and adds tag 11. V3 changes the suffix to `v3`, retains tags 1 through
 11, and adds tag 12. V4 changes the suffix to `v4`, retains tags 1 through 12,
 and adds tag 13. V5 changes the suffix to `v5`, retains tags 1 through 13, and
 adds tag 14.
 V6 changes the suffix to `v6`, retains tags 1 through 14, and adds tag 15.
+V7 changes the suffix to `v7`, retains tags 1 through 15, and adds tag 16.
 Every persistent
 path is an absolute host-local Unix path; its opaque bytes, rather than a lossy
 Unicode rendering, enter the identity.
@@ -735,6 +757,7 @@ node tag 15 DurabilityPolicy:
                             kind:string_u16
                             || minimum_durable_placements:u16be
                             || allow_deferred_write:u8
+node tag 16 Namespaced: child:string_u16 || namespace:string_u16
 ```
 
 Let `D` be `crucible.content-store.graph-configuration-id.v1` and `B` the
@@ -1365,3 +1388,8 @@ logs, or placement receipts returned to ordinary operators.
   before inventory accounting, bound the compressed length before decoding,
   and authenticate the complete decompressed plaintext without persisting an
   intermediate unencrypted frame.
+- **[CSTORE-26]** A namespaced store boundary MUST commit its non-secret
+  namespace ID to graph identity, resolve authorization through a separate
+  operational capability at construction, dominate the graph root, and
+  authorize every exact logical operation and deferred-transfer/retention-root
+  access before any child can observe the requested `ContentId`.

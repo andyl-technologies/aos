@@ -28,6 +28,7 @@ mod directory;
 mod encrypted_directory;
 mod graph;
 mod memory;
+mod namespace;
 mod packed;
 mod quota;
 mod write_back;
@@ -48,6 +49,10 @@ pub use graph::{
     StoreNodeMetricsDescription, StoreNodeSpec, StoreWriteBackFlushSummary,
 };
 pub use memory::{MemoryBlobBackend, MemoryRefBackend};
+pub use namespace::{
+    StoreGraphNamespaceAuthorizers, StoreNamespaceAuthorizer, StoreNamespaceId,
+    StoreNamespaceOperation,
+};
 pub use packed::{
     PackedBlobBackend, PackedRepackPlan, PackedRepackPlanId, PackedRepackReport,
     PackedStorageAccounting,
@@ -927,6 +932,8 @@ pub enum GraphViolation {
     RouteCoverage,
     /// A durability-policy node does not cover exactly its demanded kinds.
     DurabilityCoverage,
+    /// A graph declares namespace authorization below an unprotected root.
+    InvalidNamespaceBoundary,
     /// A tiered node names an invalid write tier.
     InvalidWriteTier,
     /// A child lacks a capability required by its parent layer.
@@ -963,6 +970,9 @@ impl fmt::Display for GraphViolation {
             Self::EmptyChildren => "empty child set",
             Self::RouteCoverage => "incomplete or extraneous route coverage",
             Self::DurabilityCoverage => "incomplete or extraneous durability-policy coverage",
+            Self::InvalidNamespaceBoundary => {
+                "namespace authorization must dominate the graph root"
+            }
             Self::InvalidWriteTier => "invalid write tier",
             Self::UnsupportedChild => "unsupported child capability",
             Self::InvalidWriteBackBounds => "invalid write-back bounds",

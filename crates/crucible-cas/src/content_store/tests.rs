@@ -8,7 +8,7 @@ use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier, mpsc};
+use std::sync::{Arc, Barrier, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -23,6 +23,40 @@ use super::memory::{MemoryBlobBackend, MemoryRefBackend};
 use super::*;
 
 const TEST_READ_LIMIT: u64 = 1024 * 1024;
+
+#[derive(Default)]
+struct RecordingNamespaceAuthorizer {
+    allowed: AtomicBool,
+    calls: Mutex<Vec<(StoreNamespaceOperation, ContentId)>>,
+}
+
+impl RecordingNamespaceAuthorizer {
+    fn set_allowed(&self, allowed: bool) {
+        self.allowed.store(allowed, Ordering::SeqCst);
+    }
+
+    fn calls(&self) -> Vec<(StoreNamespaceOperation, ContentId)> {
+        self.calls.lock().expect("namespace call lock").clone()
+    }
+}
+
+impl StoreNamespaceAuthorizer for RecordingNamespaceAuthorizer {
+    fn authorize(
+        &self,
+        operation: StoreNamespaceOperation,
+        id: ContentId,
+    ) -> Result<(), StoreError> {
+        self.calls
+            .lock()
+            .expect("namespace call lock")
+            .push((operation, id));
+        if self.allowed.load(Ordering::SeqCst) {
+            Ok(())
+        } else {
+            Err(StoreError::Unauthorized)
+        }
+    }
+}
 
 fn put_bytes(
     store: &dyn ImmutableBlobBackend,
@@ -2224,6 +2258,277 @@ fn store_graph_configuration_identity_is_canonical_and_complete() {
     assert_eq!(
         encode_hex(&first.configuration_id().as_bytes()),
         "9054c4182515f09b43494c07f5bb3f8e93b62d6251b449ebf128d7142a8528d5"
+    );
+}
+
+#[test]
+fn namespaced_graph_authorizes_every_operation_before_child_access() {
+    for invalid in ["", "/absolute", "a//b", "a/../b", "snowman-☃"] {
+        assert!(matches!(
+            StoreNamespaceId::new(invalid),
+            Err(StoreError::InvalidComposition { .. })
+        ));
+    }
+    assert!(matches!(
+        StoreNamespaceId::new("a".repeat(256)),
+        Err(StoreError::InvalidComposition { .. })
+    ));
+    assert!(matches!(
+        StoreNamespaceId::new(format!("{}/{}/c", "a".repeat(255), "b".repeat(255))),
+        Err(StoreError::InvalidComposition { .. })
+    ));
+
+    let namespace = StoreNamespaceId::new("tenant-a/campaigns").expect("namespace");
+    let namespaced = node_id("namespaced");
+    let memory = node_id("memory");
+    let config = |namespace| StoreGraphConfig {
+        root: namespaced.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
+        nodes: BTreeMap::from([
+            (
+                namespaced.clone(),
+                StoreNodeSpec::Namespaced {
+                    child: memory.clone(),
+                    namespace,
+                },
+            ),
+            (
+                memory.clone(),
+                StoreNodeSpec::Memory {
+                    max_logical_bytes: 1_024,
+                },
+            ),
+        ]),
+    };
+
+    assert!(matches!(
+        StoreGraph::build(config(namespace.clone())),
+        Err(StoreError::Unauthorized)
+    ));
+    let bypass = node_id("bypass");
+    assert!(matches!(
+        StoreGraph::build(StoreGraphConfig {
+            root: bypass.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
+            nodes: BTreeMap::from([
+                (
+                    bypass,
+                    StoreNodeSpec::WriteThrough {
+                        children: vec![namespaced.clone(), memory.clone()],
+                    },
+                ),
+                (
+                    namespaced.clone(),
+                    StoreNodeSpec::Namespaced {
+                        child: memory.clone(),
+                        namespace: namespace.clone(),
+                    },
+                ),
+                (
+                    memory.clone(),
+                    StoreNodeSpec::Memory {
+                        max_logical_bytes: 1_024,
+                    },
+                ),
+            ]),
+        }),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::InvalidNamespaceBoundary,
+            ..
+        })
+    ));
+    let nested = node_id("nested-namespace");
+    assert!(matches!(
+        StoreGraph::build(StoreGraphConfig {
+            root: namespaced.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
+            nodes: BTreeMap::from([
+                (
+                    namespaced.clone(),
+                    StoreNodeSpec::Namespaced {
+                        child: nested.clone(),
+                        namespace: namespace.clone(),
+                    },
+                ),
+                (
+                    nested,
+                    StoreNodeSpec::Namespaced {
+                        child: memory.clone(),
+                        namespace: namespace.clone(),
+                    },
+                ),
+                (
+                    memory.clone(),
+                    StoreNodeSpec::Memory {
+                        max_logical_bytes: 1_024,
+                    },
+                ),
+            ]),
+        }),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::InvalidNamespaceBoundary,
+            ..
+        })
+    ));
+    let unrelated = StoreNamespaceId::new("tenant-b/campaigns").expect("other namespace");
+    let authorizer = Arc::new(RecordingNamespaceAuthorizer::default());
+    let mut authorizers = StoreGraphNamespaceAuthorizers::new();
+    authorizers
+        .insert(unrelated.clone(), authorizer.clone())
+        .expect("unrelated capability");
+    assert!(matches!(
+        StoreGraph::build_with_authorizers(config(namespace.clone()), &authorizers),
+        Err(StoreError::Unauthorized)
+    ));
+    authorizers
+        .insert(namespace.clone(), authorizer.clone())
+        .expect("namespace capability");
+    assert!(matches!(
+        authorizers.insert(namespace.clone(), authorizer.clone()),
+        Err(StoreError::InvalidComposition { .. })
+    ));
+
+    let graph = StoreGraph::build_with_authorizers(config(namespace.clone()), &authorizers)
+        .expect("authorized namespace graph");
+    assert_eq!(graph.describe()[1].kind, StoreNodeKind::Namespaced);
+    let bytes = b"namespace protected object";
+    let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
+    let denied_opens = Arc::new(AtomicUsize::new(0));
+    let denied_bytes = Arc::new(AtomicUsize::new(0));
+    let denied_source = BlobHandle::new(Arc::new(CountingSource {
+        bytes: Arc::from(bytes.as_slice()),
+        opens: denied_opens.clone(),
+        bytes_read: denied_bytes.clone(),
+    }));
+    assert!(matches!(
+        graph.put_if_absent(id, &denied_source),
+        Err(StoreError::Unauthorized)
+    ));
+    assert_eq!(denied_opens.load(Ordering::SeqCst), 0);
+    assert_eq!(denied_bytes.load(Ordering::SeqCst), 0);
+
+    authorizer.set_allowed(true);
+    assert!(!graph.contains(id).expect("denied put reached no child"));
+    put_bytes(&graph, id, bytes).expect("authorized put");
+    assert!(graph.contains(id).expect("authorized contains"));
+    assert_eq!(
+        read_bytes(&graph, id, None).expect("authorized read"),
+        bytes
+    );
+
+    authorizer.set_allowed(false);
+    assert!(matches!(graph.contains(id), Err(StoreError::Unauthorized)));
+    assert!(matches!(
+        graph.read(id, None),
+        Err(StoreError::Unauthorized)
+    ));
+    assert_eq!(
+        authorizer.calls(),
+        vec![
+            (StoreNamespaceOperation::Put, id),
+            (StoreNamespaceOperation::Contains, id),
+            (StoreNamespaceOperation::Put, id),
+            (StoreNamespaceOperation::Contains, id),
+            (StoreNamespaceOperation::Read, id),
+            (StoreNamespaceOperation::Contains, id),
+            (StoreNamespaceOperation::Read, id),
+        ]
+    );
+
+    let mut alternate_authorizers = StoreGraphNamespaceAuthorizers::new();
+    alternate_authorizers
+        .insert(unrelated.clone(), authorizer)
+        .expect("alternate namespace capability");
+    let alternate = StoreGraph::build_with_authorizers(config(unrelated), &alternate_authorizers)
+        .expect("alternate namespace graph");
+    assert_ne!(graph.configuration_id(), alternate.configuration_id());
+    assert_eq!(
+        encode_hex(&graph.configuration_id().as_bytes()),
+        "7f8907cc7694835950ccadf6b47458a019af583119e279e6757e102e74fc0d78"
+    );
+}
+
+#[test]
+fn namespaced_graph_authorizes_deferred_transfer_and_root_inventory() {
+    let temp = TempDir::new().expect("temporary directory");
+    let namespace = StoreNamespaceId::new("tenant-a/archive").expect("namespace");
+    let namespaced = node_id("namespaced");
+    let write_back = node_id("write-back");
+    let staging = node_id("staging");
+    let destination = node_id("destination");
+    let authorizer = Arc::new(RecordingNamespaceAuthorizer::default());
+    authorizer.set_allowed(true);
+    let mut authorizers = StoreGraphNamespaceAuthorizers::new();
+    authorizers
+        .insert(namespace.clone(), authorizer.clone())
+        .expect("namespace capability");
+    let graph = StoreGraph::build_with_authorizers(
+        StoreGraphConfig {
+            root: namespaced.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
+            nodes: BTreeMap::from([
+                (
+                    namespaced,
+                    StoreNodeSpec::Namespaced {
+                        child: write_back.clone(),
+                        namespace,
+                    },
+                ),
+                (
+                    write_back,
+                    StoreNodeSpec::WriteBack {
+                        staging: staging.clone(),
+                        destination: destination.clone(),
+                        journal_root: temp.path().join("journal"),
+                        maximum_pending_objects: 8,
+                        maximum_pending_bytes: 1_024,
+                    },
+                ),
+                (
+                    staging,
+                    StoreNodeSpec::Directory {
+                        root: temp.path().join("staging"),
+                    },
+                ),
+                (
+                    destination,
+                    StoreNodeSpec::Directory {
+                        root: temp.path().join("destination"),
+                    },
+                ),
+            ]),
+        },
+        &authorizers,
+    )
+    .expect("namespaced write-back graph");
+    let bytes = b"authorized deferred finding";
+    let id = ContentId::for_bytes(ObjectKind::Finding, 1, bytes);
+    put_bytes(&graph, id, bytes).expect("authorized staging put");
+
+    authorizer.set_allowed(false);
+    assert!(matches!(
+        graph.flush_write_back(1),
+        Err(StoreError::Unauthorized)
+    ));
+    let destination = DirectoryBlobBackend::new("inspection", temp.path().join("destination"));
+    assert!(!destination.contains(id).expect("destination remains empty"));
+    {
+        let mut fence = graph
+            .acquire_write_back_retention_fence()
+            .expect("retention fence");
+        assert!(matches!(
+            fence.visit_roots(&mut |_root| Ok(())),
+            Err(StoreError::Unauthorized)
+        ));
+    }
+
+    authorizer.set_allowed(true);
+    let summary = graph.flush_write_back(1).expect("authorized transfer");
+    assert_eq!(summary.completed(), 1);
+    assert_eq!(summary.pending(), 0);
+    assert_eq!(
+        read_bytes(&destination, id, None).expect("destination bytes"),
+        bytes
     );
 }
 
