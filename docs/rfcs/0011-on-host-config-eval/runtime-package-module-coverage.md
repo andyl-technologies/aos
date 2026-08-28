@@ -16,12 +16,12 @@ upstream distribution includes a daemon.
 - [x] Envoy
 - [x] k3s worker, control-plane, and combined roles
 - [x] AOS registry server
-- [ ] containerd standalone role
+- [x] containerd standalone role
 - [ ] kubelet standalone role
 - [x] etcd
 - [x] PostgreSQL
 - [x] MariaDB
-- [ ] Garage
+- [x] Garage
 - [ ] OpenLDAP server role
 - [ ] KubeEdge CloudCore
 - [ ] KubeEdge EdgeCore
