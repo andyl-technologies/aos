@@ -1425,6 +1425,9 @@ struct ServeArgs {
     /// Load the strict local campaign peer policy from this file.
     #[arg(long, value_name = "path", requires = "campaign_socket")]
     campaign_policy: Option<PathBuf>,
+    /// Load a strict composed campaign repository-store deployment.
+    #[arg(long, value_name = "path", requires = "campaign_socket")]
+    campaign_store: Option<PathBuf>,
     /// Load distinct planner/debugger component authority keys from this file.
     #[arg(long, value_name = "path", requires = "campaign_socket")]
     campaign_component_authority: Option<PathBuf>,
@@ -2022,6 +2025,8 @@ mod cli_backend;
 mod cli_campaign;
 #[path = "cli/verify_serve/campaign_import.rs"]
 mod cli_campaign_import;
+#[path = "cli/verify_serve/campaign_store.rs"]
+mod cli_campaign_store;
 #[path = "cli/control.rs"]
 mod cli_control;
 #[path = "cli/dispatch.rs"]

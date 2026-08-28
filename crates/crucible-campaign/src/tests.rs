@@ -476,6 +476,12 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     assert_eq!(campaign_import[1], "1");
     assert_eq!(campaign_import[2], "crucible-cli::campaign_import");
     assert_eq!(campaign_import[3], "deployment-config");
+    let campaign_store = rows
+        .get("crucible.campaign-repository-store")
+        .unwrap_or_else(|| panic!("missing campaign repository-store deployment schema"));
+    assert_eq!(campaign_store[1], "1");
+    assert_eq!(campaign_store[2], "crucible-cli::campaign_store");
+    assert_eq!(campaign_store[3], "deployment-config");
     for (schema, version, owner) in [
         (
             "crucible.executor.crucible-scenario-payload",

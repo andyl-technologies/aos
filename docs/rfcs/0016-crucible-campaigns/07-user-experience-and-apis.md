@@ -654,6 +654,7 @@ crucible serve --listen 127.0.0.1:0 --trusted-unauthenticated-bind \
   --campaign-socket /run/crucible/campaign.sock \
   --campaign-state /var/lib/crucible/campaign \
   --campaign-policy /etc/crucible/campaign-policy.toml \
+  --campaign-store /etc/crucible/campaign-store.toml \
   --campaign-component-authority /etc/crucible/campaign-authority.bin \
   --campaign-runtime-all \
   --campaign-executor-socket /run/crucible/executor.sock \
@@ -661,11 +662,14 @@ crucible serve --listen 127.0.0.1:0 --trusted-unauthenticated-bind \
   --campaign-socket-mode 600
 ```
 
-The three campaign paths are an all-or-none directory profile. The daemon uses
-its exact effective UID/GID as the filesystem and peer-policy owner, takes one
-durable repository lock before opening the socket, and stops the lifecycle and
-campaign services plus the attached campaign runtime as one signal-driven
-lifecycle.
+The socket, state, and policy paths are an all-or-none profile. Without
+`--campaign-store`, the daemon uses the state directory's `objects` and `refs`
+children. With that option, the strict version-one deployment selects a local
+composed immutable graph and separate durable ref directory without creating
+those default children. The daemon uses its exact effective UID/GID as the
+filesystem and peer-policy owner, takes one durable repository lock before
+opening the socket, and stops the lifecycle and campaign services plus the
+attached campaign runtime as one signal-driven lifecycle.
 The executor socket is an absolute, dot-free, exact-owner mode-`0600` Unix
 socket in an exact-owner, non-group/other-writable directory. Startup and the
 embedded post-bind owner share one endpoint capability that authenticates the
@@ -682,10 +686,12 @@ same state-root lifetime lock, then retains the supplied capabilities without
 creating the default `objects` or `refs` directories or exposing the resulting
 repository. Restart reconstructs the exact external capabilities and reuses the
 same state-root lock. A volatile blob or ref implementation fails admission.
-The shipped `crucible serve` flag profile remains directory-backed until a
-strict deployment schema can bind S3 endpoint policy, credentials, graph,
-maintenance authority, and ref namespace without serializing secrets into
-campaign identity.
+The shipped `crucible serve` profile now binds local directory, compressed,
+encrypted, packed, verified, routed, tiered, read-through, write-through,
+write-back, durability-policy, metrics, logical/physical quota, namespaced, and
+campaign-profile nodes through that file. S3 endpoint/credential ownership,
+remote refs, and retained graph-maintenance authority require the next schema
+version and remain open; version one cannot silently name an S3 node.
 
 The separately hosted or daemon-packaged executor endpoint has one coupled
 lifecycle owner: a shutdown closes assignment admission, signals active
