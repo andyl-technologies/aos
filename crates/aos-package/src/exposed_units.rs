@@ -334,6 +334,7 @@ fn exposed_packages_from_expose_dir(
                 );
             }
         }
+        validate_package_target_ownership(&apm.name, &artifact_root, &units, &expose.target)?;
         validate_network_policy_artifact(
             &apm.name,
             Path::new(&artifact.store_path),
@@ -425,6 +426,51 @@ fn exposed_packages_from_expose_dir(
     packages.sort_by(|left, right| left.name.cmp(&right.name));
     validate_capability_routes(&packages)?;
     Ok(packages)
+}
+
+fn validate_package_target_ownership(
+    package_name: &str,
+    artifact_root: &Path,
+    units: &BTreeSet<String>,
+    own_target: &str,
+) -> Result<()> {
+    for unit in units {
+        let path = artifact_root.join(unit);
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading exposed unit {}", path.display()))?;
+        let parsed = Parsed::parse(&text);
+        for (section, key) in [
+            ("Unit", "PartOf"),
+            ("Install", "WantedBy"),
+            ("Install", "RequiredBy"),
+            ("Install", "UpheldBy"),
+        ] {
+            let Some(values) = parsed
+                .sections
+                .get(section)
+                .and_then(|values| values.get(key))
+            else {
+                continue;
+            };
+            for reference in values
+                .iter()
+                .flat_map(|value| value.split_ascii_whitespace())
+            {
+                if is_synthesized_package_target(reference) && reference != own_target {
+                    bail!(
+                        "unit '{unit}' for package '{package_name}' claims ownership through foreign synthesized package target '{reference}' in {section}.{key}"
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_synthesized_package_target(unit: &str) -> bool {
+    unit.strip_prefix("aos-pkg-")
+        .and_then(|name| name.strip_suffix(".target"))
+        .is_some_and(|name| !name.is_empty())
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -3941,6 +3987,34 @@ mod tests {
             format!("{err:#}").contains("foreign synthesized service-root unit"),
             "{err:#}"
         );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_foreign_package_target_ownership() {
+        for (section, key) in [("Unit", "PartOf"), ("Install", "WantedBy")] {
+            let tmp = TempDir::new().unwrap();
+            let installed = installed_with_expose(&tmp, "web", "pkgwebhash11", "artifactweb11");
+            let apm = installed.apm.as_ref().unwrap();
+            let artifact = PathBuf::from(&apm.expose_artifact.as_ref().unwrap().store_path);
+            std::fs::write(
+                artifact.join("units/web.service"),
+                format!("[{section}]\n{key}=aos-pkg-victim.target\n"),
+            )
+            .unwrap();
+            let profile = Profile {
+                path: tmp.path().join(format!("profile-foreign-{key}")),
+                scope: ProfileScope::System,
+            };
+            std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+            link_expose_artifact(&profile, &installed);
+
+            let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+            assert!(
+                format!("{err:#}").contains("foreign synthesized package target"),
+                "{err:#}"
+            );
+        }
     }
 
     #[test]

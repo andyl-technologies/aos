@@ -38,6 +38,7 @@
   packageNameType = "^[A-Za-z0-9][A-Za-z0-9+._=-]*$";
   overlayTokenType = "^[A-Za-z0-9][A-Za-z0-9+._=@-]*$";
   synthesizedServiceRootUnitType = "^aos-pkg-.*-service-roots[.]service$";
+  synthesizedPackageTargetType = "^aos-pkg-.*[.]target$";
   credentialNameType = "^[A-Za-z0-9_.-]+$";
   hostPathType = "^[A-Za-z0-9_./+=@-]+$";
   kernelModuleType = "^[A-Za-z0-9_-]+$";
@@ -1124,6 +1125,26 @@ in rec {
       validateTargetName
       packageName
       (checkedExpose.target or "aos-pkg-${packageName}.target");
+    authoredForeignOwnershipTargets =
+      lib.concatMap (
+        unitName:
+          lib.concatMap (
+            field:
+              builtins.filter (
+                reference:
+                  builtins.isString reference
+                  && builtins.match synthesizedPackageTargetType reference != null
+                  && reference != target
+              )
+              (units.${unitName}.${field} or [])
+          ) ["partOf" "wantedBy" "requiredBy" "upheldBy"]
+      )
+      authoredUnitNames;
+    authoredOwnershipTargetsValid =
+      throwIfNot
+      (authoredForeignOwnershipTargets == [])
+      "mkDerivation expose.units for package '${packageName}' must not claim membership in foreign synthesized package targets: ${builtins.concatStringsSep ", " authoredForeignOwnershipTargets}"
+      true;
     hostPathsUnit = "aos-pkg-${packageName}-host-paths.service";
     serviceRootsUnit = "aos-pkg-${packageName}-service-roots.service";
     modulesUnit = "aos-pkg-${packageName}-modules.service";
@@ -2257,7 +2278,7 @@ in rec {
           };
         };
       };
-    synthesizedUnits = builtins.seq reservedUnitsAvailable (
+    synthesizedUnits = builtins.seq authoredOwnershipTargetsValid (builtins.seq reservedUnitsAvailable (
       builtins.seq preparedHostPathDirectoriesAvailable (
         builtins.mapAttrs addTargetMembership units
         // sideEffectUnits
@@ -2273,7 +2294,7 @@ in rec {
           };
         }
       )
-    );
+    ));
     typedSystemdUnchecked = builtins.seq unitReferencesValid (validateTypedUnits synthesizedUnits);
     typedSystemd = builtins.seq socketTcpBindValid typedSystemdUnchecked;
     renderedUnitNames = unitNamesFromTypedSystemd typedSystemd;
