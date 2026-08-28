@@ -158,6 +158,8 @@ dependencies = [
  "aos-core",
  "aos-doc",
  "aos-net",
+ "aos-oci",
+ "aos-oci-types",
  "aos-package",
  "aos-profile",
  "aos-remote",
@@ -170,6 +172,7 @@ dependencies = [
  "clap_complete",
  "console",
  "ed25519-dalek",
+ "flate2",
  "futures-util",
  "glob",
  "hex",
@@ -185,6 +188,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tar",
  "tempfile",
  "tokio",
  "tokio-rustls 0.26.4",
@@ -451,6 +455,31 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "aos-oci"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-oci-types",
+ "axum",
+ "bytes",
+ "flate2",
+ "futures-util",
+ "hex",
+ "reqwest",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tar",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "url",
+ "zeroize",
+ "zstd",
 ]
 
 [[package]]

@@ -10,6 +10,7 @@
 pub mod build;
 pub mod cache;
 pub mod completions;
+pub mod container;
 pub mod describe;
 pub mod fmt;
 pub mod gc;

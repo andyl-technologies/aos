@@ -78,21 +78,54 @@ pub async fn run_remote(
     let package = package.ok_or_else(|| AosError::InvalidArgument {
         message: "provide a package name for remote builds".to_string(),
     })?;
+    let attr = format!("pkgs.{package}");
+    run_remote_attr(nix, printer, &attr, package, remote_url, view, token).await?;
+    Ok(())
+}
 
+/// Stable completion identity returned by an exact remote build.
+pub struct RemoteBuildResult {
+    /// Locally instantiated derivation sent to the remote builder.
+    pub derivation: String,
+    /// Final remote completion or error message, when the stream supplied one.
+    pub message: Option<String>,
+    /// Whether the remote stream reported successful completion.
+    pub success: bool,
+}
+
+/// Remotely builds one exact closed Nix attribute.
+///
+/// This is shared by package and container porcelain. Callers construct the
+/// attribute from validated components; the remote protocol receives the
+/// resulting derivation path and never evaluates a user-supplied expression.
+///
+/// # Errors
+///
+/// Returns an error when the token is missing or any local instantiation,
+/// closure export, authentication, upload, or remote build-stream operation
+/// fails.
+pub async fn run_remote_attr(
+    nix: &NixRunner,
+    printer: &Printer,
+    attr: &str,
+    label: &str,
+    remote_url: &str,
+    view: &str,
+    token: Option<&str>,
+) -> Result<RemoteBuildResult> {
     let token = token.ok_or_else(|| AosError::InvalidArgument {
         message: "provide --token or set AOS_TOKEN for remote builds".to_string(),
     })?;
 
     printer.info(&format!(
-        "Remote build: {package} on {remote_url} (view: {view})"
+        "Remote build: {label} on {remote_url} (view: {view})"
     ));
 
     // Step 1: Evaluate locally to get the .drv path.
-    let spinner = printer.activity(&format!("evaluating {package}"));
-    let attr = format!("pkgs.{package}");
+    let spinner = printer.activity(&format!("evaluating {label}"));
     let drv_path = nix
-        .instantiate(&attr)
-        .with_context(|| format!("evaluating package '{package}'"))?;
+        .instantiate(attr)
+        .with_context(|| format!("evaluating '{label}'"))?;
     spinner.finish_and_clear();
     let drv_str = drv_path.to_string_lossy().to_string();
     printer.info(&format!("Derivation: {drv_str}"));
@@ -195,6 +228,8 @@ pub async fn run_remote(
     // Step 5: Request remote build and stream events via ConnectRPC.
     printer.info("Starting remote build...");
 
+    let mut message = None;
+    let mut success = false;
     client
         .build(&drv_str, |event| {
             match event.event_type.as_str() {
@@ -202,10 +237,13 @@ pub async fn run_remote(
                 "status" => printer.info(&format!("[status] {}", event.message)),
                 "complete" => {
                     printer.success(&format!("Build complete: {}", event.message));
+                    message = Some(event.message.clone());
+                    success = true;
                     return false;
                 }
                 "error" => {
                     printer.error(&format!("Build error: {}", event.message));
+                    message = Some(event.message.clone());
                     return false;
                 }
                 "daemon-unavailable" => {
@@ -220,7 +258,11 @@ pub async fn run_remote(
         })
         .await?;
 
-    Ok(())
+    Ok(RemoteBuildResult {
+        derivation: drv_str,
+        message,
+        success,
+    })
 }
 
 /// Build every package in the `pkgs` set and list the store paths.

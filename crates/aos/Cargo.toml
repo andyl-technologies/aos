@@ -20,6 +20,8 @@ path = "src/apm.rs"
 rustix = { workspace = true }
 aos-core = { workspace = true }
 aos-net = { workspace = true }
+aos-oci = { workspace = true }
+aos-oci-types = { workspace = true }
 aos-server = { workspace = true }
 aos-cache = { workspace = true }
 aos-remote = { workspace = true }
@@ -58,3 +60,7 @@ ed25519-dalek = { workspace = true }
 url = { workspace = true }
 zeroize = { workspace = true }
 tempfile = { workspace = true }
+
+[dev-dependencies]
+flate2 = { workspace = true }
+tar = { workspace = true }

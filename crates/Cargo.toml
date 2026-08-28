@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "aos",
+    "aos-oci",
     "aos-oci-types",
     "aos-core",
     "aos-boot-identity",
@@ -194,6 +195,7 @@ rcgen = "0.14"
 crucible-cas = { path = "crucible-cas" }
 aos-core = { path = "aos-core" }
 aos-oci-types = { path = "aos-oci-types" }
+aos-oci = { path = "aos-oci" }
 aos-boot-identity = { path = "aos-boot-identity" }
 aos-net = { path = "aos-net" }
 aos-proto = { path = "aos-proto" }
