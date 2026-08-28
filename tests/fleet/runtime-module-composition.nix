@@ -260,6 +260,9 @@ in {
 
           [registry.signing_keys]
           release = "$KEY"
+
+          [registry.signing]
+          root_owner_signers = ["release"]
           EOF
 
           {APR} publish '${pkgs.nginx}' \
