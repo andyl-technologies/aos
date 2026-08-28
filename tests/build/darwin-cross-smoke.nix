@@ -286,6 +286,24 @@
               -framework CoreServices \
               -o "$c/bin/aos-darwin-coreservices-launchservices-smoke"
 
+            # OpenJDK links this public umbrella without repeating its
+            # documented CoreText and CoreServices/CarbonCore dependencies.
+            "$CC" ${./darwin-applicationservices-reexports-smoke.c} \
+              -framework ApplicationServices \
+              -o "$c/bin/aos-darwin-applicationservices-reexports-smoke"
+
+            # The Java sound implementation is C++ but consumes these APIs
+            # through their canonical C linkage.
+            "$CXX" ${./darwin-audio-cxx-smoke.cc} \
+              -framework AudioToolbox \
+              -framework AudioUnit \
+              -framework CoreAudio \
+              -o "$cxx/bin/aos-darwin-audio-cxx-smoke"
+
+            "$CC" ${./darwin-quartzcore-corevideo-smoke.c} \
+              -framework QuartzCore \
+              -o "$c/bin/aos-darwin-quartzcore-corevideo-smoke"
+
             # Match Clang's plugin topology: a dylib records the versioned
             # CoreServices install name, then a flat-namespace bundle links
             # that dylib and makes ld64 follow the transitive framework edge.
@@ -1022,6 +1040,7 @@
               -o "$cxx/aos-darwin-flat-namespace.bundle"
 
             for executable in \
+              "$c/bin/aos-darwin-applicationservices-reexports-smoke" \
               "$c/bin/aos-darwin-c-smoke" \
               "$c/bin/aos-darwin-carbon-smoke" \
               "$c/bin/aos-darwin-command-line-sdk-smoke" \
@@ -1042,12 +1061,14 @@
               "$c/bin/aos-darwin-metal-smoke" \
               "$c/bin/aos-darwin-nis-smoke" \
               "$c/bin/aos-darwin-objective-c-smoke" \
+              "$c/bin/aos-darwin-quartzcore-corevideo-smoke" \
               "$c/bin/aos-darwin-resolver-smoke" \
               "$c/bin/aos-darwin-security-smoke" \
               "$c/bin/aos-darwin-security-jdk-smoke" \
               "$c/lib/libaos-darwin-cmake-smoke.dylib" \
               "$cxx/libaos-darwin-cmake-cxx-smoke.dylib" \
               "$cxx/aos-darwin-flat-namespace.bundle" \
+              "$cxx/bin/aos-darwin-audio-cxx-smoke" \
               "$cxx/bin/aos-darwin-cxx-smoke" \
               "$cxx/bin/aos-darwin-signpost-smoke"; do
               header=$("$OBJDUMP" --macho --private-header "$executable")

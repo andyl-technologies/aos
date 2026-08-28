@@ -3,6 +3,10 @@
 
 #include <CoreAudio/CoreAudioTypes.h>
 
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
 AudioComponent AudioComponentFindNext(AudioComponent, const AudioComponentDescription *);
 OSStatus AudioComponentInstanceNew(AudioComponent, AudioComponentInstance *);
 OSStatus AudioComponentInstanceDispose(AudioComponentInstance);
@@ -12,5 +16,9 @@ OSStatus AudioUnitSetProperty(AudioUnit, AudioUnitPropertyID, AudioUnitScope, Au
 OSStatus AudioUnitRender(AudioUnit, AudioUnitRenderActionFlags *, const AudioTimeStamp *, UInt32, UInt32, AudioBufferList *);
 OSStatus AudioOutputUnitStart(AudioUnit);
 OSStatus AudioOutputUnitStop(AudioUnit);
+
+#if defined(__cplusplus)
+}
+#endif
 
 #endif

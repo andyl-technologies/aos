@@ -9,6 +9,7 @@ reexported-libraries:
     libraries:
       - '/System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork'
       - '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation'
+      - '/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/CarbonCore.framework/Versions/A/CarbonCore'
       - '/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/LaunchServices'
 exports:
   - targets: [ x86_64-macos, arm64-macos ]

@@ -3,6 +3,10 @@
 
 #include <CoreAudio/CoreAudioTypes.h>
 
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
 UInt64 AudioGetCurrentHostTime(void);
 UInt64 AudioConvertHostTimeToNanos(UInt64 hostTime);
 OSStatus AudioObjectGetPropertyDataSize(AudioObjectID, const AudioObjectPropertyAddress *, UInt32, const void *, UInt32 *);
@@ -10,5 +14,9 @@ OSStatus AudioObjectGetPropertyData(AudioObjectID, const AudioObjectPropertyAddr
 OSStatus AudioObjectSetPropertyData(AudioObjectID, const AudioObjectPropertyAddress *, UInt32, const void *, UInt32, const void *);
 OSStatus AudioObjectAddPropertyListener(AudioObjectID, const AudioObjectPropertyAddress *, AudioObjectPropertyListenerProc, void *);
 OSStatus AudioObjectRemovePropertyListener(AudioObjectID, const AudioObjectPropertyAddress *, AudioObjectPropertyListenerProc, void *);
+
+#if defined(__cplusplus)
+}
+#endif
 
 #endif
