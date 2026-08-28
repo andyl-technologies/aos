@@ -2297,12 +2297,15 @@ impl Database {
         if part_number == 0 || !matches!(state, "ambiguous" | "confirmed") {
             bail!("multipart part transition is invalid");
         }
+        // MariaDB and MySQL evaluate SET assignments from left to right. Keep
+        // the etag decision against the persisted state, then transition the
+        // state, matching sqlite and PostgreSQL's simultaneous-assignment result.
         self.backend
             .checked_batch(&[
                 Statement::new(
                     "UPDATE cache_write_ticket_parts
-                     SET state = CASE WHEN state = 'confirmed' THEN state ELSE ?4 END,
-                         etag = CASE WHEN state = 'confirmed' THEN etag ELSE ?5 END
+                     SET etag = CASE WHEN state = 'confirmed' THEN etag ELSE ?5 END,
+                         state = CASE WHEN state = 'confirmed' THEN state ELSE ?4 END
                      WHERE ticket_id = ?1 AND part_number = ?3
                        AND (state IN ('admitted', 'ambiguous')
                          OR (state = 'confirmed' AND ?4 = 'ambiguous')

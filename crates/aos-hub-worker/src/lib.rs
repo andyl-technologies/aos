@@ -458,6 +458,33 @@ mod entry {
         if path.starts_with("/_internal/") || path.starts_with("/_admin/") {
             return Ok(None);
         }
+        if let Some(repository) = crate::requestshard::oci_repository_from_path(path) {
+            let Some(authority) = crate::requestshard::canonical_oci_authority(&url) else {
+                return Ok(None);
+            };
+            let projection_key = aos_hub_core::oci::oci_route_projection_key(&authority);
+            let kv =
+                crate::workerkv::WorkerKv::new(env.kv(crate::handlers::bindings::KV_SESSIONS)?);
+            let Some(registry_stable_id) = kv
+                .get_str(&projection_key)
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "read OCI route projection {projection_key}: {error:#}"
+                    ))
+                })?
+                .filter(|stable_id| crate::requestshard::canonical_registry_stable_id(stable_id))
+            else {
+                // A cold/stale projection must not invent an authority-based
+                // shard. HubDb resolves the route and writes through the exact
+                // current stable registry incarnation for the next request.
+                return Ok(None);
+            };
+            return Ok(Some(crate::requestshard::classify_oci_repository(
+                &registry_stable_id,
+                &repository,
+            )));
+        }
         let request_method = req.method();
         let method = request_method.as_ref();
         let authority = url.host_str().unwrap_or_default();

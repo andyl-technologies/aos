@@ -8,9 +8,11 @@
 //! RFC-0015 deliberately distinguishes uploaded bytes from parsed records.
 //! Registry implementations retain and digest the exact bytes received; the
 //! types here are bounded projections used for admission, graph traversal, and
-//! AOS-generated canonical JSON. Unknown annotation keys are retained in
-//! [`Annotations`], while unknown non-annotation JSON fields may be ignored by
-//! Serde and therefore must never replace the original uploaded body.
+//! AOS-generated canonical JSON. Generic OCI projections retain unknown
+//! annotation keys in [`Annotations`] and may ignore unknown non-annotation
+//! fields, so they never replace the original uploaded body. The AOS-owned
+//! signed [`ContainerRelease`] schema is deliberately stricter and rejects
+//! unknown fields at every nested object.
 //!
 //! # Module map
 //!
@@ -24,6 +26,7 @@
 //! - [`model`] owns descriptors, platforms, manifests, indexes, and image
 //!   configuration documents.
 //! - [`reference`] owns exact repository, tag, and manifest-reference parsing.
+//! - [`release`] owns the strict signed `containers/v1/index.json` contract.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -38,6 +41,7 @@ pub mod limits;
 pub mod media_type;
 pub mod model;
 pub mod reference;
+pub mod release;
 
 pub use annotations::Annotations;
 pub use canonical::to_canonical_json;
@@ -50,3 +54,8 @@ pub use model::{
     ImageRuntimeConfig, Platform, RootFs, RootFsType,
 };
 pub use reference::{ManifestReference, RepositoryName, Tag};
+pub use release::{
+    CONTAINER_RELEASE_SCHEMA_VERSION, CONTAINER_RELEASE_SIDECAR_PATH, ContainerNixProvenance,
+    ContainerOciRelease, ContainerRelease, ContainerReleaseEvidence, ContainerReleaseIdentity,
+    NixDefinitionIdentity, NixOutputIdentity,
+};

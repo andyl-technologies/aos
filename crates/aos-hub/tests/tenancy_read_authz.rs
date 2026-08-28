@@ -1177,6 +1177,7 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
                 serves_git: true,
                 serves_cache: false,
                 serves_web: false,
+                serves_oci: false,
                 enabled: false,
             },
             "http://192.0.2.44:8420/replica",

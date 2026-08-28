@@ -1405,7 +1405,7 @@ fn parse_byte_range(header: Option<&str>) -> Option<(u64, u64)> {
 }
 
 /// Wraps one placement body with an exact signed byte-count contract.
-fn exact_image_body(body: axum::body::Body, remaining: u64) -> axum::body::Body {
+pub(crate) fn exact_image_body(body: axum::body::Body, remaining: u64) -> axum::body::Body {
     use futures_util::StreamExt as _;
 
     axum::body::Body::from_stream(futures_util::stream::unfold(
@@ -8431,6 +8431,7 @@ impl RpcService {
                 serves_git: capabilities.serves_git,
                 serves_cache: capabilities.serves_cache,
                 serves_web: capabilities.serves_web,
+                serves_oci: capabilities.serves_oci,
                 enabled: spec.enabled,
             },
             canonical_url,
@@ -8517,6 +8518,7 @@ impl RpcService {
                     serves_git: snapshot.spec.serves_git,
                     serves_cache: snapshot.spec.serves_cache,
                     serves_web: snapshot.spec.serves_web,
+                    serves_oci: snapshot.spec.serves_oci,
                 }),
                 enabled: snapshot.spec.enabled,
             }),
@@ -9349,9 +9351,10 @@ impl RpcService {
             "git" => snapshot.spec.serves_git,
             "nix_cache" => snapshot.spec.serves_cache,
             "web" => snapshot.spec.serves_web,
+            "oci" => snapshot.spec.serves_oci,
             _ => {
                 return Err(RpcError::invalid(
-                    "accessClass must be git, nix_cache, or web",
+                    "accessClass must be git, nix_cache, web, or oci",
                 ));
             }
         };
@@ -10435,6 +10438,37 @@ impl RpcService {
         }
         if registry.visibility == "public" || registry.org_id.is_none() {
             return Ok(());
+        }
+        let claims = self.require_claims(auth)?;
+        let scope = self.registry_scope(registry).await?;
+        self.require_permission(&claims, Permission::Read, &scope)
+            .await
+    }
+
+    /// Requires an authenticated Hub principal with current registry read access.
+    ///
+    /// Unlike [`Self::require_read`], this gate does not make public registries
+    /// anonymous. Delivery routes with an explicit `hub_auth` posture use it
+    /// before minting a repository-scoped protocol token.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found for an inactive owner, authentication or permission
+    /// errors for an invalid caller, and internal errors for database failures.
+    pub(crate) async fn require_authenticated_registry_read(
+        &self,
+        auth: Option<&str>,
+        registry: &RegistryRecord,
+    ) -> Result<(), RpcError> {
+        if let Some(org_id) = registry.org_id {
+            if !self
+                .db
+                .org_is_active(org_id)
+                .await
+                .map_err(RpcError::internal)?
+            {
+                return Err(RpcError::not_found("registry"));
+            }
         }
         let claims = self.require_claims(auth)?;
         let scope = self.registry_scope(registry).await?;
@@ -15047,9 +15081,10 @@ impl RpcService {
                 "git" => snapshot.spec.serves_git,
                 "nix_cache" => snapshot.spec.serves_cache,
                 "web" => snapshot.spec.serves_web,
+                "oci" => snapshot.spec.serves_oci,
                 _ => {
                     return Err(RpcError::invalid(
-                        "accessClass must be git, nix_cache, or web",
+                        "accessClass must be git, nix_cache, web, or oci",
                     ));
                 }
             };

@@ -4,7 +4,8 @@
 //! entries` through loose objects and materializes the committed files the
 //! index needs: `registry.toml`, `keys.toml`, every
 //! `packages/<bucket>/<name>.toml`, the package-root realization records under
-//! `store/`, and the `closures/` adjacency lists.
+//! `store/`, the `closures/` adjacency lists, and the optional strict
+//! `containers/v1/index.json` release sidecar.
 //! All file formats are parsed with the wasm-clean
 //! [`aos_registry_surface::manifest`] schema/parsers, so the hub, the Worker,
 //! and `apm` cannot drift on what they accept.
@@ -19,12 +20,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
+use aos_oci_types::{
+    limits::MAX_JSON_BYTES as MAX_OCI_JSON_BYTES, ContainerRelease, CONTAINER_RELEASE_SIDECAR_PATH,
+};
 use aos_registry_surface::manifest::{
     parse_package_file, KeysToml, PackageToml, ReferenceField, RegistryRootConfig,
 };
 use aos_registry_surface::object::{self, Commit, ObjectKind, Oid};
 use aos_registry_surface::store::{self, StoreEntry};
 use futures_util::future::try_join_all;
+use sha2::Digest as _;
 
 use crate::fetch::SurfaceFetch;
 
@@ -384,6 +389,17 @@ pub struct LoadedTree {
     pub packages: Vec<PackageToml>,
     /// Closure adjacency lists: store-path hash → direct references.
     pub closures: BTreeMap<String, Vec<String>>,
+    /// Strict signed container-release sidecar, when the commit carries one.
+    pub container_release: Option<LoadedContainerRelease>,
+}
+
+/// One exact `containers/v1/index.json` document loaded from a release tree.
+#[derive(Debug)]
+pub struct LoadedContainerRelease {
+    /// Strict bounded projection used for release admission.
+    pub document: ContainerRelease,
+    /// Lowercase SHA-256 of the exact committed JSON bytes.
+    pub catalog_digest: String,
 }
 
 /// Load the committed registry files reachable from `commit_oid`.
@@ -527,12 +543,101 @@ async fn load_registry_tree_inner(
         enrich_packages_from_store(&mut packages, store)?;
     }
 
+    let container_release = load_container_release(reader, &root_tree).await?;
+
     Ok(LoadedTree {
         root,
         keys,
         packages,
         closures,
+        container_release,
     })
+}
+
+async fn load_container_release(
+    reader: &ObjectReader<'_>,
+    root_tree: &BTreeMap<String, object::TreeEntry>,
+) -> Result<Option<LoadedContainerRelease>> {
+    let Some(containers_entry) = root_tree.get("containers") else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        containers_entry.is_tree(),
+        "committed containers entry is not a tree"
+    );
+    let containers = object::tree_map(
+        &reader
+            .read_kind(containers_entry.oid, ObjectKind::Tree)
+            .await?,
+    )?;
+    let Some(version_entry) = containers.get("v1") else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        version_entry.is_tree(),
+        "committed containers/v1 entry is not a tree"
+    );
+    let version = object::tree_map(
+        &reader
+            .read_kind(version_entry.oid, ObjectKind::Tree)
+            .await?,
+    )?;
+    let Some(index_entry) = version.get("index.json") else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        !index_entry.is_tree(),
+        "committed {CONTAINER_RELEASE_SIDECAR_PATH} entry is not a blob"
+    );
+
+    let bytes = reader
+        .read_kind(index_entry.oid, ObjectKind::Blob)
+        .await
+        .with_context(|| format!("loading committed {CONTAINER_RELEASE_SIDECAR_PATH}"))?;
+    parse_optional_container_release(Some(&bytes))
+}
+
+fn parse_optional_container_release(
+    bytes: Option<&[u8]>,
+) -> Result<Option<LoadedContainerRelease>> {
+    bytes.map(parse_container_release).transpose()
+}
+
+fn parse_container_release(bytes: &[u8]) -> Result<LoadedContainerRelease> {
+    anyhow::ensure!(
+        bytes.len() <= MAX_OCI_JSON_BYTES,
+        "committed {CONTAINER_RELEASE_SIDECAR_PATH} exceeds the {MAX_OCI_JSON_BYTES}-byte limit"
+    );
+    let document = ContainerRelease::from_json(bytes)
+        .with_context(|| format!("parsing committed {CONTAINER_RELEASE_SIDECAR_PATH}"))?;
+    let catalog_digest = hex::encode(sha2::Sha256::digest(bytes));
+    Ok(LoadedContainerRelease {
+        document,
+        catalog_digest,
+    })
+}
+
+#[cfg(test)]
+mod container_release_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_tree_without_container_sidecar_remains_compatible() {
+        assert!(parse_optional_container_release(None).unwrap().is_none());
+    }
+
+    #[test]
+    fn malformed_container_sidecar_fails_closed() {
+        let error = parse_optional_container_release(Some(br#"{"schemaVersion":1}"#)).unwrap_err();
+        assert!(format!("{error:#}").contains(CONTAINER_RELEASE_SIDECAR_PATH));
+    }
+
+    #[test]
+    fn oversized_container_sidecar_is_rejected_before_parsing() {
+        let bytes = vec![b' '; MAX_OCI_JSON_BYTES + 1];
+        let error = parse_container_release(&bytes).unwrap_err();
+        assert!(format!("{error:#}").contains("exceeds"));
+    }
 }
 
 async fn load_package_store_records(

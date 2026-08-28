@@ -177,6 +177,24 @@ fn is_image_object_path(path: &str) -> bool {
     image_object_sha256(path).is_some()
 }
 
+/// Returns the content digest encoded by any canonical immutable Hub object path.
+///
+/// OCI blobs deliberately remain outside [`is_machine_path`]: they are served
+/// only by the registry-selected Distribution router. This classifier exists
+/// for storage backends that must snapshot content-addressed bytes before
+/// returning response headers.
+#[must_use]
+pub fn immutable_object_sha256(path: &str) -> Option<&str> {
+    image_object_sha256(path).or_else(|| {
+        let digest = path.strip_prefix("oci/blobs/sha256/")?;
+        (digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+        .then_some(digest)
+    })
+}
+
 /// Returns the content digest encoded by a canonical immutable image path.
 #[must_use]
 pub fn image_object_sha256(path: &str) -> Option<&str> {

@@ -45,14 +45,14 @@
 //! INTEGER                     INTEGER                 BIGINT                    BIGINT
 //! TEXT                        TEXT                    TEXT                      VARCHAR(255) (see note)
 //! LONGTEXT                    LONGTEXT                TEXT                      LONGTEXT
-//! IDTEXT                      TEXT                    TEXT                      VARCHAR(255) COLLATE utf8mb4_0900_bin
-//! KEYTEXT16                   TEXT COLLATE BINARY     VARCHAR(16) COLLATE "C"    VARCHAR(16) + utf8mb4_0900_bin
-//! KEYTEXT32                   TEXT COLLATE BINARY     VARCHAR(32) COLLATE "C"    VARCHAR(32) + utf8mb4_0900_bin
-//! KEYTEXT64                   TEXT COLLATE BINARY     VARCHAR(64) COLLATE "C"    VARCHAR(64) + utf8mb4_0900_bin
-//! KEYTEXT128                  TEXT COLLATE BINARY     VARCHAR(128) COLLATE "C"   VARCHAR(128) + utf8mb4_0900_bin
-//! KEYTEXT255                  TEXT COLLATE BINARY     VARCHAR(255) COLLATE "C"   VARCHAR(255) + utf8mb4_0900_bin
-//! KEYTEXT512                  TEXT COLLATE BINARY     VARCHAR(512) COLLATE "C"   VARCHAR(512) + utf8mb4_0900_bin
-//! KEYTEXT1024                 TEXT COLLATE BINARY     VARCHAR(1024) COLLATE "C"  VARCHAR(1024) + utf8mb4_0900_bin
+//! IDTEXT                      TEXT                    TEXT                      VARBINARY(255)
+//! KEYTEXT16                   TEXT COLLATE BINARY     VARCHAR(16) COLLATE "C"    VARBINARY(16)
+//! KEYTEXT32                   TEXT COLLATE BINARY     VARCHAR(32) COLLATE "C"    VARBINARY(32)
+//! KEYTEXT64                   TEXT COLLATE BINARY     VARCHAR(64) COLLATE "C"    VARBINARY(64)
+//! KEYTEXT128                  TEXT COLLATE BINARY     VARCHAR(128) COLLATE "C"   VARBINARY(128)
+//! KEYTEXT255                  TEXT COLLATE BINARY     VARCHAR(255) COLLATE "C"   VARBINARY(255)
+//! KEYTEXT512                  TEXT COLLATE BINARY     VARCHAR(512) COLLATE "C"   VARBINARY(512)
+//! KEYTEXT1024                 TEXT COLLATE BINARY     VARCHAR(1024) COLLATE "C"  VARBINARY(1024)
 //! BLOB                        BLOB                    BYTEA                     LONGBLOB
 //! AUTOINCREMENT               AUTOINCREMENT           (removed)                 (removed)
 //! ```
@@ -61,9 +61,9 @@
 //! or any value used as an equality auth key. On mysql its default collation is
 //! case-, accent-, and trailing-space-insensitive, which would collapse
 //! case-variant identities onto one row and enable an account-takeover (sec
-//! M-6). MySQL support has an explicit 8.0.16 baseline; its
-//! `utf8mb4_0900_bin` collation is binary and `NO PAD`, so trailing spaces
-//! remain significant instead of collapsing onto the unspaced identity.
+//! M-6). MySQL-family backends store identity text as `VARBINARY(255)`, so
+//! equality is byte-exact and trailing spaces remain significant without
+//! depending on a vendor-specific collation.
 //! sqlite and postgres `TEXT` are already case-sensitive, so `IDTEXT` is plain
 //! `TEXT` there. (EMAIL columns are deliberately *not* `IDTEXT`: emails are
 //! conventionally case-insensitive and binary-collating them without
@@ -73,26 +73,20 @@
 //! for stable names, normalized paths, hashes, revisions, and other values
 //! whose equality and ordering must not depend on the database's default
 //! collation. The supported capacities are 16, 32, 64, 128, 255, 512, and 1024. SQLite
-//! and Durable Object SQLite use bytewise `BINARY` collation, postgres uses its deterministic
-//! `C` collation, and MySQL 8.0.16+ uses its `NO PAD` `utf8mb4_0900_bin`
-//! collation.
+//! and Durable Object SQLite use bytewise `BINARY` collation, postgres uses its
+//! deterministic `C` collation, and MySQL-family backends use `VARBINARY(N)`.
 //! The numeric suffix is the maximum accepted UTF-8 byte length in the Hub
-//! contract. Application validators must enforce that byte limit before every
-//! write because SQL `VARCHAR(N)` limits characters, not encoded bytes, and
-//! SQLite does not enforce a declared text length.
+//! contract. `VARBINARY(N)` enforces that byte limit directly; application
+//! validators also enforce it uniformly before every write because PostgreSQL
+//! `VARCHAR(N)` limits characters and SQLite does not enforce a declared text
+//! length.
 //!
-//! Forms through 512 bytes are safe for a topology index containing one key plus a
-//! `BIGINT`: `VARCHAR(512)` occupies at most 2,048 bytes under `utf8mb4`, below
-//! InnoDB's 3,072-byte index-key limit. `KEYTEXT1024` is reserved for unindexed
-//! provider identifiers. Multi-text indexes must use the smallest
-//! appropriate forms so their combined worst-case width remains below that
-//! limit.
+//! Binary storage also makes composite topology indexes account for exactly
+//! their declared byte capacities. Forms through 1024 bytes can participate
+//! where the complete composite key remains within InnoDB's 3,072-byte limit.
 //!
-//! The mysql dialect requires MySQL 8.0.16 or newer. Topology integrity relies
-//! on enforced `CHECK` constraints, which MySQL first enabled in 8.0.16, while
-//! byte-exact identity and key equality relies on the MySQL 8
-//! `utf8mb4_0900_bin` `NO PAD` collation. MariaDB and older MySQL releases are
-//! not compatible substitutes for topology DDL.
+//! The mysql dialect requires a server that enforces `CHECK` constraints. The
+//! tested baselines are MySQL 8.0.16 or newer and MariaDB 11.4 or newer.
 //!
 //! Note: mysql cannot index/PK a `TEXT` column without a prefix length, and
 //! several hub tables use a `TEXT PRIMARY KEY` (`tokens.id`, `sessions.id_hash`,
@@ -184,22 +178,27 @@ impl Dialect {
         Ok(self.rewrite_placeholders(&sql))
     }
 
-    /// Quotes the one hub column whose name collides with a SQL reserved word.
+    /// Quotes hub columns whose names collide with SQL reserved words.
     ///
     /// `channel_partitions.release` clashes with `RELEASE` (a reserved
-    /// keyword on postgres and mysql). The source SQL writes the bare
-    /// identifier `release`; this wraps each standalone occurrence in the
-    /// dialect's identifier quote — `"release"` on postgres, `` `release` ``
-    /// on mysql — while leaving the unrelated `releases` table untouched (the
-    /// trailing `s` is not a word boundary). sqlite tolerates the bare name,
-    /// so it is left unquoted there.
+    /// keyword on postgres and mysql). MySQL and MariaDB additionally reserve
+    /// `key` and `window`, which are columns in the legacy `rate_limits`
+    /// migration. The source SQL writes these identifiers bare; this wraps
+    /// each standalone occurrence in the dialect's identifier quote while
+    /// leaving longer identifiers and protected SQL text untouched. SQLite
+    /// tolerates the bare names, so it leaves them unquoted.
     fn quote_reserved(self, sql: &str) -> String {
         let (open, close) = match self {
             Dialect::Sqlite => return sql.to_string(),
             Dialect::Postgres => ('"', '"'),
             Dialect::Mysql => ('`', '`'),
         };
-        replace_word(sql, "release", &format!("{open}release{close}"))
+        let mut sql = replace_word(sql, "release", &format!("{open}release{close}"));
+        sql = replace_word(&sql, "window", &format!("{open}window{close}"));
+        if self == Dialect::Mysql {
+            sql = replace_word(&sql, "key", "`key`");
+        }
+        sql
     }
 
     /// Rewrites `?N` placeholders for this dialect, returning the parameter
@@ -310,12 +309,9 @@ impl Dialect {
         // lookup and the composite PK. OIDC `sub` is case-sensitive per spec and
         // is never normalized here, so on mysql an attacker who can assert a
         // case-variant `sub` from the same trusted IdP would resolve to a
-        // victim's `user_id` and log in as them (sec M-6). Declaring these
-        // columns with the supported MySQL 8.0.16+ baseline's binary, NO PAD
-        // `utf8mb4_0900_bin` collation restores the case- and
-        // trailing-space-sensitive behavior sqlite and postgres already have.
-        // MySQL 8.0.16 is also the minimum release that enforces the CHECK
-        // constraints this schema uses for topology integrity. Stash behind a
+        // victim's `user_id` and log in as them (sec M-6). `VARBINARY(255)`
+        // restores the byte- and trailing-space-sensitive behavior sqlite and
+        // postgres already have across both MySQL and MariaDB. Stash behind a
         // sentinel (TEXT-free, null delimited) so the generic
         // `TEXT -> VARCHAR(255)` narrowing below does not rewrite the `TEXT`
         // *inside* `IDTEXT`.
@@ -367,24 +363,42 @@ impl Dialect {
             Dialect::Sqlite => unreachable!(),
         };
         s = s.replace(LONGTEXT_SENTINEL, unbounded);
-        // Restore the security-identity text type. Only mysql needs an explicit
-        // collation; on postgres a plain (case-sensitive) `TEXT` is already
-        // byte-exact for these columns.
+        // Restore the security-identity text type. MySQL-family engines use a
+        // binary string so equality is exact without a vendor-specific
+        // collation; on postgres plain `TEXT` is already case-sensitive.
         let identity = match self {
-            Dialect::Mysql => "VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin",
+            Dialect::Mysql => "VARBINARY(255)",
             Dialect::Postgres => "TEXT",
             Dialect::Sqlite => unreachable!(),
         };
         s = s.replace(IDTEXT_SENTINEL, identity);
         for (_, sentinel, capacity) in KEYTEXT_SENTINELS {
             let key_type = match self {
-                Dialect::Mysql => {
-                    format!("VARCHAR({capacity}) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin")
-                }
+                Dialect::Mysql => format!("VARBINARY({capacity})"),
                 Dialect::Postgres => format!("VARCHAR({capacity}) COLLATE \"C\""),
                 Dialect::Sqlite => unreachable!(),
             };
             s = s.replace(sentinel, &key_type);
+        }
+        if self == Dialect::Mysql && s.contains("consumer_cache_publication_intents") {
+            // The portable schema keeps the full committed URL and keys it by
+            // exact value. MySQL-family engines cannot place LONGTEXT directly
+            // in an index, so use a stored SHA-256 identity for the physical
+            // unique key while retaining the full URL for the equality check.
+            // MariaDB excludes generated columns from primary keys but permits
+            // unique indexes over stored generated columns. No foreign key
+            // targets this identity. DML still compares committed_url after
+            // conflicts, making the digest a collision-resistant index rather
+            // than an authority for URL identity.
+            s = s.replace(
+                "committed_url LONGTEXT NOT NULL,",
+                "committed_url LONGTEXT NOT NULL,\n  committed_url_digest BINARY(32) \
+GENERATED ALWAYS AS (UNHEX(SHA2(committed_url, 256))) STORED,",
+            );
+            s = s.replace(
+                "PRIMARY KEY(change_id, committed_url)",
+                "UNIQUE(change_id, committed_url_digest)",
+            );
         }
         s
     }

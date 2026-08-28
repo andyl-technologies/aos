@@ -12,7 +12,7 @@ one adversarial review of the containing phase are complete.
 | 1 | OCI types and deterministic Nix builders | Complete |
 | 2 | The single `aos` image and runtime contract | Complete |
 | 3 | Local `aos container` CLI | Complete |
-| 4 | Hub OCI catalog, storage, and pull data plane | Not started |
+| 4 | Hub OCI catalog, storage, and pull data plane | Complete (follow-ups open) |
 | 5 | Upload, publication, and signed release roots | Not started |
 | 6 | Connect API, administration CLI, and console | Not started |
 | 7 | Retention, GC, operations, and rollout | Not started |
@@ -254,42 +254,71 @@ daemonless transfer tests freeze the fixes. No second review round was used.
 
 ### Database and storage
 
-- [ ] Add forward migrations for repositories, blobs, repository links,
+- [x] Add forward migrations for repositories, blobs, repository links,
   manifests, descriptor edges, tags/history, release roots, publications,
   uploads, retention, leases, and GC generations.
-- [ ] Support SQLite, PostgreSQL, and MySQL with dialect tests.
-- [ ] Store immutable objects below `oci/blobs/sha256/` in the registry bucket.
-- [ ] Charge quota once per registry digest.
-- [ ] Require repository linkage for private blob access.
-- [ ] Preserve exact manifest bytes and store only bounded parsed projections.
+- [x] Support SQLite, PostgreSQL, and MySQL with dialect tests, including a
+  physical MariaDB v19-to-v20 upgrade fixture.
+- [x] Store immutable objects below `oci/blobs/sha256/` in the registry bucket.
+- [x] Charge quota once per registry digest.
+- [x] Require repository linkage for private blob access.
+- [x] Store bounded parsed catalog projections for manifests and descriptor
+  graphs.
+- [ ] Preserve exact noncanonical manifest bytes admitted by the Phase-5 upload
+  path rather than reconstructing them from parsed projections.
 
 ### Distribution pull and authentication
 
-- [ ] Implement `/v2/` discovery.
-- [ ] Implement blob `GET`/`HEAD`, ranges, conditional requests, and placement
+- [x] Implement `/v2/` discovery.
+- [x] Implement blob `GET`/`HEAD`, ranges, conditional requests, and placement
   selection.
-- [ ] Implement manifest/index `GET`/`HEAD` with content negotiation.
-- [ ] Implement tag listing and OCI referrer discovery.
-- [ ] Implement Docker bearer challenges and short-lived repository/action
+- [x] Implement manifest/index `GET`/`HEAD` with content negotiation.
+- [x] Implement tag listing and OCI referrer discovery.
+- [x] Implement Docker bearer challenges and short-lived repository/action
   scoped tokens.
-- [ ] Map Hub `Read` to pull and public visibility to anonymous pull.
-- [ ] Add repository-aware native and Worker request sharding.
+- [x] Map Hub `Read` to pull and public visibility to anonymous pull while
+  preserving route-level `hub_auth` requirements.
+- [x] Add repository-aware native and Worker request sharding.
 
 ### Catalog integration
 
-- [ ] Add signed `containers/v1/index.json` parsing and validation.
-- [ ] Populate immutable release roots without overloading system image tables.
-- [ ] Keep old strict release readers compatible.
-- [ ] Add repository, tag, manifest, platform, layer, and provenance read models.
+- [x] Add signed `containers/v1/index.json` parsing and validation.
+- [x] Populate immutable release roots without overloading system image tables.
+- [x] Keep old strict release readers compatible.
+- [x] Add repository, tag, manifest, platform, layer, and provenance read models.
 
 ### Tests and review
 
-- [ ] Cover malformed manifests, excessive graphs, media negotiation, ranges,
+- [x] Cover malformed manifests, excessive graphs, media negotiation, ranges,
   private digest probing, token audiences/actions, and unknown references.
-- [ ] Test native/Worker route parity and sharding.
-- [ ] Pull the `aos` image from a native local Hub and run it.
-- [ ] Run dialect, retained-control, API/capability, and SSR privacy gates.
-- [ ] Complete one Phase-4 adversarial review and resolve blocking findings.
+- [x] Test native/Worker route parity and sharding.
+- [x] Pull a cataloged fixture through the native Hub with the production OCI
+  client and verify the exact resulting layout.
+- [ ] Pull the production Nix-built `aos` image from a native local Hub and run
+  it; this remains Phase-8 end-to-end qualification.
+- [x] Run dialect, retained-control, API/capability, SSR privacy, native pull,
+  Worker wasm, packaged Rust, and `checks.eval` gates.
+- [x] Complete one Phase-4 adversarial review and resolve blocking findings.
+
+The single Phase-4 adversarial review found no P0 issues. Its P1 findings were:
+the MariaDB v19 release-tag text type could not satisfy the v20 binary release
+foreign key; a public registry behind `hub_auth` could obtain an anonymous pull
+token; a soft-deleted owning organization could still serve OCI; and a native
+file-backed immutable object could be replaced by same-size bytes after catalog
+admission. Numeric release identities plus a frozen physical v19 upgrade test,
+route-policy-aware Hub authentication before token exchange and OCI bearer
+authorization before lookup, an active-owner gate on every Distribution entry
+point, and retained-descriptor hashing/snapshotting for immutable OCI paths
+resolve those findings.
+
+The P2 findings covered signed-root placement linearization, mutable public
+catalog caching, and incomplete `Accept` matching. Signed release admission now
+fences and transactionally rechecks the index, platform, evidence object, and
+placement observations; public tag/referrer responses use `public, no-cache`;
+and structured, case-insensitive `application/*` negotiation honors explicit
+`q=0` exclusions. The physical fresh/upgrade SQL VM, native Distribution pull,
+Worker wasm, retained-control/capability/privacy, 3,372-test packaged Rust, and
+evaluation gates passed after these fixes. No second review round was used.
 
 ## Phase 5: Upload, publication, and signed release roots
 

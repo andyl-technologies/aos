@@ -2,9 +2,11 @@
 {
   mkDerivation,
   fetchurl,
+  file,
   gnumake,
   pkg-config,
   krb5,
+  libxcrypt,
   openssl,
   sqlite,
 }: let
@@ -21,8 +23,8 @@ in
       hash = "sha256-fM/Gq9Ae1nwaCSSzU+Um8bdmsh9C1FYu5jWo6/xbs4w=";
     };
 
-    buildDeps = [gnumake pkg-config];
-    runtimeDeps = [krb5 openssl sqlite];
+    buildDeps = [file gnumake pkg-config];
+    runtimeDeps = [krb5 libxcrypt openssl sqlite];
     propagatedDeps = [];
 
     phases = [
@@ -31,6 +33,18 @@ in
         script = ''
           tar xf $src
           cd cyrus-sasl-${version}
+
+          # Cyrus SASL 2.1.28 predates C23's removal of implicit function
+          # declarations. Include the standard declaration used by time() and
+          # clock() instead of weakening the AOS compiler diagnostics.
+          sed -i '/#ifdef HAVE_TIME_H/,/#endif/c\#include <time.h>' lib/saslutil.c
+          for source in plugins/cram.c plugins/digestmd5.c plugins/otp.c; do
+            sed -i '/#include <stdio.h>/a#include <time.h>' "$source"
+          done
+
+          # The release embeds an old libtool probe with an FHS-only path.
+          # Point it at AOS file so ABI detection remains hermetic.
+          sed -i 's|/usr/bin/file|${file}/bin/file|g' configure
         '';
       }
       {

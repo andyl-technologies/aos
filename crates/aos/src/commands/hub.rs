@@ -7193,6 +7193,7 @@ fn route_spec(
         serves_git: input.serves.iter().any(|value| value == "git"),
         serves_cache: input.serves.iter().any(|value| value == "cache"),
         serves_web: input.serves.iter().any(|value| value == "web"),
+        serves_oci: input.serves.iter().any(|value| value == "oci"),
     };
     if require_complete && input.serves.is_empty() {
         anyhow::bail!("at least one --serves capability is required");
@@ -7356,6 +7357,7 @@ fn merge_route_spec(
             serves_git: input.serves.iter().any(|value| value == "git"),
             serves_cache: input.serves.iter().any(|value| value == "cache"),
             serves_web: input.serves.iter().any(|value| value == "web"),
+            serves_oci: input.serves.iter().any(|value| value == "oci"),
         });
     }
     let target = current

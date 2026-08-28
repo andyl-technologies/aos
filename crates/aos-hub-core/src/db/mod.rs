@@ -468,6 +468,8 @@ pub use delivery_identity::*;
 mod egress_nonce;
 mod gc_topology;
 pub use gc_topology::*;
+mod oci;
+pub use oci::*;
 mod placement_policy;
 mod publication_admission;
 mod registry_delete;
@@ -534,6 +536,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("gateway_revision_event_history.sql"),
     include_str!("placement_policy_build_event_history.sql"),
     include_str!("placement_policy_publication_history.sql"),
+    include_str!("oci_catalog.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -1516,6 +1519,93 @@ pub struct ReleaseArtifactSnapshot {
     pub manifest_digest: String,
     /// Complete artifact set, including a valid empty set.
     pub artifacts: Vec<ReleaseSnapshotArtifact>,
+    /// Signed container root carried by this release, when present.
+    pub container_release: Option<ContainerReleaseRootSnapshot>,
+}
+
+/// One OCI root bound to an exact signed AOS release sidecar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerReleaseRootSnapshot {
+    /// Registry-local OCI repository name.
+    pub repository: String,
+    /// Logical AOS container definition name.
+    pub container_name: String,
+    /// Exact publishable OCI index digest.
+    pub index_digest: String,
+    /// Exact OCI index media type.
+    pub index_media_type: String,
+    /// Exact OCI index byte length.
+    pub index_size: u64,
+    /// SHA-256 of the exact committed `containers/v1/index.json` bytes.
+    pub catalog_digest: String,
+    /// Exact placement observations for the index, every platform manifest,
+    /// and every signed evidence referrer required by the release sidecar.
+    pub required_descriptors: Vec<VerifiedContainerReleaseDescriptor>,
+}
+
+/// Signed role of one OCI descriptor required by a container release root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ContainerReleaseDescriptorRole {
+    /// Publishable multi-platform image index.
+    Index,
+    /// Runnable manifest for one declared platform.
+    PlatformManifest,
+    /// Nix runtime-closure evidence manifest.
+    NixClosure,
+    /// SPDX software-bill-of-materials evidence manifest.
+    Sbom,
+    /// Corresponding-source evidence manifest.
+    Source,
+    /// Full-closure license evidence manifest.
+    License,
+    /// In-toto provenance evidence manifest.
+    Provenance,
+    /// Producer-signature evidence manifest.
+    Signature,
+}
+
+impl ContainerReleaseDescriptorRole {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Index => "index",
+            Self::PlatformManifest => "platform_manifest",
+            Self::NixClosure => "nix_closure",
+            Self::Sbom => "sbom",
+            Self::Source => "source",
+            Self::License => "license",
+            Self::Provenance => "provenance",
+            Self::Signature => "signature",
+        }
+    }
+}
+
+/// One signed OCI descriptor and the exact physical observation that admitted it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedContainerReleaseDescriptor {
+    /// Signed role assigned to the descriptor by the release sidecar.
+    pub role: ContainerReleaseDescriptorRole,
+    /// Canonical `sha256:<hex>` content digest.
+    pub digest: String,
+    /// Exact descriptor media type.
+    pub media_type: String,
+    /// Exact descriptor byte length.
+    pub byte_size: u64,
+    /// Backing logical surface-object identity.
+    pub surface_object_id: i64,
+    /// Logical object revision against which the observation was recorded.
+    pub object_resource_version: i64,
+    /// Physical placement carrying the observed bytes.
+    pub placement_id: i64,
+    /// Placement desired-topology revision observed during validation.
+    pub placement_resource_version: i64,
+    /// Placement controller-observation revision observed during validation.
+    pub placement_observation_version: i64,
+    /// Inventory generation that observed the exact bytes.
+    pub observed_inventory_generation: i64,
+    /// Time at which the exact object observation was recorded.
+    pub observed_at: i64,
+    /// Strong backend entity tag for the observed object version.
+    pub strong_etag: String,
 }
 
 /// One image catalog authenticated by an exact signed release tag.
@@ -3479,6 +3569,8 @@ impl Database {
             // concurrently, and the legacy one-column marker cannot prevent
             // duplicate rows. Seed the keyed marker from an existing install's
             // maximum legacy version; the upsert is atomic under the primary key.
+            // The sentinel is 1 because MySQL assigns a generated identity when
+            // zero is inserted into an AUTO_INCREMENT primary key.
             self.backend
                 .execute(
                     "CREATE TABLE IF NOT EXISTS hub_schema_version (
@@ -3489,14 +3581,14 @@ impl Database {
             self.backend
                 .execute(
                     "INSERT INTO hub_schema_version(id, version)
-                     SELECT 0, COALESCE(MAX(version), 0) FROM schema_version
+                     SELECT 1, COALESCE(MAX(version), 0) FROM schema_version
                      ON CONFLICT(id) DO NOTHING",
                     &[],
                 )
                 .await?;
         }
         let marker_query = if mysql {
-            "SELECT version FROM hub_schema_version WHERE id = 0"
+            "SELECT version FROM hub_schema_version WHERE id = 1"
         } else {
             "SELECT version FROM schema_version"
         };
@@ -3572,7 +3664,7 @@ impl Database {
                     }
                     self.backend
                         .execute(
-                            "UPDATE hub_schema_version SET version = ?1 WHERE id = 0",
+                            "UPDATE hub_schema_version SET version = ?1 WHERE id = 1",
                             &vals![migration_version],
                         )
                         .await?;
@@ -3996,6 +4088,10 @@ impl Database {
         ));
         stmts.push(Statement::new(
             "DELETE FROM registry_system_images WHERE registry_id = ?1",
+            vals![registry_id].to_vec(),
+        ));
+        stmts.push(Statement::new(
+            "DELETE FROM oci_release_roots WHERE registry_id = ?1",
             vals![registry_id].to_vec(),
         ));
         // Presence is placement-local evidence. Re-indexing one authoritative
@@ -4666,6 +4762,19 @@ impl Database {
             indexed_placement_id,
         )];
         checked_stmts.extend(stmts.into_iter().map(Statement::unchecked));
+        for release in &snapshot.release_artifact_snapshots {
+            if let Some(root) = &release.container_release {
+                let placement_id = indexed_placement_id
+                    .context("signed container release requires an exact indexed placement")?;
+                checked_stmts.extend(oci_release_root_statements(
+                    registry_id,
+                    release,
+                    root,
+                    placement_id,
+                    indexed_at,
+                )?);
+            }
+        }
         if let Some((objects, observed_at)) = image_presence {
             let placement_id = indexed_placement_id
                 .context("signed image presence requires an exact indexed placement")?;
@@ -13457,6 +13566,25 @@ impl Database {
             .backend
             .query_opt(
                 "SELECT 1 FROM registry_system_images WHERE registry_id = ?1 LIMIT 1",
+                &vals![registry_id],
+            )
+            .await?
+            .is_some())
+    }
+
+    /// Returns whether the last good index contains a signed container root.
+    ///
+    /// The indexer uses this to force exact placement revalidation on every
+    /// refresh of a container-bearing registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn has_container_release_catalog(&self, registry_id: i64) -> Result<bool> {
+        Ok(self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM oci_release_roots WHERE registry_id = ?1 LIMIT 1",
                 &vals![registry_id],
             )
             .await?
@@ -24898,6 +25026,309 @@ fn store_hash_component(path: &str) -> String {
     base.split('-').next().unwrap_or(base).to_string()
 }
 
+fn oci_release_root_statements(
+    registry_id: i64,
+    release: &ReleaseArtifactSnapshot,
+    root: &ContainerReleaseRootSnapshot,
+    placement_id: i64,
+    created_at: i64,
+) -> Result<Vec<CheckedStatement>> {
+    let repository = aos_oci_types::RepositoryName::parse(&root.repository)
+        .context("signed container release repository is malformed")?;
+    anyhow::ensure!(
+        root.container_name == repository.as_str(),
+        "signed container name does not match its OCI repository"
+    );
+    let index_digest = aos_oci_types::Sha256Digest::parse(&root.index_digest)
+        .context("signed container release index digest is malformed")?;
+    let media_type = aos_oci_types::MediaType::parse(&root.index_media_type)
+        .context("signed container release index media type is malformed")?;
+    anyhow::ensure!(
+        media_type == aos_oci_types::MediaType::OciImageIndex,
+        "signed container release root is not an OCI image index"
+    );
+    let index_size = i64::try_from(root.index_size)
+        .context("signed container release index size exceeds int64")?;
+    anyhow::ensure!(index_size > 0, "signed container release index is empty");
+    anyhow::ensure!(
+        root.catalog_digest.len() == 64
+            && root
+                .catalog_digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "signed container release catalog digest is not lowercase SHA-256"
+    );
+    validate_container_release_descriptor_snapshot(root, placement_id)?;
+
+    let mut statements = oci_release_placement_fence_statements(root, registry_id, placement_id)?;
+    statements.push(
+        Statement::new(
+            "INSERT INTO oci_release_roots
+           (registry_id, release_id, release_tag, repository_id, container_name,
+            index_digest, source_commit, verified_tag_oid, catalog_digest,
+            created_at)
+         SELECT ?1, rel.id, rel.semver, repository.id, ?4, ?5,
+                rel.commit_oid, rel.tag_oid, ?9, ?10
+         FROM releases rel
+         JOIN oci_repositories repository
+           ON repository.registry_id = rel.registry_id
+          AND repository.name = ?3 AND repository.lifecycle_state = 'active'
+         JOIN oci_repository_objects link
+           ON link.repository_id = repository.id
+          AND link.registry_id = repository.registry_id
+          AND link.digest = ?5 AND link.object_kind = 'manifest'
+         JOIN oci_manifests manifest
+           ON manifest.registry_id = link.registry_id
+          AND manifest.digest = link.digest
+          AND manifest.media_type = ?6 AND manifest.byte_size = ?7
+         JOIN oci_blobs blob
+           ON blob.registry_id = link.registry_id AND blob.digest = link.digest
+          AND blob.media_type = ?6 AND blob.byte_size = ?7
+          AND blob.lifecycle_state = 'active'
+         JOIN surface_objects object
+           ON object.id = blob.surface_object_id
+          AND object.registry_id = blob.registry_id
+          AND object.object_kind = 'immutable'
+          AND object.lifecycle_state = 'active'
+          AND object.content_hash = ?12 AND object.size = ?7
+         JOIN object_placements presence
+           ON presence.surface_object_id = object.id
+          AND presence.registry_id = object.registry_id
+          AND presence.placement_id = ?13
+          AND presence.state = 'present'
+          AND presence.observed_hash = ?12
+          AND presence.observed_size = ?7
+          AND presence.etag IS NOT NULL
+          AND presence.catalog_object_resource_version = object.resource_version
+         WHERE rel.registry_id = ?1 AND rel.semver = ?2
+           AND rel.commit_oid = ?8 AND rel.tag_oid = ?11",
+            vals![
+                registry_id,
+                release.release_tag,
+                repository.as_str(),
+                root.container_name,
+                index_digest.to_string(),
+                media_type.as_str(),
+                index_size,
+                release.source_commit,
+                root.catalog_digest,
+                created_at,
+                release.verified_tag_oid,
+                index_digest.encoded(),
+                placement_id
+            ]
+            .to_vec(),
+        )
+        .expecting(1),
+    );
+    for descriptor in &root.required_descriptors {
+        statements.push(oci_release_descriptor_placement_guard(
+            registry_id,
+            repository.as_str(),
+            descriptor,
+        )?);
+    }
+    Ok(statements)
+}
+
+fn oci_release_placement_fence_statements(
+    root: &ContainerReleaseRootSnapshot,
+    registry_id: i64,
+    placement_id: i64,
+) -> Result<Vec<CheckedStatement>> {
+    let descriptor = root
+        .required_descriptors
+        .first()
+        .context("signed container release has no required descriptor placement")?;
+    Ok(vec![
+        Statement::new(
+            "UPDATE surface_placements SET updated_at = updated_at
+             WHERE id = ?1 AND registry_id = ?2 AND resource_version = ?3",
+            vals![
+                placement_id,
+                registry_id,
+                descriptor.placement_resource_version
+            ]
+            .to_vec(),
+        )
+        .expecting(1),
+        Statement::new(
+            "UPDATE surface_placement_observations SET observed_at = observed_at
+             WHERE placement_id = ?1 AND observation_version = ?2
+               AND state = 'ready' AND completeness = 'complete'",
+            vals![placement_id, descriptor.placement_observation_version].to_vec(),
+        )
+        .expecting(1),
+    ])
+}
+
+fn validate_container_release_descriptor_snapshot(
+    root: &ContainerReleaseRootSnapshot,
+    placement_id: i64,
+) -> Result<()> {
+    let index_digest = aos_oci_types::Sha256Digest::parse(&root.index_digest)
+        .context("signed container release index digest is malformed")?;
+    let mut digests = std::collections::BTreeSet::new();
+    let mut roles = std::collections::BTreeMap::<ContainerReleaseDescriptorRole, usize>::new();
+    let mut placement_fence = None;
+
+    for descriptor in &root.required_descriptors {
+        let digest = aos_oci_types::Sha256Digest::parse(&descriptor.digest)
+            .context("signed container descriptor digest is malformed")?;
+        let media_type = aos_oci_types::MediaType::parse(&descriptor.media_type)
+            .context("signed container descriptor media type is malformed")?;
+        anyhow::ensure!(
+            descriptor.byte_size > 0,
+            "signed container descriptor is empty"
+        );
+        anyhow::ensure!(
+            descriptor.surface_object_id > 0
+                && descriptor.object_resource_version > 0
+                && descriptor.placement_resource_version > 0
+                && descriptor.placement_observation_version > 0
+                && descriptor.observed_inventory_generation > 0
+                && descriptor.observed_at > 0
+                && !descriptor.strong_etag.is_empty(),
+            "signed container descriptor placement fence is malformed"
+        );
+        anyhow::ensure!(
+            descriptor.placement_id == placement_id,
+            "signed container descriptor was observed on a different placement"
+        );
+        anyhow::ensure!(
+            digests.insert(digest),
+            "signed container descriptor snapshot repeats digest {digest}"
+        );
+        *roles.entry(descriptor.role).or_default() += 1;
+
+        let fence = (
+            descriptor.placement_id,
+            descriptor.placement_resource_version,
+            descriptor.placement_observation_version,
+        );
+        if let Some(expected) = placement_fence {
+            anyhow::ensure!(
+                fence == expected,
+                "signed container descriptor observations cross a placement revision"
+            );
+        } else {
+            placement_fence = Some(fence);
+        }
+
+        match descriptor.role {
+            ContainerReleaseDescriptorRole::Index => anyhow::ensure!(
+                digest == index_digest
+                    && media_type == aos_oci_types::MediaType::OciImageIndex
+                    && descriptor.byte_size == root.index_size,
+                "signed container index placement conflicts with its release root"
+            ),
+            ContainerReleaseDescriptorRole::PlatformManifest
+            | ContainerReleaseDescriptorRole::NixClosure
+            | ContainerReleaseDescriptorRole::Sbom
+            | ContainerReleaseDescriptorRole::Source
+            | ContainerReleaseDescriptorRole::License
+            | ContainerReleaseDescriptorRole::Provenance
+            | ContainerReleaseDescriptorRole::Signature => anyhow::ensure!(
+                media_type == aos_oci_types::MediaType::OciImageManifest,
+                "signed container required descriptor is not an OCI image manifest"
+            ),
+        }
+    }
+
+    anyhow::ensure!(
+        roles.get(&ContainerReleaseDescriptorRole::Index) == Some(&1),
+        "signed container descriptor snapshot requires exactly one index"
+    );
+    let platform_count = roles
+        .get(&ContainerReleaseDescriptorRole::PlatformManifest)
+        .copied()
+        .unwrap_or_default();
+    anyhow::ensure!(
+        (1..=aos_oci_types::limits::MAX_PLATFORMS_PER_INDEX).contains(&platform_count),
+        "signed container descriptor snapshot has an invalid platform count"
+    );
+    for role in [
+        ContainerReleaseDescriptorRole::NixClosure,
+        ContainerReleaseDescriptorRole::Sbom,
+        ContainerReleaseDescriptorRole::Source,
+        ContainerReleaseDescriptorRole::License,
+        ContainerReleaseDescriptorRole::Provenance,
+        ContainerReleaseDescriptorRole::Signature,
+    ] {
+        anyhow::ensure!(
+            roles.get(&role) == Some(&1),
+            "signed container descriptor snapshot has an incomplete evidence set"
+        );
+    }
+    Ok(())
+}
+
+fn oci_release_descriptor_placement_guard(
+    registry_id: i64,
+    repository: &str,
+    descriptor: &VerifiedContainerReleaseDescriptor,
+) -> Result<CheckedStatement> {
+    let digest = aos_oci_types::Sha256Digest::parse(&descriptor.digest)
+        .context("signed container descriptor digest is malformed")?;
+    let media_type = aos_oci_types::MediaType::parse(&descriptor.media_type)
+        .context("signed container descriptor media type is malformed")?;
+    let byte_size = i64::try_from(descriptor.byte_size)
+        .context("signed container descriptor size exceeds int64")?;
+
+    Ok(Statement::new(
+        "UPDATE object_placements SET observed_at = observed_at
+         WHERE surface_object_id = ?1 AND placement_id = ?2
+           AND registry_id = ?3 AND state = 'present'
+           AND observed_hash = ?4 AND observed_size = ?5
+           AND etag = ?6
+           AND observed_inventory_generation = ?7
+           AND observed_at = ?8
+           AND catalog_object_resource_version = ?9
+           AND EXISTS (
+             SELECT 1
+             FROM oci_repositories repository
+             JOIN oci_repository_objects link
+               ON link.repository_id = repository.id
+              AND link.registry_id = repository.registry_id
+             JOIN oci_manifests manifest
+               ON manifest.registry_id = link.registry_id
+              AND manifest.digest = link.digest
+             JOIN oci_blobs blob
+               ON blob.registry_id = link.registry_id
+              AND blob.digest = link.digest
+             JOIN surface_objects object
+               ON object.id = blob.surface_object_id
+              AND object.registry_id = blob.registry_id
+             WHERE repository.registry_id = ?3
+               AND repository.name = ?10
+               AND repository.lifecycle_state = 'active'
+               AND link.digest = ?11 AND link.object_kind = 'manifest'
+               AND manifest.media_type = ?12 AND manifest.byte_size = ?5
+               AND blob.media_type = ?12 AND blob.byte_size = ?5
+               AND blob.lifecycle_state = 'active'
+               AND object.id = ?1 AND object.object_kind = 'immutable'
+               AND object.lifecycle_state = 'active'
+               AND object.content_hash = ?4 AND object.size = ?5
+               AND object.resource_version = ?9)",
+        vals![
+            descriptor.surface_object_id,
+            descriptor.placement_id,
+            registry_id,
+            digest.encoded(),
+            byte_size,
+            descriptor.strong_etag,
+            descriptor.observed_inventory_generation,
+            descriptor.observed_at,
+            descriptor.object_resource_version,
+            repository,
+            digest.to_string(),
+            media_type.as_str()
+        ]
+        .to_vec(),
+    )
+    .expecting(1))
+}
+
 /// Computes the immutable identity of every retention-relevant index row.
 fn index_snapshot_digest(snapshot: &IndexSnapshot) -> Result<String> {
     let releases = snapshot
@@ -24924,6 +25355,28 @@ fn index_snapshot_digest(snapshot: &IndexSnapshot) -> Result<String> {
                 "verified_tag_oid": release.verified_tag_oid,
                 "manifest_digest": release.manifest_digest,
                 "artifacts": release.artifacts,
+                "container_release": release.container_release.as_ref().map(|root| serde_json::json!({
+                    "repository": root.repository,
+                    "container_name": root.container_name,
+                    "index_digest": root.index_digest,
+                    "index_media_type": root.index_media_type,
+                    "index_size": root.index_size,
+                    "catalog_digest": root.catalog_digest,
+                    "required_descriptors": root.required_descriptors.iter().map(|descriptor| serde_json::json!({
+                        "role": descriptor.role.as_str(),
+                        "digest": descriptor.digest,
+                        "media_type": descriptor.media_type,
+                        "byte_size": descriptor.byte_size,
+                        "surface_object_id": descriptor.surface_object_id,
+                        "object_resource_version": descriptor.object_resource_version,
+                        "placement_id": descriptor.placement_id,
+                        "placement_resource_version": descriptor.placement_resource_version,
+                        "placement_observation_version": descriptor.placement_observation_version,
+                        "observed_inventory_generation": descriptor.observed_inventory_generation,
+                        "observed_at": descriptor.observed_at,
+                        "strong_etag": descriptor.strong_etag,
+                    })).collect::<Vec<_>>(),
+                })),
             })
         })
         .collect::<Vec<_>>();
@@ -26125,6 +26578,7 @@ source_nar_hash = ""
                 verified_tag_oid: "a".repeat(64),
                 manifest_digest: release_manifest_digest,
                 artifacts: release_snapshot_artifacts,
+                container_release: None,
             }],
             release_images: Vec::new(),
             channels: vec![ChannelSummary {
@@ -26281,6 +26735,408 @@ source_nar_hash = ""
             db.all_store_hashes(id).await.unwrap(),
             vec!["abc".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn snapshot_materializes_only_the_exact_signed_container_root() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org_id = db
+            .create_org("container-release-root", "Container Release Root")
+            .await
+            .unwrap();
+        let registry_id = db
+            .create_managed_registry(org_id, "", "containers", "public", &[], false)
+            .await
+            .unwrap();
+        let binding_id = create_test_binding(&db, org_id, "container-root", "containers").await;
+        let placement = db
+            .create_surface_placement(&NewSurfacePlacementSpec {
+                surface: SurfaceTarget::Registry(registry_id),
+                name: "primary".to_string(),
+                binding_id,
+                prefix: "containers".to_string(),
+                kind: "complete".to_string(),
+                desired_state: "active".to_string(),
+                hash_range: None,
+                desired_read_enabled: true,
+                read_order: 0,
+                requires_conditional_writes: false,
+            })
+            .await
+            .unwrap();
+        let placement = db
+            .observe_surface_placement(placement.id, "ready", "complete", 1)
+            .await
+            .unwrap();
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let object = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: format!("oci/blobs/sha256/{}", "a".repeat(64)),
+                content_hash: Some("a".repeat(64)),
+                size: Some(512),
+                object_kind: "immutable".to_string(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        db.backend
+            .batch(&[
+                Statement::new(
+                    "INSERT INTO oci_repositories
+                       (id, registry_id, name, visibility, lifecycle_state,
+                        resource_version, created_at, updated_at)
+                     VALUES (42001, ?1, 'aos', 'inherit', 'active', 1, 1, 1)",
+                    vals![registry_id].to_vec(),
+                ),
+                Statement::new(
+                    "INSERT INTO oci_blobs
+                       (registry_id, digest, byte_size, media_type,
+                        surface_object_id, quota_bytes, lifecycle_state,
+                        created_at, updated_at)
+                     VALUES (?1, ?2, 512,
+                       'application/vnd.oci.image.index.v1+json', ?3, 512,
+                       'active', 1, 1)",
+                    vals![registry_id, digest, object.id].to_vec(),
+                ),
+                Statement::new(
+                    "INSERT INTO oci_repository_objects
+                       (repository_id, registry_id, digest, object_kind, linked_at)
+                     VALUES (42001, ?1, ?2, 'manifest', 1)",
+                    vals![registry_id, digest].to_vec(),
+                ),
+                Statement::new(
+                    "INSERT INTO oci_manifests
+                       (registry_id, digest, media_type, byte_size,
+                        schema_version, artifact_type, subject_digest,
+                        config_digest, annotations_json, descriptor_count,
+                        created_at)
+                     VALUES (?1, ?2,
+                       'application/vnd.oci.image.index.v1+json', 512, 2,
+                       NULL, NULL, NULL, '{}', 0, 1)",
+                    vals![registry_id, digest].to_vec(),
+                ),
+                Statement::new(
+                    "INSERT INTO object_placements
+                       (surface_object_id, cache_id, registry_id, placement_id,
+                        state, observed_hash, observed_size, etag,
+                        observed_inventory_generation, observed_at,
+                        catalog_object_resource_version)
+                     VALUES (?1, NULL, ?2, ?3, 'present', ?4, 512,
+                             'fixture-etag', 1, 1, ?5)",
+                    vals![
+                        object.id,
+                        registry_id,
+                        placement.id,
+                        "a".repeat(64),
+                        object.resource_version
+                    ]
+                    .to_vec(),
+                ),
+            ])
+            .await
+            .unwrap();
+
+        let placement_observation_version = placement.observation_version.unwrap();
+        let mut required_descriptors = vec![VerifiedContainerReleaseDescriptor {
+            role: ContainerReleaseDescriptorRole::Index,
+            digest: digest.clone(),
+            media_type: "application/vnd.oci.image.index.v1+json".to_string(),
+            byte_size: 512,
+            surface_object_id: object.id,
+            object_resource_version: object.resource_version,
+            placement_id: placement.id,
+            placement_resource_version: placement.resource_version,
+            placement_observation_version,
+            observed_inventory_generation: 1,
+            observed_at: 1,
+            strong_etag: "fixture-etag".to_string(),
+        }];
+        let required_roles = [
+            ContainerReleaseDescriptorRole::PlatformManifest,
+            ContainerReleaseDescriptorRole::NixClosure,
+            ContainerReleaseDescriptorRole::Sbom,
+            ContainerReleaseDescriptorRole::Source,
+            ContainerReleaseDescriptorRole::License,
+            ContainerReleaseDescriptorRole::Provenance,
+            ContainerReleaseDescriptorRole::Signature,
+        ];
+        for (ordinal, role) in required_roles.into_iter().enumerate() {
+            let encoded = format!("{:064x}", ordinal + 11);
+            let descriptor_digest = format!("sha256:{encoded}");
+            let byte_size = 513 + i64::try_from(ordinal).unwrap();
+            let descriptor_object = db
+                .create_surface_object(&SetSurfaceObject {
+                    surface: SurfaceTarget::Registry(registry_id),
+                    object_key: format!("oci/blobs/sha256/{encoded}"),
+                    content_hash: Some(encoded.clone()),
+                    size: Some(byte_size),
+                    object_kind: "immutable".to_string(),
+                    mutable_publication_id: None,
+                })
+                .await
+                .unwrap();
+            db.backend
+                .batch(&[
+                    Statement::new(
+                        "INSERT INTO oci_blobs
+                           (registry_id, digest, byte_size, media_type,
+                            surface_object_id, quota_bytes, lifecycle_state,
+                            created_at, updated_at)
+                         VALUES (?1, ?2, ?3,
+                           'application/vnd.oci.image.manifest.v1+json', ?4, ?3,
+                           'active', 1, 1)",
+                        vals![
+                            registry_id,
+                            descriptor_digest,
+                            byte_size,
+                            descriptor_object.id
+                        ]
+                        .to_vec(),
+                    ),
+                    Statement::new(
+                        "INSERT INTO oci_repository_objects
+                           (repository_id, registry_id, digest, object_kind, linked_at)
+                         VALUES (42001, ?1, ?2, 'manifest', 1)",
+                        vals![registry_id, descriptor_digest].to_vec(),
+                    ),
+                    Statement::new(
+                        "INSERT INTO oci_manifests
+                           (registry_id, digest, media_type, byte_size,
+                            schema_version, artifact_type, subject_digest,
+                            config_digest, annotations_json, descriptor_count,
+                            created_at)
+                         VALUES (?1, ?2,
+                           'application/vnd.oci.image.manifest.v1+json', ?3, 2,
+                           NULL, NULL, NULL, '{}', 0, 1)",
+                        vals![registry_id, descriptor_digest, byte_size].to_vec(),
+                    ),
+                    Statement::new(
+                        "INSERT INTO object_placements
+                           (surface_object_id, cache_id, registry_id, placement_id,
+                            state, observed_hash, observed_size, etag,
+                            observed_inventory_generation, observed_at,
+                            catalog_object_resource_version)
+                         VALUES (?1, NULL, ?2, ?3, 'present', ?4, ?5,
+                                 ?6, 1, 1, ?7)",
+                        vals![
+                            descriptor_object.id,
+                            registry_id,
+                            placement.id,
+                            encoded,
+                            byte_size,
+                            format!("fixture-etag-{ordinal}"),
+                            descriptor_object.resource_version
+                        ]
+                        .to_vec(),
+                    ),
+                ])
+                .await
+                .unwrap();
+            required_descriptors.push(VerifiedContainerReleaseDescriptor {
+                role,
+                digest: descriptor_digest,
+                media_type: "application/vnd.oci.image.manifest.v1+json".to_string(),
+                byte_size: u64::try_from(byte_size).unwrap(),
+                surface_object_id: descriptor_object.id,
+                object_resource_version: descriptor_object.resource_version,
+                placement_id: placement.id,
+                placement_resource_version: placement.resource_version,
+                placement_observation_version,
+                observed_inventory_generation: 1,
+                observed_at: 1,
+                strong_etag: format!("fixture-etag-{ordinal}"),
+            });
+        }
+
+        let artifacts = Vec::<ReleaseSnapshotArtifact>::new();
+        let snapshot = IndexSnapshot {
+            commit: "c".repeat(64),
+            name: "container-release-root".to_string(),
+            releases: vec![ReleaseRow {
+                semver: "1.0.0".to_string(),
+                tag_oid: "b".repeat(64),
+                commit_oid: "c".repeat(64),
+                signer: Some("fixture-key".to_string()),
+                tagged_at: Some(1),
+                pack_present: true,
+            }],
+            release_artifact_snapshots: vec![ReleaseArtifactSnapshot {
+                release_tag: "1.0.0".to_string(),
+                source_commit: "c".repeat(64),
+                verified_tag_oid: "b".repeat(64),
+                manifest_digest: hex::encode(sha2::Sha256::digest(
+                    serde_json::to_vec(&artifacts).unwrap(),
+                )),
+                artifacts,
+                container_release: Some(ContainerReleaseRootSnapshot {
+                    repository: "aos".to_string(),
+                    container_name: "aos".to_string(),
+                    index_digest: digest.clone(),
+                    index_media_type: "application/vnd.oci.image.index.v1+json".to_string(),
+                    index_size: 512,
+                    catalog_digest: "d".repeat(64),
+                    required_descriptors,
+                }),
+            }],
+            ..IndexSnapshot::default()
+        };
+        let mut changed_observation = snapshot.clone();
+        changed_observation.release_artifact_snapshots[0]
+            .container_release
+            .as_mut()
+            .unwrap()
+            .required_descriptors[0]
+            .observed_inventory_generation += 1;
+        assert_ne!(
+            index_snapshot_digest(&snapshot).unwrap(),
+            index_snapshot_digest(&changed_observation).unwrap(),
+            "the index digest must bind exact signed-root placement evidence"
+        );
+        db.apply_snapshot_from_placement(registry_id, &snapshot, Some(placement.id))
+            .await
+            .unwrap();
+        assert!(db.has_container_release_catalog(registry_id).await.unwrap());
+
+        let root = db
+            .backend
+            .query_opt(
+                "SELECT release_id, release_tag, repository_id, container_name,
+                        index_digest, source_commit, verified_tag_oid,
+                        catalog_digest
+                 FROM oci_release_roots WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let release_id: i64 = db
+            .backend
+            .query_opt(
+                "SELECT id FROM releases WHERE registry_id = ?1 AND semver = '1.0.0'",
+                &vals![registry_id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(root.get::<i64>(0).unwrap(), release_id);
+        assert_eq!(root.get::<String>(1).unwrap(), "1.0.0");
+        assert_eq!(root.get::<i64>(2).unwrap(), 42001);
+        assert_eq!(root.get::<String>(3).unwrap(), "aos");
+        assert_eq!(root.get::<String>(4).unwrap(), digest);
+        assert_eq!(root.get::<String>(5).unwrap(), "c".repeat(64));
+        assert_eq!(root.get::<String>(6).unwrap(), "b".repeat(64));
+        assert_eq!(root.get::<String>(7).unwrap(), "d".repeat(64));
+
+        db.backend
+            .execute(
+                "UPDATE object_placements SET state = 'missing'
+                 WHERE surface_object_id = ?1 AND placement_id = ?2",
+                &vals![object.id, placement.id],
+            )
+            .await
+            .unwrap();
+        assert!(db
+            .apply_snapshot_from_placement(registry_id, &snapshot, Some(placement.id))
+            .await
+            .is_err());
+        db.backend
+            .execute(
+                "UPDATE object_placements SET state = 'present'
+                 WHERE surface_object_id = ?1 AND placement_id = ?2",
+                &vals![object.id, placement.id],
+            )
+            .await
+            .unwrap();
+
+        let platform_object_id = snapshot.release_artifact_snapshots[0]
+            .container_release
+            .as_ref()
+            .unwrap()
+            .required_descriptors[1]
+            .surface_object_id;
+        db.backend
+            .execute(
+                "UPDATE object_placements
+                 SET observed_inventory_generation = 2
+                 WHERE surface_object_id = ?1 AND placement_id = ?2",
+                &vals![platform_object_id, placement.id],
+            )
+            .await
+            .unwrap();
+        assert!(db
+            .apply_snapshot_from_placement(registry_id, &snapshot, Some(placement.id))
+            .await
+            .is_err());
+        let retained_after_object_interleaving: i64 = db
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM oci_release_roots
+                 WHERE registry_id = ?1 AND index_digest = ?2",
+                &vals![registry_id, digest],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(retained_after_object_interleaving, 1);
+        db.backend
+            .execute(
+                "UPDATE object_placements
+                 SET observed_inventory_generation = 1
+                 WHERE surface_object_id = ?1 AND placement_id = ?2",
+                &vals![platform_object_id, placement.id],
+            )
+            .await
+            .unwrap();
+
+        let mut mismatched = snapshot.clone();
+        mismatched.release_artifact_snapshots[0]
+            .container_release
+            .as_mut()
+            .unwrap()
+            .index_size += 1;
+        assert!(db
+            .apply_snapshot_from_placement(registry_id, &mismatched, Some(placement.id))
+            .await
+            .is_err());
+        let retained: i64 = db
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM oci_release_roots
+                 WHERE registry_id = ?1 AND index_digest = ?2",
+                &vals![registry_id, digest],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(retained, 1);
+
+        db.observe_surface_placement(placement.id, "ready", "complete", 2)
+            .await
+            .unwrap();
+        assert!(db
+            .apply_snapshot_from_placement(registry_id, &snapshot, Some(placement.id))
+            .await
+            .is_err());
+        let retained_after_placement_interleaving: i64 = db
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM oci_release_roots
+                 WHERE registry_id = ?1 AND index_digest = ?2",
+                &vals![registry_id, digest],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(retained_after_placement_interleaving, 1);
     }
 
     #[tokio::test]

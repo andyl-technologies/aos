@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  cc,
   gnumake,
   pkg-config,
   bison,
@@ -98,7 +99,8 @@ in
         name = "configure";
         script = ''
           export LLVM_CONFIG=${llvm}/bin/llvm-config
-          export CLANG=${llvm}/bin/clang
+          export CLANG="${llvm}/bin/clang $(cat ${cc}/nix-support/cc-cflags)"
+          export TCLSH=${tcl}/bin/tclsh9.0
           export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
           ./configure \
             --prefix=$out \
@@ -145,7 +147,7 @@ in
         script = ''
           export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
           make install-world
-          test -f "$out/share/doc/postgresql/html/index.html"
+          test -f "$out/share/doc/html/index.html"
           test -f "$out/share/man/man1/postgres.1"
           test -n "$(find "$out/share/locale" -name '*.mo' -print -quit)"
         '';
@@ -184,7 +186,7 @@ in
             --with-ssl=openssl; do
             grep -- "$flag" /tmp/postgresql-configure
           done
-          test -f ${self}/share/doc/postgresql/html/index.html
+          test -f ${self}/share/doc/html/index.html
           test -f ${self}/share/man/man1/postgres.1
           test -n "$(find ${self}/share/locale -name '*.mo' -print -quit)"
         '';

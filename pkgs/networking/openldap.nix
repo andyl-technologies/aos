@@ -2,11 +2,14 @@
 {
   mkDerivation,
   fetchurl,
+  file,
   gnumake,
   pkg-config,
   cyrus-sasl,
   krb5,
+  libtool,
   openssl,
+  soelim,
 }: let
   version = "2.6.10";
 in
@@ -21,8 +24,8 @@ in
       hash = "sha256-wGXwSq1Cc3rr1gsv5JOXBKyEQma8CuqhYJ8MrZh75RY=";
     };
 
-    buildDeps = [gnumake pkg-config];
-    runtimeDeps = [cyrus-sasl krb5 openssl];
+    buildDeps = [file gnumake pkg-config soelim];
+    runtimeDeps = [cyrus-sasl krb5 libtool openssl];
     propagatedDeps = [];
 
     phases = [
@@ -31,6 +34,10 @@ in
         script = ''
           tar xf $src
           cd openldap-${version}
+
+          # OpenLDAP's bundled libtool probes a fixed FHS path. Keep ABI
+          # detection inside the AOS closure.
+          sed -i 's|/usr/bin/file|${file}/bin/file|g' configure
         '';
       }
       {

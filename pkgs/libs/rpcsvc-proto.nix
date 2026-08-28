@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  gcc,
   gnumake,
   gettext,
 }: let
@@ -19,6 +20,11 @@ in
     };
 
     buildDeps = [
+      # rpcgen probes /lib/cpp and then a bare `cpp` while generating the
+      # installed protocol headers.  The normal compiler wrapper intentionally
+      # exposes only compilation/link tools, so provide GCC's preprocessor as
+      # an explicit build-only dependency.
+      gcc
       gnumake
       gettext
     ];

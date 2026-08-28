@@ -398,6 +398,8 @@ pub struct InboundRouteRecord {
     pub serves_cache: bool,
     /// Web capability.
     pub serves_web: bool,
+    /// OCI Distribution capability.
+    pub serves_oci: bool,
     /// Whether endpoint, route, and access observations admit Hub serving.
     pub ready: bool,
 }
@@ -470,6 +472,9 @@ pub struct RouteSpec {
     pub serves_cache: bool,
     /// Web capability.
     pub serves_web: bool,
+    /// OCI Distribution capability.
+    #[serde(default)]
+    pub serves_oci: bool,
     /// Desired enabled posture.
     pub enabled: bool,
 }
@@ -593,11 +598,14 @@ fn validate_gateway_revision_spec(spec: &GatewayRevisionSpec) -> Result<()> {
 
 fn validate_route_spec(spec: &RouteSpec) -> Result<String> {
     let base_path = normalize_base_path(&spec.base_path)?;
-    if !(spec.serves_git || spec.serves_cache || spec.serves_web) {
+    if !(spec.serves_git || spec.serves_cache || spec.serves_web || spec.serves_oci) {
         bail!("route must serve at least one audience");
     }
     if !matches!(spec.mode.as_str(), "hub_proxy" | "hub_redirect" | "direct") {
         bail!("invalid route mode");
+    }
+    if spec.serves_oci && (!base_path.is_empty() || spec.mode != "hub_proxy") {
+        bail!("an OCI route must use the root path and hub-proxy delivery");
     }
     let policy: serde_json::Value = serde_json::from_str(&spec.access_policy_json)
         .context("route access policy is not valid JSON")?;
@@ -2385,7 +2393,10 @@ impl Database {
                     r.access_boundary_revision, r.external_provider_kind,
                     r.external_provider_resource_id, r.external_provider_revision,
                     r.placement_id, r.placement_policy_revision_id,
-                    r.serves_git, r.serves_cache, r.serves_web,
+                    r.serves_git, r.serves_cache,
+                    CASE WHEN roc.route_id IS NULL THEN r.serves_web
+                         ELSE roc.serves_web END,
+                    CASE WHEN roc.route_id IS NULL THEN 0 ELSE 1 END,
                     h.configuration_generation, h.configuration_digest,
                     CASE WHEN e.desired_generation = r.endpoint_generation
                           AND eo.observed_generation = r.endpoint_generation
@@ -2458,6 +2469,7 @@ impl Database {
              LEFT JOIN route_observations ro ON ro.route_id = r.id
              LEFT JOIN route_access_observations ao
                ON ao.route_id = r.id
+             LEFT JOIN route_oci_capabilities roc ON roc.route_id = r.id
              WHERE {host_predicate} AND e.effective_port = ?2
                AND e.scheme = ?3 AND er.ingress_kind = ?4
                AND r.enabled = 1
@@ -2486,8 +2498,8 @@ impl Database {
                 };
                 Ok(InboundRouteRecord {
                     id: row.get(0)?,
-                    configuration_generation: row.get(17)?,
-                    configuration_digest: row.get(18)?,
+                    configuration_generation: row.get(18)?,
+                    configuration_digest: row.get(19)?,
                     base_path: row.get(1)?,
                     surface,
                     target_slug: row.get(4)?,
@@ -2503,7 +2515,8 @@ impl Database {
                     serves_git: row.get(14)?,
                     serves_cache: row.get(15)?,
                     serves_web: row.get(16)?,
-                    ready: row.get(19)?,
+                    serves_oci: row.get(17)?,
+                    ready: row.get(20)?,
                 })
             })
             .collect()
@@ -2661,11 +2674,12 @@ impl Database {
             bail!("route reservation candidate versions must be unique");
         }
         let base_path = validate_route_spec(spec)?;
-        if matches!(surface, SurfaceTarget::BinaryCache(_)) && spec.serves_git {
-            bail!("a binary-cache route cannot serve Git");
+        if matches!(surface, SurfaceTarget::BinaryCache(_)) && (spec.serves_git || spec.serves_oci)
+        {
+            bail!("a binary-cache route cannot serve Git or OCI");
         }
-        if !(spec.serves_git || spec.serves_cache || spec.serves_web) {
-            bail!("route must serve at least one audience");
+        if spec.serves_oci && !matches!(surface, SurfaceTarget::Registry(_)) {
+            bail!("an OCI route must target a registry");
         }
         if !matches!(spec.mode.as_str(), "hub_proxy" | "hub_redirect" | "direct") {
             bail!("invalid route mode");
@@ -2816,8 +2830,14 @@ impl Database {
             reservation_params,
         );
         self.backend
-            .batch(&[
-                reservation_statement,
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE registries SET updated_at = updated_at
+                     WHERE id = ?1 AND ?2 = 1 AND ?3 = 1",
+                    vals![registry_id, spec.serves_oci, spec.enabled],
+                )
+                .unchecked(),
+                reservation_statement.unchecked(),
                 Statement::new(
                     "INSERT INTO routes (id, url_reservation_id, resource_version,
                  endpoint_id, endpoint_generation, endpoint_ingress_kind, consumer_scope_key,
@@ -2833,13 +2853,18 @@ impl Database {
                  SELECT ?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                    ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
                    ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?32
-                 WHERE ?33 IS NULL OR EXISTS (
+                 WHERE (?33 IS NULL OR EXISTS (
                    SELECT 1 FROM routes predecessor
                    WHERE predecessor.id = ?33 AND predecessor.resource_version = ?34
                      AND predecessor.enabled = 1
                      AND (predecessor.registry_id = ?13 OR predecessor.cache_id = ?14)
                      AND NOT EXISTS (SELECT 1 FROM route_replacements replacement
-                       WHERE replacement.predecessor_route_id = predecessor.id))",
+                       WHERE replacement.predecessor_route_id = predecessor.id)))
+                   AND (?35 = 0 OR ?31 = 0 OR NOT EXISTS (
+                     SELECT 1 FROM routes active
+                     JOIN route_oci_capabilities capability
+                       ON capability.route_id = active.id
+                     WHERE active.registry_id = ?13 AND active.enabled = 1))",
                     vals![
                         id,
                         reservation_id,
@@ -2870,13 +2895,22 @@ impl Database {
                         policy_revision_state,
                         spec.serves_git,
                         spec.serves_cache,
-                        spec.serves_web,
+                        spec.serves_web || spec.serves_oci,
                         spec.enabled,
                         now,
                         predecessor.map(|value| value.0),
-                        predecessor.map(|value| value.1)
+                        predecessor.map(|value| value.1),
+                        spec.serves_oci
                     ],
-                ),
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO route_oci_capabilities (route_id, serves_web, created_at)
+                     SELECT ?1, ?2, ?3 WHERE ?4 = 1
+                       AND EXISTS (SELECT 1 FROM routes WHERE id = ?1)",
+                    vals![id, spec.serves_web, now, spec.serves_oci],
+                )
+                .unchecked(),
                 Statement::new(
                     "INSERT INTO route_replacements
                      (successor_route_id, predecessor_route_id,
@@ -2889,7 +2923,8 @@ impl Database {
                         predecessor.map(|value| value.1),
                         now
                     ],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "INSERT INTO route_configurations (route_id, registry_id,
                  cache_id, configuration_generation, configuration_digest,
@@ -2906,7 +2941,8 @@ impl Database {
                         actor,
                         now
                     ],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "INSERT INTO route_heads
                  (route_id, registry_id, cache_id, configuration_generation,
@@ -2917,20 +2953,23 @@ impl Database {
                    WHERE route_id = ?1 AND configuration_generation = 1
                      AND configuration_digest = ?2)",
                     vals![id, configuration_digest],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "UPDATE routes SET enabled = ?2, updated_at = ?3
                      WHERE id = ?1 AND EXISTS (SELECT 1 FROM route_heads
                        WHERE route_id = ?1 AND configuration_generation = 1
                          AND configuration_digest = ?4)",
                     vals![id, spec.enabled, now, configuration_digest],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "INSERT INTO route_observations (route_id, registry_id,
                  cache_id, configuration_generation, configuration_digest, state, observed_at)
                  VALUES (?1, ?2, ?3, 1, ?4, 'unknown', ?5)",
                     vals![id, registry_id, cache_id, configuration_digest, now],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "INSERT INTO endpoint_scope_grant_pins
                      (pin_id, endpoint_id, endpoint_generation, consumer_scope_key,
@@ -2950,7 +2989,8 @@ impl Database {
                         configuration_digest,
                         spec.enabled
                     ],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "INSERT INTO gateway_scope_grant_pins
                      (pin_id, gateway_id, generation, consumer_scope_key,
@@ -2970,7 +3010,8 @@ impl Database {
                         configuration_digest,
                         spec.enabled
                     ],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "INSERT INTO network_policy_serving_pins
                      (pin_id, boundary_id, revision, consumer_scope_key,
@@ -3000,7 +3041,8 @@ impl Database {
                         spec.endpoint_generation,
                         spec.enabled
                     ],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "INSERT INTO network_policy_serving_pins
                      (pin_id, boundary_id, revision, consumer_scope_key,
@@ -3027,7 +3069,8 @@ impl Database {
                         now,
                         spec.enabled
                     ],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "INSERT INTO topology_operations
                      (operation_id, operation_kind, authorization_scope_key,
@@ -3052,7 +3095,8 @@ impl Database {
                         id,
                         configuration_digest
                     ],
-                ),
+                )
+                .unchecked(),
                 Database::topology_event_insert_statement(&crate::db::NewTopologyEvent {
                     event_id: &topology_event_id,
                     event_name: "topology.route.created",
@@ -3065,7 +3109,8 @@ impl Database {
                     actor_label: actor,
                     payload_json: &topology_event_payload,
                     occurred_at: now,
-                }),
+                })
+                .unchecked(),
             ])
             .await?;
         self.route(id).await?.context("created route disappeared")
@@ -3214,8 +3259,13 @@ impl Database {
         if existing.base_path != base_path {
             bail!("route base-path identity change requires ReplaceRoute");
         }
-        if matches!(existing.surface, SurfaceTarget::BinaryCache(_)) && spec.serves_git {
-            bail!("a binary-cache route cannot serve Git");
+        if matches!(existing.surface, SurfaceTarget::BinaryCache(_))
+            && (spec.serves_git || spec.serves_oci)
+        {
+            bail!("a binary-cache route cannot serve Git or OCI");
+        }
+        if spec.serves_oci && !matches!(existing.surface, SurfaceTarget::Registry(_)) {
+            bail!("an OCI route must target a registry");
         }
         let canonical_audiences = self
             .backend
@@ -3313,6 +3363,7 @@ impl Database {
         })
         .to_string();
         let now = unix_now();
+        let (registry_id, _) = existing.surface.ids();
         let endpoint = self
             .endpoint(&spec.endpoint_id)
             .await?
@@ -3327,34 +3378,69 @@ impl Database {
             "enabled": spec.enabled,
         }))?;
         self.backend
-            .batch(&[
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE registries SET updated_at = updated_at
+                     WHERE id = ?1 AND ?2 = 1 AND ?3 = 1",
+                    vals![registry_id, spec.serves_oci, spec.enabled],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM route_oci_capabilities WHERE route_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "INSERT INTO route_oci_capabilities (route_id, serves_web, created_at)
+                     SELECT ?1, ?2, ?3 WHERE ?4 = 1
+                       AND (?5 = 0 OR NOT EXISTS (
+                         SELECT 1 FROM routes active
+                         JOIN route_oci_capabilities capability
+                           ON capability.route_id = active.id
+                         WHERE active.registry_id = ?6 AND active.enabled = 1))",
+                    vals![
+                        id,
+                        spec.serves_web,
+                        now,
+                        spec.serves_oci,
+                        spec.enabled,
+                        registry_id
+                    ],
+                )
+                .unchecked(),
                 Statement::new(
                     "DELETE FROM network_policy_serving_pins
                      WHERE target_kind = 'route' AND target_stable_id = ?1",
                     vals![id],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "DELETE FROM endpoint_scope_grant_pins
                      WHERE target_kind = 'route' AND target_stable_id = ?1",
                     vals![id],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "DELETE FROM gateway_scope_grant_pins
                      WHERE target_kind = 'route' AND target_stable_id = ?1",
                     vals![id],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "DELETE FROM direct_route_evidence WHERE route_id = ?1",
                     vals![id],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "DELETE FROM route_access_observations WHERE route_id = ?1",
                     vals![id],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "DELETE FROM route_observations WHERE route_id = ?1",
                     vals![id],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "INSERT INTO route_configurations (route_id, registry_id,
                  cache_id, configuration_generation, configuration_digest, canonical_rendered_url,
@@ -3371,7 +3457,8 @@ impl Database {
                         now,
                         expected_version
                     ],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "UPDATE routes SET endpoint_id = ?4, endpoint_generation = ?5,
                  endpoint_ingress_kind = ?6, consumer_scope_key = ?7,
@@ -3386,7 +3473,10 @@ impl Database {
                  placement_policy_revision_state = ?25, serves_git = ?26,
                  serves_cache = ?27, serves_web = ?28, enabled = ?29,
                  resource_version = resource_version + 1, updated_at = ?30
-                 WHERE id = ?1 AND resource_version = ?31 AND EXISTS (
+                 WHERE id = ?1 AND resource_version = ?31
+                   AND (?32 = 0 OR EXISTS (
+                     SELECT 1 FROM route_oci_capabilities WHERE route_id = ?1))
+                   AND EXISTS (
                    SELECT 1 FROM route_configurations WHERE route_id = ?1
                      AND configuration_generation = ?2 AND configuration_digest = ?3)",
                     vals![
@@ -3417,12 +3507,14 @@ impl Database {
                         policy_revision_state,
                         spec.serves_git,
                         spec.serves_cache,
-                        spec.serves_web,
+                        spec.serves_web || spec.serves_oci,
                         spec.enabled,
                         now,
-                        expected_version
+                        expected_version,
+                        spec.serves_oci
                     ],
-                ),
+                )
+                .expecting(1),
                 Statement::new(
                     "UPDATE route_heads SET configuration_generation = ?2,
                      configuration_digest = ?3, access_policy_digest = ?4
@@ -3431,7 +3523,8 @@ impl Database {
                        WHERE route_id = ?1 AND configuration_generation = ?2
                          AND configuration_digest = ?3)",
                     vals![id, next, digest, spec.access_policy_digest],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "INSERT INTO route_observations (route_id, registry_id,
                  cache_id, configuration_generation, configuration_digest, state, observed_at)
@@ -3440,7 +3533,8 @@ impl Database {
                         let (registry_id, cache_id) = existing.surface.ids();
                         vals![id, registry_id, cache_id, next, digest, now]
                     },
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "INSERT INTO endpoint_scope_grant_pins
                      (pin_id, endpoint_id, endpoint_generation, consumer_scope_key,
@@ -3458,7 +3552,8 @@ impl Database {
                       AND g.consumer_scope_key = r.consumer_scope_key
                       AND g.state = 'active' WHERE r.id = ?2 AND r.enabled = 1",
                     vals![format!("endpoint-pin:{}", Uuid::new_v4().simple()), id],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "INSERT INTO gateway_scope_grant_pins
                      (pin_id, gateway_id, generation, consumer_scope_key,
@@ -3477,7 +3572,8 @@ impl Database {
                       AND g.state = 'active' WHERE r.id = ?2 AND r.enabled = 1
                        AND r.gateway_id IS NOT NULL",
                     vals![format!("gateway-pin:{}", Uuid::new_v4().simple()), id],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "INSERT INTO network_policy_serving_pins
                      (pin_id, boundary_id, revision, consumer_scope_key,
@@ -3508,7 +3604,8 @@ impl Database {
                         actor,
                         now
                     ],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "INSERT INTO network_policy_serving_pins
                      (pin_id, boundary_id, revision, consumer_scope_key,
@@ -3537,7 +3634,8 @@ impl Database {
                         actor,
                         now
                     ],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "UPDATE topology_operations
                      SET state = 'cancelled',
@@ -3553,7 +3651,8 @@ impl Database {
                            AND h.configuration_generation = ?3
                            AND h.configuration_digest = ?4)",
                     vals![id, now, next, digest],
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     "INSERT INTO topology_operations
                      (operation_id, operation_kind, authorization_scope_key,
@@ -3572,7 +3671,8 @@ impl Database {
                        AND h.configuration_generation = ?5
                        AND h.configuration_digest = ?6",
                     vals![probe_operation_id, probe_detail, now, id, next, digest],
-                ),
+                )
+                .unchecked(),
                 Database::topology_event_insert_statement(&crate::db::NewTopologyEvent {
                     event_id: &topology_event_id,
                     event_name: "topology.route.revised",
@@ -3585,7 +3685,8 @@ impl Database {
                     actor_label: actor,
                     payload_json: &topology_event_payload,
                     occurred_at: now,
-                }),
+                })
+                .unchecked(),
             ])
             .await?;
         self.route(id).await?.context("updated route disappeared")
@@ -3685,6 +3786,11 @@ impl Database {
                 )
                 .unchecked(),
                 Statement::new(
+                    "DELETE FROM route_oci_capabilities WHERE route_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
                     "DELETE FROM routes WHERE id = ?1 AND resource_version = ?2
                      AND enabled = 0
                      AND NOT EXISTS (SELECT 1 FROM topology_operations o
@@ -3733,9 +3839,12 @@ impl Database {
             bail!("route advertisement audience must be git, nix_cache, or web");
         }
         let capability = match audience {
-            "git" => "serves_git",
-            "nix_cache" => "serves_cache",
-            _ => "serves_web",
+            "git" => "r.serves_git",
+            "nix_cache" => "r.serves_cache",
+            _ => {
+                "COALESCE((SELECT serves_web FROM route_oci_capabilities
+                              WHERE route_id = r.id), r.serves_web)"
+            }
         };
         let (registry_id, cache_id) = surface.ids();
         let surface_predicate = match surface {
@@ -3757,7 +3866,7 @@ impl Database {
                            AND resource_version = ?6 AND EXISTS (
                              SELECT 1 FROM routes r WHERE r.id = ?4
                                AND {route_surface_predicate}
-                               AND r.enabled = 1 AND r.{capability} = 1)"
+                               AND r.enabled = 1 AND {capability} = 1)"
                     ),
                     &vals![registry_id, cache_id, audience, route_id, now, expected],
                 )
@@ -3770,7 +3879,7 @@ impl Database {
                          route_id, resource_version, created_at, updated_at)
                          SELECT ?1, ?2, ?3, r.id, 1, ?5, ?5 FROM routes r
                          WHERE r.id = ?4 AND {route_surface_predicate}
-                           AND r.enabled = 1 AND r.{capability} = 1"
+                           AND r.enabled = 1 AND {capability} = 1"
                     ),
                     &vals![registry_id, cache_id, audience, route_id, now],
                 )
@@ -4621,6 +4730,7 @@ mod tests {
             serves_git: true,
             serves_cache: true,
             serves_web: false,
+            serves_oci: false,
             enabled: true,
         };
         (
@@ -4878,6 +4988,7 @@ mod tests {
             serves_git: false,
             serves_cache: true,
             serves_web: false,
+            serves_oci: false,
             enabled: true,
         };
         assert_eq!(validate_route_spec(&spec).unwrap(), "/cache");
@@ -4888,6 +4999,250 @@ mod tests {
         spec.mode = "direct".to_string();
         spec.endpoint_ingress_kind = "external".to_string();
         assert!(validate_route_spec(&spec).is_err());
+    }
+
+    #[test]
+    fn oci_routes_require_root_hub_proxy_delivery() {
+        let access_policy_json = "{}".to_string();
+        let mut spec = RouteSpec {
+            consumer_scope_key: "org:example".to_string(),
+            endpoint_id: "endpoint:edge".to_string(),
+            endpoint_generation: 1,
+            endpoint_ingress_kind: "hub".to_string(),
+            base_path: "/containers".to_string(),
+            mode: "hub_proxy".to_string(),
+            access_policy_kind: "public".to_string(),
+            access_policy_digest: sha256_hex(&access_policy_json),
+            access_policy_json,
+            access_boundary_id: None,
+            access_boundary_revision: None,
+            external_provider_kind: None,
+            external_provider_resource_id: None,
+            external_provider_revision: None,
+            gateway_id: None,
+            gateway_generation: None,
+            target_binding_id: None,
+            gateway_client_base_path: None,
+            target_placement_prefix: None,
+            placement_id: Some(1),
+            placement_policy_revision_id: None,
+            serves_git: false,
+            serves_cache: false,
+            serves_web: false,
+            serves_oci: true,
+            enabled: true,
+        };
+
+        assert!(validate_route_spec(&spec).is_err());
+        spec.base_path.clear();
+        spec.mode = "hub_redirect".to_string();
+        assert!(validate_route_spec(&spec).is_err());
+        spec.mode = "hub_proxy".to_string();
+        assert_eq!(validate_route_spec(&spec).unwrap(), "");
+    }
+
+    #[tokio::test]
+    async fn oci_route_side_table_masks_web_and_serializes_enabled_registry_route() {
+        let (db, registry_id, mut primary_spec, _, primary_reservation_digest) =
+            route_fixture().await;
+        primary_spec.base_path.clear();
+        primary_spec.serves_git = false;
+        primary_spec.serves_cache = false;
+        primary_spec.serves_web = false;
+        primary_spec.serves_oci = true;
+        let primary_url = "https://route-probes.example.test";
+        let primary = db
+            .create_route(
+                "route:oci-primary",
+                SurfaceTarget::Registry(registry_id),
+                &primary_spec,
+                primary_url,
+                1,
+                &primary_reservation_digest,
+                &[(1, primary_reservation_digest.to_vec())],
+                None,
+                "test",
+            )
+            .await
+            .unwrap();
+
+        let physical = db
+            .backend
+            .query_opt(
+                "SELECT route.serves_web, capability.serves_web
+                   FROM routes route
+                   JOIN route_oci_capabilities capability ON capability.route_id = route.id
+                  WHERE route.id = ?1",
+                &vals![primary.id],
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(physical.get::<i64>(0).unwrap(), 1);
+        assert_eq!(physical.get::<i64>(1).unwrap(), 0);
+
+        let snapshot = db.route_snapshot(&primary.id).await.unwrap().unwrap();
+        assert!(!snapshot.spec.serves_web);
+        assert!(snapshot.spec.serves_oci);
+        let inbound = db
+            .inbound_routes(
+                &InboundEndpointHost::Domain("route-probes.example.test".to_string()),
+                443,
+                "https",
+                "hub",
+            )
+            .await
+            .unwrap();
+        let inbound = inbound.iter().find(|route| route.id == primary.id).unwrap();
+        assert!(!inbound.serves_web);
+        assert!(inbound.serves_oci);
+        assert!(db
+            .set_route_advertisement(
+                SurfaceTarget::Registry(registry_id),
+                "web",
+                &primary.id,
+                None,
+            )
+            .await
+            .is_err());
+
+        let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
+        let endpoint_spec = crate::db::EndpointRevisionSpec {
+            boundary_revision: 1,
+            ingress_kind: "hub".to_string(),
+            listener_configuration: "listener:oci-secondary".to_string(),
+            tls_configuration: "{\"provider\":\"external\",\"certificate_ref\":\"secret:test\",\"require_client_certificate\":false}".to_string(),
+            probe_configuration: "{\"provider\":\"native_file\",\"signerSecretRef\":\"test-probe-key\",\"publicKey\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}".to_string(),
+        };
+        db.create_endpoint(
+            "endpoint:oci-secondary",
+            &registry.owner_scope_key,
+            registry.org_id,
+            "https",
+            &crate::db::EndpointHostInput::Ipv4([192, 0, 2, 9]),
+            443,
+            "instance:public",
+            &endpoint_spec,
+            None,
+            "test",
+            "request:endpoint-oci-secondary",
+        )
+        .await
+        .unwrap();
+        let secondary_reservation_digest = [8_u8; 32];
+        let mut secondary_spec = primary_spec.clone();
+        secondary_spec.endpoint_id = "endpoint:oci-secondary".to_string();
+        let secondary_url = "https://192.0.2.9";
+        assert!(db
+            .create_route(
+                "route:oci-secondary",
+                SurfaceTarget::Registry(registry_id),
+                &secondary_spec,
+                secondary_url,
+                1,
+                &secondary_reservation_digest,
+                &[(1, secondary_reservation_digest.to_vec())],
+                None,
+                "test",
+            )
+            .await
+            .is_err());
+
+        secondary_spec.enabled = false;
+        let secondary = db
+            .create_route(
+                "route:oci-secondary",
+                SurfaceTarget::Registry(registry_id),
+                &secondary_spec,
+                secondary_url,
+                1,
+                &secondary_reservation_digest,
+                &[(1, secondary_reservation_digest.to_vec())],
+                None,
+                "test",
+            )
+            .await
+            .unwrap();
+        secondary_spec.enabled = true;
+        assert!(db
+            .update_route(
+                &secondary.id,
+                &secondary_spec,
+                secondary_url,
+                secondary.resource_version,
+                "test",
+            )
+            .await
+            .is_err());
+        let unchanged = db.route(&secondary.id).await.unwrap().unwrap();
+        assert_eq!(unchanged.resource_version, secondary.resource_version);
+        assert!(!unchanged.enabled);
+        assert_eq!(
+            db.backend
+                .query_opt(
+                    "SELECT serves_web FROM route_oci_capabilities WHERE route_id = ?1",
+                    &vals![secondary.id],
+                )
+                .await
+                .unwrap()
+                .unwrap()
+                .get::<i64>(0)
+                .unwrap(),
+            0
+        );
+
+        primary_spec.enabled = false;
+        db.update_route(
+            &primary.id,
+            &primary_spec,
+            primary_url,
+            primary.resource_version,
+            "test",
+        )
+        .await
+        .unwrap();
+        let enabled_secondary = db
+            .update_route(
+                &secondary.id,
+                &secondary_spec,
+                secondary_url,
+                secondary.resource_version,
+                "test",
+            )
+            .await
+            .unwrap();
+        assert!(enabled_secondary.enabled);
+
+        secondary_spec.enabled = false;
+        let disabled_secondary = db
+            .update_route(
+                &secondary.id,
+                &secondary_spec,
+                secondary_url,
+                enabled_secondary.resource_version,
+                "test",
+            )
+            .await
+            .unwrap();
+        assert!(db
+            .delete_route(
+                &disabled_secondary.id,
+                disabled_secondary.resource_version,
+                "user",
+                Some(1),
+                "test",
+            )
+            .await
+            .unwrap());
+        assert!(db
+            .backend
+            .query_opt(
+                "SELECT route_id FROM route_oci_capabilities WHERE route_id = ?1",
+                &vals![secondary.id],
+            )
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

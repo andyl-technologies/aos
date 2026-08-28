@@ -13,7 +13,9 @@
 //! Developer runs may omit either live server. The hermetic package gate builds
 //! with `required-live-dialects`, which makes a missing feature or URL a hard
 //! failure. The pg/mysql cases drop and recreate a clean schema before
-//! connecting, so repeated runs against long-lived servers are idempotent.
+//! connecting, so repeated runs against long-lived servers are idempotent. The
+//! mysql case also creates a physical v19 schema and reopens it through the
+//! production migration path to cover the v19-to-v20 catalog upgrade.
 //!
 //! Run the live cases with, e.g.:
 //!
@@ -925,7 +927,17 @@ async fn mysql_contract() {
         .await
         .expect("connect + migrate mysql");
     exercise(&db).await;
-    println!("dialect contract: mysql OK ({url})");
+    drop(db);
+
+    reset_mysql_schema(&url).await;
+    seed_legacy_mysql_v19(&url).await;
+    let upgraded = Database::connect(&url)
+        .await
+        .expect("upgrade a physical mysql v19 schema to v20");
+    assert_mysql_v19_catalog_upgrade(&url).await;
+    drop(upgraded);
+
+    println!("dialect contract: mysql fresh + v19 upgrade OK ({url})");
 }
 
 /// Drops every table in the target postgres database, so the subsequent
@@ -968,4 +980,129 @@ async fn reset_mysql_schema(url: &str) {
             .await
             .expect("selecting mysql database");
     }
+}
+
+/// Creates a pre-catalog schema with the shipped v19 release-key representation.
+///
+/// This intentionally stops at v19 and stamps the legacy marker instead of
+/// using [`Database::connect`], which would immediately apply v20 and hide an
+/// incompatible foreign key in the catalog migration. Unrelated v19 tables use
+/// the current fresh-schema translation, while the v1 source is rewritten to
+/// the exact historical release-key declarations before it is translated.
+#[cfg(feature = "mysql")]
+async fn seed_legacy_mysql_v19(url: &str) {
+    use aos_hub_core::backend::split_statements;
+    use aos_hub_core::db::MIGRATIONS;
+    use aos_hub_core::dialect::Dialect;
+    use sqlx::{Connection as _, MySqlConnection, Row as _};
+
+    const LEGACY_VERSION: usize = 19;
+    assert_eq!(
+        MIGRATIONS.len(),
+        LEGACY_VERSION + 1,
+        "the OCI catalog must remain migration v20"
+    );
+
+    let mut connection = MySqlConnection::connect(url)
+        .await
+        .expect("connecting to mysql to seed v19");
+    sqlx::query("CREATE TABLE schema_version (version BIGINT NOT NULL)")
+        .execute(&mut connection)
+        .await
+        .expect("creating the legacy version marker");
+
+    for (offset, migration) in MIGRATIONS[..LEGACY_VERSION].iter().enumerate() {
+        let migration = if offset == 0 {
+            migration
+                .replace("semver KEYTEXT255 NOT NULL", "semver TEXT NOT NULL")
+                .replace("release KEYTEXT255 NOT NULL", "release TEXT NOT NULL")
+        } else {
+            (*migration).to_string()
+        };
+        for statement in split_statements(&migration) {
+            let translated = Dialect::Mysql
+                .translate(&statement)
+                .expect("translating a legacy mysql migration");
+            sqlx::query(&translated.sql)
+                .execute(&mut connection)
+                .await
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "applying legacy mysql migration v{} failed: {error}; SQL: {}",
+                        offset + 1,
+                        translated.sql
+                    )
+                });
+        }
+    }
+    sqlx::query("INSERT INTO schema_version(version) VALUES (?)")
+        .bind(LEGACY_VERSION as i64)
+        .execute(&mut connection)
+        .await
+        .expect("stamping mysql schema v19");
+
+    let releases_semver = sqlx::query(
+        "SELECT DATA_TYPE, CAST(CHARACTER_MAXIMUM_LENGTH AS SIGNED)
+         FROM information_schema.columns
+         WHERE table_schema = DATABASE()
+           AND table_name = 'releases' AND column_name = 'semver'",
+    )
+    .fetch_one(&mut connection)
+    .await
+    .expect("reading the physical v19 release key");
+    assert_eq!(
+        releases_semver
+            .try_get::<String, _>(0)
+            .expect("releases.semver data type"),
+        "varchar"
+    );
+    assert_eq!(
+        releases_semver
+            .try_get::<i64, _>(1)
+            .expect("releases.semver capacity"),
+        255
+    );
+}
+
+/// Verifies that production migration v20 links roots without changing v19.
+#[cfg(feature = "mysql")]
+async fn assert_mysql_v19_catalog_upgrade(url: &str) {
+    use sqlx::{Connection as _, MySqlConnection};
+
+    let mut connection = MySqlConnection::connect(url)
+        .await
+        .expect("connecting to mysql after v20 upgrade");
+    let version: i64 = sqlx::query_scalar("SELECT version FROM hub_schema_version WHERE id = 1")
+        .fetch_one(&mut connection)
+        .await
+        .expect("reading the upgraded mysql schema version");
+    assert_eq!(version, 20);
+
+    let numeric_release_fk: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+         FROM information_schema.key_column_usage
+         WHERE table_schema = DATABASE()
+           AND table_name = 'oci_release_roots'
+           AND column_name = 'release_id'
+           AND referenced_table_name = 'releases'
+           AND referenced_column_name = 'id'",
+    )
+    .fetch_one(&mut connection)
+    .await
+    .expect("reading the v20 release-root foreign key");
+    assert_eq!(numeric_release_fk, 1);
+
+    let incompatible_tag_fk: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+         FROM information_schema.key_column_usage
+         WHERE table_schema = DATABASE()
+           AND table_name = 'oci_release_roots'
+           AND column_name = 'release_tag'
+           AND referenced_table_name = 'releases'
+           AND referenced_column_name = 'semver'",
+    )
+    .fetch_one(&mut connection)
+    .await
+    .expect("checking for an incompatible v20 release-tag foreign key");
+    assert_eq!(incompatible_tag_fk, 0);
 }

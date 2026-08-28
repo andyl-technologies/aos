@@ -931,6 +931,9 @@ pub async fn health(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Render
         if snapshot.spec.serves_web {
             capabilities.push("web".to_string());
         }
+        if snapshot.spec.serves_oci {
+            capabilities.push("oci".to_string());
+        }
         routes.push(pages::RouteHealthRow {
             id: route.id,
             endpoint_id: route.endpoint_id,
