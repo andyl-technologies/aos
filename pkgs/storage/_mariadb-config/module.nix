@@ -139,6 +139,7 @@ in {
         if cfg.enable
         then "1"
         else "0";
+      MARIADB_CONFIG_GENERATION = builtins.hashString "sha256" mariadbConfig;
     };
 
     mariadb.credentials = mkMerge [
