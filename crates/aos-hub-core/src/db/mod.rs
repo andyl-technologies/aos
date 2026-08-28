@@ -543,6 +543,10 @@ pub const MIGRATIONS: &[&str] = &[
 /// to have the same length.
 pub const SCHEMA_IDENTITY: &str = "aos-hub/topology-hard-cutover/2";
 
+/// Immediately preceding identity accepted only while applying a pending
+/// repository-owned migration to [`SCHEMA_IDENTITY`].
+const LEGACY_SCHEMA_IDENTITY: &str = "aos-hub/topology-hard-cutover/1";
+
 /// Returns every migration's individual SQL statements, in order.
 ///
 /// Splits the [`MIGRATIONS`] scripts at statement boundaries via
@@ -3475,7 +3479,8 @@ impl Database {
             .unwrap_or(0);
         let target = MIGRATIONS.len() as i64;
         if current != 0 {
-            self.require_schema_identity().await?;
+            self.require_schema_identity_for_upgrade((current as usize) < MIGRATIONS.len())
+                .await?;
         }
         if current > target {
             bail!("hub database schema {current} is newer than this build supports ({target})");
@@ -3587,6 +3592,12 @@ impl Database {
     /// Refuses a database that was not produced by the topology hard-cutover
     /// schema or its offline transformer.
     async fn require_schema_identity(&self) -> Result<()> {
+        self.require_schema_identity_for_upgrade(false).await
+    }
+
+    /// Accepts the immediately preceding schema identity only when a pending
+    /// migration will atomically replace it with the current identity.
+    async fn require_schema_identity_for_upgrade(&self, allow_legacy: bool) -> Result<()> {
         let row = self
             .backend
             .query_opt("SELECT identity FROM hub_schema_identity", &[])
@@ -3597,7 +3608,7 @@ impl Database {
         let identity: String = row
             .context("topology schema identity row is missing")?
             .get(0)?;
-        if identity != SCHEMA_IDENTITY {
+        if identity != SCHEMA_IDENTITY && !(allow_legacy && identity == LEGACY_SCHEMA_IDENTITY) {
             bail!("unsupported Hub schema identity '{identity}'; expected '{SCHEMA_IDENTITY}'");
         }
         Ok(())
@@ -25927,6 +25938,31 @@ source_nar_hash = ""
             )
             .unwrap();
         assert_eq!(public_boundary, (1, "active".to_string()));
+    }
+
+    #[test]
+    fn explicit_topology_migration_adopts_the_previous_schema_identity() {
+        let connection = Connection::open_in_memory().unwrap();
+        for migration in &MIGRATIONS[..MIGRATIONS.len() - 1] {
+            connection.execute_batch(migration).unwrap();
+        }
+        connection
+            .execute(
+                "UPDATE hub_schema_identity SET identity = ?1",
+                [LEGACY_SCHEMA_IDENTITY],
+            )
+            .unwrap();
+
+        connection
+            .execute_batch(MIGRATIONS.last().unwrap())
+            .unwrap();
+
+        let identity: String = connection
+            .query_row("SELECT identity FROM hub_schema_identity", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(identity, SCHEMA_IDENTITY);
     }
 
     #[test]
