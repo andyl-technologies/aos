@@ -1135,6 +1135,18 @@ in {
           nginx-config
           k3s-config
           integration.envoy-config-module-contract
+          integration.cloudcore-config
+          integration.conntrack-tools-config
+          integration.containerd-config-module-contract
+          integration.edgecore-config
+          integration.etcd-config-module-contract
+          integration.garage-config-module-contract
+          integration.krb5-config
+          integration.mariadb-config-module-contract
+          integration.openldap-config
+          integration.postgresql-expose-contract
+          integration.postgresql-module-contract
+          integration.rsync-config
           config-source-gc
           config-provenance
           system-structure

@@ -173,8 +173,56 @@ in
     checks = {
       testing,
       self,
+      pkgs,
       ...
-    }: {
+    }: let
+      evaluate = openldapConfig:
+        lib.evalModules {
+          inherit lib;
+          modules = [
+            ({lib, ...}: {
+              options = {
+                assertions = lib.mkOption {
+                  type = lib.types.listOf lib.types.attrs;
+                  default = [];
+                };
+                openldap.config = lib.mkOption {
+                  type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
+                  default = {};
+                };
+                openldap.credentials = lib.mkOption {
+                  type = lib.types.attrsOf lib.types.attrs;
+                  default = {};
+                };
+                environment.etc = lib.mkOption {
+                  type = lib.types.attrsOf lib.types.attrs;
+                  default = {};
+                };
+                aos.users.users = lib.mkOption {
+                  type = lib.types.attrsOf lib.types.attrs;
+                  default = {};
+                };
+                aos.users.groups = lib.mkOption {
+                  type = lib.types.attrsOf lib.types.attrs;
+                  default = {};
+                };
+              };
+            })
+            ./_openldap-config/module.nix
+            {openldap = openldapConfig;}
+          ];
+        };
+      valid = evaluate {
+        enable = true;
+        suffix = "dc=aos,dc=test";
+        rootDn = "cn=admin,dc=aos,dc=test";
+        rootPassword.ref = "system-credential:openldap-root-password";
+      };
+      missingPassword = evaluate {enable = true;};
+      assertionsHold = result:
+        builtins.all (assertion: assertion.assertion) result.config.assertions;
+      rendered = builtins.toFile "openldap-slapd.conf" valid.config.environment.etc."aos/packages/openldap/slapd.conf".text;
+    in {
       cli = testing.mkToolCheck {
         pname = "tool-openldap";
         tool = self;
@@ -184,6 +232,88 @@ in
       soname = testing.mkSONAMECheck {
         pkg = self;
         libs = ["libldap.so" "liblber.so"];
+      };
+
+      config = assert assertionsHold valid;
+      assert !assertionsHold missingPassword;
+        pkgs.runCommand "openldap-config-module" {} ''
+          cp ${rendered} slapd.conf
+          ${pkgs.sed}/bin/sed -i \
+              -e 's#/etc/openldap#${self}/etc/openldap#g' \
+              -e 's#/libexec/openldap#${self}/libexec/openldap#g' \
+              -e "s#/run/aos-pkg-openldap#$TMPDIR/run#g" \
+              -e "s#/var/lib/aos-pkg-openldap/data#$TMPDIR/data#g" \
+              slapd.conf
+            mkdir -p "$TMPDIR/data" "$TMPDIR/run"
+          ${self}/sbin/slaptest -u -f slapd.conf
+          grep -F 'suffix "dc=aos,dc=test"' slapd.conf
+          test '${valid.config.openldap.credentials."root-password".ref}' = \
+            'system-credential:openldap-root-password'
+          touch "$out"
+        '';
+
+      config-lifecycle = testing.mkVMTest {
+        name = "networking-openldap-config-lifecycle";
+        rootfsDeps = [self rendered pkgs.grep pkgs.iproute2 pkgs.sed];
+        testScript = ''
+          ${pkgs.iproute2}/sbin/ip link set lo up
+          mkdir -p /var/lib/aos-pkg-openldap/data /run/aos-pkg-openldap
+          cp ${rendered} /tmp/slapd.conf
+          ${pkgs.sed}/bin/sed -i \
+            -e 's#/etc/openldap#${self}/etc/openldap#g' \
+            -e 's#/libexec/openldap#${self}/libexec/openldap#g' \
+            /tmp/slapd.conf
+          printf 'rootpw %s\n' "$(${self}/sbin/slappasswd -s aos-test-password)" >> /tmp/slapd.conf
+          ${self}/sbin/slaptest -u -f /tmp/slapd.conf
+
+          start_slapd() {
+            ${self}/libexec/slapd -d 0 -f /tmp/slapd.conf -h ldap://127.0.0.1:1389/ >/tmp/slapd.log 2>&1 &
+            slapd_pid=$!
+            ready=false
+            for attempt in 1 2 3 4 5 6 7 8 9 10; do
+              if ${self}/bin/ldapsearch -x -H ldap://127.0.0.1:1389 -s base -b "" namingContexts >/dev/null 2>&1; then
+                ready=true
+                break
+              fi
+              sleep 1
+            done
+            if [ "$ready" != true ]; then
+              cat /tmp/slapd.log >&2
+              exit 1
+            fi
+          }
+
+          start_slapd
+          printf '%s\n' \
+            'dn: dc=aos,dc=test' \
+            'objectClass: top' \
+            'objectClass: domain' \
+            'dc: aos' \
+            > /tmp/base.ldif
+          ${self}/bin/ldapadd -x -H ldap://127.0.0.1:1389 \
+            -D 'cn=admin,dc=aos,dc=test' -w aos-test-password \
+            -f /tmp/base.ldif
+          ${self}/bin/ldapsearch -x -H ldap://127.0.0.1:1389 \
+            -b 'dc=aos,dc=test' '(objectClass=domain)' dc \
+            | ${pkgs.grep}/bin/grep -F 'dc: aos'
+          kill "$slapd_pid"
+          wait "$slapd_pid" || true
+
+          start_slapd
+          ${self}/bin/ldapsearch -x -H ldap://127.0.0.1:1389 \
+            -b 'dc=aos,dc=test' '(objectClass=domain)' dc \
+            | ${pkgs.grep}/bin/grep -F 'dc: aos'
+          kill "$slapd_pid"
+          wait "$slapd_pid" || true
+
+          cp /tmp/slapd.conf /tmp/slapd-invalid.conf
+          printf '%s\n' 'unknown-directive true' >> /tmp/slapd-invalid.conf
+          if ${self}/sbin/slaptest -u -f /tmp/slapd-invalid.conf >/tmp/invalid.log 2>&1; then
+            echo 'OpenLDAP accepted an unknown configuration directive' >&2
+            exit 1
+          fi
+          echo 'OpenLDAP typed config and real-binary lifecycle: PASS'
+        '';
       };
     };
 
