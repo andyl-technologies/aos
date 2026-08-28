@@ -244,13 +244,6 @@ struct WorkerArgs {
     /// Canonical HTTPS control-plane origin (for example `https://aos.example.com`).
     #[arg(long, env = "HUB_EXTERNAL_URL")]
     external_url: Option<String>,
-    /// Public HTTPS origin that exposes the instance-default storage binding.
-    ///
-    /// Public registries with a canonical-slug placement on that binding use
-    /// `<origin>/<slug>/` as the canonical Git URL. Explicit delivery-route
-    /// advertisements override this default.
-    #[arg(long, env = "HUB_DEFAULT_PUBLIC_DELIVERY_URL")]
-    default_public_delivery_url: Option<String>,
     /// Immutable source/build identity exposed for deployment verification.
     #[arg(long, env = "HUB_DEPLOYMENT_ID")]
     deployment_id: Option<String>,
@@ -416,18 +409,6 @@ async fn main() -> Result<()> {
                 .context("reading bound listen address")?;
             let external_url = external_url.unwrap_or_else(|| format!("http://{listen_addr}"));
             let db = Arc::new(Database::open(&root.join("hub.db")).await?);
-            let default_storage_root = root.join("storage");
-            std::fs::create_dir_all(&default_storage_root).with_context(|| {
-                format!(
-                    "creating default storage root {}",
-                    default_storage_root.display()
-                )
-            })?;
-            let default_storage_root = default_storage_root
-                .to_str()
-                .context("default storage root is not valid UTF-8")?;
-            db.ensure_instance_default_binding("local_fs", Some(default_storage_root), None)
-                .await?;
             let image_snapshots = aos_hub::image_snapshot::ImageSnapshotStore::open(&root)?;
             image_snapshots.load_tracked(&db).await?;
             let route_reservation_keys_path = route_reservation_keys_file
@@ -926,18 +907,6 @@ async fn main() -> Result<()> {
             // `open_db` opens and migrates the local database. Worker HubDb
             // bootstrap is handled by the Worker command family.
             let db = open_db(&cli.root, &cli.target).await?;
-            let default_storage_root = resolve_root(cli.root.clone(), false)?.join("storage");
-            std::fs::create_dir_all(&default_storage_root).with_context(|| {
-                format!(
-                    "creating default storage root {}",
-                    default_storage_root.display()
-                )
-            })?;
-            let default_storage_root = default_storage_root
-                .to_str()
-                .context("default storage root is not valid UTF-8")?;
-            db.ensure_instance_default_binding("local_fs", Some(default_storage_root), None)
-                .await?;
             println!("schema migrated ({})", cli.target);
             if let Some(email) = root_email {
                 let plaintext = read_password(root_password, root_password_stdin)?;
@@ -1123,18 +1092,6 @@ async fn provision_worker(
     assets: &aos_hub::cloudflare::Assets,
     args: &WorkerArgs,
 ) -> Result<aos_hub::cloudflare::DeployConfig> {
-    if let Some(delivery_url) = &args.default_public_delivery_url {
-        let parsed =
-            url::Url::parse(delivery_url).context("default public delivery URL is invalid")?;
-        anyhow::ensure!(
-            parsed.scheme() == "https"
-                && parsed.username().is_empty()
-                && parsed.password().is_none()
-                && parsed.query().is_none()
-                && parsed.fragment().is_none(),
-            "default public delivery URL must be an HTTPS URL without credentials, query, or fragment"
-        );
-    }
     let external_url = args
         .external_url
         .clone()
@@ -1164,7 +1121,6 @@ async fn provision_worker(
     cfg.observability = !args.no_observability;
     cfg.head_sampling_rate = args.head_sampling_rate;
     cfg.logpush = args.logpush;
-    cfg.default_public_delivery_url = args.default_public_delivery_url.clone();
     // Email Service binding: emitted only when a verified sender is supplied.
     cfg.email_from = args.email_from.clone();
     Ok(cfg)

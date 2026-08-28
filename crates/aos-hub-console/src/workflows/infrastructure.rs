@@ -30,6 +30,15 @@ pub(super) fn InfrastructureWorkflow(route: ConsoleRoute, client: ApiClient) -> 
             />
         }
         .into_any(),
+        (ConsoleScope::Instance, "storage-new") => view! {
+            <Bindings
+                client=client
+                owner_scope_key="instance".to_string()
+                organization_slug=None
+                creation_only=true
+            />
+        }
+        .into_any(),
         (ConsoleScope::Organization { slug }, "storage") => view! {
             <OrganizationBindings client=client organization=slug.clone() creation_only=false/>
         }
@@ -127,7 +136,10 @@ fn Bindings(
                             <HelpTooltip term="Bindings" summary="Bindings name provider storage and its capability or credential lifecycle. Placements decide which surfaces use each binding."/>
                         </div>
                     </div>
-                    {organization_slug.as_ref().filter(|_| can_create).map(|slug| view! { <a class="button" href=format!("/-/org/{slug}/bindings/new")>"Create binding"</a> })}
+                    {can_create.then(|| organization_slug.as_ref().map_or_else(
+                        || "/-/instance/bindings/new".to_string(),
+                        |slug| format!("/-/org/{slug}/bindings/new"),
+                    )).map(|href| view! { <a class="button" href=href>"Create binding"</a> })}
                 </div>
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading bindings…"</p> }>
                     {move || {

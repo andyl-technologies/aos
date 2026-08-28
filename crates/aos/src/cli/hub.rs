@@ -808,7 +808,7 @@ pub enum HubBindingCmd {
         #[command(flatten)]
         pagination: HubPaginationArgs,
     },
-    /// Create a binding under an org (needs registry.configure)
+    /// Create an instance or organization binding
     Create {
         /// Hub base URL; defaults to the active profile
         #[arg(long, env = "AOS_HUB")]
@@ -816,9 +816,9 @@ pub enum HubBindingCmd {
         /// Hub access JWT; defaults to AOS_TOKEN or the matching active profile
         #[arg(long, env = "AOS_TOKEN")]
         token: Option<String>,
-        /// Org slug
+        /// Org slug; omit for an instance binding
         #[arg(long)]
-        org: String,
+        org: Option<String>,
         /// Binding name
         #[arg(long)]
         name: String,
@@ -2858,6 +2858,8 @@ mod tests {
             "list",
             "--hub",
             "https://aos.example",
+            "--org",
+            "andyl",
             "registry:andyl/main",
         ])
         .unwrap();
@@ -3122,8 +3124,6 @@ mod tests {
             "list",
             "--hub",
             "https://aos.example",
-            "--org",
-            "andyl",
         ])
         .unwrap();
         assert!(matches!(
@@ -3158,8 +3158,6 @@ mod tests {
             "create",
             "--hub",
             "https://aos.example",
-            "--org",
-            "andyl",
             "--name",
             "worker-objects",
             "--stable-id",
@@ -3177,6 +3175,7 @@ mod tests {
                     command: HubBindingCmd::Create {
                         stable_id: Some(ref stable_id),
                         bucket_binding: Some(ref binding),
+                        org: None,
                         ..
                     }
                 }
@@ -3204,23 +3203,29 @@ mod tests {
             }
         ));
 
-        assert!(
-            parse_cli([
-                "aos",
-                "hub",
-                "binding",
-                "create",
-                "--hub",
-                "https://aos.example",
-                "--name",
-                "native-storage",
-                "--kind",
-                "local-fs",
-                "--root",
-                "/var/lib/aos-hub/storage",
-            ])
-            .is_err()
-        );
+        let create = parse_cli([
+            "aos",
+            "hub",
+            "binding",
+            "create",
+            "--hub",
+            "https://aos.example",
+            "--name",
+            "native-storage",
+            "--kind",
+            "local-fs",
+            "--root",
+            "/var/lib/aos-hub/storage",
+        ])
+        .unwrap();
+        assert!(matches!(
+            create.command,
+            Commands::Hub {
+                command: HubCmd::Binding {
+                    command: HubBindingCmd::Create { org: None, .. }
+                }
+            }
+        ));
     }
 
     #[test]

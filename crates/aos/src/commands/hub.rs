@@ -4933,7 +4933,7 @@ async fn binding(printer: &Printer, command: &HubBindingCmd) -> Result<()> {
                 HubTopologyMethod::CreateBinding,
                 &hub_types::PlanBindingMutationRequest {
                     stable_id: topology_stable_id(stable_id.as_deref(), "storage-binding"),
-                    owner_scope_key: organization_scope_key(&client, Some(org)).await?,
+                    owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     spec: Some(spec),
                     idempotency_key: new_idempotency_key(),
                     ..Default::default()
