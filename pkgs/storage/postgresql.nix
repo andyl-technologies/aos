@@ -13,6 +13,8 @@
   perl,
   python3,
   llvm,
+  glibc,
+  linux-headers,
   curl,
   docbook-xml,
   docbook-xsl,
@@ -162,6 +164,12 @@
         ;;
     esac
   '';
+  clangForBitcode = writeShellScriptBin "clang" ''
+    exec ${llvm}/bin/clang \
+      -isystem ${glibc.dev}/include \
+      -isystem ${linux-headers}/include \
+      "$@"
+  '';
 in
   mkDerivation {
     pname = "postgresql";
@@ -182,11 +190,13 @@ in
       perl
       python3
       llvm
+      clangForBitcode
       docbook-xml
       docbook-xsl
       gettext
       libxml2
       libxslt
+      tcl
       util-linux
     ];
     runtimeDeps = [
@@ -230,7 +240,8 @@ in
         name = "configure";
         script = ''
           export LLVM_CONFIG=${llvm}/bin/llvm-config
-          export CLANG=${llvm}/bin/clang
+          export CLANG=${clangForBitcode}/bin/clang
+          export TCLSH=${tcl}/bin/tclsh9.0
           export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
           ./configure \
             --prefix=$out \
@@ -277,7 +288,7 @@ in
         script = ''
           export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
           make install-world
-          test -f "$out/share/doc/postgresql/html/index.html"
+          test -f "$out/share/doc/html/index.html"
           test -f "$out/share/man/man1/postgres.1"
           test -n "$(find "$out/share/locale" -name '*.mo' -print -quit)"
           ln -s ${control}/bin/postgresql-control "$out/bin/postgresql-control"
