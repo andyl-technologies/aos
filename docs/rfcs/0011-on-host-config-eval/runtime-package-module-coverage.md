@@ -23,8 +23,8 @@ upstream distribution includes a daemon.
 - [x] MariaDB
 - [x] Garage
 - [x] OpenLDAP server role
-- [ ] KubeEdge CloudCore
-- [ ] KubeEdge EdgeCore
+- [x] KubeEdge CloudCore
+- [x] KubeEdge EdgeCore
 - [x] Kerberos KDC role
 - [x] conntrackd role
 - [x] rsync daemon role
