@@ -351,7 +351,13 @@ fn render_package_module_list(members: &[WorkingSetMember], locked: bool) -> Res
                         member.package
                     )
                 })?;
-                locked_store_input(Path::new(path), Some(nar_hash))?
+                let authenticated = locked_store_input(Path::new(path), Some(nar_hash))?;
+                // `fetchTree.outPath` is a context-bearing string, while the
+                // module boundary deliberately requires a Nix path. The NAR
+                // hash above has already authenticated the exact tree; drop
+                // only its string context before path coercion so recursive
+                // package imports retain their confined path provenance.
+                format!("(/. + builtins.unsafeDiscardStringContext ({authenticated}))")
             } else {
                 nix_path_str(path)
             };
@@ -1089,6 +1095,22 @@ mod tests {
             text.contains("ref = \"system-credential:${systemCredential}\""),
             "{text}"
         );
+    }
+
+    #[test]
+    fn locked_entry_coerces_authenticated_config_roots_to_nix_paths() {
+        let mut web = member("web", Some("/nix/store/hash-web-config"));
+        web.config_output_nar_hash = Some(format!("sha256:{}", "00".repeat(32)));
+        let working = vec![web];
+        let text = render_package_module_list(&working, true).unwrap();
+
+        assert!(
+            text.contains(
+                "let configRoot = (/. + builtins.unsafeDiscardStringContext ((builtins.fetchTree"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("module = configRoot + \"/module.nix\""));
     }
 
     #[test]

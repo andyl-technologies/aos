@@ -36,10 +36,10 @@
 //!
 //! # Image transition modes
 //!
-//! [`KernelUpgradeMode`] controls what happens after staging: `Advisory`
-//! (default) and `Live` leave the transition pending and advise a reboot,
-//! `Reboot` drains when requested and queues a full reboot, and `Kexec` is
-//! rejected because it cannot change the immutable root slot.
+//! [`SystemTransitionMode`] controls what happens after staging: `Advisory`
+//! (default) leaves the transition pending and advises a reboot, while
+//! `Reboot` drains when requested and queues a full reboot. Kexec and a live
+//! userspace-only switch are not valid for an immutable A/B image transition.
 
 use std::collections::{BTreeSet, HashSet};
 use std::fs::OpenOptions;
@@ -77,18 +77,14 @@ use crate::verify::{verify_download_hash, verify_downloads, verify_nar_hash};
 // Kernel upgrade mode
 // ---------------------------------------------------------------------------
 
-/// How to handle kernel changes during a system update.
+/// How to complete an immutable system-image transition after staging.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum KernelUpgradeMode {
-    /// Default: update bootloader, advise reboot if kernel changed.
+pub enum SystemTransitionMode {
+    /// Leaves the staged image pending and advises the operator to reboot.
     #[default]
     Advisory,
-    /// Use kexec to hot-load new kernel (~2-5s disruption).
-    Kexec,
-    /// Full reboot after activation.
+    /// Requests a full reboot after staging.
     Reboot,
-    /// Skip kernel upgrade entirely, userspace only.
-    Live,
 }
 
 // ---------------------------------------------------------------------------
@@ -110,10 +106,11 @@ const ROOT_A_HASH_DEVICE: &str = "/dev/disk/by-partlabel/root-a-hash";
 const ROOT_B_HASH_DEVICE: &str = "/dev/disk/by-partlabel/root-b-hash";
 const RUNNING_TOPLEVEL_LINK: &str = "/aos-toplevel";
 const RUNNING_OS_RELEASE: &str = "/aos-toplevel/os-release";
+const IMMUTABLE_DRAIN_SCRIPT: &str = "/usr/lib/aos/drain";
 const RUNNING_CMDLINE: &str = "/proc/cmdline";
-const IMMUTABLE_SECURE_BOOT_DB: &str = "/aos-toplevel/etc-basedir/aos/trust/secure-boot-db.crt";
-const IMMUTABLE_CONFIGURED_DB_DIR: &str = "/aos-toplevel/etc-basedir/apm/trusted-sb-certs.d";
+const IMMUTABLE_ACTIVE_DB_CERTS: &str = "/usr/lib/aos/image-trust/active-db-certs.pem";
 const MAX_CONFIGURED_DB_CERTIFICATES: usize = 32;
+const MAX_INSTALLED_UKI_BYTES: u64 = 256 * 1024 * 1024;
 const SUPPORTED_RECOVERY_ABI: u32 = 1;
 
 /// Recoverable intent record for publishing a generation as current.
@@ -504,7 +501,7 @@ pub async fn install_system(
     image_output: Option<&str>,
     dry_run: bool,
     yes: bool,
-    kernel_mode: KernelUpgradeMode,
+    transition_mode: SystemTransitionMode,
     drain: bool,
     printer: &Printer,
 ) -> Result<()> {
@@ -661,11 +658,6 @@ pub async fn install_system(
         validate_sysroot_secure_boot(config, toplevel_meta, &closure.registry_name, printer)?;
     }
     if image_profile.join(IMAGE_STATE_FILE).is_file() {
-        if kernel_mode == KernelUpgradeMode::Kexec {
-            bail!(
-                "A/B image upgrades cannot use kexec because the inactive root slot must become the next boot root; use --reboot or the default advisory mode"
-            );
-        }
         let image = toplevel_meta
             .images
             .iter()
@@ -715,19 +707,18 @@ pub async fn install_system(
             "Image generation {} staged in slot {:?}; configuration remains unchanged until reboot.",
             staged.number, staged.slot
         ));
-        match kernel_mode {
-            KernelUpgradeMode::Reboot => {
+        match transition_mode {
+            SystemTransitionMode::Reboot => {
                 if drain {
-                    drain_workloads(&staged.toplevel, printer).await?;
+                    drain_workloads(printer).await?;
                 }
                 SystemdClient::connect().await?.reboot().await?;
             }
-            KernelUpgradeMode::Advisory | KernelUpgradeMode::Live => {
+            SystemTransitionMode::Advisory => {
                 printer.plain(
                     "  Reboot to assess the counted image and re-evaluate host configuration.",
                 );
             }
-            KernelUpgradeMode::Kexec => unreachable!("kexec rejected before staging"),
         }
         return Ok(());
     }
@@ -1054,7 +1045,7 @@ fn publish_reactivation_record(
 pub async fn upgrade_system(
     config: &ApmConfig,
     dry_run: bool,
-    kernel_mode: KernelUpgradeMode,
+    transition_mode: SystemTransitionMode,
     drain: bool,
     printer: &Printer,
 ) -> Result<()> {
@@ -1106,7 +1097,7 @@ pub async fn upgrade_system(
         None,
         false,
         true, // auto-yes for upgrade flow
-        kernel_mode,
+        transition_mode,
         drain,
         printer,
     )
@@ -1133,8 +1124,6 @@ pub async fn rollback_system(
     generation: Option<u32>,
     list: bool,
     dry_run: bool,
-    kernel_mode: KernelUpgradeMode,
-    drain: bool,
     printer: &Printer,
 ) -> Result<()> {
     let profile_path = ProfileScope::System.profile_path();
@@ -1295,7 +1284,6 @@ pub async fn rollback_system(
         }
     }
 
-    let _ = (kernel_mode, drain);
     bail!("image generation state is absent; refusing config rollback through legacy state")
 }
 
@@ -1616,6 +1604,13 @@ fn read_toplevel_meta(toplevel: &Path, name: &str) -> Result<String> {
     Ok(value.trim().to_string())
 }
 
+fn verity_roothash_hex(digest: &str) -> &str {
+    digest
+        .strip_prefix("sha256:")
+        .or_else(|| digest.strip_prefix("sha256-"))
+        .unwrap_or(digest)
+}
+
 fn stage_slot_artifacts(
     layout: &ImageSlotLayout,
     target_slot: ImageSlot,
@@ -1682,7 +1677,7 @@ where
     }
     if let Some(expected) = image.root_hash.as_deref() {
         let actual = std::fs::read_to_string(&root_hash_file)?;
-        if actual.trim() != expected {
+        if actual.trim() != verity_roothash_hex(expected) {
             bail!("image root hash metadata does not match root.roothash");
         }
     }
@@ -2150,29 +2145,21 @@ fn validate_known_good_recovery(
 
 /// Reads a required PE section as UTF-8 text after removing section padding.
 fn read_uki_section_text(uki: &Path, section: &str) -> Result<String> {
-    let temporary = tempfile::Builder::new()
-        .prefix("aos-installed-uki-section-")
-        .tempfile()
-        .context("creating temporary UKI section file")?;
-    let output = std::process::Command::new("objcopy")
-        .arg("-O")
-        .arg("binary")
-        .arg(format!("--only-section={section}"))
-        .arg(uki)
-        .arg(temporary.path())
-        .output()
-        .with_context(|| format!("extracting {section} from {}", uki.display()))?;
-    if !output.status.success() {
-        bail!(
-            "extracting {section} from {} failed: {}",
-            uki.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
+    let metadata = std::fs::symlink_metadata(uki)
+        .with_context(|| format!("inspecting installed UKI {}", uki.display()))?;
+    if !metadata.file_type().is_file()
+        || metadata.len() == 0
+        || metadata.len() > MAX_INSTALLED_UKI_BYTES
+    {
+        bail!("installed UKI {} is outside its size bound", uki.display());
     }
-    let bytes = std::fs::read(temporary.path())?;
-    if bytes.is_empty() {
-        bail!("UKI {} has no {section} section", uki.display());
+
+    let image = std::fs::read(uki).with_context(|| format!("reading UKI {}", uki.display()))?;
+    if image.len() as u64 != metadata.len() {
+        bail!("installed UKI {} changed while it was read", uki.display());
     }
+    let bytes = crate::registry_ops::pe_section(&image, section)?
+        .with_context(|| format!("UKI {} has no {section} section", uki.display()))?;
     let content_end = bytes
         .iter()
         .rposition(|byte| *byte != 0)
@@ -2464,11 +2451,16 @@ where
         evaluator_ref: evaluator_ref.clone(),
         module_abi,
         baselib_digest,
-        root_verity_roothash: image.root_hash.clone().or_else(|| {
-            std::fs::read_to_string(image_store.join("root.roothash"))
-                .ok()
-                .map(|value| value.trim().to_string())
-        }),
+        root_verity_roothash: image
+            .root_hash
+            .as_deref()
+            .map(verity_roothash_hex)
+            .map(str::to_string)
+            .or_else(|| {
+                std::fs::read_to_string(image_store.join("root.roothash"))
+                    .ok()
+                    .map(|value| value.trim().to_string())
+            }),
         expected_pcr11: image_uki_for_slot(image, target_slot)?
             .and_then(|uki| uki.expected_pcr11.clone())
             .or_else(|| image.expected_pcr11.clone()),
@@ -2562,7 +2554,7 @@ pub async fn rollback_image_generation(
     generation: Option<u32>,
     list: bool,
     dry_run: bool,
-    kernel_mode: KernelUpgradeMode,
+    transition_mode: SystemTransitionMode,
     drain: bool,
     printer: &Printer,
 ) -> Result<()> {
@@ -2631,9 +2623,9 @@ pub async fn rollback_image_generation(
         "Image generation {} is the durable next-boot default.",
         target.number
     ));
-    if kernel_mode == KernelUpgradeMode::Reboot {
+    if transition_mode == SystemTransitionMode::Reboot {
         if drain {
-            drain_workloads(&target.toplevel, printer).await?;
+            drain_workloads(printer).await?;
         }
         SystemdClient::connect().await?.reboot().await?;
     }
@@ -4485,41 +4477,43 @@ fn resolve_kernel_path(toplevel: &str) -> Option<String> {
 
 /// Drain workloads before a disruptive kernel switch.
 ///
-/// Checks for a `drain` script in the toplevel. If none exists, attempts to
-/// isolate the systemd `drain.target` (if present). If neither mechanism is
-/// available, this is a no-op.
-async fn drain_workloads(toplevel: &str, printer: &Printer) -> Result<()> {
-    let drain_script = format!("{}/drain", toplevel);
-    if Path::new(&drain_script).exists() {
+/// Runs the current image's immutable hook, falling back to the active
+/// toplevel for compatibility with images built before the immutable hook was
+/// introduced. If neither script exists, it isolates `drain.target` and waits
+/// for `drain-complete.target`. An unavailable or failed drain mechanism is an
+/// error: an explicit `--drain` request must never silently reboot workloads.
+async fn drain_workloads(printer: &Printer) -> Result<()> {
+    let running_toplevel_drain = format!("{RUNNING_TOPLEVEL_LINK}/drain");
+    let drain_script = [IMMUTABLE_DRAIN_SCRIPT, running_toplevel_drain.as_str()]
+        .into_iter()
+        .find(|candidate| Path::new(candidate).exists());
+    if let Some(drain_script) = drain_script {
         printer.plain("Draining workloads...");
-        run_command(&drain_script, &[])?;
+        run_command(drain_script, &[])?;
         printer.plain("Drain complete.");
         return Ok(());
     }
 
-    // Fall back to the systemd `drain.target` if it exists. The client is
-    // constructed lazily here, only on the no-drain-script path (the common
-    // case ships a drain script and returns above). `start_unit` awaits the
-    // job, giving us the old `systemctl start --wait` semantics for free.
+    // The client is constructed lazily on the no-script path. Queueing the
+    // isolate directly makes a missing target fail closed instead of
+    // confusing an existing but inactive target with an absent one.
     let client = SystemdClient::connect().await?;
-    if client.is_active("drain.target").await? {
-        printer.plain("Draining workloads via drain.target...");
-        let isolate = client.isolate_unit("drain.target").await?;
-        if !isolate.result.is_done() {
-            bail!(
-                "isolating drain.target failed: systemd job result '{}'",
-                isolate.result.label(),
-            );
-        }
-        let complete = client.start_unit("drain-complete.target").await?;
-        if !complete.result.is_done() {
-            bail!(
-                "drain-complete.target failed: systemd job result '{}'",
-                complete.result.label(),
-            );
-        }
-        printer.plain("Drain complete.");
+    printer.plain("Draining workloads via drain.target...");
+    let isolate = client.isolate_unit("drain.target").await?;
+    if !isolate.result.is_done() {
+        bail!(
+            "isolating drain.target failed: systemd job result '{}'",
+            isolate.result.label(),
+        );
     }
+    let complete = client.start_unit("drain-complete.target").await?;
+    if !complete.result.is_done() {
+        bail!(
+            "drain-complete.target failed: systemd job result '{}'",
+            complete.result.label(),
+        );
+    }
+    printer.plain("Drain complete.");
 
     Ok(())
 }
@@ -4995,21 +4989,8 @@ fn reverify_installed_uki(uki: &Path) -> Result<()> {
 }
 
 fn immutable_active_db_certificates() -> Result<Vec<String>> {
-    let mut sources = vec![PathBuf::from(IMMUTABLE_SECURE_BOOT_DB)];
-    let configured_dir = Path::new(IMMUTABLE_CONFIGURED_DB_DIR);
-    if configured_dir.exists() {
-        if !configured_dir.is_dir() {
-            bail!("immutable configured db certificate path is not a directory");
-        }
-        let mut registry_sources = std::fs::read_dir(configured_dir)?
-            .map(|entry| entry.map(|entry| entry.path()))
-            .collect::<std::io::Result<Vec<_>>>()?;
-        registry_sources.sort();
-        sources.extend(registry_sources);
-    }
-
     let mut certificates = Vec::new();
-    for source in sources {
+    for source in [PathBuf::from(IMMUTABLE_ACTIVE_DB_CERTS)] {
         let metadata = std::fs::metadata(&source).with_context(|| {
             format!(
                 "inspecting configured db certificate source {}",
@@ -5661,7 +5642,7 @@ mod tests {
         ];
         image.root_image = Some("root.img".into());
         image.root_verity = Some("root.verity".into());
-        image.root_hash = Some("deadbeef".into());
+        image.root_hash = Some("sha256:deadbeef".into());
 
         stage_slot_artifacts(
             &layout,
@@ -7029,9 +7010,9 @@ mod tests {
     }
 
     #[test]
-    fn kernel_upgrade_mode_default() {
-        let mode = KernelUpgradeMode::default();
-        assert_eq!(mode, KernelUpgradeMode::Advisory);
+    fn system_transition_mode_default() {
+        let mode = SystemTransitionMode::default();
+        assert_eq!(mode, SystemTransitionMode::Advisory);
     }
 
     #[test]

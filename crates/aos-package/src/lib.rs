@@ -105,7 +105,7 @@ use clap::{Args, Subcommand, ValueEnum};
 
 use aos_core::error::AosError;
 use aos_core::output::{OutputMode, Printer};
-use sysroot::KernelUpgradeMode;
+use sysroot::SystemTransitionMode;
 use types::{
     ProfileScope, RegistryUploadAuthConfig, validate_branch_name, validate_channel_name,
     validate_commit_hash, validate_git_ref_name, validate_registry_name,
@@ -159,16 +159,16 @@ pub enum PackageCommand {
         /// Bypass sysroot-lock check for specific packages (comma-separated) or "all"
         #[arg(long, value_name = "NAMES", num_args = 0..=1, default_missing_value = "all")]
         ignore_sysroot_lock: Option<String>,
-        /// Use kexec to hot-load new kernel (with --system)
-        #[arg(long, group = "kernel_mode")]
+        /// Reject legacy kexec transitions, which cannot change the A/B root slot
+        #[arg(long, group = "kernel_mode", hide = true)]
         kexec: bool,
-        /// Full reboot after activation (with --system)
+        /// Reboot after staging the immutable system image
         #[arg(long, group = "kernel_mode")]
         reboot: bool,
-        /// Userspace only, defer kernel to next reboot (with --system)
-        #[arg(long, group = "kernel_mode")]
+        /// Reject the retired userspace-only system switch
+        #[arg(long, group = "kernel_mode", hide = true)]
         live: bool,
-        /// Drain workloads before kernel switch (with --kexec or --reboot)
+        /// Drain workloads before --reboot
         #[arg(long)]
         drain: bool,
     },
@@ -212,16 +212,16 @@ pub enum PackageCommand {
         /// Bypass sysroot-lock check for specific packages (comma-separated) or "all"
         #[arg(long, value_name = "NAMES", num_args = 0..=1, default_missing_value = "all")]
         ignore_sysroot_lock: Option<String>,
-        /// Use kexec to hot-load new kernel (with --system)
-        #[arg(long, group = "kernel_mode")]
+        /// Reject legacy kexec transitions, which cannot change the A/B root slot
+        #[arg(long, group = "kernel_mode", hide = true)]
         kexec: bool,
-        /// Full reboot after activation (with --system)
+        /// Reboot after staging the immutable system image
         #[arg(long, group = "kernel_mode")]
         reboot: bool,
-        /// Userspace only, defer kernel to next reboot (with --system)
-        #[arg(long, group = "kernel_mode")]
+        /// Reject the retired userspace-only system switch
+        #[arg(long, group = "kernel_mode", hide = true)]
         live: bool,
-        /// Drain workloads before kernel switch (with --kexec or --reboot)
+        /// Drain workloads before --reboot
         #[arg(long)]
         drain: bool,
     },
@@ -394,16 +394,16 @@ pub enum PackageCommand {
         /// List profile generations (system generations with --system)
         #[arg(long)]
         list: bool,
-        /// Use kexec to hot-load old kernel (with --system)
-        #[arg(long, group = "kernel_mode")]
+        /// Reject legacy kexec transitions, which cannot change the A/B root slot
+        #[arg(long, group = "kernel_mode", hide = true)]
         kexec: bool,
-        /// Full reboot after rollback (with --system)
+        /// Reboot after selecting an image rollback
         #[arg(long, group = "kernel_mode")]
         reboot: bool,
-        /// Userspace only, defer kernel to next reboot (with --system)
-        #[arg(long, group = "kernel_mode")]
+        /// Reject the retired userspace-only system switch
+        #[arg(long, group = "kernel_mode", hide = true)]
         live: bool,
-        /// Drain workloads before kernel switch (with --kexec or --reboot)
+        /// Drain workloads before --reboot
         #[arg(long)]
         drain: bool,
     },
@@ -1022,9 +1022,9 @@ pub enum RegistryCommand {
         /// Semver version constraint on tags (mutually exclusive with other tracking flags)
         #[arg(long, group = "tracking")]
         version: Option<String>,
-        /// Trusted registry signing key in `<registry>:Ed25519:<base64>` form
+        /// Trusted registry signing key in `<registry>:Ed25519:<base64>` form; repeat to pin multiple rotation anchors
         #[arg(long = "trust-key", conflicts_with = "no_verify")]
-        trust_key: Option<String>,
+        trust_key: Vec<String>,
         /// Disable signature verification for this registry (writes
         /// `[registry.signing] required = false`; unverified syncs are
         /// intended for local development registries only)
@@ -1946,6 +1946,12 @@ pub enum CacheCommand {
         /// Nix narinfo signing key file in `name:base64-secret` form
         #[arg(long)]
         key: Option<PathBuf>,
+        /// OpenSSH private key used to sign a cache-pointer commit
+        #[arg(long = "registry-key", conflicts_with = "registry_key_id")]
+        registry_key: Option<String>,
+        /// Active roster key id used to sign a cache-pointer commit
+        #[arg(long = "registry-key-id", conflicts_with = "registry_key")]
+        registry_key_id: Option<String>,
         /// Public cache URL to add to the committed registry cache stack.
         #[arg(long)]
         cache_url: Option<String>,
@@ -2036,6 +2042,12 @@ pub enum WebCommand {
 /// Static git-origin subcommands.
 #[derive(Subcommand)]
 pub enum OriginCommand {
+    /// Prepare bounded index bundles in an already materialized static surface
+    PrepareIndexBundles {
+        /// Static registry surface directory containing the root objects store
+        #[arg(long)]
+        surface_dir: PathBuf,
+    },
     /// Upload the dumb-HTTP git origin surface to one or more destinations
     Upload {
         /// Backend URL to upload static origin files to; repeat for multiple destinations
@@ -2235,19 +2247,103 @@ impl CacheUploadAuthArgs {
     }
 }
 
-/// Convert mutually-exclusive kernel mode flags into a [`KernelUpgradeMode`].
+/// Validates transition flags before loading package-manager state.
 ///
-/// Clap's `kernel_mode` arg group guarantees at most one flag is set; with
-/// none set the default [`KernelUpgradeMode::Advisory`] is returned.
-fn parse_kernel_mode(kexec: bool, reboot: bool, live: bool) -> KernelUpgradeMode {
-    if kexec {
-        KernelUpgradeMode::Kexec
-    } else if reboot {
-        KernelUpgradeMode::Reboot
-    } else if live {
-        KernelUpgradeMode::Live
+/// Immutable A/B image transitions can either remain staged or request a full
+/// reboot. Kexec cannot select the newly written root slot, and a userspace-only
+/// switch would violate the image/config authority split. Configuration-axis
+/// rollback has no boot transition at all.
+fn validate_system_transition_options(command: &PackageCommand) -> Result<()> {
+    let validate_image_transition = |kexec: bool, reboot: bool, live: bool, drain: bool| {
+        if kexec {
+            bail!(
+                "--kexec is not supported for immutable A/B image transitions; use --reboot or omit the transition flag to stage for a later reboot"
+            );
+        }
+        if live {
+            bail!(
+                "--live is not supported for immutable A/B image transitions; staging never replaces userspace on the running image"
+            );
+        }
+        if drain && !reboot {
+            bail!("--drain requires --reboot for an immutable A/B image transition");
+        }
+        Ok(())
+    };
+
+    match command {
+        PackageCommand::Install {
+            system,
+            image,
+            kexec,
+            reboot,
+            live,
+            drain,
+            ..
+        } => {
+            let any_transition = *kexec || *reboot || *live || *drain;
+            if any_transition && image.is_some() {
+                bail!("system transition flags cannot be used with --image download mode");
+            }
+            if any_transition && !system {
+                bail!("system transition flags require --system");
+            }
+            if *system {
+                validate_image_transition(*kexec, *reboot, *live, *drain)?;
+            }
+        }
+        PackageCommand::Upgrade {
+            system,
+            kexec,
+            reboot,
+            live,
+            drain,
+            ..
+        } => {
+            let any_transition = *kexec || *reboot || *live || *drain;
+            if any_transition && !system {
+                bail!("system transition flags require --system");
+            }
+            if *system {
+                validate_image_transition(*kexec, *reboot, *live, *drain)?;
+            }
+        }
+        PackageCommand::Rollback {
+            system,
+            image,
+            list,
+            kexec,
+            reboot,
+            live,
+            drain,
+            ..
+        } => {
+            let any_transition = *kexec || *reboot || *live || *drain;
+            if any_transition && !system {
+                bail!("system transition flags require --system --image");
+            }
+            if any_transition && !image {
+                bail!("system transition flags apply only to rollback --system --image");
+            }
+            if any_transition && *list {
+                bail!("system transition flags cannot be used with rollback --list");
+            }
+            if *image {
+                validate_image_transition(*kexec, *reboot, *live, *drain)?;
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+/// Converts a validated reboot flag into a system transition mode.
+fn parse_system_transition_mode(reboot: bool) -> SystemTransitionMode {
+    if reboot {
+        SystemTransitionMode::Reboot
     } else {
-        KernelUpgradeMode::Advisory
+        SystemTransitionMode::Advisory
     }
 }
 
@@ -2723,6 +2819,8 @@ pub async fn run(
         );
     }
 
+    validate_system_transition_options(command)?;
+
     let system = command.is_system();
     let scope = if system {
         ProfileScope::System
@@ -2744,9 +2842,7 @@ pub async fn run(
             output: image_output,
             reinstall,
             ignore_sysroot_lock,
-            kexec,
             reboot,
-            live,
             drain,
             ..
         } => {
@@ -2771,7 +2867,7 @@ pub async fn run(
                 }
                 desired::reconcile_from_file(&config, path, dry_run, yes, printer).await
             } else if *install_system || image_fmt.is_some() {
-                let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
+                let transition_mode = parse_system_transition_mode(*reboot);
                 sysroot::install_system(
                     &config,
                     packages,
@@ -2780,7 +2876,7 @@ pub async fn run(
                     image_output.as_deref(),
                     dry_run,
                     yes,
-                    kernel_mode,
+                    transition_mode,
                     *drain,
                     printer,
                 )
@@ -2839,15 +2935,14 @@ pub async fn run(
             exclude,
             system: upgrade_system,
             ignore_sysroot_lock,
-            kexec,
             reboot,
-            live,
             drain,
+            ..
         } => {
             let ignore = sysroot_lock::IgnoreSysrootLock::parse(ignore_sysroot_lock.as_deref());
             if *upgrade_system {
-                let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
-                sysroot::upgrade_system(&config, dry_run, kernel_mode, *drain, printer).await
+                let transition_mode = parse_system_transition_mode(*reboot);
+                sysroot::upgrade_system(&config, dry_run, transition_mode, *drain, printer).await
             } else {
                 upgrade::run(&config, packages, exclude, dry_run, yes, &ignore, printer).await
             }
@@ -2972,31 +3067,27 @@ pub async fn run(
             system: rollback_system,
             image,
             list: rollback_list,
-            kexec,
             reboot,
-            live,
             drain,
+            ..
         } => {
             if *rollback_system && *image {
-                let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
+                let transition_mode = parse_system_transition_mode(*reboot);
                 sysroot::rollback_image_generation(
                     *generation,
                     *rollback_list,
                     dry_run,
-                    kernel_mode,
+                    transition_mode,
                     *drain,
                     printer,
                 )
                 .await
             } else if *rollback_system {
-                let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
                 sysroot::rollback_system(
                     &config,
                     *generation,
                     *rollback_list,
                     dry_run,
-                    kernel_mode,
-                    *drain,
                     printer,
                 )
                 .await
@@ -4078,7 +4169,7 @@ async fn run_registry(
                 channel.as_deref(),
                 tag.as_deref(),
                 version.as_deref(),
-                trust_key.as_deref(),
+                trust_key,
                 *no_verify,
                 !no_clone,
                 printer,
@@ -4678,7 +4769,7 @@ async fn registry_add(
     channel: Option<&str>,
     tag: Option<&str>,
     version: Option<&str>,
-    trust_key: Option<&str>,
+    trust_keys: &[String],
     no_verify: bool,
     clone: bool,
     printer: &Printer,
@@ -4714,7 +4805,8 @@ async fn registry_add(
     if let Some(t) = tag {
         validate_git_ref_name(t)?;
     }
-    let trusted_key = trust_key
+    let trusted_keys = trust_keys
+        .iter()
         .map(|key| {
             let (registry, algorithm, public_key) = security::parse_signing_key(key)?;
             if registry != name {
@@ -4732,7 +4824,7 @@ async fn registry_add(
                 source: security::KeySource::Tofu,
             })
         })
-        .transpose()?;
+        .collect::<Result<Vec<_>>>()?;
 
     printer.header(&format!("Adding registry '{name}'..."));
     printer.kv("URL", url);
@@ -4764,7 +4856,7 @@ async fn registry_add(
     if tracking != "default" {
         printer.kv("Tracking", &tracking);
     }
-    if no_verify && trusted_key.is_none() {
+    if no_verify && trusted_keys.is_empty() {
         // Verification is fail-closed by default; the explicit opt-out is
         // recorded in the config so the choice is visible and auditable.
         printer.kv("Signing", "verification disabled (--no-verify)");
@@ -4779,14 +4871,19 @@ async fn registry_add(
         channel,
         tag,
         version,
-        trusted_key: trusted_key.as_ref(),
+        trusted_key: trusted_keys.first(),
         no_verify,
     })?;
     fs::write(&toml_path, &toml_content)
         .with_context(|| format!("writing {}", toml_path.display()))?;
-    if let Some(key) = &trusted_key {
+    for key in &trusted_keys {
         security::KeyStore::new(config.scope.trusted_keys_dirs()).store(key)?;
-        printer.kv("Signing", "trusted key pinned");
+    }
+    if !trusted_keys.is_empty() {
+        printer.kv(
+            "Signing",
+            &format!("{} trusted key(s) pinned", trusted_keys.len()),
+        );
     }
 
     let pkg_cmd = aos_core::invocation::package_manager_command();
@@ -4807,7 +4904,8 @@ async fn registry_add(
                 "config": toml_path.to_string_lossy(),
                 "signing_required": !no_verify,
                 "verification_disabled": no_verify,
-                "trusted_key_pinned": trusted_key.is_some(),
+                "trusted_key_pinned": !trusted_keys.is_empty(),
+                "trusted_keys_pinned": trusted_keys.len(),
             }));
             return Ok(());
         }
@@ -4854,7 +4952,8 @@ async fn registry_add(
                 "config": toml_path.to_string_lossy(),
                 "signing_required": !no_verify,
                 "verification_disabled": no_verify,
-                "trusted_key_pinned": trusted_key.is_some(),
+                "trusted_key_pinned": !trusted_keys.is_empty(),
+                "trusted_keys_pinned": trusted_keys.len(),
             }));
             return Ok(());
         }
@@ -4888,7 +4987,8 @@ async fn registry_add(
             "config": toml_path.to_string_lossy(),
             "signing_required": !no_verify,
             "verification_disabled": no_verify,
-            "trusted_key_pinned": trusted_key.is_some(),
+            "trusted_key_pinned": !trusted_keys.is_empty(),
+            "trusted_keys_pinned": trusted_keys.len(),
         }));
     }
 
@@ -6555,7 +6655,7 @@ contributable = ["allowedTCPPorts"]
             None,
             None,
             None,
-            None,
+            &[],
             false,
             false,
             &printer,

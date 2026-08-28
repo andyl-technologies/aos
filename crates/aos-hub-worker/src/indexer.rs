@@ -1,8 +1,8 @@
-//! Cron-triggered registry and cache reconciliation inside `HubDb`.
+//! Queue-triggered registry and cache reconciliation over the shared database.
 //!
 //! RFC-0004 drives the Worker's indexer from a **Cron Trigger** ("Cron
 //! Triggers/Queues drive the indexer, validator, and mirror jobs"). The
-//! `scheduled` handler walks every public registry's surface — read from the
+//! maintenance dispatcher schedules each public registry's surface — read from the
 //! R2 bucket rather than over HTTP — and replaces its derived SQL index by calling the
 //! **shared core indexer** ([`aos_hub_core::indexer::index_and_record`]),
 //! the exact same fetch → verify → load → index orchestration the native hub
@@ -44,11 +44,10 @@ use aos_hub_core::secret_version::SecretVersionResolver;
 use crate::consoleports::WorkerEgressClient;
 use crate::surface::{R2SurfaceProvider, R2SurfaceWriteProvider};
 
-/// Index every live registry from its selected placement into HubDb SQLite.
+/// Index every live registry from its selected placement.
 ///
-/// Called from the `scheduled` handler inside `HubDb`. Database access goes
-/// through the shared [`Database`](aos_hub_core::db::Database) over colocated
-/// SQLite; the surface read goes through the
+/// Database access goes through the supplied shared
+/// [`Database`](aos_hub_core::db::Database) backend; the surface read goes through the
 /// [`R2SurfaceProvider`]. Each registry is indexed independently — one
 /// registry's failure is recorded as its index state and logged, never aborting
 /// the run.
@@ -59,7 +58,7 @@ use crate::surface::{R2SurfaceProvider, R2SurfaceWriteProvider};
 ///
 /// # Errors
 ///
-/// Returns an error only if the registry inventory cannot be read from HubDb.
+/// Returns an error only if the registry inventory cannot be read.
 pub async fn index_all(
     backend: Box<dyn aos_hub_core::backend::Backend>,
     bucket: Bucket,

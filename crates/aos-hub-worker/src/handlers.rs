@@ -34,4 +34,12 @@ pub mod bindings {
     /// (`[[durable_objects.bindings]]`, `new_sqlite_classes` class `HubDb`).
     /// RFC-0004 ch.14 Phase E.
     pub const HUB_DB: &str = "HUB_DB";
+    /// Request-execution Durable Object namespace for instance-wide control work.
+    pub const HUB_CONTROL_SHARDS: &str = "HUB_CONTROL_SHARDS";
+    /// Request-execution Durable Object namespace for tenant-scoped work.
+    pub const HUB_TENANT_SHARDS: &str = "HUB_TENANT_SHARDS";
+    /// Request-execution Durable Object namespace for registry-scoped work.
+    pub const HUB_REGISTRY_SHARDS: &str = "HUB_REGISTRY_SHARDS";
+    /// Request-execution Durable Object namespace for cache-scoped work.
+    pub const HUB_CACHE_SHARDS: &str = "HUB_CACHE_SHARDS";
 }

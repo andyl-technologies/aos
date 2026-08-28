@@ -28,7 +28,7 @@ use aos_net::{
     MultipartUploadRequest, TransferEngine, TransferEngineConfig,
 };
 
-use crate::backend::CacheBackend;
+use crate::backend::{CacheBackend, ObjectUploadAdmission, UploadedNarinfo};
 use crate::bandwidth;
 use crate::compress::{compression_ext, compression_name, streaming_compress, streaming_export};
 use crate::resolve::resolve_installables;
@@ -215,22 +215,44 @@ pub async fn run_push(
             .iter()
             .filter(|info| missing_hashes.contains(&narinfo::store_hash(&info.path).to_string()))
             .collect();
-        let sizes: Vec<u64> = futures::stream::iter(work)
-            .map(|info| {
-                let overall = &overall;
-                let limiter = &limiter;
-                async move {
-                    let size =
-                        upload_one(backend, info, compression, compression_level, limiter).await?;
-                    overall.inc(1);
-                    Ok::<u64, anyhow::Error>(size)
-                }
-            })
-            .buffer_unordered(effective_jobs)
-            .try_collect()
-            .await?;
-        uploaded = sizes.len() as u64;
-        total_bytes = sizes.iter().sum();
+        let wave_size = effective_jobs.min(MAX_DIRECT_UPLOAD_WAVE).max(1);
+        let mut completed = 0u64;
+        for wave in work.chunks(wave_size) {
+            let prepared: Vec<PreparedUpload> = futures::stream::iter(wave.iter().copied())
+                .map(|info| prepare_upload(info, compression, compression_level))
+                .buffer_unordered(effective_jobs)
+                .try_collect()
+                .await?;
+            let admission_inputs = prepared
+                .iter()
+                .map(|upload| (upload.nar_path.clone(), upload.file_size))
+                .collect::<Vec<_>>();
+            let admissions = backend.create_object_uploads(&admission_inputs).await?;
+            let results: Vec<(u64, UploadedNarinfo)> =
+                futures::stream::iter(prepared.into_iter())
+                    .map(|upload| {
+                        let limiter = &limiter;
+                        let admission = admissions.get(&upload.nar_path).cloned();
+                        async move {
+                            upload_prepared(backend, upload, admission.as_ref(), limiter).await
+                        }
+                    })
+                    .buffer_unordered(effective_jobs)
+                    .try_collect()
+                    .await?;
+            let narinfos = results
+                .iter()
+                .map(|(_, narinfo)| narinfo.clone())
+                .collect::<Vec<_>>();
+            backend.register_narinfos(&narinfos).await?;
+
+            let wave_count = u64::try_from(results.len()).unwrap_or(u64::MAX);
+            completed = completed.saturating_add(wave_count);
+            total_bytes =
+                total_bytes.saturating_add(results.iter().map(|(size, _)| *size).sum::<u64>());
+            overall.inc(wave_count);
+        }
+        uploaded = completed;
     }
 
     overall.finish_and_clear();
@@ -282,29 +304,31 @@ fn use_multipart_after_admission(admitted_url: Option<&str>, supported: bool) ->
     admitted_url.is_none() && supported
 }
 
-/// Compresses and uploads one missing path's NAR + narinfo.
+/// Maximum number of compressed objects retained by one batch-admission wave.
+const MAX_DIRECT_UPLOAD_WAVE: usize = 64;
+
+struct PreparedUpload {
+    store_hash: String,
+    compressed: Vec<u8>,
+    file_size: u64,
+    nar_filename: String,
+    nar_path: String,
+    narinfo_text: String,
+}
+
+/// Compresses one missing path and constructs its immutable upload metadata.
 ///
 /// Compression runs on a blocking thread (it is CPU-bound) so it never stalls
-/// the async runtime when many of these run concurrently. The NAR bytes go
-/// straight to an admitted direct or proxy URL when [`create_object_upload`] offers one
-/// (bypassing the Hub data proxy); otherwise they use typed multipart or an
-/// authenticated typed upload URL. Narinfo admission always passes through the
-/// Hub API so inventory and GC remain authoritative.
-///
-/// Returns the compressed NAR size in bytes.
+/// the async runtime when many of these run concurrently.
 ///
 /// # Errors
 ///
-/// Returns an error if compression, minting, or any upload fails.
-///
-/// [`create_object_upload`]: CacheBackend::create_object_upload
-async fn upload_one(
-    backend: &dyn CacheBackend,
+/// Returns an error if compression fails or produces an unrepresentable size.
+async fn prepare_upload(
     info: &PathInfo,
     compression: &str,
     compression_level: i32,
-    limiter: &bandwidth::BandwidthLimiter,
-) -> Result<u64> {
+) -> Result<PreparedUpload> {
     let hash = narinfo::store_hash(&info.path).to_string();
     let path = info.path.clone();
     let comp = compression.to_string();
@@ -315,35 +339,72 @@ async fn upload_one(
 
     let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(&compressed)));
     let file_size = compressed.len() as u64;
-    if limiter.is_active() {
-        limiter.acquire(file_size).await;
-    }
     let nar_filename = format!(
         "{}.{}",
         file_hash.replace(':', "-"),
         compression_ext(compression)
     );
     let narinfo_text = build_narinfo(info, &file_hash, file_size, &nar_filename, compression);
-    let nar_url = format!("nar/{nar_filename}");
+    let nar_path = format!("nar/{nar_filename}");
 
-    let admitted_url = backend.create_object_upload(&nar_url, file_size).await?;
-    let use_multipart =
-        use_multipart_after_admission(admitted_url.as_deref(), backend.supports_multipart());
-    match admitted_url {
-        Some(upload_url) => {
+    Ok(PreparedUpload {
+        store_hash: hash,
+        compressed,
+        file_size,
+        nar_filename,
+        nar_path,
+        narinfo_text,
+    })
+}
+
+/// Uploads one prepared NAR and returns its batched narinfo registration.
+///
+/// # Errors
+///
+/// Returns an error if the admitted, multipart, or backend upload fails.
+async fn upload_prepared(
+    backend: &dyn CacheBackend,
+    upload: PreparedUpload,
+    admission: Option<&ObjectUploadAdmission>,
+    limiter: &bandwidth::BandwidthLimiter,
+) -> Result<(u64, UploadedNarinfo)> {
+    if limiter.is_active() {
+        limiter.acquire(upload.file_size).await;
+    }
+
+    let use_multipart = use_multipart_after_admission(
+        admission.map(|value| value.upload_url.as_str()),
+        backend.supports_multipart(),
+    );
+    match admission {
+        Some(admission) => {
             backend
-                .upload_to_admitted_url(&upload_url, &compressed)
+                .upload_to_admitted_url(&admission.upload_url, &upload.compressed)
                 .await?
         }
         None if use_multipart => {
             // Admission is authoritative for Hub proxy limits. A Worker may
             // require multipart below the client's normal in-memory threshold.
-            upload_nar_multipart(backend, &nar_filename, compressed).await?;
+            upload_nar_multipart(backend, &upload.nar_filename, upload.compressed).await?;
         }
-        None => backend.put_nar(&nar_filename, &compressed).await?,
+        None => {
+            backend
+                .put_nar(&upload.nar_filename, &upload.compressed)
+                .await?
+        }
     }
-    backend.put_narinfo(&hash, &narinfo_text).await?;
-    Ok(file_size)
+    let ticket = admission
+        .filter(|value| value.requires_observation)
+        .map(|value| value.upload_ticket_id.clone())
+        .unwrap_or_default();
+    Ok((
+        upload.file_size,
+        UploadedNarinfo {
+            store_hash: upload.store_hash,
+            narinfo: upload.narinfo_text,
+            nar_upload_ticket_id: ticket,
+        },
+    ))
 }
 
 const PART_CONCURRENCY: usize = 8;
@@ -540,8 +601,9 @@ mod tests {
     use aos_core::nix::PathInfo;
 
     use super::{
-        MAX_MULTIPART_PART_SIZE, MAX_MULTIPART_PARTS, MIN_MULTIPART_PART_SIZE,
-        order_path_infos_for_import, upload_multipart_source, use_multipart_after_admission,
+        MAX_MULTIPART_PART_SIZE, MAX_MULTIPART_PARTS, MIN_MULTIPART_PART_SIZE, PreparedUpload,
+        order_path_infos_for_import, upload_multipart_source, upload_prepared,
+        use_multipart_after_admission,
     };
 
     struct MaliciousNegotiationBackend {
@@ -550,6 +612,7 @@ mod tests {
         aborted: std::sync::atomic::AtomicUsize,
         uploaded: std::sync::atomic::AtomicUsize,
         completed: std::sync::atomic::AtomicUsize,
+        admitted: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
     }
 
     impl MaliciousNegotiationBackend {
@@ -560,6 +623,7 @@ mod tests {
                 aborted: std::sync::atomic::AtomicUsize::new(0),
                 uploaded: std::sync::atomic::AtomicUsize::new(0),
                 completed: std::sync::atomic::AtomicUsize::new(0),
+                admitted: std::sync::Mutex::new(Vec::new()),
             }
         }
     }
@@ -608,6 +672,14 @@ mod tests {
             _sha256: Option<&str>,
         ) -> anyhow::Result<()> {
             anyhow::bail!("unused test operation")
+        }
+
+        async fn upload_to_admitted_url(&self, url: &str, data: &[u8]) -> anyhow::Result<()> {
+            self.admitted
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((url.to_string(), data.to_vec()));
+            Ok(())
         }
 
         fn supports_multipart(&self) -> bool {
@@ -703,6 +775,47 @@ mod tests {
 
         let paths: Vec<&str> = infos.iter().map(|info| info.path.as_str()).collect();
         assert_eq!(paths, vec![leaf, middle, root]);
+    }
+
+    #[tokio::test]
+    async fn admitted_upload_preserves_direct_origin_ticket_for_batch_settlement() {
+        let backend = MaliciousNegotiationBackend::new(MIN_MULTIPART_PART_SIZE as u64);
+        let prepared = PreparedUpload {
+            store_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            compressed: b"compressed-nar".to_vec(),
+            file_size: 14,
+            nar_filename: "fixture.nar.zst".to_string(),
+            nar_path: "nar/fixture.nar.zst".to_string(),
+            narinfo_text: "StorePath: /nix/store/fixture".to_string(),
+        };
+        let admission = crate::backend::ObjectUploadAdmission {
+            upload_url: "https://origin.example/upload".to_string(),
+            upload_ticket_id: "ticket-1".to_string(),
+            requires_observation: true,
+        };
+
+        let (size, narinfo) = upload_prepared(
+            &backend,
+            prepared,
+            Some(&admission),
+            &crate::bandwidth::BandwidthLimiter::new(0),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(size, 14);
+        assert_eq!(narinfo.nar_upload_ticket_id, "ticket-1");
+        assert_eq!(
+            backend
+                .admitted
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_slice(),
+            &[(
+                "https://origin.example/upload".to_string(),
+                b"compressed-nar".to_vec()
+            )]
+        );
     }
 
     #[tokio::test]
