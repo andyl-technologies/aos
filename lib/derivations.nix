@@ -1587,6 +1587,20 @@
         scrubMap
       )
     );
+    padPlaceholder = path: placeholder: let
+      padding = builtins.stringLength path - builtins.stringLength placeholder;
+    in
+      if padding < 0
+      then throw "fetchBazelDeps: scrub placeholder '${placeholder}' is longer than '${path}'"
+      else placeholder + builtins.concatStringsSep "" (builtins.genList (_: "_") padding);
+    binaryScrubSedArgs = builtins.concatStringsSep " " (
+      builtins.attrValues (
+        builtins.mapAttrs (
+          path: placeholder: "-e 's|${path}|${padPlaceholder path placeholder}|g'"
+        )
+        scrubMap
+      )
+    );
     removeReposCmds = builtins.concatStringsSep "\n" (
       builtins.map (
         repo: "rm -rf \"$bazelOut/external/${repo}\" \"$bazelOut/external/@${repo}.marker\""
@@ -1709,9 +1723,15 @@
             if scrubMap != {}
             then ''
               # --- Store path scrubbing ---
-              find "$bazelOut/external" -type f | while read f; do
-                sed -i ${scrubSedArgs} "$f" 2>/dev/null || true
-              done
+              # Variable-length substitutions corrupt offsets in binary formats
+              # such as ELF. Use compact placeholders for text and padded,
+              # equal-length placeholders for binary files.
+              find "$bazelOut/external" -type f -print0 \
+                | xargs -0 -r grep -IlZ . \
+                | xargs -0 -r sed -i ${scrubSedArgs}
+              find "$bazelOut/external" -type f -print0 \
+                | xargs -0 -r grep -ILZ . \
+                | xargs -0 -r sed -i ${binaryScrubSedArgs}
             ''
             else ""
           }

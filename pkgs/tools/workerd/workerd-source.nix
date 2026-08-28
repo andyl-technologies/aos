@@ -48,6 +48,7 @@
   python3,
   openjdk,
   gcc,
+  glibc,
   binutils,
   llvm,
   rust,
@@ -316,6 +317,7 @@
     "${scrub rust}" = "__AOS_RUST__";
     "${scrub llvm}" = "__AOS_LLVM__";
     "${scrub gcc}" = "__AOS_GCC__";
+    "${scrub glibc}" = "__AOS_GLIBC__";
   };
 
   # Build a clang/clang++ wrapper directory. AOS clang needs the GCC install dir
@@ -503,9 +505,34 @@ in
     inherit scrubMap;
 
     # --- Fetch-specific ---
-    depsHash = "sha256-cePFC9tnY+0qSwbE9nqDUV5Idj+ppFTSYNy4nTJQP9k=";
-    fetchPostPatch = "";
+    depsHash = "sha256-GcXWNE6KoPQ+LzOuI+PnQqkRmivDgVM3pZJfuhmgTYo=";
+    # Python repository rules compile optional extensions outside Bazel's C++
+    # toolchain and invoke the compiler by basename. Put the same declared
+    # wrappers used by Bazel first on PATH so libc headers and link flags cannot
+    # depend on an ambient compiler installation.
+    fetchPostPatch = ''
+      export PATH="$SRCDIR/aos-toolchain:$PATH"
+      export CC="$SRCDIR/aos-toolchain/clang"
+      export CXX="$SRCDIR/aos-toolchain/clang++"
+    '';
+    # MarkupSafe otherwise retries a failed optional C extension as a pure
+    # Python wheel, making its Bazel repository depend on whether compilation
+    # happens to succeed. The declared compiler wrapper must build the extension
+    # or fail the fetch instead of changing the fixed-output payload.
+    fetchEnv = {
+      CIBUILDWHEEL = "1";
+    };
     postFetch = ''
+      # Bazel recreates host autoconfiguration repositories for the executor
+      # that performs the real build. Persisting the fetch executor's platform
+      # and toolchain discovery makes the fixed-output closure host-dependent.
+      rm -rf "$bazelOut/external/host_platform"
+      rm -rf "$bazelOut/external/internal_platforms_do_not_use"
+      rm -rf "$bazelOut/external/local_config_"*
+      rm -f "$bazelOut/external/@host_platform.marker"
+      rm -f "$bazelOut/external/@internal_platforms_do_not_use.marker"
+      rm -f "$bazelOut/external/@local_config_"*.marker
+
       # Drop prebuilt JDK/Android toolchains Bazel recreates locally.
       rm -rf "$bazelOut/external/remotejdk"* "$bazelOut/external/local_jdk"
       rm -rf "$bazelOut/external/android_tools" "$bazelOut/external/android_gmaven_r8"

@@ -193,6 +193,23 @@ hostnames, verify that the pinned payloads are byte-identical and select the
 hostname already used by the dependency closure instead of widening its
 network-origin set.
 
+Do not retain Bazel's `host_platform`, `internal_platforms_do_not_use`, or
+`local_config_*` repositories in a fixed-output dependency closure. They
+describe the fetch executor rather than a source dependency. Remove those
+repositories and their markers in `postFetch`; Bazel recreates them for the
+executor that performs the real build.
+
+Do not let a fixed-output dependency fetch silently fall back between native
+and pure-language artifacts. When an upstream package treats a declared native
+extension as optional, use its supported strict-build switch so compilation
+failure stops the fetch. This makes the dependency hash describe one artifact
+mode instead of whichever mode happened to build on the fetch executor.
+
+Use equal-length store-path placeholders for binary files. A replacement with
+a different byte length corrupts offsets recorded in formats such as ELF, but
+a fixed-output dependency cannot retain store references. Restore the original
+equal-length path before the offline build uses the artifact.
+
 When upstream commits a Cargo lockfile and generated Bazel crate repositories,
 fetch that checked-in graph without setting `CARGO_BAZEL_REPIN`. Repinning asks
 rules_rust to resolve compatible versions against the current registry index,
