@@ -5,6 +5,7 @@
   gnumake,
   pkg-config,
   krb5,
+  libxcrypt,
   openssl,
   sqlite,
 }: let
@@ -22,7 +23,7 @@ in
     };
 
     buildDeps = [gnumake pkg-config];
-    runtimeDeps = [krb5 openssl sqlite];
+    runtimeDeps = [krb5 libxcrypt openssl sqlite];
     propagatedDeps = [];
 
     phases = [
@@ -31,6 +32,13 @@ in
         script = ''
           tar xf $src
           cd cyrus-sasl-${version}
+        '';
+      }
+      {
+        name = "patch";
+        script = ''
+          # GCC 14 rejects the upstream implicit time()/clock() declarations.
+          sed -i '1i#include <time.h>' plugins/cram.c lib/saslutil.c
         '';
       }
       {
