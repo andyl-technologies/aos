@@ -984,6 +984,53 @@ later consumers; low bits count consumers admitted before the hold until their
 operation returns. Read-only peeks do not mutate queue content and need not
 enter consumer admission.
 
+The Apache host also defines a version-1 operational ring image for copying
+held queues into a branch-private setup mapping. It is not configuration
+identity and does not replace the semantic host continuation. Its canonical
+little-endian grammar is:
+
+```text
+HotForkRingImageV1 {
+    magic: [u8; 8] = "CRHFRI01",
+    schema_version: u32 = 1,
+    abi_version: u32 = 20,
+    region_size: u64,
+    vm_node_count: u32,
+    queue_capacity: u32,
+    icount_shift: u32,
+    fault_payload_arena_bytes: u32,
+    directed_and_coverage_segments: [
+        { offset: u64, length: u64, bytes: [u8; length] },
+        { offset: u64, length: u64, bytes: [u8; length] },
+    ],
+    remaining_ring_segment: {
+        offset: u64, length: u64, bytes: [u8; length]
+    },
+    digest: [u8; 32],
+}
+```
+
+The three ranges are fixed by the validated `RegionLayout`: directed ring
+headers/data from `ring_hdr_off` to `coverage_ring_hdr_off`; coverage ring
+headers/data from `coverage_ring_hdr_off` to `fingerprint_sample_off`; and all
+white-box, fault command/result/event (including arena), guest-introspection,
+accelerator, and selectable-reply ring storage from
+`whitebox_marker_ring_hdr_off` to `region_size`. Fingerprint samples and node
+slots are deliberately not ring-image bytes and remain separate continuation
+or child-reinitialization obligations.
+
+Capture requires both endpoints of every source ring held with zero admitted
+operations. Restore requires an identical, inactive, branch-private mapping
+whose endpoints are already held and drained. Every encoded ring header MUST
+retain both held bits, zero admission counts, and a live count no larger than
+that ring class's capacity; malformed input is rejected before the first
+destination write. The complete canonical size is checked against a
+caller-supplied bound before segment allocation. `digest` is BLAKE3 derived
+with context `crucible.shmem.hot-fork-ring-image.v1` over every field after the
+magic except the digest itself. It provides transfer integrity only, not
+campaign authority. A restored mapping stays held until the remaining child
+resources and matching host continuation are authenticated.
+
 The operations the ABI defines:
 
 - **enqueue** (producer): load `write_idx` relaxed (the producer owns it), load

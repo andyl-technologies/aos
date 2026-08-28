@@ -158,6 +158,7 @@ pub use abi_header::generated_c_header;
 #[cfg(unix)]
 pub use mapped_setup_region::{
     DetachedPluginAcceleratorRings, DetachedPluginGuestIntrospectionRings,
+    HOT_FORK_RING_IMAGE_SCHEMA_VERSION, HotForkRingImage, HotForkRingImageError,
     MappedAcceleratorConsumerRingMut, MappedAcceleratorProducerRingMut, MappedCoverageRingMut,
     MappedDirectedRingMut, MappedFaultCommandTransportMut, MappedFaultEventTransportMut,
     MappedFaultResultTransportMut, MappedGuestIntrospectionConsumerRingMut,

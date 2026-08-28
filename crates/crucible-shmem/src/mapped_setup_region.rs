@@ -37,7 +37,10 @@ mod device_rings;
 mod fault_transports;
 #[path = "mapped_setup_region/hot_fork.rs"]
 mod hot_fork;
-pub use hot_fork::MappedRingIoBarrierSnapshot;
+pub use hot_fork::{
+    HOT_FORK_RING_IMAGE_SCHEMA_VERSION, HotForkRingImage, HotForkRingImageError,
+    MappedRingIoBarrierSnapshot,
+};
 
 impl Drop for MappedSetupRegion {
     fn drop(&mut self) {

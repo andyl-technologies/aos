@@ -722,10 +722,18 @@ false.
 This is a retained barrier over the callback classes covered by the sealed
 manifest, every ABI-v20 shared-memory ring producer and consumer including
 Apache host endpoints, and the mandatory RUN-control/teardown workers plus the
-optional fingerprint digest worker. It is still not the complete plugin-ring proof: a
-parked worker may retain a received trigger or queued fingerprint work, held
-rings retain their bytes, and no child-side resource reconstruction or queue
-disposition exists. QEMU therefore keeps readiness bit 6 clear.
+optional fingerprint digest worker. While this retained state is quiescent,
+the host can now capture a bounded, versioned image of every ring-backed range
+and restore it into an identical inactive branch-private mapping. The image
+authenticates exact geometry, held endpoints, cursor capacity, queued bytes,
+and fault payload arenas; restore keeps the destination held. It excludes node
+slots and fingerprint samples by contract.
+
+This is still not the complete plugin-ring proof: a parked worker may retain a
+received trigger or queued fingerprint work, and no fork child yet receives,
+remaps, authenticates, and releases the private mapping together with those
+worker dispositions and its host continuation. QEMU therefore keeps readiness
+bit 6 clear.
 
 The next source checkpoint adds a process-lifetime reversible bottom-half and
 timer-source barrier through the OOB
