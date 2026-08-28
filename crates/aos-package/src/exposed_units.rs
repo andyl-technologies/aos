@@ -207,9 +207,10 @@ pub(crate) async fn reconcile_system_profile(config: &ApmConfig, printer: &Print
         .difference(&current_targets)
         .cloned()
         .collect::<Vec<_>>();
-    let attached_diff = compute_attached_unit_diff(&root, &packages)?;
+    let mut attached_diff = compute_attached_unit_diff(&root, &packages)?;
+    attached_diff.normalize_service_root_lifecycle();
 
-    stop_changed_service_root_targets_before_swap(&root, &attached_diff).await?;
+    stop_service_root_barriers_before_swap(&root, &mut attached_diff).await?;
 
     let had_attached_units = has_attached_units(&root)?;
     if packages.is_empty() && removed_targets.is_empty() {
@@ -3147,41 +3148,37 @@ async fn apply_systemd_changes(
     Ok(())
 }
 
-async fn stop_changed_service_root_targets_before_swap(
+async fn stop_service_root_barriers_before_swap(
     root: &Path,
-    attached_diff: &UnitDiff,
+    attached_diff: &mut UnitDiff,
 ) -> Result<()> {
     if root != Path::new("/") {
         return Ok(());
     }
 
-    let targets = service_root_targets_requiring_preswap_stop(attached_diff);
-    if targets.is_empty() {
+    if attached_diff.required_stops.is_empty() {
         return Ok(());
     }
 
     let client = SystemdClient::connect().await?;
-    for target in targets {
-        match client.stop_unit(&target).await {
-            Ok(outcome) => ensure_job_done("stop", &target, outcome)?,
-            Err(err) if err.is_no_such_unit() => {}
+    for unit in attached_diff
+        .to_stop
+        .iter()
+        .filter(|unit| attached_diff.required_stops.contains(*unit))
+    {
+        match client.stop_unit(unit).await {
+            Ok(outcome) => ensure_job_done("stop", unit, outcome)?,
             Err(err) => {
                 return Err(err).with_context(|| {
-                    format!("stopping exposed package target {target} before attached-unit swap")
+                    format!("stopping exposed package service-root barrier {unit} before attached-unit swap")
                 });
             }
         }
     }
-    Ok(())
-}
-
-fn service_root_targets_requiring_preswap_stop(attached_diff: &UnitDiff) -> BTreeSet<String> {
     attached_diff
-        .to_restart
-        .iter()
-        .chain(&attached_diff.to_stop)
-        .filter_map(|unit| unit_diff::service_root_target(unit))
-        .collect()
+        .to_stop
+        .retain(|unit| !attached_diff.required_stops.contains(unit));
+    Ok(())
 }
 
 fn try_restart_changed_credential_units(root: &Path, units: &BTreeSet<String>) -> Result<()> {
@@ -6893,23 +6890,52 @@ mod tests {
     }
 
     #[test]
-    fn changed_or_removed_service_roots_require_old_target_stop() {
-        let diff = UnitDiff {
+    fn direct_reconcile_normalizes_service_root_barriers_and_member_actions() {
+        let web_helper = "aos-pkg-web-service-roots.service";
+        let api_helper = "aos-pkg-api-service-roots.service";
+        let mut diff = UnitDiff {
+            service_root_barriers: BTreeMap::from([
+                (
+                    web_helper.to_string(),
+                    unit_diff::ServiceRootBarrier {
+                        target: "aos-pkg-web.target".to_string(),
+                        live_members: BTreeSet::from(["web.service".to_string()]),
+                        candidate_members: BTreeSet::from(["web.service".to_string()]),
+                        candidate_target_present: true,
+                    },
+                ),
+                (
+                    api_helper.to_string(),
+                    unit_diff::ServiceRootBarrier {
+                        target: "aos-pkg-api.target".to_string(),
+                        live_members: BTreeSet::from(["api.service".to_string()]),
+                        ..Default::default()
+                    },
+                ),
+            ]),
             to_restart: vec![
-                "aos-pkg-web-service-roots.service".to_string(),
+                web_helper.to_string(),
                 "web.service".to_string(),
+                "aos-pkg-web.target".to_string(),
             ],
-            to_stop: vec!["aos-pkg-api-service-roots.service".to_string()],
+            to_reload: vec!["web.service".to_string()],
+            to_stop: vec![api_helper.to_string(), "api.service".to_string()],
             ..Default::default()
         };
+        diff.normalize_service_root_lifecycle();
 
         assert_eq!(
-            service_root_targets_requiring_preswap_stop(&diff),
-            BTreeSet::from([
-                "aos-pkg-api.target".to_string(),
-                "aos-pkg-web.target".to_string(),
-            ])
+            diff.to_stop,
+            vec![
+                "aos-pkg-api.target",
+                api_helper,
+                "aos-pkg-web.target",
+                web_helper,
+            ]
         );
+        assert!(diff.to_restart.is_empty());
+        assert!(diff.to_reload.is_empty());
+        assert_eq!(diff.to_start, vec!["aos-pkg-web.target"]);
     }
 
     #[test]

@@ -3945,7 +3945,7 @@ struct Plan {
     schema_version: u32,
     /// Generation number this plan was computed for.
     generation: u32,
-    /// Stopped by the pre-swap phase. Best-effort, informational.
+    /// Stopped by the pre-swap phase, including required ordered barriers.
     stopped: Vec<String>,
     /// Stops that must succeed before the generation swap is authorized.
     required_stops: BTreeSet<String>,
@@ -3990,7 +3990,7 @@ async fn activate_pre_etc_swap_inner(
     // `compute_diff` takes /etc roots and appends `systemd/system` itself.
     // In this phase live `/etc` is intentionally the old generation.
     let mut diff = unit_diff::compute_diff(Path::new("/etc"), candidate_etc);
-    normalize_service_root_lifecycle(&mut diff);
+    diff.normalize_service_root_lifecycle();
     for w in &diff.warnings {
         printer.warning(w);
     }
@@ -4029,14 +4029,21 @@ async fn activate_pre_etc_swap_inner(
     // introduced by this activation before the health scan.
     client.reset_failed().await.context("reset-failed")?;
 
-    for unit in &plan.stopped {
+    await_required_stops(&plan.stopped, &plan.required_stops, |unit| {
+        printer.plain(&format!("  stopping   {unit}"));
+        let client = &client;
+        async move { client.stop_unit(&unit).await.map(|outcome| outcome.result) }
+    })
+    .await?;
+
+    for unit in plan
+        .stopped
+        .iter()
+        .filter(|unit| !plan.required_stops.contains(*unit))
+    {
         printer.plain(&format!("  stopping   {unit}"));
         let outcome = client.stop_unit(unit).await.map(|outcome| outcome.result);
-        if plan.required_stops.contains(unit) {
-            ensure_required_stop_succeeded(unit, outcome)?;
-        } else {
-            let _ = reconcile_job_failed(printer, "stop", unit, outcome);
-        }
+        let _ = reconcile_job_failed(printer, "stop", unit, outcome);
     }
 
     println!("{}", plan_path.display());
@@ -4162,44 +4169,6 @@ async fn activate_post_etc_swap_inner(plan_path: &Path, printer: &Printer) -> Re
 
 /// Convert a [`UnitDiff`] into a serializable [`Plan`], folding install-only
 /// units and newly enabled targets into the start list.
-fn normalize_service_root_lifecycle(diff: &mut UnitDiff) {
-    // A generated roots unit embeds the authenticated payload path in both
-    // ExecStart and strict ExecStop. Whether the helper changes or disappears,
-    // stop its owning target before /etc is swapped so systemd necessarily
-    // executes the old cleanup identity. Restart the target only when the
-    // candidate retains it (for example, a confined-to-socket-only transition).
-    let affected_helpers = diff
-        .to_restart
-        .iter()
-        .chain(&diff.to_stop)
-        .filter(|unit| diff.service_root_barriers.contains_key(*unit))
-        .cloned()
-        .collect::<BTreeSet<_>>();
-
-    for helper in affected_helpers {
-        let barrier = diff.service_root_barriers[&helper].clone();
-        let members = barrier
-            .live_members
-            .union(&barrier.candidate_members)
-            .cloned()
-            .chain([helper])
-            .collect::<BTreeSet<_>>();
-        diff.to_stop.retain(|unit| !members.contains(unit));
-        diff.to_restart.retain(|unit| !members.contains(unit));
-        diff.to_reload.retain(|unit| !members.contains(unit));
-        diff.to_start.retain(|unit| !members.contains(unit));
-        diff.install_only.retain(|unit| !members.contains(unit));
-
-        if !diff.to_stop.contains(&barrier.target) {
-            diff.to_stop.push(barrier.target.clone());
-        }
-        diff.required_stops.insert(barrier.target.clone());
-        if barrier.candidate_target_present && !diff.to_start.contains(&barrier.target) {
-            diff.to_start.push(barrier.target);
-        }
-    }
-}
-
 fn plan_from_diff(generation: u32, mut diff: UnitDiff) -> Plan {
     let install_only = std::mem::take(&mut diff.install_only);
     for unit in install_only {
@@ -4232,6 +4201,25 @@ fn ensure_required_stop_succeeded<E: std::fmt::Display>(
             "required pre-swap stop for {unit} returned systemd job result '{}'",
             result.label()
         );
+    }
+    Ok(())
+}
+
+async fn await_required_stops<F, Fut, E>(
+    ordered_stops: &[String],
+    required_stops: &BTreeSet<String>,
+    mut stop: F,
+) -> Result<()>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<JobResult, E>>,
+    E: std::fmt::Display,
+{
+    for unit in ordered_stops
+        .iter()
+        .filter(|unit| required_stops.contains(*unit))
+    {
+        ensure_required_stop_succeeded(unit, stop(unit.clone()).await)?;
     }
     Ok(())
 }
@@ -7185,22 +7173,29 @@ mod tests {
                     candidate_target_present: true,
                 },
             )]),
-            to_restart: vec![helper.to_string(), "ordinary.service".to_string()],
+            to_restart: vec![
+                helper.to_string(),
+                "web.service".to_string(),
+                "aos-pkg-web.target".to_string(),
+                "ordinary.service".to_string(),
+            ],
             to_reload: vec!["web.service".to_string()],
+            blanket_targets: vec!["aos-pkg-web.target".to_string()],
             ..Default::default()
         };
 
         let mut diff = diff;
-        normalize_service_root_lifecycle(&mut diff);
+        diff.normalize_service_root_lifecycle();
         let plan = plan_from_diff(8, diff);
 
-        assert_eq!(plan.stopped, vec!["aos-pkg-web.target"]);
+        assert_eq!(plan.stopped, vec!["aos-pkg-web.target", helper]);
         assert_eq!(plan.to_restart, vec!["ordinary.service"]);
         assert!(plan.to_reload.is_empty());
+        assert!(plan.blanket_targets.is_empty());
         assert_eq!(plan.to_start, vec!["aos-pkg-web.target"]);
         assert_eq!(
             plan.required_stops,
-            BTreeSet::from(["aos-pkg-web.target".to_string()])
+            BTreeSet::from(["aos-pkg-web.target".to_string(), helper.to_string(),])
         );
     }
 
@@ -7221,14 +7216,17 @@ mod tests {
             ..Default::default()
         };
 
-        normalize_service_root_lifecycle(&mut diff);
+        diff.normalize_service_root_lifecycle();
 
-        assert_eq!(diff.to_stop, vec!["aos-pkg-web.target"]);
+        assert_eq!(
+            diff.to_stop,
+            vec!["aos-pkg-web.target", "aos-pkg-web-service-roots.service"]
+        );
         assert_eq!(diff.to_start, vec!["aos-pkg-web.target"]);
         assert!(diff.to_restart.is_empty());
         assert_eq!(
             diff.required_stops,
-            BTreeSet::from(["aos-pkg-web.target".to_string()])
+            BTreeSet::from(["aos-pkg-web.target".to_string(), helper.to_string(),])
         );
     }
 
@@ -7251,11 +7249,10 @@ mod tests {
         };
 
         let mut diff = diff;
-        normalize_service_root_lifecycle(&mut diff);
+        diff.normalize_service_root_lifecycle();
         let plan = plan_from_diff(9, diff);
 
-        assert_eq!(plan.stopped, vec!["aos-pkg-web.target"]);
-        assert!(!plan.stopped.iter().any(|unit| unit == root_unit));
+        assert_eq!(plan.stopped, vec!["aos-pkg-web.target", root_unit]);
         assert_eq!(plan.to_start, vec!["aos-pkg-web.target"]);
     }
 
@@ -7276,10 +7273,10 @@ mod tests {
         };
 
         let mut diff = diff;
-        normalize_service_root_lifecycle(&mut diff);
+        diff.normalize_service_root_lifecycle();
         let plan = plan_from_diff(10, diff);
 
-        assert_eq!(plan.stopped, vec!["aos-pkg-web.target"]);
+        assert_eq!(plan.stopped, vec!["aos-pkg-web.target", root_unit]);
         assert!(plan.to_start.is_empty());
     }
 
@@ -7299,6 +7296,87 @@ mod tests {
                 .contains("required pre-swap stop failed")
         );
         ensure_required_stop_succeeded::<&str>("aos-pkg-web.target", Ok(JobResult::Done)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn required_service_root_barrier_waits_for_old_helper_cleanup() {
+        use std::sync::{Arc, Mutex};
+        use tokio::sync::Notify;
+
+        let target = "aos-pkg-web.target".to_string();
+        let helper = "aos-pkg-web-service-roots.service".to_string();
+        let ordered = vec![target.clone(), helper.clone()];
+        let expected = ordered.clone();
+        let required = BTreeSet::from([target, helper.clone()]);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let helper_started = Arc::new(Notify::new());
+        let helper_release = Arc::new(Notify::new());
+
+        let task = {
+            let calls = Arc::clone(&calls);
+            let helper_started = Arc::clone(&helper_started);
+            let helper_release = Arc::clone(&helper_release);
+            let helper = helper.clone();
+            tokio::spawn(async move {
+                await_required_stops(&ordered, &required, move |unit| {
+                    let calls = Arc::clone(&calls);
+                    let helper_started = Arc::clone(&helper_started);
+                    let helper_release = Arc::clone(&helper_release);
+                    let helper = helper.clone();
+                    async move {
+                        calls.lock().unwrap().push(unit.clone());
+                        if unit == helper {
+                            helper_started.notify_one();
+                            helper_release.notified().await;
+                        }
+                        Ok::<_, &str>(JobResult::Done)
+                    }
+                })
+                .await
+            })
+        };
+
+        helper_started.notified().await;
+        assert!(
+            !task.is_finished(),
+            "barrier returned before helper cleanup"
+        );
+        helper_release.notify_one();
+        task.await.unwrap().unwrap();
+        assert_eq!(*calls.lock().unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn required_service_root_helper_failure_aborts_barrier() {
+        use std::sync::{Arc, Mutex};
+
+        let target = "aos-pkg-web.target".to_string();
+        let helper = "aos-pkg-web-service-roots.service".to_string();
+        let ordered = vec![target.clone(), helper.clone()];
+        let required = BTreeSet::from([target, helper.clone()]);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+
+        let err = await_required_stops(&ordered, &required, {
+            let calls = Arc::clone(&calls);
+            let helper = helper.clone();
+            move |unit| {
+                let calls = Arc::clone(&calls);
+                let helper = helper.clone();
+                async move {
+                    calls.lock().unwrap().push(unit.clone());
+                    Ok::<_, &str>(if unit == helper {
+                        JobResult::Dependency
+                    } else {
+                        JobResult::Done
+                    })
+                }
+            }
+        })
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains(&helper));
+        assert_eq!(*calls.lock().unwrap(), ordered);
     }
 
     #[test]

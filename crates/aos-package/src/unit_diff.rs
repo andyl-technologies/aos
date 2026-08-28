@@ -334,6 +334,50 @@ pub struct UnitDiff {
     pub warnings: Vec<String>,
 }
 
+impl UnitDiff {
+    /// Replaces affected service-root member actions with an ordered, required
+    /// owning-target and old-helper stop barrier.
+    pub fn normalize_service_root_lifecycle(&mut self) {
+        let affected_helpers = self
+            .to_restart
+            .iter()
+            .chain(&self.to_stop)
+            .filter(|unit| self.service_root_barriers.contains_key(*unit))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+
+        for helper in affected_helpers {
+            let barrier = self.service_root_barriers[&helper].clone();
+            let members = barrier
+                .live_members
+                .union(&barrier.candidate_members)
+                .cloned()
+                .chain([helper.clone(), barrier.target.clone()])
+                .collect::<BTreeSet<_>>();
+            self.to_stop.retain(|unit| !members.contains(unit));
+            self.to_restart.retain(|unit| !members.contains(unit));
+            self.to_reload.retain(|unit| !members.contains(unit));
+            self.to_start.retain(|unit| !members.contains(unit));
+            self.install_only.retain(|unit| !members.contains(unit));
+            self.blanket_targets.retain(|unit| !members.contains(unit));
+
+            if !self.to_stop.contains(&barrier.target) {
+                self.to_stop.push(barrier.target.clone());
+            }
+            self.required_stops.insert(barrier.target.clone());
+
+            // Stopping the target waits for its own job only. An explicit old
+            // helper stop after it is the cleanup completion barrier.
+            self.to_stop.push(helper.clone());
+            self.required_stops.insert(helper);
+
+            if barrier.candidate_target_present && !self.to_start.contains(&barrier.target) {
+                self.to_start.push(barrier.target);
+            }
+        }
+    }
+}
+
 /// Returns the package target owning a generated service-root preparation unit.
 ///
 /// The expose renderer reserves this exact name. Keeping the derivation here
@@ -1165,7 +1209,7 @@ mod tests {
             "[Unit]\nPartOf=aos-pkg-web.target\n[Socket]\nListenStream=8080\n",
         );
 
-        let diff = compute_diff(live.path(), candidate.path());
+        let mut diff = compute_diff(live.path(), candidate.path());
         let barrier = &diff.service_root_barriers[helper];
 
         assert_eq!(barrier.target, "aos-pkg-web.target");
@@ -1175,6 +1219,14 @@ mod tests {
         assert!(barrier.candidate_members.contains("web.socket"));
         assert!(barrier.candidate_target_present);
         assert!(diff.to_stop.contains(&helper.to_string()));
+
+        diff.normalize_service_root_lifecycle();
+        assert_eq!(
+            diff.to_stop,
+            vec!["aos-pkg-web.target", "aos-pkg-web-service-roots.service"]
+        );
+        assert_eq!(diff.to_start, vec!["aos-pkg-web.target"]);
+        assert!(diff.to_restart.is_empty());
     }
 
     #[test]
