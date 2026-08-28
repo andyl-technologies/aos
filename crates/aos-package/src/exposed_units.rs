@@ -1249,14 +1249,14 @@ fn validate_service_root_preparation(
         root_unit,
         service,
         "CapabilityBoundingSet",
-        "CAP_SYS_ADMIN",
+        "CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN",
     )?;
     require_service_value(
         package_name,
         root_unit,
         service,
         "AmbientCapabilities",
-        "CAP_SYS_ADMIN",
+        "CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN",
     )?;
     require_service_value(package_name, root_unit, service, "PrivateMounts", "false")?;
     require_service_value(package_name, root_unit, service, "NoNewPrivileges", "false")?;
@@ -3810,6 +3810,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn exposed_packages_rejects_incomplete_service_root_capabilities() {
+        let tmp = TempDir::new().unwrap();
+        let installed = installed_with_expose(&tmp, "web", "pkgwebhash11", "artifactweb11");
+        let artifact = installed
+            .apm
+            .as_ref()
+            .unwrap()
+            .expose_artifact
+            .as_ref()
+            .unwrap()
+            .store_path
+            .clone();
+        let root_unit = Path::new(&artifact).join("units/aos-pkg-web-service-roots.service");
+        let text = std::fs::read_to_string(&root_unit).unwrap().replace(
+            "CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN",
+            "CapabilityBoundingSet=CAP_SYS_ADMIN",
+        );
+        std::fs::write(root_unit, text).unwrap();
+        let profile = Profile {
+            path: tmp
+                .path()
+                .join("profile-incomplete-service-root-capabilities"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("CapabilityBoundingSet"),
+            "{err:#}"
+        );
+    }
+
     fn write_exposed_unit_surface(root: &Path, packages: &[ExposedPackage]) {
         write_attached_units(root, packages).unwrap();
         let targets = packages
@@ -4137,7 +4173,7 @@ mod tests {
         let workloads = workload_units.join(" ");
         let command = format!("{package_name} {runtime_store_path} {workloads}");
         format!(
-            "[Unit]\nPartOf={target}\nBefore={workloads}\n[Service]\nType=oneshot\nRemainAfterExit=true\nExecStart={helper} prepare {command}\nExecStop={helper} cleanup {command}\nExecStopPost={helper} cleanup {command}\nCapabilityBoundingSet=CAP_SYS_ADMIN\nAmbientCapabilities=CAP_SYS_ADMIN\nPrivateMounts=false\nNoNewPrivileges=false\nRestrictAddressFamilies=AF_UNIX\nUMask=0077\n[Install]\nWantedBy={target}\n"
+            "[Unit]\nPartOf={target}\nBefore={workloads}\n[Service]\nType=oneshot\nRemainAfterExit=true\nExecStart={helper} prepare {command}\nExecStop={helper} cleanup {command}\nExecStopPost={helper} cleanup {command}\nCapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN\nAmbientCapabilities=CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN\nPrivateMounts=false\nNoNewPrivileges=false\nRestrictAddressFamilies=AF_UNIX\nUMask=0077\n[Install]\nWantedBy={target}\n"
         )
     }
 

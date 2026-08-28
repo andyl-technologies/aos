@@ -1233,8 +1233,8 @@ in
             || [ "$cleanup_post" != "$expected_cleanup" ] \
             || [ "$(unit_single_value Type "$service_path")" != oneshot ] \
             || [ "$(unit_single_value RemainAfterExit "$service_path")" != true ] \
-            || [ "$(unit_single_value CapabilityBoundingSet "$service_path")" != CAP_SYS_ADMIN ] \
-            || [ "$(unit_single_value AmbientCapabilities "$service_path")" != CAP_SYS_ADMIN ] \
+            || [ "$(unit_single_value CapabilityBoundingSet "$service_path")" != "CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN" ] \
+            || [ "$(unit_single_value AmbientCapabilities "$service_path")" != "CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN" ] \
             || [ "$(unit_single_value NoNewPrivileges "$service_path")" != false ] \
             || [ "$(unit_single_value PrivateMounts "$service_path")" != false ] \
             || [ "$(unit_single_value RestrictAddressFamilies "$service_path")" != AF_UNIX ] \
