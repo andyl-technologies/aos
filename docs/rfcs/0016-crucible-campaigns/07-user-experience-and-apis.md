@@ -689,10 +689,16 @@ same state-root lock. A volatile blob or ref implementation fails admission.
 The shipped `crucible serve` profile now binds local directory, compressed,
 encrypted, packed, verified, routed, tiered, read-through, write-through,
 write-back, durability-policy, metrics, logical/physical quota, namespaced, and
-campaign-profile nodes through that file. S3 endpoint/credential ownership,
-remote refs, and bounded owner-side maintenance scheduling require the next
-schema version and remain open; version one retains but does not expose its
-exact graph/ref maintenance authority and cannot silently name an S3 node.
+campaign-profile nodes through the version-one file. The version-two profile
+also binds exact HTTPS S3 endpoints, bounded SDK workers, reloading owner-only
+credential files, S3 graph leaves, and an optional strong-CAS remote ref
+namespace. It checks the exact endpoint capability set and segment-disjoint
+physical namespaces before credential I/O, retains graph/ref maintenance
+authority through shutdown, and never exposes that authority to the campaign
+service. The strong-CAS flag is an operator conformance attestation rather than
+automatic service discovery. Bounded owner-side maintenance scheduling and
+porcelain, a hermetic live-service fixture, and the realistic operator flight
+remain open.
 
 The separately hosted or daemon-packaged executor endpoint has one coupled
 lifecycle owner: a shutdown closes assignment admission, signals active

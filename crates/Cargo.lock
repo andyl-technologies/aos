@@ -2173,6 +2173,8 @@ dependencies = [
 name = "crucible-cli"
 version = "0.1.0"
 dependencies = [
+ "aws-credential-types",
+ "aws-sdk-s3",
  "clap",
  "clap_complete",
  "crucible-api",
@@ -2181,6 +2183,7 @@ dependencies = [
  "crucible-daemon",
  "crucible-harness",
  "crucible-linux-resource",
+ "crucible-s3-store",
  "crucible-session",
  "libc",
  "rustix 1.1.4",
@@ -2190,6 +2193,8 @@ dependencies = [
  "tokio",
  "tokio-rustls 0.26.4",
  "toml 0.8.23",
+ "url",
+ "zeroize",
 ]
 
 [[package]]

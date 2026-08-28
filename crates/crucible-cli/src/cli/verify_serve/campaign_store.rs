@@ -14,11 +14,12 @@ use std::sync::Arc;
 
 use crucible_campaign::{CAMPAIGN_OBJECT_PROFILE_POLICY_V1, CampaignObjectProfiler};
 use crucible_cas::content_store::{
-    ContentId, DirectoryRefBackend, DurabilityRequirement, ObjectKind, StoreEncryptionKey,
-    StoreEncryptionKeyId, StoreGraph, StoreGraphAdmin, StoreGraphConfig, StoreGraphKeyring,
-    StoreGraphNamespaceAuthorizers, StoreGraphObjectProfilers, StoreGraphPhysicalQuotaBinders,
-    StoreGraphS3Clients, StoreNamespaceAuthorizer, StoreNamespaceId, StoreNamespaceOperation,
-    StoreNodeId, StoreNodeSpec, StoreObjectProfilePolicyId, StorePhysicalQuotaPolicyId,
+    ContentId, DirectoryRefBackend, DurabilityRequirement, ObjectKind, S3RefBackend,
+    StoreEncryptionKey, StoreEncryptionKeyId, StoreGraph, StoreGraphAdmin, StoreGraphConfig,
+    StoreGraphKeyring, StoreGraphNamespaceAuthorizers, StoreGraphObjectProfilers,
+    StoreGraphPhysicalQuotaBinders, StoreNamespaceAuthorizer, StoreNamespaceId,
+    StoreNamespaceOperation, StoreNodeId, StoreNodeSpec, StoreObjectProfilePolicyId,
+    StorePhysicalQuotaPolicyId,
 };
 use crucible_linux_resource::LinuxProjectQuotaBinder;
 use rustix::fs::{Mode, OFlags};
@@ -26,8 +27,18 @@ use serde::Deserialize;
 
 use super::*;
 
+#[path = "campaign_store/s3.rs"]
+mod s3;
+
+use s3::{
+    AuthoredS3Endpoint, AuthoredS3RefBackend, ResolvedS3RefBackend, index_s3_endpoints,
+    load_s3_capabilities, s3_endpoint_ids, validate_s3_namespace_separation,
+    validate_s3_storage_configuration,
+};
+
 const CAMPAIGN_STORE_SCHEMA: &str = "crucible.campaign-repository-store";
-const CAMPAIGN_STORE_VERSION: u32 = 1;
+const CAMPAIGN_STORE_VERSION_1: u32 = 1;
+const CAMPAIGN_STORE_VERSION_2: u32 = 2;
 const MAX_CAMPAIGN_STORE_DEPLOYMENT_BYTES: usize = 256 * 1024;
 const MAX_CAMPAIGN_STORE_KEY_BYTES: usize = 32;
 const CAMPAIGN_STORE_OBJECT_KINDS: [ObjectKind; 14] = [
@@ -54,7 +65,12 @@ struct CampaignStoreDeployment {
     version: u32,
     root: String,
     admitted_kinds: Vec<String>,
-    ref_directory: PathBuf,
+    #[serde(default)]
+    ref_directory: Option<PathBuf>,
+    #[serde(default)]
+    s3_ref: Option<AuthoredS3RefBackend>,
+    #[serde(default)]
+    s3_endpoints: Vec<AuthoredS3Endpoint>,
     #[serde(default)]
     keys: Vec<AuthoredEncryptionKey>,
     #[serde(default)]
@@ -117,6 +133,13 @@ enum AuthoredStoreNodeSpec {
     Packed {
         root: PathBuf,
         target_pack_bytes: u64,
+    },
+    S3 {
+        endpoint: String,
+        bucket: String,
+        prefix: String,
+        maximum_logical_object_bytes: u64,
+        multipart_part_bytes: u64,
     },
     Verified {
         child: String,
@@ -205,19 +228,55 @@ impl StoreNamespaceAuthorizer for StaticNamespaceAuthorizer {
     }
 }
 
+enum LoadedRefBackend {
+    Directory(Arc<DirectoryRefBackend>),
+    S3(Arc<S3RefBackend>),
+}
+
+enum ResolvedRefBackend {
+    Directory(PathBuf),
+    S3(ResolvedS3RefBackend),
+}
+
+struct LoadedCampaignRepositoryStore {
+    graph: Arc<StoreGraph>,
+    refs: LoadedRefBackend,
+    maintenance: StoreGraphAdmin,
+}
+
+impl LoadedCampaignRepositoryStore {
+    fn into_store(self) -> Result<crucible_daemon::CampaignLocalRepositoryStore, CliError> {
+        let result = match self.refs {
+            LoadedRefBackend::Directory(refs) => {
+                crucible_daemon::CampaignLocalRepositoryStore::new_with_maintenance(
+                    self.graph,
+                    refs,
+                    self.maintenance,
+                )
+            }
+            LoadedRefBackend::S3(refs) => {
+                crucible_daemon::CampaignLocalRepositoryStore::new_with_maintenance(
+                    self.graph,
+                    refs,
+                    self.maintenance,
+                )
+            }
+        };
+        result.map_err(|error| {
+            campaign_store_error(format!("repository-store admission failed: {error}"))
+        })
+    }
+}
+
 pub(super) fn load_campaign_repository_store(
     deployment_path: &Path,
 ) -> Result<crucible_daemon::CampaignLocalRepositoryStore, CliError> {
-    let (graph, refs, maintenance) = load_campaign_repository_graph(deployment_path)?;
-    crucible_daemon::CampaignLocalRepositoryStore::new_with_maintenance(graph, refs, maintenance)
-        .map_err(|error| {
-            campaign_store_error(format!("repository-store admission failed: {error}"))
-        })
+    load_campaign_repository_graph(deployment_path)?.into_store()
 }
 
 fn load_campaign_repository_graph(
     deployment_path: &Path,
-) -> Result<(Arc<StoreGraph>, Arc<DirectoryRefBackend>, StoreGraphAdmin), CliError> {
+) -> Result<LoadedCampaignRepositoryStore, CliError> {
     let bytes = read_secure_file(
         deployment_path,
         MAX_CAMPAIGN_STORE_DEPLOYMENT_BYTES,
@@ -225,20 +284,28 @@ fn load_campaign_repository_graph(
     )?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|error| campaign_store_error(format!("deployment is not UTF-8: {error}")))?;
-    let deployment: CampaignStoreDeployment = toml::from_str(text)
+    let mut deployment: CampaignStoreDeployment = toml::from_str(text)
         .map_err(|error| campaign_store_error(format!("invalid deployment: {error}")))?;
-    if deployment.schema != CAMPAIGN_STORE_SCHEMA || deployment.version != CAMPAIGN_STORE_VERSION {
+    if deployment.schema != CAMPAIGN_STORE_SCHEMA
+        || !matches!(
+            deployment.version,
+            CAMPAIGN_STORE_VERSION_1 | CAMPAIGN_STORE_VERSION_2
+        )
+    {
         return Err(campaign_store_error("unsupported schema or version"));
     }
+    let ref_backend = resolve_ref_backend(
+        deployment.version,
+        deployment.ref_directory.take(),
+        deployment.s3_ref.take(),
+        deployment.s3_endpoints.is_empty(),
+    )?;
 
     let user_id = rustix::process::geteuid().as_raw();
     let group_id = rustix::process::getegid().as_raw();
-    validate_secure_directory(
-        &deployment.ref_directory,
-        user_id,
-        group_id,
-        "ref directory",
-    )?;
+    if let ResolvedRefBackend::Directory(path) = &ref_backend {
+        validate_secure_directory(path, user_id, group_id, "ref directory")?;
+    }
 
     let admitted_kinds = parse_object_kind_set(&deployment.admitted_kinds, "admitted kind")?;
     if admitted_kinds != BTreeSet::from(CAMPAIGN_STORE_OBJECT_KINDS) {
@@ -254,6 +321,30 @@ fn load_campaign_repository_graph(
         if nodes.insert(id, spec).is_some() {
             return Err(campaign_store_error("duplicate node ID"));
         }
+    }
+
+    let mut required_s3_endpoints = nodes
+        .values()
+        .filter_map(|node| match node {
+            StoreNodeSpec::S3 { endpoint, .. } => Some(endpoint.clone()),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    if let ResolvedRefBackend::S3(refs) = &ref_backend {
+        required_s3_endpoints.insert(refs.endpoint().clone());
+    }
+    validate_s3_namespace_separation(
+        &nodes,
+        match &ref_backend {
+            ResolvedRefBackend::S3(refs) => Some(refs),
+            ResolvedRefBackend::Directory(_) => None,
+        },
+    )?;
+    let authored_s3_endpoints = index_s3_endpoints(deployment.s3_endpoints)?;
+    if s3_endpoint_ids(&authored_s3_endpoints) != required_s3_endpoints {
+        return Err(campaign_store_error(
+            "S3 endpoint capabilities do not exactly match graph and ref requirements",
+        ));
     }
 
     let required_keys = nodes
@@ -397,6 +488,8 @@ fn load_campaign_repository_graph(
             })?;
     }
 
+    let s3_capabilities = load_s3_capabilities(authored_s3_endpoints)?;
+
     let root = StoreNodeId::new(deployment.root)
         .map_err(|error| campaign_store_error(format!("invalid root node ID: {error}")))?;
     let (graph, maintenance) = StoreGraph::build_with_admin_and_all_capabilities(
@@ -409,11 +502,42 @@ fn load_campaign_repository_graph(
         &authorizers,
         &profilers,
         &physical_quotas,
-        &StoreGraphS3Clients::new(),
+        &s3_capabilities.graph,
     )
     .map_err(|error| campaign_store_error(format!("graph admission failed: {error}")))?;
-    let refs = Arc::new(DirectoryRefBackend::new(deployment.ref_directory));
-    Ok((Arc::new(graph), refs, maintenance))
+    let refs = match ref_backend {
+        ResolvedRefBackend::Directory(path) => {
+            LoadedRefBackend::Directory(Arc::new(DirectoryRefBackend::new(path)))
+        }
+        ResolvedRefBackend::S3(refs) => LoadedRefBackend::S3(refs.build(&s3_capabilities)?),
+    };
+    Ok(LoadedCampaignRepositoryStore {
+        graph: Arc::new(graph),
+        refs,
+        maintenance,
+    })
+}
+
+fn resolve_ref_backend(
+    version: u32,
+    ref_directory: Option<PathBuf>,
+    s3_ref: Option<AuthoredS3RefBackend>,
+    s3_endpoints_empty: bool,
+) -> Result<ResolvedRefBackend, CliError> {
+    match (version, ref_directory, s3_ref) {
+        (CAMPAIGN_STORE_VERSION_1, Some(path), None) if s3_endpoints_empty => {
+            Ok(ResolvedRefBackend::Directory(path))
+        }
+        (CAMPAIGN_STORE_VERSION_2, Some(path), None) => Ok(ResolvedRefBackend::Directory(path)),
+        (CAMPAIGN_STORE_VERSION_2, None, Some(refs)) => Ok(ResolvedRefBackend::S3(refs.resolve()?)),
+        (CAMPAIGN_STORE_VERSION_1, _, _) => Err(campaign_store_error(
+            "version-one deployment requires only ref_directory and no S3 endpoints",
+        )),
+        (CAMPAIGN_STORE_VERSION_2, _, _) => Err(campaign_store_error(
+            "version-two deployment requires exactly one of ref_directory or s3_ref",
+        )),
+        _ => Err(campaign_store_error("unsupported schema or version")),
+    }
 }
 
 impl AuthoredStoreNodeSpec {
@@ -474,6 +598,30 @@ impl AuthoredStoreNodeSpec {
                 Ok(StoreNodeSpec::Packed {
                     root,
                     target_pack_bytes,
+                })
+            }
+            Self::S3 {
+                endpoint,
+                bucket,
+                prefix,
+                maximum_logical_object_bytes,
+                multipart_part_bytes,
+            } => {
+                validate_s3_storage_configuration(
+                    &bucket,
+                    &prefix,
+                    maximum_logical_object_bytes,
+                    multipart_part_bytes,
+                )?;
+                Ok(StoreNodeSpec::S3 {
+                    endpoint: crucible_cas::content_store::StoreS3EndpointId::new(endpoint)
+                        .map_err(|error| {
+                            campaign_store_error(format!("invalid S3 endpoint ID: {error}"))
+                        })?,
+                    bucket,
+                    prefix,
+                    maximum_logical_object_bytes,
+                    multipart_part_bytes,
                 })
             }
             Self::Verified { child } => Ok(StoreNodeSpec::Verified {
@@ -776,21 +924,23 @@ mod tests {
         let fixture = StoreDeploymentFixture::new();
         let deployment = fixture.write_deployment("");
 
-        let (graph, refs, _maintenance) =
+        let loaded =
             load_campaign_repository_graph(&deployment).expect("load composed campaign store");
+        let graph = loaded.graph.clone();
         let bytes = b"initialize encrypted campaign storage";
         let id = ContentId::for_bytes(ObjectKind::Trace, 1, bytes);
         graph
             .put_if_absent(id, &BlobHandle::from_bytes(bytes.to_vec()))
             .expect("initialize encrypted campaign storage");
-        drop(refs);
+        drop(loaded);
         drop(graph);
         load_campaign_repository_store(&deployment).expect("restart composed campaign store");
 
         fs::write(&fixture.key, [0x52; 32]).expect("replace key generation");
-        let (wrong_key, _refs, _maintenance) =
+        let wrong_key =
             load_campaign_repository_graph(&deployment).expect("construct wrong-key graph");
         let _error = wrong_key
+            .graph
             .contains(id)
             .expect_err("changed key must not authenticate encrypted storage");
     }
@@ -847,6 +997,173 @@ path = "/definitely/missing/campaign-store-key.bin"
                 .to_string()
                 .contains("do not exactly match encrypted graph leaves")
         );
+    }
+
+    #[test]
+    fn strict_s3_store_binds_remote_graph_refs_and_maintenance_without_network_io() {
+        let fixture = StoreDeploymentFixture::new();
+        let credentials = fixture.write_s3_credentials(None);
+        let deployment = fixture.write_s3_deployment(
+            "campaign/s3-primary",
+            "campaign/s3-primary",
+            &credentials,
+            "https://s3.example.invalid",
+        );
+
+        let loaded =
+            load_campaign_repository_graph(&deployment).expect("load strict S3 deployment");
+        assert!(loaded.graph.describe().iter().any(|node| {
+            node.kind == crucible_cas::content_store::StoreNodeKind::S3 && node.capabilities.durable
+        }));
+        assert_eq!(loaded.maintenance.physical().len(), 1);
+        assert_eq!(loaded.maintenance.s3_multipart_cleanup().len(), 1);
+        assert!(matches!(&loaded.refs, LoadedRefBackend::S3(_)));
+        loaded.into_store().expect("bind maintained S3 store");
+    }
+
+    #[test]
+    fn strict_s3_store_rejects_expired_credentials_before_worker_start() {
+        let fixture = StoreDeploymentFixture::new();
+        let credentials = fixture.write_s3_credentials(Some(1));
+        let deployment = fixture.write_s3_deployment(
+            "campaign/s3-expired",
+            "campaign/s3-expired",
+            &credentials,
+            "https://s3.example.invalid",
+        );
+
+        let Err(error) = load_campaign_repository_store(&deployment) else {
+            panic!("expired S3 credentials were accepted");
+        };
+        assert!(error.to_string().contains("credential is expired"));
+    }
+
+    #[test]
+    fn strict_s3_store_never_reflects_malformed_secret_material() {
+        let fixture = StoreDeploymentFixture::new();
+        let credentials = fixture.root.join("malformed-s3-credentials.toml");
+        let secret = "must-not-appear-in-diagnostics";
+        fs::write(
+            &credentials,
+            format!(
+                r#"schema = "crucible.campaign-s3-credentials"
+version = 1
+access_key_id = "CAMPAIGNACCESSKEY"
+secret_access_key = "{secret}"
+unknown_secret_field = true
+"#,
+            ),
+        )
+        .expect("write malformed S3 credentials");
+        fs::set_permissions(&credentials, fs::Permissions::from_mode(0o600))
+            .expect("secure malformed S3 credentials");
+        let deployment = fixture.write_s3_deployment(
+            "campaign/s3-redaction",
+            "campaign/s3-redaction",
+            &credentials,
+            "https://s3.example.invalid",
+        );
+
+        let Err(error) = load_campaign_repository_store(&deployment) else {
+            panic!("malformed S3 credentials were accepted");
+        };
+        let diagnostic = error.to_string();
+        assert!(diagnostic.contains("invalid S3 credential body"));
+        assert!(!diagnostic.contains(secret));
+    }
+
+    #[test]
+    fn strict_s3_store_rejects_endpoint_mismatch_before_credential_io() {
+        let fixture = StoreDeploymentFixture::new();
+        let missing = fixture.root.join("missing-credentials.toml");
+        let deployment = fixture.write_s3_deployment(
+            "campaign/s3-required",
+            "campaign/s3-unused",
+            &missing,
+            "https://s3.example.invalid",
+        );
+
+        let Err(error) = load_campaign_repository_store(&deployment) else {
+            panic!("mismatched S3 endpoint capability was accepted");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("do not exactly match graph and ref requirements")
+        );
+    }
+
+    #[test]
+    fn strict_s3_store_rejects_non_https_endpoint_before_credential_io() {
+        let fixture = StoreDeploymentFixture::new();
+        let missing = fixture.root.join("missing-credentials.toml");
+        let deployment = fixture.write_s3_deployment(
+            "campaign/s3-insecure",
+            "campaign/s3-insecure",
+            &missing,
+            "http://s3.example.invalid",
+        );
+
+        let Err(error) = load_campaign_repository_store(&deployment) else {
+            panic!("plaintext S3 endpoint was accepted");
+        };
+        assert!(error.to_string().contains("bounded HTTPS origin"));
+    }
+
+    #[test]
+    fn strict_s3_store_requires_explicit_strong_cas_attestation_before_credential_io() {
+        let fixture = StoreDeploymentFixture::new();
+        let missing = fixture.root.join("missing-credentials.toml");
+        let deployment = fixture.write_s3_deployment(
+            "campaign/s3-unattested",
+            "campaign/s3-unattested",
+            &missing,
+            "https://s3.example.invalid",
+        );
+        let body = fs::read_to_string(&deployment).expect("read S3 deployment");
+        fs::write(
+            &deployment,
+            body.replace(
+                "strong_cas_conformance = true",
+                "strong_cas_conformance = false",
+            ),
+        )
+        .expect("remove S3 strong-CAS attestation");
+
+        let Err(error) = load_campaign_repository_store(&deployment) else {
+            panic!("unattested S3 service was accepted");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("strong-CAS conformance attestation")
+        );
+    }
+
+    #[test]
+    fn strict_s3_store_rejects_overlapping_graph_and_ref_namespaces_before_credential_io() {
+        let fixture = StoreDeploymentFixture::new();
+        let missing = fixture.root.join("missing-credentials.toml");
+        let deployment = fixture.write_s3_deployment(
+            "campaign/s3-overlap",
+            "campaign/s3-overlap",
+            &missing,
+            "https://s3.example.invalid",
+        );
+        let body = fs::read_to_string(&deployment).expect("read S3 deployment");
+        fs::write(
+            &deployment,
+            body.replace(
+                "prefix = \"campaign/refs\"",
+                "prefix = \"campaign/objects\"",
+            ),
+        )
+        .expect("overlap S3 namespaces");
+
+        let Err(error) = load_campaign_repository_store(&deployment) else {
+            panic!("overlapping S3 physical namespaces were accepted");
+        };
+        assert!(error.to_string().contains("physical namespaces overlap"));
     }
 
     #[test]
@@ -1011,6 +1328,87 @@ policy = "crucible.campaign.object-profile.v1"
             .expect("write campaign store deployment");
             fs::set_permissions(&deployment, fs::Permissions::from_mode(0o600))
                 .expect("secure campaign store deployment");
+            deployment
+        }
+
+        fn write_s3_credentials(&self, expiry: Option<u64>) -> PathBuf {
+            let path = self.root.join("s3-credentials.toml");
+            let expiry = expiry
+                .map(|seconds| format!("expires_at_unix_seconds = {seconds}\n"))
+                .unwrap_or_default();
+            fs::write(
+                &path,
+                format!(
+                    r#"schema = "crucible.campaign-s3-credentials"
+version = 1
+access_key_id = "CAMPAIGNACCESSKEY"
+secret_access_key = "campaign-secret-access-key"
+session_token = "campaign-session-token"
+{expiry}"#,
+                ),
+            )
+            .expect("write S3 credentials");
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                .expect("secure S3 credentials");
+            path
+        }
+
+        fn write_s3_deployment(
+            &self,
+            required_endpoint: &str,
+            configured_endpoint: &str,
+            credential_path: &Path,
+            endpoint_url: &str,
+        ) -> PathBuf {
+            let deployment = self.root.join("store-s3.toml");
+            let kinds = all_object_kinds_toml();
+            fs::write(
+                &deployment,
+                format!(
+                    r#"schema = "crucible.campaign-repository-store"
+version = 2
+root = "profile"
+admitted_kinds = {kinds}
+
+[s3_ref]
+endpoint = {required_endpoint:?}
+bucket = "campaign-store"
+prefix = "campaign/refs"
+
+[[s3_endpoints]]
+id = {configured_endpoint:?}
+region = "us-west-2"
+endpoint_url = {endpoint_url:?}
+force_path_style = true
+credential_path = {credential_path:?}
+maximum_queued_commands = 8
+maximum_in_flight_operations = 2
+maximum_retained_command_bytes = 134217728
+operation_timeout_ms = 1000
+strong_cas_conformance = true
+
+[[nodes]]
+id = "s3"
+[nodes.spec]
+kind = "s3"
+endpoint = {required_endpoint:?}
+bucket = "campaign-store"
+prefix = "campaign/objects"
+maximum_logical_object_bytes = 67108864
+multipart_part_bytes = 5242880
+
+[[nodes]]
+id = "profile"
+[nodes.spec]
+kind = "profile-validated"
+child = "s3"
+policy = "crucible.campaign.object-profile.v1"
+"#,
+                ),
+            )
+            .expect("write S3 deployment");
+            fs::set_permissions(&deployment, fs::Permissions::from_mode(0o600))
+                .expect("secure S3 deployment");
             deployment
         }
     }
