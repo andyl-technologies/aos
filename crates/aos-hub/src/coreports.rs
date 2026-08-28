@@ -1192,7 +1192,7 @@ impl core_sw::SurfaceWrite for LocalFsWrite {
 
 impl LocalFsWrite {
     async fn strong_version(&self, path: &str) -> Result<Option<String>> {
-        if let Some(digest) = crate::fetch::LocalFsFetch::image_digest(path) {
+        if let Some(digest) = crate::fetch::LocalFsFetch::immutable_digest(path) {
             return Ok(Some(format!("\"snapshot-sha256-{digest}\"")));
         }
         crate::fetch::LocalFsFetch::new(&self.root)

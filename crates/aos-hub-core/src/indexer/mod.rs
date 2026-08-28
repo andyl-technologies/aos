@@ -14,8 +14,9 @@
 //!    closures) and extend the trusted set with the verified roster's
 //!    active keys, mirroring `apm`'s in-band rotation semantics.
 //! 4. Verify every release tag (signature + name binding), rejecting an
-//!    advertisement above [`MAX_RELEASE_TAGS`], and probe each release's per-release
-//!    `objects/info/packs` for pack presence.
+//!    advertisement above [`MAX_RELEASE_TAGS`], validate any signed container
+//!    sidecar against exact OCI catalog and placement evidence, and probe each
+//!    release's per-release `objects/info/packs` for pack presence.
 //! 5. Resolve every channel (rejecting more than [`MAX_BRANCHES`]) by
 //!    probing all 256 partition payloads, verifying each, and mapping its
 //!    target tag object to a release.
@@ -46,6 +47,7 @@ pub mod load;
 use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
+use aos_oci_types::{ContainerRelease, Descriptor, ManifestReference, RepositoryName};
 use aos_registry_surface::manifest::RegistryRootConfig;
 use aos_registry_surface::object::{Commit, ObjectKind};
 use aos_registry_surface::refs::{parse_head, parse_info_refs, Refs};
@@ -59,8 +61,9 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::db::{
-    ChannelSummary, Database, IndexSnapshot, RegistryRecord, ReleaseArtifactSnapshot,
-    ReleaseImageSnapshot, ReleaseRow, ReleaseSnapshotArtifact,
+    ChannelSummary, ContainerReleaseDescriptorRole, ContainerReleaseRootSnapshot, Database,
+    IndexSnapshot, RegistryRecord, ReleaseArtifactSnapshot, ReleaseImageSnapshot, ReleaseRow,
+    ReleaseSnapshotArtifact, VerifiedContainerReleaseDescriptor,
 };
 use crate::fetch::SurfaceFetch;
 
@@ -395,7 +398,8 @@ async fn index_registry_inner(
     let advertised_commit = commit_oid.to_hex();
     let refs_digest_matches =
         db.refs_digest(registry.id).await?.as_deref() == Some(refs_digest.as_str());
-    let has_images = db.has_system_image_catalog(registry.id).await?;
+    let has_images = db.has_system_image_catalog(registry.id).await?
+        || db.has_container_release_catalog(registry.id).await?;
     if incremental_preconditions(
         status.as_ref().map(|status| status.state.as_str()),
         status
@@ -514,25 +518,54 @@ async fn index_registry_inner(
                             })
                         })
                 });
-                let (signed, signer) =
-                    if registry.require_signatures || typed_publication || has_image_catalog {
-                        // An image catalog is always authenticated by its release tag,
-                        // even for registries that otherwise permit unsigned package
-                        // metadata. An unsigned HEAD roster cannot delegate image trust.
-                        let image_trusted = if registry.require_signatures || typed_publication {
-                            trusted
-                        } else {
-                            registry.trust_keys.as_slice()
-                        };
-                        let signed = verify_signed_tag(&payload, &tag_name, image_trusted)
-                            .with_context(|| format!("signed image release tag '{tag_name}'"))?;
-                        let signer = parse_signed_tag(&payload)
-                            .ok()
-                            .and_then(|signed| sshsig_signer(&signed.signature));
-                        (signed, signer)
+                let has_container_release = release_tree.container_release.is_some();
+                let (signed, signer) = if release_requires_signature(
+                    registry.require_signatures,
+                    typed_publication,
+                    has_image_catalog,
+                    has_container_release,
+                ) {
+                    // An image catalog is always authenticated by its release tag,
+                    // even for registries that otherwise permit unsigned package
+                    // metadata. An unsigned HEAD roster cannot delegate image trust.
+                    let image_trusted = if registry.require_signatures || typed_publication {
+                        trusted
                     } else {
-                        (lenient, None)
+                        registry.trust_keys.as_slice()
                     };
+                    let signed = verify_signed_tag(&payload, &tag_name, image_trusted)
+                        .with_context(|| format!("signed image release tag '{tag_name}'"))?;
+                    let signer = parse_signed_tag(&payload)
+                        .ok()
+                        .and_then(|signed| sshsig_signer(&signed.signature));
+                    (signed, signer)
+                } else {
+                    (lenient, None)
+                };
+
+                let container_release = match &release_tree.container_release {
+                    Some(sidecar) => {
+                        let placement_id = indexed_placement_id.context(
+                            "signed container releases require an exact indexed placement",
+                        )?;
+                        Some(
+                            validate_container_release(
+                                db,
+                                registry.id,
+                                placement_id,
+                                &tag_name,
+                                &release_tree.packages,
+                                &sidecar.document,
+                                &sidecar.catalog_digest,
+                            )
+                            .await
+                            .with_context(|| {
+                                format!("validating signed container release '{tag_name}'")
+                            })?,
+                        )
+                    }
+                    None => None,
+                };
 
                 let mut release_leases = Vec::new();
                 let mut release_image = None;
@@ -594,6 +627,7 @@ async fn index_registry_inner(
                     verified_tag_oid: tag_oid.to_hex(),
                     manifest_digest,
                     artifacts,
+                    container_release,
                 };
                 let release = ReleaseRow {
                     semver: tag_name.clone(),
@@ -759,6 +793,241 @@ fn incremental_preconditions(
         && last_indexed_commit == Some(advertised_commit)
         && refs_digest_matches
         && !has_images
+}
+
+fn release_requires_signature(
+    registry_requires_signatures: bool,
+    typed_publication: bool,
+    has_system_images: bool,
+    has_container_release: bool,
+) -> bool {
+    registry_requires_signatures || typed_publication || has_system_images || has_container_release
+}
+
+async fn validate_container_release(
+    db: &Database,
+    registry_id: i64,
+    placement_id: i64,
+    release_tag: &str,
+    packages: &[aos_registry_surface::manifest::PackageToml],
+    release: &ContainerRelease,
+    catalog_digest: &str,
+) -> Result<ContainerReleaseRootSnapshot> {
+    release.validate()?;
+    anyhow::ensure!(
+        release.identity.release == release_tag,
+        "container release identity '{}' does not match signed tag '{release_tag}'",
+        release.identity.release
+    );
+    // Phase 4 intentionally admits one base image. The signed schema is
+    // generic enough for future definitions, but widening the Hub catalog is a
+    // separate policy change rather than an accidental consequence of a new
+    // sidecar appearing on a registry surface.
+    anyhow::ensure!(
+        release.identity.package == "aos"
+            && release.identity.image == "aos"
+            && release.nix.definition.attribute == "containerImages.aos",
+        "the initial container catalog only admits the 'aos' image"
+    );
+    let package = packages
+        .iter()
+        .find(|package| package.package.name == release.identity.package)
+        .context("container release package is absent from the signed release tree")?;
+    anyhow::ensure!(
+        package
+            .versions
+            .iter()
+            .any(|version| version.version == release.identity.package_version),
+        "container release package version '{}' is absent from the signed release tree",
+        release.identity.package_version
+    );
+
+    let repository_name = RepositoryName::parse(&release.identity.image)?;
+    let repository = db
+        .oci_repository(registry_id, &repository_name)
+        .await?
+        .context("signed container release OCI repository is not admitted")?;
+    let mut required_descriptors = vec![
+        validate_oci_descriptor_presence(
+            db,
+            repository.id,
+            placement_id,
+            ContainerReleaseDescriptorRole::Index,
+            &release.oci.index,
+        )
+        .await?,
+    ];
+    let index = db
+        .oci_manifest_for_repository(
+            repository.id,
+            &ManifestReference::Digest(release.oci.index.digest),
+        )
+        .await?
+        .context("signed container release OCI index is not admitted")?;
+    anyhow::ensure!(
+        index.media_type == release.oci.index.media_type
+            && index.byte_size == release.oci.index.size
+            && index.artifact_type.is_none()
+            && index.subject_digest.is_none()
+            && index.annotations == release.oci.index.annotations,
+        "signed container release OCI index conflicts with the admitted catalog"
+    );
+
+    let child_edges = db
+        .oci_descriptor_edges(repository.id, release.oci.index.digest)
+        .await?
+        .into_iter()
+        .filter(|edge| edge.role == "child")
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        child_edges.len() == release.oci.platform_manifests.len(),
+        "signed container release platform set is incomplete"
+    );
+    for (ordinal, (edge, descriptor)) in child_edges
+        .iter()
+        .zip(&release.oci.platform_manifests)
+        .enumerate()
+    {
+        anyhow::ensure!(
+            usize::try_from(edge.ordinal).ok() == Some(ordinal)
+                && descriptor_identity_matches(&edge.descriptor, descriptor),
+            "signed container release platform descriptor {ordinal} conflicts with the admitted index"
+        );
+        required_descriptors.push(
+            validate_oci_descriptor_presence(
+                db,
+                repository.id,
+                placement_id,
+                ContainerReleaseDescriptorRole::PlatformManifest,
+                descriptor,
+            )
+            .await?,
+        );
+        let manifest = db
+            .oci_manifest_for_repository(
+                repository.id,
+                &ManifestReference::Digest(descriptor.digest),
+            )
+            .await?
+            .with_context(|| {
+                format!(
+                    "signed container platform manifest {} is not admitted",
+                    descriptor.digest
+                )
+            })?;
+        anyhow::ensure!(
+            manifest.media_type == descriptor.media_type
+                && manifest.byte_size == descriptor.size
+                && manifest.artifact_type.is_none()
+                && manifest.platform == descriptor.platform,
+            "signed container platform manifest {} conflicts with the admitted catalog",
+            descriptor.digest
+        );
+    }
+
+    for (label, role, descriptor) in container_evidence_descriptors(release) {
+        required_descriptors.push(
+            validate_oci_descriptor_presence(db, repository.id, placement_id, role, descriptor)
+                .await?,
+        );
+        let manifest = db
+            .oci_manifest_for_repository(
+                repository.id,
+                &ManifestReference::Digest(descriptor.digest),
+            )
+            .await?
+            .with_context(|| format!("signed container {label} manifest is not admitted"))?;
+        anyhow::ensure!(
+            manifest.media_type == descriptor.media_type
+                && manifest.byte_size == descriptor.size
+                && manifest.artifact_type == descriptor.artifact_type
+                && manifest.subject_digest == Some(release.oci.index.digest)
+                && manifest.annotations == descriptor.annotations
+                && manifest.platform == descriptor.platform,
+            "signed container {label} manifest conflicts with the admitted referrer catalog"
+        );
+    }
+    let placement_fence = required_descriptors
+        .first()
+        .context("signed container release has no required descriptors")?;
+    anyhow::ensure!(
+        required_descriptors.iter().all(|descriptor| {
+            descriptor.placement_id == placement_fence.placement_id
+                && descriptor.placement_resource_version
+                    == placement_fence.placement_resource_version
+                && descriptor.placement_observation_version
+                    == placement_fence.placement_observation_version
+        }),
+        "signed container descriptor observations cross a placement revision"
+    );
+
+    Ok(ContainerReleaseRootSnapshot {
+        repository: repository_name.as_str().to_string(),
+        container_name: release.identity.image.clone(),
+        index_digest: release.oci.index.digest.to_string(),
+        index_media_type: release.oci.index.media_type.as_str().to_string(),
+        index_size: release.oci.index.size,
+        catalog_digest: catalog_digest.to_string(),
+        required_descriptors,
+    })
+}
+
+async fn validate_oci_descriptor_presence(
+    db: &Database,
+    repository_id: i64,
+    placement_id: i64,
+    role: ContainerReleaseDescriptorRole,
+    descriptor: &Descriptor,
+) -> Result<VerifiedContainerReleaseDescriptor> {
+    db.oci_release_descriptor_placement(repository_id, placement_id, role, descriptor)
+        .await?
+        .with_context(|| {
+            format!(
+                "signed container object {} lacks exact placement evidence",
+                descriptor.digest
+            )
+        })
+}
+
+fn descriptor_identity_matches(left: &Descriptor, right: &Descriptor) -> bool {
+    left == right
+}
+
+fn container_evidence_descriptors(
+    release: &ContainerRelease,
+) -> [(&'static str, ContainerReleaseDescriptorRole, &Descriptor); 6] {
+    [
+        (
+            "Nix closure",
+            ContainerReleaseDescriptorRole::NixClosure,
+            &release.nix.closure,
+        ),
+        (
+            "SBOM",
+            ContainerReleaseDescriptorRole::Sbom,
+            &release.evidence.sbom,
+        ),
+        (
+            "source",
+            ContainerReleaseDescriptorRole::Source,
+            &release.evidence.source,
+        ),
+        (
+            "license",
+            ContainerReleaseDescriptorRole::License,
+            &release.evidence.license,
+        ),
+        (
+            "provenance",
+            ContainerReleaseDescriptorRole::Provenance,
+            &release.evidence.provenance,
+        ),
+        (
+            "signature",
+            ContainerReleaseDescriptorRole::Signature,
+            &release.evidence.signature,
+        ),
+    ]
 }
 
 fn release_snapshot_artifacts(
@@ -2007,6 +2276,24 @@ mod tests {
             false,
             &advertised,
         ));
+    }
+
+    #[test]
+    fn container_sidecar_requires_a_signed_release_even_for_legacy_registries() {
+        assert!(release_requires_signature(false, false, false, true));
+        assert!(!release_requires_signature(false, false, false, false));
+    }
+
+    #[test]
+    fn signed_descriptor_identity_rejects_unpersisted_transport_metadata() {
+        let admitted = Descriptor::canonical_empty();
+        let mut signed = admitted.clone();
+        signed
+            .urls
+            .push("https://example.invalid/object".to_string());
+
+        assert!(!descriptor_identity_matches(&admitted, &signed));
+        assert!(signed.validate().is_err());
     }
 
     /// A [`SurfaceFetch`] whose `info/refs` read fails with a given error, to

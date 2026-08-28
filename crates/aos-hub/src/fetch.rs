@@ -356,8 +356,8 @@ pub struct LocalFsFetch {
 }
 
 impl LocalFsFetch {
-    pub(crate) fn image_digest(path: &str) -> Option<&str> {
-        aos_hub_core::keymap::image_object_sha256(path)
+    pub(crate) fn immutable_digest(path: &str) -> Option<&str> {
+        aos_hub_core::keymap::immutable_object_sha256(path)
     }
 
     /// Create a fetcher rooted at a surface directory.
@@ -422,7 +422,7 @@ impl LocalFsFetch {
     /// Returns an error for an unsafe path or filesystem read failure.
     pub async fn strong_version(&self, path: &str) -> Result<Option<String>> {
         let full = safe_join(&self.root, path)?;
-        if let Some(digest) = Self::image_digest(path) {
+        if let Some(digest) = Self::immutable_digest(path) {
             let snapshots = self.image_snapshots.as_ref().context(
                 "local filesystem image delivery requires a configured Hub-private snapshot store",
             )?;
@@ -479,7 +479,7 @@ impl LocalFsFetch {
         use tokio_util::io::ReaderStream;
 
         let full = safe_join(&self.root, path)?;
-        if let Some(digest) = Self::image_digest(path) {
+        if let Some(digest) = Self::immutable_digest(path) {
             let snapshots = self.image_snapshots.clone().context(
                 "local filesystem image delivery requires a configured Hub-private snapshot store",
             )?;
@@ -1043,17 +1043,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn image_snapshot_paths_accept_only_canonical_disk_and_metadata_grammars() {
+    fn immutable_snapshot_paths_accept_only_canonical_image_and_oci_grammars() {
         let disk = "a".repeat(64);
         let metadata = "b".repeat(64);
         assert_eq!(
-            LocalFsFetch::image_digest(&format!("images/sha256/{disk}/aos.img")),
+            LocalFsFetch::immutable_digest(&format!("images/sha256/{disk}/aos.img")),
             Some(disk.as_str())
         );
         assert_eq!(
-            LocalFsFetch::image_digest(&format!(
+            LocalFsFetch::immutable_digest(&format!(
                 "images/sha256/{disk}/metadata/{metadata}/image-info.json"
             )),
+            Some(metadata.as_str())
+        );
+        assert_eq!(
+            LocalFsFetch::immutable_digest(&format!("oci/blobs/sha256/{metadata}")),
             Some(metadata.as_str())
         );
         for rejected in [
@@ -1064,9 +1068,12 @@ mod tests {
             format!("images/sha256/{disk}/unsafe..img"),
             format!("images/sha256/{disk}/.hidden"),
             format!("images/sha256/{disk}/non_ascii_é.img"),
+            format!("oci/blobs/sha256/{}", "B".repeat(64)),
+            format!("oci/blobs/sha256/{metadata}/extra"),
+            format!("oci/blobs/{metadata}"),
         ] {
             assert!(
-                LocalFsFetch::image_digest(&rejected).is_none(),
+                LocalFsFetch::immutable_digest(&rejected).is_none(),
                 "{rejected}"
             );
         }
@@ -1348,6 +1355,38 @@ mod tests {
         assert_eq!(
             second.body.collect().await.unwrap().to_bytes().as_ref(),
             b"gned"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_oci_stream_is_a_digest_verified_identity_bound_snapshot() {
+        use http_body_util::BodyExt as _;
+        use sha2::Digest as _;
+
+        let root = tempfile::tempdir().unwrap();
+        let hub = tempfile::tempdir().unwrap();
+        let snapshots = crate::image_snapshot::ImageSnapshotStore::open(hub.path()).unwrap();
+        let digest = hex::encode(sha2::Sha256::digest(b"oci-exact-bytes"));
+        let path = format!("oci/blobs/sha256/{digest}");
+        let full = root.path().join(&path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(&full, b"oci-exact-bytes").unwrap();
+        let fetch = LocalFsFetch::new(root.path()).with_image_snapshots(Arc::clone(&snapshots));
+        let read = fetch.stream_read(&path, None).await.unwrap().unwrap();
+
+        std::fs::write(&full, b"bad-exact-bytes").unwrap();
+        assert_eq!(
+            read.body.collect().await.unwrap().to_bytes().as_ref(),
+            b"oci-exact-bytes"
+        );
+        let retained = fetch.stream_read(&path, None).await.unwrap().unwrap();
+        assert_eq!(
+            retained.strong_etag.as_deref(),
+            Some(format!("\"snapshot-sha256-{digest}\"").as_str())
+        );
+        assert_eq!(
+            retained.body.collect().await.unwrap().to_bytes().as_ref(),
+            b"oci-exact-bytes"
         );
     }
 

@@ -5,6 +5,8 @@
   gnumake,
   cmake,
   bison,
+  flex,
+  fmt,
   pkg-config,
   perl,
   python3,
@@ -16,6 +18,8 @@
   libaio,
   libevent,
   liburing,
+  libxml2,
+  linux-pam,
   lz4,
   ncurses,
   numactl,
@@ -45,6 +49,8 @@ in
       gnumake
       cmake
       bison
+      flex
+      fmt
       pkg-config
       perl
       python3
@@ -60,6 +66,8 @@ in
       libaio
       libevent
       liburing
+      libxml2
+      linux-pam
       lz4
       ncurses
       numactl
@@ -79,6 +87,15 @@ in
         script = ''
           tar xf $src
           cd mariadb-${version}
+
+          # MariaDB 11.4 still accepts WITH_JEMALLOC but no longer invokes its
+          # jemalloc CMake module. Link the server target explicitly so the
+          # configured allocator is actually loaded and reported at runtime.
+          substituteInPlace sql/CMakeLists.txt \
+            --replace-fail \
+              'MYSQL_ADD_EXECUTABLE(mariadbd ''${MYSQLD_SOURCE} DESTINATION ''${INSTALL_SBINDIR} COMPONENT Server)' \
+              'MYSQL_ADD_EXECUTABLE(mariadbd ''${MYSQLD_SOURCE} DESTINATION ''${INSTALL_SBINDIR} COMPONENT Server)
+TARGET_LINK_LIBRARIES(mariadbd LINK_PRIVATE ${jemalloc}/lib/libjemalloc.so)'
         '';
       }
       {
@@ -102,6 +119,27 @@ in
             -DWITH_JEMALLOC:STRING=yes \
             -DWITH_NUMA:BOOL=ON \
             -DWITH_LIBURING:BOOL=ON \
+            -DURING_INCLUDE_DIRS:PATH=${liburing}/include \
+            -DURING_LIBRARIES:FILEPATH=${liburing}/lib/liburing.so \
+            -During_INCLUDE_DIR:PATH=${liburing}/include \
+            -During_LIBRARIES:FILEPATH=${liburing}/lib/liburing.so \
+            -DCURSES_INCLUDE_PATH:PATH=${ncurses}/include \
+            -DCURSES_LIBRARY:FILEPATH=${ncurses}/lib/libncurses.so \
+            -DLZ4_INCLUDE_DIRS:PATH=${lz4}/include \
+            -DLZ4_INCLUDE_DIR:PATH=${lz4}/include \
+            -DLZ4_LIBRARIES:FILEPATH=${lz4}/lib/liblz4.so \
+            -DBZIP2_INCLUDE_DIR:PATH=${bzip2}/include \
+            -DBZIP2_LIBRARIES:FILEPATH=${bzip2}/lib/libbz2.so \
+            -DSNAPPY_INCLUDE_DIRS:PATH=${snappy}/include \
+            -DSNAPPY_LIBRARIES:FILEPATH=${snappy}/lib/libsnappy.so \
+            -DZSTD_INCLUDE_DIRS:PATH=${zstd}/include \
+            -DZSTD_LIBRARIES:FILEPATH=${zstd}/lib/libzstd.so \
+            -DLIBLZMA_INCLUDE_DIR:PATH=${xz}/include \
+            -DLIBLZMA_LIBRARY:FILEPATH=${xz}/lib/liblzma.so \
+            -DLIBXML2_INCLUDE_DIR:PATH=${libxml2}/include/libxml2 \
+            -DLIBXML2_LIBRARY:FILEPATH=${libxml2}/lib/libxml2.so \
+            -DWITH_LIBFMT:STRING=system \
+            -DLIBFMT_INCLUDE_DIR:PATH=${fmt}/include \
             -DWITH_ROCKSDB_BZip2:STRING=ON \
             -DWITH_ROCKSDB_LZ4:STRING=ON \
             -DWITH_ROCKSDB_Snappy:STRING=ON \
@@ -144,14 +182,12 @@ in
       {
         name = "build";
         script = ''
-          cd build
           make -j$NIX_BUILD_CORES
         '';
       }
       {
         name = "install";
         script = ''
-          cd build
           make install
 
           # Prove the requested features reached built artifacts, not merely
@@ -160,11 +196,12 @@ in
           # AOS packages; Mroonga is the sole libevent consumer.
           test -f "$out/lib/plugin/ha_rocksdb.so"
           readelf -d "$out/lib/plugin/ha_rocksdb.so" > rocksdb-needed.txt
-          for library in libbz2 liblz4 libsnappy liburing libzstd; do
+          for library in libbz2 liblz4 libsnappy libzstd; do
             grep "$library" rocksdb-needed.txt
           done
           test -f "$out/lib/plugin/ha_mroonga.so"
           readelf -d "$out/lib/plugin/ha_mroonga.so" | grep libevent
+          readelf -d "$out/bin/mariadbd" | grep liburing
           readelf -d "$out/bin/mariadbd" | grep libjemalloc
 
           mkdir -p "$out/share/aos-build-features"

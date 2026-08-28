@@ -97,6 +97,8 @@ pub mod kv;
 pub mod lease;
 pub mod migrate;
 pub mod nix_sign;
+pub mod oci;
+pub mod oci_http;
 pub mod placement_read;
 pub mod placement_scan;
 pub mod ratelimit;

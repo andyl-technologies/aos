@@ -685,6 +685,7 @@ async fn seed_hub_route(
                 serves_git: true,
                 serves_cache: false,
                 serves_web: true,
+                serves_oci: false,
                 enabled: true,
             },
             &canonical_url,

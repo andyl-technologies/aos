@@ -37,6 +37,7 @@ toml = { workspace = true }
 # abstraction the Worker drives over HubDb colocated SQLite, so the Worker runs the exact same
 # read/write logic as the native hub rather than a divergent reimplementation.
 aos-hub-core = { workspace = true }
+aos-oci-types = { workspace = true }
 # The Worker backend impl is async over the trait; #[async_trait(?Send)] because
 # Worker JavaScript futures are !Send.
 async-trait = { workspace = true }

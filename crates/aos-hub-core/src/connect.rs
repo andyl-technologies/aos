@@ -1024,6 +1024,155 @@ pub async fn rewrite_for_route(
             Err(StatusCode::MISDIRECTED_REQUEST.into_response())
         };
     };
+    if surface_path == "v2" || surface_path.starts_with("v2/") {
+        let head = *request.method() == Method::HEAD;
+        if !route.serves_oci {
+            return Err(crate::oci::distribution_error_response(
+                StatusCode::NOT_FOUND,
+                aos_oci_types::DistributionErrorCode::Unsupported,
+                "OCI Distribution is not enabled on this route",
+                None,
+                head,
+            ));
+        }
+        if !matches!(*request.method(), Method::GET | Method::HEAD) {
+            return Err(crate::oci::distribution_error_response(
+                StatusCode::METHOD_NOT_ALLOWED,
+                aos_oci_types::DistributionErrorCode::Unsupported,
+                "read-only OCI delivery accepts only GET and HEAD",
+                None,
+                head,
+            ));
+        }
+        let parsed = match crate::oci::parse_oci_path(surface_path) {
+            Ok(parsed) => parsed,
+            Err(crate::oci::OciPathError::InvalidReference) => {
+                return Err(crate::oci::distribution_error_response(
+                    StatusCode::BAD_REQUEST,
+                    aos_oci_types::DistributionErrorCode::NameInvalid,
+                    "invalid OCI repository, tag, or digest",
+                    None,
+                    head,
+                ));
+            }
+            Err(crate::oci::OciPathError::Unknown) => {
+                return Err(crate::oci::distribution_error_response(
+                    StatusCode::NOT_FOUND,
+                    aos_oci_types::DistributionErrorCode::Unsupported,
+                    "unsupported Distribution endpoint",
+                    None,
+                    head,
+                ));
+            }
+        };
+        let crate::db::SurfaceTarget::Registry(registry_id) = route.surface else {
+            return Err(crate::oci::distribution_error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                aos_oci_types::DistributionErrorCode::Unsupported,
+                "OCI route target is unavailable",
+                None,
+                head,
+            ));
+        };
+        if route.mode != "hub_proxy" {
+            return Err(crate::oci::distribution_error_response(
+                StatusCode::MISDIRECTED_REQUEST,
+                aos_oci_types::DistributionErrorCode::Unsupported,
+                "OCI route mode is unsupported",
+                None,
+                head,
+            ));
+        }
+        if !route.ready {
+            return Err(crate::oci::distribution_error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                aos_oci_types::DistributionErrorCode::Unsupported,
+                "OCI route is temporarily unavailable",
+                None,
+                head,
+            ));
+        }
+        if matches!(
+            route.access_policy_kind.as_str(),
+            "private_network" | "external_provider"
+        ) {
+            let access_headers = request.headers().clone();
+            let attestation = request
+                .extensions()
+                .get::<crate::delivery_attestation::VerifiedDeliveryAttestation>()
+                .cloned();
+            if let Err(error) = require_route_access(svc, route, access_headers, attestation).await
+            {
+                let (status, code, message) = match error {
+                    RpcError::Internal | RpcError::Unavailable(_) => (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        aos_oci_types::DistributionErrorCode::Unsupported,
+                        "OCI route access is temporarily unavailable",
+                    ),
+                    _ => (
+                        StatusCode::FORBIDDEN,
+                        aos_oci_types::DistributionErrorCode::Denied,
+                        "OCI route access denied",
+                    ),
+                };
+                return Err(crate::oci::distribution_error_response(
+                    status, code, message, None, head,
+                ));
+            }
+        }
+        let authority = match crate::oci::canonical_service_authority(&scheme, &host, port) {
+            Ok(authority) => authority,
+            Err(_) => {
+                return Err(crate::oci::distribution_error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    aos_oci_types::DistributionErrorCode::Unsupported,
+                    "OCI service authority is unavailable",
+                    None,
+                    head,
+                ));
+            }
+        };
+        if let Some(kv) = &svc.kv {
+            if let Ok(Some(registry)) = svc.db.registry_by_id(registry_id).await {
+                let key = crate::oci::oci_route_projection_key(&authority);
+                if let Err(error) = kv.put_str(&key, &registry.stable_id, None).await {
+                    tracing::warn!(
+                        authority,
+                        registry_id,
+                        error = %format!("{error:#}"),
+                        "OCI route projection write-through failed"
+                    );
+                }
+            }
+        }
+        request
+            .extensions_mut()
+            .insert(crate::oci::ResolvedOciRoute {
+                registry_id,
+                authority,
+                scheme: scheme.clone(),
+                access_policy_kind: route.access_policy_kind.clone(),
+                request: parsed,
+            });
+        let mut rewritten = "/_aos-internal/delivery".to_owned();
+        if let Some(query) = request.uri().query() {
+            rewritten.push('?');
+            rewritten.push_str(query);
+        }
+        return match Uri::try_from(rewritten) {
+            Ok(uri) => {
+                *request.uri_mut() = uri;
+                Ok(request)
+            }
+            Err(_) => Err(crate::oci::distribution_error_response(
+                StatusCode::BAD_REQUEST,
+                aos_oci_types::DistributionErrorCode::Unsupported,
+                "OCI request routing failed",
+                None,
+                head,
+            )),
+        };
+    }
     if !matches!(*request.method(), Method::GET | Method::HEAD) {
         return Err((
             StatusCode::METHOD_NOT_ALLOWED,
@@ -1305,6 +1454,16 @@ async fn resolved_delivery_handler(
     request: Request,
 ) -> Response {
     let method = request.method().clone();
+    if let Some(resolved) = request
+        .extensions()
+        .get::<crate::oci::ResolvedOciRoute>()
+        .cloned()
+    {
+        let query = request.uri().query().map(str::to_owned);
+        return from_state(state)
+            .serve_oci(resolved, method, headers, query.as_deref())
+            .await;
+    }
     let Some(resolved) = request.extensions().get::<ResolvedRoute>().cloned() else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -3660,6 +3819,7 @@ mod tests {
             serves_git: false,
             serves_cache: true,
             serves_web: false,
+            serves_oci: false,
             ready: true,
         };
         let verified = crate::delivery_attestation::VerifiedDeliveryAttestation {

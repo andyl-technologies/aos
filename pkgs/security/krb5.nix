@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  bison,
   pkg-config,
   perl,
   openssl,
@@ -20,7 +21,7 @@ in
       hash = "sha256-GogyuMrZI+u/E5T2fi789B46SfRgKFpm41reyPoAU68=";
     };
 
-    buildDeps = [gnumake pkg-config perl];
+    buildDeps = [gnumake bison pkg-config perl];
     runtimeDeps = [openssl];
     propagatedDeps = [];
 

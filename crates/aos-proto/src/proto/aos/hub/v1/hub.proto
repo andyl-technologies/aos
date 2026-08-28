@@ -4054,6 +4054,7 @@ message RouteCapabilities {
   bool serves_git = 1;
   bool serves_cache = 2;
   bool serves_web = 3;
+  bool serves_oci = 4;
 }
 enum HubDeliveryKind {
   HUB_DELIVERY_KIND_UNSPECIFIED = 0;

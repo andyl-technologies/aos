@@ -62,6 +62,8 @@ test-support = []
 
 [dev-dependencies]
 aos-hub-core = { workspace = true, features = ["test-fixtures"] }
+aos-oci = { workspace = true }
+aos-oci-types = { workspace = true }
 aos-proto-types = { workspace = true }
 aos-cache = { workspace = true }
 aos-remote = { workspace = true }
