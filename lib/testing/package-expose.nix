@@ -231,6 +231,24 @@
   typedUnitsRejected = typedExposeRejects "units" {
     units."bad.service" = "not-an-attrset";
   };
+  unsafeOverlayUnitNamesRejected =
+    lib.throwIfNot
+    (builtins.all (
+        unit:
+          !(builtins.tryEval (builtins.deepSeq
+            (pkg.overrideAttrs (_: {
+              expose.units = {"${unit}" = {};};
+            }))
+            .expose
+            true))
+          .success
+      ) [
+        "bad,unit.service"
+        "bad:unit.service"
+        "bad\\unit.service"
+      ])
+    "expose renderer accepted an overlay-unsafe unit token"
+    true;
   typedArtifactsRejected = typedExposeRejects "config.artifacts" {
     config.artifacts = [
       {
@@ -1574,6 +1592,7 @@ in
       typedFirewallRejected
       typedKernelRejected
       typedUnitsRejected
+      unsafeOverlayUnitNamesRejected
       typedArtifactsRejected
       typedPermissionsRejected
       typedCredentialsRejected
@@ -1682,6 +1701,7 @@ in
           : "$typedFirewallRejected"
           : "$typedKernelRejected"
           : "$typedUnitsRejected"
+          : "$unsafeOverlayUnitNamesRejected"
           : "$typedArtifactsRejected"
           : "$typedPermissionsRejected"
           : "$typedCredentialsRejected"

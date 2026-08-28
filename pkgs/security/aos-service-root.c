@@ -29,7 +29,7 @@ static void errorf(const char *format, ...) {
         fputc('\n', stderr);
 }
 
-static bool token_valid(const char *token) {
+static bool token_valid(const char *token, bool unit) {
         size_t length;
 
         if (!token || token[0] == '\0' || token[0] == '.' || token[0] == '-')
@@ -43,7 +43,8 @@ static bool token_valid(const char *token) {
                 char c = token[i];
 
                 if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                    (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '@' || c == '-')
+                    (c >= '0' && c <= '9') || c == '+' || c == '.' || c == '_' || c == '=' ||
+                    (unit && c == '@') || c == '-')
                         continue;
                 return false;
         }
@@ -692,14 +693,14 @@ static int command_prepare(int argc, char **argv) {
         int root_fd = -1, package_fd = -1;
         int result = 1;
 
-        if (!token_valid(package)) {
+        if (!token_valid(package, false)) {
                 errorf("invalid package token '%s'", package);
                 return 1;
         }
         if (payload_valid(payload) < 0)
                 return 1;
         for (int i = 4; i < argc; i++) {
-                if (!token_valid(argv[i])) {
+                if (!token_valid(argv[i], true)) {
                         errorf("invalid unit token '%s'", argv[i]);
                         return 1;
                 }
@@ -776,7 +777,7 @@ static int package_has_only_requested_units(int package_fd, const char *package_
                 }
                 if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
                         continue;
-                if (!token_valid(entry->d_name) ||
+                if (!token_valid(entry->d_name, true) ||
                     !requested_unit(argc, argv, entry->d_name)) {
                         errorf("unexpected unit entry '%s/%s' is outside cleanup authority",
                                package_path, entry->d_name);
@@ -792,14 +793,14 @@ static int command_cleanup(int argc, char **argv) {
         char package_path[PATH_MAX];
         int result = 1;
 
-        if (!token_valid(package)) {
+        if (!token_valid(package, false)) {
                 errorf("invalid package token '%s'", package);
                 return 1;
         }
         if (payload_valid(payload) < 0)
                 return 1;
         for (int i = 4; i < argc; i++) {
-                if (!token_valid(argv[i])) {
+                if (!token_valid(argv[i], true)) {
                         errorf("invalid unit token '%s'", argv[i]);
                         return 1;
                 }
