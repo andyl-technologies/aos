@@ -4,9 +4,11 @@
       - _CFCalendarGetMinimumDaysInFirstWeek
       - _CFDataAppendBytes
       - _CFDataCreateMutable
+      - _CFDateCreate
       - _CFDateFormatterCopyProperty
       - _CFDateFormatterCreate
       - _CFDateFormatterGetFormat
+      - _CFDateGetAbsoluteTime
       - _CFDictionaryApplyFunction
       - _CFDictionaryGetCount
       - _CFDictionaryGetKeysAndValues
