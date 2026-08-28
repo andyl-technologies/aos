@@ -12,10 +12,10 @@ use std::time::Duration;
 use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
     QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT,
-    QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND, QMP_HOT_FORK_RCU_BARRIER_COMMAND,
-    QMP_HOT_FORK_REQUIRED_PROOFS, QMP_HOT_FORK_TEMPLATE_COMMAND, QMP_QUERY_CPUS_FAST_COMMAND,
-    QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
+    QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND, QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND,
+    QMP_HOT_FORK_RCU_BARRIER_COMMAND, QMP_HOT_FORK_REQUIRED_PROOFS, QMP_HOT_FORK_TEMPLATE_COMMAND,
+    QMP_QUERY_CPUS_FAST_COMMAND, QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
@@ -823,15 +823,90 @@ fn hot_fork_rcu_barrier_rejects_malformed_or_wrong_action_state() -> Result<(), 
 }
 
 #[test]
+fn hot_fork_bh_timer_barrier_parks_sources_and_releases_oob() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"owner-thread-id":44,"held":true,"complete":true,"bottom-halves-complete":true,"timers-complete":true,"admissions-in-flight":1,"bottom-half-count":4,"pending-bottom-halves":2,"scheduled-bottom-halves":1,"active-bottom-half-callbacks":1,"pending-timers":3,"active-timer-callbacks":0,"quiescent":false}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"owner-thread-id":44,"held":true,"complete":true,"bottom-halves-complete":true,"timers-complete":true,"admissions-in-flight":0,"bottom-half-count":4,"pending-bottom-halves":2,"scheduled-bottom-halves":1,"active-bottom-half-callbacks":0,"pending-timers":3,"active-timer-callbacks":0,"quiescent":true}}"#,
+        r#"{"return":{"schema-version":1,"generation":3,"owner-thread-id":0,"held":false,"complete":true,"bottom-halves-complete":true,"timers-complete":true,"admissions-in-flight":0,"bottom-half-count":4,"pending-bottom-halves":2,"scheduled-bottom-halves":1,"active-bottom-half-callbacks":0,"pending-timers":3,"active-timer-callbacks":0,"quiescent":false}}"#,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
+
+    let held = client.hold_hot_fork_bh_timer_barrier()?;
+    assert!(held.held());
+    assert_eq!(held.owner_thread_id(), 44);
+    assert_eq!(held.admissions_in_flight(), 1);
+    assert_eq!(held.active_bottom_half_callbacks(), 1);
+    assert!(!held.quiescent());
+
+    let drained = client.query_hot_fork_bh_timer_barrier()?;
+    assert!(drained.complete());
+    assert!(drained.bottom_halves_complete());
+    assert!(drained.timers_complete());
+    assert_eq!(drained.bottom_half_count(), 4);
+    assert_eq!(drained.pending_bottom_halves(), 2);
+    assert_eq!(drained.scheduled_bottom_halves(), 1);
+    assert_eq!(drained.pending_timers(), 3);
+    assert_eq!(drained.active_timer_callbacks(), 0);
+    assert!(drained.quiescent());
+
+    let released = client.release_hot_fork_bh_timer_barrier()?;
+    assert!(!released.held());
+    assert_eq!(released.owner_thread_id(), 0);
+
+    drop(client);
+    let lines = written_json_lines(&audit_snapshot(&audit))?;
+    for (index, action) in [(1, "hold"), (2, "query"), (3, "release")] {
+        assert_eq!(
+            oob_execute_name(json_line(&lines, index)),
+            Some(QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND)
+        );
+        assert_eq!(
+            json_line(&lines, index)
+                .pointer("/arguments/action")
+                .and_then(Value::as_str),
+            Some(action)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn hot_fork_bh_timer_barrier_rejects_malformed_states() -> Result<(), Box<dyn Error>> {
+    for response in [
+        r#"{"return":{"schema-version":2,"generation":2,"owner-thread-id":44,"held":true,"complete":true,"bottom-halves-complete":true,"timers-complete":true,"admissions-in-flight":0,"bottom-half-count":4,"pending-bottom-halves":2,"scheduled-bottom-halves":1,"active-bottom-half-callbacks":0,"pending-timers":3,"active-timer-callbacks":0,"quiescent":true}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"owner-thread-id":44,"held":true,"complete":false,"bottom-halves-complete":true,"timers-complete":true,"admissions-in-flight":0,"bottom-half-count":4,"pending-bottom-halves":2,"scheduled-bottom-halves":1,"active-bottom-half-callbacks":0,"pending-timers":3,"active-timer-callbacks":0,"quiescent":false}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"owner-thread-id":44,"held":true,"complete":true,"bottom-halves-complete":true,"timers-complete":true,"admissions-in-flight":0,"bottom-half-count":1,"pending-bottom-halves":2,"scheduled-bottom-halves":1,"active-bottom-half-callbacks":0,"pending-timers":3,"active-timer-callbacks":0,"quiescent":true}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"owner-thread-id":0,"held":true,"complete":true,"bottom-halves-complete":true,"timers-complete":true,"admissions-in-flight":0,"bottom-half-count":4,"pending-bottom-halves":2,"scheduled-bottom-halves":1,"active-bottom-half-callbacks":0,"pending-timers":3,"active-timer-callbacks":0,"quiescent":true}}"#,
+    ] {
+        let mut client = QmpClient::connect(scripted_qmp([
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            response,
+        ]))?;
+        assert!(matches!(
+            client.hold_hot_fork_bh_timer_barrier(),
+            Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotForkBhTimerBarrier,
+                ..
+            })
+        ));
+    }
+    Ok(())
+}
+
+#[test]
 fn hot_fork_template_coordinator_retains_draining_and_rolls_back_blocked()
 -> Result<(), Box<dyn Error>> {
     let stream = scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
-        r#"{"return":{"schema-version":2,"generation":4,"outcome":"draining","transaction-active":true,"required-proofs":511,"acknowledged-proofs":7,"missing-proofs":504,"plugin-barrier":{"schema-version":1,"generation":8,"registered":true,"manifest-consistent":true,"held":true,"teardown-closed":false,"in-flight":2,"quiescent":false},"rcu-barrier":{"schema-version":1,"generation":6,"owner-thread-id":44,"held":true,"complete":true,"registered-readers":2,"active-readers":1,"admissions-in-flight":0,"pending-callbacks":0,"drain-active":false,"quiescent":false},"rollback-complete":false,"ready":false}}"#,
-        r#"{"return":{"schema-version":2,"generation":4,"outcome":"draining","transaction-active":true,"required-proofs":511,"acknowledged-proofs":23,"missing-proofs":488,"plugin-barrier":{"schema-version":1,"generation":8,"registered":true,"manifest-consistent":true,"held":true,"teardown-closed":false,"in-flight":0,"quiescent":true},"rcu-barrier":{"schema-version":1,"generation":6,"owner-thread-id":44,"held":true,"complete":true,"registered-readers":2,"active-readers":0,"admissions-in-flight":0,"pending-callbacks":0,"drain-active":false,"quiescent":true},"rollback-complete":false,"ready":false}}"#,
-        r#"{"return":{"schema-version":2,"generation":4,"outcome":"blocked","transaction-active":false,"required-proofs":511,"acknowledged-proofs":7,"missing-proofs":504,"plugin-barrier":{"schema-version":1,"generation":9,"registered":true,"manifest-consistent":true,"held":false,"teardown-closed":false,"in-flight":0,"quiescent":false},"rcu-barrier":{"schema-version":1,"generation":7,"owner-thread-id":0,"held":false,"complete":true,"registered-readers":2,"active-readers":0,"admissions-in-flight":0,"pending-callbacks":0,"drain-active":false,"quiescent":false},"rollback-complete":true,"ready":false}}"#,
-        r#"{"return":{"schema-version":2,"generation":4,"outcome":"idle","transaction-active":false,"required-proofs":511,"acknowledged-proofs":7,"missing-proofs":504,"plugin-barrier":{"schema-version":1,"generation":9,"registered":true,"manifest-consistent":true,"held":false,"teardown-closed":false,"in-flight":0,"quiescent":false},"rcu-barrier":{"schema-version":1,"generation":7,"owner-thread-id":0,"held":false,"complete":true,"registered-readers":2,"active-readers":0,"admissions-in-flight":0,"pending-callbacks":0,"drain-active":false,"quiescent":false},"rollback-complete":true,"ready":false}}"#,
+        r#"{"return":{"schema-version":3,"generation":4,"outcome":"draining","transaction-active":true,"required-proofs":511,"acknowledged-proofs":7,"missing-proofs":504,"plugin-barrier":{"schema-version":1,"generation":8,"registered":true,"manifest-consistent":true,"held":true,"teardown-closed":false,"in-flight":2,"quiescent":false},"rcu-barrier":{"schema-version":1,"generation":6,"owner-thread-id":44,"held":true,"complete":true,"registered-readers":2,"active-readers":1,"admissions-in-flight":0,"pending-callbacks":0,"drain-active":false,"quiescent":false},"bh-timer-barrier":{"schema-version":1,"generation":6,"owner-thread-id":44,"held":true,"complete":true,"bottom-halves-complete":true,"timers-complete":true,"admissions-in-flight":1,"bottom-half-count":4,"pending-bottom-halves":2,"scheduled-bottom-halves":1,"active-bottom-half-callbacks":0,"pending-timers":3,"active-timer-callbacks":0,"quiescent":false},"rollback-complete":false,"ready":false}}"#,
+        r#"{"return":{"schema-version":3,"generation":4,"outcome":"draining","transaction-active":true,"required-proofs":511,"acknowledged-proofs":23,"missing-proofs":488,"plugin-barrier":{"schema-version":1,"generation":8,"registered":true,"manifest-consistent":true,"held":true,"teardown-closed":false,"in-flight":0,"quiescent":true},"rcu-barrier":{"schema-version":1,"generation":6,"owner-thread-id":44,"held":true,"complete":true,"registered-readers":2,"active-readers":0,"admissions-in-flight":0,"pending-callbacks":0,"drain-active":false,"quiescent":true},"bh-timer-barrier":{"schema-version":1,"generation":6,"owner-thread-id":44,"held":true,"complete":true,"bottom-halves-complete":true,"timers-complete":true,"admissions-in-flight":0,"bottom-half-count":4,"pending-bottom-halves":2,"scheduled-bottom-halves":1,"active-bottom-half-callbacks":0,"pending-timers":3,"active-timer-callbacks":0,"quiescent":true},"rollback-complete":false,"ready":false}}"#,
+        r#"{"return":{"schema-version":3,"generation":4,"outcome":"blocked","transaction-active":false,"required-proofs":511,"acknowledged-proofs":7,"missing-proofs":504,"plugin-barrier":{"schema-version":1,"generation":9,"registered":true,"manifest-consistent":true,"held":false,"teardown-closed":false,"in-flight":0,"quiescent":false},"rcu-barrier":{"schema-version":1,"generation":7,"owner-thread-id":0,"held":false,"complete":true,"registered-readers":2,"active-readers":0,"admissions-in-flight":0,"pending-callbacks":0,"drain-active":false,"quiescent":false},"bh-timer-barrier":{"schema-version":1,"generation":7,"owner-thread-id":0,"held":false,"complete":true,"bottom-halves-complete":true,"timers-complete":true,"admissions-in-flight":0,"bottom-half-count":4,"pending-bottom-halves":2,"scheduled-bottom-halves":1,"active-bottom-half-callbacks":0,"pending-timers":3,"active-timer-callbacks":0,"quiescent":false},"rollback-complete":true,"ready":false}}"#,
+        r#"{"return":{"schema-version":3,"generation":4,"outcome":"idle","transaction-active":false,"required-proofs":511,"acknowledged-proofs":7,"missing-proofs":504,"plugin-barrier":{"schema-version":1,"generation":9,"registered":true,"manifest-consistent":true,"held":false,"teardown-closed":false,"in-flight":0,"quiescent":false},"rcu-barrier":{"schema-version":1,"generation":7,"owner-thread-id":0,"held":false,"complete":true,"registered-readers":2,"active-readers":0,"admissions-in-flight":0,"pending-callbacks":0,"drain-active":false,"quiescent":false},"bh-timer-barrier":{"schema-version":1,"generation":7,"owner-thread-id":0,"held":false,"complete":true,"bottom-halves-complete":true,"timers-complete":true,"admissions-in-flight":0,"bottom-half-count":4,"pending-bottom-halves":2,"scheduled-bottom-halves":1,"active-bottom-half-callbacks":0,"pending-timers":3,"active-timer-callbacks":0,"quiescent":false},"rollback-complete":true,"ready":false}}"#,
     ]);
     let audit = stream.audit_handle();
     let mut client = QmpClient::connect(stream)?;
@@ -841,12 +916,14 @@ fn hot_fork_template_coordinator_retains_draining_and_rolls_back_blocked()
     assert!(draining.transaction_active());
     assert_eq!(draining.plugin_barrier().in_flight(), 2);
     assert_eq!(draining.rcu_barrier().active_readers(), 1);
+    assert_eq!(draining.bh_timer_barrier().admissions_in_flight(), 1);
     assert!(!draining.rollback_complete());
 
     let drained = client.query_hot_fork_template()?;
     assert_eq!(drained.outcome(), QmpHotForkTemplateOutcome::Draining);
     assert!(drained.plugin_barrier().quiescent());
     assert!(drained.rcu_barrier().quiescent());
+    assert!(drained.bh_timer_barrier().quiescent());
     assert!(drained.acknowledges(QmpHotForkProof::Rcu));
 
     let blocked = client.prepare_hot_fork_template()?;
@@ -858,6 +935,7 @@ fn hot_fork_template_coordinator_retains_draining_and_rolls_back_blocked()
     assert!(blocked.rollback_complete());
     assert!(!blocked.plugin_barrier().held());
     assert!(!blocked.rcu_barrier().held());
+    assert!(!blocked.bh_timer_barrier().held());
     assert!(!blocked.ready());
 
     assert_eq!(
@@ -888,7 +966,7 @@ fn hot_fork_template_abort_is_exact_and_malformed_states_fail_closed() -> Result
     let stream = scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
-        r#"{"return":{"schema-version":2,"generation":5,"outcome":"aborted","transaction-active":false,"required-proofs":511,"acknowledged-proofs":7,"missing-proofs":504,"plugin-barrier":{"schema-version":1,"generation":10,"registered":true,"manifest-consistent":true,"held":false,"teardown-closed":false,"in-flight":0,"quiescent":false},"rcu-barrier":{"schema-version":1,"generation":7,"owner-thread-id":0,"held":false,"complete":true,"registered-readers":2,"active-readers":0,"admissions-in-flight":0,"pending-callbacks":0,"drain-active":false,"quiescent":false},"rollback-complete":true,"ready":false}}"#,
+        r#"{"return":{"schema-version":3,"generation":5,"outcome":"aborted","transaction-active":false,"required-proofs":511,"acknowledged-proofs":7,"missing-proofs":504,"plugin-barrier":{"schema-version":1,"generation":10,"registered":true,"manifest-consistent":true,"held":false,"teardown-closed":false,"in-flight":0,"quiescent":false},"rcu-barrier":{"schema-version":1,"generation":7,"owner-thread-id":0,"held":false,"complete":true,"registered-readers":2,"active-readers":0,"admissions-in-flight":0,"pending-callbacks":0,"drain-active":false,"quiescent":false},"bh-timer-barrier":{"schema-version":1,"generation":7,"owner-thread-id":0,"held":false,"complete":true,"bottom-halves-complete":true,"timers-complete":true,"admissions-in-flight":0,"bottom-half-count":4,"pending-bottom-halves":2,"scheduled-bottom-halves":1,"active-bottom-half-callbacks":0,"pending-timers":3,"active-timer-callbacks":0,"quiescent":false},"rollback-complete":true,"ready":false}}"#,
     ]);
     let audit = stream.audit_handle();
     let mut client = QmpClient::connect(stream)?;

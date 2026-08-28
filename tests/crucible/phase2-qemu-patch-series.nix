@@ -881,6 +881,13 @@
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "a process-lifetime reversible RCU barrier gates every new outer read-side entry and callback submission, retains exact admission, reader, callback, and drain state, wakes parked submitters only on release, and lets the template coordinator acknowledge proof bit 4 only while the complete held barrier is quiescent";
     }
+    {
+      file = "0127-crucible-hot-fork-bh-timer-barrier.patch";
+      catalogName = "crucible-hot-fork-bh-timer-barrier";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "a process-lifetime reversible source barrier race-closes bottom-half and timer creation, mutation, and callback dispatch, drains already-admitted work, retains queued work as parked state, remains OOB-queryable, and deliberately leaves AIO proof bit 3 clear until handler and coroutine admission are also closed";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

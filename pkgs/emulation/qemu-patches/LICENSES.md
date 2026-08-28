@@ -22,6 +22,7 @@ The series currently creates these QEMU source files:
 | `include/qemu/crucible-fault.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-process.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-hot-fork-plugin.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-hot-fork-async.h` | GPL-2.0-or-later | Explicit file notice |
 | `plugins/crucible-fault.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-fault-memory.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-fault-node.c` | GPL-2.0-or-later | Explicit SPDX identifier |
