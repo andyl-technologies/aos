@@ -1466,8 +1466,16 @@ orphan cleanup. Graph administration now retains a separate S3 cleanup
 capability that lists and idempotently aborts at most 1,000 unfinished uploads
 per call with an exact provider continuation; it validates a whole page as
 canonical keys before the first effect and cannot inventory or delete committed
-objects. S3 committed-object inventory/deletion, conditional refs, service
-conformance, and the realistic operator flight remain open under T-CAM-5.7 and
+objects. The optional S3 ref backend now uses fixed domain-separated hashed keys
+with exact name/target bodies, provider ETag CAS with read-back evidence,
+strongly consistent bounded listing, one process-wide lifecycle per exact
+namespace, and one absolute deadline across a complete remote scan. The AWS SDK
+adapter exposes those primitives only through an explicit conformant-service
+wrapper. Tests cover maximum ref names, stale conflicts, cross-instance races,
+malformed bodies, false committed versions, strict provider pages, and
+non-resetting scan deadlines. S3 committed-object inventory/deletion,
+`RefStoreAdmin`, automated live-service conformance, daemon configuration
+wiring, and the realistic operator flight remain open under T-CAM-5.7 and
 T-CAM-5.8.
 Broader layered transforms remain open;
 therefore T-CAM-5.5 is not checked by this checkpoint.

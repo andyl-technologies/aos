@@ -37,6 +37,7 @@ mod physical_quota;
 mod profile;
 mod quota;
 mod s3;
+mod s3_ref;
 mod write_back;
 
 pub use admin::{
@@ -77,6 +78,11 @@ pub use s3::{
     StoreS3Client, StoreS3ConditionalPutOutcome, StoreS3EndpointId, StoreS3MultipartCleanupPage,
     StoreS3MultipartListCursor, StoreS3MultipartListPage, StoreS3MultipartUpload,
     StoreS3MultipartUploadRecord, StoreS3ObjectDownload, StoreS3UploadedPart,
+};
+pub use s3_ref::{
+    MAX_S3_REF_LIST_ITEMS, S3RefBackend, StoreS3ConditionalWriteOutcome, StoreS3ObjectListCursor,
+    StoreS3ObjectListPage, StoreS3ObjectScan, StoreS3ObjectVersion, StoreS3RefCapability,
+    StoreS3StrongCasClient, StoreS3VersionedObject,
 };
 pub use write_back::{
     WriteBackRetentionAdmin, WriteBackRetentionFence, WriteBackRetentionGeneration,
