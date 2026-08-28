@@ -58,6 +58,11 @@ typedef struct AudioBufferList {
   AudioBuffer mBuffers[1];
 } AudioBufferList;
 
+typedef struct AudioValueRange {
+  Float64 mMinimum;
+  Float64 mMaximum;
+} AudioValueRange;
+
 typedef struct AudioStreamPacketDescription {
   SInt64 mStartOffset;
   UInt32 mVariableFramesInPacket;
@@ -85,6 +90,17 @@ typedef struct AudioTimeStamp {
   AudioTimeStampFlags mFlags;
   UInt32 mReserved;
 } AudioTimeStamp;
+
+typedef OSStatus (*AudioDeviceIOProc)(
+  AudioObjectID,
+  const AudioTimeStamp *,
+  const AudioBufferList *,
+  const AudioTimeStamp *,
+  AudioBufferList *,
+  const AudioTimeStamp *,
+  void *
+);
+typedef AudioDeviceIOProc AudioDeviceIOProcID;
 
 typedef struct AudioComponentDescription {
   OSType componentType;
@@ -125,18 +141,23 @@ typedef struct AudioConverterPrimeInfo {
 } AudioConverterPrimeInfo;
 
 enum {
+  kAudioObjectUnknown = 0,
+  kAudioDeviceUnknown = kAudioObjectUnknown,
   kAudioBooleanControlPropertyValue = 1650685548,
   kAudioControlPropertyElement = 1667591277,
   kAudioControlPropertyScope = 1668506480,
   kAudioConverterPrimeInfo = 1886546285,
   kAudioDevicePropertyActualSampleRate = 1634955892,
   kAudioDevicePropertyBufferFrameSize = 1718839674,
+  kAudioDevicePropertyBufferFrameSizeRange = 0x66737a23,
+  kAudioDevicePropertyDeviceIsRunning = 0x676f696e,
   kAudioDevicePropertyDeviceHasChanged = 1684629094,
   kAudioDevicePropertyDeviceName = 1851878757,
   kAudioDevicePropertyNominalSampleRate = 1853059700,
   kAudioDevicePropertyScopeInput = 1768845428,
   kAudioDevicePropertyScopeOutput = 1869968496,
   kAudioDevicePropertyStreamConfiguration = 1936482681,
+  kAudioDevicePropertyStreamFormat = 0x73666d74,
   kAudioDevicePropertyStreams = 1937009955,
   kAudioFormatFlagIsBigEndian = 2,
   kAudioFormatFlagIsFloat = 1,
@@ -145,15 +166,27 @@ enum {
   kAudioFormatFlagIsSignedInteger = 4,
   kAudioFormatFlagsNativeEndian = 0,
   kAudioFormatLinearPCM = 1819304813,
+  kLinearPCMFormatFlagIsFloat = kAudioFormatFlagIsFloat,
+  kAudioHardwareNoError = 0,
+  kAudioHardwareNotRunningError = 0x73746f70,
+  kAudioHardwareUnspecifiedError = 0x77686174,
+  kAudioHardwareIllegalOperationError = 0x6e6f7065,
+  kAudioHardwareBadObjectError = 0x216f626a,
+  kAudioHardwareBadDeviceError = 0x21646576,
+  kAudioHardwareBadStreamError = 0x21737472,
+  kAudioHardwareUnsupportedOperationError = 0x756e6f70,
   kAudioHardwareBadPropertySizeError = 561211770,
   kAudioHardwarePropertyDefaultInputDevice = 1682533920,
   kAudioHardwarePropertyDefaultOutputDevice = 1682929012,
   kAudioHardwarePropertyDevices = 1684370979,
   kAudioHardwarePropertyRunLoop = 1919839344,
   kAudioHardwareUnknownPropertyError = 2003332927,
+  kAudioDeviceUnsupportedFormatError = 0x21646174,
+  kAudioDevicePermissionsError = 0x21686f67,
   kAudioLevelControlPropertyScalarValue = 1818456950,
   kAudioMuteControlClassID = 1836414053,
   kAudioObjectPropertyClass = 1668047219,
+  kAudioObjectPropertyElementMain = 0,
   kAudioObjectPropertyElementMaster = 0,
   kAudioObjectPropertyElementName = 1818454126,
   kAudioObjectPropertyManufacturer = 1819107691,
