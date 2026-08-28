@@ -338,6 +338,18 @@ fn directory_ref_scan_is_bounded_ordered_and_namespaced() {
 }
 
 #[test]
+fn directory_leafs_pass_the_shared_persistent_conformance_suite() {
+    let temp = TempDir::new().expect("temporary directory conformance root");
+    super::conformance::assert_blob_leaf_conformance(&DirectoryBlobBackend::new(
+        "directory-conformance",
+        temp.path().join("objects"),
+    ));
+    super::conformance::assert_ref_leaf_conformance(&DirectoryRefBackend::new(
+        temp.path().join("refs"),
+    ));
+}
+
+#[test]
 fn memory_ref_inventory_is_exclusive_and_aba_bound() {
     let refs = Arc::new(MemoryRefBackend::new());
     let first_name = RefName::new("campaigns/first").expect("first ref name");

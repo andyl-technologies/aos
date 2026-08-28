@@ -1489,6 +1489,10 @@ inventory/deletion is implemented at the graph capability boundary and now
 runs through the daemon's canonical plan/journal/restart/apply path. The
 integration regression proves retained-object authentication, unreachable-only
 deletion, and stale-generation rejection after a concurrent publication.
+Directory and S3 blob/ref implementations now also invoke the same reusable
+persistent-leaf conformance harness for authenticated full/range/empty I/O,
+replay, fenced inventory and deletion, ordered ref pagination, stale CAS, and
+ABA generation behavior; backend-specific fault suites remain additive.
 Automated live-service conformance, daemon configuration wiring, and the
 realistic operator flight remain open under T-CAM-5.7 and T-CAM-5.8.
 Broader layered transforms remain open;
