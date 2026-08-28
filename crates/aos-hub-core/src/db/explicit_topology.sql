@@ -61,3 +61,10 @@ UPDATE network_policy_consumer_scopes
    );
 
 -- New organization and binding creation never materialize implicit grants.
+
+-- This migration is the online adoption boundary from the first topology
+-- hard-cutover schema. Startup accepts the old identity only when this pending
+-- migration is present, then verifies the new identity before serving.
+UPDATE hub_schema_identity
+   SET identity = 'aos-hub/topology-hard-cutover/2'
+ WHERE identity = 'aos-hub/topology-hard-cutover/1';
