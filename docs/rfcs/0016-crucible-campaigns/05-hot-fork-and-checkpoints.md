@@ -597,7 +597,7 @@ out-of-band query:
 
 ```text
 CrucibleHotForkPluginResourceInventory {
-    schema-version: u32 = 1,
+    schema-version: u32 = 2,
     generation: u64,
     registered: bool,
     complete: bool,
@@ -605,6 +605,7 @@ CrucibleHotForkPluginResourceInventory {
     plugin-id: u64,
     resource-mask: u64,
     callback-mask: u64,
+    worker-mask: u64,
     observed-callback-mask: u64,
     callback-mask-consistent: bool,
     shmem-device: u64,
@@ -617,6 +618,9 @@ CrucibleHotForkPluginResourceInventory {
     coverage: bool,
     whitebox: bool,
     fingerprint: bool,
+    run-control-worker: bool,
+    teardown-worker: bool,
+    fingerprint-worker: bool,
     state-dump: bool,
     app-random: bool,
 }
@@ -635,6 +639,11 @@ installed; the current runtime deliberately leaves it clear. Optional bits 12
 and 13 respectively mean TB translation and flush callbacks; no other bit is
 valid. Coverage requires both feature callback bits, white-box requires TB
 translation, and the five feature booleans MUST equal their resource bits.
+Worker-mask bits 0 and 1 are mandatory and respectively seal the RUN control
+reader and sole teardown worker. Bit 2 seals the fingerprint digest worker and
+MUST be present exactly when the fingerprint resource bit and feature boolean
+are present; no other worker bit is valid. The three worker booleans MUST equal
+their corresponding mask bits.
 
 A registered shape requires nonzero process/plugin identity, inode, mapping
 length, and node count; a slot below that node count; two distinct nonnegative
@@ -649,10 +658,11 @@ and their checked aggregate length MUST equal `shmem-length`.
 
 The manifest is by-value GPL-side process state and the host receives only this
 versioned QMP response; it does not place a Rust layout or native pointer in a
-cross-process protocol. The response inventories installed resources but does
-not count executing callbacks, freeze a ring, stop future callbacks, retain a
-process-lifetime barrier, or define child dispositions. It therefore MUST NOT
-acknowledge proof bit 6 or authorize a fork.
+cross-process protocol. The response inventories installed resources and the
+closed worker set that a later barrier must park and reconstruct. It does not
+yet count or park worker operations, freeze a ring, stop future callbacks,
+retain a process-lifetime worker barrier, or define child dispositions. It
+therefore MUST NOT acknowledge proof bit 6 or authorize a fork.
 
 The next plugin checkpoint adds a distinct reversible callback barrier. The
 plugin registers one process-lifetime operation only after every covered

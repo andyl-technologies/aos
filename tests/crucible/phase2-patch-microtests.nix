@@ -1648,7 +1648,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-plugin-resource-inventory";
         liveEvidence = ''
-          grep -Fxq 'plugin_resource_inventory_schema_version=1' "$live_result"
+          grep -Fxq 'plugin_resource_inventory_schema_version=2' "$live_result"
           grep -Fxq 'plugin_resource_inventory_stable=true' "$live_result"
           grep -Fxq 'plugin_resource_inventory_unregistered_shape=true' "$live_result"
           grep -Fxq 'plugin_ring_proof_acknowledged=false' "$live_result"
@@ -1776,7 +1776,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-block-graph-barrier";
         liveEvidence = ''
-          grep -Fxq 'patch=0135-crucible-freeze-hot-fork-rings.patch' "$live_result"
+          grep -Fxq 'patch=0136-crucible-seal-hot-fork-plugin-workers.patch' "$live_result"
           grep -Fxq 'block_barrier_schema_version=3' "$live_result"
           grep -Fxq 'block_graph_writer_admission_retained=true' "$live_result"
           grep -Fxq 'block_graph_generation_bound=true' "$live_result"
@@ -1793,7 +1793,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-block-snapshot-roots";
         liveEvidence = ''
-          grep -Fxq 'patch=0135-crucible-freeze-hot-fork-rings.patch' "$live_result"
+          grep -Fxq 'patch=0136-crucible-seal-hot-fork-plugin-workers.patch' "$live_result"
           grep -Fxq 'block_barrier_schema_version=3' "$live_result"
           grep -Fxq 'block_snapshot_binding_argument_bound=true' "$live_result"
           grep -Fxq 'block_snapshot_proof_acknowledged=false' "$live_result"
@@ -1846,7 +1846,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-ring-producer-barrier";
         liveEvidence = ''
-          grep -Fxq 'patch=0135-crucible-freeze-hot-fork-rings.patch' "$live_result"
+          grep -Fxq 'patch=0136-crucible-seal-hot-fork-plugin-workers.patch' "$live_result"
           grep -Fxq 'plugin_barrier_schema_version=2' "$live_result"
           grep -Fxq 'plugin_barrier_unregistered_shape=true' "$live_result"
           grep -Fxq 'plugin_ring_proof_acknowledged=false' "$live_result"
@@ -1855,6 +1855,24 @@
             ${patchDir}/0135-crucible-freeze-hot-fork-rings.patch
           grep -Fq 'report->rings_held == report->ring_count' \
             ${patchDir}/0135-crucible-freeze-hot-fork-rings.patch
+        '';
+      };
+    }
+    {
+      patch = "0136-crucible-seal-hot-fork-plugin-workers.patch";
+      check = certifyExactPatch {
+        patchName = "0136-crucible-seal-hot-fork-plugin-workers.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-plugin-worker-manifest";
+        liveEvidence = ''
+          grep -Fxq 'patch=0136-crucible-seal-hot-fork-plugin-workers.patch' "$live_result"
+          grep -Fxq 'plugin_resource_inventory_schema_version=2' "$live_result"
+          grep -Fxq 'plugin_resource_inventory_unregistered_shape=true' "$live_result"
+          grep -Fxq 'plugin_ring_proof_acknowledged=false' "$live_result"
+          grep -Fq 'QEMU_PLUGIN_CRUCIBLE_WORKER_REQUIRED' \
+            ${patchDir}/0136-crucible-seal-hot-fork-plugin-workers.patch
+          grep -Fq 'QEMU_PLUGIN_CRUCIBLE_WORKER_FINGERPRINT' \
+            ${patchDir}/0136-crucible-seal-hot-fork-plugin-workers.patch
         '';
       };
     }

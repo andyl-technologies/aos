@@ -613,7 +613,7 @@ fn hot_fork_plugin_resource_inventory_is_exact_and_oob() -> Result<(), Box<dyn E
     let stream = scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
-        r#"{"return":{"schema-version":1,"generation":7,"registered":true,"complete":true,"process-generation":9,"plugin-id":12,"resource-mask":1023,"callback-mask":4093,"observed-callback-mask":4093,"callback-mask-consistent":true,"shmem-device":1,"shmem-inode":2,"shmem-length":4096,"slot-index":0,"node-count":1,"control-fd":3,"wake-fd":4,"coverage":false,"whitebox":false,"fingerprint":false,"state-dump":false,"app-random":false}}"#,
+        r#"{"return":{"schema-version":2,"generation":7,"registered":true,"complete":true,"process-generation":9,"plugin-id":12,"resource-mask":1023,"callback-mask":4093,"worker-mask":3,"observed-callback-mask":4093,"callback-mask-consistent":true,"shmem-device":1,"shmem-inode":2,"shmem-length":4096,"slot-index":0,"node-count":1,"control-fd":3,"wake-fd":4,"coverage":false,"whitebox":false,"fingerprint":false,"run-control-worker":true,"teardown-worker":true,"fingerprint-worker":false,"state-dump":false,"app-random":false}}"#,
     ]);
     let audit = stream.audit_handle();
     let mut client = QmpClient::connect(stream)?;
@@ -626,6 +626,7 @@ fn hot_fork_plugin_resource_inventory_is_exact_and_oob() -> Result<(), Box<dyn E
     assert_eq!(inventory.plugin_id(), 12);
     assert_eq!(inventory.resource_mask(), 1023);
     assert_eq!(inventory.callback_mask(), 4093);
+    assert_eq!(inventory.worker_mask(), 3);
     assert_eq!(inventory.observed_callback_mask(), 4093);
     assert_eq!(inventory.shmem_device(), 1);
     assert_eq!(inventory.shmem_inode(), 2);
@@ -637,6 +638,9 @@ fn hot_fork_plugin_resource_inventory_is_exact_and_oob() -> Result<(), Box<dyn E
     assert!(!inventory.coverage());
     assert!(!inventory.whitebox());
     assert!(!inventory.fingerprint());
+    assert!(inventory.run_control_worker());
+    assert!(inventory.teardown_worker());
+    assert!(!inventory.fingerprint_worker());
     assert!(!inventory.state_dump());
     assert!(!inventory.app_random());
 
@@ -652,11 +656,14 @@ fn hot_fork_plugin_resource_inventory_is_exact_and_oob() -> Result<(), Box<dyn E
 #[test]
 fn hot_fork_plugin_resource_inventory_rejects_malformed_contracts() -> Result<(), Box<dyn Error>> {
     for response in [
-        r#"{"return":{"schema-version":2,"generation":7,"registered":true,"complete":true,"process-generation":9,"plugin-id":12,"resource-mask":1023,"callback-mask":4093,"observed-callback-mask":4093,"callback-mask-consistent":true,"shmem-device":1,"shmem-inode":2,"shmem-length":4096,"slot-index":0,"node-count":1,"control-fd":3,"wake-fd":4,"coverage":false,"whitebox":false,"fingerprint":false,"state-dump":false,"app-random":false}}"#,
-        r#"{"return":{"schema-version":1,"generation":7,"registered":true,"complete":true,"process-generation":9,"plugin-id":12,"resource-mask":33791,"callback-mask":4093,"observed-callback-mask":4093,"callback-mask-consistent":true,"shmem-device":1,"shmem-inode":2,"shmem-length":4096,"slot-index":0,"node-count":1,"control-fd":3,"wake-fd":4,"coverage":false,"whitebox":false,"fingerprint":false,"state-dump":false,"app-random":false}}"#,
-        r#"{"return":{"schema-version":1,"generation":7,"registered":true,"complete":true,"process-generation":9,"plugin-id":12,"resource-mask":1023,"callback-mask":4093,"observed-callback-mask":4092,"callback-mask-consistent":false,"shmem-device":1,"shmem-inode":2,"shmem-length":4096,"slot-index":0,"node-count":1,"control-fd":3,"wake-fd":4,"coverage":false,"whitebox":false,"fingerprint":false,"state-dump":false,"app-random":false}}"#,
-        r#"{"return":{"schema-version":1,"generation":7,"registered":true,"complete":true,"process-generation":9,"plugin-id":12,"resource-mask":1023,"callback-mask":4093,"observed-callback-mask":4093,"callback-mask-consistent":true,"shmem-device":1,"shmem-inode":2,"shmem-length":4096,"slot-index":0,"node-count":1,"control-fd":3,"wake-fd":4,"coverage":true,"whitebox":false,"fingerprint":false,"state-dump":false,"app-random":false}}"#,
-        r#"{"return":{"schema-version":1,"generation":7,"registered":true,"complete":true,"process-generation":9,"plugin-id":12,"resource-mask":1023,"callback-mask":4093,"observed-callback-mask":4093,"callback-mask-consistent":true,"shmem-device":1,"shmem-inode":2,"shmem-length":4096,"slot-index":0,"node-count":1,"control-fd":3,"wake-fd":4,"coverage":false,"whitebox":false,"fingerprint":false,"state-dump":false,"app-random":false,"extra":0}}"#,
+        r#"{"return":{"schema-version":1,"generation":7,"registered":true,"complete":true,"process-generation":9,"plugin-id":12,"resource-mask":1023,"callback-mask":4093,"worker-mask":3,"observed-callback-mask":4093,"callback-mask-consistent":true,"shmem-device":1,"shmem-inode":2,"shmem-length":4096,"slot-index":0,"node-count":1,"control-fd":3,"wake-fd":4,"coverage":false,"whitebox":false,"fingerprint":false,"run-control-worker":true,"teardown-worker":true,"fingerprint-worker":false,"state-dump":false,"app-random":false}}"#,
+        r#"{"return":{"schema-version":2,"generation":7,"registered":true,"complete":true,"process-generation":9,"plugin-id":12,"resource-mask":33791,"callback-mask":4093,"worker-mask":3,"observed-callback-mask":4093,"callback-mask-consistent":true,"shmem-device":1,"shmem-inode":2,"shmem-length":4096,"slot-index":0,"node-count":1,"control-fd":3,"wake-fd":4,"coverage":false,"whitebox":false,"fingerprint":false,"run-control-worker":true,"teardown-worker":true,"fingerprint-worker":false,"state-dump":false,"app-random":false}}"#,
+        r#"{"return":{"schema-version":2,"generation":7,"registered":true,"complete":true,"process-generation":9,"plugin-id":12,"resource-mask":1023,"callback-mask":4093,"worker-mask":3,"observed-callback-mask":4092,"callback-mask-consistent":false,"shmem-device":1,"shmem-inode":2,"shmem-length":4096,"slot-index":0,"node-count":1,"control-fd":3,"wake-fd":4,"coverage":false,"whitebox":false,"fingerprint":false,"run-control-worker":true,"teardown-worker":true,"fingerprint-worker":false,"state-dump":false,"app-random":false}}"#,
+        r#"{"return":{"schema-version":2,"generation":7,"registered":true,"complete":true,"process-generation":9,"plugin-id":12,"resource-mask":1023,"callback-mask":4093,"worker-mask":3,"observed-callback-mask":4093,"callback-mask-consistent":true,"shmem-device":1,"shmem-inode":2,"shmem-length":4096,"slot-index":0,"node-count":1,"control-fd":3,"wake-fd":4,"coverage":true,"whitebox":false,"fingerprint":false,"run-control-worker":true,"teardown-worker":true,"fingerprint-worker":false,"state-dump":false,"app-random":false}}"#,
+        r#"{"return":{"schema-version":2,"generation":7,"registered":true,"complete":true,"process-generation":9,"plugin-id":12,"resource-mask":1023,"callback-mask":4093,"worker-mask":1,"observed-callback-mask":4093,"callback-mask-consistent":true,"shmem-device":1,"shmem-inode":2,"shmem-length":4096,"slot-index":0,"node-count":1,"control-fd":3,"wake-fd":4,"coverage":false,"whitebox":false,"fingerprint":false,"run-control-worker":true,"teardown-worker":false,"fingerprint-worker":false,"state-dump":false,"app-random":false}}"#,
+        r#"{"return":{"schema-version":2,"generation":7,"registered":true,"complete":true,"process-generation":9,"plugin-id":12,"resource-mask":1023,"callback-mask":4093,"worker-mask":11,"observed-callback-mask":4093,"callback-mask-consistent":true,"shmem-device":1,"shmem-inode":2,"shmem-length":4096,"slot-index":0,"node-count":1,"control-fd":3,"wake-fd":4,"coverage":false,"whitebox":false,"fingerprint":false,"run-control-worker":true,"teardown-worker":true,"fingerprint-worker":false,"state-dump":false,"app-random":false}}"#,
+        r#"{"return":{"schema-version":2,"generation":7,"registered":true,"complete":true,"process-generation":9,"plugin-id":12,"resource-mask":1023,"callback-mask":4093,"worker-mask":7,"observed-callback-mask":4093,"callback-mask-consistent":true,"shmem-device":1,"shmem-inode":2,"shmem-length":4096,"slot-index":0,"node-count":1,"control-fd":3,"wake-fd":4,"coverage":false,"whitebox":false,"fingerprint":false,"run-control-worker":true,"teardown-worker":true,"fingerprint-worker":true,"state-dump":false,"app-random":false}}"#,
+        r#"{"return":{"schema-version":2,"generation":7,"registered":true,"complete":true,"process-generation":9,"plugin-id":12,"resource-mask":1023,"callback-mask":4093,"worker-mask":3,"observed-callback-mask":4093,"callback-mask-consistent":true,"shmem-device":1,"shmem-inode":2,"shmem-length":4096,"slot-index":0,"node-count":1,"control-fd":3,"wake-fd":4,"coverage":false,"whitebox":false,"fingerprint":false,"run-control-worker":true,"teardown-worker":true,"fingerprint-worker":false,"state-dump":false,"app-random":false,"extra":0}}"#,
     ] {
         let mut client = QmpClient::connect(scripted_qmp([
             r#"{"QMP":{"version":{},"capabilities":[]}}"#,

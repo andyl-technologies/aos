@@ -9,8 +9,10 @@ use super::{
     QMP_HOT_FORK_PLUGIN_RESOURCE_APP_RANDOM, QMP_HOT_FORK_PLUGIN_RESOURCE_COVERAGE,
     QMP_HOT_FORK_PLUGIN_RESOURCE_FINGERPRINT,
     QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_PLUGIN_RESOURCE_REQUIRED,
-    QMP_HOT_FORK_PLUGIN_RESOURCE_STATE_DUMP, QMP_HOT_FORK_PLUGIN_RESOURCE_WHITEBOX, QmpCommandKind,
-    QmpError,
+    QMP_HOT_FORK_PLUGIN_RESOURCE_STATE_DUMP, QMP_HOT_FORK_PLUGIN_RESOURCE_WHITEBOX,
+    QMP_HOT_FORK_PLUGIN_WORKER_ALL, QMP_HOT_FORK_PLUGIN_WORKER_FINGERPRINT,
+    QMP_HOT_FORK_PLUGIN_WORKER_REQUIRED, QMP_HOT_FORK_PLUGIN_WORKER_RUN_CONTROL,
+    QMP_HOT_FORK_PLUGIN_WORKER_TEARDOWN, QmpCommandKind, QmpError,
 };
 
 /// Exact scalar inventory of the installed Crucible plugin resources.
@@ -23,6 +25,7 @@ pub struct QmpHotForkPluginResourceInventory {
     plugin_id: u64,
     resource_mask: u64,
     callback_mask: u64,
+    worker_mask: u64,
     observed_callback_mask: u64,
     shmem_device: u64,
     shmem_inode: u64,
@@ -34,6 +37,9 @@ pub struct QmpHotForkPluginResourceInventory {
     coverage: bool,
     whitebox: bool,
     fingerprint: bool,
+    run_control_worker: bool,
+    teardown_worker: bool,
+    fingerprint_worker: bool,
     state_dump: bool,
     app_random: bool,
 }
@@ -61,6 +67,7 @@ impl QmpHotForkPluginResourceInventory {
             plugin_id: 1,
             resource_mask: QMP_HOT_FORK_PLUGIN_RESOURCE_REQUIRED,
             callback_mask: QMP_HOT_FORK_PLUGIN_CALLBACK_REQUIRED,
+            worker_mask: QMP_HOT_FORK_PLUGIN_WORKER_REQUIRED,
             observed_callback_mask: QMP_HOT_FORK_PLUGIN_CALLBACK_REQUIRED,
             shmem_device,
             shmem_inode,
@@ -72,6 +79,9 @@ impl QmpHotForkPluginResourceInventory {
             coverage: false,
             whitebox: false,
             fingerprint: false,
+            run_control_worker: true,
+            teardown_worker: true,
+            fingerprint_worker: false,
             state_dump: false,
             app_random: false,
         }
@@ -119,6 +129,12 @@ impl QmpHotForkPluginResourceInventory {
     #[must_use]
     pub const fn callback_mask(&self) -> u64 {
         self.callback_mask
+    }
+
+    /// Returns the closed process-lifetime plugin worker-class mask.
+    #[must_use]
+    pub const fn worker_mask(&self) -> u64 {
+        self.worker_mask
     }
 
     /// Returns the callback mask independently observed by QEMU.
@@ -185,6 +201,24 @@ impl QmpHotForkPluginResourceInventory {
     #[must_use]
     pub const fn fingerprint(&self) -> bool {
         self.fingerprint
+    }
+
+    /// Returns whether the mandatory RUN control reader is sealed.
+    #[must_use]
+    pub const fn run_control_worker(&self) -> bool {
+        self.run_control_worker
+    }
+
+    /// Returns whether the mandatory teardown worker is sealed.
+    #[must_use]
+    pub const fn teardown_worker(&self) -> bool {
+        self.teardown_worker
+    }
+
+    /// Returns whether the optional fingerprint digest worker is sealed.
+    #[must_use]
+    pub const fn fingerprint_worker(&self) -> bool {
+        self.fingerprint_worker
     }
 
     /// Returns whether raw-state-dump resources are installed.
@@ -296,6 +330,7 @@ pub(crate) fn parse_hot_fork_plugin_resource_inventory(
         "plugin-id",
         "resource-mask",
         "callback-mask",
+        "worker-mask",
         "observed-callback-mask",
         "callback-mask-consistent",
         "shmem-device",
@@ -308,6 +343,9 @@ pub(crate) fn parse_hot_fork_plugin_resource_inventory(
         "coverage",
         "whitebox",
         "fingerprint",
+        "run-control-worker",
+        "teardown-worker",
+        "fingerprint-worker",
         "state-dump",
         "app-random",
     ];
@@ -345,6 +383,10 @@ pub(crate) fn parse_hot_fork_plugin_resource_inventory(
         .ok_or_else(&malformed)?;
     let callback_mask = object
         .get("callback-mask")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let worker_mask = object
+        .get("worker-mask")
         .and_then(Value::as_u64)
         .ok_or_else(&malformed)?;
     let observed_callback_mask = object
@@ -399,6 +441,18 @@ pub(crate) fn parse_hot_fork_plugin_resource_inventory(
         .get("fingerprint")
         .and_then(Value::as_bool)
         .ok_or_else(&malformed)?;
+    let run_control_worker = object
+        .get("run-control-worker")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
+    let teardown_worker = object
+        .get("teardown-worker")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
+    let fingerprint_worker = object
+        .get("fingerprint-worker")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
     let state_dump = object
         .get("state-dump")
         .and_then(Value::as_bool)
@@ -410,7 +464,8 @@ pub(crate) fn parse_hot_fork_plugin_resource_inventory(
 
     let known_masks = resource_mask & !QMP_HOT_FORK_PLUGIN_RESOURCE_ALL == 0
         && callback_mask & !QMP_HOT_FORK_PLUGIN_CALLBACK_ALL == 0
-        && observed_callback_mask & !QMP_HOT_FORK_PLUGIN_CALLBACK_ALL == 0;
+        && observed_callback_mask & !QMP_HOT_FORK_PLUGIN_CALLBACK_ALL == 0
+        && worker_mask & !QMP_HOT_FORK_PLUGIN_WORKER_ALL == 0;
     let callback_consistent = callback_mask == observed_callback_mask;
     let derived_modes = coverage == (resource_mask & QMP_HOT_FORK_PLUGIN_RESOURCE_COVERAGE != 0)
         && whitebox == (resource_mask & QMP_HOT_FORK_PLUGIN_RESOURCE_WHITEBOX != 0)
@@ -421,12 +476,18 @@ pub(crate) fn parse_hot_fork_plugin_resource_inventory(
     let optional_consistent = (coverage || whitebox)
         == (optional_callbacks & QMP_HOT_FORK_PLUGIN_CALLBACK_TB_TRANSLATION != 0)
         && coverage == (optional_callbacks & QMP_HOT_FORK_PLUGIN_CALLBACK_FLUSH != 0);
+    let derived_workers = run_control_worker
+        == (worker_mask & QMP_HOT_FORK_PLUGIN_WORKER_RUN_CONTROL != 0)
+        && teardown_worker == (worker_mask & QMP_HOT_FORK_PLUGIN_WORKER_TEARDOWN != 0)
+        && fingerprint_worker == (worker_mask & QMP_HOT_FORK_PLUGIN_WORKER_FINGERPRINT != 0)
+        && fingerprint == fingerprint_worker;
     let registered_shape = process_generation != 0
         && plugin_id != 0
         && resource_mask & QMP_HOT_FORK_PLUGIN_RESOURCE_REQUIRED
             == QMP_HOT_FORK_PLUGIN_RESOURCE_REQUIRED
         && callback_mask & QMP_HOT_FORK_PLUGIN_CALLBACK_REQUIRED
             == QMP_HOT_FORK_PLUGIN_CALLBACK_REQUIRED
+        && worker_mask & QMP_HOT_FORK_PLUGIN_WORKER_REQUIRED == QMP_HOT_FORK_PLUGIN_WORKER_REQUIRED
         && shmem_inode != 0
         && shmem_length != 0
         && node_count != 0
@@ -438,6 +499,7 @@ pub(crate) fn parse_hot_fork_plugin_resource_inventory(
         && plugin_id == 0
         && resource_mask == 0
         && callback_mask == 0
+        && worker_mask == 0
         && shmem_device == 0
         && shmem_inode == 0
         && shmem_length == 0
@@ -448,6 +510,9 @@ pub(crate) fn parse_hot_fork_plugin_resource_inventory(
         && !coverage
         && !whitebox
         && !fingerprint
+        && !run_control_worker
+        && !teardown_worker
+        && !fingerprint_worker
         && !state_dump
         && !app_random;
     let expected_complete = registered
@@ -455,12 +520,14 @@ pub(crate) fn parse_hot_fork_plugin_resource_inventory(
         && callback_consistent
         && known_masks
         && derived_modes
+        && derived_workers
         && optional_consistent;
     if schema_version != u64::from(QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION)
         || callback_mask_consistent != callback_consistent
         || complete != expected_complete
         || !known_masks
         || !derived_modes
+        || !derived_workers
         || !optional_consistent
         || (registered && !registered_shape)
         || (!registered && !unregistered_shape)
@@ -476,6 +543,7 @@ pub(crate) fn parse_hot_fork_plugin_resource_inventory(
         plugin_id,
         resource_mask,
         callback_mask,
+        worker_mask,
         observed_callback_mask,
         shmem_device,
         shmem_inode,
@@ -487,6 +555,9 @@ pub(crate) fn parse_hot_fork_plugin_resource_inventory(
         coverage,
         whitebox,
         fingerprint,
+        run_control_worker,
+        teardown_worker,
+        fingerprint_worker,
         state_dump,
         app_random,
     })

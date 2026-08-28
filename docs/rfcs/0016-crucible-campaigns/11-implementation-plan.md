@@ -1805,17 +1805,21 @@ readiness bit 5 only while that complete binding remains retained. Snapshot
 creation, branch-private child overlay and graph reconstruction, descriptors,
 and the remaining child dispositions stay open under bits 7 and 8, so
 T-CAM-6.2 remains unchecked.
-The GPL plugin now also seals a version-1 fixed resource manifest after callback,
+The GPL plugin now also seals a version-2 fixed resource manifest after callback,
 wake-descriptor, and fault-admission setup but before successful readiness. It
 binds the exact process/plugin generation, closed required/optional resource and
-callback masks, shared-memory device/inode/length, topology slot/count, and
-control/wake descriptor numbers. Patched QEMU independently records every
-required and optional callback registration, rejects a mismatched plugin or
-mask, retains the manifest by value, and exposes one strict OOB scalar query.
+callback masks, shared-memory device/inode/length, topology slot/count,
+control/wake descriptor numbers, and the closed process-lifetime worker set:
+the mandatory RUN control reader and teardown worker plus the fingerprint
+digest worker exactly when fingerprinting is enabled. Patched QEMU
+independently records every required and optional callback registration,
+rejects a mismatched plugin or mask, retains the manifest by value, and exposes
+one strict OOB scalar query.
 The Apache host brackets procfs capture with identical query results,
 authenticates both descriptor target classes, and requires the matching
 writable/shared mapping bytes to equal the sealed length. This is a concrete
-plugin-resource inventory prerequisite, not an executing-callback count, ring
+plugin-resource inventory prerequisite and closed future
+parking/reconstruction set, not an executing-callback count, ring
 freeze, callback barrier, process-lifetime heap disposition, or child
 reinitializer; readiness bit 6 remains clear and the GPL/Apache process
 boundary is unchanged.

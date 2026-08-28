@@ -944,6 +944,13 @@
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "the retained plugin barrier also holds every ABI-v19 shared-memory ring producer, reports exact ring and already-admitted producer counts, and requires both callback and ring admission to drain before quiescence; worker parking, ring cloning, and child reconstruction remain open under proof bit 6";
     }
+    {
+      file = "0136-crucible-seal-hot-fork-plugin-workers.patch";
+      catalogName = "crucible-hot-fork-plugin-worker-manifest";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "the version-2 plugin resource manifest seals the mandatory run-control and teardown workers plus the fingerprint digest worker exactly when fingerprinting is enabled, giving future parking and child reconstruction a closed worker set without yet acknowledging proof bit 6";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

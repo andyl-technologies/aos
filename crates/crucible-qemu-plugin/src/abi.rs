@@ -352,7 +352,7 @@ pub type QemuRegisterWakeFdFn = extern "C" fn(c_int) -> c_int;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub struct QemuPluginResourceManifest {
-    /// Manifest schema version, currently one.
+    /// Manifest schema version, currently two.
     pub schema_version: u32,
     /// Exact C ABI structure size.
     pub struct_size: u32,
@@ -364,6 +364,8 @@ pub struct QemuPluginResourceManifest {
     pub resource_mask: u64,
     /// Closed callback-registration-class mask.
     pub callback_mask: u64,
+    /// Closed process-lifetime worker-class mask.
+    pub worker_mask: u64,
     /// Shared-memory backing device number captured before mmap.
     pub shmem_device: u64,
     /// Shared-memory backing inode captured before mmap.

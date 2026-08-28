@@ -100,6 +100,14 @@ impl LiveInstallFixture {
         .unwrap_or_else(|error| panic!("test coverage plugin args should parse: {error}"))
     }
 
+    pub(super) fn fingerprint_args(&self) -> PluginArgs {
+        PluginArgs::parse(&format!(
+            "simfd={},slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,fingerprint=on",
+            self.plugin.as_raw_fd()
+        ))
+        .unwrap_or_else(|error| panic!("test fingerprint plugin args should parse: {error}"))
+    }
+
     pub(super) fn whitebox_args(&self) -> PluginArgs {
         PluginArgs::parse(&format!(
             "simfd={},slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1",
