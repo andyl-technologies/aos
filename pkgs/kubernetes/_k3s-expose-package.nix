@@ -241,9 +241,9 @@ in
             root = "k3s";
             interfaceAbi = 2;
             contributable = [
-              "integrations.cni.*"
-              "integrations.csi.*"
-              "integrations.resources.*"
+              "integrations.cni"
+              "integrations.csi"
+              "integrations.resources"
             ];
           }
         ];

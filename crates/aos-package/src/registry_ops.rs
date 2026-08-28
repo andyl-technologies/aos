@@ -15979,7 +15979,7 @@ mod tests {
         let owned = vec![OwnedRoot {
             root: "nginx".to_string(),
             interface_abi: 1,
-            contributable: vec!["virtualHosts.*".to_string()],
+            contributable: vec!["virtualHosts".to_string()],
         }];
 
         assert_eq!(
