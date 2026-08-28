@@ -3931,7 +3931,7 @@ const RECONCILE_OK: i32 = 0;
 const RECONCILE_FAILED_UNITS: i32 = 1;
 const RECONCILE_CATASTROPHIC: i32 = 2;
 
-const PLAN_SCHEMA_VERSION: u32 = 2;
+const PLAN_SCHEMA_VERSION: u32 = 3;
 
 /// Where the activation orchestrator keeps the switch lock and plan files. It
 /// lives on tmpfs (`/run`), so crash debris disappears on reboot.
@@ -3949,6 +3949,8 @@ struct Plan {
     stopped: Vec<String>,
     /// Stops that must succeed before the generation swap is authorized.
     required_stops: BTreeSet<String>,
+    /// Old helpers re-started under old definitions immediately before stop.
+    required_pre_stop_starts: BTreeSet<String>,
     /// Remaining post-swap actions, already in apply order.
     to_reload: Vec<String>,
     to_restart: Vec<String>,
@@ -4029,11 +4031,21 @@ async fn activate_pre_etc_swap_inner(
     // introduced by this activation before the health scan.
     client.reset_failed().await.context("reset-failed")?;
 
-    await_required_stops(&plan.stopped, &plan.required_stops, |unit| {
-        printer.plain(&format!("  stopping   {unit}"));
-        let client = &client;
-        async move { client.stop_unit(&unit).await.map(|outcome| outcome.result) }
-    })
+    await_required_barrier_actions(
+        &plan.stopped,
+        &plan.required_stops,
+        &plan.required_pre_stop_starts,
+        |unit| {
+            printer.plain(&format!("  preparing {unit}"));
+            let client = &client;
+            async move { client.start_unit(&unit).await.map(|outcome| outcome.result) }
+        },
+        |unit| {
+            printer.plain(&format!("  stopping   {unit}"));
+            let client = &client;
+            async move { client.stop_unit(&unit).await.map(|outcome| outcome.result) }
+        },
+    )
     .await?;
 
     for unit in plan
@@ -4182,6 +4194,7 @@ fn plan_from_diff(generation: u32, mut diff: UnitDiff) -> Plan {
         generation,
         stopped: diff.to_stop,
         required_stops: diff.required_stops,
+        required_pre_stop_starts: diff.required_pre_stop_starts,
         to_reload: diff.to_reload,
         to_restart: diff.to_restart,
         to_start: diff.to_start,
@@ -4205,20 +4218,42 @@ fn ensure_required_stop_succeeded<E: std::fmt::Display>(
     Ok(())
 }
 
-async fn await_required_stops<F, Fut, E>(
+fn ensure_required_start_succeeded<E: std::fmt::Display>(
+    unit: &str,
+    result: std::result::Result<JobResult, E>,
+) -> Result<()> {
+    let result = result
+        .map_err(|error| anyhow::anyhow!("required pre-swap start failed for {unit}: {error}"))?;
+    if !result.is_done() {
+        bail!(
+            "required pre-swap start for {unit} returned systemd job result '{}'",
+            result.label()
+        );
+    }
+    Ok(())
+}
+
+async fn await_required_barrier_actions<S, SFut, T, TFut, E>(
     ordered_stops: &[String],
     required_stops: &BTreeSet<String>,
-    mut stop: F,
+    required_pre_stop_starts: &BTreeSet<String>,
+    mut start: S,
+    mut stop: T,
 ) -> Result<()>
 where
-    F: FnMut(String) -> Fut,
-    Fut: std::future::Future<Output = std::result::Result<JobResult, E>>,
+    S: FnMut(String) -> SFut,
+    SFut: std::future::Future<Output = std::result::Result<JobResult, E>>,
+    T: FnMut(String) -> TFut,
+    TFut: std::future::Future<Output = std::result::Result<JobResult, E>>,
     E: std::fmt::Display,
 {
     for unit in ordered_stops
         .iter()
         .filter(|unit| required_stops.contains(*unit))
     {
+        if required_pre_stop_starts.contains(unit) {
+            ensure_required_start_succeeded(unit, start(unit.clone()).await)?;
+        }
         ensure_required_stop_succeeded(unit, stop(unit.clone()).await)?;
     }
     Ok(())
@@ -4488,6 +4523,15 @@ fn print_diff(diff: &UnitDiff, printer: &Printer) {
         printer.plain(&format!("  {label:<9}{body}"));
     };
     show("stop:", &diff.to_stop);
+    show(
+        "prepare:",
+        &diff
+            .to_stop
+            .iter()
+            .filter(|unit| diff.required_pre_stop_starts.contains(*unit))
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
     show("reload:", &diff.to_reload);
     show("restart:", &diff.to_restart);
     show("start:", &diff.to_start);
@@ -7122,6 +7166,7 @@ mod tests {
             generation: 42,
             stopped: vec!["old.service".to_string()],
             required_stops: BTreeSet::from(["old.service".to_string()]),
+            required_pre_stop_starts: BTreeSet::new(),
             to_reload: vec!["reload.service".to_string()],
             to_restart: vec!["restart.socket".to_string(), "restart.service".to_string()],
             to_start: vec!["new.service".to_string()],
@@ -7198,6 +7243,10 @@ mod tests {
         assert!(plan.blanket_targets.is_empty());
         assert_eq!(plan.to_start, vec!["aos-pkg-web.target"]);
         assert_eq!(
+            plan.required_pre_stop_starts,
+            BTreeSet::from([helper.to_string()])
+        );
+        assert_eq!(
             plan.required_stops,
             BTreeSet::from([
                 "web.service".to_string(),
@@ -7236,6 +7285,10 @@ mod tests {
             ]
         );
         assert_eq!(diff.to_start, vec!["aos-pkg-web.target"]);
+        assert_eq!(
+            diff.required_pre_stop_starts,
+            BTreeSet::from([helper.to_string()])
+        );
         assert!(diff.to_restart.is_empty());
         assert_eq!(
             diff.required_stops,
@@ -7331,8 +7384,8 @@ mod tests {
         let helper = "aos-pkg-web-service-roots.service".to_string();
         let member = "web.service".to_string();
         let ordered = vec![member.clone(), helper.clone(), target.clone()];
-        let expected = ordered.clone();
         let required = BTreeSet::from([member, helper.clone(), target]);
+        let prepare = BTreeSet::from([helper.clone()]);
         let calls = Arc::new(Mutex::new(Vec::new()));
         let helper_started = Arc::new(Notify::new());
         let helper_release = Arc::new(Notify::new());
@@ -7343,20 +7396,33 @@ mod tests {
             let helper_release = Arc::clone(&helper_release);
             let helper = helper.clone();
             tokio::spawn(async move {
-                await_required_stops(&ordered, &required, move |unit| {
-                    let calls = Arc::clone(&calls);
-                    let helper_started = Arc::clone(&helper_started);
-                    let helper_release = Arc::clone(&helper_release);
-                    let helper = helper.clone();
-                    async move {
-                        calls.lock().unwrap().push(unit.clone());
-                        if unit == helper {
-                            helper_started.notify_one();
-                            helper_release.notified().await;
+                let start_calls = Arc::clone(&calls);
+                await_required_barrier_actions(
+                    &ordered,
+                    &required,
+                    &prepare,
+                    move |unit| {
+                        let calls = Arc::clone(&start_calls);
+                        async move {
+                            calls.lock().unwrap().push(("start", unit));
+                            Ok::<_, &str>(JobResult::Done)
                         }
-                        Ok::<_, &str>(JobResult::Done)
-                    }
-                })
+                    },
+                    move |unit| {
+                        let calls = Arc::clone(&calls);
+                        let helper_started = Arc::clone(&helper_started);
+                        let helper_release = Arc::clone(&helper_release);
+                        let helper = helper.clone();
+                        async move {
+                            calls.lock().unwrap().push(("stop", unit.clone()));
+                            if unit == helper {
+                                helper_started.notify_one();
+                                helper_release.notified().await;
+                            }
+                            Ok::<_, &str>(JobResult::Done)
+                        }
+                    },
+                )
                 .await
             })
         };
@@ -7368,12 +7434,24 @@ mod tests {
         );
         assert_eq!(
             *calls.lock().unwrap(),
-            vec!["web.service".to_string(), helper.clone()],
+            vec![
+                ("stop", "web.service".to_string()),
+                ("start", helper.clone()),
+                ("stop", helper.clone()),
+            ],
             "target stop raced PartOf-propagated helper cleanup"
         );
         helper_release.notify_one();
         task.await.unwrap().unwrap();
-        assert_eq!(*calls.lock().unwrap(), expected);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                ("stop", "web.service".to_string()),
+                ("start", helper.clone()),
+                ("stop", helper),
+                ("stop", "aos-pkg-web.target".to_string()),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -7385,29 +7463,95 @@ mod tests {
         let member = "web.service".to_string();
         let ordered = vec![member.clone(), helper.clone(), target.clone()];
         let required = BTreeSet::from([member.clone(), helper.clone(), target]);
+        let prepare = BTreeSet::from([helper.clone()]);
         let calls = Arc::new(Mutex::new(Vec::new()));
 
-        let err = await_required_stops(&ordered, &required, {
-            let calls = Arc::clone(&calls);
-            let helper = helper.clone();
+        let start_calls = Arc::clone(&calls);
+        let err = await_required_barrier_actions(
+            &ordered,
+            &required,
+            &prepare,
             move |unit| {
+                let calls = Arc::clone(&start_calls);
+                async move {
+                    calls.lock().unwrap().push(("start", unit));
+                    Ok::<_, &str>(JobResult::Done)
+                }
+            },
+            {
                 let calls = Arc::clone(&calls);
                 let helper = helper.clone();
-                async move {
-                    calls.lock().unwrap().push(unit.clone());
-                    Ok::<_, &str>(if unit == helper {
-                        JobResult::Dependency
-                    } else {
-                        JobResult::Done
-                    })
+                move |unit| {
+                    let calls = Arc::clone(&calls);
+                    let helper = helper.clone();
+                    async move {
+                        calls.lock().unwrap().push(("stop", unit.clone()));
+                        Ok::<_, &str>(if unit == helper {
+                            JobResult::Dependency
+                        } else {
+                            JobResult::Done
+                        })
+                    }
                 }
-            }
-        })
+            },
+        )
         .await
         .unwrap_err();
 
         assert!(err.to_string().contains(&helper));
-        assert_eq!(*calls.lock().unwrap(), vec![member, helper]);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                ("stop", member),
+                ("start", helper.clone()),
+                ("stop", helper),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn required_service_root_prepare_failure_aborts_before_cleanup() {
+        use std::sync::{Arc, Mutex};
+
+        let helper = "aos-pkg-web-service-roots.service".to_string();
+        let ordered = vec![
+            "web.service".to_string(),
+            helper.clone(),
+            "aos-pkg-web.target".to_string(),
+        ];
+        let required = ordered.iter().cloned().collect::<BTreeSet<_>>();
+        let prepare = BTreeSet::from([helper.clone()]);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let stop_calls = Arc::clone(&calls);
+        let start_calls = Arc::clone(&calls);
+
+        let error = await_required_barrier_actions(
+            &ordered,
+            &required,
+            &prepare,
+            move |unit| {
+                let calls = Arc::clone(&start_calls);
+                async move {
+                    calls.lock().unwrap().push(("start", unit));
+                    Ok::<_, &str>(JobResult::Dependency)
+                }
+            },
+            move |unit| {
+                let calls = Arc::clone(&stop_calls);
+                async move {
+                    calls.lock().unwrap().push(("stop", unit));
+                    Ok::<_, &str>(JobResult::Done)
+                }
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("required pre-swap start"));
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![("stop", "web.service".to_string()), ("start", helper)]
+        );
     }
 
     #[test]
