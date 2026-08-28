@@ -122,6 +122,27 @@ Unit, property, and integration tests cover:
   retry;
 - duplicate concurrent upload and cross-repository mount behavior.
 
+The Phase-3 native client gate runs `aos-oci` layout and loopback Distribution
+tests plus process-level `aos container` tests through the AOS development
+environment. It covers safe archive ingestion, complete descriptor and DiffID
+verification, multi-member gzip, nested exact-platform selection, resumable
+range pull and chunked push, immutable-before-tag ordering, published digest
+identity, in-flight cancellation, bounded bodies, redirect and Bearer-realm
+confinement, hostile acknowledgements, private state ownership, symlink and
+hardlink refusal, destination identity races, stale-blob exclusion, and
+credential redaction. A process fixture clears `PATH`, runs outside an AOS
+checkout, pulls a complete image, and pushes it to a second repository through
+the CLI, proving transfer commands neither discover Nix nor invoke a container
+daemon.
+
+The focused commands are:
+
+```text
+nix develop -c cargo test --manifest-path crates/Cargo.toml -p aos-oci --tests
+nix develop -c cargo test --manifest-path crates/Cargo.toml -p aos --test container_cli
+nix develop -c cargo test --manifest-path crates/Cargo.toml -p aos --test container_cli_transfer
+```
+
 ## Hub native integration
 
 Native tests use the real Hub service, database implementation, surface write

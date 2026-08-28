@@ -16,6 +16,7 @@
 
 mod build;
 mod cache;
+mod container;
 mod doc;
 mod gc;
 mod hub;
@@ -28,6 +29,7 @@ mod test;
 mod vm;
 
 pub use cache::*;
+pub use container::*;
 pub use hub::*;
 pub use hub_retained_control::*;
 pub use image::*;
@@ -252,6 +254,11 @@ pub enum Commands {
     Image {
         #[command(subcommand)]
         command: ImageCommand,
+    },
+    /// Build, inspect, and transfer OCI container images
+    Container {
+        #[command(subcommand)]
+        command: ContainerCommand,
     },
     /// Run downloaded AOS images locally with QEMU
     Vm {

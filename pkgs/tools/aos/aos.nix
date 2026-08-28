@@ -75,6 +75,7 @@
     "aos-hub-core"
     "aos-hub-worker"
     "aos-net"
+    "aos-oci"
     "aos-oci-types"
     "aos-package"
     "aos-profile"

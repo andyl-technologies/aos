@@ -132,6 +132,12 @@ async fn run(cli: &Cli) -> Result<()> {
         return commands::image::run(command, &printer).await;
     }
 
+    // Container transfers and local inspection are daemon-free. The handler
+    // constructs Nix lazily only for definition list/show/build operations.
+    if let Commands::Container { command } = &cli.command {
+        return commands::container::run(command, &printer).await;
+    }
+
     // Local VM runs use downloaded artifacts and host-side QEMU tools.
     if let Commands::Vm { command } = &cli.command {
         return commands::vm::run(command, &printer);
@@ -238,6 +244,7 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Metadata { .. } => unreachable!(),
         Commands::Hub { .. } => unreachable!(),
         Commands::Image { .. } => unreachable!(),
+        Commands::Container { .. } => unreachable!(),
         Commands::Vm { .. } => unreachable!(),
     }
 }

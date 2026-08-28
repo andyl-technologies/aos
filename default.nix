@@ -211,6 +211,7 @@
         };
       })
     containerConfigurations;
+  containerDefinitions = lib.mapAttrs (_: image: image.definition) containerImages;
 
   # Testing harness (headless mode for package integration tests)
   testing = import ./lib/testing {inherit pkgs lib;};
@@ -1027,7 +1028,7 @@
       referenceIntegrity = crucibleReferenceIntegrity;
     };
 in {
-  inherit lib pkgs stdenv modules mkSystem packagesWithExpose containerImages;
+  inherit lib pkgs stdenv modules mkSystem packagesWithExpose containerImages containerDefinitions;
 
   # Auto-discovered golden image systems.
   # Each system has .config, .options, .build, and .checks.
@@ -1138,7 +1139,8 @@ in {
         # These are negative exact-path assertions, not test dependencies. Drop
         # string context so proving their absence does not build or retain the
         # bootable system artifacts the container deliberately excludes.
-        forbiddenRuntimeRoots = map
+        forbiddenRuntimeRoots =
+          map
           (root: builtins.unsafeDiscardStringContext (builtins.toString root))
           [
             discoverSystems.server.config.system.build.kernel

@@ -358,6 +358,7 @@
   };
 in {
   config = container;
+  definition = metadataSpec;
   platforms.${container.platform.aosSystem} = {
     ociLayout = image;
     ociArchive = image;

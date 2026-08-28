@@ -11,7 +11,7 @@ one adversarial review of the containing phase are complete.
 | 0 | Contracts and executable spikes | Complete |
 | 1 | OCI types and deterministic Nix builders | Complete |
 | 2 | The single `aos` image and runtime contract | Complete |
-| 3 | Local `aos container` CLI | Not started |
+| 3 | Local `aos container` CLI | Complete |
 | 4 | Hub OCI catalog, storage, and pull data plane | Not started |
 | 5 | Upload, publication, and signed release roots | Not started |
 | 6 | Connect API, administration CLI, and console | Not started |
@@ -208,30 +208,47 @@ round was used.
 
 ### Command structure
 
-- [ ] Add `aos container` without changing `aos image` semantics.
-- [ ] Dispatch non-build commands before unconditional `NixRunner` creation.
-- [ ] Implement definition `list` and `show` with stable human and JSON output.
-- [ ] Implement `build` with platform, output, archive-format, and remote-build
+- [x] Add `aos container` without changing `aos image` semantics.
+- [x] Dispatch non-build commands before unconditional `NixRunner` creation.
+- [x] Implement definition `list` and `show` with stable human and JSON output.
+- [x] Implement `build` with platform, output, archive-format, and remote-build
   options.
-- [ ] Generalize remote builds from package attributes to exact container
+- [x] Generalize remote builds from package attributes to exact container
   output attributes.
-- [ ] Implement local layout/archive `inspect` with digest verification.
-- [ ] Implement platform selection for multi-platform indexes.
-- [ ] Implement daemonless `pull`, `push`, and build-plus-publish operations.
-- [ ] Reuse Hub profiles and explicit-argument precedence for authentication.
-- [ ] Never shell out to Docker or Podman for artifact operations.
+- [x] Implement local layout/archive `inspect` with digest verification.
+- [x] Implement platform selection for multi-platform indexes.
+- [x] Implement daemonless `pull`, `push`, and build-plus-publish operations.
+- [x] Reuse Hub profiles and explicit-argument precedence for authentication.
+- [x] Never shell out to Docker or Podman for artifact operations.
 
 ### Tests and review
 
-- [ ] Test command parsing, JSON envelopes, path/reference ambiguity, platform
+- [x] Test command parsing, JSON envelopes, path/reference ambiguity, platform
   selection, progress, cancellation, and credential redaction.
-- [ ] Test pull/push outside a repository and without Nix on PATH.
-- [ ] Test interrupted and resumed blob transfer.
-- [ ] Test digest mismatch before any tag update.
-- [ ] Run Rust unit/integration tests through `nix develop -c` with the shared
+- [x] Test pull/push outside a repository and without Nix on PATH.
+- [x] Test interrupted and resumed blob transfer.
+- [x] Test digest mismatch before any tag update.
+- [x] Run Rust unit/integration tests through `nix develop -c` with the shared
   worktree Cargo target.
-- [ ] Run the hermetic `pkgs.aos` build.
-- [ ] Complete one Phase-3 adversarial review and resolve blocking findings.
+- [x] Run the hermetic `pkgs.aos` build.
+- [x] Complete one Phase-3 adversarial review and resolve blocking findings.
+
+The Phase-3 adversarial review found ten blocking classes: implicit HTTP
+redirects could escape credential and upload-origin policy; resumable local
+state and final destinations were vulnerable to links, identity swaps, stale
+blob leakage, and early `--force` deletion; cancellation and response bounds
+did not cover in-flight I/O; `@tag` was accepted; nested platform selection and
+published-index identity were incomplete; local verification reopened paths
+unsafely; gzip processing stopped after one member; upload acknowledgements
+could skip bytes; unrelated expired Hub profiles could block public pulls; and
+Docker archive tags were not validated. Explicit redirect handling with
+DNS-pinned nonlocal endpoints, held no-follow descriptors and owned state
+markers, bounded cancellable streaming, digest-only `@` parsing, recursive
+exact platform selection, exact publication results, multi-member gzip,
+strict acknowledgements, origin-matched profiles, and validated Docker tags
+resolve the findings. Malicious archive, symlink, hardlink, identity-race,
+stale-blob, redirect, cancellation, hostile registry, and process-level
+daemonless transfer tests freeze the fixes. No second review round was used.
 
 ## Phase 4: Hub OCI catalog, storage, and pull data plane
 
