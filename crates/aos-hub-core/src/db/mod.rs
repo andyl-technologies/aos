@@ -13526,6 +13526,104 @@ impl Database {
         Ok(images)
     }
 
+    /// Lists the complete signed image catalogs retained by the current index.
+    ///
+    /// Unlike [`Self::list_system_images`], this method does not apply live
+    /// placement-readiness filtering. Index rebuilds use the immutable catalog
+    /// identity and re-attest its objects against the newly selected
+    /// publication before reusing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, inconsistent catalog identity, or
+    /// malformed signed image metadata.
+    pub async fn list_release_image_snapshots(
+        &self,
+        registry_id: i64,
+    ) -> Result<Vec<ReleaseImageSnapshot>> {
+        let rows = self
+            .backend
+            .query(
+                "SELECT image.release, image.source_commit,
+                        image.verified_tag_oid, image.catalog_digest,
+                        image.package_name, image.platform, image.format,
+                        image.delivery
+                   FROM registry_system_images image
+                   JOIN releases rel
+                     ON rel.registry_id = image.registry_id
+                    AND rel.semver = image.release
+                    AND rel.commit_oid = image.source_commit
+                    AND rel.tag_oid = image.verified_tag_oid
+                  WHERE image.registry_id = ?1
+                  ORDER BY image.release, image.package_name,
+                           image.platform, image.format",
+                &vals![registry_id],
+            )
+            .await?;
+
+        let mut catalogs = Vec::<ReleaseImageSnapshot>::new();
+        for row in &rows {
+            let release_tag: String = row.get(0)?;
+            let source_commit: String = row.get(1)?;
+            let verified_tag_oid: String = row.get(2)?;
+            let catalog_digest: String = row.get(3)?;
+            if catalog_digest.len() != 64
+                || !catalog_digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                bail!("indexed signed image catalog has invalid digest identity");
+            }
+
+            let starts_catalog = catalogs.last().is_none_or(|catalog| {
+                catalog.release_tag != release_tag
+                    || catalog.source_commit != source_commit
+                    || catalog.verified_tag_oid != verified_tag_oid
+                    || catalog.catalog_digest != catalog_digest
+            });
+            if starts_catalog {
+                if catalogs
+                    .last()
+                    .is_some_and(|catalog| catalog.release_tag == release_tag)
+                {
+                    bail!("indexed release has conflicting signed image catalog identities");
+                }
+                catalogs.push(ReleaseImageSnapshot {
+                    release_tag: release_tag.clone(),
+                    source_commit: source_commit.clone(),
+                    verified_tag_oid: verified_tag_oid.clone(),
+                    catalog_digest: catalog_digest.clone(),
+                    images: Vec::new(),
+                });
+            }
+
+            let package: String = row.get(4)?;
+            let platform: String = row.get(5)?;
+            let format: String = row.get(6)?;
+            let encoded: String = row.get(7)?;
+            let stored = decode_stored_system_image(&encoded)?;
+            stored
+                .delivery
+                .validate(&format, &release_tag, &platform)
+                .context("validating indexed signed image delivery metadata")?;
+            catalogs
+                .last_mut()
+                .context("signed image catalog grouping lost its parent row")?
+                .images
+                .push(IndexedSystemImage {
+                    package,
+                    release: release_tag,
+                    platform,
+                    format,
+                    store_path: stored.store_path,
+                    nar_hash: stored.nar_hash,
+                    nar_size: stored.nar_size,
+                    delivery: stored.delivery,
+                });
+        }
+        Ok(catalogs)
+    }
+
     /// Resolves one signed image by its canonical immutable object key.
     ///
     /// # Errors
