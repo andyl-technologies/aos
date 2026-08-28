@@ -8,6 +8,9 @@
 //! has one authoritative ref backend. Physical blob inventory and candidate
 //! removal require the separately held [`BlobStoreAdmin`] capability; complete
 //! ref-namespace inventory requires [`RefStoreAdmin`].
+//! S3 unfinished multipart uploads are reclaimed through the weaker,
+//! separately held [`S3MultipartCleanupAdmin`]; that capability cannot inspect
+//! or delete committed objects and is not a GC fence.
 //!
 //! Built-in memory, plaintext-directory, compressed-directory, encrypted,
 //! compressed-encrypted, and packed leaves are public. Composition
@@ -48,8 +51,9 @@ pub use encrypted_directory::{
 };
 pub use graph::{
     StoreGraph, StoreGraphAdmin, StoreGraphConfig, StoreGraphConfigurationId,
-    StoreGraphPhysicalAdmin, StoreNodeDescription, StoreNodeId, StoreNodeKind, StoreNodeMetrics,
-    StoreNodeMetricsDescription, StoreNodeSpec, StoreWriteBackFlushSummary,
+    StoreGraphPhysicalAdmin, StoreGraphS3MultipartCleanupAdmin, StoreNodeDescription, StoreNodeId,
+    StoreNodeKind, StoreNodeMetrics, StoreNodeMetricsDescription, StoreNodeSpec,
+    StoreWriteBackFlushSummary,
 };
 pub use memory::{MemoryBlobBackend, MemoryRefBackend};
 pub use namespace::{
@@ -69,8 +73,10 @@ pub use profile::{
     StoreObjectProfilePolicyId, StoreObjectProfiler,
 };
 pub use s3::{
-    S3BlobBackend, StoreGraphS3Clients, StoreS3Client, StoreS3ConditionalPutOutcome,
-    StoreS3EndpointId, StoreS3MultipartUpload, StoreS3ObjectDownload, StoreS3UploadedPart,
+    MAX_S3_MULTIPART_LIST_ITEMS, S3BlobBackend, S3MultipartCleanupAdmin, StoreGraphS3Clients,
+    StoreS3Client, StoreS3ConditionalPutOutcome, StoreS3EndpointId, StoreS3MultipartCleanupPage,
+    StoreS3MultipartListCursor, StoreS3MultipartListPage, StoreS3MultipartUpload,
+    StoreS3MultipartUploadRecord, StoreS3ObjectDownload, StoreS3UploadedPart,
 };
 pub use write_back::{
     WriteBackRetentionAdmin, WriteBackRetentionFence, WriteBackRetentionGeneration,

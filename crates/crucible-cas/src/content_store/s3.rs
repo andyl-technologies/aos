@@ -20,11 +20,18 @@ use super::{
 
 const MAX_ENDPOINT_ID_BYTES: usize = 512;
 const MAX_BUCKET_BYTES: usize = 63;
-const MAX_PREFIX_BYTES: usize = 1_024;
+const MAX_OBJECT_KEY_BYTES: usize = 1_024;
+const MAX_CONTENT_ID_TEXT_BYTES: usize = 93;
+const OBJECT_NAMESPACE_SEPARATOR_BYTES: usize = 9;
+const MAX_PREFIX_BYTES: usize =
+    MAX_OBJECT_KEY_BYTES - MAX_CONTENT_ID_TEXT_BYTES - OBJECT_NAMESPACE_SEPARATOR_BYTES;
 const MAX_MULTIPART_TOKEN_BYTES: usize = 4_096;
 const MAX_MULTIPART_PARTS: u32 = 10_000;
 const MIN_MULTIPART_PART_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_MULTIPART_PART_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Maximum unfinished multipart uploads returned or reclaimed by one call.
+pub const MAX_S3_MULTIPART_LIST_ITEMS: u16 = 1_000;
 
 /// Validated non-secret identity of one S3 endpoint and credential policy.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -162,6 +169,158 @@ pub enum StoreS3ConditionalPutOutcome {
     AlreadyExists,
 }
 
+/// Exact provider continuation for one bounded multipart-upload listing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoreS3MultipartListCursor {
+    key_marker: String,
+    upload_id_marker: StoreS3MultipartUpload,
+}
+
+impl StoreS3MultipartListCursor {
+    /// Builds one bounded provider continuation pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Incompatible`] for an empty or oversized key.
+    pub fn new(
+        key_marker: impl Into<String>,
+        upload_id_marker: StoreS3MultipartUpload,
+    ) -> Result<Self, StoreError> {
+        let key_marker = key_marker.into();
+        validate_object_key(&key_marker)?;
+        Ok(Self {
+            key_marker,
+            upload_id_marker,
+        })
+    }
+
+    /// Returns the exact provider key marker.
+    #[must_use]
+    pub fn key_marker(&self) -> &str {
+        &self.key_marker
+    }
+
+    /// Returns the exact provider upload-ID marker.
+    #[must_use]
+    pub const fn upload_id_marker(&self) -> &StoreS3MultipartUpload {
+        &self.upload_id_marker
+    }
+}
+
+/// One unfinished multipart upload returned by the provider.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoreS3MultipartUploadRecord {
+    key: String,
+    upload: StoreS3MultipartUpload,
+}
+
+impl StoreS3MultipartUploadRecord {
+    /// Builds one bounded unfinished-upload record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Incompatible`] for an empty or oversized key.
+    pub fn new(key: impl Into<String>, upload: StoreS3MultipartUpload) -> Result<Self, StoreError> {
+        let key = key.into();
+        validate_object_key(&key)?;
+        Ok(Self { key, upload })
+    }
+
+    /// Returns the exact object key named by the upload.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Returns the exact provider upload token.
+    #[must_use]
+    pub const fn upload(&self) -> &StoreS3MultipartUpload {
+        &self.upload
+    }
+}
+
+/// One bounded provider page of unfinished multipart uploads.
+pub struct StoreS3MultipartListPage {
+    uploads: Vec<StoreS3MultipartUploadRecord>,
+    next: Option<StoreS3MultipartListCursor>,
+}
+
+impl StoreS3MultipartListPage {
+    /// Validates one provider page against its requested item ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Incompatible`] when the requested bound is
+    /// invalid, the provider exceeds it, or pagination cannot make progress.
+    pub fn new(
+        uploads: Vec<StoreS3MultipartUploadRecord>,
+        next: Option<StoreS3MultipartListCursor>,
+        after: Option<&StoreS3MultipartListCursor>,
+        maximum_items: u16,
+    ) -> Result<Self, StoreError> {
+        let continuation_matches_last = next.as_ref().is_none_or(|next| {
+            uploads.last().is_some_and(|last| {
+                next.key_marker() == last.key() && next.upload_id_marker() == last.upload()
+            })
+        });
+        if maximum_items == 0
+            || maximum_items > MAX_S3_MULTIPART_LIST_ITEMS
+            || uploads.len() > usize::from(maximum_items)
+            || (next.is_some() && uploads.is_empty())
+            || next
+                .as_ref()
+                .zip(after)
+                .is_some_and(|(next, after)| next == after)
+            || !continuation_matches_last
+        {
+            return Err(StoreError::Incompatible);
+        }
+        Ok(Self { uploads, next })
+    }
+
+    /// Returns the exact unfinished uploads in this page.
+    #[must_use]
+    pub fn uploads(&self) -> &[StoreS3MultipartUploadRecord] {
+        &self.uploads
+    }
+
+    /// Returns the exact provider continuation, or `None` at observed EOF.
+    #[must_use]
+    pub const fn next(&self) -> Option<&StoreS3MultipartListCursor> {
+        self.next.as_ref()
+    }
+
+    fn into_parts(
+        self,
+    ) -> (
+        Vec<StoreS3MultipartUploadRecord>,
+        Option<StoreS3MultipartListCursor>,
+    ) {
+        (self.uploads, self.next)
+    }
+}
+
+/// Result of one bounded unfinished-upload cleanup page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoreS3MultipartCleanupPage {
+    aborted: u16,
+    next: Option<StoreS3MultipartListCursor>,
+}
+
+impl StoreS3MultipartCleanupPage {
+    /// Returns the number of uploads idempotently aborted by this call.
+    #[must_use]
+    pub const fn aborted(&self) -> u16 {
+        self.aborted
+    }
+
+    /// Returns the exact provider continuation, or `None` at observed EOF.
+    #[must_use]
+    pub const fn next(&self) -> Option<&StoreS3MultipartListCursor> {
+        self.next.as_ref()
+    }
+}
+
 /// Synchronous bounded transport contract implemented by an S3 adapter.
 ///
 /// Implementations must classify expired or rejected credentials as
@@ -250,6 +409,20 @@ pub trait StoreS3Client: Send + Sync {
         key: &str,
         upload: &StoreS3MultipartUpload,
     ) -> Result<(), StoreError>;
+
+    /// Lists one bounded page of unfinished multipart uploads.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified backend error when listing is unavailable or the
+    /// provider cannot supply an exact resumable continuation.
+    fn list_multipart_uploads(
+        &self,
+        bucket: &str,
+        prefix: &str,
+        after: Option<&StoreS3MultipartListCursor>,
+        maximum_items: u16,
+    ) -> Result<StoreS3MultipartListPage, StoreError>;
 }
 
 /// External S3 clients used while constructing one closed store graph.
@@ -314,6 +487,67 @@ pub struct S3BlobBackend {
     client: Arc<dyn StoreS3Client>,
 }
 
+/// Separate bounded authority for reclaiming unfinished multipart uploads.
+///
+/// This capability is intentionally weaker than physical inventory/delete
+/// administration. It neither lists committed objects nor fences concurrent
+/// publication, and therefore cannot serve as a garbage-collection authority.
+pub struct S3MultipartCleanupAdmin {
+    bucket: String,
+    object_prefix: String,
+    client: Arc<dyn StoreS3Client>,
+}
+
+impl S3MultipartCleanupAdmin {
+    /// Reclaims one bounded provider page under this exact object namespace.
+    ///
+    /// Exact retry is safe because abort is idempotent. The returned cursor is
+    /// provider-owned and may be persisted by the maintenance owner to resume
+    /// a long sweep without retaining an unbounded upload set in memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified credential, availability, or protocol error when
+    /// the page cannot be listed or every named upload cannot be aborted.
+    pub fn cleanup_page(
+        &self,
+        after: Option<&StoreS3MultipartListCursor>,
+        maximum_items: u16,
+    ) -> Result<StoreS3MultipartCleanupPage, StoreError> {
+        if after.is_some_and(|cursor| !self.owns_object_key(cursor.key_marker())) {
+            return Err(StoreError::Incompatible);
+        }
+        let page = self.client.list_multipart_uploads(
+            &self.bucket,
+            &self.object_prefix,
+            after,
+            maximum_items,
+        )?;
+        let (uploads, next) = page.into_parts();
+        if uploads
+            .iter()
+            .any(|upload| !self.owns_object_key(upload.key()))
+            || next
+                .as_ref()
+                .is_some_and(|cursor| !self.owns_object_key(cursor.key_marker()))
+        {
+            return Err(StoreError::Incompatible);
+        }
+        for upload in &uploads {
+            self.client
+                .abort_multipart(&self.bucket, upload.key(), upload.upload())?;
+        }
+        let aborted = u16::try_from(uploads.len()).map_err(|_| StoreError::Quota)?;
+        Ok(StoreS3MultipartCleanupPage { aborted, next })
+    }
+
+    fn owns_object_key(&self, key: &str) -> bool {
+        key.strip_prefix(&self.object_prefix)
+            .and_then(|suffix| ContentId::parse(suffix).ok())
+            .is_some()
+    }
+}
+
 impl S3BlobBackend {
     /// Validates and constructs one exact S3 object namespace.
     ///
@@ -359,11 +593,23 @@ impl S3BlobBackend {
         &self.endpoint
     }
 
+    pub(super) fn multipart_cleanup_admin(&self) -> S3MultipartCleanupAdmin {
+        S3MultipartCleanupAdmin {
+            bucket: self.bucket.clone(),
+            object_prefix: self.object_prefix(),
+            client: self.client.clone(),
+        }
+    }
+
     fn key(&self, id: ContentId) -> String {
+        format!("{}{id}", self.object_prefix())
+    }
+
+    fn object_prefix(&self) -> String {
         if self.prefix.is_empty() {
-            format!("objects/{id}")
+            "objects/".to_string()
         } else {
-            format!("{}/objects/{id}", self.prefix)
+            format!("{}/objects/", self.prefix)
         }
     }
 
@@ -632,6 +878,13 @@ fn invalid_object_data() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "content authentication failed")
 }
 
+fn validate_object_key(key: &str) -> Result<(), StoreError> {
+    if key.is_empty() || key.len() > MAX_OBJECT_KEY_BYTES {
+        return Err(StoreError::Incompatible);
+    }
+    Ok(())
+}
+
 pub(super) fn validate_configuration(
     _endpoint: &StoreS3EndpointId,
     bucket: &str,
@@ -703,6 +956,7 @@ mod tests {
         authorized: AtomicBool,
         fail_part: AtomicBool,
         fail_abort: AtomicBool,
+        malformed_listing: AtomicBool,
     }
 
     impl FakeS3Client {
@@ -717,6 +971,7 @@ mod tests {
                 authorized: AtomicBool::new(true),
                 fail_part: AtomicBool::new(false),
                 fail_abort: AtomicBool::new(false),
+                malformed_listing: AtomicBool::new(false),
             }
         }
 
@@ -890,6 +1145,60 @@ mod tests {
                 .remove(upload.as_str());
             Ok(())
         }
+
+        fn list_multipart_uploads(
+            &self,
+            bucket: &str,
+            prefix: &str,
+            after: Option<&StoreS3MultipartListCursor>,
+            maximum_items: u16,
+        ) -> Result<StoreS3MultipartListPage, StoreError> {
+            self.require_authorized()?;
+            if maximum_items == 0 || maximum_items > MAX_S3_MULTIPART_LIST_ITEMS {
+                return Err(StoreError::Incompatible);
+            }
+            let mut matching = self
+                .uploads
+                .lock()
+                .expect("upload lock")
+                .iter()
+                .filter(|(_, state)| state.bucket == bucket && state.key.starts_with(prefix))
+                .map(|(upload, state)| (state.key.clone(), upload.clone()))
+                .collect::<Vec<_>>();
+            matching.sort();
+            if self.malformed_listing.load(Ordering::SeqCst)
+                && let Some((key, _)) = matching.first_mut()
+            {
+                *key = "other/objects/not-a-content-id".to_string();
+            }
+            if let Some(after) = after {
+                matching.retain(|(key, upload)| {
+                    (key.as_str(), upload.as_str())
+                        > (after.key_marker(), after.upload_id_marker().as_str())
+                });
+            }
+            let truncated = matching.len() > usize::from(maximum_items);
+            matching.truncate(usize::from(maximum_items));
+            let next = if truncated {
+                let (key, upload) = matching.last().ok_or(StoreError::Incompatible)?;
+                Some(StoreS3MultipartListCursor::new(
+                    key.clone(),
+                    StoreS3MultipartUpload::new(upload.clone())?,
+                )?)
+            } else {
+                None
+            };
+            let uploads = matching
+                .into_iter()
+                .map(|(key, upload)| {
+                    Ok(StoreS3MultipartUploadRecord::new(
+                        key,
+                        StoreS3MultipartUpload::new(upload)?,
+                    )?)
+                })
+                .collect::<Result<Vec<_>, StoreError>>()?;
+            StoreS3MultipartListPage::new(uploads, next, after, maximum_items)
+        }
     }
 
     fn backend(client: Arc<FakeS3Client>) -> S3BlobBackend {
@@ -968,6 +1277,57 @@ mod tests {
             Err(StoreError::MultipartCleanupRequired)
         ));
         assert_eq!(client.aborts.load(Ordering::SeqCst), 2);
+
+        client.fail_abort.store(false, Ordering::SeqCst);
+        let cleanup = backend
+            .multipart_cleanup_admin()
+            .cleanup_page(None, 1)
+            .expect("reclaim retained upload");
+        assert_eq!(cleanup.aborted(), 1);
+        assert!(cleanup.next().is_none());
+        assert!(client.uploads.lock().expect("upload lock").is_empty());
+    }
+
+    #[test]
+    fn multipart_cleanup_is_bounded_resumable_and_namespace_scoped() {
+        let endpoint = StoreS3EndpointId::new("minio/cleanup").expect("endpoint");
+        let client = Arc::new(FakeS3Client::new(endpoint));
+        let backend = backend(client.clone());
+        let ids = [b"a".as_slice(), b"b".as_slice(), b"c".as_slice()]
+            .map(|bytes| ContentId::for_bytes(ObjectKind::Trace, 1, bytes));
+        let mut keys = ids
+            .map(|id| format!("tenant-a/objects/{id}"))
+            .into_iter()
+            .collect::<Vec<_>>();
+        keys.push(format!("tenant-b/objects/{}", ids[0]));
+        for key in &keys {
+            client
+                .begin_multipart("campaign-archive", key)
+                .expect("unfinished upload");
+        }
+
+        let admin = backend.multipart_cleanup_admin();
+        client.malformed_listing.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            admin.cleanup_page(None, 2),
+            Err(StoreError::Incompatible)
+        ));
+        assert_eq!(client.aborts.load(Ordering::SeqCst), 0);
+        client.malformed_listing.store(false, Ordering::SeqCst);
+
+        let first = admin.cleanup_page(None, 2).expect("first cleanup page");
+        assert_eq!(first.aborted(), 2);
+        let second = admin
+            .cleanup_page(first.next(), 2)
+            .expect("second cleanup page");
+        assert_eq!(second.aborted(), 1);
+        assert!(second.next().is_none());
+        let uploads = client.uploads.lock().expect("upload lock");
+        assert_eq!(uploads.len(), 1);
+        assert_eq!(
+            uploads.values().next().expect("foreign upload").key,
+            keys[3]
+        );
     }
 
     #[test]
@@ -983,7 +1343,54 @@ mod tests {
             Err(StoreError::Unauthorized)
         ));
         assert!(matches!(
-            S3BlobBackend::new("invalid", endpoint, "ab", "bad//prefix", 1, 1, client,),
+            S3BlobBackend::new(
+                "invalid",
+                endpoint.clone(),
+                "ab",
+                "bad//prefix",
+                1,
+                1,
+                client.clone(),
+            ),
+            Err(StoreError::InvalidComposition { .. })
+        ));
+        let maximum_prefix = format!(
+            "{}/{}/{}/{}",
+            "a".repeat(255),
+            "b".repeat(255),
+            "c".repeat(255),
+            "d".repeat(154)
+        );
+        assert_eq!(maximum_prefix.len(), MAX_PREFIX_BYTES);
+        let longest_id = ContentId::for_bytes(ObjectKind::CampaignSnapshot, u32::MAX, b"");
+        assert_eq!(longest_id.encode().len(), MAX_CONTENT_ID_TEXT_BYTES);
+        assert_eq!(
+            format!("{maximum_prefix}/objects/{longest_id}").len(),
+            MAX_OBJECT_KEY_BYTES
+        );
+        assert!(
+            S3BlobBackend::new(
+                "maximum-prefix",
+                endpoint.clone(),
+                "valid-bucket",
+                maximum_prefix.clone(),
+                5 * 1024 * 1024,
+                5 * 1024 * 1024,
+                client.clone(),
+            )
+            .is_ok()
+        );
+        let oversized_prefix = format!("{maximum_prefix}e");
+        assert!(matches!(
+            S3BlobBackend::new(
+                "oversized-prefix",
+                endpoint,
+                "valid-bucket",
+                oversized_prefix,
+                5 * 1024 * 1024,
+                5 * 1024 * 1024,
+                client,
+            ),
             Err(StoreError::InvalidComposition { .. })
         ));
     }
@@ -1015,7 +1422,7 @@ mod tests {
             StoreGraph::build(config.clone()),
             Err(StoreError::Unauthorized)
         ));
-        let graph = StoreGraph::build_with_all_capabilities(
+        let (graph, admin) = StoreGraph::build_with_admin_and_all_capabilities(
             config,
             &super::super::StoreGraphKeyring::new(),
             &super::super::StoreGraphNamespaceAuthorizers::new(),
@@ -1025,6 +1432,9 @@ mod tests {
         )
         .expect("S3 graph");
         assert_eq!(graph.describe()[0].kind, StoreNodeKind::S3);
+        assert!(admin.physical().is_empty());
+        assert_eq!(admin.s3_multipart_cleanup().len(), 1);
+        assert_eq!(admin.s3_multipart_cleanup()[0].node().as_str(), "archive");
         assert_eq!(
             super::super::encode_hex(&graph.configuration_id().as_bytes()),
             "09019301ef9ff104a49cf0a9e44b2b6c016daf668888ebff0575ceb9f8181342"
