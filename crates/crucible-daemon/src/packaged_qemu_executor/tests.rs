@@ -4,22 +4,32 @@
 #![allow(clippy::expect_used)]
 
 use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use crucible::{Checkpoint, CheckpointKind, Configuration, ScenarioDef, VirtualTime};
 use crucible_campaign::{
-    CampaignLineage, CampaignMode, CampaignPolicy, CampaignSeed, ConfigurationId, ExactRational,
-    ExecutorClient, ExplorerPolicy, FairnessPolicy, ProgressiveWideningPolicy, PuctPolicy,
+    CampaignCommandId, CampaignLineage, CampaignMode, CampaignPolicy, CampaignSeed,
+    ConfigurationId, ExactCheckpointId, ExactRational, ExecutorClient, ExplorerPolicy,
+    FairnessPolicy, PinChange, PinRequest, PinRetention, ProgressiveWideningPolicy, PuctPolicy,
     RetentionPolicy, ScenarioDefId,
 };
-use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
+use crucible_cas::content_store::{
+    BlobHandle, ContentId, DirectoryBlobBackend, ImmutableBlobBackend, MemoryBlobBackend,
+    MemoryRefBackend, ObjectKind,
+};
 use crucible_qemu::{
     QemuChildProcessContract, QemuLaunchResourceRequirements, QemuNodeChild,
-    QemuPreparedRunDirectory,
+    QemuPreparedRunDirectory, QemuReplayOracleValidation, QemuVmSnapshot,
 };
 
 use super::*;
-use crate::{LoopbackExecutorService, QemuAttemptCancellationSignal};
+use crate::{
+    DirectoryAssignmentLedger, DirectoryExactPinMaterializationStore,
+    EXACT_PIN_MATERIALIZATION_DIRECTORY, ExactCheckpointStore, ExactPinRetentionAdmin,
+    LoopbackExecutorService, QemuAttemptCancellationSignal,
+};
 
 #[derive(Debug)]
 struct UnusedHostFactory;
@@ -170,13 +180,7 @@ fn packaged_executor_serves_the_exact_composed_description_and_joins() {
     let directory = tempfile::tempdir().expect("packaged executor directory");
     let config = config(&directory, 2);
     let socket = config.endpoint().path().to_owned();
-    let repository = Arc::new(CampaignRepository::new(
-        Arc::new(crucible_cas::content_store::MemoryBlobBackend::new(
-            "packaged-executor",
-            1024 * 1024,
-        )),
-        Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
-    ));
+    let repository = repository_with_campaigns(&[("packaged", b"shared", "qemu-test")]);
     let service = compose_packaged_qemu_executor(
         repository,
         Arc::new(crucible_cas::content_store::DirectoryBlobBackend::new(
@@ -216,13 +220,7 @@ fn packaged_executor_advertises_exact_restore_with_one_owner_per_worker() {
     let directory = tempfile::tempdir().expect("packaged executor directory");
     let config = config(&directory, 2);
     let socket = config.endpoint().path().to_owned();
-    let repository = Arc::new(CampaignRepository::new(
-        Arc::new(crucible_cas::content_store::MemoryBlobBackend::new(
-            "packaged-executor-exact",
-            1024 * 1024,
-        )),
-        Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
-    ));
+    let repository = repository_with_campaigns(&[("packaged", b"shared", "qemu-test")]);
     let service = compose_packaged_qemu_executor_with_checkpoint_promotions(
         repository,
         Arc::new(crucible_cas::content_store::DirectoryBlobBackend::new(
@@ -355,36 +353,200 @@ fn repository_with_campaigns(campaigns: &[(&str, &[u8], &str)]) -> Arc<CampaignR
             1,
         )
         .expect("campaign lineage");
-        let widening = ProgressiveWideningPolicy::new(
-            ExactRational::new(1, 1).expect("widening coefficient"),
-            ExactRational::new(1, 2).expect("widening exponent"),
-            1,
-            100,
-            1,
-        )
-        .expect("widening policy");
-        let policy = CampaignPolicy::new(
-            scenario,
-            CampaignSeed::from_bytes([7; 32]),
-            CampaignMode::Strict,
-            ExplorerPolicy::TreeSearch {
-                widening: Some(widening),
-                puct: PuctPolicy::new(1_000_000, 1, 0),
-            },
-            std::collections::BTreeMap::new(),
-            std::collections::BTreeMap::new(),
-            std::collections::BTreeMap::new(),
-            BTreeSet::new(),
-            FairnessPolicy::new(0, 0).expect("fairness policy"),
-            RetentionPolicy::new(true, 1, true, true),
-            true,
-        )
-        .expect("campaign policy");
+        let policy = packaged_policy(scenario);
         repository
             .create(name, &lineage, &policy, &std::collections::BTreeMap::new())
             .expect("create campaign");
     }
     repository
+}
+
+fn packaged_policy(scenario: ScenarioDefId) -> CampaignPolicy {
+    let widening = ProgressiveWideningPolicy::new(
+        ExactRational::new(1, 1).expect("widening coefficient"),
+        ExactRational::new(1, 2).expect("widening exponent"),
+        1,
+        100,
+        1,
+    )
+    .expect("widening policy");
+    CampaignPolicy::new(
+        scenario,
+        CampaignSeed::from_bytes([7; 32]),
+        CampaignMode::Strict,
+        ExplorerPolicy::TreeSearch {
+            widening: Some(widening),
+            puct: PuctPolicy::new(1_000_000, 1, 0),
+        },
+        std::collections::BTreeMap::new(),
+        std::collections::BTreeMap::new(),
+        std::collections::BTreeMap::new(),
+        BTreeSet::new(),
+        FairnessPolicy::new(0, 0).expect("fairness policy"),
+        RetentionPolicy::new(true, 1, true, true),
+        true,
+    )
+    .expect("campaign policy")
+}
+
+struct ExactPinMaterializerFixture {
+    repository: Arc<CampaignRepository>,
+    checkpoints: Arc<ExactCheckpointStore>,
+    campaign: CampaignName,
+    configuration: ConfigurationId,
+    checkpoint: ExactCheckpointId,
+}
+
+fn exact_pin_materializer_fixture(directory: &tempfile::TempDir) -> ExactPinMaterializerFixture {
+    let backend = Arc::new(DirectoryBlobBackend::new(
+        "packaged-exact-pin-store",
+        directory.path().join("objects"),
+    ));
+    let repository = Arc::new(CampaignRepository::new(
+        backend.clone(),
+        Arc::new(MemoryRefBackend::new()),
+    ));
+    let scenario = ScenarioDef::from_canonical_material(
+        "crucible.test.packaged-exact-pin-materializer",
+        "scenario",
+    );
+    let configuration = Configuration::genesis(scenario.clone());
+    let scenario_id = ScenarioDefId::from_hash(CampaignHash::from_bytes(scenario.id().bytes));
+    let configuration_id =
+        ConfigurationId::from_hash(CampaignHash::from_bytes(configuration.id().bytes));
+    let scenario_artifact = repository
+        .publish_scenario_artifact(scenario_id, 1, b"scenario".to_vec())
+        .expect("publish scenario artifact");
+    let configuration_artifact = repository
+        .publish_configuration_artifact(
+            scenario_id,
+            scenario_artifact,
+            configuration_id,
+            1,
+            b"configuration".to_vec(),
+        )
+        .expect("publish configuration artifact");
+    let lineage = CampaignLineage::new(
+        scenario_id,
+        scenario_artifact,
+        configuration_id,
+        configuration_artifact,
+        "crucible-test",
+        "qemu-test",
+        std::collections::BTreeMap::from([(String::from("control"), 1)]),
+        1,
+        1,
+    )
+    .expect("campaign lineage");
+    let campaign = CampaignName::new("packaged-exact-pin").expect("campaign name");
+    repository
+        .create(
+            campaign.as_str(),
+            &lineage,
+            &packaged_policy(scenario_id),
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("create campaign");
+
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &configuration,
+        None,
+        VirtualTime::default(),
+        std::collections::BTreeMap::new(),
+        CheckpointKind::Fat,
+        std::collections::BTreeMap::new(),
+    )
+    .expect("checkpoint");
+    let snapshot = QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
+        .expect("QEMU snapshot");
+    let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = backend;
+    let checkpoints = Arc::new(
+        ExactCheckpointStore::new(checkpoint_backend, 1024 * 1024).expect("exact checkpoint store"),
+    );
+    let prepared = checkpoints
+        .prepare(&snapshot, BlobHandle::from_bytes(vec![0x5a; 4096]))
+        .expect("prepare checkpoint");
+    let checkpoint = checkpoints
+        .publish(&prepared)
+        .expect("publish checkpoint")
+        .root();
+
+    ExactPinMaterializerFixture {
+        repository,
+        checkpoints,
+        campaign,
+        configuration: configuration_id,
+        checkpoint,
+    }
+}
+
+fn apply_exact_pin(fixture: &ExactPinMaterializerFixture) {
+    let expected_snapshot = fixture
+        .repository
+        .head(fixture.campaign.as_str())
+        .expect("campaign head")
+        .snapshot_id();
+    fixture
+        .repository
+        .apply_pin(
+            fixture.campaign.as_str(),
+            &PinRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "crucible.test.packaged-exact-pin.command.v1",
+                    b"pin",
+                )),
+                expected_snapshot,
+                change: PinChange::new(
+                    fixture.configuration,
+                    Some(PinRetention::Exact),
+                    "retain packaged exact checkpoint",
+                )
+                .expect("exact pin change"),
+            },
+        )
+        .expect("apply exact pin");
+}
+
+#[test]
+fn packaged_materializer_selects_a_checkpoint_when_the_pin_arrives_later() {
+    let directory = tempfile::tempdir().expect("packaged exact-pin directory");
+    let fixture = exact_pin_materializer_fixture(&directory);
+    let ledger = DirectoryAssignmentLedger::open(directory.path().join("ledger"))
+        .expect("assignment ledger");
+    let selection_root = directory.path().join(EXACT_PIN_MATERIALIZATION_DIRECTORY);
+    let (prepared, observer) = prepare_packaged_exact_pin_materializer(
+        Arc::clone(&fixture.repository),
+        Arc::clone(&fixture.checkpoints),
+        BTreeSet::from([fixture.campaign.clone()]),
+        &ledger,
+        &selection_root,
+    )
+    .expect("prepare exact-pin materializer");
+    let terminal = Arc::new(AtomicBool::new(false));
+    let terminal_signal = Arc::clone(&terminal);
+    let owner = prepared
+        .start(move || terminal_signal.store(true, Ordering::Release))
+        .expect("start exact-pin materializer");
+
+    observer
+        .checkpoint_paused(fixture.checkpoint)
+        .expect("publish paused checkpoint notification");
+    owner.reconcile_now().expect("reconcile checkpoint catalog");
+    apply_exact_pin(&fixture);
+    owner.reconcile_now().expect("reconcile later exact pin");
+    owner.join().expect("join exact-pin materializer");
+    assert!(!terminal.load(Ordering::Acquire));
+
+    let mut selections = DirectoryExactPinMaterializationStore::open(&selection_root)
+        .expect("reopen exact-pin selections");
+    let mut fence = selections
+        .acquire_exact_pin_retention_fence()
+        .expect("exact-pin fence");
+    let selected = fence
+        .selection(&fixture.campaign, fixture.configuration)
+        .expect("read exact-pin selection")
+        .expect("selected exact checkpoint");
+    assert_eq!(selected.checkpoint(), fixture.checkpoint);
 }
 
 #[test]

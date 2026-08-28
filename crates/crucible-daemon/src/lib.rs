@@ -250,13 +250,13 @@ pub use exact_checkpoint_store::{
     QEMU_VM_SNAPSHOT_METADATA_SCHEMA_VERSION, QEMU_VMSTATE_SCHEMA_VERSION,
 };
 pub use exact_pin_retention::{
-    DirectoryExactPinMaterializationStore, EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA,
-    EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA_VERSION, ExactPinMaterializationSelection,
-    ExactPinReplayPromotion, ExactPinReplayTarget, ExactPinReplayValidator, ExactPinRetentionAdmin,
-    ExactPinRetentionError, ExactPinRetentionFence, ExactPinSelectionClearDisposition,
-    ExactPinSelectionDisposition, FindingExactPinBoundaries,
-    MAX_EXACT_PIN_MATERIALIZATION_SELECTIONS, MAX_FINDING_EXACT_PIN_CANDIDATES,
-    select_finding_exact_pins,
+    DirectoryExactPinMaterializationStore, EXACT_PIN_MATERIALIZATION_DIRECTORY,
+    EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA, EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA_VERSION,
+    ExactPinMaterializationSelection, ExactPinReplayPromotion, ExactPinReplayTarget,
+    ExactPinReplayValidator, ExactPinRetentionAdmin, ExactPinRetentionError,
+    ExactPinRetentionFence, ExactPinSelectionClearDisposition, ExactPinSelectionDisposition,
+    FindingExactPinBoundaries, MAX_EXACT_PIN_MATERIALIZATION_SELECTIONS,
+    MAX_FINDING_EXACT_PIN_CANDIDATES, select_finding_exact_pins,
 };
 pub use executor_capability::LocalExecutorCapabilityService;
 pub use executor_loopback::{
@@ -313,9 +313,10 @@ pub use executor_worker::{
 };
 pub use guest_selectable::GuestSelectableError;
 pub use packaged_qemu_executor::{
-    AttachedPackagedQemuExecutor, MAX_PACKAGED_SCENARIO_CATALOG_BYTES, PackagedQemuExecutor,
-    PackagedQemuExecutorCompletion, PackagedQemuExecutorConfig, PackagedQemuExecutorConfigError,
-    PackagedQemuExecutorError, PackagedQemuExecutorJoinError, PackagedQemuExecutorStartError,
+    AttachedPackagedQemuExecutor, MAX_PACKAGED_SCENARIO_CATALOG_BYTES,
+    PackagedExactPinMaterializerError, PackagedQemuExecutor, PackagedQemuExecutorCompletion,
+    PackagedQemuExecutorConfig, PackagedQemuExecutorConfigError, PackagedQemuExecutorError,
+    PackagedQemuExecutorJoinError, PackagedQemuExecutorStartError,
 };
 #[cfg(target_os = "linux")]
 pub use paused_checkpoint_promotion::{

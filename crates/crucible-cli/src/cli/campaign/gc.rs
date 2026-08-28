@@ -11,6 +11,7 @@ use crucible_daemon::{
     CampaignGcApplyStatus, CampaignGcJournalCreateDisposition, CampaignGcJournalPhase,
     CampaignLocalServiceConfig, CampaignLocalServiceMode, CampaignLoopbackEndpointConfig,
     CampaignLoopbackServerConfig, DirectoryAssignmentLedger, DirectoryCampaignGcJournal,
+    DirectoryExactPinMaterializationStore, EXACT_PIN_MATERIALIZATION_DIRECTORY,
 };
 use serde::Serialize;
 
@@ -269,12 +270,17 @@ pub(super) fn run_campaign_store_gc(
     let ledger_path = args.state.join("executor-ledger");
     let mut ledger = DirectoryAssignmentLedger::open(&ledger_path)
         .map_err(|error| maintenance_error(format!("assignment ledger open failed: {error}")))?;
+    let exact_pin_path = args.state.join(EXACT_PIN_MATERIALIZATION_DIRECTORY);
+    let mut exact_pins = DirectoryExactPinMaterializationStore::open(&exact_pin_path)
+        .map_err(|error| maintenance_error(format!("exact-pin journal open failed: {error}")))?;
 
     let report = match args.operation {
         CampaignStoreGcCommand::Plan => {
-            let planned = authority.plan(&mut ledger, None).map_err(|error| {
-                maintenance_error(format!("campaign GC planning failed: {error}"))
-            })?;
+            let planned = authority
+                .plan(&mut ledger, Some(&mut exact_pins))
+                .map_err(|error| {
+                    maintenance_error(format!("campaign GC planning failed: {error}"))
+                })?;
             let plan_id = planned.plan().id().map_err(|error| {
                 maintenance_error(format!("campaign GC plan identity failed: {error}"))
             })?;
@@ -310,7 +316,7 @@ pub(super) fn run_campaign_store_gc(
             let roots = journal.roots().len();
             let physical = physical_report(journal.plan());
             let result = authority
-                .apply(&mut journal, &mut ledger, None)
+                .apply(&mut journal, &mut ledger, Some(&mut exact_pins))
                 .map_err(|error| maintenance_error(format!("campaign GC apply failed: {error}")))?;
             CampaignStoreGcReport {
                 schema: CAMPAIGN_GC_REPORT_SCHEMA,
@@ -593,12 +599,14 @@ fn render_campaign_store_gc(
 
 fn validate_gc_paths(args: &CampaignStoreGcArgs) -> Result<(), CliError> {
     let ledger = args.state.join("executor-ledger");
+    let exact_pins = args.state.join(EXACT_PIN_MATERIALIZATION_DIRECTORY);
     let paths = vec![
         ("state", args.state.as_path()),
         ("policy", args.policy.as_path()),
         ("store", args.store.as_path()),
         ("journal", args.journal.as_path()),
         ("derived-ledger", ledger.as_path()),
+        ("derived-exact-pins", exact_pins.as_path()),
     ];
     for (label, path) in &paths {
         validate_owner_path(label, path)?;
@@ -770,6 +778,12 @@ mod tests {
         assert_eq!(planned["journal_disposition"], "created");
         assert_eq!(planned["phase"], "planned");
         assert_eq!(planned["candidates"], 0);
+        assert!(
+            fixture
+                .state
+                .join(EXACT_PIN_MATERIALIZATION_DIRECTORY)
+                .is_dir()
+        );
 
         let replay = run_campaign_store_gc(&args, OutputFormat::Jsonl)
             .expect("reopen exact planning journal");
@@ -824,6 +838,20 @@ mod tests {
         let error = run_campaign_store_gc(&args, OutputFormat::Jsonl)
             .expect_err("live executor ledger must exclude GC");
         assert!(error.to_string().contains("assignment ledger open failed"));
+        assert!(!fixture.journal.exists());
+    }
+
+    #[test]
+    fn offline_gc_rejects_a_live_exact_pin_owner_before_journaling() {
+        let fixture = GcFixture::new();
+        let exact_pin_path = fixture.state.join(EXACT_PIN_MATERIALIZATION_DIRECTORY);
+        let _live_exact_pins = DirectoryExactPinMaterializationStore::open(&exact_pin_path)
+            .expect("retain live exact-pin owner");
+        let args = fixture.args(CampaignStoreGcCommand::Plan);
+
+        let error = run_campaign_store_gc(&args, OutputFormat::Jsonl)
+            .expect_err("live exact-pin owner must exclude GC");
+        assert!(error.to_string().contains("exact-pin journal open failed"));
         assert!(!fixture.journal.exists());
     }
 
