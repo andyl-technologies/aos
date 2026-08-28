@@ -1823,17 +1823,20 @@ parking/reconstruction set, not an executing-callback count, ring
 freeze, callback barrier, process-lifetime heap disposition, or child
 reinitializer; readiness bit 6 remains clear and the GPL/Apache process
 boundary is unchanged.
-The GPL plugin now also registers one process-lifetime reversible callback and
-shared-ring producer barrier. A version-2 OOB QMP operation holds, observes,
-and releases that barrier. Holding is accepted only at the exact paused/device-
-flush boundary, rejects later live device and coverage callbacks, then holds
-producer admission in every ABI-v19 shared-memory ring without blocking QMP.
-The response exposes exact callback and aggregate ring producer counts until
-both drain to zero. Release reopens rings before callbacks and cannot reopen
-permanent teardown closure. This is a retained T-CAM-6.2 subsystem barrier, but
-it still does not park plugin workers or control threads, clone ring bytes,
-retain a complete child disposition, or reconstruct child resources. Readiness
-bit 6 therefore remains clear and T-CAM-6.2 remains unchecked.
+The GPL plugin now also registers one process-lifetime reversible callback,
+shared-ring producer, and sealed-worker barrier. A version-3 OOB QMP operation
+holds, observes, and releases that barrier. Holding is accepted only at the
+exact paused/device-flush boundary, rejects later live device and coverage
+callbacks, holds producer admission in every ABI-v19 shared-memory ring, and
+closes later operations by the RUN-control, teardown, and optional fingerprint
+workers without blocking QMP. The response exposes exact callback and
+aggregate ring-producer counts plus sealed, parked, and active worker state
+until all admitted work drains. Release reopens rings and callbacks before
+waking workers and cannot reopen permanent teardown closure. This is a
+retained T-CAM-6.2 subsystem barrier, but it still does not clone retained ring
+bytes or worker-local queued work, retain a complete child disposition, or
+reconstruct child resources. Readiness bit 6 therefore remains clear and
+T-CAM-6.2 remains unchecked.
 Patched QEMU now also owns the versioned `PrepareForkTemplate`
 transaction. Its serialized OOB coordinator starts only at the exact
 paused/device-flush boundary, asynchronously closes graph-writer admission and

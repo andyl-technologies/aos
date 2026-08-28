@@ -117,6 +117,7 @@ fn shared_shutdown_worker_defers_done_and_clean_qemu_shutdown_until_callback_dra
     let proof = PluginShutdownRequested::from_region_header(&header)
         .unwrap_or_else(|error| panic!("shared shutdown proof should build: {error}"));
     let (sender, receiver) = mpsc::channel();
+    let workers = LiveWorkerQuiescence::new(WORKER_REQUIRED);
 
     CONTROL_WORKER_SLOT_ADDRESS.store(std::ptr::from_ref(slot.as_ref()) as usize, Ordering::SeqCst);
     CONTROL_WORKER_SHUTDOWN_FAILURE.store(-1, Ordering::SeqCst);
@@ -126,7 +127,7 @@ fn shared_shutdown_worker_defers_done_and_clean_qemu_shutdown_until_callback_dra
         .send(LiveRuntimeTeardownTrigger::SharedShutdown(proof))
         .unwrap_or_else(|_error| panic!("shared shutdown should reach worker"));
     let worker = std::thread::spawn(move || {
-        run_teardown_worker(receiver, handle, record_control_worker_shutdown);
+        run_teardown_worker(receiver, handle, record_control_worker_shutdown, workers);
     });
 
     wait_until_callback_admission_closed(&quiescence);
@@ -162,17 +163,24 @@ fn quit_selected_first_keeps_receiver_live_for_admitted_callback_shutdown_signal
     let shared_proof = PluginShutdownRequested::from_region_header(&header)
         .unwrap_or_else(|error| panic!("shared shutdown proof should build: {error}"));
     let (sender, receiver) = mpsc::channel();
+    let workers = LiveWorkerQuiescence::new(WORKER_REQUIRED);
 
     CONTROL_WORKER_SLOT_ADDRESS.store(std::ptr::from_ref(slot.as_ref()) as usize, Ordering::SeqCst);
     CONTROL_WORKER_SHUTDOWN_FAILURE.store(-1, Ordering::SeqCst);
     CONTROL_WORKER_SHUTDOWN_CALLS.store(0, Ordering::SeqCst);
     CONTROL_WORKER_DONE_BEFORE_SHUTDOWN.store(false, Ordering::SeqCst);
 
+    let teardown_workers = Arc::clone(&workers);
     let worker = std::thread::spawn(move || {
-        run_teardown_worker(receiver, handle, record_control_worker_shutdown);
+        run_teardown_worker(
+            receiver,
+            handle,
+            record_control_worker_shutdown,
+            teardown_workers,
+        );
     });
     let reader_sender = sender.clone();
-    let reader = std::thread::spawn(move || run_control_reader(plugin, reader_sender));
+    let reader = std::thread::spawn(move || run_control_reader(plugin, reader_sender, workers));
     host.write_all(&control_encode_host_msg(&HostMsg::Quit))
         .unwrap_or_else(|error| panic!("host Quit should write: {error}"));
     let quit_delivered = reader
@@ -221,6 +229,7 @@ fn shared_selected_first_keeps_receiver_live_for_subsequent_quit_delivery() {
     let shared_proof = PluginShutdownRequested::from_region_header(&header)
         .unwrap_or_else(|error| panic!("shared shutdown proof should build: {error}"));
     let (sender, receiver) = mpsc::channel();
+    let workers = LiveWorkerQuiescence::new(WORKER_REQUIRED);
 
     CONTROL_WORKER_SLOT_ADDRESS.store(std::ptr::from_ref(slot.as_ref()) as usize, Ordering::SeqCst);
     CONTROL_WORKER_SHUTDOWN_FAILURE.store(-1, Ordering::SeqCst);
@@ -230,11 +239,17 @@ fn shared_selected_first_keeps_receiver_live_for_subsequent_quit_delivery() {
     sender
         .send(LiveRuntimeTeardownTrigger::SharedShutdown(shared_proof))
         .unwrap_or_else(|_error| panic!("shared shutdown should reach worker"));
+    let teardown_workers = Arc::clone(&workers);
     let worker = std::thread::spawn(move || {
-        run_teardown_worker(receiver, handle, record_control_worker_shutdown);
+        run_teardown_worker(
+            receiver,
+            handle,
+            record_control_worker_shutdown,
+            teardown_workers,
+        );
     });
     let reader_sender = sender.clone();
-    let reader = std::thread::spawn(move || run_control_reader(plugin, reader_sender));
+    let reader = std::thread::spawn(move || run_control_reader(plugin, reader_sender, workers));
 
     // Shared shutdown is queued before the worker starts, so admission closure
     // proves that it was selected. The lifecycle reader must still deliver a
@@ -265,7 +280,8 @@ fn shared_selected_first_keeps_receiver_live_for_subsequent_quit_delivery() {
 fn closing_run_control_unblocks_reader_and_delivers_fail_loud_trigger() {
     let (host, plugin) = running_plugin_control_pair();
     let (sender, receiver) = mpsc::channel();
-    let reader = std::thread::spawn(move || run_control_reader(plugin, sender));
+    let workers = LiveWorkerQuiescence::new(WORKER_REQUIRED);
+    let reader = std::thread::spawn(move || run_control_reader(plugin, sender, workers));
 
     host.shutdown(std::net::Shutdown::Both)
         .unwrap_or_else(|error| panic!("control shutdown should succeed: {error}"));
@@ -281,6 +297,49 @@ fn closing_run_control_unblocks_reader_and_delivers_fail_loud_trigger() {
         trigger,
         LiveRuntimeTeardownTrigger::RunControlFault { .. }
     ));
+}
+
+#[test]
+fn held_run_control_reader_parks_before_delivering_its_trigger() {
+    let (mut host, plugin) = running_plugin_control_pair();
+    let (sender, receiver) = mpsc::channel();
+    let workers = LiveWorkerQuiescence::new(WORKER_REQUIRED);
+    let held = workers.hold();
+    assert!(held.held);
+
+    let reader_workers = Arc::clone(&workers);
+    let reader = std::thread::spawn(move || run_control_reader(plugin, sender, reader_workers));
+    host.write_all(&control_encode_host_msg(&HostMsg::Quit))
+        .unwrap_or_else(|error| panic!("host Quit should write: {error}"));
+
+    assert!(
+        receiver
+            .recv_timeout(std::time::Duration::from_millis(20))
+            .is_err(),
+        "held reader must not deliver a teardown trigger"
+    );
+    let mut parked = false;
+    for _attempt in 0..100_000 {
+        let snapshot = workers.snapshot();
+        if snapshot.parked_mask & WORKER_RUN_CONTROL != 0 {
+            assert_eq!(snapshot.operations_in_flight, 0);
+            parked = true;
+            break;
+        }
+        std::thread::yield_now();
+    }
+    assert!(parked, "reader should park before delivery");
+
+    workers.release();
+    let trigger = receiver
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .unwrap_or_else(|error| panic!("released reader should deliver: {error}"));
+    assert!(matches!(trigger, LiveRuntimeTeardownTrigger::HostQuit(_)));
+    assert!(
+        reader
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    );
 }
 
 fn wait_until_callback_admission_closed(quiescence: &LiveCallbackQuiescence) {
@@ -864,7 +923,7 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
         manifest.struct_size,
         std::mem::size_of::<crate::QemuPluginResourceManifest>() as u32
     );
-    assert_eq!(manifest.worker_mask, PLUGIN_WORKER_REQUIRED);
+    assert_eq!(manifest.worker_mask, WORKER_REQUIRED);
     assert_eq!(manifest.process_generation, 1);
     assert_eq!(manifest.plugin_id, 41);
     assert_eq!(manifest.resource_mask, PLUGIN_RESOURCE_REQUIRED);
@@ -888,6 +947,9 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     assert!(held.ring_count > 0);
     assert_eq!(held.rings_held, held.ring_count);
     assert_eq!(held.ring_producers_in_flight, 0);
+    assert_eq!(held.worker_mask, WORKER_REQUIRED);
+    assert_eq!(held.parked_worker_mask, 0);
+    assert_eq!(held.worker_operations_in_flight, 0);
     let queried = invoke_hot_fork_barrier(crate::QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY)
         .unwrap_or_else(|status| panic!("hot-fork barrier query should succeed: {status}"));
     assert_eq!(queried, held);
@@ -898,6 +960,9 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     assert_eq!(released.ring_count, held.ring_count);
     assert_eq!(released.rings_held, 0);
     assert_eq!(released.ring_producers_in_flight, 0);
+    assert_eq!(released.worker_mask, WORKER_REQUIRED);
+    assert_eq!(released.parked_worker_mask, 0);
+    assert_eq!(released.worker_operations_in_flight, 0);
     let teardown_handle = runtime
         ._callbacks
         .control_teardown_handle(0)
@@ -939,14 +1004,16 @@ fn live_install_seals_the_optional_fingerprint_worker() {
 
     let manifest = registered_resource_manifest()
         .unwrap_or_else(|| panic!("fingerprint resource manifest should be sealed"));
-    assert_eq!(
-        manifest.worker_mask,
-        PLUGIN_WORKER_REQUIRED | PLUGIN_WORKER_FINGERPRINT
-    );
+    assert_eq!(manifest.worker_mask, WORKER_REQUIRED | WORKER_FINGERPRINT);
     assert_eq!(
         manifest.resource_mask & PLUGIN_RESOURCE_FINGERPRINT,
         PLUGIN_RESOURCE_FINGERPRINT
     );
+    let held = invoke_hot_fork_barrier(crate::QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD)
+        .unwrap_or_else(|status| panic!("fingerprint worker hold should succeed: {status}"));
+    assert_eq!(held.worker_mask, WORKER_REQUIRED | WORKER_FINGERPRINT);
+    assert_eq!(held.parked_worker_mask, 0);
+    assert_eq!(held.worker_operations_in_flight, 0);
 
     drop(runtime);
     host.join()

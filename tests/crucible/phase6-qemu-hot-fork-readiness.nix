@@ -742,7 +742,7 @@ in
              select(has("in-flight"))] as $reports |
             ($reports | length) == 2 and $reports[0] == $reports[1] and
             $reports[0] == {
-              "schema-version": 2,
+              "schema-version": 3,
               "generation": 0,
               "registered": false,
               "manifest-consistent": false,
@@ -752,6 +752,9 @@ in
               "ring-count": 0,
               "rings-held": 0,
               "ring-producers-in-flight": 0,
+              "worker-mask": 0,
+              "parked-worker-mask": 0,
+              "worker-operations-in-flight": 0,
               "quiescent": false
             }
           ' "$out/plugin-barrier-query.json" >/dev/null \
@@ -947,7 +950,7 @@ in
             $report."acknowledged-proofs" == 3 and
             $report."missing-proofs" == 508 and
             $report."plugin-barrier" == {
-              "schema-version": 2,
+              "schema-version": 3,
               "generation": 0,
               "registered": false,
               "manifest-consistent": false,
@@ -957,6 +960,9 @@ in
               "ring-count": 0,
               "rings-held": 0,
               "ring-producers-in-flight": 0,
+              "worker-mask": 0,
+              "parked-worker-mask": 0,
+              "worker-operations-in-flight": 0,
               "quiescent": false
             } and
             $report."rcu-barrier"."schema-version" == 1 and
@@ -1228,7 +1234,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0136-crucible-seal-hot-fork-plugin-workers.patch
+          patch=0137-crucible-park-hot-fork-plugin-workers.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -1278,10 +1284,13 @@ in
           plugin_resource_inventory_schema_version=2
           plugin_resource_inventory_stable=true
           plugin_resource_inventory_unregistered_shape=true
-          plugin_barrier_schema_version=2
+          plugin_barrier_schema_version=3
           plugin_barrier_stable=true
           plugin_barrier_unregistered_shape=true
           plugin_barrier_release_unregistered_rejected=true
+          plugin_worker_mask_bound=true
+          plugin_worker_parking_bound=true
+          plugin_worker_queue_cloning=false
           plugin_ring_proof_acknowledged=false
           template_coordinator_schema_version=8
           template_coordinator_idle_stable=true

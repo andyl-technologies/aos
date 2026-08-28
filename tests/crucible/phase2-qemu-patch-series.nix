@@ -951,6 +951,13 @@
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "the version-2 plugin resource manifest seals the mandatory run-control and teardown workers plus the fingerprint digest worker exactly when fingerprinting is enabled, giving future parking and child reconstruction a closed worker set without yet acknowledging proof bit 6";
     }
+    {
+      file = "0137-crucible-park-hot-fork-plugin-workers.patch";
+      catalogName = "crucible-hot-fork-plugin-worker-barrier";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "the version-3 plugin barrier reports the sealed worker mask, exact parked worker classes, and bounded operations admitted before the hold, and requires every worker to park before subsystem quiescence without yet cloning queued work or acknowledging proof bit 6";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

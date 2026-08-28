@@ -659,10 +659,10 @@ and their checked aggregate length MUST equal `shmem-length`.
 The manifest is by-value GPL-side process state and the host receives only this
 versioned QMP response; it does not place a Rust layout or native pointer in a
 cross-process protocol. The response inventories installed resources and the
-closed worker set that a later barrier must park and reconstruct. It does not
-yet count or park worker operations, freeze a ring, stop future callbacks,
-retain a process-lifetime worker barrier, or define child dispositions. It
-therefore MUST NOT acknowledge proof bit 6 or authorize a fork.
+closed worker set that the barrier below parks. The manifest alone does not
+freeze a ring, stop future callbacks, park a worker, or define child
+dispositions. It therefore MUST NOT acknowledge proof bit 6 or authorize a
+fork.
 
 The next plugin checkpoint adds a distinct reversible callback barrier. The
 plugin registers one process-lifetime operation only after every covered
@@ -673,7 +673,7 @@ the out-of-band `crucible-hot-fork-plugin-barrier` command:
 CrucibleHotForkPluginBarrierAction = hold | query | release
 
 CrucibleHotForkPluginBarrierState {
-    schema-version: u32 = 2,
+    schema-version: u32 = 3,
     generation: u64,
     registered: bool,
     manifest-consistent: bool,
@@ -683,6 +683,9 @@ CrucibleHotForkPluginBarrierState {
     ring-count: u64,
     rings-held: u64,
     ring-producers-in-flight: u64,
+    worker-mask: u64,
+    parked-worker-mask: u64,
+    worker-operations-in-flight: u64,
     quiescent: bool,
 }
 ```
@@ -690,25 +693,34 @@ CrucibleHotForkPluginBarrierState {
 `hold` is accepted only at QEMU's authenticated exact paused/device-flush
 boundary. It first atomically rejects later covered callbacks, then holds the
 producer-admission word in every ring in the validated shared-memory layout.
-Callbacks and ring publications admitted before their respective holds remain
-counted in `in-flight` and `ring-producers-in-flight`. `query` observes both
-barriers without changing them. `release` reopens ring producers before it
-removes the reversible callback hold and MUST NOT reopen callback admission
-after permanent teardown closure. A registered response requires a nonzero
-`ring-count`, `rings-held` is either zero or exactly `ring-count`, and `held`
-equals `rings-held == ring-count`. `quiescent` equals `registered &&
-manifest-consistent && held && !teardown-closed && in-flight == 0 &&
-rings-held == ring-count && ring-producers-in-flight == 0`. The process-local
-generation is positive after registration and advances when either barrier's
-observable state changes. An unregistered response has generation zero and
-every other field zero or false.
+It then closes admission to one bounded operation for every worker class in
+the sealed `worker-mask`. Callbacks, ring publications, and worker operations
+admitted before their respective holds remain counted in `in-flight`,
+`ring-producers-in-flight`, and `worker-operations-in-flight`. An idle worker
+sets its bit in `parked-worker-mask`; a worker whose blocking receive returns
+during a hold parks before it may publish, send a teardown trigger, or mutate
+shared state. `query` observes all three barriers without changing them.
+`release` reopens ring producers and callbacks before it wakes workers, and
+MUST NOT reopen callback admission after permanent teardown closure. A
+registered response requires a nonzero `ring-count`, `rings-held` is either
+zero or exactly `ring-count`, `held` equals `rings-held == ring-count`, the
+worker mask equals the sealed manifest, the parked mask is its subset, and the
+sum of parked worker classes plus admitted operations cannot exceed the sealed
+worker count. `quiescent` equals `registered && manifest-consistent && held &&
+!teardown-closed && in-flight == 0 && rings-held == ring-count &&
+ring-producers-in-flight == 0 && parked-worker-mask == worker-mask &&
+worker-operations-in-flight == 0`. The process-local generation is positive
+after registration and advances when any barrier's observable state changes.
+An unregistered response has generation zero and every other field zero or
+false.
 
 This is a retained barrier over the callback classes covered by the sealed
-manifest and over every ABI-v19 shared-memory ring producer, including Apache
-host producers. It is still not the complete plugin-ring proof: it does not
-drain or park the fingerprint digest worker, freeze the control-reader/teardown
-threads, clone the held ring bytes, or provide child-side resource
-reconstruction. QEMU therefore keeps readiness bit 6 clear.
+manifest, every ABI-v19 shared-memory ring producer including Apache host
+producers, and the mandatory RUN-control/teardown workers plus the optional
+fingerprint digest worker. It is still not the complete plugin-ring proof: a
+parked worker may retain a received trigger or queued fingerprint work, held
+rings retain their bytes, and no child-side resource reconstruction or queue
+disposition exists. QEMU therefore keeps readiness bit 6 clear.
 
 The next source checkpoint adds a process-lifetime reversible bottom-half and
 timer-source barrier through the OOB

@@ -49,6 +49,7 @@ use super::{
         LiveWhiteboxApis, crucible_qemu_plugin_live_whitebox_vcpu_init_cb,
         deliver_selectable_reply_on_vcpu_resume,
     },
+    worker_quiescence::LiveWorkerQuiescence,
 };
 
 mod devices;
@@ -887,8 +888,12 @@ impl LiveVcpuTimeCallbackState {
         sampling: PluginFingerprintSampling,
         slot: &FingerprintSampleSlot,
         synchronous_oracle: bool,
+        worker_quiescence: Arc<LiveWorkerQuiescence>,
     ) -> Result<Self, LiveVcpuTimeCallbackError> {
-        let worker = LiveFingerprintDigestWorker::spawn(StableFingerprintSlotHandle::new(slot))?;
+        let worker = LiveFingerprintDigestWorker::spawn(
+            StableFingerprintSlotHandle::new(slot),
+            worker_quiescence,
+        )?;
         self.fingerprint = Some(LiveFingerprintCallbackState {
             sampling,
             worker,

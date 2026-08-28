@@ -390,8 +390,8 @@ pub const QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD: u32 = 1;
 pub const QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY: u32 = 2;
 /// Hot-fork barrier callback action that releases the reversible hold.
 pub const QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE: u32 = 3;
-/// Current fixed-layout callback-and-ring barrier status schema.
-pub const QEMU_PLUGIN_HOT_FORK_BARRIER_STATUS_VERSION: u32 = 2;
+/// Current fixed-layout callback, ring, and worker barrier status schema.
+pub const QEMU_PLUGIN_HOT_FORK_BARRIER_STATUS_VERSION: u32 = 3;
 /// Callback-barrier status flag indicating that the reversible hold is active.
 pub const QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_HELD: u32 = 1_u32 << 0;
 /// Callback-barrier status flag indicating permanent teardown closure.
@@ -401,7 +401,7 @@ pub const QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_TEARDOWN: u32 = 1_u32 << 1;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct QemuPluginHotForkBarrierStatus {
-    /// Status schema version, currently two.
+    /// Status schema version, currently three.
     pub schema_version: u32,
     /// Exact C ABI structure size.
     pub struct_size: u32,
@@ -417,6 +417,12 @@ pub struct QemuPluginHotForkBarrierStatus {
     pub rings_held: u64,
     /// Checked aggregate of admitted producer publications still in flight.
     pub ring_producers_in_flight: u64,
+    /// Exact sealed process-lifetime worker-class mask.
+    pub worker_mask: u64,
+    /// Worker classes currently parked at an operation boundary.
+    pub parked_worker_mask: u64,
+    /// Checked count of worker operations admitted before the hold.
+    pub worker_operations_in_flight: u64,
 }
 
 /// Plugin callback that changes or observes the callback-admission barrier.
