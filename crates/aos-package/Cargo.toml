@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 aos-core = { workspace = true }
+aos-doc-model = { workspace = true }
 aos-cache = { workspace = true }
 aos-net = { workspace = true }
 aos-systemd = { workspace = true }

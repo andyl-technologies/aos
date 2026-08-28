@@ -1,0 +1,15 @@
+[package]
+name = "aos-doc-model"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Closed package-documentation schema, validation, search, and safe renderers for AOS"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

@@ -6316,6 +6316,7 @@ mod tests {
             expose: None,
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta {
