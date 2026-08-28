@@ -122,6 +122,10 @@ in {
           ip = "192.168.50.10";
         };
         networking.flannelInterface = "eth0";
+        integrations.resources.aos-contract = {
+          priority = 10;
+          content = "apiVersion: v1\\nkind: Namespace\\nmetadata:\\n  name: aos-runtime-addon-contract\\n";
+        };
       };
     }
     """)
@@ -201,6 +205,12 @@ in {
     # case in k3s-control-plane-worker.nix), so 240s gives the same
     # slack we used there.
     wait_unit_active(combined, "k3s.service", timeout=240)
+
+    combined.wait_until_succeeds(
+        "${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml "
+        "get namespace aos-runtime-addon-contract",
+        timeout=120,
+    )
 
     # ── Worker service active ───────────────────────────────────────
     wait_unit_active(worker, "k3s.service", timeout=240)
