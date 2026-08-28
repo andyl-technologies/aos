@@ -14,7 +14,7 @@ INSERT INTO consumer_scope_grant_events
   (event_id, resource_kind, resource_stable_id, resource_generation_key,
    consumer_scope_key, grant_generation, transition, previous_state,
    resulting_state, actor_id, occurred_at, request_id)
-SELECT 'migration:explicit-binding:' || grant_record.rowid, 'binding',
+SELECT 'migration:b:' || grant_record.consumer_scope_key, 'binding',
        binding.stable_id, 0, grant_record.consumer_scope_key,
        grant_record.grant_generation, 'regranted', 'active', 'active',
        'system:migration', 0, 'migration:explicit-topology'
@@ -22,7 +22,11 @@ SELECT 'migration:explicit-binding:' || grant_record.rowid, 'binding',
   JOIN bindings binding ON binding.id = grant_record.binding_id
  WHERE grant_record.grant_kind = 'instance_default'
    AND grant_record.state = 'active'
-   AND grant_record.consumer_scope_key <> binding.owner_scope_key;
+   AND grant_record.consumer_scope_key <> binding.owner_scope_key
+   AND NOT EXISTS (
+       SELECT 1 FROM consumer_scope_grant_events event
+        WHERE event.event_id = 'migration:b:' || grant_record.consumer_scope_key
+   );
 
 UPDATE binding_consumer_scopes
    SET grant_kind = 'explicit',
@@ -39,7 +43,7 @@ INSERT INTO consumer_scope_grant_events
   (event_id, resource_kind, resource_stable_id, resource_generation_key,
    consumer_scope_key, grant_generation, transition, previous_state,
    resulting_state, actor_id, occurred_at, request_id)
-SELECT 'migration:explicit-network:' || grant_record.rowid, 'network_policy',
+SELECT 'migration:n:' || grant_record.consumer_scope_key, 'network_policy',
        grant_record.boundary_id, 0, grant_record.consumer_scope_key,
        grant_record.grant_generation, 'regranted', 'active', 'active',
        'system:migration', 0, 'migration:explicit-topology'
@@ -47,7 +51,11 @@ SELECT 'migration:explicit-network:' || grant_record.rowid, 'network_policy',
   JOIN network_policies policy ON policy.id = grant_record.boundary_id
  WHERE grant_record.grant_kind = 'instance_default'
    AND grant_record.state = 'active'
-   AND grant_record.consumer_scope_key <> policy.owner_scope_key;
+   AND grant_record.consumer_scope_key <> policy.owner_scope_key
+   AND NOT EXISTS (
+       SELECT 1 FROM consumer_scope_grant_events event
+        WHERE event.event_id = 'migration:n:' || grant_record.consumer_scope_key
+   );
 
 UPDATE network_policy_consumer_scopes
    SET grant_kind = 'explicit',
