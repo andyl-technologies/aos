@@ -2595,14 +2595,8 @@ fn read_publish_config_module(
         .iter()
         .map(|owned| (owned.root.as_str(), owned))
         .collect::<BTreeMap<_, _>>();
-    let mut derived_owned_roots = declares
-        .iter()
-        .filter_map(|path| path.split('.').next())
-        .filter(|root| *root != package_name)
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    derived_owned_roots.sort();
-    derived_owned_roots.dedup();
+    let derived_owned_roots =
+        derive_owned_root_names(&declares, package_name, &authored.owns_roots);
     let mut owns_roots = Vec::with_capacity(derived_owned_roots.len());
     for root in &derived_owned_roots {
         let authored_root = owned_by_name.remove(root.as_str()).with_context(|| {
@@ -2689,6 +2683,28 @@ fn read_publish_config_module(
     validate_config_output_meta(&module.config_output)?;
     validate_config_module_meta(package_name, &module)?;
     Ok(module)
+}
+
+fn derive_owned_root_names(
+    declares: &[String],
+    package_name: &str,
+    authored_roots: &[OwnedRoot],
+) -> Vec<String> {
+    let mut roots = declares
+        .iter()
+        .filter_map(|path| path.split('.').next())
+        .filter(|root| {
+            // Package-prefixed declarations are private by default, but an
+            // explicit ownsRoots entry promotes that same-name root into a
+            // versioned contributor interface. Publication must validate the
+            // claim just like any differently named shared root.
+            *root != package_name || authored_roots.iter().any(|owned| owned.root == *root)
+        })
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    roots.sort();
+    roots.dedup();
+    roots
 }
 
 fn reject_config_derivation_references(config_output: &str) -> Result<()> {
@@ -15955,6 +15971,22 @@ mod tests {
             artifacts: Default::default(),
             provides_capabilities: vec!["system.capabilities.dns-resolver".to_string()],
         }
+    }
+
+    #[test]
+    fn publication_validates_explicit_same_name_owned_root() {
+        let declarations = vec!["nginx.enable".to_string(), "nginx.virtualHosts".to_string()];
+        let owned = vec![OwnedRoot {
+            root: "nginx".to_string(),
+            interface_abi: 1,
+            contributable: vec!["virtualHosts.*".to_string()],
+        }];
+
+        assert_eq!(
+            derive_owned_root_names(&declarations, "nginx", &owned),
+            vec!["nginx".to_string()]
+        );
+        assert!(derive_owned_root_names(&declarations, "nginx", &[]).is_empty());
     }
 
     #[test]
