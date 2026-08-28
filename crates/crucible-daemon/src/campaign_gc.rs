@@ -4,7 +4,7 @@
 //! physical-candidate manifests, the non-destructive single-host planner that
 //! binds them to every administrative generation, the durable external apply
 //! journal, and exact-generation physical-leaf logical deletion under
-//! publication/root fences. Policy-aware cache eviction and transform/S3
+//! publication/root fences. Policy-aware cache eviction and broader transform
 //! administration remain higher-level owner responsibilities.
 //!
 //! The v1 body is:

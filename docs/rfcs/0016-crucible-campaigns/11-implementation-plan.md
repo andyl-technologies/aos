@@ -1485,9 +1485,12 @@ wrapper. Tests cover maximum ref names, stale conflicts, cross-instance races,
 malformed bodies, false committed versions, strict provider pages,
 non-resetting scan deadlines, publication and mutation exclusion,
 restart-stable generations, and same-value ABA. S3 committed-object
-inventory/deletion is implemented at the graph capability boundary. Automated
-live-service conformance, daemon configuration wiring, and the realistic
-operator flight remain open under T-CAM-5.7 and T-CAM-5.8.
+inventory/deletion is implemented at the graph capability boundary and now
+runs through the daemon's canonical plan/journal/restart/apply path. The
+integration regression proves retained-object authentication, unreachable-only
+deletion, and stale-generation rejection after a concurrent publication.
+Automated live-service conformance, daemon configuration wiring, and the
+realistic operator flight remain open under T-CAM-5.7 and T-CAM-5.8.
 Broader layered transforms remain open;
 therefore T-CAM-5.5 is not checked by this checkpoint.
 
