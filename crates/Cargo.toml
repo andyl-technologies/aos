@@ -23,6 +23,7 @@ members = [
     "aos-profile",
     "aos-systemd",
     "crucible-cas",
+    "crucible-linux-resource",
     "crucible-campaign",
     "crucible-sim",
     "crucible-assert",
@@ -196,6 +197,7 @@ rcgen = "0.14"
 
 # Internal crates
 crucible-cas = { path = "crucible-cas" }
+crucible-linux-resource = { path = "crucible-linux-resource" }
 crucible-campaign = { path = "crucible-campaign" }
 aos-core = { path = "aos-core" }
 aos-boot-identity = { path = "aos-boot-identity" }

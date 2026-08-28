@@ -1,5 +1,6 @@
 [
   "crucible-cas"
+  "crucible-linux-resource"
   "crucible-sim"
   "crucible-assert"
   "crucible-shmem"

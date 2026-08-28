@@ -2253,6 +2253,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible-linux-resource"
+version = "0.1.0"
+dependencies = [
+ "crucible-cas",
+ "libc",
+ "rustix 1.1.4",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "crucible-protocol"
 version = "0.1.0"
 dependencies = [
@@ -2269,6 +2279,7 @@ dependencies = [
  "crucible",
  "crucible-campaign",
  "crucible-device",
+ "crucible-linux-resource",
  "crucible-protocol",
  "crucible-shmem",
  "libc",

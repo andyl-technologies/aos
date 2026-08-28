@@ -16,6 +16,7 @@ workspace = true
 blake3 = { workspace = true }
 crucible = { path = "../crucible" }
 crucible-device = { path = "../crucible-device" }
+crucible-linux-resource = { path = "../crucible-linux-resource", default-features = false }
 crucible-protocol = { path = "../crucible-protocol" }
 crucible-shmem = { path = "../crucible-shmem" }
 libc = { workspace = true }

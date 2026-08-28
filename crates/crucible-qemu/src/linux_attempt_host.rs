@@ -23,11 +23,11 @@ use crate::linux_attempt_storage::{
     LinuxQemuAttemptStorageConfig, LinuxQemuAttemptStorageError, LinuxQemuAttemptStorageFactory,
     LinuxQemuAttemptStorageOwner,
 };
-use crate::linux_project_quota::LinuxProjectQuotaError;
 use crate::{
     QemuChildProcessContract, QemuLaunchResourceRequirements, QemuNodeChild,
     QemuPreparedRunDirectory, QemuVmRealizationError,
 };
+use crucible_linux_resource::LinuxProjectQuotaError;
 
 const HOST_QUARANTINE_MIN_RETRY: Duration = Duration::from_millis(10);
 const HOST_QUARANTINE_MAX_RETRY: Duration = Duration::from_secs(1);

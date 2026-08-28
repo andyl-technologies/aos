@@ -33,14 +33,14 @@ use rustix::io::fcntl_dupfd_cloexec;
 use rustix::process::{Gid, Uid, geteuid};
 use thiserror::Error;
 
-use crate::linux_project_quota::{
-    LinuxProjectQuotaError, LinuxProjectQuotaLimits, LinuxProjectQuotaReservation,
-    validate_project_quota_root,
-};
 use crate::spawn::{QemuChildCredentials, validate_guarded_launch_requirements};
 use crate::{
     DEFAULT_VMSTATE_FILE_NAME, QemuChildProcessContract, QemuLaunchResourceRequirements,
     QemuPreparedRunDirectory, QemuSpawnError,
+};
+use crucible_linux_resource::{
+    LinuxProjectQuotaError, LinuxProjectQuotaLimits, LinuxProjectQuotaReservation,
+    validate_project_quota_root,
 };
 
 const ATTEMPT_COUNTER_HEX_BYTES: usize = 16;
