@@ -38,6 +38,8 @@
 //!   storage, and the sysroot-lock divergence check.
 //! - [`profile`] / [`store`] / [`download`] — profile generations, the local
 //!   store, and the NAR download engine.
+//! - `runtime_boundary` — fail-closed container and read-only command
+//!   admission before configuration, profile, or host-service access.
 
 pub mod attestation;
 pub mod clean;
@@ -78,6 +80,7 @@ pub mod registry_ops;
 pub mod remove;
 pub mod resolve;
 pub mod rollback;
+mod runtime_boundary;
 pub mod secret_ref;
 pub mod security;
 pub mod source;
@@ -115,6 +118,12 @@ const PACKAGE_ATTESTATION_SEED_CATALOG: &str = "/etc/aos/package-attestation-cat
 
 /// Environment-variable documentation appended to `apm`/`apr` long help.
 pub const ENVIRONMENT_HELP: &str = "Environment:
+  AOS_RUNTIME            Runtime kind. AOS containers set this to `container`;
+                         system scope and host boot/systemd/TPM/activation
+                         operations are unavailable in that runtime.
+  AOS_CONTAINER_READ_ONLY
+                         Set to `1` by container init when package state cannot
+                         be mutated. Read-only package queries remain available.
   APM_SYSTEM_CONFIG_DIR  Override the system configuration root (default
                          /etc/apm). Affects every derived system path,
                          including registries.d and trusted-keys.d, in both
@@ -2449,16 +2458,21 @@ fn exit_for_eval_failure(error: &anyhow::Error, verbose: u8) {
 ///
 /// # Errors
 ///
-/// Returns an error when configuration loading fails or when the dispatched
-/// subcommand fails (resolution, download, verification, activation,
-/// registry operations, ...). User cancellation at a confirmation prompt is
-/// reported as [`aos_core::error::AosError::UserCancelled`].
+/// Returns an error before configuration loading when the process runtime
+/// prohibits system or host operations, or when read-only container state
+/// prohibits a mutation. It also returns an error when configuration loading
+/// fails or when the dispatched subcommand fails (resolution, download,
+/// verification, activation, registry operations, ...). User cancellation at
+/// a confirmation prompt is reported as
+/// [`aos_core::error::AosError::UserCancelled`].
 pub async fn run(
     command: &PackageCommand,
     dry_run: bool,
     yes: bool,
     printer: &Printer,
 ) -> Result<()> {
+    runtime_boundary::validate(command)?;
+
     // The hidden systemd-client test vehicle talks to systemd over D-Bus and
     // needs no apm config or profile. Dispatch it before `ApmConfig::load`
     // below so it works on a system with no apm state (mirrors how `main.rs`
@@ -3083,14 +3097,8 @@ pub async fn run(
                 )
                 .await
             } else if *rollback_system {
-                sysroot::rollback_system(
-                    &config,
-                    *generation,
-                    *rollback_list,
-                    dry_run,
-                    printer,
-                )
-                .await
+                sysroot::rollback_system(&config, *generation, *rollback_list, dry_run, printer)
+                    .await
             } else if *rollback_list {
                 rollback::list(&config, printer).await
             } else {

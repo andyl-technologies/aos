@@ -6,6 +6,8 @@
 //!
 //! - [`error`] -- the [`AosError`](error::AosError) error type and the
 //!   exit-code conventions shared by all `aos` binaries.
+//! - [`container_runtime`] -- synchronization and read-only admission for the
+//!   official scratch container entrypoint.
 //! - [`invocation`] -- argv\[0\]-aware helpers so hint messages echo the
 //!   binary name the user actually typed (`aos`, `apm`, or `apr`).
 //! - [`nar`] -- NAR (Nix ARchive) handling: narinfo parsing/rendering,
@@ -22,6 +24,7 @@
 //! plumbing (process spawning, wire formats, terminal output) on top of
 //! which the porcelain crates are built.
 
+pub mod container_runtime;
 pub mod error;
 pub mod invocation;
 pub mod nar;

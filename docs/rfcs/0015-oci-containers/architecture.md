@@ -190,24 +190,57 @@ system. A generated executable facade provides the same interactive command
 names, with the AOS profile path ordered ahead of the baked facade so packages
 installed later by APM can add commands.
 
-The init process performs an idempotent transaction:
+The image authors an empty `0600`
+`/nix/var/nix/.aos-container-init.lock`. The initializer recreates and
+re-protects that file when an operator replaces Nix state with an empty mount.
+It then performs this idempotent transaction while holding the lock
+exclusively:
 
-1. create the local Nix database if absent;
-2. load the embedded registration stream;
-3. validate the embedded golden-root list against the registered closure;
-4. build a fresh GC-root directory containing one absolute symlink per golden
+1. validate the immutable golden-root list against the embedded closure;
+2. remove readiness state from an earlier PID-1 lifecycle;
+3. build a fresh GC-root directory containing one absolute symlink per golden
    package root and atomically replace `/nix/var/nix/gcroots/aos-container-baked`;
-5. run a validity check for every baked root;
-6. create the user APM, XDG, and profile directories;
-7. reject mutable package-management requests when the store is read-only;
-8. execute the requested argv without a shell reparse.
+4. create the local Nix database if absent;
+5. load the embedded registration stream;
+6. run a validity check for every baked root;
+7. create the user APM, XDG, and profile directories;
+8. publish a persistent read-only marker when the store cannot be mutated;
+9. publish a readiness marker bound to the current PID-1 start time;
+10. release the lock and execute the requested argv without a shell reparse.
 
 Root reconciliation happens on every start, including when an operator mounts
 an initially empty Nix database directory. GC-root names are the complete store
 basename, roots must appear in the signed embedded list, and a malformed or
-missing root aborts init. APM cannot run between DB creation and GC-root
-publication. Tests run Nix GC and APM GC before rechecking all baked roots and
-representative commands.
+missing root aborts init. Root publication precedes database initialization and
+registration, so even a concurrent runtime `exec` cannot observe valid baked
+paths during an unrooted interval. Tests run Nix GC and APM GC before rechecking
+all baked roots and representative commands.
+
+Container runtimes can start a second process while the entrypoint is still
+initializing, and that process does not inherit environment changes made by PID
+1. Every `aos`, `apm`, and `apr` process with exact
+`AOS_RUNTIME=container` therefore consults filesystem state. A process with a
+writable state directory waits for a readiness marker matching `/proc/1/stat`
+field 22, acquires the init lock in shared mode, and rechecks the marker while
+serialized with initialization. It derives read-only admission from direct
+state/store write probes and the persistent marker, not only from
+`AOS_CONTAINER_READ_ONLY`. Host-only package commands are rejected before the
+wait so they cannot use container initialization as an alternate host path.
+
+The marker bytes are versioned data contracts:
+
+```text
+/nix/var/nix/.aos-container-ready:
+schema=aos.container.ready/v1
+pid1_start_time=<decimal /proc/1/stat field 22>
+
+/nix/var/nix/.aos-container-read-only:
+schema=aos.container.read-only/v1
+```
+
+Malformed persistent markers fail closed. A fully read-only state directory
+cannot publish markers, so clients classify it as read-only directly without
+waiting for an impossible write.
 
 The entrypoint is intentionally exec-only. It is not a supervisor or
 subreaper: the requested program becomes PID 1, receives runtime signals
@@ -217,6 +250,30 @@ that need generic orphan reaping use the runtime's init option, such as Docker
 
 The Nix daemon is neither present nor contacted. The default database is
 single-user and the build-users group is empty.
+
+### APR credentials and operator-provided tools
+
+The image never contains registry credentials, signing keys, private trust
+anchors, or SSH agent sockets. Producer-side APR commands receive those inputs
+through explicit runtime mounts:
+
+- mount user registry configuration and pinned public keys below
+  `/root/.config/apm`, read-only unless APR must update the configuration;
+- mount additional public CA roots at a dedicated path and set
+  `SSL_CERT_FILE` and `NIX_SSL_CERT_FILE` to the mounted bundle;
+- mount private signing-key files read-only at an operator-selected path and
+  reference that path from APR configuration instead of copying key bytes into
+  the image or environment;
+- forward an SSH agent socket at an operator-selected path and set
+  `SSH_AUTH_SOCK` for SSH-backed registry operations; and
+- mount any program named by an APR key command or filter, then include its
+  directory in `AOS_HOST_PATH`. The hermetic AOS wrapper deliberately restores
+  that caller-supplied path only for the configured external command.
+
+Mounts must use the narrowest required permissions. In particular, a signing
+key, agent socket, or Hub/APM token is never part of an OCI layer, image config,
+label, or default environment value. Consumer-side package installation needs
+none of these producer credentials.
 
 `AOS_ROOT` remains unset because the ordinary container store is the canonical
 `/nix/store`. System-scope APM and host activation operations detect the

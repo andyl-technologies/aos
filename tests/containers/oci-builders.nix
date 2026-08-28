@@ -169,6 +169,14 @@
       "org.opencontainers.image.title" = "AOS multi-platform fixture";
     };
   };
+  # With one platform and identical empty index annotations, the composed
+  # image-index blob is byte-identical to the input layout's index blob. This
+  # freezes verified same-digest reuse instead of a read-only overwrite.
+  singlePlatform = oci.mkMultiPlatformIndex {
+    pname = "oci-fixture-single-platform";
+    images = [amd64Image];
+    referenceName = "aos-fixture:latest";
+  };
   dockerArchive = oci.mkDockerArchive {
     pname = "oci-fixture-docker-archive";
     image = amd64Image;
@@ -438,6 +446,14 @@ in
           verify_descriptor_blob \
             ${multiPlatform}/index-descriptor.json \
             ${multiPlatform}/layout/blobs/sha256/$index_hex
+
+          single_index_digest=$(jq -r .digest ${singlePlatform}/index-descriptor.json)
+          single_index_hex=''${single_index_digest#sha256:}
+          verify_descriptor_blob \
+            ${singlePlatform}/index-descriptor.json \
+            ${singlePlatform}/layout/blobs/sha256/$single_index_hex
+          test "$(find ${singlePlatform}/layout/blobs/sha256 -name "$single_index_hex" | wc -l)" -eq 1 \
+            || fail "single-platform index did not reuse its identical input blob"
 
           base_digest=$(jq -r .digest ${baseLayerA}/descriptor.json)
           base_hex=''${base_digest#sha256:}

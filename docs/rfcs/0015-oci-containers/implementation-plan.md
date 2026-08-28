@@ -10,7 +10,7 @@ one adversarial review of the containing phase are complete.
 | --- | --- | --- |
 | 0 | Contracts and executable spikes | Complete |
 | 1 | OCI types and deterministic Nix builders | Complete |
-| 2 | The single `aos` image and runtime contract | Not started |
+| 2 | The single `aos` image and runtime contract | Complete |
 | 3 | Local `aos container` CLI | Not started |
 | 4 | Hub OCI catalog, storage, and pull data plane | Not started |
 | 5 | Upload, publication, and signed release roots | Not started |
@@ -145,53 +145,64 @@ mutation capability resolve them. No second review round was used.
 
 ### Golden-image parity
 
-- [ ] Define `containers/aos.nix` as the sole registered image.
-- [ ] Take package roots from
+- [x] Define `containers/aos.nix` as the sole registered image.
+- [x] Take package roots from
   `systems.server.config.environment.systemPackages` without copying the list.
-- [ ] Assert exact package-root equality in pure evaluation.
-- [ ] Include no kernel, initrd, system toplevel, boot image, systemd PID 1, or
+- [x] Assert exact package-root equality in pure evaluation.
+- [x] Include no kernel, initrd, system toplevel, boot image, systemd PID 1, or
   host service graph.
-- [ ] Use the AOS release identity in OCI labels and `os-release`.
+- [x] Use the AOS release identity in OCI labels and `os-release`.
 
 ### Scratch filesystem
 
-- [ ] Render root and group identities deterministically.
-- [ ] Create `/tmp`, HOME, work, XDG, APM, profile, and Nix state directories
+- [x] Render root and group identities deterministically.
+- [x] Create `/tmp`, HOME, work, XDG, APM, profile, and Nix state directories
   with explicit modes.
-- [ ] Add CA bundle aliases and TLS environment.
-- [ ] Build a collision-checked PATH facade matching the golden package roots.
-- [ ] Omit runtime-owned hosts, hostname, and resolver files.
-- [ ] Do not declare `/nix` as a volume.
+- [x] Add CA bundle aliases and TLS environment.
+- [x] Build a collision-checked PATH facade matching the golden package roots.
+- [x] Omit runtime-owned hosts, hostname, and resolver files.
+- [x] Do not declare `/nix` as a volume.
 
 ### Daemonless CLI and package management
 
-- [ ] Include the exact full `pkgs.aos` wrapper closure.
-- [ ] Embed closure registration and a single-user `nix.conf`.
-- [ ] Add an idempotent init executable that initializes/loads the local Nix
+- [x] Include the exact full `pkgs.aos` wrapper closure.
+- [x] Embed closure registration and a single-user `nix.conf`.
+- [x] Add an idempotent init executable that initializes/loads the local Nix
   database and execs argv without shell parsing.
-- [ ] Reconcile atomic GC roots for every baked golden package root before APM
+- [x] Reconcile atomic GC roots for every baked golden package root before APM
   can run.
-- [ ] Set the explicit container runtime marker and leave `AOS_ROOT` unset.
-- [ ] Make read-only-store failures actionable.
-- [ ] Make container-incompatible system/boot/TPM operations fail explicitly
+- [x] Set the explicit container runtime marker and leave `AOS_ROOT` unset.
+- [x] Make read-only-store failures actionable.
+- [x] Make container-incompatible system/boot/TPM operations fail explicitly
   without weakening their behavior on AOS hosts.
-- [ ] Document key, custom command, trust root, and SSH-agent mounts for APR.
+- [x] Document key, custom command, trust root, and SSH-agent mounts for APR.
 
 ### Runtime tests and review
 
-- [ ] Load the OCI archive with AOS-built containerd/nerdctl and run `aos`,
+- [x] Load the OCI archive with AOS-built containerd/nerdctl and run `aos`,
   `apm`, and `apr` help/version commands.
-- [ ] Execute representative commands whose helpers exercise bash, OpenSSL,
+- [x] Execute representative commands whose helpers exercise bash, OpenSSL,
   Nix, Git/libgit2, and compression paths.
-- [ ] Install, query, execute, and remove a package from a local APM registry
+- [x] Install, query, execute, and remove a package from a local APM registry
   without a Nix daemon.
-- [ ] Restart the same container and verify package/profile state.
-- [ ] Run Nix GC and APM GC, then verify every baked root and representative
+- [x] Restart the same container and verify package/profile state.
+- [x] Run Nix GC and APM GC, then verify every baked root and representative
   baked command remains valid.
-- [ ] Verify a read-only run succeeds for baked commands and rejects mutation.
-- [ ] Run a manual Docker load/run compatibility smoke where Docker is
+- [x] Verify a read-only run succeeds for baked commands and rejects mutation.
+- [x] Run a manual Docker load/run compatibility smoke where Docker is
   available.
-- [ ] Complete one Phase-2 adversarial review and resolve blocking findings.
+- [x] Complete one Phase-2 adversarial review and resolve blocking findings.
+
+The Phase-2 adversarial review found three blocking issues: runtime-created
+processes could bypass PID-1 initialization and read-only environment changes,
+the VM package lifecycle pre-imported its NAR instead of proving a real cache
+download, and an asserted target could mislabel bytes from a different package
+set. Versioned filesystem readiness/read-only markers plus shared/exclusive
+locking, a VM-local static cache with pre/post validity assertions, and strict
+package-set/target equality resolve those findings. The same follow-up also
+hardened facade admission against an extra duplicate provider. CA/DNS network
+injection remains an explicit Phase-8 qualification item. No second review
+round was used.
 
 ## Phase 3: Local `aos container` CLI
 
@@ -397,6 +408,8 @@ mutation capability resolve them. No second review round was used.
 - [ ] Add a focused Hub OCI VM check using existing Hub service modules.
 - [ ] Publish through the guest/native Hub path rather than a mock transport.
 - [ ] Pull, load, and run `aos`, `apm`, and `apr` inside the VM runtime.
+- [ ] Verify runtime-injected DNS/hosts files and HTTPS through the baked CA
+  trust aliases from inside the scratch image.
 - [ ] Add private auth, range/resume, digest mismatch, multi-platform selection,
   atomic tag visibility, shared-layer, and GC negative coverage.
 - [ ] Keep all harness dependencies AOS-built.
