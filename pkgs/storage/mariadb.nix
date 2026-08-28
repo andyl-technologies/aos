@@ -291,7 +291,7 @@ in
             name = "runtime";
             path = "/etc/aos/packages/mariadb/runtime.env";
             format = "env";
-            required = ["MARIADB_ENABLED"];
+            required = ["MARIADB_CONFIG_GENERATION" "MARIADB_ENABLED"];
             units = ["mariadb-init.service" "mariadb.service"];
             reload = "restart";
           }
@@ -473,6 +473,7 @@ in
       config-module-contract = assert assertionsHold;
       assert invalidTlsRejected;
       assert evaluated.config.mariadb.config.runtime.MARIADB_ENABLED == "1";
+      assert builtins.stringLength evaluated.config.mariadb.config.runtime.MARIADB_CONFIG_GENERATION == 64;
       assert evaluated.config.mariadb.credentials."tls-certificate".ref == "system-credential:mariadb-certificate";
         pkgs.runCommand "storage-mariadb-config-module-contract" {} ''
             test -f ${self.config}/module.nix
