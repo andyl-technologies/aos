@@ -34,6 +34,13 @@
 ##!     }
 ##!   ];
 ##!   providesCapabilities = [];
+##!   documentation = {
+##!     sections.operations = lib.aosDoc.section "Operations" [
+##!       (lib.aosDoc.paragraph "Operational guidance stored as structured data.")
+##!     ];
+##!     options."example.enable".activation =
+##!       lib.aosDoc.activation "restart" ["example.service"];
+##!   };
 ##! };
 ##! ```
 {lib}: let
@@ -48,6 +55,7 @@
     "contributes"
     "artifacts"
     "providesCapabilities"
+    "documentation"
   ];
 
   validateList = packageName: field: value:
@@ -239,6 +247,28 @@
         && builtins.all (name: builtins.match "[A-Za-z0-9_-]+" name != null) dependencyNames)
       "configModule for package '${packageName}' field 'dependencies' must be an attrset with package-name keys"
       (builtins.mapAttrs (_: value: builtins.toString value) dependencies);
+    documentationValue =
+      validateRecordKeys
+      packageName
+      "documentation"
+      ["options" "sections" "summary"]
+      (checkedModule.documentation or {});
+    documentationSections = documentationValue.sections or {};
+    documentationOptions = documentationValue.options or {};
+    documentation =
+      throwIfNot
+      (builtins.isAttrs documentationSections
+        && builtins.all
+        (id: builtins.match "[A-Za-z0-9][A-Za-z0-9_-]*" id != null)
+        (builtins.attrNames documentationSections))
+      "configModule for package '${packageName}' field 'documentation.sections' must be an attrset with safe section identifiers"
+      (throwIfNot
+        (builtins.isAttrs documentationOptions
+          && builtins.all
+          (path: builtins.match "[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*" path != null)
+          (builtins.attrNames documentationOptions))
+        "configModule for package '${packageName}' field 'documentation.options' must be an attrset keyed by option path"
+        documentationValue);
     ownedRootNames = builtins.map (root: root.root) ownsRoots;
     contributedRootNames = builtins.map (contribution: contribution.root) contributes;
     contributionAuthorizes = declaredPath: contribution: let
@@ -284,6 +314,9 @@
       }
       // lib.optionalAttrs (builtins.any (values: values != []) (builtins.attrValues artifacts)) {
         inherit artifacts;
+      }
+      // lib.optionalAttrs (documentation != {}) {
+        inherit documentation;
       }
     );
   in

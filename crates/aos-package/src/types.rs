@@ -6235,7 +6235,8 @@ provenance = "provenance/firewall.jsonl"
         let mut meta = sample_package_meta();
         meta.documentation = Some(sample_documentation_artifact());
         meta.attestation.provenance = Some("provenance/firewall.intoto.jsonl".to_string());
-        meta.requires_features.push(FEATURE_ATTESTATION_V1.to_string());
+        meta.requires_features
+            .push(FEATURE_ATTESTATION_V1.to_string());
 
         let error = validate_supported_package_meta(&meta).expect_err("missing feature");
         assert!(error.to_string().contains(FEATURE_PACKAGE_DOCUMENTATION_V1));

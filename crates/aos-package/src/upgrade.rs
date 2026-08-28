@@ -186,7 +186,8 @@ pub async fn run(
         .await
         .context("computing post-upgrade profile roots")?;
     let obsolete_hashes = obsolete_installed_hashes(&installed, &needed_hashes);
-    let expose_artifacts = collect_expose_artifacts(&to_upgrade)?;
+    let mut expose_artifacts = collect_expose_artifacts(&to_upgrade)?;
+    collect_documentation_artifacts(&upgrade_closures, &mut expose_artifacts)?;
 
     // Sysroot-lock check for upgraded packages.
     if !matches!(ignore_lock, IgnoreSysrootLock::All) {
@@ -906,6 +907,34 @@ fn collect_expose_artifacts(
     Ok(artifacts)
 }
 
+fn collect_documentation_artifacts(
+    closures: &[(String, Vec<PackageMeta>)],
+    artifacts: &mut Vec<SecondaryArtifactDownload>,
+) -> Result<()> {
+    let mut seen = artifacts
+        .iter()
+        .enumerate()
+        .map(|(index, artifact)| (artifact.store_path.clone(), index))
+        .collect::<HashMap<_, _>>();
+    for (registry_name, packages) in closures {
+        for package in packages {
+            let Some(documentation) = &package.documentation else {
+                continue;
+            };
+            push_secondary_artifact(
+                artifacts,
+                &mut seen,
+                registry_name,
+                &documentation.store_path,
+                &documentation.nar_hash,
+                true,
+                true,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn push_secondary_artifact(
     artifacts: &mut Vec<SecondaryArtifactDownload>,
     seen: &mut HashMap<String, usize>,
@@ -919,7 +948,7 @@ fn push_secondary_artifact(
         let previous = &artifacts[previous_index];
         if previous.nar_hash != nar_hash {
             anyhow::bail!(
-                "secondary expose store path '{}' has conflicting signed NAR hashes",
+                "secondary artifact store path '{}' has conflicting signed NAR hashes",
                 store_path
             );
         }
@@ -927,7 +956,7 @@ fn push_secondary_artifact(
             || previous.requires_empty_references != requires_empty_references
         {
             anyhow::bail!(
-                "secondary expose store path '{}' is declared with incompatible roles",
+                "secondary artifact store path '{}' is declared with incompatible roles",
                 store_path
             );
         }
@@ -959,7 +988,7 @@ fn verify_secondary_artifact_downloads(
         };
         if artifact.requires_empty_references && !result.references.is_empty() {
             anyhow::bail!(
-                "expose image '{}' has runtime references but signed image metadata covers only the image NAR",
+                "secondary artifact '{}' must have an empty reference set",
                 result.store_path
             );
         }
