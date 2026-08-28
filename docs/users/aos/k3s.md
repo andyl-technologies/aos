@@ -55,8 +55,9 @@ Initialize a new combined cluster with:
 
 ## CNI and CSI composition
 
-The owner of `k3s.*` exposes only `integrations.cni.*` and
-`integrations.csi.*` as package-contributable paths. A CNI meta-package can,
+The owner of `k3s.*` exposes only `integrations.cni.*`,
+`integrations.csi.*`, and `integrations.resources.*` as
+package-contributable paths. A CNI meta-package can,
 for example, request replacement of Flannel, network policy, and kube-proxy:
 
 ```nix
@@ -70,6 +71,13 @@ for example, request replacement of Flannel, network policy, and kube-proxy:
 ```
 
 A CSI package may contribute node-selection labels beneath its own integration
-name. Integration packages cannot enable k3s or change server credentials,
-node identity, cluster addressing, or other owner-only settings. The operator
-continues to select and enable every package explicitly.
+name. Add-on packages contribute complete YAML bundles through the versioned
+`aos.kubernetes-resources/v1` interface. Server roles stage the ordered bundle
+at `/var/lib/rancher/k3s/server/manifests/aos-runtime-addons.yaml`; k3s then
+performs the ordinary Kubernetes reconciliation. Workers authenticate and
+retain the same configuration but do not publish server manifests.
+
+Integration packages cannot enable k3s or change server credentials, node
+identity, cluster addressing, or other owner-only settings. The operator
+continues to select and enable every package explicitly. See
+[Cilium](cilium.md) and [Longhorn](longhorn.md) for the packaged contributors.

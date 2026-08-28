@@ -14,6 +14,7 @@
   util-linux,
   kmod,
   coreutils,
+  jq,
   writeShellScriptBin,
 }: let
   mkK3sExposePackage = import ./_k3s-expose-package.nix {
@@ -33,6 +34,7 @@
       util-linux
       kmod
       coreutils
+      jq
       writeShellScriptBin
       ;
   };

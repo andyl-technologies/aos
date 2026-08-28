@@ -46,12 +46,38 @@
       description = "Node labels required to select nodes for this CSI integration.";
     };
   });
+  resourceType = types.submodule ({...}: {
+    config._module.strict = true;
+    options = {
+      content = mkOption {
+        type = nonEmptyStr;
+        description = "Complete Kubernetes YAML resource bundle staged by a server role.";
+      };
+      priority = mkOption {
+        type = types.addCheck types.int (value: value >= 0 && value <= 999);
+        default = 500;
+        description = "Stable ordering priority used before the resource name.";
+      };
+    };
+  });
 
   cniIntegrations = builtins.attrValues cfg.integrations.cni;
   csiIntegrations = builtins.attrValues cfg.integrations.csi;
   anyCni = field: builtins.any (integration: integration.${field}) cniIntegrations;
   integrationLabels = builtins.foldl' (labels: integration: labels // integration.nodeLabels) {} csiIntegrations;
   nodeLabels = cfg.node.labels // integrationLabels;
+  resourceNames = builtins.attrNames cfg.integrations.resources;
+  resourceNameRegex = "[a-z0-9]([-a-z0-9.]*[a-z0-9])?";
+  renderedResources = builtins.sort (left: right:
+    if left.priority == right.priority
+    then left.name < right.name
+    else left.priority < right.priority) (
+    lib.mapAttrsToList (name: resource: {
+      inherit name;
+      inherit (resource) content priority;
+    })
+    cfg.integrations.resources
+  );
   validLabels = builtins.all (name:
     builtins.match labelNameRegex name
     != null
@@ -238,6 +264,11 @@ in {
         default = {};
         description = "Named, package-contributable CSI integration requirements.";
       };
+      resources = mkOption {
+        type = types.attrsOf resourceType;
+        default = {};
+        description = "Named, package-contributable Kubernetes YAML bundles reconciled by server roles.";
+      };
     };
   };
 
@@ -246,6 +277,10 @@ in {
 
     ${package} = {
       config.env = desiredEnv;
+      config.addons = {
+        schema = "aos.kubernetes-resources/v1";
+        resources = renderedResources;
+      };
       credentials = mkIf (cfg.token != null) {token = cfg.token;};
     };
 
@@ -273,6 +308,10 @@ in {
       {
         assertion = validLabels;
         message = "k3s node label names and values must use Kubernetes label syntax";
+      }
+      {
+        assertion = builtins.all (name: builtins.match resourceNameRegex name != null) resourceNames;
+        message = "k3s.integrations.resources names must use lowercase DNS-label syntax";
       }
       {
         assertion = builtins.all (taint: builtins.match taintRegex taint != null) cfg.node.taints;

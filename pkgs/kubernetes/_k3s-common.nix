@@ -43,6 +43,7 @@ in {
     k3sModprobe
     pkgs.kmod # modprobe/lsmod
     pkgs.coreutils
+    pkgs.jq
   ];
   # Note: `pkgs.nftables` is intentionally NOT here. It's the
   # host-firewall tool (consumed by `nftables.service` from
@@ -127,6 +128,23 @@ in {
       fi
 
       export K3S_TOKEN_FILE="$token_file"
+
+      case ${lib.escapeShellArg command} in
+      server*)
+        addons=/etc/aos/packages/${role}/addons.json
+        destination=/var/lib/rancher/k3s/server/manifests/aos-runtime-addons.yaml
+        temporary="$destination.tmp"
+        ${pkgs.coreutils}/bin/mkdir -p "''${destination%/*}"
+        ${pkgs.jq}/bin/jq -er '
+          select(.schema == "aos.kubernetes-resources/v1")
+          | .resources
+          | map("# AOS resource: \(.name)\n\(.content)\n---\n")
+          | join("")
+        ' "$addons" > "$temporary"
+        ${pkgs.coreutils}/bin/mv -f "$temporary" "$destination"
+        ;;
+      esac
+
       exec ${pkgs.k3s}/bin/k3s ${command} "$@"
     '';
 }

@@ -14,6 +14,7 @@
   util-linux,
   kmod,
   coreutils,
+  jq,
   writeShellScriptBin,
 }: let
   pkgs = {
@@ -31,6 +32,7 @@
       util-linux
       kmod
       coreutils
+      jq
       writeShellScriptBin
       ;
   };
@@ -153,6 +155,14 @@ in
               units = ["k3s-preflight.service" "k3s.service"];
               reload = "restart";
             }
+            {
+              name = "addons";
+              path = "/etc/aos/packages/${pname}/addons.json";
+              format = "json";
+              required = ["resources" "schema"];
+              units = ["k3s.service"];
+              reload = "restart";
+            }
           ];
           credentials = [
             {
@@ -205,6 +215,7 @@ in
           "k3s.enable"
           "k3s.integrations.cni"
           "k3s.integrations.csi"
+          "k3s.integrations.resources"
           "k3s.kubeconfigMode"
           "k3s.networking.clusterCidr"
           "k3s.networking.clusterDns"
@@ -228,10 +239,11 @@ in
         ownsRoots = [
           {
             root = "k3s";
-            interfaceAbi = 1;
+            interfaceAbi = 2;
             contributable = [
               "integrations.cni.*"
               "integrations.csi.*"
+              "integrations.resources.*"
             ];
           }
         ];
