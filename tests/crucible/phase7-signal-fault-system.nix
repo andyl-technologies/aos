@@ -389,6 +389,24 @@ in
             model::fault_signal::runtime::tests::resolved_effect_trace_preflights_authored_collection_counts
           run_exact_crucible_test \
             model::fault_signal::execution_runtime::replay_tests::resolved_effect_trace_public_decode_round_trips_nonempty_and_applies_authored_limits
+          cross_domain_fleet_evidence="$TMPDIR/cross-domain-fleet-campaign.result"
+          export CRUCIBLE_CROSS_DOMAIN_FLEET_EVIDENCE="$cross_domain_fleet_evidence"
+          run_exact_crucible_test \
+            model::fault_signal::execution_runtime::cross_domain_campaign_tests::cross_domain_fleet_search_minimizes_and_locked_replays_without_explorer
+          unset CRUCIBLE_CROSS_DOMAIN_FLEET_EVIDENCE
+          grep -Fxq 'cross_domain_fleet_campaign=PASS' "$cross_domain_fleet_evidence"
+          grep -Fxq \
+            'causes=interference,movement,satellite-contact,shared-power,vibration' \
+            "$cross_domain_fleet_evidence"
+          grep -Fxq \
+            'effects=clock.transform,cpu.service,interrupt.disposition,memory.mutation,network.contact,network.route_transition,storage.volatile_cache_loss' \
+            "$cross_domain_fleet_evidence"
+          grep -Fxq 'search_candidates=2' "$cross_domain_fleet_evidence"
+          grep -Fxq 'original_decisions=4' "$cross_domain_fleet_evidence"
+          grep -Fxq 'minimized_decisions=1' "$cross_domain_fleet_evidence"
+          grep -Fxq 'minimized_failure_preserved=true' "$cross_domain_fleet_evidence"
+          grep -Fxq 'locked_replay_without_explorer=true' "$cross_domain_fleet_evidence"
+          grep -Fxq 'resolved_effect_records=7' "$cross_domain_fleet_evidence"
           run_exact_crucible_test \
             model::fault_signal::execution_runtime::capacity_preflight::tests::borrowed_capacity_wire_matches_a_real_host_record_candidate
           run_exact_crucible_test \
@@ -1135,6 +1153,8 @@ in
           cp ${replayOracle}/result "$out/evidence/replay.result"
           cp ${stateSpaceSearch}/result "$out/evidence/search.result"
           cp ${cliSearchFuzz}/result "$out/evidence/cli-search-fuzz.result"
+          cp "$TMPDIR/cross-domain-fleet-campaign.result" \
+            "$out/evidence/cross-domain-fleet-campaign.result"
           cp "$TMPDIR/production-effect-matrix" \
             "$out/evidence/production-effect-matrix.txt"
           cp "$TMPDIR/causal-network-production-effect-rows" \
@@ -1193,6 +1213,8 @@ in
           executable_taxonomy_section_counts=wired-76,radio-52,satellite-20,node-41,storage-37
           executable_taxonomy_ledger=exact-section-identity-and-registered-effects
           executable_taxonomy_ledger_artifact=evidence/rfc0014-taxonomy-ledger.tsv
+          cross_domain_fleet_campaign=search-minimized-and-ordinary-locked-replay-proven
+          cross_domain_fleet_campaign_artifact=evidence/cross-domain-fleet-campaign.result
           missing_acceptance=none
           system_evidence=adapter-dispatch,event-log,checkpoint,recomputed-replay,locked-replay,search,negative-tests
           live_boundary_evidence=network,block,9p,node-lifecycle,qemu-fault-patches,clock,accelerator,fresh-plugin-restore
