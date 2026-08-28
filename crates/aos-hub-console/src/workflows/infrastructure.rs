@@ -129,6 +129,7 @@ fn Bindings(
         }
     });
     let inventory_view_client = client.clone();
+    let binding_card_scope = owner_scope_key.clone();
 
     view! {
         <div class="workflow-stack">
@@ -150,13 +151,14 @@ fn Bindings(
                     {move || {
                         let client = inventory_view_client.clone();
                         let organization_slug = organization_slug.clone();
+                        let consumer_scope_key = binding_card_scope.clone();
                         Suspend::new(async move {
                             match inventory.await.as_ref() {
                                 Ok(bindings) if bindings.is_empty() => view! { <p class="muted">"No bindings in this scope."</p> }.into_any(),
                                 Ok(bindings) => view! {
                                     <div class="binding-list">
                                         {bindings.iter().cloned().map(|binding| view! {
-                                            <BindingCard client=client.clone() binding=binding organization_slug=organization_slug.clone() consumer_scope_key=owner_scope_key.clone()/>
+                                            <BindingCard client=client.clone() binding=binding organization_slug=organization_slug.clone() consumer_scope_key=consumer_scope_key.clone()/>
                                         }).collect_view()}
                                     </div>
                                 }.into_any(),

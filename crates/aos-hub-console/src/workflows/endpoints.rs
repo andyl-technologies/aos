@@ -174,7 +174,6 @@ async fn load_endpoint_create_choices(
                 owner_scope_key: domain_scope.clone(),
                 page_size: 100,
                 page_token,
-                include_granted: true,
             },
             |response| (response.domains, response.next_page_token),
         )
