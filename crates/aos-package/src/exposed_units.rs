@@ -6927,10 +6927,12 @@ mod tests {
         assert_eq!(
             diff.to_stop,
             vec![
-                "aos-pkg-api.target",
+                "api.service",
                 api_helper,
-                "aos-pkg-web.target",
+                "aos-pkg-api.target",
+                "web.service",
                 web_helper,
+                "aos-pkg-web.target",
             ]
         );
         assert!(diff.to_restart.is_empty());
