@@ -36,6 +36,20 @@ in
         script =
           if isDarwinCross
           then ''
+            # Bundled GLib 2.38 detects Carbon by preprocessing its umbrella
+            # header. The AOS compiler SDK deliberately exposes the surviving
+            # header-only compatibility surface, but no linkable Carbon
+            # framework, so that probe is a false positive. Keep pkg-config's
+            # private GLib on its complete Unix collation and XDG-directory
+            # implementations instead of selecting code that cannot compile or
+            # link against the target platform. Patch the pregenerated script;
+            # touching configure.ac would spuriously require an unavailable
+            # historical Automake version during this release-tarball build.
+            test "$(grep -c '^  glib_have_carbon=yes$' glib/configure)" -eq 1
+            sed -i 's/^  glib_have_carbon=yes$/  glib_have_carbon=no/' \
+              glib/configure
+            test "$(grep -c '^  glib_have_carbon=no$' glib/configure)" -eq 1
+
             # Bundled GLib discovers this by executing a target binary.
             # Both supported Darwin architectures use downward-growing stacks.
             export ac_cv_c_stack_direction=-1
