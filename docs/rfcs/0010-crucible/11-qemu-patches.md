@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **119 patches**. This count is checked against
+The carried series contains **120 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -1922,7 +1922,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 
 - **Patch:** `0125-crucible-hot-fork-template-coordinator.patch`.
 - **Enforces:** RFC-0016 [HFORK-3], [HFORK-4], [HFORK-5].
-- **Mechanism:** a serialized version-3 OOB QMP coordinator owns one retained
+- **Mechanism:** a serialized version-4 OOB QMP coordinator owns one retained
   template-preparation generation. `prepare` begins only at the authenticated
   exact paused/device-flush boundary, acquires the plugin callback, RCU, and
   bottom-half/timer source barriers, and reports `draining` while
@@ -1935,17 +1935,17 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   failure retains ownership for retry.
 - **Micro-test:** strict Rust decoding binds the action-specific outcome,
   generation, active/rollback state, exact proof and missing bitmaps, and nested
-  plugin, RCU, and bottom-half/timer barrier state; it rejects changed schemas,
-  unknown fields,
+  plugin, RCU, and asynchronous-source barrier state; it rejects changed
+  schemas, unknown fields,
   contradictory readiness, forged rollback, and wrong-action outcomes. The
   live patched-QEMU gate requires stable exact idle state, rejects preparation
   outside the exact boundary without acquiring state, and requires stock QEMU
   not to expose the command.
-- **Inertness:** version 3 composes the plugin callback, RCU, and
-  bottom-half/timer source barriers. It does not freeze host ring writers,
-  drain the remaining AIO or block owners, retain mapping or descriptor
-  dispositions, run child reinitializers, or call `fork(2)`. Plugin-ring bit 6,
-  AIO bit 3, and every other unresolved bit remain clear, so a drained
+- **Inertness:** version 4 composes the plugin callback, RCU, and complete
+  asynchronous-source barriers. It does not freeze host ring writers, drain
+  block owners, retain mapping or descriptor dispositions, run child
+  reinitializers, or call `fork(2)`. Plugin-ring bit 6 and every other
+  unresolved bit remain clear, so a drained
   transaction rolls back as `blocked` and no template can become usable.
 - **Risk:** F.
 
@@ -1970,7 +1970,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   QEMU unit test, executed by the patched package build, proves a registered
   reader cannot cross an acquired barrier until release. The live patched-QEMU
   gate requires exact stable released state, rejection of a hold outside the
-  authenticated boundary, template-version-3 nesting, and absence of the
+  authenticated boundary, template-version-4 nesting, and absence of the
   command in stock QEMU. Patch regeneration compiles the QAPI schema and C
   barrier into the full patched emulator.
 - **Inertness:** the gate is dormant until an authorized OOB caller holds it at
@@ -1980,7 +1980,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   `fork(2)`. Those missing proofs keep template preparation blocked.
 - **Risk:** F.
 
-### crucible-hot-fork-bh-timer-barrier — park asynchronous sources
+### crucible-hot-fork-bh-timer-barrier — park bottom halves and timers
 
 - **Patch:** `0127-crucible-hot-fork-bh-timer-barrier.patch`.
 - **Enforces:** RFC-0016 [HFORK-3], [HFORK-4], [HFORK-5].
@@ -1992,18 +1992,47 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   exact version-1 response reports owner/generation, admission count, bounded
   inventory completeness, queued sources, active callbacks, and derived
   quiescence. The version-3 template coordinator retains this barrier with
-  the plugin and RCU barriers while OOB QMP stays live.
+  the plugin and RCU barriers while OOB QMP stays live. Patch 0128 extends
+  this retained barrier without changing its legacy command name.
 - **Micro-test:** strict Rust decoding rejects unknown fields, changed schemas,
   invalid owner/hold generations, count overflow, contradictory completeness,
   and forged quiescence. The QEMU unit test proves nested source mutation may
   finish under a hold, pending bottom halves and timers do not dispatch while
   retained, and release runs both. The live patched-QEMU gate requires exact
   stable released state, rejection of hold outside the authenticated boundary,
-  template-version-3 nesting, and absence of the command in stock QEMU.
+  template-version-4 nesting, and absence of the command in stock QEMU.
 - **Inertness:** this prerequisite does not park `AioHandler` callbacks,
   coroutine admission, the complete `AioContext`, block owners, or child clock
   and context reconstruction. It cannot acknowledge AIO proof bit 3 and does
   not call `fork(2)`.
+- **Risk:** F.
+
+### crucible-hot-fork-aio-barrier — close asynchronous admission
+
+- **Patch:** `0128-crucible-hot-fork-aio-barrier.patch`.
+- **Enforces:** RFC-0016 [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** the process-lifetime source barrier additionally gates
+  AioContext polling and GLib dispatch, AioHandler lifecycle and callback
+  entry, and coroutine scheduling through the same race-closed admission
+  state. Already-admitted outer work may complete nested source mutations;
+  later polls, handlers, coroutines, bottom halves, and timers remain parked.
+  The exact version-2 response reports bounded AioContext and AioHandler
+  completeness plus active poll, dispatch, handler-callback, and queued-
+  coroutine counts. The version-4 template coordinator acknowledges proof bit
+  3 exactly while this complete held asynchronous-source barrier is quiescent.
+- **Micro-test:** strict Rust decoding rejects changed schemas, forged aggregate
+  completeness, count overflow, active work hidden behind quiescence, and an
+  AIO proof bit detached from the retained quiescent barrier. The QEMU AIO unit
+  test parks an event notifier and queued coroutine alongside a bottom half and
+  timer, proves none dispatch under the hold, then proves release runs all four.
+  Patch regeneration compiles the QAPI schema and barrier into both supported
+  QEMU system targets.
+- **Inertness:** the legacy `crucible-hot-fork-bh-timer-barrier` command remains
+  dormant until an authorized OOB caller holds it at the exact boundary. This
+  patch does not drain block owners, freeze plugin rings, choose mapping or
+  descriptor disposition, run child reinitializers, or call `fork(2)`. Proof
+  bits 5 through 8 remain clear, so template preparation still rolls back as
+  blocked and cannot yield a usable child.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

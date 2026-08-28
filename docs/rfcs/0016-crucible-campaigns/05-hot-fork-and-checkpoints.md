@@ -574,7 +574,7 @@ timer-source barrier through the OOB
 CrucibleHotForkBhTimerBarrierAction = hold | query | release
 
 CrucibleHotForkBhTimerBarrierState {
-    schema-version: u32 = 1,
+    schema-version: u32 = 2,
     generation: u64,
     owner-thread-id: i64,
     held: bool,
@@ -588,35 +588,46 @@ CrucibleHotForkBhTimerBarrierState {
     active-bottom-half-callbacks: u64,
     pending-timers: u64,
     active-timer-callbacks: u64,
+    aio-context-count: u64,
+    active-aio-polls: u64,
+    active-aio-dispatches: u64,
+    queued-coroutines: u64,
+    aio-handler-count: u64,
+    active-aio-handler-callbacks: u64,
+    aio-contexts-complete: bool,
+    aio-handlers-complete: bool,
     quiescent: bool,
 }
 ```
 
 `hold` is accepted only at the authenticated exact paused/device-flush
 boundary. A race-closed two-phase admission gate prevents every later outer
-bottom-half or timer creation, mutation, and callback dispatch from entering
-the covered source operations. Producers wait until release; event-loop
-dispatch uses nonblocking admission and leaves already queued sources parked,
-so OOB QMP remains live. Work admitted before the hold may finish and may make
-nested source mutations inside that admission. `admissions-in-flight` exposes
-those outer operations until they drain. Pending and scheduled bottom halves
-and armed timers are retained parked state and need not be empty.
+AioContext poll or GLib dispatch, AioHandler mutation or callback, coroutine
+schedule, bottom-half or timer creation, mutation, and callback dispatch from
+entering the covered asynchronous-source operations. Producers wait until
+release; event-loop dispatch uses nonblocking admission and leaves already
+queued sources parked, so OOB QMP remains live. Work admitted before the hold
+may finish and may make nested source mutations inside that admission.
+`admissions-in-flight` exposes those outer operations until they drain.
+Pending and scheduled bottom halves, armed timers, and queued coroutines are
+retained parked state and need not be empty.
 
-`bottom-halves-complete` requires the bounded bottom-half inventory to be
-stable and not overflowed. `timers-complete` requires the bounded POSIX timer
-inventory not to overflow; it is false on unsupported non-POSIX builds.
-`complete` is their conjunction. `quiescent` equals `held && complete &&
-admissions-in-flight == 0 && active-bottom-half-callbacks == 0 &&
-active-timer-callbacks == 0`. The owner is positive only while held, and the
-generation advances on each hold and release transition.
+`bottom-halves-complete`, `timers-complete`, `aio-contexts-complete`, and
+`aio-handlers-complete` require their bounded inventories to be stable and not
+overflowed; timer and handler completeness is false on unsupported non-POSIX
+builds. `complete` is their conjunction. `quiescent` equals `held && complete
+&& admissions-in-flight == 0 && active-aio-polls == 0 &&
+active-aio-dispatches == 0 && active-bottom-half-callbacks == 0 &&
+active-aio-handler-callbacks == 0 && active-timer-callbacks == 0`. The owner is
+positive only while held, and the generation advances on each hold and release
+transition.
 
-This barrier closes the bottom-half/timer source and dispatch races, but it is
-not the complete AIO proof. It does not park registered `AioHandler` callbacks,
-coroutine admission, context polling/dispatch outside the covered sources, or
-choose child-side context and clock reinitializers. QEMU therefore retains the
-barrier without acknowledging proof bit 3.
+This barrier closes the in-process asynchronous-source admission and dispatch
+races and is sufficient for proof bit 3 while retained and quiescent. It does
+not choose child-side descriptor, context, coroutine, or clock disposition;
+those obligations remain separately represented by proof bits 7 and 8.
 
-The retained `PrepareForkTemplate` checkpoint is the version-3 OOB
+The retained `PrepareForkTemplate` checkpoint is the version-4 OOB
 `crucible-hot-fork-template` coordinator:
 
 ```text
@@ -626,7 +637,7 @@ CrucibleHotForkTemplateOutcome =
     idle | draining | blocked | prepared | aborted
 
 CrucibleHotForkTemplateState {
-    schema-version: u32 = 3,
+    schema-version: u32 = 4,
     generation: u64,
     outcome: CrucibleHotForkTemplateOutcome,
     transaction-active: bool,
@@ -657,21 +668,22 @@ retry query/abort while QEMU continues to own the retained state.
 `missing-proofs` MUST equal `required-proofs & ~acknowledged-proofs`.
 `rollback-complete` is true exactly when no transaction is active and none of
 the three barriers is held. `ready` is true exactly for an active `prepared`
-transaction whose plugin, RCU, and bottom-half/timer barriers are quiescent and
-whose missing bitmap is zero.
+transaction whose plugin, RCU, and asynchronous-source barriers are quiescent
+and whose missing bitmap is zero.
 Proof bit 4 is present exactly while the transaction remains active and its
-complete RCU barrier is quiescent. Version 3 deliberately does not derive proof
-bit 3 from the source barrier alone and still does not compose the remaining
-plugin-ring, AIO-handler/coroutine, block, descriptor/mapping, or child-reinitialization
-barriers; therefore it rolls a drained transaction back as `blocked` and cannot
-advertise a usable hot-fork template.
+complete RCU barrier is quiescent. Proof bit 3 is present exactly while the
+transaction remains active and its complete asynchronous-source barrier is
+quiescent. Version 4 still does not compose the remaining plugin-ring, block,
+descriptor/mapping, or child-reinitialization barriers; therefore it rolls a
+drained transaction back as `blocked` and cannot advertise a usable hot-fork
+template.
 
-The AioContext, AIO-handler, and block-backend responses remain observational.
-The retained source barrier now parks bottom-half and timer producers and
-dispatch, but it does not drain or park the remaining context, handler, and
-coroutine classes or define their child disposition. It therefore MUST NOT
-acknowledge proof bit 3. The future coordinator must extend this retained
-barrier across the complete AIO admission and child-reinitialization contract.
+The standalone AioContext, AIO-handler, and block-backend responses remain
+observational. The retained asynchronous-source barrier composes the context,
+handler, coroutine, bottom-half, and timer admission classes and derives proof
+bit 3 only while they are complete and quiescent. The future coordinator must
+still compose block write-root, descriptor/mapping, and child-reinitialization
+proofs before a retained template can authorize `fork(2)`.
 
 Patched POSIX QEMU also exposes the bounded observational mutex inventory used
 to define the process-private lock side of the child-reinitialization proof:
@@ -765,8 +777,9 @@ before the inventory entry is removed.
 This response is still observational. It does not prevent a timer from being
 armed, canceled, or fired after the query, retain a timer-list or AIO barrier
 across `fork(2)`, select a child disposition, or reinitialize clock state. It
-therefore MUST NOT acknowledge proof bit 3. The future coordinator must retain
-the timer and AIO/BH barriers across the fork transaction.
+therefore MUST NOT acknowledge proof bit 3. The version-4 coordinator supplies
+the required retained timer and AIO/BH composition; this standalone inventory
+still cannot promote the proof by itself.
 
 The Phase 6 host audit complements that query with bounded operational evidence
 for one exact Linux process generation. It accepts only while proof bit 2 is

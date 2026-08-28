@@ -727,9 +727,16 @@ in
             ($reports | length) == 2 and $reports[0] == $reports[1] and
             ($reports[0] as $report |
             ($report | keys | sort) == [
+              "active-aio-dispatches",
+              "active-aio-handler-callbacks",
+              "active-aio-polls",
               "active-bottom-half-callbacks",
               "active-timer-callbacks",
               "admissions-in-flight",
+              "aio-context-count",
+              "aio-contexts-complete",
+              "aio-handler-count",
+              "aio-handlers-complete",
               "bottom-half-count",
               "bottom-halves-complete",
               "complete",
@@ -738,12 +745,13 @@ in
               "owner-thread-id",
               "pending-bottom-halves",
               "pending-timers",
+              "queued-coroutines",
               "quiescent",
               "scheduled-bottom-halves",
               "schema-version",
               "timers-complete"
             ] and
-            $report."schema-version" == 1 and
+            $report."schema-version" == 2 and
             $report.generation == 0 and
             $report."owner-thread-id" == 0 and
             $report.held == false and
@@ -762,10 +770,29 @@ in
             $report."pending-timers" <= 65536 and
             $report."active-timer-callbacks" >= 0 and
             $report."active-timer-callbacks" <= 65536 and
+            $report."aio-context-count" >= 0 and
+            $report."aio-context-count" <= 65536 and
+            $report."active-aio-polls" >= 0 and
+            $report."active-aio-polls" <= $report."aio-context-count" and
+            $report."active-aio-dispatches" >= 0 and
+            $report."active-aio-dispatches" <= $report."aio-context-count" and
+            $report."queued-coroutines" >= 0 and
+            $report."queued-coroutines" <=
+              ($report."aio-context-count" * 4294967295) and
+            $report."aio-handler-count" >= 0 and
+            $report."aio-handler-count" <= 65536 and
+            $report."active-aio-handler-callbacks" >= 0 and
+            $report."active-aio-handler-callbacks" <=
+              ($report."aio-handler-count" * 4294967295) and
             ($report."bottom-halves-complete" | type) == "boolean" and
             ($report."timers-complete" | type) == "boolean" and
+            ($report."aio-contexts-complete" | type) == "boolean" and
+            ($report."aio-handlers-complete" | type) == "boolean" and
             $report.complete ==
-              ($report."bottom-halves-complete" and $report."timers-complete"))
+              ($report."bottom-halves-complete" and
+               $report."timers-complete" and
+               $report."aio-contexts-complete" and
+               $report."aio-handlers-complete"))
           ' "$out/bh-timer-barrier-query.json" >/dev/null \
             || { cat "$out/bh-timer-barrier-query.json" >&2; fail "QEMU released bottom-half/timer barrier state was not exact and stable"; }
           qmp "$patched_socket" \
@@ -808,7 +835,7 @@ in
               "schema-version",
               "transaction-active"
             ] and
-            $report."schema-version" == 3 and
+            $report."schema-version" == 4 and
             $report.generation == 0 and
             $report.outcome == "idle" and
             $report."transaction-active" == false and
@@ -1092,7 +1119,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0127-crucible-hot-fork-bh-timer-barrier.patch
+          patch=0128-crucible-hot-fork-aio-barrier.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -1112,7 +1139,7 @@ in
           rcu_barrier_released_stable=true
           rcu_barrier_hold_without_exact_boundary_rejected=true
           rcu_barrier_quiescence_proof_bound=true
-          bh_timer_barrier_schema_version=1
+          bh_timer_barrier_schema_version=2
           bh_timer_barrier_released_stable=true
           bh_timer_barrier_hold_without_exact_boundary_rejected=true
           bh_timer_barrier_template_bound=true
@@ -1140,7 +1167,7 @@ in
           plugin_barrier_unregistered_shape=true
           plugin_barrier_release_unregistered_rejected=true
           plugin_ring_proof_acknowledged=false
-          template_coordinator_schema_version=3
+          template_coordinator_schema_version=4
           template_coordinator_idle_stable=true
           template_coordinator_unregistered_shape=true
           template_prepare_without_exact_boundary_rejected=true

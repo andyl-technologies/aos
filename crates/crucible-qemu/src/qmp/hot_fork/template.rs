@@ -14,8 +14,9 @@ use crate::qmp::{QmpCommandKind, QmpError};
 /// QMP command name used for QEMU's retained template-preparation coordinator.
 pub const QMP_HOT_FORK_TEMPLATE_COMMAND: &str = "crucible-hot-fork-template";
 /// Version of the QEMU-owned template-preparation transaction contract.
-pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 3;
+pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 4;
 
+const QMP_HOT_FORK_AIO_PROOF: u64 = 1_u64 << 3;
 const QMP_HOT_FORK_RCU_PROOF: u64 = 1_u64 << 4;
 
 /// Exact outcome of one hot-fork template coordinator operation.
@@ -97,7 +98,7 @@ impl QmpHotForkTemplateState {
         self.rcu_barrier
     }
 
-    /// Returns the retained bottom-half and timer-source barrier state.
+    /// Returns the retained asynchronous-source barrier state.
     #[must_use]
     pub const fn bh_timer_barrier(self) -> QmpHotForkBhTimerBarrierState {
         self.bh_timer_barrier
@@ -211,6 +212,8 @@ pub(crate) fn parse_hot_fork_template_state(
         && !bh_timer_barrier.held();
     let rcu_proof_valid = (acknowledged_proofs & QMP_HOT_FORK_RCU_PROOF != 0)
         == (transaction_active && rcu_barrier.quiescent());
+    let aio_proof_valid = (acknowledged_proofs & QMP_HOT_FORK_AIO_PROOF != 0)
+        == (transaction_active && bh_timer_barrier.quiescent());
     let shape_valid = match outcome {
         QmpHotForkTemplateOutcome::Idle => {
             !transaction_active
@@ -263,6 +266,7 @@ pub(crate) fn parse_hot_fork_template_state(
         || ready != expected_ready
         || rollback_complete != expected_rollback
         || !rcu_proof_valid
+        || !aio_proof_valid
         || !shape_valid
     {
         return Err(malformed());
