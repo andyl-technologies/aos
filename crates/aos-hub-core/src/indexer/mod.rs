@@ -49,8 +49,8 @@ use std::collections::BTreeMap;
 use anyhow::{bail, Context, Result};
 use aos_oci_types::{
     limits::MAX_JSON_BYTES as MAX_OCI_JSON_BYTES, ContainerDsseEnvelope, ContainerRelease,
-    Descriptor, ManifestReference, MediaType, RepositoryName, Sha256Digest,
-    CONTAINER_DSSE_SIGNATURE_NAMESPACE,
+    Descriptor, ImageConfig, ImageIndex, ImageManifest, ManifestReference, MediaType,
+    RepositoryName, Sha256Digest, CONTAINER_DSSE_SIGNATURE_NAMESPACE,
 };
 use aos_registry_surface::manifest::RegistryRootConfig;
 use aos_registry_surface::object::{Commit, ObjectKind};
@@ -58,6 +58,7 @@ use aos_registry_surface::refs::{parse_head, parse_info_refs, Refs};
 use aos_registry_surface::sshsig;
 use aos_registry_surface::tag::{parse_signed_tag, verify_signed_tag, SignedTag};
 use aos_registry_surface::tagobject::{verify_name_binding, TagTarget};
+use axum::body::to_bytes;
 use base64::Engine as _;
 use ed25519_dalek::VerifyingKey;
 use futures_util::{future::try_join_all, TryStreamExt as _};
@@ -65,9 +66,11 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::db::{
-    ChannelSummary, ContainerReleaseDescriptorRole, ContainerReleaseRootSnapshot, Database,
-    IndexSnapshot, RegistryRecord, ReleaseArtifactSnapshot, ReleaseImageSnapshot, ReleaseRow,
-    ReleaseSnapshotArtifact, VerifiedContainerReleaseDescriptor,
+    ChannelSummary, ContainerReleaseClosureMemberSnapshot, ContainerReleaseDescriptorRole,
+    ContainerReleaseEvidenceSnapshot, ContainerReleaseLayerSnapshot, ContainerReleaseRootSnapshot,
+    Database, IndexOciRepositoryCatalog, IndexSnapshot, OciCatalogProjection,
+    OciImageConfigProjection, OciLayerProjection, RegistryRecord, ReleaseArtifactSnapshot,
+    ReleaseImageSnapshot, ReleaseRow, ReleaseSnapshotArtifact, VerifiedContainerReleaseDescriptor,
 };
 use crate::fetch::SurfaceFetch;
 
@@ -92,6 +95,38 @@ pub const MAX_RELEASE_TAGS: usize = 1024;
 /// avoids making a complete channel cost hundreds of serial object-store round
 /// trips while remaining below Worker subrequest and memory limits.
 const CHANNEL_FETCH_CONCURRENCY: usize = 32;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SignedClosureDocument {
+    schema: String,
+    subject: Descriptor,
+    roots: Vec<String>,
+    layers: Vec<Descriptor>,
+    paths: Vec<SignedClosurePath>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SignedClosurePath {
+    path: String,
+    nar_hash: String,
+    nar_size: u64,
+    references: Vec<String>,
+    layer: SignedClosureLayer,
+    package: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SignedClosureLayer {
+    name: String,
+    digest: String,
+    #[serde(rename = "diffID")]
+    diff_id: String,
+    compressed_size: u64,
+    uncompressed_size: u64,
+}
 
 /// Maximum release generations verified concurrently during a full index pass.
 ///
@@ -752,6 +787,7 @@ async fn index_registry_inner(
         pending: false,
     };
     if let Some(placement_id) = indexed_placement_id {
+        reconcile_legacy_oci_admin_projections(db, fetch, registry.id, placement_id).await?;
         tracing::info!(phase = "snapshot", "registry index phase started");
         db.apply_snapshot_with_image_presence(
             registry.id,
@@ -787,6 +823,221 @@ async fn index_registry_inner(
     .await;
 
     Ok(outcome)
+}
+
+async fn reconcile_legacy_oci_admin_projections(
+    db: &Database,
+    fetch: &dyn SurfaceFetch,
+    registry_id: i64,
+    placement_id: i64,
+) -> Result<()> {
+    loop {
+        let pending = db
+            .pending_oci_admin_projection_roots(registry_id, 50)
+            .await?;
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let page_len = pending.len();
+        for reconciliation in pending {
+            let result = reconcile_legacy_oci_admin_root(
+                db,
+                fetch,
+                registry_id,
+                placement_id,
+                &reconciliation.repository,
+                reconciliation.repository_id,
+                &reconciliation.root,
+            )
+            .await;
+            if let Err(error) = result {
+                let detail = format!("{error:#}");
+                db.mark_oci_admin_projection_reconciliation_failed(
+                    registry_id,
+                    reconciliation.repository_id,
+                    reconciliation.root.digest,
+                    &detail,
+                    crate::clock::now_unix_secs(),
+                )
+                .await?;
+                return Err(error);
+            }
+        }
+        if page_len < 50 {
+            return Ok(());
+        }
+    }
+}
+
+async fn reconcile_legacy_oci_admin_root(
+    db: &Database,
+    fetch: &dyn SurfaceFetch,
+    registry_id: i64,
+    placement_id: i64,
+    repository: &RepositoryName,
+    repository_id: i64,
+    root: &Descriptor,
+) -> Result<()> {
+    let mut objects = db
+        .oci_repository_closed_graph(repository_id, std::slice::from_ref(root))
+        .await?;
+    for object in &mut objects {
+        if object.descriptor.media_type.is_image_manifest() {
+            let bytes = fetch_exact_oci_semantic_object(fetch, &object.descriptor).await?;
+            let manifest = ImageManifest::from_json(&bytes)?;
+            let (platform, image_config) = if manifest.artifact_type.is_none() {
+                let config_bytes = fetch_exact_oci_semantic_object(fetch, &manifest.config).await?;
+                let config = ImageConfig::from_json(&config_bytes)?;
+                anyhow::ensure!(
+                    config.rootfs.diff_ids.len() == manifest.layers.len(),
+                    "legacy OCI config DiffIDs do not match its manifest layers"
+                );
+                let mut layers = Vec::with_capacity(manifest.layers.len());
+                for (descriptor, diff_id) in manifest.layers.iter().zip(&config.rootfs.diff_ids) {
+                    layers.push(OciLayerProjection {
+                        unpacked_byte_size: reconcile_oci_layer_unpacked_size(fetch, descriptor)
+                            .await?,
+                        diff_id: *diff_id,
+                        closure_group: String::new(),
+                    });
+                }
+                let platform = config.platform();
+                let projection = OciImageConfigProjection {
+                    config_json: String::from_utf8(config_bytes)
+                        .context("legacy OCI image config is not UTF-8")?,
+                    aos_system: reconcile_aos_system(&platform),
+                    layers,
+                };
+                (Some(platform), Some(projection))
+            } else {
+                (None, None)
+            };
+            object.projection = Some(OciCatalogProjection::Manifest {
+                document: manifest,
+                platform,
+                image_config,
+            });
+        } else if object.descriptor.media_type.is_image_index() {
+            let bytes = fetch_exact_oci_semantic_object(fetch, &object.descriptor).await?;
+            object.projection = Some(OciCatalogProjection::Index(ImageIndex::from_json(&bytes)?));
+        }
+    }
+    db.index_oci_repository_catalog(&IndexOciRepositoryCatalog {
+        registry_id,
+        placement_id,
+        repository: repository.clone(),
+        objects,
+        root_digest: root.digest,
+        tag: None,
+        source_kind: "manual".to_string(),
+        actor_id: "system:index-admin-reconciliation".to_string(),
+        observed_at: crate::clock::now_unix_secs(),
+    })
+    .await?;
+    Ok(())
+}
+
+async fn fetch_exact_oci_semantic_object(
+    fetch: &dyn SurfaceFetch,
+    descriptor: &Descriptor,
+) -> Result<Vec<u8>> {
+    let bytes = fetch
+        .fetch_bounded(
+            &crate::db::oci_blob_object_key(descriptor.digest),
+            MAX_OCI_JSON_BYTES,
+        )
+        .await?
+        .context("legacy OCI semantic object is absent")?;
+    anyhow::ensure!(
+        bytes.len() as u64 == descriptor.size && Sha256Digest::digest(&bytes) == descriptor.digest,
+        "legacy OCI semantic object conflicts with its immutable descriptor"
+    );
+    Ok(bytes)
+}
+
+async fn reconcile_oci_layer_unpacked_size(
+    fetch: &dyn SurfaceFetch,
+    descriptor: &Descriptor,
+) -> Result<u64> {
+    match descriptor.media_type {
+        MediaType::OciLayerTar | MediaType::DockerLayerTar => Ok(descriptor.size),
+        MediaType::OciLayerGzip | MediaType::DockerLayerGzip => {
+            anyhow::ensure!(descriptor.size >= 4, "legacy gzip OCI layer is truncated");
+            let start = descriptor.size - 4;
+            let bytes =
+                fetch_exact_oci_range(fetch, descriptor, (start, descriptor.size - 1), 4).await?;
+            let footer: [u8; 4] = bytes
+                .as_slice()
+                .try_into()
+                .context("legacy gzip OCI footer has the wrong size")?;
+            Ok(u64::from(u32::from_le_bytes(footer)))
+        }
+        MediaType::OciLayerZstd => {
+            let end = descriptor.size.saturating_sub(1).min(17);
+            let bytes = fetch_exact_oci_range(fetch, descriptor, (0, end), 18).await?;
+            reconcile_zstd_content_size(&bytes)
+                .context("legacy zstd OCI layer omits its content size")
+        }
+        _ => bail!("legacy runnable manifest has an unsupported OCI layer media type"),
+    }
+}
+
+async fn fetch_exact_oci_range(
+    fetch: &dyn SurfaceFetch,
+    descriptor: &Descriptor,
+    range: (u64, u64),
+    limit: usize,
+) -> Result<Vec<u8>> {
+    let read = fetch
+        .fetch_stream(
+            &crate::db::oci_blob_object_key(descriptor.digest),
+            Some(range),
+        )
+        .await?
+        .context("legacy OCI layer range is absent")?;
+    anyhow::ensure!(
+        read.total == descriptor.size && read.range == Some(range),
+        "legacy OCI layer range conflicts with its immutable descriptor"
+    );
+    Ok(to_bytes(read.body, limit).await?.to_vec())
+}
+
+fn reconcile_aos_system(platform: &aos_oci_types::Platform) -> String {
+    match (platform.os.as_str(), platform.architecture.as_str()) {
+        ("linux", "amd64") => "x86_64-linux".to_string(),
+        ("linux", "arm64") => "aarch64-linux".to_string(),
+        (os, architecture) => format!("{architecture}-{os}"),
+    }
+}
+
+fn reconcile_zstd_content_size(bytes: &[u8]) -> Option<u64> {
+    if bytes.len() < 5 || bytes[..4] != [0x28, 0xb5, 0x2f, 0xfd] {
+        return None;
+    }
+    let descriptor = bytes[4];
+    let single_segment = descriptor & 0x20 != 0;
+    let dictionary_size = match descriptor & 0x03 {
+        0 => 0,
+        1 => 1,
+        2 => 2,
+        _ => 4,
+    };
+    let size_length = match (descriptor >> 6, single_segment) {
+        (0, false) => 0,
+        (0, true) => 1,
+        (1, _) => 2,
+        (2, _) => 4,
+        _ => 8,
+    };
+    if size_length == 0 {
+        return None;
+    }
+    let offset = 5 + usize::from(!single_segment) + dictionary_size;
+    let field = bytes.get(offset..offset + size_length)?;
+    let mut encoded = [0_u8; 8];
+    encoded[..size_length].copy_from_slice(field);
+    let size = u64::from_le_bytes(encoded);
+    Some(if size_length == 2 { size + 256 } else { size })
 }
 
 /// Returns whether the index state proves the immutable graph is unchanged.
@@ -978,6 +1229,8 @@ async fn validate_container_release(
         }),
         "signed container descriptor observations cross a placement revision"
     );
+    let (closure_members, layers, evidence) =
+        signed_container_admin_projection(db, fetch, repository.id, placement_id, release).await?;
 
     Ok(ContainerReleaseRootSnapshot {
         repository: repository_name.as_str().to_string(),
@@ -986,8 +1239,200 @@ async fn validate_container_release(
         index_media_type: release.oci.index.media_type.as_str().to_string(),
         index_size: release.oci.index.size,
         catalog_digest: catalog_digest.to_string(),
+        package_name: release.identity.package.clone(),
+        closure_members,
+        layers,
+        evidence,
         required_descriptors,
     })
+}
+
+async fn signed_container_admin_projection(
+    db: &Database,
+    fetch: &dyn SurfaceFetch,
+    repository_id: i64,
+    placement_id: i64,
+    release: &ContainerRelease,
+) -> Result<(
+    Vec<ContainerReleaseClosureMemberSnapshot>,
+    Vec<ContainerReleaseLayerSnapshot>,
+    Vec<ContainerReleaseEvidenceSnapshot>,
+)> {
+    let closure_edges = db
+        .oci_descriptor_edges(repository_id, release.nix.closure.digest)
+        .await?;
+    let closure_payloads = closure_edges
+        .iter()
+        .filter(|edge| {
+            edge.role == "payload" && edge.descriptor.media_type == MediaType::AosNixClosure
+        })
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        closure_payloads.len() == 1,
+        "container closure evidence requires exactly one closure payload"
+    );
+    let closure_payload = &closure_payloads[0].descriptor;
+    anyhow::ensure!(
+        db.oci_repository_object_has_placement(
+            repository_id,
+            closure_payload.digest,
+            placement_id,
+            closure_payload.size,
+            closure_payload.media_type,
+        )
+        .await?,
+        "container closure payload lacks exact indexed-placement evidence"
+    );
+    let closure_bytes = fetch
+        .fetch_bounded(
+            &crate::db::oci_blob_object_key(closure_payload.digest),
+            MAX_OCI_JSON_BYTES,
+        )
+        .await?
+        .context("container closure payload is absent")?;
+    anyhow::ensure!(
+        closure_bytes.len() as u64 == closure_payload.size
+            && Sha256Digest::digest(&closure_bytes) == closure_payload.digest,
+        "container closure payload bytes conflict with its descriptor"
+    );
+    let closure = serde_json::from_slice::<SignedClosureDocument>(&closure_bytes)
+        .context("parsing strict signed container closure evidence")?;
+    anyhow::ensure!(
+        closure.schema == "aos.container.nix-closure/v1" && closure.subject == release.oci.index,
+        "container closure evidence is bound to a different release root"
+    );
+    let roots = closure
+        .roots
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    anyhow::ensure!(
+        roots.len() == closure.roots.len(),
+        "container closure evidence repeats a direct root"
+    );
+
+    let declared_layers = closure
+        .layers
+        .iter()
+        .map(|descriptor| (descriptor.digest, descriptor))
+        .collect::<BTreeMap<_, _>>();
+    anyhow::ensure!(
+        declared_layers.len() == closure.layers.len(),
+        "container closure evidence repeats a layer descriptor"
+    );
+    let mut layer_map = BTreeMap::<String, SignedClosureLayer>::new();
+    let mut members = Vec::with_capacity(closure.paths.len());
+    let mut prior_path = None;
+    for path in closure.paths {
+        anyhow::ensure!(
+            path.path.starts_with("/nix/store/")
+                && !path.nar_hash.is_empty()
+                && prior_path
+                    .as_deref()
+                    .is_none_or(|prior| prior < path.path.as_str()),
+            "container closure member ordering or identity is invalid"
+        );
+        let layer_digest = Sha256Digest::parse(&path.layer.digest)
+            .context("container closure layer digest is malformed")?;
+        let diff_id = Sha256Digest::parse(&path.layer.diff_id)
+            .context("container closure layer DiffID is malformed")?;
+        let declared = declared_layers
+            .get(&layer_digest)
+            .context("container closure member names an undeclared layer")?;
+        anyhow::ensure!(
+            declared.size == path.layer.compressed_size,
+            "container closure layer compressed size conflicts with its descriptor"
+        );
+        if let Some(existing) = layer_map.get(&path.layer.digest) {
+            anyhow::ensure!(
+                existing == &path.layer,
+                "container closure layer metadata is inconsistent between members"
+            );
+        } else {
+            layer_map.insert(path.layer.digest.clone(), path.layer.clone());
+        }
+        members.push(ContainerReleaseClosureMemberSnapshot {
+            store_path: path.path.clone(),
+            nar_hash: path.nar_hash,
+            nar_size: path.nar_size,
+            layer_digest: layer_digest.to_string(),
+            direct: roots.contains(&path.path),
+        });
+        prior_path = Some(path.path);
+        let _ = (diff_id, path.references, path.package);
+    }
+    anyhow::ensure!(
+        roots
+            .iter()
+            .all(|root| members.iter().any(|member| &member.store_path == *root)),
+        "container closure evidence omits a direct root member"
+    );
+    let layers = layer_map
+        .into_values()
+        .map(|layer| ContainerReleaseLayerSnapshot {
+            name: layer.name,
+            digest: layer.digest,
+            diff_id: layer.diff_id,
+            compressed_size: layer.compressed_size,
+            uncompressed_size: layer.uncompressed_size,
+        })
+        .collect();
+
+    let mut evidence = Vec::new();
+    for (label, role, referrer) in container_evidence_descriptors(release) {
+        let kind = container_evidence_kind(role);
+        let payload_media_type = if role == ContainerReleaseDescriptorRole::Signature {
+            MediaType::DsseEnvelope
+        } else {
+            referrer
+                .artifact_type
+                .context("signed evidence referrer has no artifact type")?
+        };
+        let edges = db
+            .oci_descriptor_edges(repository_id, referrer.digest)
+            .await?;
+        let payloads = edges
+            .iter()
+            .filter(|edge| {
+                edge.role == "payload" && edge.descriptor.media_type == payload_media_type
+            })
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            payloads.len() == 1,
+            "signed container {label} evidence requires exactly one typed payload"
+        );
+        let payload = &payloads[0].descriptor;
+        anyhow::ensure!(
+            db.oci_repository_object_has_placement(
+                repository_id,
+                payload.digest,
+                placement_id,
+                payload.size,
+                payload.media_type,
+            )
+            .await?,
+            "signed container {label} payload lacks indexed-placement evidence"
+        );
+        evidence.push(ContainerReleaseEvidenceSnapshot {
+            kind: kind.to_string(),
+            digest: payload.digest.to_string(),
+            media_type: payload.media_type.as_str().to_string(),
+            referrer_digest: referrer.digest.to_string(),
+        });
+    }
+    Ok((members, layers, evidence))
+}
+
+fn container_evidence_kind(role: ContainerReleaseDescriptorRole) -> &'static str {
+    match role {
+        ContainerReleaseDescriptorRole::NixClosure => "closure",
+        ContainerReleaseDescriptorRole::Sbom => "sbom",
+        ContainerReleaseDescriptorRole::Source => "source",
+        ContainerReleaseDescriptorRole::License => "license",
+        ContainerReleaseDescriptorRole::Provenance => "provenance",
+        ContainerReleaseDescriptorRole::Signature => "signature",
+        ContainerReleaseDescriptorRole::Index
+        | ContainerReleaseDescriptorRole::PlatformManifest => "manifest",
+    }
 }
 
 async fn validate_container_dsse(

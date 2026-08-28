@@ -469,6 +469,15 @@ impl Database {
             )
             .expecting(1),
         );
+        statements.push(
+            Statement::new(
+                "UPDATE oci_registry_state
+                 SET mutation_epoch = mutation_epoch + 1, updated_at = ?2
+                 WHERE registry_id = ?1",
+                vals![input.registry_id, input.now],
+            )
+            .expecting(1),
+        );
         if let Err(error) = self.backend.checked_batch(&statements).await {
             if let Some(existing) = self
                 .oci_publication_by_idempotency(
@@ -915,6 +924,7 @@ impl Database {
                 Some(OciCatalogProjection::Manifest {
                     document: manifest.document,
                     platform: manifest.platform,
+                    image_config: None,
                 })
             } else if descriptor.media_type.is_image_index() {
                 let index = serde_json::from_str::<ImageIndex>(
@@ -1055,6 +1065,15 @@ impl Database {
                 ],
             )
             .expecting(1),
+            Statement::new(
+                "UPDATE oci_registry_state
+                 SET mutation_epoch = mutation_epoch + 1, updated_at = ?4
+                 WHERE registry_id = (SELECT registry_id
+                   FROM oci_publication_sessions WHERE id = ?1
+                     AND writer_id = ?2 AND token_id = ?3 AND state = 'aborted')",
+                vals![publication_id, writer_id, token_id, now],
+            )
+            .expecting(1),
         ];
         if let Err(error) = self.backend.checked_batch(&statements).await {
             if let Some(existing) = self
@@ -1100,9 +1119,13 @@ impl Database {
         let mut statements = vec![Statement::new(
             "INSERT INTO oci_tag_history
                    (id, repository_id, registry_id, name, prior_digest,
-                    next_digest, source_kind, actor_id, changed_at)
+                    next_digest, source_kind, actor_id, changed_at,
+                    tag_resource_version)
                  SELECT ?1, repository.id, repository.registry_id, ?3,
-                        current.digest, ?4, 'manual', ?5, ?6
+                        current.digest, ?4, 'manual', ?5, ?6,
+                        (SELECT COUNT(*) + 1 FROM oci_tag_history prior
+                         WHERE prior.repository_id = repository.id
+                           AND prior.name = ?3)
                  FROM oci_repositories repository LEFT JOIN oci_tags current
                    ON current.repository_id = repository.id AND current.name = ?3
                  WHERE repository.id = ?2 AND repository.lifecycle_state = 'active'
@@ -1142,9 +1165,9 @@ impl Database {
             Statement::new(
                 "INSERT INTO oci_tags
                    (repository_id, registry_id, name, digest, source_kind,
-                    resource_version, updated_at)
+                    resource_version, updated_at, created_at)
                  SELECT repository.id, repository.registry_id, ?2, ?3,
-                        'manual', 1, ?4
+                        'manual', 1, ?4, ?4
                  FROM oci_repositories repository
                  WHERE repository.id = ?1 AND NOT EXISTS (SELECT 1 FROM oci_tags
                    WHERE repository_id = ?1 AND name = ?2)",
@@ -1256,9 +1279,13 @@ impl Database {
             Statement::new(
                 "INSERT INTO oci_tag_history
                    (id, repository_id, registry_id, name, prior_digest,
-                    next_digest, source_kind, actor_id, changed_at)
+                    next_digest, source_kind, actor_id, changed_at,
+                    tag_resource_version)
                  SELECT ?1, tag.repository_id, tag.registry_id, tag.name,
-                        tag.digest, NULL, 'manual', ?5, ?6
+                        tag.digest, NULL, 'manual', ?5, ?6,
+                        (SELECT COUNT(*) + 1 FROM oci_tag_history prior
+                         WHERE prior.repository_id = tag.repository_id
+                           AND prior.name = tag.name)
                  FROM oci_tags tag WHERE tag.repository_id = ?2 AND tag.name = ?3
                    AND tag.resource_version = ?4 AND tag.source_kind = 'manual'",
                 vals![
@@ -1675,12 +1702,12 @@ impl Database {
                 .projection
                 .as_ref()
                 .map(|projection| match projection {
-                    OciCatalogProjection::Manifest { document, platform } => {
-                        aos_oci_types::to_canonical_json(&FrozenManifestProjection {
-                            document: document.clone(),
-                            platform: platform.clone(),
-                        })
-                    }
+                    OciCatalogProjection::Manifest {
+                        document, platform, ..
+                    } => aos_oci_types::to_canonical_json(&FrozenManifestProjection {
+                        document: document.clone(),
+                        platform: platform.clone(),
+                    }),
                     OciCatalogProjection::Index(index) => aos_oci_types::to_canonical_json(index),
                 })
                 .transpose()?

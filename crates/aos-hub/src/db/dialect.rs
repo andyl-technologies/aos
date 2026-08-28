@@ -616,6 +616,36 @@ mod tests {
     }
 
     #[test]
+    fn oci_admin_ddl_and_backfills_translate_for_every_backend() {
+        let migration = crate::db::MIGRATIONS
+            .iter()
+            .find(|migration| {
+                migration.contains("CREATE TABLE oci_admin_mutations")
+                    && migration.contains("CREATE TABLE oci_release_provenance")
+            })
+            .expect("OCI administration migration");
+        let statements = crate::db::backend::split_statements(migration);
+        assert!(
+            statements
+                .iter()
+                .any(|statement| statement.contains("tag_resource_version")),
+            "tag-history version backfill is absent"
+        );
+        for statement in &statements {
+            for dialect in [Dialect::Sqlite, Dialect::Postgres, Dialect::Mysql] {
+                let sql = dialect.translate(statement).unwrap().sql;
+                assert!(!sql.contains("KEYTEXT"), "marker leaked: {sql}");
+                if dialect == Dialect::Postgres {
+                    assert!(!sql.contains("LONGTEXT"), "{sql}");
+                }
+                if dialect == Dialect::Mysql {
+                    assert!(!sql.contains("LONGVARCHAR"), "{sql}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn fresh_mysql_release_identity_is_byte_exact_and_legacy_shape_is_frozen() {
         let baseline = crate::db::MIGRATIONS
             .first()

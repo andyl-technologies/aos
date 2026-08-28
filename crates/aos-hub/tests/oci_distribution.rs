@@ -35,6 +35,7 @@ use aos_oci_types::{
     ImageManifest, ImageRuntimeConfig, MediaType, Platform, RepositoryName, RootFs, RootFsType,
     Sha256Digest, Tag,
 };
+use aos_proto_types as pb;
 use base64::Engine as _;
 use hmac::{Hmac, Mac as _};
 use reqwest::header::{
@@ -192,6 +193,7 @@ fn image_graph_for(
                 projection: Some(OciCatalogProjection::Manifest {
                     document: manifest,
                     platform: Some(platform),
+                    image_config: None,
                 }),
             },
             GraphObject {
@@ -291,6 +293,7 @@ fn artifact_graph(subject: &ImageGraph) -> (Descriptor, Vec<GraphObject>) {
             projection: Some(OciCatalogProjection::Manifest {
                 document: manifest,
                 platform: None,
+                image_config: None,
             }),
         },
         GraphObject {
@@ -690,6 +693,42 @@ async fn spawn_registry(
 async fn error_code(response: reqwest::Response) -> String {
     let envelope: serde_json::Value = response.json().await.unwrap();
     envelope["errors"][0]["code"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn repository_inventory_uses_only_the_ready_oci_delivery_authority() {
+    let registry = spawn_registry("private", false, "hub_auth").await;
+    let registry_slug = registry
+        .db
+        .registry_by_id(registry.registry_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .slug;
+    let response = registry
+        .http
+        .post(format!(
+            "{}aos.hub.v1.ContainerService/GetContainerRepository",
+            registry.origin
+        ))
+        .bearer_auth(registry.hub_bearer.as_deref().unwrap())
+        .header("connect-protocol-version", "1")
+        .json(&pb::GetContainerRepositoryRequest {
+            registry: registry_slug,
+            repository: "aos".to_string(),
+        })
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = response.bytes().await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let response: pb::ContainerRepositoryResponse = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(
+        response.repository.unwrap().distribution_reference,
+        format!("{}/aos", registry.authority)
+    );
 }
 
 fn forged_action_token(registry: &RunningRegistry, repository: &str, action: &str) -> String {

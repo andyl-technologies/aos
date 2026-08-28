@@ -1,4 +1,4 @@
-//! The transport-free registry-hub service layer (RFC-0004 Phase 5).
+//! The transport-free registry-hub service layer.
 //!
 //! [`RpcService`] holds the `aos.hub.v1` method bodies once, decoupled
 //! from any HTTP framework or wire protocol. Both deployment targets call it:
@@ -29,6 +29,7 @@
 //! ```
 
 mod container;
+mod container_admin;
 mod publication_manifest;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};

@@ -336,6 +336,66 @@ service ImageService {
 // canonical signed-release declaration only after all referenced bytes were
 // uploaded; commit advances a verified root and optional tag atomically.
 service ContainerService {
+  rpc ListContainerRepositories(ListContainerRepositoriesRequest)
+      returns (ListContainerRepositoriesResponse);
+  rpc GetContainerRepository(GetContainerRepositoryRequest)
+      returns (ContainerRepositoryResponse);
+  rpc PlanCreateContainerRepository(PlanCreateContainerRepositoryRequest)
+      returns (TopologyPlanResponse);
+  rpc CreateContainerRepository(ApplyContainerMutationRequest)
+      returns (ContainerRepositoryResponse);
+  rpc PlanUpdateContainerRepository(PlanUpdateContainerRepositoryRequest)
+      returns (TopologyPlanResponse);
+  rpc UpdateContainerRepository(ApplyContainerMutationRequest)
+      returns (ContainerRepositoryResponse);
+  rpc PlanDeleteContainerRepository(PlanDeleteContainerRepositoryRequest)
+      returns (TopologyPlanResponse);
+  rpc DeleteContainerRepository(ApplyContainerMutationRequest)
+      returns (ContainerDeletionResponse);
+  rpc ListContainerTags(ListContainerTagsRequest)
+      returns (ListContainerTagsResponse);
+  rpc GetContainerTag(GetContainerTagRequest) returns (ContainerTagResponse);
+  rpc ResolveContainerTag(ResolveContainerTagRequest)
+      returns (ContainerTagResolutionResponse);
+  rpc ListContainerTagHistory(ListContainerTagHistoryRequest)
+      returns (ListContainerTagHistoryResponse);
+  rpc PlanSetContainerTag(PlanSetContainerTagRequest)
+      returns (TopologyPlanResponse);
+  rpc SetContainerTag(ApplyContainerMutationRequest)
+      returns (ContainerTagResponse);
+  rpc PlanUnsetContainerTag(PlanUnsetContainerTagRequest)
+      returns (TopologyPlanResponse);
+  rpc UnsetContainerTag(ApplyContainerMutationRequest)
+      returns (ContainerDeletionResponse);
+  rpc GetContainerManifest(GetContainerManifestRequest)
+      returns (ContainerManifestResponse);
+  rpc ListContainerPlatforms(ListContainerPlatformsRequest)
+      returns (ListContainerPlatformsResponse);
+  rpc GetContainerPlatform(GetContainerPlatformRequest)
+      returns (ContainerPlatformResponse);
+  rpc ListContainerLayers(ListContainerLayersRequest)
+      returns (ListContainerLayersResponse);
+  rpc GetContainerLayer(GetContainerLayerRequest)
+      returns (ContainerLayerResponse);
+  rpc ListContainerReferrers(ListContainerReferrersRequest)
+      returns (ListContainerReferrersResponse);
+  rpc ListContainerPublications(ListContainerPublicationsRequest)
+      returns (ListContainerPublicationsResponse);
+  rpc GetContainerProvenance(GetContainerProvenanceRequest)
+      returns (ContainerProvenanceResponse);
+  rpc GetContainerRetentionPolicy(GetContainerRetentionPolicyRequest)
+      returns (ContainerRetentionPolicyResponse);
+  rpc PlanSetContainerRetentionPolicy(PlanSetContainerRetentionPolicyRequest)
+      returns (TopologyPlanResponse);
+  rpc SetContainerRetentionPolicy(ApplyContainerMutationRequest)
+      returns (ContainerRetentionPolicyResponse);
+  rpc PlanRunContainerGc(PlanRunContainerGcRequest)
+      returns (TopologyPlanResponse);
+  rpc RunContainerGc(ApplyContainerMutationRequest) returns (OperationResponse);
+  rpc GetContainerGcRun(GetContainerGcRunRequest)
+      returns (ContainerGcRunResponse);
+  rpc ListContainerGcRuns(ListContainerGcRunsRequest)
+      returns (ListContainerGcRunsResponse);
   rpc BeginContainerPublication(BeginContainerPublicationRequest)
       returns (ContainerPublication);
   rpc GetContainerPublication(GetContainerPublicationRequest)
@@ -519,6 +579,488 @@ message GetImageResponse {
   SystemImage image = 1;
 }
 
+// -- OCI container administration and inspection -------------------------
+
+// One repository inside a registry. Visibility is inherited from the owning
+// registry and cannot be changed independently.
+message ContainerRepository {
+  string registry = 1;
+  string repository = 2;
+  string description = 3;
+  string visibility = 4;
+  string lifecycle_state = 5;
+  uint64 tag_count = 6;
+  uint64 manifest_count = 7;
+  uint64 compressed_byte_size = 8;
+  uint64 unique_byte_size = 9;
+  string resource_version = 10;
+  int64 created_at = 11;
+  int64 updated_at = 12;
+  // Copyable OCI Distribution authority/repository reference. Empty unless an
+  // exact enabled route generation is currently ready to serve OCI.
+  string distribution_reference = 13;
+}
+
+message ListContainerRepositoriesRequest {
+  string registry = 1;
+  string repository_prefix = 2;
+  string lifecycle_state = 3;
+  uint32 page_size = 4;
+  // Opaque keyset cursor bound to the registry, filters, and mutation epoch.
+  string page_token = 5;
+}
+
+message ListContainerRepositoriesResponse {
+  repeated ContainerRepository repositories = 1;
+  string next_page_token = 2;
+  string mutation_epoch = 3;
+}
+
+message GetContainerRepositoryRequest {
+  string registry = 1;
+  string repository = 2;
+}
+
+message ContainerRepositoryResponse {
+  ContainerRepository repository = 1;
+}
+
+message PlanCreateContainerRepositoryRequest {
+  string registry = 1;
+  string repository = 2;
+  string description = 3;
+  string expected_resource_version = 4;
+  string idempotency_key = 5;
+}
+
+message PlanUpdateContainerRepositoryRequest {
+  string registry = 1;
+  string repository = 2;
+  string description = 3;
+  repeated string update_mask = 4;
+  string expected_resource_version = 5;
+  string idempotency_key = 6;
+}
+
+message PlanDeleteContainerRepositoryRequest {
+  string registry = 1;
+  string repository = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+
+// Applies a reviewed repository, tag, or retention mutation plan. The plan
+// freezes all requested CAS inputs; a retry must reuse the idempotency key.
+message ApplyContainerMutationRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+}
+
+message ContainerDeletionResponse {
+  bool deleted = 1;
+  string registry = 2;
+  string repository = 3;
+  string tag = 4;
+  string resource_version = 5;
+}
+
+// One mutable tag pointer. ownership_kind is manual, release, or channel;
+// signed release and channel tags are immutable outside verified publication.
+message ContainerTag {
+  string registry = 1;
+  string repository = 2;
+  string tag = 3;
+  string digest = 4;
+  string media_type = 5;
+  string ownership_kind = 6;
+  string release = 7;
+  string channel = 8;
+  string resource_version = 9;
+  int64 created_at = 10;
+  int64 updated_at = 11;
+}
+
+message ListContainerTagsRequest {
+  string registry = 1;
+  string repository = 2;
+  string tag_prefix = 3;
+  string ownership_kind = 4;
+  uint32 page_size = 5;
+  // Opaque keyset cursor bound to the repository, filters, and mutation epoch.
+  string page_token = 6;
+}
+
+message ListContainerTagsResponse {
+  repeated ContainerTag tags = 1;
+  string next_page_token = 2;
+  string mutation_epoch = 3;
+}
+
+message GetContainerTagRequest {
+  string registry = 1;
+  string repository = 2;
+  string tag = 3;
+}
+
+message ContainerTagResponse {
+  ContainerTag tag = 1;
+}
+
+message ResolveContainerTagRequest {
+  string registry = 1;
+  string repository = 2;
+  string tag = 3;
+  string operating_system = 4;
+  string architecture = 5;
+  string variant = 6;
+  string os_version = 7;
+  // Ordered mandatory OS features; order is part of the exact OCI selector.
+  repeated string os_features = 8;
+}
+
+message ContainerTagResolutionResponse {
+  ContainerTag tag = 1;
+  ContainerManifest manifest = 2;
+  ContainerPlatform selected_platform = 3;
+}
+
+message ContainerTagHistoryEntry {
+  string registry = 1;
+  string repository = 2;
+  string tag = 3;
+  string operation = 4;
+  string previous_digest = 5;
+  string digest = 6;
+  string ownership_kind = 7;
+  string actor = 8;
+  string resource_version = 9;
+  int64 created_at = 10;
+}
+
+message ListContainerTagHistoryRequest {
+  string registry = 1;
+  string repository = 2;
+  string tag = 3;
+  uint32 page_size = 4;
+  // Opaque newest-first keyset cursor bound to the exact tag and epoch.
+  string page_token = 5;
+}
+
+message ListContainerTagHistoryResponse {
+  repeated ContainerTagHistoryEntry entries = 1;
+  string next_page_token = 2;
+  string mutation_epoch = 3;
+}
+
+message PlanSetContainerTagRequest {
+  string registry = 1;
+  string repository = 2;
+  string tag = 3;
+  string target_digest = 4;
+  // Set for update-only CAS; omit to require that the tag does not exist.
+  optional string expected_resource_version = 5;
+  // When set, both the tag resource version and old digest must match.
+  optional string expected_digest = 6;
+  string idempotency_key = 7;
+}
+
+message PlanUnsetContainerTagRequest {
+  string registry = 1;
+  string repository = 2;
+  string tag = 3;
+  string expected_resource_version = 4;
+  string expected_digest = 5;
+  string idempotency_key = 6;
+}
+
+// One normalized immutable manifest or index record. Exact source bytes remain
+// in the Distribution object plane and are identified by digest.
+message ContainerManifest {
+  string registry = 1;
+  string repository = 2;
+  string digest = 3;
+  string media_type = 4;
+  uint64 byte_size = 5;
+  string artifact_type = 6;
+  string subject_digest = 7;
+  string config_digest = 8;
+  uint32 layer_count = 9;
+  uint32 child_count = 10;
+  string annotations_json = 11;
+  int64 created_at = 12;
+}
+
+message GetContainerManifestRequest {
+  string registry = 1;
+  string repository = 2;
+  string digest = 3;
+}
+
+message ContainerManifestResponse {
+  ContainerManifest manifest = 1;
+}
+
+// One platform child selected from a root index and its parsed image config.
+message ContainerPlatform {
+  string registry = 1;
+  string repository = 2;
+  string root_digest = 3;
+  string manifest_digest = 4;
+  string config_digest = 5;
+  string operating_system = 6;
+  string architecture = 7;
+  string variant = 8;
+  string aos_system = 9;
+  uint64 compressed_byte_size = 10;
+  uint64 unpacked_byte_size = 11;
+  uint32 layer_count = 12;
+  string config_json = 13;
+  string os_version = 14;
+  // Ordered mandatory OS features from the exact OCI platform identity.
+  repeated string os_features = 15;
+}
+
+message ListContainerPlatformsRequest {
+  string registry = 1;
+  string repository = 2;
+  string root_digest = 3;
+  uint32 page_size = 4;
+  // Opaque keyset cursor bound to the immutable root digest.
+  string page_token = 5;
+}
+
+message ListContainerPlatformsResponse {
+  repeated ContainerPlatform platforms = 1;
+  string next_page_token = 2;
+}
+
+message GetContainerPlatformRequest {
+  string registry = 1;
+  string repository = 2;
+  string root_digest = 3;
+  string operating_system = 4;
+  string architecture = 5;
+  string variant = 6;
+  string os_version = 7;
+  // Ordered mandatory OS features; order is part of the exact OCI selector.
+  repeated string os_features = 8;
+}
+
+message ContainerPlatformResponse {
+  ContainerPlatform platform = 1;
+}
+
+message ContainerLayer {
+  string registry = 1;
+  string repository = 2;
+  string manifest_digest = 3;
+  uint32 ordinal = 4;
+  string digest = 5;
+  string media_type = 6;
+  uint64 compressed_byte_size = 7;
+  uint64 unpacked_byte_size = 8;
+  uint64 shared_repository_count = 9;
+  string diff_id = 10;
+  string closure_group = 11;
+  // Signed release root that owns the closure-layer projection.
+  string root_digest = 12;
+}
+
+message ListContainerLayersRequest {
+  string registry = 1;
+  string repository = 2;
+  string manifest_digest = 3;
+  uint32 page_size = 4;
+  // Opaque keyset cursor bound to the immutable manifest digest.
+  string page_token = 5;
+  // Signed release root that disambiguates release-specific closure mapping.
+  string root_digest = 6;
+}
+
+message ListContainerLayersResponse {
+  repeated ContainerLayer layers = 1;
+  string next_page_token = 2;
+}
+
+message GetContainerLayerRequest {
+  string registry = 1;
+  string repository = 2;
+  string manifest_digest = 3;
+  string digest = 4;
+  // Signed release root that disambiguates release-specific closure mapping.
+  string root_digest = 5;
+}
+
+message ContainerLayerResponse {
+  ContainerLayer layer = 1;
+}
+
+message ContainerReferrer {
+  string registry = 1;
+  string repository = 2;
+  string subject_digest = 3;
+  string digest = 4;
+  string media_type = 5;
+  uint64 byte_size = 6;
+  string artifact_type = 7;
+  string annotations_json = 8;
+  string verification = 9;
+  int64 created_at = 10;
+}
+
+message ListContainerReferrersRequest {
+  string registry = 1;
+  string repository = 2;
+  string subject_digest = 3;
+  string artifact_type = 4;
+  uint32 page_size = 5;
+  // Opaque keyset cursor bound to the immutable subject and artifact filter.
+  string page_token = 6;
+}
+
+message ListContainerReferrersResponse {
+  repeated ContainerReferrer referrers = 1;
+  string next_page_token = 2;
+}
+
+message ListContainerPublicationsRequest {
+  string registry = 1;
+  string repository = 2;
+  string state = 3;
+  uint32 page_size = 4;
+  // Opaque newest-first keyset cursor bound to the registry and filters.
+  string page_token = 5;
+}
+
+message ListContainerPublicationsResponse {
+  repeated ContainerPublication publications = 1;
+  string next_page_token = 2;
+  string mutation_epoch = 3;
+}
+
+message ContainerClosureMember {
+  string store_path = 1;
+  string nar_hash = 2;
+  uint64 nar_size = 3;
+  string layer_digest = 4;
+  bool direct = 5;
+}
+
+message ContainerEvidence {
+  string kind = 1;
+  string digest = 2;
+  string media_type = 3;
+  string verification = 4;
+  string referrer_digest = 5;
+}
+
+message ContainerProvenance {
+  string registry = 1;
+  string repository = 2;
+  string root_digest = 3;
+  string package = 4;
+  string release = 5;
+  string channel = 6;
+  string signed_release_root = 7;
+  string catalog_digest = 8;
+  string verification = 9;
+  repeated ContainerClosureMember closure_members = 10;
+  repeated ContainerEvidence evidence = 11;
+  int64 verified_at = 12;
+}
+
+message GetContainerProvenanceRequest {
+  string registry = 1;
+  string repository = 2;
+  string root_digest = 3;
+  // Exact verified release identity for roots reused by multiple releases.
+  string release = 4;
+}
+
+message ContainerProvenanceResponse {
+  ContainerProvenance provenance = 1;
+}
+
+// Registry-scoped reachability policy. Signed roots, live tags, active uploads,
+// and retained referrers remain mandatory roots regardless of these bounds.
+message ContainerRetentionPolicy {
+  string registry = 1;
+  uint64 untagged_grace_period_secs = 2;
+  uint64 deleted_tag_history_period_secs = 3;
+  uint32 recent_manual_tag_revisions = 4;
+  bool retain_referrers = 5;
+  string resource_version = 6;
+  int64 updated_at = 7;
+}
+
+message GetContainerRetentionPolicyRequest {
+  string registry = 1;
+}
+
+message ContainerRetentionPolicyResponse {
+  ContainerRetentionPolicy policy = 1;
+}
+
+message PlanSetContainerRetentionPolicyRequest {
+  string registry = 1;
+  ContainerRetentionPolicy policy = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+
+// Requests a reviewed garbage-collection generation. Implementations must
+// return unavailable until they can capture a complete inventory and mutation
+// epoch, compute a reviewable plan, and revalidate every deletion in Phase 7.
+message PlanRunContainerGcRequest {
+  string registry = 1;
+  string expected_resource_version = 2;
+  string idempotency_key = 3;
+}
+
+message GetContainerGcRunRequest {
+  string registry = 1;
+  string run_id = 2;
+}
+
+message ListContainerGcRunsRequest {
+  string registry = 1;
+  string state = 2;
+  uint32 page_size = 3;
+  // Opaque newest-first keyset cursor bound to the registry and state filter.
+  string page_token = 4;
+}
+
+message ContainerGcRun {
+  string run_id = 1;
+  string registry = 2;
+  string state = 3;
+  string mutation_epoch = 4;
+  uint64 inventory_object_count = 5;
+  uint64 reachable_object_count = 6;
+  uint64 candidate_object_count = 7;
+  uint64 reclaimable_byte_size = 8;
+  uint64 deleted_object_count = 9;
+  uint64 deleted_byte_size = 10;
+  repeated string blockers = 11;
+  string operation_id = 12;
+  string failure = 13;
+  string resource_version = 14;
+  int64 created_at = 15;
+  int64 started_at = 16;
+  int64 finished_at = 17;
+}
+
+message ContainerGcRunResponse {
+  ContainerGcRun run = 1;
+}
+
+message ListContainerGcRunsResponse {
+  repeated ContainerGcRun runs = 1;
+  string next_page_token = 2;
+  string mutation_epoch = 3;
+}
+
 // One immutable disk encoding belonging to a signed logical AOS release.
 message SystemImage {
   string package = 1;
@@ -577,6 +1119,9 @@ message BeginContainerPublicationRequest {
 
 message GetContainerPublicationRequest {
   string publication_id = 1;
+  // Registry authorization context for administration reads. Legacy
+  // publication-resume callers may omit it and remain session-owner scoped.
+  string registry = 2;
 }
 
 message CommitContainerPublicationRequest {

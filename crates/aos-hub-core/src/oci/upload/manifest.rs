@@ -25,7 +25,8 @@ use super::{
 use crate::db::{
     oci_blob_object_key, AppendOciUploadChunk, BeginOciUpload, ClaimOciUpload, CompleteOciUpload,
     IndexOciRepositoryCatalog, OciBlobClaimOutcome, OciCatalogObject, OciCatalogProjection,
-    OciUploadChunkRecord, OciUploadCleanupRecord, OciUploadRecord,
+    OciImageConfigProjection, OciLayerProjection, OciUploadChunkRecord, OciUploadCleanupRecord,
+    OciUploadRecord,
 };
 
 const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
@@ -562,13 +563,13 @@ impl RpcService {
                         },
                     )?;
                 }
-                let platform = if manifest.artifact_type.is_none() {
-                    Some(
-                        self.read_image_config_platform(repository, placement, &manifest.config)
-                            .await?,
-                    )
+                let (platform, image_config) = if manifest.artifact_type.is_none() {
+                    let (platform, projection) = self
+                        .read_image_config_projection(repository, placement, &manifest)
+                        .await?;
+                    (Some(platform), Some(projection))
                 } else {
-                    None
+                    (None, None)
                 };
                 insert_object(
                     &mut objects,
@@ -577,6 +578,7 @@ impl RpcService {
                         projection: Some(OciCatalogProjection::Manifest {
                             document: manifest,
                             platform,
+                            image_config,
                         }),
                     },
                 )?;
@@ -699,12 +701,13 @@ impl RpcService {
             })
     }
 
-    async fn read_image_config_platform(
+    async fn read_image_config_projection(
         &self,
         repository: &OciRepositoryRecord,
         placement: &crate::db::SurfacePlacementRecord,
-        descriptor: &Descriptor,
-    ) -> Result<Platform, Response> {
+        manifest: &ImageManifest,
+    ) -> Result<(Platform, OciImageConfigProjection), Response> {
+        let descriptor = &manifest.config;
         if !descriptor.media_type.is_image_config() {
             return Err(manifest_invalid(
                 "runnable manifest config has an unsupported media type",
@@ -731,10 +734,133 @@ impl RpcService {
         {
             return Err(manifest_blob_unknown());
         }
-        ImageConfig::from_json(&bytes)
-            .map(|config| config.platform())
-            .map_err(|_| manifest_invalid("image config JSON is invalid"))
+        let config = ImageConfig::from_json(&bytes)
+            .map_err(|_| manifest_invalid("image config JSON is invalid"))?;
+        if config.rootfs.diff_ids.len() != manifest.layers.len() {
+            return Err(manifest_invalid(
+                "image config DiffIDs do not match manifest layers",
+            ));
+        }
+        let mut layers = Vec::with_capacity(manifest.layers.len());
+        for (descriptor, diff_id) in manifest.layers.iter().zip(&config.rootfs.diff_ids) {
+            let unpacked_byte_size = self.read_layer_unpacked_size(placement, descriptor).await?;
+            layers.push(OciLayerProjection {
+                unpacked_byte_size,
+                diff_id: *diff_id,
+                closure_group: String::new(),
+            });
+        }
+        let platform = config.platform();
+        let aos_system = aos_system(&platform);
+        let config_json = String::from_utf8(bytes.to_vec())
+            .map_err(|_| manifest_invalid("image config JSON is not UTF-8"))?;
+        Ok((
+            platform,
+            OciImageConfigProjection {
+                config_json,
+                aos_system,
+                layers,
+            },
+        ))
     }
+
+    async fn read_layer_unpacked_size(
+        &self,
+        placement: &crate::db::SurfacePlacementRecord,
+        descriptor: &Descriptor,
+    ) -> Result<u64, Response> {
+        match descriptor.media_type {
+            MediaType::OciLayerTar | MediaType::DockerLayerTar => Ok(descriptor.size),
+            MediaType::OciLayerGzip | MediaType::DockerLayerGzip => {
+                if descriptor.size < 4 {
+                    return Err(manifest_invalid("gzip image layer is truncated"));
+                }
+                let start = descriptor.size - 4;
+                let bytes = self
+                    .read_layer_range(placement, descriptor, (start, descriptor.size - 1), 4)
+                    .await?;
+                let mut footer = [0_u8; 4];
+                footer.copy_from_slice(&bytes);
+                Ok(u64::from(u32::from_le_bytes(footer)))
+            }
+            MediaType::OciLayerZstd => {
+                let end = descriptor.size.saturating_sub(1).min(17);
+                let bytes = self
+                    .read_layer_range(placement, descriptor, (0, end), 18)
+                    .await?;
+                parse_zstd_content_size(&bytes)
+                    .ok_or_else(|| manifest_invalid("zstd image layer omits its content size"))
+            }
+            _ => Err(manifest_invalid(
+                "runnable manifest has an unsupported layer media type",
+            )),
+        }
+    }
+
+    async fn read_layer_range(
+        &self,
+        placement: &crate::db::SurfacePlacementRecord,
+        descriptor: &Descriptor,
+        range: (u64, u64),
+        limit: usize,
+    ) -> Result<Vec<u8>, Response> {
+        let fetcher = self
+            .surface
+            .placement_fetcher(placement)
+            .await
+            .map_err(|_| unavailable_response("registry reader is unavailable", false))?;
+        let read = fetcher
+            .fetch_stream(&oci_blob_object_key(descriptor.digest), Some(range))
+            .await
+            .map_err(|_| unavailable_response("image layer could not be read", false))?
+            .ok_or_else(manifest_blob_unknown)?;
+        if read.total != descriptor.size || read.range != Some(range) {
+            return Err(manifest_blob_unknown());
+        }
+        let bytes = to_bytes(read.body, limit)
+            .await
+            .map_err(|_| manifest_invalid("image layer metadata range is malformed"))?;
+        Ok(bytes.to_vec())
+    }
+}
+
+fn aos_system(platform: &Platform) -> String {
+    match (platform.os.as_str(), platform.architecture.as_str()) {
+        ("linux", "amd64") => "x86_64-linux".to_string(),
+        ("linux", "arm64") => "aarch64-linux".to_string(),
+        (os, architecture) => format!("{architecture}-{os}"),
+    }
+}
+
+fn parse_zstd_content_size(bytes: &[u8]) -> Option<u64> {
+    if bytes.len() < 5 || bytes[..4] != [0x28, 0xb5, 0x2f, 0xfd] {
+        return None;
+    }
+    let descriptor = bytes[4];
+    let single_segment = descriptor & 0x20 != 0;
+    let dictionary_size = match descriptor & 0x03 {
+        0 => 0,
+        1 => 1,
+        2 => 2,
+        _ => 4,
+    };
+    let size_flag = descriptor >> 6;
+    let size_length = match (size_flag, single_segment) {
+        (0, false) => 0,
+        (0, true) => 1,
+        (1, _) => 2,
+        (2, _) => 4,
+        _ => 8,
+    };
+    if size_length == 0 {
+        return None;
+    }
+    let offset = 5 + usize::from(!single_segment) + dictionary_size;
+    let field = bytes.get(offset..offset + size_length)?;
+    let mut encoded = [0_u8; 8];
+    encoded[..size_length].copy_from_slice(field);
+    let size = u64::from_le_bytes(encoded);
+    Some(if size_length == 2 { size + 256 } else { size })
 }
 
 fn manifest_content_type(headers: &HeaderMap) -> Result<MediaType, &'static str> {

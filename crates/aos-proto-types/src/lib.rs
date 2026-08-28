@@ -211,6 +211,174 @@ mod connect_path_tests {
         assert!(EXPECTED_CONNECT_PATHS.contains(&IDENTITY_SERVICE_WHO_AM_I_PATH));
         assert_eq!(EXPECTED_CONNECT_METHODS.len(), EXPECTED_CONNECT_PATHS.len());
     }
+
+    #[test]
+    fn container_administration_requests_freeze_pagination_and_cas_fields() {
+        let request_fields = |method: &str| {
+            EXPECTED_CONNECT_METHODS
+                .iter()
+                .find(|descriptor| {
+                    descriptor.service == "ContainerService" && descriptor.method == method
+                })
+                .map(|descriptor| descriptor.input_fields)
+                .unwrap_or_else(|| panic!("missing ContainerService/{method}"))
+        };
+
+        assert_eq!(
+            request_fields("ListContainerRepositories"),
+            [
+                "registry",
+                "repository_prefix",
+                "lifecycle_state",
+                "page_size",
+                "page_token",
+            ]
+        );
+        assert_eq!(
+            request_fields("PlanSetContainerTag"),
+            [
+                "registry",
+                "repository",
+                "tag",
+                "target_digest",
+                "expected_resource_version",
+                "expected_digest",
+                "idempotency_key",
+            ]
+        );
+        assert_eq!(
+            request_fields("SetContainerTag"),
+            ["plan_id", "idempotency_key", "confirmation_hash"]
+        );
+        assert_eq!(
+            request_fields("GetContainerPublication"),
+            ["publication_id", "registry"]
+        );
+        assert_eq!(
+            request_fields("ListContainerLayers"),
+            [
+                "registry",
+                "repository",
+                "manifest_digest",
+                "page_size",
+                "page_token",
+                "root_digest",
+            ]
+        );
+        assert_eq!(
+            request_fields("GetContainerLayer"),
+            [
+                "registry",
+                "repository",
+                "manifest_digest",
+                "digest",
+                "root_digest",
+            ]
+        );
+        assert_eq!(
+            request_fields("ResolveContainerTag"),
+            [
+                "registry",
+                "repository",
+                "tag",
+                "operating_system",
+                "architecture",
+                "variant",
+                "os_version",
+                "os_features",
+            ]
+        );
+        assert_eq!(
+            request_fields("GetContainerPlatform"),
+            [
+                "registry",
+                "repository",
+                "root_digest",
+                "operating_system",
+                "architecture",
+                "variant",
+                "os_version",
+                "os_features",
+            ]
+        );
+        assert_eq!(
+            request_fields("GetContainerProvenance"),
+            ["registry", "repository", "root_digest", "release"]
+        );
+        assert_eq!(
+            request_fields("PlanRunContainerGc"),
+            ["registry", "expected_resource_version", "idempotency_key"]
+        );
+    }
+
+    #[test]
+    fn container_service_remains_a_closed_distinct_rpc_surface() {
+        let methods = EXPECTED_CONNECT_METHODS
+            .iter()
+            .filter(|descriptor| descriptor.service == "ContainerService")
+            .map(|descriptor| descriptor.method)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(methods.len(), 35);
+        for method in [
+            "ListContainerRepositories",
+            "GetContainerRepository",
+            "ListContainerTags",
+            "ResolveContainerTag",
+            "ListContainerTagHistory",
+            "GetContainerManifest",
+            "ListContainerPlatforms",
+            "GetContainerPlatform",
+            "ListContainerLayers",
+            "GetContainerLayer",
+            "ListContainerReferrers",
+            "ListContainerPublications",
+            "GetContainerPublication",
+            "GetContainerProvenance",
+            "GetContainerRetentionPolicy",
+            "PlanSetContainerRetentionPolicy",
+            "SetContainerRetentionPolicy",
+            "PlanRunContainerGc",
+            "RunContainerGc",
+            "GetContainerGcRun",
+            "ListContainerGcRuns",
+        ] {
+            assert!(
+                methods.contains(method),
+                "missing ContainerService/{method}"
+            );
+        }
+    }
+
+    #[test]
+    fn container_platform_protojson_preserves_the_complete_oci_identity() {
+        let platform = ContainerPlatform {
+            operating_system: "windows".to_string(),
+            architecture: "amd64".to_string(),
+            os_version: "10.0.20348.2402".to_string(),
+            os_features: vec!["win32k".to_string(), "containers".to_string()],
+            ..Default::default()
+        };
+
+        let encoded = serde_json::to_value(platform).unwrap();
+        assert_eq!(encoded["osVersion"], "10.0.20348.2402");
+        assert_eq!(
+            encoded["osFeatures"],
+            serde_json::json!(["win32k", "containers"])
+        );
+    }
+
+    #[test]
+    fn container_repository_protojson_exposes_only_an_explicit_distribution_reference() {
+        let repository = ContainerRepository {
+            registry: "andyl/main".to_string(),
+            repository: "aos".to_string(),
+            distribution_reference: "containers.example/aos".to_string(),
+            ..Default::default()
+        };
+
+        let encoded = serde_json::to_value(repository).unwrap();
+        assert_eq!(encoded["distributionReference"], "containers.example/aos");
+    }
 }
 
 macro_rules! impl_open_proto_enum {

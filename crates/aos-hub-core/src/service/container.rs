@@ -217,6 +217,21 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::GetContainerPublicationRequest,
     ) -> Result<pb::ContainerPublication, RpcError> {
+        if !req.registry.is_empty() {
+            let registry = self
+                .container_registry_for_publication_read(auth, &req.registry)
+                .await?;
+            let publication = self
+                .db
+                .oci_admin_publication(registry.id, &req.publication_id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::not_found("container publication"))?;
+            return Ok(super::container_admin::publication_message(
+                &registry.slug,
+                &publication,
+            ));
+        }
         let claims = self.require_claims(auth)?;
         let publication = self
             .db
@@ -526,7 +541,9 @@ fn descriptor_role(
 
 fn projection_json(object: &OciCatalogObject) -> Result<Option<String>, RpcError> {
     let bytes = match &object.projection {
-        Some(OciCatalogProjection::Manifest { document, platform }) => Some(
+        Some(OciCatalogProjection::Manifest {
+            document, platform, ..
+        }) => Some(
             to_canonical_json(&serde_json::json!({
                 "document": document,
                 "platform": platform,

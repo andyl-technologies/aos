@@ -4,6 +4,7 @@
 //! key as one value. Apply callbacks therefore cannot accidentally recompute a
 //! plan or combine confirmation material from two requests.
 
+#[cfg(target_arch = "wasm32")]
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// One exact reviewed mutation awaiting confirmation.
@@ -13,6 +14,16 @@ pub(crate) struct PendingPlan {
     pub(crate) plan: aos_proto_types::TopologyPlan,
     /// Idempotency key shared by the plan and apply request.
     pub(crate) idempotency_key: String,
+}
+
+/// Returns whether a tag ownership class accepts manual CAS mutation.
+pub(crate) fn container_tag_is_manually_mutable(ownership_kind: &str) -> bool {
+    ownership_kind == "manual"
+}
+
+/// Returns whether the live route capability allows manual tag mutation.
+pub(crate) fn container_tag_controls_visible(allows: impl FnOnce(&str) -> bool) -> bool {
+    allows("publish")
 }
 
 impl PendingPlan {
@@ -81,6 +92,15 @@ impl PendingPlan {
     /// Builds a cache policy/operation apply envelope for this exact plan.
     pub(crate) fn cache_plan_apply(&self) -> aos_proto_types::ApplyCachePlanRequest {
         aos_proto_types::ApplyCachePlanRequest {
+            plan_id: self.plan.plan_id.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            confirmation_hash: self.plan.confirmation_hash.clone(),
+        }
+    }
+
+    /// Builds a container-administration apply envelope for this exact plan.
+    pub(crate) fn container_apply(&self) -> aos_proto_types::ApplyContainerMutationRequest {
+        aos_proto_types::ApplyContainerMutationRequest {
             plan_id: self.plan.plan_id.clone(),
             idempotency_key: self.idempotency_key.clone(),
             confirmation_hash: self.plan.confirmation_hash.clone(),
@@ -239,9 +259,11 @@ impl PendingPlan {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 static IDEMPOTENCY_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
 /// Generates a collision-resistant, non-secret browser idempotency key.
+#[cfg(target_arch = "wasm32")]
 pub(crate) fn idempotency_key(action: &str) -> String {
     let time = js_sys::Date::now().to_bits();
     let random = (js_sys::Math::random() * u64::MAX as f64) as u64;
@@ -262,5 +284,48 @@ mod tests {
             }),
         };
         assert!(PendingPlan::from_response(response, "key".to_string()).is_err());
+    }
+
+    #[test]
+    fn container_apply_preserves_the_reviewed_plan_and_idempotency_key() {
+        let reviewed = PendingPlan::from_response(
+            aos_proto_types::TopologyPlanResponse {
+                plan: Some(aos_proto_types::TopologyPlan {
+                    plan_id: "plan:container".to_string(),
+                    confirmation_hash: "sha256:confirmation".to_string(),
+                    ..Default::default()
+                }),
+            },
+            "web-container-same-key".to_string(),
+        )
+        .expect("complete plan must be retained");
+
+        let apply = reviewed.container_apply();
+        assert_eq!(apply.plan_id, "plan:container");
+        assert_eq!(apply.confirmation_hash, "sha256:confirmation");
+        assert_eq!(apply.idempotency_key, "web-container-same-key");
+    }
+
+    #[test]
+    fn signed_container_tags_never_enable_manual_controls() {
+        assert!(container_tag_is_manually_mutable("manual"));
+        assert!(!container_tag_is_manually_mutable("release"));
+        assert!(!container_tag_is_manually_mutable("channel"));
+    }
+
+    #[test]
+    fn admin_configure_only_does_not_expose_tag_mutation_controls() {
+        let permissions = ["read", "registry.configure"];
+        assert!(!container_tag_controls_visible(|required| {
+            permissions.contains(&required)
+        }));
+    }
+
+    #[test]
+    fn maintainer_publish_exposes_tag_mutation_controls() {
+        let permissions = ["read", "publish", "channel.advance", "keys.manage"];
+        assert!(container_tag_controls_visible(|required| {
+            permissions.contains(&required)
+        }));
     }
 }
