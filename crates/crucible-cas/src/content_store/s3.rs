@@ -1567,6 +1567,15 @@ mod tests {
     }
 
     #[test]
+    fn s3_blob_leaf_passes_the_shared_persistent_conformance_suite() {
+        let endpoint = StoreS3EndpointId::new("minio/blob-conformance").expect("endpoint");
+        let ordinary = Arc::new(FakeS3Client::new(endpoint));
+        let administration = Arc::new(FakeBlobAdminClient::new(ordinary.clone()));
+        let backend = administrative_backend(ordinary, administration);
+        super::super::conformance::assert_blob_leaf_conformance(&backend);
+    }
+
+    #[test]
     fn committed_inventory_is_restart_stable_aba_safe_and_deletable() {
         let endpoint = StoreS3EndpointId::new("minio/administration").expect("endpoint");
         let ordinary = Arc::new(FakeS3Client::new(endpoint));

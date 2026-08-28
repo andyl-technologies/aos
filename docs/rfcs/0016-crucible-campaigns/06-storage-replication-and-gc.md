@@ -493,6 +493,17 @@ strong-CAS committed-object, ref, and ref-inventory boundaries above. It does
 not grant automatic live-service conformance or daemon configuration wiring;
 those remain required before selecting either S3 boundary in production.
 
+Directory and S3 persistent leaves run through one backend-neutral semantic
+conformance suite. For immutable objects it proves authenticated full, range,
+empty, replay, inventory, exact planned deletion, retained-object isolation,
+and delete/restore generation behavior, including a wrong source that retains
+no object. For refs it proves ordered pagination, exact stale-CAS diagnostics,
+complete fenced inventory, and same-value ABA generation change. Backend-
+specific tests add filesystem interruption/corruption and S3 multipart,
+credential, provider-page, deadline, and conditional-operation failures. This
+shared in-process harness does not replace the still-required live deployment
+service conformance flight.
+
 - **[CSTORE-7]** The directory backend MUST leave either no object or a complete
   authenticated object after interruption; same-filesystem staging debris is
   unreachable and reclaimable.

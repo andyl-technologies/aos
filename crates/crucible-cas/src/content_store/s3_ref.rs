@@ -1184,6 +1184,22 @@ mod tests {
     }
 
     #[test]
+    fn s3_ref_leaf_passes_the_shared_persistent_conformance_suite() {
+        let client = Arc::new(FakeStrongCasClient::new(
+            StoreS3EndpointId::new("tests/ref-conformance").expect("endpoint"),
+        ));
+        let capability = StoreS3RefCapability::new(
+            client.endpoint.clone(),
+            "campaign-refs",
+            "tenant-conformance",
+            client,
+        )
+        .expect("strong ref capability");
+        let refs = S3RefBackend::new(capability);
+        super::super::conformance::assert_ref_leaf_conformance(&refs);
+    }
+
+    #[test]
     fn maximum_ref_name_uses_fixed_key_and_corruption_fails_closed() {
         let client = Arc::new(FakeStrongCasClient::new(endpoint()));
         let refs = backend(client.clone());
