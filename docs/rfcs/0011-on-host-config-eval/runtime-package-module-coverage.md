@@ -22,7 +22,7 @@ upstream distribution includes a daemon.
 - [x] PostgreSQL
 - [x] MariaDB
 - [x] Garage
-- [ ] OpenLDAP server role
+- [x] OpenLDAP server role
 - [ ] KubeEdge CloudCore
 - [ ] KubeEdge EdgeCore
 - [ ] Kerberos KDC role
