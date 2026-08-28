@@ -1510,10 +1510,18 @@ ref directory. Its exact-kind, unknown-field, permission, no-default-leaf, and
 wrong-key restart regressions are executable. The managed service now retains
 the graph's exact separately returned physical/multipart administration and a
 second ref-inventory view through shutdown, rejects foreign graph authority,
-and exposes neither to ordinary service/runtime components. S3/remote-ref
-client ownership, bounded maintenance scheduling and porcelain, a hermetic
-service fixture, and the realistic operator flight remain open under Phase 5
-and T-CAM-5.8.
+and exposes neither to ordinary service/runtime components. Version two now
+adds exact HTTPS S3 endpoint capabilities, bounded SDK workers, owner-only
+reloading credential files, S3 leaves, and optional strong-CAS remote refs. It
+validates exact endpoint membership, multipart geometry, and segment-disjoint
+graph/ref namespaces before secret I/O; retains worker, multipart/object, and
+ref administration through shutdown; and treats strong-CAS conformance as an
+operator-owned deployment assertion rather than an inferred provider property.
+Focused regressions cover v1 compatibility, capability mismatch and ordering,
+insecure endpoints, credential expiry, namespace overlap, physical
+administration retention, and construction without network I/O. Bounded
+maintenance scheduling and porcelain, a hermetic live-service fixture, and the
+realistic operator flight remain open under Phase 5 and T-CAM-5.8.
 Broader layered transforms remain open;
 therefore T-CAM-5.5 is not checked by this checkpoint.
 

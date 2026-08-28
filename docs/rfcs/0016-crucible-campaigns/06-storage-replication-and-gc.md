@@ -577,10 +577,11 @@ eviction behavior for every admitted object kind. A write-back layer is valid
 only with a durable transfer journal whose protected roots participate in GC.
 
 `crucible serve --campaign-store PATH` loads the registered
-`crucible.campaign-repository-store` version-one TOML deployment. The file is
+`crucible.campaign-repository-store` TOML deployment. The file is
 an absolute, lexically normalized, exact-owner mode-`0600` regular file of at
-most 256 KiB; unknown fields and other schema versions fail closed. Its closed
-top-level fields are:
+most 256 KiB; unknown fields and schema versions other than 1 and 2 fail
+closed. Version one remains the S3-free local compatibility profile. Its
+closed top-level fields are:
 
 ```toml
 schema = "crucible.campaign-repository-store"
@@ -660,9 +661,99 @@ ordinary graph.
 
 Memory and S3 nodes are deliberately absent from version one: memory cannot
 satisfy durable daemon admission, while S3 requires an async credential/client
-lifecycle and strong-CAS evidence for remote refs. Adding those is a
-schema-versioned extension rather than an
-unrecognized field or a credential embedded in canonical graph identity.
+lifecycle and strong-CAS evidence for remote refs. Version two adds the `s3`
+node and either a local `ref_directory` or one remote `[s3_ref]`, exactly one,
+without embedding credentials in canonical graph identity. For example:
+
+```toml
+schema = "crucible.campaign-repository-store"
+version = 2
+root = "profile"
+admitted_kinds = [
+  "campaign-fact", "campaign-snapshot", "merkle-node", "scenario",
+  "configuration", "policy", "exact-manifest", "ram-extent",
+  "disk-extent", "device-state", "observation", "finding", "projection",
+  "trace",
+]
+
+[s3_ref]
+endpoint = "campaign/s3-primary"
+bucket = "campaign-store"
+prefix = "campaign/refs"
+
+[[s3_endpoints]]
+id = "campaign/s3-primary"
+region = "us-west-2"
+endpoint_url = "https://s3.example.invalid"
+force_path_style = true
+credential_path = "/etc/crucible/campaign-s3-credentials.toml"
+maximum_queued_commands = 8
+maximum_in_flight_operations = 2
+maximum_retained_command_bytes = 134217728
+operation_timeout_ms = 30000
+strong_cas_conformance = true
+
+[[nodes]]
+id = "s3"
+[nodes.spec]
+kind = "s3"
+endpoint = "campaign/s3-primary"
+bucket = "campaign-store"
+prefix = "campaign/objects"
+maximum_logical_object_bytes = 67108864
+multipart_part_bytes = 5242880
+
+[[nodes]]
+id = "profile"
+[nodes.spec]
+kind = "profile-validated"
+child = "s3"
+policy = "crucible.campaign.object-profile.v1"
+```
+
+The exact `s3_endpoints` ID set MUST equal the union required by graph leaves
+and the optional remote ref before a credential is read or worker is started.
+Every endpoint URL is a path-free HTTPS origin of at most 2,048 bytes; the
+region is 1 through 64 ASCII alphanumeric-or-hyphen bytes. Queue size is 1
+through 1,024, in-flight operations 1 through 64, retained command bytes 128
+MiB through 1 GiB, and the one queue-plus-SDK-plus-stream deadline is 100 ms
+through one hour. Bucket, prefix, logical-object, and multipart bounds are the
+same as the canonical S3 node and ref contracts above. Within one endpoint and
+bucket, every graph-leaf and ref base prefix MUST be segment-disjoint: equality,
+an empty prefix, or an ancestor/descendant prefix is rejected so an inventory
+or cleanup capability cannot encounter another logical namespace.
+
+Every admitted version-two endpoint supplies both the ordinary SDK capability
+and the separately typed strong object/ref administration capability. Setting
+`strong_cas_conformance = true` is an exact-owner deployment attestation that
+the configured service satisfies the strong-CAS, listing, lifecycle, and
+single-daemon-writer requirements above; the adapter does not discover or
+infer those properties and never promotes an ordinary capability implicitly.
+Dedicated bounded workers and both graph/ref administration capabilities
+remain retained through managed-service shutdown. Construction performs no
+network request; the first repository operation exercises the endpoint.
+
+Each endpoint names a separate registered
+`crucible.campaign-s3-credentials` version-one TOML file. It is an absolute,
+normalized, exact-owner mode-`0600` regular file of at most 16 KiB. Unknown
+fields, invalid bounds, expired credentials, and other schema versions fail
+closed without reflecting secret material in diagnostics. The closed body is:
+
+```toml
+schema = "crucible.campaign-s3-credentials"
+version = 1
+access_key_id = "REDACTED-ACCESS-KEY"
+secret_access_key = "REDACTED-SECRET-KEY"
+session_token = "REDACTED-SESSION-TOKEN"
+expires_at_unix_seconds = 2000000000
+```
+
+The access-key ID is 1 through 256 printable non-space ASCII bytes, the secret
+key 1 through 4,096, and an optional session token 1 through 8,192. The optional
+expiry is an unsigned Unix timestamp strictly after the load time. The AWS SDK
+provider rereads and reauthenticates this exact file when credentials refresh;
+secret buffers are cleared on drop and neither secrets nor their paths enter
+graph identity. Memory remains absent from both durable deployment versions.
 
 The first write-back layer requires durable streaming staging and destination
 children. A put authenticates its complete source, publishes the staging child,
