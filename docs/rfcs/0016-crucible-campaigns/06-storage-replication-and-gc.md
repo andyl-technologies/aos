@@ -362,6 +362,53 @@ This cleanup boundary is not a stable committed-object inventory: ordinary
 publication may continue while a page is listed and aborted, and the capability
 cannot list or delete completed objects. It MUST NOT be used as a GC fence.
 
+An optional `S3RefBackend` is admitted only through a separately supplied
+strong-CAS service capability. An ordinary immutable S3 client cannot be
+promoted implicitly. The deployment MUST have verified that its exact endpoint
+provides atomic `If-None-Match: *` creation, atomic `If-Match: <ETag>`
+replacement, read-after-write consistency, and strongly consistent ordered
+listing. The selected endpoint/bucket/prefix is single-daemon authoritative;
+external writers and a second daemon process are forbidden. Within the daemon,
+all independently constructed capabilities for the same exact namespace share
+one process-wide lifecycle authority. At most 1,024 live S3 ref namespaces are
+admitted.
+
+The complete 1,024-byte `RefName` language cannot fit by value beneath every
+valid S3 prefix. A ref therefore uses the fixed-size physical key:
+
+```text
+ref_digest = BLAKE3(
+  "crucible.content-store.s3-ref-key.v1" ||
+  name_length_u64_be || name_bytes
+)
+key = <prefix> "/refs/" lowercase_hex(ref_digest)
+```
+
+For an empty prefix the key begins `refs/`. The corresponding body is at most
+4 KiB and has the exact private physical grammar:
+
+```text
+"crucible.content-store.s3-ref.v1\0"
+name_length_u16_be
+name_bytes[name_length]
+target_length_u16_be
+canonical_content_id_ascii[target_length]
+```
+
+Every read decodes the complete body, re-derives the physical key from the
+stored name, and rejects a mismatch. An accepted conditional write is read back
+and must reproduce both the requested target and the exact ETag returned by the
+write. A failed precondition is re-read and returned as the ordinary exact
+`Conflict { expected, current }` outcome.
+
+`scan_refs` lists fixed-size physical keys in pages of at most 1,000, reads and
+validates each bounded body, visits at most 65,536 refs, and selects the bounded
+result page in canonical `RefName` order. One scan session owns a single
+absolute SDK deadline across every provider page and body read; progress never
+resets it. The in-daemon namespace lifecycle lock excludes local replacements
+for the complete scan. This checkpoint does not provide `RefStoreAdmin` for S3,
+so S3 authoritative refs do not yet satisfy the complete global-GC root fence.
+
 The concrete `crucible-s3-store` AWS SDK adapter owns a command queue of 1
 through 1,024 entries, an active-operation ceiling of 1 through 64, an
 aggregate queued-plus-active command budget of 128 MiB through 1 GiB, and a
@@ -371,10 +418,12 @@ streaming. Downloads cross a two-chunk, fixed 64-KiB handoff. A full queue or
 exhausted byte budget fails promptly. Endpoint credentials or service denial
 map to `Unauthorized`, transient transport/service failures to `Unavailable`,
 and malformed or unsupported provider behavior to `Incompatible`. This
-checkpoint grants only the bounded unfinished-upload listing/abort authority
-above. It does not grant committed-object inventory/deletion or mutable-ref
-authority; those remain required before the S3 leaf participates in global GC
-or is selected as the authoritative ref backend.
+checkpoint grants bounded unfinished-upload listing/abort and the optional
+strong-CAS ref boundary above. It does not grant committed-object
+inventory/deletion, S3 ref-inventory fencing, automatic live-service
+conformance, or daemon configuration wiring; those remain required before the
+S3 leaf participates in global GC or is selected as the production
+authoritative ref backend.
 
 - **[CSTORE-7]** The directory backend MUST leave either no object or a complete
   authenticated object after interruption; same-filesystem staging debris is

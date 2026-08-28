@@ -19,10 +19,12 @@ use std::time::Duration;
 use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
 use aws_sdk_s3::primitives::ByteStream;
 use crucible_cas::content_store::{
-    ContentId, MAX_S3_MULTIPART_LIST_ITEMS, StoreError, StoreS3Client,
-    StoreS3ConditionalPutOutcome, StoreS3EndpointId, StoreS3MultipartListCursor,
-    StoreS3MultipartListPage, StoreS3MultipartUpload, StoreS3MultipartUploadRecord,
-    StoreS3ObjectDownload, StoreS3UploadedPart,
+    ContentId, MAX_S3_MULTIPART_LIST_ITEMS, MAX_S3_REF_LIST_ITEMS, StoreError, StoreS3Client,
+    StoreS3ConditionalPutOutcome, StoreS3ConditionalWriteOutcome, StoreS3EndpointId,
+    StoreS3MultipartListCursor, StoreS3MultipartListPage, StoreS3MultipartUpload,
+    StoreS3MultipartUploadRecord, StoreS3ObjectDownload, StoreS3ObjectListCursor,
+    StoreS3ObjectListPage, StoreS3ObjectScan, StoreS3ObjectVersion, StoreS3StrongCasClient,
+    StoreS3UploadedPart, StoreS3VersionedObject,
 };
 
 mod deadline;
@@ -39,6 +41,7 @@ const MAX_BUCKET_REQUEST_BYTES: usize = 63;
 const MAX_OBJECT_KEY_BYTES: usize = 1_024;
 const MAX_MULTIPART_PART_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MULTIPART_PARTS: usize = 10_000;
+const MAX_STRONG_CAS_OBJECT_BYTES: usize = 4 * 1024;
 const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const MIN_OPERATION_TIMEOUT: Duration = Duration::from_millis(100);
 const MAX_OPERATION_TIMEOUT: Duration = Duration::from_secs(60 * 60);
@@ -124,6 +127,29 @@ pub struct AwsSdkS3Client {
     worker: Arc<Worker>,
 }
 
+/// Explicit strong-CAS/listing view of one configured AWS SDK client.
+///
+/// Construction is an operator assertion that the exact configured service
+/// has passed the deployment's strong-CAS service conformance procedure and
+/// that no writer outside the admitted single daemon mutates the selected ref namespace. The ordinary
+/// [`AwsSdkS3Client`] remains usable for immutable objects without making this
+/// stronger assertion.
+pub struct AwsSdkS3StrongCasClient {
+    client: Arc<AwsSdkS3Client>,
+}
+
+impl AwsSdkS3StrongCasClient {
+    /// Admits a configured SDK client after external service conformance.
+    ///
+    /// This constructor performs no remote mutation. Callers MUST first run the
+    /// exact deployment service through its strong-CAS conformance procedure;
+    /// compatible endpoints without that evidence are not admissible.
+    #[must_use]
+    pub const fn from_conformant_service(client: Arc<AwsSdkS3Client>) -> Self {
+        Self { client }
+    }
+}
+
 impl AwsSdkS3Client {
     /// Starts one dedicated SDK worker for an already configured client.
     ///
@@ -176,6 +202,18 @@ impl AwsSdkS3Client {
     ) -> Result<T, StoreError> {
         let deadline =
             OperationalDeadline::after(self.operation_timeout).ok_or(StoreError::Unavailable)?;
+        self.call_at(deadline, dynamic_retained_bytes, build)
+    }
+
+    fn call_at<T>(
+        &self,
+        deadline: OperationalDeadline,
+        dynamic_retained_bytes: u64,
+        build: impl FnOnce(SyncSender<Result<T, StoreError>>) -> Command,
+    ) -> Result<T, StoreError> {
+        if deadline.remaining().is_zero() {
+            return Err(StoreError::Unavailable);
+        }
         let (response, result) = mpsc::sync_channel(1);
         let retained_bytes = u64::try_from(mem::size_of::<Command>())
             .map_err(|_| StoreError::Quota)?
@@ -374,6 +412,159 @@ impl StoreS3Client for AwsSdkS3Client {
     }
 }
 
+impl StoreS3StrongCasClient for AwsSdkS3StrongCasClient {
+    fn endpoint_id(&self) -> &StoreS3EndpointId {
+        &self.client.endpoint
+    }
+
+    fn get_small_versioned_object(
+        &self,
+        bucket: &str,
+        key: &str,
+        maximum_bytes: u16,
+    ) -> Result<Option<StoreS3VersionedObject>, StoreError> {
+        if maximum_bytes == 0 || usize::from(maximum_bytes) > MAX_STRONG_CAS_OBJECT_BYTES {
+            return Err(StoreError::Quota);
+        }
+        let (bucket, key) = request_location(bucket, key)?;
+        let retained = retained_lengths(&[bucket.len(), key.len()])?;
+        self.client
+            .call(retained, |response| Command::GetSmallVersioned {
+                bucket,
+                key,
+                maximum_bytes,
+                response,
+            })
+    }
+
+    fn put_small_if_absent(
+        &self,
+        bucket: &str,
+        key: &str,
+        bytes: Arc<[u8]>,
+    ) -> Result<StoreS3ConditionalWriteOutcome, StoreError> {
+        if bytes.len() > MAX_STRONG_CAS_OBJECT_BYTES {
+            return Err(StoreError::Quota);
+        }
+        let (bucket, key) = request_location(bucket, key)?;
+        let retained = retained_lengths(&[bucket.len(), key.len(), bytes.len()])?;
+        self.client
+            .call(retained, |response| Command::PutSmallIfAbsent {
+                bucket,
+                key,
+                bytes,
+                response,
+            })
+    }
+
+    fn replace_small_if_version(
+        &self,
+        bucket: &str,
+        key: &str,
+        expected: &StoreS3ObjectVersion,
+        bytes: Arc<[u8]>,
+    ) -> Result<StoreS3ConditionalWriteOutcome, StoreError> {
+        if bytes.len() > MAX_STRONG_CAS_OBJECT_BYTES {
+            return Err(StoreError::Quota);
+        }
+        let (bucket, key) = request_location(bucket, key)?;
+        let retained = retained_lengths(&[
+            bucket.len(),
+            key.len(),
+            expected.as_str().len(),
+            bytes.len(),
+        ])?;
+        self.client
+            .call(retained, |response| Command::ReplaceSmallIfVersion {
+                bucket,
+                key,
+                expected: expected.as_str().to_string(),
+                bytes,
+                response,
+            })
+    }
+
+    fn begin_small_object_scan(
+        &self,
+        bucket: &str,
+        prefix: &str,
+    ) -> Result<Box<dyn StoreS3ObjectScan + '_>, StoreError> {
+        let (bucket, prefix) = request_location(bucket, prefix)?;
+        let deadline = OperationalDeadline::after(self.client.operation_timeout)
+            .ok_or(StoreError::Unavailable)?;
+        Ok(Box::new(AwsSdkS3StrongCasScan {
+            client: self.client.clone(),
+            bucket,
+            prefix,
+            after: None,
+            deadline,
+            finished: false,
+        }))
+    }
+}
+
+struct AwsSdkS3StrongCasScan {
+    client: Arc<AwsSdkS3Client>,
+    bucket: String,
+    prefix: String,
+    after: Option<StoreS3ObjectListCursor>,
+    deadline: OperationalDeadline,
+    finished: bool,
+}
+
+impl StoreS3ObjectScan for AwsSdkS3StrongCasScan {
+    fn next_page(&mut self, maximum_items: u16) -> Result<StoreS3ObjectListPage, StoreError> {
+        if self.finished {
+            return Err(StoreError::Incompatible);
+        }
+        if maximum_items == 0 || maximum_items > MAX_S3_REF_LIST_ITEMS {
+            return Err(StoreError::Quota);
+        }
+        let mut retained = retained_lengths(&[self.bucket.len(), self.prefix.len()])?;
+        if let Some(after) = &self.after {
+            retained = retained
+                .checked_add(retained_lengths(&[after.as_str().len()])?)
+                .ok_or(StoreError::Quota)?;
+        }
+        let bucket = self.bucket.clone();
+        let prefix = self.prefix.clone();
+        let after = self.after.clone();
+        let page = self.client.call_at(self.deadline, retained, |response| {
+            Command::ListSmallObjects {
+                bucket,
+                prefix,
+                after,
+                maximum_items,
+                response,
+            }
+        })?;
+        self.after = page.next().cloned();
+        self.finished = self.after.is_none();
+        Ok(page)
+    }
+
+    fn get_small_versioned_object(
+        &self,
+        key: &str,
+        maximum_bytes: u16,
+    ) -> Result<Option<StoreS3VersionedObject>, StoreError> {
+        if maximum_bytes == 0 || usize::from(maximum_bytes) > MAX_STRONG_CAS_OBJECT_BYTES {
+            return Err(StoreError::Quota);
+        }
+        let (_bucket, key) = request_location(&self.bucket, key)?;
+        let bucket = self.bucket.clone();
+        let retained = retained_lengths(&[bucket.len(), key.len()])?;
+        self.client.call_at(self.deadline, retained, |response| {
+            Command::GetSmallVersioned {
+                bucket,
+                key,
+                maximum_bytes,
+                response,
+            }
+        })
+    }
+}
+
 fn request_location(bucket: &str, key: &str) -> Result<(String, String), StoreError> {
     if bucket.is_empty()
         || bucket.len() > MAX_BUCKET_REQUEST_BYTES
@@ -461,6 +652,32 @@ enum Command {
         maximum_items: u16,
         response: SyncSender<Result<StoreS3MultipartListPage, StoreError>>,
     },
+    GetSmallVersioned {
+        bucket: String,
+        key: String,
+        maximum_bytes: u16,
+        response: SyncSender<Result<Option<StoreS3VersionedObject>, StoreError>>,
+    },
+    PutSmallIfAbsent {
+        bucket: String,
+        key: String,
+        bytes: Arc<[u8]>,
+        response: SyncSender<Result<StoreS3ConditionalWriteOutcome, StoreError>>,
+    },
+    ReplaceSmallIfVersion {
+        bucket: String,
+        key: String,
+        expected: String,
+        bytes: Arc<[u8]>,
+        response: SyncSender<Result<StoreS3ConditionalWriteOutcome, StoreError>>,
+    },
+    ListSmallObjects {
+        bucket: String,
+        prefix: String,
+        after: Option<StoreS3ObjectListCursor>,
+        maximum_items: u16,
+        response: SyncSender<Result<StoreS3ObjectListPage, StoreError>>,
+    },
 }
 
 struct QueuedCommand {
@@ -537,6 +754,44 @@ impl Command {
                     add(after.upload_id_marker().as_str().len())?;
                 }
             }
+            Self::GetSmallVersioned { bucket, key, .. } => {
+                add(bucket.len())?;
+                add(key.len())?;
+            }
+            Self::PutSmallIfAbsent {
+                bucket,
+                key,
+                bytes: body,
+                ..
+            } => {
+                add(bucket.len())?;
+                add(key.len())?;
+                add(body.len())?;
+            }
+            Self::ReplaceSmallIfVersion {
+                bucket,
+                key,
+                expected,
+                bytes: body,
+                ..
+            } => {
+                add(bucket.len())?;
+                add(key.len())?;
+                add(expected.len())?;
+                add(body.len())?;
+            }
+            Self::ListSmallObjects {
+                bucket,
+                prefix,
+                after,
+                ..
+            } => {
+                add(bucket.len())?;
+                add(prefix.len())?;
+                if let Some(after) = after {
+                    add(after.as_str().len())?;
+                }
+            }
         }
         Ok(bytes)
     }
@@ -565,6 +820,16 @@ impl Command {
                 let _ = response.send(Err(StoreError::Unavailable));
             }
             Self::ListMultipartUploads { response, .. } => {
+                let _ = response.send(Err(StoreError::Unavailable));
+            }
+            Self::GetSmallVersioned { response, .. } => {
+                let _ = response.send(Err(StoreError::Unavailable));
+            }
+            Self::PutSmallIfAbsent { response, .. }
+            | Self::ReplaceSmallIfVersion { response, .. } => {
+                let _ = response.send(Err(StoreError::Unavailable));
+            }
+            Self::ListSmallObjects { response, .. } => {
                 let _ = response.send(Err(StoreError::Unavailable));
             }
         }
@@ -910,7 +1175,175 @@ async fn handle_command(client: aws_sdk_s3::Client, command: Command) {
             };
             let _ = response.send(result);
         }
+        Command::GetSmallVersioned {
+            bucket,
+            key,
+            maximum_bytes,
+            response,
+        } => {
+            let result = match client.get_object().bucket(&bucket).key(&key).send().await {
+                Ok(output) => decode_small_versioned_object(output, maximum_bytes)
+                    .await
+                    .map(Some),
+                Err(error) if is_missing(&error) => Ok(None),
+                Err(error) => Err(classify_sdk_error(&error)),
+            };
+            let _ = response.send(result);
+        }
+        Command::PutSmallIfAbsent {
+            bucket,
+            key,
+            bytes,
+            response,
+        } => {
+            let result = client
+                .put_object()
+                .bucket(&bucket)
+                .key(&key)
+                .if_none_match("*")
+                .body(ByteStream::from(bytes.to_vec()))
+                .send()
+                .await;
+            let _ = response.send(decode_conditional_small_write(result));
+        }
+        Command::ReplaceSmallIfVersion {
+            bucket,
+            key,
+            expected,
+            bytes,
+            response,
+        } => {
+            let result = client
+                .put_object()
+                .bucket(&bucket)
+                .key(&key)
+                .if_match(expected)
+                .body(ByteStream::from(bytes.to_vec()))
+                .send()
+                .await;
+            let _ = response.send(decode_conditional_small_write(result));
+        }
+        Command::ListSmallObjects {
+            bucket,
+            prefix,
+            after,
+            maximum_items,
+            response,
+        } => {
+            let mut request = client
+                .list_objects_v2()
+                .bucket(&bucket)
+                .prefix(&prefix)
+                .max_keys(i32::from(maximum_items));
+            if let Some(after) = &after {
+                request = request.continuation_token(after.as_str());
+            }
+            let result = match request.send().await {
+                Ok(output) => decode_small_object_list_page(
+                    &bucket,
+                    &prefix,
+                    after.as_ref(),
+                    maximum_items,
+                    &output,
+                ),
+                Err(error) => Err(classify_sdk_error(&error)),
+            };
+            let _ = response.send(result);
+        }
     }
+}
+
+async fn decode_small_versioned_object(
+    output: aws_sdk_s3::operation::get_object::GetObjectOutput,
+    maximum_bytes: u16,
+) -> Result<StoreS3VersionedObject, StoreError> {
+    let length = output
+        .content_length()
+        .ok_or(StoreError::Incompatible)
+        .and_then(|length| usize::try_from(length).map_err(|_| StoreError::Incompatible))?;
+    if length > usize::from(maximum_bytes) {
+        return Err(StoreError::Quota);
+    }
+    let version = output
+        .e_tag()
+        .ok_or(StoreError::Incompatible)
+        .and_then(StoreS3ObjectVersion::new)?;
+    let mut reader = output.body.into_async_read();
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|_| StoreError::Quota)?;
+    let mut limited =
+        tokio::io::AsyncReadExt::take(&mut reader, u64::from(maximum_bytes).saturating_add(1));
+    tokio::io::AsyncReadExt::read_to_end(&mut limited, &mut bytes)
+        .await
+        .map_err(|_| StoreError::Unavailable)?;
+    if bytes.len() != length {
+        return Err(StoreError::Incompatible);
+    }
+    StoreS3VersionedObject::new(Arc::from(bytes), version)
+}
+
+fn decode_conditional_small_write<E, R>(
+    result: Result<aws_sdk_s3::operation::put_object::PutObjectOutput, SdkError<E, R>>,
+) -> Result<StoreS3ConditionalWriteOutcome, StoreError>
+where
+    E: ProvideErrorMetadata,
+{
+    match result {
+        Ok(output) => output
+            .e_tag()
+            .ok_or(StoreError::Incompatible)
+            .and_then(StoreS3ObjectVersion::new)
+            .map(StoreS3ConditionalWriteOutcome::Committed),
+        Err(error) if is_conditional_conflict(&error) => {
+            Ok(StoreS3ConditionalWriteOutcome::PreconditionFailed)
+        }
+        Err(error) => Err(classify_sdk_error(&error)),
+    }
+}
+
+fn decode_small_object_list_page(
+    bucket: &str,
+    prefix: &str,
+    after: Option<&StoreS3ObjectListCursor>,
+    maximum_items: u16,
+    output: &aws_sdk_s3::operation::list_objects_v2::ListObjectsV2Output,
+) -> Result<StoreS3ObjectListPage, StoreError> {
+    let expected_after = after.map(StoreS3ObjectListCursor::as_str);
+    let key_count = output
+        .key_count()
+        .ok_or(StoreError::Incompatible)
+        .and_then(|count| usize::try_from(count).map_err(|_| StoreError::Incompatible))?;
+    if output.name() != Some(bucket)
+        || output.prefix() != Some(prefix)
+        || output.max_keys() != Some(i32::from(maximum_items))
+        || output.continuation_token() != expected_after
+        || key_count != output.contents().len()
+        || key_count > usize::from(maximum_items)
+    {
+        return Err(StoreError::Incompatible);
+    }
+    let keys = output
+        .contents()
+        .iter()
+        .map(|object| {
+            object
+                .key()
+                .map(str::to_string)
+                .ok_or(StoreError::Incompatible)
+        })
+        .collect::<Result<Vec<_>, StoreError>>()?;
+    let next = match output.is_truncated() {
+        Some(true) => Some(StoreS3ObjectListCursor::new(
+            output
+                .next_continuation_token()
+                .ok_or(StoreError::Incompatible)?,
+        )?),
+        Some(false) if output.next_continuation_token().is_none() => None,
+        _ => return Err(StoreError::Incompatible),
+    };
+    StoreS3ObjectListPage::new(keys, next, after, maximum_items)
 }
 
 fn decode_multipart_list_page(
@@ -1196,6 +1629,61 @@ mod tests {
     }
 
     #[test]
+    fn ref_scan_pages_share_one_absolute_deadline() {
+        let (commands, receiver) = mpsc::sync_channel::<QueuedCommand>(2);
+        let thread = thread::spawn(move || {
+            let first = receiver.recv().expect("first list command");
+            thread::sleep(Duration::from_millis(150));
+            match first.command {
+                Command::ListSmallObjects {
+                    after, response, ..
+                } => {
+                    let next = StoreS3ObjectListCursor::new("next-page").expect("cursor");
+                    let page = StoreS3ObjectListPage::new(
+                        vec!["tenant/refs/a".to_string()],
+                        Some(next),
+                        after.as_ref(),
+                        1,
+                    )
+                    .expect("first page");
+                    let _ = response.send(Ok(page));
+                }
+                _ => panic!("unexpected first command"),
+            }
+
+            let second = receiver.recv().expect("second list command");
+            thread::sleep(Duration::from_millis(500));
+            match second.command {
+                Command::ListSmallObjects {
+                    after, response, ..
+                } => {
+                    let page = StoreS3ObjectListPage::new(Vec::new(), None, after.as_ref(), 1)
+                        .expect("EOF page");
+                    let _ = response.send(Ok(page));
+                }
+                _ => panic!("unexpected second command"),
+            }
+        });
+        let client = Arc::new(AwsSdkS3Client {
+            endpoint: endpoint(),
+            operation_timeout: Duration::from_millis(200),
+            worker: Arc::new(Worker {
+                commands: Mutex::new(Some(commands)),
+                thread: Mutex::new(Some(thread)),
+                budget: Arc::new(CommandBudget::new(MIN_RETAINED_COMMAND_BYTES)),
+            }),
+        });
+        let strong = AwsSdkS3StrongCasClient::from_conformant_service(client);
+        let started = Instant::now();
+        let mut scan = strong
+            .begin_small_object_scan("bucket", "tenant/refs/")
+            .expect("scan session");
+        scan.next_page(1).expect("first page before deadline");
+        assert!(matches!(scan.next_page(1), Err(StoreError::Unavailable)));
+        assert!(started.elapsed() < Duration::from_millis(300));
+    }
+
+    #[test]
     fn command_byte_budget_is_shared_and_released() {
         let budget = Arc::new(CommandBudget::new(10));
         let first = budget.reserve(7).expect("first reservation");
@@ -1272,6 +1760,54 @@ mod tests {
                 .build();
         assert!(matches!(
             decode_multipart_list_page("bucket", "tenant/objects/", None, 1, &malformed),
+            Err(StoreError::Incompatible)
+        ));
+    }
+
+    #[test]
+    fn small_versioned_reads_and_list_pages_are_strictly_bounded() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let object = aws_sdk_s3::operation::get_object::GetObjectOutput::builder()
+            .content_length(3)
+            .e_tag("etag-1")
+            .body(ByteStream::from_static(b"ref"))
+            .build();
+        let decoded = runtime
+            .block_on(decode_small_versioned_object(object, 4))
+            .expect("bounded versioned object");
+        assert_eq!(decoded.bytes(), b"ref");
+        assert_eq!(decoded.version().as_str(), "etag-1");
+
+        let listed = aws_sdk_s3::types::Object::builder()
+            .key("tenant/refs/abc")
+            .build();
+        let output = aws_sdk_s3::operation::list_objects_v2::ListObjectsV2Output::builder()
+            .name("bucket")
+            .prefix("tenant/refs/")
+            .max_keys(1)
+            .key_count(1)
+            .is_truncated(true)
+            .next_continuation_token("next-page")
+            .contents(listed)
+            .build();
+        let page = decode_small_object_list_page("bucket", "tenant/refs/", None, 1, &output)
+            .expect("strict object page");
+        assert_eq!(page.keys(), &["tenant/refs/abc".to_string()]);
+        assert_eq!(page.next().expect("continuation").as_str(), "next-page");
+
+        let malformed = aws_sdk_s3::operation::list_objects_v2::ListObjectsV2Output::builder()
+            .name("bucket")
+            .prefix("tenant/refs/")
+            .max_keys(1)
+            .key_count(0)
+            .is_truncated(true)
+            .next_continuation_token("next-page")
+            .build();
+        assert!(matches!(
+            decode_small_object_list_page("bucket", "tenant/refs/", None, 1, &malformed),
             Err(StoreError::Incompatible)
         ));
     }
