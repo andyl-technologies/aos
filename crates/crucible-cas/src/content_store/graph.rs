@@ -16,6 +16,10 @@ use super::encrypted_directory::{
     StoreGraphKeyring,
 };
 use super::memory::MemoryBlobBackend;
+use super::namespace::{
+    NamespacedStore, StoreGraphNamespaceAuthorizers, StoreNamespaceAuthorizer, StoreNamespaceId,
+    StoreNamespaceOperation,
+};
 use super::packed::PackedBlobBackend;
 use super::quota::{LogicalQuotaStore, MAXIMUM_LOGICAL_QUOTA_OBJECTS};
 use super::write_back::{
@@ -198,6 +202,13 @@ pub enum StoreNodeSpec {
         /// Child node whose synchronous operations are observed.
         child: StoreNodeId,
     },
+    /// Enforces operational authorization for one deployment namespace.
+    Namespaced {
+        /// Child node hidden behind the authorization boundary.
+        child: StoreNodeId,
+        /// Non-secret namespace resolved through an external capability.
+        namespace: StoreNamespaceId,
+    },
 }
 
 impl StoreNodeSpec {
@@ -222,6 +233,7 @@ impl StoreNodeSpec {
             Self::DurabilityPolicy { child, .. } => vec![child],
             Self::LogicalQuota { child, .. } => vec![child],
             Self::Metrics { child } => vec![child],
+            Self::Namespaced { child, .. } => vec![child],
         }
     }
 
@@ -244,6 +256,7 @@ impl StoreNodeSpec {
             Self::DurabilityPolicy { .. } => StoreNodeKind::DurabilityPolicy,
             Self::LogicalQuota { .. } => StoreNodeKind::LogicalQuota,
             Self::Metrics { .. } => StoreNodeKind::Metrics,
+            Self::Namespaced { .. } => StoreNodeKind::Namespaced,
         }
     }
 }
@@ -292,6 +305,8 @@ pub enum StoreNodeKind {
     LogicalQuota,
     /// Operational metrics facade.
     Metrics,
+    /// Deployment-namespace authorization facade.
+    Namespaced,
 }
 
 /// Non-sensitive operational description of one admitted graph node.
@@ -437,6 +452,7 @@ pub struct StoreGraph {
     description: Vec<StoreNodeDescription>,
     metrics: BTreeMap<StoreNodeId, Arc<MetricsState>>,
     write_back: BTreeMap<StoreNodeId, Arc<WriteBackStore>>,
+    namespace_authorizer: Option<Arc<dyn StoreNamespaceAuthorizer>>,
 }
 
 impl StoreGraph {
@@ -452,7 +468,8 @@ impl StoreGraph {
     /// when the declarative graph cannot safely implement the logical store.
     pub fn build(config: StoreGraphConfig) -> Result<Self, StoreError> {
         let keys = StoreGraphKeyring::new();
-        let (graph, _admin) = Self::build_with_admin_and_keys(config, &keys)?;
+        let authorizers = StoreGraphNamespaceAuthorizers::new();
+        let (graph, _admin) = Self::build_with_admin_and_capabilities(config, &keys, &authorizers)?;
         Ok(graph)
     }
 
@@ -469,7 +486,47 @@ impl StoreGraph {
         config: StoreGraphConfig,
         keys: &StoreGraphKeyring,
     ) -> Result<Self, StoreError> {
-        let (graph, _admin) = Self::build_with_admin_and_keys(config, keys)?;
+        let authorizers = StoreGraphNamespaceAuthorizers::new();
+        let (graph, _admin) = Self::build_with_admin_and_capabilities(config, keys, &authorizers)?;
+        Ok(graph)
+    }
+
+    /// Validates and constructs a graph with external namespace capabilities.
+    ///
+    /// Each namespaced node resolves its exact non-secret identifier through
+    /// `authorizers`. Policy state and credentials remain outside graph
+    /// identity and introspection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Unauthorized`] when a namespaced node has no
+    /// matching capability, or a graph/composition error when admission fails.
+    pub fn build_with_authorizers(
+        config: StoreGraphConfig,
+        authorizers: &StoreGraphNamespaceAuthorizers,
+    ) -> Result<Self, StoreError> {
+        let keys = StoreGraphKeyring::new();
+        let (graph, _admin) = Self::build_with_admin_and_capabilities(config, &keys, authorizers)?;
+        Ok(graph)
+    }
+
+    /// Validates and constructs a graph with every external capability class.
+    ///
+    /// Encryption keys and namespace authorizers are consulted only by nodes
+    /// that name them. Neither capability's secret or mutable policy state
+    /// enters the canonical graph configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Unauthorized`] when a required key or namespace
+    /// capability is unavailable, or a graph/composition error when admission
+    /// fails.
+    pub fn build_with_capabilities(
+        config: StoreGraphConfig,
+        keys: &StoreGraphKeyring,
+        authorizers: &StoreGraphNamespaceAuthorizers,
+    ) -> Result<Self, StoreError> {
+        let (graph, _admin) = Self::build_with_admin_and_capabilities(config, keys, authorizers)?;
         Ok(graph)
     }
 
@@ -489,7 +546,8 @@ impl StoreGraph {
         config: StoreGraphConfig,
     ) -> Result<(Self, StoreGraphAdmin), StoreError> {
         let keys = StoreGraphKeyring::new();
-        Self::build_with_admin_and_keys(config, &keys)
+        let authorizers = StoreGraphNamespaceAuthorizers::new();
+        Self::build_with_admin_and_capabilities(config, &keys, &authorizers)
     }
 
     /// Validates a keyed graph and returns physical maintenance authority.
@@ -505,12 +563,46 @@ impl StoreGraph {
         config: StoreGraphConfig,
         keys: &StoreGraphKeyring,
     ) -> Result<(Self, StoreGraphAdmin), StoreError> {
+        let authorizers = StoreGraphNamespaceAuthorizers::new();
+        Self::build_with_admin_and_capabilities(config, keys, &authorizers)
+    }
+
+    /// Validates a graph with all external capabilities and returns physical
+    /// maintenance authority separately.
+    ///
+    /// Namespace authorizers remain reachable only through namespaced logical
+    /// nodes. The returned administration value carries physical inventory and
+    /// deletion authority but no authorization credential or policy escape.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Unauthorized`] when a required key or namespace
+    /// capability is unavailable, or a graph/composition error when admission
+    /// fails.
+    pub fn build_with_admin_and_capabilities(
+        config: StoreGraphConfig,
+        keys: &StoreGraphKeyring,
+        authorizers: &StoreGraphNamespaceAuthorizers,
+    ) -> Result<(Self, StoreGraphAdmin), StoreError> {
         validate_structure(&config)?;
         validate_demands(&config)?;
         let configuration = StoreGraphConfigurationId::for_config(&config)?;
+        let namespace_authorizer = match config.nodes.get(&config.root) {
+            Some(StoreNodeSpec::Namespaced { namespace, .. }) => {
+                Some(authorizers.resolve(namespace)?)
+            }
+            _ => None,
+        };
 
         let mut state = GraphBuildState::default();
-        let root = instantiate(configuration, &config.root, &config.nodes, keys, &mut state)?;
+        let root = instantiate(
+            configuration,
+            &config.root,
+            &config.nodes,
+            keys,
+            authorizers,
+            &mut state,
+        )?;
         validate_capability_edges(&config.nodes, &state.built)?;
         let mut description = Vec::with_capacity(config.nodes.len());
         for (id, spec) in &config.nodes {
@@ -533,6 +625,7 @@ impl StoreGraph {
                 description,
                 metrics: state.metrics,
                 write_back: state.write_back,
+                namespace_authorizer,
             },
             StoreGraphAdmin {
                 configuration,
@@ -612,8 +705,10 @@ impl StoreGraph {
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError::InvalidComposition`] for a zero limit or a child,
-    /// journal, authentication, or durability error during transfer.
+    /// Returns [`StoreError::InvalidComposition`] for a zero limit,
+    /// [`StoreError::Unauthorized`] when namespace policy denies a pending
+    /// transfer or root inventory, or a child, journal, authentication, or
+    /// durability error during transfer.
     pub fn flush_write_back(
         &self,
         maximum_transfers: u32,
@@ -626,7 +721,10 @@ impl StoreGraph {
         let mut completed = 0_u32;
         'nodes: for store in self.write_back.values() {
             while completed < maximum_transfers {
-                if !store.flush_one()? {
+                if !store.flush_one(&mut |id| {
+                    self.authorize_namespace(StoreNamespaceOperation::Read, id)?;
+                    self.authorize_namespace(StoreNamespaceOperation::Put, id)
+                })? {
                     continue 'nodes;
                 }
                 completed += 1;
@@ -652,7 +750,10 @@ impl WriteBackRetentionAdmin for StoreGraph {
             .iter()
             .map(|(id, store)| (id.as_str().to_owned(), store.journal()))
             .collect();
-        Ok(Box::new(StoreGraphWriteBackFence::acquire(&journals)?))
+        Ok(Box::new(StoreGraphWriteBackFence::acquire(
+            &journals,
+            self.namespace_authorizer.clone(),
+        )?))
     }
 }
 
@@ -682,6 +783,16 @@ impl ImmutableBlobBackend for StoreGraph {
 }
 
 impl StoreGraph {
+    fn authorize_namespace(
+        &self,
+        operation: StoreNamespaceOperation,
+        id: ContentId,
+    ) -> Result<(), StoreError> {
+        self.namespace_authorizer
+            .as_ref()
+            .map_or(Ok(()), |authorizer| authorizer.authorize(operation, id))
+    }
+
     fn require_admitted(&self, id: ContentId) -> Result<(), StoreError> {
         if self.admitted_kinds.contains(&id.kind()) {
             Ok(())
@@ -708,6 +819,23 @@ fn validate_structure(config: &StoreGraphConfig) -> Result<(), StoreError> {
         return Err(invalid_graph(
             config.root.as_str(),
             GraphViolation::MissingNode,
+        ));
+    }
+    let namespace_nodes = config
+        .nodes
+        .values()
+        .filter(|node| matches!(node, StoreNodeSpec::Namespaced { .. }))
+        .count();
+    if namespace_nodes != 0
+        && (namespace_nodes != 1
+            || !matches!(
+                config.nodes.get(&config.root),
+                Some(StoreNodeSpec::Namespaced { .. })
+            ))
+    {
+        return Err(invalid_graph(
+            config.root.as_str(),
+            GraphViolation::InvalidNamespaceBoundary,
         ));
     }
     validate_administrative_paths(config)?;
@@ -967,6 +1095,9 @@ fn validate_demands(config: &StoreGraphConfig) -> Result<(), StoreError> {
             StoreNodeSpec::Metrics { child } => {
                 extend_demand(child, &kinds, &mut demands, &mut queue);
             }
+            StoreNodeSpec::Namespaced { child, .. } => {
+                extend_demand(child, &kinds, &mut demands, &mut queue);
+            }
         }
     }
     for (id, node) in &config.nodes {
@@ -1016,6 +1147,7 @@ fn instantiate(
     id: &StoreNodeId,
     nodes: &BTreeMap<StoreNodeId, StoreNodeSpec>,
     keys: &StoreGraphKeyring,
+    authorizers: &StoreGraphNamespaceAuthorizers,
     state: &mut GraphBuildState,
 ) -> Result<Arc<dyn ImmutableBlobBackend>, StoreError> {
     if let Some(backend) = state.built.get(id) {
@@ -1093,7 +1225,7 @@ fn instantiate(
         }
         StoreNodeSpec::Verified { child } => Arc::new(VerifiedStore::new(
             id.as_str(),
-            instantiate(configuration, child, nodes, keys, state)?,
+            instantiate(configuration, child, nodes, keys, authorizers, state)?,
         )),
         StoreNodeSpec::Routed { routes } => {
             let routes = routes
@@ -1101,7 +1233,7 @@ fn instantiate(
                 .map(|(kind, child)| {
                     Ok((
                         *kind,
-                        instantiate(configuration, child, nodes, keys, state)?,
+                        instantiate(configuration, child, nodes, keys, authorizers, state)?,
                     ))
                 })
                 .collect::<Result<BTreeMap<_, _>, StoreError>>()?;
@@ -1114,7 +1246,7 @@ fn instantiate(
         } => {
             let tiers = tiers
                 .iter()
-                .map(|child| instantiate(configuration, child, nodes, keys, state))
+                .map(|child| instantiate(configuration, child, nodes, keys, authorizers, state))
                 .collect::<Result<Vec<_>, _>>()?;
             Arc::new(TieredStore::new(
                 id.as_str(),
@@ -1125,13 +1257,13 @@ fn instantiate(
         }
         StoreNodeSpec::ReadThrough { cache, source } => Arc::new(ReadThroughStore::new(
             id.as_str(),
-            instantiate(configuration, cache, nodes, keys, state)?,
-            instantiate(configuration, source, nodes, keys, state)?,
+            instantiate(configuration, cache, nodes, keys, authorizers, state)?,
+            instantiate(configuration, source, nodes, keys, authorizers, state)?,
         )),
         StoreNodeSpec::WriteThrough { children } => {
             let children = children
                 .iter()
-                .map(|child| instantiate(configuration, child, nodes, keys, state))
+                .map(|child| instantiate(configuration, child, nodes, keys, authorizers, state))
                 .collect::<Result<Vec<_>, _>>()?;
             Arc::new(WriteThroughStore::new(id.as_str(), children)?)
         }
@@ -1144,8 +1276,8 @@ fn instantiate(
         } => {
             let store = Arc::new(WriteBackStore::new(
                 id.as_str(),
-                instantiate(configuration, staging, nodes, keys, state)?,
-                instantiate(configuration, destination, nodes, keys, state)?,
+                instantiate(configuration, staging, nodes, keys, authorizers, state)?,
+                instantiate(configuration, destination, nodes, keys, authorizers, state)?,
                 journal_root.clone(),
                 *maximum_pending_objects,
                 *maximum_pending_bytes,
@@ -1158,11 +1290,11 @@ fn instantiate(
             requirements,
         } => Arc::new(DurabilityPolicyStore::new(
             id.as_str(),
-            instantiate(configuration, child, nodes, keys, state)?,
+            instantiate(configuration, child, nodes, keys, authorizers, state)?,
             requirements.clone(),
         )),
         StoreNodeSpec::Metrics { child } => {
-            let child = instantiate(configuration, child, nodes, keys, state)?;
+            let child = instantiate(configuration, child, nodes, keys, authorizers, state)?;
             let (backend, metrics_state) = MetricsStore::new(id.as_str(), child);
             state.metrics.insert(id.clone(), metrics_state);
             Arc::new(backend)
@@ -1173,7 +1305,7 @@ fn instantiate(
             maximum_objects,
             maximum_logical_bytes,
         } => {
-            let child_backend = instantiate(configuration, child, nodes, keys, state)?;
+            let child_backend = instantiate(configuration, child, nodes, keys, authorizers, state)?;
             let child_admin = state.physical.remove(child).ok_or_else(|| {
                 invalid_graph(id.as_str(), GraphViolation::InvalidLogicalQuotaChild)
             })?;
@@ -1189,6 +1321,11 @@ fn instantiate(
             state.physical.insert(id.clone(), store.clone());
             store
         }
+        StoreNodeSpec::Namespaced { child, namespace } => Arc::new(NamespacedStore::new(
+            id.as_str(),
+            instantiate(configuration, child, nodes, keys, authorizers, state)?,
+            authorizers.resolve(namespace)?,
+        )),
     };
     state.built.insert(id.clone(), backend.clone());
     Ok(backend)
