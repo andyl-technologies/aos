@@ -624,6 +624,11 @@
     # config at its full absolute option path. Re-checking a nested relative
     # path would lose that prefix and reject valid writes.
     enforcePackageAuthorization ? true,
+    # Stage-1 package selection deliberately evaluates against only the
+    # desired-package declaration, before selected package modules contribute
+    # their option schemas. The resolver disables this check only for that
+    # seed evaluation; full stage-2 evaluation remains fail-closed.
+    enforceRuntimeDeclarations ? true,
   }: let
     moduleLib =
       if lib == {}
@@ -1041,20 +1046,23 @@
             ? ${builtins.concatStringsSep "." (lists.take length path)})
           (builtins.genList (index: index + 1) (builtins.length path));
       in
-        builtins.foldl'
-        (checked: module:
-          if !builtins.elem (module._provenance or "") ["@runtime" "@runtime-import"]
-          then checked
-          else
-            builtins.foldl'
-            (inner: path:
-              if hasDeclaredPrefix path
-              then inner
-              else throw "evalModules: ${module._provenance} module '${module._file}' writes undeclared option '${builtins.concatStringsSep "." path}'")
-            checked
-            (configLeafPaths [] module.config))
-        true
-        evaluatedModules;
+        if !enforceRuntimeDeclarations
+        then true
+        else
+          builtins.foldl'
+          (checked: module:
+            if !builtins.elem (module._provenance or "") ["@runtime" "@runtime-import"]
+            then checked
+            else
+              builtins.foldl'
+              (inner: path:
+                if hasDeclaredPrefix path
+                then inner
+                else throw "evalModules: ${module._provenance} module '${module._file}' writes undeclared option '${builtins.concatStringsSep "." path}'")
+              checked
+              (configLeafPaths [] module.config))
+          true
+          evaluatedModules;
 
       authorizePackageDeclaration = decl: let
         package = strings.removePrefix "package:" decl.provenance;
@@ -1657,7 +1665,7 @@
       in
         evalModules ({
             modules = modules ++ extraModules;
-            inherit pkgs lib extraArgs specialArgs operatorModules packageModules enforcePackageAuthorization;
+            inherit pkgs lib extraArgs specialArgs operatorModules packageModules enforcePackageAuthorization enforceRuntimeDeclarations;
           }
           // builtins.removeAttrs args ["modules"]);
 
