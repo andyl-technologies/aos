@@ -128,6 +128,7 @@ in {
       modules = [./modules/base/host-selection.nix];
       pkgs = frozenPkgs;
       inherit lib operatorModules runtimeModules;
+      enforceRuntimeDeclarations = false;
     };
 
   ## Evaluate a host configuration on-host into a config manifest.

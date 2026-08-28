@@ -925,6 +925,25 @@
       .config
       .known))
     .success;
+  runtimeUnknownOptionDeferredForSelection =
+    (lib.evalModules {
+      modules = [../../modules/base/host-selection.nix];
+      runtimeModules = [
+        {
+          config = {
+            aos.apm.desiredPackages = ["nginx"];
+            environment.etc."runtime-selection/deferred.conf".mode = "0644";
+          };
+        }
+      ];
+      enforceRuntimeDeclarations = false;
+      inherit lib;
+    })
+    .config
+    .aos
+    .apm
+    .desiredPackages
+    == ["nginx"];
   hostUnknownOptionRemainsLazy =
     (lib.evalModules {
       modules = [
@@ -1269,7 +1288,7 @@
         message = "host import ownership and priority";
       }
       {
-        ok = runtimeDirectGetsOperatorPriority && runtimeNestedMatchesOperator && runtimeOwnershipMatchesMergePriority && runtimeImportKeepsNormalPriority && runtimeNestedImportKeepsNormalPriority && runtimeProvisioningRejected && runtimeUnknownOptionRejected && runtimeImportedUnknownOptionRejected && hostUnknownOptionRemainsLazy;
+        ok = runtimeDirectGetsOperatorPriority && runtimeNestedMatchesOperator && runtimeOwnershipMatchesMergePriority && runtimeImportKeepsNormalPriority && runtimeNestedImportKeepsNormalPriority && runtimeProvisioningRejected && runtimeUnknownOptionRejected && runtimeImportedUnknownOptionRejected && runtimeUnknownOptionDeferredForSelection && hostUnknownOptionRemainsLazy;
         message = "runtime module priority, declared surface, and provisioning confinement";
       }
       {
