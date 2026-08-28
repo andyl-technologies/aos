@@ -29,7 +29,7 @@ use super::profile::{
 };
 use super::quota::{LogicalQuotaStore, MAXIMUM_LOGICAL_QUOTA_OBJECTS};
 use super::s3::{
-    S3BlobBackend, StoreGraphS3Clients, StoreS3EndpointId,
+    S3BlobBackend, S3MultipartCleanupAdmin, StoreGraphS3Clients, StoreS3EndpointId,
     validate_configuration as validate_s3_configuration,
 };
 use super::write_back::{
@@ -444,17 +444,19 @@ impl StoreWriteBackFlushSummary {
     }
 }
 
-/// Separate physical-placement administration returned during graph construction.
+/// Separate maintenance administration returned during graph construction.
 ///
 /// This capability is not retained by [`StoreGraph`]. A campaign repository
 /// that receives only the ordinary graph therefore cannot inventory or delete
 /// physical placements. The daemon maintenance owner may retain this value and
 /// lend individual administrative boundaries to a generation-bound GC
 /// operation. A logical-quota boundary owns and replaces its child leaf's
-/// otherwise direct capability.
+/// otherwise direct capability. S3 leaves add only bounded unfinished-upload
+/// cleanup; that weaker boundary cannot inventory or delete committed objects.
 pub struct StoreGraphAdmin {
     configuration: StoreGraphConfigurationId,
     physical: BTreeMap<StoreNodeId, Arc<dyn BlobStoreAdmin>>,
+    s3_multipart_cleanup: BTreeMap<StoreNodeId, Arc<S3MultipartCleanupAdmin>>,
 }
 
 impl StoreGraphAdmin {
@@ -470,6 +472,21 @@ impl StoreGraphAdmin {
         self.physical
             .iter()
             .map(|(node, admin)| StoreGraphPhysicalAdmin {
+                node,
+                admin: admin.as_ref(),
+            })
+            .collect()
+    }
+
+    /// Returns bounded S3 multipart-cleanup boundaries in node-ID order.
+    ///
+    /// These capabilities reclaim unfinished uploads only. They do not expose
+    /// committed-object inventory or deletion and are not physical GC fences.
+    #[must_use]
+    pub fn s3_multipart_cleanup(&self) -> Vec<StoreGraphS3MultipartCleanupAdmin<'_>> {
+        self.s3_multipart_cleanup
+            .iter()
+            .map(|(node, admin)| StoreGraphS3MultipartCleanupAdmin {
                 node,
                 admin: admin.as_ref(),
             })
@@ -494,6 +511,27 @@ impl<'a> StoreGraphPhysicalAdmin<'a> {
     /// Returns the separately held physical inventory/delete authority.
     #[must_use]
     pub const fn admin(self) -> &'a dyn BlobStoreAdmin {
+        self.admin
+    }
+}
+
+/// Borrowed cleanup capability for one exact admitted S3 leaf.
+#[derive(Clone, Copy)]
+pub struct StoreGraphS3MultipartCleanupAdmin<'a> {
+    node: &'a StoreNodeId,
+    admin: &'a S3MultipartCleanupAdmin,
+}
+
+impl<'a> StoreGraphS3MultipartCleanupAdmin<'a> {
+    /// Returns the cleanup boundary's exact graph node ID.
+    #[must_use]
+    pub const fn node(self) -> &'a StoreNodeId {
+        self.node
+    }
+
+    /// Returns the separately held bounded multipart cleanup authority.
+    #[must_use]
+    pub const fn admin(self) -> &'a S3MultipartCleanupAdmin {
         self.admin
     }
 }
@@ -747,13 +785,14 @@ impl StoreGraph {
         )
     }
 
-    /// Validates a graph with all external capabilities and returns physical
-    /// maintenance authority separately.
+    /// Validates a graph with all external capabilities and returns maintenance
+    /// authority separately.
     ///
     /// Physical-quota binders return guards rather than quota mutation
     /// authority. The latter remains solely operator-owned. S3 client
-    /// capabilities provide ordinary immutable transport only and do not add
-    /// S3 inventory/delete authority to the returned administration value.
+    /// capabilities provide ordinary immutable transport plus separately held
+    /// unfinished-upload cleanup. They do not add S3 committed-object
+    /// inventory/delete authority to the returned administration value.
     ///
     /// # Errors
     ///
@@ -827,6 +866,7 @@ impl StoreGraph {
             StoreGraphAdmin {
                 configuration,
                 physical: state.physical,
+                s3_multipart_cleanup: state.s3_multipart_cleanup,
             },
         ))
     }
@@ -1417,6 +1457,7 @@ fn extend_demand(
 struct GraphBuildState {
     built: BTreeMap<StoreNodeId, Arc<dyn ImmutableBlobBackend>>,
     physical: BTreeMap<StoreNodeId, Arc<dyn BlobStoreAdmin>>,
+    s3_multipart_cleanup: BTreeMap<StoreNodeId, Arc<S3MultipartCleanupAdmin>>,
     metrics: BTreeMap<StoreNodeId, Arc<MetricsState>>,
     write_back: BTreeMap<StoreNodeId, Arc<WriteBackStore>>,
 }
@@ -1515,15 +1556,21 @@ fn instantiate(
             prefix,
             maximum_logical_object_bytes,
             multipart_part_bytes,
-        } => Arc::new(S3BlobBackend::new(
-            id.as_str(),
-            endpoint.clone(),
-            bucket.clone(),
-            prefix.clone(),
-            *maximum_logical_object_bytes,
-            *multipart_part_bytes,
-            capabilities.s3_clients.resolve(endpoint)?,
-        )?),
+        } => {
+            let leaf = Arc::new(S3BlobBackend::new(
+                id.as_str(),
+                endpoint.clone(),
+                bucket.clone(),
+                prefix.clone(),
+                *maximum_logical_object_bytes,
+                *multipart_part_bytes,
+                capabilities.s3_clients.resolve(endpoint)?,
+            )?);
+            state
+                .s3_multipart_cleanup
+                .insert(id.clone(), Arc::new(leaf.multipart_cleanup_admin()));
+            leaf
+        }
         StoreNodeSpec::Verified { child } => Arc::new(VerifiedStore::new(
             id.as_str(),
             instantiate(configuration, child, nodes, capabilities, state)?,

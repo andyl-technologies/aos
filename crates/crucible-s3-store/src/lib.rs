@@ -19,8 +19,10 @@ use std::time::Duration;
 use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
 use aws_sdk_s3::primitives::ByteStream;
 use crucible_cas::content_store::{
-    ContentId, StoreError, StoreS3Client, StoreS3ConditionalPutOutcome, StoreS3EndpointId,
-    StoreS3MultipartUpload, StoreS3ObjectDownload, StoreS3UploadedPart,
+    ContentId, MAX_S3_MULTIPART_LIST_ITEMS, StoreError, StoreS3Client,
+    StoreS3ConditionalPutOutcome, StoreS3EndpointId, StoreS3MultipartListCursor,
+    StoreS3MultipartListPage, StoreS3MultipartUpload, StoreS3MultipartUploadRecord,
+    StoreS3ObjectDownload, StoreS3UploadedPart,
 };
 
 mod deadline;
@@ -34,7 +36,7 @@ const MAX_RETAINED_COMMAND_BYTES: u64 = 1024 * 1024 * 1024;
 const DOWNLOAD_CHANNEL_CHUNKS: usize = 2;
 const DOWNLOAD_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_BUCKET_REQUEST_BYTES: usize = 63;
-const MAX_OBJECT_KEY_BYTES: usize = 2_048;
+const MAX_OBJECT_KEY_BYTES: usize = 1_024;
 const MAX_MULTIPART_PART_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MULTIPART_PARTS: usize = 10_000;
 const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -340,6 +342,36 @@ impl StoreS3Client for AwsSdkS3Client {
             response,
         })
     }
+
+    fn list_multipart_uploads(
+        &self,
+        bucket: &str,
+        prefix: &str,
+        after: Option<&StoreS3MultipartListCursor>,
+        maximum_items: u16,
+    ) -> Result<StoreS3MultipartListPage, StoreError> {
+        if maximum_items == 0 || maximum_items > MAX_S3_MULTIPART_LIST_ITEMS {
+            return Err(StoreError::Quota);
+        }
+        let (bucket, prefix) = request_location(bucket, prefix)?;
+        let mut retained = retained_lengths(&[bucket.len(), prefix.len()])?;
+        if let Some(after) = after {
+            retained = retained
+                .checked_add(retained_lengths(&[
+                    after.key_marker().len(),
+                    after.upload_id_marker().as_str().len(),
+                ])?)
+                .ok_or(StoreError::Quota)?;
+        }
+        let after = after.cloned();
+        self.call(retained, |response| Command::ListMultipartUploads {
+            bucket,
+            prefix,
+            after,
+            maximum_items,
+            response,
+        })
+    }
 }
 
 fn request_location(bucket: &str, key: &str) -> Result<(String, String), StoreError> {
@@ -422,6 +454,13 @@ enum Command {
         upload: String,
         response: SyncSender<Result<(), StoreError>>,
     },
+    ListMultipartUploads {
+        bucket: String,
+        prefix: String,
+        after: Option<StoreS3MultipartListCursor>,
+        maximum_items: u16,
+        response: SyncSender<Result<StoreS3MultipartListPage, StoreError>>,
+    },
 }
 
 struct QueuedCommand {
@@ -485,6 +524,19 @@ impl Command {
                 add(key.len())?;
                 add(upload.len())?;
             }
+            Self::ListMultipartUploads {
+                bucket,
+                prefix,
+                after,
+                ..
+            } => {
+                add(bucket.len())?;
+                add(prefix.len())?;
+                if let Some(after) = after {
+                    add(after.key_marker().len())?;
+                    add(after.upload_id_marker().as_str().len())?;
+                }
+            }
         }
         Ok(bytes)
     }
@@ -510,6 +562,9 @@ impl Command {
                 let _ = response.send(Err(StoreError::Unavailable));
             }
             Self::AbortMultipart { response, .. } => {
+                let _ = response.send(Err(StoreError::Unavailable));
+            }
+            Self::ListMultipartUploads { response, .. } => {
                 let _ = response.send(Err(StoreError::Unavailable));
             }
         }
@@ -826,7 +881,84 @@ async fn handle_command(client: aws_sdk_s3::Client, command: Command) {
                 Err(error) => Err(classify_sdk_error(&error)),
             });
         }
+        Command::ListMultipartUploads {
+            bucket,
+            prefix,
+            after,
+            maximum_items,
+            response,
+        } => {
+            let mut request = client
+                .list_multipart_uploads()
+                .bucket(&bucket)
+                .prefix(&prefix)
+                .max_uploads(i32::from(maximum_items));
+            if let Some(after) = &after {
+                request = request
+                    .key_marker(after.key_marker())
+                    .upload_id_marker(after.upload_id_marker().as_str());
+            }
+            let result = match request.send().await {
+                Ok(output) => decode_multipart_list_page(
+                    &bucket,
+                    &prefix,
+                    after.as_ref(),
+                    maximum_items,
+                    &output,
+                ),
+                Err(error) => Err(classify_sdk_error(&error)),
+            };
+            let _ = response.send(result);
+        }
     }
+}
+
+fn decode_multipart_list_page(
+    bucket: &str,
+    prefix: &str,
+    after: Option<&StoreS3MultipartListCursor>,
+    maximum_items: u16,
+    output: &aws_sdk_s3::operation::list_multipart_uploads::ListMultipartUploadsOutput,
+) -> Result<StoreS3MultipartListPage, StoreError> {
+    let expected_key_marker = after.map(StoreS3MultipartListCursor::key_marker);
+    let expected_upload_marker = after.map(|cursor| cursor.upload_id_marker().as_str());
+    if output.bucket() != Some(bucket)
+        || output.prefix() != Some(prefix)
+        || output.max_uploads() != Some(i32::from(maximum_items))
+        || output.key_marker() != expected_key_marker
+        || output.upload_id_marker() != expected_upload_marker
+        || output.uploads().len() > usize::from(maximum_items)
+    {
+        return Err(StoreError::Incompatible);
+    }
+    let uploads = output
+        .uploads()
+        .iter()
+        .map(|upload| {
+            let key = upload.key().ok_or(StoreError::Incompatible)?;
+            let upload = upload
+                .upload_id()
+                .ok_or(StoreError::Incompatible)
+                .and_then(StoreS3MultipartUpload::new)?;
+            StoreS3MultipartUploadRecord::new(key, upload)
+        })
+        .collect::<Result<Vec<_>, StoreError>>()?;
+    let next = match output.is_truncated() {
+        Some(true) => Some(StoreS3MultipartListCursor::new(
+            output.next_key_marker().ok_or(StoreError::Incompatible)?,
+            output
+                .next_upload_id_marker()
+                .ok_or(StoreError::Incompatible)
+                .and_then(StoreS3MultipartUpload::new)?,
+        )?),
+        Some(false)
+            if output.next_key_marker().is_none() && output.next_upload_id_marker().is_none() =>
+        {
+            None
+        }
+        _ => return Err(StoreError::Incompatible),
+    };
+    StoreS3MultipartListPage::new(uploads, next, after, maximum_items)
 }
 
 enum DownloadChunk {
@@ -1099,5 +1231,48 @@ mod tests {
         assert!(request_location("", "objects/key").is_err());
         assert!(request_location("bucket", "").is_err());
         assert!(request_location("bucket", &"x".repeat(MAX_OBJECT_KEY_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn multipart_listing_requires_exact_bounded_pagination() {
+        let upload = aws_sdk_s3::types::MultipartUpload::builder()
+            .key("tenant/objects/a")
+            .upload_id("upload-a")
+            .build();
+        let output =
+            aws_sdk_s3::operation::list_multipart_uploads::ListMultipartUploadsOutput::builder()
+                .bucket("bucket")
+                .prefix("tenant/objects/")
+                .max_uploads(1)
+                .is_truncated(true)
+                .next_key_marker("tenant/objects/a")
+                .next_upload_id_marker("upload-a")
+                .uploads(upload)
+                .build();
+        let page = decode_multipart_list_page("bucket", "tenant/objects/", None, 1, &output)
+            .expect("exact multipart page");
+        assert_eq!(page.uploads().len(), 1);
+        assert_eq!(
+            page.next().expect("continuation").key_marker(),
+            "tenant/objects/a"
+        );
+
+        let malformed =
+            aws_sdk_s3::operation::list_multipart_uploads::ListMultipartUploadsOutput::builder()
+                .bucket("bucket")
+                .prefix("tenant/objects/")
+                .max_uploads(1)
+                .is_truncated(true)
+                .uploads(
+                    aws_sdk_s3::types::MultipartUpload::builder()
+                        .key("tenant/objects/a")
+                        .upload_id("upload-a")
+                        .build(),
+                )
+                .build();
+        assert!(matches!(
+            decode_multipart_list_page("bucket", "tenant/objects/", None, 1, &malformed),
+            Err(StoreError::Incompatible)
+        ));
     }
 }

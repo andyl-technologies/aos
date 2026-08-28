@@ -330,8 +330,10 @@ non-secret endpoint-policy identifier. The daemon supplies the separately
 configured client capability with exact matching identity; credentials,
 regions, retry policy, HTTP details, and secrets never enter graph bytes. The
 canonical bucket is 3 through 63 ASCII alphanumeric, `.` or `-` bytes. The
-optional key prefix is at most 1,024 bytes, has slash-separated 1 through 255
-byte segments, excludes leading/trailing slash and `.`/`..`, and otherwise uses
+optional key prefix is at most 922 bytes, leaving room under S3's 1,024-byte
+object-key ceiling for `/objects/` and the longest canonical `ContentId`. It
+has slash-separated 1 through 255 byte segments, excludes leading/trailing
+slash and `.`/`..`, and otherwise uses
 ASCII alphanumeric, `.`, `_`, or `-`. Objects live below
 `<prefix>/objects/<ContentId>` (or `objects/<ContentId>` for an empty prefix).
 
@@ -345,6 +347,21 @@ success boundary. Failed multipart operations are synchronously aborted;
 failure to confirm abort returns `MultipartCleanupRequired` rather than
 silently losing cleanup responsibility.
 
+Graph construction returns a separate S3 multipart-cleanup capability to the
+daemon maintenance owner; the ordinary immutable graph never retains it. One
+cleanup call lists and aborts at most 1,000 unfinished uploads below the exact
+`<prefix>/objects/` namespace and returns the service's bounded
+`(next_key_marker, next_upload_id_marker)` continuation. The adapter requires
+both markers on a truncated page, rejects a repeated or non-progressing cursor,
+and validates the entire page as canonical `ContentId` object keys before the
+first abort. Abort is idempotent, so a crash or partial page can resume from the
+prior cursor. A provider-retained unfinished upload is therefore discoverable
+again after daemon restart without an unbounded process-local journal.
+
+This cleanup boundary is not a stable committed-object inventory: ordinary
+publication may continue while a page is listed and aborted, and the capability
+cannot list or delete completed objects. It MUST NOT be used as a GC fence.
+
 The concrete `crucible-s3-store` AWS SDK adapter owns a command queue of 1
 through 1,024 entries, an active-operation ceiling of 1 through 64, an
 aggregate queued-plus-active command budget of 128 MiB through 1 GiB, and a
@@ -354,19 +371,20 @@ streaming. Downloads cross a two-chunk, fixed 64-KiB handoff. A full queue or
 exhausted byte budget fails promptly. Endpoint credentials or service denial
 map to `Unauthorized`, transient transport/service failures to `Unavailable`,
 and malformed or unsupported provider behavior to `Incompatible`. This
-checkpoint does not yet grant S3 listing/deletion authority, durable orphaned
-multipart cleanup, or mutable-ref authority; those remain required before the
-S3 leaf participates in global GC or is selected as the authoritative ref
-backend.
+checkpoint grants only the bounded unfinished-upload listing/abort authority
+above. It does not grant committed-object inventory/deletion or mutable-ref
+authority; those remain required before the S3 leaf participates in global GC
+or is selected as the authoritative ref backend.
 
 - **[CSTORE-7]** The directory backend MUST leave either no object or a complete
   authenticated object after interruption; same-filesystem staging debris is
   unreachable and reclaimable.
 - **[CSTORE-8]** The S3-compatible backend MUST tolerate interrupted multipart
   upload without losing cleanup responsibility, enforce bounded transfer work
-  and absolute operation deadlines, authenticate downloaded logical bytes, and
-  use conditional ref operations only after the concrete service passes the
-  ref conformance suite.
+  and absolute operation deadlines, make provider-retained unfinished uploads
+  resumably reclaimable through separate bounded maintenance authority,
+  authenticate downloaded logical bytes, and use conditional ref operations
+  only after the concrete service passes the ref conformance suite.
 
 ## 06.5 Store composition graph
 

@@ -1461,9 +1461,14 @@ retained-command-byte admission, one absolute deadline over each SDK/stream oper
 credential/availability/protocol error classes, and conditional completion. Tests cover multipart
 round trip, range authentication, exact replay, corruption, interruption,
 cleanup failure, credential expiry, capability mismatch, graph identity, queue
-bounds, command deadline, and stream interruption. S3 inventory/deletion,
-durable orphaned-upload sweeping, conditional refs, service conformance, and
-the realistic operator flight remain open under T-CAM-5.7 and T-CAM-5.8.
+bounds, command deadline, stream interruption, and bounded restart-resumable
+orphan cleanup. Graph administration now retains a separate S3 cleanup
+capability that lists and idempotently aborts at most 1,000 unfinished uploads
+per call with an exact provider continuation; it validates a whole page as
+canonical keys before the first effect and cannot inventory or delete committed
+objects. S3 committed-object inventory/deletion, conditional refs, service
+conformance, and the realistic operator flight remain open under T-CAM-5.7 and
+T-CAM-5.8.
 Broader layered transforms remain open;
 therefore T-CAM-5.5 is not checked by this checkpoint.
 
