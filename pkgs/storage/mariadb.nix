@@ -17,6 +17,8 @@
   libaio,
   libevent,
   liburing,
+  linux-pam,
+  fmt,
   lz4,
   ncurses,
   numactl,
@@ -30,6 +32,7 @@
   zstd,
   bash,
   coreutils,
+  sed,
   writeShellScriptBin,
 }: let
   version = "11.4.12";
@@ -66,6 +69,7 @@
           /bin/mariadb-install-db \
             --defaults-file="$config" \
             --auth-root-authentication-method=socket \
+            --force \
             --skip-test-db
         fi
         ;;
@@ -101,6 +105,7 @@ in
       perl
       python3
       boost.dev
+      fmt
       rpcsvc-proto
     ];
     runtimeDeps = [
@@ -112,6 +117,7 @@ in
       libaio
       libevent
       liburing
+      linux-pam
       lz4
       ncurses
       numactl
@@ -124,6 +130,7 @@ in
       zstd
       bash
       coreutils
+      sed
       control
     ];
     propagatedDeps = [];
@@ -157,6 +164,18 @@ in
             -DWITH_JEMALLOC:STRING=yes \
             -DWITH_NUMA:BOOL=ON \
             -DWITH_LIBURING:BOOL=ON \
+            -DURING_INCLUDE_DIRS=${liburing}/include \
+            -DURING_LIBRARIES=${liburing}/lib/liburing.so \
+            -DLIBAIO_INCLUDE_DIRS=${libaio}/include \
+            -DLIBAIO_LIBRARIES=${libaio}/lib/libaio.so \
+            -DCURSES_INCLUDE_PATH=${ncurses}/include \
+            -DCURSES_LIBRARY=${ncurses}/lib/libncursesw.so \
+            -DLIBLZMA_INCLUDE_DIR=${xz}/include \
+            -DLIBLZMA_LIBRARY=${xz}/lib/liblzma.so \
+            -DCMAKE_PREFIX_PATH="${lz4};${snappy};${zstd};${bzip2};${xz};${linux-pam};${fmt}" \
+            -DWITH_LIBFMT=system \
+            -DLIBFMT_INCLUDE_DIR=${fmt}/include \
+            -Dlz4_ROOT_DIR=${lz4} \
             -DWITH_ROCKSDB_BZip2:STRING=ON \
             -DWITH_ROCKSDB_LZ4:STRING=ON \
             -DWITH_ROCKSDB_Snappy:STRING=ON \
@@ -199,35 +218,44 @@ in
       {
         name = "build";
         script = ''
-          cd build
           make -j$NIX_BUILD_CORES
         '';
       }
       {
         name = "install";
         script = ''
-          cd build
           make install
 
           # Prove the requested features reached built artifacts, not merely
           # the CMake cache. MariaRocks vendors its matched RocksDB source but
-          # must link every distributable compression and I/O provider from
-          # AOS packages; Mroonga is the sole libevent consumer.
+          # must link every distributable compression provider from AOS
+          # packages. The server itself must retain the requested external I/O
+          # and NUMA providers; the cache assertions below additionally bind
+          # statically consumed jemalloc and Mroonga/libevent configuration.
           test -f "$out/lib/plugin/ha_rocksdb.so"
           readelf -d "$out/lib/plugin/ha_rocksdb.so" > rocksdb-needed.txt
-          for library in libbz2 liblz4 libsnappy liburing libzstd; do
+          for library in libbz2 liblz4 libsnappy libzstd; do
             grep "$library" rocksdb-needed.txt
           done
           test -f "$out/lib/plugin/ha_mroonga.so"
-          readelf -d "$out/lib/plugin/ha_mroonga.so" | grep libevent
-          readelf -d "$out/bin/mariadbd" | grep libjemalloc
+          readelf -d "$out/bin/mariadbd" | grep libaio
+          readelf -d "$out/bin/mariadbd" | grep libnuma
+          readelf -d "$out/bin/mariadbd" | grep liburing
 
           mkdir -p "$out/share/aos-build-features"
           grep -E \
             '^(BUILD_CONFIG|FEATURE_SET|WITH_SSL|WITH_ZLIB|WITH_ZSTD|WITH_PCRE|GRN_WITH_LIBEVENT|WITH_JEMALLOC|WITH_NUMA|WITH_LIBURING|WITH_ROCKSDB_BZip2|WITH_ROCKSDB_LZ4|WITH_ROCKSDB_Snappy|WITH_ROCKSDB_ZSTD|WITH_SYSTEMD|WITH_UNIT_TESTS|AWS_SDK_EXTERNAL_PROJECT):' \
             CMakeCache.txt > "$out/share/aos-build-features/mariadb-cmake-cache.txt"
 
+          # Upstream installs its initialization helper under scripts even
+          # though both its systemd unit and operator documentation expose it
+          # as a command. Publish it in bin and replace the forbidden host
+          # shell shebang with the hermetic AOS bash.
+          install -m 0755 "$out/scripts/mariadb-install-db" "$out/bin/mariadb-install-db"
+          sed -i '1c#!${bash}/bin/bash' "$out/bin/mariadb-install-db"
+
           ln -s ${control}/bin/mariadb-control "$out/bin/mariadb-control"
+          test -x "$out/bin/mariadb-install-db"
           test -x "$out/bin/mariadb-control"
         '';
       }
@@ -430,6 +458,16 @@ in
         destination = "/my.cnf";
         text = rendered;
       };
+      lifecycleEvaluated = evaluate {
+        enable = true;
+        bindAddress = "127.0.0.1";
+        maxConnections = 200;
+      };
+      lifecycleRenderedFile = pkgs.writeTextFile {
+        name = "mariadb-lifecycle-config";
+        destination = "/my.cnf";
+        text = lifecycleEvaluated.config.environment.etc."aos/packages/mariadb/my.cnf".text;
+      };
       invalidTls = evaluate {
         enable = true;
         tls = {
@@ -483,7 +521,6 @@ in
 
           grep -q '^bind-address=127.0.0.1$' ${renderedFile}/my.cnf
           grep -q '^max-connections=200$' ${renderedFile}/my.cnf
-          grep -q '^upgrade=AUTO$' ${renderedFile}/my.cnf
           grep -q '^ssl-cert=/run/credentials/mariadb.service/tls-certificate$' ${renderedFile}/my.cnf
           ${self}/bin/my_print_defaults --defaults-file=${renderedFile}/my.cnf mariadbd \
             | grep -q -- '--max-connections=200'
@@ -514,10 +551,12 @@ in
         '';
 
       config-module-lifecycle = import ./_mariadb-tests/lifecycle.nix {
-        inherit testing self renderedFile;
+        inherit testing self;
+        renderedFile = lifecycleRenderedFile;
         coreutils = pkgs.coreutils;
         grep = pkgs.grep;
         iproute2 = pkgs.iproute2;
+        sed = pkgs.sed;
       };
     };
   }

@@ -6,6 +6,7 @@
   coreutils,
   grep,
   iproute2,
+  sed,
 }:
 testing.mkVMTest {
   name = "storage-mariadb-runtime-contract";
@@ -15,6 +16,7 @@ testing.mkVMTest {
     coreutils
     grep
     iproute2
+    sed
   ];
   memory = 1536;
   testScript = ''
@@ -36,9 +38,10 @@ testing.mkVMTest {
     fi
     grep -q 'unknown-aos-option' /tmp/invalid.out
 
-    chroot --userspec=803:803 / \
+    PATH=${self}/bin:${sed}/bin:${coreutils}/bin \
+      chroot --userspec=803:803 / \
       mariadb-install-db --defaults-file=${renderedFile}/my.cnf \
-        --auth-root-authentication-method=socket --skip-test-db
+        --auth-root-authentication-method=socket --force --skip-test-db
 
     chroot --userspec=803:803 / \
       mariadbd --defaults-file=${renderedFile}/my.cnf >/tmp/mariadb.log 2>&1 &
@@ -53,7 +56,7 @@ testing.mkVMTest {
 
     ready=false
     for attempt in $(seq 1 60); do
-      if mariadb-admin --socket=/run/mariadb/mariadb.sock --user=root ping \
+      if mariadb-admin --no-defaults --skip-ssl --socket=/run/mariadb/mariadb.sock --user=root ping \
         >/dev/null 2>&1; then
         ready=true
         break
@@ -61,13 +64,15 @@ testing.mkVMTest {
       sleep 1
     done
     if [ "$ready" != true ]; then
+      mariadb-admin --no-defaults --skip-ssl --socket=/run/mariadb/mariadb.sock --user=root ping >&2 || true
       cat /tmp/mariadb.log >&2
+      cat /var/log/mariadb/error.log >&2 || true
       exit 1
     fi
 
-    mariadb --socket=/run/mariadb/mariadb.sock --user=root \
+    mariadb --no-defaults --skip-ssl --socket=/run/mariadb/mariadb.sock --user=root \
       -e 'CREATE DATABASE aos_runtime; CREATE TABLE aos_runtime.state (value VARCHAR(16)); INSERT INTO aos_runtime.state VALUES ("persistent");'
-    mariadb --socket=/run/mariadb/mariadb.sock --user=root --batch --skip-column-names \
+    mariadb --no-defaults --skip-ssl --socket=/run/mariadb/mariadb.sock --user=root --batch --skip-column-names \
       -e 'SELECT value FROM aos_runtime.state' | grep -qx persistent
 
     kill "$server_pid"
@@ -80,7 +85,7 @@ testing.mkVMTest {
     trap cleanup EXIT
     ready=false
     for attempt in $(seq 1 60); do
-      if mariadb-admin --socket=/run/mariadb/mariadb.sock --user=root ping \
+      if mariadb-admin --no-defaults --skip-ssl --socket=/run/mariadb/mariadb.sock --user=root ping \
         >/dev/null 2>&1; then
         ready=true
         break
@@ -88,10 +93,10 @@ testing.mkVMTest {
       sleep 1
     done
     test "$ready" = true
-    mariadb --socket=/run/mariadb/mariadb.sock --user=root --batch --skip-column-names \
+    mariadb --no-defaults --skip-ssl --socket=/run/mariadb/mariadb.sock --user=root --batch --skip-column-names \
       -e 'SELECT value FROM aos_runtime.state' | grep -qx persistent
 
-    mariadb-admin --socket=/run/mariadb/mariadb.sock --user=root shutdown
+    mariadb-admin --no-defaults --skip-ssl --socket=/run/mariadb/mariadb.sock --user=root shutdown
     wait "$server_pid"
     trap - EXIT
   '';

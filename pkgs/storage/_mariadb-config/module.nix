@@ -46,9 +46,8 @@
     max-connections=${toString cfg.maxConnections}
     skip-name-resolve=${boolValue cfg.skipNameResolve}
     sql-mode=${cfg.sqlMode}
-    upgrade=AUTO
     init-file=/run/mariadb/bootstrap.sql
-    ${optionalLine cfg.tls.enable "ssl-cert=/run/credentials/mariadb.service/tls-certificate"}${optionalLine cfg.tls.enable "ssl-key=/run/credentials/mariadb.service/tls-private-key"}${optionalLine (cfg.tls.enable && cfg.tls.ca != null) "ssl-ca=/run/credentials/mariadb.service/tls-ca"}
+    ${optionalLine (!cfg.tls.enable) "skip-ssl"}${optionalLine cfg.tls.enable "ssl-cert=/run/credentials/mariadb.service/tls-certificate"}${optionalLine cfg.tls.enable "ssl-key=/run/credentials/mariadb.service/tls-private-key"}${optionalLine (cfg.tls.enable && cfg.tls.ca != null) "ssl-ca=/run/credentials/mariadb.service/tls-ca"}
   '';
 in {
   options.mariadb = {

@@ -19,7 +19,7 @@ The package writes a validated option file at
 `/etc/aos/packages/mariadb/my.cnf`. Database state remains in
 `/var/lib/aos-pkg-mariadb`; logs and the Unix socket use systemd-managed
 directories. Initial system tables are created before the main service starts,
-and MariaDB's `upgrade=AUTO` gate completes internal upgrades before the server
+and MariaDB reuses that durable initialized state when the server
 accepts clients.
 
 ## Credentials
