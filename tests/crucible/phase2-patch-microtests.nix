@@ -1679,7 +1679,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-template-coordinator";
         liveEvidence = ''
-          grep -Fxq 'template_coordinator_schema_version=3' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=4' "$live_result"
           grep -Fxq 'template_coordinator_idle_stable=true' "$live_result"
           grep -Fxq 'template_coordinator_unregistered_shape=true' "$live_result"
           grep -Fxq 'template_prepare_without_exact_boundary_rejected=true' "$live_result"
@@ -1700,7 +1700,7 @@
           grep -Fxq 'rcu_barrier_released_stable=true' "$live_result"
           grep -Fxq 'rcu_barrier_hold_without_exact_boundary_rejected=true' "$live_result"
           grep -Fxq 'rcu_barrier_quiescence_proof_bound=true' "$live_result"
-          grep -Fxq 'template_coordinator_schema_version=3' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=4' "$live_result"
           grep -Fxq 'rcu_proof_acknowledged=false' "$live_result"
           grep -Fxq 'template_ready=false' "$live_result"
         '';
@@ -1713,11 +1713,28 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-bh-timer-barrier";
         liveEvidence = ''
-          grep -Fxq 'bh_timer_barrier_schema_version=1' "$live_result"
+          grep -Fxq 'bh_timer_barrier_schema_version=2' "$live_result"
           grep -Fxq 'bh_timer_barrier_released_stable=true' "$live_result"
           grep -Fxq 'bh_timer_barrier_hold_without_exact_boundary_rejected=true' "$live_result"
           grep -Fxq 'bh_timer_barrier_template_bound=true' "$live_result"
-          grep -Fxq 'template_coordinator_schema_version=3' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=4' "$live_result"
+          grep -Fxq 'aio_proof_acknowledged=false' "$live_result"
+          grep -Fxq 'template_ready=false' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0128-crucible-hot-fork-aio-barrier.patch";
+      check = certifyExactPatch {
+        patchName = "0128-crucible-hot-fork-aio-barrier.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-aio-barrier";
+        liveEvidence = ''
+          grep -Fxq 'bh_timer_barrier_schema_version=2' "$live_result"
+          grep -Fxq 'bh_timer_barrier_released_stable=true' "$live_result"
+          grep -Fxq 'bh_timer_barrier_hold_without_exact_boundary_rejected=true' "$live_result"
+          grep -Fxq 'bh_timer_barrier_template_bound=true' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=4' "$live_result"
           grep -Fxq 'aio_proof_acknowledged=false' "$live_result"
           grep -Fxq 'template_ready=false' "$live_result"
         '';

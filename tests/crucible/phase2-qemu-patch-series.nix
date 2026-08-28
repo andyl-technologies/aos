@@ -888,6 +888,13 @@
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "a process-lifetime reversible source barrier race-closes bottom-half and timer creation, mutation, and callback dispatch, drains already-admitted work, retains queued work as parked state, remains OOB-queryable, and deliberately leaves AIO proof bit 3 clear until handler and coroutine admission are also closed";
     }
+    {
+      file = "0128-crucible-hot-fork-aio-barrier.patch";
+      catalogName = "crucible-hot-fork-aio-barrier";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "the retained asynchronous-source barrier additionally race-closes AioContext polling and GLib dispatch, POSIX AioHandler mutation and callbacks, and coroutine scheduling; reports bounded complete inventories and exact active counts; and lets the retained template coordinator derive AIO proof bit 3 only while the complete held barrier is quiescent";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

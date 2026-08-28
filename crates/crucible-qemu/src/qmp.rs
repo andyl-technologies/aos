@@ -672,12 +672,15 @@ where
         self.hot_fork_rcu_barrier(HotForkRcuBarrierAction::Release)
     }
 
-    /// Holds QEMU's reversible bottom-half and timer-source barrier.
+    /// Holds QEMU's reversible asynchronous-source barrier.
     ///
     /// New producers are parked and new callback dispatch is skipped while
-    /// already-admitted operations finish. Pending sources remain queued for
-    /// release or an eventual child reinitializer. This prerequisite does not
-    /// by itself acknowledge AIO hot-fork proof bit 3.
+    /// already-admitted operations finish. AioContext polling and GLib
+    /// dispatch, AioHandler lifecycle and callbacks, coroutine scheduling,
+    /// bottom halves, and timers share the retained admission gate. Pending
+    /// work remains queued for release or an eventual child reinitializer.
+    /// The retained template coordinator acknowledges AIO proof bit 3 only
+    /// while this complete held barrier is quiescent.
     ///
     /// # Errors
     ///
@@ -690,7 +693,7 @@ where
         self.hot_fork_bh_timer_barrier(HotForkBhTimerBarrierAction::Hold)
     }
 
-    /// Observes QEMU's reversible bottom-half and timer-source barrier.
+    /// Observes QEMU's reversible asynchronous-source barrier.
     ///
     /// # Errors
     ///
@@ -702,7 +705,7 @@ where
         self.hot_fork_bh_timer_barrier(HotForkBhTimerBarrierAction::Query)
     }
 
-    /// Releases QEMU's reversible bottom-half and timer-source barrier.
+    /// Releases QEMU's reversible asynchronous-source barrier.
     ///
     /// # Errors
     ///
@@ -1393,7 +1396,7 @@ pub enum QmpCommandKind {
     HotForkPluginBarrier,
     /// QEMU-owned reversible RCU admission/drain-barrier operation.
     HotForkRcuBarrier,
-    /// QEMU-owned reversible bottom-half/timer-source barrier operation.
+    /// QEMU-owned reversible asynchronous-source barrier operation.
     HotForkBhTimerBarrier,
     /// QEMU-owned retained hot-fork template coordinator operation.
     HotForkTemplate,

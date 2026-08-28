@@ -1571,29 +1571,30 @@ QEMU now additionally owns a process-lifetime reversible RCU admission/drain
 barrier. Holding at the exact paused/device-flush boundary gates every new
 outer reader and callback submission through a race-closed
 two-phase admission, retains the exact reader/admission/callback/drain state,
-and parks rejected entrants until release. The version-3 template coordinator
+and parks rejected entrants until release. The version-4 template coordinator
 holds this barrier with the plugin callback barrier and acknowledges readiness
 bit 4 only while the complete retained RCU state is quiescent. The RCU worker
 still needs an exact child disposition/reinitializer, so bit 8 remains clear.
-QEMU now additionally owns a process-lifetime reversible bottom-half and
-timer-source barrier. A race-closed two-phase admission gate covers source
-creation, mutation, and callback dispatch. Holding at the exact
-paused/device-flush boundary parks later producers, lets already-admitted work
-and its nested mutations finish, leaves queued sources parked, and keeps OOB
-QMP responsive through nonblocking event-loop admission. The version-3
+QEMU now additionally owns a process-lifetime reversible asynchronous-source
+barrier. A race-closed two-phase admission gate covers AioContext polling and
+GLib dispatch, AioHandler lifecycle and callbacks, coroutine scheduling,
+bottom-half and timer creation, mutation, and callback dispatch. Holding at the
+exact paused/device-flush boundary parks later producers, lets already-admitted
+work and its nested mutations finish, leaves queued sources parked, and keeps
+OOB QMP responsive through nonblocking event-loop admission. The version-4
 template coordinator retains this barrier with the plugin and RCU barriers,
-and the typed client validates its exact bounded inventory and derived
-quiescence. This closes a real source-race prerequisite, but `AioHandler`,
-coroutine, complete `AioContext`, and child-reinitialization admission remain
-open. Readiness bit 3 and T-CAM-6.2 therefore remain unchecked.
+and the typed client validates its exact bounded inventories and derived
+quiescence. This closes readiness bit 3 while the barrier is retained and
+quiescent. Child descriptor, context, coroutine, and clock reconstruction stay
+open under bits 7 and 8, and T-CAM-6.2 remains unchecked.
 QEMU now also exposes a version-1, 65,536-context AioContext inventory with
 stable process-local identities, exact home-thread ownership, active poll and
 GLib dispatch counts, queued and active bottom halves, queued coroutines, and
 notification state. The host brackets procfs capture with identical reports,
 checks every assigned home thread against the QEMU thread registry, and rejects
-changed context state. This is observational and still omits a retained
-drain/park barrier and child reinitializers; readiness bit 3 therefore remains
-clear.
+changed context state. This standalone inventory remains observational; the
+separate asynchronous-source barrier supplies the retained admission proof,
+while child reinitializers remain open under proof bit 8.
 QEMU now also exposes a version-1, 65,536-entry allocated-`QEMUBH` inventory.
 It reports inert, pending, active, canceled, one-shot, and deferred-deletion
 instances under stable process-local bottom-half identities, with exact owning
@@ -1629,9 +1630,9 @@ an inventory prerequisite, not the drained block-graph/write-root barrier, so
 readiness bit 5 remains clear. The audit rejects incomplete thread, RCU,
 AioContext, AIO-handler, block-backend, plugin-resource, bottom-half, mutex, or
 timer reports.
-This is observational and
-still does not retain a drain/park barrier across `fork(2)`; readiness bit 3
-remains clear.
+These standalone inventories remain observational and cannot promote a proof
+bit by themselves. The retained asynchronous-source barrier supplies bit 3;
+block, descriptor/mapping, and child-reinitialization proofs remain open.
 The GPL plugin now also seals a version-1 fixed resource manifest after callback,
 wake-descriptor, and fault-admission setup but before successful readiness. It
 binds the exact process/plugin generation, closed required/optional resource and
@@ -1658,8 +1659,8 @@ template transaction, or reconstruct child resources. Readiness bit 6 therefore
 remains clear and T-CAM-6.2 remains unchecked.
 Patched QEMU now also owns the versioned `PrepareForkTemplate`
 transaction. Its serialized OOB coordinator starts only at the exact
-paused/device-flush boundary, retains the plugin callback, RCU, and
-bottom-half/timer source barriers while admitted work drains, and lets the
+paused/device-flush boundary, retains the plugin callback, RCU, and complete
+asynchronous-source barriers while admitted work drains, and lets the
 Apache client query or abort that retained state without blocking QMP. A
 quiescent transaction is reported as `prepared`
 only when all nine readiness bits are present in the same generation; otherwise
@@ -1667,10 +1668,9 @@ QEMU releases every acquired barrier and reports exact rollback as `blocked`.
 Standalone plugin, RCU, or bottom-half/timer hold/release cannot steal
 coordinator-owned state, and a plugin release failure leaves every barrier
 retained for a later query/abort retry. The current coordinator acknowledges
-RCU bit 4 only while its retained barrier is quiescent. The source barrier does
-not acknowledge AIO bit 3 until handlers, coroutines, and context disposition
-are also covered. Plugin-ring bit 6, AIO, block, mapping/descriptor, and child
-reinitialization proofs remain clear, every fully drained preparation rolls
+RCU bit 4 and AIO bit 3 only while their complete retained barriers are
+quiescent. Plugin-ring bit 6, block bit 5, mapping/descriptor bit 7, and
+child-reinitialization bit 8 remain clear, every fully drained preparation rolls
 back, no fork operation exists, and T-CAM-6.2 remains unchecked.
 QEMU now also exposes a version-1, 65,536-entry POSIX `QemuMutex` and
 `QemuRecMutex` inventory. It reports sorted lifecycle identities, owner thread,
@@ -1687,15 +1687,17 @@ callback state, and checked aggregates. The host brackets procfs capture with
 identical timer reports and rejects changed state. Inert initialized timers are
 intentionally absent, while callback entries retain copied metadata so a
 callback may safely free its enclosing timer. The report is observational. The
-separate retained source barrier covers bottom-half/timer admission and
-dispatch but not the complete `AioContext`, handler, coroutine, or
-child-reinitialization contract, so readiness bit 3 remains clear.
+separate retained asynchronous-source barrier covers timer, bottom-half,
+AioContext, handler, and coroutine admission and dispatch, so its quiescent
+state supplies readiness bit 3. Child-side clock and context reconstruction
+remain separate proof-bit-8 obligations.
 These are executable T-CAM-6.1 audit prerequisites, not completion of the task:
 the internal registry identifies two non-coordinator subsystem owners but has
-no safe non-coordinator child disposition, and none of the views can prove a
-retained mutex, AIO/BH/timer, plugin, or RCU barrier, block write-root boundary,
-process-lifetime plugin ownership, external-thread disposition, or
-child-reinitialization state. They cannot promote a readiness bit. T-CAM-6.1
+no safe non-coordinator child disposition. The retained AIO/BH/timer and RCU
+barriers now promote bits 3 and 4, but the remaining views cannot prove a
+retained mutex barrier, block write-root boundary, process-lifetime plugin
+ownership, external-thread disposition, or child-reinitialization state.
+T-CAM-6.1
 remains unchecked until the complete supported-profile registry and all
 subsystem-owned proofs are implemented and accepted in the Phase 6 lab.
 
