@@ -170,6 +170,7 @@ fn DocumentationBrowser(client: ApiClient, registry_id: String) -> impl IntoView
     let selected_identity = RwSignal::new(None::<aos_proto_types::PackageDocumentationIdentity>);
     let selected_options = RwSignal::new(Vec::<aos_proto_types::PackageOptionView>::new());
     let selected_option = RwSignal::new(None::<aos_proto_types::PackageOptionView>);
+    let option_filter = RwSignal::new(String::new());
     let compare_to = RwSignal::new(String::new());
     let comparison = RwSignal::new(None::<aos_doc_model::DocumentationComparison>);
     let error = RwSignal::new(None::<String>);
@@ -340,8 +341,12 @@ fn DocumentationBrowser(client: ApiClient, registry_id: String) -> impl IntoView
                         <div class="documentation-content" inner_html=html></div>
                         <section class="subworkflow">
                             <h3>"Option explorer"</h3>
+                            <label class="full-field"><span>"Filter option paths"</span><input type="search" placeholder="nginx.virtualHosts" prop:value=move || option_filter.get() on:input=move |event| option_filter.set(event_target_value(&event))/></label>
                             <div class="documentation-results">
-                                {selected_options.get().into_iter().map(|option| {
+                                {selected_options.get().into_iter().filter(|option| {
+                                    let filter = option_filter.get().to_ascii_lowercase();
+                                    filter.is_empty() || option.display_path.to_ascii_lowercase().contains(&filter)
+                                }).map(|option| {
                                     let option_client = option_client_root.clone();
                                     let option_registry = option_registry_root.clone();
                                     let identity = option.identity.clone();
@@ -366,15 +371,7 @@ fn DocumentationBrowser(client: ApiClient, registry_id: String) -> impl IntoView
                                     }
                                 }).collect_view()}
                             </div>
-                            {move || selected_option.get().map(|option| view! {
-                                <article class="revision-card">
-                                    <h4>{option.display_path}</h4>
-                                    <div class="resource-identity">
-                                        <div><span>"Type"</span><strong>{option.r#type}</strong></div>
-                                        <div><span>"Owner"</span><strong>{format!("{} / {}", option.owner_package, option.owner_root)}</strong></div>
-                                    </div>
-                                </article>
-                            })}
+                            {move || selected_option.get().map(|option| view! { <OptionInspector option=option/> })}
                         </section>
                     </article>
                 }
@@ -394,6 +391,54 @@ fn DocumentationBrowser(client: ApiClient, registry_id: String) -> impl IntoView
                 })}
             </section>
         </section>
+    }
+}
+
+#[component]
+fn OptionInspector(option: aos_proto_types::PackageOptionView) -> impl IntoView {
+    let parsed =
+        serde_json::from_slice::<aos_doc_model::OptionDocument>(&option.canonical_option_json);
+    let initial_value = parsed
+        .as_ref()
+        .ok()
+        .and_then(|option| option.example.as_ref().or(option.default.as_ref()))
+        .map(documented_value_text)
+        .unwrap_or_else(|| "null".to_string());
+    let value = RwSignal::new(initial_value);
+    let path = option.display_path.clone();
+    let snippet = Signal::derive(move || format!("{{\n  {path} = {};\n}}", value.get()));
+
+    view! {
+        <article class="revision-card option-workspace">
+            <div class="compact-list-row"><h4>{option.display_path.clone()}</h4><StatusBadge state=if option.contributable { "contributable" } else { "owner-only" }.to_string() positive=option.contributable/></div>
+            <div class="resource-identity">
+                <div><span>"Type"</span><strong>{option.r#type}</strong></div>
+                <div><span>"Owner"</span><strong>{format!("{} / {}", option.owner_package, option.owner_root)}</strong></div>
+            </div>
+            {match parsed {
+                Ok(document) => view! {
+                    <div class="resource-identity">
+                        <div><span>"Visibility"</span><strong>{format!("{:?}", document.visibility)}</strong></div>
+                        <div><span>"Activation"</span><strong>{document.activation.map(|effect| format!("{:?}", effect.kind)).unwrap_or_else(|| "evaluation only".to_string())}</strong></div>
+                        <div><span>"Source"</span><code>{document.source.map(|source| source.path).unwrap_or_else(|| "generated interface".to_string())}</code></div>
+                    </div>
+                }.into_any(),
+                Err(failure) => view! { <InlineError detail=format!("Invalid canonical option: {failure}")/> }.into_any(),
+            }}
+            <section class="subworkflow configuration-composer">
+                <h4>"Local configuration composer"</h4>
+                <p class="muted">"Values remain in this browser tab. Review the generated fragment with apm config diff before applying it."</p>
+                <label class="full-field"><span>"Nix value"</span><input spellcheck="false" prop:value=move || value.get() on:input=move |event| value.set(event_target_value(&event))/></label>
+                <pre><code>{move || snippet.get()}</code></pre>
+            </section>
+        </article>
+    }
+}
+
+fn documented_value_text(value: &aos_doc_model::DocumentedValue) -> String {
+    match value {
+        aos_doc_model::DocumentedValue::Literal { value } => value.to_string(),
+        aos_doc_model::DocumentedValue::Text { text } => text.clone(),
     }
 }
 

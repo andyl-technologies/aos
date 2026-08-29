@@ -1464,6 +1464,29 @@ label.inline {
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
+.package-section-nav {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  gap: 0.25rem;
+  margin: 1rem 0;
+  padding: 0.45rem;
+  overflow-x: auto;
+  border: 1px solid var(--rule);
+  background: color-mix(in srgb, var(--paper) 94%, transparent);
+  backdrop-filter: blur(0.4rem);
+}
+.package-section-nav a {
+  padding: 0.4rem 0.65rem;
+  border-radius: 0.25rem;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.package-section-nav a:hover,
+.package-section-nav a:focus-visible {
+  background: color-mix(in srgb, var(--accent) 12%, var(--paper));
+}
 .docs-search, .documentation-search {
   display: grid;
   grid-template-columns: minmax(16rem, 1fr) minmax(9rem, 0.25fr) auto;

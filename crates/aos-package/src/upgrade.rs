@@ -1349,7 +1349,7 @@ mod tests {
         let err = verify_secondary_artifact_downloads(&[result], &[artifact])
             .expect_err("referenced expose image should be rejected");
 
-        assert!(err.to_string().contains("runtime references"));
+        assert!(err.to_string().contains("empty reference set"));
     }
 
     // A newer version of curl for the registry (different hash).

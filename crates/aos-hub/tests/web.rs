@@ -424,9 +424,10 @@ async fn registry_home_carries_setup_snippets_and_fingerprints() {
         "{body}"
     );
     assert!(body.contains("trustKeys"), "{body}");
-    // substituters point at the advertised binary cache, not the registry URL.
+    // Substituters use the canonical anonymous delivery route selected by the
+    // indexed topology; the cache remains an implementation behind that route.
     assert!(
-        body.contains("substituters = https://cache.example.com"),
+        body.contains("substituters = http://127.0.0.1:8420/demo"),
         "{body}"
     );
     assert!(body.contains("trusted-public-keys ="), "{body}");
@@ -445,7 +446,7 @@ async fn registry_home_carries_setup_snippets_and_fingerprints() {
         "{package}"
     );
     assert!(
-        package.contains("substituters = https://cache.example.com"),
+        package.contains("substituters = http://127.0.0.1:8420/demo"),
         "{package}"
     );
 }
