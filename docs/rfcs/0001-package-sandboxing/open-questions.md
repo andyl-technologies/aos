@@ -244,10 +244,13 @@ lifecycle coverage is the per-unit VM test path, with introspection through
 
 ## 5. Package roots and RootImage — RESOLVED
 
-> **Resolved.** Store-path-in-closure, consumed via `RootDirectory=`, remains the
-> default package root shape: it inherits NAR hashing, the registry
-> tag-signature chain, and gc-rooting with zero new machinery, and needs no
-> image build, loop device, or udev ordering. The stronger verity-signed
+> **Resolved.** The store-path payload remains the immutable, NAR-hashed,
+> registry-authenticated, and gc-rooted identity. A confined non-verity service
+> consumes it as the lower layer of a per-service volatile overlay under
+> `/run`; `RootDirectory=` names the merged path after a host-side preparation
+> unit creates distinct upper/work/merged directories. This prevents systemd
+> mount-point creation from mutating the store and needs no image build, loop
+> device, or udev ordering. The stronger verity-signed
 > `RootImage=` path also landed for packages that declare signed
 > `expose.images[]` metadata: the builder emits `root.img`, `root.verity`,
 > `root.roothash`, and `root.roothash.p7s`, while the kernel config enables the
@@ -261,16 +264,19 @@ There is still **no OCI format** in the pipeline.
 
 **Why it matters.** This is build surface and a registry artifact. The registry
 ships package closures as NARs (`crates/aos-package/`); a package root is an
-additional artifact that must be fetched, verified, rooted in the package
-generation, and consumed by `RootImage=`/`RootDirectory=`. The resolved
+additional artifact that must be fetched, verified, and rooted in the package
+generation. It is consumed either as a signed `RootImage=` or as the immutable
+lower layer of a volatile overlay `RootDirectory=`. The resolved
 `RootImage=` path signs the dm-verity root hash and validates it against the
 platform keyring, closing the unsigned-root trust gap.
 
 **Options.**
-- Ship the package root as a normal store path inside the package closure →
-  it inherits NAR hashing + the registry signing chain for free; the generated
-  service consumes the store-path rootfs with `RootDirectory=`. (Most hermetic;
-  aligns with "verify it exists in the closure".)
+- Ship the package payload as a normal store path inside the package closure →
+  it inherits NAR hashing + the registry signing chain. A generated host-side
+  preparation unit mounts it as the lower layer of a per-service volatile
+  overlay, and the service consumes the merged `/run` path with
+  `RootDirectory=`. (Most hermetic; aligns with "verify it exists in the
+  closure" without allowing systemd to write into the store.)
 - Ship a separate verity-signed package-root image through `expose.images[]`
   with the existing narinfo/signature chain plus `RootImage=` runtime
   verification.
@@ -288,11 +294,12 @@ recommendation is **fetch-at-boot via apm as the default**; if a deployment
 bakes a root, the per-package choice must be documented explicitly (ties to
 Decision 6's bake-vs-fetch).
 
-**Resolution.** The default package root is a store path consumed via
-`RootDirectory=`, so ordinary package roots inherit existing NAR signing and
-registry metadata. The stronger signed `RootImage=` path is in P9 with
-dm-verity, PCR measurement, and attestation-binding of the package manifest to
-the package root.
+**Resolution.** The default immutable package identity is a store path, so
+ordinary package roots inherit existing NAR signing and registry metadata. A
+confined non-verity service uses that path only as the lower layer of its
+volatile per-service overlay `RootDirectory=`. The stronger signed `RootImage=`
+path is in P9 with dm-verity, PCR measurement, and attestation-binding of the
+package manifest to the package root.
 
 ---
 
@@ -733,8 +740,9 @@ implementation reference for this resolved mechanism.
 > for a future package that genuinely needs its own init tree). Every line of
 > gathered evidence pointed one way: it dissolves the k3s `KillMode=process`
 > regression (Decision 11), eliminates the nesting/test risk (Decision 4) and
-> the per-package image format (Decision 5 — the MVP "root" is a store path
-> via `RootDirectory=`: no loop device, no udev ordering, no image build),
+> the per-package image format (Decision 5 — the default non-verity root is a
+> per-service volatile overlay backed by the immutable payload store path: no
+> loop device, no udev ordering, no image build),
 > gives named-fd host-socket activation and the `JoinsNamespaceOf=` pod primitive,
 > and is upstream's flagship-supported composition (the portable-services
 > default profile). The Decision 17 spike served as **validation**: materialize
@@ -868,7 +876,7 @@ gate.
 | 2 | Kernel modules as the allowlisted, signature-backed host-fulfilled permission (allowlist in 1(a)) | RESOLVED | packages-core |
 | 3 | Networking — **RESOLVED**: socket-activation default, netns+veth oneshot for outbound, host for k3s | RESOLVED | packages-core / pkgs |
 | 4 | nspawn-in-VM feasibility — **mooted for MVP** by D17; per-unit lifecycle test remains | RESOLVED | test-infra |
-| 5 | Container roots — **RESOLVED**: store path via `RootDirectory=`; **verity-signed `RootImage=` un-deferred** (budget mandate) — built in D21/P9, `CONFIG_DM_VERITY` added | RESOLVED | pkgs / apm |
+| 5 | Container roots — **RESOLVED**: per-service volatile overlay `RootDirectory=` with authenticated store lower; **verity-signed `RootImage=` un-deferred** (budget mandate) — built in D21/P9, `CONFIG_DM_VERITY` added | RESOLVED | pkgs / apm |
 | 6 | Bake vs. fetch — **RESOLVED by 5**: ordinary closure delivery; bake k3s, fetch workloads | RESOLVED | pkgs / boot |
 | 7 | machined/portabled/importd — **RESOLVED: stay disabled** | RESOLVED | pkgs |
 | 8 | Install-at-boot — enable **RESOLVED: presets via every-boot `aos-preset.service`** (machine-id + tmpfs-upper + apm idempotency all verified); install unit runs after profile seeding and reconciles desired packages | RESOLVED | boot / apm |

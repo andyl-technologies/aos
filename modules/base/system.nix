@@ -118,6 +118,16 @@ in {
       '';
     };
 
+    configInputAbi = lib.mkOption {
+      type = lib.types.int;
+      default = 2;
+      readOnly = true;
+      description = ''
+        Persistent evaluator-input ABI. Version 2 binds a separately
+        authenticated runtime module set and generation compare-and-swap.
+      '';
+    };
+
     ## System locale (LANG environment variable).
     ##
     ## # Examples
@@ -234,6 +244,7 @@ in {
         BUG_REPORT_URL="https://aos.dev/issues"
         AOS_STATE_VERSION=${cfg.stateVersion}
         AOS_MODULE_ABI=${toString cfg.moduleAbi}
+        AOS_CONFIG_INPUT_ABI=${toString cfg.configInputAbi}
         AOS_BASELIB_DIGEST=sha256:${builtins.hashString "sha256" (toString config.aos.config.evalAtBoot.baseLib)}
       '';
     };

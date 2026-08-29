@@ -12,6 +12,7 @@
   perl,
   openssl,
   aos-landlock,
+  aos-service-root,
   aos-selinux-run,
   aos-verity-root-guard,
   aos-ebpf-net-policy,
@@ -148,7 +149,7 @@ in
     # so scrubPhase nukes their references and they never enter the runtime
     # closure — production code uses libgit2 + ssh-key, never these binaries.
     buildDeps = [perl pkg-config openssl protobuf cmake libssh2 git-minimal openssh];
-    runtimeDeps = [openssl zlib aos-landlock aos-selinux-run aos-verity-root-guard aos-ebpf-net-policy aos-ebpf-lsm-policy checkpolicy policycoreutils semodule-utils tpm2-tools] ++ runtimeTools;
+    runtimeDeps = [openssl zlib aos-landlock aos-service-root aos-selinux-run aos-verity-root-guard aos-ebpf-net-policy aos-ebpf-lsm-policy checkpolicy policycoreutils semodule-utils tpm2-tools] ++ runtimeTools;
 
     preBuild = ''
       # Keep the integration-test executable below the bounded verifier-
@@ -164,6 +165,7 @@ in
       export OPENSSL_STATIC=0
       export PROTOC="${protobuf}/bin/protoc"
       export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
+      export AOS_SERVICE_ROOT_HELPER="${aos-service-root}/bin/aos-service-root"
       export AOS_SELINUX_RUNNER="${aos-selinux-run}/bin/aos-selinux-run"
       export AOS_VERITY_ROOT_GUARD="${aos-verity-root-guard}/bin/aos-verity-root-guard"
       export AOS_SYSTEMD_PCREXTEND="${systemd}/lib/systemd/systemd-pcrextend"
@@ -228,6 +230,7 @@ in
       #!${bash}/bin/bash
       export AOS_HOST_PATH="''${AOS_HOST_PATH-$PATH}"
       export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
+      export AOS_SERVICE_ROOT_HELPER="${aos-service-root}/bin/aos-service-root"
       export AOS_SELINUX_RUNNER="${aos-selinux-run}/bin/aos-selinux-run"
       export AOS_VERITY_ROOT_GUARD="${aos-verity-root-guard}/bin/aos-verity-root-guard"
       export AOS_SYSTEMD_PCREXTEND="${systemd}/lib/systemd/systemd-pcrextend"

@@ -2103,12 +2103,20 @@ mod entry {
                 let placement_scans = aos_hub_core::placement_scan::PlacementScanController::new(
                     Arc::clone(&db),
                     Arc::new(crate::surface::R2SurfaceProvider::new(
+                        bucket.clone(),
+                        Arc::clone(&db),
+                        Arc::clone(&secret_versions),
+                        Arc::clone(&egress),
+                    )),
+                )
+                .with_writes(Arc::new(
+                    crate::surface::R2SurfaceWriteProvider::new(
                         bucket,
                         Arc::clone(&db),
                         secret_versions,
                         Arc::clone(&egress),
-                    )),
-                );
+                    ),
+                ));
                 if let Err(error) = placement_scans.run_due(5).await {
                     worker::console_error!("placement scans: {error:#}");
                 }

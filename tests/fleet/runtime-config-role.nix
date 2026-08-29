@@ -20,6 +20,15 @@
           bundle = true;
           preset = false;
         };
+        # This production-profile image deliberately carries the fleet control
+        # agent as test infrastructure. Keep the runtime-closure audit strict
+        # for every other artifact while admitting that explicit fixture.
+        aos.image.allowTestArtifacts = true;
+        # Host-selectable OpenSSH/chrony closures plus the control agent make
+        # this acceptance image larger than the production golden-image gate.
+        # Raise only the fixture budget; the server publication contract stays
+        # at 512 MiB.
+        aos.image.budgets.maxRootMiB = 640;
         aos.image.erofsCompressionLevel = 1;
       }
     ];

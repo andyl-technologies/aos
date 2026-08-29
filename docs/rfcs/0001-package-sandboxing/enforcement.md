@@ -47,7 +47,8 @@ the XZ backdoor disabled — evidence it is worth enforcing.
   eBPF policy contract. The host policy admits those grants explicitly via
   `[allow].tcp-bind` and `[allow].tcp-connect`; `host-paths` map to
   `LANDLOCK_ACCESS_FS_*` path rules. Non-root-equivalent services also get the
-  default filesystem rules `--fs-ro / --fs-rw /tmp --fs-rw /var/tmp` plus
+  default filesystem rules
+  `--fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null` plus
   writable `StateDirectory=` paths, evaluated after `RootDirectory=` and its
   package-private temp/state directories are in place.
   `apm` validates any artifact-carried `network-policy.json` against the

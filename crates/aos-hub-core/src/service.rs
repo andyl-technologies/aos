@@ -2422,7 +2422,8 @@ pub struct RpcService {
     pub jwt_keys: JwtKeys,
     /// Externally reachable base URL, used to build the canonical upload URL.
     pub external_url: String,
-    /// Public base URL exposing the instance-default storage binding directly.
+    /// Public base URL exposing canonical-slug placements on the
+    /// instance-default storage binding directly.
     ///
     /// When configured, public registries on a reconciled complete placement
     /// inherit a canonical Git URL from this origin unless an explicit Git
@@ -14308,6 +14309,7 @@ impl RpcService {
     /// Returns the first stable metadata-deletion precondition.
     fn placement_delete_blocker_error(
         blockers: crate::db::SurfacePlacementBlockers,
+        registry_placement: bool,
     ) -> Option<RpcError> {
         if blockers.direct_route {
             Some(RpcError::FailedPrecondition(
@@ -14317,11 +14319,15 @@ impl RpcService {
             Some(RpcError::FailedPrecondition(
                 "placement is referenced by a placement policy".to_string(),
             ))
-        } else if blockers.object_presence {
+        } else if blockers.object_presence && !registry_placement {
             Some(RpcError::FailedPrecondition(
                 "placement has object-presence inventory".to_string(),
             ))
-        } else if blockers.publication {
+        } else if blockers.active_publication {
+            Some(RpcError::FailedPrecondition(
+                "placement has active registry-publication state".to_string(),
+            ))
+        } else if blockers.publication && !registry_placement {
             Some(RpcError::FailedPrecondition(
                 "placement has registry-publication state".to_string(),
             ))
@@ -16308,6 +16314,42 @@ impl RpcService {
             req.hash_range.as_ref(),
         )?;
         let binding_id = self.topology_binding_id(org_id, &req.binding_id).await?;
+        let mut warnings = Vec::new();
+        if let SurfaceTarget::Registry(registry_id) = surface {
+            let binding = self
+                .db
+                .binding(binding_id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::not_found("binding"))?;
+            let registry = self
+                .db
+                .registry_by_id(registry_id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::not_found("registry"))?;
+            if binding.is_instance_default
+                && registry.visibility == "public"
+                && req.kind == "complete"
+                && req.desired_read_enabled.unwrap_or(false)
+                && (binding
+                    .object_prefix
+                    .as_deref()
+                    .is_some_and(|prefix| !prefix.is_empty())
+                    || req.prefix.trim_matches('/') != registry.slug)
+            {
+                warnings.push(format!(
+                    "default public delivery remains unavailable because the binding-root-relative prefix '{}' does not equal canonical slug '{}'",
+                    [binding.object_prefix.as_deref().unwrap_or(""), &req.prefix]
+                        .into_iter()
+                        .map(|part| part.trim_matches('/'))
+                        .filter(|part| !part.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                    registry.slug
+                ));
+            }
+        }
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
         let (registry_id, cache_id) = Self::topology_surface_ids(surface);
         let input = PlacementCreatePlanInput {
@@ -16330,7 +16372,7 @@ impl RpcService {
                 "create placement '{}' without write authority",
                 input.request.name
             )],
-            Vec::new(),
+            warnings,
             Some(confirmation_hash),
         )
         .await
@@ -17001,6 +17043,9 @@ impl RpcService {
         };
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
             .await?;
+        if let Err(error) = self.topology_probes.wake_controller().await {
+            tracing::warn!(error = %format!("{error:#}"), "waking write-authority controller");
+        }
         Ok(response)
     }
 
@@ -17161,6 +17206,9 @@ impl RpcService {
         };
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
             .await?;
+        if let Err(error) = self.topology_probes.wake_controller().await {
+            tracing::warn!(error = %format!("{error:#}"), "waking write-authority controller");
+        }
         Ok(response)
     }
 
@@ -18198,7 +18246,10 @@ impl RpcService {
             .surface_placement_blockers(current.id)
             .await
             .map_err(RpcError::internal)?;
-        if let Some(error) = Self::placement_delete_blocker_error(blockers) {
+        if let Some(error) = Self::placement_delete_blocker_error(
+            blockers,
+            matches!(surface, SurfaceTarget::Registry(_)),
+        ) {
             return Err(error);
         }
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
@@ -18304,15 +18355,23 @@ impl RpcService {
             .surface_placement_blockers(current.id)
             .await
             .map_err(RpcError::internal)?;
-        if let Some(error) = Self::placement_delete_blocker_error(blockers) {
+        if let Some(error) = Self::placement_delete_blocker_error(
+            blockers,
+            matches!(surface, SurfaceTarget::Registry(_)),
+        ) {
             return Err(error);
         }
-        if !self
-            .db
-            .delete_surface_placement(current.id, input.baseline_resource_version)
-            .await
-            .map_err(RpcError::internal)?
-        {
+        let deleted = if matches!(surface, SurfaceTarget::Registry(_)) {
+            self.db
+                .delete_registry_surface_placement(current.id, input.baseline_resource_version)
+                .await
+        } else {
+            self.db
+                .delete_surface_placement(current.id, input.baseline_resource_version)
+                .await
+        }
+        .map_err(RpcError::internal)?;
+        if !deleted {
             return Err(RpcError::FailedPrecondition(
                 "placement changed while deletion was applied".to_string(),
             ));
@@ -22397,8 +22456,9 @@ impl RpcService {
     /// The consumer-facing base URL for a registry's git surface.
     ///
     /// An explicit canonical Git route is authoritative. Without one, a public
-    /// registry on a complete reconciled instance-default placement derives
-    /// its URL from the configured public storage origin.
+    /// registry on a complete reconciled instance-default placement whose
+    /// prefix equals its canonical slug derives its URL from the configured
+    /// public storage origin.
     ///
     /// # Errors
     ///
@@ -22442,12 +22502,13 @@ impl RpcService {
         }
         let Some(path) = self
             .db
-            .default_public_delivery_path(SurfaceTarget::Registry(registry.id))
+            .default_public_slug_delivery_path(SurfaceTarget::Registry(registry.id), &registry.slug)
             .await
             .map_err(RpcError::internal)?
         else {
             return Err(RpcError::FailedPrecondition(
-                "registry has no published complete placement on default storage".to_owned(),
+                "registry has no published complete canonical-slug placement on default storage"
+                    .to_owned(),
             ));
         };
 
@@ -24317,7 +24378,7 @@ impl RpcService {
             .map_err(RpcError::internal)?;
         if placements.is_empty() {
             return Err(RpcError::FailedPrecondition(
-                "registry has no complete validated publication placement".into(),
+                "registry has no validated writable publication placement".into(),
             ));
         }
         let manifest_digest = hex::encode(Sha256::digest(
@@ -32148,6 +32209,15 @@ impl RpcService {
             )
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+        if matches!(
+            updated.operation_kind.as_str(),
+            "scan_placement" | "replicate_placement" | "repair_placement"
+        ) {
+            self.topology_probes
+                .wake_controller()
+                .await
+                .map_err(RpcError::internal)?;
+        }
         Ok(pb::OperationDetailResponse {
             operation: Some(self.operation_detail(&updated).await?),
         })
@@ -32326,6 +32396,7 @@ impl RpcService {
                 .unwrap_or(operation.created_at),
             finished_at: operation.finished_at,
             resource_version: operation.resource_version.to_string(),
+            detail_json: operation.detail_json.clone(),
         })
     }
 }
@@ -36218,7 +36289,7 @@ mod cache_upload_tests {
                 surface: SurfaceTarget::Registry(registry_id),
                 name: "primary".into(),
                 binding_id,
-                prefix: "registries/registry-stable-id".into(),
+                prefix: "automatic/main".into(),
                 kind: "complete".into(),
                 desired_state: "active".into(),
                 hash_range: None,
@@ -36237,8 +36308,49 @@ mod cache_upload_tests {
             .with_default_public_delivery_url("https://cdn.example.test/storage-root".into());
         assert_eq!(
             service.registry_consumer_url(&registry).await.unwrap(),
-            "https://cdn.example.test/storage-root/registries/registry-stable-id/"
+            "https://cdn.example.test/storage-root/automatic/main/"
         );
+    }
+
+    #[tokio::test]
+    async fn public_registry_does_not_advertise_an_opaque_default_placement() {
+        let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+        let binding_id = db
+            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
+            .await
+            .unwrap()
+            .id;
+        let org_id = db.create_org("automatic", "Automatic").await.unwrap();
+        let registry_id = db
+            .create_managed_registry(org_id, "", "main", "public", &[], false)
+            .await
+            .unwrap();
+        let placement = db
+            .create_surface_placement(&NewSurfacePlacementSpec {
+                surface: SurfaceTarget::Registry(registry_id),
+                name: "primary".into(),
+                binding_id,
+                prefix: "registries/100960088f5b423a93e73b1bcc4082fc".into(),
+                kind: "complete".into(),
+                desired_state: "active".into(),
+                hash_range: None,
+                desired_read_enabled: true,
+                read_order: 0,
+                requires_conditional_writes: false,
+            })
+            .await
+            .unwrap();
+        db.observe_surface_placement(placement.id, "ready", "complete", 1)
+            .await
+            .unwrap();
+        let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
+
+        let service = service.with_default_public_delivery_url("https://cdn.example.test".into());
+        assert!(matches!(
+            service.registry_consumer_url(&registry).await,
+            Err(RpcError::FailedPrecondition(message))
+                if message.contains("canonical-slug placement")
+        ));
     }
 
     #[tokio::test]
@@ -38060,6 +38172,13 @@ mod cache_upload_tests {
             ),
             (
                 SurfacePlacementBlockers {
+                    active_publication: true,
+                    ..Default::default()
+                },
+                "placement has active registry-publication state",
+            ),
+            (
+                SurfacePlacementBlockers {
                     deletion_job: true,
                     ..Default::default()
                 },
@@ -38074,11 +38193,33 @@ mod cache_upload_tests {
             ),
         ];
         for (blockers, expected) in cases {
-            let error = RpcService::placement_delete_blocker_error(blockers).unwrap();
+            let error = RpcService::placement_delete_blocker_error(blockers, false).unwrap();
             assert_eq!(error.code(), "failed_precondition");
             assert_eq!(error.message(), expected);
             assert!(!error.message().contains("FOREIGN KEY"));
         }
+
+        assert!(RpcService::placement_delete_blocker_error(
+            SurfacePlacementBlockers {
+                object_presence: true,
+                publication: true,
+                ..Default::default()
+            },
+            true,
+        )
+        .is_none());
+        assert_eq!(
+            RpcService::placement_delete_blocker_error(
+                SurfacePlacementBlockers {
+                    active_publication: true,
+                    ..Default::default()
+                },
+                true,
+            )
+            .unwrap()
+            .message(),
+            "placement has active registry-publication state"
+        );
     }
 
     #[test]

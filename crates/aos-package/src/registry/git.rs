@@ -374,6 +374,7 @@ pub async fn sync_git(
     extract_packages(&repo_dir, &new_commit, &packages_dir).await?;
     extract_store(&repo_dir, &new_commit, &registry_cache_dir.join("store")).await?;
     extract_provenance(&repo_dir, &new_commit, &packages_dir, &registry_cache_dir).await?;
+    extract_registry_cache_trust(&repo_dir, &new_commit, &registry_cache_dir).await?;
     if let Some(receipt) = release_trust {
         write_release_trust_receipt(
             &release_trust_path,
@@ -1194,6 +1195,23 @@ async fn enforce_fast_forward(repo_dir: &Path, old_commit: &str, new_commit: &st
 /// and extract it into the output directory.
 async fn extract_packages(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {
     extract_tree_dir(repo_dir, commit, "packages", output_dir, true).await
+}
+
+/// Materializes the verified maintainer roster beside cached provenance.
+///
+/// Install-time provenance verification deliberately reads both artifacts
+/// from the authenticated cache tree. Keeping `keys.toml` only in the
+/// registry-root mirror would make a successfully synced signed registry
+/// impossible to install from.
+async fn extract_registry_cache_trust(
+    repo_dir: &Path,
+    commit: &str,
+    registry_cache_dir: &Path,
+) -> Result<()> {
+    tokio::fs::create_dir_all(registry_cache_dir)
+        .await
+        .with_context(|| format!("creating {}", registry_cache_dir.display()))?;
+    extract_optional_root_file(repo_dir, commit, registry_cache_dir, "keys.toml").await
 }
 
 /// Extract the `store/` realisation graph from a git tree (RFC-0005).
@@ -2424,6 +2442,9 @@ mod tests {
         tokio::fs::write(pkg_dir.join("curl.toml"), "[package]\nname = \"curl\"\n")
             .await
             .unwrap();
+        tokio::fs::write(work_dir.join("keys.toml"), "schema = 1\n")
+            .await
+            .unwrap();
 
         // Add and commit.
         let _ = git(&work_dir).args(["add", "."]).output().await;
@@ -2465,6 +2486,17 @@ mod tests {
             .await
             .unwrap();
         assert!(content.contains("curl"));
+
+        let cache_dir = tmp.path().join("authenticated-cache");
+        extract_registry_cache_trust(&repo_dir, &commit, &cache_dir)
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(cache_dir.join("keys.toml"))
+                .await
+                .unwrap(),
+            "schema = 1\n"
+        );
     }
 
     #[tokio::test]

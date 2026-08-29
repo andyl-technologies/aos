@@ -35,25 +35,26 @@ in
         script = ''
           mkdir build
           cd build
+          # Release tarballs do not vendor googletest or benchmark. AOS
+          # validates the installed library through its hermetic SONAME and
+          # link checks below rather than fetching CMake test dependencies.
           cmake .. \
             -DCMAKE_INSTALL_PREFIX=$out \
             -DBUILD_SHARED_LIBS=ON \
-            -DSNAPPY_BUILD_TESTS=ON \
-            -DSNAPPY_BUILD_BENCHMARKS=ON \
+            -DSNAPPY_BUILD_TESTS=OFF \
+            -DSNAPPY_BUILD_BENCHMARKS=OFF \
             -DSNAPPY_FUZZING_BUILD=OFF
         '';
       }
       {
         name = "build";
         script = ''
-          cd build
           make -j$NIX_BUILD_CORES
         '';
       }
       {
         name = "install";
         script = ''
-          cd build
           make install
         '';
       }

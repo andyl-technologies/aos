@@ -24,7 +24,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::types::{ApmMeta, InstalledMeta, PackageMeta};
+use crate::types::{ApmMeta, ConfigModuleMeta, InstalledMeta, PackageMeta};
 
 const AOS_PACKAGE_CEL_REL: &str = "run/log/aos-packages.cel";
 const PCR_EXTEND_ENV: &str = "AOS_SYSTEMD_PCREXTEND";
@@ -674,20 +674,30 @@ fn package_store_path_root_digest(store_path: &str) -> String {
 }
 
 fn package_manifest_digest(root: &Path, apm: &ApmMeta) -> Result<String> {
+    let mut expose_manifest_digest = None;
     if let Some(artifact) = &apm.expose_artifact {
         let manifest = Path::new(&artifact.store_path).join("manifest.json");
         if manifest.is_file() {
             let bytes = fs::read(&manifest)
                 .with_context(|| format!("reading expose manifest {}", manifest.display()))?;
-            return Ok(package_manifest_digest_bytes(&bytes));
-        }
-        if root == Path::new("/") {
+            expose_manifest_digest = Some(package_manifest_digest_bytes(&bytes));
+        } else if root == Path::new("/") {
             bail!(
                 "exposed package '{}' is missing signed manifest at {}",
                 apm.name,
                 manifest.display()
             );
         }
+    }
+
+    if let Some(module) = &apm.config_module
+        && module.evaluation_base_lib.is_some()
+    {
+        return config_module_binding_digest(module, expose_manifest_digest.as_deref());
+    }
+
+    if let Some(digest) = expose_manifest_digest {
+        return Ok(digest);
     }
 
     let bytes = serde_json::to_vec(&apm.permissions)
@@ -714,6 +724,38 @@ pub(crate) fn package_measurement_digest(
 /// Returns the manifest digest format used in package measurement events.
 pub(crate) fn package_manifest_digest_bytes(bytes: &[u8]) -> String {
     format!("sha256:{}", digest_hex(bytes))
+}
+
+/// Returns the digest binding a package configuration module to its evaluator
+/// ABI, metadata, and optional expose manifest.
+///
+/// # Errors
+///
+/// Returns an error when the module has no authenticated evaluation base
+/// library or its metadata cannot be serialized canonically.
+pub(crate) fn config_module_binding_digest(
+    module: &ConfigModuleMeta,
+    expose_manifest_digest: Option<&str>,
+) -> Result<String> {
+    let base_lib = module
+        .evaluation_base_lib
+        .as_ref()
+        .context("published config module is missing its evaluation base-lib binding")?;
+    let metadata = serde_json::to_vec(module)
+        .context("serializing derived config-module metadata for provenance binding")?;
+    Ok(format!(
+        "sha256:{}",
+        digest_hex(
+            format!(
+                "config={}\nbase-lib={}\nmetadata=sha256:{}\nexpose={}\n",
+                module.config_output.nar_hash,
+                base_lib.nar_hash,
+                digest_hex(&metadata),
+                expose_manifest_digest.unwrap_or("")
+            )
+            .as_bytes()
+        )
+    ))
 }
 
 /// Replays and verifies the package event log against a quoted PCR 15 value
@@ -2722,9 +2764,9 @@ fn digest_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::types::{
-        ApmMeta, AttestationMeta, ExposeArtifactMeta, ExposeMeta, HostPathMode, HostPathPermission,
-        InstalledMeta, NetworkPermission, PACKAGE_META_FORMAT, PackageMeta, PermissionsMeta,
-        SysrootImageEntry,
+        ApmMeta, AttestationMeta, ConfigModuleMeta, ConfigOutputMeta, ExposeArtifactMeta,
+        ExposeMeta, HostPathMode, HostPathPermission, InstalledMeta, ModuleAbiCompat,
+        NetworkPermission, PACKAGE_META_FORMAT, PackageMeta, PermissionsMeta, SysrootImageEntry,
     };
     use tempfile::TempDir;
 
@@ -3000,6 +3042,76 @@ mod tests {
         };
 
         measurement_events(tmp.path(), &[installed]).expect("matching measurement");
+    }
+
+    #[test]
+    fn package_measurement_selects_authenticated_config_module_binding() {
+        let tmp = TempDir::new().expect("tempdir");
+        let manifest = br#"{"permissions":{"network":"private"}}"#;
+        let mut installed = installed_fixture(&tmp, manifest);
+        let apm = installed.apm.as_mut().expect("apm metadata");
+        let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let module = ConfigModuleMeta {
+            config_output: ConfigOutputMeta {
+                store_path: "/nix/store/config-module".into(),
+                nar_hash: "sha256:config".into(),
+                nar_size: 1,
+                references: Vec::new(),
+            },
+            evaluation_base_lib: Some(ConfigOutputMeta {
+                store_path: "/nix/store/base-lib".into(),
+                nar_hash: "sha256:base-lib".into(),
+                nar_size: 1,
+                references: Vec::new(),
+            }),
+            dependency_outputs: BTreeMap::new(),
+            module_abi_compat: ModuleAbiCompat { min: 1, max: 2 },
+            declares: vec!["web.enable".into()],
+            declaration_schema: Vec::new(),
+            requires: Vec::new(),
+            owns_roots: Vec::new(),
+            contributes: Vec::new(),
+            artifacts: Default::default(),
+            provides_capabilities: Vec::new(),
+        };
+        let manifest_digest = package_manifest_digest_bytes(manifest);
+
+        let mut image_seed = installed_fixture(&tmp, manifest);
+        let seed_apm = image_seed.apm.as_mut().expect("seed APM metadata");
+        let mut unbound_module = module.clone();
+        unbound_module.evaluation_base_lib = None;
+        seed_apm.config_module = Some(unbound_module);
+        seed_apm.attestation = AttestationMeta {
+            root_digest: Some(root_hash.into()),
+            root_hash: Some(root_hash.into()),
+            root_hash_sig: Some("root.roothash.p7s".into()),
+            provenance: None,
+            measurement: Some(package_measurement_digest(
+                &seed_apm.name,
+                &seed_apm.version,
+                root_hash,
+                &manifest_digest,
+            )),
+        };
+        measurement_events(tmp.path(), &[image_seed]).expect("image-seed measurement");
+
+        let binding_digest =
+            config_module_binding_digest(&module, Some(&manifest_digest)).expect("binding digest");
+        apm.config_module = Some(module);
+        apm.attestation = AttestationMeta {
+            root_digest: Some(root_hash.into()),
+            root_hash: Some(root_hash.into()),
+            root_hash_sig: Some("root.roothash.p7s".into()),
+            provenance: None,
+            measurement: Some(package_measurement_digest(
+                &apm.name,
+                &apm.version,
+                root_hash,
+                &binding_digest,
+            )),
+        };
+
+        measurement_events(tmp.path(), &[installed]).expect("config binding measurement");
     }
 
     #[test]
