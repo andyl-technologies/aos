@@ -2263,12 +2263,14 @@ pub fn parse_package_file(content: &str) -> Result<PackageToml> {
                                 == first_image.sb_signer_cert_sha256
                             && image.sbat == first_image.sbat
                             && image.expected_pcr11 == first_image.expected_pcr11
-                            && image.recovery_ukis == first_image.recovery_ukis
-                            && image.recovery_bundle == first_image.recovery_bundle,
+                            && image.recovery_ukis == first_image.recovery_ukis,
                         "release '{}' platform '{}' image encodings have different UKI or Secure Boot facts",
                         version.version,
                         platform
                     );
+                    // The recovery manifest authenticates the format-specific
+                    // image-info.json, so its component digest legitimately
+                    // differs between raw, QCOW2, VMDK, and VHD encodings.
                 }
             }
         }
