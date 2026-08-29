@@ -67,6 +67,13 @@ static OSStatus audio_device_io(
   return kAudioHardwareNoError;
 }
 
+static BOOL aos_platform_version_check(void) {
+  if (@available(macOS 12.0, *)) {
+    return YES;
+  }
+  return NO;
+}
+
 const void *aos_jdk25_data_exports[] = {
   &kCFProxyTypeKey,
   &kCFProxyTypeAutoConfigurationURL,
@@ -194,8 +201,11 @@ int main(void) {
   OSStatus status = SecKeychainOpen("aos.keychain", &keychain);
   AudioValueRange range = { 0.0, 1.0 };
   AudioDeviceIOProcID ioProc = audio_device_io;
+  volatile BOOL platformAvailable = aos_platform_version_check();
+  UInt32 bundleVersion = CFBundleGetVersionNumber((CFBundleRef)settings);
   return home == nil && settings == NULL && proxies == NULL && source == NULL &&
     keychain == NULL && status == 0 && aos_jdk25_data_exports[0] == NULL &&
     aos_jdk25_function_exports[0] == NULL && jdk25Classes[0] == Nil &&
-    range.mMinimum == range.mMaximum && ioProc == NULL;
+    range.mMinimum == range.mMaximum && ioProc == NULL && bundleVersion == 0 &&
+    !platformAvailable;
 }

@@ -13,6 +13,7 @@
   target = stdenv.hostPlatform.config;
   sdk = stdenv.sdk;
   runtimes = stdenv.darwinRuntimes;
+  targetResourceDir = "${builtins.placeholder "out"}/lib/clang/aos-darwin";
 in
   mkDerivation {
     pname = "aos-darwin-cc-wrapper";
@@ -31,12 +32,16 @@ in
       {
         name = "install";
         script = ''
-          mkdir -p "$out/bin" "$out/nix-support"
+          mkdir -p "$out/bin" "$out/nix-support" "$out/lib/clang/aos-darwin/lib"
+          llvm_resource_dir=$(${llvm}/bin/clang -print-resource-dir)
+          ln -s "$llvm_resource_dir/include" "$out/lib/clang/aos-darwin/include"
+          ln -s ${runtimes}/lib/darwin "$out/lib/clang/aos-darwin/lib/darwin"
 
           cat > "$out/bin/clang" <<'AOS_DARWIN_CLANG'
           #!${bash}/bin/bash
           exec ${llvm}/bin/clang \
             --target=${target} \
+            -resource-dir ${targetResourceDir} \
             -isysroot ${sdk} \
             -mmacosx-version-min=${stdenv.deploymentTarget} \
             -fuse-ld=lld \
@@ -48,6 +53,7 @@ in
           #!${bash}/bin/bash
           exec ${llvm}/bin/clang++ \
             --target=${target} \
+            -resource-dir ${targetResourceDir} \
             -isysroot ${sdk} \
             -mmacosx-version-min=${stdenv.deploymentTarget} \
             -fuse-ld=lld \
