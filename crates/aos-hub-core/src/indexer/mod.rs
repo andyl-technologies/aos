@@ -1590,22 +1590,36 @@ async fn verify_package_documentation(
                 )
                 .await?;
                 anyhow::ensure!(
-                    aos_registry_surface::store::normalize_digest(
+                    documentation_digest_matches(
                         &document.identity.runtime_nar_hash,
-                    )? == aos_registry_surface::store::normalize_digest(&entry.nar_hash)?,
+                        &entry.nar_hash,
+                    )?,
                     "package documentation runtime identity mismatch"
                 );
                 if let Some(config) = &entry.config_module {
                     anyhow::ensure!(
-                        document.identity.config_module_nar_hash.as_deref()
-                            == Some(config.config_output.nar_hash.as_str()),
+                        document
+                            .identity
+                            .config_module_nar_hash
+                            .as_deref()
+                            .map(|digest| documentation_digest_matches(
+                                digest,
+                                &config.config_output.nar_hash,
+                            ))
+                            .transpose()?
+                            == Some(true),
                         "package documentation config-module identity mismatch"
                     );
                 }
                 if let Some(expose) = &entry.expose_artifact {
                     anyhow::ensure!(
-                        document.identity.expose_artifact_nar_hash.as_deref()
-                            == Some(expose.nar_hash.as_str()),
+                        document
+                            .identity
+                            .expose_artifact_nar_hash
+                            .as_deref()
+                            .map(|digest| documentation_digest_matches(digest, &expose.nar_hash))
+                            .transpose()?
+                            == Some(true),
                         "package documentation expose-artifact identity mismatch"
                     );
                 }
@@ -1627,6 +1641,11 @@ async fn verify_package_documentation(
         ))
     });
     Ok(indexed)
+}
+
+fn documentation_digest_matches(left: &str, right: &str) -> Result<bool> {
+    Ok(aos_registry_surface::store::canonical_digest_hex(left)?
+        == aos_registry_surface::store::canonical_digest_hex(right)?)
 }
 
 struct ImageNarInfo {
@@ -2665,6 +2684,15 @@ mod tests {
         )
         .await
         .is_err());
+    }
+
+    #[test]
+    fn documentation_identity_compares_digest_bytes_not_spelling() {
+        let hex = format!("sha256:{}", "0".repeat(64));
+        let sri = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
+        assert!(documentation_digest_matches(&hex, sri).unwrap());
+        assert!(documentation_digest_matches(&hex, &format!("sha256:{}", "0".repeat(52))).unwrap());
     }
 
     #[tokio::test]
