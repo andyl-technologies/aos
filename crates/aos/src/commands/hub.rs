@@ -272,6 +272,33 @@ mod tests {
     }
 
     #[test]
+    fn documentation_browser_urls_preserve_registry_path_segments() {
+        let url = documentation_browser_url(
+            "https://hub.example.test",
+            "acme/platform/production",
+            "nginx",
+            "1.30.4",
+            "x86_64-linux",
+        )
+        .unwrap();
+
+        assert_eq!(
+            url.as_str(),
+            "https://hub.example.test/acme/platform/production/-/docs/nginx/1.30.4/x86_64-linux"
+        );
+        assert!(
+            documentation_browser_url(
+                "https://hub.example.test",
+                "acme//production",
+                "nginx",
+                "1.30.4",
+                "x86_64-linux",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn network_policy_kinds_use_wire_spelling() {
         assert_eq!(
             canonical_network_policy_kind("source-allowlist"),
@@ -1093,21 +1120,51 @@ async fn documentation(printer: &Printer, command: &HubDocumentationCmd) -> Resu
                 access.hub.as_deref(),
                 access.token.as_deref(),
             )?;
-            let mut url = url::Url::parse(&origin)?;
-            url.path_segments_mut()
-                .map_err(|_| anyhow::anyhow!("Hub URL cannot carry path segments"))?
-                .extend([
-                    registry.as_str(),
-                    "-",
-                    "docs",
-                    identity.package.as_str(),
-                    identity.version.as_str(),
-                    identity.platform.as_str(),
-                ]);
+            let url = documentation_browser_url(
+                &origin,
+                registry,
+                &identity.package,
+                &identity.version,
+                &identity.platform,
+            )?;
+            if print_hub_json(
+                printer,
+                "documentation_url",
+                serde_json::json!({ "url": url.as_str() }),
+            ) {
+                return Ok(());
+            }
             println!("{url}");
             Ok(())
         }
     }
+}
+
+fn documentation_browser_url(
+    origin: &str,
+    registry: &str,
+    package: &str,
+    version: &str,
+    platform: &str,
+) -> Result<url::Url> {
+    let registry_segments = registry.split('/').collect::<Vec<_>>();
+    anyhow::ensure!(
+        !registry_segments.is_empty()
+            && registry_segments
+                .iter()
+                .all(|segment| !segment.is_empty() && *segment != "." && *segment != ".."),
+        "registry refs contain non-empty canonical path segments"
+    );
+
+    let mut url = url::Url::parse(origin).context("parsing Hub URL")?;
+    let mut path = url
+        .path_segments_mut()
+        .map_err(|_| anyhow::anyhow!("Hub URL cannot carry path segments"))?;
+    path.extend(registry_segments);
+    path.extend(["-", "docs", package, version, platform]);
+    drop(path);
+
+    Ok(url)
 }
 
 async fn fetch_documentation(
