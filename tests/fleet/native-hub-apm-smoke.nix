@@ -748,7 +748,7 @@ in {
            f"{APM} options compare nginx --from '${pkgs.nginx.version}' "
            f"--to '${pkgs.nginx.version}' --platform x86_64-linux "
            f"--hub {HUB} --registry acme/production --token {shlex.quote(token)} "
-           "| grep -q 'semantic'"),
+           "| grep -q 'schema changed: false, runtime changed: false'"),
       )
       for documentation_label, documentation_command in documentation_commands:
           status, stdout, stderr = consumer.execute(textwrap.dedent(f"""
