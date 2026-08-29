@@ -575,8 +575,11 @@ fn find_orphans_from_meta(
         .collect()
 }
 
-/// Collect each entry's store-path hash plus its source derivation's hash
-/// (both have GC roots in the generation).
+/// Collect each entry's package, source, and documentation store-path hashes.
+///
+/// Every returned hash names a GC root owned by the profile generation. Keeping
+/// these identities together ensures removal drops all artifacts belonging to
+/// removed packages without disturbing retained packages' offline docs.
 fn root_hashes_for_installed(installed: &[InstalledMeta]) -> HashSet<String> {
     let mut hashes = HashSet::new();
     for meta in installed {
@@ -585,6 +588,9 @@ fn root_hashes_for_installed(installed: &[InstalledMeta]) -> HashSet<String> {
             if !apm.source_drv.is_empty() {
                 hashes.insert(store_path_hash(&apm.source_drv).to_string());
             }
+            if let Some(documentation) = &apm.documentation {
+                hashes.insert(store_path_hash(&documentation.store_path).to_string());
+            }
         }
     }
     hashes
@@ -592,7 +598,7 @@ fn root_hashes_for_installed(installed: &[InstalledMeta]) -> HashSet<String> {
 
 /// Copy roots from one generation to another, EXCLUDING specific hashes.
 ///
-/// Copies both `usr/` and `src/` symlinks, skipping any entry whose
+/// Copies `usr/`, `src/`, and `docs/` symlinks, skipping any entry whose
 /// name (hash) is in the `exclude` set.
 fn copy_roots_except(
     from: &super::profile::Generation,
@@ -601,46 +607,26 @@ fn copy_roots_except(
 ) -> Result<()> {
     use std::os::unix::fs::symlink;
 
-    // Copy usr/ roots.
-    let from_usr = from.path.join("usr");
-    let to_usr = to.path.join("usr");
-    std::fs::create_dir_all(&to_usr).with_context(|| format!("creating {}", to_usr.display()))?;
+    for root_class in ["usr", "src", "docs"] {
+        let from_root = from.path.join(root_class);
+        let to_root = to.path.join(root_class);
+        std::fs::create_dir_all(&to_root)
+            .with_context(|| format!("creating {}", to_root.display()))?;
 
-    if from_usr.is_dir() {
-        for entry in std::fs::read_dir(&from_usr)? {
-            let entry = entry?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            if exclude.contains(&name) {
-                continue;
-            }
-            let target = std::fs::read_link(entry.path())?;
-            let dest = to_usr.join(entry.file_name());
-            if !dest.symlink_metadata().is_ok() {
-                symlink(&target, &dest).with_context(|| {
-                    format!("copying root {} -> {}", dest.display(), target.display())
-                })?;
-            }
-        }
-    }
-
-    // Copy src/ roots.
-    let from_src = from.path.join("src");
-    let to_src = to.path.join("src");
-    std::fs::create_dir_all(&to_src).with_context(|| format!("creating {}", to_src.display()))?;
-
-    if from_src.is_dir() {
-        for entry in std::fs::read_dir(&from_src)? {
-            let entry = entry?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            if exclude.contains(&name) {
-                continue;
-            }
-            let target = std::fs::read_link(entry.path())?;
-            let dest = to_src.join(entry.file_name());
-            if !dest.symlink_metadata().is_ok() {
-                symlink(&target, &dest).with_context(|| {
-                    format!("copying root {} -> {}", dest.display(), target.display())
-                })?;
+        if from_root.is_dir() {
+            for entry in std::fs::read_dir(&from_root)? {
+                let entry = entry?;
+                let name = entry.file_name().to_string_lossy().to_string();
+                if exclude.contains(&name) {
+                    continue;
+                }
+                let target = std::fs::read_link(entry.path())?;
+                let dest = to_root.join(entry.file_name());
+                if !dest.symlink_metadata().is_ok() {
+                    symlink(&target, &dest).with_context(|| {
+                        format!("copying root {} -> {}", dest.display(), target.display())
+                    })?;
+                }
             }
         }
     }
@@ -711,7 +697,7 @@ mod tests {
 
     use crate::profile::Generation;
     use crate::profile::meta::write_meta;
-    use crate::types::{ApmMeta, ExposeMeta, ProfileScope};
+    use crate::types::{ApmMeta, DocumentationArtifactMeta, ExposeMeta, ProfileScope};
 
     fn test_profile(tmp: &TempDir) -> Profile {
         Profile::open_at(tmp.path().to_path_buf(), ProfileScope::User).unwrap()
@@ -773,6 +759,25 @@ mod tests {
     ) -> InstalledMeta {
         let mut installed = sample_installed(name, hash, explicit);
         installed.apm.as_mut().unwrap().registry = registry.into();
+        installed
+    }
+
+    fn with_documentation(mut installed: InstalledMeta, hash: &str) -> InstalledMeta {
+        installed.apm.as_mut().unwrap().documentation = Some(DocumentationArtifactMeta {
+            format: aos_doc_model::DOCUMENT_FORMAT.to_string(),
+            store_path: format!("/var/lib/store/{hash}-package-aos-docs.json"),
+            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            nar_size: 1024,
+            document_sha256:
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    .to_string(),
+            document_size: 900,
+            semantic_schema_sha256:
+                "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    .to_string(),
+            references: Vec::new(),
+        });
         installed
     }
 
@@ -1119,7 +1124,8 @@ mod tests {
 
     #[test]
     fn root_hashes_for_installed_includes_source_roots() {
-        let mut installed = sample_installed("sourceful", "aaa111", true);
+        let mut installed =
+            with_documentation(sample_installed("sourceful", "aaa111", true), "doc333");
         installed.apm.as_mut().unwrap().source_drv =
             "/var/lib/store/src222-sourceful-src.drv".to_string();
 
@@ -1127,6 +1133,7 @@ mod tests {
 
         assert!(hashes.contains("aaa111"));
         assert!(hashes.contains("src222"));
+        assert!(hashes.contains("doc333"));
     }
 
     // 10. copy_roots_except also handles src/ roots
@@ -1178,5 +1185,45 @@ mod tests {
         // zlib should be copied.
         assert!(to_path.join("usr/def456").symlink_metadata().is_ok());
         assert!(to_path.join("src/src222").symlink_metadata().is_ok());
+    }
+
+    #[test]
+    fn copy_roots_except_retains_only_selected_documentation_roots() {
+        let tmp = TempDir::new().unwrap();
+
+        let from_path = tmp.path().join("gen-1");
+        let from_docs = from_path.join("docs");
+        fs::create_dir_all(&from_docs).unwrap();
+        symlink(
+            "/var/lib/store/doc111-removed-aos-docs.json",
+            from_docs.join("doc111"),
+        )
+        .unwrap();
+        symlink(
+            "/var/lib/store/doc222-retained-aos-docs.json",
+            from_docs.join("doc222"),
+        )
+        .unwrap();
+
+        let from_gen = Generation {
+            number: 1,
+            path: from_path,
+        };
+        let to_path = tmp.path().join("gen-2");
+        fs::create_dir_all(&to_path).unwrap();
+        let to_gen = Generation {
+            number: 2,
+            path: to_path.clone(),
+        };
+
+        copy_roots_except(
+            &from_gen,
+            &to_gen,
+            &["doc111".to_string()].into_iter().collect(),
+        )
+        .unwrap();
+
+        assert!(to_path.join("docs/doc111").symlink_metadata().is_err());
+        assert!(to_path.join("docs/doc222").symlink_metadata().is_ok());
     }
 }
