@@ -81,7 +81,7 @@ fn max_advance_enqueues_and_acknowledges_logical_preemption_in_raw_space() {
         &header,
         &slot,
         Arc::new(LiveCallbackQuiescence::new()),
-        teardown_sender,
+        LiveRuntimeTeardownRouter::new(teardown_sender),
     )
     .unwrap_or_else(|error| panic!("test live state should validate: {error}"));
 

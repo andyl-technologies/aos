@@ -54,6 +54,7 @@ fn prepare_setup_maps_validates_and_arms_wake_fd_before_ready_ack() {
 
     assert_eq!(completion.mapped_region().region_len(), layout.region_size);
     assert_eq!(completion.validated_region().region_len, layout.region_size);
+    assert_eq!(completion.validated_layout(), layout);
     assert_nonblocking(completion.wake_fd().as_raw_fd());
     assert_eq!(completion.registered_wake_fd(), None);
     assert!(completion.app_random_branch_plan().entries().is_empty());

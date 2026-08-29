@@ -53,6 +53,44 @@ extern "C" fn record_control_worker_shutdown(failure: i32) {
 }
 
 #[test]
+fn callback_teardown_route_moves_to_the_replacement_child_worker() {
+    let (template_sender, template_receiver) = mpsc::channel();
+    let router = LiveRuntimeTeardownRouter::new(template_sender);
+    let callback_route = Arc::clone(&router);
+
+    callback_route
+        .send(LiveRuntimeTeardownTrigger::RunControlFault {
+            diagnostic: String::from("template"),
+        })
+        .unwrap_or_else(|()| panic!("template route should remain connected"));
+    assert!(matches!(
+        template_receiver.recv(),
+        Ok(LiveRuntimeTeardownTrigger::RunControlFault { diagnostic })
+            if diagnostic == "template"
+    ));
+
+    let (child_sender, child_receiver) = mpsc::channel();
+    router
+        .replace(child_sender)
+        .unwrap_or_else(|()| panic!("quiescent route replacement should succeed"));
+    assert!(matches!(
+        template_receiver.try_recv(),
+        Err(mpsc::TryRecvError::Disconnected)
+    ));
+
+    callback_route
+        .send(LiveRuntimeTeardownTrigger::RunControlFault {
+            diagnostic: String::from("child"),
+        })
+        .unwrap_or_else(|()| panic!("retained callback route should reach child worker"));
+    assert!(matches!(
+        child_receiver.recv(),
+        Ok(LiveRuntimeTeardownTrigger::RunControlFault { diagnostic })
+            if diagnostic == "child"
+    ));
+}
+
+#[test]
 fn run_control_worker_consumes_quit_marks_done_then_requests_clean_shutdown() {
     let _test_lock = CONTROL_WORKER_TEST_LOCK
         .lock()
