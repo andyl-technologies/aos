@@ -195,6 +195,13 @@ Replace `fakeHash` with the printed `sha256-...` value. Alternatively,
 the version, source URLs, and hash together in the package file. Prefer more
 than one trusted source URL when the upstream has a stable mirror.
 
+Extract only the named members a package consumes from a larger vendor bundle.
+Some archives contain a `./` member whose mode and timestamp `tar` applies to
+the existing extraction root; a sandbox executor can allow file creation there
+without allowing the builder to change mount-owned root metadata. Naming the
+required members avoids that unrelated metadata operation and keeps unpacking
+bounded to the package's declared payload.
+
 For a Bazel package built with `mkBazelPackage`, leave `populateBCR` enabled
 when the dependency graph uses Bazel modules. Set `populateBCR = false` when
 the package explicitly disables Bzlmod and resolves only a `WORKSPACE` graph.
