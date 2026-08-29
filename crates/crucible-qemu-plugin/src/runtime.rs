@@ -32,7 +32,7 @@ use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 
 use thiserror::Error;
 
@@ -64,6 +64,43 @@ pub(super) enum LiveRuntimeTeardownTrigger {
     SharedShutdown(PluginShutdownRequested),
     /// RUN control was malformed, unsolicited, closed, or otherwise unreadable.
     RunControlFault { diagnostic: String },
+}
+
+/// Replaceable route from callback state to the current process's teardown worker.
+///
+/// A hot-fork child retains callback allocations at their original addresses,
+/// but it does not retain the parent's worker threads. The barrier guarantees
+/// that no callback or lifecycle worker is using this lock across `fork(2)`;
+/// child initialization can therefore replace the disconnected sender before
+/// callback admission reopens.
+pub(super) struct LiveRuntimeTeardownRouter {
+    sender: Mutex<mpsc::Sender<LiveRuntimeTeardownTrigger>>,
+}
+
+impl LiveRuntimeTeardownRouter {
+    fn new(sender: mpsc::Sender<LiveRuntimeTeardownTrigger>) -> Arc<Self> {
+        Arc::new(Self {
+            sender: Mutex::new(sender),
+        })
+    }
+
+    fn send(&self, trigger: LiveRuntimeTeardownTrigger) -> Result<(), ()> {
+        self.sender
+            .lock()
+            .map_err(|_poisoned| ())?
+            .send(trigger)
+            .map_err(|_disconnected| ())
+    }
+
+    #[allow(
+        dead_code,
+        reason = "the replaceable callback route is consumed by the next fork-child worker slice"
+    )]
+    fn replace(&self, sender: mpsc::Sender<LiveRuntimeTeardownTrigger>) -> Result<(), ()> {
+        let mut current = self.sender.lock().map_err(|_poisoned| ())?;
+        *current = sender;
+        Ok(())
+    }
 }
 
 /// Callback families that must be live before the plugin can acknowledge setup.
@@ -187,7 +224,7 @@ impl OwnedCallbackRegistrationMask {
 pub(crate) struct OwnedCallbackRuntimeState {
     quiescence: Arc<LiveCallbackQuiescence>,
     workers: Arc<LiveWorkerQuiescence>,
-    teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
+    teardown_router: Arc<LiveRuntimeTeardownRouter>,
     live_vcpu_time: Option<Pin<Box<live_callbacks::LiveVcpuTimeCallbackState>>>,
     live_whitebox: Option<Pin<Box<live_whitebox::LiveWhiteboxState>>>,
     setup: PluginSetupCompletion,
@@ -202,12 +239,12 @@ impl OwnedCallbackRuntimeState {
     fn pin(
         worker_mask: u64,
         setup: PluginSetupCompletion,
-        teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
+        teardown_router: Arc<LiveRuntimeTeardownRouter>,
     ) -> Pin<Box<Self>> {
         Box::pin(Self {
             quiescence: Arc::new(LiveCallbackQuiescence::new()),
             workers: LiveWorkerQuiescence::new(worker_mask),
-            teardown_sender,
+            teardown_router,
             live_vcpu_time: None,
             live_whitebox: None,
             setup,
@@ -325,7 +362,7 @@ impl OwnedCallbackRuntimeState {
             header,
             mapped.node_slot,
             Arc::clone(&state.quiescence),
-            state.teardown_sender.clone(),
+            Arc::clone(&state.teardown_router),
         )?
         .attach_network(
             slot_index,
@@ -670,7 +707,11 @@ impl RequiredOwnedCallbacksRegistered {
         let mask = OwnedCallbackRegistrationMask::required_for(args);
         let (teardown_sender, teardown_receiver) = mpsc::channel();
         let mut registered = Self::from_registered(
-            OwnedCallbackRuntimeState::pin(plugin_worker_mask(args), setup, teardown_sender),
+            OwnedCallbackRuntimeState::pin(
+                plugin_worker_mask(args),
+                setup,
+                LiveRuntimeTeardownRouter::new(teardown_sender),
+            ),
             mask,
         );
         registered._teardown_receiver = Some(teardown_receiver);
@@ -1557,8 +1598,12 @@ where
     };
 
     let (teardown_sender, teardown_receiver) = mpsc::channel();
-    let callback_state =
-        OwnedCallbackRuntimeState::pin(plugin_worker_mask(&args), setup, teardown_sender.clone());
+    let teardown_router = LiveRuntimeTeardownRouter::new(teardown_sender.clone());
+    let callback_state = OwnedCallbackRuntimeState::pin(
+        plugin_worker_mask(&args),
+        setup,
+        Arc::clone(&teardown_router),
+    );
     let mut post_registration_stage = PostRegistrationStage::RegisterCallbacks;
     let mut acknowledgement_state = PostRegistrationAckState::Pending;
     let post_registration = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

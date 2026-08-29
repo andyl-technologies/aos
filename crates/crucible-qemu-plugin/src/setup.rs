@@ -30,8 +30,8 @@ use crucible_protocol::{
 };
 #[cfg(unix)]
 use crucible_shmem::{
-    MappedSetupRegion, RegionSetupValidationError, SetupRegionMapError, ValidatedSetupRegion,
-    mmap_setup_region,
+    HotForkChildMappingInstallError, MappedSetupRegion, RegionLayout, RegionSetupValidationError,
+    SetupRegionBackingIdentity, SetupRegionMapError, ValidatedSetupRegion, mmap_setup_region,
 };
 
 #[cfg(unix)]
@@ -170,6 +170,7 @@ impl RegisteredWakeFd {
 pub struct PluginSetupCompletion {
     mapped_region: MappedSetupRegion,
     validated_region: ValidatedSetupRegion,
+    validated_layout: RegionLayout,
     shared_memory_device: u64,
     shared_memory_inode: u64,
     wake_fd: ArmedWakeFd,
@@ -195,6 +196,12 @@ impl PluginSetupCompletion {
     #[must_use]
     pub const fn validated_region(&self) -> ValidatedSetupRegion {
         self.validated_region
+    }
+
+    /// Returns the exact setup-time shared-memory layout contract.
+    #[must_use]
+    pub const fn validated_layout(&self) -> RegionLayout {
+        self.validated_layout
     }
 
     /// Returns the backing object's stable device number captured before mmap.
@@ -237,6 +244,72 @@ impl PluginSetupCompletion {
     pub const fn registered_wake_fd(&self) -> Option<RegisteredWakeFd> {
         self.registered_wake_fd
     }
+
+    /// Installs and revalidates one exact branch-private child mapping.
+    ///
+    /// The source mapping must already be absent from the fork child. The new
+    /// descriptor must match the authenticated plan identity, must not alias
+    /// the template source object, and must reproduce the setup-time ABI and
+    /// layout contract before any retained callback pointer is used.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginSetupChildMappingError`] when exact mapping placement or
+    /// identity authentication fails, the replacement header is invalid, or
+    /// its validated setup contract differs from the template contract.
+    #[allow(
+        dead_code,
+        reason = "the sealed child-mapping transition is wired by the next QEMU callback slice"
+    )]
+    pub(crate) fn install_hot_fork_child_mapping(
+        &mut self,
+        fd: BorrowedFd<'_>,
+        expected: SetupRegionBackingIdentity,
+    ) -> Result<(), PluginSetupChildMappingError> {
+        self.mapped_region
+            .install_hot_fork_child_mapping(fd, expected)
+            .map_err(|source| PluginSetupChildMappingError::Install { source })?;
+
+        let actual_region = PluginShmemOrdering::validate_setup_header(&self.mapped_region)
+            .map_err(|source| PluginSetupChildMappingError::Validate { source })?;
+        let actual_layout = self
+            .mapped_region
+            .layout()
+            .map_err(|source| PluginSetupChildMappingError::Validate { source })?;
+        if actual_region != self.validated_region || actual_layout != self.validated_layout {
+            return Err(PluginSetupChildMappingError::ContractMismatch);
+        }
+
+        let identity = self.mapped_region.backing_identity();
+        self.shared_memory_device = identity.device();
+        self.shared_memory_inode = identity.inode();
+        Ok(())
+    }
+}
+
+/// Failure to bind retained plugin callback state to a fork-child mapping.
+#[cfg(unix)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "the sealed child-mapping transition is wired by the next QEMU callback slice"
+)]
+pub(crate) enum PluginSetupChildMappingError {
+    /// Exact-address mapping or backing-identity authentication failed.
+    #[error("fork-child setup mapping installation failed")]
+    Install {
+        /// Underlying exact mapping failure.
+        source: HotForkChildMappingInstallError,
+    },
+    /// The replacement shared-memory header or geometry is invalid.
+    #[error("fork-child setup mapping validation failed")]
+    Validate {
+        /// Underlying ABI or layout validation failure.
+        source: RegionSetupValidationError,
+    },
+    /// The replacement validates but differs from the template setup contract.
+    #[error("fork-child setup mapping contract differs from the template")]
+    ContractMismatch,
 }
 
 /// Typed evidence that the ready `SetupAck(0)` was sent.
@@ -362,6 +435,13 @@ where
             return Err(PluginSetupError::ValidateRegion { source });
         }
     };
+    let validated_layout = match mapped_region.layout() {
+        Ok(layout) => layout,
+        Err(source) => {
+            send_setup_failure_ack(writer, PluginSetupFailureStage::ValidateRegion)?;
+            return Err(PluginSetupError::ValidateRegion { source });
+        }
+    };
 
     validate_setup_handshake_slot(writer, handshake, header_snapshot.node_count)?;
 
@@ -375,6 +455,7 @@ where
     Ok(PluginSetupCompletion {
         mapped_region,
         validated_region,
+        validated_layout,
         shared_memory_device,
         shared_memory_inode,
         wake_fd,

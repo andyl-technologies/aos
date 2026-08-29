@@ -840,11 +840,19 @@ QEMU generation.
 
 This is still not the complete plugin-ring proof. Template-bound staging rejects
 a parked worker that retains a received trigger or queued fingerprint work,
-but no fork child yet receives, remaps, authenticates, and releases the private
-mapping or applies the recorded worker plan together with its host
-continuation. Template-process descriptor and endpoint retention are not child
-dispositions: they prove neither inherited-FD closure nor child remap/rebind.
-QEMU therefore keeps readiness bits 6 through 8 clear.
+but no fork child yet applies the complete worker plan together with its host
+continuation. The plugin setup owner now retains the exact validated
+`RegionLayout` and has a sealed transition that installs the distinct private
+backing at the retained address, revalidates the current ABI and complete
+layout, and updates the owned backing identity. Callback-held shutdown paths
+also route through one quiescence-replaceable sender, so a retained callback
+allocation can be rebound to a future child teardown receiver without retaining
+the vanished parent receiver. Those internal transitions are not yet registered
+or invoked by QEMU, do not recreate the control, teardown, or optional
+fingerprint workers, and do not release the child barrier. Template-process
+descriptor and endpoint retention are therefore not child dispositions: they
+prove neither inherited-FD closure nor complete child remap/rebind. QEMU keeps
+readiness bits 6 through 8 clear.
 
 The next source checkpoint adds a process-lifetime reversible bottom-half and
 timer-source barrier through the OOB

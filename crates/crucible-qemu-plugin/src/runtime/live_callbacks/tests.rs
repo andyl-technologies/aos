@@ -89,7 +89,7 @@ fn test_live_state_with_teardown(
         header,
         slot,
         Arc::new(LiveCallbackQuiescence::new()),
-        teardown_sender,
+        LiveRuntimeTeardownRouter::new(teardown_sender),
     )
 }
 

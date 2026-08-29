@@ -1896,8 +1896,15 @@ transition authenticates the exact distinct destination backing and shrink
 seal, requires the source address to be vacant, and installs the replacement at
 that address with `MAP_FIXED_NOREPLACE`. A real-fork regression proves the
 parent remains on its source backing while the child mutates only the private
-one. This is the exact-address mapping half of child reinitialization; QEMU has
-not yet invoked it or rebound plugin workers and endpoints.
+one. The plugin setup owner additionally retains and exact-checks the complete
+validated `RegionLayout` after that mapping transition, updates its owned
+backing identity only after validation, and routes callback teardown signals
+through a sender that can be replaced while the callback and worker barriers
+are held. A focused regression proves a sender retained by callback state stops
+addressing the template receiver and reaches the replacement receiver. This is
+the mapping and callback-route half of child reinitialization; QEMU has not yet
+invoked it, rebuilt the three worker classes, rebound endpoint state, or
+released child admission.
 This remains a retained T-CAM-6.2 subsystem primitive: a pending worker-local
 item is rejected rather than assigned ambiguously, while fork-child descriptor
 inheritance/remapping beyond the now-excluded source ring, application of the complete recorded disposition plan,

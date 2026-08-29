@@ -42,8 +42,8 @@ use crate::{
 };
 
 use super::{
-    LiveRuntimeTeardownTrigger, OwnedCallbackRegistrar, OwnedCallbackRegistrationError,
-    OwnedCallbackRegistrationMask, OwnedCallbackRuntimeState,
+    LiveRuntimeTeardownRouter, LiveRuntimeTeardownTrigger, OwnedCallbackRegistrar,
+    OwnedCallbackRegistrationError, OwnedCallbackRegistrationMask, OwnedCallbackRuntimeState,
     callback_quiescence::{LiveCallbackInFlight, LiveCallbackQuiescence},
     live_whitebox::{
         LiveWhiteboxApis, crucible_qemu_plugin_live_whitebox_vcpu_init_cb,
@@ -664,7 +664,7 @@ impl LiveNetworkCallbackState {
 /// rejects callback re-entry before a mutable ring or freeze-state borrow forms.
 pub(crate) struct LiveVcpuTimeCallbackState {
     quiescence: Arc<LiveCallbackQuiescence>,
-    teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
+    teardown_router: Arc<LiveRuntimeTeardownRouter>,
     shared_shutdown_signaled: AtomicBool,
     plugin_id: QemuPluginId,
     icount_raw: QemuIcountRawFn,
@@ -760,7 +760,7 @@ impl LiveVcpuTimeCallbackState {
         header: &RegionHeader,
         slot: &NodeSlot,
         quiescence: Arc<LiveCallbackQuiescence>,
-        teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
+        teardown_router: Arc<LiveRuntimeTeardownRouter>,
     ) -> Result<Self, LiveVcpuTimeCallbackError> {
         if 1_u64.checked_shl(u32::from(icount_shift)).is_none() {
             return Err(LiveVcpuTimeCallbackError::IcountShiftOutOfRange {
@@ -787,7 +787,7 @@ impl LiveVcpuTimeCallbackState {
             .into_boxed_slice();
         Ok(Self {
             quiescence,
-            teardown_sender,
+            teardown_router,
             shared_shutdown_signaled: AtomicBool::new(false),
             plugin_id,
             icount_raw,
@@ -852,9 +852,9 @@ impl LiveVcpuTimeCallbackState {
         {
             return Ok(());
         }
-        self.teardown_sender
+        self.teardown_router
             .send(LiveRuntimeTeardownTrigger::SharedShutdown(proof))
-            .map_err(|_error| LiveVcpuTimeCallbackError::TeardownWorkerUnavailable)
+            .map_err(|()| LiveVcpuTimeCallbackError::TeardownWorkerUnavailable)
     }
 
     pub(super) fn attach_network(
