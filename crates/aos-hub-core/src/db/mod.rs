@@ -30100,6 +30100,17 @@ source_nar_hash = ""
         db.grant_membership("user", user, &original_project_scope, "viewer")
             .await
             .unwrap();
+        db.grant_consumer_scope(
+            crate::db::GrantResource::NetworkPolicy {
+                id: "instance:public",
+            },
+            &original_scope,
+            "explicit",
+            "test",
+            "request:purge-test-public-boundary",
+        )
+        .await
+        .unwrap();
         let (_, old_secret) = db
             .create_token(
                 crate::domain::Principal::user(user),
@@ -30222,7 +30233,7 @@ source_nar_hash = ""
             .unwrap()
             .get(0)
             .unwrap();
-        assert_eq!(recreated_grant, 1);
+        assert_eq!(recreated_grant, 0);
     }
 
     #[tokio::test]

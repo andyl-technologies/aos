@@ -171,7 +171,7 @@ pub async fn configure_hub_route(
     )
     .unwrap();
     let (serves_git, serves_cache, serves_web) = match surface {
-        aos_hub::db::SurfaceTarget::Registry(_) => (true, false, true),
+        aos_hub::db::SurfaceTarget::Registry(_) => (true, true, true),
         aos_hub::db::SurfaceTarget::BinaryCache(_) => (false, true, true),
     };
     let route = db
@@ -232,7 +232,7 @@ pub async fn configure_hub_route(
     .await
     .unwrap();
     let canonical_audiences: &[&str] = match surface {
-        aos_hub::db::SurfaceTarget::Registry(_) => &["git", "web"],
+        aos_hub::db::SurfaceTarget::Registry(_) => &["git", "nix_cache", "web"],
         aos_hub::db::SurfaceTarget::BinaryCache(_) => &["nix_cache", "web"],
     };
     assert!(canonical_audiences.contains(&audience));

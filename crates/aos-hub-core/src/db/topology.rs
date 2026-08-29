@@ -4612,6 +4612,17 @@ mod tests {
         let db = Database::open_in_memory().await.unwrap();
         let org_id = db.create_org("route-probes", "Route probes").await.unwrap();
         let org = db.org_by_slug("route-probes").await.unwrap().unwrap();
+        db.grant_consumer_scope(
+            GrantResource::NetworkPolicy {
+                id: "instance:public",
+            },
+            &org.stable_id,
+            "explicit",
+            "test",
+            "request:route-fixture-public-boundary",
+        )
+        .await
+        .unwrap();
         let binding_id = db
             .create_topology_binding(
                 Some(org_id),
