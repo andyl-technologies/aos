@@ -534,6 +534,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("gateway_revision_event_history.sql"),
     include_str!("placement_policy_build_event_history.sql"),
     include_str!("placement_policy_publication_history.sql"),
+    include_str!("package_documentation.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -1516,6 +1517,57 @@ pub struct ReleaseArtifactSnapshot {
     pub manifest_digest: String,
     /// Complete artifact set, including a valid empty set.
     pub artifacts: Vec<ReleaseSnapshotArtifact>,
+}
+
+/// Verified documentation locator and deterministic search projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedPackageDocumentation {
+    /// Package name bound inside the canonical document.
+    pub package_name: String,
+    /// Package version bound inside the canonical document.
+    pub package_version: String,
+    /// Platform bound inside the canonical document.
+    pub platform: String,
+    /// Signed artifact locator.
+    pub artifact: aos_registry_surface::manifest::DocumentationArtifactMeta,
+    /// Disposable search rows derived from the canonical document.
+    pub search: Vec<aos_doc_model::SearchDocument>,
+}
+
+/// One searchable package-documentation result returned by the database.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PackageDocumentationSearchResult {
+    /// Package name.
+    pub package_name: String,
+    /// Package version.
+    pub package_version: String,
+    /// Platform triple.
+    pub platform: String,
+    /// Result kind.
+    pub kind: String,
+    /// Stable result key.
+    pub key: String,
+    /// Human title.
+    pub title: String,
+    /// Bounded plain-text summary.
+    pub summary: String,
+    /// Deterministic integer relevance score.
+    pub score: u64,
+}
+
+/// Exact immutable locator selected for one package/version/platform document.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PackageDocumentationLocator {
+    /// Registry commit that selected this locator.
+    pub indexed_commit: String,
+    /// Package name.
+    pub package_name: String,
+    /// Package version.
+    pub package_version: String,
+    /// Platform triple.
+    pub platform: String,
+    /// Signed immutable artifact identity.
+    pub artifact: aos_registry_surface::manifest::DocumentationArtifactMeta,
 }
 
 /// One image catalog authenticated by an exact signed release tag.
@@ -2857,6 +2909,8 @@ pub struct IndexSnapshot {
     pub roster: Vec<(String, String, String)>,
     /// Full package documents.
     pub packages: Vec<aos_registry_surface::manifest::PackageToml>,
+    /// Verified canonical documentation locators and search projections.
+    pub package_documentation: Vec<IndexedPackageDocumentation>,
     /// Verified releases.
     pub releases: Vec<ReleaseRow>,
     /// Complete immutable artifact snapshots for verified releases.
@@ -3989,7 +4043,12 @@ impl Database {
         let mut image_roots: Vec<(String, String, String, i64, String)> = Vec::new();
 
         let mut stmts: Vec<Statement> = Vec::new();
-        for table in ["packages", "key_rosters", "registry_cache_stack_entries"] {
+        for table in [
+            "package_documentation",
+            "packages",
+            "key_rosters",
+            "registry_cache_stack_entries",
+        ] {
             stmts.push(Statement::new(
                 format!("DELETE FROM {table} WHERE registry_id = ?1"),
                 vals![registry_id].to_vec(),
@@ -4085,6 +4144,21 @@ impl Database {
                             }
                         }
                     }
+                    if let Some(expose) = &entry.expose_artifact {
+                        catalog_artifacts.push(("expose", expose.store_path.as_str()));
+                    }
+                    if let Some(config) = &entry.config_module {
+                        catalog_artifacts
+                            .push(("config", config.config_output.store_path.as_str()));
+                        if let Some(base_lib) = &config.evaluation_base_lib {
+                            catalog_artifacts
+                                .push(("evaluation_base_lib", base_lib.store_path.as_str()));
+                        }
+                    }
+                    if let Some(documentation) = &entry.documentation {
+                        catalog_artifacts
+                            .push(("documentation", documentation.store_path.as_str()));
+                    }
                     for (artifact_kind, store_path) in catalog_artifacts {
                         let store_hash = store_hash_component(store_path);
                         let metadata_digest = hex::encode(sha2::Sha256::digest(
@@ -4117,6 +4191,56 @@ impl Database {
             "INSERT INTO packages
              (id, registry_id, name, description, homepage, license, maintainer, sysroot)",
             &package_rows,
+            "",
+        )?;
+
+        let mut documentation_rows = Vec::new();
+        let mut documentation_search_rows = Vec::new();
+        for documentation in &snapshot.package_documentation {
+            let artifact = &documentation.artifact;
+            documentation_rows.push(vals![
+                registry_id,
+                snapshot.commit,
+                documentation.package_name,
+                documentation.package_version,
+                documentation.platform,
+                artifact.format,
+                artifact.store_path,
+                artifact.nar_hash,
+                artifact.nar_size,
+                artifact.document_sha256,
+                artifact.document_size,
+                artifact.semantic_schema_sha256,
+            ]);
+            for search in &documentation.search {
+                documentation_search_rows.push(vals![
+                    registry_id,
+                    documentation.package_name,
+                    documentation.package_version,
+                    documentation.platform,
+                    search.kind,
+                    search.key,
+                    search.title,
+                    search.summary,
+                    serde_json::to_string(&search.terms)?,
+                ]);
+            }
+        }
+        extend_multirow_insert(
+            &mut stmts,
+            "INSERT INTO package_documentation
+             (registry_id, indexed_commit, package_name, package_version, platform,
+              format, store_path, nar_hash, nar_size, document_sha256, document_size,
+              semantic_schema_sha256)",
+            &documentation_rows,
+            "",
+        )?;
+        extend_multirow_insert(
+            &mut stmts,
+            "INSERT INTO package_documentation_search
+             (registry_id, package_name, package_version, platform, kind,
+              document_key, title, summary, terms)",
+            &documentation_search_rows,
             "",
         )?;
         extend_multirow_insert(
@@ -13459,6 +13583,192 @@ impl Database {
             });
         }
         Ok(Some(detail))
+    }
+
+    /// Loads one exact canonical package-documentation locator.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed indexed metadata.
+    pub async fn package_documentation_locator(
+        &self,
+        registry_id: i64,
+        package_name: &str,
+        package_version: &str,
+        platform: &str,
+    ) -> Result<Option<PackageDocumentationLocator>> {
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT indexed_commit, format, store_path, nar_hash, nar_size,
+                        document_sha256, document_size, semantic_schema_sha256
+                 FROM package_documentation
+                 WHERE registry_id = ?1 AND package_name = ?2
+                   AND package_version = ?3 AND platform = ?4",
+                &vals![registry_id, package_name, package_version, platform],
+            )
+            .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        Ok(Some(PackageDocumentationLocator {
+            indexed_commit: row.get(0)?,
+            package_name: package_name.to_string(),
+            package_version: package_version.to_string(),
+            platform: platform.to_string(),
+            artifact: aos_registry_surface::manifest::DocumentationArtifactMeta {
+                format: row.get(1)?,
+                store_path: row.get(2)?,
+                nar_hash: row.get(3)?,
+                nar_size: row.get(4)?,
+                document_sha256: row.get(5)?,
+                document_size: row.get(6)?,
+                semantic_schema_sha256: row.get(7)?,
+                references: Vec::new(),
+            },
+        }))
+    }
+
+    /// Resolves an optional version/platform selection to one exact locator.
+    ///
+    /// Empty selectors choose the newest indexed package version and the first
+    /// platform in stable lexical order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed indexed metadata.
+    pub async fn resolve_package_documentation_locator(
+        &self,
+        registry_id: i64,
+        package_name: &str,
+        package_version: &str,
+        platform: &str,
+    ) -> Result<Option<PackageDocumentationLocator>> {
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT d.indexed_commit, d.package_version, d.platform,
+                        d.format, d.store_path, d.nar_hash, d.nar_size,
+                        d.document_sha256, d.document_size,
+                        d.semantic_schema_sha256
+                 FROM package_documentation d
+                 JOIN packages p ON p.registry_id = d.registry_id
+                                AND p.name = d.package_name
+                 JOIN package_versions v ON v.package_id = p.id
+                                        AND v.version = d.package_version
+                 WHERE d.registry_id = ?1 AND d.package_name = ?2
+                   AND (?3 = '' OR d.package_version = ?3)
+                   AND (?4 = '' OR d.platform = ?4)
+                 ORDER BY v.id DESC, d.platform
+                 LIMIT 1",
+                &vals![registry_id, package_name, package_version, platform],
+            )
+            .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        Ok(Some(PackageDocumentationLocator {
+            indexed_commit: row.get(0)?,
+            package_name: package_name.to_string(),
+            package_version: row.get(1)?,
+            platform: row.get(2)?,
+            artifact: aos_registry_surface::manifest::DocumentationArtifactMeta {
+                format: row.get(3)?,
+                store_path: row.get(4)?,
+                nar_hash: row.get(5)?,
+                nar_size: row.get(6)?,
+                document_sha256: row.get(7)?,
+                document_size: row.get(8)?,
+                semantic_schema_sha256: row.get(9)?,
+                references: Vec::new(),
+            },
+        }))
+    }
+
+    /// Searches deterministic documentation projections within one registry.
+    ///
+    /// Search rows are disposable acceleration data. Callers load the exact
+    /// canonical Nix object before rendering a detail response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed indexed term data.
+    pub async fn search_package_documentation(
+        &self,
+        registry_id: i64,
+        query: &str,
+        kind: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<PackageDocumentationSearchResult>> {
+        let terms = aos_doc_model::tokenize(query);
+        if terms.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = self
+            .backend
+            .query(
+                "SELECT package_name, package_version, platform, kind,
+                        document_key, title, summary, terms
+                 FROM package_documentation_search
+                 WHERE registry_id = ?1
+                 ORDER BY package_name, package_version, platform, kind, document_key
+                 LIMIT 10000",
+                &vals![registry_id],
+            )
+            .await?;
+        let mut results = Vec::new();
+        for row in rows {
+            let row_kind: String = row.get(3)?;
+            if kind.is_some_and(|expected| expected != row_kind) {
+                continue;
+            }
+            let encoded: String = row.get(7)?;
+            let weights: std::collections::BTreeMap<String, u16> =
+                serde_json::from_str(&encoded).context("invalid indexed documentation terms")?;
+            let score = terms.iter().fold(0u64, |score, term| {
+                score.saturating_add(
+                    weights
+                        .iter()
+                        .filter(|(candidate, _)| candidate.starts_with(term.as_str()))
+                        .map(|(_, weight)| u64::from(*weight))
+                        .max()
+                        .unwrap_or(0),
+                )
+            });
+            if score == 0 {
+                continue;
+            }
+            results.push(PackageDocumentationSearchResult {
+                package_name: row.get(0)?,
+                package_version: row.get(1)?,
+                platform: row.get(2)?,
+                kind: row_kind,
+                key: row.get(4)?,
+                title: row.get(5)?,
+                summary: row.get(6)?,
+                score,
+            });
+        }
+        results.sort_by(|left, right| {
+            right.score.cmp(&left.score).then_with(|| {
+                (
+                    &left.package_name,
+                    &left.package_version,
+                    &left.platform,
+                    &left.kind,
+                    &left.key,
+                )
+                    .cmp(&(
+                        &right.package_name,
+                        &right.package_version,
+                        &right.platform,
+                        &right.kind,
+                        &right.key,
+                    ))
+            })
+        });
+        results.truncate(limit.min(100));
+        Ok(results)
     }
 
     /// Lists signed direct-delivery images belonging to verified releases.
@@ -25230,6 +25540,19 @@ fn index_snapshot_digest(snapshot: &IndexSnapshot) -> Result<String> {
             })
         })
         .collect::<Vec<_>>();
+    let package_documentation = snapshot
+        .package_documentation
+        .iter()
+        .map(|documentation| {
+            serde_json::json!({
+                "package_name": documentation.package_name,
+                "package_version": documentation.package_version,
+                "platform": documentation.platform,
+                "artifact": documentation.artifact,
+                "search": documentation.search,
+            })
+        })
+        .collect::<Vec<_>>();
     let document = serde_json::json!({
         "commit": snapshot.commit,
         "name": snapshot.name,
@@ -25239,6 +25562,7 @@ fn index_snapshot_digest(snapshot: &IndexSnapshot) -> Result<String> {
         "cache_stack": snapshot.cache_stack,
         "roster": snapshot.roster,
         "packages": format!("{:?}", snapshot.packages),
+        "package_documentation": package_documentation,
         "releases": releases,
         "release_artifacts": release_artifacts,
         "release_images": release_images,
@@ -26366,6 +26690,32 @@ source_nar_hash = ""
         let release_manifest_digest = hex::encode(sha2::Sha256::digest(
             serde_json::to_vec(&release_snapshot_artifacts).unwrap(),
         ));
+        let documentation = IndexedPackageDocumentation {
+            package_name: "curl".into(),
+            package_version: "8.5.0".into(),
+            platform: "x86_64-linux".into(),
+            artifact: aos_registry_surface::manifest::DocumentationArtifactMeta {
+                format: aos_doc_model::DOCUMENT_FORMAT.into(),
+                store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-curl-docs.json".into(),
+                nar_hash: format!("sha256-{}", "A".repeat(43)),
+                nar_size: 4096,
+                document_sha256: "b".repeat(64),
+                document_size: 2048,
+                semantic_schema_sha256: "c".repeat(64),
+                references: Vec::new(),
+            },
+            search: vec![aos_doc_model::SearchDocument {
+                kind: "option".into(),
+                key: "curl.listenPort".into(),
+                title: "curl.listenPort".into(),
+                summary: "TCP listen port".into(),
+                terms: std::collections::BTreeMap::from([
+                    ("curl".into(), 20),
+                    ("listen".into(), 80),
+                    ("port".into(), 100),
+                ]),
+            }],
+        };
         let mut snapshot = IndexSnapshot {
             commit: "c".repeat(64),
             name: "demo".into(),
@@ -26377,6 +26727,7 @@ source_nar_hash = ""
             ],
             roster: vec![("alice".into(), "demo:Ed25519:AA".into(), "active".into())],
             packages: vec![package],
+            package_documentation: vec![documentation.clone()],
             releases: vec![ReleaseRow {
                 semver: "1.0.0".into(),
                 tag_oid: "a".repeat(64),
@@ -26402,6 +26753,25 @@ source_nar_hash = ""
             cache_stack: None,
         };
         db.apply_snapshot(id, &snapshot).await.unwrap();
+        let exact = db
+            .package_documentation_locator(id, "curl", "8.5.0", "x86_64-linux")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(exact.artifact, documentation.artifact);
+        let resolved = db
+            .resolve_package_documentation_locator(id, "curl", "", "")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.package_version, "8.5.0");
+        let search = db
+            .search_package_documentation(id, "listen port", Some("option"), 10)
+            .await
+            .unwrap();
+        assert_eq!(search.len(), 1);
+        assert_eq!(search[0].key, "curl.listenPort");
+        assert_eq!(search[0].score, 180);
         let retention_releases = db.list_retention_release_snapshots(id).await.unwrap();
         assert_eq!(retention_releases.len(), 1);
         assert_eq!(retention_releases[0].artifacts[0].store_hash, "abc");
@@ -26441,6 +26811,21 @@ source_nar_hash = ""
             .get(0)
             .unwrap();
         assert_eq!(artifact_count, 1);
+
+        snapshot.package_documentation.clear();
+        db.apply_snapshot(id, &snapshot).await.unwrap();
+        assert!(db
+            .package_documentation_locator(id, "curl", "8.5.0", "x86_64-linux")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(db
+            .search_package_documentation(id, "listen", None, 10)
+            .await
+            .unwrap()
+            .is_empty());
+        snapshot.package_documentation.push(documentation);
+        db.apply_snapshot(id, &snapshot).await.unwrap();
 
         let channel_id: i64 = db
             .backend
@@ -31306,6 +31691,7 @@ source_nar_hash = ""
             cache_stack: None,
             roster: Vec::new(),
             packages: Vec::new(),
+            package_documentation: Vec::new(),
             releases: Vec::new(),
             release_artifact_snapshots: Vec::new(),
             release_images: Vec::new(),

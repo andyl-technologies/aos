@@ -337,6 +337,8 @@ fn distinct_capped(values: impl Iterator<Item = String>) -> Vec<String> {
 pub struct BrowseQuery {
     /// Hub-home registries substring search.
     pub q: Option<String>,
+    /// Documentation result-kind filter.
+    pub kind: Option<String>,
     /// Package-index filter expression.
     pub filter: Option<String>,
     /// Package-index sort column token.
@@ -371,6 +373,7 @@ impl BrowseQuery {
         for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
             match key.as_ref() {
                 "q" => out.q = Some(value.into_owned()),
+                "kind" => out.kind = Some(value.into_owned()),
                 "filter" => out.filter = Some(value.into_owned()),
                 "sort" => out.sort = Some(value.into_owned()),
                 "dir" => out.dir = Some(value.into_owned()),
@@ -754,12 +757,104 @@ pub async fn package(svc: &RpcService, headers: &HeaderMap, slug: &str, name: &s
         external.ok().as_deref(),
         &caches,
     );
+    let documentation_result = svc
+        .load_package_documentation_for_registry(registry.id, name, "", "")
+        .await;
+    let documentation_unavailable = documentation_result.is_err();
+    let documentation = documentation_result
+        .ok()
+        .flatten()
+        .map(|(locator, document)| pages::PackageDocumentationPanel {
+            document,
+            store_path: locator.artifact.store_path,
+            document_sha256: locator.artifact.document_sha256,
+            nar_hash: locator.artifact.nar_hash,
+        });
     Rendered::Html(pages::package_page(
         &registry,
         status.as_ref(),
         &detail,
         &closure,
         &setup,
+        documentation.as_ref(),
+        documentation_unavailable,
+        started,
+        &session,
+    ))
+}
+
+/// The searchable structured package-documentation index (HTML).
+pub async fn documentation_search(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    slug: &str,
+    query: &BrowseQuery,
+) -> Rendered {
+    if let Some(limited) = browse_rate_limited(svc, headers).await {
+        return limited;
+    }
+    let started = Instant::now();
+    let Some((registry, status)) = load_visible(svc, headers, slug).await else {
+        return Rendered::NotFound;
+    };
+    let kind = query.kind.as_deref().filter(|kind| {
+        matches!(
+            *kind,
+            "package" | "option" | "service" | "credential" | "capability"
+        )
+    });
+    let results = match query.query() {
+        Some(term) => svc
+            .db
+            .search_package_documentation(registry.id, term, kind, 100)
+            .await
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let session = session_indicator(svc, headers).await;
+    Rendered::Html(pages::documentation_index_page(
+        &registry,
+        status.as_ref(),
+        &results,
+        query.q.as_deref(),
+        kind,
+        started,
+        &session,
+    ))
+}
+
+/// One exact package/version/platform structured documentation page (HTML).
+pub async fn documentation(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    slug: &str,
+    package: &str,
+    version: &str,
+    platform: &str,
+) -> Rendered {
+    let started = Instant::now();
+    let Some((registry, status)) = load_visible(svc, headers, slug).await else {
+        return Rendered::NotFound;
+    };
+    let Some((locator, document)) = svc
+        .load_package_documentation_for_registry(registry.id, package, version, platform)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return Rendered::NotFound;
+    };
+    let panel = pages::PackageDocumentationPanel {
+        document,
+        store_path: locator.artifact.store_path,
+        document_sha256: locator.artifact.document_sha256,
+        nar_hash: locator.artifact.nar_hash,
+    };
+    let session = session_indicator(svc, headers).await;
+    Rendered::Html(pages::documentation_page(
+        &registry,
+        status.as_ref(),
+        &panel,
         started,
         &session,
     ))
@@ -1298,6 +1393,76 @@ pub async fn api_package(svc: &RpcService, slug: &str, name: &str) -> Rendered {
         Some(package) => json(&package),
         None => Rendered::NotFound,
     }
+}
+
+/// `GET /{slug}/-/api/docs/search` — ranked documentation results (JSON).
+pub async fn api_documentation_search(
+    svc: &RpcService,
+    slug: &str,
+    query: &BrowseQuery,
+) -> Rendered {
+    if registry(svc, slug).await.is_none() {
+        return Rendered::NotFound;
+    }
+    let Some(registry_record) = svc.db.registry_by_slug(slug).await.ok().flatten() else {
+        return Rendered::NotFound;
+    };
+    let Some(term) = query.query() else {
+        return json(&Vec::<crate::db::PackageDocumentationSearchResult>::new());
+    };
+    let kind = query.kind.as_deref().filter(|kind| {
+        matches!(
+            *kind,
+            "package" | "option" | "service" | "credential" | "capability"
+        )
+    });
+    match svc
+        .db
+        .search_package_documentation(registry_record.id, term, kind, 100)
+        .await
+    {
+        Ok(results) => json(&results),
+        Err(_) => Rendered::NotFound,
+    }
+}
+
+/// `GET /{slug}/-/api/docs/{package}/{version}/{platform}` — canonical JSON.
+pub async fn api_documentation(
+    svc: &RpcService,
+    slug: &str,
+    package: &str,
+    version: &str,
+    platform: &str,
+) -> Rendered {
+    if registry(svc, slug).await.is_none() {
+        return Rendered::NotFound;
+    }
+    let Some(response) = or_not_found(
+        svc.get_package_documentation(
+            None,
+            pb::GetPackageDocumentationRequest {
+                registry: slug.to_string(),
+                package: package.to_string(),
+                version: version.to_string(),
+                platform: platform.to_string(),
+            },
+        )
+        .await,
+    ) else {
+        return Rendered::NotFound;
+    };
+    match String::from_utf8(response.canonical_json) {
+        Ok(canonical_json) => Rendered::Json(canonical_json),
+        Err(_) => Rendered::NotFound,
+    }
+}
+
+/// `GET /{slug}/-/api/docs/schema` — the closed document JSON Schema.
+pub async fn api_documentation_schema(svc: &RpcService, slug: &str) -> Rendered {
+    if registry(svc, slug).await.is_none() {
+        return Rendered::NotFound;
+    }
+    Rendered::Json(aos_doc_model::DOCUMENT_JSON_SCHEMA.to_string())
 }
 
 /// `GET /{slug}/-/api/channels` — the channel list (JSON).

@@ -334,6 +334,7 @@ dependencies = [
 name = "aos-hub-console"
 version = "0.1.0"
 dependencies = [
+ "aos-doc-model",
  "aos-hub-console-contract",
  "aos-proto-types",
  "gloo-net",
@@ -360,6 +361,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "aos-doc-model",
  "aos-hub-console-contract",
  "aos-proto-types",
  "aos-registry-surface",

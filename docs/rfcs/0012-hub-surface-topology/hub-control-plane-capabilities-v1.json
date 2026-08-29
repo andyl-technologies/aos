@@ -227,6 +227,13 @@
       "methods": ["ListPackages", "GetPackage"]
     },
     {
+      "service": "DocumentationService",
+      "audience": "public",
+      "cli_families": ["registry docs", "package docs"],
+      "web_workflows": ["public-package-documentation", "registry-package-documentation"],
+      "methods": ["GetPackageDocumentation", "SearchPackageDocumentation", "GetPackageDocumentationSchema"]
+    },
+    {
       "service": "ChannelService",
       "audience": "public",
       "cli_families": ["registry channel"],

@@ -353,16 +353,28 @@ async fn browse_dispatch(
         Some(api) => match api {
             "registry" => browse::api_registry(&svc, &slug).await,
             "packages" => browse::api_packages(&svc, &slug).await,
+            "docs/search" => browse::api_documentation_search(&svc, &slug, &q).await,
+            "docs/schema" => browse::api_documentation_schema(&svc, &slug).await,
             "channels" => browse::api_channels(&svc, &slug).await,
             "releases" => browse::api_releases(&svc, &slug).await,
-            other => match other.strip_prefix("packages/") {
-                Some(name) if !name.is_empty() => browse::api_package(&svc, &slug, name).await,
-                _ => Rendered::NotFound,
-            },
+            other => {
+                if let Some(name) = other
+                    .strip_prefix("packages/")
+                    .filter(|name| !name.is_empty())
+                {
+                    browse::api_package(&svc, &slug, name).await
+                } else if let Some(selection) = documentation_selection(other, "docs/") {
+                    browse::api_documentation(&svc, &slug, selection.0, selection.1, selection.2)
+                        .await
+                } else {
+                    Rendered::NotFound
+                }
+            }
         },
         None => match rest.as_str() {
             "" => browse::registry_home(&svc, &headers, &slug).await,
             "packages" => browse::packages(&svc, &headers, &slug, &q).await,
+            "docs" => browse::documentation_search(&svc, &headers, &slug, &q).await,
             "images" => browse::images(&svc, &headers, &slug, &q).await,
             "channels" => browse::channels(&svc, &headers, &slug, &q).await,
             "releases" => browse::releases(&svc, &headers, &slug, &q).await,
@@ -370,6 +382,16 @@ async fn browse_dispatch(
             other => {
                 if let Some(name) = other.strip_prefix("packages/").filter(|n| !n.is_empty()) {
                     browse::package(&svc, &headers, &slug, name).await
+                } else if let Some(selection) = documentation_selection(other, "docs/") {
+                    browse::documentation(
+                        &svc,
+                        &headers,
+                        &slug,
+                        selection.0,
+                        selection.1,
+                        selection.2,
+                    )
+                    .await
                 } else if let Some(name) = other.strip_prefix("channels/").filter(|n| !n.is_empty())
                 {
                     browse::channel(&svc, &headers, &slug, name, &q).await
@@ -380,6 +402,17 @@ async fn browse_dispatch(
         },
     };
     browse_response(rendered)
+}
+
+fn documentation_selection<'a>(path: &'a str, prefix: &str) -> Option<(&'a str, &'a str, &'a str)> {
+    let mut segments = path.strip_prefix(prefix)?.split('/');
+    let package = segments.next().filter(|segment| !segment.is_empty())?;
+    let version = segments.next().filter(|segment| !segment.is_empty())?;
+    let platform = segments.next().filter(|segment| !segment.is_empty())?;
+    segments
+        .next()
+        .is_none()
+        .then_some((package, version, platform))
 }
 
 /// Mount one `aos.hub.v1` method as a `POST` route delegating to the
@@ -2248,6 +2281,22 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     // PackageService
     r = rpc_route!(r, "/aos.hub.v1.PackageService/ListPackages", list_packages);
     r = rpc_route!(r, "/aos.hub.v1.PackageService/GetPackage", get_package);
+    // DocumentationService
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DocumentationService/GetPackageDocumentation",
+        get_package_documentation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DocumentationService/SearchPackageDocumentation",
+        search_package_documentation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DocumentationService/GetPackageDocumentationSchema",
+        get_package_documentation_schema
+    );
     // ChannelService
     r = rpc_route!(r, "/aos.hub.v1.ChannelService/ListChannels", list_channels);
     r = rpc_route!(r, "/aos.hub.v1.ChannelService/GetChannel", get_channel);
