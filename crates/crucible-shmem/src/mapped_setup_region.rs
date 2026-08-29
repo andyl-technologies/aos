@@ -38,12 +38,19 @@ mod fault_transports;
 #[path = "mapped_setup_region/hot_fork.rs"]
 mod hot_fork;
 pub use hot_fork::{
-    HOT_FORK_RING_IMAGE_SCHEMA_VERSION, HotForkMappingDispositionError, HotForkRingImage,
-    HotForkRingImageError, MappedRingIoBarrierSnapshot,
+    HOT_FORK_RING_IMAGE_SCHEMA_VERSION, HotForkChildMappingInstallError,
+    HotForkMappingDispositionError, HotForkRingImage, HotForkRingImageError,
+    MappedRingIoBarrierSnapshot,
 };
 
 impl Drop for MappedSetupRegion {
     fn drop(&mut self) {
+        // SAFETY: `getpid` has no pointer preconditions and cannot fail.
+        // A DONTFORK child inherits this Rust owner but not its source VMA. It
+        // must not unmap an unrelated mapping that later occupied the address.
+        if self.mapping_process_id != unsafe { libc::getpid() } {
+            return;
+        }
         // SAFETY: `ptr` and `len` were returned by `mmap` and are owned by this
         // value until `Drop`.
         unsafe {
@@ -124,6 +131,8 @@ pub fn mmap_setup_region(
         len,
         region_len,
         backing_identity,
+        // SAFETY: `getpid` has no pointer preconditions and cannot fail.
+        mapping_process_id: unsafe { libc::getpid() },
     })
 }
 
@@ -184,22 +193,8 @@ mod tests {
 
     #[test]
     fn hot_fork_mapping_disposition_is_reversible() -> Result<(), Box<dyn std::error::Error>> {
-        let fd = test_memfd()?;
         let region_len = REGION_HEADER_SIZE as u64;
-        let truncate = unsafe {
-            // SAFETY: `fd` is live and the header size fits in `off_t`.
-            libc::ftruncate(fd.as_raw_fd(), REGION_HEADER_SIZE as libc::off_t)
-        };
-        if truncate != 0 {
-            return Err(Box::new(io::Error::last_os_error()));
-        }
-        let add_seal = unsafe {
-            // SAFETY: `fd` is a live memfd created with `MFD_ALLOW_SEALING`.
-            libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SHRINK)
-        };
-        if add_seal != 0 {
-            return Err(Box::new(io::Error::last_os_error()));
-        }
+        let fd = prepared_test_memfd(region_len)?;
 
         let mapped = mmap_setup_region(fd.as_fd(), region_len)?;
         assert!(
@@ -221,6 +216,108 @@ mod tests {
                 .iter()
                 .any(|flag| flag == "dc")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn hot_fork_child_installs_private_mapping_at_exact_source_address()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let region_len = REGION_HEADER_SIZE as u64;
+        let source_fd = prepared_test_memfd(region_len)?;
+        let destination_fd = prepared_test_memfd(region_len)?;
+        let destination_identity = setup_region_backing_identity(destination_fd.as_fd())?;
+        let mut mapped = mmap_setup_region(source_fd.as_fd(), region_len)?;
+        let source_identity = mapped.backing_identity();
+
+        assert_eq!(
+            mapped.install_hot_fork_child_mapping(source_fd.as_fd(), source_identity),
+            Err(HotForkChildMappingInstallError::SourceAlias)
+        );
+        let wrong_identity = SetupRegionBackingIdentity::from_parts(
+            destination_identity.device(),
+            if destination_identity.inode() == u64::MAX {
+                destination_identity.inode() - 1
+            } else {
+                destination_identity.inode() + 1
+            },
+            destination_identity.length(),
+        )
+        .ok_or_else(|| io::Error::other("valid wrong test identity"))?;
+        assert!(matches!(
+            mapped.install_hot_fork_child_mapping(destination_fd.as_fd(), wrong_identity),
+            Err(HotForkChildMappingInstallError::IdentityMismatch { .. })
+        ));
+        let wrong_length = SetupRegionBackingIdentity::from_parts(
+            destination_identity.device(),
+            destination_identity.inode(),
+            destination_identity.length() + 1,
+        )
+        .ok_or_else(|| io::Error::other("valid wrong test length"))?;
+        assert!(matches!(
+            mapped.install_hot_fork_child_mapping(destination_fd.as_fd(), wrong_length),
+            Err(HotForkChildMappingInstallError::LengthMismatch { .. })
+        ));
+
+        assert_eq!(
+            mapped.install_hot_fork_child_mapping(destination_fd.as_fd(), destination_identity,),
+            Err(HotForkChildMappingInstallError::AddressOccupied)
+        );
+        assert_eq!(mapped.backing_identity(), source_identity);
+
+        mapped.exclude_from_hot_fork_child()?;
+        // SAFETY: the child performs only bounded descriptor/mapping syscalls,
+        // writes one byte, and exits with `_exit` without entering test-harness
+        // or allocator teardown. The parent remains the only test runner.
+        let child = unsafe { libc::fork() };
+        if child < 0 {
+            return Err(Box::new(io::Error::last_os_error()));
+        }
+        if child == 0 {
+            let installed = mapped
+                .install_hot_fork_child_mapping(destination_fd.as_fd(), destination_identity)
+                .is_ok();
+            if !installed || mapped.backing_identity() != destination_identity {
+                // SAFETY: `_exit` terminates only the fork child and runs no
+                // inherited Rust destructors.
+                unsafe { libc::_exit(1) };
+            }
+            // SAFETY: the successful install made this exact byte range live
+            // in the child and the mapping is writable.
+            unsafe { mapped.base_ptr().write(0x5a) };
+            // SAFETY: see the failure exit above.
+            unsafe { libc::_exit(0) };
+        }
+
+        let mut status = 0;
+        let waited = loop {
+            // SAFETY: `child` is the positive PID returned to this parent and
+            // `status` points to writable storage.
+            let waited = unsafe { libc::waitpid(child, &mut status, 0) };
+            if waited >= 0 || io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                break waited;
+            }
+        };
+        if waited != child {
+            return Err(Box::new(io::Error::last_os_error()));
+        }
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 0);
+
+        let mut destination_byte = 0_u8;
+        // SAFETY: the destination fd is live and the one-byte output buffer is
+        // valid for the duration of `pread`.
+        let read = unsafe {
+            libc::pread(
+                destination_fd.as_raw_fd(),
+                std::ptr::from_mut(&mut destination_byte).cast::<libc::c_void>(),
+                1,
+                0,
+            )
+        };
+        assert_eq!(read, 1);
+        assert_eq!(destination_byte, 0x5a);
+        assert_eq!(mapped.backing_identity(), source_identity);
+        mapped.restore_hot_fork_parent_inheritance()?;
         Ok(())
     }
 
@@ -261,6 +358,21 @@ mod tests {
         // SAFETY: successful `memfd_create` returned a new descriptor whose
         // ownership is transferred exactly once into `OwnedFd`.
         Ok(unsafe { OwnedFd::from_raw_fd(raw_fd) })
+    }
+
+    fn prepared_test_memfd(region_len: u64) -> io::Result<OwnedFd> {
+        let fd = test_memfd()?;
+        let length = libc::off_t::try_from(region_len)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        // SAFETY: `fd` is live and `length` was checked for `off_t`.
+        if unsafe { libc::ftruncate(fd.as_raw_fd(), length) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `fd` is a live memfd created with `MFD_ALLOW_SEALING`.
+        if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SHRINK) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(fd)
     }
 }
 mod os_mapping;

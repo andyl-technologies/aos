@@ -4,6 +4,13 @@ use super::*;
 
 impl MappedSetupRegion {
     pub(super) fn base_ptr(&self) -> *mut u8 {
+        // SAFETY: `getpid` has no pointer preconditions and cannot fail.
+        // `MADV_DONTFORK` removes the source mapping while the Rust owner is
+        // copied into the child. Dereferencing its retained address before the
+        // exact-address child install would be memory-unsafe, so fail closed.
+        if self.mapping_process_id != unsafe { libc::getpid() } {
+            std::process::abort();
+        }
         self.address as *mut u8
     }
 
