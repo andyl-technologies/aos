@@ -21,6 +21,7 @@
   upgradeImageDisk = fixture.consumerUpgradeSystem.config.system.build.imageArtifacts.raw.disk;
   upgradeImageInfo = fixture.consumerUpgradeSystem.config.system.build.imageArtifacts.raw.info;
   upgradeUki = fixture.consumerUpgradeSystem.config.system.build.uki;
+  documentationBaseLib = fixture.consumerSystem.config.aos.config.evalAtBoot.baseLib;
   publisherClosureInfo = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
     rootPaths = [
       fixture.toolV1
@@ -30,6 +31,10 @@
       upgradeImageDisk
       upgradeImageInfo
       upgradeUki
+      pkgs.nginx
+      pkgs.nginx.config
+      pkgs.nginx.expose
+      documentationBaseLib
       pkgs.binutils
       pkgs.sbsigntools
       pkgs.systemd
@@ -94,6 +99,10 @@ in {
       HELPER_V1 = "${fixture.helperV1}"
       TOOL_V2 = "${fixture.toolV2}"
       HELPER_V2 = "${fixture.helperV2}"
+      NGINX = "${pkgs.nginx}"
+      NGINX_CONFIG = "${pkgs.nginx.config}"
+      NGINX_EXPOSE = "${pkgs.nginx.expose}"
+      DOCUMENTATION_BASE_LIB = "${documentationBaseLib}"
       UPGRADE_TOPLEVEL = "${upgradeToplevel}"
       UPGRADE_IMAGE = "${upgradeImage}"
       UPGRADE_IMAGE_DISK = "${upgradeImageDisk}"
@@ -561,6 +570,14 @@ in {
             --name hub-helper --version 1.0.0 \\
             --description 'Native Hub helper fixture' --license MIT \\
             --maintainer publisher@example.test --key "$key"
+          {APR} publish {NGINX} --registry production \\
+            --name nginx --version '${pkgs.nginx.version}' \\
+            --description 'Typed virtual hosts, upstreams, TLS credentials, validation, and reload behavior.' \\
+            --license BSD-2-Clause --maintainer publisher@example.test \\
+            --expose-manifest "$NGINX_EXPOSE/manifest.json" \\
+            --config-module "$NGINX_CONFIG" \\
+            --config-base-lib "$DOCUMENTATION_BASE_LIB" \\
+            --key-id initial
           {APR} release 1.0.0 --registry production \\
             --store-path {TOOL_V1} --name hub-tool \\
             --description 'Native Hub production fixture' --license MIT \\
@@ -584,6 +601,76 @@ in {
           ) + f" | {JQ} -e '.data | tostring | contains(\"1.0.0\")'",
           timeout=180,
       )
+      publisher.wait_until_succeeds(
+          hub_command(
+              "docs search virtual --registry acme/production --kind option",
+              token,
+          ) + f" | {JQ} -e '.data.results | length > 0'",
+          timeout=180,
+      )
+      publisher.succeed(
+          hub_command(
+              "docs package nginx --registry acme/production",
+              token,
+          ) + f" | {JQ} -e '.package.name == \"nginx\" and (.options | length > 0)'"
+      )
+      publisher.succeed(
+          hub_command(
+              "docs option nginx --registry acme/production --prefix nginx.virtualHosts",
+              token,
+          ) + f" | {JQ} -e '.data.options | length > 0'"
+      )
+      publisher.succeed(
+          hub_command(
+              "docs compare nginx --registry acme/production "
+              "--from '${pkgs.nginx.version}' --to '${pkgs.nginx.version}' "
+              "--platform x86_64-linux",
+              token,
+          ) + f" | {JQ} -e '.data.semantic_changed == false'"
+      )
+      publisher.succeed(
+          hub_command(
+              "docs fetch nginx --registry acme/production "
+              "--output /var/tmp/nginx-documentation.json",
+              token,
+          )
+      )
+      publisher.succeed(
+          f"{JQ} -e '.schema == \"aos.package-documentation/v1\" "
+          "and .package.name == \"nginx\" and (.options | length > 0)' "
+          "/var/tmp/nginx-documentation.json"
+      )
+
+      # Exercise the anonymous, content-bearing browser and stable API aliases
+      # served by the same native Hub process. The selected endpoint publishes
+      # a strong ETag that addresses the immutable documentation object.
+      consumer.succeed(
+          f"{CURL} -fsS '{REGISTRY}-/docs?q=virtual' "
+          "| grep -q 'Package documentation'"
+      )
+      consumer.succeed(
+          f"{CURL} -fsS {REGISTRY}-/docs/nginx/${pkgs.nginx.version}/x86_64-linux "
+          "| grep -q 'Typed virtual hosts'"
+      )
+      consumer.succeed(
+          f"{CURL} -fsS '{REGISTRY}-/api/v1/packages/nginx/options?prefix=nginx.virtualHosts' "
+          f"| {JQ} -e '.options | length > 0'"
+      )
+      consumer.succeed(textwrap.dedent(f"""
+          set -eu
+          {CURL} -fsS -D /tmp/nginx-doc.headers \
+            -o /tmp/nginx-doc.json \
+            '{REGISTRY}-/api/v1/packages/nginx/documentation'
+          grep -qi '^cache-control:.*immutable' /tmp/nginx-doc.headers
+          etag=$(sed -n 's/^[Ee][Tt][Aa][Gg]:[[:space:]]*"\\([^"[:space:]]*\\)".*/\\1/p' \
+            /tmp/nginx-doc.headers | tr -d '\\r')
+          test -n "$etag"
+          {CURL} -fsS -D /tmp/nginx-doc-immutable.headers \
+            -o /tmp/nginx-doc-immutable.json \
+            "{REGISTRY}-/api/v1/documentation/$etag"
+          cmp /tmp/nginx-doc.json /tmp/nginx-doc-immutable.json
+          grep -qi '^cache-control:.*immutable' /tmp/nginx-doc-immutable.headers
+      """))
       consumer.wait_until_succeeds(f"{CURL} -fsS {REGISTRY}HEAD", timeout=120)
 
       # Strong network precondition: neither closure member exists or is valid
@@ -622,7 +709,19 @@ in {
             --channel stable --trust-key {shlex.quote(trust)}
           {APM} registry list 2>&1 | grep production >/dev/null
           {APM} update --registry production
+          {APM} install nginx --registry production --yes
       """), timeout=600)
+      consumer.succeed(textwrap.dedent(f"""
+          set -eu
+          export HOME=/tmp/consumer USER=consumer
+          export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
+          {APM} docs show nginx | grep -q 'Typed virtual hosts'
+          {APM} options search virtual | grep -q 'nginx.virtualHosts'
+          {APM} options show nginx.enable --package nginx | grep -q 'nginx.enable'
+          man_path=$({APM} docs man nginx --install --print-path)
+          test -s "$man_path"
+          {APM} docs cache status | grep -q nginx
+      """), timeout=300)
       install_status, install_stdout, install_stderr = consumer.execute(textwrap.dedent(f"""
           set -eu
           export HOME=/tmp/consumer USER=consumer
@@ -677,6 +776,39 @@ in {
       )
       for path in (TOOL_V1, HELPER_V1):
           consumer.succeed(f"{NIX_STORE} --check-validity {shlex.quote(path)}")
+
+      # Once installed, documentation and editor metadata are exact retained
+      # profile inputs rather than a Hub cache. Prove every offline surface
+      # works while the native Hub is unavailable.
+      hub.succeed("systemctl stop aos-hub.service")
+      consumer.succeed(textwrap.dedent(f"""
+          set -eu
+          export HOME=/tmp/consumer USER=consumer
+          export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
+          {APM} docs show nginx | grep -q 'Typed virtual hosts'
+          {APM} options complete nginx.virtual | grep -q 'nginx.virtualHosts'
+
+          {APM} docs serve --listen 127.0.0.1:18080 --once \
+            >/tmp/apm-docs-serve.log 2>&1 &
+          docs_pid=$!
+          served=0
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if {CURL} -fsS http://127.0.0.1:18080/packages/nginx \
+              | grep -q 'Typed virtual hosts'; then
+              served=1
+              break
+            fi
+            sleep 1
+          done
+          wait "$docs_pid"
+          test "$served" = 1
+
+          payload='{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{}}}}'
+          printf 'Content-Length: %s\\r\\n\\r\\n%s' "''${{#payload}}" "$payload" \
+            | {AOS} language-server >/tmp/aos-doc-lsp.out
+          grep -q 'completionProvider' /tmp/aos-doc-lsp.out
+          grep -q 'hoverProvider' /tmp/aos-doc-lsp.out
+      """), timeout=180)
 
       # SQLite topology, publication metadata, and local surface bytes survive
       # a process restart. Anonymous package consumption stays available.
