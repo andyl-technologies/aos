@@ -573,6 +573,7 @@
 
             cp ${./darwin-jdk10-sdk-smoke.m} jdk10-sdk-smoke.mm
             "$CXX" jdk10-sdk-smoke.mm \
+              -framework Foundation \
               -framework AppKit \
               -framework CoreGraphics \
               -framework CoreText \

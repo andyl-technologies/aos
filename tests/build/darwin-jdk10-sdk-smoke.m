@@ -1,4 +1,5 @@
 #import <AppKit/NSOpenGL.h>
+#import <Foundation/Foundation.h>
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreText/CoreText.h>
 
@@ -16,6 +17,11 @@ _Static_assert(kCJKItalicRomanOffSelector == 3, "CJK italic selector");
 
 #define AOS_FUNCTION(name) ((const void *)&name)
 static const void *aos_jdk10_functions[] = {
+  AOS_FUNCTION(NSLog),
+  AOS_FUNCTION(NSSearchPathForDirectoriesInDomains),
+  AOS_FUNCTION(CFStringCreateWithFileSystemRepresentation),
+  AOS_FUNCTION(CFStringGetFileSystemRepresentation),
+  AOS_FUNCTION(CFStringGetMaximumSizeOfFileSystemRepresentation),
   AOS_FUNCTION(CGFontCreateWithDataProvider),
   AOS_FUNCTION(CGFontRetain),
   AOS_FUNCTION(CGFontCopyPostScriptName),
