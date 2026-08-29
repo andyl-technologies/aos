@@ -580,7 +580,7 @@
               -o "$cxx/bin/aos-darwin-jdk10-sdk-smoke"
 
             cp ${./darwin-jdk25-sdk-smoke.m} jdk25-sdk-smoke.m
-            "$CC" jdk25-sdk-smoke.m \
+            "$CC" -mmacosx-version-min=10.12 jdk25-sdk-smoke.m \
               -framework Foundation \
               -framework AppKit \
               -framework ApplicationServices \
@@ -598,6 +598,22 @@
               -framework Security \
               -lobjc \
               -o "$c/bin/aos-darwin-jdk25-sdk-smoke"
+            availability_symbols=$("$NM" -m "$c/bin/aos-darwin-jdk25-sdk-smoke")
+            case "$availability_symbols" in
+              *'___isPlatformVersionAtLeast'*) ;;
+              *)
+                echo "compiler-rt platform availability helper was not linked" >&2
+                exit 1
+                ;;
+            esac
+            bundle_bind=$("$OBJDUMP" --macho --lazy-bind "$c/bin/aos-darwin-jdk25-sdk-smoke")
+            case "$bundle_bind" in
+              *'CoreFoundation'*'_CFBundleGetVersionNumber'*) ;;
+              *)
+                echo "CFBundleGetVersionNumber did not bind to CoreFoundation" >&2
+                exit 1
+                ;;
+            esac
 
             # Apple's split Foundation headers are valid entry points, not
             # aliases that only work after the umbrella has established the

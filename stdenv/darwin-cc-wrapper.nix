@@ -13,6 +13,7 @@
 }: let
   system = buildPlatform.system;
   targetTriple = hostPlatform.config;
+  targetResourceDir = "${builtins.placeholder "out"}/lib/clang/aos-darwin";
 
   mkdir = "${coreutils}/bin/mkdir";
   cat = "${coreutils}/bin/cat";
@@ -23,7 +24,7 @@
   runtimeCompilerFlags =
     if runtimes == null
     then ""
-    else "-isystem ${runtimes}/include/c++/v1";
+    else ''-resource-dir "${targetResourceDir}" -isystem ${runtimes}/include/c++/v1'';
   cxxCompilerFlags =
     if runtimes == null
     then ""
@@ -36,6 +37,16 @@
     if runtimes == null
     then ""
     else "-L${runtimes}/lib -Wl,-rpath,${runtimes}/lib";
+  runtimeResourceSetup =
+    if runtimes == null
+    then ""
+    else ''
+      llvm_resource_dir=$(${llvm}/bin/clang -print-resource-dir)
+      ${ln} -s "$llvm_resource_dir/include" \
+        "$out/lib/clang/aos-darwin/include"
+      ${ln} -s ${runtimes}/lib/darwin \
+        "$out/lib/clang/aos-darwin/lib/darwin"
+    '';
   wrapper = builtins.derivation {
     name = "aos-${hostPlatform.system}-cc-wrapper";
     inherit system;
@@ -45,7 +56,12 @@
       ''
         set -eu
 
-        ${mkdir} -p "$out/bin" "$out/nix-support"
+        ${mkdir} -p \
+          "$out/bin" \
+          "$out/nix-support" \
+          "$out/lib/clang/aos-darwin/lib"
+
+        ${runtimeResourceSetup}
 
         ${cat} > "$out/bin/clang" <<'WRAPPER_EOF'
         #!${shell}

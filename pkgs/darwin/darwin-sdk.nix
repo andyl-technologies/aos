@@ -1691,6 +1691,7 @@ in
                 - _CFBundleCreate
                 - _CFBundleGetIdentifier
                 - _CFBundleGetValueForInfoDictionaryKey
+                - _CFBundleGetVersionNumber
                 - _CFCopyTypeIDDescription
                 - _CFDataGetBytePtr
                 - _CFDataCreate
