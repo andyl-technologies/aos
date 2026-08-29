@@ -73,6 +73,23 @@
     then throw "the verity image must disable generic initrd LUKS discovery exactly once"
     else "ok";
 
+  namedOutputPropagationProbe = pkgs.mkDerivation {
+    pname = "named-output-propagation-probe";
+    version = "0";
+    src = null;
+    outputs = ["out" "dev"];
+    propagatedDeps = [pkgs.pcre2];
+    phases = [];
+  };
+  namedOutputsPreservePackageMetadata =
+    if
+      builtins.map builtins.toString namedOutputPropagationProbe.dev.propagatedDeps
+      != [(builtins.toString pkgs.pcre2)]
+    then throw "named derivation outputs must preserve propagated dependencies"
+    else if namedOutputPropagationProbe.dev.pname != namedOutputPropagationProbe.pname
+    then throw "named derivation outputs must preserve the package identity"
+    else "propagated dependencies and package identity";
+
   mergeImageManifest = import ../build/merge-image-manifest.nix {inherit lib;};
   activationImageOverride = let
     hostnameUnit = "aos-hostname.service";
@@ -1288,6 +1305,7 @@ in
         echo "systemd gate:   $security_units workload services under threshold $security_threshold; $security_skipped allowlisted unconfined package(s) skipped: ''${security_skipped_names:-none}"
         echo "package policy: baked profile (${packagePolicyModule}), preset requires bundle (${packagePolicyRejectsPresetWithoutBundle}), target mismatch (${packagePolicyRejectsWrongTarget})"
         echo "derivations:    meta.execute uses build execution identity (${executionCompatibilityUsesBuildExecutionSystem})"
+        echo "named outputs:  preserve ${namedOutputsPreservePackageMetadata}"
         echo "bare metal:    encrypted ZFS zvol slots and authoritative ESPs (${bareMetalStorageProfile})"
 
         # Force the build attributes to ensure they evaluate
