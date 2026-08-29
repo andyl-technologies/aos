@@ -571,6 +571,14 @@
               -lobjc \
               -o "$c/bin/aos-darwin-jdk-sdk-smoke"
 
+            cp ${./darwin-jdk10-sdk-smoke.m} jdk10-sdk-smoke.mm
+            "$CXX" jdk10-sdk-smoke.mm \
+              -framework AppKit \
+              -framework CoreGraphics \
+              -framework CoreText \
+              -framework OpenGL \
+              -o "$cxx/bin/aos-darwin-jdk10-sdk-smoke"
+
             cp ${./darwin-jdk25-sdk-smoke.m} jdk25-sdk-smoke.m
             "$CC" jdk25-sdk-smoke.m \
               -framework Foundation \
@@ -1121,6 +1129,7 @@
               "$cxx/libaos-darwin-cmake-cxx-smoke.dylib" \
               "$cxx/aos-darwin-flat-namespace.bundle" \
               "$cxx/bin/aos-darwin-audio-cxx-smoke" \
+              "$cxx/bin/aos-darwin-jdk10-sdk-smoke" \
               "$cxx/bin/aos-darwin-cxx-smoke" \
               "$cxx/bin/aos-darwin-signpost-smoke"; do
               header=$("$OBJDUMP" --macho --private-header "$executable")

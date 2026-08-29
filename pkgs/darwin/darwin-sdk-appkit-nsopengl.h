@@ -16,6 +16,7 @@ enum {
   NSOpenGLPFAAccelerated = 73,
   NSOpenGLPFAClosestPolicy = 74,
   NSOpenGLPFAWindow = 80,
+  NSOpenGLPFAScreenMask = 84,
   NSOpenGLPFAPixelBuffer = 90,
   NSOpenGLPFAAllowOfflineRenderers = 96,
 };

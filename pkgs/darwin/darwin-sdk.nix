@@ -587,6 +587,8 @@
     cat > "$out/System/Library/Frameworks/CoreGraphics.framework/Headers/CoreGraphics.h" <<'EOF'
     #ifndef _AOS_COREGRAPHICS_H_
     #define _AOS_COREGRAPHICS_H_
+    #include <CoreFoundation/CoreFoundation.h>
+    CF_EXTERN_C_BEGIN
     #include <CoreGraphics/CGGeometry.h>
     #include <CoreGraphics/CGColorSpace.h>
     #include <CoreGraphics/CGColor.h>
@@ -599,6 +601,7 @@
     #include <CoreGraphics/CGEvent.h>
     #include <CoreGraphics/CGRemoteOperation.h>
     #include <CoreGraphics/JDKSurface.h>
+    CF_EXTERN_C_END
     #endif
     EOF
     cp ${./darwin-sdk-coregraphics-jdk.h} \
@@ -728,11 +731,16 @@
           - _CGFontGetDescent
           - _CGFontGetLeading
           - _CGFontGetUnitsPerEm
+          - _CGFontCreateWithDataProvider
+          - _CGFontRetain
+          - _CGFontCopyPostScriptName
+          - _CGFontCopyTableForTag
           - _CGFunctionCreate
           - _CGFunctionRelease
           - _CGGradientCreateWithColorComponents
           - _CGGradientRelease
           - _CGMainDisplayID
+          - _CGDisplayIDToOpenGLDisplayMask
           - _CGPatternCreate
           - _CGPatternRelease
           - _CGRectContainsPoint
