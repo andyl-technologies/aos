@@ -13,24 +13,57 @@ exports:
   - targets: [ x86_64-macos, arm64-macos ]
     symbols:
       - _CTFontCopyGraphicsFont
+      - _CTFontCopyAttribute
       - _CTFontCopyAvailableTables
       - _CTFontCopyDefaultCascadeListForLanguages
       - _CTFontCopyFontDescriptor
       - _CTFontCopyFullName
+      - _CTFontCopyName
+      - _CTFontCopyPostScriptName
       - _CTFontCopyTable
       - _CTFontCreateUIFontForLanguage
+      - _CTFontCreateCopyWithAttributes
+      - _CTFontCreateWithGraphicsFont
       - _CTFontCreatePathForGlyph
       - _CTFontCreateCopyWithSymbolicTraits
       - _CTFontDrawGlyphs
       - _CTFontManagerRegisterFontsForURL
       - _CTFontDescriptorCopyAttribute
+      - _CTFontDescriptorCreateWithAttributes
+      - _CTFontDescriptorCreateWithNameAndSize
       - _CTFontGetAdvancesForGlyphs
       - _CTFontGetGlyphsForCharacters
+      - _CTFontGetSize
+      - _CTGetCoreTextVersion
       - _CTLineDraw
+      - _CTLineGetGlyphRuns
+      - _CTLineGetTrailingWhitespaceWidth
+      - _CTRunGetAttributes
+      - _CTRunGetGlyphCount
+      - _CTRunGetGlyphs
+      - _CTRunGetGlyphsPtr
+      - _CTRunGetPositions
+      - _CTRunGetPositionsPtr
+      - _CTRunGetStatus
+      - _CTRunGetStringIndices
+      - _CTRunGetStringIndicesPtr
+      - _CTRunGetStringRange
+      - _CTRunGetTypographicBounds
       - _CTTypesetterCreateLine
       - _CTTypesetterCreateWithAttributedString
       - _CTTypesetterCreateWithAttributedStringAndOptions
       - _kCTFontFamilyNameAttribute
       - _kCTFontNameAttribute
       - _kCTForegroundColorFromContextAttributeName
+      - _kCTFontCascadeListAttribute
+      - _kCTFontURLAttribute
+      - _kCTFontFeatureTypeIdentifierKey
+      - _kCTFontFeatureSelectorIdentifierKey
+      - _kCTFontFeatureSettingsAttribute
+      - _kCTVerticalFormsAttributeName
+      - _kCTLanguageAttributeName
+      - _kCTFontAttributeName
+      - _kCTKernAttributeName
+      - _kCTTypesetterOptionForcedEmbeddingLevel
+      - _kCTFontPostScriptNameKey
 ...

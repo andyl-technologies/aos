@@ -44,6 +44,7 @@ typedef struct CGPatternCallbacks {
 } CGPatternCallbacks;
 
 typedef uint32_t CGDisplayChangeSummaryFlags;
+typedef uint32_t CGOpenGLDisplayMask;
 typedef void (*CGDisplayReconfigurationCallBack)(
   CGDirectDisplayID, CGDisplayChangeSummaryFlags, void *);
 enum {
@@ -94,6 +95,8 @@ enum {
 };
 
 enum { kCGBitmapByteOrderMask = 0x7000 };
+
+CF_EXTERN_C_BEGIN
 
 CGAffineTransform CGAffineTransformConcat(CGAffineTransform, CGAffineTransform);
 CGAffineTransform CGAffineTransformInvert(CGAffineTransform);
@@ -195,6 +198,10 @@ int CGFontGetAscent(CGFontRef);
 int CGFontGetDescent(CGFontRef);
 int CGFontGetLeading(CGFontRef);
 int CGFontGetUnitsPerEm(CGFontRef);
+CGFontRef CGFontCreateWithDataProvider(CGDataProviderRef);
+CGFontRef CGFontRetain(CGFontRef);
+CFStringRef CGFontCopyPostScriptName(CGFontRef);
+CFDataRef CGFontCopyTableForTag(CGFontRef, uint32_t);
 void CGFontRelease(CGFontRef);
 CGFunctionRef CGFunctionCreate(void *, size_t, const CGFloat *, size_t, const CGFloat *, const CGFunctionCallbacks *);
 void CGFunctionRelease(CGFunctionRef);
@@ -205,6 +212,7 @@ CGImageRef CGImageCreate(size_t, size_t, size_t, size_t, size_t, CGColorSpaceRef
 CGImageRef CGImageCreateWithImageInRect(CGImageRef, CGRect);
 void CGImageRelease(CGImageRef);
 CGDirectDisplayID CGMainDisplayID(void);
+CGOpenGLDisplayMask CGDisplayIDToOpenGLDisplayMask(CGDirectDisplayID);
 void CGPathApply(CGPathRef, void *, CGPathApplierFunction);
 void CGPathRelease(CGPathRef);
 CGPatternRef CGPatternCreate(void *, CGRect, CGAffineTransform, CGFloat, CGFloat, CGPatternTiling, bool, const CGPatternCallbacks *);
@@ -227,6 +235,9 @@ void CGEventSetFlags(CGEventRef, CGEventFlags);
 CGEventSourceRef CGEventSourceCreate(CGEventSourceStateID);
 CGEventFlags CGEventSourceFlagsState(CGEventSourceStateID);
 void CGRestorePermanentDisplayConfiguration(void);
+
+CF_EXTERN_C_END
+
 #ifdef __OBJC__
 @protocol MTLDevice;
 id<MTLDevice> CGDirectDisplayCopyCurrentMetalDevice(CGDirectDisplayID);
