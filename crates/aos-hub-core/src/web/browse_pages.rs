@@ -3409,7 +3409,7 @@ mod tests {
             &anon(),
         );
         // Header carries the latest version and a prominent description.
-        assert!(html.contains("<h1>curl <span class=\"dim\">8.5.0</span>"));
+        assert!(html.contains("<h1 id=\"overview\">curl <span class=\"dim\">8.5.0</span>"));
         assert!(html.contains("class=\"lede\">URL transfers"));
         // Platform chips near the top.
         assert!(html.contains("class=\"chip\">x86_64-linux"));
