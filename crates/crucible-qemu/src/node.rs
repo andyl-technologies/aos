@@ -58,6 +58,8 @@ pub use error::{QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeError};
 #[cfg(unix)]
 pub use hot_fork_ring_image::QemuHotForkPluginRingImage;
 #[cfg(target_os = "linux")]
+pub use hot_fork_ring_image::QemuHotForkPrivateRingMapping;
+#[cfg(target_os = "linux")]
 use process_identity::linux_process_identity_components;
 #[cfg(target_os = "linux")]
 pub use process_identity::{QemuProcessIdentity, linux_process_identity};

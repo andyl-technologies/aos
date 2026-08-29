@@ -231,6 +231,8 @@ pub use live_plugin_quantum_gate::{
 pub use mapped_quantum::{QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError};
 #[cfg(unix)]
 pub use node::QemuHotForkPluginRingImage;
+#[cfg(target_os = "linux")]
+pub use node::QemuHotForkPrivateRingMapping;
 pub use node::{
     QemuLogicalTimeCalibration, QemuNode, QemuNodeChannelError, QemuNodeChannelPlane,
     QemuNodeChannels, QemuNodeChild, QemuNodeEmittedFrame, QemuNodeError, QemuNodeIdleState,

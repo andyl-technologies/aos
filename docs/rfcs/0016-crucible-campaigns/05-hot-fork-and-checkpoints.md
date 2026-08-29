@@ -737,11 +737,22 @@ producer/consumer admission totals to agree. Changed proof generations,
 resource identity, or host barrier state reject the capture. This binds one
 host image to one retained plugin barrier but still does not authorize fork.
 
+The Linux host can materialize that capture into a fresh shrink-sealed memfd
+without exposing either descriptor or release authority. It first requires the
+live node to reproduce the captured plugin-resource inventory, setup-mapping
+identity, plugin-barrier generation, and host barrier. It initializes the new
+mapping from the image's exact `RegionConfig`, thereby resetting node slots and
+fingerprint samples, holds every fresh ring, restores only the three canonical
+ring ranges, and recaptures an exact image/digest match. Before returning the
+opaque mapping owner, it again requires the source inventory, identity, and
+both barriers to be unchanged. The destination device/inode must not alias the
+source and its producer and consumer endpoints remain held.
+
 This is still not the complete plugin-ring proof: a parked worker may retain a
 received trigger or queued fingerprint work, and no fork child yet receives,
-remaps, authenticates, and releases the private mapping together with those
-worker dispositions and its host continuation. QEMU therefore keeps readiness
-bit 6 clear.
+remaps, authenticates, and releases this private mapping together with those
+worker dispositions and its host continuation. No descriptor disposition has
+been authorized. QEMU therefore keeps readiness bit 6 clear.
 
 The next source checkpoint adds a process-lifetime reversible bottom-half and
 timer-source barrier through the OOB

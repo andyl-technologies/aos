@@ -52,6 +52,20 @@ impl HotForkRingImage {
         self.region_size
     }
 
+    /// Returns the exact setup-region geometry carried by the image.
+    ///
+    /// A branch-private destination uses this value to construct fresh
+    /// non-ring state before restoring the retained queue-backed segments.
+    #[must_use]
+    pub const fn region_config(&self) -> RegionConfig {
+        RegionConfig {
+            vm_node_count: self.vm_node_count,
+            queue_capacity: self.queue_capacity,
+            icount_shift: self.icount_shift,
+            fault_payload_arena_bytes: self.fault_payload_arena_bytes,
+        }
+    }
+
     /// Returns the BLAKE3 transfer-integrity digest.
     ///
     /// This digest authenticates the complete operational image but does not
