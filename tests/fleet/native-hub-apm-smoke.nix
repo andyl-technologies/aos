@@ -569,7 +569,8 @@ in {
           {APR} publish {HELPER_V1} --registry production \\
             --name hub-helper --version 1.0.0 \\
             --description 'Native Hub helper fixture' --license MIT \\
-            --maintainer publisher@example.test --key "$key"
+            --maintainer publisher@example.test --key "$key" \\
+            --key-id initial
           {APR} publish {NGINX} --registry production \\
             --name nginx --version '${pkgs.nginx.version}' \\
             --description 'Typed virtual hosts, upstreams, TLS credentials, validation, and reload behavior.' \\
