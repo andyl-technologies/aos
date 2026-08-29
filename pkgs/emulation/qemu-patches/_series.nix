@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "77f2bdeb8c90e77554130f71cd6a34481dbc674a629e7b8bd4711f5379a365f3";
+  patchBranchBundleSha256 = "cac90d4c11282f63af88f36abcab27416ab9fa91ba4e2e134d89321714cb0efc";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "be5f0c3f9d9c50d7e13ba57fb8a7b80474368d09";
+  patchBranchHeadCommit = "4e9712732d9b23b9bba63adf5f31c5201c8f2e3c";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1335,6 +1335,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "the version-5 plugin barrier distinguishes an idle parked worker from a parked worker retaining one dequeued item in thread-local state, requires pending workers to remain parked, and keeps quiescence false until every local item is either discarded or admitted without acknowledging proof bit 6";
+    }
+    {
+      file = "0141-crucible-stage-hot-fork-plugin-endpoints.patch";
+      branchSubject = "crucible: stage hot-fork plugin endpoints";
+      branchCommit = "4e9712732d9b23b9bba63adf5f31c5201c8f2e3c";
+      branchTree = "bb0d2aa9dcc4544096fe7db5ab442d042c78abbf";
+      catalogName = "crucible-hot-fork-plugin-endpoint-stage";
+      class = "F";
+      enforces = "HFORK-3,HFORK-8,HFORK-9";
+      capability = "QEMU retains and authenticates distinct connected-empty AF_UNIX control and empty eventfd wake endpoints against exact kernel identities, normalizes and verifies the retained eventfd as nonblocking after standard-QMP import, and binds both to one retained private-ring generation without installing either endpoint in a child or acknowledging readiness bits 6 through 8";
     }
   ];
   catalogOnlyCapabilities = [

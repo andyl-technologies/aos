@@ -1,0 +1,641 @@
+From 4e9712732d9b23b9bba63adf5f31c5201c8f2e3c Mon Sep 17 00:00:00 2001
+From: Dylan Plecki <dylan@andyl.com>
+Date: Mon, 1 Jan 2001 00:00:01 +0000
+Subject: [PATCH] crucible: stage hot-fork plugin endpoints
+
+Signed-off-by: Dylan Plecki <dylan@andyl.com>
+---
+ monitor/fds.c       |   7 +-
+ monitor/qmp-cmds.c  | 450 ++++++++++++++++++++++++++++++++++++++++++++
+ qapi/run-state.json | 109 +++++++++++
+ 3 files changed, 565 insertions(+), 1 deletion(-)
+
+diff --git a/monitor/fds.c b/monitor/fds.c
+index 8906a70..3c04d30 100644
+--- a/monitor/fds.c
++++ b/monitor/fds.c
+@@ -178,7 +178,12 @@ int monitor_dup_fd(Monitor *mon, const char *fdname, Error **errp)
+             continue;
+         }
+ 
+-        fd = qemu_dup_flags(monfd->fd, O_CLOEXEC);
++        /*
++         * Preserve status flags such as O_NONBLOCK. qemu_dup() already uses
++         * F_DUPFD_CLOEXEC where available, so the duplicate remains private
++         * across exec without rewriting the shared open-file description.
++         */
++        fd = qemu_dup(monfd->fd);
+         if (fd < 0) {
+             error_setg_errno(errp, errno,
+                              "Could not duplicate file descriptor named '%s'",
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index e05b0af..f98d67b 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -14,6 +14,9 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include <poll.h>
++
++#include "qemu/cutils.h"
+ #include "qemu/plugin.h"
+ #include "qemu/crucible-hot-fork-plugin.h"
+ #include "qemu/ctype.h"
+@@ -367,6 +370,21 @@ typedef struct CrucibleHotForkPrivateRingStage {
+ 
+ static CrucibleHotForkPrivateRingStage crucible_hot_fork_private_ring_stage;
+ 
++typedef struct CrucibleHotForkPluginEndpointStage {
++    bool staged;
++    int control_fd;
++    int wake_fd;
++    char *control_fdname;
++    char *wake_fdname;
++    uint64_t control_socket_cookie;
++    uint64_t wake_eventfd_id;
++    uint64_t private_ring_generation;
++    uint64_t generation;
++} CrucibleHotForkPluginEndpointStage;
++
++static CrucibleHotForkPluginEndpointStage
++    crucible_hot_fork_plugin_endpoint_stage;
++
+ static void crucible_hot_fork_template_schedule_block_transition(void);
+ 
+ static bool crucible_hot_fork_private_ring_fd_name_valid(const char *name)
+@@ -390,6 +408,120 @@ static bool crucible_hot_fork_private_ring_fd_name_valid(const char *name)
+     return true;
+ }
+ 
++static bool crucible_hot_fork_read_fdinfo(int fd, char *buffer,
++                                          size_t buffer_size, Error **errp)
++{
++    char path[64];
++    size_t used = 0;
++    int info_fd;
++
++    if (buffer_size < 2) {
++        error_setg(errp, "Crucible hot-fork fdinfo buffer is too small");
++        return false;
++    }
++    snprintf(path, sizeof(path), "/proc/self/fdinfo/%d", fd);
++    info_fd = open(path, O_RDONLY | O_CLOEXEC);
++    if (info_fd < 0) {
++        error_setg_errno(errp, errno,
++                         "Could not open Crucible hot-fork fdinfo");
++        return false;
++    }
++    while (used < buffer_size - 1) {
++        ssize_t length = read(info_fd, buffer + used,
++                              buffer_size - 1 - used);
++
++        if (length > 0) {
++            used += length;
++            continue;
++        }
++        if (length == 0) {
++            break;
++        }
++        if (errno == EINTR) {
++            continue;
++        }
++        error_setg_errno(errp, errno,
++                         "Could not read Crucible hot-fork fdinfo");
++        close(info_fd);
++        return false;
++    }
++    if (used == buffer_size - 1) {
++        char extra;
++        ssize_t length;
++
++        do {
++            length = read(info_fd, &extra, 1);
++        } while (length < 0 && errno == EINTR);
++        if (length != 0) {
++            if (length < 0) {
++                error_setg_errno(errp, errno,
++                                 "Could not finish Crucible hot-fork fdinfo");
++            } else {
++                error_setg(errp, "Crucible hot-fork fdinfo exceeds its bound");
++            }
++            close(info_fd);
++            return false;
++        }
++    }
++    close(info_fd);
++    buffer[used] = '\0';
++    return true;
++}
++
++static bool crucible_hot_fork_eventfd_id(int fd, uint64_t *eventfd_id,
++                                         Error **errp)
++{
++    char buffer[4096];
++    char *cursor;
++    bool found = false;
++
++    if (!crucible_hot_fork_read_fdinfo(fd, buffer, sizeof(buffer), errp)) {
++        return false;
++    }
++    cursor = buffer;
++    while (*cursor != '\0') {
++        char *line_end = strchr(cursor, '\n');
++        size_t line_length = line_end ? (size_t)(line_end - cursor) :
++                                        strlen(cursor);
++        static const char prefix[] = "eventfd-id:";
++
++        if (line_length >= sizeof(prefix) - 1 &&
++            memcmp(cursor, prefix, sizeof(prefix) - 1) == 0) {
++            char value[64];
++            const char *value_start = cursor + sizeof(prefix) - 1;
++            size_t value_length = line_length - (sizeof(prefix) - 1);
++            const char *end = NULL;
++            uint64_t parsed;
++
++            while (value_length > 0 && qemu_isspace(*value_start)) {
++                value_start++;
++                value_length--;
++            }
++            if (found || value_length == 0 || value_length >= sizeof(value)) {
++                error_setg(errp, "Invalid Crucible hot-fork eventfd identity");
++                return false;
++            }
++            memcpy(value, value_start, value_length);
++            value[value_length] = '\0';
++            if (qemu_strtou64(value, &end, 10, &parsed) < 0 ||
++                !end || *end != '\0' || parsed == 0) {
++                error_setg(errp, "Invalid Crucible hot-fork eventfd identity");
++                return false;
++            }
++            *eventfd_id = parsed;
++            found = true;
++        }
++        if (!line_end) {
++            break;
++        }
++        cursor = line_end + 1;
++    }
++    if (!found) {
++        error_setg(errp, "Crucible hot-fork wake descriptor is not an eventfd");
++    }
++    return found;
++}
++
+ static CrucibleHotForkPrivateRingState *
+ crucible_hot_fork_private_ring_report(void)
+ {
+@@ -558,6 +690,11 @@ qmp_crucible_hot_fork_private_rings(
+                        "during template preparation");
+             goto out;
+         }
++        if (crucible_hot_fork_plugin_endpoint_stage.staged) {
++            error_setg(errp, "Cannot release Crucible hot-fork private rings "
++                       "while plugin endpoints retain their generation");
++            goto out;
++        }
+         close(crucible_hot_fork_private_ring_stage.fd);
+         crucible_hot_fork_private_ring_stage.fd = -1;
+         g_clear_pointer(&crucible_hot_fork_private_ring_stage.fdname, g_free);
+@@ -581,6 +718,319 @@ out:
+     return report;
+ }
+ 
++static bool crucible_hot_fork_control_socket_cookie(
++    int fd, uint64_t *cookie, Error **errp)
++{
++#if defined(SO_DOMAIN) && defined(SO_COOKIE)
++    int domain;
++    int type;
++    uint64_t socket_cookie;
++    socklen_t length;
++    char byte;
++    ssize_t peeked;
++
++    length = sizeof(domain);
++    if (getsockopt(fd, SOL_SOCKET, SO_DOMAIN, &domain, &length) != 0) {
++        error_setg_errno(errp, errno,
++                         "Could not inspect Crucible control socket domain");
++        return false;
++    }
++    if (length != sizeof(domain) || domain != AF_UNIX) {
++        error_setg(errp, "Crucible hot-fork control endpoint is not AF_UNIX");
++        return false;
++    }
++    length = sizeof(type);
++    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &length) != 0) {
++        error_setg_errno(errp, errno,
++                         "Could not inspect Crucible control socket type");
++        return false;
++    }
++    if (length != sizeof(type) || type != SOCK_STREAM) {
++        error_setg(errp, "Crucible hot-fork control endpoint is not a stream");
++        return false;
++    }
++    length = sizeof(socket_cookie);
++    if (getsockopt(fd, SOL_SOCKET, SO_COOKIE, &socket_cookie, &length) != 0) {
++        error_setg_errno(errp, errno,
++                         "Could not authenticate Crucible control socket");
++        return false;
++    }
++    if (length != sizeof(socket_cookie) || socket_cookie == 0) {
++        error_setg(errp, "Invalid Crucible control socket identity");
++        return false;
++    }
++    do {
++        peeked = recv(fd, &byte, sizeof(byte), MSG_PEEK | MSG_DONTWAIT);
++    } while (peeked < 0 && errno == EINTR);
++    if (peeked >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
++        error_setg(errp, "Crucible hot-fork control socket is not connected "
++                   "and empty");
++        return false;
++    }
++    *cookie = socket_cookie;
++    return true;
++#else
++    error_setg(errp, "Crucible hot-fork control socket authentication is "
++               "unsupported on this host");
++    return false;
++#endif
++}
++
++static bool crucible_hot_fork_wake_eventfd_id(
++    int fd, uint64_t *eventfd_id, Error **errp)
++{
++    struct pollfd wake = { .fd = fd, .events = POLLIN };
++    int flags;
++    int ready;
++
++    flags = fcntl(fd, F_GETFL);
++    if (flags < 0) {
++        error_setg_errno(errp, errno,
++                         "Could not inspect Crucible wake descriptor flags");
++        return false;
++    }
++    if ((flags & O_NONBLOCK) == 0) {
++        if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
++            error_setg_errno(errp, errno,
++                             "Could not make Crucible wake eventfd nonblocking");
++            return false;
++        }
++        flags = fcntl(fd, F_GETFL);
++        if (flags < 0) {
++            error_setg_errno(errp, errno,
++                             "Could not verify Crucible wake eventfd flags");
++            return false;
++        }
++        if ((flags & O_NONBLOCK) == 0) {
++            error_setg(errp, "Crucible wake eventfd remained blocking");
++            return false;
++        }
++    }
++    do {
++        ready = poll(&wake, 1, 0);
++    } while (ready < 0 && errno == EINTR);
++    if (ready < 0) {
++        error_setg_errno(errp, errno,
++                         "Could not inspect Crucible wake eventfd state");
++        return false;
++    }
++    if (ready != 0 || wake.revents != 0) {
++        error_setg(errp, "Crucible hot-fork wake eventfd is not empty");
++        return false;
++    }
++    return crucible_hot_fork_eventfd_id(fd, eventfd_id, errp);
++}
++
++static CrucibleHotForkPluginEndpointState *
++crucible_hot_fork_plugin_endpoint_report(void)
++{
++    CrucibleHotForkPluginEndpointState *report =
++        g_new0(CrucibleHotForkPluginEndpointState, 1);
++
++    report->schema_version = 1;
++    report->generation = crucible_hot_fork_plugin_endpoint_stage.generation;
++    report->staged = crucible_hot_fork_plugin_endpoint_stage.staged;
++    if (crucible_hot_fork_plugin_endpoint_stage.staged) {
++        report->control_fdname = g_strdup(
++            crucible_hot_fork_plugin_endpoint_stage.control_fdname);
++        report->wake_fdname = g_strdup(
++            crucible_hot_fork_plugin_endpoint_stage.wake_fdname);
++    }
++    report->control_socket_cookie =
++        crucible_hot_fork_plugin_endpoint_stage.control_socket_cookie;
++    report->wake_eventfd_id =
++        crucible_hot_fork_plugin_endpoint_stage.wake_eventfd_id;
++    report->private_ring_generation =
++        crucible_hot_fork_plugin_endpoint_stage.private_ring_generation;
++    report->control_unix_stream =
++        crucible_hot_fork_plugin_endpoint_stage.staged;
++    report->wake_eventfd = crucible_hot_fork_plugin_endpoint_stage.staged;
++    report->disposition_complete = false;
++    report->readiness_proof_acknowledged = false;
++    return report;
++}
++
++static bool crucible_hot_fork_plugin_endpoint_stage_matches(
++    const char *control_fdname, const char *wake_fdname,
++    uint64_t control_socket_cookie, uint64_t wake_eventfd_id)
++{
++    return crucible_hot_fork_plugin_endpoint_stage.staged &&
++        strcmp(crucible_hot_fork_plugin_endpoint_stage.control_fdname,
++               control_fdname) == 0 &&
++        strcmp(crucible_hot_fork_plugin_endpoint_stage.wake_fdname,
++               wake_fdname) == 0 &&
++        crucible_hot_fork_plugin_endpoint_stage.control_socket_cookie ==
++            control_socket_cookie &&
++        crucible_hot_fork_plugin_endpoint_stage.wake_eventfd_id ==
++            wake_eventfd_id &&
++        crucible_hot_fork_plugin_endpoint_stage.private_ring_generation ==
++            crucible_hot_fork_private_ring_stage.generation;
++}
++
++CrucibleHotForkPluginEndpointState *
++qmp_crucible_hot_fork_plugin_endpoints(
++    CrucibleHotForkPluginEndpointAction action,
++    const char *control_fdname, const char *wake_fdname,
++    bool has_expected_control_socket_cookie,
++    uint64_t expected_control_socket_cookie,
++    bool has_expected_wake_eventfd_id, uint64_t expected_wake_eventfd_id,
++    Error **errp)
++{
++    CrucibleHotForkPluginEndpointState *report = NULL;
++    uint64_t observed_control_socket_cookie = 0;
++    uint64_t observed_wake_eventfd_id = 0;
++    int control_candidate = -1;
++    int wake_candidate = -1;
++
++    g_mutex_lock(&crucible_hot_fork_template_lock);
++    switch (action) {
++    case CRUCIBLE_HOT_FORK_PLUGIN_ENDPOINT_ACTION_STAGE:
++        if (!control_fdname || !wake_fdname ||
++            !has_expected_control_socket_cookie ||
++            !has_expected_wake_eventfd_id ||
++            expected_control_socket_cookie == 0 ||
++            expected_wake_eventfd_id == 0 ||
++            strcmp(control_fdname, wake_fdname) == 0) {
++            error_setg(errp, "Crucible hot-fork plugin endpoint staging "
++                       "requires two distinct exact identities");
++            goto out;
++        }
++        if (!crucible_hot_fork_private_ring_fd_name_valid(control_fdname) ||
++            !crucible_hot_fork_private_ring_fd_name_valid(wake_fdname)) {
++            error_setg(errp, "Invalid Crucible hot-fork plugin endpoint name");
++            goto out;
++        }
++        if (!crucible_hot_fork_private_ring_stage.staged ||
++            crucible_hot_fork_private_ring_stage.generation == 0) {
++            error_setg(errp, "Crucible hot-fork plugin endpoint staging "
++                       "requires retained private rings");
++            goto out;
++        }
++        control_candidate = monitor_dup_fd(monitor_cur(), control_fdname, errp);
++        if (control_candidate < 0) {
++            goto out;
++        }
++        wake_candidate = monitor_dup_fd(monitor_cur(), wake_fdname, errp);
++        if (wake_candidate < 0) {
++            goto out;
++        }
++        if (!crucible_hot_fork_control_socket_cookie(
++                control_candidate, &observed_control_socket_cookie, errp) ||
++            !crucible_hot_fork_wake_eventfd_id(
++                wake_candidate, &observed_wake_eventfd_id, errp)) {
++            goto out;
++        }
++        if (observed_control_socket_cookie !=
++                expected_control_socket_cookie ||
++            observed_wake_eventfd_id != expected_wake_eventfd_id) {
++            error_setg(errp, "Crucible hot-fork plugin endpoint identity "
++                       "mismatch");
++            goto out;
++        }
++        if (crucible_hot_fork_plugin_endpoint_stage.staged) {
++            if (!crucible_hot_fork_plugin_endpoint_stage_matches(
++                    control_fdname, wake_fdname,
++                    expected_control_socket_cookie,
++                    expected_wake_eventfd_id)) {
++                error_setg(errp, "Different Crucible hot-fork plugin "
++                           "endpoints are already staged");
++                goto out;
++            }
++            report = crucible_hot_fork_plugin_endpoint_report();
++            goto out;
++        }
++        if (crucible_hot_fork_template_active) {
++            error_setg(errp, "Cannot change Crucible hot-fork plugin "
++                       "endpoints during template preparation");
++            goto out;
++        }
++        crucible_hot_fork_plugin_endpoint_stage.staged = true;
++        crucible_hot_fork_plugin_endpoint_stage.control_fd = control_candidate;
++        control_candidate = -1;
++        crucible_hot_fork_plugin_endpoint_stage.wake_fd = wake_candidate;
++        wake_candidate = -1;
++        crucible_hot_fork_plugin_endpoint_stage.control_fdname =
++            g_strdup(control_fdname);
++        crucible_hot_fork_plugin_endpoint_stage.wake_fdname =
++            g_strdup(wake_fdname);
++        crucible_hot_fork_plugin_endpoint_stage.control_socket_cookie =
++            expected_control_socket_cookie;
++        crucible_hot_fork_plugin_endpoint_stage.wake_eventfd_id =
++            expected_wake_eventfd_id;
++        crucible_hot_fork_plugin_endpoint_stage.private_ring_generation =
++            crucible_hot_fork_private_ring_stage.generation;
++        crucible_hot_fork_plugin_endpoint_stage.generation++;
++        assert(crucible_hot_fork_plugin_endpoint_stage.generation != 0);
++        report = crucible_hot_fork_plugin_endpoint_report();
++        break;
++    case CRUCIBLE_HOT_FORK_PLUGIN_ENDPOINT_ACTION_QUERY:
++        if (control_fdname || wake_fdname ||
++            has_expected_control_socket_cookie ||
++            has_expected_wake_eventfd_id) {
++            error_setg(errp, "Crucible hot-fork plugin endpoint query accepts "
++                       "no descriptor identity");
++            goto out;
++        }
++        report = crucible_hot_fork_plugin_endpoint_report();
++        break;
++    case CRUCIBLE_HOT_FORK_PLUGIN_ENDPOINT_ACTION_RELEASE:
++        if (!control_fdname || !wake_fdname ||
++            !has_expected_control_socket_cookie ||
++            !has_expected_wake_eventfd_id ||
++            !crucible_hot_fork_private_ring_fd_name_valid(control_fdname) ||
++            !crucible_hot_fork_private_ring_fd_name_valid(wake_fdname)) {
++            error_setg(errp, "Crucible hot-fork plugin endpoint release "
++                       "requires the exact retained basis");
++            goto out;
++        }
++        if (!crucible_hot_fork_plugin_endpoint_stage.staged) {
++            error_setg(errp,
++                       "No Crucible hot-fork plugin endpoints are staged");
++            goto out;
++        }
++        if (!crucible_hot_fork_plugin_endpoint_stage_matches(
++                control_fdname, wake_fdname,
++                expected_control_socket_cookie,
++                expected_wake_eventfd_id)) {
++            error_setg(errp, "Crucible hot-fork plugin endpoint release basis "
++                       "does not match the retained endpoints");
++            goto out;
++        }
++        if (crucible_hot_fork_template_active) {
++            error_setg(errp, "Cannot release Crucible hot-fork plugin "
++                       "endpoints during template preparation");
++            goto out;
++        }
++        close(crucible_hot_fork_plugin_endpoint_stage.control_fd);
++        close(crucible_hot_fork_plugin_endpoint_stage.wake_fd);
++        crucible_hot_fork_plugin_endpoint_stage.control_fd = -1;
++        crucible_hot_fork_plugin_endpoint_stage.wake_fd = -1;
++        g_clear_pointer(
++            &crucible_hot_fork_plugin_endpoint_stage.control_fdname, g_free);
++        g_clear_pointer(
++            &crucible_hot_fork_plugin_endpoint_stage.wake_fdname, g_free);
++        crucible_hot_fork_plugin_endpoint_stage.staged = false;
++        crucible_hot_fork_plugin_endpoint_stage.control_socket_cookie = 0;
++        crucible_hot_fork_plugin_endpoint_stage.wake_eventfd_id = 0;
++        crucible_hot_fork_plugin_endpoint_stage.private_ring_generation = 0;
++        crucible_hot_fork_plugin_endpoint_stage.generation++;
++        assert(crucible_hot_fork_plugin_endpoint_stage.generation != 0);
++        report = crucible_hot_fork_plugin_endpoint_report();
++        break;
++    default:
++        g_assert_not_reached();
++    }
++out:
++    if (control_candidate >= 0) {
++        close(control_candidate);
++    }
++    if (wake_candidate >= 0) {
++        close(wake_candidate);
++    }
++    g_mutex_unlock(&crucible_hot_fork_template_lock);
++    return report;
++}
++
+ static void crucible_hot_fork_template_complete(
+     CrucibleHotForkTemplateOutcome outcome)
+ {
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 7ebf663..3d91257 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -1481,6 +1481,115 @@
+   'returns': 'CrucibleHotForkPrivateRingState',
+   'allow-oob': true }
+ 
++##
++# @CrucibleHotForkPluginEndpointAction:
++#
++# Operation over QEMU's retained duplicates of one branch-private plugin
++# control socket and wake eventfd.
++#
++# @stage: duplicate and authenticate two standard-QMP `getfd` entries
++#
++# @query: observe the retained endpoint pair without changing it
++#
++# @release: close the exact QEMU-retained duplicates; the monitor's `getfd`
++#     entries remain separately owned until standard QMP `closefd`
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'enum': 'CrucibleHotForkPluginEndpointAction',
++  'data': [ 'stage', 'query', 'release' ] }
++
++##
++# @CrucibleHotForkPluginEndpointState:
++#
++# Exact QEMU-owned state for one authenticated branch-private plugin endpoint
++# pair. This is a template-side retention primitive only: it neither installs
++# the endpoints in a fork child nor recreates plugin workers, so readiness
++# proof bits 6 through 8 remain clear.
++#
++# @schema-version: retained-endpoint contract version, currently 1
++#
++# @generation: process-local positive mutation generation, or zero initially
++#
++# @staged: whether QEMU retains both independently duplicated endpoints
++#
++# @control-fdname: exact standard-QMP control name while @staged
++#
++# @wake-fdname: exact standard-QMP wake name while @staged
++#
++# @control-socket-cookie: authenticated Linux `SO_COOKIE`, or zero when absent
++#
++# @wake-eventfd-id: authenticated Linux `/proc/self/fdinfo` eventfd identity,
++#     or zero when absent
++#
++# @private-ring-generation: exact retained private-ring generation captured at
++#     staging, or zero when absent
++#
++# @control-unix-stream: whether the retained control endpoint is one connected,
++#     empty AF_UNIX stream socket
++#
++# @wake-eventfd: whether the retained wake endpoint is one empty nonblocking
++#     eventfd
++#
++# @disposition-complete: always false until the complete child disposition
++#     transaction lands
++#
++# @readiness-proof-acknowledged: always false; this primitive acknowledges no
++#     hot-fork readiness proof
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkPluginEndpointState',
++  'data': { 'schema-version': 'uint32',
++            'generation': 'uint64',
++            'staged': 'bool',
++            '*control-fdname': 'str',
++            '*wake-fdname': 'str',
++            'control-socket-cookie': 'uint64',
++            'wake-eventfd-id': 'uint64',
++            'private-ring-generation': 'uint64',
++            'control-unix-stream': 'bool',
++            'wake-eventfd': 'bool',
++            'disposition-complete': 'bool',
++            'readiness-proof-acknowledged': 'bool' } }
++
++##
++# @crucible-hot-fork-plugin-endpoints:
++#
++# Retains or observes authenticated duplicates of standard-QMP `getfd` entries
++# for future child plugin control and wake rebinding. Stage requires two
++# distinct names, exact kernel-object identities, a connected empty AF_UNIX
++# stream socket, and an empty eventfd. Because the QMP chardev normalizes
++# received descriptors to blocking mode, stage makes the eventfd nonblocking
++# and verifies that retained state before accepting it. Query accepts no
++# endpoint fields. Release requires the same exact basis as stage and does not
++# close the separately owned standard-QMP names.
++#
++# @action: requested retained-endpoint operation
++#
++# @control-fdname: exact control endpoint name for @stage and @release
++#
++# @wake-fdname: exact wake endpoint name for @stage and @release
++#
++# @expected-control-socket-cookie: exact expected Linux `SO_COOKIE` for @stage
++#     and @release
++#
++# @expected-wake-eventfd-id: exact expected Linux eventfd identity for @stage
++#     and @release
++#
++# Returns: @CrucibleHotForkPluginEndpointState
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'crucible-hot-fork-plugin-endpoints',
++  'data': { 'action': 'CrucibleHotForkPluginEndpointAction',
++            '*control-fdname': 'str',
++            '*wake-fdname': 'str',
++            '*expected-control-socket-cookie': 'uint64',
++            '*expected-wake-eventfd-id': 'uint64' },
++  'returns': 'CrucibleHotForkPluginEndpointState',
++  'allow-oob': true }
++
+ ##
+ # @CrucibleHotForkMutex:
+ #
+-- 
+2.48.1

@@ -153,6 +153,43 @@ where
             .close_hot_fork_private_ring_descriptor(name, identity)
     }
 
+    fn query_hot_fork_private_rings(
+        &mut self,
+    ) -> Result<crate::QmpHotForkPrivateRingState, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_private_rings()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn install_hot_fork_plugin_endpoints(
+        &mut self,
+        control_name: &crate::QmpDescriptorName,
+        control: std::os::fd::BorrowedFd<'_>,
+        wake_name: &crate::QmpDescriptorName,
+        wake: std::os::fd::BorrowedFd<'_>,
+        identity: crate::QmpHotForkPluginEndpointIdentity,
+        private_ring_generation: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate.install_hot_fork_plugin_endpoints(
+            control_name,
+            control,
+            wake_name,
+            wake,
+            identity,
+            private_ring_generation,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn close_hot_fork_plugin_endpoints(
+        &mut self,
+        control_name: &crate::QmpDescriptorName,
+        wake_name: &crate::QmpDescriptorName,
+        identity: crate::QmpHotForkPluginEndpointIdentity,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate
+            .close_hot_fork_plugin_endpoints(control_name, wake_name, identity)
+    }
+
     fn query_hot_fork_bottom_half_inventory(
         &mut self,
     ) -> Result<crate::QmpHotForkBottomHalfInventory, QemuNodeChannelError> {

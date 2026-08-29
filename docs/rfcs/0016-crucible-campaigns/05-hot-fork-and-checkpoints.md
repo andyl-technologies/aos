@@ -796,12 +796,39 @@ Pre-transfer validation failure returns the untouched mapping and leaves the
 node running. This ordering prevents either a lost memfd owner or a caller from
 treating an unacknowledged transfer as a definite rejection.
 
+Once that private-ring stage is installed, the node may create one fresh
+branch-private control/wake pair without exposing either host continuation. The
+control endpoint is a connected empty AF_UNIX stream; the wake endpoint is an
+empty nonblocking eventfd. Their standard-QMP names are distinct and bounded:
+
+```text
+crucible-hfork-control-v1-<SO_COOKIE:16-lower-hex>
+crucible-hfork-wake-v1-<eventfd-id:16-lower-hex>
+```
+
+After two `getfd` acknowledgements, the OOB
+`crucible-hot-fork-plugin-endpoints stage` command independently duplicates
+both entries. QEMU authenticates the socket's Linux `SO_COOKIE`, the eventfd's
+`/proc/self/fdinfo` identity, their empty state, and the current retained
+private-ring generation. Standard QMP normalizes received descriptors to
+blocking mode, so the custom stage sets the retained eventfd's shared open-file
+description nonblocking and verifies that state before acceptance. The closed
+version-1 state reports both identities and explicitly keeps
+`disposition-complete` and
+`readiness-proof-acknowledged` false. Private-ring release is rejected while
+the pair retains its generation. Endpoint release first closes QEMU's
+duplicates, then standard `closefd` closes wake and control names; the node
+drops its original pairs only after all acknowledgements. Any transfer or
+release ambiguity poisons QMP, retains the opaque pair, and quarantines the
+QEMU generation.
+
 This is still not the complete plugin-ring proof: a parked worker may retain a
 received trigger or queued fingerprint work, and no fork child yet receives,
 remaps, authenticates, and releases this private mapping together with those
-worker dispositions and its host continuation. Template-process descriptor
-retention is not a child disposition: it proves neither inherited-FD closure
-nor child remap/rebind. QEMU therefore keeps readiness bits 6 and 7 clear.
+worker dispositions and its host continuation. Template-process descriptor and
+endpoint retention are not child dispositions: they prove neither inherited-FD
+closure nor child remap/rebind. QEMU therefore keeps readiness bits 6 through 8
+clear.
 
 The next source checkpoint adds a process-lifetime reversible bottom-half and
 timer-source barrier through the OOB

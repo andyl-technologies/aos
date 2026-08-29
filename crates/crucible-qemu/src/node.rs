@@ -51,12 +51,22 @@ mod checkpoint_probe;
 mod error;
 mod exact_snapshot;
 mod fault_events;
+#[cfg(target_os = "linux")]
+#[path = "node/hot_fork_plugin_endpoints.rs"]
+mod hot_fork_plugin_endpoints;
 #[cfg(unix)]
 #[path = "node/hot_fork_ring_image.rs"]
 mod hot_fork_ring_image;
 #[cfg(target_os = "linux")]
 mod process_identity;
 pub use error::{QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeError};
+#[cfg(target_os = "linux")]
+use hot_fork_plugin_endpoints::QemuHotForkPluginEndpointStage;
+#[cfg(target_os = "linux")]
+pub use hot_fork_plugin_endpoints::{
+    QemuHotForkPluginEndpointStageError, QemuHotForkPluginEndpointStageProof,
+    QemuHotForkPluginEndpointStageState,
+};
 #[cfg(unix)]
 pub use hot_fork_ring_image::QemuHotForkPluginRingImage;
 #[cfg(target_os = "linux")]
@@ -1028,6 +1038,63 @@ pub trait QemuQmpMachineControlChannel: Send {
         ))
     }
 
+    /// Queries QEMU's exact retained branch-private ring descriptor state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
+    /// response validation fails.
+    fn query_hot_fork_private_rings(
+        &mut self,
+    ) -> Result<crate::QmpHotForkPrivateRingState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query hot-fork private rings",
+            "hot-fork private-ring query is not implemented by this QMP channel",
+        ))
+    }
+
+    /// Imports branch-private plugin control and wake endpoints into QEMU.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the channel cannot transfer both
+    /// Unix descriptors or QEMU cannot authenticate the exact endpoint and
+    /// private-ring basis.
+    #[cfg(target_os = "linux")]
+    fn install_hot_fork_plugin_endpoints(
+        &mut self,
+        _control_name: &crate::QmpDescriptorName,
+        _control: BorrowedFd<'_>,
+        _wake_name: &crate::QmpDescriptorName,
+        _wake: BorrowedFd<'_>,
+        _identity: crate::QmpHotForkPluginEndpointIdentity,
+        _private_ring_generation: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "install hot-fork plugin endpoints",
+            "hot-fork plugin endpoint transfer is not implemented by this QMP channel",
+        ))
+    }
+
+    /// Closes plugin endpoints retained by the QEMU template and monitor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QEMU cannot release the exact
+    /// retained pair or either standard monitor name cannot be closed.
+    #[cfg(target_os = "linux")]
+    fn close_hot_fork_plugin_endpoints(
+        &mut self,
+        _control_name: &crate::QmpDescriptorName,
+        _wake_name: &crate::QmpDescriptorName,
+        _identity: crate::QmpHotForkPluginEndpointIdentity,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "close hot-fork plugin endpoints",
+            "hot-fork plugin endpoint close is not implemented by this QMP channel",
+        ))
+    }
+
     /// Queries QEMU's exact bounded allocated-bottom-half inventory.
     ///
     /// # Errors
@@ -1171,6 +1238,8 @@ pub struct QemuNode {
     channels: QemuNodeChannels,
     #[cfg(target_os = "linux")]
     hot_fork_private_ring_stage: Option<QemuHotForkPrivateRingStage>,
+    #[cfg(target_os = "linux")]
+    hot_fork_plugin_endpoint_stage: Option<QemuHotForkPluginEndpointStage>,
     lifecycle_state: QemuNodeLifecycleState,
     shutdown_policy: QemuShutdownPolicy,
     async_policy: QemuAsyncDriverPolicy,
@@ -1360,6 +1429,8 @@ impl QemuNode {
             channels,
             #[cfg(target_os = "linux")]
             hot_fork_private_ring_stage: None,
+            #[cfg(target_os = "linux")]
+            hot_fork_plugin_endpoint_stage: None,
             lifecycle_state: QemuNodeLifecycleState::Running,
             shutdown_policy,
             async_policy,

@@ -85,6 +85,17 @@ enum ChannelCall {
     QmpHotForkPluginBarrier,
     QmpHotForkInstallDescriptor(String, crucible_shmem::SetupRegionBackingIdentity),
     QmpHotForkCloseDescriptor(String, crucible_shmem::SetupRegionBackingIdentity),
+    QmpHotForkInstallPluginEndpoints {
+        control_name: String,
+        wake_name: String,
+        identity: crate::QmpHotForkPluginEndpointIdentity,
+        private_ring_generation: u64,
+    },
+    QmpHotForkClosePluginEndpoints {
+        control_name: String,
+        wake_name: String,
+        identity: crate::QmpHotForkPluginEndpointIdentity,
+    },
     QmpHotForkBottomHalfInventory,
     QmpHotForkMutexInventory,
     QmpHotForkTimerInventory,
@@ -142,8 +153,18 @@ struct ScriptedQmpMachineControl {
     timeout_snapshot: bool,
     plugin_resources: Option<crate::QmpHotForkPluginResourceInventory>,
     plugin_barriers: Option<Arc<Mutex<VecDeque<crate::QmpHotForkPluginBarrierState>>>>,
+    private_ring_state: Arc<
+        Mutex<
+            Option<(
+                crate::QmpDescriptorName,
+                crucible_shmem::SetupRegionBackingIdentity,
+                u64,
+            )>,
+        >,
+    >,
     fail_descriptor_install: bool,
     fail_descriptor_close: bool,
+    fail_endpoint_install: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -151,6 +172,7 @@ enum DescriptorScript {
     Success,
     InstallFailure,
     CloseFailure,
+    EndpointInstallFailure,
 }
 
 impl QemuPluginIpcControlChannel for ScriptedPluginControl {
@@ -589,6 +611,7 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
                 "injected descriptor transfer failure",
             ));
         }
+        *self.private_ring_state.lock().unwrap() = Some((name.clone(), identity, 1));
         Ok(())
     }
 
@@ -608,6 +631,76 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
             return Err(QemuNodeChannelError::new(
                 "close hot-fork private ring descriptor",
                 "injected descriptor close failure",
+            ));
+        }
+        *self.private_ring_state.lock().unwrap() = None;
+        Ok(())
+    }
+
+    fn query_hot_fork_private_rings(
+        &mut self,
+    ) -> Result<crate::QmpHotForkPrivateRingState, QemuNodeChannelError> {
+        let state = self.private_ring_state.lock().unwrap();
+        let (name, identity, generation) = state.as_ref().ok_or_else(|| {
+            QemuNodeChannelError::new(
+                "query hot-fork private rings",
+                "scripted private-ring stage is absent",
+            )
+        })?;
+        Ok(crate::QmpHotForkPrivateRingState::one_staged(
+            *generation,
+            name.clone(),
+            identity.device(),
+            identity.inode(),
+            identity.length(),
+        ))
+    }
+
+    fn install_hot_fork_plugin_endpoints(
+        &mut self,
+        control_name: &crate::QmpDescriptorName,
+        _control: std::os::fd::BorrowedFd<'_>,
+        wake_name: &crate::QmpDescriptorName,
+        _wake: std::os::fd::BorrowedFd<'_>,
+        identity: crate::QmpHotForkPluginEndpointIdentity,
+        private_ring_generation: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpHotForkInstallPluginEndpoints {
+                control_name: control_name.as_str().to_owned(),
+                wake_name: wake_name.as_str().to_owned(),
+                identity,
+                private_ring_generation,
+            });
+        if self.fail_endpoint_install {
+            return Err(QemuNodeChannelError::new(
+                "install hot-fork plugin endpoints",
+                "injected endpoint transfer failure",
+            ));
+        }
+        Ok(())
+    }
+
+    fn close_hot_fork_plugin_endpoints(
+        &mut self,
+        control_name: &crate::QmpDescriptorName,
+        wake_name: &crate::QmpDescriptorName,
+        identity: crate::QmpHotForkPluginEndpointIdentity,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpHotForkClosePluginEndpoints {
+                control_name: control_name.as_str().to_owned(),
+                wake_name: wake_name.as_str().to_owned(),
+                identity,
+            });
+        if self.fail_descriptor_close {
+            return Err(QemuNodeChannelError::new(
+                "close hot-fork plugin endpoints",
+                "injected endpoint close failure",
             ));
         }
         Ok(())
@@ -1156,6 +1249,108 @@ fn hot_fork_private_ring_stage_retains_ambiguous_transfer_and_close_failures()
 
 #[test]
 #[cfg(target_os = "linux")]
+fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
+-> Result<(), Box<dyn Error>> {
+    let (setup_identity, host_barrier, image) = held_hot_fork_ring_image()?;
+    let barrier = crate::QmpHotForkPluginBarrierState::one_quiescent(12, host_barrier.ring_count());
+    let log = shared_log();
+    let mut node = scripted_hot_fork_capture_node(
+        Arc::clone(&log),
+        setup_identity,
+        setup_identity,
+        host_barrier,
+        image.clone(),
+        [barrier; 8],
+        DescriptorScript::Success,
+    )?;
+    let capture = node.capture_hot_fork_plugin_ring_image(image.canonical_len()?)?;
+    let private = node.materialize_hot_fork_private_ring_mapping(capture)?;
+    node.stage_hot_fork_private_ring_mapping(private)?;
+
+    let proof = node.stage_hot_fork_plugin_endpoints()?;
+    assert_eq!(
+        proof.state(),
+        crate::QemuHotForkPluginEndpointStageState::Installed
+    );
+    assert_eq!(proof.private_ring_generation(), 1);
+    assert_ne!(proof.control_name(), proof.wake_name());
+    assert_ne!(proof.identity().control_socket_cookie(), 0);
+    assert_ne!(proof.identity().wake_eventfd_id(), 0);
+    assert_eq!(node.hot_fork_plugin_endpoint_stage(), Some(proof.clone()));
+    assert!(node.release_hot_fork_private_ring_mapping().is_err());
+
+    node.release_hot_fork_plugin_endpoints()?;
+    assert!(node.hot_fork_plugin_endpoint_stage().is_none());
+    node.release_hot_fork_private_ring_mapping()?;
+    assert!(recorded(&log).iter().any(|call| {
+        matches!(
+            call,
+            ChannelCall::QmpHotForkInstallPluginEndpoints {
+                control_name,
+                wake_name,
+                identity,
+                private_ring_generation: 1,
+            } if control_name == proof.control_name().as_str()
+                && wake_name == proof.wake_name().as_str()
+                && *identity == proof.identity()
+        )
+    }));
+    assert!(recorded(&log).iter().any(|call| {
+        matches!(
+            call,
+            ChannelCall::QmpHotForkClosePluginEndpoints {
+                control_name,
+                wake_name,
+                identity,
+            } if control_name == proof.control_name().as_str()
+                && wake_name == proof.wake_name().as_str()
+                && *identity == proof.identity()
+        )
+    }));
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hot_fork_plugin_endpoint_transfer_failure_retains_and_quarantines_owner()
+-> Result<(), Box<dyn Error>> {
+    let (setup_identity, host_barrier, image) = held_hot_fork_ring_image()?;
+    let barrier = crate::QmpHotForkPluginBarrierState::one_quiescent(13, host_barrier.ring_count());
+    let mut node = scripted_hot_fork_capture_node(
+        shared_log(),
+        setup_identity,
+        setup_identity,
+        host_barrier,
+        image.clone(),
+        [barrier; 8],
+        DescriptorScript::EndpointInstallFailure,
+    )?;
+    let capture = node.capture_hot_fork_plugin_ring_image(image.canonical_len()?)?;
+    let private = node.materialize_hot_fork_private_ring_mapping(capture)?;
+    node.stage_hot_fork_private_ring_mapping(private)?;
+
+    let error = node
+        .stage_hot_fork_plugin_endpoints()
+        .expect_err("endpoint transfer failure must remain ownership-ambiguous");
+    assert!(matches!(
+        error,
+        crate::QemuHotForkPluginEndpointStageError::TransferUncertain { .. }
+    ));
+    assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Quarantined);
+    assert_eq!(
+        node.hot_fork_plugin_endpoint_stage()
+            .ok_or("ambiguous endpoint owner was not retained")?
+            .state(),
+        crate::QemuHotForkPluginEndpointStageState::TransferUncertain
+    );
+    assert!(node.release_hot_fork_plugin_endpoints().is_err());
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
 fn hot_fork_private_ring_stage_returns_mapping_before_transfer_on_source_drift()
 -> Result<(), Box<dyn Error>> {
     let (setup_identity, host_barrier, image) = held_hot_fork_ring_image()?;
@@ -1483,8 +1678,13 @@ fn scripted_hot_fork_capture_node(
                 ),
             ),
             plugin_barriers: Some(Arc::new(Mutex::new(plugin_barriers.into_iter().collect()))),
+            private_ring_state: Arc::new(Mutex::new(None)),
             fail_descriptor_install: matches!(descriptor_script, DescriptorScript::InstallFailure),
             fail_descriptor_close: matches!(descriptor_script, DescriptorScript::CloseFailure),
+            fail_endpoint_install: matches!(
+                descriptor_script,
+                DescriptorScript::EndpointInstallFailure
+            ),
         },
     );
     Ok(QemuNode::new(
@@ -1604,8 +1804,10 @@ fn scripted_node_with_fault_events(
                 ),
             ),
             plugin_barriers: None,
+            private_ring_state: Arc::new(Mutex::new(None)),
             fail_descriptor_install: false,
             fail_descriptor_close: false,
+            fail_endpoint_install: false,
         },
     );
     Ok(QemuNode::new(
@@ -1694,8 +1896,10 @@ fn scripted_node_with_coverage(
                 ),
             ),
             plugin_barriers: None,
+            private_ring_state: Arc::new(Mutex::new(None)),
             fail_descriptor_install: false,
             fail_descriptor_close: false,
+            fail_endpoint_install: false,
         },
     );
     Ok(QemuNode::new(

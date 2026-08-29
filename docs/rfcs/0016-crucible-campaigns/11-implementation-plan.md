@@ -1860,6 +1860,15 @@ device, inode, length, regular-file type, and shrink seal. The version-1 state
 explicitly withholds child-disposition completion and readiness
 acknowledgement. Release requires the same exact basis and closes the
 QEMU-owned duplicate before standard `closefd` closes the monitor entry.
+With that ring generation retained, the node now also creates fresh opaque
+AF_UNIX control and nonblocking-eventfd wake pairs, transfers both child ends
+through standard `getfd`, and asks the version-1
+`crucible-hot-fork-plugin-endpoints` operation to authenticate their exact
+Linux kernel identities, empty state, distinct names, and private-ring
+generation. QEMU independently retains both endpoints until exact release;
+private-ring release is blocked in the interim. The node retains both host and
+child owners, exposes only bounded proof, releases QEMU duplicates before the
+two monitor names, and quarantines every ambiguous transfer or close.
 Transfer or adoption ambiguity poisons QMP, retains the mapping as uncertain,
 and quarantines the node; either release
 ambiguity retains the installed mapping and also quarantines. Focused typed and
@@ -1870,8 +1879,9 @@ This remains a retained T-CAM-6.2 subsystem primitive: child disposition for
 observably pending worker-local work, fork-child descriptor
 inheritance/remapping, a complete disposition table, host-continuation pairing,
 child process identity, and final ring release are not composed yet.
-Template-process descriptor staging and pending-local accounting do not satisfy
-proof bits 6 or 7. Both remain clear and T-CAM-6.2 remains unchecked.
+Template-process descriptor/endpoint staging and pending-local accounting do
+not satisfy proof bits 6 through 8. All three remain clear and T-CAM-6.2 remains
+unchecked.
 Patched QEMU now also owns the versioned `PrepareForkTemplate`
 transaction. Its serialized OOB coordinator starts only at the exact
 paused/device-flush boundary, asynchronously closes graph-writer admission and

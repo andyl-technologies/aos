@@ -635,6 +635,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0141-crucible-stage-hot-fork-plugin-endpoints.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
