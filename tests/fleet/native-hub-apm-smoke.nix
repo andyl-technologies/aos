@@ -731,22 +731,39 @@ in {
           {APM} update --registry production
           {APM} install nginx --registry production --yes
       """), timeout=600)
-      consumer.succeed(textwrap.dedent(f"""
-          set -eu
-          export HOME=/tmp/consumer USER=consumer
-          export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
-          {APM} docs show nginx | grep -q 'Typed virtual hosts'
-          {APM} options search virtual | grep -q 'nginx.virtualHosts'
-          {APM} options show nginx.enable --package nginx | grep -q 'nginx.enable'
-          man_path=$({APM} docs man nginx --install --print-path)
-          test -s "$man_path"
-          {APM} docs cache status | grep -q nginx
-          {APM} docs schema | {JQ} -e '.title | contains("AOS")' >/dev/null
-          {APM} options compare nginx --from '${pkgs.nginx.version}' \
-            --to '${pkgs.nginx.version}' --platform x86_64-linux \
-            --hub {HUB} --registry acme/production --token {shlex.quote(token)} \
-            | grep -q 'semantic'
-      """), timeout=300)
+      documentation_commands = (
+          ("show installed package documentation",
+           f"{APM} docs show nginx | grep -q 'Typed virtual hosts'"),
+          ("search installed options",
+           f"{APM} options search virtual | grep -q 'nginx.virtualHosts'"),
+          ("show one installed option",
+           f"{APM} options show nginx.enable --package nginx | grep -q 'nginx.enable'"),
+          ("install generated manpage",
+           f"man_path=$({APM} docs man nginx --install --print-path); test -s \"$man_path\""),
+          ("inspect documentation cache",
+           f"{APM} docs cache status | grep -q nginx"),
+          ("export documentation schema",
+           f"{APM} docs schema | {JQ} -e '.title | contains(\"AOS\")' >/dev/null"),
+          ("compare documentation versions",
+           f"{APM} options compare nginx --from '${pkgs.nginx.version}' "
+           f"--to '${pkgs.nginx.version}' --platform x86_64-linux "
+           f"--hub {HUB} --registry acme/production --token {shlex.quote(token)} "
+           "| grep -q 'semantic'"),
+      )
+      for documentation_label, documentation_command in documentation_commands:
+          status, stdout, stderr = consumer.execute(textwrap.dedent(f"""
+              set -eu
+              export HOME=/tmp/consumer USER=consumer
+              export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
+              {documentation_command}
+          """), timeout=300)
+          assert status == 0, (
+              documentation_label,
+              documentation_command,
+              status,
+              stdout,
+              stderr,
+          )
       install_status, install_stdout, install_stderr = consumer.execute(textwrap.dedent(f"""
           set -eu
           export HOME=/tmp/consumer USER=consumer
