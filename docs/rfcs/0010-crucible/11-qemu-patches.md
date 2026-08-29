@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **121 patches**. This count is checked against
+The carried series contains **139 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -2307,6 +2307,26 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   It does not fork, install endpoints in a child, expose the host continuation,
   recreate plugin workers, complete inherited-descriptor disposition, or
   acknowledge readiness bits 6 through 8.
+- **Risk:** F.
+
+### crucible-hot-fork-retained-resource-stage — stage under the retained barrier
+
+- **Patch:** `0142-crucible-retain-hot-fork-resource-staging.patch`.
+- **Enforces:** [HFORK-3], [HFORK-8], [HFORK-9].
+- **Mechanism:** the version-10 template coordinator retains a fully drained
+  incomplete transaction as `draining` until explicit abort. Private-ring and
+  plugin-endpoint staging is admitted during that transaction only in the
+  fully held phase, at the exact paused/device-flush boundary, and while the
+  retained plugin barrier is quiescent. A new transaction rejects a nonempty
+  resource stage rather than adopting stale descriptors.
+- **Micro-test:** strict QMP fixtures pin the version-10 retained-draining
+  shape, while the patch gate verifies the held-phase, exact-boundary, and
+  plugin-quiescence predicates and the absence of automatic missing-proof
+  rollback.
+- **Inertness:** retained staging does not fork, install resources in a child,
+  complete inherited-resource disposition, or acknowledge readiness bits 6
+  through 8. The caller must explicitly abort before releasing staged
+  descriptors and resuming the template.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

@@ -1284,7 +1284,7 @@ in
               "schema-version",
               "transaction-active"
             ] and
-            $report."schema-version" == 9 and
+            $report."schema-version" == 10 and
             $report.generation == 0 and
             $report.outcome == "idle" and
             $report."transaction-active" == false and
@@ -1578,7 +1578,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0141-crucible-stage-hot-fork-plugin-endpoints.patch
+          patch=0142-crucible-retain-hot-fork-resource-staging.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -1654,7 +1654,7 @@ in
           plugin_endpoint_two_layer_release=true
           plugin_endpoint_disposition_complete=false
           plugin_endpoint_readiness_proof_acknowledged=false
-          template_coordinator_schema_version=9
+          template_coordinator_schema_version=10
           template_coordinator_idle_stable=true
           template_coordinator_unregistered_shape=true
           template_prepare_without_exact_boundary_rejected=true

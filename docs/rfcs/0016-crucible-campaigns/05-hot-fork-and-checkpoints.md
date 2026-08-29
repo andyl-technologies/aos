@@ -891,7 +891,7 @@ races and is sufficient for proof bit 3 while retained and quiescent. It does
 not choose child-side descriptor, context, coroutine, or clock disposition;
 those obligations remain separately represented by proof bits 7 and 8.
 
-The retained `PrepareForkTemplate` checkpoint is the version-9 OOB
+The retained `PrepareForkTemplate` checkpoint is the version-10 OOB
 `crucible-hot-fork-template` coordinator:
 
 ```text
@@ -901,7 +901,7 @@ CrucibleHotForkTemplateOutcome =
     idle | draining | blocked | prepared | aborted
 
 CrucibleHotForkTemplateState {
-    schema-version: u32 = 9,
+    schema-version: u32 = 10,
     generation: u64,
     outcome: CrucibleHotForkTemplateOutcome,
     transaction-active: bool,
@@ -930,9 +930,20 @@ is complete, the coordinator acquires the RCU
 admission barrier, the bottom-half/timer source barrier, and the plugin callback
 barrier, and retains all four while previously admitted work drains. A repeated
 `prepare` reevaluates the retained transaction. Once all four barriers are
-quiescent, QEMU
-either reports `prepared` only when all nine required bits are present in the
-same transaction, or releases every acquired barrier and reports `blocked`.
+quiescent, QEMU reports `prepared` only when all nine required bits are present
+in the same transaction. Otherwise version 10 continues to report `draining`
+and retains the barriers so the host can capture and stage branch-private
+resources without releasing the source-ring barrier. A new transaction starts
+only with an empty resource stage. Private-ring and plugin-endpoint staging
+during a transaction is accepted only in the fully held phase, at the exact
+paused/device-flush boundary, and while the retained plugin barrier is
+quiescent. Those retained template resources still do not acknowledge proof
+bits 6 through 8.
+
+The caller MUST explicitly `abort` an incomplete retained transaction before
+resuming or abandoning the template. Abort rolls the four barriers back but
+does not silently discard separately owned staged descriptors; those are
+released through their exact resource operations after rollback.
 Rollback releases plugin, asynchronous-source, and RCU admission before it
 schedules graph and native block release on the main AioContext; this ordering
 prevents new AIO work from entering while the block layer is still drained.
@@ -943,7 +954,9 @@ aborting an idle coordinator reports `idle`. Standalone mutation of any one of
 the four barriers is rejected while any asynchronous transaction phase is
 reserved. A failed release does not discard coordinator ownership: later
 prepare/abort calls retry it, while query continues to observe the retained
-draining state.
+draining state. `blocked` is reserved for a preparation path that must roll back
+after a subsystem acquisition or retained-transition failure; missing future
+proof classes alone do not trigger rollback.
 
 `missing-proofs` MUST equal `required-proofs & ~acknowledged-proofs`.
 `rollback-complete` is true exactly when no transaction is active and none of
