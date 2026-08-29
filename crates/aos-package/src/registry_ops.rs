@@ -3153,14 +3153,16 @@ fn publish_package_documentation(
         },
         identity: DocumentationIdentity {
             semantic_schema_sha256: format!("sha256:{}", "0".repeat(64)),
-            runtime_nar_hash: package_nar_root_digest(&runtime.nar_hash),
+            runtime_nar_hash: documentation_nar_identity(&runtime.nar_hash)?,
             config_module_nar_hash: config_module
-                .map(|module| package_nar_root_digest(&module.config_output.nar_hash)),
+                .map(|module| documentation_nar_identity(&module.config_output.nar_hash))
+                .transpose()?,
             expose_artifact_nar_hash: expose_artifact
-                .map(|artifact| package_nar_root_digest(&artifact.nar_hash)),
-            source_nar_hash: package_nar_root_digest(
+                .map(|artifact| documentation_nar_identity(&artifact.nar_hash))
+                .transpose()?,
+            source_nar_hash: documentation_nar_identity(
                 source.map_or(runtime.nar_hash.as_str(), |source| source.nar_hash.as_str()),
-            ),
+            )?,
         },
         sections,
         options,
@@ -6626,6 +6628,14 @@ fn package_nar_root_digest(nar_hash: &str) -> String {
     } else {
         format!("sha256:{}", sha256_hex(nar_hash.as_bytes()))
     }
+}
+
+/// Returns the canonical hexadecimal identity of the NAR bytes themselves.
+fn documentation_nar_identity(nar_hash: &str) -> Result<String> {
+    Ok(format!(
+        "sha256:{}",
+        aos_registry_surface::store::canonical_digest_hex(nar_hash)?
+    ))
 }
 
 const PACKAGE_PROVENANCE_TRANSPARENCY_LOG: &str = "transparency/package-provenance.jsonl";
@@ -16242,6 +16252,18 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(paths, ["nginx.enable"]);
+    }
+
+    #[test]
+    fn package_documentation_preserves_the_nar_byte_identity() {
+        let expected = format!("sha256:{}", "0".repeat(64));
+        assert_eq!(documentation_nar_identity(&expected).unwrap(), expected);
+
+        let sri = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        assert_eq!(documentation_nar_identity(sri).unwrap(), expected);
+
+        let nix_base32 = format!("sha256:{}", "0".repeat(52));
+        assert_eq!(documentation_nar_identity(&nix_base32).unwrap(), expected);
     }
 
     #[test]
