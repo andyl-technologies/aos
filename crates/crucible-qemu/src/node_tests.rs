@@ -83,6 +83,8 @@ enum ChannelCall {
     QmpHotForkBlockBackendInventory,
     QmpHotForkPluginResourceInventory,
     QmpHotForkPluginBarrier,
+    QmpHotForkInstallDescriptor(String),
+    QmpHotForkCloseDescriptor(String),
     QmpHotForkBottomHalfInventory,
     QmpHotForkMutexInventory,
     QmpHotForkTimerInventory,
@@ -140,6 +142,15 @@ struct ScriptedQmpMachineControl {
     timeout_snapshot: bool,
     plugin_resources: Option<crate::QmpHotForkPluginResourceInventory>,
     plugin_barriers: Option<Arc<Mutex<VecDeque<crate::QmpHotForkPluginBarrierState>>>>,
+    fail_descriptor_install: bool,
+    fail_descriptor_close: bool,
+}
+
+#[derive(Clone, Copy)]
+enum DescriptorScript {
+    Success,
+    InstallFailure,
+    CloseFailure,
 }
 
 impl QemuPluginIpcControlChannel for ScriptedPluginControl {
@@ -559,6 +570,45 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
             })
     }
 
+    fn install_hot_fork_private_ring_descriptor(
+        &mut self,
+        name: &crate::QmpDescriptorName,
+        _descriptor: std::os::fd::BorrowedFd<'_>,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpHotForkInstallDescriptor(
+                name.as_str().to_owned(),
+            ));
+        if self.fail_descriptor_install {
+            return Err(QemuNodeChannelError::new(
+                "install hot-fork private ring descriptor",
+                "injected descriptor transfer failure",
+            ));
+        }
+        Ok(())
+    }
+
+    fn close_hot_fork_private_ring_descriptor(
+        &mut self,
+        name: &crate::QmpDescriptorName,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpHotForkCloseDescriptor(
+                name.as_str().to_owned(),
+            ));
+        if self.fail_descriptor_close {
+            return Err(QemuNodeChannelError::new(
+                "close hot-fork private ring descriptor",
+                "injected descriptor close failure",
+            ));
+        }
+        Ok(())
+    }
+
     fn query_hot_fork_bottom_half_inventory(
         &mut self,
     ) -> Result<crate::QmpHotForkBottomHalfInventory, QemuNodeChannelError> {
@@ -867,7 +917,8 @@ fn hot_fork_ring_capture_binds_one_unchanged_plugin_barrier() -> Result<(), Box<
         setup_identity,
         host_barrier,
         image.clone(),
-        [barrier, barrier, barrier, barrier],
+        [barrier, barrier, barrier, barrier, barrier],
+        DescriptorScript::Success,
     )?;
 
     let capture = node.capture_hot_fork_plugin_ring_image(image.canonical_len()?)?;
@@ -887,6 +938,18 @@ fn hot_fork_ring_capture_binds_one_unchanged_plugin_barrier() -> Result<(), Box<
     assert_ne!(private.backing_identity(), setup_identity);
     assert_eq!(private.backing_identity().length(), setup_identity.length());
     assert_eq!(private.capture_ring_image(image.canonical_len()?)?, image);
+    let expected_name = private.descriptor_name().clone();
+    let proof = node.stage_hot_fork_private_ring_mapping(private)?;
+    assert_eq!(
+        proof.state(),
+        crate::QemuHotForkPrivateRingStageState::Installed
+    );
+    assert_eq!(proof.descriptor_name(), &expected_name);
+    assert_eq!(proof.image_digest(), image.digest());
+    assert_eq!(node.hot_fork_private_ring_stage(), Some(proof));
+    let private = node.release_hot_fork_private_ring_mapping()?;
+    assert_eq!(private.descriptor_name(), &expected_name);
+    assert!(node.hot_fork_private_ring_stage().is_none());
     assert_eq!(
         recorded(&log),
         [
@@ -906,6 +969,12 @@ fn hot_fork_ring_capture_binds_one_unchanged_plugin_barrier() -> Result<(), Box<
             ChannelCall::ShmemHotForkIdentity,
             ChannelCall::ShmemHotForkBarrier,
             ChannelCall::QmpHotForkPluginBarrier,
+            ChannelCall::QmpHotForkPluginResourceInventory,
+            ChannelCall::ShmemHotForkIdentity,
+            ChannelCall::ShmemHotForkBarrier,
+            ChannelCall::QmpHotForkPluginBarrier,
+            ChannelCall::QmpHotForkInstallDescriptor(expected_name.as_str().to_owned()),
+            ChannelCall::QmpHotForkCloseDescriptor(expected_name.as_str().to_owned()),
         ]
     );
     node.shutdown_child()?;
@@ -921,6 +990,7 @@ fn hot_fork_ring_capture_binds_one_unchanged_plugin_barrier() -> Result<(), Box<
         host_barrier,
         image.clone(),
         [barrier, changed],
+        DescriptorScript::Success,
     )?;
     let error = drifting
         .capture_hot_fork_plugin_ring_image(image.canonical_len()?)
@@ -935,6 +1005,7 @@ fn hot_fork_ring_capture_binds_one_unchanged_plugin_barrier() -> Result<(), Box<
         host_barrier,
         image.clone(),
         [barrier, barrier, changed],
+        DescriptorScript::Success,
     )?;
     let stale_capture = stale.capture_hot_fork_plugin_ring_image(image.canonical_len()?)?;
     let error = stale
@@ -951,6 +1022,7 @@ fn hot_fork_ring_capture_binds_one_unchanged_plugin_barrier() -> Result<(), Box<
         host_barrier,
         image.clone(),
         [barrier, barrier, barrier, changed],
+        DescriptorScript::Success,
     )?;
     let capture = changing_during_materialization
         .capture_hot_fork_plugin_ring_image(image.canonical_len()?)?;
@@ -970,6 +1042,7 @@ fn hot_fork_ring_capture_binds_one_unchanged_plugin_barrier() -> Result<(), Box<
         host_barrier,
         wrong_length_image.clone(),
         [barrier, barrier],
+        DescriptorScript::Success,
     )?;
     let error = wrong_length
         .capture_hot_fork_plugin_ring_image(wrong_length_image.canonical_len()?)
@@ -985,12 +1058,123 @@ fn hot_fork_ring_capture_binds_one_unchanged_plugin_barrier() -> Result<(), Box<
         host_barrier,
         image.clone(),
         [barrier, barrier],
+        DescriptorScript::Success,
     )?;
     let error = mismatched
         .capture_hot_fork_plugin_ring_image(image.canonical_len()?)
         .expect_err("foreign setup-region identity must reject capture");
     assert!(error.to_string().contains("resource identity disagree"));
     mismatched.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hot_fork_private_ring_stage_retains_ambiguous_transfer_and_close_failures()
+-> Result<(), Box<dyn Error>> {
+    let (setup_identity, host_barrier, image) = held_hot_fork_ring_image()?;
+    let barrier = crate::QmpHotForkPluginBarrierState::one_quiescent(11, host_barrier.ring_count());
+
+    let mut transfer_failure = scripted_hot_fork_capture_node(
+        shared_log(),
+        setup_identity,
+        setup_identity,
+        host_barrier,
+        image.clone(),
+        [barrier, barrier, barrier, barrier, barrier],
+        DescriptorScript::InstallFailure,
+    )?;
+    let capture = transfer_failure.capture_hot_fork_plugin_ring_image(image.canonical_len()?)?;
+    let private = transfer_failure.materialize_hot_fork_private_ring_mapping(capture)?;
+    let error = transfer_failure
+        .stage_hot_fork_private_ring_mapping(private)
+        .expect_err("descriptor transfer failure must remain ownership-ambiguous");
+    assert!(matches!(
+        error,
+        crate::QemuHotForkPrivateRingStageError::TransferUncertain { .. }
+    ));
+    assert_eq!(
+        transfer_failure.lifecycle_state(),
+        QemuNodeLifecycleState::Quarantined
+    );
+    assert_eq!(
+        transfer_failure
+            .hot_fork_private_ring_stage()
+            .ok_or("ambiguous mapping was not retained")?
+            .state(),
+        crate::QemuHotForkPrivateRingStageState::TransferUncertain
+    );
+    assert!(
+        transfer_failure
+            .release_hot_fork_private_ring_mapping()
+            .is_err()
+    );
+    transfer_failure.shutdown_child()?;
+
+    let mut close_failure = scripted_hot_fork_capture_node(
+        shared_log(),
+        setup_identity,
+        setup_identity,
+        host_barrier,
+        image.clone(),
+        [barrier, barrier, barrier, barrier, barrier],
+        DescriptorScript::CloseFailure,
+    )?;
+    let capture = close_failure.capture_hot_fork_plugin_ring_image(image.canonical_len()?)?;
+    let private = close_failure.materialize_hot_fork_private_ring_mapping(capture)?;
+    close_failure.stage_hot_fork_private_ring_mapping(private)?;
+    assert!(
+        close_failure
+            .release_hot_fork_private_ring_mapping()
+            .is_err()
+    );
+    assert_eq!(
+        close_failure.lifecycle_state(),
+        QemuNodeLifecycleState::Quarantined
+    );
+    assert_eq!(
+        close_failure
+            .hot_fork_private_ring_stage()
+            .ok_or("failed close discarded its mapping")?
+            .state(),
+        crate::QemuHotForkPrivateRingStageState::Installed
+    );
+    close_failure.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hot_fork_private_ring_stage_returns_mapping_before_transfer_on_source_drift()
+-> Result<(), Box<dyn Error>> {
+    let (setup_identity, host_barrier, image) = held_hot_fork_ring_image()?;
+    let barrier = crate::QmpHotForkPluginBarrierState::one_quiescent(13, host_barrier.ring_count());
+    let changed = crate::QmpHotForkPluginBarrierState::one_quiescent(
+        barrier.generation() + 1,
+        host_barrier.ring_count(),
+    );
+    let mut node = scripted_hot_fork_capture_node(
+        shared_log(),
+        setup_identity,
+        setup_identity,
+        host_barrier,
+        image.clone(),
+        [barrier, barrier, barrier, barrier, changed],
+        DescriptorScript::Success,
+    )?;
+    let capture = node.capture_hot_fork_plugin_ring_image(image.canonical_len()?)?;
+    let private = node.materialize_hot_fork_private_ring_mapping(capture)?;
+    let identity = private.backing_identity();
+    let error = node
+        .stage_hot_fork_private_ring_mapping(private)
+        .expect_err("source drift must reject before descriptor transfer");
+    let returned = error
+        .into_untransferred_mapping()
+        .ok_or("pre-transfer rejection did not return mapping")?;
+    assert_eq!(returned.backing_identity(), identity);
+    assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Running);
+    assert!(node.hot_fork_private_ring_stage().is_none());
+    node.shutdown_child()?;
     Ok(())
 }
 
@@ -1249,6 +1433,7 @@ fn scripted_hot_fork_capture_node(
     host_barrier: crucible_shmem::MappedRingIoBarrierSnapshot,
     image: crucible_shmem::HotForkRingImage,
     plugin_barriers: impl IntoIterator<Item = crate::QmpHotForkPluginBarrierState>,
+    descriptor_script: DescriptorScript,
 ) -> Result<QemuNode, Box<dyn Error>> {
     let child = Command::new("sleep").arg("60").spawn()?;
     let process_id = child.id();
@@ -1287,6 +1472,8 @@ fn scripted_hot_fork_capture_node(
                 ),
             ),
             plugin_barriers: Some(Arc::new(Mutex::new(plugin_barriers.into_iter().collect()))),
+            fail_descriptor_install: matches!(descriptor_script, DescriptorScript::InstallFailure),
+            fail_descriptor_close: matches!(descriptor_script, DescriptorScript::CloseFailure),
         },
     );
     Ok(QemuNode::new(
@@ -1406,6 +1593,8 @@ fn scripted_node_with_fault_events(
                 ),
             ),
             plugin_barriers: None,
+            fail_descriptor_install: false,
+            fail_descriptor_close: false,
         },
     );
     Ok(QemuNode::new(
@@ -1494,6 +1683,8 @@ fn scripted_node_with_coverage(
                 ),
             ),
             plugin_barriers: None,
+            fail_descriptor_install: false,
+            fail_descriptor_close: false,
         },
     );
     Ok(QemuNode::new(

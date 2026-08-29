@@ -132,6 +132,24 @@ where
         self.vmstate.abort_hot_fork_template()
     }
 
+    #[cfg(target_os = "linux")]
+    fn install_hot_fork_private_ring_descriptor(
+        &mut self,
+        name: &crate::QmpDescriptorName,
+        descriptor: std::os::fd::BorrowedFd<'_>,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate
+            .install_hot_fork_private_ring_descriptor(name, descriptor)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn close_hot_fork_private_ring_descriptor(
+        &mut self,
+        name: &crate::QmpDescriptorName,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate.close_hot_fork_private_ring_descriptor(name)
+    }
+
     fn query_hot_fork_bottom_half_inventory(
         &mut self,
     ) -> Result<crate::QmpHotForkBottomHalfInventory, QemuNodeChannelError> {

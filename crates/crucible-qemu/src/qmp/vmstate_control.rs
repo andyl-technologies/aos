@@ -1,18 +1,19 @@
 //! Checkpoint-tagged VMState control over typed QMP commands.
 
 use std::io::Write;
+use std::os::fd::BorrowedFd;
 use std::os::unix::net::UnixStream;
 
 use crucible::Checkpoint;
 
 use super::{
-    QmpClient, QmpCommandComplete, QmpError, QmpHotForkAioHandlerInventory, QmpHotForkAioInventory,
-    QmpHotForkBhTimerBarrierState, QmpHotForkBlockBackendInventory, QmpHotForkBlockBarrierState,
-    QmpHotForkBlockSnapshotBinding, QmpHotForkBottomHalfInventory, QmpHotForkMutexInventory,
-    QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory, QmpHotForkRcuBarrierState,
-    QmpHotForkRcuInventory, QmpHotForkReadiness, QmpHotForkTemplateState,
-    QmpHotForkThreadInventory, QmpHotForkTimerInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy,
-    QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
+    QmpClient, QmpCommandComplete, QmpDescriptorName, QmpError, QmpHotForkAioHandlerInventory,
+    QmpHotForkAioInventory, QmpHotForkBhTimerBarrierState, QmpHotForkBlockBackendInventory,
+    QmpHotForkBlockBarrierState, QmpHotForkBlockSnapshotBinding, QmpHotForkBottomHalfInventory,
+    QmpHotForkMutexInventory, QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory,
+    QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkReadiness,
+    QmpHotForkTemplateState, QmpHotForkThreadInventory, QmpHotForkTimerInventory,
+    QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 use crate::{
     QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
@@ -434,6 +435,44 @@ where
     ) -> Result<QmpHotForkTemplateState, QemuNodeChannelError> {
         self.client
             .abort_hot_fork_template()
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Imports one held branch-private ring descriptor into the QEMU template.
+    ///
+    /// The caller retains its descriptor and mapping. A successful return only
+    /// proves that standard QMP `getfd` acknowledged this exact name; it does
+    /// not authorize a fork, release a ring barrier, or prove child rebinding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the descriptor-bearing QMP
+    /// exchange fails or QEMU does not acknowledge the import. An ambiguous
+    /// transfer poisons the underlying QMP client.
+    pub fn install_hot_fork_private_ring_descriptor(
+        &mut self,
+        name: &QmpDescriptorName,
+        descriptor: BorrowedFd<'_>,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.client
+            .install_descriptor(name, descriptor)
+            .map(|_complete| ())
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Closes one branch-private ring descriptor previously imported into QEMU.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the typed QMP client is poisoned,
+    /// the close exchange fails, or QEMU no longer owns this exact name.
+    pub fn close_hot_fork_private_ring_descriptor(
+        &mut self,
+        name: &QmpDescriptorName,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.client
+            .close_descriptor(name)
+            .map(|_complete| ())
             .map_err(QemuNodeChannelError::from)
     }
 

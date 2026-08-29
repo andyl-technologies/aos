@@ -232,7 +232,10 @@ pub use mapped_quantum::{QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHo
 #[cfg(unix)]
 pub use node::QemuHotForkPluginRingImage;
 #[cfg(target_os = "linux")]
-pub use node::QemuHotForkPrivateRingMapping;
+pub use node::{
+    QemuHotForkPrivateRingMapping, QemuHotForkPrivateRingStageError,
+    QemuHotForkPrivateRingStageProof, QemuHotForkPrivateRingStageState,
+};
 pub use node::{
     QemuLogicalTimeCalibration, QemuNode, QemuNodeChannelError, QemuNodeChannelPlane,
     QemuNodeChannels, QemuNodeChild, QemuNodeEmittedFrame, QemuNodeError, QemuNodeIdleState,
@@ -261,8 +264,9 @@ pub use production_fault_runtime::{
 };
 pub use production_fault_sink::ProductionFaultActionSink;
 pub use qmp::{
-    QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_CONT_COMMAND,
-    QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QMP_GREETING_TIMEOUT, QMP_HOT_FORK_AIO_HANDLER_INVENTORY_MAX,
+    QMP_CAPABILITIES_COMMAND, QMP_CLOSEFD_COMMAND, QMP_COMMAND_TIMEOUT, QMP_CONT_COMMAND,
+    QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QMP_DESCRIPTOR_NAME_MAX_BYTES, QMP_GETFD_COMMAND,
+    QMP_GREETING_TIMEOUT, QMP_HOT_FORK_AIO_HANDLER_INVENTORY_MAX,
     QMP_HOT_FORK_AIO_HANDLER_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_AIO_INVENTORY_MAX,
     QMP_HOT_FORK_AIO_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND,
     QMP_HOT_FORK_BH_TIMER_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_BLOCK_BACKEND_INVENTORY_MAX,
@@ -289,7 +293,7 @@ pub use qmp::{
     QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND,
     QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QMP_STOP_COMMAND,
     QemuQmpVmStateControlChannel, QmpClient, QmpCommandComplete, QmpCommandKind, QmpCpuTopology,
-    QmpError, QmpGreeting, QmpHotForkAioContext, QmpHotForkAioHandler,
+    QmpDescriptorName, QmpError, QmpGreeting, QmpHotForkAioContext, QmpHotForkAioHandler,
     QmpHotForkAioHandlerInventory, QmpHotForkAioInventory, QmpHotForkBhTimerBarrierState,
     QmpHotForkBlockBackend, QmpHotForkBlockBackendInventory, QmpHotForkBlockBarrierState,
     QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,

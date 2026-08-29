@@ -7,6 +7,8 @@
 
 use std::any::Any;
 use std::net::SocketAddr;
+#[cfg(target_os = "linux")]
+use std::os::fd::BorrowedFd;
 use std::process::Child;
 use std::time::Duration;
 
@@ -58,7 +60,12 @@ pub use error::{QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeError};
 #[cfg(unix)]
 pub use hot_fork_ring_image::QemuHotForkPluginRingImage;
 #[cfg(target_os = "linux")]
-pub use hot_fork_ring_image::QemuHotForkPrivateRingMapping;
+use hot_fork_ring_image::QemuHotForkPrivateRingStage;
+#[cfg(target_os = "linux")]
+pub use hot_fork_ring_image::{
+    QemuHotForkPrivateRingMapping, QemuHotForkPrivateRingStageError,
+    QemuHotForkPrivateRingStageProof, QemuHotForkPrivateRingStageState,
+};
 #[cfg(target_os = "linux")]
 use process_identity::linux_process_identity_components;
 #[cfg(target_os = "linux")]
@@ -982,6 +989,41 @@ pub trait QemuQmpMachineControlChannel: Send {
         ))
     }
 
+    /// Imports one held branch-private ring descriptor into the QEMU template.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when this channel cannot transfer Unix
+    /// descriptors or standard QMP `getfd` does not acknowledge the exact name.
+    #[cfg(target_os = "linux")]
+    fn install_hot_fork_private_ring_descriptor(
+        &mut self,
+        _name: &crate::QmpDescriptorName,
+        _descriptor: BorrowedFd<'_>,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "install hot-fork private ring descriptor",
+            "hot-fork descriptor transfer is not implemented by this QMP channel",
+        ))
+    }
+
+    /// Closes one branch-private ring descriptor retained by the QEMU template.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when this channel cannot exchange the
+    /// standard QMP `closefd` command or QEMU no longer owns the exact name.
+    #[cfg(target_os = "linux")]
+    fn close_hot_fork_private_ring_descriptor(
+        &mut self,
+        _name: &crate::QmpDescriptorName,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "close hot-fork private ring descriptor",
+            "hot-fork descriptor close is not implemented by this QMP channel",
+        ))
+    }
+
     /// Queries QEMU's exact bounded allocated-bottom-half inventory.
     ///
     /// # Errors
@@ -1123,6 +1165,8 @@ struct QemuConsoleObservation {
 pub struct QemuNode {
     child: QemuNodeChild,
     channels: QemuNodeChannels,
+    #[cfg(target_os = "linux")]
+    hot_fork_private_ring_stage: Option<QemuHotForkPrivateRingStage>,
     lifecycle_state: QemuNodeLifecycleState,
     shutdown_policy: QemuShutdownPolicy,
     async_policy: QemuAsyncDriverPolicy,
@@ -1310,6 +1354,8 @@ impl QemuNode {
         Self {
             child,
             channels,
+            #[cfg(target_os = "linux")]
+            hot_fork_private_ring_stage: None,
             lifecycle_state: QemuNodeLifecycleState::Running,
             shutdown_policy,
             async_policy,

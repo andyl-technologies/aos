@@ -738,21 +738,51 @@ resource identity, or host barrier state reject the capture. This binds one
 host image to one retained plugin barrier but still does not authorize fork.
 
 The Linux host can materialize that capture into a fresh shrink-sealed memfd
-without exposing either descriptor or release authority. It first requires the
-live node to reproduce the captured plugin-resource inventory, setup-mapping
-identity, plugin-barrier generation, and host barrier. It initializes the new
-mapping from the image's exact `RegionConfig`, thereby resetting node slots and
-fingerprint samples, holds every fresh ring, restores only the three canonical
-ring ranges, and recaptures an exact image/digest match. Before returning the
-opaque mapping owner, it again requires the source inventory, identity, and
-both barriers to be unchanged. The destination device/inode must not alias the
-source and its producer and consumer endpoints remain held.
+without exposing raw descriptor or release authority to its caller. It first
+requires the live node to reproduce the captured plugin-resource inventory,
+setup-mapping identity, plugin-barrier generation, and host barrier. It
+initializes the new mapping from the image's exact `RegionConfig`, thereby
+resetting node slots and fingerprint samples, holds every fresh ring, restores
+only the three canonical ring ranges, and recaptures an exact image/digest
+match. Before returning the opaque mapping owner, it again requires the source
+inventory, identity, and both barriers to be unchanged. The destination
+device/inode must not alias the source and its producer and consumer endpoints
+remain held.
+
+The node can then consume that owner into a template-process descriptor stage.
+Immediately before transfer it repeats the exact source inventory, source
+mapping, QEMU barrier, host barrier, and destination image-digest checks. The
+typed Unix QMP client sends standard `getfd` and exactly one `SCM_RIGHTS`
+descriptor under this bounded name:
+
+```text
+crucible-hfork-rings-v1-<device:16-lower-hex>-<inode:16-lower-hex>-<image-digest:64-lower-hex>
+```
+
+Typed descriptor names contain 1 through 128 bytes from `[a-z0-9-]`. The
+device/inode pair makes distinct still-live memfds non-aliasing, while the
+digest binds the staged descriptor to the exact restored image. QEMU receives
+a duplicate; the node retains the original descriptor, mapping, held ring
+endpoints, source proof, exact name, and image digest. Only an acknowledged
+`getfd` yields the `installed` stage. Standard `closefd` must acknowledge the
+same exact name before an installed mapping can leave node ownership.
+
+Any error once descriptor transfer begins makes QEMU ownership and the stream
+boundary indeterminate. The typed client permanently poisons that QMP stream;
+the node retains the mapping as `transfer-uncertain` and quarantines the QEMU
+generation. A failed `closefd` likewise retains the installed mapping and
+quarantines the generation. Pre-transfer validation failure returns the
+untouched mapping and leaves the node running. This ordering prevents either a
+lost memfd owner or a caller from treating an unacknowledged transfer as a
+definite rejection.
 
 This is still not the complete plugin-ring proof: a parked worker may retain a
 received trigger or queued fingerprint work, and no fork child yet receives,
 remaps, authenticates, and releases this private mapping together with those
-worker dispositions and its host continuation. No descriptor disposition has
-been authorized. QEMU therefore keeps readiness bit 6 clear.
+worker dispositions and its host continuation. Template-process `getfd`
+staging is not a child disposition: it proves neither inherited-FD closure nor
+child remap/rebind, so proof bit 7 also remains clear. QEMU therefore keeps
+readiness bit 6 clear.
 
 The next source checkpoint adds a process-lifetime reversible bottom-half and
 timer-source barrier through the OOB
