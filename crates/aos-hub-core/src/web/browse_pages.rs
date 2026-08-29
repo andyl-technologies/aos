@@ -720,6 +720,12 @@ impl SortDir {
 /// (see [`crate::filter`]); `filter_error` carries a parse error to surface.
 #[derive(Debug, Clone, Copy)]
 pub struct PackageBrowse<'a> {
+    /// Selected verified release tag or exact release commit; `None` means the indexed HEAD.
+    pub snapshot: Option<&'a str>,
+    /// Commit of the current indexed HEAD, shown for an explicit default identity.
+    pub head_commit: Option<&'a str>,
+    /// Verified `(tag, commit)` choices available for snapshot selection.
+    pub snapshots: &'a [(String, String)],
     /// The raw `?filter=` expression text (repopulates the box), if any.
     pub filter: Option<&'a str>,
     /// A filter parse-error message to display, if the expression was invalid.
@@ -890,6 +896,9 @@ pub fn package_index(
     session: &SessionIndicator,
 ) -> String {
     let PackageBrowse {
+        snapshot,
+        head_commit,
+        snapshots,
         filter,
         filter_error,
         sort,
@@ -903,6 +912,9 @@ pub fn package_index(
         platforms,
     } = *browse;
     let slug = &registry.slug;
+    let snapshot_query = snapshot
+        .map(|value| format!("release={}", urlencode(value)))
+        .unwrap_or_default();
 
     // The encoded `filter=…` parameter, preserved across sort and pagination.
     let filter_query = filter
@@ -923,9 +935,10 @@ pub fn package_index(
                     .iter()
                     .map(|platform| {
                         format!(
-                            "<a class=\"platform-pill\" title=\"Filter by platform: {}\" href=\"/{}/-/packages?filter={}\">{}</a>",
+                            "<a class=\"platform-pill\" title=\"Filter by platform: {}\" href=\"/{}/-/packages?{}filter={}\">{}</a>",
                             escape(platform),
                             escape(slug),
+                            if snapshot_query.is_empty() { "".to_string() } else { format!("{}&", snapshot_query) },
                             urlencode(&format!("platform == \"{platform}\"")),
                             escape(platform),
                         )
@@ -939,18 +952,20 @@ pub fn package_index(
                 "—".to_string()
             } else {
                 format!(
-                    "<a class=\"license-pill\" title=\"Filter by license: {}\" href=\"/{}/-/packages?filter={}\">{}</a>",
+                    "<a class=\"license-pill\" title=\"Filter by license: {}\" href=\"/{}/-/packages?{}filter={}\">{}</a>",
                     escape(&p.license),
                     escape(slug),
+                    if snapshot_query.is_empty() { "".to_string() } else { format!("{}&", snapshot_query) },
                     urlencode(&format!("license == \"{}\"", p.license)),
                     escape(license_pill_label(&p.license)),
                 )
             };
             vec![
                 format!(
-                    "<a href=\"/{}/-/packages/{}\">{}</a>",
+                    "<a href=\"/{}/-/packages/{}{}\">{}</a>",
                     escape(slug),
                     escape(&p.name),
+                    snapshot.map(|value| format!("?release={}", urlencode(value))).unwrap_or_default(),
                     escape(&p.name),
                 ),
                 escape(p.latest_version.as_deref().unwrap_or("—")),
@@ -965,6 +980,38 @@ pub fn package_index(
     let mut body = registry_nav(slug, "packages");
     let _ = writeln!(body, "<h1>Packages ({total_all})</h1>");
 
+    body.push_str("<form method=\"get\" class=\"snapshot-selector\"><label>registry snapshot <select name=\"release\">");
+    let _ = write!(
+        body,
+        "<option value=\"\"{}>indexed HEAD{}</option>",
+        if snapshot.is_none() { " selected" } else { "" },
+        head_commit
+            .map(|commit| format!(" · {}", escape(&commit[..commit.len().min(12)])))
+            .unwrap_or_default(),
+    );
+    for (tag, commit) in snapshots {
+        let _ = write!(
+            body,
+            "<option value=\"{}\"{}>{} · {}</option>",
+            escape(tag),
+            if snapshot == Some(tag.as_str()) || snapshot == Some(commit.as_str()) {
+                " selected"
+            } else {
+                ""
+            },
+            escape(tag),
+            escape(&commit[..commit.len().min(12)]),
+        );
+    }
+    body.push_str("</select></label> <button>Show snapshot</button></form>\n");
+    let _ = writeln!(
+        body,
+        "<p class=\"dim\">Showing package membership at <strong>{}</strong>.</p>",
+        snapshot.map(escape).unwrap_or_else(|| head_commit
+            .map(|commit| format!("indexed HEAD {}", hash_value(commit)))
+            .unwrap_or_else(|| "indexed HEAD".to_string())),
+    );
+
     // The filter box is a Wireshark-style display-filter expression: every
     // attribute is queryable with operators and boolean connectives. A bare
     // word still matches any field, so simple searches keep working.
@@ -976,6 +1023,13 @@ pub fn package_index(
     // registry's distinct values per field. (No native `<datalist>`: its popup
     // can't be themed.)
     body.push_str("<form method=\"get\" class=\"pkg-search\">");
+    if let Some(snapshot) = snapshot {
+        let _ = write!(
+            body,
+            "<input type=\"hidden\" name=\"release\" value=\"{}\">",
+            escape(snapshot)
+        );
+    }
     let _ = write!(
         body,
         "<span class=\"filter-field\" data-filter-widget>\
@@ -1012,9 +1066,12 @@ pub fn package_index(
         let _ = writeln!(
             body,
             "<p class=\"dim\">{total_matches} of {total_all} packages matching \
-             <code>{}</code> · <a href=\"/{}/-/packages\">clear filter</a></p>",
+             <code>{}</code> · <a href=\"/{}/-/packages{}\">clear filter</a></p>",
             escape(filter.unwrap_or("")),
             escape(slug),
+            snapshot
+                .map(|value| format!("?release={}", urlencode(value)))
+                .unwrap_or_default(),
         );
     } else {
         let _ = writeln!(body, "<p class=\"dim\">{total_all} packages</p>");
@@ -1033,17 +1090,22 @@ pub fn package_index(
     if body_rows.is_empty() {
         body.push_str("<p class=\"dim\">No packages.</p>\n");
     } else {
+        let preserved_query = [snapshot_query.as_str(), filter_query.as_str()]
+            .into_iter()
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>()
+            .join("&");
         let headers = vec![
-            sort_header(slug, "name", SortColumn::Name, sort, &filter_query),
-            sort_header(slug, "latest", SortColumn::Version, sort, &filter_query),
-            sort_header(slug, "license", SortColumn::License, sort, &filter_query),
-            sort_header(slug, "closure", SortColumn::Closure, sort, &filter_query),
+            sort_header(slug, "name", SortColumn::Name, sort, &preserved_query),
+            sort_header(slug, "version", SortColumn::Version, sort, &preserved_query),
+            sort_header(slug, "license", SortColumn::License, sort, &preserved_query),
+            sort_header(slug, "closure", SortColumn::Closure, sort, &preserved_query),
             sort_header(
                 slug,
                 "platforms",
                 SortColumn::Platforms,
                 sort,
-                &filter_query,
+                &preserved_query,
             ),
             "description".to_string(),
         ];
@@ -1054,6 +1116,9 @@ pub fn package_index(
     // drops the filter. The query has no leading separator; Pager::nav appends
     // `&page=N` itself.
     let mut params: Vec<String> = Vec::new();
+    if !snapshot_query.is_empty() {
+        params.push(snapshot_query);
+    }
     if !filter_query.is_empty() {
         params.push(filter_query.clone());
     }
@@ -1130,6 +1195,7 @@ pub fn package_page(
     detail: &PackageDetail,
     closure: &PackageClosure,
     setup: &RegistrySetup,
+    snapshot: Option<&str>,
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
@@ -1143,6 +1209,15 @@ pub fn package_page(
         let _ = write!(body, " <span class=\"dim\">{}</span>", escape(latest));
     }
     body.push_str("</h1>\n");
+    if let Some(snapshot) = snapshot {
+        let _ = writeln!(
+            body,
+            "<p class=\"dim\">Package state authenticated by registry snapshot <strong>{}</strong> · <a href=\"/{}/-/packages?release={}\">back to this snapshot</a></p>",
+            escape(snapshot),
+            escape(slug),
+            urlencode(snapshot),
+        );
+    }
     if !detail.description.is_empty() {
         let _ = writeln!(
             body,
@@ -1832,12 +1907,29 @@ pub fn channel_page(
 
     let mut body = registry_nav(slug, "channels");
     let _ = writeln!(body, "<h1>Channel {}</h1>", escape(&channel.name));
+    let frontier = channel.frontier.as_deref().map_or_else(
+        || "—".to_string(),
+        |release| {
+            format!(
+                "<strong><a href=\"/{}/-/releases#release-{}\">{}</a></strong> · <a href=\"/{}/-/images?release={}\">images</a>",
+                escape(slug),
+                urlencode(release),
+                escape(release),
+                escape(slug),
+                urlencode(release),
+            )
+        },
+    );
     let _ = writeln!(
         body,
-        "<p>frontier <strong>{}</strong> · floor {} · {} of 256 partitions assigned</p>",
-        escape(channel.frontier.as_deref().unwrap_or("—")),
+        "<p>frontier {frontier} · floor {} · {} of 256 partitions assigned</p>",
         match floor {
-            Some(floor) => format!("<strong>{}</strong>", escape(floor)),
+            Some(floor) => format!(
+                "<strong><a href=\"/{}/-/releases#release-{}\">{}</a></strong>",
+                escape(slug),
+                urlencode(floor),
+                escape(floor),
+            ),
             None => "<span class=\"dim\">—</span>".to_string(),
         },
         channel.partitions.iter().flatten().count(),
@@ -1853,7 +1945,14 @@ pub fn channel_page(
         match parse_bucket(raw) {
             Some(bucket) => {
                 let target = match channel.partitions[bucket as usize].as_deref() {
-                    Some(release) => format!("release <strong>{}</strong>", escape(release)),
+                    Some(release) => format!(
+                        "release <strong><a href=\"/{}/-/releases#release-{}\">{}</a></strong> · <a href=\"/{}/-/images?release={}\">images</a>",
+                        escape(slug),
+                        urlencode(release),
+                        escape(release),
+                        escape(slug),
+                        urlencode(release),
+                    ),
                     None => "<span class=\"dim\">unassigned</span>".to_string(),
                 };
                 let _ = writeln!(
@@ -1888,7 +1987,14 @@ pub fn channel_page(
                 .unwrap_or(GRID_GLYPHS.len() - 1);
             vec![
                 format!("<span class=\"r{i}\">{}</span>", GRID_GLYPHS[i]),
-                escape(release),
+                format!(
+                    "<a href=\"/{}/-/releases#release-{}\">{}</a> · <a href=\"/{}/-/images?release={}\">images</a>",
+                    escape(slug),
+                    urlencode(release),
+                    escape(release),
+                    escape(slug),
+                    urlencode(release),
+                ),
                 format!("{count} partitions ({}%)", count * 100 / 256),
             ]
         })
@@ -1937,7 +2043,17 @@ pub fn channels_index(
                     escape(&channel.name),
                     escape(&channel.name),
                 ),
-                escape(channel.frontier.as_deref().unwrap_or("—")),
+                channel.frontier.as_deref().map_or_else(
+                    || "—".to_string(),
+                    |release| {
+                        format!(
+                            "<a href=\"/{}/-/releases#release-{}\">{}</a>",
+                            escape(slug),
+                            urlencode(release),
+                            escape(release),
+                        )
+                    },
+                ),
                 format!("{}/256", channel.partitions.iter().flatten().count()),
             ]
         })
@@ -2152,7 +2268,18 @@ pub fn images_page(
         let channel_cell = if channel_names.is_empty() {
             "—".to_string()
         } else {
-            escape(&channel_names.join(", "))
+            channel_names
+                .iter()
+                .map(|name| {
+                    format!(
+                        "<a href=\"/{}/-/channels/{}\">{}</a>",
+                        escape(slug),
+                        urlencode(name),
+                        escape(name),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
         };
         let download = if image.store_path.is_empty() {
             download_base.map_or_else(
@@ -2220,7 +2347,12 @@ pub fn images_page(
              <tr><th scope=\"row\">store path</th><td>{store_path}</td><th scope=\"row\">NAR</th><td>{nar_identity}</td></tr>\
              <tr><th scope=\"row\">UKI</th><td>{uki}</td><th scope=\"row\">image info</th><td>{image_info}</td></tr>\
              </tbody></table></td></tr></tbody>\n",
-            release = escape(&image.release),
+            release = format!(
+                "<a href=\"/{}/-/releases#release-{}\">{}</a>",
+                escape(slug),
+                urlencode(&image.release),
+                escape(&image.release),
+            ),
             package = escape(&image.package),
             channel = channel_cell,
             architecture = escape(&image.delivery.architecture),
@@ -2298,7 +2430,12 @@ pub fn images_page(
     if total_matches == 0 {
         body.push_str("<p class=\"dim\">No matching signed disk images are published.</p>\n");
     } else {
-        let _ = writeln!(body, "<p class=\"dim\">{total_matches} images</p>");
+        let _ = writeln!(
+            body,
+            "<p class=\"dim\">{total_matches} images · page {} of {}</p>",
+            pager.page(),
+            pager.pages(),
+        );
         body.push_str(
             "<div class=\"table-scroll\" role=\"region\" aria-label=\"System images\" tabindex=\"0\">\n\
              <table class=\"images-table\"><thead><tr><th>release</th><th>channel</th>\
@@ -2351,7 +2488,13 @@ pub fn releases_page(
         .iter()
         .map(|release| {
             vec![
-                escape(&release.semver),
+                format!(
+                    "<span id=\"release-{}\"><a href=\"/{}/-/images?release={}\">{}</a></span>",
+                    urlencode(&release.semver),
+                    escape(slug),
+                    urlencode(&release.semver),
+                    escape(&release.semver),
+                ),
                 hash_value(&release.commit_oid),
                 match &release.signer {
                     Some(signer) => format!(
@@ -3042,7 +3185,10 @@ mod tests {
         // Frontier glyph appears exactly 64 times, in the frontier class.
         assert_eq!(grid.matches('■').count(), 64);
         assert_eq!(grid.matches("<span class=\"r0\">■</span>").count(), 64);
-        assert!(html.contains("frontier <strong>1.2.0</strong>"));
+        assert!(html.contains(
+            "frontier <strong><a href=\"/demo/-/releases#release-1.2.0\">1.2.0</a></strong>"
+        ));
+        assert!(html.contains("/demo/-/images?release=1.2.0"));
     }
 
     #[tokio::test]
@@ -3062,9 +3208,13 @@ mod tests {
             &anon(),
         );
         assert!(html.contains("bucket <strong>0x0A</strong> (10)"), "{html}");
-        assert!(html.contains("release <strong>1.2.0</strong>"));
+        assert!(html.contains(
+            "release <strong><a href=\"/demo/-/releases#release-1.2.0\">1.2.0</a></strong>"
+        ));
         assert!(html.contains("<strong class=\"hit\">"));
-        assert!(html.contains("floor <strong>1.1.0</strong>"));
+        assert!(html.contains(
+            "floor <strong><a href=\"/demo/-/releases#release-1.1.0\">1.1.0</a></strong>"
+        ));
 
         assert_eq!(parse_bucket("10"), Some(10), "decimal wins when both parse");
         assert_eq!(parse_bucket("0x10"), Some(16));
@@ -3190,6 +3340,7 @@ mod tests {
             &detail,
             &closure,
             &setup,
+            None,
             Instant::now(),
             &anon(),
         );
@@ -3206,6 +3357,7 @@ mod tests {
             &detail,
             &closure,
             &setup,
+            None,
             Instant::now(),
             &anon(),
         );
@@ -3257,6 +3409,7 @@ mod tests {
             &detail,
             &closure,
             &setup,
+            None,
             Instant::now(),
             &anon(),
         );
@@ -3320,6 +3473,7 @@ mod tests {
             &detail,
             &PackageClosure::default(),
             &setup,
+            None,
             Instant::now(),
             &anon(),
         );
@@ -3354,6 +3508,7 @@ mod tests {
             &detail,
             &PackageClosure::default(),
             &setup,
+            None,
             Instant::now(),
             &anon(),
         );
@@ -3453,6 +3608,9 @@ mod tests {
             None,
             &rows,
             &PackageBrowse {
+                snapshot: None,
+                head_commit: Some("abc123"),
+                snapshots: &[],
                 filter: Some("license == MIT"),
                 filter_error: None,
                 sort: Some((SortColumn::Closure, SortDir::Desc)),
@@ -3495,6 +3653,9 @@ mod tests {
             None,
             &rows,
             &PackageBrowse {
+                snapshot: None,
+                head_commit: Some("abc123"),
+                snapshots: &[],
                 filter: None,
                 filter_error: None,
                 sort: None,
@@ -3526,6 +3687,9 @@ mod tests {
             None,
             &rows,
             &PackageBrowse {
+                snapshot: None,
+                head_commit: Some("abc123"),
+                snapshots: &[],
                 filter: Some("license == MIT"),
                 filter_error: None,
                 sort: None,
@@ -3549,6 +3713,9 @@ mod tests {
             None,
             &rows,
             &PackageBrowse {
+                snapshot: None,
+                head_commit: Some("abc123"),
+                snapshots: &[],
                 filter: Some("license =="),
                 filter_error: Some("expected a value after `license ==`"),
                 sort: None,

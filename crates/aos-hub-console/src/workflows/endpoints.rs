@@ -397,14 +397,20 @@ fn EndpointCreateForm(
                 <label><span>"Network policy"</span><select required prop:value=move || boundary_id.get() on:change=on_boundary_change>{boundary_choices.iter().map(|boundary| view! { <option value=boundary.stable_id.clone()>{format!("{} · {}", boundary.name, boundary.kind)}</option> }).collect_view()}</select>{boundary_choices.is_empty().then(|| view! { <small>"No network policies exist in this scope. Create one before adding an endpoint."</small> })}</label>
                 <label><span>"Boundary revision"</span><input readonly aria-readonly="true" prop:value=move || boundary_revision.get()/><small>"Pins the boundary's current default revision."</small></label>
                 <label><span>"Ingress kind"</span><select prop:value=move || ingress.get() on:change=move |event| ingress.set(event_target_value(&event))><option value="external">"External ingress (CDN or object storage)"</option><option value="hub">"AOS Hub"</option><option value="layer7">"Layer 7 provider"</option></select></label>
-                <label><span>"Listener reference"</span><input required prop:value=move || listener_ref.get() on:input=move |event| listener_ref.set(event_target_value(&event))/></label>
+                {move || if host_kind.get() == "domain" {
+                    view! { <p class="field-note full-field">"Listener and certificate configuration come from the selected managed domain."</p> }.into_any()
+                } else {
+                    view! { <label><span>"Provider listener"</span><input required prop:value=move || listener_ref.get() on:input=move |event| listener_ref.set(event_target_value(&event))/><small>"Opaque listener handle supplied by the ingress provider."</small></label> }.into_any()
+                }}
                 {move || (scheme.get() == "https").then(|| view! {
-                    <label><span>"TLS provider"</span><input required prop:value=move || tls_provider.get() on:input=move |event| tls_provider.set(event_target_value(&event))/></label>
-                    <label><span>"Certificate reference"</span><input required prop:value=move || certificate_ref.get() on:input=move |event| certificate_ref.set(event_target_value(&event))/></label>
+                    {move || (host_kind.get() != "domain").then(|| view! {
+                        <label><span>"TLS provider"</span><input required prop:value=move || tls_provider.get() on:input=move |event| tls_provider.set(event_target_value(&event))/></label>
+                        <label><span>"Provider certificate"</span><input required prop:value=move || certificate_ref.get() on:input=move |event| certificate_ref.set(event_target_value(&event))/><small>"Opaque certificate or secret handle supplied by the TLS provider."</small></label>
+                    })}
                     <label class="checkbox-field"><input type="checkbox" prop:checked=move || require_client_certificate.get() on:change=move |event| require_client_certificate.set(event_target_checked(&event))/><span>"Require client certificate"</span></label>
                 })}
-                <label class="full-field"><span>"Probe configuration reference"</span><input prop:value=move || probe_ref.get() on:input=move |event| probe_ref.set(event_target_value(&event))/></label>
-                <div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || host.get().is_empty() || boundary_id.get().is_empty()>"Review creation"</button></div>
+                <label class="full-field"><span>"Provider probe"</span><input prop:value=move || probe_ref.get() on:input=move |event| probe_ref.set(event_target_value(&event))/><small>"Optional opaque probe configuration handle; this is not a Hub resource ID."</small></label>
+                <div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || host.get().is_empty() || boundary_id.get().is_empty()>"Create endpoint"</button></div>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
@@ -435,6 +441,7 @@ fn domain_tls_defaults(domain: &aos_proto_types::Domain) -> (String, String) {
 #[component]
 fn EndpointRevisionFields(
     is_https: bool,
+    managed_domain: bool,
     boundary_revision: RwSignal<String>,
     ingress: RwSignal<String>,
     listener_ref: RwSignal<String>,
@@ -444,7 +451,7 @@ fn EndpointRevisionFields(
     probe_ref: RwSignal<String>,
     #[prop(default = true)] show_boundary: bool,
 ) -> impl IntoView {
-    view! { {show_boundary.then(|| view! { <label><span>"Boundary revision"</span><input required type="number" min="1" prop:value=move || boundary_revision.get() on:input=move |event| boundary_revision.set(event_target_value(&event))/></label> })}<label><span>"Ingress kind"</span><select prop:value=move || ingress.get() on:change=move |event| ingress.set(event_target_value(&event))><option value="hub">"AOS Hub"</option><option value="external">"External ingress"</option><option value="layer7">"Layer 7 provider"</option></select></label><label><span>"Listener configuration reference"</span><input required prop:value=move || listener_ref.get() on:input=move |event| listener_ref.set(event_target_value(&event))/></label>{is_https.then(|| view! { <label><span>"TLS provider"</span><input required prop:value=move || tls_provider.get() on:input=move |event| tls_provider.set(event_target_value(&event))/></label><label><span>"Certificate reference"</span><input required prop:value=move || certificate_ref.get() on:input=move |event| certificate_ref.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || require_client_certificate.get() on:change=move |event| require_client_certificate.set(event_target_checked(&event))/><span>"Require client certificate"</span></label> })}<label class="full-field"><span>"Probe configuration reference"</span><input prop:value=move || probe_ref.get() on:input=move |event| probe_ref.set(event_target_value(&event))/></label> }
+    view! { {show_boundary.then(|| view! { <label><span>"Boundary revision"</span><input required type="number" min="1" prop:value=move || boundary_revision.get() on:input=move |event| boundary_revision.set(event_target_value(&event))/></label> })}<label><span>"Ingress kind"</span><select prop:value=move || ingress.get() on:change=move |event| ingress.set(event_target_value(&event))><option value="hub">"AOS Hub"</option><option value="external">"External ingress"</option><option value="layer7">"Layer 7 provider"</option></select></label>{if managed_domain { view! { <p class="field-note full-field">"Listener and certificate configuration come from this endpoint's managed domain."</p> }.into_any() } else { view! { <label><span>"Provider listener"</span><input required prop:value=move || listener_ref.get() on:input=move |event| listener_ref.set(event_target_value(&event))/><small>"Opaque listener handle supplied by the selected ingress provider."</small></label>{is_https.then(|| view! { <label><span>"TLS provider"</span><input required prop:value=move || tls_provider.get() on:input=move |event| tls_provider.set(event_target_value(&event))/></label><label><span>"Provider certificate"</span><input required prop:value=move || certificate_ref.get() on:input=move |event| certificate_ref.set(event_target_value(&event))/><small>"Opaque certificate or secret handle supplied by the TLS provider."</small></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || require_client_certificate.get() on:change=move |event| require_client_certificate.set(event_target_checked(&event))/><span>"Require client certificate"</span></label> })} }.into_any() }}<label class="full-field"><span>"Provider probe"</span><input prop:value=move || probe_ref.get() on:input=move |event| probe_ref.set(event_target_value(&event))/><small>"Optional opaque probe configuration handle; this is not a Hub resource ID."</small></label> }
 }
 
 #[component]
@@ -544,13 +551,17 @@ fn EndpointGenerationRow(
             busy.set(false);
         });
     });
-    view! { <div class="revision-card"><div class="compact-list-row"><div><strong>{format!("Generation {}", generation.generation)}</strong><span>{format!("boundary revision {}", generation.desired.as_ref().map(|value| value.boundary_revision).unwrap_or_default())}</span><HashValue value=generation.content_digest/></div>{if generation.selected { view! { <StatusBadge state="selected".to_string() positive=true/> }.into_any() } else { view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=on_plan>"Review activation"</button> }.into_any() }}</div>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</div> }
+    view! { <div class="revision-card"><div class="compact-list-row"><div><strong>{format!("Generation {}", generation.generation)}</strong><span>{format!("boundary revision {}", generation.desired.as_ref().map(|value| value.boundary_revision).unwrap_or_default())}</span><HashValue value=generation.content_digest/></div>{if generation.selected { view! { <StatusBadge state="selected".to_string() positive=true/> }.into_any() } else { view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=on_plan>"Activate"</button> }.into_any() }}</div>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</div> }
 }
 
 #[component]
 fn EndpointStage(client: ApiClient, endpoint: aos_proto_types::Endpoint) -> impl IntoView {
     let scheme = endpoint.scheme.clone();
     let is_https = scheme == "https";
+    let managed_domain = matches!(
+        endpoint.host.as_ref().and_then(|host| host.host.as_ref()),
+        Some(aos_proto_types::endpoint_host::Host::DomainId(_))
+    );
     let desired = endpoint.desired.clone().unwrap_or_default();
     let revisions_client = client.clone();
     let revisions_boundary = endpoint.network_policy_id.clone();
@@ -651,7 +662,7 @@ fn EndpointStage(client: ApiClient, endpoint: aos_proto_types::Endpoint) -> impl
             busy.set(false);
         });
     });
-    view! { <section class="subworkflow"><h4>"Stage generation"</h4><form class="stacked-form" on:submit=on_plan><label><span>"Network policy revision"</span><select required prop:value=move || boundary_revision.get() on:change=move |event| boundary_revision.set(event_target_value(&event))><Suspense fallback=move || view! { <option value=boundary_revision.get_untracked()>"Loading boundary revisions…"</option> }>{move || Suspend::new(async move { match boundary_revisions.await.as_ref() { Ok(revisions) => revisions.iter().map(|revision| { let lifecycle = revision.lifecycle.as_ref().map(|value| value.state.as_str()).unwrap_or("unknown"); view! { <option value=revision.revision.to_string()>{format!("Revision {} · {}", revision.revision, lifecycle)}</option> } }).collect_view().into_any(), Err(_) => view! { <option value=boundary_revision.get_untracked()>"Current pinned revision"</option> }.into_any() } })}</Suspense></select></label><EndpointRevisionFields is_https=is_https boundary_revision=boundary_revision ingress=ingress listener_ref=listener_ref tls_provider=tls_provider certificate_ref=certificate_ref require_client_certificate=require_client_certificate probe_ref=probe_ref show_boundary=false/><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review generation"</button></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="subworkflow"><h4>"Stage generation"</h4><form class="stacked-form" on:submit=on_plan><label><span>"Network policy revision"</span><select required prop:value=move || boundary_revision.get() on:change=move |event| boundary_revision.set(event_target_value(&event))><Suspense fallback=move || view! { <option value=boundary_revision.get_untracked()>"Loading boundary revisions…"</option> }>{move || Suspend::new(async move { match boundary_revisions.await.as_ref() { Ok(revisions) => revisions.iter().map(|revision| { let lifecycle = revision.lifecycle.as_ref().map(|value| value.state.as_str()).unwrap_or("unknown"); view! { <option value=revision.revision.to_string()>{format!("Revision {} · {}", revision.revision, lifecycle)}</option> } }).collect_view().into_any(), Err(_) => view! { <option value=boundary_revision.get_untracked()>"Current pinned revision"</option> }.into_any() } })}</Suspense></select></label><EndpointRevisionFields is_https=is_https managed_domain=managed_domain boundary_revision=boundary_revision ingress=ingress listener_ref=listener_ref tls_provider=tls_provider certificate_ref=certificate_ref require_client_certificate=require_client_certificate probe_ref=probe_ref show_boundary=false/><button class="secondary-button" type="submit" disabled=move || busy.get()>"Stage generation"</button></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 #[component]
@@ -714,7 +725,7 @@ fn EndpointGrants(client: ApiClient, endpoint: aos_proto_types::Endpoint) -> imp
             busy.set(false);
         });
     });
-    view! { <section class="subworkflow"><h4>"Consumer scopes"</h4><div class="compact-list">{endpoint.grants.into_iter().filter(|grant| grant.state == "active").map(|grant| view! { <EndpointGrantRow client=row_client.clone() grant=grant/> }).collect_view()}</div><form class="stacked-form" on:submit=on_plan><label><span>"Consumer scope key"</span><input required prop:value=move || scope.get() on:input=move |event| scope.set(event_target_value(&event))/></label><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review grant"</button></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="subworkflow"><h4>"Consumer scopes"</h4><div class="compact-list">{endpoint.grants.into_iter().filter(|grant| grant.state == "active").map(|grant| view! { <EndpointGrantRow client=row_client.clone() grant=grant/> }).collect_view()}</div><form class="stacked-form" on:submit=on_plan><label><span>"Consumer scope key"</span><input required prop:value=move || scope.get() on:input=move |event| scope.set(event_target_value(&event))/></label><button class="secondary-button" type="submit" disabled=move || busy.get()>"Grant"</button></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 #[component]
@@ -775,7 +786,7 @@ fn EndpointGrantRow(
             busy.set(false);
         });
     });
-    view! { <div class="compact-list-row"><div><code>{grant.consumer_scope_key}</code><span>{format!("generation {} · {} live pins", grant.resource_generation, grant.live_pin_count)}</span></div><button class="table-action" type="button" disabled=move || busy.get() on:click=on_plan>"Review revoke"</button></div>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })} }
+    view! { <div class="compact-list-row"><div><code>{grant.consumer_scope_key}</code><span>{format!("generation {} · {} live pins", grant.resource_generation, grant.live_pin_count)}</span></div><button class="table-action" type="button" disabled=move || busy.get() on:click=on_plan>"Revoke"</button></div>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })} }
 }
 
 #[component]
@@ -832,7 +843,7 @@ fn EndpointDelete(client: ApiClient, endpoint: aos_proto_types::Endpoint) -> imp
             busy.set(false);
         });
     });
-    view! { <section class="subworkflow danger-subworkflow"><h4>"Delete endpoint"</h4><p>"Deletion remains blocked by routes, defaults, gateways, grants, and live generation pins."</p><button class="danger-button" type="button" disabled=move || busy.get() on:click=on_plan>"Review deletion"</button>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="subworkflow danger-subworkflow"><h4>"Delete endpoint"</h4><p>"Deletion remains blocked by routes, defaults, gateways, grants, and live generation pins."</p><button class="danger-button" type="button" disabled=move || busy.get() on:click=on_plan>"Delete"</button>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 fn endpoint_host(kind: &str, value: &str) -> Result<aos_proto_types::EndpointHost, String> {

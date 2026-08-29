@@ -13276,6 +13276,112 @@ impl Database {
         self.query_package_rows(registry_id, Some(limit)).await
     }
 
+    /// Lists the package set authenticated by one verified release tag or commit.
+    ///
+    /// Package membership, version, and platforms come from the immutable
+    /// release-artifact snapshot. Descriptive metadata is joined from the
+    /// current package catalog because release snapshots deliberately retain
+    /// artifact identities rather than duplicate package prose.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_packages_at_release(
+        &self,
+        registry_id: i64,
+        release_or_commit: &str,
+    ) -> Result<Vec<PackageRow>> {
+        let rows = self
+            .backend
+            .query(
+                "WITH selected_versions AS (
+                   SELECT DISTINCT artifact.package_name, artifact.package_version
+                   FROM releases release
+                   JOIN release_artifact_snapshot_heads head
+                     ON head.release_id = release.id AND head.registry_id = release.registry_id
+                   JOIN release_artifact_snapshots snapshot
+                     ON snapshot.snapshot_id = head.complete_artifact_snapshot_id
+                    AND snapshot.state = 'complete'
+                    AND snapshot.source_commit = release.commit_oid
+                    AND snapshot.verified_tag_oid = release.tag_oid
+                   JOIN release_artifacts artifact ON artifact.snapshot_id = snapshot.snapshot_id
+                   WHERE release.registry_id = ?1
+                     AND (release.semver = ?2 OR release.commit_oid = ?2)
+                     AND artifact.artifact_kind = 'output'
+                 ), ranked_versions AS (
+                   SELECT selected.package_name, selected.package_version,
+                          ROW_NUMBER() OVER (
+                            PARTITION BY selected.package_name
+                            ORDER BY version.id DESC, selected.package_version DESC
+                          ) AS rank
+                   FROM selected_versions selected
+                   LEFT JOIN packages package
+                     ON package.registry_id = ?1 AND package.name = selected.package_name
+                   LEFT JOIN package_versions version
+                     ON version.package_id = package.id
+                    AND version.version = selected.package_version
+                 )
+                 SELECT artifact.package_name,
+                        COALESCE(package.description, ''),
+                        COALESCE(package.license, ''),
+                        artifact.package_version,
+                        artifact.platform,
+                        platform.closure_size
+                 FROM releases release
+                 JOIN release_artifact_snapshot_heads head
+                   ON head.release_id = release.id AND head.registry_id = release.registry_id
+                 JOIN release_artifact_snapshots snapshot
+                   ON snapshot.snapshot_id = head.complete_artifact_snapshot_id
+                  AND snapshot.state = 'complete'
+                  AND snapshot.source_commit = release.commit_oid
+                  AND snapshot.verified_tag_oid = release.tag_oid
+                 JOIN release_artifacts artifact ON artifact.snapshot_id = snapshot.snapshot_id
+                 JOIN ranked_versions selected
+                   ON selected.package_name = artifact.package_name
+                  AND selected.package_version = artifact.package_version
+                  AND selected.rank = 1
+                 LEFT JOIN packages package
+                   ON package.registry_id = ?1 AND package.name = artifact.package_name
+                 LEFT JOIN package_versions version
+                   ON version.package_id = package.id
+                  AND version.version = artifact.package_version
+                 LEFT JOIN version_platforms platform
+                   ON platform.version_id = version.id
+                  AND platform.platform = artifact.platform
+                 WHERE release.registry_id = ?1
+                   AND (release.semver = ?2 OR release.commit_oid = ?2)
+                   AND artifact.artifact_kind = 'output'
+                 ORDER BY artifact.package_name, artifact.platform",
+                &vals![registry_id, release_or_commit],
+            )
+            .await?;
+
+        let mut packages = Vec::<PackageRow>::new();
+        for row in &rows {
+            let name: String = row.get(0)?;
+            if packages.last().map(|package| package.name.as_str()) != Some(name.as_str()) {
+                packages.push(PackageRow {
+                    name,
+                    description: row.get(1)?,
+                    license: row.get(2)?,
+                    latest_version: row.get(3)?,
+                    closure_size: None,
+                    platforms: Vec::new(),
+                });
+            }
+            if let Some(package) = packages.last_mut() {
+                let platform: String = row.get(4)?;
+                if !package.platforms.contains(&platform) {
+                    package.platforms.push(platform);
+                }
+                if package.closure_size.is_none() {
+                    package.closure_size = row.get(5)?;
+                }
+            }
+        }
+        Ok(packages)
+    }
+
     /// Single-query package listing shared by [`Database::list_packages`] and
     /// [`Database::list_packages_capped`].
     ///
@@ -26586,6 +26692,16 @@ source_nar_hash = ""
         let retention_releases = db.list_retention_release_snapshots(id).await.unwrap();
         assert_eq!(retention_releases.len(), 1);
         assert_eq!(retention_releases[0].artifacts[0].store_hash, "abc");
+        let release_packages = db.list_packages_at_release(id, "1.0.0").await.unwrap();
+        assert_eq!(release_packages.len(), 1);
+        assert_eq!(release_packages[0].name, "curl");
+        assert_eq!(release_packages[0].latest_version.as_deref(), Some("8.5.0"));
+        assert_eq!(release_packages[0].platforms, ["x86_64-linux"]);
+        let commit_packages = db
+            .list_packages_at_release(id, &"c".repeat(64))
+            .await
+            .unwrap();
+        assert_eq!(commit_packages.len(), 1);
         let release_id: i64 = db
             .backend
             .query_opt(

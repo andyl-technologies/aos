@@ -483,7 +483,7 @@ fn BoundaryGrants(client: ApiClient, boundary: aos_proto_types::NetworkPolicy) -
             busy.set(false);
         });
     });
-    view! { <section class="subworkflow"><h4>"Consumer scopes"</h4><div class="compact-list">{boundary.grants.into_iter().filter(|grant| grant.state == "active").map(|grant| view! { <BoundaryGrantRow client=row_client.clone() grant=grant/> }).collect_view()}</div><form class="stacked-form" on:submit=on_plan><label><span>"Consumer scope key"</span><input required prop:value=move || scope.get() on:input=move |event| scope.set(event_target_value(&event))/></label><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review grant"</button></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="subworkflow"><h4>"Consumer scopes"</h4><div class="compact-list">{boundary.grants.into_iter().filter(|grant| grant.state == "active").map(|grant| view! { <BoundaryGrantRow client=row_client.clone() grant=grant/> }).collect_view()}</div><form class="stacked-form" on:submit=on_plan><label><span>"Consumer scope key"</span><input required prop:value=move || scope.get() on:input=move |event| scope.set(event_target_value(&event))/></label><button class="secondary-button" type="submit" disabled=move || busy.get()>"Grant"</button></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 #[component]
@@ -545,7 +545,7 @@ fn BoundaryGrantRow(
             busy.set(false);
         });
     });
-    view! { <div class="compact-list-row"><div><code>{grant.consumer_scope_key}</code><span>{format!("{} live pins", grant.live_pin_count)}</span></div><button class="table-action" type="button" disabled=move || busy.get() on:click=on_plan>"Review revoke"</button></div>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })} }
+    view! { <div class="compact-list-row"><div><code>{grant.consumer_scope_key}</code><span>{format!("{} live pins", grant.live_pin_count)}</span></div><button class="table-action" type="button" disabled=move || busy.get() on:click=on_plan>"Revoke"</button></div>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })} }
 }
 
 #[component]
@@ -602,7 +602,7 @@ fn BoundaryDelete(client: ApiClient, boundary: aos_proto_types::NetworkPolicy) -
             busy.set(false);
         });
     });
-    view! { <section class="subworkflow danger-subworkflow"><h4>"Delete boundary"</h4><p>"Public identity is permanent; other boundaries remain blocked by endpoints, grants, routes, or live pins."</p><button class="danger-button" type="button" disabled=move || busy.get() on:click=on_plan>"Review deletion"</button>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="subworkflow danger-subworkflow"><h4>"Delete boundary"</h4><p>"Public identity is permanent; other boundaries remain blocked by endpoints, grants, routes, or live pins."</p><button class="danger-button" type="button" disabled=move || busy.get() on:click=on_plan>"Delete"</button>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 fn boundary_identity(
