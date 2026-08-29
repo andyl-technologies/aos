@@ -643,6 +643,52 @@ pub struct SearchDocument {
     pub terms: BTreeMap<String, u16>,
 }
 
+/// Deterministic semantic comparison between two exact package documents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentationComparison {
+    /// Compared package name.
+    pub package: String,
+    /// Exact source version.
+    pub from_version: String,
+    /// Exact destination version.
+    pub to_version: String,
+    /// Whether the semantic schema digest changed.
+    pub semantic_changed: bool,
+    /// Whether the authenticated runtime contract changed.
+    pub runtime_changed: bool,
+    /// Sorted option additions, removals, and semantic modifications.
+    pub option_changes: Vec<OptionChange>,
+}
+
+/// One option-level semantic change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OptionChange {
+    /// Stable human option path.
+    pub path: String,
+    /// Change classification.
+    pub kind: OptionChangeKind,
+    /// Previous type signature when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_type: Option<String>,
+    /// Destination type signature when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_type: Option<String>,
+}
+
+/// Closed option comparison classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OptionChangeKind {
+    /// Option exists only in the destination document.
+    Added,
+    /// Option exists only in the source document.
+    Removed,
+    /// Configuration meaning changed while the path remained present.
+    Changed,
+}
+
 impl PackageDocumentation {
     /// Decodes canonical JSON and rejects non-canonical or invalid input.
     ///
@@ -836,6 +882,87 @@ impl PackageDocumentation {
         rows
     }
 
+    /// Compares configuration meaning with another exact package document.
+    ///
+    /// Explanatory prose and source locations do not produce option changes;
+    /// the comparison follows the same semantic projection as
+    /// [`Self::computed_semantic_schema_sha256`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the documents describe different packages or
+    /// platforms, or when either document is invalid.
+    pub fn compare(&self, other: &Self) -> Result<DocumentationComparison> {
+        self.validate()?;
+        other.validate()?;
+        if self.package.name != other.package.name {
+            return Err(DocumentationError::Invalid(format!(
+                "cannot compare package '{}' with '{}'",
+                self.package.name, other.package.name
+            )));
+        }
+        if self.package.platform != other.package.platform {
+            return Err(DocumentationError::Invalid(format!(
+                "cannot compare platform '{}' with '{}'",
+                self.package.platform, other.package.platform
+            )));
+        }
+
+        let before = self
+            .options
+            .iter()
+            .map(|option| (option.display_path.as_str(), option))
+            .collect::<BTreeMap<_, _>>();
+        let after = other
+            .options
+            .iter()
+            .map(|option| (option.display_path.as_str(), option))
+            .collect::<BTreeMap<_, _>>();
+        let paths = before
+            .keys()
+            .chain(after.keys())
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let mut option_changes = Vec::new();
+        for path in paths {
+            let change = match (before.get(path), after.get(path)) {
+                (None, Some(option)) => Some(OptionChange {
+                    path: path.to_string(),
+                    kind: OptionChangeKind::Added,
+                    from_type: None,
+                    to_type: Some(option.type_signature.clone()),
+                }),
+                (Some(option), None) => Some(OptionChange {
+                    path: path.to_string(),
+                    kind: OptionChangeKind::Removed,
+                    from_type: Some(option.type_signature.clone()),
+                    to_type: None,
+                }),
+                (Some(left), Some(right)) if semantic_option(left) != semantic_option(right) => {
+                    Some(OptionChange {
+                        path: path.to_string(),
+                        kind: OptionChangeKind::Changed,
+                        from_type: Some(left.type_signature.clone()),
+                        to_type: Some(right.type_signature.clone()),
+                    })
+                }
+                _ => None,
+            };
+            if let Some(change) = change {
+                option_changes.push(change);
+            }
+        }
+        Ok(DocumentationComparison {
+            package: self.package.name.clone(),
+            from_version: self.package.version.clone(),
+            to_version: other.package.version.clone(),
+            semantic_changed: self.identity.semantic_schema_sha256
+                != other.identity.semantic_schema_sha256,
+            runtime_changed: self.runtime != other.runtime,
+            option_changes,
+        })
+    }
+
     /// Renders complete, escape-free plain text suitable for terminals.
     pub fn render_plain(&self) -> String {
         let mut output = format!(
@@ -968,13 +1095,12 @@ impl PackageDocumentation {
 #[derive(Serialize)]
 struct SemanticProjection<'a> {
     package: &'a str,
-    version: &'a str,
     platform: &'a str,
     options: Vec<SemanticOption<'a>>,
     runtime: &'a RuntimeSurface,
 }
 
-#[derive(Serialize)]
+#[derive(PartialEq, Eq, Serialize)]
 struct SemanticOption<'a> {
     path: &'a [PathSegment],
     option_type: &'a OptionType,
@@ -992,7 +1118,6 @@ impl<'a> From<&'a PackageDocumentation> for SemanticProjection<'a> {
     fn from(document: &'a PackageDocumentation) -> Self {
         Self {
             package: &document.package.name,
-            version: &document.package.version,
             platform: &document.package.platform,
             options: document
                 .options
@@ -1012,6 +1137,21 @@ impl<'a> From<&'a PackageDocumentation> for SemanticProjection<'a> {
                 .collect(),
             runtime: &document.runtime,
         }
+    }
+}
+
+fn semantic_option(option: &OptionDocument) -> SemanticOption<'_> {
+    SemanticOption {
+        path: &option.path,
+        option_type: &option.option_type,
+        type_signature: &option.type_signature,
+        visibility: option.visibility,
+        read_only: option.read_only,
+        deprecated: &option.deprecated,
+        replacement: &option.replacement,
+        owner: &option.owner,
+        contributable: option.contributable,
+        activation: &option.activation,
     }
 }
 
@@ -1767,6 +1907,38 @@ mod tests {
             .computed_semantic_schema_sha256()
             .expect("digest after");
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn comparison_ignores_version_and_prose_but_reports_option_semantics() {
+        let before = fixture();
+        let mut prose_only = before.clone();
+        prose_only.package.version = "2.0.0".to_string();
+        prose_only.sections[0].title = "New prose".to_string();
+        prose_only.identity.semantic_schema_sha256 = prose_only
+            .computed_semantic_schema_sha256()
+            .expect("semantic digest");
+        assert_eq!(
+            before.identity.semantic_schema_sha256,
+            prose_only.identity.semantic_schema_sha256
+        );
+        let comparison = before.compare(&prose_only).expect("comparison");
+        assert!(!comparison.semantic_changed);
+        assert!(comparison.option_changes.is_empty());
+
+        let mut changed = prose_only.clone();
+        changed.options[0].option_type = OptionType::Unsigned {
+            min: Some(1),
+            max: Some(65_535),
+        };
+        changed.options[0].type_signature = "unsigned integer".to_string();
+        changed.identity.semantic_schema_sha256 = changed
+            .computed_semantic_schema_sha256()
+            .expect("semantic digest");
+        let comparison = before.compare(&changed).expect("comparison");
+        assert!(comparison.semantic_changed);
+        assert_eq!(comparison.option_changes.len(), 1);
+        assert_eq!(comparison.option_changes[0].kind, OptionChangeKind::Changed);
     }
 
     #[test]

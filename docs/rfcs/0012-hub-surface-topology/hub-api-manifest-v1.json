@@ -1485,6 +1485,34 @@
          "service" : "DocumentationService"
       },
       {
+         "method" : "ListPackageOptions",
+         "path" : "aos.hub.v1.DocumentationService/ListPackageOptions",
+         "request" : "ListPackageOptionsRequest",
+         "response" : "ListPackageOptionsResponse",
+         "service" : "DocumentationService"
+      },
+      {
+         "method" : "GetPackageOption",
+         "path" : "aos.hub.v1.DocumentationService/GetPackageOption",
+         "request" : "GetPackageOptionRequest",
+         "response" : "GetPackageOptionResponse",
+         "service" : "DocumentationService"
+      },
+      {
+         "method" : "ComparePackageDocumentation",
+         "path" : "aos.hub.v1.DocumentationService/ComparePackageDocumentation",
+         "request" : "ComparePackageDocumentationRequest",
+         "response" : "ComparePackageDocumentationResponse",
+         "service" : "DocumentationService"
+      },
+      {
+         "method" : "GetDocumentationArtifact",
+         "path" : "aos.hub.v1.DocumentationService/GetDocumentationArtifact",
+         "request" : "GetDocumentationArtifactRequest",
+         "response" : "GetPackageDocumentationResponse",
+         "service" : "DocumentationService"
+      },
+      {
          "method" : "GetPackageDocumentationSchema",
          "path" : "aos.hub.v1.DocumentationService/GetPackageDocumentationSchema",
          "request" : "GetPackageDocumentationSchemaRequest",
@@ -2507,7 +2535,7 @@
    },
    "protobuf_package" : "aos.hub.v1",
    "protobuf_source" : "crates/aos-proto/src/proto/aos/hub/v1/hub.proto",
-   "rpc_count" : 330,
+   "rpc_count" : 334,
    "services" : [
       "RegistryService",
       "OrganizationService",

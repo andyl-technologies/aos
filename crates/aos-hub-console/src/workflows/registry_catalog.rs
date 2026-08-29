@@ -168,6 +168,10 @@ fn DocumentationBrowser(client: ApiClient, registry_id: String) -> impl IntoView
     let results = RwSignal::new(Vec::<aos_proto_types::PackageDocumentationSearchResult>::new());
     let selected = RwSignal::new(None::<aos_doc_model::PackageDocumentation>);
     let selected_identity = RwSignal::new(None::<aos_proto_types::PackageDocumentationIdentity>);
+    let selected_options = RwSignal::new(Vec::<aos_proto_types::PackageOptionView>::new());
+    let selected_option = RwSignal::new(None::<aos_proto_types::PackageOptionView>);
+    let compare_to = RwSignal::new(String::new());
+    let comparison = RwSignal::new(None::<aos_doc_model::DocumentationComparison>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
 
@@ -215,6 +219,39 @@ fn DocumentationBrowser(client: ApiClient, registry_id: String) -> impl IntoView
         });
     };
 
+    let compare_client = client.clone();
+    let compare_registry = registry_id.clone();
+    let on_compare = move |event: SubmitEvent| {
+        event.prevent_default();
+        let Some(identity) = selected_identity.get_untracked() else {
+            error.set(Some(
+                "Select package documentation before comparing versions".to_string(),
+            ));
+            return;
+        };
+        let destination = compare_to.get_untracked().trim().to_string();
+        if destination.is_empty() {
+            error.set(Some("Destination version is required".to_string()));
+            return;
+        }
+        let client = compare_client.clone();
+        let registry = compare_registry.clone();
+        error.set(None);
+        comparison.set(None);
+        busy.set(true);
+        spawn_local(async move {
+            match compare_documentation(&client, registry, &identity, destination).await {
+                Ok(value) => comparison.set(Some(value)),
+                Err(detail) => error.set(Some(detail)),
+            }
+            busy.set(false);
+        });
+    };
+    let result_client = client.clone();
+    let result_registry = registry_id.clone();
+    let option_client_root = client;
+    let option_registry_root = registry_id;
+
     view! {
         <section class="panel resource-panel documentation-browser">
             <div class="section-heading">
@@ -250,8 +287,8 @@ fn DocumentationBrowser(client: ApiClient, registry_id: String) -> impl IntoView
                 (!entries.is_empty()).then(|| view! {
                     <div class="documentation-results" aria-label="Documentation search results">
                         {entries.into_iter().map(|entry| {
-                            let load_client = client.clone();
-                            let load_registry = registry_id.clone();
+                            let load_client = result_client.clone();
+                            let load_registry = result_registry.clone();
                             let package = entry.package.clone();
                             let version = entry.version.clone();
                             let platform = entry.platform.clone();
@@ -266,9 +303,12 @@ fn DocumentationBrowser(client: ApiClient, registry_id: String) -> impl IntoView
                                     busy.set(true);
                                     spawn_local(async move {
                                         match load_documentation(&client, registry, package, version, platform).await {
-                                            Ok((document, identity)) => {
+                                            Ok((document, identity, options)) => {
                                                 selected.set(Some(document));
                                                 selected_identity.set(identity);
+                                                selected_options.set(options);
+                                                selected_option.set(None);
+                                                comparison.set(None);
                                             }
                                             Err(detail) => error.set(Some(detail)),
                                         }
@@ -298,9 +338,61 @@ fn DocumentationBrowser(client: ApiClient, registry_id: String) -> impl IntoView
                             </div>
                         })}
                         <div class="documentation-content" inner_html=html></div>
+                        <section class="subworkflow">
+                            <h3>"Option explorer"</h3>
+                            <div class="documentation-results">
+                                {selected_options.get().into_iter().map(|option| {
+                                    let option_client = option_client_root.clone();
+                                    let option_registry = option_registry_root.clone();
+                                    let identity = option.identity.clone();
+                                    let path = option.path.clone();
+                                    view! {
+                                        <button class="documentation-result" type="button" on:click=move |_| {
+                                            let Some(identity) = identity.clone() else { return; };
+                                            let client = option_client.clone();
+                                            let registry = option_registry.clone();
+                                            let path = path.clone();
+                                            spawn_local(async move {
+                                                match load_package_option(&client, registry, identity, path).await {
+                                                    Ok(option) => selected_option.set(Some(option)),
+                                                    Err(detail) => error.set(Some(detail)),
+                                                }
+                                            });
+                                        }>
+                                            <strong>{option.display_path}</strong>
+                                            <span>{option.r#type}</span>
+                                            <code>{format!("owner {} · contributable {}", option.owner_package, option.contributable)}</code>
+                                        </button>
+                                    }
+                                }).collect_view()}
+                            </div>
+                            {move || selected_option.get().map(|option| view! {
+                                <article class="revision-card">
+                                    <h4>{option.display_path}</h4>
+                                    <div class="resource-identity">
+                                        <div><span>"Type"</span><strong>{option.r#type}</strong></div>
+                                        <div><span>"Owner"</span><strong>{format!("{} / {}", option.owner_package, option.owner_root)}</strong></div>
+                                    </div>
+                                </article>
+                            })}
+                        </section>
                     </article>
                 }
             })}
+            <section class="subworkflow">
+                <h3>"Compare semantic versions"</h3>
+                <form class="editor-form" on:submit=on_compare>
+                    <label><span>"Destination version"</span><input placeholder="1.31.0" prop:value=move || compare_to.get() on:input=move |event| compare_to.set(event_target_value(&event))/></label>
+                    <button class="secondary-button" type="submit" disabled=move || busy.get() || selected_identity.get().is_none()>"Compare"</button>
+                </form>
+                {move || comparison.get().map(|comparison| view! {
+                    <article class="revision-card">
+                        <div class="compact-list-row"><strong>{format!("{} → {}", comparison.from_version, comparison.to_version)}</strong><StatusBadge state=if comparison.semantic_changed { "semantic change" } else { "prose-only" }.to_string() positive=!comparison.semantic_changed/></div>
+                        <p>{format!("{} option changes · runtime changed: {}", comparison.option_changes.len(), comparison.runtime_changed)}</p>
+                        <div class="compact-list">{comparison.option_changes.into_iter().map(|change| view! { <div class="compact-list-row"><code>{change.path}</code><span>{format!("{:?}", change.kind)}</span></div> }).collect_view()}</div>
+                    </article>
+                })}
+            </section>
         </section>
     }
 }
@@ -315,6 +407,7 @@ async fn load_documentation(
     (
         aos_doc_model::PackageDocumentation,
         Option<aos_proto_types::PackageDocumentationIdentity>,
+        Vec<aos_proto_types::PackageOptionView>,
     ),
     String,
 > {
@@ -322,7 +415,7 @@ async fn load_documentation(
         .call::<_, aos_proto_types::GetPackageDocumentationResponse>(
             aos_proto_types::DOCUMENTATION_SERVICE_GET_PACKAGE_DOCUMENTATION_PATH,
             &aos_proto_types::GetPackageDocumentationRequest {
-                registry,
+                registry: registry.clone(),
                 package,
                 version,
                 platform,
@@ -333,7 +426,90 @@ async fn load_documentation(
     let document =
         aos_doc_model::PackageDocumentation::from_canonical_json(&response.canonical_json)
             .map_err(|failure| format!("Hub returned invalid package documentation: {failure}"))?;
-    Ok((document, response.identity))
+    let identity = response.identity;
+    let identity_ref = identity
+        .as_ref()
+        .ok_or_else(|| "Hub documentation omitted identity".to_string())?;
+    let artifact = client
+        .call::<_, aos_proto_types::GetPackageDocumentationResponse>(
+            aos_proto_types::DOCUMENTATION_SERVICE_GET_DOCUMENTATION_ARTIFACT_PATH,
+            &aos_proto_types::GetDocumentationArtifactRequest {
+                registry: registry.clone(),
+                document_sha256: identity_ref.document_sha256.clone(),
+            },
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
+    if artifact.canonical_json != response.canonical_json || artifact.etag != response.etag {
+        return Err(
+            "immutable documentation artifact disagrees with package selection".to_string(),
+        );
+    }
+    let options = client
+        .call::<_, aos_proto_types::ListPackageOptionsResponse>(
+            aos_proto_types::DOCUMENTATION_SERVICE_LIST_PACKAGE_OPTIONS_PATH,
+            &aos_proto_types::ListPackageOptionsRequest {
+                registry,
+                package: identity_ref.package.clone(),
+                version: identity_ref.version.clone(),
+                platform: identity_ref.platform.clone(),
+                prefix: String::new(),
+                owner: String::new(),
+                r#type: String::new(),
+                contributable: None,
+                page_size: 100,
+                page_token: String::new(),
+            },
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
+    Ok((document, identity, options.options))
+}
+
+async fn load_package_option(
+    client: &ApiClient,
+    registry: String,
+    identity: aos_proto_types::PackageDocumentationIdentity,
+    path: Vec<aos_proto_types::DocumentationPathSegment>,
+) -> Result<aos_proto_types::PackageOptionView, String> {
+    client
+        .call::<_, aos_proto_types::GetPackageOptionResponse>(
+            aos_proto_types::DOCUMENTATION_SERVICE_GET_PACKAGE_OPTION_PATH,
+            &aos_proto_types::GetPackageOptionRequest {
+                registry,
+                package: identity.package,
+                version: identity.version,
+                platform: identity.platform,
+                path,
+            },
+        )
+        .await
+        .map_err(|failure| failure.to_string())?
+        .option
+        .ok_or_else(|| "Hub package option response omitted its option".to_string())
+}
+
+async fn compare_documentation(
+    client: &ApiClient,
+    registry: String,
+    identity: &aos_proto_types::PackageDocumentationIdentity,
+    to_version: String,
+) -> Result<aos_doc_model::DocumentationComparison, String> {
+    let response = client
+        .call::<_, aos_proto_types::ComparePackageDocumentationResponse>(
+            aos_proto_types::DOCUMENTATION_SERVICE_COMPARE_PACKAGE_DOCUMENTATION_PATH,
+            &aos_proto_types::ComparePackageDocumentationRequest {
+                registry,
+                package: identity.package.clone(),
+                from_version: identity.version.clone(),
+                to_version,
+                platform: identity.platform.clone(),
+            },
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
+    serde_json::from_slice(&response.canonical_comparison_json)
+        .map_err(|failure| format!("Hub returned invalid documentation comparison: {failure}"))
 }
 
 #[component]

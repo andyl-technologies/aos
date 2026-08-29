@@ -323,6 +323,10 @@ service PackageService {
 service DocumentationService {
   rpc GetPackageDocumentation(GetPackageDocumentationRequest) returns (GetPackageDocumentationResponse);
   rpc SearchPackageDocumentation(SearchPackageDocumentationRequest) returns (SearchPackageDocumentationResponse);
+  rpc ListPackageOptions(ListPackageOptionsRequest) returns (ListPackageOptionsResponse);
+  rpc GetPackageOption(GetPackageOptionRequest) returns (GetPackageOptionResponse);
+  rpc ComparePackageDocumentation(ComparePackageDocumentationRequest) returns (ComparePackageDocumentationResponse);
+  rpc GetDocumentationArtifact(GetDocumentationArtifactRequest) returns (GetPackageDocumentationResponse);
   rpc GetPackageDocumentationSchema(GetPackageDocumentationSchemaRequest) returns (GetPackageDocumentationSchemaResponse);
 }
 
@@ -503,6 +507,71 @@ message PackageDocumentationSearchResult {
 message SearchPackageDocumentationResponse {
   repeated PackageDocumentationSearchResult results = 1;
   string next_page_token = 2;
+}
+
+message DocumentationPathSegment {
+  oneof segment {
+    string literal = 1;
+    string wildcard = 2;
+  }
+}
+
+message ListPackageOptionsRequest {
+  string registry = 1;
+  string package = 2;
+  string version = 3;
+  string platform = 4;
+  string prefix = 5;
+  string owner = 6;
+  string type = 7;
+  optional bool contributable = 8;
+  uint32 page_size = 9;
+  string page_token = 10;
+}
+
+message PackageOptionView {
+  PackageDocumentationIdentity identity = 1;
+  repeated DocumentationPathSegment path = 2;
+  string display_path = 3;
+  string type = 4;
+  string owner_package = 5;
+  string owner_root = 6;
+  bool contributable = 7;
+  bytes canonical_option_json = 8;
+}
+
+message ListPackageOptionsResponse {
+  repeated PackageOptionView options = 1;
+  string next_page_token = 2;
+}
+
+message GetPackageOptionRequest {
+  string registry = 1;
+  string package = 2;
+  string version = 3;
+  string platform = 4;
+  repeated DocumentationPathSegment path = 5;
+}
+
+message GetPackageOptionResponse { PackageOptionView option = 1; }
+
+message ComparePackageDocumentationRequest {
+  string registry = 1;
+  string package = 2;
+  string from_version = 3;
+  string to_version = 4;
+  string platform = 5;
+}
+
+message ComparePackageDocumentationResponse {
+  PackageDocumentationIdentity from = 1;
+  PackageDocumentationIdentity to = 2;
+  bytes canonical_comparison_json = 3;
+}
+
+message GetDocumentationArtifactRequest {
+  string registry = 1;
+  string document_sha256 = 2;
 }
 
 message GetPackageDocumentationSchemaRequest {}

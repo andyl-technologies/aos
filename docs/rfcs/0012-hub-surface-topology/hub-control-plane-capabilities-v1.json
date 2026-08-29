@@ -231,7 +231,7 @@
       "audience": "public",
       "cli_families": ["registry docs", "package docs"],
       "web_workflows": ["public-package-documentation", "registry-package-documentation"],
-      "methods": ["GetPackageDocumentation", "SearchPackageDocumentation", "GetPackageDocumentationSchema"]
+      "methods": ["GetPackageDocumentation", "SearchPackageDocumentation", "ListPackageOptions", "GetPackageOption", "ComparePackageDocumentation", "GetDocumentationArtifact", "GetPackageDocumentationSchema"]
     },
     {
       "service": "ChannelService",

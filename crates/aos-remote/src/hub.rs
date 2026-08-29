@@ -584,6 +584,14 @@ enum HubTopologyMethod {
     GetPackageDocumentation,
     /// Selects indexed package-documentation search.
     SearchPackageDocumentation,
+    /// Selects a filtered page of structured package options.
+    ListPackageOptions,
+    /// Selects one exact structured package option.
+    GetPackageOption,
+    /// Selects a semantic comparison between package versions.
+    ComparePackageDocumentation,
+    /// Selects an immutable documentation object by digest.
+    GetDocumentationArtifact,
     /// Selects the closed package-documentation JSON Schema.
     GetPackageDocumentationSchema,
     /// Selects the normalized `ListChannels` Connect operation.
@@ -1071,6 +1079,12 @@ impl HubTopologyMethod {
             SearchPackageDocumentation => {
                 "aos.hub.v1.DocumentationService/SearchPackageDocumentation"
             }
+            ListPackageOptions => "aos.hub.v1.DocumentationService/ListPackageOptions",
+            GetPackageOption => "aos.hub.v1.DocumentationService/GetPackageOption",
+            ComparePackageDocumentation => {
+                "aos.hub.v1.DocumentationService/ComparePackageDocumentation"
+            }
+            GetDocumentationArtifact => "aos.hub.v1.DocumentationService/GetDocumentationArtifact",
             GetPackageDocumentationSchema => {
                 "aos.hub.v1.DocumentationService/GetPackageDocumentationSchema"
             }
@@ -1469,6 +1483,10 @@ pub mod hub_rpc {
         GetPackage: GetPackageRequest => GetPackageResponse;
         GetPackageDocumentation: GetPackageDocumentationRequest => GetPackageDocumentationResponse;
         SearchPackageDocumentation: SearchPackageDocumentationRequest => SearchPackageDocumentationResponse;
+        ListPackageOptions: ListPackageOptionsRequest => ListPackageOptionsResponse;
+        GetPackageOption: GetPackageOptionRequest => GetPackageOptionResponse;
+        ComparePackageDocumentation: ComparePackageDocumentationRequest => ComparePackageDocumentationResponse;
+        GetDocumentationArtifact: GetDocumentationArtifactRequest => GetPackageDocumentationResponse;
         GetPackageDocumentationSchema: GetPackageDocumentationSchemaRequest => GetPackageDocumentationSchemaResponse;
         ListChannels: ListChannelsRequest => ListChannelsResponse;
         GetChannel: GetChannelRequest => GetChannelResponse;

@@ -13685,6 +13685,49 @@ impl Database {
         }))
     }
 
+    /// Resolves one immutable document digest inside a registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed indexed metadata.
+    pub async fn package_documentation_locator_by_digest(
+        &self,
+        registry_id: i64,
+        document_sha256: &str,
+    ) -> Result<Option<PackageDocumentationLocator>> {
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT indexed_commit, package_name, package_version, platform,
+                        format, store_path, nar_hash, nar_size, document_size,
+                        semantic_schema_sha256
+                 FROM package_documentation
+                 WHERE registry_id = ?1 AND document_sha256 = ?2
+                 ORDER BY package_name, package_version, platform LIMIT 1",
+                &vals![registry_id, document_sha256],
+            )
+            .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        Ok(Some(PackageDocumentationLocator {
+            indexed_commit: row.get(0)?,
+            package_name: row.get(1)?,
+            package_version: row.get(2)?,
+            platform: row.get(3)?,
+            artifact: aos_registry_surface::manifest::DocumentationArtifactMeta {
+                format: row.get(4)?,
+                store_path: row.get(5)?,
+                nar_hash: row.get(6)?,
+                nar_size: row.get(7)?,
+                document_sha256: document_sha256.to_string(),
+                document_size: row.get(8)?,
+                semantic_schema_sha256: row.get(9)?,
+                references: Vec::new(),
+            },
+        }))
+    }
+
     /// Searches deterministic documentation projections within one registry.
     ///
     /// Search rows are disposable acceleration data. Callers load the exact
