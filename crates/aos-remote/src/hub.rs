@@ -580,6 +580,12 @@ enum HubTopologyMethod {
     ListPackages,
     /// Selects the normalized `GetPackage` Connect operation.
     GetPackage,
+    /// Selects exact canonical package documentation.
+    GetPackageDocumentation,
+    /// Selects indexed package-documentation search.
+    SearchPackageDocumentation,
+    /// Selects the closed package-documentation JSON Schema.
+    GetPackageDocumentationSchema,
     /// Selects the normalized `ListChannels` Connect operation.
     ListChannels,
     /// Selects the normalized `GetChannel` Connect operation.
@@ -1061,6 +1067,13 @@ impl HubTopologyMethod {
             GetChangeset => "aos.hub.v1.RegistryConfigurationService/GetChangeset",
             ListPackages => "aos.hub.v1.PackageService/ListPackages",
             GetPackage => "aos.hub.v1.PackageService/GetPackage",
+            GetPackageDocumentation => "aos.hub.v1.DocumentationService/GetPackageDocumentation",
+            SearchPackageDocumentation => {
+                "aos.hub.v1.DocumentationService/SearchPackageDocumentation"
+            }
+            GetPackageDocumentationSchema => {
+                "aos.hub.v1.DocumentationService/GetPackageDocumentationSchema"
+            }
             ListChannels => "aos.hub.v1.ChannelService/ListChannels",
             GetChannel => "aos.hub.v1.ChannelService/GetChannel",
             ListImages => "aos.hub.v1.ImageService/ListImages",
@@ -1454,6 +1467,9 @@ pub mod hub_rpc {
         GetChangeset: GetChangesetRequest => GetChangesetResponse;
         ListPackages: ListPackagesRequest => ListPackagesResponse;
         GetPackage: GetPackageRequest => GetPackageResponse;
+        GetPackageDocumentation: GetPackageDocumentationRequest => GetPackageDocumentationResponse;
+        SearchPackageDocumentation: SearchPackageDocumentationRequest => SearchPackageDocumentationResponse;
+        GetPackageDocumentationSchema: GetPackageDocumentationSchemaRequest => GetPackageDocumentationSchemaResponse;
         ListChannels: ListChannelsRequest => ListChannelsResponse;
         GetChannel: GetChannelRequest => GetChannelResponse;
         ListImages: ListImagesRequest => ListImagesResponse;
