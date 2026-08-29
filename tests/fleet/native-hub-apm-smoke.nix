@@ -592,7 +592,7 @@ in {
           {APR} release 1.0.0 --registry production \\
             --store-path {TOOL_V1} --name hub-tool \\
             --description 'Native Hub production fixture' --license MIT \\
-            --maintainer publisher@example.test --key "$key" \\
+            --maintainer publisher@example.test --key-id initial \\
             --channel stable --init-channel --cache-url {REGISTRY} \\
             --upload-url file:///var/tmp/aos-publication-v1
           {APR} verify --registry production
@@ -859,18 +859,17 @@ in {
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
           export NIX_REMOTE=""
           export NIX_CONF_DIR="$HOME/.config/nix"
-          key="$HOME/.config/apm/keys/production-initial.key"
           rm -rf /var/tmp/aos-publication-v2
           mkdir -p /var/tmp/aos-publication-v2
           {APR} publish {HELPER_V2} --registry production \\
             --name hub-helper --version 2.0.0 --previous 1.0.0 \\
             --description 'Native Hub helper fixture update' --license MIT \\
-            --maintainer publisher@example.test --key "$key"
+            --maintainer publisher@example.test --key-id initial
           {APR} release 2.0.0 --registry production \\
             --store-path {TOOL_V2} --name hub-tool --version 2.0.0 \\
             --previous 1.0.0 \\
             --description 'Native Hub production fixture update' --license MIT \\
-            --maintainer publisher@example.test --key "$key" \\
+            --maintainer publisher@example.test --key-id initial \\
             --channel stable --count 256 --cache-url {REGISTRY} \\
             --upload-url file:///var/tmp/aos-publication-v2
           {APR} verify --registry production
@@ -954,7 +953,6 @@ in {
               "$available_mib" >&2
             exit 1
           fi
-          key="$HOME/.config/apm/keys/production-initial.key"
           rm -rf /var/tmp/aos-publication-system
           mkdir -p /var/tmp/aos-publication-system
           set -- {UPGRADE_UKI}/*.efi
@@ -968,7 +966,7 @@ in {
             --image-info {UPGRADE_IMAGE_INFO} --image-format raw \\
             --image-uki "$candidate_uki" \\
             --description 'AOS native Hub system upgrade fixture' --license MIT \\
-            --maintainer publisher@example.test --key "$key" \\
+            --maintainer publisher@example.test --key-id initial \\
             --channel stable --count 256 --cache-url {REGISTRY} \\
             --upload-url file:///var/tmp/aos-publication-system
           {APR} verify --registry production
