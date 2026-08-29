@@ -40,8 +40,8 @@ impl LiveFingerprintDigestWorker {
                     let Ok(work) = receiver.recv() else {
                         break;
                     };
-                    drop(idle);
-                    let _operation = quiescence.enter(WORKER_FINGERPRINT);
+                    let pending = idle.received();
+                    let _operation = pending.enter();
                     let (captured, completion) = match work {
                         LiveFingerprintDigestWork::Publish(captured) => (captured, None),
                         LiveFingerprintDigestWork::PublishAndAcknowledge {

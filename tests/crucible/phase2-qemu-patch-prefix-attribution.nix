@@ -631,6 +631,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0140-crucible-account-hot-fork-worker-local-state.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

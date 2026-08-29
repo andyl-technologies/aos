@@ -2270,6 +2270,22 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   acknowledge readiness bits 6 or 7.
 - **Risk:** F.
 
+### crucible-hot-fork-worker-local-state — account dequeued worker state
+
+- **Patch:** `0140-crucible-account-hot-fork-worker-local-state.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-5].
+- **Mechanism:** the version-5 plugin barrier distinguishes an idle parked
+  worker from a parked worker retaining one dequeued item in thread-local
+  state. Pending workers remain parked, their bits are a subset of the parked
+  mask, and subsystem quiescence requires the pending mask to be empty.
+- **Micro-test:** a held worker dequeues one item and remains observably pending
+  until release; strict QMP fixtures reject pending workers outside the parked
+  set and false quiescence while any pending bit remains set.
+- **Inertness:** the accounting path is reachable only while the existing
+  authorized plugin barrier is held. It does not define child disposition,
+  clone local state, reconstruct workers, or acknowledge proof bit 6.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

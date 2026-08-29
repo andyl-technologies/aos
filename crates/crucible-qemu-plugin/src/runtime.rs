@@ -791,8 +791,8 @@ fn run_control_reader(
 ) -> bool {
     let idle = workers.idle(WORKER_RUN_CONTROL);
     let trigger = read_run_control_trigger(control);
-    drop(idle);
-    let _operation = workers.enter(WORKER_RUN_CONTROL);
+    let pending = idle.received();
+    let _operation = pending.enter();
     // A send failure means the sole teardown worker already selected another
     // concurrently delivered proof and returned. No second shutdown may run.
     teardown_sender.send(trigger).is_ok()
@@ -815,8 +815,8 @@ fn run_teardown_worker(
             std::process::abort();
         }
     };
-    drop(idle);
-    let _operation = workers.enter(WORKER_TEARDOWN);
+    let pending = idle.received();
+    let _operation = pending.enter();
     complete_live_teardown(trigger, teardown_handle, request_shutdown);
 }
 
@@ -1114,6 +1114,7 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
             ring_consumers_in_flight: rings.consumers_in_flight(),
             worker_mask: workers.worker_mask,
             parked_worker_mask: workers.parked_mask,
+            pending_worker_mask: workers.pending_mask,
             worker_operations_in_flight: workers.operations_in_flight,
         });
     }

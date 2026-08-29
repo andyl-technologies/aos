@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "be66b7140290b0cef1619b49d7d8bfdeac7f1fab71a91722367704fa9078ac2d";
+  patchBranchBundleSha256 = "77f2bdeb8c90e77554130f71cd6a34481dbc674a629e7b8bd4711f5379a365f3";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "74e51cfb9b23e70bae439e6d0b9f1e1644c4becf";
+  patchBranchHeadCommit = "be5f0c3f9d9c50d7e13ba57fb8a7b80474368d09";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1325,6 +1325,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-8,HFORK-9";
       capability = "QEMU duplicates and authenticates one bounded standard-QMP getfd entry by name, device, inode, length, regular-file type, and shrink seal, then retains it independently for future child remapping while explicitly keeping readiness bits 6 and 7 clear";
+    }
+    {
+      file = "0140-crucible-account-hot-fork-worker-local-state.patch";
+      branchSubject = "crucible: account hot-fork worker local state";
+      branchCommit = "be5f0c3f9d9c50d7e13ba57fb8a7b80474368d09";
+      branchTree = "65d2ea71b225231d5962a8c0129478b009bfc710";
+      catalogName = "crucible-hot-fork-worker-local-state";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "the version-5 plugin barrier distinguishes an idle parked worker from a parked worker retaining one dequeued item in thread-local state, requires pending workers to remain parked, and keeps quiescence false until every local item is either discarded or admitted without acknowledging proof bit 6";
     }
   ];
   catalogOnlyCapabilities = [

@@ -1,0 +1,131 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 27faf9782..a99d86d06 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1228,7 +1228,7 @@ QEMU_PLUGIN_API
+ int qemu_plugin_crucible_register_resource_manifest(
+     const struct qemu_plugin_crucible_resource_manifest *manifest);
+ 
+-#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_STATUS_VERSION 4
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_STATUS_VERSION 5
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD 1
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY 2
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_RELEASE 3
+@@ -1250,6 +1250,7 @@ struct qemu_plugin_crucible_hot_fork_barrier_status {
+     uint64_t ring_consumers_in_flight;
+     uint64_t worker_mask;
+     uint64_t parked_worker_mask;
++    uint64_t pending_worker_mask;
+     uint64_t worker_operations_in_flight;
+ };
+ 
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 2d7c40571..e05b0af95 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -180,6 +180,7 @@ crucible_hot_fork_plugin_barrier(uint32_t operation, Error **errp)
+         inventory.status.ring_consumers_in_flight;
+     report->worker_mask = inventory.status.worker_mask;
+     report->parked_worker_mask = inventory.status.parked_worker_mask;
++    report->pending_worker_mask = inventory.status.pending_worker_mask;
+     report->worker_operations_in_flight =
+         inventory.status.worker_operations_in_flight;
+     report->quiescent = report->registered && report->manifest_consistent &&
+@@ -189,6 +190,7 @@ crucible_hot_fork_plugin_barrier(uint32_t operation, Error **errp)
+         report->ring_producers_in_flight == 0 &&
+         report->ring_consumers_in_flight == 0 &&
+         report->parked_worker_mask == report->worker_mask &&
++        report->pending_worker_mask == 0 &&
+         report->worker_operations_in_flight == 0;
+     return report;
+ }
+@@ -944,7 +946,7 @@ crucible_hot_fork_template_report(
+         acknowledged |= CRUCIBLE_HOT_FORK_PROOF_BLOCK_SNAPSHOT;
+     }
+ 
+-    report->schema_version = 8;
++    report->schema_version = 9;
+     report->generation = crucible_hot_fork_template_generation;
+     report->outcome = outcome;
+     report->transaction_active = crucible_hot_fork_template_active;
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+index edfa71344..5c750ae11 100644
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -287,6 +287,7 @@ int qemu_plugin_crucible_hot_fork_barrier(
+     uint64_t previous_ring_consumers_in_flight;
+     uint64_t previous_worker_mask;
+     uint64_t previous_parked_worker_mask;
++    uint64_t previous_pending_worker_mask;
+     uint64_t previous_worker_operations_in_flight;
+     int result;
+ 
+@@ -327,6 +328,7 @@ int qemu_plugin_crucible_hot_fork_barrier(
+         (status.worker_mask & QEMU_PLUGIN_CRUCIBLE_WORKER_REQUIRED) !=
+             QEMU_PLUGIN_CRUCIBLE_WORKER_REQUIRED ||
+         (status.parked_worker_mask & ~status.worker_mask) != 0 ||
++        (status.pending_worker_mask & ~status.parked_worker_mask) != 0 ||
+         ctpop64(status.parked_worker_mask) +
+             status.worker_operations_in_flight > ctpop64(status.worker_mask) ||
+         (((status.flags &
+@@ -364,6 +366,8 @@ int qemu_plugin_crucible_hot_fork_barrier(
+         qemu_plugin_crucible_barrier_inventory.status.worker_mask;
+     previous_parked_worker_mask =
+         qemu_plugin_crucible_barrier_inventory.status.parked_worker_mask;
++    previous_pending_worker_mask =
++        qemu_plugin_crucible_barrier_inventory.status.pending_worker_mask;
+     previous_worker_operations_in_flight =
+         qemu_plugin_crucible_barrier_inventory.status
+             .worker_operations_in_flight;
+@@ -378,6 +382,7 @@ int qemu_plugin_crucible_hot_fork_barrier(
+             status.ring_consumers_in_flight ||
+         previous_worker_mask != status.worker_mask ||
+         previous_parked_worker_mask != status.parked_worker_mask ||
++        previous_pending_worker_mask != status.pending_worker_mask ||
+         previous_worker_operations_in_flight !=
+             status.worker_operations_in_flight) {
+         qemu_plugin_crucible_barrier_inventory.generation++;
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 90da18d46..7ebf66361 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -988,9 +988,10 @@
+ # mask, every producer and consumer for the validated shared-memory ring set,
+ # and every sealed worker class is parked. It does not clone queued ring/worker
+ # bytes, reconstruct child workers, or acknowledge hot-fork readiness proof
+-# bit 6.
++# bit 6. Version 5 distinguishes an idle parked worker from a parked worker
++# retaining one dequeued item in thread-local state.
+ #
+-# @schema-version: barrier contract version, currently 4
++# @schema-version: barrier contract version, currently 5
+ #
+ # @generation: process-local barrier registration/hold generation
+ #
+@@ -1018,6 +1019,9 @@
+ #
+ # @parked-worker-mask: worker classes parked at an operation boundary
+ #
++# @pending-worker-mask: parked worker classes retaining one dequeued item in
++#     thread-local state
++#
+ # @worker-operations-in-flight: worker operations admitted before the hold
+ #                               that have not yet returned
+ #
+@@ -1039,6 +1043,7 @@
+             'ring-consumers-in-flight': 'uint64',
+             'worker-mask': 'uint64',
+             'parked-worker-mask': 'uint64',
++            'pending-worker-mask': 'uint64',
+             'worker-operations-in-flight': 'uint64',
+             'quiescent': 'bool' } }
+ 
+@@ -1313,7 +1318,7 @@
+ # proof bit 5. Other unresolved proof classes still make a drained transaction
+ # roll back as @blocked.
+ #
+-# @schema-version: transaction contract version, currently 8
++# @schema-version: transaction contract version, currently 9
+ #
+ # @generation: positive process-local transaction generation after the first
+ #     successful prepare, or zero before any transaction

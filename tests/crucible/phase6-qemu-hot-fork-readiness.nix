@@ -909,7 +909,7 @@ in
              select(has("in-flight"))] as $reports |
             ($reports | length) == 2 and $reports[0] == $reports[1] and
             $reports[0] == {
-              "schema-version": 4,
+              "schema-version": 5,
               "generation": 0,
               "registered": false,
               "manifest-consistent": false,
@@ -922,6 +922,7 @@ in
               "ring-consumers-in-flight": 0,
               "worker-mask": 0,
               "parked-worker-mask": 0,
+              "pending-worker-mask": 0,
               "worker-operations-in-flight": 0,
               "quiescent": false
             }
@@ -1110,7 +1111,7 @@ in
               "schema-version",
               "transaction-active"
             ] and
-            $report."schema-version" == 8 and
+            $report."schema-version" == 9 and
             $report.generation == 0 and
             $report.outcome == "idle" and
             $report."transaction-active" == false and
@@ -1118,7 +1119,7 @@ in
             $report."acknowledged-proofs" == 3 and
             $report."missing-proofs" == 508 and
             $report."plugin-barrier" == {
-              "schema-version": 4,
+              "schema-version": 5,
               "generation": 0,
               "registered": false,
               "manifest-consistent": false,
@@ -1131,6 +1132,7 @@ in
               "ring-consumers-in-flight": 0,
               "worker-mask": 0,
               "parked-worker-mask": 0,
+              "pending-worker-mask": 0,
               "worker-operations-in-flight": 0,
               "quiescent": false
             } and
@@ -1403,7 +1405,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0139-crucible-retain-hot-fork-private-rings.patch
+          patch=0140-crucible-account-hot-fork-worker-local-state.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -1453,12 +1455,13 @@ in
           plugin_resource_inventory_schema_version=2
           plugin_resource_inventory_stable=true
           plugin_resource_inventory_unregistered_shape=true
-          plugin_barrier_schema_version=4
+          plugin_barrier_schema_version=5
           plugin_barrier_stable=true
           plugin_barrier_unregistered_shape=true
           plugin_barrier_release_unregistered_rejected=true
           plugin_worker_mask_bound=true
           plugin_worker_parking_bound=true
+          plugin_worker_pending_local_bound=true
           plugin_worker_queue_cloning=false
           plugin_ring_consumer_admission_bound=true
           plugin_ring_proof_acknowledged=false
@@ -1470,7 +1473,7 @@ in
           private_ring_two_layer_release=true
           private_ring_disposition_complete=false
           private_ring_readiness_proof_acknowledged=false
-          template_coordinator_schema_version=8
+          template_coordinator_schema_version=9
           template_coordinator_idle_stable=true
           template_coordinator_unregistered_shape=true
           template_prepare_without_exact_boundary_rejected=true

@@ -554,7 +554,7 @@ and `held-graph-mutation-generation` zero and is not quiescent. Waiting writers
 may be nonzero during a released observation immediately after admission
 reopens; they are not inside a graph critical section.
 
-While this barrier is held and quiescent, schema version 8 of the template
+While this barrier is held and quiescent, schema version 9 of the template
 coordinator additionally requires one complete
 `CrucibleHotForkBlockSnapshotBinding` list in increasing `backend-id` order.
 The list MUST name every writable rooted backend exactly once. Backend names
@@ -673,7 +673,7 @@ the out-of-band `crucible-hot-fork-plugin-barrier` command:
 CrucibleHotForkPluginBarrierAction = hold | query | release
 
 CrucibleHotForkPluginBarrierState {
-    schema-version: u32 = 4,
+    schema-version: u32 = 5,
     generation: u64,
     registered: bool,
     manifest-consistent: bool,
@@ -686,6 +686,7 @@ CrucibleHotForkPluginBarrierState {
     ring-consumers-in-flight: u64,
     worker-mask: u64,
     parked-worker-mask: u64,
+    pending-worker-mask: u64,
     worker-operations-in-flight: u64,
     quiescent: bool,
 }
@@ -699,21 +700,28 @@ It then closes admission to one bounded operation for every worker class in
 the sealed `worker-mask`. Callbacks, ring publications, and worker operations
 admitted before their respective holds remain counted in `in-flight`,
 `ring-producers-in-flight`, `ring-consumers-in-flight`, and
-`worker-operations-in-flight`. An idle worker
-sets its bit in `parked-worker-mask`; a worker whose blocking receive returns
-during a hold parks before it may publish, send a teardown trigger, or mutate
-shared state. `query` observes all barriers without changing them. `release`
+`worker-operations-in-flight`. An idle worker sets its bit in
+`parked-worker-mask`. A worker whose blocking receive returns during a hold
+retains that parked bit and sets its bit in `pending-worker-mask` immediately
+after the receive and before the item can be admitted or affect modeled/shared
+state. The bit remains set until the item is discarded or the hold releases
+and the worker atomically becomes active. QEMU therefore observes every item
+retained at this explicit pre-admission boundary, but this accounting does not
+itself define a child-side disposition for that item. `query` observes all
+barriers without changing them. `release`
 reopens ring consumers before producers, then callbacks before it wakes
 workers, and
 MUST NOT reopen callback admission after permanent teardown closure. A
 registered response requires a nonzero `ring-count`, `rings-held` is either
 zero or exactly `ring-count`, `held` equals `rings-held == ring-count`, the
-worker mask equals the sealed manifest, the parked mask is its subset, and the
-sum of parked worker classes plus admitted operations cannot exceed the sealed
-worker count. `quiescent` equals `registered && manifest-consistent && held &&
+worker mask equals the sealed manifest, the parked mask is its subset, the
+pending mask is a subset of the parked mask, and the sum of parked worker
+classes plus admitted operations cannot exceed the sealed worker count.
+`quiescent` equals `registered && manifest-consistent && held &&
 !teardown-closed && in-flight == 0 && rings-held == ring-count &&
 ring-producers-in-flight == 0 && ring-consumers-in-flight == 0 &&
 parked-worker-mask == worker-mask &&
+pending-worker-mask == 0 &&
 worker-operations-in-flight == 0`. The process-local generation is positive
 after registration and advances when any barrier's observable state changes.
 An unregistered response has generation zero and every other field zero or
@@ -856,7 +864,7 @@ races and is sufficient for proof bit 3 while retained and quiescent. It does
 not choose child-side descriptor, context, coroutine, or clock disposition;
 those obligations remain separately represented by proof bits 7 and 8.
 
-The retained `PrepareForkTemplate` checkpoint is the version-8 OOB
+The retained `PrepareForkTemplate` checkpoint is the version-9 OOB
 `crucible-hot-fork-template` coordinator:
 
 ```text
@@ -866,7 +874,7 @@ CrucibleHotForkTemplateOutcome =
     idle | draining | blocked | prepared | aborted
 
 CrucibleHotForkTemplateState {
-    schema-version: u32 = 8,
+    schema-version: u32 = 9,
     generation: u64,
     outcome: CrucibleHotForkTemplateOutcome,
     transaction-active: bool,
