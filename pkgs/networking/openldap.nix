@@ -125,6 +125,17 @@ in
         users = ["openldap"];
         groups = ["openldap"];
       };
+      documentation = {
+        summary = "Typed OpenLDAP suffix, listener, database, root credential, and TLS configuration.";
+        sections = {
+          directory = lib.aosDoc.section "Directory state" [
+            (lib.aosDoc.paragraph "The suffix and root DN define a durable package-owned database. Changing identity fields does not migrate existing directory data automatically.")
+          ];
+          credentials = lib.aosDoc.section "Credentials and TLS" [
+            (lib.aosDoc.paragraph "Root password and TLS key material use opaque references delivered through service credentials; plaintext values are not accepted by the module.")
+          ];
+        };
+      };
     };
 
     phases = [

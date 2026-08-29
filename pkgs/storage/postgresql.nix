@@ -476,6 +476,20 @@ in
         users = [];
         groups = [];
       };
+      documentation = {
+        summary = "Typed PostgreSQL cluster, authentication, replication, resource, and TLS configuration.";
+        sections = {
+          lifecycle = lib.aosDoc.section "Initialization and lifecycle" [
+            (lib.aosDoc.paragraph "The database cluster is initialized once in durable package state. Desired changes conservatively restart the server because not every PostgreSQL parameter is safely reloadable.")
+          ];
+          authentication = lib.aosDoc.section "Authentication and TLS" [
+            (lib.aosDoc.paragraph "Host authentication rules are ordered and typed. Bootstrap, replication, certificate, private-key, and CA values use opaque credential references and never enter generated files.")
+          ];
+          settings = lib.aosDoc.section "Additional settings" [
+            (lib.aosDoc.paragraph "postgresql.settings is reserved for non-secret parameters without a dedicated option. Dedicated or credential-bearing settings cannot be overridden through that map.")
+          ];
+        };
+      };
     };
 
     meta = {

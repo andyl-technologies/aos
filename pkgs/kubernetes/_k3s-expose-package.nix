@@ -247,6 +247,24 @@ in
             ];
           }
         ];
+        documentation = {
+          summary = "Role-aware k3s node configuration, token delivery, networking, and authenticated add-on composition.";
+          sections = {
+            roles = lib.aosDoc.section "Roles and bootstrap" [
+              (lib.aosDoc.paragraph "Select exactly one of k3s-worker, k3s-control-plane, or k3s-combined. Workers require serverUrl; every enabled role receives its cluster token through an opaque systemd credential.")
+              (lib.aosDoc.code "nix" ''
+                {
+                  aos.apm.desiredPackages = ["${pname}"];
+                  k3s.enable = true;
+                  k3s.token.ref = "system-credential:k3s-token";
+                }
+              '')
+            ];
+            composition = lib.aosDoc.section "CNI, CSI, and resources" [
+              (lib.aosDoc.paragraph "Signed integration packages may contribute only the CNI, CSI, and Kubernetes resource subtrees. They cannot enable k3s or change node and cluster credentials.")
+            ];
+          };
+        };
       };
 
       meta = {

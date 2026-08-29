@@ -193,6 +193,17 @@ in
         users = ["krb5-kdc"];
         groups = ["krb5-kdc"];
       };
+      documentation = {
+        summary = "Typed Kerberos realm, KDC, administration, policy, and master-key configuration.";
+        sections = {
+          realm = lib.aosDoc.section "Realm lifecycle" [
+            (lib.aosDoc.paragraph "Choose the realm and KDC endpoints before initialization. The package retains the principal database and applies ticket lifetime and ACL policy declaratively.")
+          ];
+          credentials = lib.aosDoc.section "Master credential" [
+            (lib.aosDoc.paragraph "The KDC master password is an opaque credential reference used only during controlled initialization and service operation.")
+          ];
+        };
+      };
     };
 
     phases = [

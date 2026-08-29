@@ -219,6 +219,17 @@ in
           contributable = [];
         }
       ];
+      documentation = {
+        summary = "Typed native AOS Git registry and binary-cache service configuration.";
+        sections = {
+          services = lib.aosDoc.section "Registry services" [
+            (lib.aosDoc.paragraph "Git smart transport and binary-cache HTTP listeners can be enabled independently. State roots, views, bootstrap sockets, and anonymous-read policy remain explicit typed values.")
+          ];
+          lifecycle = lib.aosDoc.section "Activation" [
+            (lib.aosDoc.paragraph "The generated environment artifacts are validated before activation. Listener and state changes restart only the affected exposed service.")
+          ];
+        };
+      };
     };
 
     meta = {

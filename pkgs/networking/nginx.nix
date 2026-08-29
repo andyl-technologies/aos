@@ -7,6 +7,7 @@
   bash,
   coreutils,
   jq,
+  lib,
   openssl,
   pcre2,
   zlib,
@@ -258,6 +259,27 @@ in
         units = [];
         users = [];
         groups = [];
+      };
+      documentation = {
+        summary = "Typed virtual hosts, upstreams, TLS credentials, validation, and reload behavior.";
+        sections = {
+          quickstart = lib.aosDoc.section "Quick start" [
+            (lib.aosDoc.paragraph "Install nginx, set nginx.enable, and declare at least one virtual host. AOS validates each candidate with nginx -t before activation and reloads a running master in place.")
+            (lib.aosDoc.code "nix" ''
+              {
+                aos.apm.desiredPackages = ["nginx"];
+                nginx.enable = true;
+                nginx.virtualHosts.default.listen = [8080];
+              }
+            '')
+          ];
+          composition = lib.aosDoc.section "Package composition" [
+            (lib.aosDoc.paragraph "Authenticated meta-packages may contribute only named nginx.virtualHosts and nginx.upstreams entries. They cannot enable nginx or replace global policy.")
+          ];
+          credentials = lib.aosDoc.section "TLS credentials" [
+            (lib.aosDoc.paragraph "Certificate and private-key values are opaque references resolved into optional volatile systemd credentials. Secret bytes never enter Nix evaluation, the store, or generated configuration.")
+          ];
+        };
       };
     };
 

@@ -129,6 +129,17 @@ in
         users = [];
         groups = [];
       };
+      documentation = {
+        summary = "Typed conntrackd cache, polling, logging, and state-synchronization configuration.";
+        sections = {
+          modes = lib.aosDoc.section "Operation modes" [
+            (lib.aosDoc.paragraph "Choose a local statistics/cache mode or declare a complete synchronization channel. Buffer, hash, polling, and connection logging controls are validated before reload.")
+          ];
+          lifecycle = lib.aosDoc.section "Runtime lifecycle" [
+            (lib.aosDoc.paragraph "conntrackd reloads a validated configuration in place while its socket and log paths remain systemd-managed.")
+          ];
+        };
+      };
     };
 
     phases = [
