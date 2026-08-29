@@ -1471,6 +1471,27 @@
          "service" : "PackageService"
       },
       {
+         "method" : "GetPackageDocumentation",
+         "path" : "aos.hub.v1.DocumentationService/GetPackageDocumentation",
+         "request" : "GetPackageDocumentationRequest",
+         "response" : "GetPackageDocumentationResponse",
+         "service" : "DocumentationService"
+      },
+      {
+         "method" : "SearchPackageDocumentation",
+         "path" : "aos.hub.v1.DocumentationService/SearchPackageDocumentation",
+         "request" : "SearchPackageDocumentationRequest",
+         "response" : "SearchPackageDocumentationResponse",
+         "service" : "DocumentationService"
+      },
+      {
+         "method" : "GetPackageDocumentationSchema",
+         "path" : "aos.hub.v1.DocumentationService/GetPackageDocumentationSchema",
+         "request" : "GetPackageDocumentationSchemaRequest",
+         "response" : "GetPackageDocumentationSchemaResponse",
+         "service" : "DocumentationService"
+      },
+      {
          "method" : "ListChannels",
          "path" : "aos.hub.v1.ChannelService/ListChannels",
          "request" : "ListChannelsRequest",
@@ -2486,7 +2507,7 @@
    },
    "protobuf_package" : "aos.hub.v1",
    "protobuf_source" : "crates/aos-proto/src/proto/aos/hub/v1/hub.proto",
-   "rpc_count" : 327,
+   "rpc_count" : 330,
    "services" : [
       "RegistryService",
       "OrganizationService",
@@ -2503,6 +2524,7 @@
       "InstanceService",
       "RegistryConfigurationService",
       "PackageService",
+      "DocumentationService",
       "ChannelService",
       "ImageService",
       "PublishService",

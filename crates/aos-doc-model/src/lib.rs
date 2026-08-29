@@ -18,11 +18,18 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+mod nar;
+
+pub use nar::decode_single_file_nar;
+
 /// Canonical schema identifier carried inside every document.
 pub const DOCUMENT_SCHEMA: &str = "aos.package-documentation/v1";
 
 /// Media/format identifier advertised by signed registry metadata.
 pub const DOCUMENT_FORMAT: &str = "aos.package-documentation/v1+json";
+
+/// Closed JSON Schema served to editors and language tooling.
+pub const DOCUMENT_JSON_SCHEMA: &str = include_str!("../schema-v1.json");
 
 /// Maximum canonical document size admitted by version 1.
 pub const MAX_DOCUMENT_BYTES: usize = 4 * 1024 * 1024;
@@ -863,39 +870,58 @@ impl PackageDocumentation {
             "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>",
         );
         escape_html_into(&self.package.name, &mut output);
-        output.push_str(" documentation</title></head><body><main><header><h1>");
-        escape_html_into(&self.package.name, &mut output);
+        output.push_str(" documentation</title></head><body>");
+        self.render_html_fragment_into(&mut output);
+        output.push_str("</body></html>");
+        output
+    }
+
+    /// Renders safe embeddable HTML for Web UIs.
+    ///
+    /// Package-authored content is represented by the closed structured-prose
+    /// model, and every literal is escaped before it reaches the returned
+    /// fragment. The result therefore contains no document wrapper, script,
+    /// style, or untrusted markup.
+    #[must_use]
+    pub fn render_html_fragment(&self) -> String {
+        let mut output = String::new();
+        self.render_html_fragment_into(&mut output);
+        output
+    }
+
+    fn render_html_fragment_into(&self, output: &mut String) {
+        output.push_str("<main class=\"package-documentation\"><header><h1>");
+        escape_html_into(&self.package.name, output);
         output.push_str("</h1><p>");
-        escape_html_into(&self.package.summary, &mut output);
+        escape_html_into(&self.package.summary, output);
         output.push_str("</p><p><code>");
-        escape_html_into(&self.package.version, &mut output);
+        escape_html_into(&self.package.version, output);
         output.push_str(" · ");
-        escape_html_into(&self.package.platform, &mut output);
+        escape_html_into(&self.package.platform, output);
         output.push_str("</code></p></header>");
         for section in &self.sections {
             output.push_str("<section id=\"");
-            escape_html_into(&section.id, &mut output);
+            escape_html_into(&section.id, output);
             output.push_str("\"><h2>");
-            escape_html_into(&section.title, &mut output);
+            escape_html_into(&section.title, output);
             output.push_str("</h2>");
-            render_blocks_html(&section.blocks, &mut output);
+            render_blocks_html(&section.blocks, output);
             output.push_str("</section>");
         }
         if !self.options.is_empty() {
             output.push_str("<section id=\"options\"><h2>Options</h2><dl>");
             for option in &self.options {
                 output.push_str("<dt><code>");
-                escape_html_into(&option.display_path, &mut output);
+                escape_html_into(&option.display_path, output);
                 output.push_str("</code></dt><dd><p><strong>");
-                escape_html_into(&option.type_signature, &mut output);
+                escape_html_into(&option.type_signature, output);
                 output.push_str("</strong></p>");
-                render_blocks_html(&option.description, &mut output);
+                render_blocks_html(&option.description, output);
                 output.push_str("</dd>");
             }
             output.push_str("</dl></section>");
         }
-        output.push_str("</main></body></html>");
-        output
+        output.push_str("</main>");
     }
 
     /// Renders safe roff source for an `apm-<package>(5)` manual page.
@@ -1782,5 +1808,44 @@ mod tests {
                 && row.terms.contains_key("listenport")
                 && row.terms.contains_key("virtualhosts")
         }));
+    }
+
+    #[test]
+    fn checked_json_schema_exposes_the_complete_tooling_contract() {
+        let schema: Value = serde_json::from_str(DOCUMENT_JSON_SCHEMA).expect("valid JSON Schema");
+        assert_eq!(
+            schema
+                .pointer("/properties/schema/const")
+                .and_then(Value::as_str),
+            Some(DOCUMENT_SCHEMA)
+        );
+        assert_eq!(
+            schema
+                .pointer("/$defs/optionType/oneOf")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(17)
+        );
+        for runtime_field in [
+            "units",
+            "listeners",
+            "managed_paths",
+            "config_artifacts",
+            "credentials",
+            "capabilities",
+            "confinement",
+        ] {
+            assert!(
+                schema
+                    .pointer(&format!("/$defs/runtime/properties/{runtime_field}"))
+                    .is_some()
+            );
+        }
+        assert_eq!(
+            schema
+                .pointer("/$defs/runtime/additionalProperties")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
     }
 }

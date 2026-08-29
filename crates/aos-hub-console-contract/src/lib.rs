@@ -688,6 +688,13 @@ pub const REGISTRY_PAGES: &[PageSpec] = &[
         "registry-packages",
     ),
     PageSpec::new(
+        "docs",
+        "Package docs",
+        "Publishing",
+        "documentation",
+        "registry-package-documentation",
+    ),
+    PageSpec::new(
         "mirror",
         "Upstream mirror",
         "Publishing",
@@ -918,6 +925,7 @@ mod tests {
                     "tokens",
                     "images",
                     "packages",
+                    "docs",
                     "mirror",
                     "configuration",
                     "channels",

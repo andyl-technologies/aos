@@ -11236,6 +11236,161 @@ impl RpcService {
         })
     }
 
+    /// `DocumentationService.GetPackageDocumentation` — one exact canonical document.
+    ///
+    /// Empty version/platform selectors resolve to the newest indexed version
+    /// and first platform. The canonical JSON is fetched from and reverified
+    /// against the signed Nix object on every uncached service read.
+    ///
+    /// # Errors
+    ///
+    /// Returns the ordinary registry visibility failures, not-found for an
+    /// absent selection, and internal/unavailable errors for object-integrity
+    /// or placement failures.
+    pub async fn get_package_documentation(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetPackageDocumentationRequest,
+    ) -> Result<pb::GetPackageDocumentationResponse, RpcError> {
+        let registry = self.registry_or_not_found(&req.registry).await?;
+        self.require_read(auth, &registry).await?;
+        let (locator, document) = self
+            .load_package_documentation_for_registry(
+                registry.id,
+                &req.package,
+                &req.version,
+                &req.platform,
+            )
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("package documentation"))?;
+        let canonical_json = document.canonical_json().map_err(RpcError::internal)?;
+        let artifact = locator.artifact;
+        Ok(pb::GetPackageDocumentationResponse {
+            identity: Some(pb::PackageDocumentationIdentity {
+                registry_commit: locator.indexed_commit,
+                package: locator.package_name,
+                version: locator.package_version,
+                platform: locator.platform,
+                format: artifact.format,
+                store_path: artifact.store_path,
+                nar_hash: artifact.nar_hash,
+                nar_size: artifact.nar_size,
+                document_sha256: artifact.document_sha256.clone(),
+                document_size: artifact.document_size,
+                semantic_schema_sha256: artifact.semantic_schema_sha256,
+            }),
+            canonical_json,
+            etag: artifact.document_sha256,
+        })
+    }
+
+    /// Loads and re-verifies one indexed package document after authorization.
+    ///
+    /// The caller must already have authorized access to `registry_id`. This
+    /// helper is shared by the typed API and the session-aware browser so both
+    /// runtimes render bytes from the same signed Nix-object path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for database, placement, transport, NAR, or canonical
+    /// document verification failures.
+    pub(crate) async fn load_package_documentation_for_registry(
+        &self,
+        registry_id: i64,
+        package: &str,
+        version: &str,
+        platform: &str,
+    ) -> anyhow::Result<
+        Option<(
+            crate::db::PackageDocumentationLocator,
+            aos_doc_model::PackageDocumentation,
+        )>,
+    > {
+        let Some(locator) = self
+            .db
+            .resolve_package_documentation_locator(registry_id, package, version, platform)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let fetch = self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry_id));
+        let document = crate::indexer::fetch_package_documentation(
+            fetch.as_ref(),
+            &locator.package_name,
+            &locator.package_version,
+            &locator.platform,
+            &locator.artifact,
+        )
+        .await?;
+        Ok(Some((locator, document)))
+    }
+
+    /// `DocumentationService.SearchPackageDocumentation` — ranked index search.
+    ///
+    /// # Errors
+    ///
+    /// Returns visibility, argument, pagination, or database errors.
+    pub async fn search_package_documentation(
+        &self,
+        auth: Option<&str>,
+        req: pb::SearchPackageDocumentationRequest,
+    ) -> Result<pb::SearchPackageDocumentationResponse, RpcError> {
+        let registry = self.registry_or_not_found(&req.registry).await?;
+        self.require_read(auth, &registry).await?;
+        if req.query.trim().is_empty() {
+            return Err(RpcError::invalid("documentation query must not be empty"));
+        }
+        let kind = (!req.kind.is_empty()).then_some(req.kind.as_str());
+        if kind.is_some_and(|kind| {
+            !matches!(
+                kind,
+                "package" | "option" | "service" | "credential" | "capability"
+            )
+        }) {
+            return Err(RpcError::invalid("unsupported documentation result kind"));
+        }
+        let results = self
+            .db
+            .search_package_documentation(registry.id, &req.query, kind, 100)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(|result| pb::PackageDocumentationSearchResult {
+                package: result.package_name,
+                version: result.package_version,
+                platform: result.platform,
+                kind: result.kind,
+                key: result.key,
+                title: result.title,
+                summary: result.summary,
+                score: result.score,
+            })
+            .collect();
+        let (results, next_page_token) = paginate(results, req.page_size, &req.page_token)?;
+        Ok(pb::SearchPackageDocumentationResponse {
+            results,
+            next_page_token,
+        })
+    }
+
+    /// `DocumentationService.GetPackageDocumentationSchema` — closed v1 JSON Schema.
+    ///
+    /// # Errors
+    ///
+    /// This method has no expected error conditions.
+    pub async fn get_package_documentation_schema(
+        &self,
+        _auth: Option<&str>,
+        _req: pb::GetPackageDocumentationSchemaRequest,
+    ) -> Result<pb::GetPackageDocumentationSchemaResponse, RpcError> {
+        Ok(pb::GetPackageDocumentationSchemaResponse {
+            schema: aos_doc_model::DOCUMENT_SCHEMA.to_string(),
+            media_type: aos_doc_model::DOCUMENT_FORMAT.to_string(),
+            json_schema: aos_doc_model::DOCUMENT_JSON_SCHEMA.as_bytes().to_vec(),
+        })
+    }
+
     /// `ChannelService.ListChannels` — channels with full partition maps.
     ///
     /// # Errors
