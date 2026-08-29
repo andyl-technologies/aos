@@ -3,6 +3,8 @@
   mkDerivation,
   fetchurl,
   go,
+  longhorn-engine,
+  longhorn-instance-manager,
 }: let
   version = "1.8.1";
 in
@@ -45,11 +47,46 @@ in
       {
         name = "install";
         script = ''
-          mkdir -p $out/bin
+          mkdir -p $out/bin $out/share
           install -m 755 longhorn-manager $out/bin/
+          printf '%s\n' '${builtins.toJSON {inherit version;}}' > $out/share/longhorn-package.json
         '';
       }
     ];
+
+    configModule = {
+      src = ./_longhorn-config;
+      moduleAbiCompat = {
+        min = 1;
+        max = 2;
+      };
+      declares = [
+        "k3s.integrations.csi.longhorn"
+        "k3s.integrations.resources.longhorn"
+        "longhorn.defaultReplicaCount"
+        "longhorn.enable"
+        "longhorn.nodeLabel"
+      ];
+      ownsRoots = [
+        {
+          root = "longhorn";
+          interfaceAbi = 1;
+        }
+      ];
+      contributes = [
+        {
+          root = "k3s";
+          interfaceAbi = 2;
+          paths = [
+            "integrations.csi.longhorn"
+            "integrations.resources.longhorn"
+          ];
+        }
+      ];
+      dependencies = {
+        inherit longhorn-engine longhorn-instance-manager;
+      };
+    };
 
     checks = {
       testing,

@@ -752,6 +752,7 @@ fn staged_render_bytes_and_credential_handles_enter_generation_manifest() {
             ciphertext: None,
             units: vec!["web.service".into()],
             encrypted: true,
+            optional: false,
         }],
     });
     manifest.credentials.insert(

@@ -27,6 +27,12 @@ in {
     }
   ];
 
+  # This module exists only to exercise image-generation reconciliation. Its
+  # Python HTTP server is therefore an explicit test artifact, never part of
+  # the production server image contract.
+  aos.image.allowTestArtifacts = true;
+  aos.image.testArtifactRoots = [pkgs.python3];
+
   environment.systemPackages = [pkgs.python3];
 
   aos.firewall.allowedTCP = [8000] ++ lib.optional isGen2 8443;

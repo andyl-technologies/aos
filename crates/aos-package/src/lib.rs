@@ -446,6 +446,16 @@ pub enum PackageCommand {
         #[arg(long)]
         plan: PathBuf,
     },
+    /// Hidden: idempotently restore routed sources from an activation plan.
+    #[command(name = "activate-restore-routed-sources", hide = true)]
+    ActivateRestoreRoutedSources {
+        /// Path to the pre-swap activation plan
+        #[arg(long)]
+        plan: PathBuf,
+        /// Restore candidate-eligible sources instead of the old active set
+        #[arg(long)]
+        candidate: bool,
+    },
     /// Hidden: recover an interrupted credential publication transaction.
     #[command(name = "recover-credential-transactions", hide = true)]
     RecoverCredentialTransactions,
@@ -514,6 +524,15 @@ pub enum PackageCommand {
         /// The delivered leaf host.nix path
         #[arg(long = "host-nix")]
         host_nix: PathBuf,
+        /// Ordered generation-pinned runtime module entrypoint; repeatable.
+        #[arg(long = "runtime-module")]
+        runtime_module: Vec<PathBuf>,
+        /// Immutable runtime source root; required to represent an empty set.
+        #[arg(long = "runtime-module-root")]
+        runtime_module_root: Option<PathBuf>,
+        /// Active config generation sampled before this evaluation began.
+        #[arg(long = "expected-current-generation")]
+        expected_current_generation: Option<u32>,
         /// The in-image module library store path
         #[arg(long = "base-lib")]
         base_lib: PathBuf,
@@ -628,6 +647,9 @@ pub enum PackageCommand {
         /// The operator host.nix to evaluate (defaults to the staged stash leaf)
         #[arg(long = "from")]
         from: Option<PathBuf>,
+        /// Ordered generation-pinned runtime module entrypoint; repeatable.
+        #[arg(long = "runtime-module")]
+        runtime_module: Vec<PathBuf>,
         /// Base manifest selector: `current`, `gen-N`, or an explicit path
         #[arg(long = "diff-against")]
         diff_against: Option<String>,
@@ -658,6 +680,11 @@ pub enum PackageCommand {
         /// Where a real (non-dry-run) switch publishes the committed manifest
         #[arg(long = "live-manifest", default_value = graph_compile::DEFAULT_MANIFEST_PATH)]
         live_manifest: PathBuf,
+    },
+    /// Manage the persistent runtime configuration-module worktree.
+    Config {
+        #[command(subcommand)]
+        command: RuntimeConfigCommand,
     },
     /// Materialize one package's pinned NAR closure into the store.
     ///
@@ -714,6 +741,70 @@ pub enum PackageCommand {
         /// Override the `/run/systemd/system` root (development only)
         #[arg(long = "run-root")]
         run_root: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum RuntimeConfigCommand {
+    /// Show the active immutable set and mutable worktree state.
+    Status {
+        #[arg(long, default_value = "/var/lib/aos/config/modules.d")]
+        worktree: PathBuf,
+    },
+    /// List discoverable worktree module entrypoints.
+    List {
+        #[arg(long, default_value = "/var/lib/aos/config/modules.d")]
+        worktree: PathBuf,
+    },
+    /// Add a new module to the worktree.
+    Add {
+        source: PathBuf,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, default_value = "/var/lib/aos/config/modules.d")]
+        worktree: PathBuf,
+    },
+    /// Atomically replace an existing worktree module.
+    Replace {
+        name: String,
+        source: PathBuf,
+        #[arg(long, default_value = "/var/lib/aos/config/modules.d")]
+        worktree: PathBuf,
+    },
+    /// Move a worktree module to the recoverable sibling trash directory.
+    Remove {
+        name: String,
+        #[arg(long, default_value = "/var/lib/aos/config/modules.d")]
+        worktree: PathBuf,
+    },
+    /// Evaluate and optionally activate the complete worktree transaction.
+    Apply {
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, default_value = "/var/lib/aos/config/modules.d")]
+        worktree: PathBuf,
+        #[arg(long = "base-lib", default_value = DEFAULT_SWITCH_BASE_LIB)]
+        base_lib: PathBuf,
+        #[arg(long = "eval-root", default_value = config_eval::stock::DEFAULT_EVAL_ROOT)]
+        eval_root: PathBuf,
+        #[arg(long = "allow-unprivileged-worktree", hide = true)]
+        allow_unprivileged_worktree: bool,
+    },
+    /// Preview the complete worktree transaction without activation.
+    Diff {
+        #[arg(long, default_value = "/var/lib/aos/config/modules.d")]
+        worktree: PathBuf,
+        #[arg(long = "base-lib", default_value = DEFAULT_SWITCH_BASE_LIB)]
+        base_lib: PathBuf,
+        #[arg(long = "eval-root", default_value = config_eval::stock::DEFAULT_EVAL_ROOT)]
+        eval_root: PathBuf,
+        #[arg(long = "allow-unprivileged-worktree", hide = true)]
+        allow_unprivileged_worktree: bool,
+    },
+    /// Restore the worktree from the active immutable set.
+    Discard {
+        #[arg(long, default_value = "/var/lib/aos/config/modules.d")]
+        worktree: PathBuf,
     },
 }
 
@@ -2425,6 +2516,397 @@ fn resolve_default_switch_host(
     Ok((store_path, true))
 }
 
+fn acquire_runtime_config_lock(worktree: &Path) -> Result<std::fs::File> {
+    let parent = worktree
+        .parent()
+        .context("runtime module worktree has no parent")?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("creating runtime config directory {}", parent.display()))?;
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(parent.join("modules.lock"))?;
+    rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)
+        .context("locking runtime configuration worktree")?;
+    Ok(lock)
+}
+
+fn validate_runtime_module_name(name: &str) -> Result<()> {
+    if !name.ends_with(".nix")
+        || name.starts_with('_')
+        || name.contains('/')
+        || name.contains("..")
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    {
+        bail!("runtime module name must be a safe, non-underscore .nix file name");
+    }
+    Ok(())
+}
+
+fn publish_runtime_module(source: &Path, destination: &Path, replace: bool) -> Result<()> {
+    let bytes = std::fs::read(source)
+        .with_context(|| format!("reading runtime module {}", source.display()))?;
+    std::str::from_utf8(&bytes).context("runtime module source is not UTF-8")?;
+    if replace != destination.is_file() {
+        if replace {
+            bail!("runtime module {} does not exist", destination.display());
+        }
+        bail!("runtime module {} already exists", destination.display());
+    }
+    let parent = destination
+        .parent()
+        .context("runtime module destination has no parent")?;
+    std::fs::create_dir_all(parent)?;
+    let temporary = parent.join(format!(".module.tmp.{}", std::process::id()));
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    use std::io::Write as _;
+    output.write_all(&bytes)?;
+    output.sync_all()?;
+    std::fs::rename(&temporary, destination)?;
+    std::fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+fn copy_runtime_tree(source: &Path, destination: &Path) -> Result<()> {
+    std::fs::create_dir(destination)?;
+    std::fs::set_permissions(
+        destination,
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let target = destination.join(entry.file_name());
+        if ty.is_dir() {
+            copy_runtime_tree(&entry.path(), &target)?;
+        } else if ty.is_file() {
+            std::fs::copy(entry.path(), &target)?;
+            std::fs::set_permissions(&target, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+            std::fs::File::open(&target)?.sync_all()?;
+        } else {
+            bail!("retained runtime module set contains an unsupported object");
+        }
+    }
+    std::fs::File::open(destination)?.sync_all()?;
+    Ok(())
+}
+
+async fn run_runtime_config_command(
+    command: &RuntimeConfigCommand,
+    printer: &Printer,
+) -> Result<()> {
+    match command {
+        RuntimeConfigCommand::Status { worktree } => {
+            let manifest_path =
+                Path::new(DEFAULT_SYSTEM_GENERATION_PROFILE).join("current/manifest.json");
+            if manifest_path.is_file() {
+                let manifest: config_eval::materialize::ConfigManifest = serde_json::from_slice(
+                    &std::fs::read(&manifest_path)
+                        .with_context(|| format!("reading {}", manifest_path.display()))?,
+                )?;
+                if let Some(runtime) = manifest.inputs.runtime_modules {
+                    printer.plain(&format!(
+                        "active runtime modules: {} ({} entrypoints, {}, {})",
+                        runtime.store_path,
+                        runtime.entrypoints.len(),
+                        runtime.nar_hash,
+                        runtime.trust_mode
+                    ));
+                } else {
+                    printer.plain("active runtime modules: empty");
+                }
+            } else {
+                printer.plain("active runtime modules: unavailable (no active generation)");
+            }
+            let entries = if worktree.is_dir() {
+                config_eval::runtime_modules::list_entrypoints(worktree)?
+            } else {
+                Vec::new()
+            };
+            printer.plain(&format!(
+                "worktree: {} ({} entrypoints)",
+                worktree.display(),
+                entries.len()
+            ));
+            Ok(())
+        }
+        RuntimeConfigCommand::List { worktree } => {
+            if worktree.is_dir() {
+                for entry in config_eval::runtime_modules::list_entrypoints(worktree)? {
+                    printer.plain(&entry.display().to_string());
+                }
+            }
+            Ok(())
+        }
+        RuntimeConfigCommand::Add {
+            source,
+            name,
+            worktree,
+        } => {
+            let _lock = acquire_runtime_config_lock(worktree)?;
+            let name = name
+                .clone()
+                .or_else(|| {
+                    source
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .map(str::to_string)
+                })
+                .context("runtime module source has no UTF-8 file name; pass --name")?;
+            validate_runtime_module_name(&name)?;
+            publish_runtime_module(source, &worktree.join(&name), false)?;
+            printer.success(&format!(
+                "Added runtime module {name}; run `apm config apply` to activate."
+            ));
+            Ok(())
+        }
+        RuntimeConfigCommand::Replace {
+            name,
+            source,
+            worktree,
+        } => {
+            let _lock = acquire_runtime_config_lock(worktree)?;
+            validate_runtime_module_name(name)?;
+            publish_runtime_module(source, &worktree.join(name), true)?;
+            printer.success(&format!(
+                "Replaced runtime module {name}; run `apm config apply` to activate."
+            ));
+            Ok(())
+        }
+        RuntimeConfigCommand::Remove { name, worktree } => {
+            let _lock = acquire_runtime_config_lock(worktree)?;
+            validate_runtime_module_name(name)?;
+            let source = worktree.join(name);
+            if !source.is_file() {
+                bail!("runtime module {} does not exist", source.display());
+            }
+            let trash = worktree
+                .parent()
+                .context("runtime worktree has no parent")?
+                .join("modules-trash");
+            std::fs::create_dir_all(&trash)?;
+            let destination = trash.join(format!("{}.{}.removed", name, std::process::id()));
+            if destination.exists() {
+                bail!(
+                    "recoverable removal destination already exists: {}",
+                    destination.display()
+                );
+            }
+            std::fs::rename(&source, &destination)?;
+            std::fs::File::open(&trash)?.sync_all()?;
+            std::fs::File::open(worktree)?.sync_all()?;
+            printer.success(&format!(
+                "Removed {name} to {}; run `apm config apply` to activate.",
+                destination.display()
+            ));
+            Ok(())
+        }
+        RuntimeConfigCommand::Discard { worktree } => {
+            let _lock = acquire_runtime_config_lock(worktree)?;
+            let _switch_lock = config_eval::activation::acquire_switch_lock_pub(
+                &config_eval::activation::default_switch_lock_path(),
+            )?;
+            let manifest_path =
+                Path::new(DEFAULT_SYSTEM_GENERATION_PROFILE).join("current/manifest.json");
+            let manifest: config_eval::materialize::ConfigManifest =
+                serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
+            let parent = worktree
+                .parent()
+                .context("runtime worktree has no parent")?;
+            let staged = parent.join(format!(".modules.restore.{}", std::process::id()));
+            match manifest.inputs.runtime_modules {
+                Some(runtime) => copy_runtime_tree(Path::new(&runtime.store_path), &staged)?,
+                None => {
+                    std::fs::create_dir(&staged)?;
+                    std::fs::File::open(&staged)?.sync_all()?;
+                }
+            }
+            std::fs::set_permissions(&staged, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
+            if worktree.exists() {
+                let backup = parent.join(format!("modules.backup.{}", std::process::id()));
+                if backup.exists() {
+                    bail!(
+                        "runtime worktree backup already exists: {}",
+                        backup.display()
+                    );
+                }
+                std::fs::rename(worktree, &backup)?;
+                printer.plain(&format!(
+                    "previous worktree preserved at {}",
+                    backup.display()
+                ));
+            }
+            std::fs::rename(&staged, worktree)?;
+            std::fs::File::open(parent)?.sync_all()?;
+            printer.success("Restored worktree from the active generation.");
+            Ok(())
+        }
+        RuntimeConfigCommand::Apply {
+            dry_run,
+            worktree,
+            base_lib,
+            eval_root,
+            allow_unprivileged_worktree,
+        } => {
+            apply_runtime_worktree(
+                worktree,
+                base_lib,
+                eval_root,
+                *allow_unprivileged_worktree,
+                *dry_run,
+                printer,
+            )
+            .await
+        }
+        RuntimeConfigCommand::Diff {
+            worktree,
+            base_lib,
+            eval_root,
+            allow_unprivileged_worktree,
+        } => {
+            apply_runtime_worktree(
+                worktree,
+                base_lib,
+                eval_root,
+                *allow_unprivileged_worktree,
+                true,
+                printer,
+            )
+            .await
+        }
+    }
+}
+
+async fn apply_runtime_worktree(
+    worktree: &Path,
+    base_lib: &Path,
+    eval_root: &Path,
+    allow_unprivileged_worktree: bool,
+    dry_run: bool,
+    printer: &Printer,
+) -> Result<()> {
+    let _lock = acquire_runtime_config_lock(worktree)?;
+    ensure_runtime_config_input_compatibility(allow_unprivileged_worktree)?;
+    let profile = Path::new(DEFAULT_SYSTEM_GENERATION_PROFILE);
+    let expected_current_generation =
+        config_eval::current_config_generation_number(&profile.join("state.json"))?;
+    anyhow::ensure!(
+        expected_current_generation > 0,
+        "runtime configuration requires an active configuration generation"
+    );
+    let base_manifest = profile.join(format!("gen-{expected_current_generation}/manifest.json"));
+    let current: config_eval::materialize::ConfigManifest =
+        serde_json::from_slice(&std::fs::read(&base_manifest)?)?;
+    current.validate()?;
+    if !worktree.exists() {
+        std::fs::create_dir(worktree)?;
+        std::fs::set_permissions(
+            worktree,
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )?;
+        std::fs::File::open(
+            worktree
+                .parent()
+                .context("runtime worktree has no parent")?,
+        )?
+        .sync_all()?;
+    }
+    let snapshot =
+        config_eval::runtime_modules::snapshot(worktree, eval_root, !allow_unprivileged_worktree)?;
+    let host_nix = PathBuf::from(&current.inputs.host_nix.store_path);
+    let image_default_host = current.inputs.host_nix.trust_mode == "image";
+    let facts_json = PathBuf::from(&current.inputs.instance_facts.store_path);
+    let base_lib = std::fs::canonicalize(base_lib)
+        .with_context(|| format!("resolving base library {}", base_lib.display()))?;
+    let module_abi = running_module_abi(Path::new(DEFAULT_SWITCH_OS_RELEASE))?;
+    let candidate = eval_root.join(format!("runtime-candidate-{}.json", std::process::id()));
+    config_eval::dry_run::run_switch(&config_eval::dry_run::SwitchParams {
+        eval: config_eval::EvalCommand {
+            host_nix,
+            runtime_modules: snapshot.entrypoints,
+            runtime_module_root: Some(snapshot.store_path),
+            expected_current_generation: Some(expected_current_generation),
+            base_lib,
+            facts_json: Some(facts_json),
+            desired: None,
+            module_abi,
+            out: candidate,
+            eval_root: eval_root.to_path_buf(),
+            verbose: u8::from(printer.mode() == OutputMode::Verbose),
+            trusted_config_keys_dirs: Vec::new(),
+            retained_host_inputs: Some(config_eval::RetainedHostInputs {
+                host_nix: current.inputs.host_nix.clone(),
+                instance_facts: current.inputs.instance_facts.clone(),
+            }),
+            require_signed_host_nix: false,
+            image_default_host,
+        },
+        base_manifest,
+        base_label: "current".to_string(),
+        dry_run,
+        live_manifest: PathBuf::from(graph_compile::DEFAULT_MANIFEST_PATH),
+        json_out: printer.mode() == OutputMode::Json,
+    })
+    .await?;
+    Ok(())
+}
+
+fn ensure_runtime_config_input_compatibility(development_bypass: bool) -> Result<()> {
+    if development_bypass {
+        return Ok(());
+    }
+    let running = std::fs::read_to_string(DEFAULT_SWITCH_OS_RELEASE)?;
+    let running_abi = running
+        .lines()
+        .find_map(|line| line.strip_prefix("AOS_CONFIG_INPUT_ABI="))
+        .and_then(|value| value.trim_matches('"').parse::<u32>().ok())
+        .context("running image does not advertise AOS_CONFIG_INPUT_ABI")?;
+    if running_abi < 2 {
+        bail!("running image does not support generation-pinned runtime modules");
+    }
+
+    let image_profile = Path::new("/var/lib/profiles/image");
+    let state = sysroot::load_image_generation_state_pub(image_profile)
+        .context("loading bootable image generations for runtime-module compatibility gate")?;
+    let mut latest_by_slot = std::collections::BTreeMap::new();
+    for generation in &state.generations {
+        let slot = match generation.slot {
+            types::ImageSlot::A => 'A',
+            types::ImageSlot::B => 'B',
+        };
+        latest_by_slot
+            .entry(slot)
+            .and_modify(|current: &mut &types::ImageGeneration| {
+                if generation.number > current.number {
+                    *current = generation;
+                }
+            })
+            .or_insert(generation);
+    }
+    for (slot, generation) in latest_by_slot {
+        let path = Path::new(&generation.toplevel).join("meta/config-input-abi");
+        let abi = std::fs::read_to_string(&path)
+            .with_context(|| {
+                format!("bootable slot {slot} lacks runtime-module compatibility metadata")
+            })?
+            .trim()
+            .parse::<u32>()
+            .with_context(|| format!("bootable slot {slot} has invalid config-input ABI"))?;
+        if abi < 2 {
+            bail!(
+                "bootable slot {slot} uses config-input ABI {abi}; upgrade every A/B slot before applying runtime modules"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Exits with the evaluator's stable class when an error crossed a CLI boundary.
 fn exit_for_eval_failure(error: &anyhow::Error, verbose: u8) {
     let Some(failure) = error.downcast_ref::<config_eval::diagnostics::EvalCommandFailure>() else {
@@ -2474,11 +2956,18 @@ pub async fn run(
         return ebpf_lsm::load_system_policies();
     }
 
+    if let PackageCommand::Config { command } = command {
+        return run_runtime_config_command(command, printer).await;
+    }
+
     // The on-host config-eval driver needs no apm config or profile: it reads
     // the registry index and host.nix from disk and shells out to stock nix.
     // Dispatch it before `ApmConfig::load` (mirrors the systemd-client vehicle).
     if let PackageCommand::Eval {
         host_nix,
+        runtime_module,
+        runtime_module_root,
+        expected_current_generation,
         base_lib,
         facts_json,
         desired,
@@ -2493,6 +2982,9 @@ pub async fn run(
         let verbose = u8::from(printer.mode() == OutputMode::Verbose);
         let result = config_eval::run_eval_command(&config_eval::EvalCommand {
             host_nix: host_nix.clone(),
+            runtime_modules: runtime_module.clone(),
+            runtime_module_root: runtime_module_root.clone(),
+            expected_current_generation: *expected_current_generation,
             base_lib: base_lib.clone(),
             facts_json: Some(facts_json.clone()),
             desired: desired.clone(),
@@ -2501,6 +2993,7 @@ pub async fn run(
             eval_root: eval_root.clone(),
             verbose,
             trusted_config_keys_dirs: trusted_config_keys_dir.clone(),
+            retained_host_inputs: None,
             require_signed_host_nix: *require_signed_host_nix,
             image_default_host: *image_default_host,
         });
@@ -2614,6 +3107,7 @@ pub async fn run(
     if let PackageCommand::Switch {
         dry_run: switch_dry_run,
         from,
+        runtime_module,
         diff_against,
         base_label,
         base_lib,
@@ -2628,16 +3122,36 @@ pub async fn run(
     {
         let verbose = u8::from(printer.mode() == OutputMode::Verbose);
         let json_out = printer.mode() == OutputMode::Json;
-        let (base_manifest, selected_label) = resolve_switch_manifest(
-            diff_against.as_deref(),
-            Path::new(DEFAULT_SYSTEM_GENERATION_PROFILE),
+        let profile = Path::new(DEFAULT_SYSTEM_GENERATION_PROFILE);
+        let expected_current_generation =
+            config_eval::current_config_generation_number(&profile.join("state.json"))?;
+        let active_manifest_path =
+            profile.join(format!("gen-{expected_current_generation}/manifest.json"));
+        let active_manifest: config_eval::materialize::ConfigManifest = serde_json::from_slice(
+            &std::fs::read(&active_manifest_path)
+                .with_context(|| format!("reading {}", active_manifest_path.display()))?,
         )?;
+        active_manifest.validate()?;
+        let (base_manifest, selected_label) =
+            resolve_switch_manifest(diff_against.as_deref(), profile)?;
         let (host_nix, image_default_host) = match from {
             Some(path) => (path.clone(), false),
             None => resolve_default_switch_host(
                 Path::new(DEFAULT_SWITCH_HOST_NIX),
-                &Path::new(DEFAULT_SYSTEM_GENERATION_PROFILE).join("current/manifest.json"),
+                &active_manifest_path,
             )?,
+        };
+        let (runtime_modules, runtime_module_root) = if runtime_module.is_empty() {
+            (
+                config_eval::retained_runtime_modules(&active_manifest)?,
+                active_manifest
+                    .inputs
+                    .runtime_modules
+                    .as_ref()
+                    .map(|runtime| PathBuf::from(&runtime.store_path)),
+            )
+        } else {
+            (runtime_module.clone(), None)
         };
         let base_lib = match base_lib {
             Some(path) => path.clone(),
@@ -2660,6 +3174,14 @@ pub async fn run(
         let params = config_eval::dry_run::SwitchParams {
             eval: config_eval::EvalCommand {
                 host_nix,
+                runtime_modules,
+                runtime_module_root: runtime_module_root.clone(),
+                expected_current_generation: runtime_module_root
+                    .as_ref()
+                    .map(|_| expected_current_generation)
+                    .or_else(|| {
+                        (!runtime_module.is_empty()).then_some(expected_current_generation)
+                    }),
                 base_lib,
                 facts_json: Some(facts_json.clone()),
                 desired: desired.clone(),
@@ -2668,6 +3190,7 @@ pub async fn run(
                 eval_root: eval_root.clone(),
                 verbose,
                 trusted_config_keys_dirs: trusted_config_keys_dir.clone(),
+                retained_host_inputs: None,
                 require_signed_host_nix: *require_signed_host_nix,
                 image_default_host,
             },
@@ -2811,6 +3334,10 @@ pub async fn run(
     }
     if let PackageCommand::ActivatePostEtcSwap { plan } = command {
         let code = sysroot::activate_post_etc_swap(plan, printer).await;
+        std::process::exit(code);
+    }
+    if let PackageCommand::ActivateRestoreRoutedSources { plan, candidate } = command {
+        let code = sysroot::activate_restore_routed_sources(plan, *candidate, printer).await;
         std::process::exit(code);
     }
     if let PackageCommand::RecoverCredentialTransactions = command {
@@ -3083,14 +3610,8 @@ pub async fn run(
                 )
                 .await
             } else if *rollback_system {
-                sysroot::rollback_system(
-                    &config,
-                    *generation,
-                    *rollback_list,
-                    dry_run,
-                    printer,
-                )
-                .await
+                sysroot::rollback_system(&config, *generation, *rollback_list, dry_run, printer)
+                    .await
             } else if *rollback_list {
                 rollback::list(&config, printer).await
             } else {
@@ -3132,6 +3653,9 @@ pub async fn run(
         PackageCommand::ActivatePostEtcSwap { .. } => {
             unreachable!("ActivatePostEtcSwap is handled before ApmConfig::load")
         }
+        PackageCommand::ActivateRestoreRoutedSources { .. } => {
+            unreachable!("ActivateRestoreRoutedSources is handled before ApmConfig::load")
+        }
         PackageCommand::RecoverCredentialTransactions => {
             unreachable!("RecoverCredentialTransactions is handled before ApmConfig::load")
         }
@@ -3152,6 +3676,9 @@ pub async fn run(
         }
         PackageCommand::Switch { .. } => {
             unreachable!("Switch is handled before ApmConfig::load")
+        }
+        PackageCommand::Config { .. } => {
+            unreachable!("Config is handled before ApmConfig::load")
         }
         PackageCommand::GraphCompile { .. } => {
             unreachable!("GraphCompile is handled before ApmConfig::load")
@@ -3198,6 +3725,8 @@ struct GenerationVerifierPolicyFile {
     trusted_config_keys: Vec<String>,
     #[serde(default)]
     trusted_platforms: Vec<String>,
+    #[serde(default)]
+    allow_local_root_runtime_modules: bool,
     #[serde(default)]
     image_config_modules: Vec<attestation::VerifiedConfigModuleMember>,
 }
@@ -3525,6 +4054,7 @@ where
         prior_pcr15_event_digests: prior,
         trusted_config_keys: policy_file.trusted_config_keys,
         trusted_platforms: policy_file.trusted_platforms,
+        allow_local_root_runtime_modules: policy_file.allow_local_root_runtime_modules,
         roster_fingerprints: roster,
         revoked_roster_fingerprints: revoked,
         valid_release_tags: release.into_iter().collect(),
@@ -3944,7 +4474,11 @@ fn signed_module_authorization(
         paths.sort();
         paths.dedup();
     }
-    config_eval::PackageAuthorization { owns, contributes }
+    config_eval::PackageAuthorization {
+        owns,
+        contributes,
+        artifacts: module.artifacts.clone(),
+    }
 }
 
 fn signed_store_subset_hash(repo: &Path, commit: &str, root: &str) -> Result<String> {
@@ -6073,6 +6607,7 @@ contributable = ["allowedTCPPorts"]
                     platform: Some("aws".to_string()),
                     signer_key: None,
                 },
+                runtime_modules: None,
                 instance_facts: attestation::InstanceFactsAttInput {
                     facts_hash: format!("sha256:{}", "77".repeat(32)),
                     store_path: "/nix/store/66666666666666666666666666666666-host-facts"

@@ -546,18 +546,11 @@ pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) ->
         .await;
     let channels = channels.unwrap_or_default();
     let package_count = packages.unwrap_or_default();
-    let caches: Vec<(String, u32)> = caches
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|entry| {
-            u32::try_from(entry.resolved_priority)
-                .ok()
-                .map(|priority| (entry.committed_url, priority))
-        })
-        .collect();
+    let caches = resolved_cache_urls(caches.unwrap_or_default());
     let roster = roster.unwrap_or_default();
     let validations = validations.unwrap_or_default();
     let external = svc.registry_consumer_url(&registry).await.ok();
+    let setup = pages::RegistrySetup::new(&registry, status.as_ref(), external.as_deref(), &caches);
     Rendered::Html(pages::registry_home(
         &registry,
         status.as_ref(),
@@ -566,7 +559,7 @@ pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) ->
         &caches,
         &roster,
         &validations,
-        external.as_deref(),
+        &setup,
         can_manage,
         started,
         &session,
@@ -625,6 +618,7 @@ pub async fn images(
         &channels.unwrap_or_default(),
         download_base.as_deref(),
         &pages::ImageBrowse {
+            page_number: query.page_number(),
             query: query.q.as_deref(),
             release: query.release.as_deref(),
             channel: query.channel.as_deref(),
@@ -746,17 +740,42 @@ pub async fn package(svc: &RpcService, headers: &HeaderMap, slug: &str, name: &s
     else {
         return Rendered::NotFound;
     };
-    let closure = resolve_package_closure(svc, registry.id, name, &detail).await;
-    let session = session_indicator(svc, headers).await;
+    let (closure, session, caches, external) = futures_util::future::join4(
+        resolve_package_closure(svc, registry.id, name, &detail),
+        session_indicator(svc, headers),
+        svc.db.registry_cache_stack_entries(registry.id),
+        svc.registry_consumer_url(&registry),
+    )
+    .await;
+    let caches = resolved_cache_urls(caches.unwrap_or_default());
+    let setup = pages::RegistrySetup::new(
+        &registry,
+        status.as_ref(),
+        external.ok().as_deref(),
+        &caches,
+    );
     Rendered::Html(pages::package_page(
         &registry,
         status.as_ref(),
         &detail,
         &closure,
-        &svc.external_url,
+        &setup,
         started,
         &session,
     ))
+}
+
+fn resolved_cache_urls(
+    entries: Vec<crate::db::RegistryCacheStackEntryRecord>,
+) -> Vec<(String, u32)> {
+    entries
+        .into_iter()
+        .filter_map(|entry| {
+            u32::try_from(entry.resolved_priority)
+                .ok()
+                .map(|priority| (entry.committed_url, priority))
+        })
+        .collect()
 }
 
 /// Resolve a package's forward and reverse closure for the detail page.

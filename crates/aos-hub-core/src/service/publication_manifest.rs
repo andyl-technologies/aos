@@ -428,7 +428,7 @@ impl RpcService {
             .map_err(RpcError::internal)?;
         if placements.is_empty() {
             return Err(RpcError::FailedPrecondition(
-                "registry has no complete validated publication placement".into(),
+                "registry has no validated writable publication placement".into(),
             ));
         }
         self.db

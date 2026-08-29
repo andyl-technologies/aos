@@ -112,6 +112,10 @@ List application-specific build tools, libraries, and runtime commands
 explicitly. Include tools that an upstream configure script probes before the
 compile even when the build phases do not invoke them directly; for example,
 declare Perl in `buildDeps` when configure rejects a missing Perl interpreter.
+Declare generators such as Bison even when a release archive includes generated
+sources, because build rules can regenerate them after unpacking or patching.
+Pass the generator through the upstream configure interface when one exists so
+the build cannot silently fall back to an undeclared host command.
 If a dependency is missing from AOS, package it from source rather than
 reaching into the host or importing nixpkgs.
 
@@ -246,7 +250,10 @@ target.
 Declare the narrowest permissions the service needs. `network = "private"`
 gives the package an isolated network namespace. A service that must use the
 host network needs `network = "host"` and the appropriate `tcp-bind` ports.
-The package renderer rejects inconsistent permissions during evaluation.
+The package renderer rejects inconsistent permissions during evaluation. The
+port list remains signed audit and socket-listener intent, but host networking
+is an explicit downgrade from per-package Landlock/eBPF network enforcement;
+filesystem, MAC, capability, and systemd sandboxing still apply.
 
 ## Add an on-host configuration module
 

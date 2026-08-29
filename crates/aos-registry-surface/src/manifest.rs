@@ -1484,6 +1484,13 @@ impl ExposeConfigMeta {
             .iter()
             .any(|artifact| !artifact.units.is_empty())
     }
+
+    /// Returns whether configuration may conditionally bind credentials.
+    pub fn has_optional_credentials(&self) -> bool {
+        self.credentials
+            .iter()
+            .any(|credential| credential.optional)
+    }
 }
 
 /// Structured config artifact materialized from host desired-package config.
@@ -1559,6 +1566,12 @@ pub struct CredentialMeta {
     /// Whether the credential is expected to be TPM2/systemd encrypted.
     #[serde(default, rename = "encrypted", skip_serializing_if = "is_false")]
     pub encrypted: bool,
+    /// Whether the unit binding is emitted only when configuration references
+    /// this credential. Optional declarations remain signed authorization for
+    /// runtime credential reconciliation, but do not make unrelated service
+    /// configurations depend on an absent credential.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub optional: bool,
 }
 
 /// Typed package capability kind.
@@ -2409,10 +2422,44 @@ pub struct ConfigModuleMeta {
     /// owner-declared contributable sub-paths (F3-B).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contributes: Vec<RootContribution>,
+    /// Exact core artifact names this module may materialize.
+    ///
+    /// These grants are deliberately leaf-scoped: they do not confer
+    /// ownership of the structural `environment`, `systemd`, or `aos` roots.
+    #[serde(default, skip_serializing_if = "ConfigModuleArtifacts::is_empty")]
+    pub artifacts: ConfigModuleArtifacts,
     /// Capability tokens this module *sets* (write-provider index entries),
     /// e.g. `system.capabilities.dns-resolver`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provides_capabilities: Vec<String>,
+}
+
+/// Exact core artifact leaves a package configuration module may write.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigModuleArtifacts {
+    /// Targets below `environment.etc`, such as `nginx/nginx.conf`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub etc: Vec<String>,
+    /// Full systemd unit names, such as `nginx.service`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub units: Vec<String>,
+    /// Exact names below `aos.users.users`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub users: Vec<String>,
+    /// Exact names below `aos.users.groups`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
+}
+
+impl ConfigModuleArtifacts {
+    /// Returns whether this authorization grants no core artifact leaves.
+    pub fn is_empty(&self) -> bool {
+        self.etc.is_empty()
+            && self.units.is_empty()
+            && self.users.is_empty()
+            && self.groups.is_empty()
+    }
 }
 
 /// One mechanically derived option declaration in a config module's schema.

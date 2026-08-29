@@ -330,7 +330,7 @@ fn running_as_root() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_sync_summary, SyncResult};
+    use super::{SyncResult, format_sync_summary};
 
     #[test]
     fn sync_summary_reports_every_package_delta() {
