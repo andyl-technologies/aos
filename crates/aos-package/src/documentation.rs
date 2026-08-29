@@ -912,8 +912,19 @@ fn run_cache(command: &DocumentationCacheCommand, printer: &Printer) -> Result<(
         }
     }
     if printer.mode() == OutputMode::Json {
+        let retained = documents
+            .iter()
+            .map(|loaded| {
+                serde_json::json!({
+                    "package": &loaded.document.package.name,
+                    "version": &loaded.document.package.version,
+                    "platform": &loaded.document.package.platform,
+                })
+            })
+            .collect::<Vec<_>>();
         printer.json(&serde_json::json!({
             "retained_documents": documents.len(),
+            "documents": retained,
             "generated_manpages": if collect { 0 } else { generated.len() },
             "removed": if collect { generated.len() } else { 0 },
         }));
@@ -921,7 +932,18 @@ fn run_cache(command: &DocumentationCacheCommand, printer: &Printer) -> Result<(
         printer.success(&format!("Removed {} generated manpage(s)", generated.len()));
     } else {
         println!("retained documents\t{}", documents.len());
+        for loaded in &documents {
+            println!(
+                "document\t{}\t{}\t{}",
+                loaded.document.package.name,
+                loaded.document.package.version,
+                loaded.document.package.platform
+            );
+        }
         println!("generated manpages\t{}", generated.len());
+        for path in &generated {
+            println!("manpage\t{}", path.display());
+        }
     }
     Ok(())
 }
