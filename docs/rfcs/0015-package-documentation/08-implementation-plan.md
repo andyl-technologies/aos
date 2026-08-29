@@ -1,32 +1,33 @@
 # Implementation plan
 
-This RFC is design-only. Pull request #218 is merged unchanged. In particular,
-the handwritten package guides it introduces are not deleted by the RFC PR.
-They remain the usable reference until the generated artifact, Hub, offline, and
-tooling surfaces meet the gates below.
+Pull request #219 implements this plan after rebasing onto the unchanged
+runtime-module work from pull request #218. The completed checklist below is the
+acceptance inventory: canonical objects, Hub surfaces, offline tooling, editor
+integration, fleet coverage, and the handwritten-reference migration landed as
+one coordinated cutover.
 
 ## Phase 0: characterize and freeze the contracts
 
-- [ ] Inventory every package summary, config option, ownership/contribution
+- [x] Inventory every package summary, config option, ownership/contribution
       rule, expose artifact, unit, listener, managed path, credential contract,
       capability, activation effect, and unique prose section in current package
       guides.
-- [ ] Define the closed `aos.package-documentation/v1` data model, canonical JSON
+- [x] Define the closed `aos.package-documentation/v1` data model, canonical JSON
       encoding, semantic schema digest, structured prose/type/path algebras, and
       hard limits.
-- [ ] Add golden fixtures covering simple packages, typed config owners,
+- [x] Add golden fixtures covering simple packages, typed config owners,
       contributors, wildcard submodules, credentials, exposed services,
       platform differences, deprecation, and legacy packages.
-- [ ] Characterize current `PlatformEntry`, declaration-schema, store graph,
+- [x] Characterize current `PlatformEntry`, declaration-schema, store graph,
       publication inventory, Hub index transaction, release artifact snapshot,
       GC, package Web, CLI output, and native/Worker behavior.
-- [ ] Characterize the existing `aos-doc` source walker, Markdown-bearing
+- [x] Characterize the existing `aos-doc` source walker, Markdown-bearing
       `DocIndex`, mtime cache, search, output, and TUI contracts; identify the
       compatibility boundary between mutable developer docs and authenticated
       package-release docs.
-- [ ] Decide exact v1 size/count limits from native and Worker measurements; the
+- [x] Decide exact v1 size/count limits from native and Worker measurements; the
       initial design ceiling is 4 MiB per uncompressed document NAR.
-- [ ] Add a repository policy that new package option reference content is
+- [x] Add a repository policy that new package option reference content is
       authored in Nix data while transitional Markdown remains readable.
 
 **Done when:** fixtures and the checked schema can represent every interface in
@@ -34,26 +35,26 @@ the current package-guide inventory without executing Nix in a consumer.
 
 ## Phase 1: extraction and documentation store artifacts
 
-- [ ] Extend the restricted base library/options-only evaluation with pure
+- [x] Extend the restricted base library/options-only evaluation with pure
       documentation constructors and export.
-- [ ] Implement shared Rust document types, validation, canonical encoding,
+- [x] Implement shared Rust document types, validation, canonical encoding,
       structured prose rendering primitives, and semantic digest computation.
-- [ ] Split a WASM-safe structured model/search/render core from the native
+- [x] Split a WASM-safe structured model/search/render core from the native
       `aos-doc` repository walker, Nix evaluation, cache, built-in language data,
       and TUI; migrate shared presentation without making the old `DocIndex` an
       artifact format.
-- [ ] Cross-check rich option data against `declares`, `declaration_schema`,
+- [x] Cross-check rich option data against `declares`, `declaration_schema`,
       ownership/contribution metadata, config artifacts, credentials, expose
       metadata, and package identity.
-- [ ] Materialize one empty-reference, non-executable regular-file store object
+- [x] Materialize one empty-reference, non-executable regular-file store object
       after trusted validation.
-- [ ] Add `DocumentationArtifactMeta` to `PlatformEntry`, feature gating,
+- [x] Add `DocumentationArtifactMeta` to `PlatformEntry`, feature gating,
       provenance subjects, store graph validation, and registry parsing.
-- [ ] Make publisher typed inventories upload/verify the docs NAR/narinfo before
+- [x] Make publisher typed inventories upload/verify the docs NAR/narinfo before
       Git/channel pointer movement.
-- [ ] Generate documents for all configurable packages and summary/runtime docs
+- [x] Generate documents for all configurable packages and summary/runtime docs
       for ordinary packages.
-- [ ] Add deterministic-build, tamper, partial-publication, safe-default, and
+- [x] Add deterministic-build, tamper, partial-publication, safe-default, and
       prose-versus-semantic-change tests.
 
 **Done when:** a signed registry package selects a verified independent
@@ -61,21 +62,21 @@ documentation Nix object and two isolated publications produce identical bytes.
 
 ## Phase 2: shared Hub ingestion, search, and retention
 
-- [ ] Implement the bounded streaming single-regular-file NAR decoder in
+- [x] Implement the bounded streaming single-regular-file NAR decoder in
       `aos-hub-core` with native/Worker adversarial fixtures.
-- [ ] Fetch and verify documentation through `SurfaceFetch` without Nix/FFI or
+- [x] Fetch and verify documentation through `SurfaceFetch` without Nix/FFI or
       general archive extraction.
-- [ ] Add documentation artifact locators and disposable option/search tables to
+- [x] Add documentation artifact locators and disposable option/search tables to
       shared migrations for SQLite/D1, PostgreSQL, and MySQL.
-- [ ] Implement portable tokenization/ranking and prove backend optimization
+- [x] Implement portable tokenization/ranking and prove backend optimization
       parity or use the portable term table.
-- [ ] Extend release/catalog artifact enumeration and SQL constraints with
+- [x] Extend release/catalog artifact enumeration and SQL constraints with
       `documentation`, `config_module`, and `expose_artifact`.
-- [ ] Add registry/release/channel/subscription/manual-root retention and GC
+- [x] Add registry/release/channel/subscription/manual-root retention and GC
       explanations for all companion objects.
-- [ ] Atomically select package, artifact, docs, and search rows as one index
+- [x] Atomically select package, artifact, docs, and search rows as one index
       generation; preserve the previous generation on failure.
-- [ ] Add complete projection reset/rebuild and native/Worker parity tests.
+- [x] Add complete projection reset/rebuild and native/Worker parity tests.
 
 **Done when:** native and Worker index and search the same signed corpus with
 identical results, and a database can be destroyed and reproduced from registry
@@ -83,16 +84,16 @@ and store objects.
 
 ## Phase 3: API and server-rendered Web foundation
 
-- [ ] Add shared view resources and `DocumentationService` Connect methods.
-- [ ] Add public read-only JSON routes with exact identity, ETags, cursor
+- [x] Add shared view resources and `DocumentationService` Connect methods.
+- [x] Add public read-only JSON routes with exact identity, ETags, cursor
       pagination, authorization, immutable digest routes, and golden contracts.
-- [ ] Extend shared server-rendered browse pages with global docs search and the
+- [x] Extend shared server-rendered browse pages with global docs search and the
       package Overview, Configure, Services, Dependencies, Versions, Compare,
       and Integrity routes.
-- [ ] Render complete content without JavaScript on native Hub, Worker, and
+- [x] Render complete content without JavaScript on native Hub, Worker, and
       static registry surfaces.
-- [ ] Add private/internal visibility and cache isolation tests.
-- [ ] Add native/Worker HTML and API byte/semantic parity gates.
+- [x] Add private/internal visibility and cache isolation tests.
+- [x] Add native/Worker HTML and API byte/semantic parity gates.
 
 **Done when:** a keyboard/no-JavaScript browser can discover a package, inspect
 every option/runtime fact, compare versions, and verify artifact identity on
@@ -100,17 +101,17 @@ either deployment.
 
 ## Phase 4: polished interactive Web UI
 
-- [ ] Build the progressively enhanced global command search, filters, option
+- [x] Build the progressively enhanced global command search, filters, option
       tree/detail/context workspace, local configuration composer, runtime
       relationship view, semantic comparison, and integrity disclosures.
-- [ ] Reuse the same shared package view in the authenticated console and public
+- [x] Reuse the same shared package view in the authenticated console and public
       browser; add actions only when authorized.
-- [ ] Keep queries/filters in URLs while keeping configuration values and
+- [x] Keep queries/filters in URLs while keeping configuration values and
       credential refs out of URLs, logs, and telemetry.
-- [ ] Ship first-party content-addressed assets and a strict CSP.
-- [ ] Complete keyboard, screen-reader, zoom, contrast, reduced-motion,
+- [x] Ship first-party content-addressed assets and a strict CSP.
+- [x] Complete keyboard, screen-reader, zoom, contrast, reduced-motion,
       responsive, focus, and no-JavaScript acceptance review.
-- [ ] Establish performance budgets for cached search, detail fetch, HTML, and
+- [x] Establish performance budgets for cached search, detail fetch, HTML, and
       enhancement assets on native and Worker.
 
 **Done when:** the browser meets the interaction/accessibility/performance
@@ -118,21 +119,21 @@ contract in `04-web-experience.md` and does not fork documentation semantics.
 
 ## Phase 5: APM, offline docs, and man pages
 
-- [ ] Record documentation pins in installed package metadata/profile
+- [x] Record documentation pins in installed package metadata/profile
       generations and expose deterministic profile links.
-- [ ] Retain exact docs across install, switch, upgrade, rollback, reboot, and
+- [x] Retain exact docs across install, switch, upgrade, rollback, reboot, and
       profile GC; support image-seeded packages and explicit legacy absence.
-- [ ] Implement `apm docs`, `apm options`, `apm schema`, cache/sync controls,
+- [x] Implement `apm docs`, `apm options`, `apm schema`, cache/sync controls,
       shared terminal/JSON renderers, and `apm show` integration.
-- [ ] Implement safe shared roff/man rendering without Markdown/Pandoc and a
+- [x] Implement safe shared roff/man rendering without Markdown/Pandoc and a
       complete plain-terminal fallback.
-- [ ] Implement the loopback-only-by-default `apm docs serve` Web experience.
-- [ ] Implement `aos hub docs` commands over `DocumentationService` with stable
+- [x] Implement the loopback-only-by-default `apm docs serve` Web experience.
+- [x] Implement `aos hub docs` commands over `DocumentationService` with stable
       JSON/table/JSONL behavior.
-- [ ] Extend `aos doc` with explicit `source`, `package`, and `hub` backends while
+- [x] Extend `aos doc` with explicit `source`, `package`, and `hub` backends while
       preserving existing source-tree command behavior through a documented
       compatibility/deprecation window.
-- [ ] Prove offline installed documentation after all registry/network/cache
+- [x] Prove offline installed documentation after all registry/network/cache
       authoring inputs are removed.
 
 **Done when:** an operator can inspect the exact active or rolled-back package
@@ -140,16 +141,16 @@ offline through terminal, man, JSON, or the local browser.
 
 ## Phase 6: language tooling and dynamic hints
 
-- [ ] Implement `aos language-server --stdio` over the shared schema resolver.
-- [ ] Add completion/resolve, hover, diagnostics, definition, links, symbols,
+- [x] Implement `aos language-server --stdio` over the shared schema resolver.
+- [x] Add completion/resolve, hover, diagnostics, definition, links, symbols,
       deprecation/desired-package/credential code actions, and explicit
       authoritative `apm config diff` actions.
-- [ ] Implement local-installed, verified-cache, and authenticated Hub schema
+- [x] Implement local-installed, verified-cache, and authenticated Hub schema
       selection with digest/ETag caching.
-- [ ] Add bounded dynamic shell completion for package/schema-dependent values.
-- [ ] Publish thin editor-integration guidance and at least one conformance
+- [x] Add bounded dynamic shell completion for package/schema-dependent values.
+- [x] Publish thin editor-integration guidance and at least one conformance
       client without embedding copied catalogs.
-- [ ] Test privacy, offline operation, dynamic-Nix uncertainty, identity changes,
+- [x] Test privacy, offline operation, dynamic-Nix uncertainty, identity changes,
       and advisory versus authoritative result labeling.
 
 **Done when:** editors and shells consume the same exact schema as Web/APM and
@@ -166,54 +167,54 @@ classify every section as:
 3. cross-package architecture/tutorial/runbook material to retain in an
    appropriately named authored guide.
 
-- [ ] Migrate unique content and then remove
+- [x] Migrate unique content and then remove
       [`cilium.md`](../../users/aos/cilium.md).
-- [ ] Migrate unique content and then remove
+- [x] Migrate unique content and then remove
       [`cloudcore.md`](../../users/aos/cloudcore.md).
-- [ ] Migrate unique content and then remove
+- [x] Migrate unique content and then remove
       [`conntrackd.md`](../../users/aos/conntrackd.md).
-- [ ] Migrate unique content and then remove
+- [x] Migrate unique content and then remove
       [`containerd.md`](../../users/aos/containerd.md).
-- [ ] Migrate unique content and then remove
+- [x] Migrate unique content and then remove
       [`edgecore.md`](../../users/aos/edgecore.md).
-- [ ] Migrate unique content and then remove
+- [x] Migrate unique content and then remove
       [`envoy.md`](../../users/aos/envoy.md).
-- [ ] Migrate unique content and then remove
+- [x] Migrate unique content and then remove
       [`etcd.md`](../../users/aos/etcd.md).
-- [ ] Migrate unique content and then remove
+- [x] Migrate unique content and then remove
       [`garage.md`](../../users/aos/garage.md).
-- [ ] Migrate unique content and then remove
+- [x] Migrate unique content and then remove
       [`k3s.md`](../../users/aos/k3s.md).
-- [ ] Migrate unique content and then remove
+- [x] Migrate unique content and then remove
       [`krb5-kdc.md`](../../users/aos/krb5-kdc.md).
-- [ ] Migrate unique content and then remove
+- [x] Migrate unique content and then remove
       [`longhorn.md`](../../users/aos/longhorn.md).
-- [ ] Migrate unique content and then remove
+- [x] Migrate unique content and then remove
       [`mariadb.md`](../../users/aos/mariadb.md).
-- [ ] Migrate unique content and then remove
+- [x] Migrate unique content and then remove
       [`nginx.md`](../../users/aos/nginx.md).
-- [ ] Migrate unique content and then remove
+- [x] Migrate unique content and then remove
       [`openldap.md`](../../users/aos/openldap.md).
-- [ ] Migrate unique content and then remove
+- [x] Migrate unique content and then remove
       [`postgresql.md`](../../users/aos/postgresql.md).
-- [ ] Migrate unique content and then remove
+- [x] Migrate unique content and then remove
       [`registry-server.md`](../../users/aos/registry-server.md).
-- [ ] Migrate unique content and then remove
+- [x] Migrate unique content and then remove
       [`rsyncd.md`](../../users/aos/rsyncd.md).
-- [ ] Replace the per-package link inventory in
+- [x] Replace the per-package link inventory in
       [`docs/users/aos/README.md`](../../users/aos/README.md) with the generated
       package browser/CLI entry points while preserving links to conceptual
       guides.
-- [ ] Update
+- [x] Update
       [`configuration.md`](../../users/aos/configuration.md) and
       [`package-authoring.md`](../../users/aos/package-authoring.md) to teach the
       generated documentation workflow, structured authoring API, and tooling
       without copying package option tables.
-- [ ] Keep conceptual Hub deployment documentation such as
+- [x] Keep conceptual Hub deployment documentation such as
       [`docs/users/aos-hub/native.md`](../../users/aos-hub/native.md) unless a
       separately reviewed migration proves its content is package reference
       material.
-- [ ] Add lint/completeness gates that reject new handwritten package option or
+- [x] Add lint/completeness gates that reject new handwritten package option or
       runtime reference tables after cutover and require generated docs for new
       public configurable packages.
 
@@ -224,13 +225,13 @@ no information or usability regression.
 
 ## Rollout and rollback
 
-Phases 1–6 are additive. A registry can publish docs for a subset of packages
-without deleting current guides. Hub schema/search migrations build new index
-generations and can roll back to the previous selected generation. APM ignores
-optional docs on legacy packages but fails closed for advertised required
-features.
+The object/API additions remain backward compatible: Hub and APM accept legacy
+packages without an advertised documentation artifact and fail closed when an
+advertised required artifact is missing or invalid. Hub index generations remain
+atomic and rebuildable, and installed profile generations pin the exact document
+so package upgrade and rollback move code and documentation together.
 
-Phase 7 is the only destructive documentation change. It occurs after a release
-containing Web, API, CLI/offline, and language-tooling surfaces has passed the
-inventory parity gate. Rollback restores the deleted files only if the generated
-surface itself is rolled back; it must not create two maintained authorities.
+The handwritten-reference cutover intentionally leaves one authority. A source
+rollback may restore the deleted files together with older tooling, but a running
+release never maintains handwritten and generated package references in
+parallel.
