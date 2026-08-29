@@ -42,7 +42,8 @@ pub use hot_fork::{
     QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX, QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION,
     QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES, QMP_HOT_FORK_MUTEX_INVENTORY_MAX,
     QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND,
-    QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION,
+    QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND,
+    QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION,
     QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
     QMP_HOT_FORK_PRIVATE_RINGS_SCHEMA_VERSION, QMP_HOT_FORK_RCU_BARRIER_COMMAND,
     QMP_HOT_FORK_RCU_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_RCU_INVENTORY_MAX,
@@ -62,6 +63,7 @@ pub use hot_fork::{
     QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,
     QmpHotForkBlockSnapshotRoot, QmpHotForkBottomHalf, QmpHotForkBottomHalfInventory,
     QmpHotForkMutex, QmpHotForkMutexInventory, QmpHotForkPluginBarrierState,
+    QmpHotForkPluginEndpointIdentity, QmpHotForkPluginEndpointState,
     QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState, QmpHotForkProof,
     QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness,
     QmpHotForkTemplateOutcome, QmpHotForkTemplateState, QmpHotForkThread,
@@ -73,9 +75,10 @@ use hot_fork::{
     parse_hot_fork_bh_timer_barrier_state, parse_hot_fork_block_backend_inventory,
     parse_hot_fork_block_barrier_state, parse_hot_fork_bottom_half_inventory,
     parse_hot_fork_mutex_inventory, parse_hot_fork_plugin_barrier_state,
-    parse_hot_fork_plugin_resource_inventory, parse_hot_fork_private_ring_state,
-    parse_hot_fork_rcu_barrier_state, parse_hot_fork_rcu_inventory, parse_hot_fork_readiness,
-    parse_hot_fork_template_state, parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
+    parse_hot_fork_plugin_endpoint_state, parse_hot_fork_plugin_resource_inventory,
+    parse_hot_fork_private_ring_state, parse_hot_fork_rcu_barrier_state,
+    parse_hot_fork_rcu_inventory, parse_hot_fork_readiness, parse_hot_fork_template_state,
+    parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
 };
 pub use snapshot_tag::QmpSnapshotTag;
 pub use vmstate_control::QemuQmpVmStateControlChannel;
@@ -474,7 +477,7 @@ where
                     })
                 }
             });
-        self.poison_after_private_ring_mutation_error(result)
+        self.poison_after_descriptor_mutation_error(result)
     }
 
     /// Reads QEMU's exact retained private-ring descriptor state.
@@ -528,7 +531,113 @@ where
                     Ok(state)
                 }
             });
-        self.poison_after_private_ring_mutation_error(result)
+        self.poison_after_descriptor_mutation_error(result)
+    }
+
+    /// Makes QEMU retain independently duplicated plugin control/wake endpoints.
+    ///
+    /// Both descriptors must already have been imported through
+    /// [`Self::install_descriptor`]. QEMU authenticates the control socket by
+    /// Linux `SO_COOKIE`, the wake eventfd by `/proc/self/fdinfo`, and requires
+    /// both fresh endpoints to be empty. This does not install either endpoint
+    /// in a fork child or acknowledge a hot-fork readiness proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails, QEMU rejects the exact
+    /// endpoint basis, or its response violates the closed stage contract.
+    /// Every error poisons the client because retained ownership may be
+    /// ambiguous.
+    pub fn stage_hot_fork_plugin_endpoints(
+        &mut self,
+        control_name: &QmpDescriptorName,
+        wake_name: &QmpDescriptorName,
+        identity: QmpHotForkPluginEndpointIdentity,
+        private_ring_generation: u64,
+    ) -> Result<QmpHotForkPluginEndpointState, QmpError> {
+        let result = self
+            .send_command_return(QmpCommand::HotForkPluginEndpoints {
+                action: HotForkPluginEndpointAction::Stage,
+                control_name: Some(control_name),
+                wake_name: Some(wake_name),
+                identity: Some(identity),
+            })
+            .and_then(|response| parse_hot_fork_plugin_endpoint_state(&response.value))
+            .and_then(|state| {
+                let exact_basis = state.staged()
+                    && state.control_name() == Some(control_name)
+                    && state.wake_name() == Some(wake_name)
+                    && state.identity() == Some(identity)
+                    && state.private_ring_generation() == private_ring_generation;
+                if exact_basis {
+                    Ok(state)
+                } else {
+                    Err(QmpError::MalformedTypedResponse {
+                        command: QmpCommandKind::HotForkPluginEndpoints,
+                        response: format!(
+                            "plugin endpoint stage did not retain {control_name:?}/{wake_name:?}/{identity:?}"
+                        ),
+                    })
+                }
+            });
+        self.poison_after_descriptor_mutation_error(result)
+    }
+
+    /// Reads QEMU's exact retained branch-private plugin endpoint state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the query fails or QEMU returns a state outside
+    /// the closed version-1 contract.
+    pub fn query_hot_fork_plugin_endpoints(
+        &mut self,
+    ) -> Result<QmpHotForkPluginEndpointState, QmpError> {
+        let response = self.send_command_return(QmpCommand::HotForkPluginEndpoints {
+            action: HotForkPluginEndpointAction::Query,
+            control_name: None,
+            wake_name: None,
+            identity: None,
+        })?;
+        parse_hot_fork_plugin_endpoint_state(&response.value)
+    }
+
+    /// Releases QEMU's exact independently retained plugin endpoint pair.
+    ///
+    /// Standard monitor-owned `getfd` names remain until callers close them
+    /// after this command confirms both QEMU-owned duplicates are absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails, QEMU rejects the exact
+    /// endpoint basis, or the response still reports staged endpoints. Every
+    /// error poisons the client because retained ownership may be ambiguous.
+    pub fn release_hot_fork_plugin_endpoints(
+        &mut self,
+        control_name: &QmpDescriptorName,
+        wake_name: &QmpDescriptorName,
+        identity: QmpHotForkPluginEndpointIdentity,
+    ) -> Result<QmpHotForkPluginEndpointState, QmpError> {
+        let result = self
+            .send_command_return(QmpCommand::HotForkPluginEndpoints {
+                action: HotForkPluginEndpointAction::Release,
+                control_name: Some(control_name),
+                wake_name: Some(wake_name),
+                identity: Some(identity),
+            })
+            .and_then(|response| parse_hot_fork_plugin_endpoint_state(&response.value))
+            .and_then(|state| {
+                if state.staged() || state.generation() == 0 {
+                    Err(QmpError::MalformedTypedResponse {
+                        command: QmpCommandKind::HotForkPluginEndpoints,
+                        response: String::from(
+                            "plugin endpoint release did not report a positive absent generation",
+                        ),
+                    })
+                } else {
+                    Ok(state)
+                }
+            });
+        self.poison_after_descriptor_mutation_error(result)
     }
 
     /// Confirms that launch predeclared the fixed guest-introspection channel.
@@ -1452,7 +1561,7 @@ where
         })
     }
 
-    fn poison_after_private_ring_mutation_error<T>(
+    fn poison_after_descriptor_mutation_error<T>(
         &mut self,
         result: Result<T, QmpError>,
     ) -> Result<T, QmpError> {
@@ -1814,6 +1923,8 @@ pub enum QmpCommandKind {
     HotForkTemplate,
     /// QEMU-owned branch-private ring descriptor retention operation.
     HotForkPrivateRings,
+    /// QEMU-owned branch-private plugin endpoint retention operation.
+    HotForkPluginEndpoints,
     /// QEMU-owned hot-fork allocated-bottom-half inventory query.
     QueryHotForkBottomHalfInventory,
     /// QEMU-owned hot-fork mutex ownership inventory query.
@@ -1861,6 +1972,7 @@ impl QmpCommandKind {
             Self::HotForkBlockBarrier => QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
             Self::HotForkTemplate => QMP_HOT_FORK_TEMPLATE_COMMAND,
             Self::HotForkPrivateRings => QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
+            Self::HotForkPluginEndpoints => QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND,
             Self::QueryHotForkBottomHalfInventory => {
                 QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND
             }
@@ -1933,6 +2045,13 @@ enum HotForkPrivateRingAction {
     Release,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HotForkPluginEndpointAction {
+    Stage,
+    Query,
+    Release,
+}
+
 impl HotForkTemplateAction {
     const fn wire_name(self) -> &'static str {
         match self {
@@ -1944,6 +2063,16 @@ impl HotForkTemplateAction {
 }
 
 impl HotForkPrivateRingAction {
+    const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Stage => "stage",
+            Self::Query => "query",
+            Self::Release => "release",
+        }
+    }
+}
+
+impl HotForkPluginEndpointAction {
     const fn wire_name(self) -> &'static str {
         match self {
             Self::Stage => "stage",
@@ -2048,6 +2177,12 @@ enum QmpCommand<'a> {
         name: Option<&'a QmpDescriptorName>,
         identity: Option<SetupRegionBackingIdentity>,
     },
+    HotForkPluginEndpoints {
+        action: HotForkPluginEndpointAction,
+        control_name: Option<&'a QmpDescriptorName>,
+        wake_name: Option<&'a QmpDescriptorName>,
+        identity: Option<QmpHotForkPluginEndpointIdentity>,
+    },
     QueryHotForkBottomHalfInventory,
     QueryHotForkMutexInventory,
     QueryHotForkTimerInventory,
@@ -2093,6 +2228,7 @@ impl QmpCommand<'_> {
             Self::HotForkBlockBarrier { .. } => QmpCommandKind::HotForkBlockBarrier,
             Self::HotForkTemplate { .. } => QmpCommandKind::HotForkTemplate,
             Self::HotForkPrivateRings { .. } => QmpCommandKind::HotForkPrivateRings,
+            Self::HotForkPluginEndpoints { .. } => QmpCommandKind::HotForkPluginEndpoints,
             Self::QueryHotForkBottomHalfInventory => {
                 QmpCommandKind::QueryHotForkBottomHalfInventory
             }
@@ -2259,6 +2395,44 @@ impl QmpCommand<'_> {
                 }
                 json!({
                     "exec-oob": QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
+                    "arguments": Value::Object(arguments),
+                })
+            }
+            Self::HotForkPluginEndpoints {
+                action,
+                control_name,
+                wake_name,
+                identity,
+            } => {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert(
+                    String::from("action"),
+                    Value::String(action.wire_name().to_owned()),
+                );
+                if let Some(control_name) = control_name {
+                    arguments.insert(
+                        String::from("control-fdname"),
+                        Value::String(control_name.as_str().to_owned()),
+                    );
+                }
+                if let Some(wake_name) = wake_name {
+                    arguments.insert(
+                        String::from("wake-fdname"),
+                        Value::String(wake_name.as_str().to_owned()),
+                    );
+                }
+                if let Some(identity) = identity {
+                    arguments.insert(
+                        String::from("expected-control-socket-cookie"),
+                        Value::from(identity.control_socket_cookie()),
+                    );
+                    arguments.insert(
+                        String::from("expected-wake-eventfd-id"),
+                        Value::from(identity.wake_eventfd_id()),
+                    );
+                }
+                json!({
+                    "exec-oob": QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND,
                     "arguments": Value::Object(arguments),
                 })
             }

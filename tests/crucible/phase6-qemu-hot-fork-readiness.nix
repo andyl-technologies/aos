@@ -152,6 +152,11 @@ in
           jq -e -s 'any(.[]; has("error"))' "$out/stock-private-rings.json" >/dev/null \
             || fail "stock QEMU unexpectedly exposed the Crucible private-ring stage"
           qmp "$stock_socket" \
+            '{"exec-oob":"crucible-hot-fork-plugin-endpoints","arguments":{"action":"query"}}' \
+            "$out/stock-plugin-endpoints.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/stock-plugin-endpoints.json" >/dev/null \
+            || fail "stock QEMU unexpectedly exposed the Crucible plugin-endpoint stage"
+          qmp "$stock_socket" \
             '{"exec-oob":"query-crucible-hot-fork-bottom-half-inventory"}' \
             "$out/stock-bottom-half-inventory.json"
           jq -e -s 'any(.[]; has("error"))' "$out/stock-bottom-half-inventory.json" >/dev/null \
@@ -214,6 +219,25 @@ in
           ' "$out/private-rings-initial.json" >/dev/null \
             || { cat "$out/private-rings-initial.json" >&2; fail "initial private-ring stage was not exact"; }
 
+          qmp "$patched_socket" \
+            '{"exec-oob":"crucible-hot-fork-plugin-endpoints","arguments":{"action":"query"}}' \
+            "$out/plugin-endpoints-initial.json"
+          jq -e -s '
+            [.[] | select(has("return"))][-1].return == {
+              "schema-version": 1,
+              "generation": 0,
+              "staged": false,
+              "control-socket-cookie": 0,
+              "wake-eventfd-id": 0,
+              "private-ring-generation": 0,
+              "control-unix-stream": false,
+              "wake-eventfd": false,
+              "disposition-complete": false,
+              "readiness-proof-acknowledged": false
+            }
+          ' "$out/plugin-endpoints-initial.json" >/dev/null \
+            || { cat "$out/plugin-endpoints-initial.json" >&2; fail "initial plugin-endpoint stage was not exact"; }
+
           PATCHED_SOCKET="$patched_socket" PRIVATE_RING_AUDIT="$out/private-rings-live.json" \
             ${pkgs.python3}/bin/python3 <<'PY'
           import array
@@ -221,6 +245,7 @@ in
           import json
           import os
           import socket
+          import struct
 
           socket_path = os.environ["PATCHED_SOCKET"]
           audit_path = os.environ["PRIVATE_RING_AUDIT"]
@@ -279,6 +304,60 @@ in
               "exec-oob": "crucible-hot-fork-private-rings",
               "arguments": {"action": "query"},
           })
+
+          control_host, control_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+          wake = os.eventfd(0, os.EFD_CLOEXEC | os.EFD_NONBLOCK)
+          control_cookie = struct.unpack(
+              "=Q",
+              control_child.getsockopt(
+                  socket.SOL_SOCKET,
+                  getattr(socket, "SO_COOKIE", 57),
+                  8,
+              ),
+          )[0]
+          with open(f"/proc/self/fdinfo/{wake}", "r", encoding="utf-8") as fdinfo:
+              eventfd_lines = [
+                  line.split(":", 1)[1].strip()
+                  for line in fdinfo
+                  if line.startswith("eventfd-id:")
+              ]
+          if len(eventfd_lines) != 1:
+              raise RuntimeError(f"eventfd identity was not exact: {eventfd_lines}")
+          wake_identity = int(eventfd_lines[0], 10)
+          control_name = "crucible-hfork-control-v1-live"
+          wake_name = "crucible-hfork-wake-v1-live"
+
+          def transfer_fd(name, descriptor):
+              request = json.dumps(
+                  {"execute": "getfd", "arguments": {"fdname": name}},
+                  separators=(",", ":"),
+              ).encode() + b"\r\n"
+              transferred = array.array("i", [descriptor])
+              connection.sendmsg(
+                  [request],
+                  [(socket.SOL_SOCKET, socket.SCM_RIGHTS, transferred)],
+              )
+              response = receive()
+              if "error" in response:
+                  raise RuntimeError(f"endpoint getfd failed: {response}")
+              return response
+
+          control_getfd = transfer_fd(control_name, control_child.fileno())
+          wake_getfd = transfer_fd(wake_name, wake)
+          endpoint_stage = send({
+              "exec-oob": "crucible-hot-fork-plugin-endpoints",
+              "arguments": {
+                  "action": "stage",
+                  "control-fdname": control_name,
+                  "wake-fdname": wake_name,
+                  "expected-control-socket-cookie": control_cookie,
+                  "expected-wake-eventfd-id": wake_identity,
+              },
+          })
+          endpoint_query = send({
+              "exec-oob": "crucible-hot-fork-plugin-endpoints",
+              "arguments": {"action": "query"},
+          })
           foreign_release = send_raw({
               "exec-oob": "crucible-hot-fork-private-rings",
               "arguments": {
@@ -292,6 +371,45 @@ in
           after_rejected_release = send({
               "exec-oob": "crucible-hot-fork-private-rings",
               "arguments": {"action": "query"},
+          })
+          retained_ring_release = send_raw({
+              "exec-oob": "crucible-hot-fork-private-rings",
+              "arguments": {
+                  "action": "release",
+                  "fdname": name,
+                  "expected-device": identity.st_dev,
+                  "expected-inode": identity.st_ino,
+                  "expected-length": identity.st_size,
+              },
+          })
+          endpoint_foreign_release = send_raw({
+              "exec-oob": "crucible-hot-fork-plugin-endpoints",
+              "arguments": {
+                  "action": "release",
+                  "control-fdname": control_name,
+                  "wake-fdname": wake_name,
+                  "expected-control-socket-cookie": control_cookie,
+                  "expected-wake-eventfd-id": wake_identity + 1,
+              },
+          })
+          endpoint_after_rejected_release = send({
+              "exec-oob": "crucible-hot-fork-plugin-endpoints",
+              "arguments": {"action": "query"},
+          })
+          endpoint_release = send({
+              "exec-oob": "crucible-hot-fork-plugin-endpoints",
+              "arguments": {
+                  "action": "release",
+                  "control-fdname": control_name,
+                  "wake-fdname": wake_name,
+                  "expected-control-socket-cookie": control_cookie,
+                  "expected-wake-eventfd-id": wake_identity,
+              },
+          })
+          wake_closefd = send({"execute": "closefd", "arguments": {"fdname": wake_name}})
+          control_closefd = send({
+              "execute": "closefd",
+              "arguments": {"fdname": control_name},
           })
           release = send({
               "exec-oob": "crucible-hot-fork-private-rings",
@@ -315,18 +433,39 @@ in
                   },
                   "stage": stage,
                   "query": query,
+                  "control-name": control_name,
+                  "wake-name": wake_name,
+                  "control-cookie": control_cookie,
+                  "wake-identity": wake_identity,
+                  "control-getfd": control_getfd,
+                  "wake-getfd": wake_getfd,
+                  "endpoint-stage": endpoint_stage,
+                  "endpoint-query": endpoint_query,
                   "foreign-release": foreign_release,
                   "after-rejected-release": after_rejected_release,
+                  "retained-ring-release": retained_ring_release,
+                  "endpoint-foreign-release": endpoint_foreign_release,
+                  "endpoint-after-rejected-release": endpoint_after_rejected_release,
+                  "endpoint-release": endpoint_release,
+                  "wake-closefd": wake_closefd,
+                  "control-closefd": control_closefd,
                   "release": release,
                   "closefd": closefd,
               }, audit, separators=(",", ":"))
               audit.write("\n")
           os.close(descriptor)
+          os.close(wake)
+          control_child.close()
+          control_host.close()
           connection.close()
           PY
           jq -e '
             .identity as $identity |
             .name as $name |
+            ."control-name" as $control_name |
+            ."wake-name" as $wake_name |
+            ."control-cookie" as $control_cookie |
+            ."wake-identity" as $wake_identity |
             .stage.return == {
               "schema-version": 1,
               "generation": 1,
@@ -340,8 +479,42 @@ in
               "readiness-proof-acknowledged": false
             } and
             .query.return == .stage.return and
+            ."control-getfd".return == {} and
+            ."wake-getfd".return == {} and
+            ."endpoint-stage".return == {
+              "schema-version": 1,
+              "generation": 1,
+              "staged": true,
+              "control-fdname": $control_name,
+              "wake-fdname": $wake_name,
+              "control-socket-cookie": $control_cookie,
+              "wake-eventfd-id": $wake_identity,
+              "private-ring-generation": 1,
+              "control-unix-stream": true,
+              "wake-eventfd": true,
+              "disposition-complete": false,
+              "readiness-proof-acknowledged": false
+            } and
+            ."endpoint-query".return == ."endpoint-stage".return and
             (."foreign-release".error | type) == "object" and
             ."after-rejected-release".return == .stage.return and
+            (."retained-ring-release".error | type) == "object" and
+            (."endpoint-foreign-release".error | type) == "object" and
+            ."endpoint-after-rejected-release".return == ."endpoint-stage".return and
+            ."endpoint-release".return == {
+              "schema-version": 1,
+              "generation": 2,
+              "staged": false,
+              "control-socket-cookie": 0,
+              "wake-eventfd-id": 0,
+              "private-ring-generation": 0,
+              "control-unix-stream": false,
+              "wake-eventfd": false,
+              "disposition-complete": false,
+              "readiness-proof-acknowledged": false
+            } and
+            ."wake-closefd".return == {} and
+            ."control-closefd".return == {} and
             .release.return == {
               "schema-version": 1,
               "generation": 2,
@@ -1405,7 +1578,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0140-crucible-account-hot-fork-worker-local-state.patch
+          patch=0141-crucible-stage-hot-fork-plugin-endpoints.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -1473,6 +1646,14 @@ in
           private_ring_two_layer_release=true
           private_ring_disposition_complete=false
           private_ring_readiness_proof_acknowledged=false
+          plugin_endpoint_stage_schema_version=1
+          plugin_endpoint_stage_initially_absent=true
+          plugin_endpoint_exact_kernel_identity=true
+          plugin_endpoint_private_ring_generation_bound=true
+          plugin_endpoint_foreign_release_rejected=true
+          plugin_endpoint_two_layer_release=true
+          plugin_endpoint_disposition_complete=false
+          plugin_endpoint_readiness_proof_acknowledged=false
           template_coordinator_schema_version=9
           template_coordinator_idle_stable=true
           template_coordinator_unregistered_shape=true

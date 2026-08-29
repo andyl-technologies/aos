@@ -607,6 +607,12 @@ impl QemuNode {
                 "descriptor release requires a running node",
             ));
         }
+        if self.hot_fork_plugin_endpoint_stage.is_some() {
+            return Err(QemuNodeChannelError::new(
+                "release hot-fork private ring mapping",
+                "plugin endpoints still retain this private-ring generation",
+            ));
+        }
         let (name, identity) = match self.hot_fork_private_ring_stage.as_ref() {
             Some(QemuHotForkPrivateRingStage::Installed(mapping)) => (
                 mapping.descriptor_name().clone(),

@@ -979,6 +979,13 @@
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "the version-5 plugin barrier distinguishes an idle parked worker from a parked worker retaining one dequeued item in thread-local state, requires pending workers to remain parked, and keeps quiescence false until every local item is either discarded or admitted without acknowledging proof bit 6";
     }
+    {
+      file = "0141-crucible-stage-hot-fork-plugin-endpoints.patch";
+      catalogName = "crucible-hot-fork-plugin-endpoint-stage";
+      class = "F";
+      enforces = "HFORK-3,HFORK-8,HFORK-9";
+      capability = "QEMU retains and authenticates distinct connected-empty AF_UNIX control and empty eventfd wake endpoints against exact kernel identities, normalizes and verifies the retained eventfd as nonblocking after standard-QMP import, and binds both to one retained private-ring generation without installing either endpoint in a child or acknowledging readiness bits 6 through 8";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

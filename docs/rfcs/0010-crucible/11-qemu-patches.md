@@ -2286,6 +2286,29 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   clone local state, reconstruct workers, or acknowledge proof bit 6.
 - **Risk:** F.
 
+### crucible-hot-fork-plugin-endpoint-stage — retain branch-private plugin endpoints
+
+- **Patch:** `0141-crucible-stage-hot-fork-plugin-endpoints.patch`.
+- **Enforces:** [HFORK-3], [HFORK-8], [HFORK-9].
+- **Mechanism:** an OOB QMP command duplicates distinct standard-QMP `getfd`
+  entries for one connected-empty AF_UNIX control socket and one empty eventfd.
+  QEMU authenticates the socket by Linux `SO_COOKIE`, the eventfd by
+  `/proc/self/fdinfo` identity, normalizes and verifies the retained eventfd as
+  nonblocking after standard QMP import, and binds both retained duplicates to
+  the exact current private-ring generation.
+- **Micro-test:** typed Rust fixtures pin the exact stage/query/release schema,
+  generation and identity checks, poisoning on contradictory ownership
+  responses, and two-descriptor acquisition/release ordering. The live QEMU
+  gate transfers real socket/eventfd descriptors, rejects foreign release and
+  private-ring release while endpoints remain staged, then proves both QEMU
+  and monitor ownership layers close in order.
+- **Inertness:** endpoint retention is reachable only through the authorized
+  custom command after two standard `getfd` imports and one private-ring stage.
+  It does not fork, install endpoints in a child, expose the host continuation,
+  recreate plugin workers, complete inherited-descriptor disposition, or
+  acknowledge readiness bits 6 through 8.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

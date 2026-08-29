@@ -1846,7 +1846,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-ring-producer-barrier";
         liveEvidence = ''
-          grep -Fxq 'patch=0140-crucible-account-hot-fork-worker-local-state.patch' "$live_result"
+          grep -Fxq 'patch=0141-crucible-stage-hot-fork-plugin-endpoints.patch' "$live_result"
           grep -Fxq 'plugin_barrier_schema_version=5' "$live_result"
           grep -Fxq 'plugin_barrier_unregistered_shape=true' "$live_result"
           grep -Fxq 'plugin_ring_proof_acknowledged=false' "$live_result"
@@ -1865,7 +1865,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-plugin-worker-manifest";
         liveEvidence = ''
-          grep -Fxq 'patch=0140-crucible-account-hot-fork-worker-local-state.patch' "$live_result"
+          grep -Fxq 'patch=0141-crucible-stage-hot-fork-plugin-endpoints.patch' "$live_result"
           grep -Fxq 'plugin_resource_inventory_schema_version=2' "$live_result"
           grep -Fxq 'plugin_resource_inventory_unregistered_shape=true' "$live_result"
           grep -Fxq 'plugin_ring_proof_acknowledged=false' "$live_result"
@@ -1883,7 +1883,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-plugin-worker-barrier";
         liveEvidence = ''
-          grep -Fxq 'patch=0140-crucible-account-hot-fork-worker-local-state.patch' "$live_result"
+          grep -Fxq 'patch=0141-crucible-stage-hot-fork-plugin-endpoints.patch' "$live_result"
           grep -Fxq 'plugin_barrier_schema_version=5' "$live_result"
           grep -Fxq 'plugin_worker_mask_bound=true' "$live_result"
           grep -Fxq 'plugin_worker_parking_bound=true' "$live_result"
@@ -1905,7 +1905,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-ring-consumer-barrier";
         liveEvidence = ''
-          grep -Fxq 'patch=0140-crucible-account-hot-fork-worker-local-state.patch' "$live_result"
+          grep -Fxq 'patch=0141-crucible-stage-hot-fork-plugin-endpoints.patch' "$live_result"
           grep -Fxq 'plugin_barrier_schema_version=5' "$live_result"
           grep -Fxq 'plugin_ring_consumer_admission_bound=true' "$live_result"
           grep -Fxq 'plugin_ring_proof_acknowledged=false' "$live_result"
@@ -1925,7 +1925,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-private-ring-stage";
         liveEvidence = ''
-          grep -Fxq 'patch=0140-crucible-account-hot-fork-worker-local-state.patch' "$live_result"
+          grep -Fxq 'patch=0141-crucible-stage-hot-fork-plugin-endpoints.patch' "$live_result"
           grep -Fxq 'private_ring_stage_schema_version=1' "$live_result"
           grep -Fxq 'private_ring_stage_initially_absent=true' "$live_result"
           grep -Fxq 'private_ring_live_descriptor_transaction=true' "$live_result"
@@ -1954,7 +1954,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-worker-local-state";
         liveEvidence = ''
-          grep -Fxq 'patch=0140-crucible-account-hot-fork-worker-local-state.patch' "$live_result"
+          grep -Fxq 'patch=0141-crucible-stage-hot-fork-plugin-endpoints.patch' "$live_result"
           grep -Fxq 'plugin_barrier_schema_version=5' "$live_result"
           grep -Fxq 'plugin_worker_pending_local_bound=true' "$live_result"
           grep -Fxq 'plugin_ring_proof_acknowledged=false' "$live_result"
@@ -1965,6 +1965,37 @@
             ${patchDir}/0140-crucible-account-hot-fork-worker-local-state.patch
           grep -Fq "'pending-worker-mask': 'uint64'" \
             ${patchDir}/0140-crucible-account-hot-fork-worker-local-state.patch
+        '';
+      };
+    }
+    {
+      patch = "0141-crucible-stage-hot-fork-plugin-endpoints.patch";
+      check = certifyExactPatch {
+        patchName = "0141-crucible-stage-hot-fork-plugin-endpoints.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-plugin-endpoint-stage";
+        liveEvidence = ''
+          grep -Fxq 'patch=0141-crucible-stage-hot-fork-plugin-endpoints.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_stage_schema_version=1' "$live_result"
+          grep -Fxq 'plugin_endpoint_stage_initially_absent=true' "$live_result"
+          grep -Fxq 'plugin_endpoint_exact_kernel_identity=true' "$live_result"
+          grep -Fxq 'plugin_endpoint_private_ring_generation_bound=true' "$live_result"
+          grep -Fxq 'plugin_endpoint_foreign_release_rejected=true' "$live_result"
+          grep -Fxq 'plugin_endpoint_two_layer_release=true' "$live_result"
+          grep -Fxq 'plugin_endpoint_disposition_complete=false' "$live_result"
+          grep -Fxq 'plugin_endpoint_readiness_proof_acknowledged=false' "$live_result"
+          grep -Fq 'SO_COOKIE' \
+            ${patchDir}/0141-crucible-stage-hot-fork-plugin-endpoints.patch
+          grep -Fq 'eventfd-id:' \
+            ${patchDir}/0141-crucible-stage-hot-fork-plugin-endpoints.patch
+          grep -Fq 'private_ring_generation' \
+            ${patchDir}/0141-crucible-stage-hot-fork-plugin-endpoints.patch
+          grep -Fq 'while plugin endpoints retain their generation' \
+            ${patchDir}/0141-crucible-stage-hot-fork-plugin-endpoints.patch
+          grep -Fq 'report->disposition_complete = false' \
+            ${patchDir}/0141-crucible-stage-hot-fork-plugin-endpoints.patch
+          grep -Fq 'report->readiness_proof_acknowledged = false' \
+            ${patchDir}/0141-crucible-stage-hot-fork-plugin-endpoints.patch
         '';
       };
     }

@@ -22,8 +22,9 @@ use std::thread;
 #[cfg(target_os = "linux")]
 use crucible_qemu::{
     QMP_CAPABILITIES_COMMAND, QMP_CLOSEFD_COMMAND, QMP_GETFD_COMMAND,
-    QMP_HOT_FORK_PRIVATE_RINGS_COMMAND, QMP_QUIT_COMMAND_NAME, QemuQmpVmStateControlChannel,
-    QmpClient, QmpCommandKind, QmpDescriptorName, QmpError,
+    QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND, QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
+    QMP_QUIT_COMMAND_NAME, QemuQmpVmStateControlChannel, QmpClient, QmpCommandKind,
+    QmpDescriptorName, QmpError, QmpHotForkPluginEndpointIdentity,
 };
 #[cfg(target_os = "linux")]
 use crucible_shmem::mmap_setup_region;
@@ -249,6 +250,116 @@ fn vmstate_control_stages_and_releases_both_descriptor_ownership_layers()
     assert_eq!(
         requests[3].get("execute").and_then(Value::as_str),
         Some(QMP_CLOSEFD_COMMAND)
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn vmstate_control_orders_both_plugin_endpoint_ownership_layers() -> Result<(), Box<dyn Error>> {
+    let (client_stream, server_stream) = UnixStream::pair()?;
+    let control_source = tempfile::tempfile()?;
+    let wake_source = tempfile::tempfile()?;
+    let control_name = QmpDescriptorName::new("crucible-hfork-control-v1-owned")?;
+    let wake_name = QmpDescriptorName::new("crucible-hfork-wake-v1-owned")?;
+    let identity = QmpHotForkPluginEndpointIdentity::new(101, 202)
+        .ok_or("nonzero endpoint identity should be valid")?;
+    let expected_control_name = control_name.clone();
+    let expected_wake_name = wake_name.clone();
+    let server = thread::spawn(move || -> Result<Vec<Value>, String> {
+        let stream = negotiate_qmp(server_stream)?;
+        let (control_getfd, control_descriptor) = receive_qmp_descriptor_request(&stream)?;
+        drop(control_descriptor);
+        write_qmp_return(&stream, b"{\"return\":{}}\r\n")?;
+
+        let (wake_getfd, wake_descriptor) = receive_qmp_descriptor_request(&stream)?;
+        drop(wake_descriptor);
+        write_qmp_return(&stream, b"{\"return\":{}}\r\n")?;
+
+        let mut reader = BufReader::new(stream);
+        let stage = read_qmp_line(&mut reader)?;
+        let stage_response = format!(
+            concat!(
+                r#"{{"return":{{"schema-version":1,"generation":1,"staged":true,"control-fdname":"{}","wake-fdname":"{}","control-socket-cookie":101,"wake-eventfd-id":202,"private-ring-generation":7,"control-unix-stream":true,"wake-eventfd":true,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#,
+                "\r\n"
+            ),
+            expected_control_name.as_str(),
+            expected_wake_name.as_str(),
+        );
+        write_qmp_return(reader.get_ref(), stage_response.as_bytes())?;
+
+        let release = read_qmp_line(&mut reader)?;
+        write_qmp_return(
+            reader.get_ref(),
+            b"{\"return\":{\"schema-version\":1,\"generation\":2,\"staged\":false,\"control-socket-cookie\":0,\"wake-eventfd-id\":0,\"private-ring-generation\":0,\"control-unix-stream\":false,\"wake-eventfd\":false,\"disposition-complete\":false,\"readiness-proof-acknowledged\":false}}\r\n",
+        )?;
+        let wake_closefd = read_qmp_line(&mut reader)?;
+        write_qmp_return(reader.get_ref(), b"{\"return\":{}}\r\n")?;
+        let control_closefd = read_qmp_line(&mut reader)?;
+        write_qmp_return(reader.get_ref(), b"{\"return\":{}}\r\n")?;
+        Ok(vec![
+            control_getfd,
+            wake_getfd,
+            stage,
+            release,
+            wake_closefd,
+            control_closefd,
+        ])
+    });
+
+    let mut control = QemuQmpVmStateControlChannel::new(QmpClient::connect(client_stream)?);
+    control.install_hot_fork_plugin_endpoints(
+        &control_name,
+        control_source.as_fd(),
+        &wake_name,
+        wake_source.as_fd(),
+        identity,
+        7,
+    )?;
+    control.close_hot_fork_plugin_endpoints(&control_name, &wake_name, identity)?;
+
+    let requests = join_server(server)?;
+    assert_eq!(
+        requests[0].get("execute").and_then(Value::as_str),
+        Some(QMP_GETFD_COMMAND)
+    );
+    assert_eq!(
+        requests[0]
+            .pointer("/arguments/fdname")
+            .and_then(Value::as_str),
+        Some(control_name.as_str())
+    );
+    assert_eq!(
+        requests[1].get("execute").and_then(Value::as_str),
+        Some(QMP_GETFD_COMMAND)
+    );
+    assert_eq!(
+        requests[1]
+            .pointer("/arguments/fdname")
+            .and_then(Value::as_str),
+        Some(wake_name.as_str())
+    );
+    assert_eq!(
+        requests[2].get("exec-oob").and_then(Value::as_str),
+        Some(QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND)
+    );
+    assert_eq!(
+        requests[3]
+            .pointer("/arguments/action")
+            .and_then(Value::as_str),
+        Some("release")
+    );
+    assert_eq!(
+        requests[4]
+            .pointer("/arguments/fdname")
+            .and_then(Value::as_str),
+        Some(wake_name.as_str())
+    );
+    assert_eq!(
+        requests[5]
+            .pointer("/arguments/fdname")
+            .and_then(Value::as_str),
+        Some(control_name.as_str())
     );
     Ok(())
 }

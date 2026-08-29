@@ -233,8 +233,10 @@ pub use mapped_quantum::{QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHo
 pub use node::QemuHotForkPluginRingImage;
 #[cfg(target_os = "linux")]
 pub use node::{
-    QemuHotForkPrivateRingMapping, QemuHotForkPrivateRingStageError,
-    QemuHotForkPrivateRingStageProof, QemuHotForkPrivateRingStageState,
+    QemuHotForkPluginEndpointStageError, QemuHotForkPluginEndpointStageProof,
+    QemuHotForkPluginEndpointStageState, QemuHotForkPrivateRingMapping,
+    QemuHotForkPrivateRingStageError, QemuHotForkPrivateRingStageProof,
+    QemuHotForkPrivateRingStageState,
 };
 pub use node::{
     QemuLogicalTimeCalibration, QemuNode, QemuNodeChannelError, QemuNodeChannelPlane,
@@ -276,6 +278,7 @@ pub use qmp::{
     QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES,
     QMP_HOT_FORK_MUTEX_INVENTORY_MAX, QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION,
     QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND, QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION,
+    QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND, QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION,
     QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
     QMP_HOT_FORK_PRIVATE_RINGS_SCHEMA_VERSION, QMP_HOT_FORK_RCU_BARRIER_COMMAND,
     QMP_HOT_FORK_RCU_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_RCU_INVENTORY_MAX,
@@ -300,6 +303,7 @@ pub use qmp::{
     QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,
     QmpHotForkBlockSnapshotRoot, QmpHotForkBottomHalf, QmpHotForkBottomHalfInventory,
     QmpHotForkMutex, QmpHotForkMutexInventory, QmpHotForkPluginBarrierState,
+    QmpHotForkPluginEndpointIdentity, QmpHotForkPluginEndpointState,
     QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState, QmpHotForkProof,
     QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness,
     QmpHotForkTemplateOutcome, QmpHotForkTemplateState, QmpHotForkThread,

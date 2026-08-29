@@ -21,6 +21,24 @@ pub struct QmpHotForkPrivateRingState {
 }
 
 impl QmpHotForkPrivateRingState {
+    #[cfg(test)]
+    pub(crate) fn one_staged(
+        generation: u64,
+        descriptor_name: QmpDescriptorName,
+        device: u64,
+        inode: u64,
+        length: u64,
+    ) -> Self {
+        Self {
+            generation,
+            descriptor_name: Some(descriptor_name),
+            device,
+            inode,
+            length,
+            shrink_sealed: true,
+        }
+    }
+
     /// Returns the process-local mutation generation.
     #[must_use]
     pub const fn generation(&self) -> u64 {

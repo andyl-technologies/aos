@@ -487,6 +487,84 @@ where
             .map_err(QemuNodeChannelError::from)
     }
 
+    /// Queries QEMU's exact retained private-ring descriptor state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response is
+    /// outside the closed version-1 contract.
+    pub fn query_hot_fork_private_rings(
+        &mut self,
+    ) -> Result<super::QmpHotForkPrivateRingState, QemuNodeChannelError> {
+        self.client
+            .query_hot_fork_private_rings()
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Imports branch-private plugin control and wake endpoints into QEMU.
+    ///
+    /// The caller retains both endpoint pairs. This imports two monitor-owned
+    /// `getfd` copies, then makes QEMU independently duplicate and authenticate
+    /// them against `identity`. A successful return does not install either
+    /// endpoint in a fork child, recreate a plugin worker, or acknowledge a
+    /// hot-fork readiness proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when either descriptor-bearing exchange
+    /// fails or QEMU does not acknowledge the exact pair. Any ambiguous
+    /// transfer poisons the underlying QMP client.
+    pub fn install_hot_fork_plugin_endpoints(
+        &mut self,
+        control_name: &QmpDescriptorName,
+        control: BorrowedFd<'_>,
+        wake_name: &QmpDescriptorName,
+        wake: BorrowedFd<'_>,
+        identity: crate::QmpHotForkPluginEndpointIdentity,
+        private_ring_generation: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.client
+            .install_descriptor(control_name, control)
+            .map_err(QemuNodeChannelError::from)?;
+        self.client
+            .install_descriptor(wake_name, wake)
+            .map_err(QemuNodeChannelError::from)?;
+        self.client
+            .stage_hot_fork_plugin_endpoints(
+                control_name,
+                wake_name,
+                identity,
+                private_ring_generation,
+            )
+            .map(|_state| ())
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Releases QEMU-owned and monitor-owned plugin endpoint descriptors.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the typed QMP client is poisoned,
+    /// any close exchange fails, or QEMU no longer owns the exact names and
+    /// kernel-object identities.
+    pub fn close_hot_fork_plugin_endpoints(
+        &mut self,
+        control_name: &QmpDescriptorName,
+        wake_name: &QmpDescriptorName,
+        identity: crate::QmpHotForkPluginEndpointIdentity,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.client
+            .release_hot_fork_plugin_endpoints(control_name, wake_name, identity)
+            .map_err(QemuNodeChannelError::from)?;
+        self.client
+            .close_descriptor(wake_name)
+            .map_err(QemuNodeChannelError::from)?;
+        self.client
+            .close_descriptor(control_name)
+            .map(|_complete| ())
+            .map_err(QemuNodeChannelError::from)
+    }
+
     /// Queries QEMU's exact bounded allocated-bottom-half inventory.
     ///
     /// # Errors

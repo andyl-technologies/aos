@@ -15,10 +15,11 @@ use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
     QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT,
     QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND, QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
-    QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND, QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
-    QMP_HOT_FORK_RCU_BARRIER_COMMAND, QMP_HOT_FORK_REQUIRED_PROOFS, QMP_HOT_FORK_TEMPLATE_COMMAND,
-    QMP_QUERY_CPUS_FAST_COMMAND, QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
+    QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND, QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND,
+    QMP_HOT_FORK_PRIVATE_RINGS_COMMAND, QMP_HOT_FORK_RCU_BARRIER_COMMAND,
+    QMP_HOT_FORK_REQUIRED_PROOFS, QMP_HOT_FORK_TEMPLATE_COMMAND, QMP_QUERY_CPUS_FAST_COMMAND,
+    QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
@@ -26,9 +27,9 @@ use crucible_qemu::{
     QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND,
     QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QemuExactSnapshotPolicy, QmpClient,
     QmpCommandKind, QmpDescriptorName, QmpError, QmpGreeting, QmpHotForkBlockSnapshotBinding,
-    QmpHotForkBlockSnapshotBindingError, QmpHotForkProof, QmpHotForkTemplateOutcome,
-    QmpHotForkThreadDisposition, QmpHotForkTimerClock, QmpIoTimeoutPolicy, QmpJobPollPolicy,
-    QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
+    QmpHotForkBlockSnapshotBindingError, QmpHotForkPluginEndpointIdentity, QmpHotForkProof,
+    QmpHotForkTemplateOutcome, QmpHotForkThreadDisposition, QmpHotForkTimerClock,
+    QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 #[cfg(unix)]
 use crucible_shmem::mmap_setup_region;
@@ -1775,6 +1776,117 @@ fn contradictory_private_ring_stage_poisoned_the_qmp_client() -> Result<(), Box<
         client.stage_hot_fork_private_rings(&name, identity),
         Err(QmpError::MalformedTypedResponse {
             command: QmpCommandKind::HotForkPrivateRings,
+            ..
+        })
+    ));
+    assert_eq!(client.quit(), Err(QmpError::ConnectionPoisoned));
+    Ok(())
+}
+
+#[test]
+fn plugin_endpoint_stage_authenticates_exact_basis_and_releases_qemu_copies()
+-> Result<(), Box<dyn Error>> {
+    let control_name = QmpDescriptorName::new("crucible-hfork-control-v1-test")?;
+    let wake_name = QmpDescriptorName::new("crucible-hfork-wake-v1-test")?;
+    let identity = QmpHotForkPluginEndpointIdentity::new(101, 202)
+        .ok_or("nonzero endpoint identity should be valid")?;
+    let staged = format!(
+        concat!(
+            r#"{{"return":{{"schema-version":1,"generation":1,"staged":true,"control-fdname":"{}","wake-fdname":"{}","control-socket-cookie":101,"wake-eventfd-id":202,"private-ring-generation":7,"control-unix-stream":true,"wake-eventfd":true,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#
+        ),
+        control_name.as_str(),
+        wake_name.as_str(),
+    );
+    let released = r#"{"return":{"schema-version":1,"generation":2,"staged":false,"control-socket-cookie":0,"wake-eventfd-id":0,"private-ring-generation":0,"control-unix-stream":false,"wake-eventfd":false,"disposition-complete":false,"readiness-proof-acknowledged":false}}"#;
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        &staged,
+        &staged,
+        released,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
+
+    let stage = client.stage_hot_fork_plugin_endpoints(&control_name, &wake_name, identity, 7)?;
+    assert_eq!(stage.identity(), Some(identity));
+    assert_eq!(stage.private_ring_generation(), 7);
+    assert_eq!(client.query_hot_fork_plugin_endpoints()?, stage);
+    assert!(
+        !client
+            .release_hot_fork_plugin_endpoints(&control_name, &wake_name, identity)?
+            .staged()
+    );
+
+    drop(client);
+    let lines = written_json_lines(&audit_snapshot(&audit))?;
+    let stage_request = json_line(&lines, 1);
+    assert_eq!(
+        oob_execute_name(stage_request),
+        Some(QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND)
+    );
+    assert_eq!(
+        stage_request
+            .pointer("/arguments/control-fdname")
+            .and_then(Value::as_str),
+        Some(control_name.as_str())
+    );
+    assert_eq!(
+        stage_request
+            .pointer("/arguments/wake-fdname")
+            .and_then(Value::as_str),
+        Some(wake_name.as_str())
+    );
+    assert_eq!(
+        stage_request
+            .pointer("/arguments/expected-control-socket-cookie")
+            .and_then(Value::as_u64),
+        Some(identity.control_socket_cookie())
+    );
+    assert_eq!(
+        stage_request
+            .pointer("/arguments/expected-wake-eventfd-id")
+            .and_then(Value::as_u64),
+        Some(identity.wake_eventfd_id())
+    );
+    assert_eq!(
+        json_line(&lines, 2)
+            .pointer("/arguments/action")
+            .and_then(Value::as_str),
+        Some("query")
+    );
+    assert_eq!(
+        json_line(&lines, 3)
+            .pointer("/arguments/action")
+            .and_then(Value::as_str),
+        Some("release")
+    );
+    Ok(())
+}
+
+#[test]
+fn contradictory_plugin_endpoint_stage_poisons_the_qmp_client() -> Result<(), Box<dyn Error>> {
+    let control_name = QmpDescriptorName::new("crucible-hfork-endpoint-v1-same")?;
+    let wake_name = control_name.clone();
+    let identity = QmpHotForkPluginEndpointIdentity::new(101, 202)
+        .ok_or("nonzero endpoint identity should be valid")?;
+    let contradictory = format!(
+        concat!(
+            r#"{{"return":{{"schema-version":1,"generation":1,"staged":true,"control-fdname":"{}","wake-fdname":"{}","control-socket-cookie":101,"wake-eventfd-id":202,"private-ring-generation":7,"control-unix-stream":true,"wake-eventfd":true,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#
+        ),
+        control_name.as_str(),
+        wake_name.as_str(),
+    );
+    let mut client = QmpClient::connect(scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        &contradictory,
+    ]))?;
+
+    assert!(matches!(
+        client.stage_hot_fork_plugin_endpoints(&control_name, &wake_name, identity, 7),
+        Err(QmpError::MalformedTypedResponse {
+            command: QmpCommandKind::HotForkPluginEndpoints,
             ..
         })
     ));
