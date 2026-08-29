@@ -64,37 +64,62 @@ pub async fn import_nar(
     references: &[String],
     deriver: Option<&str>,
 ) -> Result<String> {
-    // Decompress .nar.zst -> .nar alongside the original file.
-    let decompressed = nar_path.with_extension("");
-    let zstd_output = Command::new("zstd")
-        .args([
-            "-d",
-            "-f",
-            &nar_path.display().to_string(),
-            "-o",
-            &decompressed.display().to_string(),
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .context("running zstd decompression")?;
+    import_nar_with_compression(nar_path, expected_store_path, references, deriver, "zstd").await
+}
 
-    if !zstd_output.status.success() {
-        let stderr = String::from_utf8_lossy(&zstd_output.stderr);
-        bail!(
-            "zstd decompression failed for {}: {}",
-            nar_path.display(),
-            stderr.trim()
-        );
-    }
+/// Imports a NAR using the transport encoding declared by its narinfo.
+///
+/// # Errors
+///
+/// Returns an error when the payload cannot be decoded, the encoding is
+/// unsupported, Nix rejects the import, or the imported path is unexpected.
+pub async fn import_nar_with_compression(
+    nar_path: &Path,
+    expected_store_path: &str,
+    references: &[String],
+    deriver: Option<&str>,
+    compression: &str,
+) -> Result<String> {
+    let nar_data = match compression {
+        "none" => tokio::fs::read(nar_path)
+            .await
+            .with_context(|| format!("reading uncompressed NAR {}", nar_path.display()))?,
+        "zstd" => {
+            // Decompress .nar.zst -> .nar alongside the original file.
+            let decompressed = nar_path.with_extension("");
+            let zstd_output = Command::new("zstd")
+                .args([
+                    "-d",
+                    "-f",
+                    &nar_path.display().to_string(),
+                    "-o",
+                    &decompressed.display().to_string(),
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await
+                .context("running zstd decompression")?;
 
-    let nar_data = tokio::fs::read(&decompressed)
-        .await
-        .with_context(|| format!("reading decompressed NAR {}", decompressed.display()))?;
+            if !zstd_output.status.success() {
+                let stderr = String::from_utf8_lossy(&zstd_output.stderr);
+                bail!(
+                    "zstd decompression failed for {}: {}",
+                    nar_path.display(),
+                    stderr.trim()
+                );
+            }
 
-    // Clean up the decompressed file now that it's in memory.
-    let _ = tokio::fs::remove_file(&decompressed).await;
+            let nar_data = tokio::fs::read(&decompressed)
+                .await
+                .with_context(|| format!("reading decompressed NAR {}", decompressed.display()))?;
+
+            // Clean up the decompressed file now that it's in memory.
+            let _ = tokio::fs::remove_file(&decompressed).await;
+            nar_data
+        }
+        other => bail!("unsupported NAR compression '{other}'"),
+    };
 
     // Resolve the store directory references are rooted under, so bare
     // basenames from the narinfo become full paths in the export trailer.

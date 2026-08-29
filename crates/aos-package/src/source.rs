@@ -27,7 +27,7 @@ use super::download::{
 use super::profile::Profile;
 use super::profile::meta;
 use super::registry::{RegistrySet, store_path_hash};
-use super::store::{filter_missing, import_nar};
+use super::store::filter_missing;
 use super::types::{InstalledMeta, PackageMeta};
 use super::verify as hash_verify;
 use aos_core::error::AosError;
@@ -575,16 +575,21 @@ async fn fetch_source_from_registry_cache(
     for result in &results {
         hash_verify::verify_download_hash(&result.local_path, &result.download_hash)
             .with_context(|| format!("verifying download for {}", result.store_path))?;
-        hash_verify::verify_nar_hash(&result.local_path, &result.nar_hash)
-            .with_context(|| format!("verifying NAR hash for {}", result.store_path))?;
+        hash_verify::verify_nar_hash_with_compression(
+            &result.local_path,
+            &result.nar_hash,
+            &result.compression,
+        )
+        .with_context(|| format!("verifying NAR hash for {}", result.store_path))?;
     }
 
     for result in &results {
-        import_nar(
+        crate::store::import_nar_with_compression(
             &result.local_path,
             &result.store_path,
             &result.references,
             result.deriver.as_deref(),
+            &result.compression,
         )
         .await
         .with_context(|| format!("importing source path {}", result.store_path))?;
