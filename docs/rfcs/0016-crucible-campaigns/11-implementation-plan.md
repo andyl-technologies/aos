@@ -1843,9 +1843,16 @@ identical quiescent plugin-barrier and sealed plugin-resource reports, binds
 the mapped backing's device/inode/length to the sealed manifest, and requires
 the host and QEMU ring-barrier aggregates to match exactly. Drift or a foreign
 mapping fails closed before the image is accepted.
-This remains a retained T-CAM-6.2 subsystem primitive: node slots, fingerprint
-samples, worker-local queued work, fork-child remapping, host-continuation
-pairing, and final release are not composed yet. Readiness bit 6 therefore
+The Linux node can now consume that proof into an opaque branch-private mapping
+owner. It reauthenticates the live source before and after materialization,
+creates a distinct shrink-sealed memfd at the exact image geometry, initializes
+fresh non-ring state, holds every destination ring, restores the image, and
+recaptures an exact byte/digest match. The type exposes neither the descriptor
+nor release authority, so a stale capture or partially composed child cannot
+make the mapping runnable.
+This remains a retained T-CAM-6.2 subsystem primitive: worker-local queued
+work, fork-child descriptor remapping, host-continuation pairing, child process
+identity, and final release are not composed yet. Readiness bit 6 therefore
 remains clear and T-CAM-6.2 remains unchecked.
 Patched QEMU now also owns the versioned `PrepareForkTemplate`
 transaction. Its serialized OOB coordinator starts only at the exact

@@ -1796,7 +1796,13 @@ fn socket_pair() -> Result<(OwnedFd, OwnedFd), QemuSpawnError> {
     Ok((host, child))
 }
 
-fn memfd_region(region_len: u64) -> Result<OwnedFd, QemuSpawnError> {
+/// Creates one writable, shrink-sealed setup-region memfd.
+///
+/// # Errors
+///
+/// Returns [`QemuSpawnError`] when the length is not representable or the
+/// memfd cannot be created, sized, or sealed.
+pub(crate) fn memfd_region(region_len: u64) -> Result<OwnedFd, QemuSpawnError> {
     let region_len = libc::off_t::try_from(region_len)
         .map_err(|_| QemuSpawnError::RegionLengthTooLarge { region_len })?;
     let name = CString::new("crucible-qemu-shmem").map_err(|source| QemuSpawnError::Io {

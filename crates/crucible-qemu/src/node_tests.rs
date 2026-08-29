@@ -14,9 +14,10 @@ use crucible::{
     event_log_coverage_projection,
 };
 use crucible_shmem::{
-    FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR, FAULT_COMMAND_SEMANTIC_VERSION,
-    FaultBoundaryPhase, FaultCapabilityScope, FaultCommandKind, FaultEventHeaderV1,
-    FaultEventOutcomeV1, FaultResultHeaderV1, RegionAllocation, RegionConfig, mmap_setup_region,
+    CoverageEntry, FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR,
+    FAULT_COMMAND_SEMANTIC_VERSION, FaultBoundaryPhase, FaultCapabilityScope, FaultCommandKind,
+    FaultEventHeaderV1, FaultEventOutcomeV1, FaultResultHeaderV1, RegionAllocation, RegionConfig,
+    mmap_setup_region,
 };
 
 use crate::{
@@ -866,7 +867,7 @@ fn hot_fork_ring_capture_binds_one_unchanged_plugin_barrier() -> Result<(), Box<
         setup_identity,
         host_barrier,
         image.clone(),
-        [barrier, barrier],
+        [barrier, barrier, barrier, barrier],
     )?;
 
     let capture = node.capture_hot_fork_plugin_ring_image(image.canonical_len()?)?;
@@ -878,6 +879,14 @@ fn hot_fork_ring_capture_binds_one_unchanged_plugin_barrier() -> Result<(), Box<
     assert_eq!(capture.plugin_barrier(), barrier);
     assert_eq!(capture.host_barrier(), host_barrier);
     assert_eq!(capture.image(), &image);
+    let private = node.materialize_hot_fork_private_ring_mapping(capture)?;
+    assert_eq!(private.source_setup_region(), setup_identity);
+    assert_eq!(private.source_plugin_barrier(), barrier);
+    assert_eq!(private.host_barrier(), host_barrier);
+    assert_eq!(private.image_digest(), image.digest());
+    assert_ne!(private.backing_identity(), setup_identity);
+    assert_eq!(private.backing_identity().length(), setup_identity.length());
+    assert_eq!(private.capture_ring_image(image.canonical_len()?)?, image);
     assert_eq!(
         recorded(&log),
         [
@@ -888,6 +897,14 @@ fn hot_fork_ring_capture_binds_one_unchanged_plugin_barrier() -> Result<(), Box<
             ChannelCall::ShmemHotForkCapture,
             ChannelCall::ShmemHotForkBarrier,
             ChannelCall::QmpHotForkPluginResourceInventory,
+            ChannelCall::QmpHotForkPluginBarrier,
+            ChannelCall::QmpHotForkPluginResourceInventory,
+            ChannelCall::QmpHotForkPluginBarrier,
+            ChannelCall::ShmemHotForkIdentity,
+            ChannelCall::ShmemHotForkBarrier,
+            ChannelCall::QmpHotForkPluginResourceInventory,
+            ChannelCall::ShmemHotForkIdentity,
+            ChannelCall::ShmemHotForkBarrier,
             ChannelCall::QmpHotForkPluginBarrier,
         ]
     );
@@ -910,6 +927,55 @@ fn hot_fork_ring_capture_binds_one_unchanged_plugin_barrier() -> Result<(), Box<
         .expect_err("changed plugin barrier must reject capture");
     assert!(error.to_string().contains("changed across image capture"));
     drifting.shutdown_child()?;
+
+    let mut stale = scripted_hot_fork_capture_node(
+        shared_log(),
+        setup_identity,
+        setup_identity,
+        host_barrier,
+        image.clone(),
+        [barrier, barrier, changed],
+    )?;
+    let stale_capture = stale.capture_hot_fork_plugin_ring_image(image.canonical_len()?)?;
+    let error = stale
+        .materialize_hot_fork_private_ring_mapping(stale_capture)
+        .err()
+        .ok_or("stale capture unexpectedly materialized")?;
+    assert!(error.to_string().contains("no longer current"));
+    stale.shutdown_child()?;
+
+    let mut changing_during_materialization = scripted_hot_fork_capture_node(
+        shared_log(),
+        setup_identity,
+        setup_identity,
+        host_barrier,
+        image.clone(),
+        [barrier, barrier, barrier, changed],
+    )?;
+    let capture = changing_during_materialization
+        .capture_hot_fork_plugin_ring_image(image.canonical_len()?)?;
+    let error = changing_during_materialization
+        .materialize_hot_fork_private_ring_mapping(capture)
+        .err()
+        .ok_or("source drift during materialization unexpectedly succeeded")?;
+    assert!(error.to_string().contains("changed during"));
+    changing_during_materialization.shutdown_child()?;
+
+    let (_other_identity, _other_barrier, wrong_length_image) =
+        held_hot_fork_ring_image_for(RegionConfig::new(2, 4, 0))?;
+    let mut wrong_length = scripted_hot_fork_capture_node(
+        shared_log(),
+        setup_identity,
+        setup_identity,
+        host_barrier,
+        wrong_length_image.clone(),
+        [barrier, barrier],
+    )?;
+    let error = wrong_length
+        .capture_hot_fork_plugin_ring_image(wrong_length_image.canonical_len()?)
+        .expect_err("foreign image length must reject capture");
+    assert!(error.to_string().contains("image length differs"));
+    wrong_length.shutdown_child()?;
 
     let (foreign_identity, _foreign_barrier, _foreign_image) = held_hot_fork_ring_image()?;
     let mut mismatched = scripted_hot_fork_capture_node(
@@ -1148,7 +1214,23 @@ fn held_hot_fork_ring_image() -> Result<
     ),
     Box<dyn Error>,
 > {
-    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))?;
+    held_hot_fork_ring_image_for(RegionConfig::new(1, 4, 0))
+}
+
+#[cfg(unix)]
+fn held_hot_fork_ring_image_for(
+    config: RegionConfig,
+) -> Result<
+    (
+        crucible_shmem::SetupRegionBackingIdentity,
+        crucible_shmem::MappedRingIoBarrierSnapshot,
+        crucible_shmem::HotForkRingImage,
+    ),
+    Box<dyn Error>,
+> {
+    let mut allocation = RegionAllocation::new_model(config)?;
+    let retained = CoverageEntry::new(17, 0, 0x4000, 4, 9)?;
+    allocation.enqueue_coverage_entry(0, retained)?;
     let mut shmem = tempfile::tempfile()?;
     shmem.write_all(&allocation.setup_region_bytes()?)?;
     let region_len = allocation.layout().region_size;
