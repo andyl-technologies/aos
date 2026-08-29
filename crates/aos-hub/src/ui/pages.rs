@@ -222,6 +222,8 @@ pub fn releases_page(
         registry,
         status,
         releases,
+        &[],
+        &[],
         page_number,
         started,
         &current_session_indicator(),

@@ -53,6 +53,8 @@
 
 use crate::clock::Instant;
 
+use std::collections::BTreeMap;
+
 use axum::http::{header, HeaderMap};
 
 use aos_proto_types as pb;
@@ -934,12 +936,30 @@ pub async fn releases(
     let Some((registry, status)) = load_visible(svc, headers, slug).await else {
         return Rendered::NotFound;
     };
-    let releases = svc.db.list_releases(registry.id).await.unwrap_or_default();
+    let (releases, images, package_counts) = futures_util::future::join3(
+        svc.db.list_releases(registry.id),
+        svc.db.list_system_images(registry.id),
+        svc.db.list_release_package_counts(registry.id),
+    )
+    .await;
+    let releases = releases.unwrap_or_default();
+    let package_counts = package_counts.unwrap_or_default();
+    let image_counts = images
+        .unwrap_or_default()
+        .into_iter()
+        .fold(BTreeMap::<String, usize>::new(), |mut counts, image| {
+            *counts.entry(image.release).or_default() += 1;
+            counts
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
     let session = session_indicator(svc, headers).await;
     Rendered::Html(pages::releases_page(
         &registry,
         status.as_ref(),
         &releases,
+        &package_counts,
+        &image_counts,
         query.page_number(),
         started,
         &session,
