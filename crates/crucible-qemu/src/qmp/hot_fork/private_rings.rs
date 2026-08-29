@@ -41,6 +41,20 @@ impl QmpHotForkPrivateRingState {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn one_template_staged(
+        generation: u64,
+        template_generation: u64,
+        descriptor_name: QmpDescriptorName,
+        device: u64,
+        inode: u64,
+        length: u64,
+    ) -> Self {
+        let mut state = Self::one_staged(generation, descriptor_name, device, inode, length);
+        state.template_generation = template_generation;
+        state
+    }
+
     /// Returns the process-local mutation generation.
     #[must_use]
     pub const fn generation(&self) -> u64 {

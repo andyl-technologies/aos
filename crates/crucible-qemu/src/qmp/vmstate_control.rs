@@ -492,7 +492,7 @@ where
     /// # Errors
     ///
     /// Returns [`QemuNodeChannelError`] when QMP I/O fails or the response is
-    /// outside the closed version-1 contract.
+    /// outside the current closed contract.
     pub fn query_hot_fork_private_rings(
         &mut self,
     ) -> Result<super::QmpHotForkPrivateRingState, QemuNodeChannelError> {
@@ -505,9 +505,12 @@ where
     ///
     /// The caller retains both endpoint pairs. This imports two monitor-owned
     /// `getfd` copies, then makes QEMU independently duplicate and authenticate
-    /// them against `identity`. A successful return does not install either
-    /// endpoint in a fork child, recreate a plugin worker, or acknowledge a
-    /// hot-fork readiness proof.
+    /// them against `identity`. During an active template transaction, QEMU
+    /// also captures the exact quiescent plugin-barrier generation and a plan
+    /// that resumes every sealed worker class in the parent and reinitializes
+    /// every class in a future child. A successful return does not apply the
+    /// child plan, recreate a plugin worker, or acknowledge a hot-fork
+    /// readiness proof.
     ///
     /// # Errors
     ///
@@ -522,7 +525,7 @@ where
         wake: BorrowedFd<'_>,
         identity: crate::QmpHotForkPluginEndpointIdentity,
         private_ring_generation: u64,
-    ) -> Result<(), QemuNodeChannelError> {
+    ) -> Result<crate::QmpHotForkPluginEndpointState, QemuNodeChannelError> {
         self.client
             .install_descriptor(control_name, control)
             .map_err(QemuNodeChannelError::from)?;
@@ -536,7 +539,6 @@ where
                 identity,
                 private_ring_generation,
             )
-            .map(|_state| ())
             .map_err(QemuNodeChannelError::from)
     }
 

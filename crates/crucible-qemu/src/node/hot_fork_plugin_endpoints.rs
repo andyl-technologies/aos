@@ -21,6 +21,12 @@ pub enum QemuHotForkPluginEndpointStageState {
 }
 
 /// Bounded evidence for one node-retained branch-private plugin endpoint stage.
+///
+/// A successfully installed proof binds the endpoints to the exact template,
+/// private-ring, and quiescent plugin-barrier generations that admitted them.
+/// Its worker mask is the complete set that the parent must resume and a future
+/// child must reinitialize. The proof does not claim that child reconstruction
+/// has occurred.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuHotForkPluginEndpointStageProof {
     state: QemuHotForkPluginEndpointStageState,
@@ -28,6 +34,9 @@ pub struct QemuHotForkPluginEndpointStageProof {
     wake_name: crate::QmpDescriptorName,
     identity: crate::QmpHotForkPluginEndpointIdentity,
     private_ring_generation: u64,
+    template_generation: u64,
+    plugin_barrier_generation: u64,
+    worker_mask: u64,
 }
 
 impl QemuHotForkPluginEndpointStageProof {
@@ -60,6 +69,24 @@ impl QemuHotForkPluginEndpointStageProof {
     pub const fn private_ring_generation(&self) -> u64 {
         self.private_ring_generation
     }
+
+    /// Returns the exact template generation that admitted the disposition.
+    #[must_use]
+    pub const fn template_generation(&self) -> u64 {
+        self.template_generation
+    }
+
+    /// Returns the exact plugin-barrier generation captured by the disposition.
+    #[must_use]
+    pub const fn plugin_barrier_generation(&self) -> u64 {
+        self.plugin_barrier_generation
+    }
+
+    /// Returns the complete parent-resume and child-reinitialize worker mask.
+    #[must_use]
+    pub const fn worker_mask(&self) -> u64 {
+        self.worker_mask
+    }
 }
 
 pub(super) struct QemuHotForkPluginEndpointPair {
@@ -73,6 +100,9 @@ pub(super) struct QemuHotForkPluginEndpointPair {
     wake_name: crate::QmpDescriptorName,
     identity: crate::QmpHotForkPluginEndpointIdentity,
     private_ring_generation: u64,
+    template_generation: u64,
+    plugin_barrier_generation: u64,
+    worker_mask: u64,
 }
 
 impl std::fmt::Debug for QemuHotForkPluginEndpointPair {
@@ -83,6 +113,9 @@ impl std::fmt::Debug for QemuHotForkPluginEndpointPair {
             .field("wake_name", &self.wake_name)
             .field("identity", &self.identity)
             .field("private_ring_generation", &self.private_ring_generation)
+            .field("template_generation", &self.template_generation)
+            .field("plugin_barrier_generation", &self.plugin_barrier_generation)
+            .field("worker_mask", &self.worker_mask)
             .finish_non_exhaustive()
     }
 }
@@ -98,6 +131,9 @@ impl QemuHotForkPluginEndpointPair {
             wake_name: self.wake_name.clone(),
             identity: self.identity,
             private_ring_generation: self.private_ring_generation,
+            template_generation: self.template_generation,
+            plugin_barrier_generation: self.plugin_barrier_generation,
+            worker_mask: self.worker_mask,
         }
     }
 }
@@ -235,12 +271,19 @@ impl QemuNode {
             ));
         }
 
-        let endpoints = create_plugin_endpoint_pair(qemu_ring.generation()).map_err(|source| {
-            endpoint_rejected_source(QemuNodeChannelError::new(
-                "prepare hot-fork plugin endpoints",
-                source.to_string(),
-            ))
-        })?;
+        if qemu_ring.template_generation() == 0 {
+            return Err(endpoint_rejected(
+                "plugin endpoint staging requires a template-bound private-ring descriptor",
+            ));
+        }
+
+        let mut endpoints =
+            create_plugin_endpoint_pair(qemu_ring.generation()).map_err(|source| {
+                endpoint_rejected_source(QemuNodeChannelError::new(
+                    "prepare hot-fork plugin endpoints",
+                    source.to_string(),
+                ))
+            })?;
         let transfer = self
             .channels
             .qmp_machine_control
@@ -252,12 +295,35 @@ impl QemuNode {
                 endpoints.identity,
                 endpoints.private_ring_generation,
             );
-        if let Err(source) = transfer {
+        let qemu_endpoints = match transfer {
+            Ok(state) => state,
+            Err(source) => {
+                self.lifecycle_state = crate::QemuNodeLifecycleState::Quarantined;
+                self.hot_fork_plugin_endpoint_stage =
+                    Some(QemuHotForkPluginEndpointStage::TransferUncertain(endpoints));
+                return Err(QemuHotForkPluginEndpointStageError::TransferUncertain { source });
+            }
+        };
+        let disposition_matches = qemu_endpoints.template_generation()
+            == qemu_ring.template_generation()
+            && qemu_endpoints.plugin_barrier_generation() == plugin.generation()
+            && qemu_endpoints.worker_mask() == plugin.worker_mask()
+            && qemu_endpoints.parent_resume_worker_mask() == plugin.worker_mask()
+            && qemu_endpoints.child_reinitialize_worker_mask() == plugin.worker_mask()
+            && qemu_endpoints.worker_disposition_planned();
+        if !disposition_matches {
+            let source = QemuNodeChannelError::new(
+                "install hot-fork plugin endpoints",
+                "QEMU endpoint stage did not retain the exact template worker disposition",
+            );
             self.lifecycle_state = crate::QemuNodeLifecycleState::Quarantined;
             self.hot_fork_plugin_endpoint_stage =
                 Some(QemuHotForkPluginEndpointStage::TransferUncertain(endpoints));
             return Err(QemuHotForkPluginEndpointStageError::TransferUncertain { source });
         }
+        endpoints.template_generation = qemu_endpoints.template_generation();
+        endpoints.plugin_barrier_generation = qemu_endpoints.plugin_barrier_generation();
+        endpoints.worker_mask = qemu_endpoints.worker_mask();
 
         let proof = endpoints.proof(QemuHotForkPluginEndpointStageState::Installed);
         self.hot_fork_plugin_endpoint_stage =
@@ -376,6 +442,9 @@ fn create_plugin_endpoint_pair(
         wake_name,
         identity,
         private_ring_generation,
+        template_generation: 0,
+        plugin_barrier_generation: 0,
+        worker_mask: 0,
     })
 }
 

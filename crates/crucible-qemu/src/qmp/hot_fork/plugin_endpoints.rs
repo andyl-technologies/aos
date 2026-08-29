@@ -2,12 +2,13 @@
 
 use serde_json::Value;
 
+use super::{QMP_HOT_FORK_PLUGIN_WORKER_ALL, QMP_HOT_FORK_PLUGIN_WORKER_REQUIRED};
 use crate::qmp::{QmpCommandKind, QmpDescriptorName, QmpError};
 
 /// QMP command that retains or releases one authenticated plugin endpoint pair.
 pub const QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND: &str = "crucible-hot-fork-plugin-endpoints";
 /// Version of the retained plugin-endpoint contract.
-pub const QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION: u32 = 2;
+pub const QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION: u32 = 3;
 
 /// Exact Linux identities for one branch-private plugin endpoint pair.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,7 +45,8 @@ impl QmpHotForkPluginEndpointIdentity {
     }
 }
 
-/// Exact QEMU-owned state for retained branch-private plugin endpoints.
+/// Exact QEMU-owned state and planned worker disposition for retained
+/// branch-private plugin endpoints.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QmpHotForkPluginEndpointState {
     generation: u64,
@@ -53,9 +55,40 @@ pub struct QmpHotForkPluginEndpointState {
     wake_name: Option<QmpDescriptorName>,
     identity: Option<QmpHotForkPluginEndpointIdentity>,
     private_ring_generation: u64,
+    plugin_barrier_generation: u64,
+    worker_mask: u64,
+    parent_resume_worker_mask: u64,
+    child_reinitialize_worker_mask: u64,
+    worker_disposition_planned: bool,
 }
 
 impl QmpHotForkPluginEndpointState {
+    #[cfg(test)]
+    pub(crate) fn one_template_staged(
+        generation: u64,
+        template_generation: u64,
+        control_name: QmpDescriptorName,
+        wake_name: QmpDescriptorName,
+        identity: QmpHotForkPluginEndpointIdentity,
+        private_ring_generation: u64,
+        plugin_barrier: super::QmpHotForkPluginBarrierState,
+    ) -> Self {
+        let worker_mask = plugin_barrier.worker_mask();
+        Self {
+            generation,
+            template_generation,
+            control_name: Some(control_name),
+            wake_name: Some(wake_name),
+            identity: Some(identity),
+            private_ring_generation,
+            plugin_barrier_generation: plugin_barrier.generation(),
+            worker_mask,
+            parent_resume_worker_mask: worker_mask,
+            child_reinitialize_worker_mask: worker_mask,
+            worker_disposition_planned: true,
+        }
+    }
+
     /// Returns the process-local mutation generation.
     #[must_use]
     pub const fn generation(&self) -> u64 {
@@ -99,6 +132,40 @@ impl QmpHotForkPluginEndpointState {
     pub const fn private_ring_generation(&self) -> u64 {
         self.private_ring_generation
     }
+
+    /// Returns the exact plugin-barrier generation captured at staging.
+    ///
+    /// Zero identifies a deliberately standalone endpoint stage.
+    #[must_use]
+    pub const fn plugin_barrier_generation(&self) -> u64 {
+        self.plugin_barrier_generation
+    }
+
+    /// Returns the exact sealed worker classes captured at staging.
+    #[must_use]
+    pub const fn worker_mask(&self) -> u64 {
+        self.worker_mask
+    }
+
+    /// Returns the worker classes the template parent must resume.
+    #[must_use]
+    pub const fn parent_resume_worker_mask(&self) -> u64 {
+        self.parent_resume_worker_mask
+    }
+
+    /// Returns the worker classes a future fork child must reinitialize.
+    #[must_use]
+    pub const fn child_reinitialize_worker_mask(&self) -> u64 {
+        self.child_reinitialize_worker_mask
+    }
+
+    /// Returns whether QEMU retained a complete empty-local-state worker plan.
+    ///
+    /// This does not attest that a child reinitializer has applied the plan.
+    #[must_use]
+    pub const fn worker_disposition_planned(&self) -> bool {
+        self.worker_disposition_planned
+    }
 }
 
 pub(crate) fn parse_hot_fork_plugin_endpoint_state(
@@ -117,6 +184,12 @@ pub(crate) fn parse_hot_fork_plugin_endpoint_state(
         "control-socket-cookie",
         "wake-eventfd-id",
         "private-ring-generation",
+        "plugin-barrier-generation",
+        "worker-mask",
+        "parent-resume-worker-mask",
+        "child-reinitialize-worker-mask",
+        "pending-worker-mask",
+        "worker-disposition-planned",
         "control-unix-stream",
         "wake-eventfd",
         "disposition-complete",
@@ -170,6 +243,30 @@ pub(crate) fn parse_hot_fork_plugin_endpoint_state(
         .get("private-ring-generation")
         .and_then(Value::as_u64)
         .ok_or_else(&malformed)?;
+    let plugin_barrier_generation = object
+        .get("plugin-barrier-generation")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let worker_mask = object
+        .get("worker-mask")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let parent_resume_worker_mask = object
+        .get("parent-resume-worker-mask")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let child_reinitialize_worker_mask = object
+        .get("child-reinitialize-worker-mask")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let pending_worker_mask = object
+        .get("pending-worker-mask")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let worker_disposition_planned = object
+        .get("worker-disposition-planned")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
     let control_unix_stream = object
         .get("control-unix-stream")
         .and_then(Value::as_bool)
@@ -189,6 +286,22 @@ pub(crate) fn parse_hot_fork_plugin_endpoint_state(
 
     let names_present = control_name.is_some() && wake_name.is_some();
     let names_distinct = control_name != wake_name;
+    let standalone_worker_shape = template_generation == 0
+        && plugin_barrier_generation == 0
+        && worker_mask == 0
+        && parent_resume_worker_mask == 0
+        && child_reinitialize_worker_mask == 0
+        && pending_worker_mask == 0
+        && !worker_disposition_planned;
+    let template_worker_shape = template_generation != 0
+        && plugin_barrier_generation != 0
+        && worker_mask != 0
+        && worker_mask & !QMP_HOT_FORK_PLUGIN_WORKER_ALL == 0
+        && worker_mask & QMP_HOT_FORK_PLUGIN_WORKER_REQUIRED == QMP_HOT_FORK_PLUGIN_WORKER_REQUIRED
+        && parent_resume_worker_mask == worker_mask
+        && child_reinitialize_worker_mask == worker_mask
+        && pending_worker_mask == 0
+        && worker_disposition_planned;
     let shape_valid = schema_version == u64::from(QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION)
         && !disposition_complete
         && !readiness_proof_acknowledged
@@ -202,6 +315,7 @@ pub(crate) fn parse_hot_fork_plugin_endpoint_state(
                 && private_ring_generation != 0
                 && control_unix_stream
                 && wake_eventfd
+                && (standalone_worker_shape || template_worker_shape)
         } else {
             template_generation == 0
                 && control_name.is_none()
@@ -209,6 +323,7 @@ pub(crate) fn parse_hot_fork_plugin_endpoint_state(
                 && control_socket_cookie == 0
                 && wake_eventfd_id == 0
                 && private_ring_generation == 0
+                && standalone_worker_shape
                 && !control_unix_stream
                 && !wake_eventfd
         };
@@ -231,5 +346,10 @@ pub(crate) fn parse_hot_fork_plugin_endpoint_state(
         wake_name,
         identity,
         private_ring_generation,
+        plugin_barrier_generation,
+        worker_mask,
+        parent_resume_worker_mask,
+        child_reinitialize_worker_mask,
+        worker_disposition_planned,
     })
 }

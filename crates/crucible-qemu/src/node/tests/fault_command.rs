@@ -109,10 +109,12 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
                 timeout_snapshot: false,
                 plugin_resources: None,
                 plugin_barriers: None,
+                last_plugin_barrier: Arc::new(Mutex::new(None)),
                 private_ring_state: Arc::new(Mutex::new(None)),
                 fail_descriptor_install: false,
                 fail_descriptor_close: false,
                 fail_endpoint_install: false,
+                mismatch_endpoint_disposition: false,
             },
         );
         let mut node = QemuNode::new(

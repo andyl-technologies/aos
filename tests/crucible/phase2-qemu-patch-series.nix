@@ -1000,6 +1000,13 @@
       enforces = "HFORK-3,HFORK-8,HFORK-9";
       capability = "QEMU atomically binds retained private-ring and plugin-endpoint generations to the exact version-11 template transaction, rejects cross-transaction composition, and reports retained-but-unbound resources after abort without acknowledging readiness bits 6 through 8";
     }
+    {
+      file = "0144-crucible-bind-hot-fork-worker-dispositions.patch";
+      catalogName = "crucible-hot-fork-worker-disposition-binding";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-8,HFORK-9";
+      capability = "QEMU binds an explicit empty-local-state parent-resume and child-reinitialize plan for every sealed plugin worker class to the exact quiescent plugin-barrier generation retained by the version-12 template transaction, while leaving child application and readiness bits 6 through 8 incomplete";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
