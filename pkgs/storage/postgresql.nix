@@ -36,6 +36,7 @@
   zstd,
   stdenv,
   buildPackages,
+  darwin-sdk,
 }: let
   version = "18.4";
   isDarwin = stdenv.hostPlatform.isDarwin;
@@ -258,6 +259,7 @@ in
               -e 's|${buildPackages.perl}|${perl}|g' \
               -e 's|${buildPackages.python3}|${python3}|g' \
               -e 's|${buildPackages.tcl}|${tcl}|g' \
+              -e "s|${stdenv.sdk}|$out/share/darwin-sdk|g" \
               -e "s| 'PKG_CONFIG_PATH=[^']*'||g" \
               src/include/pg_config.h
 
@@ -339,6 +341,18 @@ in
             test -f "$out/share/man/man1/postgres.1"
             test -n "$(find "$out/share/locale" -name '*.mo' -print -quit)"
 
+            # Installed PGXS can compile extensions with LLVM on Darwin, but
+            # must not retain the Linux-hosted compiler SDK used by this cross
+            # build. Publish the clean target SDK beside PostgreSQL and point
+            # only installed metadata at that self-contained copy.
+            mkdir -p "$out/share/darwin-sdk/share"
+            cp -R \
+              ${darwin-sdk}/SDKSettings.json \
+              ${darwin-sdk}/System \
+              ${darwin-sdk}/usr \
+              "$out/share/darwin-sdk/"
+            cp -R ${darwin-sdk}/share/licenses "$out/share/darwin-sdk/share/"
+
             # PGXS is target-side tooling. Retarget interpreter and LLVM
             # paths recorded while Linux-native generators built the tree.
             find "$out/lib/pgxs" -type f -exec sed -i \
@@ -347,6 +361,7 @@ in
               -e 's|${buildPackages.llvm}|${llvm}|g' \
               -e "s|$PWD/.aos-native-tools/llvm-config|${llvm}/bin/llvm-config|g" \
               -e "s|$PWD/.aos-native-tools/python3|${python3}/bin/python3|g" \
+              -e "s|${stdenv.sdk}|$out/share/darwin-sdk|g" \
               -e "s|$CC|${llvm}/bin/clang|g" \
               -e "s|^CXX = .*|CXX = ${llvm}/bin/clang++|" \
               -e "s|^AR = .*|AR = ${llvm}/bin/llvm-ar|" \
