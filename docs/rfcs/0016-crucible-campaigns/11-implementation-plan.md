@@ -1847,13 +1847,25 @@ The Linux node can now consume that proof into an opaque branch-private mapping
 owner. It reauthenticates the live source before and after materialization,
 creates a distinct shrink-sealed memfd at the exact image geometry, initializes
 fresh non-ring state, holds every destination ring, restores the image, and
-recaptures an exact byte/digest match. The type exposes neither the descriptor
-nor release authority, so a stale capture or partially composed child cannot
-make the mapping runnable.
+recaptures an exact byte/digest match. The type exposes neither the raw
+descriptor nor release authority, so a stale capture or partially composed
+child cannot make the mapping runnable. The node can now additionally retain
+that owner while a typed Unix QMP client stages its duplicate with standard
+`getfd`/`SCM_RIGHTS` under a bounded identity-derived name. It repeats the live
+source and destination-image checks before transfer, requires exact `getfd`
+acknowledgement, and requires exact-name `closefd` acknowledgement before
+returning an installed mapping. Transfer ambiguity poisons QMP, retains the
+mapping as uncertain, and quarantines the node; close ambiguity retains the
+installed mapping and also quarantines. Focused real-Unix-socket tests verify
+the received descriptor's exact device/inode/length, the closed name grammar,
+close exchange, stream poisoning, source-drift rejection, and both retained
+failure states.
 This remains a retained T-CAM-6.2 subsystem primitive: worker-local queued
-work, fork-child descriptor remapping, host-continuation pairing, child process
-identity, and final release are not composed yet. Readiness bit 6 therefore
-remains clear and T-CAM-6.2 remains unchecked.
+work, fork-child descriptor inheritance/remapping, a complete disposition
+table, host-continuation pairing, child process identity, and final ring release
+are not composed yet. Template-process descriptor staging does not satisfy
+proof bit 7. Readiness bit 6 therefore remains clear and T-CAM-6.2 remains
+unchecked.
 Patched QEMU now also owns the versioned `PrepareForkTemplate`
 transaction. Its serialized OOB coordinator starts only at the exact
 paused/device-flush boundary, asynchronously closes graph-writer admission and

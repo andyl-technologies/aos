@@ -4,12 +4,15 @@
 //! status/topology, hot-fork-readiness observation, bounded QEMU-owned resource
 //! inventories, the reversible plugin callback barrier, and QEMU's retained
 //! template-preparation coordinator, plus VM snapshot save/load/delete,
-//! snapshot job polling, and graceful quit. The client parses JSON-line QMP
-//! responses internally, skips asynchronous event objects while waiting for a
-//! command response, and exposes no public arbitrary-command execution path.
+//! snapshot job polling, bounded standard `getfd`/`closefd` descriptor staging,
+//! and graceful quit. The client parses JSON-line QMP responses internally,
+//! skips asynchronous event objects while waiting for a command response, and
+//! exposes no public arbitrary-command execution path.
 
 use std::io::{self, BufReader, ErrorKind, Read, Write};
 use std::net::TcpStream;
+#[cfg(unix)]
+use std::os::fd::BorrowedFd;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::thread;
@@ -96,6 +99,12 @@ pub const QMP_COMPLETE_TERMINAL_LIFECYCLE_COMMAND: &str = "crucible-complete-ter
 pub const QMP_QUERY_CPUS_FAST_COMMAND: &str = "query-cpus-fast";
 /// QMP command name used for graceful QEMU termination.
 pub const QMP_QUIT_COMMAND_NAME: &str = "quit";
+/// Standard QMP command used to import one Unix descriptor under a stable name.
+pub const QMP_GETFD_COMMAND: &str = "getfd";
+/// Standard QMP command used to close one previously imported descriptor.
+pub const QMP_CLOSEFD_COMMAND: &str = "closefd";
+/// Maximum bytes in one descriptor name admitted by the typed QMP surface.
+pub const QMP_DESCRIPTOR_NAME_MAX_BYTES: usize = 128;
 /// Versioned token consumed by the dormant fixture-side debugger bootstrap.
 pub const QMP_DEBUG_GUEST_ACTIVATION_TOKEN: &str = "CRUCIBLE_DEBUG_AGENT_V1\n";
 /// QMP snapshot device name used for diskless VMState snapshots.
@@ -128,6 +137,35 @@ pub trait QmpTimeoutStream: Read + Write + Send {
     ///
     /// Returns [`io::Error`] when the stream cannot install the timeout.
     fn set_qmp_write_timeout(&mut self, timeout: Duration) -> io::Result<()>;
+
+    /// Sends one complete QMP request prefix with one attached Unix descriptor.
+    ///
+    /// Implementations must attach the descriptor with exactly one
+    /// `SCM_RIGHTS` control message to the first returned byte. A successful
+    /// short write may be completed by ordinary stream writes because the
+    /// descriptor is already attached to that request prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::ErrorKind::Unsupported`] when this stream cannot transfer
+    /// Unix descriptors, or another I/O error when the transfer fails.
+    #[cfg(unix)]
+    fn send_qmp_bytes_with_descriptor(
+        &mut self,
+        _bytes: &[u8],
+        _descriptor: BorrowedFd<'_>,
+    ) -> io::Result<usize> {
+        Err(io::Error::new(
+            ErrorKind::Unsupported,
+            "QMP stream does not support Unix descriptor transfer",
+        ))
+    }
+
+    /// Permanently closes a stream whose command boundary became ambiguous.
+    ///
+    /// In-memory test transports may retain the default no-op implementation;
+    /// production socket transports must prevent every subsequent exchange.
+    fn poison_qmp_stream(&mut self) {}
 }
 
 impl QmpTimeoutStream for TcpStream {
@@ -149,6 +187,18 @@ impl QmpTimeoutStream for UnixStream {
     fn set_qmp_write_timeout(&mut self, timeout: Duration) -> io::Result<()> {
         self.set_write_timeout(Some(timeout))
     }
+
+    fn send_qmp_bytes_with_descriptor(
+        &mut self,
+        bytes: &[u8],
+        descriptor: BorrowedFd<'_>,
+    ) -> io::Result<usize> {
+        unix_socket::send_bytes_with_descriptor(self, bytes, descriptor)
+    }
+
+    fn poison_qmp_stream(&mut self) {
+        let _result = self.shutdown(std::net::Shutdown::Both);
+    }
 }
 
 /// Typed minimal QMP client over an established stream.
@@ -159,6 +209,7 @@ pub struct QmpClient<S> {
     job_poll_policy: QmpJobPollPolicy,
     io_timeout_policy: QmpIoTimeoutPolicy,
     predeclared_debug_guest_endpoint: bool,
+    poisoned: bool,
 }
 
 impl<S> QmpClient<S>
@@ -217,6 +268,7 @@ where
             job_poll_policy,
             io_timeout_policy,
             predeclared_debug_guest_endpoint: false,
+            poisoned: false,
         };
         client.greeting = client.read_greeting()?;
         client.send_command(QmpCommand::Capabilities)?;
@@ -315,6 +367,62 @@ where
     /// cannot be read or decoded, or when QMP returns an error response.
     pub fn quit(&mut self) -> Result<QmpCommandComplete, QmpError> {
         self.send_command(QmpCommand::Quit)
+    }
+
+    /// Imports one Unix descriptor into QEMU under an exact bounded name.
+    ///
+    /// The JSON command and `SCM_RIGHTS` descriptor are sent as one QMP stream
+    /// operation. Any error after transfer begins poisons the client because
+    /// neither the byte-stream boundary nor QEMU's ownership is then safe to
+    /// infer. The caller continues to own its descriptor in every outcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the descriptor name is invalid, the transport
+    /// cannot attach exactly one descriptor, the complete command cannot be
+    /// written or acknowledged within the absolute command deadline, or QEMU
+    /// rejects the standard `getfd` command. Every transfer-path error poisons
+    /// this client.
+    #[cfg(unix)]
+    pub fn install_descriptor(
+        &mut self,
+        name: &QmpDescriptorName,
+        descriptor: BorrowedFd<'_>,
+    ) -> Result<QmpCommandComplete, QmpError> {
+        self.ensure_usable()?;
+        let command = QmpCommand::GetFd { name };
+        let kind = command.kind();
+        let deadline = QmpOperationDeadline::new(self.io_timeout_policy.command_timeout);
+        let result = self
+            .write_json_line_with_descriptor(
+                kind.wire_name(),
+                command.request(),
+                descriptor,
+                &deadline,
+            )
+            .and_then(|()| self.read_command_response(kind, &deadline))
+            .map(|response| QmpCommandComplete {
+                command: response.command,
+            });
+        if result.is_err() {
+            self.poisoned = true;
+            self.stream.get_mut().poison_qmp_stream();
+        }
+        result
+    }
+
+    /// Closes one descriptor previously imported with [`Self::install_descriptor`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the client is poisoned, the command cannot be
+    /// exchanged within its absolute deadline, or QEMU does not own `name`.
+    #[cfg(unix)]
+    pub fn close_descriptor(
+        &mut self,
+        name: &QmpDescriptorName,
+    ) -> Result<QmpCommandComplete, QmpError> {
+        self.send_command(QmpCommand::CloseFd { name })
     }
 
     /// Confirms that launch predeclared the fixed guest-introspection channel.
@@ -1009,6 +1117,7 @@ where
         &mut self,
         command: QmpCommand<'_>,
     ) -> Result<QmpCommandReturn, QmpError> {
+        self.ensure_usable()?;
         let kind = command.kind();
         let deadline = QmpOperationDeadline::new(self.io_timeout_policy.command_timeout);
         self.write_json_line(kind.wire_name(), command.request(), &deadline)?;
@@ -1167,6 +1276,116 @@ where
         self.stream.get_mut().flush().map_err(|error| {
             QmpError::from_io_with_timeout("flush QMP request", deadline.timeout, error)
         })
+    }
+
+    #[cfg(unix)]
+    fn write_json_line_with_descriptor(
+        &mut self,
+        operation: &'static str,
+        request: Value,
+        descriptor: BorrowedFd<'_>,
+        deadline: &QmpOperationDeadline,
+    ) -> Result<(), QmpError> {
+        let mut line = serde_json::to_vec(&request).map_err(|error| QmpError::Json {
+            operation,
+            message: error.to_string(),
+        })?;
+        line.extend_from_slice(b"\r\n");
+
+        let remaining = deadline.remaining(operation)?;
+        self.stream
+            .get_mut()
+            .set_qmp_write_timeout(remaining)
+            .map_err(|error| QmpError::from_io("set QMP write timeout", error))?;
+        let first = self
+            .stream
+            .get_mut()
+            .send_qmp_bytes_with_descriptor(&line, descriptor)
+            .map_err(|error| {
+                QmpError::from_io_with_timeout(
+                    "write QMP request with descriptor",
+                    deadline.timeout,
+                    error,
+                )
+            })?;
+        if first == 0 || first > line.len() {
+            return Err(QmpError::DescriptorTransferLength {
+                expected_maximum: line.len(),
+                actual: first,
+            });
+        }
+
+        let mut written = first;
+        while written < line.len() {
+            let remaining = deadline.remaining(operation)?;
+            self.stream
+                .get_mut()
+                .set_qmp_write_timeout(remaining)
+                .map_err(|error| QmpError::from_io("set QMP write timeout", error))?;
+            let count = self
+                .stream
+                .get_mut()
+                .write(&line[written..])
+                .map_err(|error| {
+                    QmpError::from_io_with_timeout(
+                        "complete QMP descriptor request",
+                        deadline.timeout,
+                        error,
+                    )
+                })?;
+            if count == 0 {
+                return Err(QmpError::Io {
+                    operation: "complete QMP descriptor request",
+                    kind: ErrorKind::WriteZero,
+                });
+            }
+            written = written.saturating_add(count);
+        }
+        self.stream.get_mut().flush().map_err(|error| {
+            QmpError::from_io_with_timeout("flush QMP descriptor request", deadline.timeout, error)
+        })
+    }
+
+    fn ensure_usable(&self) -> Result<(), QmpError> {
+        if self.poisoned {
+            Err(QmpError::ConnectionPoisoned)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Exact bounded name assigned to one descriptor imported through QMP.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct QmpDescriptorName(String);
+
+impl QmpDescriptorName {
+    /// Validates one descriptor name for the typed Crucible QMP subset.
+    ///
+    /// Names contain 1 through [`QMP_DESCRIPTOR_NAME_MAX_BYTES`] lowercase
+    /// ASCII letters, digits, or hyphens. This deliberately narrower grammar
+    /// keeps generated hot-fork resource names language-neutral and bounded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError::InvalidDescriptorName`] when the length or grammar
+    /// is outside the typed subset.
+    pub fn new(name: impl AsRef<str>) -> Result<Self, QmpError> {
+        let name = name.as_ref();
+        let valid_length = !name.is_empty() && name.len() <= QMP_DESCRIPTOR_NAME_MAX_BYTES;
+        let valid_bytes = name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+        if !valid_length || !valid_bytes {
+            return Err(QmpError::InvalidDescriptorName { length: name.len() });
+        }
+        Ok(Self(name.to_owned()))
+    }
+
+    /// Returns the exact wire name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -1484,6 +1703,10 @@ pub enum QmpCommandKind {
     QueryHotForkTimerInventory,
     /// Graceful QEMU quit.
     Quit,
+    /// Import one Unix descriptor under a stable name.
+    GetFd,
+    /// Close one previously imported Unix descriptor.
+    CloseFd,
 }
 
 impl QmpCommandKind {
@@ -1524,6 +1747,8 @@ impl QmpCommandKind {
             Self::QueryHotForkMutexInventory => QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
             Self::QueryHotForkTimerInventory => QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND,
             Self::Quit => QMP_QUIT_COMMAND_NAME,
+            Self::GetFd => QMP_GETFD_COMMAND,
+            Self::CloseFd => QMP_CLOSEFD_COMMAND,
         }
     }
 }
@@ -1685,6 +1910,12 @@ enum QmpCommand<'a> {
     QueryHotForkMutexInventory,
     QueryHotForkTimerInventory,
     Quit,
+    GetFd {
+        name: &'a QmpDescriptorName,
+    },
+    CloseFd {
+        name: &'a QmpDescriptorName,
+    },
 }
 
 impl QmpCommand<'_> {
@@ -1725,6 +1956,8 @@ impl QmpCommand<'_> {
             Self::QueryHotForkMutexInventory => QmpCommandKind::QueryHotForkMutexInventory,
             Self::QueryHotForkTimerInventory => QmpCommandKind::QueryHotForkTimerInventory,
             Self::Quit => QmpCommandKind::Quit,
+            Self::GetFd { .. } => QmpCommandKind::GetFd,
+            Self::CloseFd { .. } => QmpCommandKind::CloseFd,
         }
     }
 
@@ -1862,6 +2095,14 @@ impl QmpCommand<'_> {
             }),
             Self::Quit => json!({
                 "execute": QMP_QUIT_COMMAND_NAME,
+            }),
+            Self::GetFd { name } => json!({
+                "execute": QMP_GETFD_COMMAND,
+                "arguments": { "fdname": name.as_str() },
+            }),
+            Self::CloseFd { name } => json!({
+                "execute": QMP_CLOSEFD_COMMAND,
+                "arguments": { "fdname": name.as_str() },
             }),
         }
     }

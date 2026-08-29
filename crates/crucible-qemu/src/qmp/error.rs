@@ -5,6 +5,23 @@ use super::*;
 /// Typed errors returned by the minimal QMP client.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QmpError {
+    /// A descriptor name is outside the typed Crucible QMP grammar.
+    #[error("invalid QMP descriptor name of {length} bytes")]
+    InvalidDescriptorName {
+        /// Rejected byte length; invalid bytes are deliberately not retained.
+        length: usize,
+    },
+    /// A descriptor-bearing send reported an impossible byte count.
+    #[error("QMP descriptor transfer wrote {actual} bytes, expected 1..={expected_maximum}")]
+    DescriptorTransferLength {
+        /// Maximum request bytes supplied to the transport.
+        expected_maximum: usize,
+        /// Bytes reported by the transport.
+        actual: usize,
+    },
+    /// A previous ambiguous descriptor transfer permanently poisoned the client.
+    #[error("QMP connection is poisoned after an ambiguous descriptor transfer")]
+    ConnectionPoisoned,
     /// A launch omitted the fixed inert guest-introspection endpoint.
     #[error("QEMU launch did not predeclare the fixed guest-introspection endpoint")]
     DebugGuestEndpointNotPredeclared,

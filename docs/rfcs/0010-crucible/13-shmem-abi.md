@@ -1036,8 +1036,14 @@ shrink-sealed memfd from fresh `RegionAllocation` bytes, holds all destination
 rings before restore, and requires an exact post-restore recapture. The live
 source inventory, mapping identity, and QEMU/host barrier generation are
 checked before and after that work. The resulting owner is opaque at this
-checkpoint: it grants neither descriptor handoff nor barrier release and is
-not evidence that a child process has been rebound.
+checkpoint: it grants no raw descriptor escape or barrier release. The node may
+consume it into a retained template-process stage by rechecking the live source
+and destination digest, sending one standard QMP `getfd`/`SCM_RIGHTS` duplicate
+under a bounded identity-derived name, and retaining the original mapping until
+the same name is acknowledged by `closefd` or a later closed child-disposition
+transaction. Transfer ambiguity poisons QMP, retains the mapping, and
+quarantines the QEMU generation. This stage is not evidence that a child
+process inherited, remapped, authenticated, or released the region.
 
 The operations the ABI defines:
 

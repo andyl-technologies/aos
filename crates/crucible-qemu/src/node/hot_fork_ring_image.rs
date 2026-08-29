@@ -1,6 +1,8 @@
 //! Drift-checked host capture of a held Crucible plugin ring image.
 
 #[cfg(target_os = "linux")]
+use std::fmt;
+#[cfg(target_os = "linux")]
 use std::fs::File;
 #[cfg(target_os = "linux")]
 use std::os::fd::{AsFd, OwnedFd};
@@ -19,6 +21,8 @@ use thiserror::Error;
 use super::{QemuNode, QemuNodeChannelError};
 #[cfg(target_os = "linux")]
 use crate::spawn::{QemuSpawnError, memfd_region};
+#[cfg(target_os = "linux")]
+use crate::{QmpDescriptorName, QmpError};
 use crate::{QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory};
 
 /// One ring image paired with the exact retained QEMU/plugin barrier proof.
@@ -85,13 +89,31 @@ impl QemuHotForkPluginRingImage {
 pub struct QemuHotForkPrivateRingMapping {
     // Retained for the complete mapping lifetime; no public descriptor escape
     // exists at this incomplete child-composition boundary.
-    _descriptor: OwnedFd,
+    descriptor: OwnedFd,
     region: MappedSetupRegion,
+    descriptor_name: QmpDescriptorName,
     plugin_resources: QmpHotForkPluginResourceInventory,
     source_setup_region: SetupRegionBackingIdentity,
     source_plugin_barrier: QmpHotForkPluginBarrierState,
     source_host_barrier: MappedRingIoBarrierSnapshot,
     image_digest: [u8; 32],
+    image_canonical_len: usize,
+}
+
+#[cfg(target_os = "linux")]
+impl fmt::Debug for QemuHotForkPrivateRingMapping {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("QemuHotForkPrivateRingMapping")
+            .field("backing_identity", &self.backing_identity())
+            .field("descriptor_name", &self.descriptor_name)
+            .field("source_setup_region", &self.source_setup_region)
+            .field("source_plugin_barrier", &self.source_plugin_barrier)
+            .field("source_host_barrier", &self.source_host_barrier)
+            .field("image_digest", &self.image_digest)
+            .field("image_canonical_len", &self.image_canonical_len)
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -128,6 +150,20 @@ impl QemuHotForkPrivateRingMapping {
     #[must_use]
     pub const fn image_digest(&self) -> [u8; 32] {
         self.image_digest
+    }
+
+    /// Returns the stable QMP name derived from this exact private backing.
+    #[must_use]
+    pub const fn descriptor_name(&self) -> &QmpDescriptorName {
+        &self.descriptor_name
+    }
+
+    pub(super) fn descriptor(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.descriptor.as_fd()
+    }
+
+    const fn image_canonical_len(&self) -> usize {
+        self.image_canonical_len
     }
 
     /// Recaptures the held destination ring image for exact verification.
@@ -197,6 +233,126 @@ enum QemuHotForkPrivateRingMappingError {
     /// Destination recapture did not reproduce the exact authenticated image.
     #[error("branch-private hot-fork ring image differs after restore")]
     ImageMismatch,
+    /// The exact destination identity could not form a bounded QMP name.
+    #[error("branch-private hot-fork descriptor name failed: {source}")]
+    DescriptorName {
+        /// Underlying typed QMP name failure.
+        source: QmpError,
+    },
+}
+
+/// QMP ownership state for one node-retained private ring mapping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QemuHotForkPrivateRingStageState {
+    /// Standard QMP `getfd` acknowledged the exact descriptor name.
+    Installed,
+    /// Transfer began but QMP ownership could not be determined safely.
+    TransferUncertain,
+}
+
+/// Bounded evidence for one node-retained private ring descriptor stage.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuHotForkPrivateRingStageProof {
+    state: QemuHotForkPrivateRingStageState,
+    descriptor_name: QmpDescriptorName,
+    backing_identity: SetupRegionBackingIdentity,
+    source_setup_region: SetupRegionBackingIdentity,
+    image_digest: [u8; 32],
+}
+
+impl QemuHotForkPrivateRingStageProof {
+    /// Returns whether descriptor installation was acknowledged or uncertain.
+    #[must_use]
+    pub const fn state(&self) -> QemuHotForkPrivateRingStageState {
+        self.state
+    }
+
+    /// Returns the exact stable name used by standard QMP `getfd`.
+    #[must_use]
+    pub const fn descriptor_name(&self) -> &QmpDescriptorName {
+        &self.descriptor_name
+    }
+
+    /// Returns the fresh private backing identity retained by the node.
+    #[must_use]
+    pub const fn backing_identity(&self) -> SetupRegionBackingIdentity {
+        self.backing_identity
+    }
+
+    /// Returns the source mapping identity authenticated before staging.
+    #[must_use]
+    pub const fn source_setup_region(&self) -> SetupRegionBackingIdentity {
+        self.source_setup_region
+    }
+
+    /// Returns the exact canonical image digest retained by the mapping.
+    #[must_use]
+    pub const fn image_digest(&self) -> [u8; 32] {
+        self.image_digest
+    }
+}
+
+pub(super) enum QemuHotForkPrivateRingStage {
+    Installed(QemuHotForkPrivateRingMapping),
+    TransferUncertain(QemuHotForkPrivateRingMapping),
+}
+
+impl QemuHotForkPrivateRingStage {
+    pub(super) fn proof(&self) -> QemuHotForkPrivateRingStageProof {
+        match self {
+            Self::Installed(mapping) => {
+                mapping.stage_proof(QemuHotForkPrivateRingStageState::Installed)
+            }
+            Self::TransferUncertain(mapping) => {
+                mapping.stage_proof(QemuHotForkPrivateRingStageState::TransferUncertain)
+            }
+        }
+    }
+}
+
+impl QemuHotForkPrivateRingMapping {
+    fn stage_proof(
+        &self,
+        state: QemuHotForkPrivateRingStageState,
+    ) -> QemuHotForkPrivateRingStageProof {
+        QemuHotForkPrivateRingStageProof {
+            state,
+            descriptor_name: self.descriptor_name.clone(),
+            backing_identity: self.backing_identity(),
+            source_setup_region: self.source_setup_region,
+            image_digest: self.image_digest,
+        }
+    }
+}
+
+/// Failure to stage one private mapping in a retained QEMU template.
+#[derive(Debug, Error)]
+pub enum QemuHotForkPrivateRingStageError {
+    /// Validation failed before any descriptor-bearing QMP command began.
+    #[error("hot-fork private ring staging was rejected before transfer: {source}")]
+    Rejected {
+        /// Exact validation failure.
+        source: QemuNodeChannelError,
+        /// Untransferred mapping returned to its caller.
+        mapping: Box<QemuHotForkPrivateRingMapping>,
+    },
+    /// Transfer began, so the node retained ownership and quarantined itself.
+    #[error("hot-fork private ring descriptor transfer is ownership-ambiguous: {source}")]
+    TransferUncertain {
+        /// QMP transfer or acknowledgement failure.
+        source: QemuNodeChannelError,
+    },
+}
+
+impl QemuHotForkPrivateRingStageError {
+    /// Returns an untransferred mapping when rejection preceded QMP transfer.
+    #[must_use]
+    pub fn into_untransferred_mapping(self) -> Option<QemuHotForkPrivateRingMapping> {
+        match self {
+            Self::Rejected { mapping, .. } => Some(*mapping),
+            Self::TransferUncertain { .. } => None,
+        }
+    }
 }
 
 impl QemuNode {
@@ -360,6 +516,194 @@ impl QemuNode {
         Ok(private)
     }
 
+    /// Stages one exact private ring descriptor in the retained QEMU template.
+    ///
+    /// The node reauthenticates the live source inventory/barriers and exact
+    /// destination image before sending standard QMP `getfd`. On success the
+    /// node, not the caller, retains the mapping and descriptor for subsequent
+    /// child disposition. This operation neither forks nor releases any ring.
+    ///
+    /// If transfer begins but fails or lacks an acknowledgement, the node keeps
+    /// the mapping, records an uncertain stage, poisons the QMP stream, and
+    /// enters [`crate::QemuNodeLifecycleState::Quarantined`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuHotForkPrivateRingStageError::Rejected`] with the mapping
+    /// when a pre-transfer invariant fails. Returns
+    /// [`QemuHotForkPrivateRingStageError::TransferUncertain`] after any
+    /// descriptor-bearing QMP failure; in that case the node retains ownership.
+    pub fn stage_hot_fork_private_ring_mapping(
+        &mut self,
+        mapping: QemuHotForkPrivateRingMapping,
+    ) -> Result<QemuHotForkPrivateRingStageProof, QemuHotForkPrivateRingStageError> {
+        if self.lifecycle_state != crate::QemuNodeLifecycleState::Running {
+            return Err(rejected_stage(
+                mapping,
+                "stage hot-fork private ring mapping",
+                "descriptor staging requires a running node",
+            ));
+        }
+        if self.hot_fork_private_ring_stage.is_some() {
+            return Err(rejected_stage(
+                mapping,
+                "stage hot-fork private ring mapping",
+                "node already retains a private ring descriptor stage",
+            ));
+        }
+        if let Err(source) = self.require_matching_private_ring_mapping(&mapping) {
+            return Err(QemuHotForkPrivateRingStageError::Rejected {
+                source,
+                mapping: Box::new(mapping),
+            });
+        }
+
+        let transfer = self
+            .channels
+            .qmp_machine_control
+            .install_hot_fork_private_ring_descriptor(
+                mapping.descriptor_name(),
+                mapping.descriptor(),
+            );
+        if let Err(source) = transfer {
+            self.hot_fork_private_ring_stage =
+                Some(QemuHotForkPrivateRingStage::TransferUncertain(mapping));
+            self.lifecycle_state = crate::QemuNodeLifecycleState::Quarantined;
+            return Err(QemuHotForkPrivateRingStageError::TransferUncertain { source });
+        }
+
+        let proof = mapping.stage_proof(QemuHotForkPrivateRingStageState::Installed);
+        self.hot_fork_private_ring_stage = Some(QemuHotForkPrivateRingStage::Installed(mapping));
+        Ok(proof)
+    }
+
+    /// Returns evidence for the private ring stage retained by this node.
+    #[must_use]
+    pub fn hot_fork_private_ring_stage(&self) -> Option<QemuHotForkPrivateRingStageProof> {
+        self.hot_fork_private_ring_stage
+            .as_ref()
+            .map(QemuHotForkPrivateRingStage::proof)
+    }
+
+    /// Closes an acknowledged QMP descriptor stage and returns its held mapping.
+    ///
+    /// A successful `closefd` acknowledgement proves that QEMU released its
+    /// imported duplicate before the mapping leaves node ownership. An error
+    /// retains the mapping and quarantines the node because descriptor ownership
+    /// is then unsafe to infer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the node is not running, no stage is
+    /// installed, transfer was already uncertain, or QMP cannot acknowledge the
+    /// exact close. The mapping remains node-owned on every error.
+    pub fn release_hot_fork_private_ring_mapping(
+        &mut self,
+    ) -> Result<QemuHotForkPrivateRingMapping, QemuNodeChannelError> {
+        if self.lifecycle_state != crate::QemuNodeLifecycleState::Running {
+            return Err(QemuNodeChannelError::new(
+                "release hot-fork private ring mapping",
+                "descriptor release requires a running node",
+            ));
+        }
+        let name = match self.hot_fork_private_ring_stage.as_ref() {
+            Some(QemuHotForkPrivateRingStage::Installed(mapping)) => {
+                mapping.descriptor_name().clone()
+            }
+            Some(QemuHotForkPrivateRingStage::TransferUncertain(_)) => {
+                return Err(QemuNodeChannelError::new(
+                    "release hot-fork private ring mapping",
+                    "descriptor transfer ownership is uncertain",
+                ));
+            }
+            None => {
+                return Err(QemuNodeChannelError::new(
+                    "release hot-fork private ring mapping",
+                    "node retains no private ring descriptor stage",
+                ));
+            }
+        };
+        if let Err(source) = self
+            .channels
+            .qmp_machine_control
+            .close_hot_fork_private_ring_descriptor(&name)
+        {
+            self.lifecycle_state = crate::QemuNodeLifecycleState::Quarantined;
+            return Err(source);
+        }
+
+        match self.hot_fork_private_ring_stage.take() {
+            Some(QemuHotForkPrivateRingStage::Installed(mapping)) => Ok(mapping),
+            Some(QemuHotForkPrivateRingStage::TransferUncertain(_)) | None => {
+                Err(QemuNodeChannelError::new(
+                    "release hot-fork private ring mapping",
+                    "private ring stage changed after acknowledged descriptor close",
+                ))
+            }
+        }
+    }
+
+    fn require_matching_private_ring_mapping(
+        &mut self,
+        mapping: &QemuHotForkPrivateRingMapping,
+    ) -> Result<(), QemuNodeChannelError> {
+        let resources = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_plugin_resource_inventory()?;
+        if &resources != mapping.plugin_resources() {
+            return Err(QemuNodeChannelError::new(
+                "stage hot-fork private ring mapping",
+                "QEMU plugin resource inventory no longer matches the private mapping",
+            ));
+        }
+        let setup_region = self
+            .channels
+            .shmem_hot_path
+            .hot_fork_setup_region_identity()?;
+        if setup_region != mapping.source_setup_region() {
+            return Err(QemuNodeChannelError::new(
+                "stage hot-fork private ring mapping",
+                "source setup-region identity no longer matches the private mapping",
+            ));
+        }
+        let host = self.channels.shmem_hot_path.hot_fork_ring_io_snapshot()?;
+        if host != mapping.host_barrier() {
+            return Err(QemuNodeChannelError::new(
+                "stage hot-fork private ring mapping",
+                "source host ring barrier no longer matches the private mapping",
+            ));
+        }
+        let plugin = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_plugin_barrier()?;
+        if plugin != mapping.source_plugin_barrier() {
+            return Err(QemuNodeChannelError::new(
+                "stage hot-fork private ring mapping",
+                "source QEMU plugin barrier no longer matches the private mapping",
+            ));
+        }
+        validate_plugin_barrier(plugin)?;
+        validate_matching_barriers(plugin, host)?;
+
+        let recaptured = mapping
+            .capture_ring_image(mapping.image_canonical_len())
+            .map_err(|source| {
+                QemuNodeChannelError::new(
+                    "stage hot-fork private ring mapping",
+                    format!("destination ring recapture failed: {source}"),
+                )
+            })?;
+        if recaptured.digest() != mapping.image_digest() {
+            return Err(QemuNodeChannelError::new(
+                "stage hot-fork private ring mapping",
+                "destination ring image changed before descriptor transfer",
+            ));
+        }
+        Ok(())
+    }
+
     #[cfg(target_os = "linux")]
     fn require_matching_hot_fork_capture(
         &mut self,
@@ -485,15 +829,51 @@ fn materialize_private_ring_mapping(
         return Err(QemuHotForkPrivateRingMappingError::ImageMismatch);
     }
 
+    let image_digest = image.digest();
+    let descriptor_name = private_ring_descriptor_name(destination, image_digest)
+        .map_err(|source| QemuHotForkPrivateRingMappingError::DescriptorName { source })?;
+
     Ok(QemuHotForkPrivateRingMapping {
-        _descriptor: descriptor,
+        descriptor,
         region,
+        descriptor_name,
         plugin_resources,
         source_setup_region,
         source_plugin_barrier,
         source_host_barrier,
-        image_digest: image.digest(),
+        image_digest,
+        image_canonical_len: maximum_bytes,
     })
+}
+
+#[cfg(target_os = "linux")]
+fn private_ring_descriptor_name(
+    identity: SetupRegionBackingIdentity,
+    image_digest: [u8; 32],
+) -> Result<QmpDescriptorName, QmpError> {
+    const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut digest = String::with_capacity(64);
+    for byte in image_digest {
+        digest.push(char::from(LOWER_HEX[usize::from(byte >> 4)]));
+        digest.push(char::from(LOWER_HEX[usize::from(byte & 0x0f)]));
+    }
+    QmpDescriptorName::new(format!(
+        "crucible-hfork-rings-v1-{:016x}-{:016x}-{digest}",
+        identity.device(),
+        identity.inode()
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn rejected_stage(
+    mapping: QemuHotForkPrivateRingMapping,
+    operation: &'static str,
+    message: &'static str,
+) -> QemuHotForkPrivateRingStageError {
+    QemuHotForkPrivateRingStageError::Rejected {
+        source: QemuNodeChannelError::new(operation, message),
+        mapping: Box::new(mapping),
+    }
 }
 
 fn validate_setup_region(

@@ -34,6 +34,8 @@ pub(crate) fn scripted_node_with_live_host_runtime(
             timeout_snapshot: false,
             plugin_resources: None,
             plugin_barriers: None,
+            fail_descriptor_install: false,
+            fail_descriptor_close: false,
         },
     );
     Ok(QemuNode::new(
