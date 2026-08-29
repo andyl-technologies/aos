@@ -103,12 +103,17 @@ The commands relevant to a release, in workflow order:
 | `apr push [--branch] [--set-upstream] [--force]` | `push` (`registry_ops.rs:1398`) | `git push [-u origin] [branch] [--force]`. |
 
 The signed-UKI gate is release policy, not a build-time default. Enable it in
-the committed root only after the producer has a separately held Secure Boot
-private key, its public certificate is active in `sb-certs.toml`, and the same
-certificate is installed locally as `sb-certs/db.pem`. Never commit the private
-key or pass it through a Nix derivation: the build should produce unsigned UKIs,
-an external signing stage should sign them, and publication should consume the
-signed artifacts. Releases containing no system images remain valid.
+the committed root only after its public certificate is active in
+`sb-certs.toml` and the same certificate is installed locally as
+`sb-certs/db.pem`. Releases containing no system images remain valid.
+
+The current Secure Boot image module signs during the Nix build, so a key path
+used there is copied into the local Nix store. That is acceptable only for
+disposable development or staging identities on a controlled single-user
+builder. Do not use that path for production keys. Production requires the
+external signing/key-custody stage described by RFC-0006; until that stage is
+implemented, the release gate verifies signed artifacts but does not make the
+in-build signer a production-safe workflow.
 
 ### 2.1 CURRENT: transport/index refresh
 

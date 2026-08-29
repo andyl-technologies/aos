@@ -5209,10 +5209,8 @@ mod tests {
                 &vals![org_scope],
             )
             .await
-            .unwrap()
             .unwrap();
-        assert_eq!(org_grant.get::<String>(0).unwrap(), "instance_default");
-        assert_eq!(org_grant.get::<String>(1).unwrap(), "active");
+        assert!(org_grant.is_none());
         let org_event_count = db
             .backend
             .query_opt(
@@ -5229,7 +5227,7 @@ mod tests {
             .unwrap()
             .get::<i64>(0)
             .unwrap();
-        assert_eq!(org_event_count, 1);
+        assert_eq!(org_event_count, 0);
     }
 
     #[tokio::test]

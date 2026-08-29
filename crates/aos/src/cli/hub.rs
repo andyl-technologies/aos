@@ -2868,8 +2868,6 @@ mod tests {
             "list",
             "--hub",
             "https://aos.example",
-            "--org",
-            "andyl",
             "registry:andyl/main",
         ])
         .unwrap();

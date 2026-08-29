@@ -36186,16 +36186,28 @@ mod cache_upload_tests {
     #[tokio::test]
     async fn registry_without_a_canonical_route_has_no_consumer_url() {
         let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
-        let binding_id = db
+        let binding = db
             .ensure_instance_default_binding(
                 "deployment_r2",
                 None,
                 Some(crate::binding::DEPLOYMENT_R2_ATTACHMENT),
             )
             .await
-            .unwrap()
-            .id;
+            .unwrap();
         let org_id = db.create_org("automatic", "Automatic").await.unwrap();
+        let org = db.org_by_id(org_id).await.unwrap().unwrap();
+        db.grant_consumer_scope(
+            crate::db::GrantResource::Binding {
+                id: binding.id,
+                stable_id: &binding.stable_id,
+            },
+            &org.stable_id,
+            "explicit",
+            "test",
+            "request:automatic-binding-grant",
+        )
+        .await
+        .unwrap();
         let registry_id = db
             .create_managed_registry(org_id, "", "main", "public", &[], false)
             .await
@@ -36204,7 +36216,7 @@ mod cache_upload_tests {
             .create_surface_placement(&NewSurfacePlacementSpec {
                 surface: SurfaceTarget::Registry(registry_id),
                 name: "primary".into(),
-                binding_id,
+                binding_id: binding.id,
                 prefix: "automatic/main".into(),
                 kind: "complete".into(),
                 desired_state: "active".into(),
