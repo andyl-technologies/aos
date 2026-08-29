@@ -116,6 +116,12 @@ Declare generators such as Bison even when a release archive includes generated
 sources, because build rules can regenerate them after unpacking or patching.
 Pass the generator through the upstream configure interface when one exists so
 the build cannot silently fall back to an undeclared host command.
+Make excluded optional components explicit through the upstream configure
+interface. Do not rely on a missing dependency to disable a component: a CMake
+helper can return after a failed probe while its parent directory continues
+generating targets with `NOTFOUND` include or library paths. Assert the
+component's disabled cache value after configure so an upstream default change
+cannot silently expand the package feature set.
 If a dependency is missing from AOS, package it from source rather than
 reaching into the host or importing nixpkgs.
 
