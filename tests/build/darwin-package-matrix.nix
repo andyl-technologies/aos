@@ -128,6 +128,7 @@
     };
     targetPackages = cross.pkgs.targetPackagesFor targetSystem;
     targetNames = cross.pkgs.targetPackageNamesFor targetSystem;
+    compilerSdkPath = toString cross.pkgs.stdenv.cc.passthru.sdk;
     namesForWave = wave:
       builtins.filter (
         name: (support.packageSupport name).wave == wave
@@ -223,6 +224,8 @@
               set -eu
 
               expected_platform=${lib.escapeShellArg targetSystem}
+              expected_build_platform=${lib.escapeShellArg buildSystem}
+              compiler_sdk_path=${lib.escapeShellArg compilerSdkPath}
               expected_cpu=${lib.escapeShellArg targetConfig.expectedCpu}
               expected_elf_arch=${lib.escapeShellArg targetConfig.expectedElfArch}
               expected_elf_format=${lib.escapeShellArg targetConfig.expectedElfFormat}
@@ -446,8 +449,19 @@
               : > wrong-platform-paths
               while IFS= read -r path; do
                 marker="$path/nix-support/aos-target-platform"
-                if [ -f "$marker" ] && [ "$(cat "$marker")" != "$expected_platform" ]; then
-                  printf '%s\n' "$path" >> wrong-platform-paths
+                if [ -f "$marker" ]; then
+                  marked_platform=$(cat "$marker")
+                  if [ "$marked_platform" != "$expected_platform" ]; then
+                    # The compiler SDK is a Linux-hosted publication consumed
+                    # as immutable target data. Exempt only this exact role and
+                    # path; every other marked closure member must match the
+                    # Darwin target.
+                    if [ "$path" = "$compiler_sdk_path" ] \
+                      && [ "$marked_platform" = "$expected_build_platform" ]; then
+                      continue
+                    fi
+                    printf '%s\n' "$path" >> wrong-platform-paths
+                  fi
                 fi
               done < audited-closure-paths
               if [ -s wrong-platform-paths ]; then
