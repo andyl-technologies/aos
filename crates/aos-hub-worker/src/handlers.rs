@@ -11,7 +11,7 @@
 //! `fetch`/`scheduled` entry points, the README, and `wrangler.toml` agree on.
 
 /// The R2 bucket binding name (`wrangler.toml` `[[r2_buckets]]`).
-const R2_BINDING: &str = "REGISTRY_BUCKET";
+const R2_BINDING: &str = aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT;
 
 /// Re-export the binding names so the README/wrangler config and tests agree.
 pub mod bindings {

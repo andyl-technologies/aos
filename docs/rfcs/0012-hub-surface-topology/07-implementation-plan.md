@@ -70,8 +70,8 @@ authority; and the runtime reports which placement served the object.
       immutable-identity `endpoint` with explicit scheme,
       DNS/IPv4/IPv6 host, effective port, and pinned endpoint/boundary
       revisions.
-- [ ] Provision the non-deletable instance public-boundary singleton and
-      eagerly materialize its exact instance-default organization grants.
+- [ ] Provision the non-deletable instance public-boundary singleton. Grant it
+      to organizations only through the ordinary reviewed grant plan.
 - [ ] Add routes, permanent privacy-minimized URL reservations,
       route advertisements, gateways, and append-only route audit events.
 - [ ] Migrate registry/cache frontends to routes and binding frontends to
