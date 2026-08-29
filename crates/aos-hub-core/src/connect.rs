@@ -292,6 +292,15 @@ fn browse_response(rendered: Rendered) -> Response {
         Rendered::Json(body) => {
             ([(header::CONTENT_TYPE, "application/json")], body).into_response()
         }
+        Rendered::ImmutableJson { body, etag } => (
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+                (header::ETAG, &format!("\"{etag}\"")),
+            ],
+            body,
+        )
+            .into_response(),
         Rendered::Redirect(location) => {
             axum::response::Redirect::permanent(&location).into_response()
         }
@@ -349,7 +358,10 @@ async fn browse_dispatch(
         };
         return browse_response(rendered);
     }
-    let rendered = match rest.strip_prefix("api/") {
+    let api_rest = rest
+        .strip_prefix("api/v1/")
+        .or_else(|| rest.strip_prefix("api/"));
+    let rendered = match api_rest {
         Some(api) => match api {
             "registry" => browse::api_registry(&svc, &slug).await,
             "packages" => browse::api_packages(&svc, &slug).await,
@@ -358,11 +370,41 @@ async fn browse_dispatch(
             "channels" => browse::api_channels(&svc, &slug).await,
             "releases" => browse::api_releases(&svc, &slug).await,
             other => {
-                if let Some(name) = other
+                if let Some(digest) = other
+                    .strip_prefix("documentation/")
+                    .filter(|digest| !digest.is_empty() && !digest.contains('/'))
+                {
+                    browse::api_documentation_artifact(&svc, &slug, digest).await
+                } else if let Some(name) = other
                     .strip_prefix("packages/")
                     .filter(|name| !name.is_empty())
                 {
-                    browse::api_package(&svc, &slug, name).await
+                    if let Some((package, suffix)) = name.split_once('/') {
+                        match suffix {
+                            "documentation" => {
+                                browse::api_package_documentation(&svc, &slug, package, &q).await
+                            }
+                            "options" => {
+                                browse::api_package_options(&svc, &slug, package, &q).await
+                            }
+                            "compare" => {
+                                browse::api_documentation_compare(&svc, &slug, package, &q).await
+                            }
+                            option if option.starts_with("options/") => {
+                                browse::api_package_option(
+                                    &svc,
+                                    &slug,
+                                    package,
+                                    option.trim_start_matches("options/"),
+                                    &q,
+                                )
+                                .await
+                            }
+                            _ => Rendered::NotFound,
+                        }
+                    } else {
+                        browse::api_package(&svc, &slug, name).await
+                    }
                 } else if let Some(selection) = documentation_selection(other, "docs/") {
                     browse::api_documentation(&svc, &slug, selection.0, selection.1, selection.2)
                         .await
@@ -2291,6 +2333,26 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         r,
         "/aos.hub.v1.DocumentationService/SearchPackageDocumentation",
         search_package_documentation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DocumentationService/ListPackageOptions",
+        list_package_options
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DocumentationService/GetPackageOption",
+        get_package_option
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DocumentationService/ComparePackageDocumentation",
+        compare_package_documentation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DocumentationService/GetDocumentationArtifact",
+        get_documentation_artifact
     );
     r = rpc_route!(
         r,
