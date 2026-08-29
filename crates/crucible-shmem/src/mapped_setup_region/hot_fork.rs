@@ -38,6 +38,50 @@ pub enum HotForkMappingDispositionError {
     },
 }
 
+/// Failure to install a branch-private setup mapping in a fork child.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum HotForkChildMappingInstallError {
+    /// The current operating system has no supported exact-address mapping API.
+    #[error("hot-fork child setup mapping is unsupported on this platform")]
+    Unsupported,
+    /// The destination descriptor could not be authenticated.
+    #[error("hot-fork child setup descriptor inspection failed")]
+    Inspect {
+        /// Underlying descriptor inspection failure.
+        source: SetupRegionMapError,
+    },
+    /// The expected destination length differs from the source mapping length.
+    #[error(
+        "hot-fork child setup length {destination_length} differs from source length {source_length}"
+    )]
+    LengthMismatch {
+        /// Retained source mapping length.
+        source_length: u64,
+        /// Expected destination descriptor length.
+        destination_length: u64,
+    },
+    /// The destination aliases the template's source backing object.
+    #[error("hot-fork child setup descriptor aliases the template source")]
+    SourceAlias,
+    /// The descriptor identity differs from the authenticated expected basis.
+    #[error("hot-fork child setup descriptor identity mismatch")]
+    IdentityMismatch {
+        /// Exact identity expected by the child plan.
+        expected: SetupRegionBackingIdentity,
+        /// Identity observed immediately before mapping.
+        actual: SetupRegionBackingIdentity,
+    },
+    /// The source virtual address is still occupied in this process.
+    #[error("hot-fork child setup address is still occupied")]
+    AddressOccupied,
+    /// Linux rejected the exact-address shared mapping.
+    #[error("hot-fork child setup mmap failed with errno {errno}")]
+    MmapFailed {
+        /// Raw operating-system error number.
+        errno: i32,
+    },
+}
+
 impl MappedRingIoBarrierSnapshot {
     /// Returns the exact number of ring headers in the validated region layout.
     #[must_use]
@@ -81,6 +125,99 @@ enum BarrierAction {
 }
 
 impl MappedSetupRegion {
+    /// Installs an authenticated branch-private mapping at the source address.
+    ///
+    /// `MADV_DONTFORK` leaves this owner present but its mapping absent in a
+    /// fork child. This transition authenticates the staged descriptor, rejects
+    /// the source backing object, and uses `MAP_FIXED_NOREPLACE` so it can never
+    /// overwrite an inherited or concurrently installed VMA. Preserving the
+    /// exact address keeps every previously validated protocol pointer bound to
+    /// the replacement bytes.
+    ///
+    /// The destination must already contain the complete held canonical ring
+    /// image. This method authenticates mapping identity and placement; normal
+    /// typed accessors continue to validate the shared-memory header and layout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HotForkChildMappingInstallError`] when the platform is not
+    /// Linux, descriptor identity or length differs, the descriptor aliases the
+    /// source, the source address remains occupied, or `mmap` rejects the
+    /// exact-address install.
+    pub fn install_hot_fork_child_mapping(
+        &mut self,
+        fd: std::os::fd::BorrowedFd<'_>,
+        expected: SetupRegionBackingIdentity,
+    ) -> Result<(), HotForkChildMappingInstallError> {
+        self.install_hot_fork_child_mapping_inner(fd, expected)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn install_hot_fork_child_mapping_inner(
+        &mut self,
+        fd: std::os::fd::BorrowedFd<'_>,
+        expected: SetupRegionBackingIdentity,
+    ) -> Result<(), HotForkChildMappingInstallError> {
+        if expected.length() != self.region_len {
+            return Err(HotForkChildMappingInstallError::LengthMismatch {
+                source_length: self.region_len,
+                destination_length: expected.length(),
+            });
+        }
+        if expected == self.backing_identity {
+            return Err(HotForkChildMappingInstallError::SourceAlias);
+        }
+
+        let actual = setup_region_backing_identity(fd)
+            .map_err(|source| HotForkChildMappingInstallError::Inspect { source })?;
+        if actual != expected {
+            return Err(HotForkChildMappingInstallError::IdentityMismatch { expected, actual });
+        }
+        verify_setup_region_shrink_seal(fd)
+            .map_err(|source| HotForkChildMappingInstallError::Inspect { source })?;
+
+        // SAFETY: the destination descriptor was authenticated at the exact
+        // source geometry. `MAP_FIXED_NOREPLACE` either installs precisely at
+        // the retained address or fails without changing an existing VMA.
+        let mapped = unsafe {
+            libc::mmap(
+                self.address as *mut libc::c_void,
+                self.len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED | libc::MAP_FIXED_NOREPLACE,
+                fd.as_raw_fd(),
+                0,
+            )
+        };
+        if mapped == libc::MAP_FAILED {
+            let errno = last_os_error();
+            return Err(if errno == libc::EEXIST {
+                HotForkChildMappingInstallError::AddressOccupied
+            } else {
+                HotForkChildMappingInstallError::MmapFailed { errno }
+            });
+        }
+        if mapped as usize != self.address {
+            // Linux promises exact placement for MAP_FIXED_NOREPLACE. A kernel
+            // violation leaves the retained typed-pointer invariant unknowable.
+            std::process::abort();
+        }
+
+        self.backing_identity = actual;
+        // SAFETY: `getpid` has no pointer preconditions and cannot fail.
+        self.mapping_process_id = unsafe { libc::getpid() };
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn install_hot_fork_child_mapping_inner(
+        &mut self,
+        _fd: std::os::fd::BorrowedFd<'_>,
+        _expected: SetupRegionBackingIdentity,
+    ) -> Result<(), HotForkChildMappingInstallError> {
+        Err(HotForkChildMappingInstallError::Unsupported)
+    }
+
     /// Excludes this exact mapping from a future `fork(2)` child.
     ///
     /// The current process retains normal access. Callers must first stop every

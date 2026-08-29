@@ -1649,7 +1649,13 @@ The supported launch profile optimizes the complete child-ready path:
 - the live source protocol-ring mapping is now frozen and marked
   `MADV_DONTFORK` by the version-6 plugin barrier, then restored with
   `MADV_DOFORK` before the parent reopens; the staged child mapping is still
-  installed only by the future child reinitializer;
+  installed only by the future child reinitializer. The permissive shared-memory
+  boundary now supplies the exact-address Linux install primitive used by that
+  reinitializer: it authenticates the non-aliasing destination device, inode,
+  length, and shrink seal, requires the source VMA to be absent, and maps with
+  `MAP_FIXED_NOREPLACE`. A real `fork(2)` regression proves the child writes the
+  private backing while the parent's source mapping and backing identity remain
+  unchanged;
 - shared protocol rings are small, frozen separately, and replaced rather than
   forcing the main RAM mapping to be shared;
 - child sockets, memfds, overlay descriptors, directory identities, cgroup

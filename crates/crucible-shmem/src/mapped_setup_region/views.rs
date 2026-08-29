@@ -192,6 +192,12 @@ pub struct MappedSetupRegion {
     pub(super) len: usize,
     pub(super) region_len: u64,
     pub(super) backing_identity: SetupRegionBackingIdentity,
+    /// Process that owns the currently installed virtual-memory mapping.
+    ///
+    /// `MADV_DONTFORK` deliberately leaves this owner without a mapping in a
+    /// fork child. The child must install its authenticated replacement before
+    /// any typed accessor reconstructs a pointer.
+    pub(super) mapping_process_id: libc::pid_t,
 }
 
 /// Stable filesystem identity of one mapped setup-region backing object.
@@ -203,6 +209,22 @@ pub struct SetupRegionBackingIdentity {
 }
 
 impl SetupRegionBackingIdentity {
+    /// Constructs one exact nonempty setup-region backing identity.
+    ///
+    /// Returns `None` for a zero inode or length. A zero device remains valid
+    /// because pseudo-filesystems may report it.
+    #[must_use]
+    pub const fn from_parts(device: u64, inode: u64, length: u64) -> Option<Self> {
+        if inode == 0 || length == 0 {
+            return None;
+        }
+        Some(Self {
+            device,
+            inode,
+            length,
+        })
+    }
+
     /// Returns the backing filesystem device number.
     #[must_use]
     pub const fn device(self) -> u64 {

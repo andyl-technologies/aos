@@ -1890,6 +1890,14 @@ rejection, and both retained failure states.
 The permissive mapping owner has focused Linux coverage that observes the
 kernel `dc` `VmFlags` bit across the reversible transition, and the typed QMP
 client requires `mapping-dontfork` for any captured source-ring proof.
+The mapping owner now also records its owning process and fails closed before
+reconstructing a typed pointer in an uninitialized fork child. Its Linux child
+transition authenticates the exact distinct destination backing and shrink
+seal, requires the source address to be vacant, and installs the replacement at
+that address with `MAP_FIXED_NOREPLACE`. A real-fork regression proves the
+parent remains on its source backing while the child mutates only the private
+one. This is the exact-address mapping half of child reinitialization; QEMU has
+not yet invoked it or rebound plugin workers and endpoints.
 This remains a retained T-CAM-6.2 subsystem primitive: a pending worker-local
 item is rejected rather than assigned ambiguously, while fork-child descriptor
 inheritance/remapping beyond the now-excluded source ring, application of the complete recorded disposition plan,
