@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "cac90d4c11282f63af88f36abcab27416ab9fa91ba4e2e134d89321714cb0efc";
+  patchBranchBundleSha256 = "64037e1a009fa1a7b5d54e2d5aa8ea0eea448d346e70bc0e31a46fbc76079ad4";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "4e9712732d9b23b9bba63adf5f31c5201c8f2e3c";
+  patchBranchHeadCommit = "ee19f957c901c33596c9c40aedcb16c412d5650c";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1039,7 +1039,7 @@ let
     {
       file = "0111-crucible-accelerator-service-schema.patch";
       branchSubject = "crucible: correct accelerator service schema";
-      branchCommit = "c1dbfb8cdf88e05d59fdc52a52a84f01f021a294";
+      branchCommit = "543bc42bd126637d3b8b90df3f1288149d0702de";
       branchTree = "bd83546cd7c1ccbce13d71a62b7ba0ff9ed1f7f9";
       catalogName = "crucible-accelerator-service-schema";
       class = "F";
@@ -1049,7 +1049,7 @@ let
     {
       file = "0112-crucible-compile-affected-clock-sources.patch";
       branchSubject = "crucible: compile only affected clock sources";
-      branchCommit = "904a0454b3d42cbb84bc158bc8d2e4594cec4560";
+      branchCommit = "396534bb992d07a7944c5350ff73fb3297ca4db6";
       branchTree = "7167097468bc36dec5a4e8175e762f2a2fbfe84b";
       catalogName = "crucible-compile-affected-clock-sources";
       class = "F";
@@ -1059,7 +1059,7 @@ let
     {
       file = "0113-crucible-restore-accelerator-rule-indexes.patch";
       branchSubject = "crucible: restore accelerator rule indexes";
-      branchCommit = "b900da9c4e3eb5d0e422121f52fb844468569cf6";
+      branchCommit = "176ec83b05dcc766e3daf1230a8ae9a00d6cd88d";
       branchTree = "738f7ed30240aefc43ce5036f49deed1d00baf5f";
       catalogName = "crucible-restore-accelerator-rule-indexes";
       class = "F";
@@ -1069,7 +1069,7 @@ let
     {
       file = "0114-crucible-hot-fork-readiness.patch";
       branchSubject = "crucible: report hot-fork readiness proofs";
-      branchCommit = "492f2a11ec3f2f576b4416f440db6bfa2c1cb254";
+      branchCommit = "edf8276c38dd54f58b11eaaa1750982f4d577194";
       branchTree = "013780a29e18b21d743a265f959f851250f2ec9c";
       catalogName = "crucible-hot-fork-readiness";
       class = "F";
@@ -1079,7 +1079,7 @@ let
     {
       file = "0115-crucible-hot-fork-thread-ownership.patch";
       branchSubject = "crucible: classify unresolved hot-fork threads";
-      branchCommit = "785e7771dd37d5456d07c141627f8620bff1ac04";
+      branchCommit = "126443ece18e2ae7606d32591e5ab8d4a0442761";
       branchTree = "be3f356920f4c43e210a407ef7dba54ecb6a41a4";
       catalogName = "crucible-hot-fork-thread-ownership";
       class = "F";
@@ -1089,7 +1089,7 @@ let
     {
       file = "0116-crucible-hot-fork-rcu-inventory.patch";
       branchSubject = "crucible: inventory hot-fork RCU state";
-      branchCommit = "4a932e7074b02b3b07e53e79e5230b6c3eabbad1";
+      branchCommit = "6ba1b4d2097ab16b278bac34dc6467fd621b4e7c";
       branchTree = "0b0e443773051a8a79ed1749f71005c10632c581";
       catalogName = "crucible-hot-fork-rcu-inventory";
       class = "F";
@@ -1099,7 +1099,7 @@ let
     {
       file = "0117-crucible-hot-fork-aio-inventory.patch";
       branchSubject = "crucible: inventory hot-fork AIO activity";
-      branchCommit = "100ed66ed15bf1f1ff5a8da7dfaa690e1730b699";
+      branchCommit = "da318a23e52e5474497f2223931fd148d50df0f6";
       branchTree = "0f6eca9721b407ff2c07e41f4f6797122ed5dd52";
       catalogName = "crucible-hot-fork-aio-inventory";
       class = "F";
@@ -1109,7 +1109,7 @@ let
     {
       file = "0118-crucible-hot-fork-mutex-inventory.patch";
       branchSubject = "crucible: inventory hot-fork mutex ownership";
-      branchCommit = "640192ed7c8003ae0b1867de1ed1b40c43db1064";
+      branchCommit = "714683bc78cdbf306a359ad3ec57a19f5fc588b7";
       branchTree = "7cf0cf5fde3e21cde7ebfef1ab41edb8a8160176";
       catalogName = "crucible-hot-fork-mutex-inventory";
       class = "F";
@@ -1119,7 +1119,7 @@ let
     {
       file = "0119-crucible-hot-fork-timer-inventory.patch";
       branchSubject = "crucible: inventory hot-fork timers";
-      branchCommit = "f07121b0c783e61e26cdad4f4084bae9176f292c";
+      branchCommit = "94aff6e1c758a71ae44ae65bcb5dfdb6dc46e497";
       branchTree = "24d5abfa7452b50ff47f23ac7ac8ee338b645479";
       catalogName = "crucible-hot-fork-timer-inventory";
       class = "F";
@@ -1129,7 +1129,7 @@ let
     {
       file = "0120-crucible-hot-fork-bottom-half-inventory.patch";
       branchSubject = "crucible: inventory hot-fork bottom halves";
-      branchCommit = "17bced64c6eed1e17aa1ab5e388951ea1af1318e";
+      branchCommit = "81bc0486f8ee8d96df0105396dbb38f95c0851a4";
       branchTree = "9d55b51e52826ebd6b64ba3239f3f2977e94a396";
       catalogName = "crucible-hot-fork-bottom-half-inventory";
       class = "F";
@@ -1139,7 +1139,7 @@ let
     {
       file = "0121-crucible-hot-fork-aio-handler-inventory.patch";
       branchSubject = "crucible: inventory hot-fork AIO handlers";
-      branchCommit = "d2b92ba1d107de82c36729f8ea369ae2ffbcab9a";
+      branchCommit = "dbcf0af13accb0932920e1cbaf27bfa87e5a2245";
       branchTree = "23498a2beef07a58ed036b7089e886db9fca5b9f";
       catalogName = "crucible-hot-fork-aio-handler-inventory";
       class = "F";
@@ -1149,7 +1149,7 @@ let
     {
       file = "0122-crucible-hot-fork-block-backend-inventory.patch";
       branchSubject = "crucible: inventory block backends for hot fork";
-      branchCommit = "cac1288401fc126be15068bef1a207ab2ee131f3";
+      branchCommit = "c40b3bf717250528ef4e23e3395da8f825766d3c";
       branchTree = "fed38a88088b9de2d7afc642a2e71a783597de3e";
       catalogName = "crucible-hot-fork-block-backend-inventory";
       class = "F";
@@ -1159,7 +1159,7 @@ let
     {
       file = "0123-crucible-hot-fork-plugin-resource-inventory.patch";
       branchSubject = "crucible: inventory plugin resources for hot fork";
-      branchCommit = "051e7c05ca6068d92a3cde393ec5f22191c694c9";
+      branchCommit = "1812ed36c67706b611ff9b7b450e66c51207846b";
       branchTree = "011b8dd139f2cbff8ed446abbae0369ea6fb5ece";
       catalogName = "crucible-hot-fork-plugin-resource-inventory";
       class = "F";
@@ -1169,7 +1169,7 @@ let
     {
       file = "0124-crucible-hot-fork-plugin-callback-barrier.patch";
       branchSubject = "crucible: hold plugin callbacks for hot fork";
-      branchCommit = "852bc9d253f7e7ea94d2083ccfdc9232d3e667e9";
+      branchCommit = "86dfe49b3a348d37249ccdfcc6571bd78abafaa1";
       branchTree = "a4ffb31708841d192e4bb645008996b875d3be62";
       catalogName = "crucible-hot-fork-plugin-callback-barrier";
       class = "F";
@@ -1179,7 +1179,7 @@ let
     {
       file = "0125-crucible-hot-fork-template-coordinator.patch";
       branchSubject = "crucible: coordinate hot-fork template preparation";
-      branchCommit = "08f0f9f07cbaaf02370b38e072c459118af0c8c4";
+      branchCommit = "7f5f3877119b3113d68b24dd6fcc7f295ef771ee";
       branchTree = "9fd170957f39e963c5ce05553370d344ae5d38db";
       catalogName = "crucible-hot-fork-template-coordinator";
       class = "F";
@@ -1189,7 +1189,7 @@ let
     {
       file = "0126-crucible-hot-fork-rcu-barrier.patch";
       branchSubject = "crucible: retain RCU quiescence for hot fork";
-      branchCommit = "e7ff1dc4c3be44cdbeb4835389145089f0400336";
+      branchCommit = "94069e96124b68848c715962a61d1c6a7aafd8ae";
       branchTree = "dab9e6d8470af774b0ce2287fd1c96f370d30b7c";
       catalogName = "crucible-hot-fork-rcu-barrier";
       class = "F";
@@ -1199,7 +1199,7 @@ let
     {
       file = "0127-crucible-hot-fork-bh-timer-barrier.patch";
       branchSubject = "crucible: park BH and timer sources for hot fork";
-      branchCommit = "b3e787fe19caebe4ebed1a14a3db4e2e67edc0df";
+      branchCommit = "3b8e36c700b80d9a62df1770cad98daa00cc099c";
       branchTree = "a4323ea0508efb9370771d2fe05d313d30ebe842";
       catalogName = "crucible-hot-fork-bh-timer-barrier";
       class = "F";
@@ -1209,7 +1209,7 @@ let
     {
       file = "0128-crucible-hot-fork-aio-barrier.patch";
       branchSubject = "crucible: park AIO contexts for hot fork";
-      branchCommit = "475f05c3bf531ec8739ddb1d84ca959684697b16";
+      branchCommit = "be21f977a161a4bc366310d3e1d2364ad9722a24";
       branchTree = "910f17a6bbc1937467bf4906f399e05250bd7ade";
       catalogName = "crucible-hot-fork-aio-barrier";
       class = "F";
@@ -1219,7 +1219,7 @@ let
     {
       file = "0129-crucible-hot-fork-block-drain-barrier.patch";
       branchSubject = "crucible: retain block drain for hot fork";
-      branchCommit = "b46c7cd35f6e46ac5265fa8221f185dc45b3ec78";
+      branchCommit = "6463d6a264547261844caa854195286f7c0c4b13";
       branchTree = "8404f0032a0912dfbb4df15fff54a9d1acfbc316";
       catalogName = "crucible-hot-fork-block-drain-barrier";
       class = "F";
@@ -1229,7 +1229,7 @@ let
     {
       file = "0130-crucible-hot-fork-block-template-coordinator.patch";
       branchSubject = "crucible: coordinate block drain for hot fork";
-      branchCommit = "a1f44c51a961b0c4672b9c402bdd9990b10e4584";
+      branchCommit = "adb496a88e3556234d68700320e31ff0c77035b4";
       branchTree = "2a6cae9969159274a4a051c76e26c4969a2d5d31";
       catalogName = "crucible-hot-fork-block-template-coordinator";
       class = "F";
@@ -1239,7 +1239,7 @@ let
     {
       file = "0131-crucible-hot-fork-block-graph-barrier.patch";
       branchSubject = "crucible: retain block graph barrier for hot fork";
-      branchCommit = "7901cc52c2a248f2d8e5e3ed1ac6f55236b8573c";
+      branchCommit = "2eb8d57331e14940aa5fdefe106b546c23ee9c6d";
       branchTree = "83cd169f85445660b8e2fe7a6e4d4fb98db9ad7f";
       catalogName = "crucible-hot-fork-block-graph-barrier";
       class = "F";
@@ -1249,7 +1249,7 @@ let
     {
       file = "0132-crucible-bind-hot-fork-block-snapshot-roots.patch";
       branchSubject = "crucible: bind hot-fork block snapshot roots";
-      branchCommit = "18de7c2f3183eec56d9969e1404049d7a3477590";
+      branchCommit = "6dea5c3e566d9b535eabe0bdc9965f318a84a1e8";
       branchTree = "648aad461d79ff1a6b5f9af001deb16e8c6bfce9";
       catalogName = "crucible-hot-fork-block-snapshot-roots";
       class = "F";
@@ -1259,7 +1259,7 @@ let
     {
       file = "0133-crucible-authenticate-fault-result-payloads.patch";
       branchSubject = "crucible: authenticate every fault result payload";
-      branchCommit = "011f1423524a9388c1827390a07009fb3572432e";
+      branchCommit = "238e669b493da7e95e1028df18fa15ad18084fec";
       branchTree = "be12ece0704a78de8902646460604695e463ac0d";
       catalogName = "crucible-authenticate-fault-result-payloads";
       class = "F";
@@ -1269,7 +1269,7 @@ let
     {
       file = "0134-crucible-clock-impulse-read-error-policies.patch";
       branchSubject = "crucible: honor clock impulse and read-error policies";
-      branchCommit = "68a21ce058346c61d2332f214efa2a66ace0222d";
+      branchCommit = "dba1981388d0dd4747dfe29d56ac9b957eaad375";
       branchTree = "05be4bbf628e689b672aaa4a278b3901c63c36b5";
       catalogName = "crucible-clock-impulse-read-error-policies";
       class = "F";
@@ -1279,7 +1279,7 @@ let
     {
       file = "0135-crucible-freeze-hot-fork-rings.patch";
       branchSubject = "crucible: freeze shared rings for hot fork";
-      branchCommit = "2fc133444c3b0d0d2084410731de07811efbd049";
+      branchCommit = "69919246f4268b0e8ed655c26f4069960af5d0c4";
       branchTree = "d43d255714c58a593ca2ab9f48422da71f2ba69d";
       catalogName = "crucible-hot-fork-ring-producer-barrier";
       class = "F";
@@ -1289,7 +1289,7 @@ let
     {
       file = "0136-crucible-seal-hot-fork-plugin-workers.patch";
       branchSubject = "crucible: seal hot-fork plugin workers";
-      branchCommit = "170469474567397bb09807e542e31cc85aa2ef1e";
+      branchCommit = "362469bae01662cac99d04b0e6f9f5d5d49d40e1";
       branchTree = "48b53def2473604b0c7a9cef23e640f0b4481a17";
       catalogName = "crucible-hot-fork-plugin-worker-manifest";
       class = "F";
@@ -1299,7 +1299,7 @@ let
     {
       file = "0137-crucible-park-hot-fork-plugin-workers.patch";
       branchSubject = "crucible: park sealed plugin workers";
-      branchCommit = "351bfffb69e5d37102f79da02e021af121adaf75";
+      branchCommit = "0e641f09f865ff54cb71ce6084ac7829ba586322";
       branchTree = "b662eafebb29dd3673bf632f5f88bc499646ea69";
       catalogName = "crucible-hot-fork-plugin-worker-barrier";
       class = "F";
@@ -1309,7 +1309,7 @@ let
     {
       file = "0138-crucible-drain-hot-fork-ring-consumers.patch";
       branchSubject = "crucible: drain hot-fork ring consumers";
-      branchCommit = "c4bf833e5bb035892c17e5c27a35329800f70e8e";
+      branchCommit = "e07d40d3bdb417e95d68d76c82c75e826427be3f";
       branchTree = "72c6cac2eea42490875a94011ff40fd1d72b07ce";
       catalogName = "crucible-hot-fork-ring-consumer-barrier";
       class = "F";
@@ -1319,7 +1319,7 @@ let
     {
       file = "0139-crucible-retain-hot-fork-private-rings.patch";
       branchSubject = "crucible: retain private hot-fork ring descriptors";
-      branchCommit = "74e51cfb9b23e70bae439e6d0b9f1e1644c4becf";
+      branchCommit = "59aa6716dcf0db1df17ce48d6e7836611ef0c2d7";
       branchTree = "c33d7194db4adf7259d14228c06330e96d8e7f84";
       catalogName = "crucible-hot-fork-private-ring-stage";
       class = "F";
@@ -1329,7 +1329,7 @@ let
     {
       file = "0140-crucible-account-hot-fork-worker-local-state.patch";
       branchSubject = "crucible: account hot-fork worker local state";
-      branchCommit = "be5f0c3f9d9c50d7e13ba57fb8a7b80474368d09";
+      branchCommit = "0bf12edfc26025f8abe1ae014cbdf3dcd5e5a374";
       branchTree = "65d2ea71b225231d5962a8c0129478b009bfc710";
       catalogName = "crucible-hot-fork-worker-local-state";
       class = "F";
@@ -1339,7 +1339,7 @@ let
     {
       file = "0141-crucible-stage-hot-fork-plugin-endpoints.patch";
       branchSubject = "crucible: stage hot-fork plugin endpoints";
-      branchCommit = "4e9712732d9b23b9bba63adf5f31c5201c8f2e3c";
+      branchCommit = "ee19f957c901c33596c9c40aedcb16c412d5650c";
       branchTree = "bb0d2aa9dcc4544096fe7db5ab442d042c78abbf";
       catalogName = "crucible-hot-fork-plugin-endpoint-stage";
       class = "F";
