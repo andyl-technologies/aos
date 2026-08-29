@@ -1901,17 +1901,26 @@ validated `RegionLayout` after that mapping transition, updates its owned
 backing identity only after validation, and routes callback teardown signals
 through a sender that can be replaced while the callback and worker barriers
 are held. A focused regression proves a sender retained by callback state stops
-addressing the template receiver and reaches the replacement receiver. This is
-the mapping and callback-route half of child reinitialization; QEMU has not yet
-invoked it, rebuilt the three worker classes, rebound endpoint state, or
-released child admission.
+addressing the template receiver and reaches the replacement receiver. QEMU and
+the plugin now additionally register a fixed version-1 child-runtime plan and
+status ABI. The plan and echoed status bind the exact template, private-ring,
+endpoint, plugin-barrier, Linux endpoint-identity, mapping, descriptor, and
+worker basis. The plugin operation independently authenticates both kernel
+endpoint identities, validates the exact staged mapping and descriptor basis,
+installs and revalidates the private setup region, resets
+only a complete inherited parked-worker set, replaces the callback route, and
+starts fresh held control, teardown, and optional fingerprint workers. The
+operation is retained but QEMU has not yet invoked it from the fork transaction,
+rebound the staged endpoint generation and process generation, released child
+admission, or reported a child disposition.
 This remains a retained T-CAM-6.2 subsystem primitive: a pending worker-local
 item is rejected rather than assigned ambiguously, while fork-child descriptor
-inheritance/remapping beyond the now-excluded source ring, application of the complete recorded disposition plan,
-host-continuation pairing, child process identity, and final ring release are
-not composed yet. Template-process descriptor/endpoint staging and the planned
-empty-local-state disposition do not satisfy proof bits 6 through 8. All three
-remain clear and T-CAM-6.2 remains unchecked.
+inheritance/remapping beyond the now-excluded source ring, invocation of the
+complete recorded disposition plan, host-continuation pairing, child process
+identity, and final ring release are not composed yet. Template-process
+descriptor/endpoint staging and the registered empty-local-state reinitializer
+do not satisfy proof bits 6 through 8. All three remain clear and T-CAM-6.2
+remains unchecked.
 Patched QEMU now also owns the versioned `PrepareForkTemplate`
 transaction. Its serialized OOB coordinator starts only at the exact
 paused/device-flush boundary, asynchronously closes graph-writer admission and

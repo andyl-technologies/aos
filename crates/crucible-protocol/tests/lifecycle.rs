@@ -205,6 +205,36 @@ fn lifecycle_stream_does_not_advance_after_invalid_hello_ack() -> Result<(), Box
 
 #[cfg(unix)]
 #[test]
+fn restored_child_run_stream_accepts_only_the_terminal_run_frame() -> Result<(), Box<dyn Error>> {
+    let (mut invalid_host, invalid_plugin) = UnixStream::pair()?;
+    let mut invalid_plugin = ControlLifecycleStream::restored_run_via_shared_memory(invalid_plugin);
+    invalid_host.write_all(&control_encode_host_msg(&HostMsg::Setup {
+        region_len: 4096,
+    }))?;
+    assert!(invalid_plugin.plugin_read_run_control_frame().is_err());
+    assert_eq!(
+        invalid_plugin.state(),
+        ControlLifecycleState::RunningViaSharedMemory
+    );
+
+    let (mut host, plugin) = UnixStream::pair()?;
+    let mut plugin = ControlLifecycleStream::restored_run_via_shared_memory(plugin);
+    assert_eq!(
+        plugin.state(),
+        ControlLifecycleState::RunningViaSharedMemory
+    );
+
+    host.write_all(&control_encode_host_msg(&HostMsg::Quit))?;
+    assert_eq!(
+        plugin.plugin_read_run_control_frame()?,
+        ControlLifecycleState::QuitSent
+    );
+    assert_eq!(plugin.state(), ControlLifecycleState::QuitSent);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn plugin_setup_io_is_bounded_to_setup_and_rejected_during_run() -> Result<(), Box<dyn Error>> {
     let (peer_socket, plugin_socket) = UnixStream::pair()?;
     let mut connected = ControlLifecycleStream::connected_unix_stream(plugin_socket)?;

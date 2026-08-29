@@ -8,6 +8,8 @@
 
 use std::sync::{Arc, Condvar, Mutex};
 
+use thiserror::Error;
+
 pub(super) const WORKER_RUN_CONTROL: u64 = 1_u64 << 0;
 pub(super) const WORKER_TEARDOWN: u64 = 1_u64 << 1;
 pub(super) const WORKER_FINGERPRINT: u64 = 1_u64 << 2;
@@ -21,6 +23,17 @@ pub(super) struct WorkerQuiescenceSnapshot {
     pub(super) parked_mask: u64,
     pub(super) pending_mask: u64,
     pub(super) operations_in_flight: u64,
+}
+
+/// Failure to replace parked template workers with fresh fork-child workers.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub(super) enum WorkerForkChildResetError {
+    /// The template worker set was not completely parked and empty.
+    #[error("template worker set is not quiescent for fork-child replacement")]
+    NotQuiescent {
+        /// Exact worker state observed before any reset mutation.
+        snapshot: WorkerQuiescenceSnapshot,
+    },
 }
 
 #[derive(Debug)]
@@ -90,6 +103,39 @@ impl LiveWorkerQuiescence {
         let snapshot = self.snapshot_locked(&state);
         self.released.notify_all();
         snapshot
+    }
+
+    /// Replaces the inherited parked-worker accounting with an empty child set.
+    ///
+    /// The reversible hold remains active. Fresh child workers must each enter
+    /// their idle safe point, after which [`Self::fork_child_workers_ready`]
+    /// authorizes the ordinary release transition.
+    pub(super) fn reset_fork_child_workers(
+        &self,
+    ) -> Result<WorkerQuiescenceSnapshot, WorkerForkChildResetError> {
+        let mut state = self.lock_state();
+        let snapshot = self.snapshot_locked(&state);
+        if !snapshot.held
+            || snapshot.parked_mask != snapshot.worker_mask
+            || snapshot.pending_mask != 0
+            || snapshot.operations_in_flight != 0
+        {
+            return Err(WorkerForkChildResetError::NotQuiescent { snapshot });
+        }
+
+        state.parked_mask = 0;
+        state.pending_mask = 0;
+        state.active_mask = 0;
+        Ok(snapshot)
+    }
+
+    /// Returns whether every fresh child worker is parked behind the hold.
+    pub(super) fn fork_child_workers_ready(&self) -> bool {
+        let snapshot = self.snapshot();
+        snapshot.held
+            && snapshot.parked_mask == snapshot.worker_mask
+            && snapshot.pending_mask == 0
+            && snapshot.operations_in_flight == 0
     }
 
     fn assert_worker(&self, worker: u64) {
@@ -314,5 +360,29 @@ mod tests {
         let drained = quiescence.snapshot();
         assert_eq!(drained.parked_mask, 0);
         assert_eq!(drained.pending_mask, 0);
+    }
+
+    #[test]
+    fn fork_child_reset_forgets_only_a_complete_parked_template_set() {
+        let quiescence = LiveWorkerQuiescence::new(WORKER_REQUIRED);
+        let held = quiescence.hold();
+        assert_eq!(
+            quiescence.reset_fork_child_workers(),
+            Err(WorkerForkChildResetError::NotQuiescent { snapshot: held })
+        );
+
+        let template_control = quiescence.idle(WORKER_RUN_CONTROL);
+        let template_teardown = quiescence.idle(WORKER_TEARDOWN);
+        let parked = quiescence.snapshot();
+        assert_eq!(parked.parked_mask, WORKER_REQUIRED);
+        assert_eq!(quiescence.reset_fork_child_workers(), Ok(parked));
+        assert!(!quiescence.fork_child_workers_ready());
+
+        std::mem::forget(template_control);
+        std::mem::forget(template_teardown);
+        let _child_control = quiescence.idle(WORKER_RUN_CONTROL);
+        let _child_teardown = quiescence.idle(WORKER_TEARDOWN);
+        assert!(quiescence.fork_child_workers_ready());
+        assert!(!quiescence.release().held);
     }
 }

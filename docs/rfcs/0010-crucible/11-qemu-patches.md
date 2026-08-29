@@ -2385,6 +2385,35 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   `T-CAM-6.2` remains unchecked.
 - **Risk:** F.
 
+### crucible-hot-fork-child-runtime-registration — register child reconstruction
+
+- **Patch:** `0146-crucible-register-hot-fork-child-runtime.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-12].
+- **Mechanism:** QEMU and the GPL plugin share fixed version-1 child plan and
+  status structures. The plan binds the exact template, private-ring,
+  endpoint-pair, and plugin-barrier generations; the authenticated Linux
+  `SO_COOKIE` and eventfd identities; the private setup-region device, inode,
+  length, and descriptor; the replacement control and wake descriptor
+  numbers; and the exact sealed worker mask. Status echoes the complete staged
+  generation and endpoint identity basis after installation. The plugin
+  independently authenticates both replacement kernel objects before it
+  retains its validated setup layout,
+  installs the private mapping only after inherited callback and worker holds
+  are complete, replaces callback-held teardown routing, forgets only a fully
+  parked inherited worker set, and starts replacement control, teardown, and
+  optional fingerprint workers behind the same holds. QEMU retains the exact
+  process-lifetime callback and validates any future invocation against the
+  sealed resource manifest.
+- **Micro-test:** Rust layout and live-registration tests exercise the inert
+  template query and reject child-runtime registration failure. Worker tests
+  reject an incomplete inherited parked set and prove that a complete set can
+  be reset and reconstructed without reopening admission.
+- **Inertness:** this patch registers and retains the operation but does not
+  invoke it from the fork transaction, replace child endpoints, update process
+  generation, release a child, or set readiness bits 6 through 8. `T-CAM-6.2`
+  remains unchecked.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

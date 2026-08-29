@@ -1014,6 +1014,13 @@
       enforces = "HFORK-3,HFORK-8,HFORK-9,HFORK-12";
       capability = "the version-6 plugin barrier applies MADV_DONTFORK to the exact source shared-memory mapping only after callback, ring, and worker admission closes, rolls every hold back on failure, and restores MADV_DOFORK before reopening the retained parent without yet installing a child mapping or acknowledging readiness bits 6 through 8";
     }
+    {
+      file = "0146-crucible-register-hot-fork-child-runtime.patch";
+      catalogName = "crucible-hot-fork-child-runtime-registration";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-8,HFORK-9,HFORK-12";
+      capability = "QEMU and the plugin share a fixed version-1 child-runtime ABI that binds the exact template, private-ring, endpoint, plugin-barrier, kernel endpoint, mapping, descriptor, and worker basis while retaining the reconstruction callback without invoking a child transaction or acknowledging readiness bits 6 through 8";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

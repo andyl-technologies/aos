@@ -257,10 +257,6 @@ impl PluginSetupCompletion {
     /// Returns [`PluginSetupChildMappingError`] when exact mapping placement or
     /// identity authentication fails, the replacement header is invalid, or
     /// its validated setup contract differs from the template contract.
-    #[allow(
-        dead_code,
-        reason = "the sealed child-mapping transition is wired by the next QEMU callback slice"
-    )]
     pub(crate) fn install_hot_fork_child_mapping(
         &mut self,
         fd: BorrowedFd<'_>,
@@ -290,10 +286,6 @@ impl PluginSetupCompletion {
 /// Failure to bind retained plugin callback state to a fork-child mapping.
 #[cfg(unix)]
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[allow(
-    dead_code,
-    reason = "the sealed child-mapping transition is wired by the next QEMU callback slice"
-)]
 pub(crate) enum PluginSetupChildMappingError {
     /// Exact-address mapping or backing-identity authentication failed.
     #[error("fork-child setup mapping installation failed")]

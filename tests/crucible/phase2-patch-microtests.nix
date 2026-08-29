@@ -2101,6 +2101,28 @@
         '';
       };
     }
+    {
+      patch = "0146-crucible-register-hot-fork-child-runtime.patch";
+      check = certifyExactPatch {
+        patchName = "0146-crucible-register-hot-fork-child-runtime.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-child-runtime-registration";
+        liveEvidence = ''
+          grep -Fxq 'patch=0146-crucible-register-hot-fork-child-runtime.patch' "$live_result"
+          grep -Fxq 'template_ready=false' "$live_result"
+          grep -Fq 'QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PLAN_VERSION 1' \
+            ${patchDir}/0146-crucible-register-hot-fork-child-runtime.patch
+          grep -Fq 'qemu_plugin_crucible_register_hot_fork_child_runtime' \
+            ${patchDir}/0146-crucible-register-hot-fork-child-runtime.patch
+          grep -Fq 'plugin_endpoint_generation' \
+            ${patchDir}/0146-crucible-register-hot-fork-child-runtime.patch
+          grep -Fq 'control_socket_cookie' \
+            ${patchDir}/0146-crucible-register-hot-fork-child-runtime.patch
+          grep -Fq 'previous_status.plugin_endpoint_generation' \
+            ${patchDir}/0146-crucible-register-hot-fork-child-runtime.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

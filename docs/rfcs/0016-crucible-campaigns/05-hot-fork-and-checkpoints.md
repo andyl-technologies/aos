@@ -1656,14 +1656,22 @@ The supported launch profile optimizes the complete child-ready path:
   the platform supports it and recreates them before child readiness;
 - the live source protocol-ring mapping is now frozen and marked
   `MADV_DONTFORK` by the version-6 plugin barrier, then restored with
-  `MADV_DOFORK` before the parent reopens; the staged child mapping is still
-  installed only by the future child reinitializer. The permissive shared-memory
-  boundary now supplies the exact-address Linux install primitive used by that
-  reinitializer: it authenticates the non-aliasing destination device, inode,
-  length, and shrink seal, requires the source VMA to be absent, and maps with
-  `MAP_FIXED_NOREPLACE`. A real `fork(2)` regression proves the child writes the
-  private backing while the parent's source mapping and backing identity remain
-  unchanged;
+  `MADV_DOFORK` before the parent reopens. QEMU and the GPL plugin now register
+  a fixed version-1 child-runtime operation that binds the staged template,
+  private-ring, endpoint, and plugin-barrier generations; authenticated socket
+  and eventfd identities; private-ring device, inode, length, and descriptor;
+  replacement control and wake descriptor numbers; and sealed worker mask. Its
+  status echoes that exact resource basis. The plugin independently
+  authenticates both replacement endpoint identities, installs the exact private
+  mapping, revalidates the retained ABI/layout contract, replaces callback-held
+  teardown routing, and reconstructs the held control, teardown, and optional
+  fingerprint workers. The permissive shared-memory boundary supplies the
+  exact-address Linux install primitive: it authenticates the non-aliasing
+  destination device, inode, length, and shrink seal, requires the source VMA
+  to be absent, and maps with `MAP_FIXED_NOREPLACE`. A real `fork(2)` regression
+  proves the child writes the private backing while the parent's source mapping
+  and backing identity remain unchanged. The QEMU fork transaction does not yet
+  invoke or release this registered operation, so it confers no readiness bit;
 - shared protocol rings are small, frozen separately, and replaced rather than
   forcing the main RAM mapping to be shared;
 - child sockets, memfds, overlay descriptors, directory identities, cgroup
