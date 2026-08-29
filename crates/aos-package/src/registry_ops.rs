@@ -14648,6 +14648,12 @@ pub struct ReleaseStorePublish {
     pub signing_key_id: Option<String>,
 }
 
+impl ReleaseStorePublish {
+    fn publish_signing_args(&self) -> (Option<&str>, Option<&str>) {
+        (None, self.signing_key_id.as_deref())
+    }
+}
+
 impl ReleaseTreeOptions {
     fn publishing(&self) -> bool {
         !self.upload_urls.is_empty()
@@ -14854,9 +14860,9 @@ pub async fn release(
 /// remain independent.
 async fn publish_release_store_path(
     publish_opts: &ReleaseStorePublish,
-    signing_key: &str,
     printer: &Printer,
 ) -> Result<()> {
+    let (key, key_id) = publish_opts.publish_signing_args();
     publish(
         &publish_opts.config,
         &publish_opts.store_path,
@@ -14883,8 +14889,8 @@ async fn publish_release_store_path(
         false,
         false,
         publish_opts.message.as_deref(),
-        Some(signing_key),
-        publish_opts.signing_key_id.as_deref(),
+        key,
+        key_id,
         Some(&publish_opts.registry),
         printer,
     )
@@ -14946,7 +14952,7 @@ pub async fn release_registry_tree(
     ensure_release_tag_available(dir, &options.version, options.resume)?;
 
     if let Some(publish) = &options.store_publish {
-        publish_release_store_path(publish, &options.signing_key, printer).await?;
+        publish_release_store_path(publish, printer).await?;
     }
 
     // Publishing cache unit (§9): generate into the internal staging dir, push
@@ -18979,6 +18985,7 @@ mod tests {
             signing_key_id: Some("initial".into()),
         };
         assert_eq!(publish.signing_key_id.as_deref(), Some("initial"));
+        assert_eq!(publish.publish_signing_args(), (None, Some("initial")));
     }
 
     #[test]
