@@ -156,6 +156,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0140-crucible-account-hot-fork-worker-local-state.patch",
     "0141-crucible-stage-hot-fork-plugin-endpoints.patch",
     "0142-crucible-retain-hot-fork-resource-staging.patch",
+    "0143-crucible-bind-hot-fork-resource-generations.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

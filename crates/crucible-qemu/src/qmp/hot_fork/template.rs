@@ -15,7 +15,7 @@ use crate::qmp::{QmpCommandKind, QmpError};
 /// QMP command name used for QEMU's retained template-preparation coordinator.
 pub const QMP_HOT_FORK_TEMPLATE_COMMAND: &str = "crucible-hot-fork-template";
 /// Version of the QEMU-owned template-preparation transaction contract.
-pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 10;
+pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 11;
 
 const QMP_HOT_FORK_AIO_PROOF: u64 = 1_u64 << 3;
 const QMP_HOT_FORK_RCU_PROOF: u64 = 1_u64 << 4;
@@ -37,6 +37,62 @@ pub enum QmpHotForkTemplateOutcome {
     Aborted,
 }
 
+/// Exact transaction binding for resources retained beside a template.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QmpHotForkTemplateResourceStageState {
+    template_generation: u64,
+    private_ring_staged: bool,
+    private_ring_generation: u64,
+    plugin_endpoints_staged: bool,
+    plugin_endpoint_generation: u64,
+    plugin_private_ring_generation: u64,
+    transaction_bound: bool,
+}
+
+impl QmpHotForkTemplateResourceStageState {
+    /// Returns the template generation that admitted the retained resources.
+    #[must_use]
+    pub const fn template_generation(self) -> u64 {
+        self.template_generation
+    }
+
+    /// Returns whether QEMU retains one branch-private ring descriptor.
+    #[must_use]
+    pub const fn private_ring_staged(self) -> bool {
+        self.private_ring_staged
+    }
+
+    /// Returns the current private-ring mutation generation.
+    #[must_use]
+    pub const fn private_ring_generation(self) -> u64 {
+        self.private_ring_generation
+    }
+
+    /// Returns whether QEMU retains one branch-private plugin endpoint pair.
+    #[must_use]
+    pub const fn plugin_endpoints_staged(self) -> bool {
+        self.plugin_endpoints_staged
+    }
+
+    /// Returns the current plugin-endpoint mutation generation.
+    #[must_use]
+    pub const fn plugin_endpoint_generation(self) -> u64 {
+        self.plugin_endpoint_generation
+    }
+
+    /// Returns the private-ring generation captured by the endpoint pair.
+    #[must_use]
+    pub const fn plugin_private_ring_generation(self) -> u64 {
+        self.plugin_private_ring_generation
+    }
+
+    /// Returns whether every staged resource belongs to the active transaction.
+    #[must_use]
+    pub const fn transaction_bound(self) -> bool {
+        self.transaction_bound
+    }
+}
+
 /// Exact state returned by QEMU's retained template-preparation coordinator.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QmpHotForkTemplateState {
@@ -49,6 +105,7 @@ pub struct QmpHotForkTemplateState {
     rcu_barrier: QmpHotForkRcuBarrierState,
     bh_timer_barrier: QmpHotForkBhTimerBarrierState,
     block_barrier: QmpHotForkBlockBarrierState,
+    resource_stage: QmpHotForkTemplateResourceStageState,
     rollback_complete: bool,
     ready: bool,
 }
@@ -114,6 +171,12 @@ impl QmpHotForkTemplateState {
         &self.block_barrier
     }
 
+    /// Returns the exact resource generations bound beside this transaction.
+    #[must_use]
+    pub const fn resource_stage(&self) -> QmpHotForkTemplateResourceStageState {
+        self.resource_stage
+    }
+
     /// Returns whether QEMU attests that no transaction barrier remains acquired.
     #[must_use]
     pub const fn rollback_complete(&self) -> bool {
@@ -147,6 +210,7 @@ pub(crate) fn parse_hot_fork_template_state(
         "rcu-barrier",
         "bh-timer-barrier",
         "block-barrier",
+        "resource-stage",
         "rollback-complete",
         "ready",
     ];
@@ -201,6 +265,12 @@ pub(crate) fn parse_hot_fork_template_state(
     let block_barrier = parse_hot_fork_block_barrier_state_for(
         QmpCommandKind::HotForkTemplate,
         object.get("block-barrier").ok_or_else(&malformed)?,
+    )?;
+    let resource_stage = parse_hot_fork_template_resource_stage(
+        object.get("resource-stage").ok_or_else(&malformed)?,
+        generation,
+        transaction_active,
+        &malformed,
     )?;
     let rollback_complete = object
         .get("rollback-complete")
@@ -308,7 +378,161 @@ pub(crate) fn parse_hot_fork_template_state(
         rcu_barrier,
         bh_timer_barrier,
         block_barrier,
+        resource_stage,
         rollback_complete,
         ready,
     })
+}
+
+fn parse_hot_fork_template_resource_stage(
+    value: &Value,
+    template_generation: u64,
+    transaction_active: bool,
+    malformed: &impl Fn() -> QmpError,
+) -> Result<QmpHotForkTemplateResourceStageState, QmpError> {
+    let object = value.as_object().ok_or_else(malformed)?;
+    let fields = [
+        "schema-version",
+        "template-generation",
+        "private-ring-staged",
+        "private-ring-generation",
+        "plugin-endpoints-staged",
+        "plugin-endpoint-generation",
+        "plugin-private-ring-generation",
+        "transaction-bound",
+        "readiness-proof-acknowledged",
+    ];
+    if object.len() != fields.len() || !fields.iter().all(|field| object.contains_key(*field)) {
+        return Err(malformed());
+    }
+
+    let u64_field = |field| {
+        object
+            .get(field)
+            .and_then(Value::as_u64)
+            .ok_or_else(malformed)
+    };
+    let bool_field = |field| {
+        object
+            .get(field)
+            .and_then(Value::as_bool)
+            .ok_or_else(malformed)
+    };
+    let schema_version = u64_field("schema-version")?;
+    let resource_template_generation = u64_field("template-generation")?;
+    let private_ring_staged = bool_field("private-ring-staged")?;
+    let private_ring_generation = u64_field("private-ring-generation")?;
+    let plugin_endpoints_staged = bool_field("plugin-endpoints-staged")?;
+    let plugin_endpoint_generation = u64_field("plugin-endpoint-generation")?;
+    let plugin_private_ring_generation = u64_field("plugin-private-ring-generation")?;
+    let transaction_bound = bool_field("transaction-bound")?;
+    let readiness_proof_acknowledged = bool_field("readiness-proof-acknowledged")?;
+    let state = QmpHotForkTemplateResourceStageState {
+        template_generation: resource_template_generation,
+        private_ring_staged,
+        private_ring_generation,
+        plugin_endpoints_staged,
+        plugin_endpoint_generation,
+        plugin_private_ring_generation,
+        transaction_bound,
+    };
+    if !resource_stage_shape_valid(
+        schema_version,
+        state,
+        template_generation,
+        transaction_active,
+        readiness_proof_acknowledged,
+    ) {
+        return Err(malformed());
+    }
+    Ok(state)
+}
+
+fn resource_stage_shape_valid(
+    schema_version: u64,
+    state: QmpHotForkTemplateResourceStageState,
+    template_generation: u64,
+    transaction_active: bool,
+    readiness_proof_acknowledged: bool,
+) -> bool {
+    let resources_staged = state.private_ring_staged || state.plugin_endpoints_staged;
+    let expected_bound =
+        transaction_active && resources_staged && state.template_generation == template_generation;
+
+    schema_version == 1
+        && !readiness_proof_acknowledged
+        && (!state.private_ring_staged || state.private_ring_generation != 0)
+        && (!state.plugin_endpoints_staged
+            || (state.private_ring_staged
+                && state.plugin_endpoint_generation != 0
+                && state.plugin_private_ring_generation == state.private_ring_generation))
+        && (state.plugin_endpoints_staged || state.plugin_private_ring_generation == 0)
+        && (resources_staged || state.template_generation == 0)
+        && (!resources_staged
+            || state.template_generation == 0
+            || state.template_generation == template_generation)
+        && (!transaction_active || !resources_staged || expected_bound)
+        && state.transaction_bound == expected_bound
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{QmpHotForkTemplateResourceStageState, resource_stage_shape_valid};
+
+    #[test]
+    fn resource_stage_requires_exact_template_and_private_ring_generations() {
+        let bound = QmpHotForkTemplateResourceStageState {
+            template_generation: 4,
+            private_ring_staged: true,
+            private_ring_generation: 11,
+            plugin_endpoints_staged: true,
+            plugin_endpoint_generation: 12,
+            plugin_private_ring_generation: 11,
+            transaction_bound: true,
+        };
+        assert!(resource_stage_shape_valid(1, bound, 4, true, false));
+
+        let foreign_template = QmpHotForkTemplateResourceStageState {
+            template_generation: 3,
+            ..bound
+        };
+        assert!(!resource_stage_shape_valid(
+            1,
+            foreign_template,
+            4,
+            true,
+            false
+        ));
+
+        let foreign_ring = QmpHotForkTemplateResourceStageState {
+            plugin_private_ring_generation: 10,
+            ..bound
+        };
+        assert!(!resource_stage_shape_valid(1, foreign_ring, 4, true, false));
+
+        let unbound = QmpHotForkTemplateResourceStageState {
+            transaction_bound: false,
+            ..bound
+        };
+        assert!(!resource_stage_shape_valid(1, unbound, 4, true, false));
+
+        let retained_after_abort = QmpHotForkTemplateResourceStageState {
+            transaction_bound: false,
+            ..bound
+        };
+        assert!(resource_stage_shape_valid(
+            1,
+            retained_after_abort,
+            4,
+            false,
+            false
+        ));
+        assert!(!resource_stage_shape_valid(
+            1,
+            retained_after_abort,
+            5,
+            false,
+            false
+        ));
+    }
 }

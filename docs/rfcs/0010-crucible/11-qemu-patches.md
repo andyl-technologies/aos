@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **139 patches**. This count is checked against
+The carried series contains **140 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -2327,6 +2327,24 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   complete inherited-resource disposition, or acknowledge readiness bits 6
   through 8. The caller must explicitly abort before releasing staged
   descriptors and resuming the template.
+- **Risk:** F.
+
+### crucible-hot-fork-resource-generation-binding — bind retained generations
+
+- **Patch:** `0143-crucible-bind-hot-fork-resource-generations.patch`.
+- **Enforces:** [HFORK-3], [HFORK-8], [HFORK-9].
+- **Mechanism:** private-ring and plugin-endpoint state version 2 records the
+  exact template generation that admitted each stage. The version-11 template
+  report atomically exposes both mutation generations, the endpoint-to-ring
+  generation edge, and whether all retained resources belong to the current
+  active transaction. Endpoint staging rejects a ring retained by another or
+  already-aborted transaction.
+- **Micro-test:** strict QMP fixtures accept one exact active binding, retain
+  its immutable origin after abort, and reject foreign template or ring
+  generations. Patch regeneration pins the QAPI and C implementation.
+- **Inertness:** generation binding neither installs resources in a child nor
+  completes any inherited-resource disposition. Readiness bits 6 through 8
+  remain clear and no fork operation exists.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

@@ -1717,7 +1717,7 @@ QEMU now additionally owns a process-lifetime reversible RCU admission/drain
 barrier. Holding at the exact paused/device-flush boundary gates every new
 outer reader and callback submission through a race-closed
 two-phase admission, retains the exact reader/admission/callback/drain state,
-and parks rejected entrants until release. The version-10 template coordinator
+and parks rejected entrants until release. The version-11 template coordinator
 holds this barrier with the plugin callback barrier and acknowledges readiness
 bit 4 only while the complete retained RCU state is quiescent. The RCU worker
 still needs an exact child disposition/reinitializer, so bit 8 remains clear.
@@ -1727,7 +1727,7 @@ GLib dispatch, AioHandler lifecycle and callbacks, coroutine scheduling,
 bottom-half and timer creation, mutation, and callback dispatch. Holding at the
 exact paused/device-flush boundary parks later producers, lets already-admitted
 work and its nested mutations finish, leaves queued sources parked, and keeps
-OOB QMP responsive through nonblocking event-loop admission. The version-10
+OOB QMP responsive through nonblocking event-loop admission. The version-11
 template coordinator retains this barrier with the plugin, RCU, and native
 block barriers,
 and the typed client validates its exact bounded inventories and derived
@@ -1792,7 +1792,7 @@ typed Rust control surface rejects contradictory schemas, bounds, generations,
 owners, and action postconditions. The QEMU unit regression parks a real graph
 writer until a scheduled release, while the live gate proves stable released
 state and no state retention after an invalid hold. This is a concrete
-block-side graph and I/O quiescence prerequisite. The version-10 template
+block-side graph and I/O quiescence prerequisite. The version-11 template
 coordinator schedules acquisition and release on the main AioContext, holds the
 graph and native drain barriers before parking asynchronous sources, and
 releases asynchronous sources before graph and block I/O admission reopen.
@@ -1856,19 +1856,25 @@ that owner while a typed Unix QMP client imports its duplicate with standard
 `getfd`/`SCM_RIGHTS` under a bounded identity-derived name. Patched QEMU now
 independently duplicates that monitor entry through the OOB
 `crucible-hot-fork-private-rings` operation and authenticates its exact name,
-device, inode, length, regular-file type, and shrink seal. The version-1 state
-explicitly withholds child-disposition completion and readiness
+device, inode, length, regular-file type, and shrink seal. The version-2 state
+also records the admitting template generation and explicitly withholds
+child-disposition completion and readiness
 acknowledgement. Release requires the same exact basis and closes the
 QEMU-owned duplicate before standard `closefd` closes the monitor entry.
 With that ring generation retained, the node now also creates fresh opaque
 AF_UNIX control and nonblocking-eventfd wake pairs, transfers both child ends
-through standard `getfd`, and asks the version-1
+through standard `getfd`, and asks the version-2
 `crucible-hot-fork-plugin-endpoints` operation to authenticate their exact
 Linux kernel identities, empty state, distinct names, and private-ring
 generation. QEMU independently retains both endpoints until exact release;
 private-ring release is blocked in the interim. The node retains both host and
 child owners, exposes only bounded proof, releases QEMU duplicates before the
 two monitor names, and quarantines every ambiguous transfer or close.
+The endpoint state records the same template generation as its private-ring
+dependency. The version-11 template report atomically binds both resource
+mutation generations and that dependency edge to the active transaction;
+after abort it preserves the origin generation but marks the retained stage
+unbound. Cross-transaction endpoint composition fails closed.
 Transfer or adoption ambiguity poisons QMP, retains the mapping as uncertain,
 and quarantines the node; either release
 ambiguity retains the installed mapping and also quarantines. Focused typed and
@@ -1891,9 +1897,10 @@ drains, and lets the
 Apache client query or abort that retained state without blocking QMP. A
 quiescent transaction is reported as `prepared`
 only when all nine readiness bits are present in the same generation. Version
-10 otherwise retains the fully drained transaction as `draining`, permitting
+11 retains the fully drained transaction as `draining`, permitting
 branch-private ring and endpoint staging only under that exact quiescent source
-barrier. The caller must explicitly abort before resuming or abandoning the
+barrier and binding both stages to that transaction. The caller must explicitly
+abort before resuming or abandoning the
 template; `blocked` remains the fail-closed outcome for subsystem acquisition
 or retained-transition failures that require rollback.
 Rollback reopens asynchronous sources before scheduling main-loop graph and

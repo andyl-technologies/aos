@@ -202,7 +202,7 @@ fn vmstate_control_stages_and_releases_both_descriptor_ownership_layers()
         let stage = read_qmp_line(&mut reader)?;
         let stage_response = format!(
             concat!(
-                r#"{{"return":{{"schema-version":1,"generation":1,"staged":true,"fdname":"{}","device":{},"inode":{},"length":{},"shrink-sealed":true,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#,
+                r#"{{"return":{{"schema-version":2,"generation":1,"template-generation":0,"staged":true,"fdname":"{}","device":{},"inode":{},"length":{},"shrink-sealed":true,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#,
                 "\r\n"
             ),
             expected_name.as_str(),
@@ -215,7 +215,7 @@ fn vmstate_control_stages_and_releases_both_descriptor_ownership_layers()
         let release = read_qmp_line(&mut reader)?;
         write_qmp_return(
             reader.get_ref(),
-            b"{\"return\":{\"schema-version\":1,\"generation\":2,\"staged\":false,\"device\":0,\"inode\":0,\"length\":0,\"shrink-sealed\":false,\"disposition-complete\":false,\"readiness-proof-acknowledged\":false}}\r\n",
+            b"{\"return\":{\"schema-version\":2,\"generation\":2,\"template-generation\":0,\"staged\":false,\"device\":0,\"inode\":0,\"length\":0,\"shrink-sealed\":false,\"disposition-complete\":false,\"readiness-proof-acknowledged\":false}}\r\n",
         )?;
         let closefd = read_qmp_line(&mut reader)?;
         write_qmp_return(reader.get_ref(), b"{\"return\":{}}\r\n")?;
@@ -280,7 +280,7 @@ fn vmstate_control_orders_both_plugin_endpoint_ownership_layers() -> Result<(), 
         let stage = read_qmp_line(&mut reader)?;
         let stage_response = format!(
             concat!(
-                r#"{{"return":{{"schema-version":1,"generation":1,"staged":true,"control-fdname":"{}","wake-fdname":"{}","control-socket-cookie":101,"wake-eventfd-id":202,"private-ring-generation":7,"control-unix-stream":true,"wake-eventfd":true,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#,
+                r#"{{"return":{{"schema-version":2,"generation":1,"template-generation":0,"staged":true,"control-fdname":"{}","wake-fdname":"{}","control-socket-cookie":101,"wake-eventfd-id":202,"private-ring-generation":7,"control-unix-stream":true,"wake-eventfd":true,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#,
                 "\r\n"
             ),
             expected_control_name.as_str(),
@@ -291,7 +291,7 @@ fn vmstate_control_orders_both_plugin_endpoint_ownership_layers() -> Result<(), 
         let release = read_qmp_line(&mut reader)?;
         write_qmp_return(
             reader.get_ref(),
-            b"{\"return\":{\"schema-version\":1,\"generation\":2,\"staged\":false,\"control-socket-cookie\":0,\"wake-eventfd-id\":0,\"private-ring-generation\":0,\"control-unix-stream\":false,\"wake-eventfd\":false,\"disposition-complete\":false,\"readiness-proof-acknowledged\":false}}\r\n",
+            b"{\"return\":{\"schema-version\":2,\"generation\":2,\"template-generation\":0,\"staged\":false,\"control-socket-cookie\":0,\"wake-eventfd-id\":0,\"private-ring-generation\":0,\"control-unix-stream\":false,\"wake-eventfd\":false,\"disposition-complete\":false,\"readiness-proof-acknowledged\":false}}\r\n",
         )?;
         let wake_closefd = read_qmp_line(&mut reader)?;
         write_qmp_return(reader.get_ref(), b"{\"return\":{}}\r\n")?;
