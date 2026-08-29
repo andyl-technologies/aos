@@ -56,6 +56,8 @@ pub(crate) mod credential;
 pub(crate) mod credential_artifact;
 pub mod deps;
 pub mod desired;
+pub mod documentation;
+mod documentation_lsp;
 pub mod download;
 pub(crate) mod ebpf_lsm;
 pub(crate) mod exposed_units;
@@ -254,6 +256,12 @@ pub enum PackageCommand {
         /// Query the system scope instead of the user scope
         #[arg(long)]
         system: bool,
+    },
+    /// Browse canonical package documentation and editor metadata
+    Docs {
+        /// Documentation operation to run
+        #[command(subcommand)]
+        command: DocumentationCommand,
     },
     /// Show package information
     Info {
@@ -742,6 +750,108 @@ pub enum PackageCommand {
         #[arg(long = "run-root")]
         run_root: Option<PathBuf>,
     },
+}
+
+/// Canonical package-documentation operations.
+#[derive(Subcommand)]
+pub enum DocumentationCommand {
+    /// Search installed documentation or a Hub index
+    Search {
+        /// Terms to search for
+        query: String,
+        /// Restrict results to package, option, service, credential, or capability
+        #[arg(long)]
+        kind: Option<String>,
+        /// Maximum number of results
+        #[arg(long, default_value = "25")]
+        limit: usize,
+        /// Hub root URL for a remote search
+        #[arg(long)]
+        hub: Option<String>,
+        /// Hub registry slug for a remote search
+        #[arg(long, requires = "hub")]
+        registry: Option<String>,
+        /// Hub access token for private registries
+        #[arg(long, env = "AOS_TOKEN", requires = "hub")]
+        token: Option<String>,
+        /// Search the system package profile instead of the user profile
+        #[arg(long)]
+        system: bool,
+    },
+    /// Render one exact package document
+    Show {
+        /// Package name
+        package: String,
+        /// Exact version for a remote selection
+        #[arg(long)]
+        version: Option<String>,
+        /// Exact platform for a remote selection
+        #[arg(long)]
+        platform: Option<String>,
+        /// Plain text, canonical JSON, standalone HTML, or roff
+        #[arg(long, value_enum)]
+        format: Option<DocumentationOutput>,
+        /// Write rendered bytes to this file instead of stdout
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Hub root URL for a remote lookup
+        #[arg(long)]
+        hub: Option<String>,
+        /// Hub registry slug for a remote lookup
+        #[arg(long, requires = "hub")]
+        registry: Option<String>,
+        /// Hub access token for private registries
+        #[arg(long, env = "AOS_TOKEN", requires = "hub")]
+        token: Option<String>,
+        /// Read the system package profile instead of the user profile
+        #[arg(long)]
+        system: bool,
+    },
+    /// Print the closed JSON Schema used by documentation tooling
+    Schema {
+        /// Fetch the schema from this Hub instead of using the checked local schema
+        #[arg(long)]
+        hub: Option<String>,
+        /// Hub access token
+        #[arg(long, env = "AOS_TOKEN", requires = "hub")]
+        token: Option<String>,
+    },
+    /// Render or install an offline package manpage
+    Man {
+        /// Installed package name
+        package: String,
+        /// Install the generated manpage into APM's profile-scoped cache
+        #[arg(long)]
+        install: bool,
+        /// Print only the installed cache path
+        #[arg(long, requires = "install")]
+        print_path: bool,
+        /// Use the system package profile and cache
+        #[arg(long)]
+        system: bool,
+    },
+    /// Serve completion, hover, diagnostics, and schema over LSP stdio
+    Lsp {
+        /// Read the system package profile instead of the user profile
+        #[arg(long)]
+        system: bool,
+        /// Add a canonical documentation JSON file outside the installed profile
+        #[arg(long = "document")]
+        documents: Vec<PathBuf>,
+    },
+}
+
+/// Supported package-document renderers.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum DocumentationOutput {
+    /// Human-readable terminal reference
+    Plain,
+    /// Exact canonical JSON
+    Json,
+    /// Standalone safe HTML
+    Html,
+    /// Troff/groff manpage source
+    Man,
 }
 
 #[derive(Subcommand)]
@@ -2960,6 +3070,12 @@ pub async fn run(
         return run_runtime_config_command(command, printer).await;
     }
 
+    // Documentation reads retained installed objects or the public Hub API and
+    // needs neither mutable registry checkout state nor a writable profile.
+    if let PackageCommand::Docs { command } = command {
+        return documentation::run(command, printer).await;
+    }
+
     // The on-host config-eval driver needs no apm config or profile: it reads
     // the registry index and host.nix from disk and shells out to stock nix.
     // Dispatch it before `ApmConfig::load` (mirrors the systemd-client vehicle).
@@ -3679,6 +3795,9 @@ pub async fn run(
         }
         PackageCommand::Config { .. } => {
             unreachable!("Config is handled before ApmConfig::load")
+        }
+        PackageCommand::Docs { .. } => {
+            unreachable!("Docs is handled before ApmConfig::load")
         }
         PackageCommand::GraphCompile { .. } => {
             unreachable!("GraphCompile is handled before ApmConfig::load")
