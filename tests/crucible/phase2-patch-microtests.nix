@@ -2079,6 +2079,28 @@
         '';
       };
     }
+    {
+      patch = "0145-crucible-exclude-source-rings-from-fork-children.patch";
+      check = certifyExactPatch {
+        patchName = "0145-crucible-exclude-source-rings-from-fork-children.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-source-ring-noninheritance";
+        liveEvidence = ''
+          grep -Fxq 'patch=0145-crucible-exclude-source-rings-from-fork-children.patch' "$live_result"
+          grep -Fxq 'plugin_barrier_schema_version=6' "$live_result"
+          grep -Fxq 'plugin_mapping_dontfork_unregistered=false' "$live_result"
+          grep -Fxq 'template_ready=false' "$live_result"
+          grep -Fq 'QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_STATUS_VERSION 6' \
+            ${patchDir}/0145-crucible-exclude-source-rings-from-fork-children.patch
+          grep -Fq 'QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_MAPPING_DONTFORK' \
+            ${patchDir}/0145-crucible-exclude-source-rings-from-fork-children.patch
+          grep -Fq 'report->mapping_dontfork' \
+            ${patchDir}/0145-crucible-exclude-source-rings-from-fork-children.patch
+          grep -Fq 'report->readiness_proof_acknowledged = false' \
+            ${patchDir}/0144-crucible-bind-hot-fork-worker-dispositions.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

@@ -242,6 +242,7 @@ pub struct QmpHotForkPluginBarrierState {
     manifest_consistent: bool,
     held: bool,
     teardown_closed: bool,
+    mapping_dontfork: bool,
     in_flight: u64,
     ring_count: u64,
     rings_held: u64,
@@ -263,6 +264,7 @@ impl QmpHotForkPluginBarrierState {
             manifest_consistent: true,
             held: true,
             teardown_closed: false,
+            mapping_dontfork: true,
             in_flight: 0,
             ring_count,
             rings_held: ring_count,
@@ -304,6 +306,12 @@ impl QmpHotForkPluginBarrierState {
     #[must_use]
     pub const fn teardown_closed(self) -> bool {
         self.teardown_closed
+    }
+
+    /// Returns whether the exact source mapping is excluded from fork children.
+    #[must_use]
+    pub const fn mapping_dontfork(self) -> bool {
+        self.mapping_dontfork
     }
 
     /// Returns callbacks admitted before the hold that have not yet returned.
@@ -643,6 +651,7 @@ pub(super) fn parse_hot_fork_plugin_barrier_state_for(
         "manifest-consistent",
         "held",
         "teardown-closed",
+        "mapping-dontfork",
         "in-flight",
         "ring-count",
         "rings-held",
@@ -680,6 +689,10 @@ pub(super) fn parse_hot_fork_plugin_barrier_state_for(
         .ok_or_else(&malformed)?;
     let teardown_closed = object
         .get("teardown-closed")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
+    let mapping_dontfork = object
+        .get("mapping-dontfork")
         .and_then(Value::as_bool)
         .ok_or_else(&malformed)?;
     let in_flight = object
@@ -726,10 +739,12 @@ pub(super) fn parse_hot_fork_plugin_barrier_state_for(
         && rings_held <= ring_count
         && (rings_held == 0 || rings_held == ring_count)
         && held == (rings_held == ring_count);
+    let mapping_shape = mapping_dontfork == held;
     let expected_quiescent = registered
         && manifest_consistent
         && held
         && !teardown_closed
+        && mapping_dontfork
         && in_flight == 0
         && ring_shape
         && ring_producers_in_flight == 0
@@ -747,6 +762,7 @@ pub(super) fn parse_hot_fork_plugin_barrier_state_for(
         && !manifest_consistent
         && !held
         && !teardown_closed
+        && !mapping_dontfork
         && in_flight == 0
         && ring_count == 0
         && rings_held == 0
@@ -763,9 +779,11 @@ pub(super) fn parse_hot_fork_plugin_barrier_state_for(
         || (!registered && !unregistered_shape)
         || (manifest_consistent && !registered)
         || (registered && !ring_shape)
+        || (registered && !mapping_shape)
         || (registered && !worker_shape)
         || ((held
             || teardown_closed
+            || mapping_dontfork
             || in_flight != 0
             || ring_count != 0
             || rings_held != 0
@@ -786,6 +804,7 @@ pub(super) fn parse_hot_fork_plugin_barrier_state_for(
         manifest_consistent,
         held,
         teardown_closed,
+        mapping_dontfork,
         in_flight,
         ring_count,
         rings_held,

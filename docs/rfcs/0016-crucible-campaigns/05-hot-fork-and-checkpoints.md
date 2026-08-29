@@ -673,12 +673,13 @@ the out-of-band `crucible-hot-fork-plugin-barrier` command:
 CrucibleHotForkPluginBarrierAction = hold | query | release
 
 CrucibleHotForkPluginBarrierState {
-    schema-version: u32 = 5,
+    schema-version: u32 = 6,
     generation: u64,
     registered: bool,
     manifest-consistent: bool,
     held: bool,
     teardown-closed: bool,
+    mapping-dontfork: bool,
     in-flight: u64,
     ring-count: u64,
     rings-held: u64,
@@ -707,25 +708,32 @@ after the receive and before the item can be admitted or affect modeled/shared
 state. The bit remains set until the item is discarded or the hold releases
 and the worker atomically becomes active. QEMU therefore observes every item
 retained at this explicit pre-admission boundary, but this accounting does not
-itself define a child-side disposition for that item. `query` observes all
-barriers without changing them. `release`
-reopens ring consumers before producers, then callbacks before it wakes
-workers, and
+itself define a child-side disposition for that item. After those admissions
+are closed, the plugin applies `MADV_DONTFORK` to the exact live setup-region
+mapping. Failure rolls back the worker, ring, and callback holds rather than
+leaving a partial transaction. `query` observes all barriers and mapping state
+without changing them. `release` first restores `MADV_DOFORK`; failure retains
+every hold. Only then does release reopen ring consumers before producers,
+then callbacks before it wakes workers, and
 MUST NOT reopen callback admission after permanent teardown closure. A
 registered response requires a nonzero `ring-count`, `rings-held` is either
-zero or exactly `ring-count`, `held` equals `rings-held == ring-count`, the
+zero or exactly `ring-count`, `held` equals both
+`rings-held == ring-count` and `mapping-dontfork`, the
 worker mask equals the sealed manifest, the parked mask is its subset, the
 pending mask is a subset of the parked mask, and the sum of parked worker
 classes plus admitted operations cannot exceed the sealed worker count.
 `quiescent` equals `registered && manifest-consistent && held &&
 !teardown-closed && in-flight == 0 && rings-held == ring-count &&
+mapping-dontfork &&
 ring-producers-in-flight == 0 && ring-consumers-in-flight == 0 &&
 parked-worker-mask == worker-mask &&
 pending-worker-mask == 0 &&
 worker-operations-in-flight == 0`. The process-local generation is positive
 after registration and advances when any barrier's observable state changes.
 An unregistered response has generation zero and every other field zero or
-false.
+false. `mapping-dontfork` is real Linux VMA state, not a future disposition
+plan; the focused mapping regression observes the `dc` `VmFlags` bit appear on
+hold and disappear on release.
 
 This is a retained barrier over the callback classes covered by the sealed
 manifest, every ABI-v20 shared-memory ring producer and consumer including
@@ -740,7 +748,8 @@ slots and fingerprint samples by contract.
 The production node adapter brackets capture with identical QMP plugin-barrier
 and sealed plugin-resource reports. It requires the host mapping's retained
 device, inode, and descriptor length to match the sealed resource manifest,
-and independently requires the QEMU and host ring count, held count, and
+requires the exact source mapping to remain `MADV_DONTFORK`, and independently
+requires the QEMU and host ring count, held count, and
 producer/consumer admission totals to agree. Changed proof generations,
 resource identity, or host barrier state reject the capture. This binds one
 host image to one retained plugin barrier but still does not authorize fork.
@@ -1637,6 +1646,10 @@ The supported launch profile optimizes the complete child-ready path:
   backing mapped privately by the template and children;
 - QEMU marks reconstructible non-semantic scratch mappings `MADV_DONTFORK` when
   the platform supports it and recreates them before child readiness;
+- the live source protocol-ring mapping is now frozen and marked
+  `MADV_DONTFORK` by the version-6 plugin barrier, then restored with
+  `MADV_DOFORK` before the parent reopens; the staged child mapping is still
+  installed only by the future child reinitializer;
 - shared protocol rings are small, frozen separately, and replaced rather than
   forcing the main RAM mapping to be shared;
 - child sockets, memfds, overlay descriptors, directory identities, cgroup

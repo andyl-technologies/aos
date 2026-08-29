@@ -651,6 +651,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0145-crucible-exclude-source-rings-from-fork-children.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

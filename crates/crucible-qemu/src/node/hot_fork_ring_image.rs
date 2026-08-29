@@ -910,6 +910,7 @@ fn validate_plugin_barrier(
         || !barrier.manifest_consistent()
         || !barrier.held()
         || barrier.teardown_closed()
+        || !barrier.mapping_dontfork()
         || !barrier.quiescent()
     {
         return Err(QemuNodeChannelError::new(

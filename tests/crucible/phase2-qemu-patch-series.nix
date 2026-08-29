@@ -1007,6 +1007,13 @@
       enforces = "HFORK-3,HFORK-4,HFORK-8,HFORK-9";
       capability = "QEMU binds an explicit empty-local-state parent-resume and child-reinitialize plan for every sealed plugin worker class to the exact quiescent plugin-barrier generation retained by the version-12 template transaction, while leaving child application and readiness bits 6 through 8 incomplete";
     }
+    {
+      file = "0145-crucible-exclude-source-rings-from-fork-children.patch";
+      catalogName = "crucible-hot-fork-source-ring-noninheritance";
+      class = "F";
+      enforces = "HFORK-3,HFORK-8,HFORK-9,HFORK-12";
+      capability = "the version-6 plugin barrier applies MADV_DONTFORK to the exact source shared-memory mapping only after callback, ring, and worker admission closes, rolls every hold back on failure, and restores MADV_DOFORK before reopening the retained parent without yet installing a child mapping or acknowledging readiness bits 6 through 8";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

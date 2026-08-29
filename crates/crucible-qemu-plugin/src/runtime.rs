@@ -31,7 +31,7 @@ use std::net::Shutdown;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, mpsc};
 
 use thiserror::Error;
@@ -192,6 +192,7 @@ pub(crate) struct OwnedCallbackRuntimeState {
     live_whitebox: Option<Pin<Box<live_whitebox::LiveWhiteboxState>>>,
     setup: PluginSetupCompletion,
     coverage: Option<LiveBasicBlockCoverage>,
+    mapping_excluded_from_child: AtomicBool,
     #[cfg(test)]
     allow_missing_fault_command_state: bool,
     _pin: PhantomPinned,
@@ -211,6 +212,7 @@ impl OwnedCallbackRuntimeState {
             live_whitebox: None,
             setup,
             coverage: None,
+            mapping_excluded_from_child: AtomicBool::new(false),
             #[cfg(test)]
             allow_missing_fault_command_state: false,
             _pin: PhantomPinned,
@@ -1066,9 +1068,21 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
         crate::QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD => {
             let snapshot = state.quiescence.hold_hot_fork();
             let Ok(rings) = state.setup.mapped_region().hold_hot_fork_ring_io() else {
+                state.quiescence.release_hot_fork();
                 return -libc::EPROTO;
             };
             let workers = state.workers.hold();
+            if !state.mapping_excluded_from_child.load(Ordering::Acquire) {
+                if let Err(error) = state.setup.mapped_region().exclude_from_hot_fork_child() {
+                    state.workers.release();
+                    let _released_rings = state.setup.mapped_region().release_hot_fork_ring_io();
+                    state.quiescence.release_hot_fork();
+                    return hot_fork_mapping_disposition_status(error);
+                }
+                state
+                    .mapping_excluded_from_child
+                    .store(true, Ordering::Release);
+            }
             (snapshot, rings, workers)
         }
         crate::QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY => {
@@ -1080,6 +1094,18 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
             (snapshot, rings, workers)
         }
         crate::QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE => {
+            if state.mapping_excluded_from_child.load(Ordering::Acquire) {
+                if let Err(error) = state
+                    .setup
+                    .mapped_region()
+                    .restore_hot_fork_parent_inheritance()
+                {
+                    return hot_fork_mapping_disposition_status(error);
+                }
+                state
+                    .mapping_excluded_from_child
+                    .store(false, Ordering::Release);
+            }
             let Ok(rings) = state.setup.mapped_region().release_hot_fork_ring_io() else {
                 return -libc::EPROTO;
             };
@@ -1098,7 +1124,9 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
         return -libc::EOVERFLOW;
     };
     let flags = (u32::from(snapshot.hot_fork_held) * crate::QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_HELD)
-        | (u32::from(snapshot.teardown_closed) * crate::QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_TEARDOWN);
+        | (u32::from(snapshot.teardown_closed) * crate::QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_TEARDOWN)
+        | (u32::from(state.mapping_excluded_from_child.load(Ordering::Acquire))
+            * crate::QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_MAPPING_DONTFORK);
     // SAFETY: the caller supplied a non-null out pointer for this synchronous
     // callback. The fixed C/Rust ABI layouts are checked by QEMU before use.
     unsafe {
@@ -1119,6 +1147,18 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
         });
     }
     0
+}
+
+fn hot_fork_mapping_disposition_status(
+    error: crucible_shmem::HotForkMappingDispositionError,
+) -> std::os::raw::c_int {
+    match error {
+        crucible_shmem::HotForkMappingDispositionError::Unsupported => -libc::ENOTSUP,
+        crucible_shmem::HotForkMappingDispositionError::Madvise { source, .. } => source
+            .raw_os_error()
+            .filter(|errno| *errno > 0)
+            .map_or(-libc::EIO, |errno| -errno),
+    }
 }
 
 #[cfg(test)]

@@ -1824,14 +1824,17 @@ freeze, callback barrier, process-lifetime heap disposition, or child
 reinitializer; readiness bit 6 remains clear and the GPL/Apache process
 boundary is unchanged.
 The GPL plugin now also registers one process-lifetime reversible callback,
-shared-ring I/O, and sealed-worker barrier. A version-5 OOB QMP operation
+shared-ring I/O, sealed-worker, and source-mapping barrier. A version-6 OOB QMP operation
 holds, observes, and releases that barrier. Holding is accepted only at the
 exact paused/device-flush boundary, rejects later live device and coverage
 callbacks, holds producer and consumer admission in every ABI-v20 shared-memory
 ring, and closes later operations by the RUN-control, teardown, and optional
-fingerprint workers without blocking QMP. The response exposes exact callback
+fingerprint workers without blocking QMP. It then applies `MADV_DONTFORK` to
+the exact live setup-region mapping; failure rolls every hold back. Release
+restores `MADV_DOFORK` before it reopens any parent admission, and failure keeps
+the complete transaction held. The response exposes exact callback
 and aggregate ring-producer and ring-consumer counts plus sealed, parked,
-pending-local, and active worker state until all admitted work drains. A worker
+pending-local, active worker, and kernel mapping-disposition state until all admitted work drains. A worker
 that dequeues during a hold stays parked and marks its local item pending
 before it may admit or act on that item. Release reopens rings and callbacks
 before waking workers and cannot reopen permanent teardown closure.
@@ -1884,9 +1887,12 @@ ambiguity retains the installed mapping and also quarantines. Focused typed and
 real-Unix-socket tests verify the exact basis, two-layer command order, closed
 name grammar, response postconditions, stream poisoning, source-drift
 rejection, and both retained failure states.
+The permissive mapping owner has focused Linux coverage that observes the
+kernel `dc` `VmFlags` bit across the reversible transition, and the typed QMP
+client requires `mapping-dontfork` for any captured source-ring proof.
 This remains a retained T-CAM-6.2 subsystem primitive: a pending worker-local
 item is rejected rather than assigned ambiguously, while fork-child descriptor
-inheritance/remapping, application of the complete recorded disposition plan,
+inheritance/remapping beyond the now-excluded source ring, application of the complete recorded disposition plan,
 host-continuation pairing, child process identity, and final ring release are
 not composed yet. Template-process descriptor/endpoint staging and the planned
 empty-local-state disposition do not satisfy proof bits 6 through 8. All three
