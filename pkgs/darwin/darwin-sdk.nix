@@ -1745,12 +1745,15 @@ in
                 - _CFStringCreateCopy
                 - _CFStringCreateMutableCopy
                 - _CFStringCreateWithCharactersNoCopy
+                - _CFStringCreateWithFileSystemRepresentation
                 - _CFStringCompare
                 - _CFStringGetBytes
                 - _CFStringGetCString
                 - _CFStringGetCStringPtr
+                - _CFStringGetFileSystemRepresentation
                 - _CFStringGetLength
                 - _CFStringGetMaximumSizeForEncoding
+                - _CFStringGetMaximumSizeOfFileSystemRepresentation
                 - _CFStringGetTypeID
                 - _CFStringHasPrefix
                 - _CFStringNormalize
@@ -2496,6 +2499,11 @@ in
           #define NS_ENUM(_type, _name) CF_ENUM(_type, _name)
           #define NS_OPTIONS(_type, _name) CF_OPTIONS(_type, _name)
           #define NS_INLINE static inline
+          #ifdef __cplusplus
+          #define FOUNDATION_EXPORT extern "C"
+          #else
+          #define FOUNDATION_EXPORT extern
+          #endif
 
           typedef struct _NSRange {
             NSUInteger location;
@@ -2622,7 +2630,7 @@ in
           @property(readonly, copy) NSArray<NSString *> *callStackSymbols;
           @end
 
-          extern void NSLog(NSString *format, ...);
+          FOUNDATION_EXPORT void NSLog(NSString *format, ...);
 
           @interface NSMutableArray<ObjectType> : NSArray<ObjectType>
           + (instancetype)arrayWithCapacity:(NSUInteger)numItems;
@@ -2745,7 +2753,7 @@ in
             NSSystemDomainMask = 8,
             NSAllDomainsMask = 0xffff
           };
-          NSArray<NSString *> *NSSearchPathForDirectoriesInDomains(
+          FOUNDATION_EXPORT NSArray<NSString *> *NSSearchPathForDirectoriesInDomains(
             NSSearchPathDirectory directory,
             NSSearchPathDomainMask domainMask,
             BOOL expandTilde

@@ -4,7 +4,11 @@
 #import <Foundation/NSString.h>
 
 #ifndef FOUNDATION_EXPORT
+#ifdef __cplusplus
+#define FOUNDATION_EXPORT extern "C"
+#else
 #define FOUNDATION_EXPORT extern
+#endif
 #endif
 
 FOUNDATION_EXPORT NSString *NSHomeDirectory(void);
