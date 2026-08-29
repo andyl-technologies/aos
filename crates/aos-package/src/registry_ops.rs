@@ -1773,6 +1773,8 @@ pub async fn publish(
     let name = resolve_registry_name(config, registry)?;
     let dir = config.scope.registries_path().join(&name);
     ensure_writable_registry_clone(&name, &dir)?;
+    let require_signed_ukis =
+        read_registry_toml(&dir)?.is_some_and(|root| root.registry.require_signed_ukis);
     if let Some(name) = name_override {
         validate_package_name(name)?;
     }
@@ -1878,7 +1880,12 @@ pub async fn publish(
         )?);
     }
     let sb_catalog = sb_certs::load_sb_certs_toml(&dir)?;
-    apply_publish_sb_policy(&mut image_infos, sb_catalog.as_ref(), sb_db_cert.is_some())?;
+    apply_publish_sb_policy(
+        &mut image_infos,
+        sb_catalog.as_ref(),
+        sb_db_cert.is_some(),
+        require_signed_ukis,
+    )?;
     let expose_manifest = expose_manifest_path
         .map(|path| read_publish_expose_manifest(path, pkg_name))
         .transpose()?;
@@ -2336,8 +2343,34 @@ fn apply_publish_sb_policy(
     images: &mut [PublishedImage],
     catalog: Option<&SbCertsToml>,
     has_db_cert: bool,
+    require_signed_ukis: bool,
 ) -> Result<()> {
     for image in images {
+        if require_signed_ukis {
+            if image.sb.signer_cert_sha256.is_none()
+                || image
+                    .sb
+                    .ukis
+                    .iter()
+                    .any(|uki| uki.sb_signer_cert_sha256.is_none())
+            {
+                bail!(
+                    "registry [registry] require_signed_ukis = true refuses unsigned UKIs in '{}' image",
+                    image.format
+                );
+            }
+            if catalog.is_none() {
+                bail!(
+                    "registry [registry] require_signed_ukis = true requires a committed sb-certs.toml policy"
+                );
+            }
+            if !has_db_cert {
+                bail!(
+                    "registry [registry] require_signed_ukis = true requires the matching registry sb-certs/db.pem for publish-time verification"
+                );
+            }
+        }
+
         let signers = image
             .sb
             .signer_cert_sha256
@@ -16780,7 +16813,7 @@ mod tests {
         image.sb.signer_cert_sha256 = Some(signer.clone());
         image.delivery.uki.verification = ImageVerificationState::SignedUnverified;
 
-        apply_publish_sb_policy(std::slice::from_mut(&mut image), None, false).unwrap();
+        apply_publish_sb_policy(std::slice::from_mut(&mut image), None, false, false).unwrap();
         assert_eq!(
             image.delivery.uki.verification,
             ImageVerificationState::SignedUnverified
@@ -16794,10 +16827,16 @@ mod tests {
             ..SbCertsToml::default()
         };
         assert!(
-            apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&active), false)
-                .is_err()
+            apply_publish_sb_policy(
+                std::slice::from_mut(&mut image),
+                Some(&active),
+                false,
+                false
+            )
+            .is_err()
         );
-        apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&active), true).unwrap();
+        apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&active), true, false)
+            .unwrap();
         assert_eq!(
             image.delivery.uki.verification,
             ImageVerificationState::PolicyVerified
@@ -16812,8 +16851,48 @@ mod tests {
             ..SbCertsToml::default()
         };
         assert!(
-            apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&revoked), true)
+            apply_publish_sb_policy(
+                std::slice::from_mut(&mut image),
+                Some(&revoked),
+                true,
+                false
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn secure_boot_publish_policy_enforces_opt_in_signed_uki_gate() {
+        let temp = TempDir::new().unwrap();
+        let store =
+            write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
+        let mut image = inspect_test_image("raw", store, "2026.08", "x86_64-linux").unwrap();
+
+        let error = apply_publish_sb_policy(std::slice::from_mut(&mut image), None, false, true)
+            .unwrap_err();
+        assert!(error.to_string().contains("refuses unsigned UKIs"));
+
+        let signer = "e".repeat(64);
+        image.sb.signer_cert_sha256 = Some(signer.clone());
+        let active = SbCertsToml {
+            active: vec![SbCert {
+                id: "staging".into(),
+                cert_sha256: signer,
+            }],
+            ..SbCertsToml::default()
+        };
+        assert!(
+            apply_publish_sb_policy(std::slice::from_mut(&mut image), None, true, true).is_err()
+        );
+        assert!(
+            apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&active), false, true)
                 .is_err()
+        );
+        apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&active), true, true)
+            .unwrap();
+        assert_eq!(
+            image.delivery.uki.verification,
+            ImageVerificationState::PolicyVerified
         );
     }
 

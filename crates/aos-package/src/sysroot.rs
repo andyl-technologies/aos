@@ -67,8 +67,9 @@ use crate::resolve::{collect_unique_metas, resolve_multiple};
 use crate::store::filter_missing;
 use crate::types::{
     ConfigGeneration, ConfigGenerationState, CrossAbiReEvalInputs, ImageGeneration,
-    ImageGenerationState, ImageSlot, PackageMeta, ProfileScope, ReactivationPlan,
-    RecoveryPublication, RecoveryUkiEntry, SysrootImageEntry, SysrootUkiEntry, UkiSlot,
+    ImageGenerationState, ImageSlot, ImageVerificationState, PackageMeta, ProfileScope,
+    ReactivationPlan, RecoveryPublication, RecoveryUkiEntry, RegistryRootConfig, SysrootImageEntry,
+    SysrootUkiEntry, UkiSlot,
 };
 use crate::unit_diff::{self, UnitDiff};
 use crate::verify::{verify_download_hash, verify_downloads};
@@ -4823,8 +4824,9 @@ fn validate_sysroot_secure_boot(
 ///
 /// # Errors
 ///
-/// Returns an error when the catalog fails to load/parse or any image fails
-/// [`validate_image_secure_boot`].
+/// Returns an error when the registry root or catalog fails to load/parse, the
+/// registry requires signed UKIs but an image is not policy-verified, or any
+/// signed image fails [`validate_image_secure_boot`].
 fn validate_sysroot_secure_boot_in(
     images: &[crate::types::SysrootImageEntry],
     registry_name: &str,
@@ -4832,6 +4834,39 @@ fn validate_sysroot_secure_boot_in(
     db_cert: Option<&Path>,
     printer: &Printer,
 ) -> Result<()> {
+    let registry_config_path = catalog_dir.join("registry.toml");
+    let require_signed_ukis = if registry_config_path.is_file() {
+        let source = std::fs::read_to_string(&registry_config_path).with_context(|| {
+            format!(
+                "reading committed registry configuration {}",
+                registry_config_path.display()
+            )
+        })?;
+        let root: RegistryRootConfig = toml::from_str(&source).with_context(|| {
+            format!(
+                "parsing committed registry configuration {}",
+                registry_config_path.display()
+            )
+        })?;
+        root.registry.require_signed_ukis
+    } else {
+        false
+    };
+    let direct_images = images
+        .iter()
+        .filter(|image| !image.delivery.is_store_only())
+        .collect::<Vec<_>>();
+    if require_signed_ukis {
+        for image in &direct_images {
+            if image.delivery.uki.verification != ImageVerificationState::PolicyVerified {
+                bail!(
+                    "registry '{registry_name}' requires signed UKIs, but image format '{}' is not policy-verified",
+                    image.format
+                );
+            }
+        }
+    }
+
     let signed_images: Vec<&crate::types::SysrootImageEntry> = images
         .iter()
         .filter(|img| {
@@ -4858,6 +4893,11 @@ fn validate_sysroot_secure_boot_in(
         )
     })?
     else {
+        if require_signed_ukis && !direct_images.is_empty() {
+            bail!(
+                "registry '{registry_name}' requires signed UKIs but publishes no sb-certs.toml policy"
+            );
+        }
         // The registry publishes no Secure Boot catalog; there is no
         // signed floor or active set to enforce against.
         printer.info(
@@ -6437,6 +6477,15 @@ mod tests {
         // No catalog written, no facts on the image: no-op success.
         assert!(
             validate_sysroot_secure_boot_in(&unsigned, "aos", tmp.path(), None, &printer).is_ok()
+        );
+
+        std::fs::write(
+            tmp.path().join("registry.toml"),
+            "[registry]\nname = \"aos\"\nrequire_signed_ukis = true\n",
+        )
+        .unwrap();
+        assert!(
+            validate_sysroot_secure_boot_in(&unsigned, "aos", tmp.path(), None, &printer).is_err()
         );
     }
 

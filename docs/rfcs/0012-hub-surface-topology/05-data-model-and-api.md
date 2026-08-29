@@ -784,14 +784,12 @@ booleans or write order.
 (`instance` or `org:<stable-id>`) and `UNIQUE(id, scope_key)`. DNS domains,
 typed endpoints, and gateways retain their owner scope, while endpoint
 and gateway grant rows enumerate consumer scopes allowed to create routes.
-Instance-owned Hub infrastructure may grant named organizations. An
-`instance_default` grant is eagerly materialized as one exact consumer-scope
-row for every existing organization and by the organization-creation
-transaction for each new organization; request authorization never interprets
-a wildcard. Organization-owned infrastructure grants its owner by default
-and another organization only through a separately authorized
-cross-organization plan. Absence of an active grant generation and its required
-live target pin is structural denial.
+Instance-owned Hub infrastructure may grant named organizations only through a
+reviewed grant plan; organization creation never inherits deployment topology.
+Request authorization never interprets a wildcard. Organization-owned
+infrastructure grants its owner by default and another organization only
+through a separately authorized cross-organization plan. Absence of an active
+grant generation and its required live target pin is structural denial.
 
 Grant identity is durable history, not a deletable authorization fact. Binding
 and boundary grants key stable resources; endpoint and gateway grants key exact
@@ -1645,12 +1643,11 @@ therefore cannot bypass a URL reservation. Default ports remain in identity and
 are omitted only when rendering. No row stores a URL, userinfo, query, fragment,
 IPv6 zone id, or storage-origin address.
 
-An endpoint revision grant is always an exact consumer scope. The
-organization-creation workflow materializes any active instance-default grants
-in the same transaction that makes the organization usable, and removing an
-instance default does not silently revoke already-materialized explicit
-access. CLI/API stable endpoint refs resolve to the exact desired generation in
-the plan and apply rejects a changed generation. Endpoint update plans list
+An endpoint revision grant is always an exact consumer scope. Organization
+creation does not materialize infrastructure grants; an operator applies them
+through the same grant API used for every other consumer scope. CLI/API stable
+endpoint refs resolve to the exact desired generation in the plan and apply
+rejects a changed generation. Endpoint update plans list
 every old-generation grant and affected route; apply creates only the
 explicitly confirmed replacement-generation grants before moving routes. Old
 grants are never wildcards: every carry-forward item seals the old endpoint
@@ -1992,16 +1989,15 @@ topology_defaults(
 )
 ```
 
-The deployment-provisioned instance binding singleton uses the same eager
-exact-grant projection as instance defaults elsewhere: existing organizations
-are materialized when the grant is enabled, and organization creation inserts
-its exact row before topology can reference the binding. Organization bindings
-grant their owner by default; cross-organization grants require a dual-scope
-impact plan. Placement, gateway, and topology-default rows carry the consuming
-scope and reference that exact grant, so neither a nonexistent nor a foreign
-binding can enter topology. Grant revocation enumerates and removes defaults,
-gateways, and placements first; absence of an active grant generation and its
-required live pin is structural denial.
+The instance binding singleton is created through the typed binding API and
+selects one named runtime attachment. It is not inferred from deployment
+environment values and is not granted to organizations automatically.
+Organization bindings grant their owner by default; cross-organization grants
+require a dual-scope impact plan. Placement, gateway, and topology-default rows
+carry the consuming scope and reference that exact grant, so neither a
+nonexistent nor a foreign binding can enter topology. Grant revocation
+enumerates and removes defaults, gateways, and placements first; absence of an
+active grant generation and its required live pin is structural denial.
 
 `routes.gateway_id` and `gateway_generation` pin immutable
 user-selected provenance. Gateway reconciliation creates/configures or probes a

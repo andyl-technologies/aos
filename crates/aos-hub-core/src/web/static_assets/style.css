@@ -603,7 +603,8 @@ p.chips { margin: 0.2rem 0 0.8rem; }
   font-size: 0.85rem;
 }
 .license-pill,
-.platform-pill {
+.platform-pill,
+.release-count-pill {
   display: inline-block;
   max-width: 16ch;
   overflow: hidden;
@@ -618,11 +619,20 @@ p.chips { margin: 0.2rem 0 0.8rem; }
   white-space: nowrap;
 }
 .license-pill:hover,
-.platform-pill:hover {
+.platform-pill:hover,
+.release-count-pill:hover {
   border-color: var(--accent);
   color: var(--accent);
   text-decoration: none;
 }
+.release-shortlinks {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  min-width: 0;
+}
+.release-count-pill { max-width: none; }
+.release-count-pill strong { font-variant-numeric: tabular-nums; }
 
 /* Package artifacts use comparable, bounded facts in the summary row and put
  * unbounded paths, hashes, and references on full-width detail rows. */
