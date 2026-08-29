@@ -800,6 +800,7 @@
                 builtin_sysroot = "${stdenv.sdk}",
                 cxx_builtin_include_directories = [
                     "${stdenv.darwinRuntimes}/include/c++/v1",
+                    "${stdenv.cc}/lib/clang/aos-darwin/include",
                     "${buildLlvm}/lib/clang/${llvmMajor}/include",
                     "${stdenv.sdk}/usr/include",
                     "${stdenv.sdk}/System/Library/Frameworks",
