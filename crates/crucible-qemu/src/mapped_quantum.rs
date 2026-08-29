@@ -579,6 +579,31 @@ impl QemuMappedQuantumShmemHotPath {
 }
 
 impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
+    fn hot_fork_setup_region_identity(
+        &mut self,
+    ) -> Result<crucible_shmem::SetupRegionBackingIdentity, QemuNodeChannelError> {
+        Ok(self.region.backing_identity())
+    }
+
+    fn hot_fork_ring_io_snapshot(
+        &mut self,
+    ) -> Result<crucible_shmem::MappedRingIoBarrierSnapshot, QemuNodeChannelError> {
+        self.region.hot_fork_ring_io_snapshot().map_err(|source| {
+            QemuNodeChannelError::new("query hot-fork ring I/O barrier", source.to_string())
+        })
+    }
+
+    fn capture_hot_fork_ring_image(
+        &mut self,
+        maximum_bytes: usize,
+    ) -> Result<crucible_shmem::HotForkRingImage, QemuNodeChannelError> {
+        self.region
+            .capture_hot_fork_ring_image(maximum_bytes)
+            .map_err(|source| {
+                QemuNodeChannelError::new("capture hot-fork ring image", source.to_string())
+            })
+    }
+
     fn checkpoint_network_transport(
         &mut self,
     ) -> Result<crate::QemuNetworkTransportCheckpoint, QemuNodeChannelError> {

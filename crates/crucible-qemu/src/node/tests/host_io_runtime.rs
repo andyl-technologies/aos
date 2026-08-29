@@ -23,6 +23,8 @@ pub(crate) fn scripted_node_with_live_host_runtime(
             stale_fault_results: Arc::new(Mutex::new(VecDeque::new())),
             fault_events: Arc::new(Mutex::new(VecDeque::new())),
             fingerprint_retry_countdown: Arc::new(Mutex::new(0)),
+            hot_fork_setup_identity: None,
+            hot_fork_ring_image: None,
         },
         ScriptedQmpMachineControl {
             log,
@@ -31,6 +33,7 @@ pub(crate) fn scripted_node_with_live_host_runtime(
             fail_snapshot: false,
             timeout_snapshot: false,
             plugin_resources: None,
+            plugin_barriers: None,
         },
     );
     Ok(QemuNode::new(

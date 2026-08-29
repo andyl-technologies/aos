@@ -729,6 +729,14 @@ authenticates exact geometry, held endpoints, cursor capacity, queued bytes,
 and fault payload arenas; restore keeps the destination held. It excludes node
 slots and fingerprint samples by contract.
 
+The production node adapter brackets capture with identical QMP plugin-barrier
+and sealed plugin-resource reports. It requires the host mapping's retained
+device, inode, and descriptor length to match the sealed resource manifest,
+and independently requires the QEMU and host ring count, held count, and
+producer/consumer admission totals to agree. Changed proof generations,
+resource identity, or host barrier state reject the capture. This binds one
+host image to one retained plugin barrier but still does not authorize fork.
+
 This is still not the complete plugin-ring proof: a parked worker may retain a
 received trigger or queued fingerprint work, and no fork child yet receives,
 remaps, authenticates, and releases the private mapping together with those

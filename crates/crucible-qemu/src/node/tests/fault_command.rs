@@ -98,6 +98,8 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
                 stale_fault_results: Arc::new(Mutex::new(VecDeque::new())),
                 fault_events: Arc::new(Mutex::new(VecDeque::new())),
                 fingerprint_retry_countdown: Arc::new(Mutex::new(0)),
+                hot_fork_setup_identity: None,
+                hot_fork_ring_image: None,
             },
             ScriptedQmpMachineControl {
                 log: Arc::clone(&log),
@@ -106,6 +108,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
                 fail_snapshot: false,
                 timeout_snapshot: false,
                 plugin_resources: None,
+                plugin_barriers: None,
             },
         );
         let mut node = QemuNode::new(

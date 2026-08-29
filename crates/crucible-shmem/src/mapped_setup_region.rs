@@ -81,10 +81,10 @@ pub fn mmap_setup_region(
         });
     }
 
-    let backing_len = setup_region_backing_len(fd)?;
-    if backing_len < region_len {
+    let backing_identity = setup_region_backing_identity(fd)?;
+    if backing_identity.length() < region_len {
         return Err(SetupRegionMapError::BackingTooShort {
-            backing_len,
+            backing_len: backing_identity.length(),
             region_len,
         });
     }
@@ -123,6 +123,7 @@ pub fn mmap_setup_region(
         address: ptr.as_ptr() as usize,
         len,
         region_len,
+        backing_identity,
     })
 }
 

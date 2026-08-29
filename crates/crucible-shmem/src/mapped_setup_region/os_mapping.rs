@@ -12,7 +12,9 @@ pub(super) fn last_os_error() -> i32 {
 }
 use super::*;
 
-pub(super) fn setup_region_backing_len(fd: BorrowedFd<'_>) -> Result<u64, SetupRegionMapError> {
+pub(super) fn setup_region_backing_identity(
+    fd: BorrowedFd<'_>,
+) -> Result<SetupRegionBackingIdentity, SetupRegionMapError> {
     let mut stat = MaybeUninit::<libc::stat>::uninit();
     // SAFETY: `stat` points to valid writable storage and `fd` is borrowed from
     // a live owned descriptor for the duration of the syscall.
@@ -24,7 +26,13 @@ pub(super) fn setup_region_backing_len(fd: BorrowedFd<'_>) -> Result<u64, SetupR
     }
     // SAFETY: successful `fstat` initialized the output structure.
     let stat = unsafe { stat.assume_init() };
-    u64::try_from(stat.st_size).map_err(|_| SetupRegionMapError::NegativeBackingLength {
-        backing_len: stat.st_size,
+    let length =
+        u64::try_from(stat.st_size).map_err(|_| SetupRegionMapError::NegativeBackingLength {
+            backing_len: stat.st_size,
+        })?;
+    Ok(SetupRegionBackingIdentity {
+        device: stat.st_dev,
+        inode: stat.st_ino,
+        length,
     })
 }

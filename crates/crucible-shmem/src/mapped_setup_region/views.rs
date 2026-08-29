@@ -191,6 +191,35 @@ pub struct MappedSetupRegion {
     pub(super) address: usize,
     pub(super) len: usize,
     pub(super) region_len: u64,
+    pub(super) backing_identity: SetupRegionBackingIdentity,
+}
+
+/// Stable filesystem identity of one mapped setup-region backing object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SetupRegionBackingIdentity {
+    pub(super) device: u64,
+    pub(super) inode: u64,
+    pub(super) length: u64,
+}
+
+impl SetupRegionBackingIdentity {
+    /// Returns the backing filesystem device number.
+    #[must_use]
+    pub const fn device(self) -> u64 {
+        self.device
+    }
+
+    /// Returns the backing inode number.
+    #[must_use]
+    pub const fn inode(self) -> u64 {
+        self.inode
+    }
+
+    /// Returns the descriptor length observed immediately before `mmap`.
+    #[must_use]
+    pub const fn length(self) -> u64 {
+        self.length
+    }
 }
 
 pub(super) type AcceleratorRingPairMut<'a> = (
