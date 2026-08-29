@@ -972,6 +972,13 @@
       enforces = "HFORK-3,HFORK-8,HFORK-9";
       capability = "QEMU duplicates and authenticates one bounded standard-QMP getfd entry by name, device, inode, length, regular-file type, and shrink seal, then retains it independently for future child remapping while explicitly keeping readiness bits 6 and 7 clear";
     }
+    {
+      file = "0140-crucible-account-hot-fork-worker-local-state.patch";
+      catalogName = "crucible-hot-fork-worker-local-state";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-5";
+      capability = "the version-5 plugin barrier distinguishes an idle parked worker from a parked worker retaining one dequeued item in thread-local state, requires pending workers to remain parked, and keeps quiescence false until every local item is either discarded or admitted without acknowledging proof bit 6";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

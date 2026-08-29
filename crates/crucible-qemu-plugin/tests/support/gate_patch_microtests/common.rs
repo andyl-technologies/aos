@@ -153,6 +153,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0137-crucible-park-hot-fork-plugin-workers.patch",
     "0138-crucible-drain-hot-fork-ring-consumers.patch",
     "0139-crucible-retain-hot-fork-private-rings.patch",
+    "0140-crucible-account-hot-fork-worker-local-state.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

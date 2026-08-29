@@ -1717,7 +1717,7 @@ QEMU now additionally owns a process-lifetime reversible RCU admission/drain
 barrier. Holding at the exact paused/device-flush boundary gates every new
 outer reader and callback submission through a race-closed
 two-phase admission, retains the exact reader/admission/callback/drain state,
-and parks rejected entrants until release. The version-8 template coordinator
+and parks rejected entrants until release. The version-9 template coordinator
 holds this barrier with the plugin callback barrier and acknowledges readiness
 bit 4 only while the complete retained RCU state is quiescent. The RCU worker
 still needs an exact child disposition/reinitializer, so bit 8 remains clear.
@@ -1727,7 +1727,7 @@ GLib dispatch, AioHandler lifecycle and callbacks, coroutine scheduling,
 bottom-half and timer creation, mutation, and callback dispatch. Holding at the
 exact paused/device-flush boundary parks later producers, lets already-admitted
 work and its nested mutations finish, leaves queued sources parked, and keeps
-OOB QMP responsive through nonblocking event-loop admission. The version-7
+OOB QMP responsive through nonblocking event-loop admission. The version-9
 template coordinator retains this barrier with the plugin, RCU, and native
 block barriers,
 and the typed client validates its exact bounded inventories and derived
@@ -1792,7 +1792,7 @@ typed Rust control surface rejects contradictory schemas, bounds, generations,
 owners, and action postconditions. The QEMU unit regression parks a real graph
 writer until a scheduled release, while the live gate proves stable released
 state and no state retention after an invalid hold. This is a concrete
-block-side graph and I/O quiescence prerequisite. The version-8 template
+block-side graph and I/O quiescence prerequisite. The version-9 template
 coordinator schedules acquisition and release on the main AioContext, holds the
 graph and native drain barriers before parking asynchronous sources, and
 releases asynchronous sources before graph and block I/O admission reopen.
@@ -1824,15 +1824,17 @@ freeze, callback barrier, process-lifetime heap disposition, or child
 reinitializer; readiness bit 6 remains clear and the GPL/Apache process
 boundary is unchanged.
 The GPL plugin now also registers one process-lifetime reversible callback,
-shared-ring I/O, and sealed-worker barrier. A version-4 OOB QMP operation
+shared-ring I/O, and sealed-worker barrier. A version-5 OOB QMP operation
 holds, observes, and releases that barrier. Holding is accepted only at the
 exact paused/device-flush boundary, rejects later live device and coverage
 callbacks, holds producer and consumer admission in every ABI-v20 shared-memory
 ring, and closes later operations by the RUN-control, teardown, and optional
 fingerprint workers without blocking QMP. The response exposes exact callback
-and aggregate ring-producer and ring-consumer counts plus sealed, parked, and
-active worker state until all admitted work drains. Release reopens rings and
-callbacks before waking workers and cannot reopen permanent teardown closure.
+and aggregate ring-producer and ring-consumer counts plus sealed, parked,
+pending-local, and active worker state until all admitted work drains. A worker
+that dequeues during a hold stays parked and marks its local item pending
+before it may admit or act on that item. Release reopens rings and callbacks
+before waking workers and cannot reopen permanent teardown closure.
 The host can now capture the resulting queue-backed ranges into a
 caller-bounded canonical v1 image and restore their exact held headers,
 cursors, slots, and fault arenas into an identical inactive branch-private
@@ -1864,10 +1866,11 @@ ambiguity retains the installed mapping and also quarantines. Focused typed and
 real-Unix-socket tests verify the exact basis, two-layer command order, closed
 name grammar, response postconditions, stream poisoning, source-drift
 rejection, and both retained failure states.
-This remains a retained T-CAM-6.2 subsystem primitive: worker-local queued
-work, fork-child descriptor inheritance/remapping, a complete disposition
-table, host-continuation pairing, child process identity, and final ring release
-are not composed yet. Template-process descriptor staging does not satisfy
+This remains a retained T-CAM-6.2 subsystem primitive: child disposition for
+observably pending worker-local work, fork-child descriptor
+inheritance/remapping, a complete disposition table, host-continuation pairing,
+child process identity, and final ring release are not composed yet.
+Template-process descriptor staging and pending-local accounting do not satisfy
 proof bits 6 or 7. Both remain clear and T-CAM-6.2 remains unchecked.
 Patched QEMU now also owns the versioned `PrepareForkTemplate`
 transaction. Its serialized OOB coordinator starts only at the exact

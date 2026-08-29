@@ -950,6 +950,7 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     assert_eq!(held.ring_consumers_in_flight, 0);
     assert_eq!(held.worker_mask, WORKER_REQUIRED);
     assert_eq!(held.parked_worker_mask, 0);
+    assert_eq!(held.pending_worker_mask, 0);
     assert_eq!(held.worker_operations_in_flight, 0);
     let queried = invoke_hot_fork_barrier(crate::QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY)
         .unwrap_or_else(|status| panic!("hot-fork barrier query should succeed: {status}"));
@@ -964,6 +965,7 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     assert_eq!(released.ring_consumers_in_flight, 0);
     assert_eq!(released.worker_mask, WORKER_REQUIRED);
     assert_eq!(released.parked_worker_mask, 0);
+    assert_eq!(released.pending_worker_mask, 0);
     assert_eq!(released.worker_operations_in_flight, 0);
     let teardown_handle = runtime
         ._callbacks
@@ -1015,6 +1017,7 @@ fn live_install_seals_the_optional_fingerprint_worker() {
         .unwrap_or_else(|status| panic!("fingerprint worker hold should succeed: {status}"));
     assert_eq!(held.worker_mask, WORKER_REQUIRED | WORKER_FINGERPRINT);
     assert_eq!(held.parked_worker_mask, 0);
+    assert_eq!(held.pending_worker_mask, 0);
     assert_eq!(held.worker_operations_in_flight, 0);
 
     drop(runtime);

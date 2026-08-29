@@ -19,6 +19,7 @@ pub(super) struct WorkerQuiescenceSnapshot {
     pub(super) held: bool,
     pub(super) worker_mask: u64,
     pub(super) parked_mask: u64,
+    pub(super) pending_mask: u64,
     pub(super) operations_in_flight: u64,
 }
 
@@ -26,6 +27,7 @@ pub(super) struct WorkerQuiescenceSnapshot {
 struct WorkerQuiescenceState {
     held: bool,
     parked_mask: u64,
+    pending_mask: u64,
     active_mask: u64,
 }
 
@@ -46,6 +48,7 @@ impl LiveWorkerQuiescence {
             state: Mutex::new(WorkerQuiescenceState {
                 held: false,
                 parked_mask: 0,
+                pending_mask: 0,
                 active_mask: 0,
             }),
             released: Condvar::new(),
@@ -66,28 +69,7 @@ impl LiveWorkerQuiescence {
         WorkerIdleGuard {
             quiescence: Arc::clone(self),
             worker,
-        }
-    }
-
-    /// Waits for a reversible hold to release, then admits one worker operation.
-    pub(super) fn enter(self: &Arc<Self>, worker: u64) -> WorkerOperationGuard {
-        self.assert_worker(worker);
-        let mut state = self.lock_state();
-        while state.held {
-            debug_assert_eq!(state.active_mask & worker, 0);
-            state.parked_mask |= worker;
-            state = self
-                .released
-                .wait(state)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-        }
-        state.parked_mask &= !worker;
-        debug_assert_eq!(state.active_mask & worker, 0);
-        state.active_mask |= worker;
-        drop(state);
-        WorkerOperationGuard {
-            quiescence: Arc::clone(self),
-            worker,
+            parked: true,
         }
     }
 
@@ -126,6 +108,7 @@ impl LiveWorkerQuiescence {
             held: state.held,
             worker_mask: self.worker_mask,
             parked_mask: state.parked_mask,
+            pending_mask: state.pending_mask,
             operations_in_flight: u64::from(state.active_mask.count_ones()),
         }
     }
@@ -135,11 +118,83 @@ impl LiveWorkerQuiescence {
 pub(super) struct WorkerIdleGuard {
     quiescence: Arc<LiveWorkerQuiescence>,
     worker: u64,
+    parked: bool,
+}
+
+impl WorkerIdleGuard {
+    /// Transfers one received item into explicit worker-local ownership.
+    pub(super) fn received(mut self) -> WorkerPendingGuard {
+        // The receive has completed, but the worker cannot inspect, publish,
+        // or otherwise act on the item until this mutex transition makes its
+        // local ownership visible to the barrier snapshot.
+        let mut state = self.quiescence.lock_state();
+        debug_assert_ne!(state.parked_mask & self.worker, 0);
+        debug_assert_eq!(state.pending_mask & self.worker, 0);
+        debug_assert_eq!(state.active_mask & self.worker, 0);
+        state.pending_mask |= self.worker;
+        drop(state);
+
+        self.parked = false;
+        WorkerPendingGuard {
+            quiescence: Arc::clone(&self.quiescence),
+            worker: self.worker,
+            pending: true,
+        }
+    }
 }
 
 impl Drop for WorkerIdleGuard {
     fn drop(&mut self) {
+        if !self.parked {
+            return;
+        }
         let mut state = self.quiescence.lock_state();
+        state.parked_mask &= !self.worker;
+    }
+}
+
+/// RAII marker for one item dequeued but not yet admitted for processing.
+pub(super) struct WorkerPendingGuard {
+    quiescence: Arc<LiveWorkerQuiescence>,
+    worker: u64,
+    pending: bool,
+}
+
+impl WorkerPendingGuard {
+    /// Waits for a reversible hold to release, then admits the pending item.
+    pub(super) fn enter(mut self) -> WorkerOperationGuard {
+        let mut state = self.quiescence.lock_state();
+        while state.held {
+            debug_assert_ne!(state.pending_mask & self.worker, 0);
+            debug_assert_eq!(state.active_mask & self.worker, 0);
+            state.parked_mask |= self.worker;
+            state = self
+                .quiescence
+                .released
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        state.pending_mask &= !self.worker;
+        state.parked_mask &= !self.worker;
+        debug_assert_eq!(state.active_mask & self.worker, 0);
+        state.active_mask |= self.worker;
+        drop(state);
+
+        self.pending = false;
+        WorkerOperationGuard {
+            quiescence: Arc::clone(&self.quiescence),
+            worker: self.worker,
+        }
+    }
+}
+
+impl Drop for WorkerPendingGuard {
+    fn drop(&mut self) {
+        if !self.pending {
+            return;
+        }
+        let mut state = self.quiescence.lock_state();
+        state.pending_mask &= !self.worker;
         state.parked_mask &= !self.worker;
     }
 }
@@ -175,13 +230,14 @@ mod tests {
         assert!(snapshot.held);
         assert_eq!(snapshot.worker_mask, WORKER_REQUIRED);
         assert_eq!(snapshot.parked_mask, WORKER_REQUIRED);
+        assert_eq!(snapshot.pending_mask, 0);
         assert_eq!(snapshot.operations_in_flight, 0);
     }
 
     #[test]
     fn admitted_operation_drains_then_parks_until_release() {
         let quiescence = LiveWorkerQuiescence::new(WORKER_REQUIRED);
-        let operation = quiescence.enter(WORKER_RUN_CONTROL);
+        let operation = quiescence.idle(WORKER_RUN_CONTROL).received().enter();
         let held = quiescence.hold();
         assert_eq!(held.operations_in_flight, 1);
 
@@ -193,7 +249,10 @@ mod tests {
             attempted
                 .send(())
                 .unwrap_or_else(|error| panic!("attempt marker: {error}"));
-            let _next = worker_quiescence.enter(WORKER_RUN_CONTROL);
+            let _next = worker_quiescence
+                .idle(WORKER_RUN_CONTROL)
+                .received()
+                .enter();
             admitted
                 .send(())
                 .unwrap_or_else(|error| panic!("admit marker: {error}"));
@@ -214,6 +273,7 @@ mod tests {
         }
         let parked = parked.unwrap_or_else(|| panic!("worker should reach the held safe point"));
         assert_eq!(parked.parked_mask, WORKER_RUN_CONTROL);
+        assert_eq!(parked.pending_mask, WORKER_RUN_CONTROL);
         assert_eq!(parked.operations_in_flight, 0);
 
         let released = quiescence.release();
@@ -237,5 +297,22 @@ mod tests {
         let snapshot = quiescence.hold();
         assert_eq!(snapshot.worker_mask, mask);
         assert_eq!(snapshot.parked_mask, mask);
+        assert_eq!(snapshot.pending_mask, 0);
+    }
+
+    #[test]
+    fn hold_reports_dequeued_worker_local_state_until_release() {
+        let quiescence = LiveWorkerQuiescence::new(WORKER_REQUIRED);
+        let pending = quiescence.idle(WORKER_RUN_CONTROL).received();
+
+        let held = quiescence.hold();
+        assert_eq!(held.parked_mask, WORKER_RUN_CONTROL);
+        assert_eq!(held.pending_mask, WORKER_RUN_CONTROL);
+        assert_eq!(held.operations_in_flight, 0);
+
+        drop(pending);
+        let drained = quiescence.snapshot();
+        assert_eq!(drained.parked_mask, 0);
+        assert_eq!(drained.pending_mask, 0);
     }
 }
