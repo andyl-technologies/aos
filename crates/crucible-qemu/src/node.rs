@@ -49,9 +49,14 @@ mod checkpoint_probe;
 mod error;
 mod exact_snapshot;
 mod fault_events;
+#[cfg(unix)]
+#[path = "node/hot_fork_ring_image.rs"]
+mod hot_fork_ring_image;
 #[cfg(target_os = "linux")]
 mod process_identity;
 pub use error::{QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeError};
+#[cfg(unix)]
+pub use hot_fork_ring_image::QemuHotForkPluginRingImage;
 #[cfg(target_os = "linux")]
 use process_identity::linux_process_identity_components;
 #[cfg(target_os = "linux")]
@@ -347,6 +352,56 @@ pub trait QemuPluginIpcControlChannel: Send {
 
 /// Shared-memory hot-path channel for per-quantum data.
 pub trait QemuShmemHotPathChannel: Send {
+    /// Returns the retained setup-region backing identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when this channel has no mapped setup
+    /// region whose descriptor identity can be authenticated.
+    #[cfg(unix)]
+    fn hot_fork_setup_region_identity(
+        &mut self,
+    ) -> Result<crucible_shmem::SetupRegionBackingIdentity, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query hot-fork setup-region identity",
+            "hot-fork ring imaging is unavailable on this channel",
+        ))
+    }
+
+    /// Observes both hot-fork admission endpoints for every mapped ring.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when this channel has no mapped setup
+    /// region or its retained ABI geometry no longer validates.
+    #[cfg(unix)]
+    fn hot_fork_ring_io_snapshot(
+        &mut self,
+    ) -> Result<crucible_shmem::MappedRingIoBarrierSnapshot, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query hot-fork ring I/O barrier",
+            "hot-fork ring imaging is unavailable on this channel",
+        ))
+    }
+
+    /// Captures one bounded canonical image of every held ring-backed range.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when this channel has no mapped setup
+    /// region, either endpoint is open or active, or the exact image exceeds
+    /// `maximum_bytes`.
+    #[cfg(unix)]
+    fn capture_hot_fork_ring_image(
+        &mut self,
+        _maximum_bytes: usize,
+    ) -> Result<crucible_shmem::HotForkRingImage, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "capture hot-fork ring image",
+            "hot-fork ring imaging is unavailable on this channel",
+        ))
+    }
+
     /// Captures both directed network rings and the host injection cursor.
     ///
     /// # Errors
@@ -861,6 +916,21 @@ pub trait QemuQmpMachineControlChannel: Send {
         Err(QemuNodeChannelError::new(
             "query_hot_fork_plugin_resource_inventory",
             "hot-fork plugin-resource inventory is not implemented by this QMP channel",
+        ))
+    }
+
+    /// Queries the retained Crucible plugin callback/ring/worker barrier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
+    /// versioned response validation fails.
+    fn query_hot_fork_plugin_barrier(
+        &mut self,
+    ) -> Result<crate::QmpHotForkPluginBarrierState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query_hot_fork_plugin_barrier",
+            "hot-fork plugin barrier is not implemented by this QMP channel",
         ))
     }
 

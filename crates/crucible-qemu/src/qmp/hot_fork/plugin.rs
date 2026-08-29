@@ -254,6 +254,26 @@ pub struct QmpHotForkPluginBarrierState {
 }
 
 impl QmpHotForkPluginBarrierState {
+    #[cfg(test)]
+    pub(crate) const fn one_quiescent(generation: u64, ring_count: u64) -> Self {
+        Self {
+            generation,
+            registered: true,
+            manifest_consistent: true,
+            held: true,
+            teardown_closed: false,
+            in_flight: 0,
+            ring_count,
+            rings_held: ring_count,
+            ring_producers_in_flight: 0,
+            ring_consumers_in_flight: 0,
+            worker_mask: QMP_HOT_FORK_PLUGIN_WORKER_REQUIRED,
+            parked_worker_mask: QMP_HOT_FORK_PLUGIN_WORKER_REQUIRED,
+            worker_operations_in_flight: 0,
+            quiescent: true,
+        }
+    }
+
     /// Returns the process-local barrier registration/hold generation.
     #[must_use]
     pub const fn generation(self) -> u64 {

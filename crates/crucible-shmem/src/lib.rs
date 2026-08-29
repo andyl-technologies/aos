@@ -166,7 +166,8 @@ pub use mapped_setup_region::{
     MappedHostGuestIntrospectionRingsMut, MappedNodeRingPairMut, MappedPluginAcceleratorRingsMut,
     MappedPluginGuestIntrospectionRingsMut, MappedRingIoBarrierSnapshot,
     MappedSelectableReplyRingMut, MappedSetupRegion, MappedSetupRegionAccessError,
-    MappedWhiteboxMarkerRingMut, SetupRegionMapError, mmap_setup_region,
+    MappedWhiteboxMarkerRingMut, SetupRegionBackingIdentity, SetupRegionMapError,
+    mmap_setup_region,
 };
 
 use thiserror::Error;

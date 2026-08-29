@@ -106,6 +106,12 @@ where
         self.vmstate.query_hot_fork_plugin_resource_inventory()
     }
 
+    fn query_hot_fork_plugin_barrier(
+        &mut self,
+    ) -> Result<crate::QmpHotForkPluginBarrierState, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_plugin_barrier()
+    }
+
     fn prepare_hot_fork_template(
         &mut self,
         block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],

@@ -2,7 +2,9 @@
 
 use std::collections::VecDeque;
 use std::error::Error;
+use std::io::Write;
 use std::net::TcpListener;
+use std::os::fd::AsFd;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -14,7 +16,7 @@ use crucible::{
 use crucible_shmem::{
     FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR, FAULT_COMMAND_SEMANTIC_VERSION,
     FaultBoundaryPhase, FaultCapabilityScope, FaultCommandKind, FaultEventHeaderV1,
-    FaultEventOutcomeV1, FaultResultHeaderV1,
+    FaultEventOutcomeV1, FaultResultHeaderV1, RegionAllocation, RegionConfig, mmap_setup_region,
 };
 
 use crate::{
@@ -42,6 +44,9 @@ type SharedFaultEvents = Arc<Mutex<VecDeque<DequeuedFaultEvent>>>;
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ChannelCall {
     ShmemCurrentIcount,
+    ShmemHotForkIdentity,
+    ShmemHotForkBarrier,
+    ShmemHotForkCapture,
     HostYield,
     HostAwait {
         wait: QemuAsyncWait,
@@ -76,6 +81,7 @@ enum ChannelCall {
     QmpHotForkAioHandlerInventory,
     QmpHotForkBlockBackendInventory,
     QmpHotForkPluginResourceInventory,
+    QmpHotForkPluginBarrier,
     QmpHotForkBottomHalfInventory,
     QmpHotForkMutexInventory,
     QmpHotForkTimerInventory,
@@ -108,6 +114,11 @@ struct ScriptedShmemHotPath {
     stale_fault_results: Arc<Mutex<VecDeque<DequeuedFaultResult>>>,
     fault_events: SharedFaultEvents,
     fingerprint_retry_countdown: Arc<Mutex<u8>>,
+    hot_fork_setup_identity: Option<crucible_shmem::SetupRegionBackingIdentity>,
+    hot_fork_ring_image: Option<(
+        crucible_shmem::MappedRingIoBarrierSnapshot,
+        crucible_shmem::HotForkRingImage,
+    )>,
 }
 
 #[derive(Clone)]
@@ -127,6 +138,7 @@ struct ScriptedQmpMachineControl {
     fail_snapshot: bool,
     timeout_snapshot: bool,
     plugin_resources: Option<crate::QmpHotForkPluginResourceInventory>,
+    plugin_barriers: Option<Arc<Mutex<VecDeque<crate::QmpHotForkPluginBarrierState>>>>,
 }
 
 impl QemuPluginIpcControlChannel for ScriptedPluginControl {
@@ -140,6 +152,69 @@ impl QemuPluginIpcControlChannel for ScriptedPluginControl {
 }
 
 impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
+    fn hot_fork_setup_region_identity(
+        &mut self,
+    ) -> Result<crucible_shmem::SetupRegionBackingIdentity, QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::ShmemHotForkIdentity);
+        self.hot_fork_setup_identity.ok_or_else(|| {
+            QemuNodeChannelError::new(
+                "query hot-fork setup-region identity",
+                "scripted setup identity is unavailable",
+            )
+        })
+    }
+
+    fn hot_fork_ring_io_snapshot(
+        &mut self,
+    ) -> Result<crucible_shmem::MappedRingIoBarrierSnapshot, QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::ShmemHotForkBarrier);
+        self.hot_fork_ring_image
+            .as_ref()
+            .map(|(snapshot, _image)| *snapshot)
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "query hot-fork ring I/O barrier",
+                    "scripted ring image is unavailable",
+                )
+            })
+    }
+
+    fn capture_hot_fork_ring_image(
+        &mut self,
+        maximum_bytes: usize,
+    ) -> Result<crucible_shmem::HotForkRingImage, QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::ShmemHotForkCapture);
+        let image = self
+            .hot_fork_ring_image
+            .as_ref()
+            .map(|(_snapshot, image)| image)
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "capture hot-fork ring image",
+                    "scripted ring image is unavailable",
+                )
+            })?;
+        let required = image.canonical_len().map_err(|source| {
+            QemuNodeChannelError::new("measure hot-fork ring image", source.to_string())
+        })?;
+        if required > maximum_bytes {
+            return Err(QemuNodeChannelError::new(
+                "capture hot-fork ring image",
+                "scripted ring image exceeds its bound",
+            ));
+        }
+        Ok(image.clone())
+    }
+
     fn checkpoint_network_transport(
         &mut self,
     ) -> Result<crate::QemuNetworkTransportCheckpoint, QemuNodeChannelError> {
@@ -457,6 +532,32 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         })
     }
 
+    fn query_hot_fork_plugin_barrier(
+        &mut self,
+    ) -> Result<crate::QmpHotForkPluginBarrierState, QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpHotForkPluginBarrier);
+        self.plugin_barriers
+            .as_ref()
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "query_hot_fork_plugin_barrier",
+                    "scripted plugin barrier is unavailable",
+                )
+            })?
+            .lock()
+            .unwrap()
+            .pop_front()
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "query_hot_fork_plugin_barrier",
+                    "scripted plugin barrier sequence is exhausted",
+                )
+            })
+    }
+
     fn query_hot_fork_bottom_half_inventory(
         &mut self,
     ) -> Result<crate::QmpHotForkBottomHalfInventory, QemuNodeChannelError> {
@@ -753,6 +854,80 @@ fn qemu_node_owns_one_child_and_exactly_three_channel_roles() -> Result<(), Box<
     Ok(())
 }
 
+#[test]
+#[cfg(unix)]
+fn hot_fork_ring_capture_binds_one_unchanged_plugin_barrier() -> Result<(), Box<dyn Error>> {
+    let (setup_identity, host_barrier, image) = held_hot_fork_ring_image()?;
+    let barrier = crate::QmpHotForkPluginBarrierState::one_quiescent(9, host_barrier.ring_count());
+    let log = shared_log();
+    let mut node = scripted_hot_fork_capture_node(
+        Arc::clone(&log),
+        setup_identity,
+        setup_identity,
+        host_barrier,
+        image.clone(),
+        [barrier, barrier],
+    )?;
+
+    let capture = node.capture_hot_fork_plugin_ring_image(image.canonical_len()?)?;
+    assert_eq!(capture.setup_region(), setup_identity);
+    assert_eq!(
+        capture.plugin_resources().shmem_inode(),
+        setup_identity.inode()
+    );
+    assert_eq!(capture.plugin_barrier(), barrier);
+    assert_eq!(capture.host_barrier(), host_barrier);
+    assert_eq!(capture.image(), &image);
+    assert_eq!(
+        recorded(&log),
+        [
+            ChannelCall::QmpHotForkPluginResourceInventory,
+            ChannelCall::QmpHotForkPluginBarrier,
+            ChannelCall::ShmemHotForkIdentity,
+            ChannelCall::ShmemHotForkBarrier,
+            ChannelCall::ShmemHotForkCapture,
+            ChannelCall::ShmemHotForkBarrier,
+            ChannelCall::QmpHotForkPluginResourceInventory,
+            ChannelCall::QmpHotForkPluginBarrier,
+        ]
+    );
+    node.shutdown_child()?;
+
+    let changed = crate::QmpHotForkPluginBarrierState::one_quiescent(
+        barrier.generation() + 1,
+        host_barrier.ring_count(),
+    );
+    let mut drifting = scripted_hot_fork_capture_node(
+        shared_log(),
+        setup_identity,
+        setup_identity,
+        host_barrier,
+        image.clone(),
+        [barrier, changed],
+    )?;
+    let error = drifting
+        .capture_hot_fork_plugin_ring_image(image.canonical_len()?)
+        .expect_err("changed plugin barrier must reject capture");
+    assert!(error.to_string().contains("changed across image capture"));
+    drifting.shutdown_child()?;
+
+    let (foreign_identity, _foreign_barrier, _foreign_image) = held_hot_fork_ring_image()?;
+    let mut mismatched = scripted_hot_fork_capture_node(
+        shared_log(),
+        setup_identity,
+        foreign_identity,
+        host_barrier,
+        image.clone(),
+        [barrier, barrier],
+    )?;
+    let error = mismatched
+        .capture_hot_fork_plugin_ring_image(image.canonical_len()?)
+        .expect_err("foreign setup-region identity must reject capture");
+    assert!(error.to_string().contains("resource identity disagree"));
+    mismatched.shutdown_child()?;
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn hot_fork_audit_brackets_plugin_inventory_around_one_exact_child_process()
@@ -964,6 +1139,91 @@ mod fault_event_budget;
 #[path = "node_tests/fingerprint.rs"]
 mod fingerprint;
 
+#[cfg(unix)]
+fn held_hot_fork_ring_image() -> Result<
+    (
+        crucible_shmem::SetupRegionBackingIdentity,
+        crucible_shmem::MappedRingIoBarrierSnapshot,
+        crucible_shmem::HotForkRingImage,
+    ),
+    Box<dyn Error>,
+> {
+    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))?;
+    let mut shmem = tempfile::tempfile()?;
+    shmem.write_all(&allocation.setup_region_bytes()?)?;
+    let region_len = allocation.layout().region_size;
+    let mapped = mmap_setup_region(shmem.as_fd(), region_len)?;
+    let identity = mapped.backing_identity();
+    let host_barrier = mapped.hold_hot_fork_ring_io()?;
+    let image = mapped.capture_hot_fork_ring_image(usize::MAX)?;
+    Ok((identity, host_barrier, image))
+}
+
+#[cfg(unix)]
+fn scripted_hot_fork_capture_node(
+    log: SharedLog,
+    setup_identity: crucible_shmem::SetupRegionBackingIdentity,
+    resource_identity: crucible_shmem::SetupRegionBackingIdentity,
+    host_barrier: crucible_shmem::MappedRingIoBarrierSnapshot,
+    image: crucible_shmem::HotForkRingImage,
+    plugin_barriers: impl IntoIterator<Item = crate::QmpHotForkPluginBarrierState>,
+) -> Result<QemuNode, Box<dyn Error>> {
+    let child = Command::new("sleep").arg("60").spawn()?;
+    let process_id = child.id();
+    let channels = QemuNodeChannels::new(
+        ScriptedPluginControl {
+            log: Arc::clone(&log),
+            fail_quit: false,
+        },
+        ScriptedShmemHotPath {
+            log: Arc::clone(&log),
+            fail_advance: false,
+            coverage_enabled: false,
+            quantum_coverage: Arc::new(Mutex::new(VecDeque::new())),
+            teardown_coverage: Arc::new(Mutex::new(Vec::new())),
+            fault_commands: Arc::new(Mutex::new(Vec::new())),
+            stale_fault_results: Arc::new(Mutex::new(VecDeque::new())),
+            fault_events: Arc::new(Mutex::new(VecDeque::new())),
+            fingerprint_retry_countdown: Arc::new(Mutex::new(0)),
+            hot_fork_setup_identity: Some(setup_identity),
+            hot_fork_ring_image: Some((host_barrier, image)),
+        },
+        ScriptedQmpMachineControl {
+            log: Arc::clone(&log),
+            process_id,
+            fail_stop: false,
+            fail_snapshot: false,
+            timeout_snapshot: false,
+            plugin_resources: Some(
+                crate::QmpHotForkPluginResourceInventory::one_complete_with_bindings(
+                    1,
+                    resource_identity.device(),
+                    resource_identity.inode(),
+                    resource_identity.length(),
+                    0,
+                    1,
+                ),
+            ),
+            plugin_barriers: Some(Arc::new(Mutex::new(plugin_barriers.into_iter().collect()))),
+        },
+    );
+    Ok(QemuNode::new(
+        QemuNodeChild::new(child),
+        channels,
+        node_shutdown_policy(),
+        QemuAsyncDriverPolicy::fast_test(),
+        QemuCrashDetector::new("vm-a"),
+        ScriptedHostIoRuntime {
+            log,
+            outcomes: VecDeque::new(),
+            fault_results: VecDeque::new(),
+            staged_fault_events: Vec::new(),
+            fingerprint_fault_events: VecDeque::new(),
+        },
+        2,
+    ))
+}
+
 fn scripted_node(
     log: SharedLog,
     fail_plugin_quit: bool,
@@ -1049,6 +1309,8 @@ fn scripted_node_with_fault_events(
             stale_fault_results: Arc::new(Mutex::new(VecDeque::new())),
             fault_events: Arc::new(Mutex::new(events.collect())),
             fingerprint_retry_countdown: Arc::new(Mutex::new(0)),
+            hot_fork_setup_identity: None,
+            hot_fork_ring_image: None,
         },
         ScriptedQmpMachineControl {
             log: Arc::clone(&log),
@@ -1061,6 +1323,7 @@ fn scripted_node_with_fault_events(
                     1, 1, 2, 4096, 0, 1,
                 ),
             ),
+            plugin_barriers: None,
         },
     );
     Ok(QemuNode::new(
@@ -1134,6 +1397,8 @@ fn scripted_node_with_coverage(
             stale_fault_results: Arc::new(Mutex::new(VecDeque::new())),
             fault_events: Arc::new(Mutex::new(VecDeque::new())),
             fingerprint_retry_countdown: Arc::new(Mutex::new(options.fingerprint_retry_countdown)),
+            hot_fork_setup_identity: None,
+            hot_fork_ring_image: None,
         },
         ScriptedQmpMachineControl {
             log: Arc::clone(&log),
@@ -1146,6 +1411,7 @@ fn scripted_node_with_coverage(
                     1, 1, 2, 4096, 0, 1,
                 ),
             ),
+            plugin_barriers: None,
         },
     );
     Ok(QemuNode::new(

@@ -1838,6 +1838,11 @@ caller-bounded canonical v1 image and restore their exact held headers,
 cursors, slots, and fault arenas into an identical inactive branch-private
 mapping. Decode rejects changed geometry, open/active endpoints, impossible
 cursors, trailing bytes, and a changed transfer digest before restore.
+The scheduler-facing QEMU node now additionally brackets that capture with
+identical quiescent plugin-barrier and sealed plugin-resource reports, binds
+the mapped backing's device/inode/length to the sealed manifest, and requires
+the host and QEMU ring-barrier aggregates to match exactly. Drift or a foreign
+mapping fails closed before the image is accepted.
 This remains a retained T-CAM-6.2 subsystem primitive: node slots, fingerprint
 samples, worker-local queued work, fork-child remapping, host-continuation
 pairing, and final release are not composed yet. Readiness bit 6 therefore

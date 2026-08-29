@@ -13,6 +13,12 @@ impl MappedSetupRegion {
         self.region_len
     }
 
+    /// Returns the descriptor identity retained immediately before mapping.
+    #[must_use]
+    pub const fn backing_identity(&self) -> SetupRegionBackingIdentity {
+        self.backing_identity
+    }
+
     /// Borrows the mapped region header for cross-process atomic operations.
     ///
     /// The reference remains tied to this mapping's lifetime. Callers must use
