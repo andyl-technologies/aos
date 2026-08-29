@@ -15,7 +15,7 @@ use crate::qmp::{QmpCommandKind, QmpError};
 /// QMP command name used for QEMU's retained template-preparation coordinator.
 pub const QMP_HOT_FORK_TEMPLATE_COMMAND: &str = "crucible-hot-fork-template";
 /// Version of the QEMU-owned template-preparation transaction contract.
-pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 9;
+pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 10;
 
 const QMP_HOT_FORK_AIO_PROOF: u64 = 1_u64 << 3;
 const QMP_HOT_FORK_RCU_PROOF: u64 = 1_u64 << 4;
@@ -26,9 +26,10 @@ const QMP_HOT_FORK_BLOCK_PROOF: u64 = 1_u64 << 5;
 pub enum QmpHotForkTemplateOutcome {
     /// No transaction or acquired subsystem barrier exists.
     Idle,
-    /// The retained transaction is waiting for admitted work or reevaluation.
+    /// The retained transaction is waiting for admitted work, exact resource
+    /// staging, or reevaluation.
     Draining,
-    /// Complete readiness was unavailable and every acquired barrier rolled back.
+    /// A preparation failure caused every acquired barrier to roll back.
     Blocked,
     /// Every proof is present and the retained transaction remains prepared.
     Prepared,

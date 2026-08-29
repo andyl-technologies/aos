@@ -1717,7 +1717,7 @@ QEMU now additionally owns a process-lifetime reversible RCU admission/drain
 barrier. Holding at the exact paused/device-flush boundary gates every new
 outer reader and callback submission through a race-closed
 two-phase admission, retains the exact reader/admission/callback/drain state,
-and parks rejected entrants until release. The version-9 template coordinator
+and parks rejected entrants until release. The version-10 template coordinator
 holds this barrier with the plugin callback barrier and acknowledges readiness
 bit 4 only while the complete retained RCU state is quiescent. The RCU worker
 still needs an exact child disposition/reinitializer, so bit 8 remains clear.
@@ -1727,7 +1727,7 @@ GLib dispatch, AioHandler lifecycle and callbacks, coroutine scheduling,
 bottom-half and timer creation, mutation, and callback dispatch. Holding at the
 exact paused/device-flush boundary parks later producers, lets already-admitted
 work and its nested mutations finish, leaves queued sources parked, and keeps
-OOB QMP responsive through nonblocking event-loop admission. The version-9
+OOB QMP responsive through nonblocking event-loop admission. The version-10
 template coordinator retains this barrier with the plugin, RCU, and native
 block barriers,
 and the typed client validates its exact bounded inventories and derived
@@ -1792,7 +1792,7 @@ typed Rust control surface rejects contradictory schemas, bounds, generations,
 owners, and action postconditions. The QEMU unit regression parks a real graph
 writer until a scheduled release, while the live gate proves stable released
 state and no state retention after an invalid hold. This is a concrete
-block-side graph and I/O quiescence prerequisite. The version-9 template
+block-side graph and I/O quiescence prerequisite. The version-10 template
 coordinator schedules acquisition and release on the main AioContext, holds the
 graph and native drain barriers before parking asynchronous sources, and
 releases asynchronous sources before graph and block I/O admission reopen.
@@ -1890,8 +1890,12 @@ callback, RCU, asynchronous-source, and block barriers while admitted work
 drains, and lets the
 Apache client query or abort that retained state without blocking QMP. A
 quiescent transaction is reported as `prepared`
-only when all nine readiness bits are present in the same generation; otherwise
-QEMU releases every acquired barrier and reports exact rollback as `blocked`.
+only when all nine readiness bits are present in the same generation. Version
+10 otherwise retains the fully drained transaction as `draining`, permitting
+branch-private ring and endpoint staging only under that exact quiescent source
+barrier. The caller must explicitly abort before resuming or abandoning the
+template; `blocked` remains the fail-closed outcome for subsystem acquisition
+or retained-transition failures that require rollback.
 Rollback reopens asynchronous sources before scheduling main-loop graph and
 block release. Graph admission reopens immediately before native drain cleanup
 inside that one callback, preventing parked outer writers from interleaving
@@ -1904,7 +1908,8 @@ RCU bit 4 and AIO bit 3 only while their complete retained barriers are
 quiescent, and block bit 5 only while the exact immutable writable-root binding
 remains complete. Plugin-ring bit 6, mapping/descriptor bit 7, and
 child-reinitialization bit 8 remain clear, every fully drained preparation
-rolls back, no fork operation exists, and T-CAM-6.2 remains unchecked.
+remains retained until explicit abort, no fork operation exists, and
+T-CAM-6.2 remains unchecked.
 QEMU now also exposes a version-1, 65,536-entry POSIX `QemuMutex` and
 `QemuRecMutex` inventory. It reports sorted lifecycle identities, owner thread,
 recursion depth, acquisition and condition waiters, active unlock transitions,

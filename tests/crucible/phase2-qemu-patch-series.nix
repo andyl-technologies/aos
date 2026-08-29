@@ -986,6 +986,13 @@
       enforces = "HFORK-3,HFORK-8,HFORK-9";
       capability = "QEMU retains and authenticates distinct connected-empty AF_UNIX control and empty eventfd wake endpoints against exact kernel identities, normalizes and verifies the retained eventfd as nonblocking after standard-QMP import, and binds both to one retained private-ring generation without installing either endpoint in a child or acknowledging readiness bits 6 through 8";
     }
+    {
+      file = "0142-crucible-retain-hot-fork-resource-staging.patch";
+      catalogName = "crucible-hot-fork-retained-resource-stage";
+      class = "F";
+      enforces = "HFORK-3,HFORK-8,HFORK-9";
+      capability = "the version-10 template coordinator retains a fully drained incomplete transaction until explicit abort and admits exact private-ring and plugin-endpoint staging only while the retained plugin barrier is quiescent, without acknowledging readiness bits 6 through 8 or forking";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

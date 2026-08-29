@@ -1,0 +1,173 @@
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index f98d67ba1..8cc9ede3b 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -387,6 +387,40 @@ static CrucibleHotForkPluginEndpointStage
+ 
+ static void crucible_hot_fork_template_schedule_block_transition(void);
+ 
++static bool crucible_hot_fork_resource_stage_allowed(Error **errp)
++{
++    CrucibleHotForkPluginBarrierState *plugin_barrier;
++    bool allowed;
++
++    if (!crucible_hot_fork_template_active) {
++        return true;
++    }
++    if (crucible_hot_fork_template_phase !=
++        CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BARRIERS_HELD) {
++        error_setg(errp, "Crucible hot-fork resources require the retained "
++                   "template barrier phase");
++        return false;
++    }
++    if (!crucible_hot_fork_exact_paused_boundary()) {
++        error_setg(errp, "Crucible hot-fork resources require the exact "
++                   "paused/device-flush boundary");
++        return false;
++    }
++
++    plugin_barrier = crucible_hot_fork_plugin_barrier(
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY, errp);
++    if (!plugin_barrier) {
++        return false;
++    }
++    allowed = plugin_barrier->quiescent;
++    g_free(plugin_barrier);
++    if (!allowed) {
++        error_setg(errp, "Crucible hot-fork resources require a quiescent "
++                   "retained plugin barrier");
++    }
++    return allowed;
++}
++
+ static bool crucible_hot_fork_private_ring_fd_name_valid(const char *name)
+ {
+     size_t length;
+@@ -639,9 +673,7 @@ qmp_crucible_hot_fork_private_rings(
+             report = crucible_hot_fork_private_ring_report();
+             goto out;
+         }
+-        if (crucible_hot_fork_template_active) {
+-            error_setg(errp, "Cannot change Crucible hot-fork private rings "
+-                       "during template preparation");
++        if (!crucible_hot_fork_resource_stage_allowed(errp)) {
+             goto out;
+         }
+ 
+@@ -939,9 +971,7 @@ qmp_crucible_hot_fork_plugin_endpoints(
+             report = crucible_hot_fork_plugin_endpoint_report();
+             goto out;
+         }
+-        if (crucible_hot_fork_template_active) {
+-            error_setg(errp, "Cannot change Crucible hot-fork plugin "
+-                       "endpoints during template preparation");
++        if (!crucible_hot_fork_resource_stage_allowed(errp)) {
+             goto out;
+         }
+         crucible_hot_fork_plugin_endpoint_stage.staged = true;
+@@ -1396,7 +1426,7 @@ crucible_hot_fork_template_report(
+         acknowledged |= CRUCIBLE_HOT_FORK_PROOF_BLOCK_SNAPSHOT;
+     }
+ 
+-    report->schema_version = 9;
++    report->schema_version = 10;
+     report->generation = crucible_hot_fork_template_generation;
+     report->outcome = outcome;
+     report->transaction_active = crucible_hot_fork_template_active;
+@@ -1519,6 +1549,12 @@ qmp_crucible_hot_fork_template(
+     case CRUCIBLE_HOT_FORK_TEMPLATE_ACTION_PREPARE:
+         if (crucible_hot_fork_template_phase ==
+             CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_IDLE) {
++            if (crucible_hot_fork_private_ring_stage.staged ||
++                crucible_hot_fork_plugin_endpoint_stage.staged) {
++                error_setg(errp, "Crucible hot-fork template preparation "
++                           "requires an empty resource stage");
++                goto out;
++            }
+             if (!has_block_snapshot_bindings ||
+                 !crucible_hot_fork_template_copy_snapshot_bindings(
+                     block_snapshot_bindings, errp)) {
+@@ -1635,23 +1671,6 @@ qmp_crucible_hot_fork_template(
+             break;
+         }
+ 
+-        g_clear_pointer(&plugin_barrier, g_free);
+-        plugin_barrier = crucible_hot_fork_plugin_barrier(
+-            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_RELEASE, errp);
+-        if (!plugin_barrier) {
+-            goto out;
+-        }
+-        g_clear_pointer(&bh_timer_barrier, g_free);
+-        bh_timer_barrier = crucible_hot_fork_bh_timer_barrier(
+-            QEMU_BH_TIMER_HOT_FORK_BARRIER_RELEASE);
+-        g_clear_pointer(&rcu_barrier, g_free);
+-        rcu_barrier = crucible_hot_fork_rcu_barrier(
+-            QEMU_RCU_HOT_FORK_BARRIER_RELEASE);
+-        crucible_hot_fork_template_completion =
+-            CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_BLOCKED;
+-        crucible_hot_fork_template_phase =
+-            CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_RELEASE_PENDING;
+-        crucible_hot_fork_template_schedule_block_transition();
+         outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_DRAINING;
+         break;
+     case CRUCIBLE_HOT_FORK_TEMPLATE_ACTION_QUERY:
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 3d9125786..ec4cfbcfb 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -1267,9 +1267,9 @@
+ #
+ # Operation over QEMU's retained hot-fork template preparation transaction.
+ #
+-# @prepare: acquire registered subsystem barriers, poll them, and either retain
+-#     a draining/prepared transaction or roll every acquired barrier back when
+-#     the complete readiness proof is unavailable
++# @prepare: acquire registered subsystem barriers, poll them, and retain a
++#     draining/prepared transaction; acquisition or retained-transition
++#     failures roll every acquired barrier back
+ #
+ # @query: observe the current transaction without acquiring or releasing a
+ #     barrier
+@@ -1288,11 +1288,13 @@
+ #
+ # @idle: no retained transaction or acquired barrier exists
+ #
+-# @draining: the transaction retains its acquired barrier while admitted work
+-#     drains or while the caller asks @prepare to evaluate readiness again
++# @draining: the transaction retains its acquired barriers while admitted work
++#     drains, while the host stages branch-private resources under the
++#     quiescent plugin barrier, or while the caller asks @prepare to evaluate
++#     readiness again
+ #
+-# @blocked: preparation reached a stable barrier but the complete readiness
+-#     bitmap was unavailable, so all acquired barriers were rolled back
++# @blocked: preparation encountered an acquisition or retained-transition
++#     failure and all acquired barriers were rolled back
+ #
+ # @prepared: every required proof was acknowledged and the transaction remains
+ #     retained for a future fork operation
+@@ -1315,10 +1317,11 @@
+ # I/O admission on the main AioContext. A quiescent RCU barrier acknowledges
+ # proof bit 4. A quiescent asynchronous barrier acknowledges AIO proof bit 3.
+ # A complete immutable-root binding retained by the block barrier acknowledges
+-# proof bit 5. Other unresolved proof classes still make a drained transaction
+-# roll back as @blocked.
++# proof bit 5. Version 10 retains a fully drained incomplete transaction so the
++# host can stage branch-private resources under the same quiescent source-ring
++# barrier. The caller must explicitly abort to roll the retained barriers back.
+ #
+-# @schema-version: transaction contract version, currently 9
++# @schema-version: transaction contract version, currently 10
+ #
+ # @generation: positive process-local transaction generation after the first
+ #     successful prepare, or zero before any transaction
+@@ -1369,7 +1372,8 @@
+ #
+ # Drives QEMU's retained hot-fork template preparation coordinator. Preparation
+ # begins only at the exact paused/device-flush boundary. The command never forks
+-# a process; incomplete readiness rolls acquired barriers back fail-closed.
++# a process. A fully drained incomplete transaction remains retained for exact
++# resource staging until the caller advances or explicitly aborts it.
+ #
+ # @action: requested coordinator operation
+ #

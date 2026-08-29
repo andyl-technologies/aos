@@ -1087,9 +1087,10 @@ where
     /// Starts or advances QEMU's retained hot-fork template transaction.
     ///
     /// QEMU acquires every currently implemented subsystem barrier. A draining
-    /// response retains those barriers for another poll. Once the implemented
-    /// barriers drain, an incomplete readiness bitmap produces a blocked
-    /// response only after QEMU rolls every acquired barrier back.
+    /// response retains those barriers for another poll or for exact
+    /// branch-private resource staging. Once the implemented barriers drain,
+    /// an incomplete readiness bitmap remains retained until the caller
+    /// advances preparation or explicitly aborts the transaction.
     ///
     /// # Errors
     ///

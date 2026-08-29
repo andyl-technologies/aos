@@ -639,6 +639,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0142-crucible-retain-hot-fork-resource-staging.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

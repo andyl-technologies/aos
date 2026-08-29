@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "64037e1a009fa1a7b5d54e2d5aa8ea0eea448d346e70bc0e31a46fbc76079ad4";
+  patchBranchBundleSha256 = "6cce5767bc1b2ad1309a58b40598775ba3637d8361a6cbc1dd80b9c328a9b861";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "ee19f957c901c33596c9c40aedcb16c412d5650c";
+  patchBranchHeadCommit = "3b8bef6a1fb5f0c8226da649c5c08133fd85fc25";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1345,6 +1345,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-8,HFORK-9";
       capability = "QEMU retains and authenticates distinct connected-empty AF_UNIX control and empty eventfd wake endpoints against exact kernel identities, normalizes and verifies the retained eventfd as nonblocking after standard-QMP import, and binds both to one retained private-ring generation without installing either endpoint in a child or acknowledging readiness bits 6 through 8";
+    }
+    {
+      file = "0142-crucible-retain-hot-fork-resource-staging.patch";
+      branchSubject = "crucible: retain hot-fork resource staging";
+      branchCommit = "3b8bef6a1fb5f0c8226da649c5c08133fd85fc25";
+      branchTree = "f1a4a6c900f749179a23d4cd84e62cfd2a6083a6";
+      catalogName = "crucible-hot-fork-retained-resource-stage";
+      class = "F";
+      enforces = "HFORK-3,HFORK-8,HFORK-9";
+      capability = "the version-10 template coordinator retains a fully drained incomplete transaction until explicit abort and admits exact private-ring and plugin-endpoint staging only while the retained plugin barrier is quiescent, without acknowledging readiness bits 6 through 8 or forking";
     }
   ];
   catalogOnlyCapabilities = [
