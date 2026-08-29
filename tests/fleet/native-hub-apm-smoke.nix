@@ -585,9 +585,9 @@ in {
             --name nginx --version '${pkgs.nginx.version}' \\
             --description 'Typed virtual hosts, upstreams, TLS credentials, validation, and reload behavior.' \\
             --license BSD-2-Clause --maintainer publisher@example.test \\
-            --expose-manifest "$NGINX_EXPOSE/manifest.json" \\
-            --config-module "$NGINX_CONFIG" \\
-            --config-base-lib "$DOCUMENTATION_BASE_LIB" \\
+            --expose-manifest {shlex.quote(NGINX_EXPOSE + "/manifest.json")} \\
+            --config-module {shlex.quote(NGINX_CONFIG)} \\
+            --config-base-lib {shlex.quote(DOCUMENTATION_BASE_LIB)} \\
             --key-id initial
           {APR} release 1.0.0 --registry production \\
             --store-path {TOOL_V1} --name hub-tool \\
