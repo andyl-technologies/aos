@@ -1,17 +1,5 @@
-From 4e9712732d9b23b9bba63adf5f31c5201c8f2e3c Mon Sep 17 00:00:00 2001
-From: Dylan Plecki <dylan@andyl.com>
-Date: Mon, 1 Jan 2001 00:00:01 +0000
-Subject: [PATCH] crucible: stage hot-fork plugin endpoints
-
-Signed-off-by: Dylan Plecki <dylan@andyl.com>
----
- monitor/fds.c       |   7 +-
- monitor/qmp-cmds.c  | 450 ++++++++++++++++++++++++++++++++++++++++++++
- qapi/run-state.json | 109 +++++++++++
- 3 files changed, 565 insertions(+), 1 deletion(-)
-
 diff --git a/monitor/fds.c b/monitor/fds.c
-index 8906a70..3c04d30 100644
+index 8906a7055..3c04d3032 100644
 --- a/monitor/fds.c
 +++ b/monitor/fds.c
 @@ -178,7 +178,12 @@ int monitor_dup_fd(Monitor *mon, const char *fdname, Error **errp)
@@ -29,7 +17,7 @@ index 8906a70..3c04d30 100644
              error_setg_errno(errp, errno,
                               "Could not duplicate file descriptor named '%s'",
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index e05b0af..f98d67b 100644
+index e05b0af95..f98d67ba1 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
 @@ -14,6 +14,9 @@
@@ -518,7 +506,7 @@ index e05b0af..f98d67b 100644
      CrucibleHotForkTemplateOutcome outcome)
  {
 diff --git a/qapi/run-state.json b/qapi/run-state.json
-index 7ebf663..3d91257 100644
+index 7ebf66361..3d9125786 100644
 --- a/qapi/run-state.json
 +++ b/qapi/run-state.json
 @@ -1481,6 +1481,115 @@
@@ -637,5 +625,3 @@ index 7ebf663..3d91257 100644
  ##
  # @CrucibleHotForkMutex:
  #
--- 
-2.48.1
