@@ -15,7 +15,7 @@
 //!   filesystem (`local_fs`) — a directory on the host.
 //! - The **Worker** runtime (`wasm32-unknown-unknown` on Cloudflare) has no
 //!   filesystem, so `local_fs` is meaningless there; its built-in object store
-//!   is represented by a deployment-provisioned singleton R2 binding.
+//!   is represented by an explicitly configured R2 runtime attachment.
 //!
 //! Both runtimes can serve an **external, S3-compatible object store** (`s3` or
 //! `r2`) — Amazon S3, Cloudflare R2 via its S3 API, MinIO, and so on. There is
@@ -52,16 +52,17 @@ pub enum BindingKind {
     S3,
     /// An externally configured Cloudflare R2 bucket/prefix.
     R2,
-    /// Deployment-owned Worker R2 binding; never user-creatable.
+    /// Explicit Worker R2 runtime attachment.
     DeploymentR2,
 }
+
+/// Canonical Worker R2 attachment name selectable by explicit topology.
+pub const DEPLOYMENT_R2_ATTACHMENT: &str = "REGISTRY_BUCKET";
 
 impl BindingKind {
     /// Every recognized binding kind, in a stable order.
     ///
-    /// This includes the deployment-owned, non-creatable Worker singleton.
-    /// User-facing creation lists must use
-    /// [`RuntimeKind::creatable_binding_kinds`] instead.
+    /// This includes the Worker runtime attachment.
     pub const ALL: [BindingKind; 4] = [
         BindingKind::LocalFs,
         BindingKind::S3,
@@ -160,8 +161,8 @@ impl RuntimeKind {
     /// Returns the binding kinds supported on this runtime.
     ///
     /// The native runtime supports `local_fs`, `s3`, and external `r2`. The
-    /// Worker supports `s3`, external `r2`, and its deployment-provisioned
-    /// `deployment_r2` singleton. External `s3`/`r2` bindings are served via
+    /// Worker supports `s3`, external `r2`, and its explicitly configured
+    /// `deployment_r2` attachment. External `s3`/`r2` bindings are served via
     /// presigned URLs, so neither needs a runtime-specific object-store SDK.
     pub fn supported_binding_kinds(&self) -> &'static [BindingKind] {
         match self {
@@ -179,15 +180,10 @@ impl RuntimeKind {
     /// kinds the WebUI offers in the create-binding form.
     ///
     /// `local_fs` is creatable only on the [`Native`](RuntimeKind::Native) hub;
-    /// external `s3`/`r2` are creatable on both runtimes. `deployment_r2` is
-    /// never returned: the Worker runtime provisions that instance-owned
-    /// singleton from its deployment binding.
+    /// external `s3`/`r2` are creatable on both runtimes. The Worker also lets
+    /// an operator explicitly select its canonical R2 runtime attachment.
     pub fn creatable_binding_kinds(&self) -> Vec<BindingKind> {
-        self.supported_binding_kinds()
-            .iter()
-            .copied()
-            .filter(|kind| *kind != BindingKind::DeploymentR2)
-            .collect()
+        self.supported_binding_kinds().iter().copied().collect()
     }
 }
 
@@ -219,17 +215,16 @@ mod tests {
     }
 
     #[test]
-    fn creatable_kinds_exclude_deployment_owned_r2() {
-        // Native can create the three user-configured kinds; the Worker can
-        // create only external object-store kinds (no filesystem). Neither can
-        // create the deployment-owned singleton through public interfaces.
+    fn creatable_kinds_match_runtime_attachments() {
+        // Native can create the three user-configured kinds. The Worker can
+        // create external object stores and explicitly select its R2 attachment.
         assert_eq!(
             RuntimeKind::Native.creatable_binding_kinds(),
             vec![BindingKind::LocalFs, BindingKind::S3, BindingKind::R2]
         );
         assert_eq!(
             RuntimeKind::Worker.creatable_binding_kinds(),
-            vec![BindingKind::S3, BindingKind::R2]
+            vec![BindingKind::S3, BindingKind::R2, BindingKind::DeploymentR2]
         );
         // Every creatable kind is supported by its runtime.
         for rt in [RuntimeKind::Native, RuntimeKind::Worker] {

@@ -18,7 +18,7 @@ use aos_net::{
     TransferObserver,
 };
 use aos_remote::hub_rpc as HubTopologyMethod;
-use aos_remote::{HubClient, HubRpc, HubSurfaceRef, Placement, hub_types};
+use aos_remote::{hub_types, HubClient, HubRpc, HubSurfaceRef, Placement};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -374,47 +374,39 @@ mod tests {
           }]
         }"#;
         assert_eq!(parse_pin_resolution_document(valid).unwrap().len(), 1);
-        assert!(
-            parse_pin_resolution_document(
-                br#"{"schemaVersion":"aos.hub.pin-resolutions.v2","resolutions":[]}"#
-            )
-            .is_err()
-        );
-        assert!(
-            parse_pin_resolution_document(
-                br#"{"schemaVersion":"aos.hub.pin-resolutions.v1","resolutions":[],"extra":true}"#
-            )
-            .is_err()
-        );
+        assert!(parse_pin_resolution_document(
+            br#"{"schemaVersion":"aos.hub.pin-resolutions.v2","resolutions":[]}"#
+        )
+        .is_err());
+        assert!(parse_pin_resolution_document(
+            br#"{"schemaVersion":"aos.hub.pin-resolutions.v1","resolutions":[],"extra":true}"#
+        )
+        .is_err());
     }
 
     #[test]
     fn pin_resolution_document_rejects_malformed_duplicate_and_unsealed_actions() {
         assert!(parse_pin_resolution_document(b"not-json").is_err());
-        assert!(
-            parse_pin_resolution_document(
-                br#"{
+        assert!(parse_pin_resolution_document(
+            br#"{
               "schemaVersion":"aos.hub.pin-resolutions.v1",
               "resolutions":[
                 {"pinId":"pin:one","release":{"expectedSourceResourceVersion":"7"}},
                 {"pinId":"pin:one","release":{"expectedSourceResourceVersion":"8"}}
               ]
             }"#
-            )
-            .is_err()
-        );
-        assert!(
-            parse_pin_resolution_document(
-                br#"{
+        )
+        .is_err());
+        assert!(parse_pin_resolution_document(
+            br#"{
               "schemaVersion":"aos.hub.pin-resolutions.v1",
               "resolutions":[{
                 "pinId":"pin:one",
                 "release":{"expectedSourceResourceVersion":"0"}
               }]
             }"#
-            )
-            .is_err()
-        );
+        )
+        .is_err());
     }
 
     #[test]
@@ -778,11 +770,9 @@ mod tests {
         .unwrap();
 
         let error = publication_from_root(root, "andyl/main").err().unwrap();
-        assert!(
-            error
-                .to_string()
-                .contains("does not identify its compressed FileHash")
-        );
+        assert!(error
+            .to_string()
+            .contains("does not identify its compressed FileHash"));
     }
 
     #[test]
@@ -3050,9 +3040,9 @@ async fn run_coverage_operation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyTopologyPlanRequest,
-        Response = hub_types::OperationResponse,
-    > + Copy,
+            Request = hub_types::ApplyTopologyPlanRequest,
+            Response = hub_types::OperationResponse,
+        > + Copy,
     mutation: &HubMutationArgs,
     operation: &HubOperationArgs,
 ) -> Result<()> {
@@ -4688,9 +4678,9 @@ async fn topology_operation_mutation<PlanReq>(
     client: &HubClient,
     plan_method: impl HubRpc<Request = PlanReq, Response = hub_types::TopologyPlanResponse>,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyTopologyPlanRequest,
-        Response = hub_types::OperationResponse,
-    > + Copy,
+            Request = hub_types::ApplyTopologyPlanRequest,
+            Response = hub_types::OperationResponse,
+        > + Copy,
     plan_request: &PlanReq,
     mutation: &HubMutationArgs,
     operation: &HubOperationArgs,
@@ -4964,9 +4954,9 @@ async fn consumer_scope_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyConsumerScopeGrantRequest,
-        Response = hub_types::ConsumerScopeGrantResponse,
-    > + Copy,
+            Request = hub_types::ApplyConsumerScopeGrantRequest,
+            Response = hub_types::ConsumerScopeGrantResponse,
+        > + Copy,
 ) -> Result<()> {
     let client = hub_client(&access.hub, access.token.as_deref())?;
     topology_mutation::<
@@ -5008,9 +4998,9 @@ async fn delete_topology_resource(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyDeleteTopologyResourceRequest,
-        Response = hub_types::DeleteTopologyResourceResponse,
-    > + Copy,
+            Request = hub_types::ApplyDeleteTopologyResourceRequest,
+            Response = hub_types::DeleteTopologyResourceResponse,
+        > + Copy,
 ) -> Result<()> {
     let client = hub_client(&access.hub, access.token.as_deref())?;
     topology_mutation::<
@@ -5051,6 +5041,7 @@ async fn binding(printer: &Printer, command: &HubBindingCmd) -> Result<()> {
             hub,
             token,
             org,
+            include_granted,
             pagination,
         } => {
             let client = hub_client(hub, token.as_deref())?;
@@ -5062,6 +5053,7 @@ async fn binding(printer: &Printer, command: &HubBindingCmd) -> Result<()> {
                     owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
+                    include_granted: *include_granted,
                 },
             )
             .await
@@ -5213,7 +5205,7 @@ async fn binding(printer: &Printer, command: &HubBindingCmd) -> Result<()> {
                 HubTopologyMethod::CreateBinding,
                 &hub_types::PlanBindingMutationRequest {
                     stable_id: topology_stable_id(stable_id.as_deref(), "storage-binding"),
-                    owner_scope_key: organization_scope_key(&client, Some(org)).await?,
+                    owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     spec: Some(spec),
                     idempotency_key: new_idempotency_key(),
                     ..Default::default()
@@ -5891,6 +5883,7 @@ async fn network_policy(printer: &Printer, command: &HubNetworkPolicyCmd) -> Res
         HubNetworkPolicyCmd::List {
             access,
             org,
+            include_granted,
             pagination,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
@@ -5902,6 +5895,7 @@ async fn network_policy(printer: &Printer, command: &HubNetworkPolicyCmd) -> Res
                     owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
+                    include_granted: *include_granted,
                 },
             )
             .await
@@ -6395,9 +6389,9 @@ async fn boundary_lifecycle_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyNetworkPolicyLifecycleRequest,
-        Response = hub_types::NetworkPolicyRevisionResponse,
-    > + Copy,
+            Request = hub_types::ApplyNetworkPolicyLifecycleRequest,
+            Response = hub_types::NetworkPolicyRevisionResponse,
+        > + Copy,
 ) -> Result<()> {
     let (boundary_id, revision) =
         parse_generation_ref(boundary_revision, "network policy revision")?;
@@ -6477,6 +6471,7 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
         HubEndpointCmd::List {
             access,
             org,
+            include_granted,
             pagination,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
@@ -6488,6 +6483,7 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                     owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
+                    include_granted: *include_granted,
                 },
             )
             .await
@@ -7012,7 +7008,7 @@ async fn topology_state_mutation<Resp>(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<Request = hub_types::ApplyDeleteTopologyResourceRequest, Response = Resp>
-    + Copy,
+        + Copy,
 ) -> Result<()>
 where
     Resp: DeserializeOwned + Serialize,
@@ -7057,7 +7053,7 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
                 &client,
                 HubTopologyMethod::ListGateways,
                 &hub_types::ListGatewaysRequest {
-                    binding: Some(parse_binding_ref(binding)?),
+                    binding: binding.as_deref().map(parse_binding_ref).transpose()?,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
                 },
@@ -7309,9 +7305,9 @@ async fn gateway_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyGatewayMutationRequest,
-        Response = hub_types::GatewayResponse,
-    > + Copy,
+            Request = hub_types::ApplyGatewayMutationRequest,
+            Response = hub_types::GatewayResponse,
+        > + Copy,
     request: hub_types::PlanGatewayMutationRequest,
     mutation: &HubMutationArgs,
 ) -> Result<()> {
@@ -7977,10 +7973,8 @@ async fn route_mutation(
         Request = hub_types::PlanRouteMutationRequest,
         Response = hub_types::TopologyPlanResponse,
     >,
-    apply_method: impl HubRpc<
-        Request = hub_types::ApplyRouteMutationRequest,
-        Response = hub_types::RouteResponse,
-    > + Copy,
+    apply_method: impl HubRpc<Request = hub_types::ApplyRouteMutationRequest, Response = hub_types::RouteResponse>
+        + Copy,
     request: hub_types::PlanRouteMutationRequest,
     mutation: &HubMutationArgs,
 ) -> Result<()> {
@@ -8164,9 +8158,9 @@ async fn apply_topology_defaults(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplySetTopologyDefaultsRequest,
-        Response = hub_types::TopologyDefaultsResponse,
-    > + Copy,
+            Request = hub_types::ApplySetTopologyDefaultsRequest,
+            Response = hub_types::TopologyDefaultsResponse,
+        > + Copy,
 ) -> Result<()> {
     if let Some(value) = binding {
         defaults.binding_id = value.clone();
@@ -11138,9 +11132,9 @@ async fn apply_signing_key_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyTopologyPlanRequest,
-        Response = hub_types::SigningKeyResponse,
-    > + Copy,
+            Request = hub_types::ApplyTopologyPlanRequest,
+            Response = hub_types::SigningKeyResponse,
+        > + Copy,
 ) -> Result<()> {
     let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
     let mutation = retained_apply_mutation(apply);

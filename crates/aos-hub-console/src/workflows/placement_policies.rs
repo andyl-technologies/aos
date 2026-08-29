@@ -188,6 +188,7 @@ async fn load_policy_choices(
                 owner_scope_key: owner_scope_key.clone(),
                 page_size: 100,
                 page_token,
+                include_granted: true,
             },
             |response| (response.network_policies, response.next_page_token),
         )

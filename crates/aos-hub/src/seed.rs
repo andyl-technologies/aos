@@ -683,7 +683,7 @@ async fn seed_hub_route(
                 placement_id: Some(placement_id),
                 placement_policy_revision_id: None,
                 serves_git: true,
-                serves_cache: false,
+                serves_cache: true,
                 serves_web: true,
                 enabled: true,
             },
@@ -712,7 +712,7 @@ async fn seed_hub_route(
         1,
     )
     .await?;
-    for audience in ["git", "web"] {
+    for audience in ["git", "nix_cache", "web"] {
         db.set_route_advertisement(
             SurfaceTarget::Registry(registry_id),
             audience,

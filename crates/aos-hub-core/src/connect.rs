@@ -423,7 +423,7 @@ async fn browse_dispatch(
             "health" => browse::health(&svc, &headers, &slug).await,
             other => {
                 if let Some(name) = other.strip_prefix("packages/").filter(|n| !n.is_empty()) {
-                    browse::package(&svc, &headers, &slug, name).await
+                    browse::package(&svc, &headers, &slug, name, &q).await
                 } else if let Some(selection) = documentation_selection(other, "docs/") {
                     browse::documentation(
                         &svc,

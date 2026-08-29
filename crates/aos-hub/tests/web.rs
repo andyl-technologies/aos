@@ -258,10 +258,20 @@ async fn channel_calculator_resolves_bucket() {
     let (status, _, body) = get(&app, "/demo/-/channels/stable?bucket=0a").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("0x0A"), "{body}");
-    assert!(body.contains("release <strong>1.0.0</strong>"), "{body}");
+    assert!(
+        body.contains(
+            "release <strong><a href=\"/demo/-/releases#release-1.0.0\">1.0.0</a></strong>"
+        ),
+        "{body}"
+    );
     assert!(body.contains("class=\"hit\""), "{body}");
     // The anti-rollback floor (recorded at index time) is shown.
-    assert!(body.contains("floor <strong>1.0.0</strong>"), "{body}");
+    assert!(
+        body.contains(
+            "floor <strong><a href=\"/demo/-/releases#release-1.0.0\">1.0.0</a></strong>"
+        ),
+        "{body}"
+    );
 }
 
 #[tokio::test]
@@ -424,8 +434,8 @@ async fn registry_home_carries_setup_snippets_and_fingerprints() {
         "{body}"
     );
     assert!(body.contains("trustKeys"), "{body}");
-    // Substituters use the canonical anonymous delivery route selected by the
-    // indexed topology; the cache remains an implementation behind that route.
+    // The canonical anonymous delivery facade is also the advertised
+    // binary-cache endpoint; the cache remains an implementation behind it.
     assert!(
         body.contains("substituters = http://127.0.0.1:8420/demo"),
         "{body}"

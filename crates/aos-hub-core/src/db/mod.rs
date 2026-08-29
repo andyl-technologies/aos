@@ -514,6 +514,8 @@ pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// Upgrade/cutover is deliberately an offline artifact. The first migration
 /// establishes the topology hard-cutover schema; subsequent entries are
 /// forward-only additions shared by native SQLite and Cloudflare D1.
+const EXPLICIT_TOPOLOGY_MIGRATION: &str = include_str!("explicit_topology.sql");
+
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("auth_refresh.sql"),
@@ -534,6 +536,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("gateway_revision_event_history.sql"),
     include_str!("placement_policy_build_event_history.sql"),
     include_str!("placement_policy_publication_history.sql"),
+    EXPLICIT_TOPOLOGY_MIGRATION,
     include_str!("package_documentation.sql"),
 ];
 
@@ -542,6 +545,18 @@ pub const MIGRATIONS: &[&str] = &[
 /// with a pre-cutover deployment whose independent migration history happened
 /// to have the same length.
 pub const SCHEMA_IDENTITY: &str = "aos-hub/topology-hard-cutover/2";
+
+/// Immediately preceding identity accepted only while applying a pending
+/// repository-owned migration to [`SCHEMA_IDENTITY`].
+pub const PREVIOUS_SCHEMA_IDENTITY: &str = "aos-hub/topology-hard-cutover/1";
+
+/// SQLite compatibility transformer from the immediately preceding topology
+/// identity to the current relational vocabulary.
+///
+/// This script is intentionally outside [`MIGRATIONS`]: fresh v2 databases
+/// already use the final names, while a v1 database must run the transformer
+/// before any pending v2 migration can reference those names.
+pub const TOPOLOGY_V1_TO_V2_SQLITE: &str = include_str!("topology_v1_to_v2.sql");
 
 /// Returns every migration's individual SQL statements, in order.
 ///
@@ -721,7 +736,7 @@ pub struct BindingReadDetail {
     pub name: String,
     /// Provider kind without its connection coordinates.
     pub kind: String,
-    /// Whether this is the deployment-provisioned singleton.
+    /// Whether this is the instance-owned singleton.
     pub is_instance_default: bool,
     /// Stable API identity.
     pub stable_id: String,
@@ -746,7 +761,7 @@ pub struct BindingReadSummary {
     pub name: String,
     /// Provider kind without its connection coordinates.
     pub kind: String,
-    /// Whether this is the deployment-provisioned singleton.
+    /// Whether this is the instance-owned singleton.
     pub is_instance_default: bool,
     /// Stable API identity.
     pub stable_id: String,
@@ -3340,46 +3355,6 @@ impl Database {
             .context("surface has no reconciled read placement")
     }
 
-    /// Returns the object path of the canonical-slug placement on the
-    /// instance-default binding that may use derived public delivery.
-    ///
-    /// Derived delivery never exposes an arbitrary physical placement prefix.
-    /// The placement itself must use the registry's globally unique canonical
-    /// slug; other complete placements remain available through explicit
-    /// delivery topology.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure or malformed persisted data.
-    pub async fn default_public_slug_delivery_path(
-        &self,
-        surface: SurfaceTarget,
-        canonical_slug: &str,
-    ) -> Result<Option<String>> {
-        let (registry_id, cache_id) = surface.ids();
-        self.backend
-            .query_opt(
-                "SELECT placement.prefix
-                 FROM surface_placement_effective placement
-                 JOIN bindings binding ON binding.id = placement.binding_id
-                 WHERE (placement.registry_id = ?1 OR placement.cache_id = ?2)
-                   AND placement.kind = 'complete'
-                   AND placement.effective_read_enabled = 1
-                   AND binding.is_instance_default = 1
-                   AND (binding.object_prefix IS NULL OR binding.object_prefix = '')
-                   AND placement.prefix = ?3
-                 ORDER BY placement.read_order, placement.name, placement.id
-                 LIMIT 1",
-                &vals![registry_id, cache_id, canonical_slug.trim_matches('/')],
-            )
-            .await?
-            .map(|row| {
-                let placement_prefix: String = row.get(0)?;
-                Ok(placement_prefix.trim_matches('/').to_string())
-            })
-            .transpose()
-    }
-
     /// Resolves the sole fully reconciled write-authority placement.
     ///
     /// # Errors
@@ -3567,11 +3542,45 @@ impl Database {
             .transpose()?
             .unwrap_or(0);
         let target = MIGRATIONS.len() as i64;
-        if current != 0 {
-            self.require_schema_identity().await?;
-        }
+        let legacy_identity = if current == 0 {
+            false
+        } else {
+            self.require_schema_identity_for_upgrade(true).await?
+        };
         if current > target {
             bail!("hub database schema {current} is newer than this build supports ({target})");
+        }
+        if legacy_identity {
+            anyhow::ensure!(
+                self.backend.dialect() == Dialect::Sqlite,
+                "topology schema identity v1 requires the offline transformer on non-SQLite databases"
+            );
+            let statements = crate::backend::split_statements(TOPOLOGY_V1_TO_V2_SQLITE)
+                .into_iter()
+                .map(|sql| Statement::new(sql, Vec::new()))
+                .collect::<Vec<_>>();
+            self.backend
+                .batch(&statements)
+                .await
+                .context("transforming topology schema identity v1 to v2 vocabulary")?;
+        }
+        let identity_adoption_index = MIGRATIONS
+            .iter()
+            .position(|migration| *migration == EXPLICIT_TOPOLOGY_MIGRATION)
+            .context("current schema has no identity-adoption migration")?;
+        if legacy_identity && current as usize > identity_adoption_index {
+            for sql in crate::backend::split_statements(EXPLICIT_TOPOLOGY_MIGRATION) {
+                let sql = if mysql {
+                    mysql_replay_safe_migration_sql(&sql)
+                } else {
+                    sql
+                };
+                self.backend
+                    .execute(&sql, &[])
+                    .await
+                    .context("applying schema identity-adoption migration")?;
+            }
+            self.require_schema_identity().await?;
         }
         // Apply every pending migration *and* advance the version marker in one
         // portable transaction. Keeping the marker in the same batch matters
@@ -3680,6 +3689,14 @@ impl Database {
     /// Refuses a database that was not produced by the topology hard-cutover
     /// schema or its offline transformer.
     async fn require_schema_identity(&self) -> Result<()> {
+        self.require_schema_identity_for_upgrade(false)
+            .await
+            .map(|_| ())
+    }
+
+    /// Accepts the immediately preceding schema identity only when a pending
+    /// migration will atomically replace it with the current identity.
+    async fn require_schema_identity_for_upgrade(&self, allow_legacy: bool) -> Result<bool> {
         let row = self
             .backend
             .query_opt("SELECT identity FROM hub_schema_identity", &[])
@@ -3690,10 +3707,10 @@ impl Database {
         let identity: String = row
             .context("topology schema identity row is missing")?
             .get(0)?;
-        if identity != SCHEMA_IDENTITY {
+        if identity != SCHEMA_IDENTITY && !(allow_legacy && identity == PREVIOUS_SCHEMA_IDENTITY) {
             bail!("unsupported Hub schema identity '{identity}'; expected '{SCHEMA_IDENTITY}'");
         }
-        Ok(())
+        Ok(identity == PREVIOUS_SCHEMA_IDENTITY)
     }
 
     // -- system of record ---------------------------------------------------
@@ -13385,6 +13402,159 @@ impl Database {
         self.query_package_rows(registry_id, Some(limit)).await
     }
 
+    /// Lists the package set authenticated by one verified release tag or commit.
+    ///
+    /// Package membership, version, and platforms come from the immutable
+    /// release-artifact snapshot. Descriptive metadata is joined from the
+    /// current package catalog because release snapshots deliberately retain
+    /// artifact identities rather than duplicate package prose.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_packages_at_release(
+        &self,
+        registry_id: i64,
+        release_or_commit: &str,
+    ) -> Result<Vec<PackageRow>> {
+        let rows = self
+            .backend
+            .query(
+                "WITH selected_versions AS (
+                   SELECT DISTINCT artifact.package_name, artifact.package_version
+                   FROM releases release
+                   JOIN release_artifact_snapshot_heads head
+                     ON head.release_id = release.id AND head.registry_id = release.registry_id
+                   JOIN release_artifact_snapshots snapshot
+                     ON snapshot.snapshot_id = head.complete_artifact_snapshot_id
+                    AND snapshot.state = 'complete'
+                    AND snapshot.source_commit = release.commit_oid
+                    AND snapshot.verified_tag_oid = release.tag_oid
+                   JOIN release_artifacts artifact ON artifact.snapshot_id = snapshot.snapshot_id
+                   WHERE release.registry_id = ?1
+                     AND (release.semver = ?2 OR release.commit_oid = ?2)
+                     AND artifact.artifact_kind = 'output'
+                 ), ranked_versions AS (
+                   SELECT selected.package_name, selected.package_version,
+                          ROW_NUMBER() OVER (
+                            PARTITION BY selected.package_name
+                            ORDER BY version.id DESC, selected.package_version DESC
+                          ) AS rank
+                   FROM selected_versions selected
+                   LEFT JOIN packages package
+                     ON package.registry_id = ?1 AND package.name = selected.package_name
+                   LEFT JOIN package_versions version
+                     ON version.package_id = package.id
+                    AND version.version = selected.package_version
+                 )
+                 SELECT artifact.package_name,
+                        COALESCE(package.description, ''),
+                        COALESCE(package.license, ''),
+                        artifact.package_version,
+                        artifact.platform,
+                        platform.closure_size
+                 FROM releases release
+                 JOIN release_artifact_snapshot_heads head
+                   ON head.release_id = release.id AND head.registry_id = release.registry_id
+                 JOIN release_artifact_snapshots snapshot
+                   ON snapshot.snapshot_id = head.complete_artifact_snapshot_id
+                  AND snapshot.state = 'complete'
+                  AND snapshot.source_commit = release.commit_oid
+                  AND snapshot.verified_tag_oid = release.tag_oid
+                 JOIN release_artifacts artifact ON artifact.snapshot_id = snapshot.snapshot_id
+                 JOIN ranked_versions selected
+                   ON selected.package_name = artifact.package_name
+                  AND selected.package_version = artifact.package_version
+                  AND selected.rank = 1
+                 LEFT JOIN packages package
+                   ON package.registry_id = ?1 AND package.name = artifact.package_name
+                 LEFT JOIN package_versions version
+                   ON version.package_id = package.id
+                  AND version.version = artifact.package_version
+                 LEFT JOIN version_platforms platform
+                   ON platform.version_id = version.id
+                  AND platform.platform = artifact.platform
+                 WHERE release.registry_id = ?1
+                   AND (release.semver = ?2 OR release.commit_oid = ?2)
+                   AND artifact.artifact_kind = 'output'
+                 ORDER BY artifact.package_name, artifact.platform",
+                &vals![registry_id, release_or_commit],
+            )
+            .await?;
+
+        let mut packages = Vec::<PackageRow>::new();
+        for row in &rows {
+            let name: String = row.get(0)?;
+            if packages.last().map(|package| package.name.as_str()) != Some(name.as_str()) {
+                packages.push(PackageRow {
+                    name,
+                    description: row.get(1)?,
+                    license: row.get(2)?,
+                    latest_version: row.get(3)?,
+                    closure_size: None,
+                    platforms: Vec::new(),
+                });
+            }
+            if let Some(package) = packages.last_mut() {
+                let platform: String = row.get(4)?;
+                if !package.platforms.contains(&platform) {
+                    package.platforms.push(platform);
+                }
+                if package.closure_size.is_none() {
+                    package.closure_size = row.get(5)?;
+                }
+            }
+        }
+        Ok(packages)
+    }
+
+    /// Counts distinct packages in every complete verified release snapshot.
+    ///
+    /// Releases without a complete artifact snapshot are retained with a zero
+    /// count so browse pages can distinguish "no packages" from an omitted
+    /// release row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or if a count is outside `usize`.
+    pub async fn list_release_package_counts(
+        &self,
+        registry_id: i64,
+    ) -> Result<Vec<(String, usize)>> {
+        let rows = self
+            .backend
+            .query(
+                "SELECT release.semver, COUNT(DISTINCT artifact.package_name)
+                   FROM releases release
+                   LEFT JOIN release_artifact_snapshot_heads head
+                     ON head.release_id = release.id AND head.registry_id = release.registry_id
+                   LEFT JOIN release_artifact_snapshots snapshot
+                     ON snapshot.snapshot_id = head.complete_artifact_snapshot_id
+                    AND snapshot.state = 'complete'
+                    AND snapshot.source_commit = release.commit_oid
+                    AND snapshot.verified_tag_oid = release.tag_oid
+                   LEFT JOIN release_artifacts artifact
+                     ON artifact.snapshot_id = snapshot.snapshot_id
+                    AND artifact.artifact_kind = 'output'
+                  WHERE release.registry_id = ?1
+                  GROUP BY release.id, release.semver
+                  ORDER BY release.semver",
+                &vals![registry_id],
+            )
+            .await?;
+
+        rows.iter()
+            .map(|row| {
+                let release = row.get::<String>(0)?;
+                let count = row.get::<i64>(1)?;
+                Ok((
+                    release,
+                    usize::try_from(count).context("release package count is outside usize")?,
+                ))
+            })
+            .collect()
+    }
+
     /// Single-query package listing shared by [`Database::list_packages`] and
     /// [`Database::list_packages_capped`].
     ///
@@ -15132,7 +15302,6 @@ impl Database {
         let org_id = self.max_id("orgs").await? + 1;
         let consumer_scope_key = format!("org:{}", uuid::Uuid::new_v4().simple());
         let now = unix_now();
-        let event_id = format!("grant-event:{}", uuid::Uuid::new_v4().simple());
         self.backend
             .checked_batch(&[
                 Statement::new(
@@ -15170,40 +15339,6 @@ impl Database {
                     vals![consumer_scope_key],
                 )
                 .unchecked(),
-                Statement::new(
-                    "INSERT INTO network_policy_consumer_scopes
-                     (boundary_id, consumer_scope_key, grant_generation, grant_kind,
-                      state, granted_by, granted_at, resource_version)
-                     VALUES ('instance:public', ?1, 1, 'instance_default',
-                       'active', 'system:org-create', ?2, 1)",
-                    vals![consumer_scope_key, now],
-                )
-                .expecting(1),
-                Statement::new(
-                    "INSERT INTO binding_consumer_scopes
-                     (binding_id, consumer_scope_key, grant_generation, grant_kind,
-                      state, granted_by, granted_at, resource_version)
-                     SELECT id, ?1, 1, 'instance_default', 'active',
-                            'system:org-create', ?2, 1
-                     FROM bindings WHERE is_instance_default = 1",
-                    vals![consumer_scope_key, now],
-                )
-                .unchecked(),
-                Statement::new(
-                    "INSERT INTO consumer_scope_grant_events
-                     (event_id, resource_kind, resource_stable_id, resource_generation_key,
-                      consumer_scope_key, grant_generation, transition, previous_state,
-                      resulting_state, actor_id, occurred_at, request_id)
-                     VALUES (?1, 'network_policy', 'instance:public', 0, ?2, 1,
-                       'granted', NULL, 'active', 'system:org-create', ?3, ?4)",
-                    vals![
-                        event_id,
-                        consumer_scope_key,
-                        now,
-                        format!("org-create:{slug}")
-                    ],
-                )
-                .expecting(1),
             ])
             .await?;
         Ok(org_id)
@@ -15221,7 +15356,6 @@ impl Database {
         let org_id = self.max_id("orgs").await? + 1;
         let consumer_scope_key = format!("org:{}", uuid::Uuid::new_v4().simple());
         let now = unix_now();
-        let event_id = format!("grant-event:{}", uuid::Uuid::new_v4().simple());
         self.backend
             .checked_batch(&[
                 Statement::new(
@@ -15260,35 +15394,6 @@ impl Database {
                     vals![consumer_scope_key],
                 )
                 .unchecked(),
-                Statement::new(
-                    "INSERT INTO network_policy_consumer_scopes
-                     (boundary_id, consumer_scope_key, grant_generation, grant_kind,
-                      state, granted_by, granted_at, resource_version)
-                     VALUES ('instance:public', ?1, 1, 'instance_default',
-                       'active', 'system:org-create', ?2, 1)",
-                    vals![consumer_scope_key, now],
-                )
-                .expecting(1),
-                Statement::new(
-                    "INSERT INTO binding_consumer_scopes
-                     (binding_id, consumer_scope_key, grant_generation, grant_kind,
-                      state, granted_by, granted_at, resource_version)
-                     SELECT id, ?1, 1, 'instance_default', 'active',
-                            'system:org-create', ?2, 1
-                     FROM bindings WHERE is_instance_default = 1",
-                    vals![consumer_scope_key, now],
-                )
-                .unchecked(),
-                Statement::new(
-                    "INSERT INTO consumer_scope_grant_events
-                     (event_id, resource_kind, resource_stable_id, resource_generation_key,
-                      consumer_scope_key, grant_generation, transition, previous_state,
-                      resulting_state, actor_id, occurred_at, request_id)
-                     VALUES (?1, 'network_policy', 'instance:public', 0, ?2, 1,
-                       'granted', NULL, 'active', 'system:org-create', ?3, ?4)",
-                    vals![event_id, consumer_scope_key, now, plan_id],
-                )
-                .expecting(1),
             ])
             .await?;
         Ok(org_id)
@@ -17558,7 +17663,7 @@ impl Database {
         let now = unix_now();
         let id = self.max_id("bindings").await? + 1;
         let default_key = is_instance_default.then_some("singleton");
-        let mut statements = vec![
+        let statements = [
             Statement::new(
                 "INSERT INTO bindings
                  (id, org_id, name, kind, is_instance_default, instance_default_key, created_at,
@@ -17599,20 +17704,6 @@ impl Database {
             )
             .expecting(1),
         ];
-        if is_instance_default {
-            statements.push(
-                Statement::new(
-                    "INSERT INTO binding_consumer_scopes
-                 (binding_id, consumer_scope_key, grant_generation, grant_kind,
-                  state, granted_by, granted_at, resource_version)
-                 SELECT ?1, stable_id, 1, 'instance_default', 'active',
-                        'system:binding-create', ?2, 1
-                 FROM orgs WHERE deleted_at IS NULL",
-                    vals![id, now],
-                )
-                .unchecked(),
-            );
-        }
         self.backend.checked_batch(&statements).await?;
         Ok(id)
     }
@@ -18316,7 +18407,10 @@ impl Database {
     /// object-store credentials. Their deployment attachment is nevertheless
     /// an immutable authorization input, so it receives the same validated
     /// credential and write-revision history used by external providers.
-    async fn ensure_deployment_owned_write_revision(&self, binding: &BindingRecord) -> Result<()> {
+    pub async fn ensure_deployment_owned_write_revision(
+        &self,
+        binding: &BindingRecord,
+    ) -> Result<()> {
         let version_ref = match binding.kind.as_str() {
             "local_fs" => "native://aos-hub/default-storage/v1",
             "deployment_r2" => "worker://aos-hub/default-storage/v1",
@@ -18544,6 +18638,37 @@ impl Database {
                  signing_region, access_mode, resource_version, created_at, updated_at
                  FROM bindings WHERE owner_scope_key = ?1 ORDER BY stable_id",
                 &vals![owner_scope_key],
+            )
+            .await?;
+        rows.iter().map(row_to_binding).collect()
+    }
+
+    /// Lists bindings owned by or explicitly granted to one consumer scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_bindings_available_to_scope(
+        &self,
+        consumer_scope_key: &str,
+    ) -> Result<Vec<BindingRecord>> {
+        let rows = self
+            .backend
+            .query(
+                "SELECT id, org_id, name, kind, is_instance_default, stable_id, owner_scope_key,
+                 local_root_path, object_bucket, object_prefix, endpoint_scheme,
+                 endpoint_host_kind, endpoint_host_bytes, endpoint_port,
+                 signing_region, access_mode, resource_version, created_at, updated_at
+                 FROM bindings binding
+                 WHERE binding.owner_scope_key = ?1
+                    OR EXISTS (
+                       SELECT 1 FROM binding_consumer_scopes grant_record
+                       WHERE grant_record.binding_id = binding.id
+                         AND grant_record.consumer_scope_key = ?1
+                         AND grant_record.state = 'active'
+                    )
+                 ORDER BY stable_id",
+                &vals![consumer_scope_key],
             )
             .await?;
         rows.iter().map(row_to_binding).collect()
@@ -25670,6 +25795,35 @@ mod tests {
     use rusqlite::Connection;
     use uuid::Uuid;
 
+    /// Reverses the transformer's identifier DDL to construct a v1-shaped
+    /// database without retaining a second 160-KiB baseline fixture.
+    fn topology_v2_to_v1_identifier_sql() -> String {
+        crate::backend::split_statements(TOPOLOGY_V1_TO_V2_SQLITE)
+            .into_iter()
+            .take_while(|statement| !statement.contains("DROP INDEX"))
+            .filter_map(|statement| {
+                statement
+                    .find("ALTER TABLE ")
+                    .map(|offset| statement[offset..].to_string())
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|statement| {
+                let words = statement.split_whitespace().collect::<Vec<_>>();
+                if words.get(3) == Some(&"RENAME") && words.get(4) == Some(&"COLUMN") {
+                    format!(
+                        "ALTER TABLE {} RENAME COLUMN {} TO {}",
+                        words[2], words[7], words[5]
+                    )
+                } else {
+                    format!("ALTER TABLE {} RENAME TO {}", words[5], words[2])
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(";\n")
+    }
+
     #[test]
     fn generated_relational_ids_are_positive_and_worker_exact() {
         assert_eq!(portable_relational_id(Uuid::from_u128(0)), 1);
@@ -25765,11 +25919,19 @@ mod tests {
     async fn deployment_default_records_one_valid_write_revision() {
         let db = Database::open_in_memory().await.unwrap();
         let first = db
-            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
+            .ensure_instance_default_binding(
+                "deployment_r2",
+                None,
+                Some(crate::binding::DEPLOYMENT_R2_ATTACHMENT),
+            )
             .await
             .unwrap();
         let second = db
-            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
+            .ensure_instance_default_binding(
+                "deployment_r2",
+                None,
+                Some(crate::binding::DEPLOYMENT_R2_ATTACHMENT),
+            )
             .await
             .unwrap();
         assert_eq!(first.id, second.id);
@@ -25811,6 +25973,124 @@ mod tests {
             .ensure_instance_default_binding("deployment_r2", None, Some("different"))
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn instance_resources_require_explicit_organization_grants() {
+        let db = Database::open_in_memory().await.unwrap();
+        let binding = db
+            .ensure_instance_default_binding(
+                "deployment_r2",
+                None,
+                Some(crate::binding::DEPLOYMENT_R2_ATTACHMENT),
+            )
+            .await
+            .unwrap();
+        let org_id = db
+            .create_org("explicit-grants", "Explicit grants")
+            .await
+            .unwrap();
+        let scope = db.org_by_id(org_id).await.unwrap().unwrap().stable_id;
+
+        assert!(db
+            .load_consumer_scope_grant(
+                crate::db::GrantResource::NetworkPolicy {
+                    id: "instance:public"
+                },
+                &scope,
+            )
+            .await
+            .unwrap()
+            .is_none());
+        assert!(db
+            .list_bindings_available_to_scope(&scope)
+            .await
+            .unwrap()
+            .is_empty());
+        let registry_id = db
+            .create_managed_registry(org_id, "", "main", "public", &[], false)
+            .await
+            .unwrap();
+        let placement = NewSurfacePlacementSpec {
+            surface: SurfaceTarget::Registry(registry_id),
+            name: "primary".to_owned(),
+            binding_id: binding.id,
+            prefix: "explicit-grants/main".to_owned(),
+            kind: "complete".to_owned(),
+            desired_state: "active".to_owned(),
+            hash_range: None,
+            desired_read_enabled: true,
+            read_order: 0,
+            requires_conditional_writes: false,
+        };
+        assert!(db.create_surface_placement(&placement).await.is_err());
+
+        db.grant_consumer_scope(
+            crate::db::GrantResource::Binding {
+                id: binding.id,
+                stable_id: &binding.stable_id,
+            },
+            &scope,
+            "instance_default",
+            "legacy-test",
+            "request:legacy-binding-grant",
+        )
+        .await
+        .unwrap();
+        assert!(db.create_surface_placement(&placement).await.is_ok());
+
+        let adopted = db
+            .grant_consumer_scope(
+                crate::db::GrantResource::Binding {
+                    id: binding.id,
+                    stable_id: &binding.stable_id,
+                },
+                &scope,
+                "explicit",
+                "test",
+                "request:adopt-binding-grant",
+            )
+            .await
+            .unwrap();
+        assert_eq!(adopted.grant_generation, 1);
+        assert_eq!(adopted.grant_kind, "explicit");
+
+        let available = db.list_bindings_available_to_scope(&scope).await.unwrap();
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0].stable_id, binding.stable_id);
+        assert_eq!(
+            db.list_surface_placements(SurfaceTarget::Registry(registry_id))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        db.grant_consumer_scope(
+            crate::db::GrantResource::NetworkPolicy {
+                id: "instance:public",
+            },
+            &scope,
+            "instance_default",
+            "legacy-test",
+            "request:legacy-network-grant",
+        )
+        .await
+        .unwrap();
+        let adopted = db
+            .grant_consumer_scope(
+                crate::db::GrantResource::NetworkPolicy {
+                    id: "instance:public",
+                },
+                &scope,
+                "explicit",
+                "test",
+                "request:adopt-network-grant",
+            )
+            .await
+            .unwrap();
+        assert_eq!(adopted.grant_generation, 1);
+        assert_eq!(adopted.grant_kind, "explicit");
     }
 
     #[tokio::test]
@@ -26252,6 +26532,66 @@ source_nar_hash = ""
             )
             .unwrap();
         assert_eq!(public_boundary, (1, "active".to_string()));
+    }
+
+    #[test]
+    fn explicit_topology_migration_adopts_the_previous_schema_identity() {
+        let connection = Connection::open_in_memory().unwrap();
+        let adoption_index = MIGRATIONS
+            .iter()
+            .position(|migration| *migration == EXPLICIT_TOPOLOGY_MIGRATION)
+            .unwrap();
+        for migration in &MIGRATIONS[..adoption_index] {
+            connection.execute_batch(migration).unwrap();
+        }
+        connection
+            .execute(
+                "UPDATE hub_schema_identity SET identity = ?1",
+                [PREVIOUS_SCHEMA_IDENTITY],
+            )
+            .unwrap();
+
+        connection
+            .execute_batch(EXPLICIT_TOPOLOGY_MIGRATION)
+            .unwrap();
+
+        let identity: String = connection
+            .query_row("SELECT identity FROM hub_schema_identity", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(identity, SCHEMA_IDENTITY);
+    }
+
+    #[tokio::test]
+    async fn migrate_repairs_the_known_schema_version_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("topology-v1.db");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch("CREATE TABLE schema_version(version INTEGER NOT NULL);")
+            .unwrap();
+        connection.execute_batch(MIGRATIONS[0]).unwrap();
+        connection
+            .execute_batch(&topology_v2_to_v1_identifier_sql())
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE hub_schema_identity SET identity = ?1",
+                [PREVIOUS_SCHEMA_IDENTITY],
+            )
+            .unwrap();
+        connection
+            .execute_batch(&format!(
+                "DELETE FROM schema_version;
+                 INSERT INTO schema_version(version) VALUES ({});",
+                MIGRATIONS.len()
+            ))
+            .unwrap();
+        drop(connection);
+
+        let db = Database::open(&path).await.unwrap();
+        db.require_schema_identity().await.unwrap();
     }
 
     #[test]
@@ -26818,6 +27158,20 @@ source_nar_hash = ""
         let retention_releases = db.list_retention_release_snapshots(id).await.unwrap();
         assert_eq!(retention_releases.len(), 1);
         assert_eq!(retention_releases[0].artifacts[0].store_hash, "abc");
+        let release_packages = db.list_packages_at_release(id, "1.0.0").await.unwrap();
+        assert_eq!(release_packages.len(), 1);
+        assert_eq!(release_packages[0].name, "curl");
+        assert_eq!(release_packages[0].latest_version.as_deref(), Some("8.5.0"));
+        assert_eq!(release_packages[0].platforms, ["x86_64-linux"]);
+        assert_eq!(
+            db.list_release_package_counts(id).await.unwrap(),
+            [("1.0.0".to_string(), 1)]
+        );
+        let commit_packages = db
+            .list_packages_at_release(id, &"c".repeat(64))
+            .await
+            .unwrap();
+        assert_eq!(commit_packages.len(), 1);
         let release_id: i64 = db
             .backend
             .query_opt(
@@ -30180,6 +30534,17 @@ source_nar_hash = ""
         db.grant_membership("user", user, &original_project_scope, "viewer")
             .await
             .unwrap();
+        db.grant_consumer_scope(
+            crate::db::GrantResource::NetworkPolicy {
+                id: "instance:public",
+            },
+            &original_scope,
+            "explicit",
+            "test",
+            "request:purge-test-public-boundary",
+        )
+        .await
+        .unwrap();
         let (_, old_secret) = db
             .create_token(
                 crate::domain::Principal::user(user),
@@ -30302,7 +30667,7 @@ source_nar_hash = ""
             .unwrap()
             .get(0)
             .unwrap();
-        assert_eq!(recreated_grant, 1);
+        assert_eq!(recreated_grant, 0);
     }
 
     #[tokio::test]
@@ -30409,6 +30774,17 @@ source_nar_hash = ""
         let db = Database::open_in_memory().await.unwrap();
         let org_id = db.create_org("race", "Race").await.unwrap();
         let scope = db.org_by_id(org_id).await.unwrap().unwrap().stable_id;
+        db.grant_consumer_scope(
+            crate::db::GrantResource::NetworkPolicy {
+                id: "instance:public",
+            },
+            &scope,
+            "explicit",
+            "test",
+            "request:grant-before-revoke",
+        )
+        .await
+        .unwrap();
         db.revoke_consumer_scope(
             crate::db::GrantResource::NetworkPolicy {
                 id: "instance:public",
