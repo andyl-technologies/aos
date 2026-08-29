@@ -199,13 +199,47 @@ enum DomainConfigurationKind {
 
 #[component]
 fn DomainDnsEditor(client: ApiClient, domain: aos_proto_types::Domain) -> impl IntoView {
-    let mode = RwSignal::new("external".to_string());
-    let expected_target = RwSignal::new(String::new());
-    let provider = RwSignal::new(String::new());
-    let zone_id = RwSignal::new(String::new());
-    let record_mode = RwSignal::new("cname".to_string());
-    let target = RwSignal::new(String::new());
-    let ttl = RwSignal::new("300".to_string());
+    let current = domain
+        .desired
+        .as_ref()
+        .and_then(|desired| desired.dns_configuration.as_ref())
+        .and_then(|configuration| configuration.configuration.as_ref());
+    let (mode, expected_target, provider, zone_id, record_mode, target, ttl) = match current {
+        Some(aos_proto_types::dns_configuration::Configuration::External(configuration)) => (
+            "external".to_string(),
+            configuration.expected_target.clone(),
+            String::new(),
+            String::new(),
+            "cname".to_string(),
+            String::new(),
+            "300".to_string(),
+        ),
+        Some(aos_proto_types::dns_configuration::Configuration::HubManaged(configuration)) => (
+            "hub".to_string(),
+            String::new(),
+            configuration.provider.clone(),
+            configuration.zone_id.clone(),
+            configuration.record_mode.clone(),
+            configuration.target.clone(),
+            configuration.ttl_seconds.to_string(),
+        ),
+        None => (
+            "external".to_string(),
+            String::new(),
+            String::new(),
+            String::new(),
+            "cname".to_string(),
+            String::new(),
+            "300".to_string(),
+        ),
+    };
+    let mode = RwSignal::new(mode);
+    let expected_target = RwSignal::new(expected_target);
+    let provider = RwSignal::new(provider);
+    let zone_id = RwSignal::new(zone_id);
+    let record_mode = RwSignal::new(record_mode);
+    let target = RwSignal::new(target);
+    let ttl = RwSignal::new(ttl);
     let pending = RwSignal::new(None::<(PendingPlan, DomainConfigurationKind)>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
@@ -272,10 +306,39 @@ fn DomainDnsEditor(client: ApiClient, domain: aos_proto_types::Domain) -> impl I
 
 #[component]
 fn DomainCertificateEditor(client: ApiClient, domain: aos_proto_types::Domain) -> impl IntoView {
-    let mode = RwSignal::new("hub".to_string());
-    let issuer = RwSignal::new("acme".to_string());
-    let challenge_provider = RwSignal::new(String::new());
-    let secret_ref = RwSignal::new(String::new());
+    let current = domain
+        .desired
+        .as_ref()
+        .and_then(|desired| desired.certificate_configuration.as_ref())
+        .and_then(|configuration| configuration.configuration.as_ref());
+    let (mode, issuer, challenge_provider, secret_ref) = match current {
+        Some(aos_proto_types::certificate_configuration::Configuration::External(
+            configuration,
+        )) => (
+            "external".to_string(),
+            "acme".to_string(),
+            String::new(),
+            configuration.certificate_secret_ref.clone(),
+        ),
+        Some(aos_proto_types::certificate_configuration::Configuration::HubManaged(
+            configuration,
+        )) => (
+            "hub".to_string(),
+            configuration.issuer.clone(),
+            configuration.dns_challenge_provider.clone(),
+            String::new(),
+        ),
+        None => (
+            "hub".to_string(),
+            "acme".to_string(),
+            String::new(),
+            String::new(),
+        ),
+    };
+    let mode = RwSignal::new(mode);
+    let issuer = RwSignal::new(issuer);
+    let challenge_provider = RwSignal::new(challenge_provider);
+    let secret_ref = RwSignal::new(secret_ref);
     let pending = RwSignal::new(None::<(PendingPlan, DomainConfigurationKind)>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
