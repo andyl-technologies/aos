@@ -92,6 +92,7 @@ in {
       APR = "${pkgs.aos}/bin/apr"
       JQ = "${pkgs.jq}/bin/jq"
       CURL = "${pkgs.curl}/bin/curl"
+      CMP = "${pkgs.diffutils}/bin/cmp"
       NIX_STORE = "${pkgs.nix}/bin/nix-store"
       MOUNT = "${pkgs.util-linux}/bin/mount"
       FINDMNT = "${pkgs.util-linux}/bin/findmnt"
@@ -685,7 +686,7 @@ in {
           {CURL} -fsS -D /tmp/nginx-doc-immutable.headers \
             -o /tmp/nginx-doc-immutable.json \
             "{REGISTRY}-/api/v1/documentation/$etag"
-          cmp /tmp/nginx-doc.json /tmp/nginx-doc-immutable.json
+          {CMP} /tmp/nginx-doc.json /tmp/nginx-doc-immutable.json
           grep -qi '^cache-control:.*immutable' /tmp/nginx-doc-immutable.headers
       """))
       consumer.wait_until_succeeds(f"{CURL} -fsS {REGISTRY}HEAD", timeout=120)
