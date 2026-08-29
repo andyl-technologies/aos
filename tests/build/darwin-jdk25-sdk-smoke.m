@@ -99,6 +99,7 @@ const void *aos_jdk25_data_exports[] = {
   &NSAccessibilityOutlineRole,
   &NSAccessibilityTableRowSubrole,
   &NSAccessibilityUnknownSubrole,
+  &NSAccessibilityGridRole,
   &NSAppearanceNameAqua,
   &NSDocumentTypeDocumentAttribute,
   &NSPrintJobSavingURL,
