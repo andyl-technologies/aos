@@ -481,6 +481,24 @@ in
             else ""
           }
 
+          # x.py preserves its copy transcript as install.log. The compiler
+          # artifacts use bootstrap's debuginfo remapping, but this text
+          # metadata records the sandbox source root verbatim. Preserve the
+          # transcript while giving it the same canonical Rust source prefix.
+          install_log="$out/lib/rustlib/install.log"
+          if [ ! -f "$install_log" ]; then
+            echo "Rust installation did not produce install.log" >&2
+            exit 1
+          fi
+          sed -i \
+            -e "s|/build/rustc-${version}-src/build/|/rustc/${version}/bootstrap/|g" \
+            -e "s|/build/rustc-${version}-src|/rustc/${version}|g" \
+            "$install_log"
+          if grep -F '/build/' "$install_log" >/dev/null; then
+            echo "Rust install.log retains its sandbox source root" >&2
+            exit 1
+          fi
+
           test -x "$out/bin/rustc"
           test -x "$out/bin/cargo"
           "$OBJDUMP" --macho --private-header "$out/bin/rustc" >/dev/null
