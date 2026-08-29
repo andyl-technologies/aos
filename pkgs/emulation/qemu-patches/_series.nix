@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "e937ad6763b7e3869831de6159dd3d22cb1c5feab5de3441d85544b422d876e8";
+  patchBranchBundleSha256 = "5774b272645839595b78fedaa9bd57055859c2d8e31ab16520448373f9db54a5";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "c1c1791b2604d3c1f3702085c821dc32d81a15a2";
+  patchBranchHeadCommit = "23d9630233d07787bdd70518edafb3344a91b068";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1385,6 +1385,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-8,HFORK-9,HFORK-12";
       capability = "the version-6 plugin barrier applies MADV_DONTFORK to the exact source shared-memory mapping only after callback, ring, and worker admission closes, rolls every hold back on failure, and restores MADV_DOFORK before reopening the retained parent without yet installing a child mapping or acknowledging readiness bits 6 through 8";
+    }
+    {
+      file = "0146-crucible-register-hot-fork-child-runtime.patch";
+      branchSubject = "crucible: register hot-fork child runtime";
+      branchCommit = "23d9630233d07787bdd70518edafb3344a91b068";
+      branchTree = "ff5cd5015e3f3c2008effe6b8b91ce6384304847";
+      catalogName = "crucible-hot-fork-child-runtime-registration";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-8,HFORK-9,HFORK-12";
+      capability = "QEMU and the plugin share a fixed version-1 child-runtime plan and status ABI that binds and echoes the exact template, private-ring, endpoint, plugin-barrier, kernel endpoint, mapping, descriptor, and worker basis; QEMU retains the exact process-lifetime reconstruction callback, and the plugin can install a validated private ring mapping and rebuild held workers without yet invoking the callback from the fork transaction or acknowledging readiness bits 6 through 8";
     }
   ];
   catalogOnlyCapabilities = [

@@ -655,6 +655,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0146-crucible-register-hot-fork-child-runtime.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

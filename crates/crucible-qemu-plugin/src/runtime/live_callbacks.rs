@@ -528,6 +528,7 @@ impl StableFingerprintSlotHandle {
 /// per-node [`FingerprintSampleSlot`].
 struct LiveFingerprintCallbackState {
     sampling: PluginFingerprintSampling,
+    slot: StableFingerprintSlotHandle,
     worker: LiveFingerprintDigestWorker,
     last_capture_icount: AtomicU64,
     capture_submitted: AtomicBool,
@@ -890,18 +891,36 @@ impl LiveVcpuTimeCallbackState {
         synchronous_oracle: bool,
         worker_quiescence: Arc<LiveWorkerQuiescence>,
     ) -> Result<Self, LiveVcpuTimeCallbackError> {
-        let worker = LiveFingerprintDigestWorker::spawn(
-            StableFingerprintSlotHandle::new(slot),
-            worker_quiescence,
-        )?;
+        let slot = StableFingerprintSlotHandle::new(slot);
+        let worker = LiveFingerprintDigestWorker::spawn(slot, worker_quiescence)?;
         self.fingerprint = Some(LiveFingerprintCallbackState {
             sampling,
+            slot,
             worker,
             last_capture_icount: AtomicU64::new(0),
             capture_submitted: AtomicBool::new(false),
             synchronous_oracle,
         });
         Ok(self)
+    }
+
+    /// Replaces the vanished template fingerprint worker in a fork child.
+    ///
+    /// The caller holds callback and worker admission, and the template queue
+    /// was proven empty before `fork(2)`. The inherited `JoinHandle` cannot be
+    /// joined in the child, so it is deliberately abandoned after the fresh
+    /// worker owns the same exact-address slot.
+    pub(super) fn reinitialize_hot_fork_child_workers(
+        &mut self,
+        worker_quiescence: Arc<LiveWorkerQuiescence>,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        let Some(fingerprint) = self.fingerprint.as_mut() else {
+            return Ok(());
+        };
+        let worker = LiveFingerprintDigestWorker::spawn(fingerprint.slot, worker_quiescence)?;
+        let inherited = std::mem::replace(&mut fingerprint.worker, worker);
+        std::mem::forget(inherited);
+        Ok(())
     }
 
     /// Binds the optional terminal raw-state exporter to this pinned callback state.

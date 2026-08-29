@@ -1623,6 +1623,7 @@ in
           tasks=${taskList}
           gate=gate:hot-fork-readiness
           patch=0145-crucible-exclude-source-rings-from-fork-children.patch
+          patch=0146-crucible-register-hot-fork-child-runtime.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3

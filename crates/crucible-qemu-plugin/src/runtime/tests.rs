@@ -973,6 +973,111 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     assert_eq!(manifest.node_count, node_count);
     assert_eq!(manifest.control_fd, control_fd);
     assert_eq!(manifest.wake_fd, registered_wake_fd());
+    let control_socket_cookie = hot_fork_control_socket_cookie(manifest.control_fd)
+        .unwrap_or_else(|error| panic!("control socket identity should resolve: {error}"));
+    let wake_eventfd_id = hot_fork_wake_eventfd_id(manifest.wake_fd)
+        .unwrap_or_else(|error| panic!("wake eventfd identity should resolve: {error}"));
+    let exact_endpoint_plan = crate::QemuPluginHotForkChildPlan {
+        control_fd: manifest.control_fd,
+        wake_fd: manifest.wake_fd,
+        control_socket_cookie,
+        wake_eventfd_id,
+        ..crate::QemuPluginHotForkChildPlan::default()
+    };
+    assert!(hot_fork_child_endpoint_identity_matches(
+        &exact_endpoint_plan
+    ));
+    assert!(!hot_fork_child_endpoint_identity_matches(
+        &crate::QemuPluginHotForkChildPlan {
+            control_socket_cookie: control_socket_cookie + 1,
+            ..exact_endpoint_plan
+        }
+    ));
+    assert!(!hot_fork_child_endpoint_identity_matches(
+        &crate::QemuPluginHotForkChildPlan {
+            wake_eventfd_id: wake_eventfd_id + 1,
+            ..exact_endpoint_plan
+        }
+    ));
+    assert_eq!(
+        invoke_hot_fork_child_runtime(
+            crate::QEMU_PLUGIN_HOT_FORK_CHILD_INITIALIZE,
+            Some(&crate::QemuPluginHotForkChildPlan::default()),
+        ),
+        Err(-libc::EPROTO)
+    );
+    let child = invoke_hot_fork_child_runtime(crate::QEMU_PLUGIN_HOT_FORK_CHILD_QUERY, None)
+        .unwrap_or_else(|status| panic!("hot-fork child query should succeed: {status}"));
+    assert_eq!(
+        child.schema_version,
+        crate::QEMU_PLUGIN_HOT_FORK_CHILD_STATUS_VERSION
+    );
+    assert_eq!(
+        child.struct_size,
+        std::mem::size_of::<crate::QemuPluginHotForkChildStatus>() as u32
+    );
+    assert_eq!(
+        std::mem::size_of::<crate::QemuPluginHotForkChildPlan>(),
+        112
+    );
+    assert_eq!(
+        std::mem::size_of::<crate::QemuPluginHotForkChildStatus>(),
+        96
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, template_generation),
+        16
+    );
+    assert_eq!(
+        std::mem::offset_of!(
+            crate::QemuPluginHotForkChildPlan,
+            plugin_endpoint_generation
+        ),
+        32
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, control_socket_cookie),
+        56
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, shmem_device),
+        72
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, private_ring_fd),
+        96
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, template_generation),
+        16
+    );
+    assert_eq!(
+        std::mem::offset_of!(
+            crate::QemuPluginHotForkChildStatus,
+            plugin_endpoint_generation
+        ),
+        32
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, control_socket_cookie),
+        48
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, worker_mask),
+        64
+    );
+    assert_eq!(child.flags, 0);
+    assert_eq!(child.phase, u32::from(CHILD_RUNTIME_TEMPLATE));
+    assert_eq!(child.template_generation, 0);
+    assert_eq!(child.private_ring_generation, 0);
+    assert_eq!(child.plugin_endpoint_generation, 0);
+    assert_eq!(child.plugin_barrier_generation, 0);
+    assert_eq!(child.control_socket_cookie, 0);
+    assert_eq!(child.wake_eventfd_id, 0);
+    assert_eq!(child.worker_mask, WORKER_REQUIRED);
+    assert_eq!(child.parked_worker_mask, 0);
+    assert_eq!(child.pending_worker_mask, 0);
+    assert_eq!(child.worker_operations_in_flight, 0);
     let held = invoke_hot_fork_barrier(crate::QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD)
         .unwrap_or_else(|status| panic!("hot-fork barrier hold should succeed: {status}"));
     assert_eq!(
@@ -1257,6 +1362,14 @@ extern "C" fn reject_hot_fork_barrier_registration(
     -libc::EBUSY
 }
 
+extern "C" fn reject_hot_fork_child_runtime_registration(
+    _plugin_id: QemuPluginId,
+    _callback: Option<crate::QemuPluginHotForkChildRuntimeCbFn>,
+    _userdata: *mut std::ffi::c_void,
+) -> i32 {
+    -libc::EPROTONOSUPPORT
+}
+
 #[test]
 fn hot_fork_barrier_registration_failure_is_fatal_after_callbacks_exist() {
     let _runtime_state = isolate_runtime_state_for_test();
@@ -1279,6 +1392,32 @@ fn hot_fork_barrier_registration_failure_is_fatal_after_callbacks_exist() {
         error,
         PluginRuntimeInstallError::HotForkBarrierRejected { status }
             if status == -libc::EBUSY
+    ));
+    join_host(host);
+}
+
+#[test]
+fn hot_fork_child_runtime_registration_failure_is_fatal_after_callbacks_exist() {
+    let _runtime_state = isolate_runtime_state_for_test();
+    let fixture = LiveInstallFixture::new();
+    let host = fixture.spawn_host(SETUP_ACK_STATUS_SETUP_FAILED);
+    let mut capabilities = test_capabilities();
+    capabilities.register_hot_fork_child_runtime = reject_hot_fork_child_runtime_registration;
+    let mut reservation =
+        reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
+
+    let error = install_expecting_post_registration_fatal(
+        49,
+        &fixture,
+        capabilities,
+        &SuccessfulCallbackRegistrar,
+        &mut reservation,
+    );
+
+    assert!(matches!(
+        error,
+        PluginRuntimeInstallError::HotForkChildRuntimeRejected { status }
+            if status == -libc::EPROTONOSUPPORT
     ));
     join_host(host);
 }

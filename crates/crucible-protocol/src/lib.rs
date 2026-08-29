@@ -1201,6 +1201,23 @@ impl<S> ControlLifecycleStream<S> {
         Ok(Self { stream, lifecycle })
     }
 
+    /// Restores an authenticated replacement stream directly into RUN.
+    ///
+    /// A hot-fork child does not replay the template's setup handshake. Its
+    /// child reinitializer first authenticates and installs a fresh private
+    /// control endpoint, then uses this constructor so the only accepted frame
+    /// remains the terminal host `Quit`. Callers must not use this constructor
+    /// for an unvalidated or template-shared endpoint.
+    #[must_use]
+    pub fn restored_run_via_shared_memory(stream: S) -> Self {
+        Self {
+            stream,
+            lifecycle: ControlLifecycle {
+                state: ControlLifecycleState::RunningViaSharedMemory,
+            },
+        }
+    }
+
     /// Returns the current lifecycle state.
     #[must_use]
     pub const fn state(&self) -> ControlLifecycleState {
