@@ -221,12 +221,24 @@ a different byte length corrupts offsets recorded in formats such as ELF, but
 a fixed-output dependency cannot retain store references. Restore the original
 equal-length path before the offline build uses the artifact.
 
+Preserve permissions while scrubbing fetched repositories. Go module caches
+make their files and directories read-only to enforce content immutability, so
+do not make an entire cache recursively writable just to run an in-place
+rewriter. Render the transformed bytes into scratch space, make only the matched
+file writable long enough to overwrite it, and restore its exact mode. This
+avoids requiring write permission on the cache directory and leaves unrelated
+module content untouched.
+
 When upstream commits a Cargo lockfile and generated Bazel crate repositories,
 fetch that checked-in graph without setting `CARGO_BAZEL_REPIN`. Repinning asks
 rules_rust to resolve compatible versions against the current registry index,
 so the result can change even when the package source revision does not. Run a
 repin only while intentionally updating the source and commit the regenerated
 lock and repository definitions before calculating the new dependency hash.
+When a local rules_rust patch changes the repository-rule input digest without
+changing the Cargo.lock-selected graph, advance the generated lock's exact
+checksum in the source patch phase and assert the new value. Do not enable
+repinning in production fetches merely to bypass a stale rule digest.
 
 ## Expose the runtime interface
 
