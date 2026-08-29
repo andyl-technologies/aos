@@ -2472,6 +2472,85 @@ pub fn health_page(
     let mut body = registry_nav(slug, "health");
     body.push_str("<h1>Health</h1>\n");
 
+    let (index_state, index_detail) = match status {
+        Some(status) => {
+            let class = match status.state.as_str() {
+                "fresh" => "ok",
+                "indexing" | "stale" => "warn",
+                _ => "bad",
+            };
+            let detail = status.error.clone().unwrap_or_else(|| {
+                let commit = status
+                    .last_indexed_commit
+                    .as_deref()
+                    .map(hash_value)
+                    .unwrap_or_else(|| "no indexed commit".to_string());
+                status.indexed_at.map_or(commit.clone(), |indexed_at| {
+                    format!("{commit}, indexed {}", ago(indexed_at))
+                })
+            });
+            (
+                format!("<span class=\"{class}\">{}</span>", escape(&status.state)),
+                detail,
+            )
+        }
+        None => (
+            "<span class=\"bad\">unavailable</span>".to_string(),
+            "No registry index status is available.".to_string(),
+        ),
+    };
+    let enabled_routes = routes.iter().filter(|route| route.enabled).count();
+    let validation_state = if runs.is_empty() {
+        "<span class=\"warn\">not run</span>".to_string()
+    } else if runs
+        .iter()
+        .any(|(run, _, _)| !run.reachable || run.missing > 0)
+    {
+        "<span class=\"warn\">findings</span>".to_string()
+    } else {
+        "<span class=\"ok\">passing</span>".to_string()
+    };
+    let summary_rows = vec![
+        vec![
+            "Registry index".to_string(),
+            index_state,
+            escape(&index_detail),
+        ],
+        vec![
+            "Cache stack".to_string(),
+            if stack.is_some() {
+                "<span class=\"ok\">configured</span>".to_string()
+            } else {
+                "<span class=\"warn\">not configured</span>".to_string()
+            },
+            if stack.is_some() {
+                "Committed consumer cache policy is available.".to_string()
+            } else {
+                "No consumer cache endpoints are configured.".to_string()
+            },
+        ],
+        vec![
+            "Cache validation".to_string(),
+            validation_state,
+            if runs.is_empty() {
+                "No validation job has recorded a result.".to_string()
+            } else {
+                format!("Latest results for {} cache endpoint(s).", runs.len())
+            },
+        ],
+        vec![
+            "Delivery routes".to_string(),
+            if enabled_routes > 0 {
+                "<span class=\"ok\">configured</span>".to_string()
+            } else {
+                "<span class=\"warn\">not configured</span>".to_string()
+            },
+            format!("{enabled_routes} enabled of {} total.", routes.len()),
+        ],
+    ];
+    body.push_str("<h2>Summary</h2>\n");
+    body.push_str(&table(&["component", "state", "detail"], &summary_rows));
+
     // Per-cache coverage labels, keyed by URL, drawn from the latest runs.
     let coverage_by_url: BTreeMap<&str, String> = runs
         .iter()
@@ -2516,7 +2595,18 @@ pub fn health_page(
     }
 
     if runs.is_empty() {
-        body.push_str("<p class=\"dim\">No validation runs recorded yet.</p>\n");
+        body.push_str("<h2>Cache validation</h2>\n");
+        if stack.is_some() {
+            body.push_str(
+                "<p class=\"warn\">Not yet validated. No validation job has recorded a result \n\
+                 for the current cache stack.</p>\n",
+            );
+        } else {
+            body.push_str(
+                "<p class=\"dim\">No cache stack is configured, so there is nothing to \n\
+                 validate.</p>\n",
+            );
+        }
     } else {
         body.push_str("<h2>Cache validation</h2>\n");
         let rows: Vec<Vec<String>> = runs
@@ -3486,6 +3576,50 @@ mod tests {
             "ACPI/GPL2/BSD3"
         );
         assert_eq!(license_pill_label("custom-license"), "custom-license");
+    }
+
+    #[test]
+    fn health_page_empty_validation_state_still_summarizes_live_health() {
+        let status = IndexStatus {
+            state: "fresh".into(),
+            error: None,
+            last_indexed_commit: Some("a".repeat(64)),
+            name: None,
+            description: None,
+            readme: None,
+            indexed_at: Some(0),
+            generation: 1,
+            content_digest: None,
+        };
+        let stack = StackNode::Endpoint("https://cache.example".into());
+        let routes = [RouteHealthRow {
+            id: "route:primary".into(),
+            endpoint_id: "endpoint:cdn".into(),
+            base_path: "/demo".into(),
+            mode: "hub_proxy".into(),
+            enabled: true,
+            capabilities: vec!["git".into(), "cache".into(), "web".into()],
+        }];
+
+        let html = health_page(
+            &registry(),
+            Some(&status),
+            &[],
+            Some(&stack),
+            &[],
+            &[],
+            &routes,
+            Instant::now(),
+            &anon(),
+        );
+
+        assert!(html.contains("<h2>Summary</h2>"));
+        assert!(html.contains("Registry index"));
+        assert!(html.contains("Cache validation"));
+        assert!(html.contains("No validation job has recorded a result."));
+        assert!(html.contains("1 enabled of 1 total."));
+        assert!(html.contains("Not yet validated"));
+        assert!(!html.contains("No validation runs recorded yet"));
     }
 
     #[tokio::test]
