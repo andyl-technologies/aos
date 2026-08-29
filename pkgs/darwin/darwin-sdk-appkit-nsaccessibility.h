@@ -51,6 +51,7 @@ extern NSAccessibilityRole const NSAccessibilityOutlineRole;
 extern NSAccessibilitySubrole const NSAccessibilityOutlineRowSubrole;
 extern NSAccessibilitySubrole const NSAccessibilityTabButtonSubrole;
 extern NSAccessibilitySubrole const NSAccessibilityTableRowSubrole;
+extern NSAccessibilitySubrole const NSAccessibilityUnknownSubrole;
 
 @protocol NSAccessibilityElement <NSObject>
 @end
