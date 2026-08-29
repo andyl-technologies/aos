@@ -631,6 +631,25 @@
                 -o "$c/bin/aos-darwin-foundation-$split_header-smoke"
             done
 
+            cat > appkit-NSRunningApplication-smoke.m <<'EOF'
+            #import <AppKit/NSRunningApplication.h>
+            #import <AppKit/AppKit.h>
+            int main(void) {
+              NSStringEncoding encoding = [NSString defaultCStringEncoding];
+              NSProcessInfo *processInfo = [NSProcessInfo processInfo];
+              NSString *processName = [processInfo processName];
+              unsigned long long physicalMemory = [processInfo physicalMemory];
+              NSDictionary *infoDictionary = [[NSBundle mainBundle] infoDictionary];
+              for (id key in infoDictionary) { (void)key; }
+              return [NSRunningApplication currentApplication] == nil &&
+                encoding == 0 && processName == nil && physicalMemory == 0;
+            }
+            EOF
+            "$CC" appkit-NSRunningApplication-smoke.m \
+              -framework AppKit \
+              -lobjc \
+              -o "$c/bin/aos-darwin-appkit-NSRunningApplication-smoke"
+
             cp ${./darwin-jrs-sdk-smoke.m} jrs-sdk-smoke.m
             "$CC" jrs-sdk-smoke.m \
               -framework JavaRuntimeSupport \

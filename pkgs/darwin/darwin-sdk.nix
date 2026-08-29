@@ -1685,6 +1685,10 @@ in
                 - _CFArrayInsertValueAtIndex
                 - _CFArrayRemoveAllValues
                 - _CFArraySetValueAtIndex
+                - _CFAttributedStringCreateMutable
+                - _CFAttributedStringRemoveAttribute
+                - _CFAttributedStringReplaceString
+                - _CFAttributedStringSetAttribute
                 - _CFBooleanGetTypeID
                 - _CFBooleanGetValue
                 - _CFBundleCopyExecutableURL
@@ -1735,6 +1739,7 @@ in
                 - _CFRunLoopStop
                 - _CFRunLoopWakeUp
                 - _CFStringCreateWithCString
+                - _CFStringCreateWithCStringNoCopy
                 - _CFShow
                 - _CFStringCreateWithBytes
                 - _CFStringCreateCopy
@@ -2548,6 +2553,7 @@ in
           };
 
           @interface NSString : NSObject
+          + (NSStringEncoding)defaultCStringEncoding;
           + (instancetype)stringWithCString:(const char *)bytes encoding:(NSStringEncoding)encoding;
           + (instancetype)stringWithCharacters:(const unichar *)characters length:(NSUInteger)length;
           + (instancetype)stringWithFormat:(NSString *)format, ...;
@@ -2623,7 +2629,7 @@ in
           - (void)addObject:(ObjectType)anObject;
           @end
 
-          @interface NSDictionary<KeyType, ObjectType> : NSObject
+          @interface NSDictionary<KeyType, ObjectType> : NSObject <NSFastEnumeration>
           + (instancetype)dictionaryWithObjects:(const ObjectType [])objects forKeys:(const KeyType [])keys count:(NSUInteger)count;
           - (ObjectType)objectForKey:(KeyType)aKey;
           - (ObjectType)objectForKeyedSubscript:(KeyType)key;
@@ -2669,6 +2675,7 @@ in
           @property(readonly, copy) NSString *bundleIdentifier;
           @property(readonly, copy) NSString *bundlePath;
           @property(readonly, copy) NSString *executablePath;
+          @property(readonly, copy) NSDictionary *infoDictionary;
           - (id)objectForInfoDictionaryKey:(NSString *)key;
           @end
 
@@ -2693,6 +2700,8 @@ in
 
           @interface NSProcessInfo : NSObject
           + (NSProcessInfo *)processInfo;
+          @property(readonly, copy) NSString *processName;
+          @property(readonly) unsigned long long physicalMemory;
           @property(readonly) NSOperatingSystemVersion operatingSystemVersion;
           @property(readonly, copy) NSString *operatingSystemVersionString;
           - (BOOL)isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion)version;
@@ -3187,6 +3196,8 @@ in
             "$out/System/Library/Frameworks/AppKit.framework/Headers/NSTrackingArea.h"
           cp ${./darwin-sdk-appkit-nsopengl.h} \
             "$out/System/Library/Frameworks/AppKit.framework/Headers/NSOpenGL.h"
+          cp ${./darwin-sdk-appkit-nsrunningapplication.h} \
+            "$out/System/Library/Frameworks/AppKit.framework/Headers/NSRunningApplication.h"
 
           cp ${./darwin-sdk-opengl.h} \
             "$out/System/Library/Frameworks/OpenGL.framework/Headers/OpenGL.h"
