@@ -1850,22 +1850,25 @@ fresh non-ring state, holds every destination ring, restores the image, and
 recaptures an exact byte/digest match. The type exposes neither the raw
 descriptor nor release authority, so a stale capture or partially composed
 child cannot make the mapping runnable. The node can now additionally retain
-that owner while a typed Unix QMP client stages its duplicate with standard
-`getfd`/`SCM_RIGHTS` under a bounded identity-derived name. It repeats the live
-source and destination-image checks before transfer, requires exact `getfd`
-acknowledgement, and requires exact-name `closefd` acknowledgement before
-returning an installed mapping. Transfer ambiguity poisons QMP, retains the
-mapping as uncertain, and quarantines the node; close ambiguity retains the
-installed mapping and also quarantines. Focused real-Unix-socket tests verify
-the received descriptor's exact device/inode/length, the closed name grammar,
-close exchange, stream poisoning, source-drift rejection, and both retained
-failure states.
+that owner while a typed Unix QMP client imports its duplicate with standard
+`getfd`/`SCM_RIGHTS` under a bounded identity-derived name. Patched QEMU now
+independently duplicates that monitor entry through the OOB
+`crucible-hot-fork-private-rings` operation and authenticates its exact name,
+device, inode, length, regular-file type, and shrink seal. The version-1 state
+explicitly withholds child-disposition completion and readiness
+acknowledgement. Release requires the same exact basis and closes the
+QEMU-owned duplicate before standard `closefd` closes the monitor entry.
+Transfer or adoption ambiguity poisons QMP, retains the mapping as uncertain,
+and quarantines the node; either release
+ambiguity retains the installed mapping and also quarantines. Focused typed and
+real-Unix-socket tests verify the exact basis, two-layer command order, closed
+name grammar, response postconditions, stream poisoning, source-drift
+rejection, and both retained failure states.
 This remains a retained T-CAM-6.2 subsystem primitive: worker-local queued
 work, fork-child descriptor inheritance/remapping, a complete disposition
 table, host-continuation pairing, child process identity, and final ring release
 are not composed yet. Template-process descriptor staging does not satisfy
-proof bit 7. Readiness bit 6 therefore remains clear and T-CAM-6.2 remains
-unchecked.
+proof bits 6 or 7. Both remain clear and T-CAM-6.2 remains unchecked.
 Patched QEMU now also owns the versioned `PrepareForkTemplate`
 transaction. Its serialized OOB coordinator starts only at the exact
 paused/device-flush boundary, asynchronously closes graph-writer admission and

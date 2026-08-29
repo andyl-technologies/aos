@@ -14,6 +14,7 @@ in
     buildDeps = [
       pkgs.coreutils
       pkgs.jq
+      pkgs.python3
       pkgs.qemu
       pkgs.socat
       qemuPackage
@@ -146,6 +147,11 @@ in
           jq -e -s 'any(.[]; has("error"))' "$out/stock-template-coordinator.json" >/dev/null \
             || fail "stock QEMU unexpectedly exposed the Crucible hot-fork template coordinator"
           qmp "$stock_socket" \
+            '{"exec-oob":"crucible-hot-fork-private-rings","arguments":{"action":"query"}}' \
+            "$out/stock-private-rings.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/stock-private-rings.json" >/dev/null \
+            || fail "stock QEMU unexpectedly exposed the Crucible private-ring stage"
+          qmp "$stock_socket" \
             '{"exec-oob":"query-crucible-hot-fork-bottom-half-inventory"}' \
             "$out/stock-bottom-half-inventory.json"
           jq -e -s 'any(.[]; has("error"))' "$out/stock-bottom-half-inventory.json" >/dev/null \
@@ -189,6 +195,167 @@ in
             }
           ' "$out/prelaunch-readiness.json" >/dev/null \
             || { cat "$out/prelaunch-readiness.json" >&2; fail "prelaunch readiness was not exact"; }
+
+          qmp "$patched_socket" \
+            '{"exec-oob":"crucible-hot-fork-private-rings","arguments":{"action":"query"}}' \
+            "$out/private-rings-initial.json"
+          jq -e -s '
+            [.[] | select(has("return"))][-1].return == {
+              "schema-version": 1,
+              "generation": 0,
+              "staged": false,
+              "device": 0,
+              "inode": 0,
+              "length": 0,
+              "shrink-sealed": false,
+              "disposition-complete": false,
+              "readiness-proof-acknowledged": false
+            }
+          ' "$out/private-rings-initial.json" >/dev/null \
+            || { cat "$out/private-rings-initial.json" >&2; fail "initial private-ring stage was not exact"; }
+
+          PATCHED_SOCKET="$patched_socket" PRIVATE_RING_AUDIT="$out/private-rings-live.json" \
+            ${pkgs.python3}/bin/python3 <<'PY'
+          import array
+          import fcntl
+          import json
+          import os
+          import socket
+
+          socket_path = os.environ["PATCHED_SOCKET"]
+          audit_path = os.environ["PRIVATE_RING_AUDIT"]
+          connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+          connection.settimeout(3.0)
+          connection.connect(socket_path)
+          reader = connection.makefile("rb")
+
+          def receive():
+              line = reader.readline()
+              if not line:
+                  raise RuntimeError("QMP closed before a complete response")
+              return json.loads(line)
+
+          def send_raw(command):
+              connection.sendall(json.dumps(command, separators=(",", ":")).encode() + b"\r\n")
+              return receive()
+
+          def send(command):
+              response = send_raw(command)
+              if "error" in response:
+                  raise RuntimeError(f"QMP command failed: {response}")
+              return response
+
+          greeting = receive()
+          if "QMP" not in greeting:
+              raise RuntimeError(f"missing QMP greeting: {greeting}")
+          send({"execute": "qmp_capabilities", "arguments": {"enable": ["oob"]}})
+
+          descriptor = os.memfd_create("crucible-hfork-private-rings", os.MFD_ALLOW_SEALING)
+          os.ftruncate(descriptor, 4096)
+          fcntl.fcntl(descriptor, fcntl.F_ADD_SEALS, fcntl.F_SEAL_SHRINK)
+          identity = os.fstat(descriptor)
+          name = "crucible-hfork-rings-v1-live"
+          getfd = json.dumps(
+              {"execute": "getfd", "arguments": {"fdname": name}},
+              separators=(",", ":"),
+          ).encode() + b"\r\n"
+          rights = array.array("i", [descriptor])
+          connection.sendmsg([getfd], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)])
+          getfd_response = receive()
+          if "error" in getfd_response:
+              raise RuntimeError(f"getfd failed: {getfd_response}")
+
+          stage = send({
+              "exec-oob": "crucible-hot-fork-private-rings",
+              "arguments": {
+                  "action": "stage",
+                  "fdname": name,
+                  "expected-device": identity.st_dev,
+                  "expected-inode": identity.st_ino,
+                  "expected-length": identity.st_size,
+              },
+          })
+          query = send({
+              "exec-oob": "crucible-hot-fork-private-rings",
+              "arguments": {"action": "query"},
+          })
+          foreign_release = send_raw({
+              "exec-oob": "crucible-hot-fork-private-rings",
+              "arguments": {
+                  "action": "release",
+                  "fdname": name,
+                  "expected-device": identity.st_dev,
+                  "expected-inode": identity.st_ino + 1,
+                  "expected-length": identity.st_size,
+              },
+          })
+          after_rejected_release = send({
+              "exec-oob": "crucible-hot-fork-private-rings",
+              "arguments": {"action": "query"},
+          })
+          release = send({
+              "exec-oob": "crucible-hot-fork-private-rings",
+              "arguments": {
+                  "action": "release",
+                  "fdname": name,
+                  "expected-device": identity.st_dev,
+                  "expected-inode": identity.st_ino,
+                  "expected-length": identity.st_size,
+              },
+          })
+          closefd = send({"execute": "closefd", "arguments": {"fdname": name}})
+
+          with open(audit_path, "w", encoding="utf-8") as audit:
+              json.dump({
+                  "name": name,
+                  "identity": {
+                      "device": identity.st_dev,
+                      "inode": identity.st_ino,
+                      "length": identity.st_size,
+                  },
+                  "stage": stage,
+                  "query": query,
+                  "foreign-release": foreign_release,
+                  "after-rejected-release": after_rejected_release,
+                  "release": release,
+                  "closefd": closefd,
+              }, audit, separators=(",", ":"))
+              audit.write("\n")
+          os.close(descriptor)
+          connection.close()
+          PY
+          jq -e '
+            .identity as $identity |
+            .name as $name |
+            .stage.return == {
+              "schema-version": 1,
+              "generation": 1,
+              "staged": true,
+              "fdname": $name,
+              "device": $identity.device,
+              "inode": $identity.inode,
+              "length": $identity.length,
+              "shrink-sealed": true,
+              "disposition-complete": false,
+              "readiness-proof-acknowledged": false
+            } and
+            .query.return == .stage.return and
+            (."foreign-release".error | type) == "object" and
+            ."after-rejected-release".return == .stage.return and
+            .release.return == {
+              "schema-version": 1,
+              "generation": 2,
+              "staged": false,
+              "device": 0,
+              "inode": 0,
+              "length": 0,
+              "shrink-sealed": false,
+              "disposition-complete": false,
+              "readiness-proof-acknowledged": false
+            } and
+            .closefd.return == {}
+          ' "$out/private-rings-live.json" >/dev/null \
+            || { cat "$out/private-rings-live.json" >&2; fail "live private-ring ownership transaction was not exact"; }
 
           qmp "$patched_socket" '{"execute":"stop"}' "$out/stop.json"
           jq -e -s 'all(.[]; has("error") | not)' "$out/stop.json" >/dev/null \
@@ -1236,7 +1403,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0138-crucible-drain-hot-fork-ring-consumers.patch
+          patch=0139-crucible-retain-hot-fork-private-rings.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -1295,6 +1462,14 @@ in
           plugin_worker_queue_cloning=false
           plugin_ring_consumer_admission_bound=true
           plugin_ring_proof_acknowledged=false
+          private_ring_stage_schema_version=1
+          private_ring_stage_initially_absent=true
+          private_ring_live_descriptor_transaction=true
+          private_ring_exact_identity_and_seal=true
+          private_ring_foreign_release_rejected=true
+          private_ring_two_layer_release=true
+          private_ring_disposition_complete=false
+          private_ring_readiness_proof_acknowledged=false
           template_coordinator_schema_version=8
           template_coordinator_idle_stable=true
           template_coordinator_unregistered_shape=true

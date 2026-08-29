@@ -619,6 +619,18 @@
       kind = "recorded";
       symbols = [];
     };
+    "0137-crucible-park-hot-fork-plugin-workers.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0138-crucible-drain-hot-fork-ring-consumers.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0139-crucible-retain-hot-fork-private-rings.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

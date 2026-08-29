@@ -21,9 +21,12 @@ use std::thread;
 
 #[cfg(target_os = "linux")]
 use crucible_qemu::{
-    QMP_CAPABILITIES_COMMAND, QMP_CLOSEFD_COMMAND, QMP_GETFD_COMMAND, QMP_QUIT_COMMAND_NAME,
-    QemuQmpVmStateControlChannel, QmpClient, QmpCommandKind, QmpDescriptorName, QmpError,
+    QMP_CAPABILITIES_COMMAND, QMP_CLOSEFD_COMMAND, QMP_GETFD_COMMAND,
+    QMP_HOT_FORK_PRIVATE_RINGS_COMMAND, QMP_QUIT_COMMAND_NAME, QemuQmpVmStateControlChannel,
+    QmpClient, QmpCommandKind, QmpDescriptorName, QmpError,
 };
+#[cfg(target_os = "linux")]
+use crucible_shmem::mmap_setup_region;
 #[cfg(target_os = "linux")]
 use serde_json::Value;
 
@@ -165,6 +168,88 @@ fn qmp_getfd_rejection_poisons_connection_and_preserves_caller_descriptor()
     assert_eq!(source.metadata()?.len(), 127);
     assert_eq!(client.quit(), Err(QmpError::ConnectionPoisoned));
     join_server(server)?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn vmstate_control_stages_and_releases_both_descriptor_ownership_layers()
+-> Result<(), Box<dyn Error>> {
+    let (client_stream, server_stream) = UnixStream::pair()?;
+    let source = tempfile::tempfile()?;
+    source.set_len(4096)?;
+    let mapping = mmap_setup_region(source.as_fd(), 4096)?;
+    let identity = mapping.backing_identity();
+    let name = QmpDescriptorName::new("crucible-hfork-rings-v1-owned")?;
+    let expected_name = name.clone();
+    let server = thread::spawn(move || -> Result<Vec<Value>, String> {
+        let stream = negotiate_qmp(server_stream)?;
+        let (getfd, descriptor) = receive_qmp_descriptor_request(&stream)?;
+        let metadata = fs::File::from(descriptor)
+            .metadata()
+            .map_err(|error| error.to_string())?;
+        use std::os::unix::fs::MetadataExt as _;
+        if metadata.dev() != identity.device()
+            || metadata.ino() != identity.inode()
+            || metadata.len() != identity.length()
+        {
+            return Err(String::from("transferred descriptor identity changed"));
+        }
+        write_qmp_return(&stream, b"{\"return\":{}}\r\n")?;
+
+        let mut reader = BufReader::new(stream);
+        let stage = read_qmp_line(&mut reader)?;
+        let stage_response = format!(
+            concat!(
+                r#"{{"return":{{"schema-version":1,"generation":1,"staged":true,"fdname":"{}","device":{},"inode":{},"length":{},"shrink-sealed":true,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#,
+                "\r\n"
+            ),
+            expected_name.as_str(),
+            identity.device(),
+            identity.inode(),
+            identity.length(),
+        );
+        write_qmp_return(reader.get_ref(), stage_response.as_bytes())?;
+
+        let release = read_qmp_line(&mut reader)?;
+        write_qmp_return(
+            reader.get_ref(),
+            b"{\"return\":{\"schema-version\":1,\"generation\":2,\"staged\":false,\"device\":0,\"inode\":0,\"length\":0,\"shrink-sealed\":false,\"disposition-complete\":false,\"readiness-proof-acknowledged\":false}}\r\n",
+        )?;
+        let closefd = read_qmp_line(&mut reader)?;
+        write_qmp_return(reader.get_ref(), b"{\"return\":{}}\r\n")?;
+        Ok(vec![getfd, stage, release, closefd])
+    });
+
+    let mut control = QemuQmpVmStateControlChannel::new(QmpClient::connect(client_stream)?);
+    control.install_hot_fork_private_ring_descriptor(&name, source.as_fd(), identity)?;
+    control.close_hot_fork_private_ring_descriptor(&name, identity)?;
+
+    let requests = join_server(server)?;
+    assert_eq!(
+        requests[0].get("execute").and_then(Value::as_str),
+        Some(QMP_GETFD_COMMAND)
+    );
+    assert_eq!(
+        requests[1].get("exec-oob").and_then(Value::as_str),
+        Some(QMP_HOT_FORK_PRIVATE_RINGS_COMMAND)
+    );
+    assert_eq!(
+        requests[1]
+            .pointer("/arguments/action")
+            .and_then(Value::as_str),
+        Some("stage")
+    );
+    assert_eq!(
+        requests[2]
+            .pointer("/arguments/action")
+            .and_then(Value::as_str),
+        Some("release")
+    );
+    assert_eq!(
+        requests[3].get("execute").and_then(Value::as_str),
+        Some(QMP_CLOSEFD_COMMAND)
+    );
     Ok(())
 }
 

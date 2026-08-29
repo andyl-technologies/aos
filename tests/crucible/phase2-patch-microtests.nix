@@ -1846,7 +1846,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-ring-producer-barrier";
         liveEvidence = ''
-          grep -Fxq 'patch=0138-crucible-drain-hot-fork-ring-consumers.patch' "$live_result"
+          grep -Fxq 'patch=0139-crucible-retain-hot-fork-private-rings.patch' "$live_result"
           grep -Fxq 'plugin_barrier_schema_version=4' "$live_result"
           grep -Fxq 'plugin_barrier_unregistered_shape=true' "$live_result"
           grep -Fxq 'plugin_ring_proof_acknowledged=false' "$live_result"
@@ -1865,7 +1865,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-plugin-worker-manifest";
         liveEvidence = ''
-          grep -Fxq 'patch=0138-crucible-drain-hot-fork-ring-consumers.patch' "$live_result"
+          grep -Fxq 'patch=0139-crucible-retain-hot-fork-private-rings.patch' "$live_result"
           grep -Fxq 'plugin_resource_inventory_schema_version=2' "$live_result"
           grep -Fxq 'plugin_resource_inventory_unregistered_shape=true' "$live_result"
           grep -Fxq 'plugin_ring_proof_acknowledged=false' "$live_result"
@@ -1883,7 +1883,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-plugin-worker-barrier";
         liveEvidence = ''
-          grep -Fxq 'patch=0138-crucible-drain-hot-fork-ring-consumers.patch' "$live_result"
+          grep -Fxq 'patch=0139-crucible-retain-hot-fork-private-rings.patch' "$live_result"
           grep -Fxq 'plugin_barrier_schema_version=4' "$live_result"
           grep -Fxq 'plugin_worker_mask_bound=true' "$live_result"
           grep -Fxq 'plugin_worker_parking_bound=true' "$live_result"
@@ -1905,7 +1905,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-ring-consumer-barrier";
         liveEvidence = ''
-          grep -Fxq 'patch=0138-crucible-drain-hot-fork-ring-consumers.patch' "$live_result"
+          grep -Fxq 'patch=0139-crucible-retain-hot-fork-private-rings.patch' "$live_result"
           grep -Fxq 'plugin_barrier_schema_version=4' "$live_result"
           grep -Fxq 'plugin_ring_consumer_admission_bound=true' "$live_result"
           grep -Fxq 'plugin_ring_proof_acknowledged=false' "$live_result"
@@ -1915,6 +1915,35 @@
             ${patchDir}/0138-crucible-drain-hot-fork-ring-consumers.patch
           grep -Fq "'ring-consumers-in-flight': 'uint64'" \
             ${patchDir}/0138-crucible-drain-hot-fork-ring-consumers.patch
+        '';
+      };
+    }
+    {
+      patch = "0139-crucible-retain-hot-fork-private-rings.patch";
+      check = certifyExactPatch {
+        patchName = "0139-crucible-retain-hot-fork-private-rings.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-private-ring-stage";
+        liveEvidence = ''
+          grep -Fxq 'patch=0139-crucible-retain-hot-fork-private-rings.patch' "$live_result"
+          grep -Fxq 'private_ring_stage_schema_version=1' "$live_result"
+          grep -Fxq 'private_ring_stage_initially_absent=true' "$live_result"
+          grep -Fxq 'private_ring_live_descriptor_transaction=true' "$live_result"
+          grep -Fxq 'private_ring_exact_identity_and_seal=true' "$live_result"
+          grep -Fxq 'private_ring_foreign_release_rejected=true' "$live_result"
+          grep -Fxq 'private_ring_two_layer_release=true' "$live_result"
+          grep -Fxq 'private_ring_disposition_complete=false' "$live_result"
+          grep -Fxq 'private_ring_readiness_proof_acknowledged=false' "$live_result"
+          grep -Fq 'monitor_dup_fd' \
+            ${patchDir}/0139-crucible-retain-hot-fork-private-rings.patch
+          grep -Fq 'F_SEAL_SHRINK' \
+            ${patchDir}/0139-crucible-retain-hot-fork-private-rings.patch
+          grep -Fq "'allow-oob': true" \
+            ${patchDir}/0139-crucible-retain-hot-fork-private-rings.patch
+          grep -Fq 'report->disposition_complete = false' \
+            ${patchDir}/0139-crucible-retain-hot-fork-private-rings.patch
+          grep -Fq 'report->readiness_proof_acknowledged = false' \
+            ${patchDir}/0139-crucible-retain-hot-fork-private-rings.patch
         '';
       };
     }

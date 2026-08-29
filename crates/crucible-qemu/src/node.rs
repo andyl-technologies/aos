@@ -994,12 +994,14 @@ pub trait QemuQmpMachineControlChannel: Send {
     /// # Errors
     ///
     /// Returns [`QemuNodeChannelError`] when this channel cannot transfer Unix
-    /// descriptors or standard QMP `getfd` does not acknowledge the exact name.
+    /// descriptors, standard QMP `getfd` does not acknowledge the exact name,
+    /// or QEMU cannot duplicate and authenticate `identity`.
     #[cfg(target_os = "linux")]
     fn install_hot_fork_private_ring_descriptor(
         &mut self,
         _name: &crate::QmpDescriptorName,
         _descriptor: BorrowedFd<'_>,
+        _identity: crucible_shmem::SetupRegionBackingIdentity,
     ) -> Result<(), QemuNodeChannelError> {
         Err(QemuNodeChannelError::new(
             "install hot-fork private ring descriptor",
@@ -1011,12 +1013,14 @@ pub trait QemuQmpMachineControlChannel: Send {
     ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeChannelError`] when this channel cannot exchange the
-    /// standard QMP `closefd` command or QEMU no longer owns the exact name.
+    /// Returns [`QemuNodeChannelError`] when QEMU cannot release its retained
+    /// duplicate under the exact identity, the channel cannot exchange
+    /// standard QMP `closefd`, or the monitor no longer owns the exact name.
     #[cfg(target_os = "linux")]
     fn close_hot_fork_private_ring_descriptor(
         &mut self,
         _name: &crate::QmpDescriptorName,
+        _identity: crucible_shmem::SetupRegionBackingIdentity,
     ) -> Result<(), QemuNodeChannelError> {
         Err(QemuNodeChannelError::new(
             "close hot-fork private ring descriptor",

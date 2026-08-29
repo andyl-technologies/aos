@@ -1,0 +1,401 @@
+diff --git a/include/monitor/monitor.h b/include/monitor/monitor.h
+index c3740ec61..4539e3e29 100644
+--- a/include/monitor/monitor.h
++++ b/include/monitor/monitor.h
+@@ -29,6 +29,7 @@ int monitor_suspend(Monitor *mon);
+ void monitor_resume(Monitor *mon);
+ 
+ int monitor_get_fd(Monitor *mon, const char *fdname, Error **errp);
++int monitor_dup_fd(Monitor *mon, const char *fdname, Error **errp);
+ int monitor_fd_param(Monitor *mon, const char *fdname, Error **errp);
+ 
+ int monitor_puts(Monitor *mon, const char *str);
+diff --git a/monitor/fds.c b/monitor/fds.c
+index cc35d2ec3..8906a7055 100644
+--- a/monitor/fds.c
++++ b/monitor/fds.c
+@@ -166,6 +166,31 @@ int monitor_get_fd(Monitor *mon, const char *fdname, Error **errp)
+     return -1;
+ }
+ 
++int monitor_dup_fd(Monitor *mon, const char *fdname, Error **errp)
++{
++    mon_fd_t *monfd;
++
++    QEMU_LOCK_GUARD(&mon->mon_lock);
++    QLIST_FOREACH(monfd, &mon->fds, next) {
++        int fd;
++
++        if (strcmp(monfd->name, fdname) != 0) {
++            continue;
++        }
++
++        fd = qemu_dup_flags(monfd->fd, O_CLOEXEC);
++        if (fd < 0) {
++            error_setg_errno(errp, errno,
++                             "Could not duplicate file descriptor named '%s'",
++                             fdname);
++        }
++        return fd;
++    }
++
++    error_setg(errp, "File descriptor named '%s' has not been found", fdname);
++    return -1;
++}
++
+ static void monitor_fdset_free(MonFdset *mon_fdset)
+ {
+     QLIST_REMOVE(mon_fdset, next);
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index eebf077da..2d7c40571 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -16,6 +16,7 @@
+ #include "qemu/osdep.h"
+ #include "qemu/plugin.h"
+ #include "qemu/crucible-hot-fork-plugin.h"
++#include "qemu/ctype.h"
+ #include "qemu/sockets.h"
+ #include "monitor-internal.h"
+ #include "monitor/qdev.h"
+@@ -349,8 +350,235 @@ static size_t crucible_hot_fork_template_snapshot_binding_count;
+ static QemuBlockBackendHotForkSnapshotBinding
+     *crucible_hot_fork_template_snapshot_bindings;
+ 
++#define CRUCIBLE_HOT_FORK_PRIVATE_RING_FD_NAME_MAX 128
++
++typedef struct CrucibleHotForkPrivateRingStage {
++    bool staged;
++    int fd;
++    char *fdname;
++    uint64_t device;
++    uint64_t inode;
++    uint64_t length;
++    bool shrink_sealed;
++    uint64_t generation;
++} CrucibleHotForkPrivateRingStage;
++
++static CrucibleHotForkPrivateRingStage crucible_hot_fork_private_ring_stage;
++
+ static void crucible_hot_fork_template_schedule_block_transition(void);
+ 
++static bool crucible_hot_fork_private_ring_fd_name_valid(const char *name)
++{
++    size_t length;
++
++    if (!name) {
++        return false;
++    }
++    length = strlen(name);
++    if (length == 0 || length > CRUCIBLE_HOT_FORK_PRIVATE_RING_FD_NAME_MAX) {
++        return false;
++    }
++    for (size_t index = 0; index < length; index++) {
++        unsigned char byte = name[index];
++
++        if (!qemu_islower(byte) && !qemu_isdigit(byte) && byte != '-') {
++            return false;
++        }
++    }
++    return true;
++}
++
++static CrucibleHotForkPrivateRingState *
++crucible_hot_fork_private_ring_report(void)
++{
++    CrucibleHotForkPrivateRingState *report =
++        g_new0(CrucibleHotForkPrivateRingState, 1);
++
++    report->schema_version = 1;
++    report->generation = crucible_hot_fork_private_ring_stage.generation;
++    report->staged = crucible_hot_fork_private_ring_stage.staged;
++    if (crucible_hot_fork_private_ring_stage.staged) {
++        report->fdname =
++            g_strdup(crucible_hot_fork_private_ring_stage.fdname);
++    }
++    report->device = crucible_hot_fork_private_ring_stage.device;
++    report->inode = crucible_hot_fork_private_ring_stage.inode;
++    report->length = crucible_hot_fork_private_ring_stage.length;
++    report->shrink_sealed =
++        crucible_hot_fork_private_ring_stage.shrink_sealed;
++    report->disposition_complete = false;
++    report->readiness_proof_acknowledged = false;
++    return report;
++}
++
++static bool crucible_hot_fork_private_ring_stage_matches(
++    const char *fdname, uint64_t device, uint64_t inode, uint64_t length)
++{
++    return crucible_hot_fork_private_ring_stage.staged &&
++        strcmp(crucible_hot_fork_private_ring_stage.fdname, fdname) == 0 &&
++        crucible_hot_fork_private_ring_stage.device == device &&
++        crucible_hot_fork_private_ring_stage.inode == inode &&
++        crucible_hot_fork_private_ring_stage.length == length &&
++        crucible_hot_fork_private_ring_stage.shrink_sealed;
++}
++
++CrucibleHotForkPrivateRingState *
++qmp_crucible_hot_fork_private_rings(
++    CrucibleHotForkPrivateRingAction action,
++    const char *fdname,
++    bool has_expected_device, uint64_t expected_device,
++    bool has_expected_inode, uint64_t expected_inode,
++    bool has_expected_length, uint64_t expected_length,
++    Error **errp)
++{
++    CrucibleHotForkPrivateRingState *report = NULL;
++    struct stat metadata;
++    int candidate = -1;
++    int seals;
++
++    g_mutex_lock(&crucible_hot_fork_template_lock);
++    switch (action) {
++    case CRUCIBLE_HOT_FORK_PRIVATE_RING_ACTION_STAGE:
++        if (!fdname || !has_expected_device || !has_expected_inode ||
++            !has_expected_length) {
++            error_setg(errp, "Crucible hot-fork private-ring staging requires "
++                       "an exact fd name, device, inode, and length");
++            goto out;
++        }
++        if (!crucible_hot_fork_private_ring_fd_name_valid(fdname)) {
++            error_setg(errp, "Invalid Crucible hot-fork private-ring fd name");
++            goto out;
++        }
++        if (expected_inode == 0 || expected_length == 0 ||
++            expected_length > INT64_MAX) {
++            error_setg(errp, "Invalid Crucible hot-fork private-ring identity");
++            goto out;
++        }
++        candidate = monitor_dup_fd(monitor_cur(), fdname, errp);
++        if (candidate < 0) {
++            goto out;
++        }
++        if (fstat(candidate, &metadata) != 0) {
++            error_setg_errno(errp, errno,
++                             "Could not inspect Crucible hot-fork private rings");
++            goto out;
++        }
++        if (!S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
++            (uint64_t)metadata.st_dev != expected_device ||
++            (uint64_t)metadata.st_ino != expected_inode ||
++            (uint64_t)metadata.st_size != expected_length) {
++            error_setg(errp, "Crucible hot-fork private-ring descriptor "
++                       "identity mismatch");
++            goto out;
++        }
++#ifdef F_GET_SEALS
++        seals = fcntl(candidate, F_GET_SEALS);
++#else
++        seals = -1;
++        errno = ENOTSUP;
++#endif
++        if (seals < 0) {
++            error_setg_errno(errp, errno,
++                             "Could not inspect Crucible hot-fork private-ring seals");
++            goto out;
++        }
++#ifdef F_SEAL_SHRINK
++        if ((seals & F_SEAL_SHRINK) == 0) {
++            error_setg(errp, "Crucible hot-fork private-ring descriptor is "
++                       "not shrink sealed");
++            goto out;
++        }
++#else
++        error_setg(errp, "Crucible hot-fork private-ring shrink sealing is "
++                   "not supported on this host");
++        goto out;
++#endif
++
++        if (crucible_hot_fork_private_ring_stage.staged) {
++            if (!crucible_hot_fork_private_ring_stage_matches(
++                    fdname, expected_device, expected_inode,
++                    expected_length)) {
++                error_setg(errp, "A different Crucible hot-fork private-ring "
++                           "descriptor is already staged");
++                goto out;
++            }
++            report = crucible_hot_fork_private_ring_report();
++            goto out;
++        }
++        if (crucible_hot_fork_template_active) {
++            error_setg(errp, "Cannot change Crucible hot-fork private rings "
++                       "during template preparation");
++            goto out;
++        }
++
++        crucible_hot_fork_private_ring_stage.staged = true;
++        crucible_hot_fork_private_ring_stage.fd = candidate;
++        candidate = -1;
++        crucible_hot_fork_private_ring_stage.fdname = g_strdup(fdname);
++        crucible_hot_fork_private_ring_stage.device = expected_device;
++        crucible_hot_fork_private_ring_stage.inode = expected_inode;
++        crucible_hot_fork_private_ring_stage.length = expected_length;
++        crucible_hot_fork_private_ring_stage.shrink_sealed = true;
++        crucible_hot_fork_private_ring_stage.generation++;
++        assert(crucible_hot_fork_private_ring_stage.generation != 0);
++        report = crucible_hot_fork_private_ring_report();
++        break;
++    case CRUCIBLE_HOT_FORK_PRIVATE_RING_ACTION_QUERY:
++        if (fdname || has_expected_device || has_expected_inode ||
++            has_expected_length) {
++            error_setg(errp, "Crucible hot-fork private-ring query accepts no "
++                       "descriptor identity");
++            goto out;
++        }
++        report = crucible_hot_fork_private_ring_report();
++        break;
++    case CRUCIBLE_HOT_FORK_PRIVATE_RING_ACTION_RELEASE:
++        if (!fdname || !has_expected_device || !has_expected_inode ||
++            !has_expected_length ||
++            !crucible_hot_fork_private_ring_fd_name_valid(fdname)) {
++            error_setg(errp, "Crucible hot-fork private-ring release requires "
++                       "an exact descriptor identity");
++            goto out;
++        }
++        if (!crucible_hot_fork_private_ring_stage.staged) {
++            error_setg(errp, "No Crucible hot-fork private-ring descriptor "
++                       "is staged");
++            goto out;
++        }
++        if (!crucible_hot_fork_private_ring_stage_matches(
++                fdname, expected_device, expected_inode, expected_length)) {
++            error_setg(errp, "Crucible hot-fork private-ring release identity "
++                       "does not match the retained descriptor");
++            goto out;
++        }
++        if (crucible_hot_fork_template_active) {
++            error_setg(errp, "Cannot release Crucible hot-fork private rings "
++                       "during template preparation");
++            goto out;
++        }
++        close(crucible_hot_fork_private_ring_stage.fd);
++        crucible_hot_fork_private_ring_stage.fd = -1;
++        g_clear_pointer(&crucible_hot_fork_private_ring_stage.fdname, g_free);
++        crucible_hot_fork_private_ring_stage.staged = false;
++        crucible_hot_fork_private_ring_stage.device = 0;
++        crucible_hot_fork_private_ring_stage.inode = 0;
++        crucible_hot_fork_private_ring_stage.length = 0;
++        crucible_hot_fork_private_ring_stage.shrink_sealed = false;
++        crucible_hot_fork_private_ring_stage.generation++;
++        assert(crucible_hot_fork_private_ring_stage.generation != 0);
++        report = crucible_hot_fork_private_ring_report();
++        break;
++    default:
++        g_assert_not_reached();
++    }
++out:
++    if (candidate >= 0) {
++        close(candidate);
++    }
++    g_mutex_unlock(&crucible_hot_fork_template_lock);
++    return report;
++}
++
+ static void crucible_hot_fork_template_complete(
+     CrucibleHotForkTemplateOutcome outcome)
+ {
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 4d1bdffb8..90da18d46 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -1382,6 +1382,100 @@
+   'returns': 'CrucibleHotForkTemplateState',
+   'allow-oob': true }
+ 
++##
++# @CrucibleHotForkPrivateRingAction:
++#
++# Operation over QEMU's retained duplicate of one branch-private shared-ring
++# mapping descriptor.
++#
++# @stage: duplicate and authenticate one standard-QMP `getfd` entry
++#
++# @query: observe the retained descriptor without changing it
++#
++# @release: close the exact QEMU-retained duplicate; the monitor's `getfd`
++#     entry remains separately owned until standard QMP `closefd`
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'enum': 'CrucibleHotForkPrivateRingAction',
++  'data': [ 'stage', 'query', 'release' ] }
++
++##
++# @CrucibleHotForkPrivateRingState:
++#
++# Exact QEMU-owned state for one authenticated private-ring descriptor. This is
++# a template-side retention primitive only: it neither remaps a fork child nor
++# completes the inherited-resource disposition table, so readiness proof bits
++# 6 and 7 remain clear.
++#
++# @schema-version: retained-descriptor contract version, currently 1
++#
++# @generation: process-local positive mutation generation, or zero initially
++#
++# @staged: whether QEMU retains an independently duplicated descriptor
++#
++# @fdname: exact standard-QMP name while @staged
++#
++# @device: authenticated descriptor device identity, or zero when absent
++#
++# @inode: authenticated descriptor inode identity, or zero when absent
++#
++# @length: authenticated descriptor length, or zero when absent
++#
++# @shrink-sealed: whether `F_SEAL_SHRINK` was present at adoption
++#
++# @disposition-complete: always false until the complete child disposition
++#     transaction lands
++#
++# @readiness-proof-acknowledged: always false; this primitive acknowledges no
++#     hot-fork readiness proof
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkPrivateRingState',
++  'data': { 'schema-version': 'uint32',
++            'generation': 'uint64',
++            'staged': 'bool',
++            '*fdname': 'str',
++            'device': 'uint64',
++            'inode': 'uint64',
++            'length': 'uint64',
++            'shrink-sealed': 'bool',
++            'disposition-complete': 'bool',
++            'readiness-proof-acknowledged': 'bool' } }
++
++##
++# @crucible-hot-fork-private-rings:
++#
++# Retains or observes one authenticated duplicate of a standard-QMP `getfd`
++# entry for future child private-ring remapping. Stage requires the exact
++# device, inode, and length and accepts only a regular shrink-sealed descriptor.
++# Query accepts no descriptor fields. Release requires the same exact basis as
++# stage and does not close the separately owned standard-QMP name.
++#
++# @action: requested retained-descriptor operation
++#
++# @fdname: exact standard-QMP name, required for @stage and @release
++#
++# @expected-device: exact expected `st_dev`, required for @stage and @release
++#
++# @expected-inode: exact expected `st_ino`, required for @stage and @release
++#
++# @expected-length: exact expected `st_size`, required for @stage and @release
++#
++# Returns: @CrucibleHotForkPrivateRingState
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'crucible-hot-fork-private-rings',
++  'data': { 'action': 'CrucibleHotForkPrivateRingAction',
++            '*fdname': 'str',
++            '*expected-device': 'uint64',
++            '*expected-inode': 'uint64',
++            '*expected-length': 'uint64' },
++  'returns': 'CrucibleHotForkPrivateRingState',
++  'allow-oob': true }
++
+ ##
+ # @CrucibleHotForkMutex:
+ #

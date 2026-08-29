@@ -4,8 +4,9 @@
 //! status/topology, hot-fork-readiness observation, bounded QEMU-owned resource
 //! inventories, the reversible plugin callback barrier, and QEMU's retained
 //! template-preparation coordinator, plus VM snapshot save/load/delete,
-//! snapshot job polling, bounded standard `getfd`/`closefd` descriptor staging,
-//! and graceful quit. The client parses JSON-line QMP responses internally,
+//! snapshot job polling, bounded standard `getfd`/`closefd` transfer plus
+//! QEMU-owned authenticated private-ring retention, and graceful quit. The
+//! client parses JSON-line QMP responses internally,
 //! skips asynchronous event objects while waiting for a command response, and
 //! exposes no public arbitrary-command execution path.
 
@@ -20,6 +21,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use thiserror::Error;
+
+use crucible_shmem::SetupRegionBackingIdentity;
 
 use crate::{QemuLoadvmCommandAuthorization, QemuNodeChannelError};
 
@@ -40,7 +43,8 @@ pub use hot_fork::{
     QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES, QMP_HOT_FORK_MUTEX_INVENTORY_MAX,
     QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND,
     QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION,
-    QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_RCU_BARRIER_COMMAND,
+    QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
+    QMP_HOT_FORK_PRIVATE_RINGS_SCHEMA_VERSION, QMP_HOT_FORK_RCU_BARRIER_COMMAND,
     QMP_HOT_FORK_RCU_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_RCU_INVENTORY_MAX,
     QMP_HOT_FORK_RCU_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_READINESS_SCHEMA_VERSION,
     QMP_HOT_FORK_REQUIRED_PROOFS, QMP_HOT_FORK_TEMPLATE_COMMAND,
@@ -58,19 +62,20 @@ pub use hot_fork::{
     QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,
     QmpHotForkBlockSnapshotRoot, QmpHotForkBottomHalf, QmpHotForkBottomHalfInventory,
     QmpHotForkMutex, QmpHotForkMutexInventory, QmpHotForkPluginBarrierState,
-    QmpHotForkPluginResourceInventory, QmpHotForkProof, QmpHotForkRcuBarrierState,
-    QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness, QmpHotForkTemplateOutcome,
-    QmpHotForkTemplateState, QmpHotForkThread, QmpHotForkThreadDisposition,
-    QmpHotForkThreadInventory, QmpHotForkTimer, QmpHotForkTimerClock, QmpHotForkTimerInventory,
+    QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState, QmpHotForkProof,
+    QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness,
+    QmpHotForkTemplateOutcome, QmpHotForkTemplateState, QmpHotForkThread,
+    QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer, QmpHotForkTimerClock,
+    QmpHotForkTimerInventory,
 };
 use hot_fork::{
     parse_hot_fork_aio_handler_inventory, parse_hot_fork_aio_inventory,
     parse_hot_fork_bh_timer_barrier_state, parse_hot_fork_block_backend_inventory,
     parse_hot_fork_block_barrier_state, parse_hot_fork_bottom_half_inventory,
     parse_hot_fork_mutex_inventory, parse_hot_fork_plugin_barrier_state,
-    parse_hot_fork_plugin_resource_inventory, parse_hot_fork_rcu_barrier_state,
-    parse_hot_fork_rcu_inventory, parse_hot_fork_readiness, parse_hot_fork_template_state,
-    parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
+    parse_hot_fork_plugin_resource_inventory, parse_hot_fork_private_ring_state,
+    parse_hot_fork_rcu_barrier_state, parse_hot_fork_rcu_inventory, parse_hot_fork_readiness,
+    parse_hot_fork_template_state, parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
 };
 pub use snapshot_tag::QmpSnapshotTag;
 pub use vmstate_control::QemuQmpVmStateControlChannel;
@@ -423,6 +428,107 @@ where
         name: &QmpDescriptorName,
     ) -> Result<QmpCommandComplete, QmpError> {
         self.send_command(QmpCommand::CloseFd { name })
+    }
+
+    /// Makes QEMU retain an independently duplicated private-ring descriptor.
+    ///
+    /// The descriptor must already have been imported under `name` through
+    /// [`Self::install_descriptor`]. QEMU authenticates the duplicate against
+    /// the exact backing identity and requires `F_SEAL_SHRINK`. This stage does
+    /// not complete the eventual child disposition or acknowledge either
+    /// corresponding hot-fork readiness proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails, QEMU rejects the exact
+    /// descriptor basis, or its response violates the closed stage contract.
+    /// Every error poisons the client because retained descriptor ownership may
+    /// then be ambiguous.
+    pub fn stage_hot_fork_private_rings(
+        &mut self,
+        name: &QmpDescriptorName,
+        identity: SetupRegionBackingIdentity,
+    ) -> Result<QmpHotForkPrivateRingState, QmpError> {
+        let result = self
+            .send_command_return(QmpCommand::HotForkPrivateRings {
+                action: HotForkPrivateRingAction::Stage,
+                name: Some(name),
+                identity: Some(identity),
+            })
+            .and_then(|response| parse_hot_fork_private_ring_state(&response.value))
+            .and_then(|state| {
+                let exact_basis = state.staged()
+                    && state.descriptor_name() == Some(name)
+                    && state.device() == identity.device()
+                    && state.inode() == identity.inode()
+                    && state.length() == identity.length()
+                    && state.shrink_sealed();
+                if exact_basis {
+                    Ok(state)
+                } else {
+                    Err(QmpError::MalformedTypedResponse {
+                        command: QmpCommandKind::HotForkPrivateRings,
+                        response: format!(
+                            "private-ring stage did not retain {name:?}/{identity:?}"
+                        ),
+                    })
+                }
+            });
+        self.poison_after_private_ring_mutation_error(result)
+    }
+
+    /// Reads QEMU's exact retained private-ring descriptor state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the query fails or QEMU returns a state outside
+    /// the closed version-1 contract.
+    pub fn query_hot_fork_private_rings(&mut self) -> Result<QmpHotForkPrivateRingState, QmpError> {
+        let response = self.send_command_return(QmpCommand::HotForkPrivateRings {
+            action: HotForkPrivateRingAction::Query,
+            name: None,
+            identity: None,
+        })?;
+        parse_hot_fork_private_ring_state(&response.value)
+    }
+
+    /// Releases QEMU's exact independently retained private-ring descriptor.
+    ///
+    /// This does not close the standard monitor-owned `getfd` name; callers
+    /// release that second ownership layer with [`Self::close_descriptor`] only
+    /// after this command confirms the QEMU-owned duplicate is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails, QEMU rejects the exact
+    /// descriptor basis, or the response still reports a staged descriptor.
+    /// Every error poisons the client because retained descriptor ownership may
+    /// then be ambiguous.
+    pub fn release_hot_fork_private_rings(
+        &mut self,
+        name: &QmpDescriptorName,
+        identity: SetupRegionBackingIdentity,
+    ) -> Result<QmpHotForkPrivateRingState, QmpError> {
+        let result = self
+            .send_command_return(QmpCommand::HotForkPrivateRings {
+                action: HotForkPrivateRingAction::Release,
+                name: Some(name),
+                identity: Some(identity),
+            })
+            .and_then(|response| parse_hot_fork_private_ring_state(&response.value))
+            .and_then(|state| {
+                if state.staged() || state.generation() == 0 {
+                    Err(QmpError::MalformedTypedResponse {
+                        command: QmpCommandKind::HotForkPrivateRings,
+                        response: String::from(
+                            "private-ring release did not report a positive absent generation",
+                        ),
+                    })
+                } else {
+                    Ok(state)
+                }
+            });
+        self.poison_after_private_ring_mutation_error(result)
     }
 
     /// Confirms that launch predeclared the fixed guest-introspection channel.
@@ -1346,6 +1452,17 @@ where
         })
     }
 
+    fn poison_after_private_ring_mutation_error<T>(
+        &mut self,
+        result: Result<T, QmpError>,
+    ) -> Result<T, QmpError> {
+        if result.is_err() {
+            self.poisoned = true;
+            self.stream.get_mut().poison_qmp_stream();
+        }
+        result
+    }
+
     fn ensure_usable(&self) -> Result<(), QmpError> {
         if self.poisoned {
             Err(QmpError::ConnectionPoisoned)
@@ -1695,6 +1812,8 @@ pub enum QmpCommandKind {
     HotForkBlockBarrier,
     /// QEMU-owned retained hot-fork template coordinator operation.
     HotForkTemplate,
+    /// QEMU-owned branch-private ring descriptor retention operation.
+    HotForkPrivateRings,
     /// QEMU-owned hot-fork allocated-bottom-half inventory query.
     QueryHotForkBottomHalfInventory,
     /// QEMU-owned hot-fork mutex ownership inventory query.
@@ -1741,6 +1860,7 @@ impl QmpCommandKind {
             Self::HotForkBhTimerBarrier => QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND,
             Self::HotForkBlockBarrier => QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
             Self::HotForkTemplate => QMP_HOT_FORK_TEMPLATE_COMMAND,
+            Self::HotForkPrivateRings => QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
             Self::QueryHotForkBottomHalfInventory => {
                 QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND
             }
@@ -1806,12 +1926,29 @@ enum HotForkTemplateAction {
     Abort,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HotForkPrivateRingAction {
+    Stage,
+    Query,
+    Release,
+}
+
 impl HotForkTemplateAction {
     const fn wire_name(self) -> &'static str {
         match self {
             Self::Prepare => "prepare",
             Self::Query => "query",
             Self::Abort => "abort",
+        }
+    }
+}
+
+impl HotForkPrivateRingAction {
+    const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Stage => "stage",
+            Self::Query => "query",
+            Self::Release => "release",
         }
     }
 }
@@ -1906,6 +2043,11 @@ enum QmpCommand<'a> {
         action: HotForkTemplateAction,
         block_snapshot_bindings: Option<&'a [QmpHotForkBlockSnapshotBinding]>,
     },
+    HotForkPrivateRings {
+        action: HotForkPrivateRingAction,
+        name: Option<&'a QmpDescriptorName>,
+        identity: Option<SetupRegionBackingIdentity>,
+    },
     QueryHotForkBottomHalfInventory,
     QueryHotForkMutexInventory,
     QueryHotForkTimerInventory,
@@ -1950,6 +2092,7 @@ impl QmpCommand<'_> {
             Self::HotForkBhTimerBarrier { .. } => QmpCommandKind::HotForkBhTimerBarrier,
             Self::HotForkBlockBarrier { .. } => QmpCommandKind::HotForkBlockBarrier,
             Self::HotForkTemplate { .. } => QmpCommandKind::HotForkTemplate,
+            Self::HotForkPrivateRings { .. } => QmpCommandKind::HotForkPrivateRings,
             Self::QueryHotForkBottomHalfInventory => {
                 QmpCommandKind::QueryHotForkBottomHalfInventory
             }
@@ -2081,6 +2224,41 @@ impl QmpCommand<'_> {
                 }
                 json!({
                     "exec-oob": QMP_HOT_FORK_TEMPLATE_COMMAND,
+                    "arguments": Value::Object(arguments),
+                })
+            }
+            Self::HotForkPrivateRings {
+                action,
+                name,
+                identity,
+            } => {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert(
+                    String::from("action"),
+                    Value::String(action.wire_name().to_owned()),
+                );
+                if let Some(name) = name {
+                    arguments.insert(
+                        String::from("fdname"),
+                        Value::String(name.as_str().to_owned()),
+                    );
+                }
+                if let Some(identity) = identity {
+                    arguments.insert(
+                        String::from("expected-device"),
+                        Value::from(identity.device()),
+                    );
+                    arguments.insert(
+                        String::from("expected-inode"),
+                        Value::from(identity.inode()),
+                    );
+                    arguments.insert(
+                        String::from("expected-length"),
+                        Value::from(identity.length()),
+                    );
+                }
+                json!({
+                    "exec-oob": QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
                     "arguments": Value::Object(arguments),
                 })
             }

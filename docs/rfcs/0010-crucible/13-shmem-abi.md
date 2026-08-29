@@ -1039,11 +1039,16 @@ checked before and after that work. The resulting owner is opaque at this
 checkpoint: it grants no raw descriptor escape or barrier release. The node may
 consume it into a retained template-process stage by rechecking the live source
 and destination digest, sending one standard QMP `getfd`/`SCM_RIGHTS` duplicate
-under a bounded identity-derived name, and retaining the original mapping until
-the same name is acknowledged by `closefd` or a later closed child-disposition
-transaction. Transfer ambiguity poisons QMP, retains the mapping, and
-quarantines the QEMU generation. This stage is not evidence that a child
-process inherited, remapped, authenticated, or released the region.
+under a bounded identity-derived name, and requiring patched QEMU to
+independently duplicate and authenticate that entry's exact device, inode,
+length, regular-file type, and shrink seal. The original mapping remains held.
+Release requires that same exact basis and closes the QEMU-owned duplicate
+before standard `closefd` closes the monitor-owned entry. Transfer or adoption
+ambiguity poisons QMP, retains the mapping, and quarantines the QEMU generation.
+This stage explicitly
+acknowledges neither complete disposition nor readiness and is not evidence
+that a child process inherited, remapped, authenticated, or released the
+region.
 
 The operations the ABI defines:
 

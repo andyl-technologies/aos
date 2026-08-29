@@ -5,6 +5,7 @@ use std::os::fd::BorrowedFd;
 use std::os::unix::net::UnixStream;
 
 use crucible::Checkpoint;
+use crucible_shmem::SetupRegionBackingIdentity;
 
 use super::{
     QmpClient, QmpCommandComplete, QmpDescriptorName, QmpError, QmpHotForkAioHandlerInventory,
@@ -440,9 +441,10 @@ where
 
     /// Imports one held branch-private ring descriptor into the QEMU template.
     ///
-    /// The caller retains its descriptor and mapping. A successful return only
-    /// proves that standard QMP `getfd` acknowledged this exact name; it does
-    /// not authorize a fork, release a ring barrier, or prove child rebinding.
+    /// The caller retains its descriptor and mapping. This first imports a
+    /// monitor-owned `getfd` copy, then makes QEMU independently duplicate and
+    /// authenticate it against `identity`. A successful return does not
+    /// authorize a fork, release a ring barrier, or prove child rebinding.
     ///
     /// # Errors
     ///
@@ -453,23 +455,32 @@ where
         &mut self,
         name: &QmpDescriptorName,
         descriptor: BorrowedFd<'_>,
+        identity: SetupRegionBackingIdentity,
     ) -> Result<(), QemuNodeChannelError> {
         self.client
             .install_descriptor(name, descriptor)
-            .map(|_complete| ())
+            .map_err(QemuNodeChannelError::from)?;
+        self.client
+            .stage_hot_fork_private_rings(name, identity)
+            .map(|_state| ())
             .map_err(QemuNodeChannelError::from)
     }
 
-    /// Closes one branch-private ring descriptor previously imported into QEMU.
+    /// Releases both QEMU-owned and monitor-owned private-ring descriptors.
     ///
     /// # Errors
     ///
     /// Returns [`QemuNodeChannelError`] when the typed QMP client is poisoned,
-    /// the close exchange fails, or QEMU no longer owns this exact name.
+    /// the close exchange fails, or QEMU no longer owns the exact name and
+    /// backing identity.
     pub fn close_hot_fork_private_ring_descriptor(
         &mut self,
         name: &QmpDescriptorName,
+        identity: SetupRegionBackingIdentity,
     ) -> Result<(), QemuNodeChannelError> {
+        self.client
+            .release_hot_fork_private_rings(name, identity)
+            .map_err(QemuNodeChannelError::from)?;
         self.client
             .close_descriptor(name)
             .map(|_complete| ())

@@ -244,7 +244,7 @@ enum QemuHotForkPrivateRingMappingError {
 /// QMP ownership state for one node-retained private ring mapping.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QemuHotForkPrivateRingStageState {
-    /// Standard QMP `getfd` acknowledged the exact descriptor name.
+    /// QEMU duplicated and authenticated the exact standard-QMP descriptor.
     Installed,
     /// Transfer began but QMP ownership could not be determined safely.
     TransferUncertain,
@@ -564,6 +564,7 @@ impl QemuNode {
             .install_hot_fork_private_ring_descriptor(
                 mapping.descriptor_name(),
                 mapping.descriptor(),
+                mapping.backing_identity(),
             );
         if let Err(source) = transfer {
             self.hot_fork_private_ring_stage =
@@ -587,10 +588,10 @@ impl QemuNode {
 
     /// Closes an acknowledged QMP descriptor stage and returns its held mapping.
     ///
-    /// A successful `closefd` acknowledgement proves that QEMU released its
-    /// imported duplicate before the mapping leaves node ownership. An error
-    /// retains the mapping and quarantines the node because descriptor ownership
-    /// is then unsafe to infer.
+    /// QEMU first releases its independently retained duplicate, then standard
+    /// `closefd` releases the monitor-owned name. An error retains the mapping
+    /// and quarantines the node because either ownership layer may then be
+    /// unsafe to infer.
     ///
     /// # Errors
     ///
@@ -606,10 +607,11 @@ impl QemuNode {
                 "descriptor release requires a running node",
             ));
         }
-        let name = match self.hot_fork_private_ring_stage.as_ref() {
-            Some(QemuHotForkPrivateRingStage::Installed(mapping)) => {
-                mapping.descriptor_name().clone()
-            }
+        let (name, identity) = match self.hot_fork_private_ring_stage.as_ref() {
+            Some(QemuHotForkPrivateRingStage::Installed(mapping)) => (
+                mapping.descriptor_name().clone(),
+                mapping.backing_identity(),
+            ),
             Some(QemuHotForkPrivateRingStage::TransferUncertain(_)) => {
                 return Err(QemuNodeChannelError::new(
                     "release hot-fork private ring mapping",
@@ -626,7 +628,7 @@ impl QemuNode {
         if let Err(source) = self
             .channels
             .qmp_machine_control
-            .close_hot_fork_private_ring_descriptor(&name)
+            .close_hot_fork_private_ring_descriptor(&name, identity)
         {
             self.lifecycle_state = crate::QemuNodeLifecycleState::Quarantined;
             return Err(source);

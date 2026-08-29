@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "09ecc8d5bd66afb1b63fb1e80c137e6f4959cd44c72779d8ae1ee2a68cb56f61";
+  patchBranchBundleSha256 = "be66b7140290b0cef1619b49d7d8bfdeac7f1fab71a91722367704fa9078ac2d";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "c4bf833e5bb035892c17e5c27a35329800f70e8e";
+  patchBranchHeadCommit = "74e51cfb9b23e70bae439e6d0b9f1e1644c4becf";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1315,6 +1315,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "the version-4 plugin barrier reports shared-ring consumers admitted before the hold and requires every producer and consumer to drain before subsystem quiescence without yet cloning queued bytes or acknowledging proof bit 6";
+    }
+    {
+      file = "0139-crucible-retain-hot-fork-private-rings.patch";
+      branchSubject = "crucible: retain private hot-fork ring descriptors";
+      branchCommit = "74e51cfb9b23e70bae439e6d0b9f1e1644c4becf";
+      branchTree = "c33d7194db4adf7259d14228c06330e96d8e7f84";
+      catalogName = "crucible-hot-fork-private-ring-stage";
+      class = "F";
+      enforces = "HFORK-3,HFORK-8,HFORK-9";
+      capability = "QEMU duplicates and authenticates one bounded standard-QMP getfd entry by name, device, inode, length, regular-file type, and shrink seal, then retains it independently for future child remapping while explicitly keeping readiness bits 6 and 7 clear";
     }
   ];
   catalogOnlyCapabilities = [

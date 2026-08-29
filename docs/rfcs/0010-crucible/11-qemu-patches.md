@@ -2250,6 +2250,26 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   child mapping, reconstruct workers, or acknowledge proof bit 6.
 - **Risk:** F.
 
+### crucible-hot-fork-private-ring-stage — retain authenticated private rings
+
+- **Patch:** `0139-crucible-retain-hot-fork-private-rings.patch`.
+- **Enforces:** [HFORK-3], [HFORK-8], [HFORK-9].
+- **Mechanism:** an OOB QMP command duplicates one bounded standard-QMP
+  `getfd` entry without consuming the monitor-owned copy, then authenticates
+  the duplicate's exact name, device, inode, length, regular-file type, and
+  `F_SEAL_SHRINK`. QEMU retains that descriptor independently until a release
+  supplies the same exact basis; standard `closefd` remains a separate host
+  operation.
+- **Micro-test:** typed Rust fixtures pin the stage/query/release wire shapes,
+  exact-basis response checks, false disposition/readiness bits, and poisoning
+  on contradictory mutation responses. A real Unix-socket fixture proves the
+  two ownership layers are acquired and released in the required order.
+- **Inertness:** descriptor retention is reachable only through the authorized
+  custom command after standard `getfd`. It does not fork, remap a child,
+  release ring barriers, complete the inherited-resource disposition table, or
+  acknowledge readiness bits 6 or 7.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
