@@ -2053,6 +2053,14 @@ pub struct RegistryRootMeta {
     /// set `false` for a pure input-addressed registry.
     #[serde(default = "default_content_addressed")]
     pub content_addressed: bool,
+    /// Whether every directly delivered system image must contain UKIs whose
+    /// signatures verify against the committed `sb-certs.toml` policy.
+    ///
+    /// This is an authenticated, opt-in release gate. Package-only releases
+    /// are unaffected. The default remains `false` for development and legacy
+    /// registries that intentionally publish unsigned images.
+    #[serde(default)]
+    pub require_signed_ukis: bool,
 }
 
 /// Serde default for [`RegistryRootMeta::content_addressed`].
@@ -2317,6 +2325,18 @@ mod root_config_tests {
         assert!(cfg.caches.is_none());
         assert!(cfg.cache_entries().is_empty());
         assert!(cfg.cache_stack().is_none());
+        assert!(!cfg.registry.require_signed_ukis);
+    }
+
+    #[test]
+    fn signed_uki_release_gate_is_explicitly_opt_in() {
+        let source = r#"
+            [registry]
+            name = "example"
+            require_signed_ukis = true
+        "#;
+        let cfg: RegistryRootConfig = toml::from_str(source).unwrap();
+        assert!(cfg.registry.require_signed_ukis);
     }
 
     #[test]

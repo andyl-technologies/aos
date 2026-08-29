@@ -46,7 +46,7 @@ pub mod load;
 use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
-use aos_registry_surface::manifest::RegistryRootConfig;
+use aos_registry_surface::manifest::{ImageVerificationState, RegistryRootConfig};
 use aos_registry_surface::object::{Commit, ObjectKind};
 use aos_registry_surface::refs::{parse_head, parse_info_refs, Refs};
 use aos_registry_surface::sshsig;
@@ -595,6 +595,7 @@ async fn index_registry_inner(
                         refs_digest,
                         &source_commit,
                         &release_tree.root.registry.name,
+                        release_tree.root.registry.require_signed_ukis,
                         &release_tree.packages,
                         &tag_name,
                         &mut release_leases,
@@ -1213,6 +1214,7 @@ async fn verify_system_image_objects(
     refs_digest: &str,
     commit: &str,
     registry_identity: &str,
+    require_signed_ukis: bool,
     packages: &[aos_registry_surface::manifest::PackageToml],
     selected_release: &str,
     snapshot_leases: &mut Vec<String>,
@@ -1228,6 +1230,18 @@ async fn verify_system_image_objects(
                         continue;
                     }
                     image.validate_delivery(&version.version, platform)?;
+                    if require_signed_ukis
+                        && image.delivery.uki.verification != ImageVerificationState::PolicyVerified
+                    {
+                        bail!(
+                            "registry '{}' requires signed UKIs, but release '{}' package '{}' platform '{}' format '{}' is not policy-verified",
+                            registry_identity,
+                            version.version,
+                            package.package.name,
+                            platform,
+                            image.format
+                        );
+                    }
                     let indexed_image = crate::db::IndexedSystemImage {
                         package: package.package.name.clone(),
                         release: version.version.clone(),
