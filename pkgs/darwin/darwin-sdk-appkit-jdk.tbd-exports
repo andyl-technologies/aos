@@ -33,6 +33,7 @@
       - _NSAccessibilityFocusedAttribute
       - _NSAccessibilityFocusedUIElementChangedNotification
       - _NSAccessibilityGroupRole
+      - _NSAccessibilityGridRole
       - _NSAccessibilityHelpAttribute
       - _NSAccessibilityHorizontalOrientationValue
       - _NSAccessibilityHorizontalScrollBarAttribute
