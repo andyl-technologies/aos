@@ -13382,6 +13382,53 @@ impl Database {
         Ok(packages)
     }
 
+    /// Counts distinct packages in every complete verified release snapshot.
+    ///
+    /// Releases without a complete artifact snapshot are retained with a zero
+    /// count so browse pages can distinguish "no packages" from an omitted
+    /// release row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or if a count is outside `usize`.
+    pub async fn list_release_package_counts(
+        &self,
+        registry_id: i64,
+    ) -> Result<Vec<(String, usize)>> {
+        let rows = self
+            .backend
+            .query(
+                "SELECT release.semver, COUNT(DISTINCT artifact.package_name)
+                   FROM releases release
+                   LEFT JOIN release_artifact_snapshot_heads head
+                     ON head.release_id = release.id AND head.registry_id = release.registry_id
+                   LEFT JOIN release_artifact_snapshots snapshot
+                     ON snapshot.snapshot_id = head.complete_artifact_snapshot_id
+                    AND snapshot.state = 'complete'
+                    AND snapshot.source_commit = release.commit_oid
+                    AND snapshot.verified_tag_oid = release.tag_oid
+                   LEFT JOIN release_artifacts artifact
+                     ON artifact.snapshot_id = snapshot.snapshot_id
+                    AND artifact.artifact_kind = 'output'
+                  WHERE release.registry_id = ?1
+                  GROUP BY release.id, release.semver
+                  ORDER BY release.semver",
+                &vals![registry_id],
+            )
+            .await?;
+
+        rows.iter()
+            .map(|row| {
+                let release = row.get::<String>(0)?;
+                let count = row.get::<i64>(1)?;
+                Ok((
+                    release,
+                    usize::try_from(count).context("release package count is outside usize")?,
+                ))
+            })
+            .collect()
+    }
+
     /// Single-query package listing shared by [`Database::list_packages`] and
     /// [`Database::list_packages_capped`].
     ///
@@ -26697,6 +26744,10 @@ source_nar_hash = ""
         assert_eq!(release_packages[0].name, "curl");
         assert_eq!(release_packages[0].latest_version.as_deref(), Some("8.5.0"));
         assert_eq!(release_packages[0].platforms, ["x86_64-linux"]);
+        assert_eq!(
+            db.list_release_package_counts(id).await.unwrap(),
+            [("1.0.0".to_string(), 1)]
+        );
         let commit_packages = db
             .list_packages_at_release(id, &"c".repeat(64))
             .await

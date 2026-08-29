@@ -2091,11 +2091,25 @@ fn image_target_token(target: ImageTarget) -> &'static str {
     }
 }
 
-fn image_verification_label(state: ImageVerificationState) -> (&'static str, &'static str) {
+fn image_verification_label(
+    state: ImageVerificationState,
+) -> (&'static str, &'static str, &'static str) {
     match state {
-        ImageVerificationState::Unsigned => ("unsigned", "bad"),
-        ImageVerificationState::SignedUnverified => ("signed, unverified", "warn"),
-        ImageVerificationState::PolicyVerified => ("verified", "ok"),
+        ImageVerificationState::Unsigned => (
+            "UKI unsigned",
+            "warn",
+            "The unified kernel image has no Authenticode signature.",
+        ),
+        ImageVerificationState::SignedUnverified => (
+            "UKI signed, policy unverified",
+            "warn",
+            "The unified kernel image is signed, but no committed active-certificate policy verified its signer.",
+        ),
+        ImageVerificationState::PolicyVerified => (
+            "UKI policy verified",
+            "ok",
+            "The unified kernel image signer was verified against committed Secure Boot certificate policy.",
+        ),
     }
 }
 
@@ -2263,7 +2277,7 @@ pub fn images_page(
         {
             continue;
         }
-        let (boot_verification, boot_class) =
+        let (boot_verification, boot_class, boot_explanation) =
             image_verification_label(image.delivery.uki.verification);
         let channel_cell = if channel_names.is_empty() {
             "—".to_string()
@@ -2316,7 +2330,7 @@ pub fn images_page(
         };
         let verification = format!(
             "<span class=\"ok\">release verified</span> · \
-             <span class=\"{boot_class}\">boot {boot_verification}</span>"
+             <span class=\"{boot_class}\" title=\"{boot_explanation}\">{boot_verification}</span>"
         );
         let encoding = format!(
             "{} · {}",
@@ -2461,6 +2475,8 @@ pub fn releases_page(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
     releases: &[ReleaseRow],
+    package_counts: &[(String, usize)],
+    image_counts: &[(String, usize)],
     page_number: usize,
     started: Instant,
     session: &SessionIndicator,
@@ -2487,13 +2503,29 @@ pub fn releases_page(
         .slice(&sorted)
         .iter()
         .map(|release| {
+            let package_count = package_counts
+                .iter()
+                .find_map(|(version, count)| (version == &release.semver).then_some(*count))
+                .unwrap_or_default();
+            let image_count = image_counts
+                .iter()
+                .find_map(|(version, count)| (version == &release.semver).then_some(*count))
+                .unwrap_or_default();
             vec![
                 format!(
-                    "<span id=\"release-{}\"><a href=\"/{}/-/images?release={}\">{}</a></span>",
+                    "<span id=\"release-{}\">{}</span>",
+                    urlencode(&release.semver),
+                    escape(&release.semver),
+                ),
+                format!(
+                    "<span class=\"release-shortlinks\">\
+                     <a class=\"release-count-pill\" href=\"/{}/-/images?release={}\">images <strong>{image_count}</strong></a>\
+                     <a class=\"release-count-pill\" href=\"/{}/-/packages?release={}\">packages <strong>{package_count}</strong></a>\
+                     </span>",
+                    escape(slug),
                     urlencode(&release.semver),
                     escape(slug),
                     urlencode(&release.semver),
-                    escape(&release.semver),
                 ),
                 hash_value(&release.commit_oid),
                 match &release.signer {
@@ -2518,7 +2550,14 @@ pub fn releases_page(
     let mut body = registry_nav(slug, "releases");
     body.push_str("<h1>Releases</h1>\n");
     body.push_str(&table(
-        &["release", "commit", "signature", "pack", "tagged"],
+        &[
+            "release",
+            "contents",
+            "commit",
+            "signature",
+            "pack",
+            "tagged",
+        ],
         &rows,
     ));
     body.push_str(&pager.nav(&format!("/{slug}/-/releases"), ""));
@@ -3061,6 +3100,8 @@ mod tests {
         assert!(default.contains("<th scope=\"row\">file SHA-256</th>"));
         assert!(default.contains("<th scope=\"row\">UKI SHA-256</th>"));
         assert!(default.contains("class=\"hash-control\""));
+        assert!(default.contains("UKI policy verified"));
+        assert!(!default.contains("boot verified"));
         assert!(default.contains(&format!("data-copy-value=\"{}\"", "a".repeat(64))));
         assert!(default.contains("aos-2026.08.img.zst"));
         assert!(default.contains("aos-2026.09.qcow2"));
@@ -3086,6 +3127,23 @@ mod tests {
         assert!(filtered.contains("aos-2026.08.img.zst"));
         assert!(!filtered.contains("aos-2026.09.qcow2"));
         assert!(filtered.contains("value=\"bare-metal\" selected"));
+
+        let mut unsigned = indexed_image("raw", "2026.10");
+        unsigned.delivery.uki.verification = ImageVerificationState::Unsigned;
+        unsigned.delivery.uki.signer_cert_sha256 = None;
+        let unsigned_html = images_page(
+            &registry(),
+            None,
+            &[unsigned],
+            &[],
+            Some("https://download.example/demo"),
+            &ImageBrowse::default(),
+            Instant::now(),
+            &anon(),
+        );
+        assert!(unsigned_html.contains("UKI unsigned"));
+        assert!(unsigned_html.contains("has no Authenticode signature"));
+        assert!(!unsigned_html.contains("boot unsigned"));
     }
 
     #[test]
@@ -3534,7 +3592,16 @@ mod tests {
             release("1.10.0", 100, true),
             release("0.9.0", 200, false),
         ];
-        let html = releases_page(&registry(), None, &releases, 1, Instant::now(), &anon());
+        let html = releases_page(
+            &registry(),
+            None,
+            &releases,
+            &[("1.10.0".into(), 258)],
+            &[("1.10.0".into(), 3)],
+            1,
+            Instant::now(),
+            &anon(),
+        );
         let first = html.find("1.10.0").unwrap();
         let second = html.find("1.9.0").unwrap();
         let third = html.find("0.9.0").unwrap();
@@ -3542,6 +3609,10 @@ mod tests {
         assert!(html.contains("✓ pack"));
         assert!(html.contains("— none"));
         assert!(html.contains("(unix 100)"));
+        assert!(html.contains("/demo/-/images?release=1.10.0\">images <strong>3</strong>"));
+        assert!(html.contains("/demo/-/packages?release=1.10.0\">packages <strong>258</strong>"));
+        assert!(html.contains("/demo/-/images?release=1.9.0\">images <strong>0</strong>"));
+        assert!(!html.contains("/demo/-/images?release=1.10.0\">1.10.0</a>"));
     }
 
     #[tokio::test]
@@ -3554,7 +3625,16 @@ mod tests {
             tagged_at: None,
             pack_present: false,
         }];
-        let html = releases_page(&registry(), None, &releases, 1, Instant::now(), &anon());
+        let html = releases_page(
+            &registry(),
+            None,
+            &releases,
+            &[],
+            &[],
+            1,
+            Instant::now(),
+            &anon(),
+        );
         assert!(html.contains("<code aria-label=\"abc\">abc</code>"));
     }
 
