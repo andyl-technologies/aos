@@ -643,11 +643,30 @@ async fn package_index_html(
     use crate::db::PackageRow;
     use crate::filter::{version_key, Filter};
 
-    let (all, truncated) = svc
-        .db
-        .list_packages_capped(registry.id, MAX_BROWSE_PACKAGES)
-        .await
-        .unwrap_or_else(|_| (Vec::new(), false));
+    let snapshot = query
+        .release
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let releases = svc.db.list_releases(registry.id).await.unwrap_or_default();
+    let snapshots = releases
+        .iter()
+        .map(|release| (release.semver.clone(), release.commit_oid.clone()))
+        .collect::<Vec<_>>();
+    let (all, truncated) = if let Some(snapshot) = snapshot {
+        (
+            svc.db
+                .list_packages_at_release(registry.id, snapshot)
+                .await
+                .unwrap_or_default(),
+            false,
+        )
+    } else {
+        svc.db
+            .list_packages_capped(registry.id, MAX_BROWSE_PACKAGES)
+            .await
+            .unwrap_or_else(|_| (Vec::new(), false))
+    };
     let total_all = all.len();
     let filter_text = query.filter();
 
@@ -703,6 +722,9 @@ async fn package_index_html(
         .saturating_add(pages::PACKAGES_PER_PAGE)
         .min(total_matches);
     let browse = pages::PackageBrowse {
+        snapshot,
+        head_commit: status.and_then(|status| status.last_indexed_commit.as_deref()),
+        snapshots: &snapshots,
         filter: filter_text,
         filter_error: filter_error.as_deref(),
         sort,
@@ -726,12 +748,18 @@ async fn package_index_html(
 }
 
 /// One package's detail page (HTML), with its resolved forward/reverse closure.
-pub async fn package(svc: &RpcService, headers: &HeaderMap, slug: &str, name: &str) -> Rendered {
+pub async fn package(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    slug: &str,
+    name: &str,
+    query: &BrowseQuery,
+) -> Rendered {
     let started = Instant::now();
     let Some((registry, status)) = load_visible(svc, headers, slug).await else {
         return Rendered::NotFound;
     };
-    let Some(detail) = svc
+    let Some(mut detail) = svc
         .db
         .package_detail(registry.id, name)
         .await
@@ -740,6 +768,32 @@ pub async fn package(svc: &RpcService, headers: &HeaderMap, slug: &str, name: &s
     else {
         return Rendered::NotFound;
     };
+    let snapshot = query
+        .release
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(snapshot) = snapshot {
+        let snapshot_packages = svc
+            .db
+            .list_packages_at_release(registry.id, snapshot)
+            .await
+            .unwrap_or_default();
+        let Some(snapshot_package) = snapshot_packages
+            .iter()
+            .find(|package| package.name == name)
+        else {
+            return Rendered::NotFound;
+        };
+        detail.versions.retain(|version| {
+            snapshot_package.latest_version.as_deref() == Some(version.version.as_str())
+        });
+        for version in &mut detail.versions {
+            version
+                .platforms
+                .retain(|platform| snapshot_package.platforms.contains(&platform.platform));
+        }
+    }
     let (closure, session, caches, external) = futures_util::future::join4(
         resolve_package_closure(svc, registry.id, name, &detail),
         session_indicator(svc, headers),
@@ -760,6 +814,7 @@ pub async fn package(svc: &RpcService, headers: &HeaderMap, slug: &str, name: &s
         &detail,
         &closure,
         &setup,
+        snapshot,
         started,
         &session,
     ))

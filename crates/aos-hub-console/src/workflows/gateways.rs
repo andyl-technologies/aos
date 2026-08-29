@@ -440,7 +440,7 @@ fn GatewayCreateForm(
                 <label><span>"Client base path"</span><input required prop:value=move || client_base_path.get() on:input=move |event| client_base_path.set(event_target_value(&event))/></label>
                 <label><span>"Origin prefix"</span><input required prop:value=move || origin_prefix.get() on:input=move |event| origin_prefix.set(event_target_value(&event))/></label>
                 <AccessPolicyFields signals=access boundaries=boundaries/>
-                <div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || binding_id.get().is_empty() || endpoint_id.get().is_empty()>"Review creation"</button></div>
+                <div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || binding_id.get().is_empty() || endpoint_id.get().is_empty()>"Create gateway"</button></div>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
@@ -719,7 +719,7 @@ fn GatewayUpdate(client: ApiClient, gateway: aos_proto_types::Gateway) -> impl I
                 <label><span>"Client base path"</span><input required prop:value=move || client_base_path.get() on:input=move |event| client_base_path.set(event_target_value(&event))/></label>
                 <label><span>"Origin prefix"</span><input required prop:value=move || origin_prefix.get() on:input=move |event| origin_prefix.set(event_target_value(&event))/></label>
                 <AccessPolicyFields signals=access/>
-                <button class="secondary-button" type="submit" disabled=move || busy.get()>"Review generation"</button>
+                <button class="secondary-button" type="submit" disabled=move || busy.get()>"Stage generation"</button>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
@@ -798,7 +798,7 @@ fn GatewayGrants(client: ApiClient, gateway: aos_proto_types::Gateway) -> impl I
             </div>
             <form class="stacked-form" on:submit=on_plan>
                 <label><span>"Consumer scope key"</span><input required prop:value=move || consumer_scope.get() on:input=move |event| consumer_scope.set(event_target_value(&event))/></label>
-                <button class="secondary-button" type="submit" disabled=move || busy.get()>"Review grant"</button>
+                <button class="secondary-button" type="submit" disabled=move || busy.get()>"Grant"</button>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
@@ -865,7 +865,7 @@ fn GatewayGrantRow(client: ApiClient, grant: aos_proto_types::ConsumerScopeGrant
     view! {
         <div class="compact-list-row">
             <div><code>{grant.consumer_scope_key}</code><span>{format!("generation {} · {} live pins", grant.resource_generation, grant.live_pin_count)}</span></div>
-            <button class="table-action" type="button" disabled=move || busy.get() on:click=on_plan>"Review revoke"</button>
+            <button class="table-action" type="button" disabled=move || busy.get() on:click=on_plan>"Revoke"</button>
         </div>
         {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
         {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
@@ -940,7 +940,7 @@ fn GatewayState(client: ApiClient, gateway: aos_proto_types::Gateway) -> impl In
         <section class="subworkflow">
             <h4>{if enabling { "Enable gateway" } else { "Disable gateway" }}</h4>
             <p>{if enabling { "Enable this generation for route use after review." } else { "Disable only after all live route pins have drained." }}</p>
-            <button class="secondary-button" type="button" disabled=move || busy.get() on:click=on_plan>{if enabling { "Review enable" } else { "Review disable" }}</button>
+            <button class="secondary-button" type="button" disabled=move || busy.get() on:click=on_plan>{if enabling { "Enable" } else { "Disable" }}</button>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
         </section>
@@ -1006,7 +1006,7 @@ fn GatewayDelete(client: ApiClient, gateway: aos_proto_types::Gateway) -> impl I
         <section class="subworkflow danger-subworkflow">
             <h4>"Delete gateway"</h4>
             <p>"Deletion remains blocked while the gateway is enabled, granted, pinned, or referenced by routes."</p>
-            <button class="danger-button" type="button" disabled=move || busy.get() on:click=on_plan>"Review deletion"</button>
+            <button class="danger-button" type="button" disabled=move || busy.get() on:click=on_plan>"Delete"</button>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
         </section>

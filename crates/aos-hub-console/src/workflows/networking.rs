@@ -483,7 +483,7 @@ fn DomainVerify(client: ApiClient, domain: aos_proto_types::Domain) -> impl Into
             busy.set(false);
         });
     });
-    view! { <section class="subworkflow"><h4>"Verify observations"</h4><p>"Probe configured DNS and certificate state; a click cannot assert success."</p><button class="secondary-button" type="button" disabled=move || busy.get() on:click=on_plan>"Review verification"</button>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="subworkflow"><h4>"Verify observations"</h4><p>"Probe configured DNS and certificate state; a click cannot assert success."</p><button class="secondary-button" type="button" disabled=move || busy.get() on:click=on_plan>"Verify"</button>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 #[component]
@@ -540,7 +540,7 @@ fn DomainDelete(client: ApiClient, domain: aos_proto_types::Domain) -> impl Into
             busy.set(false);
         });
     });
-    view! { <section class="subworkflow danger-subworkflow"><h4>"Delete domain"</h4><p>"Deletion fails while defaults, endpoints, routes, or live pins reference this identity."</p><button class="danger-button" type="button" disabled=move || busy.get() on:click=on_plan>"Review deletion"</button>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="subworkflow danger-subworkflow"><h4>"Delete domain"</h4><p>"Deletion fails while defaults, endpoints, routes, or live pins reference this identity."</p><button class="danger-button" type="button" disabled=move || busy.get() on:click=on_plan>"Delete"</button>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 fn state_or_unknown(state: &str) -> &str {
