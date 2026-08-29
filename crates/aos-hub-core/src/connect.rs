@@ -1143,8 +1143,19 @@ pub async fn rewrite_for_route(
         .extensions()
         .get::<crate::delivery_attestation::VerifiedDeliveryAttestation>()
         .cloned();
-    if let Err(error) = require_route_access(svc, route, access_headers, attestation).await {
-        return Err(error_response(&error));
+    // Browser reads apply the registry visibility matrix in `browse_dispatch`:
+    // hidden registries deliberately look absent instead of issuing an
+    // authentication challenge. Keep transport-attested route boundaries here,
+    // while allowing public and hub-auth Web routes to reach that finer-grained
+    // registry authorization layer.
+    let browse_namespace = surface_path == "-" || surface_path.starts_with("-/");
+    let browse_authorizes_registry = audience == DeliveryAudience::Web
+        && browse_namespace
+        && matches!(route.access_policy_kind.as_str(), "public" | "hub_auth");
+    if !browse_authorizes_registry {
+        if let Err(error) = require_route_access(svc, route, access_headers, attestation).await {
+            return Err(error_response(&error));
+        }
     }
     if route.mode == "direct" {
         return Err(StatusCode::MISDIRECTED_REQUEST.into_response());
