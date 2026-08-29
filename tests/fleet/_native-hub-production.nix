@@ -110,6 +110,7 @@
     # inspection toolkit an operator image carries. These are AOS-built tools;
     # they do not provide package payloads or seeded Hub state.
     environment.systemPackages = [
+      pkgs.diffutils
       pkgs.gawk
       pkgs.grep
       pkgs.sed
