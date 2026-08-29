@@ -5,6 +5,7 @@
   gnumake,
   go,
   llvm,
+  lib,
 }: let
   version = "1.17.3";
 in
@@ -110,6 +111,12 @@ in
           ];
         }
       ];
+      documentation = {
+        summary = "Authenticated Cilium CNI and Kubernetes resource contribution for k3s.";
+        sections.integration = lib.aosDoc.section "k3s integration" [
+          (lib.aosDoc.paragraph "Cilium contributes only its signed CNI settings and resource bundle. It cannot enable k3s or change unrelated cluster policy; the k3s owner must be installed with interface ABI 2.")
+        ];
+      };
     };
 
     checks = {

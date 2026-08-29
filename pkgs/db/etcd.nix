@@ -177,6 +177,20 @@ in
         users = [];
         groups = [];
       };
+      documentation = {
+        summary = "Typed etcd membership, endpoints, storage policy, TLS, and durable service lifecycle.";
+        sections = {
+          topology = lib.aosDoc.section "Cluster topology" [
+            (lib.aosDoc.paragraph "The local member must appear in cluster.members and its peer URLs must exactly match peer.advertiseUrls. Use etcdctl membership operations before changing the declared topology of a live cluster.")
+          ];
+          transport = lib.aosDoc.section "Transport security" [
+            (lib.aosDoc.paragraph "Client and peer certificates, private keys, and CA bundles are opaque references delivered only through systemd credentials. HTTPS is required whenever TLS is enabled.")
+          ];
+          lifecycle = lib.aosDoc.section "State and activation" [
+            (lib.aosDoc.paragraph "Configuration changes restart etcd while retaining its database in /var/lib/aos-pkg-etcd. Binding beyond loopback also requires explicit firewall policy.")
+          ];
+        };
+      };
     };
 
     phases = [

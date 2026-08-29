@@ -5,6 +5,7 @@
   go,
   longhorn-engine,
   longhorn-instance-manager,
+  lib,
 }: let
   version = "1.8.1";
 in
@@ -85,6 +86,12 @@ in
       ];
       dependencies = {
         inherit longhorn-engine longhorn-instance-manager;
+      };
+      documentation = {
+        summary = "Authenticated Longhorn CSI and Kubernetes resource contribution for k3s.";
+        sections.integration = lib.aosDoc.section "k3s integration" [
+          (lib.aosDoc.paragraph "Longhorn contributes only its signed CSI settings, node label, and ordered resource bundle. Engine and instance-manager payloads are retained dependencies, not separate host daemons.")
+        ];
       };
     };
 

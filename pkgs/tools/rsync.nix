@@ -126,6 +126,17 @@ in
         users = [];
         groups = [];
       };
+      documentation = {
+        summary = "Typed rsync daemon listener, export modules, authorization, and secret-file configuration.";
+        sections = {
+          exports = lib.aosDoc.section "Export modules" [
+            (lib.aosDoc.paragraph "Each named module declares an explicit package state export path and read/write policy. Module names, paths, and client restrictions are validated before activation.")
+          ];
+          credentials = lib.aosDoc.section "Authentication" [
+            (lib.aosDoc.paragraph "Daemon secret files are assembled from opaque references in volatile storage and are never represented as Nix strings or published artifacts.")
+          ];
+        };
+      };
     };
 
     phases = [
