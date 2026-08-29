@@ -630,6 +630,12 @@ in {
       )
       publisher.succeed(
           hub_command(
+              "docs open nginx --registry acme/production",
+              token,
+          ) + " | grep -q '/acme/production/-/docs/nginx/'"
+      )
+      publisher.succeed(
+          hub_command(
               "docs fetch nginx --registry acme/production "
               "--output /var/tmp/nginx-documentation.json",
               token,
@@ -721,6 +727,11 @@ in {
           man_path=$({APM} docs man nginx --install --print-path)
           test -s "$man_path"
           {APM} docs cache status | grep -q nginx
+          {APM} docs schema | {JQ} -e '.title | contains("AOS")' >/dev/null
+          {APM} options compare nginx --from '${pkgs.nginx.version}' \
+            --to '${pkgs.nginx.version}' --platform x86_64-linux \
+            --hub {HUB} --registry acme/production --token {shlex.quote(token)} \
+            | grep -q 'semantic'
       """), timeout=300)
       install_status, install_stdout, install_stderr = consumer.execute(textwrap.dedent(f"""
           set -eu
@@ -805,9 +816,10 @@ in {
 
           payload='{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{}}}}'
           printf 'Content-Length: %s\\r\\n\\r\\n%s' "''${{#payload}}" "$payload" \
-            | {AOS} language-server >/tmp/aos-doc-lsp.out
+            | {APM} docs lsp >/tmp/aos-doc-lsp.out
           grep -q 'completionProvider' /tmp/aos-doc-lsp.out
           grep -q 'hoverProvider' /tmp/aos-doc-lsp.out
+          {APM} docs cache gc
       """), timeout=180)
 
       # SQLite topology, publication metadata, and local surface bytes survive

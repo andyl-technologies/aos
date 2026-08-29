@@ -2587,7 +2587,7 @@ mod tests {
         let err = verify_secondary_artifact_downloads(&[result], &[artifact])
             .expect_err("referenced expose image should be rejected");
 
-        assert!(err.to_string().contains("runtime references"));
+        assert!(err.to_string().contains("empty reference set"));
     }
 
     fn package_toml(name: &str, version: &str, store_path: &str) -> String {

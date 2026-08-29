@@ -1154,7 +1154,7 @@ pub fn package_page(
     // Header: name, latest version, then the description prominently.
     let latest = detail.versions.first().map(|v| v.version.as_str());
     let mut body = registry_nav(slug, "packages");
-    let _ = write!(body, "<h1>{}", escape(&detail.name));
+    let _ = write!(body, "<h1 id=\"overview\">{}", escape(&detail.name));
     if let Some(latest) = latest {
         let _ = write!(body, " <span class=\"dim\">{}</span>", escape(latest));
     }
@@ -1166,6 +1166,9 @@ pub fn package_page(
             escape(&detail.description)
         );
     }
+    body.push_str(
+        "<nav class=\"package-section-nav\" aria-label=\"Package documentation sections\"><a href=\"#overview\">Overview</a><a href=\"#configure\">Configure</a><a href=\"#runtime\">Services</a><a href=\"#dependencies\">Dependencies</a><a href=\"#versions\">Versions</a><a href=\"#integrity\">Integrity</a></nav>",
+    );
 
     // The union of every version's platforms, as chips near the top.
     let mut all_platforms: Vec<&str> = detail
@@ -1239,7 +1242,7 @@ pub fn package_page(
         );
     }
 
-    body.push_str("<section class=\"package-docs\"><div class=\"section-heading\"><div><p class=\"eyebrow\">Canonical reference</p><h2>Configuration &amp; runtime</h2></div>");
+    body.push_str("<section id=\"configure\" class=\"package-docs\"><div class=\"section-heading\"><div><p class=\"eyebrow\">Canonical reference</p><h2>Configuration &amp; runtime</h2></div>");
     let _ = write!(
         body,
         "<a class=\"button secondary\" href=\"/{}/-/docs?q={}\">Search all docs</a></div>",
@@ -1250,7 +1253,7 @@ pub fn package_page(
         let document = &documentation.document;
         let _ = write!(
             body,
-            "<p class=\"dim docs-provenance\">Verified from <code>{}</code> · document {} · NAR {}</p>",
+            "<p id=\"integrity\" class=\"dim docs-provenance\">Verified from <code>{}</code> · document {} · NAR {}</p>",
             escape(&documentation.store_path),
             hash_value(&documentation.document_sha256),
             hash_value(&documentation.nar_hash),
@@ -1280,7 +1283,7 @@ pub fn package_page(
     // back to a narinfo permalink.
     let _ = writeln!(
         body,
-        "<h2>Dependencies ({})</h2>",
+        "<h2 id=\"dependencies\">Dependencies ({})</h2>",
         closure.dependencies.len(),
     );
     if closure.dependencies.is_empty() {
@@ -1343,7 +1346,7 @@ pub fn package_page(
         }
     }
 
-    body.push_str("<h2>Versions</h2>\n");
+    body.push_str("<h2 id=\"versions\">Versions</h2>\n");
     body.push_str(
         "<div class=\"table-scroll\" role=\"region\" aria-label=\"Package artifacts\" tabindex=\"0\">\n\
          <table class=\"artifact-table\"><thead><tr><th>version</th><th>platform</th><th>NAR</th><th>closure</th></tr></thead>\n",
@@ -3538,6 +3541,8 @@ mod tests {
             &anon(),
         );
         assert!(package_html.contains("Configuration &amp; runtime"));
+        assert!(package_html.contains("aria-label=\"Package documentation sections\""));
+        assert!(package_html.contains("href=\"#integrity\""));
         assert!(package_html.contains("HTTP &lt;proxy&gt; service"));
         assert!(!package_html.contains("HTTP <proxy> service"));
         assert!(package_html.contains("/-/api/docs/nginx/1.30.4/x86_64-linux"));

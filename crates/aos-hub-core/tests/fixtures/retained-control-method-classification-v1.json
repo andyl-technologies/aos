@@ -3425,5 +3425,40 @@
     "service": "BinaryCacheUploadControllerService", "method": "ReportCacheNarinfos",
     "exposure": "internal_controller", "durability": "durable",
     "class": { "class": "controller_observation" }, "external_effects": false
+  },
+  {
+    "service": "DocumentationService", "method": "GetPackageDocumentation",
+    "exposure": "public", "durability": "read_only",
+    "class": { "class": "read" }, "external_effects": false
+  },
+  {
+    "service": "DocumentationService", "method": "SearchPackageDocumentation",
+    "exposure": "public", "durability": "read_only",
+    "class": { "class": "read" }, "external_effects": false
+  },
+  {
+    "service": "DocumentationService", "method": "GetPackageDocumentationSchema",
+    "exposure": "public", "durability": "read_only",
+    "class": { "class": "read" }, "external_effects": false
+  },
+  {
+    "service": "DocumentationService", "method": "ListPackageOptions",
+    "exposure": "public", "durability": "read_only",
+    "class": { "class": "read" }, "external_effects": false
+  },
+  {
+    "service": "DocumentationService", "method": "GetPackageOption",
+    "exposure": "public", "durability": "read_only",
+    "class": { "class": "read" }, "external_effects": false
+  },
+  {
+    "service": "DocumentationService", "method": "ComparePackageDocumentation",
+    "exposure": "public", "durability": "read_only",
+    "class": { "class": "read" }, "external_effects": false
+  },
+  {
+    "service": "DocumentationService", "method": "GetDocumentationArtifact",
+    "exposure": "public", "durability": "read_only",
+    "class": { "class": "read" }, "external_effects": false
   }
 ]

@@ -988,6 +988,7 @@ impl PackageDocumentation {
                 ));
             }
         }
+        render_runtime_plain(&self.runtime, &mut output);
         output
     }
 
@@ -1048,6 +1049,7 @@ impl PackageDocumentation {
             }
             output.push_str("</dl></section>");
         }
+        render_runtime_html(&self.runtime, output);
         output.push_str("</main>");
     }
 
@@ -1082,6 +1084,13 @@ impl PackageDocumentation {
                 output.push('\n');
             }
         }
+        let mut runtime = String::new();
+        render_runtime_plain(&self.runtime, &mut runtime);
+        if !runtime.is_empty() {
+            output.push_str(".SH RUNTIME\n");
+            escape_roff_into(runtime.trim(), &mut output);
+            output.push('\n');
+        }
         output
     }
 
@@ -1090,6 +1099,197 @@ impl PackageDocumentation {
         copy.identity.semantic_schema_sha256 = format!("sha256:{}", "0".repeat(64));
         copy.validate()
     }
+}
+
+fn runtime_is_empty(runtime: &RuntimeSurface) -> bool {
+    runtime.units.is_empty()
+        && runtime.listeners.is_empty()
+        && runtime.managed_paths.is_empty()
+        && runtime.config_artifacts.is_empty()
+        && runtime.credentials.is_empty()
+        && runtime.capabilities.is_empty()
+        && runtime.confinement.is_none()
+}
+
+fn render_runtime_plain(runtime: &RuntimeSurface, output: &mut String) {
+    if runtime_is_empty(runtime) {
+        return;
+    }
+    output.push_str("\nRUNTIME\n-------\n");
+    for unit in &runtime.units {
+        output.push_str(&format!("unit\t{}\t{}", unit.name, unit.kind));
+        if !unit.summary.is_empty() {
+            output.push_str(&format!("\t{}", unit.summary));
+        }
+        output.push('\n');
+    }
+    for listener in &runtime.listeners {
+        let port = listener
+            .port
+            .map(|port| port.to_string())
+            .unwrap_or_else(|| "dynamic".to_string());
+        output.push_str(&format!(
+            "listener\t{}\t{}/{}\t{}\n",
+            listener.unit, listener.protocol, port, listener.network_mode
+        ));
+    }
+    for path in &runtime.managed_paths {
+        output.push_str(&format!(
+            "path\t{}\t{}\t{}\n",
+            path.path,
+            path.purpose,
+            if path.writable {
+                "writable"
+            } else {
+                "read-only"
+            }
+        ));
+    }
+    for artifact in &runtime.config_artifacts {
+        output.push_str(&format!(
+            "configuration\t{}\t{}\t{}\n",
+            artifact.name, artifact.destination, artifact.format
+        ));
+    }
+    for credential in &runtime.credentials {
+        output.push_str(&format!(
+            "credential\t{}\t{}\t{}\n",
+            credential.name,
+            credential.destination,
+            if credential.required {
+                "required"
+            } else {
+                "optional"
+            }
+        ));
+    }
+    for capability in &runtime.capabilities {
+        output.push_str(&format!(
+            "capability\t{}\t{}\n",
+            capability.name, capability.direction
+        ));
+    }
+    if let Some(confinement) = &runtime.confinement {
+        output.push_str(&format!(
+            "confinement\t{}\tnetwork={}\tprivate-root={}\n",
+            confinement.class, confinement.network, confinement.private_root
+        ));
+    }
+}
+
+fn render_runtime_html(runtime: &RuntimeSurface, output: &mut String) {
+    if runtime_is_empty(runtime) {
+        return;
+    }
+    output.push_str("<section id=\"runtime\"><h2>Runtime</h2>");
+    if !runtime.units.is_empty() {
+        output.push_str("<h3>Services</h3><dl>");
+        for unit in &runtime.units {
+            output.push_str("<dt><code>");
+            escape_html_into(&unit.name, output);
+            output.push_str("</code></dt><dd>");
+            escape_html_into(&unit.kind, output);
+            if !unit.summary.is_empty() {
+                output.push_str(" — ");
+                escape_html_into(&unit.summary, output);
+            }
+            output.push_str("</dd>");
+        }
+        output.push_str("</dl>");
+    }
+    if !runtime.listeners.is_empty() {
+        output.push_str("<h3>Listeners</h3><ul>");
+        for listener in &runtime.listeners {
+            output.push_str("<li><code>");
+            escape_html_into(&listener.unit, output);
+            output.push_str("</code> ");
+            escape_html_into(&listener.protocol, output);
+            output.push(':');
+            escape_html_into(
+                &listener
+                    .port
+                    .map(|port| port.to_string())
+                    .unwrap_or_else(|| "dynamic".to_string()),
+                output,
+            );
+            output.push_str(" · ");
+            escape_html_into(&listener.network_mode, output);
+            output.push_str("</li>");
+        }
+        output.push_str("</ul>");
+    }
+    if !runtime.managed_paths.is_empty() {
+        output.push_str("<h3>Managed paths</h3><ul>");
+        for path in &runtime.managed_paths {
+            output.push_str("<li><code>");
+            escape_html_into(&path.path, output);
+            output.push_str("</code> · ");
+            escape_html_into(&path.purpose, output);
+            output.push_str(if path.writable {
+                " · writable"
+            } else {
+                " · read-only"
+            });
+            output.push_str("</li>");
+        }
+        output.push_str("</ul>");
+    }
+    if !runtime.config_artifacts.is_empty() {
+        output.push_str("<h3>Configuration artifacts</h3><ul>");
+        for artifact in &runtime.config_artifacts {
+            output.push_str("<li><strong>");
+            escape_html_into(&artifact.name, output);
+            output.push_str("</strong> <code>");
+            escape_html_into(&artifact.destination, output);
+            output.push_str("</code> · ");
+            escape_html_into(&artifact.format, output);
+            output.push_str("</li>");
+        }
+        output.push_str("</ul>");
+    }
+    if !runtime.credentials.is_empty() {
+        output.push_str("<h3>Credentials</h3><ul>");
+        for credential in &runtime.credentials {
+            output.push_str("<li><strong>");
+            escape_html_into(&credential.name, output);
+            output.push_str("</strong> — ");
+            escape_html_into(&credential.purpose, output);
+            output.push_str(" · <code>");
+            escape_html_into(&credential.destination, output);
+            output.push_str("</code>");
+            output.push_str(if credential.required {
+                " · required"
+            } else {
+                " · optional"
+            });
+            output.push_str("</li>");
+        }
+        output.push_str("</ul>");
+    }
+    if !runtime.capabilities.is_empty() {
+        output.push_str("<h3>Capabilities</h3><ul>");
+        for capability in &runtime.capabilities {
+            output.push_str("<li><code>");
+            escape_html_into(&capability.name, output);
+            output.push_str("</code> · ");
+            escape_html_into(&capability.direction, output);
+            output.push_str("</li>");
+        }
+        output.push_str("</ul>");
+    }
+    if let Some(confinement) = &runtime.confinement {
+        output.push_str("<h3>Confinement</h3><p>");
+        escape_html_into(&confinement.class, output);
+        output.push_str(" · network ");
+        escape_html_into(&confinement.network, output);
+        output.push_str(if confinement.private_root {
+            " · private root"
+        } else {
+            " · shared root"
+        });
+        output.push_str("</p>");
+    }
+    output.push_str("</section>");
 }
 
 #[derive(Serialize)]
@@ -1967,6 +2167,44 @@ mod tests {
         assert!(html.contains("&lt;script&gt;"));
         let roff = document.render_roff();
         assert!(roff.contains("\\&.danger \\e macro"));
+    }
+
+    #[test]
+    fn renderers_include_the_complete_runtime_surface() {
+        let mut document = fixture();
+        document.runtime.units.push(RuntimeUnit {
+            name: "nginx.service".into(),
+            kind: "service".into(),
+            summary: "HTTP proxy".into(),
+            requires: Vec::new(),
+        });
+        document.runtime.listeners.push(RuntimeListener {
+            unit: "nginx.service".into(),
+            protocol: "tcp".into(),
+            port: Some(8080),
+            network_mode: "private".into(),
+        });
+        document.runtime.credentials.push(CredentialContract {
+            name: "tls-key".into(),
+            purpose: "TLS private key".into(),
+            destination: "/run/credentials/nginx.service/tls-key".into(),
+            accepted_kinds: vec!["system-credential".into()],
+            required: false,
+            mode: 0o400,
+            activation: None,
+        });
+
+        let plain = document.render_plain();
+        assert!(plain.contains("RUNTIME"));
+        assert!(plain.contains("nginx.service"));
+        assert!(plain.contains("tls-key"));
+        let html = document.render_html_fragment();
+        assert!(html.contains("id=\"runtime\""));
+        assert!(html.contains("tcp:8080"));
+        assert!(html.contains("TLS private key"));
+        let roff = document.render_roff();
+        assert!(roff.contains(".SH RUNTIME"));
+        assert!(roff.contains("nginx.service"));
     }
 
     #[test]
