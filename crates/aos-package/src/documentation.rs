@@ -8,17 +8,18 @@
 
 use std::fs;
 use std::io::{self, Write};
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use aos_core::output::{OutputMode, Printer};
 use aos_doc_model::{
-    DOCUMENT_JSON_SCHEMA, DOCUMENT_SCHEMA, MAX_DOCUMENT_BYTES, PackageDocumentation,
-    SearchDocument, tokenize,
+    DOCUMENT_JSON_SCHEMA, DOCUMENT_SCHEMA, DocumentationComparison, MAX_DOCUMENT_BYTES,
+    OptionDocument, PackageDocumentation, SearchDocument, tokenize,
 };
 use aos_proto_types::{
-    GetPackageDocumentationRequest, GetPackageDocumentationSchemaRequest,
-    SearchPackageDocumentationRequest,
+    ComparePackageDocumentationRequest, GetPackageDocumentationRequest,
+    GetPackageDocumentationSchemaRequest, SearchPackageDocumentationRequest,
 };
 use aos_remote::{HubClient, hub_rpc};
 use serde::Serialize;
@@ -27,7 +28,7 @@ use sha2::{Digest, Sha256};
 use crate::documentation_lsp;
 use crate::profile::{Profile, meta};
 use crate::types::{DocumentationArtifactMeta, ProfileScope};
-use crate::{DocumentationCommand, DocumentationOutput};
+use crate::{DocumentationCacheCommand, DocumentationCommand, DocumentationOutput, OptionsCommand};
 
 /// One reverified canonical document and its signed installed locator.
 #[derive(Clone)]
@@ -157,6 +158,196 @@ pub async fn run(command: &DocumentationCommand, printer: &Printer) -> Result<()
                 loaded.push(load_document_file(path, None, "explicit document")?);
             }
             documentation_lsp::run(loaded)
+        }
+        DocumentationCommand::Serve {
+            listen,
+            once,
+            system,
+        } => serve(scope(*system), listen, *once, printer).await,
+        DocumentationCommand::Cache { command } => run_cache(command, printer),
+    }
+}
+
+/// Runs one first-class `apm options` command.
+///
+/// # Errors
+///
+/// Returns an error for invalid selections, ambiguous paths, unavailable Hub
+/// objects, or malformed canonical option/comparison data.
+pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<()> {
+    match command {
+        OptionsCommand::Search {
+            query,
+            limit,
+            hub,
+            registry,
+            token,
+            system,
+        } => {
+            let rows = if let Some(hub) = hub {
+                remote_search(
+                    hub,
+                    registry
+                        .as_deref()
+                        .context("remote option search requires --registry")?,
+                    token.as_deref(),
+                    query,
+                    Some("option"),
+                    *limit,
+                )
+                .await?
+            } else {
+                local_search(scope(*system), query, Some("option"), *limit)?
+            };
+            print_search_results(printer, &rows)
+        }
+        OptionsCommand::Show {
+            path,
+            package,
+            hub,
+            registry,
+            token,
+            system,
+        } => {
+            let matches = if let Some(hub) = hub {
+                let registry = registry
+                    .as_deref()
+                    .context("remote option lookup requires --registry")?;
+                let rows =
+                    remote_search(hub, registry, token.as_deref(), path, Some("option"), 100)
+                        .await?;
+                let mut matches = Vec::new();
+                for row in rows.into_iter().filter(|row| {
+                    row.key == *path && package.as_ref().is_none_or(|name| row.package == *name)
+                }) {
+                    let document = remote_document(
+                        hub,
+                        registry,
+                        token.as_deref(),
+                        &row.package,
+                        Some(&row.version),
+                        Some(&row.platform),
+                    )
+                    .await?;
+                    matches.extend(
+                        document
+                            .options
+                            .into_iter()
+                            .filter(|option| option.display_path == *path),
+                    );
+                }
+                matches
+            } else {
+                load_installed_documents(scope(*system))?
+                    .into_iter()
+                    .filter(|loaded| {
+                        package
+                            .as_ref()
+                            .is_none_or(|name| loaded.document.package.name == *name)
+                    })
+                    .flat_map(|loaded| loaded.document.options)
+                    .filter(|option| option.display_path == *path)
+                    .collect()
+            };
+            print_exact_option(printer, path, matches)
+        }
+        OptionsCommand::Compare {
+            package,
+            from,
+            to,
+            platform,
+            hub,
+            registry,
+            token,
+        } => {
+            let response = hub_client(hub, token.as_deref())?
+                .call_topology(
+                    hub_rpc::ComparePackageDocumentation,
+                    &ComparePackageDocumentationRequest {
+                        registry: registry.clone(),
+                        package: package.clone(),
+                        from_version: from.clone(),
+                        to_version: to.clone(),
+                        platform: platform.clone(),
+                    },
+                )
+                .await?;
+            let comparison: DocumentationComparison =
+                serde_json::from_slice(&response.canonical_comparison_json)
+                    .context("Hub returned an invalid documentation comparison")?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::to_value(&comparison)?);
+            } else {
+                println!(
+                    "{} {} -> {} (schema changed: {}, runtime changed: {})",
+                    comparison.package,
+                    comparison.from_version,
+                    comparison.to_version,
+                    comparison.semantic_changed,
+                    comparison.runtime_changed
+                );
+                for change in comparison.option_changes {
+                    println!("{:?}\t{}", change.kind, change.path);
+                }
+            }
+            Ok(())
+        }
+        OptionsCommand::Complete { prefix, system } => {
+            let mut paths = load_installed_documents(scope(*system))?
+                .into_iter()
+                .flat_map(|loaded| loaded.document.options)
+                .map(|option| option.display_path)
+                .filter(|path| path.starts_with(prefix))
+                .collect::<Vec<_>>();
+            paths.sort();
+            paths.dedup();
+            for path in paths {
+                println!("{path}");
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Exports the global closed schema or one exact package model.
+///
+/// # Errors
+///
+/// Returns an error when the local or Hub selection cannot be verified.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_schema(
+    package: Option<&str>,
+    hub: Option<&str>,
+    registry: Option<&str>,
+    version: Option<&str>,
+    platform: Option<&str>,
+    token: Option<&str>,
+    system: bool,
+) -> Result<()> {
+    match package {
+        Some(package) => {
+            let document = match hub {
+                Some(hub) => {
+                    remote_document(
+                        hub,
+                        registry.context("remote schema lookup requires --registry")?,
+                        token,
+                        package,
+                        version,
+                        platform,
+                    )
+                    .await?
+                }
+                None => local_document(scope(system), package, version, platform)?.document,
+            };
+            write_bytes(&document.canonical_json()?, None)
+        }
+        None => {
+            let bytes = match hub {
+                Some(hub) => remote_schema(hub, token).await?,
+                None => DOCUMENT_JSON_SCHEMA.as_bytes().to_vec(),
+            };
+            write_bytes(&bytes, None)
         }
     }
 }
@@ -493,6 +684,248 @@ fn print_search_results(printer: &Printer, rows: &[SearchResult]) -> Result<()> 
     Ok(())
 }
 
+fn print_exact_option(
+    printer: &Printer,
+    path: &str,
+    mut matches: Vec<OptionDocument>,
+) -> Result<()> {
+    if matches.is_empty() {
+        bail!("no documented option matches '{path}'");
+    }
+    if matches.len() > 1 {
+        bail!(
+            "option path '{path}' is ambiguous across {} installed or visible packages; pass --package",
+            matches.len()
+        );
+    }
+    let option = matches.pop().context("option match disappeared")?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::to_value(option)?);
+        return Ok(());
+    }
+    println!("{}\n  type: {}", option.display_path, option.type_signature);
+    println!(
+        "  owner: {} / {}{}",
+        option.owner.package,
+        option.owner.root,
+        if option.contributable {
+            " (contributable)"
+        } else {
+            ""
+        }
+    );
+    for block in option.description {
+        println!("{}", render_prose_block(&block));
+    }
+    Ok(())
+}
+
+fn render_prose_block(block: &aos_doc_model::ProseBlock) -> String {
+    match block {
+        aos_doc_model::ProseBlock::Paragraph { spans } => spans
+            .iter()
+            .map(|span| match span {
+                aos_doc_model::InlineSpan::Text { text }
+                | aos_doc_model::InlineSpan::Code { text } => text.as_str(),
+                aos_doc_model::InlineSpan::Link { label, .. } => label.as_str(),
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        aos_doc_model::ProseBlock::Code { text, .. } => text.clone(),
+        aos_doc_model::ProseBlock::List { items, .. } => items
+            .iter()
+            .map(|item| {
+                format!(
+                    "- {}",
+                    item.iter()
+                        .map(render_prose_block)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        aos_doc_model::ProseBlock::Note { severity, blocks } => format!(
+            "{:?}: {}",
+            severity,
+            blocks
+                .iter()
+                .map(render_prose_block)
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+        aos_doc_model::ProseBlock::Definitions { entries } => entries
+            .iter()
+            .map(|entry| {
+                format!(
+                    "{}: {}",
+                    entry.term,
+                    entry
+                        .body
+                        .iter()
+                        .map(render_prose_block)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+async fn serve(scope: ProfileScope, listen: &str, once: bool, printer: &Printer) -> Result<()> {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let address: SocketAddr = listen
+        .parse()
+        .with_context(|| format!("parsing documentation listener '{listen}'"))?;
+    if !matches!(address.ip(), IpAddr::V4(ip) if ip.is_loopback())
+        && !matches!(address.ip(), IpAddr::V6(ip) if ip.is_loopback())
+    {
+        bail!("apm docs serve accepts loopback listeners only");
+    }
+    let listener = tokio::net::TcpListener::bind(address)
+        .await
+        .with_context(|| format!("binding documentation listener {address}"))?;
+    let address = listener.local_addr()?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({ "url": format!("http://{address}/") }));
+    } else {
+        println!("http://{address}/");
+    }
+
+    let documents = load_installed_documents(scope)?;
+    loop {
+        let (mut stream, _) = listener.accept().await?;
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        while request.len() <= 16 * 1024 && !request.windows(4).any(|window| window == b"\r\n\r\n")
+        {
+            let count = stream.read(&mut chunk).await?;
+            if count == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..count]);
+        }
+        let response = local_http_response(&documents, &request);
+        stream.write_all(&response).await?;
+        stream.shutdown().await?;
+        if once {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn local_http_response(documents: &[LoadedDocumentation], request: &[u8]) -> Vec<u8> {
+    let first = request
+        .split(|byte| *byte == b'\n')
+        .next()
+        .and_then(|line| std::str::from_utf8(line).ok())
+        .unwrap_or_default();
+    let mut fields = first.split_ascii_whitespace();
+    let method = fields.next().unwrap_or_default();
+    let path = fields
+        .next()
+        .unwrap_or_default()
+        .split('?')
+        .next()
+        .unwrap_or("/");
+    if method != "GET" {
+        return http_response("405 Method Not Allowed", "text/plain", b"GET required\n");
+    }
+    if path == "/" {
+        let mut body = String::from(
+            "<!doctype html><meta charset=utf-8><title>Installed package documentation</title><main><h1>Installed package documentation</h1><ul>",
+        );
+        for loaded in documents {
+            let name = html_escape(&loaded.document.package.name);
+            body.push_str(&format!(
+                "<li><a href=\"/packages/{name}\">{name}</a> <code>{}</code></li>",
+                html_escape(&loaded.document.package.version)
+            ));
+        }
+        body.push_str("</ul></main>");
+        return http_response("200 OK", "text/html; charset=utf-8", body.as_bytes());
+    }
+    let Some(name) = path
+        .strip_prefix("/packages/")
+        .filter(|name| !name.is_empty() && !name.contains('/'))
+    else {
+        return http_response("404 Not Found", "text/plain", b"not found\n");
+    };
+    let Some(document) = documents
+        .iter()
+        .find(|loaded| loaded.document.package.name == name)
+    else {
+        return http_response("404 Not Found", "text/plain", b"not found\n");
+    };
+    let body = document.document.render_html();
+    http_response("200 OK", "text/html; charset=utf-8", body.as_bytes())
+}
+
+fn http_response(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
+    let headers = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let mut response = headers.into_bytes();
+    response.extend_from_slice(body);
+    response
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn run_cache(command: &DocumentationCacheCommand, printer: &Printer) -> Result<()> {
+    let (scope, collect) = match command {
+        DocumentationCacheCommand::Status { system } => (scope(*system), false),
+        DocumentationCacheCommand::Gc { system } => (scope(*system), true),
+    };
+    let documents = load_installed_documents(scope)?;
+    let man_directory = scope.nar_cache_path().join("man/man5");
+    let mut generated = Vec::new();
+    if let Ok(entries) = fs::read_dir(&man_directory) {
+        for entry in entries {
+            let entry = entry?;
+            if entry.file_type()?.is_file()
+                && entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "5")
+            {
+                generated.push(entry.path());
+            }
+        }
+    }
+    generated.sort();
+    if collect {
+        for path in &generated {
+            fs::remove_file(path)
+                .with_context(|| format!("removing generated cache entry {}", path.display()))?;
+        }
+    }
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "retained_documents": documents.len(),
+            "generated_manpages": if collect { 0 } else { generated.len() },
+            "removed": if collect { generated.len() } else { 0 },
+        }));
+    } else if collect {
+        printer.success(&format!("Removed {} generated manpage(s)", generated.len()));
+    } else {
+        println!("retained documents\t{}", documents.len());
+        println!("generated manpages\t{}", generated.len());
+    }
+    Ok(())
+}
+
 fn write_rendered(
     document: &PackageDocumentation,
     format: DocumentationOutput,
@@ -652,5 +1085,35 @@ mod tests {
             .unwrap();
         assert!(score_search_row(&row, &["enable".to_string()]) > 0);
         assert_eq!(score_search_row(&row, &["database".to_string()]), 0);
+    }
+
+    #[test]
+    fn documentation_loopback_browser_is_content_bearing_and_bounded() {
+        let loaded = LoadedDocumentation {
+            document: fixture(),
+        };
+        let index = local_http_response(
+            std::slice::from_ref(&loaded),
+            b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        );
+        let index = String::from_utf8(index).unwrap();
+        assert!(index.starts_with("HTTP/1.1 200 OK"));
+        assert!(index.contains("/packages/nginx"));
+        assert!(index.contains("Content-Security-Policy"));
+
+        let detail = local_http_response(
+            &[loaded],
+            b"GET /packages/nginx HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        );
+        let detail = String::from_utf8(detail).unwrap();
+        assert!(detail.contains("nginx.enable"));
+        assert!(!detail.contains("<script"));
+
+        let rejected = local_http_response(&[], b"POST / HTTP/1.1\r\n\r\n");
+        assert!(
+            String::from_utf8(rejected)
+                .unwrap()
+                .starts_with("HTTP/1.1 405 Method Not Allowed")
+        );
     }
 }

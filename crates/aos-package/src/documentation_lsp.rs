@@ -63,8 +63,11 @@ impl Server {
                 json!({
                     "capabilities": {
                         "textDocumentSync": 1,
-                        "completionProvider": { "triggerCharacters": ["."] },
+                        "completionProvider": { "triggerCharacters": ["."], "resolveProvider": true },
                         "hoverProvider": true,
+                        "definitionProvider": true,
+                        "documentLinkProvider": { "resolveProvider": false },
+                        "codeActionProvider": true,
                         "diagnosticProvider": {
                             "identifier": "aos-package-documentation",
                             "interFileDependencies": false,
@@ -116,6 +119,47 @@ impl Server {
                     .and_then(|(text, line, character)| self.hover(&text, line, character))
                     .unwrap_or(Value::Null);
                 respond(output, id, result)?;
+            }
+            "completionItem/resolve" => {
+                let label = params
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let result = self
+                    .options()
+                    .find(|(_, option)| option.display_path == label)
+                    .map(|(document, option)| {
+                        let mut item = params.clone();
+                        item["documentation"] = json!({
+                            "kind": "markdown",
+                            "value": option_markdown(document, option)
+                        });
+                        item["data"] = json!({
+                            "package": document.package.name,
+                            "version": document.package.version,
+                            "semanticSchemaSha256": document.identity.semantic_schema_sha256
+                        });
+                        item
+                    })
+                    .unwrap_or(params);
+                respond(output, id, result)?;
+            }
+            "textDocument/definition" => {
+                let result = self
+                    .document_position(&params)
+                    .and_then(|(text, line, character)| self.definition(&text, line, character))
+                    .unwrap_or(Value::Null);
+                respond(output, id, result)?;
+            }
+            "textDocument/documentLink" => {
+                let links = text_document_uri(&params)
+                    .and_then(|uri| self.open_files.get(&uri))
+                    .map(|text| self.document_links(text))
+                    .unwrap_or_else(|| Value::Array(Vec::new()));
+                respond(output, id, links)?;
+            }
+            "textDocument/codeAction" => {
+                respond(output, id, self.code_actions(&params))?;
             }
             "textDocument/diagnostic" => {
                 let items = text_document_uri(&params)
@@ -182,6 +226,11 @@ impl Server {
                     },
                     "filterText": option.display_path,
                     "insertText": option.display_path
+                    ,"data": {
+                        "package": document.package.name,
+                        "version": document.package.version,
+                        "path": option.display_path
+                    }
                 })
             })
             .collect::<Vec<_>>();
@@ -200,6 +249,76 @@ impl Server {
                     }
                 })
             })
+    }
+
+    fn definition(&self, text: &str, line: usize, character: usize) -> Option<Value> {
+        let word = word_at_position(text, line, character, false)?;
+        self.options()
+            .find(|(_, option)| option_matches(option, &word) || option.display_path == word)
+            .and_then(|(_, option)| option.source.as_ref())
+            .map(|source| {
+                json!({
+                    "uri": format!("aos-source:///{}", source.path.trim_start_matches('/')),
+                    "range": {
+                        "start": { "line": source.line.unwrap_or(1).saturating_sub(1), "character": 0 },
+                        "end": { "line": source.line.unwrap_or(1).saturating_sub(1), "character": 0 }
+                    }
+                })
+            })
+    }
+
+    fn document_links(&self, text: &str) -> Value {
+        let mut links = Vec::new();
+        for (line_number, line) in text.lines().enumerate() {
+            for (document, option) in self.options() {
+                let Some(start) = line.find(&option.display_path) else {
+                    continue;
+                };
+                links.push(json!({
+                    "range": {
+                        "start": { "line": line_number, "character": utf16_len(&line[..start]) },
+                        "end": { "line": line_number, "character": utf16_len(&line[..start + option.display_path.len()]) }
+                    },
+                    "target": format!("aos-doc://{}/{}#{}", document.package.name, document.package.version, option.display_path),
+                    "tooltip": format!("Open verified {} documentation", document.package.name)
+                }));
+            }
+        }
+        Value::Array(links)
+    }
+
+    fn code_actions(&self, params: &Value) -> Value {
+        let diagnostics = params
+            .pointer("/context/diagnostics")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Value::Array(
+            diagnostics
+                .into_iter()
+                .filter(|diagnostic| {
+                    diagnostic.get("code").and_then(Value::as_str) == Some("aos-unknown-option")
+                })
+                .filter_map(|diagnostic| {
+                    let candidate = diagnostic.pointer("/data/candidate")?.as_str()?;
+                    let replacement = nearest_option(
+                        self.options()
+                            .map(|(_, option)| option.display_path.as_str()),
+                        candidate,
+                    )?;
+                    Some(json!({
+                        "title": format!("Replace with '{replacement}'"),
+                        "kind": "quickfix",
+                        "diagnostics": [diagnostic],
+                        "command": {
+                            "title": "Replace option path",
+                            "command": "aos.replaceOptionPath",
+                            "arguments": [candidate, replacement]
+                        }
+                    }))
+                })
+                .collect(),
+        )
     }
 
     fn diagnostics(&self, text: &str) -> Vec<Value> {
@@ -244,7 +363,8 @@ impl Server {
                 "severity": 1,
                 "code": "aos-unknown-option",
                 "source": "apm-docs",
-                "message": format!("unknown documented AOS option '{candidate}'")
+                "message": format!("unknown documented AOS option '{candidate}'"),
+                "data": { "candidate": candidate }
             }));
         }
         diagnostics
@@ -327,6 +447,19 @@ fn option_matches(option: &OptionDocument, candidate: &str) -> bool {
                 PathSegment::Literal { value } => value == actual,
                 PathSegment::Wildcard { .. } => !actual.is_empty(),
             })
+}
+
+fn nearest_option<'a>(options: impl Iterator<Item = &'a str>, candidate: &str) -> Option<&'a str> {
+    let root = candidate.split('.').next()?;
+    options
+        .filter(|option| option.split('.').next() == Some(root))
+        .max_by_key(|option| {
+            option
+                .bytes()
+                .zip(candidate.bytes())
+                .take_while(|(left, right)| left == right)
+                .count()
+        })
 }
 
 fn word_at_position(
@@ -587,6 +720,24 @@ mod tests {
         let invalid = server.diagnostics("nginx.virtualHosts.site.missing = true;");
         assert_eq!(invalid.len(), 1);
         assert_eq!(invalid[0]["code"], "aos-unknown-option");
+        assert!(
+            server
+                .definition("nginx.virtualHosts.site.root", 0, 15)
+                .unwrap()["uri"]
+                .as_str()
+                .unwrap()
+                .starts_with("aos-source:///")
+        );
+        assert_eq!(
+            server
+                .document_links("nginx.virtualHosts.<name>.root = \"/srv\";")
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let actions = server.code_actions(&json!({ "context": { "diagnostics": invalid } }));
+        assert_eq!(actions.as_array().unwrap().len(), 1);
     }
 
     #[test]
