@@ -566,6 +566,16 @@ in {
           key="$HOME/.config/apm/keys/production-initial.key"
           {APR} create production --trust-key {shlex.quote(trust)} \\
             --trust-key-id initial --key "$key"
+          registry="$HOME/.local/share/apm/registries/production"
+          mkdir -p "$HOME/.config/apm/registries.d"
+          cat > "$HOME/.config/apm/registries.d/production.toml" <<EOF
+          [registry]
+          name = "production"
+          url = "file://$registry"
+
+          [registry.signing_keys]
+          initial = "$key"
+          EOF
           {APR} publish {HELPER_V1} --registry production \\
             --name hub-helper --version 1.0.0 \\
             --description 'Native Hub helper fixture' --license MIT \\
