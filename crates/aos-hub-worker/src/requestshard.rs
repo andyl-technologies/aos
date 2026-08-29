@@ -238,7 +238,7 @@ fn is_connect_path(path: &str) -> bool {
 }
 
 fn request_kind(path: &str, body: Option<&[u8]>) -> RequestShardKind {
-    // ContainerService remains on the control shard for Phase 6. Moving its
+    // ContainerService remains on the control shard through Phase 7. Moving its
     // reviewed administration surface requires an explicit migration because
     // publication transactions already use this authority.
     if path.contains(".ContainerService/") {
@@ -718,12 +718,23 @@ mod tests {
     }
 
     #[test]
-    fn phase_six_container_service_remains_on_the_control_shard() {
+    fn phase_seven_container_service_remains_on_the_control_shard() {
         for method in [
             "ListContainerRepositories",
             "PlanSetContainerTag",
             "BeginContainerPublication",
             "PlanRunContainerGc",
+            "ListContainerGcCandidates",
+            "ListContainerGcBlockers",
+            "ListContainerGcPlacementActions",
+            "RequeueContainerGcPlacementAction",
+            "ListContainerUntrackedInventory",
+            "PlanRepairContainerUntrackedObject",
+            "RepairContainerUntrackedObject",
+            "GetContainerUntrackedRepair",
+            "PlanContainerRegistryPurgeFence",
+            "ApplyContainerRegistryPurgeFence",
+            "GetContainerRegistryPurgeFence",
         ] {
             let path = format!("/aos.hub.v1.ContainerService/{method}");
             let classified = classify_request(

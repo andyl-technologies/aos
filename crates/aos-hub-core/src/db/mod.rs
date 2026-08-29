@@ -472,6 +472,8 @@ mod oci;
 pub use oci::*;
 mod oci_admin;
 pub use oci_admin::*;
+mod oci_gc;
+pub use oci_gc::*;
 mod placement_policy;
 mod publication_admission;
 mod registry_delete;
@@ -541,6 +543,8 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("oci_catalog.sql"),
     include_str!("oci_upload_publication.sql"),
     include_str!("oci_admin.sql"),
+    include_str!("oci_gc.sql"),
+    include_str!("oci_gc_remediation.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -4852,7 +4856,9 @@ impl Database {
                 Statement::new(
                     "UPDATE oci_registry_state
                      SET mutation_epoch = mutation_epoch + 1, updated_at = ?2
-                     WHERE registry_id = ?1",
+                     WHERE registry_id = ?1
+                       AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                         WHERE registry_lock.registry_id = ?1)",
                     vals![registry_id, indexed_at],
                 )
                 .expecting(1),
@@ -9811,18 +9817,45 @@ impl Database {
         {
             bail!("binding-write revision is still the binding's current revision");
         }
+        if self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM oci_gc_placement_snapshots snapshot
+                 JOIN oci_gc_runs run ON run.id = snapshot.run_id
+                 WHERE snapshot.binding_id = ?1
+                   AND snapshot.binding_write_revision = ?2
+                   AND run.state = 'applying' LIMIT 1",
+                &vals![binding_id, revision],
+            )
+            .await?
+            .is_some()
+        {
+            bail!("binding-write revision remains pinned by applying OCI GC");
+        }
         self.backend
             .batch(&[
                 Statement::new(
                     "DELETE FROM surface_placement_write_capabilities
-                     WHERE binding_id = ?1 AND binding_write_revision = ?2",
+                     WHERE binding_id = ?1 AND binding_write_revision = ?2
+                       AND NOT EXISTS (SELECT 1
+                         FROM oci_gc_placement_snapshots snapshot
+                         JOIN oci_gc_runs run ON run.id = snapshot.run_id
+                         WHERE snapshot.binding_id = ?1
+                           AND snapshot.binding_write_revision = ?2
+                           AND run.state = 'applying')",
                     vals![binding_id, revision].to_vec(),
                 ),
                 Statement::new(
                     "DELETE FROM binding_write_revisions
                      WHERE binding_id = ?1 AND revision = ?2
                        AND NOT EXISTS (SELECT 1 FROM binding_write_state s
-                         WHERE s.binding_id = ?1 AND s.current_write_revision = ?2)",
+                         WHERE s.binding_id = ?1 AND s.current_write_revision = ?2)
+                       AND NOT EXISTS (SELECT 1
+                         FROM oci_gc_placement_snapshots snapshot
+                         JOIN oci_gc_runs run ON run.id = snapshot.run_id
+                         WHERE snapshot.binding_id = ?1
+                           AND snapshot.binding_write_revision = ?2
+                           AND run.state = 'applying')",
                     vals![binding_id, revision].to_vec(),
                 ),
             ])
@@ -9886,6 +9919,9 @@ impl Database {
              WHERE b.id = ?4
                AND ((?1 IS NOT NULL AND r.id IS NOT NULL)
                  OR (?2 IS NOT NULL AND c.id IS NOT NULL))
+               AND (?1 IS NULL OR NOT EXISTS (
+                 SELECT 1 FROM oci_gc_registry_locks registry_lock
+                 WHERE registry_lock.registry_id = ?1))
                AND NOT EXISTS (SELECT 1 FROM surface_placements existing
                  WHERE existing.binding_id = b.id
                    AND (existing.prefix = '' OR ?5 = ''
@@ -10401,7 +10437,14 @@ impl Database {
                      WHERE placement_id = ?1
                    UNION ALL
                    SELECT policy_revision_id FROM placement_policy_shard_members
-                     WHERE placement_id = ?1))";
+                     WHERE placement_id = ?1))
+               AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                 JOIN surface_placements gc_placement
+                   ON gc_placement.registry_id = registry_lock.registry_id
+                 WHERE gc_placement.id = ?1)
+               AND NOT EXISTS (SELECT 1 FROM oci_gc_placement_snapshots snapshot
+                 JOIN oci_gc_runs run ON run.id = snapshot.run_id
+                 WHERE snapshot.placement_id = ?1 AND run.state = 'applying')";
         let values = vals![
             id,
             input.expected_version,
@@ -10480,7 +10523,14 @@ impl Database {
                          AND o.primary_target_stable_id = ?3)
                        OR EXISTS (SELECT 1 FROM operation_secondary_targets t
                          WHERE t.operation_id = o.operation_id
-                           AND t.target_kind = 'placement' AND t.stable_id = ?3)))",
+                           AND t.target_kind = 'placement' AND t.stable_id = ?3)))
+                   AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                     JOIN surface_placements gc_placement
+                       ON gc_placement.registry_id = registry_lock.registry_id
+                     WHERE gc_placement.id = ?1)
+                   AND NOT EXISTS (SELECT 1 FROM oci_gc_placement_snapshots snapshot
+                     JOIN oci_gc_runs run ON run.id = snapshot.run_id
+                     WHERE snapshot.placement_id = ?1 AND run.state = 'applying')",
                 &vals![id, expected_version, placement_target_id],
             )
             .await?
@@ -14066,7 +14116,16 @@ impl Database {
                 Statement::new(
                     "INSERT INTO image_snapshot_leases(lease_id, digest, expires_at)
                      SELECT ?1, digest, ?3 FROM image_snapshots
-                     WHERE digest = ?2 AND byte_size = ?4",
+                     WHERE digest = ?2 AND byte_size = ?4
+                       AND NOT EXISTS (SELECT 1
+                         FROM image_snapshot_references reference
+                         JOIN oci_gc_candidates candidate
+                           ON candidate.registry_id = reference.registry_id
+                          AND candidate.object_key = reference.object_key
+                         JOIN oci_gc_runs run ON run.id = candidate.run_id
+                         WHERE reference.digest = image_snapshots.digest
+                           AND run.state = 'applying'
+                           AND candidate.state IN('deleting', 'physically_absent'))",
                     vals![lease_id, digest, expires_at, byte_size].to_vec(),
                 ),
             ])
@@ -26393,7 +26452,7 @@ source_nar_hash = ""
     fn oci_phase5_v21_migration_upgrades_v20_and_backfills_contextual_media() {
         const OCI_UPLOAD_PUBLICATION_INDEX: usize = 20;
 
-        assert_eq!(MIGRATIONS.len(), 22, "reviewed schema version changed");
+        assert_eq!(MIGRATIONS.len(), 24, "reviewed schema version changed");
         let connection = Connection::open_in_memory().unwrap();
         for migration in &MIGRATIONS[..OCI_UPLOAD_PUBLICATION_INDEX] {
             connection.execute_batch(migration).unwrap();
@@ -26722,7 +26781,7 @@ source_nar_hash = ""
             .unwrap()
             .get(0)
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 24);
     }
 
     #[test]
@@ -30801,6 +30860,14 @@ source_nar_hash = ""
         db.observe_binding_write_revision(binding_id, write_revision.revision, "valid", None, None)
             .await
             .unwrap();
+        let write_state = db.binding_write_state(binding_id).await.unwrap().unwrap();
+        db.set_current_binding_write_revision(
+            binding_id,
+            write_revision.revision,
+            write_state.resource_version,
+        )
+        .await
+        .unwrap();
         db.bind_surface_placement_write_capability(placement.id, write_revision.revision)
             .await
             .unwrap();
@@ -30956,6 +31023,74 @@ source_nar_hash = ""
             .await
             .unwrap();
         db.materialize_topology_events().await.unwrap();
+        let purge_now = unix_now();
+        let purge_plan = db
+            .plan_oci_registry_purge_fence(&PlanOciRegistryPurgeFence {
+                registry_id: id,
+                action: OciRegistryPurgeFenceAction::Begin,
+                actor_id: "release-controller".to_string(),
+                idempotency_key: "retired-purge-plan".to_string(),
+                expected_resource_version: registry.resource_version,
+                now: purge_now,
+            })
+            .await
+            .unwrap();
+        db.apply_oci_registry_purge_fence(&ApplyOciRegistryPurgeFence {
+            plan_id: purge_plan.id,
+            actor_id: "release-controller".to_string(),
+            idempotency_key: "retired-purge-apply".to_string(),
+            confirmation_hash: purge_plan.confirmation_hash,
+            expected_resource_version: purge_plan.resource_version,
+            now: purge_now + 1,
+        })
+        .await
+        .unwrap();
+
+        let placement = db.surface_placement(placement.id).await.unwrap().unwrap();
+        let inventory = db
+            .begin_oci_provider_inventory(&BeginOciProviderInventory {
+                registry_id: id,
+                placement_id: placement.id,
+                expected_placement_resource_version: placement.resource_version,
+                expected_placement_observation_version: placement.observation_version.unwrap(),
+                collector_id: "retired-purge-collector".to_string(),
+                collector_claim_token: "retired-purge-claim".to_string(),
+                collector_lease_seconds: 100,
+                idempotency_key: "retired-purge-inventory".to_string(),
+                now: purge_now + 2,
+            })
+            .await
+            .unwrap();
+        db.append_oci_provider_inventory_page(&AppendOciProviderInventoryPage {
+            generation_id: inventory.id.clone(),
+            collector_id: "retired-purge-collector".to_string(),
+            collector_claim_token: "retired-purge-claim".to_string(),
+            expected_checkpoint_ordinal: 0,
+            expected_provider_cursor: None,
+            next_provider_cursor: None,
+            last_listed_key: None,
+            entries: Vec::new(),
+            now: purge_now + 3,
+            lease_seconds: 100,
+        })
+        .await
+        .unwrap();
+        db.complete_oci_provider_inventory(&CompleteOciProviderInventory {
+            generation_id: inventory.id,
+            collector_id: "retired-purge-collector".to_string(),
+            collector_claim_token: "retired-purge-claim".to_string(),
+            expected_checkpoint_ordinal: 1,
+            observed_at: purge_now + 3,
+            now: purge_now + 4,
+        })
+        .await
+        .unwrap();
+        assert!(!db
+            .oci_registry_purge_blockers(id, purge_now + 4)
+            .await
+            .unwrap()
+            .any());
+
         let change_id = uuid::Uuid::new_v4().to_string();
 
         assert!(db

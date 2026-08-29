@@ -309,6 +309,94 @@
   },
   {
     "service": "ContainerService",
+    "method": "ListContainerGcCandidates",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "ListContainerGcBlockers",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "ListContainerGcPlacementActions",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "RequeueContainerGcPlacementAction",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "maintenance_replay" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "ListContainerUntrackedInventory",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "PlanRepairContainerUntrackedObject",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "repair_container_untracked_object" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "RepairContainerUntrackedObject",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "repair_container_untracked_object", "outcome": "operation" },
+    "external_effects": true
+  },
+  {
+    "service": "ContainerService",
+    "method": "GetContainerUntrackedRepair",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "PlanContainerRegistryPurgeFence",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "container_registry_purge_fence" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "ApplyContainerRegistryPurgeFence",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "container_registry_purge_fence", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "GetContainerRegistryPurgeFence",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
     "method": "BeginContainerPublication",
     "exposure": "public",
     "durability": "durable",

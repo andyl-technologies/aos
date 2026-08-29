@@ -37,6 +37,9 @@ impl RpcService {
         let scope = self.registry_scope(&registry).await?;
         self.require_permission(&claims, Permission::Publish, &scope)
             .await?;
+        if !self.container_rollout.verified_publication {
+            return Err(verified_publication_unavailable());
+        }
 
         let repository_name = RepositoryName::parse(&req.repository)
             .map_err(|error| RpcError::invalid(error.to_string()))?;
@@ -279,6 +282,9 @@ impl RpcService {
         let (registry, repository) = self
             .authorize_container_publication(&claims, &publication)
             .await?;
+        if !self.container_rollout.verified_publication {
+            return Err(verified_publication_unavailable());
+        }
         let confirmation_hash = Sha256Digest::parse(&req.confirmation_hash)
             .map_err(|error| RpcError::invalid(error.to_string()))?;
         let expected_confirmation = oci_publication_confirmation_hash(&publication);
@@ -349,6 +355,9 @@ impl RpcService {
         let (registry, repository) = self
             .authorize_container_publication(&claims, &publication)
             .await?;
+        if !self.container_rollout.verified_publication {
+            return Err(verified_publication_unavailable());
+        }
         let aborted = self
             .db
             .abort_oci_publication(
@@ -422,6 +431,10 @@ impl RpcService {
 }
 
 use crate::db::OciRepositoryRecord;
+
+fn verified_publication_unavailable() -> RpcError {
+    RpcError::Unavailable("verified container publication rollout is disabled".to_string())
+}
 
 fn validate_initial_release(release: &ContainerRelease) -> Result<(), RpcError> {
     if release.identity.package != "aos"

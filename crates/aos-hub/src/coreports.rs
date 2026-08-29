@@ -816,6 +816,53 @@ impl core_fetch::SurfaceProvider for HubSurfaceProvider {
             ))),
         }
     }
+
+    async fn frozen_placement_fetcher(
+        &self,
+        access: &core_sw::FrozenSurfaceAccess,
+    ) -> Result<Box<dyn core_fetch::SurfaceFetch>> {
+        let binding = frozen_access_binding(&self.db, access).await?;
+        match BindingKind::parse(&binding.kind) {
+            Some(BindingKind::LocalFs) => {
+                anyhow::ensure!(
+                    access.delete_credential_purpose.is_none()
+                        && access.delete_credential_generation.is_none(),
+                    "local frozen placement access must not carry credentials"
+                );
+                let root = binding
+                    .local_root_path
+                    .as_deref()
+                    .context("local frozen placement has no localRootPath")?;
+                // A deletion absence probe must inspect the placement itself,
+                // not the separately retained ImageSnapshotStore hardlink.
+                Ok(Box::new(crate::fetch::LocalFsFetch::new(
+                    PathBuf::from(root).join(&access.placement_prefix),
+                )))
+            }
+            Some(BindingKind::S3 | BindingKind::R2) => {
+                let credential = frozen_delete_credential(
+                    self.credentials.as_deref(),
+                    access,
+                    "object-store frozen read",
+                )
+                .await?;
+                let surface = S3Surface::from_binding(
+                    &binding,
+                    &access.placement_prefix,
+                    credential
+                        .as_ref()
+                        .map(|credential| credential.secret())
+                        .transpose()?,
+                )?
+                .context("frozen placement object-store binding cannot be resolved")?;
+                Ok(Box::new(S3Fetch::new(surface, self.http.clone())))
+            }
+            Some(BindingKind::DeploymentR2) => {
+                bail!("deployment R2 cannot be addressed by the native runtime")
+            }
+            None => bail!("frozen placement uses an unsupported binding kind"),
+        }
+    }
 }
 
 /// The native [`SurfaceWriteProvider`](core_sw::SurfaceWriteProvider): resolves
@@ -963,24 +1010,122 @@ impl core_sw::SurfaceWriteProvider for HubSurfaceWriteProvider {
                 placement.name
             );
         }
-        if !matches!(BindingKind::parse(&binding.kind), Some(BindingKind::S3)) {
-            bail!(
+        match BindingKind::parse(&binding.kind) {
+            Some(BindingKind::LocalFs) => Ok(Box::new(LocalFsWrite::new(
+                PathBuf::from(
+                    binding
+                        .local_root_path
+                        .as_deref()
+                        .context("local deletion placement has no localRootPath")?,
+                )
+                .join(&placement.prefix),
+            ))),
+            Some(BindingKind::S3 | BindingKind::R2) => {
+                let resolver = self
+                    .credentials
+                    .as_ref()
+                    .context("object-store placement deletion requires a credential resolver")?;
+                let credential = resolver
+                    .resolve_exact(binding.id, "delete", delete_credential_generation)
+                    .await?;
+                let surface = S3Surface::from_binding(
+                    &binding,
+                    &placement.prefix,
+                    Some(credential.secret()?),
+                )?
+                .context("placement object-store binding cannot be resolved")?;
+                Ok(Box::new(S3Write::new(surface, self.http.clone())))
+            }
+            _ => bail!(
                 "placement '{}' backend '{}' cannot enforce conditional deletion",
                 placement.name,
                 binding.kind
-            );
+            ),
         }
-        let resolver = self
-            .credentials
-            .as_ref()
-            .context("object-store placement deletion requires a credential resolver")?;
-        let credential = resolver
-            .resolve_exact(binding.id, "delete", delete_credential_generation)
-            .await?;
-        let surface =
-            S3Surface::from_binding(&binding, &placement.prefix, Some(credential.secret()?))?
-                .context("placement object-store binding cannot be resolved")?;
-        Ok(Box::new(S3Write::new(surface, self.http.clone())))
+    }
+
+    async fn frozen_placement_deleter(
+        &self,
+        access: &core_sw::FrozenSurfaceAccess,
+    ) -> Result<Box<dyn core_sw::SurfaceWrite>> {
+        let binding = frozen_access_binding(&self.db, access).await?;
+        match BindingKind::parse(&binding.kind) {
+            Some(BindingKind::LocalFs) => {
+                anyhow::ensure!(
+                    access.delete_credential_purpose.is_none()
+                        && access.delete_credential_generation.is_none(),
+                    "local frozen placement deletion must not carry credentials"
+                );
+                Ok(Box::new(LocalFsWrite::new(
+                    PathBuf::from(
+                        binding
+                            .local_root_path
+                            .as_deref()
+                            .context("local frozen placement has no localRootPath")?,
+                    )
+                    .join(&access.placement_prefix),
+                )))
+            }
+            Some(BindingKind::S3 | BindingKind::R2) => {
+                let credential = frozen_delete_credential(
+                    self.credentials.as_deref(),
+                    access,
+                    "object-store frozen deletion",
+                )
+                .await?
+                .context("object-store frozen deletion requires exact credentials")?;
+                let surface = S3Surface::from_binding(
+                    &binding,
+                    &access.placement_prefix,
+                    Some(credential.secret()?),
+                )?
+                .context("frozen deletion object-store binding cannot be resolved")?;
+                Ok(Box::new(S3Write::new(surface, self.http.clone())))
+            }
+            Some(BindingKind::DeploymentR2) => {
+                bail!("deployment R2 cannot enforce atomic conditional deletion")
+            }
+            None => bail!("frozen placement uses an unsupported binding kind"),
+        }
+    }
+}
+
+async fn frozen_access_binding(
+    db: &Database,
+    access: &core_sw::FrozenSurfaceAccess,
+) -> Result<aos_hub_core::db::BindingRecord> {
+    access.validate()?;
+    let binding = db
+        .binding(access.binding_id)
+        .await?
+        .context("frozen placement references a missing binding")?;
+    anyhow::ensure!(
+        binding.resource_version == access.binding_resource_version,
+        "frozen placement binding resource version changed"
+    );
+    db.binding_write_revision(access.binding_id, access.binding_write_revision)
+        .await?
+        .context("frozen placement binding revision disappeared")?;
+    Ok(binding)
+}
+
+async fn frozen_delete_credential(
+    resolver: Option<&dyn StorageCredentialResolver>,
+    access: &core_sw::FrozenSurfaceAccess,
+    operation: &str,
+) -> Result<Option<aos_hub_core::storage_credential::ResolvedStorageCredential>> {
+    match (
+        access.delete_credential_purpose.as_deref(),
+        access.delete_credential_generation,
+    ) {
+        (Some(purpose), Some(generation)) => Ok(Some(
+            resolver
+                .with_context(|| format!("{operation} requires a credential resolver"))?
+                .resolve_exact(access.binding_id, purpose, generation)
+                .await?,
+        )),
+        (None, None) => Ok(None),
+        _ => bail!("frozen placement carries an incomplete credential fence"),
     }
 }
 
@@ -1016,6 +1161,7 @@ impl core_sw::SurfaceWrite for LocalFsWrite {
         // component cannot redirect the write outside the storage root. The
         // returned target is rebased onto the canonical parent.
         let contained = self.contained_target(&target).await?;
+        let _guard = crate::local_fs_delete::lock_object(&contained).await;
         write_atomic(&contained, bytes).await
     }
 
@@ -1037,6 +1183,7 @@ impl core_sw::SurfaceWrite for LocalFsWrite {
         if !canonical.starts_with(&root) {
             bail!("surface path '{path}' escapes the storage root via symlink");
         }
+        let _guard = crate::local_fs_delete::lock_object(&canonical).await;
         match tokio::fs::remove_file(&canonical).await {
             Ok(()) => {
                 sync_parent_directory(&canonical).await?;
@@ -1045,6 +1192,14 @@ impl core_sw::SurfaceWrite for LocalFsWrite {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(err) => Err(err).with_context(|| format!("deleting {}", canonical.display())),
         }
+    }
+
+    async fn delete_if_matches(
+        &self,
+        path: &str,
+        expected: &core_sw::SurfaceDeletePrecondition,
+    ) -> Result<core_sw::SurfaceDeleteOutcome> {
+        crate::local_fs_delete::delete_if_matches(&self.root, path, expected).await
     }
 
     async fn create_multipart(&self, path: &str) -> Result<String> {
@@ -1151,6 +1306,7 @@ impl core_sw::SurfaceWrite for LocalFsWrite {
         let terminal = self.multipart_terminal_marker(&upload_id);
         write_atomic(&terminal, b"completing\n").await?;
         self.durability_checkpoint("completion-marker-synced")?;
+        let _guard = crate::local_fs_delete::lock_object(&contained).await;
         tokio::fs::rename(&tmp, &contained)
             .await
             .with_context(|| format!("renaming into {}", contained.display()))?;
@@ -2067,20 +2223,7 @@ impl core_sw::SurfaceWrite for S3Write {
         )
         .await
         .with_context(|| format!("s3 conditional DELETE {path}"))?;
-        match response.status() {
-            status if status.is_success() => Ok(core_sw::SurfaceDeleteOutcome::Deleted {
-                etag: expected.etag.clone(),
-                content_hash: expected.content_hash.clone(),
-                size: expected.size,
-            }),
-            reqwest::StatusCode::NOT_FOUND => Ok(core_sw::SurfaceDeleteOutcome::NotFound),
-            reqwest::StatusCode::PRECONDITION_FAILED => {
-                Ok(core_sw::SurfaceDeleteOutcome::PreconditionFailed {
-                    detail: "backend object identity changed after inventory".to_string(),
-                })
-            }
-            status => bail!("s3 conditional DELETE {path}: status {status}"),
-        }
+        s3_conditional_delete_outcome(response.status(), etag, path)
     }
 
     async fn create_multipart(&self, path: &str) -> Result<String> {
@@ -2213,6 +2356,25 @@ impl core_sw::SurfaceWrite for S3Write {
     }
 }
 
+fn s3_conditional_delete_outcome(
+    status: reqwest::StatusCode,
+    etag: String,
+    path: &str,
+) -> Result<core_sw::SurfaceDeleteOutcome> {
+    match status {
+        status if status.is_success() => {
+            Ok(core_sw::SurfaceDeleteOutcome::ConditionalDeleteAcknowledged { etag })
+        }
+        reqwest::StatusCode::NOT_FOUND => Ok(core_sw::SurfaceDeleteOutcome::NotFound),
+        reqwest::StatusCode::PRECONDITION_FAILED => {
+            Ok(core_sw::SurfaceDeleteOutcome::PreconditionFailed {
+                detail: "backend object identity changed after inventory".to_string(),
+            })
+        }
+        status => bail!("s3 conditional DELETE {path}: status {status}"),
+    }
+}
+
 /// Parse a `Content-Range: bytes START-END/TOTAL` value into `(start, end, total)`.
 ///
 /// Returns `None` for an unsatisfiable (`bytes */TOTAL`) or malformed value.
@@ -2228,6 +2390,10 @@ pub(crate) fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
 }
 
 #[cfg(test)]
+#[path = "coreports_frozen_tests.rs"]
+mod frozen_tests;
+
+#[cfg(test)]
 mod multipart_tests {
     use super::*;
     use core_sw::SurfaceWrite as _;
@@ -2241,6 +2407,22 @@ mod multipart_tests {
         assert_eq!(url_origin(&original), url_origin(&same));
         assert_ne!(url_origin(&original), url_origin(&changed_host));
         assert_ne!(url_origin(&original), url_origin(&changed_scheme));
+    }
+
+    #[test]
+    fn s3_delete_success_is_only_an_if_match_acknowledgment() {
+        let outcome = s3_conditional_delete_outcome(
+            reqwest::StatusCode::NO_CONTENT,
+            "\"inventory-etag\"".into(),
+            "oci/blobs/sha256/object",
+        )
+        .unwrap();
+        assert_eq!(
+            outcome,
+            core_sw::SurfaceDeleteOutcome::ConditionalDeleteAcknowledged {
+                etag: "\"inventory-etag\"".into()
+            }
+        );
     }
 
     #[test]

@@ -528,6 +528,22 @@ impl RpcService {
         body: Body,
     ) -> Response {
         let head = method == Method::HEAD;
+        if resolved.request == OciRequest::Ping && !self.container_rollout.distribution_enabled() {
+            return unavailable_response("OCI Distribution rollout is disabled", head);
+        }
+        if !matches!(resolved.request, OciRequest::Ping | OciRequest::Token) {
+            let Some(action) =
+                oci_request_action_for_rollout(&resolved.request, &method, self.container_rollout)
+            else {
+                return method_not_allowed_response(
+                    "method is not supported for this Distribution endpoint",
+                    head,
+                );
+            };
+            if !self.container_rollout.distribution_action_enabled(action) {
+                return unavailable_response("OCI Distribution action is disabled", head);
+            }
+        }
         let registry = match self.db.registry_by_id(resolved.registry_id).await {
             Ok(Some(registry)) => registry,
             Ok(None) => {
@@ -582,6 +598,9 @@ impl RpcService {
                     true,
                 );
             }
+            if !self.container_rollout.distribution_enabled() {
+                return unavailable_response("OCI Distribution rollout is disabled", false);
+            }
             let token_request = match parse_token_query(query.unwrap_or_default()) {
                 Ok(request) if request.service == resolved.authority => request,
                 Ok(_) | Err(_) => {
@@ -594,6 +613,13 @@ impl RpcService {
                     );
                 }
             };
+            if token_request
+                .grants
+                .iter()
+                .any(|grant| token_grant_requests_disabled_action(grant, self.container_rollout))
+            {
+                return unavailable_response("OCI Distribution action is disabled", false);
+            }
             let authorization = headers
                 .get(header::AUTHORIZATION)
                 .and_then(|value| value.to_str().ok());
@@ -668,7 +694,9 @@ impl RpcService {
         let authorization = headers
             .get(header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok());
-        let Some(required_action) = oci_request_action(&resolved.request, &method) else {
+        let Some(required_action) =
+            oci_request_action_for_rollout(&resolved.request, &method, self.container_rollout)
+        else {
             return method_not_allowed_response(
                 "method is not supported for this Distribution endpoint",
                 head,
@@ -753,7 +781,10 @@ impl RpcService {
         };
         let private = resolved.access_policy_kind != "public"
             || !(registry.visibility == "public" || registry.org_id.is_none());
-        if required_action == "push" {
+        // A push-only rollout authorizes immutable blob/manifest HEAD probes
+        // with the push grant, but those probes still use the read-side object
+        // responder. Only protocol write operations enter the write handler.
+        if oci_request_action(&resolved.request, &method) == Some("push") {
             return self
                 .serve_oci_write(
                     &registry,
@@ -1013,6 +1044,44 @@ fn oci_request_action(request: &OciRequest, method: &Method) -> Option<&'static 
         ) => Some("push"),
         _ => None,
     }
+}
+
+fn oci_request_action_for_rollout(
+    request: &OciRequest,
+    method: &Method,
+    rollout: crate::container_rollout::ContainerRollout,
+) -> Option<&'static str> {
+    let action = oci_request_action(request, method)?;
+    if action == "pull"
+        && *method == Method::HEAD
+        && matches!(
+            request,
+            OciRequest::Blob { .. } | OciRequest::Manifest { .. }
+        )
+        && !rollout.pull
+        && rollout.push
+    {
+        // Docker-family clients probe immutable content before uploading it.
+        // Treat only those HEAD probes as push when public/read pull is off;
+        // GET and catalog reads remain blocked by the pull gate.
+        return Some("push");
+    }
+    Some(action)
+}
+
+fn token_grant_requests_disabled_action(
+    grant: &OciRepositoryGrant,
+    rollout: crate::container_rollout::ContainerRollout,
+) -> bool {
+    let requests_push = grant.actions.iter().any(|action| action == "push");
+    grant.actions.iter().any(|action| match action.as_str() {
+        // Push clients conventionally ask for pull,push together so they can
+        // issue authenticated HEAD probes. The data-plane gate still rejects
+        // GET when pull is disabled.
+        "pull" => !rollout.pull && !(rollout.push && requests_push),
+        "push" => !rollout.push,
+        _ => false,
+    })
 }
 
 fn method_not_allowed_response(message: &'static str, head: bool) -> Response {
@@ -1539,5 +1608,41 @@ mod tests {
     fn only_organization_registries_admit_oci_writes() {
         assert!(registry_supports_oci_writes(Some(7)));
         assert!(!registry_supports_oci_writes(None));
+    }
+
+    #[test]
+    fn push_only_rollout_allows_authenticated_head_preflight_but_not_get() {
+        let rollout = crate::container_rollout::ContainerRollout {
+            push: true,
+            ..crate::container_rollout::ContainerRollout::default()
+        };
+        let request = OciRequest::Blob {
+            repository: RepositoryName::parse("aos").unwrap(),
+            digest: Sha256Digest::digest(b"blob"),
+        };
+
+        assert_eq!(
+            oci_request_action_for_rollout(&request, &Method::HEAD, rollout),
+            Some("push")
+        );
+        assert_eq!(
+            oci_request_action_for_rollout(&request, &Method::GET, rollout),
+            Some("pull")
+        );
+        assert!(!rollout.distribution_action_enabled("pull"));
+
+        let combined_grant = OciRepositoryGrant {
+            repository: RepositoryName::parse("aos").unwrap(),
+            actions: vec!["pull".to_string(), "push".to_string()],
+        };
+        assert!(!token_grant_requests_disabled_action(
+            &combined_grant,
+            rollout
+        ));
+        let pull_grant = OciRepositoryGrant {
+            repository: RepositoryName::parse("aos").unwrap(),
+            actions: vec!["pull".to_string()],
+        };
+        assert!(token_grant_requests_disabled_action(&pull_grant, rollout));
     }
 }

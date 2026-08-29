@@ -981,7 +981,12 @@ fn append_repository_delete(
             format!(
                 "UPDATE oci_registry_state SET mutation_epoch = mutation_epoch + 1,
                     updated_at = ?4
-                 WHERE registry_id = ?2 AND EXISTS (SELECT 1 FROM oci_repositories repository
+                 WHERE registry_id = ?2
+                   AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                     WHERE registry_lock.registry_id = ?2)
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
+                     WHERE purge.registry_id = ?2 AND purge.state = 'collecting')
+                   AND EXISTS (SELECT 1 FROM oci_repositories repository
                    WHERE repository.id = ?1 AND repository.registry_id = ?2
                      AND repository.resource_version = ?3
                      AND repository.lifecycle_state = 'active' AND {empty_guard})"
@@ -1100,6 +1105,32 @@ fn append_manual_tag_set(
             .expecting(1),
         );
     }
+    statements.push(
+        Statement::new(
+            "UPDATE oci_blobs SET unreferenced_since = NULL, updated_at = ?3
+             WHERE registry_id = ?1 AND digest = ?2 AND lifecycle_state = 'active'",
+            vals![plan.registry_id, target, input.now],
+        )
+        .expecting(1),
+    );
+    if desired.expected_digest.as_deref() != Some(target) {
+        statements.push(
+            Statement::new(
+                "UPDATE oci_blobs SET unreferenced_since = COALESCE(unreferenced_since, ?3),
+                    updated_at = ?3
+                 WHERE registry_id = ?1 AND digest = ?2 AND lifecycle_state = 'active'
+                   AND NOT EXISTS (SELECT 1 FROM oci_tags tag
+                     WHERE tag.registry_id = ?1 AND tag.digest = ?2)
+                   AND NOT EXISTS (SELECT 1 FROM oci_release_roots root
+                     WHERE root.registry_id = ?1 AND root.index_digest = ?2)
+                   AND NOT EXISTS (SELECT 1 FROM oci_release_evidence evidence
+                     WHERE evidence.registry_id = ?1 AND evidence.referrer_digest = ?2
+                       AND evidence.verification = 'verified')",
+                vals![plan.registry_id, desired.expected_digest, input.now],
+            )
+            .unchecked(),
+        );
+    }
     statements.push(mutation_epoch_statement(plan.registry_id, input.now));
     Ok(())
 }
@@ -1164,6 +1195,22 @@ fn append_manual_tag_unset(
             ],
         )
         .expecting(1),
+    );
+    statements.push(
+        Statement::new(
+            "UPDATE oci_blobs SET unreferenced_since = COALESCE(unreferenced_since, ?3),
+                updated_at = ?3
+             WHERE registry_id = ?1 AND digest = ?2 AND lifecycle_state = 'active'
+               AND NOT EXISTS (SELECT 1 FROM oci_tags tag
+                 WHERE tag.registry_id = ?1 AND tag.digest = ?2)
+               AND NOT EXISTS (SELECT 1 FROM oci_release_roots root
+                 WHERE root.registry_id = ?1 AND root.index_digest = ?2)
+               AND NOT EXISTS (SELECT 1 FROM oci_release_evidence evidence
+                 WHERE evidence.registry_id = ?1 AND evidence.referrer_digest = ?2
+                   AND evidence.verification = 'verified')",
+            vals![plan.registry_id, expected_digest, input.now],
+        )
+        .unchecked(),
     );
     statements.push(mutation_epoch_statement(plan.registry_id, input.now));
     Ok(())
@@ -1250,7 +1297,11 @@ fn ensure_registry_state_statement(registry_id: i64, now: i64) -> CheckedStateme
 fn mutation_epoch_statement(registry_id: i64, now: i64) -> CheckedStatement {
     Statement::new(
         "UPDATE oci_registry_state SET mutation_epoch = mutation_epoch + 1,
-            updated_at = ?2 WHERE registry_id = ?1",
+            updated_at = ?2 WHERE registry_id = ?1
+            AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+              WHERE registry_lock.registry_id = ?1)
+            AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
+              WHERE purge.registry_id = ?1 AND purge.state = 'collecting')",
         vals![registry_id, now],
     )
     .expecting(1)

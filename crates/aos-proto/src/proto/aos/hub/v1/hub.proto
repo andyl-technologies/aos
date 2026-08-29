@@ -390,12 +390,34 @@ service ContainerService {
   rpc SetContainerRetentionPolicy(ApplyContainerMutationRequest)
       returns (ContainerRetentionPolicyResponse);
   rpc PlanRunContainerGc(PlanRunContainerGcRequest)
-      returns (TopologyPlanResponse);
+      returns (ContainerGcPlanResponse);
   rpc RunContainerGc(ApplyContainerMutationRequest) returns (OperationResponse);
   rpc GetContainerGcRun(GetContainerGcRunRequest)
       returns (ContainerGcRunResponse);
   rpc ListContainerGcRuns(ListContainerGcRunsRequest)
       returns (ListContainerGcRunsResponse);
+  rpc ListContainerGcCandidates(ListContainerGcCandidatesRequest)
+      returns (ListContainerGcCandidatesResponse);
+  rpc ListContainerGcBlockers(ListContainerGcBlockersRequest)
+      returns (ListContainerGcBlockersResponse);
+  rpc ListContainerGcPlacementActions(ListContainerGcPlacementActionsRequest)
+      returns (ListContainerGcPlacementActionsResponse);
+  rpc RequeueContainerGcPlacementAction(RequeueContainerGcPlacementActionRequest)
+      returns (ContainerGcPlacementActionResponse);
+  rpc ListContainerUntrackedInventory(ListContainerUntrackedInventoryRequest)
+      returns (ListContainerUntrackedInventoryResponse);
+  rpc PlanRepairContainerUntrackedObject(PlanRepairContainerUntrackedObjectRequest)
+      returns (TopologyPlanResponse);
+  rpc RepairContainerUntrackedObject(RepairContainerUntrackedObjectRequest)
+      returns (OperationResponse);
+  rpc GetContainerUntrackedRepair(GetContainerUntrackedRepairRequest)
+      returns (ContainerUntrackedRepairResponse);
+  rpc PlanContainerRegistryPurgeFence(PlanContainerRegistryPurgeFenceRequest)
+      returns (TopologyPlanResponse);
+  rpc ApplyContainerRegistryPurgeFence(ApplyContainerRegistryPurgeFenceRequest)
+      returns (ContainerRegistryPurgeFenceResponse);
+  rpc GetContainerRegistryPurgeFence(GetContainerRegistryPurgeFenceRequest)
+      returns (ContainerRegistryPurgeFenceResponse);
   rpc BeginContainerPublication(BeginContainerPublicationRequest)
       returns (ContainerPublication);
   rpc GetContainerPublication(GetContainerPublicationRequest)
@@ -1009,9 +1031,8 @@ message PlanSetContainerRetentionPolicyRequest {
   string idempotency_key = 4;
 }
 
-// Requests a reviewed garbage-collection generation. Implementations must
-// return unavailable until they can capture a complete inventory and mutation
-// epoch, compute a reviewable plan, and revalidate every deletion in Phase 7.
+// Requests a reviewed garbage-collection generation bound to the effective
+// retention policy version, complete placement inventory, and mutation epoch.
 message PlanRunContainerGcRequest {
   string registry = 1;
   string expected_resource_version = 2;
@@ -1031,15 +1052,54 @@ message ListContainerGcRunsRequest {
   string page_token = 4;
 }
 
+message ListContainerGcCandidatesRequest {
+  string registry = 1;
+  string run_id = 2;
+  uint32 page_size = 3;
+  // Opaque digest-keyset cursor bound to the exact run and captured epoch.
+  string page_token = 4;
+}
+
+message ListContainerGcBlockersRequest {
+  string registry = 1;
+  string run_id = 2;
+}
+
+message ListContainerGcPlacementActionsRequest {
+  string registry = 1;
+  string run_id = 2;
+  string state = 3;
+  uint32 page_size = 4;
+  // Opaque action-keyset cursor bound to the exact run, epoch, and state.
+  string page_token = 5;
+}
+
+// Requeues only the same frozen failed action after an operator repairs exact
+// access. The action is never retargeted to current bytes or credentials.
+message RequeueContainerGcPlacementActionRequest {
+  string registry = 1;
+  string run_id = 2;
+  string action_id = 3;
+  string expected_resource_version = 4;
+  string idempotency_key = 5;
+}
+
 message ContainerGcRun {
   string run_id = 1;
   string registry = 2;
   string state = 3;
   string mutation_epoch = 4;
+  // Provider keys across all exact frozen placement inventories. An object
+  // present in two placements contributes two inventory entries.
   uint64 inventory_object_count = 5;
+  // Registry-global immutable objects reached from the reviewed hard roots.
   uint64 reachable_object_count = 6;
+  // Registry-global immutable objects selected by the reviewed plan.
   uint64 candidate_object_count = 7;
   uint64 reclaimable_byte_size = 8;
+  // Objects whose catalog and quota identity has been finalized. This remains
+  // zero while an applying run has only partial physical-absence evidence,
+  // because final catalog deletion is atomic across the generation.
   uint64 deleted_object_count = 9;
   uint64 deleted_byte_size = 10;
   repeated string blockers = 11;
@@ -1049,16 +1109,297 @@ message ContainerGcRun {
   int64 created_at = 15;
   int64 started_at = 16;
   int64 finished_at = 17;
+  string applied_mutation_epoch = 18;
+  string policy_resource_version = 19;
+  string root_set_digest = 20;
+  string placement_inventory_digest = 21;
+  string topology_digest = 22;
+  string plan_digest = 23;
+  string confirmation_hash = 24;
+  uint64 placement_action_count = 25;
+  int64 expires_at = 26;
+  int64 applied_at = 27;
+  string policy_digest = 28;
+  // Provider bytes across all exact frozen placement inventories.
+  uint64 inventory_byte_size = 29;
 }
 
 message ContainerGcRunResponse {
   ContainerGcRun run = 1;
+  repeated ContainerGcBlocker blockers = 2;
 }
 
 message ListContainerGcRunsResponse {
   repeated ContainerGcRun runs = 1;
   string next_page_token = 2;
   string mutation_epoch = 3;
+}
+
+message ContainerGcPlanResponse {
+  TopologyPlan plan = 1;
+  ContainerGcRun run = 2;
+  repeated ContainerGcBlocker blockers = 3;
+}
+
+message ContainerGcCandidate {
+  string digest = 1;
+  string media_type = 2;
+  uint64 byte_size = 3;
+  string object_key = 4;
+  uint64 repository_count = 5;
+  string state = 6;
+  int64 eligible_at = 7;
+  int64 finalized_at = 8;
+  repeated string repositories = 9;
+  string last_error = 10;
+  string resource_version = 11;
+}
+
+message ContainerGcBlocker {
+  string kind = 1;
+  string digest = 2;
+  string detail = 3;
+}
+
+message ContainerGcPlacementAction {
+  string action_id = 1;
+  string digest = 2;
+  int64 placement_id = 3;
+  string placement_name = 4;
+  string state = 5;
+  uint32 attempt_count = 6;
+  uint32 max_attempts = 7;
+  string last_error = 8;
+  string resource_version = 9;
+  int64 confirmed_at = 10;
+  int64 next_attempt_at = 11;
+  string run_id = 12;
+  string object_key = 13;
+  string expected_hash = 14;
+  uint64 expected_byte_size = 15;
+  string expected_strong_etag = 16;
+  bool inventory_entry_present = 17;
+  string inventory_generation_id = 18;
+  string inventory_digest = 19;
+  int64 inventory_observed_at = 20;
+  string placement_prefix = 21;
+  string placement_resource_version = 22;
+  string placement_write_spec_version = 23;
+  string placement_observation_version = 24;
+  int64 binding_id = 25;
+  string binding_resource_version = 26;
+  string binding_write_revision = 27;
+  string delete_credential_purpose = 28;
+  string delete_credential_generation = 29;
+  string delete_capability_fingerprint = 30;
+  string delete_capability_resource_version = 31;
+}
+
+message ListContainerGcCandidatesResponse {
+  repeated ContainerGcCandidate candidates = 1;
+  string next_page_token = 2;
+  string mutation_epoch = 3;
+}
+
+message ListContainerGcBlockersResponse {
+  repeated ContainerGcBlocker blockers = 1;
+  string mutation_epoch = 2;
+}
+
+message ListContainerGcPlacementActionsResponse {
+  repeated ContainerGcPlacementAction actions = 1;
+  string next_page_token = 2;
+  string mutation_epoch = 3;
+}
+
+message ContainerGcPlacementActionResponse {
+  ContainerGcPlacementAction action = 1;
+  string mutation_epoch = 2;
+}
+
+// Lists provider objects from complete current inventory heads that have no
+// matching logical catalog identity. The cursor is bound to the current-head
+// selector and captured registry mutation epoch.
+message ListContainerUntrackedInventoryRequest {
+  string registry = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+// One exact current-head provider observation eligible only for reviewed
+// reconciliation. None of these nonsecret fields authorizes a provider write.
+message ContainerUntrackedInventoryObject {
+  string registry = 1;
+  int64 placement_id = 2;
+  string placement_name = 3;
+  string placement_prefix = 4;
+  string inventory_generation_id = 5;
+  string inventory_digest = 6;
+  int64 inventory_observed_at = 7;
+  string object_key = 8;
+  string object_digest = 9;
+  string observed_hash = 10;
+  uint64 byte_size = 11;
+  string strong_etag = 12;
+  string placement_resource_version = 13;
+  string placement_write_spec_version = 14;
+  string placement_observation_version = 15;
+  int64 binding_id = 16;
+  string binding_resource_version = 17;
+  string binding_write_revision = 18;
+  string delete_credential_purpose = 19;
+  string delete_credential_generation = 20;
+  string delete_capability_fingerprint = 21;
+  string delete_capability_resource_version = 22;
+}
+
+message ListContainerUntrackedInventoryResponse {
+  repeated ContainerUntrackedInventoryObject objects = 1;
+  string next_page_token = 2;
+  // Registry mutation epoch captured by the current-head inventory selector.
+  string inventory_epoch = 3;
+}
+
+// Plans a conditional delete of one exact current-head untracked observation.
+// The expected resource version is the inventory epoch returned by the list.
+// Adoption is intentionally absent until the Hub can prove a complete immutable
+// catalog graph and accounting identity.
+message PlanRepairContainerUntrackedObjectRequest {
+  string registry = 1;
+  int64 placement_id = 2;
+  string inventory_generation_id = 3;
+  string object_key = 4;
+  string expected_resource_version = 5;
+  string idempotency_key = 6;
+}
+
+// Applies one actor-bound reviewed conditional-repair plan with an exact CAS.
+message RepairContainerUntrackedObjectRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+  string expected_resource_version = 4;
+}
+
+// Reads one actor-owned durable repair without accepting a caller-controlled
+// registry selector. Authorization is derived from the persisted plan.
+message GetContainerUntrackedRepairRequest { string plan_id = 1; }
+
+// Nonsecret provider evidence proving the terminal conditional outcome.
+message ContainerUntrackedRepairEvidence {
+  string outcome = 1;
+  string provider_request_id = 2;
+  string conditional_etag = 3;
+  string evidence_digest = 4;
+  int64 confirmed_at = 5;
+}
+
+// Durable reviewed-repair state and the exact frozen provider identity. Public
+// repair plans are delete-only; no credential material is exposed here.
+message ContainerUntrackedRepair {
+  string plan_id = 1;
+  string registry = 2;
+  string state = 3;
+  string resource_version = 4;
+  int64 placement_id = 5;
+  string placement_name = 6;
+  string placement_prefix = 7;
+  string placement_resource_version = 8;
+  string placement_write_spec_version = 9;
+  string placement_observation_version = 10;
+  int64 binding_id = 11;
+  string binding_resource_version = 12;
+  string binding_write_revision = 13;
+  string delete_credential_purpose = 14;
+  string delete_credential_generation = 15;
+  string delete_capability_fingerprint = 16;
+  string delete_capability_resource_version = 17;
+  string inventory_generation_id = 18;
+  string inventory_digest = 19;
+  int64 inventory_observed_at = 20;
+  string object_key = 21;
+  string object_digest = 22;
+  string observed_hash = 23;
+  uint64 byte_size = 24;
+  string strong_etag = 25;
+  string mutation_epoch = 26;
+  string confirmation_hash = 27;
+  int64 expires_at = 28;
+  int64 created_at = 29;
+  int64 applied_at = 30;
+  int64 finished_at = 31;
+  string last_error = 32;
+  ContainerUntrackedRepairEvidence evidence = 33;
+}
+
+message ContainerUntrackedRepairResponse {
+  ContainerUntrackedRepair repair = 1;
+}
+
+enum ContainerRegistryPurgeFenceAction {
+  CONTAINER_REGISTRY_PURGE_FENCE_ACTION_UNSPECIFIED = 0;
+  CONTAINER_REGISTRY_PURGE_FENCE_ACTION_BEGIN = 1;
+  CONTAINER_REGISTRY_PURGE_FENCE_ACTION_ABORT = 2;
+}
+
+// Plans acquisition or explicit abort of the writer fence required before
+// final registry deletion. Exactly one expected version is applicable: the
+// registry version for BEGIN or current fence version for ABORT.
+message PlanContainerRegistryPurgeFenceRequest {
+  string registry = 1;
+  ContainerRegistryPurgeFenceAction action = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+
+// Applies one exact actor-owned purge-fence review with plan CAS.
+message ApplyContainerRegistryPurgeFenceRequest {
+  string plan_id = 1;
+  string idempotency_key = 2;
+  string confirmation_hash = 3;
+  string expected_resource_version = 4;
+}
+
+// Reads one actor-owned purge-fence review and its current bound registry
+// state; no caller-controlled registry selector is accepted.
+message GetContainerRegistryPurgeFenceRequest { string plan_id = 1; }
+
+message ContainerRegistryPurgeBlockers {
+  uint64 repositories = 1;
+  uint64 catalog_objects = 2;
+  uint64 active_sessions = 3;
+  uint64 gc_work = 4;
+  uint64 tracked_provider_objects = 5;
+  uint64 untracked_provider_objects = 6;
+  uint64 stale_or_missing_inventories = 7;
+  uint64 snapshot_references = 8;
+}
+
+// Durable review, current fence, and bounded readiness state. The fence blocks
+// new registry writes but does not delete registry identity; the existing
+// reviewed DeleteRegistry operation remains the final deletion boundary.
+message ContainerRegistryPurgeFence {
+  string plan_id = 1;
+  string registry = 2;
+  ContainerRegistryPurgeFenceAction action = 3;
+  string plan_state = 4;
+  string plan_resource_version = 5;
+  string fence_state = 6;
+  string fence_resource_version = 7;
+  string registry_resource_version = 8;
+  string captured_mutation_epoch = 9;
+  bool post_fence_inventory_ready = 10;
+  ContainerRegistryPurgeBlockers blockers = 11;
+  string confirmation_hash = 12;
+  int64 expires_at = 13;
+  int64 created_at = 14;
+  int64 applied_at = 15;
+  int64 finished_at = 16;
+  string last_error = 17;
+}
+
+message ContainerRegistryPurgeFenceResponse {
+  ContainerRegistryPurgeFence fence = 1;
 }
 
 // One immutable disk encoding belonging to a signed logical AOS release.

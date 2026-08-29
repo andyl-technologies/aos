@@ -10,15 +10,16 @@ use aos_remote::hub_rpc as Method;
 use aos_remote::{HubClient, hub_types};
 
 use crate::cli::{
-    HubAccessArgs, HubContainerCmd, HubContainerGcCmd, HubContainerLayerCmd,
-    HubContainerManifestCmd, HubContainerPlatformCmd, HubContainerProvenanceCmd,
-    HubContainerPublicationCmd, HubContainerReferrerCmd, HubContainerRepositoryCmd,
-    HubContainerRetentionCmd, HubContainerTagCmd, HubMutationArgs,
+    HubAccessArgs, HubContainerCmd, HubContainerGcCmd, HubContainerGcPurgeFenceCmd,
+    HubContainerGcUntrackedCmd, HubContainerLayerCmd, HubContainerManifestCmd,
+    HubContainerPlatformCmd, HubContainerProvenanceCmd, HubContainerPublicationCmd,
+    HubContainerReferrerCmd, HubContainerRepositoryCmd, HubContainerRetentionCmd,
+    HubContainerTagCmd,
 };
 
 use super::hub::{
-    container_hub_client, new_idempotency_key, parse_duration_seconds, topology_mutation,
-    topology_read,
+    container_hub_client, new_idempotency_key, parse_duration_seconds, print_topology_message,
+    topology_mutation, topology_read,
 };
 
 /// Runs one Hub container-administration command.
@@ -55,6 +56,20 @@ fn apply_request(
         plan_id: plan_id.into(),
         idempotency_key: idempotency_key.into(),
         confirmation_hash: confirmation_hash.into(),
+    }
+}
+
+fn repair_untracked_apply_request(
+    plan_id: &str,
+    idempotency_key: &str,
+    confirmation_hash: &str,
+    expected_resource_version: String,
+) -> hub_types::RepairContainerUntrackedObjectRequest {
+    hub_types::RepairContainerUntrackedObjectRequest {
+        plan_id: plan_id.to_string(),
+        idempotency_key: idempotency_key.to_string(),
+        confirmation_hash: confirmation_hash.to_string(),
+        expected_resource_version,
     }
 }
 
@@ -798,26 +813,19 @@ async fn gc(printer: &Printer, command: &HubContainerGcCmd) -> Result<()> {
             idempotency_key,
         } => {
             let client = client(access)?;
-            let mutation = HubMutationArgs {
-                idempotency_key: idempotency_key.clone(),
-                plan: true,
-                if_version: if_version.clone(),
-                ..HubMutationArgs::default()
-            };
-            topology_mutation(
-                printer,
-                &client,
-                Method::PlanRunContainerGc,
-                Method::RunContainerGc,
-                &hub_types::PlanRunContainerGcRequest {
-                    registry: registry.clone(),
-                    expected_resource_version: if_version.clone().unwrap_or_default(),
-                    idempotency_key: new_idempotency_key(),
-                },
-                &mutation,
-                apply_request,
-            )
-            .await
+            let response: hub_types::ContainerGcPlanResponse = client
+                .call_topology(
+                    Method::PlanRunContainerGc,
+                    &hub_types::PlanRunContainerGcRequest {
+                        registry: registry.clone(),
+                        expected_resource_version: if_version.clone(),
+                        idempotency_key: idempotency_key
+                            .clone()
+                            .unwrap_or_else(new_idempotency_key),
+                    },
+                )
+                .await?;
+            print_topology_message(printer, &response)
         }
         HubContainerGcCmd::Apply {
             access,
@@ -827,25 +835,199 @@ async fn gc(printer: &Printer, command: &HubContainerGcCmd) -> Result<()> {
             yes,
         } => {
             let client = client(access)?;
-            let mutation = HubMutationArgs {
-                idempotency_key: Some(idempotency_key.clone()),
-                plan_id: Some(plan_id.clone()),
-                confirm_hash: Some(confirm_hash.clone()),
-                yes: *yes,
-                ..HubMutationArgs::default()
-            };
-            topology_mutation(
-                printer,
-                &client,
-                Method::PlanRunContainerGc,
-                Method::RunContainerGc,
-                &hub_types::PlanRunContainerGcRequest::default(),
-                &mutation,
-                apply_request,
-            )
-            .await
+            if !*yes {
+                anyhow::bail!("--yes is required to apply a reviewed garbage-collection plan");
+            }
+            let response: hub_types::OperationResponse = client
+                .call_topology(
+                    Method::RunContainerGc,
+                    &hub_types::ApplyContainerMutationRequest {
+                        plan_id: plan_id.clone(),
+                        idempotency_key: idempotency_key.clone(),
+                        confirmation_hash: confirm_hash.clone(),
+                    },
+                )
+                .await?;
+            print_topology_message(printer, &response)
         }
-        HubContainerGcCmd::Status {
+        HubContainerGcCmd::Requeue {
+            access,
+            registry,
+            run_id,
+            action_id,
+            if_version,
+            idempotency_key,
+            yes,
+        } => {
+            let client = client(access)?;
+            if !*yes {
+                anyhow::bail!("--yes is required to requeue a failed garbage-collection action");
+            }
+            let response: hub_types::ContainerGcPlacementActionResponse = client
+                .call_topology(
+                    Method::RequeueContainerGcPlacementAction,
+                    &hub_types::RequeueContainerGcPlacementActionRequest {
+                        registry: registry.clone(),
+                        run_id: run_id.clone(),
+                        action_id: action_id.clone(),
+                        expected_resource_version: if_version.clone(),
+                        idempotency_key: idempotency_key.clone(),
+                    },
+                )
+                .await?;
+            print_topology_message(printer, &response)
+        }
+        HubContainerGcCmd::Untracked { command } => match command {
+            HubContainerGcUntrackedCmd::List {
+                access,
+                registry,
+                pagination,
+            } => {
+                let client = client(access)?;
+                topology_read::<_, hub_types::ListContainerUntrackedInventoryResponse>(
+                    printer,
+                    &client,
+                    Method::ListContainerUntrackedInventory,
+                    &hub_types::ListContainerUntrackedInventoryRequest {
+                        registry: registry.clone(),
+                        page_size: pagination.page_size.unwrap_or_default(),
+                        page_token: pagination.page_token.clone().unwrap_or_default(),
+                    },
+                )
+                .await
+            }
+            HubContainerGcUntrackedCmd::Repair {
+                access,
+                registry,
+                placement_id,
+                inventory_generation_id,
+                object_key,
+                mutation,
+            } => {
+                let client = client(access)?;
+                let expected_resource_version = mutation
+                    .if_version
+                    .clone()
+                    .context("--if-version is required for an untracked repair plan or apply")?;
+                let request = if mutation.plan_id.is_some() {
+                    hub_types::PlanRepairContainerUntrackedObjectRequest::default()
+                } else {
+                    hub_types::PlanRepairContainerUntrackedObjectRequest {
+                        registry: registry.clone().context(
+                            "untracked repair requires REGISTRY when creating a plan",
+                        )?,
+                        placement_id: placement_id.context(
+                            "--placement-id is required when creating an untracked repair plan",
+                        )?,
+                        inventory_generation_id: inventory_generation_id.clone().context(
+                            "--inventory-generation-id is required when creating an untracked repair plan",
+                        )?,
+                        object_key: object_key.clone().context(
+                            "--object-key is required when creating an untracked repair plan",
+                        )?,
+                        expected_resource_version: expected_resource_version.clone(),
+                        idempotency_key: String::new(),
+                    }
+                };
+                topology_mutation(
+                    printer,
+                    &client,
+                    Method::PlanRepairContainerUntrackedObject,
+                    Method::RepairContainerUntrackedObject,
+                    &request,
+                    mutation,
+                    move |plan_id, idempotency_key, confirmation_hash| {
+                        repair_untracked_apply_request(
+                            plan_id,
+                            idempotency_key,
+                            confirmation_hash,
+                            expected_resource_version.clone(),
+                        )
+                    },
+                )
+                .await
+            }
+            HubContainerGcUntrackedCmd::RepairStatus { access, plan_id } => {
+                let client = client(access)?;
+                topology_read::<_, hub_types::ContainerUntrackedRepairResponse>(
+                    printer,
+                    &client,
+                    Method::GetContainerUntrackedRepair,
+                    &hub_types::GetContainerUntrackedRepairRequest {
+                        plan_id: plan_id.clone(),
+                    },
+                )
+                .await
+            }
+        },
+        HubContainerGcCmd::PurgeFence { command } => match command {
+            HubContainerGcPurgeFenceCmd::Plan {
+                access,
+                registry,
+                action,
+                if_version,
+                idempotency_key,
+            } => {
+                let client = client(access)?;
+                let action = match action.as_str() {
+                    "begin" => hub_types::ContainerRegistryPurgeFenceAction::Begin as i32,
+                    "abort" => hub_types::ContainerRegistryPurgeFenceAction::Abort as i32,
+                    _ => anyhow::bail!("purge-fence action must be begin or abort"),
+                };
+                topology_read::<_, hub_types::TopologyPlanResponse>(
+                    printer,
+                    &client,
+                    Method::PlanContainerRegistryPurgeFence,
+                    &hub_types::PlanContainerRegistryPurgeFenceRequest {
+                        registry: registry.clone(),
+                        action,
+                        expected_resource_version: if_version.clone(),
+                        idempotency_key: idempotency_key
+                            .clone()
+                            .unwrap_or_else(new_idempotency_key),
+                    },
+                )
+                .await
+            }
+            HubContainerGcPurgeFenceCmd::Apply {
+                access,
+                plan_id,
+                confirm_hash,
+                if_version,
+                idempotency_key,
+                yes,
+            } => {
+                if !*yes {
+                    anyhow::bail!("--yes is required to apply a registry purge fence plan");
+                }
+                let client = client(access)?;
+                topology_read::<_, hub_types::ContainerRegistryPurgeFenceResponse>(
+                    printer,
+                    &client,
+                    Method::ApplyContainerRegistryPurgeFence,
+                    &hub_types::ApplyContainerRegistryPurgeFenceRequest {
+                        plan_id: plan_id.clone(),
+                        idempotency_key: idempotency_key.clone(),
+                        confirmation_hash: confirm_hash.clone(),
+                        expected_resource_version: if_version.clone(),
+                    },
+                )
+                .await
+            }
+            HubContainerGcPurgeFenceCmd::Status { access, plan_id } => {
+                let client = client(access)?;
+                topology_read::<_, hub_types::ContainerRegistryPurgeFenceResponse>(
+                    printer,
+                    &client,
+                    Method::GetContainerRegistryPurgeFence,
+                    &hub_types::GetContainerRegistryPurgeFenceRequest {
+                        plan_id: plan_id.clone(),
+                    },
+                )
+                .await
+            }
+        },
+        HubContainerGcCmd::Get {
             access,
             registry,
             id,
@@ -865,29 +1047,95 @@ async fn gc(printer: &Printer, command: &HubContainerGcCmd) -> Result<()> {
         HubContainerGcCmd::List {
             access,
             registry,
+            resource,
+            run_id,
             state,
             pagination,
         } => {
             let client = client(access)?;
-            topology_read::<_, hub_types::ListContainerGcRunsResponse>(
-                printer,
-                &client,
-                Method::ListContainerGcRuns,
-                &hub_types::ListContainerGcRunsRequest {
-                    registry: registry.clone(),
-                    state: state.clone().unwrap_or_default(),
-                    page_size: pagination.page_size.unwrap_or_default(),
-                    page_token: pagination.page_token.clone().unwrap_or_default(),
-                },
-            )
-            .await
+            match resource.as_str() {
+                "runs" => {
+                    if run_id.is_some() {
+                        anyhow::bail!("--run-id is invalid for --resource runs");
+                    }
+                    topology_read::<_, hub_types::ListContainerGcRunsResponse>(
+                        printer,
+                        &client,
+                        Method::ListContainerGcRuns,
+                        &hub_types::ListContainerGcRunsRequest {
+                            registry: registry.clone(),
+                            state: state.clone().unwrap_or_default(),
+                            page_size: pagination.page_size.unwrap_or_default(),
+                            page_token: pagination.page_token.clone().unwrap_or_default(),
+                        },
+                    )
+                    .await
+                }
+                "candidates" => {
+                    let run_id = run_id.as_deref().context("--run-id is required")?;
+                    if state.is_some() {
+                        anyhow::bail!("--state is valid only for runs and placement-actions");
+                    }
+                    topology_read::<_, hub_types::ListContainerGcCandidatesResponse>(
+                        printer,
+                        &client,
+                        Method::ListContainerGcCandidates,
+                        &hub_types::ListContainerGcCandidatesRequest {
+                            registry: registry.clone(),
+                            run_id: run_id.to_string(),
+                            page_size: pagination.page_size.unwrap_or_default(),
+                            page_token: pagination.page_token.clone().unwrap_or_default(),
+                        },
+                    )
+                    .await
+                }
+                "blockers" => {
+                    let run_id = run_id.as_deref().context("--run-id is required")?;
+                    if state.is_some()
+                        || pagination.page_size.is_some()
+                        || pagination.page_token.is_some()
+                    {
+                        anyhow::bail!("blocker lists do not accept state or pagination filters");
+                    }
+                    topology_read::<_, hub_types::ListContainerGcBlockersResponse>(
+                        printer,
+                        &client,
+                        Method::ListContainerGcBlockers,
+                        &hub_types::ListContainerGcBlockersRequest {
+                            registry: registry.clone(),
+                            run_id: run_id.to_string(),
+                        },
+                    )
+                    .await
+                }
+                "placement-actions" => {
+                    let run_id = run_id.as_deref().context("--run-id is required")?;
+                    topology_read::<_, hub_types::ListContainerGcPlacementActionsResponse>(
+                        printer,
+                        &client,
+                        Method::ListContainerGcPlacementActions,
+                        &hub_types::ListContainerGcPlacementActionsRequest {
+                            registry: registry.clone(),
+                            run_id: run_id.to_string(),
+                            state: state.clone().unwrap_or_default(),
+                            page_size: pagination.page_size.unwrap_or_default(),
+                            page_token: pagination.page_token.clone().unwrap_or_default(),
+                        },
+                    )
+                    .await
+                }
+                _ => unreachable!("clap validates GC list resources"),
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{get_container_platform_request, parse_platform, plan_unset_container_tag_request};
+    use super::{
+        get_container_platform_request, parse_platform, plan_unset_container_tag_request,
+        repair_untracked_apply_request,
+    };
 
     #[test]
     fn platform_selector_is_exact() {
@@ -939,5 +1187,23 @@ mod tests {
         assert_eq!(request.architecture, "amd64");
         assert_eq!(request.os_version, "10.0.20348.2402");
         assert_eq!(request.os_features, ["win32k", "containers"]);
+    }
+
+    #[test]
+    fn untracked_repair_apply_preserves_review_and_cas_identity() {
+        let request = repair_untracked_apply_request(
+            "repair-plan",
+            "repair-apply-key",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "1".to_string(),
+        );
+
+        assert_eq!(request.plan_id, "repair-plan");
+        assert_eq!(request.idempotency_key, "repair-apply-key");
+        assert_eq!(
+            request.confirmation_hash,
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(request.expected_resource_version, "1");
     }
 }

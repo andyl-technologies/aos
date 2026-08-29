@@ -100,5 +100,6 @@ send_wrapper = { version = "0.6", features = ["futures"] }
 
 [dev-dependencies]
 aos-hub = { workspace = true, features = ["test-support"] }
+aos-proto-types = { workspace = true }
 # Drives the native unit test for the pure Worker request-routing seam.
 tokio = { workspace = true, features = ["macros", "rt"] }

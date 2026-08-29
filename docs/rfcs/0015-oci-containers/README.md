@@ -12,6 +12,8 @@
 - **Plan:** [`implementation-plan.md`](implementation-plan.md)
 - **Tests:** [`testing.md`](testing.md)
 - **Phase-0 evidence:** [`phase0-evidence.md`](phase0-evidence.md)
+- **Client compatibility:** [`../../users/aos-hub/oci-containers.md`](../../users/aos-hub/oci-containers.md)
+- **GC operations:** [`../../plans/registry/oci-gc-runbook.md`](../../plans/registry/oci-gc-runbook.md)
 
 ## Summary
 

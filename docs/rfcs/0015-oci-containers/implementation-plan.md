@@ -14,8 +14,8 @@ one adversarial review of the containing phase are complete.
 | 3 | Local `aos container` CLI | Complete |
 | 4 | Hub OCI catalog, storage, and pull data plane | Complete (follow-ups open) |
 | 5 | Upload, publication, and signed release roots | Complete |
-| 6 | Connect API, administration CLI, and console | Complete (Phase 7 GC engine open) |
-| 7 | Retention, GC, operations, and rollout | Not started |
+| 6 | Connect API, administration CLI, and console | Complete |
+| 7 | Retention, GC, operations, and rollout | Complete |
 | 8 | Native and VM end-to-end qualification | Not started |
 
 ## Review rule
@@ -403,7 +403,7 @@ publication.
   inspection.
 - [x] Implement retention get/set and define fail-closed GC plan/apply/status
   operations.
-- [ ] Enable GC plan/apply/status only with the complete Phase 7 deletion engine.
+- [x] Enable GC plan/apply/status only with the complete Phase 7 deletion engine.
 - [x] Update manual method maps, proto generation, capability manifests, route
   coverage, and retained-control fixtures.
 
@@ -425,7 +425,7 @@ publication.
 - [x] Show package/release/channel provenance, verification, SBOM, source,
   licenses, signatures, and referrers.
 - [x] Show publication health, tag history, and retention.
-- [ ] Show GC blockers and planned reclaimable bytes from the Phase 7 engine.
+- [x] Show GC blockers and planned reclaimable bytes from the Phase 7 engine.
 - [x] Keep multi-gigabyte uploads out of the browser.
 
 ### Tests and review
@@ -460,36 +460,82 @@ claimed for this phase.
 
 ### Safe retention and GC
 
-- [ ] Capture a registry OCI mutation epoch and complete placement inventory.
-- [ ] Mark tags, signed roots, referrers, leases, and active uploads.
-- [ ] Traverse config/layer/child/subject/referrer edges.
-- [ ] Fail closed on missing edges, stale inventory, or epoch changes.
-- [ ] Apply grace periods and emit a reviewable plan.
-- [ ] Revalidate roots and exact placement identity before every deletion.
-- [ ] Tombstone and delete with digest/size/etag preconditions.
-- [ ] Release DB identity and quota only after all placements confirm deletion.
-- [ ] Block repository/registry deletion while tracked or untracked OCI bytes
+- [x] Capture a registry OCI mutation epoch and complete placement inventory.
+- [x] Mark tags, signed roots, referrers, leases, and active uploads.
+- [x] Traverse config/layer/child/subject/referrer edges.
+- [x] Fail closed on missing edges, stale inventory, or epoch changes.
+- [x] Apply grace periods and emit a reviewable plan.
+- [x] Revalidate roots and exact placement identity before every deletion.
+- [x] Tombstone and delete with digest/size/etag preconditions.
+- [x] Release DB identity and quota only after all placements confirm deletion.
+- [x] Block repository/registry deletion while tracked or untracked OCI bytes
   remain.
 
 ### Operations
 
-- [ ] Add bounded durable jobs for upload expiry, catalog reconciliation, blob
-  verification, placement repair, and GC.
-- [ ] Add metrics for logical bytes, physical bytes, reuse ratio, upload state,
+- [x] Add bounded durable operations for upload expiry (`RecoverOciUploads`),
+  catalog/projection reconciliation (`Reindex`), blob verification
+  (`RefreshPublicationObject`), existing placement repair, provider inventory
+  and capability probing (`InventoryOciProviders` and
+  `ProbeOciConditionalDeletes`), and GC (`RunOciGc`).
+- [x] Add metrics for logical bytes, physical bytes, reuse ratio, upload state,
   publication latency, placement health, and GC recovery.
-- [ ] Add alerts and operator runbooks for digest mismatch, stuck publication,
+- [x] Add alerts and operator runbooks for digest mismatch, stuck publication,
   stale inventory, placement loss, and failed conditional deletion.
-- [ ] Add compatibility documentation for Docker, Podman, nerdctl, and ORAS.
-- [ ] Add rollout flags that can independently enable pull, push, signed
+- [x] Add compatibility documentation for Docker, Podman, nerdctl, and ORAS.
+- [x] Add rollout flags that can independently enable pull, push, signed
   publication, UI administration, and GC.
 
 ### Tests and review
 
-- [ ] Exercise GC races with new tags, active uploads, topology changes,
+- [x] Exercise GC races with new tags, active uploads, topology changes,
   retention leases, and failed placement deletions.
-- [ ] Verify quota under duplicate pushes, mounts, deletion, and repair.
-- [ ] Test registry deletion only after purge and reconciliation.
-- [ ] Complete one Phase-7 adversarial review and resolve blocking findings.
+- [x] Verify quota under duplicate pushes, mounts, deletion, and repair.
+- [x] Test registry deletion only after purge and reconciliation.
+- [x] Complete one Phase-7 adversarial review and resolve blocking findings.
+
+### 2026-08-28 implementation checkpoint
+
+The implemented GC path freezes the mutation epoch, hard roots, retention
+policy, topology, complete provider inventory, placement and binding revisions,
+delete-credential generation, and observed conditional-delete capability. Apply
+revalidates those fences before tombstoning; bounded native and Worker jobs then
+resume inventory, conditional deletion, and atomic catalog/quota finalization.
+The Connect API, CLI, and no-SSR console expose reviewed plans, blockers, exact
+counters, candidates, placement actions, and actor/idempotency/version-bound
+maintenance requeue without exposing credential material.
+
+The single Phase-7 adversarial review added bounded current-head provider
+inventory, actor-bound reviewed conditional repair with durable terminal
+evidence, and a separately reviewed registry purge fence with Begin, Abort,
+Apply, and Status operations. Final registry deletion remains the existing
+reviewed operation and is admitted only after a fresh complete post-fence
+inventory proves every logical, provider, session, GC, and snapshot blocker is
+zero. The review also tightened rollout information ordering, resumable
+inventory progress, and low-cardinality operational metrics and alerts.
+
+Focused descriptor, service, CLI, console, native, Worker, controller, provider,
+migration, metrics/rule-contract, and WASM evidence is recorded with the
+Phase-7 commit. The final remediation schedules cover late upload and
+publication roots, tag-history and grace transitions, topology and credential
+rotation, snapshot leases, failed and retried placement deletion, duplicate
+digest admission, deterministic reservation reuse, two-placement accounting,
+and post-fence purge reconciliation.
+
+The frozen-tree qualification run passed the seven-package native compile; the
+18-case generated Connect/ProtoJSON contract; the complete 20-case retained
+control manifest; the 11-case native Distribution suite; the 8-case native
+container-administration suite; alert-rule, metrics-exposition, and signed
+publication tests; exact counter, provider identity, repair evidence, and purge
+readiness projections; CLI and typed remote-path contracts; the 8-case native
+console mutation suite; all 28 Worker tests; and Worker plus console
+`wasm32-unknown-unknown` compilation. The database slice separately passed its
+22-case focused GC suite, the reviewed purge-through-reconciliation schedule,
+and PostgreSQL/MySQL dialect and migration-translation compilation. Provider
+qualification separately passed bounded inventory, conditional-deletion,
+cache-evidence, frozen-access, native, and Worker checks. Together these results
+complete the Phase-7 race, quota, purge, and review qualification; the
+production-image and VM end-to-end work remains in Phase 8.
 
 ## Phase 8: Native and VM end-to-end qualification
 

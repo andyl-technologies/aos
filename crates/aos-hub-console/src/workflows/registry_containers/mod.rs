@@ -5,6 +5,7 @@
 //! separate. Every request crosses the authenticated Connect transport; the
 //! browser never receives a server-rendered private repository model.
 
+mod gc;
 mod inspection;
 mod publications;
 mod retention;
@@ -19,6 +20,7 @@ use crate::components::{CopyableCommand, EmptyState, InlineError, ReviewedPlanCa
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
+use self::gc::ContainerGc;
 use self::inspection::ContainerGraphInspector;
 use self::publications::ContainerPublications;
 use self::retention::ContainerRetention;
@@ -95,7 +97,8 @@ pub(super) fn RegistryContainers(client: ApiClient, registry_id: String) -> impl
                 </Suspense>
             </section>
             {move || selected.get().map(|repository| view! { <RepositoryWorkspace client=workspace_client.clone() registry=workspace_registry.clone() repository=repository/> })}
-            <ContainerRetention client=client registry=registry_id/>
+            <ContainerRetention client=client.clone() registry=registry_id.clone()/>
+            <ContainerGc client=client registry=registry_id/>
         </div>
     }
 }

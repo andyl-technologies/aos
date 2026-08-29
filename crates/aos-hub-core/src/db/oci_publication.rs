@@ -306,8 +306,19 @@ impl Database {
             topology_digest,
             &input.source_kind,
         );
-        let mut statements = vec![Statement::new(
-            "INSERT INTO oci_publication_sessions
+        let mut statements = vec![
+            Statement::new(
+                "UPDATE registries SET updated_at = updated_at
+                 WHERE id = ?1
+                   AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                     WHERE registry_lock.registry_id = ?1)
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
+                     WHERE purge.registry_id = ?1 AND purge.state = 'collecting')",
+                vals![input.registry_id],
+            )
+            .expecting(1),
+            Statement::new(
+                "INSERT INTO oci_publication_sessions
                (id, registry_id, repository_id, writer_id, token_id, target_tag,
                 expected_tag_version, expected_tag_digest, root_digest,
                 catalog_digest, release_tag, sidecar_sha256, confirmation_hash,
@@ -342,29 +353,30 @@ impl Database {
                AND NOT EXISTS (SELECT 1 FROM oci_publication_sessions current
                  WHERE current.registry_id = ?3 AND current.writer_id = ?4
                    AND current.idempotency_key = ?17)",
-            vals![
-                publication_id,
-                input.repository_id,
-                input.registry_id,
-                input.writer_id,
-                input.token_id,
-                input.target_tag.as_ref().map(Tag::as_str),
-                input.expected_tag_version,
-                input.expected_tag_digest.map(|digest| digest.to_string()),
-                input.root_digest.to_string(),
-                input.catalog_digest.to_string(),
-                input.release_tag,
-                input.sidecar_sha256_hex,
-                confirmation_hash.to_string(),
-                topology_digest.to_string(),
-                required_placement_count,
-                input.source_kind,
-                input.idempotency_key,
-                input.expires_at,
-                input.now
-            ],
-        )
-        .expecting(1)];
+                vals![
+                    publication_id,
+                    input.repository_id,
+                    input.registry_id,
+                    input.writer_id,
+                    input.token_id,
+                    input.target_tag.as_ref().map(Tag::as_str),
+                    input.expected_tag_version,
+                    input.expected_tag_digest.map(|digest| digest.to_string()),
+                    input.root_digest.to_string(),
+                    input.catalog_digest.to_string(),
+                    input.release_tag,
+                    input.sidecar_sha256_hex,
+                    confirmation_hash.to_string(),
+                    topology_digest.to_string(),
+                    required_placement_count,
+                    input.source_kind,
+                    input.idempotency_key,
+                    input.expires_at,
+                    input.now
+                ],
+            )
+            .expecting(1),
+        ];
         for placement in &input.required_placements {
             statements.push(
                 Statement::new(
@@ -473,7 +485,11 @@ impl Database {
             Statement::new(
                 "UPDATE oci_registry_state
                  SET mutation_epoch = mutation_epoch + 1, updated_at = ?2
-                 WHERE registry_id = ?1",
+                 WHERE registry_id = ?1
+                   AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                     WHERE registry_lock.registry_id = ?1)
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
+                     WHERE purge.registry_id = ?1 AND purge.state = 'collecting')",
                 vals![input.registry_id, input.now],
             )
             .expecting(1),
@@ -595,6 +611,33 @@ impl Database {
         let descriptor_json =
             canonical_publication_json(&input.descriptor, "OCI publication descriptor")?;
         let statements = vec![
+            Statement::new(
+                "UPDATE oci_registry_state
+                 SET mutation_epoch = mutation_epoch + 1, updated_at = ?6
+                 WHERE registry_id = (SELECT registry_id FROM oci_publication_sessions
+                   WHERE id = ?1 AND writer_id = ?2 AND token_id = ?3
+                     AND state = 'preparing' AND expires_at > ?6
+                     AND resource_version = ?7)
+                   AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                     WHERE registry_lock.registry_id = oci_registry_state.registry_id)
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
+                     WHERE purge.registry_id = oci_registry_state.registry_id
+                       AND purge.state = 'collecting')
+                   AND EXISTS (SELECT 1 FROM surface_objects object
+                     WHERE object.id = ?5
+                       AND object.registry_id = oci_registry_state.registry_id
+                       AND object.lifecycle_state = 'active')",
+                vals![
+                    input.publication_id,
+                    input.writer_id,
+                    input.token_id,
+                    digest,
+                    input.surface_object_id,
+                    now,
+                    input.expected_resource_version
+                ],
+            )
+            .expecting(1),
             Statement::new(
                 "INSERT INTO oci_publication_objects
                    (publication_id, registry_id, digest, media_type, byte_size,
@@ -1070,7 +1113,12 @@ impl Database {
                  SET mutation_epoch = mutation_epoch + 1, updated_at = ?4
                  WHERE registry_id = (SELECT registry_id
                    FROM oci_publication_sessions WHERE id = ?1
-                     AND writer_id = ?2 AND token_id = ?3 AND state = 'aborted')",
+                     AND writer_id = ?2 AND token_id = ?3 AND state = 'aborted')
+                   AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                     WHERE registry_lock.registry_id = oci_registry_state.registry_id)
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
+                     WHERE purge.registry_id = oci_registry_state.registry_id
+                       AND purge.state = 'collecting')",
                 vals![publication_id, writer_id, token_id, now],
             )
             .expecting(1),
@@ -1183,9 +1231,52 @@ impl Database {
         statements.push(tag_mutation);
         statements.push(
             Statement::new(
+                "UPDATE oci_blobs
+                 SET unreferenced_since = COALESCE(unreferenced_since, ?4),
+                     updated_at = ?4
+                 WHERE registry_id = (SELECT registry_id FROM oci_repositories
+                   WHERE id = ?1)
+                   AND digest = (SELECT prior_digest FROM oci_tag_history
+                     WHERE id = ?2)
+                   AND digest <> ?3 AND lifecycle_state = 'active'
+                   AND NOT EXISTS (SELECT 1 FROM oci_tags tag
+                     WHERE tag.registry_id = oci_blobs.registry_id
+                       AND tag.digest = oci_blobs.digest)
+                   AND NOT EXISTS (SELECT 1 FROM oci_release_roots root
+                     WHERE root.registry_id = oci_blobs.registry_id
+                       AND root.index_digest = oci_blobs.digest)
+                   AND NOT EXISTS (SELECT 1 FROM oci_release_evidence evidence
+                     WHERE evidence.registry_id = oci_blobs.registry_id
+                       AND evidence.referrer_digest = oci_blobs.digest
+                       AND evidence.verification = 'verified')",
+                vals![
+                    input.repository_id,
+                    history_id,
+                    input.digest.to_string(),
+                    input.now
+                ],
+            )
+            .unchecked(),
+        );
+        statements.push(
+            Statement::new(
+                "UPDATE oci_blobs SET unreferenced_since = NULL, updated_at = ?3
+                 WHERE registry_id = (SELECT registry_id FROM oci_repositories WHERE id = ?1)
+                   AND digest = ?2 AND lifecycle_state = 'active'",
+                vals![input.repository_id, input.digest.to_string(), input.now],
+            )
+            .expecting(1),
+        );
+        statements.push(
+            Statement::new(
                 "UPDATE oci_registry_state SET mutation_epoch = mutation_epoch + 1,
                     updated_at = ?3
                  WHERE registry_id = (SELECT registry_id FROM oci_repositories WHERE id = ?1)
+                   AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                     WHERE registry_lock.registry_id = oci_registry_state.registry_id)
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
+                     WHERE purge.registry_id = oci_registry_state.registry_id
+                       AND purge.state = 'collecting')
                    AND EXISTS (SELECT 1 FROM oci_tags WHERE repository_id = ?1
                      AND name = ?2 AND digest = ?4 AND source_kind = 'manual')",
                 vals![
@@ -1305,9 +1396,37 @@ impl Database {
             )
             .expecting(1),
             Statement::new(
+                "UPDATE oci_blobs
+                 SET unreferenced_since = COALESCE(unreferenced_since, ?4),
+                     updated_at = ?4
+                 WHERE registry_id = (SELECT registry_id FROM oci_repositories WHERE id = ?1)
+                   AND digest = (SELECT prior_digest FROM oci_tag_history
+                     WHERE repository_id = ?1 AND name = ?2 AND actor_id = ?3
+                       AND changed_at = ?4 AND next_digest IS NULL
+                     ORDER BY id DESC LIMIT 1)
+                   AND lifecycle_state = 'active'
+                   AND NOT EXISTS (SELECT 1 FROM oci_tags tag
+                     WHERE tag.registry_id = oci_blobs.registry_id
+                       AND tag.digest = oci_blobs.digest)
+                   AND NOT EXISTS (SELECT 1 FROM oci_release_roots root
+                     WHERE root.registry_id = oci_blobs.registry_id
+                       AND root.index_digest = oci_blobs.digest)
+                   AND NOT EXISTS (SELECT 1 FROM oci_release_evidence evidence
+                     WHERE evidence.registry_id = oci_blobs.registry_id
+                       AND evidence.referrer_digest = oci_blobs.digest
+                       AND evidence.verification = 'verified')",
+                vals![repository_id, tag.as_str(), actor_id, now],
+            )
+            .unchecked(),
+            Statement::new(
                 "UPDATE oci_registry_state SET mutation_epoch = mutation_epoch + 1,
                     updated_at = ?3
                  WHERE registry_id = (SELECT registry_id FROM oci_repositories WHERE id = ?1)
+                   AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                     WHERE registry_lock.registry_id = oci_registry_state.registry_id)
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
+                     WHERE purge.registry_id = oci_registry_state.registry_id
+                       AND purge.state = 'collecting')
                    AND NOT EXISTS (SELECT 1 FROM oci_tags
                      WHERE repository_id = ?1 AND name = ?2)",
                 vals![repository_id, tag.as_str(), now],
@@ -1371,9 +1490,21 @@ impl Database {
             )
             .expecting(1),
             Statement::new(
+                "UPDATE oci_blobs SET unreferenced_since = ?3, updated_at = ?3
+                 WHERE registry_id = (SELECT registry_id FROM oci_repositories WHERE id = ?1)
+                   AND digest = ?2 AND lifecycle_state = 'active'",
+                vals![repository_id, digest.to_string(), now],
+            )
+            .expecting(1),
+            Statement::new(
                 "UPDATE oci_registry_state SET mutation_epoch = mutation_epoch + 1,
                     updated_at = ?3
                  WHERE registry_id = (SELECT registry_id FROM oci_repositories WHERE id = ?1)
+                   AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                     WHERE registry_lock.registry_id = oci_registry_state.registry_id)
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
+                     WHERE purge.registry_id = oci_registry_state.registry_id
+                       AND purge.state = 'collecting')
                    AND NOT EXISTS (SELECT 1 FROM oci_repository_objects
                      WHERE repository_id = ?1 AND digest = ?2)",
                 vals![repository_id, digest.to_string(), now],
@@ -1769,6 +1900,41 @@ impl Database {
                 ],
             )
             .expecting(1),
+        );
+        statements.push(
+            Statement::new(
+                "UPDATE oci_blobs
+                 SET unreferenced_since = COALESCE(unreferenced_since, ?2),
+                     updated_at = ?2
+                 WHERE registry_id = ?1 AND lifecycle_state = 'active'
+                   AND digest IN (SELECT object.digest FROM oci_publication_objects object
+                     WHERE object.publication_id = ?3)
+                   AND NOT EXISTS (SELECT 1 FROM oci_tags tag
+                     WHERE tag.registry_id = oci_blobs.registry_id
+                       AND tag.digest = oci_blobs.digest)
+                   AND NOT EXISTS (SELECT 1 FROM oci_release_roots root
+                     WHERE root.registry_id = oci_blobs.registry_id
+                       AND root.index_digest = oci_blobs.digest)
+                   AND NOT EXISTS (SELECT 1 FROM oci_release_evidence evidence
+                     WHERE evidence.registry_id = oci_blobs.registry_id
+                       AND evidence.referrer_digest = oci_blobs.digest
+                       AND evidence.verification = 'verified')
+                   AND NOT EXISTS (SELECT 1 FROM oci_upload_sessions upload
+                     WHERE upload.registry_id = oci_blobs.registry_id
+                       AND upload.state IN('active', 'completing')
+                       AND (upload.expected_digest = oci_blobs.digest
+                         OR upload.final_digest = oci_blobs.digest))
+                   AND NOT EXISTS (SELECT 1 FROM oci_publication_sessions publication
+                     LEFT JOIN oci_publication_objects object
+                       ON object.publication_id = publication.id
+                      AND object.digest = oci_blobs.digest
+                     WHERE publication.registry_id = oci_blobs.registry_id
+                       AND publication.state IN('preparing', 'committing')
+                       AND (publication.root_digest = oci_blobs.digest
+                         OR object.digest IS NOT NULL))",
+                vals![publication.registry_id, now, publication_id],
+            )
+            .unchecked(),
         );
         self.backend
             .checked_batch(&statements)

@@ -53,6 +53,16 @@ impl Database {
         let expected_digest = input.expected_digest.map(|digest| digest.to_string());
         let mut statements = vec![
             Statement::new(
+                "UPDATE registries SET updated_at = updated_at
+                 WHERE id = ?1
+                   AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                     WHERE registry_lock.registry_id = ?1)
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
+                     WHERE purge.registry_id = ?1 AND purge.state = 'collecting')",
+                vals![input.registry_id],
+            )
+            .expecting(1),
+            Statement::new(
                 "INSERT INTO oci_quota_reservations
                    (id, registry_id, org_id, owner_kind, owner_id,
                     reserved_bytes, reserved_objects, state, created_at, updated_at)
@@ -118,7 +128,11 @@ impl Database {
                         ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
                         0, '', 'active', ?21, ?22, NULL, 1
                  FROM oci_quota_reservations reservation
-                 WHERE reservation.id = ?5 AND reservation.state = 'reserved'",
+                 WHERE reservation.id = ?5 AND reservation.state = 'reserved'
+                   AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                     WHERE registry_lock.registry_id = ?2)
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
+                     WHERE purge.registry_id = ?2 AND purge.state = 'collecting')",
                 vals![
                     upload_id,
                     input.registry_id,
@@ -143,6 +157,19 @@ impl Database {
                     input.expires_at,
                     input.now
                 ],
+            )
+            .expecting(1),
+        );
+        statements.push(
+            Statement::new(
+                "UPDATE oci_registry_state
+                 SET mutation_epoch = mutation_epoch + 1, updated_at = ?2
+                 WHERE registry_id = ?1
+                   AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                     WHERE registry_lock.registry_id = ?1)
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
+                     WHERE purge.registry_id = ?1 AND purge.state = 'collecting')",
+                vals![input.registry_id, input.now],
             )
             .expecting(1),
         );
@@ -256,6 +283,27 @@ impl Database {
         let next_size = checked_u64(next_size, "upload size")?;
         let ordinal = i64::from(input.chunk.ordinal);
         let statements = vec![
+            Statement::new(
+                "UPDATE oci_registry_state
+                 SET updated_at = updated_at
+                 WHERE registry_id = (SELECT registry_id FROM oci_upload_sessions
+                   WHERE id = ?1 AND writer_id = ?2 AND token_id = ?3
+                     AND state = 'active' AND resource_version = ?4
+                     AND expires_at > ?5)
+                   AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                     WHERE registry_lock.registry_id = oci_registry_state.registry_id)
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
+                     WHERE purge.registry_id = oci_registry_state.registry_id
+                       AND purge.state = 'collecting')",
+                vals![
+                    input.upload_id,
+                    input.writer_id,
+                    input.token_id,
+                    input.expected_resource_version,
+                    input.now
+                ],
+            )
+            .expecting(1),
             Statement::new(
                 "UPDATE org_usage SET used_bytes = used_bytes + ?6, updated_at = ?5
                  WHERE org_id = (SELECT reservation.org_id
@@ -538,6 +586,39 @@ impl Database {
         }
         let statements = vec![
             Statement::new(
+                "UPDATE oci_registry_state
+                 SET mutation_epoch = mutation_epoch + 1, updated_at = ?5
+                 WHERE registry_id = (SELECT registry_id FROM oci_upload_sessions
+                   WHERE id = ?1 AND writer_id = ?2 AND token_id = ?3
+                     AND state = 'active' AND resource_version = ?6
+                     AND expires_at > ?5)
+                   AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                     WHERE registry_lock.registry_id = oci_registry_state.registry_id)
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
+                     WHERE purge.registry_id = oci_registry_state.registry_id
+                       AND purge.state = 'collecting')
+                   AND NOT EXISTS (SELECT 1 FROM oci_blobs deleting_blob
+                     WHERE deleting_blob.registry_id = oci_registry_state.registry_id
+                       AND deleting_blob.digest = ?4
+                       AND deleting_blob.lifecycle_state <> 'active')",
+                vals![
+                    input.upload_id,
+                    input.writer_id,
+                    input.token_id,
+                    input.digest.to_string(),
+                    input.now,
+                    input.expected_resource_version
+                ],
+            )
+            .expecting(1),
+            Statement::new(
+                "UPDATE oci_blobs SET unreferenced_since = NULL, updated_at = ?3
+                 WHERE registry_id = (SELECT registry_id FROM oci_upload_sessions
+                   WHERE id = ?1) AND digest = ?2 AND lifecycle_state = 'active'",
+                vals![input.upload_id, input.digest.to_string(), input.now],
+            )
+            .unchecked(),
+            Statement::new(
                 "INSERT INTO oci_blob_claims(registry_id, digest, upload_id, claimed_at)
                  SELECT registry_id, ?4, id, ?5 FROM oci_upload_sessions
                  WHERE id = ?1 AND writer_id = ?2 AND token_id = ?3
@@ -548,7 +629,8 @@ impl Database {
                    AND (expected_digest IS NULL OR expected_digest = ?4)
                    AND NOT EXISTS (SELECT 1 FROM oci_blobs stored_blob
                      WHERE stored_blob.registry_id = oci_upload_sessions.registry_id
-                       AND stored_blob.digest = ?4)
+                       AND stored_blob.digest = ?4
+                       AND stored_blob.lifecycle_state = 'active')
                  ON CONFLICT(registry_id, digest) DO NOTHING",
                 vals![
                     input.upload_id,
@@ -605,7 +687,8 @@ impl Database {
                             AND claim.digest = ?4)
                      OR EXISTS (SELECT 1 FROM oci_blobs stored_blob
                           WHERE stored_blob.registry_id = oci_upload_sessions.registry_id
-                            AND stored_blob.digest = ?4))",
+                            AND stored_blob.digest = ?4
+                            AND stored_blob.lifecycle_state = 'active'))",
                 vals![
                     input.upload_id,
                     input.writer_id,
@@ -675,6 +758,52 @@ impl Database {
         let surface_object_id = portable_relational_id(Uuid::new_v4());
         let partition_key = Sha256::digest(object_key.as_bytes()).to_vec();
         let statements = vec![
+            Statement::new(
+                "INSERT INTO oci_registry_state
+                   (registry_id, mutation_epoch, charged_bytes,
+                    charged_objects, updated_at)
+                 SELECT id, 0, 0, 0, ?2 FROM registries WHERE id = ?1
+                 ON CONFLICT(registry_id) DO NOTHING",
+                vals![registry_id, now],
+            )
+            .unchecked(),
+            Statement::new(
+                "UPDATE oci_registry_state
+                 SET mutation_epoch = mutation_epoch + 1, updated_at = ?6
+                 WHERE registry_id = ?1
+                   AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                     WHERE registry_lock.registry_id = ?1)
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
+                     WHERE purge.registry_id = ?1 AND purge.state = 'collecting')
+                   AND NOT EXISTS (SELECT 1 FROM oci_blobs deleting_blob
+                     WHERE deleting_blob.registry_id = ?1 AND deleting_blob.digest = ?2
+                       AND deleting_blob.lifecycle_state <> 'active')
+                   AND EXISTS (SELECT 1 FROM surface_placements placement
+                     JOIN surface_placement_observations observation
+                       ON observation.placement_id = placement.id
+                     WHERE placement.id = ?7 AND placement.registry_id = ?1)
+                   AND NOT EXISTS (SELECT 1 FROM surface_objects existing
+                     JOIN object_placements presence
+                       ON presence.surface_object_id = existing.id
+                      AND presence.registry_id = existing.registry_id
+                     WHERE existing.registry_id = ?1 AND existing.object_key = ?3
+                       AND existing.lifecycle_state = 'active'
+                       AND existing.content_hash = ?4 AND existing.size = ?5
+                       AND presence.placement_id = ?7 AND presence.state = 'present'
+                       AND presence.observed_hash = ?4 AND presence.observed_size = ?5
+                       AND presence.etag = ?8)",
+                vals![
+                    registry_id,
+                    digest.to_string(),
+                    object_key.as_str(),
+                    digest.encoded(),
+                    size,
+                    now,
+                    placement_id,
+                    observed_etag
+                ],
+            )
+            .expecting(1),
             Statement::new(
                 "INSERT INTO surface_objects
                    (id, registry_id, cache_id, object_key, object_kind,
@@ -1156,6 +1285,37 @@ impl Database {
             )
             .expecting(1),
             Statement::new(
+                "UPDATE oci_blobs SET unreferenced_since = COALESCE(unreferenced_since, ?2),
+                    updated_at = ?2
+                 WHERE registry_id = (SELECT registry_id FROM oci_upload_sessions
+                   WHERE id = ?1) AND digest = ?3 AND lifecycle_state = 'active'
+                   AND NOT EXISTS (SELECT 1 FROM oci_tags tag
+                     WHERE tag.registry_id = oci_blobs.registry_id
+                       AND tag.digest = oci_blobs.digest)
+                   AND NOT EXISTS (SELECT 1 FROM oci_release_roots root
+                     WHERE root.registry_id = oci_blobs.registry_id
+                       AND root.index_digest = oci_blobs.digest)
+                   AND NOT EXISTS (SELECT 1 FROM oci_release_evidence evidence
+                     WHERE evidence.registry_id = oci_blobs.registry_id
+                       AND evidence.referrer_digest = oci_blobs.digest
+                       AND evidence.verification = 'verified')
+                   AND NOT EXISTS (SELECT 1 FROM oci_upload_sessions upload
+                     WHERE upload.registry_id = oci_blobs.registry_id
+                       AND upload.state IN('active', 'completing')
+                       AND (upload.expected_digest = oci_blobs.digest
+                         OR upload.final_digest = oci_blobs.digest))
+                   AND NOT EXISTS (SELECT 1 FROM oci_publication_sessions publication
+                     LEFT JOIN oci_publication_objects object
+                       ON object.publication_id = publication.id
+                      AND object.digest = oci_blobs.digest
+                     WHERE publication.registry_id = oci_blobs.registry_id
+                       AND publication.state IN('preparing', 'committing')
+                       AND (publication.root_digest = oci_blobs.digest
+                         OR object.digest IS NOT NULL))",
+                vals![input.upload_id, input.now, digest],
+            )
+            .unchecked(),
+            Statement::new(
                 "INSERT INTO oci_registry_state
                    (registry_id, mutation_epoch, charged_bytes,
                     charged_objects, updated_at)
@@ -1172,7 +1332,12 @@ impl Database {
                      charged_objects = (SELECT COUNT(*) FROM oci_blobs
                        WHERE registry_id = oci_registry_state.registry_id),
                      updated_at = ?2
-                 WHERE registry_id = (SELECT registry_id FROM oci_upload_sessions WHERE id = ?1)",
+                 WHERE registry_id = (SELECT registry_id FROM oci_upload_sessions WHERE id = ?1)
+                   AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                     WHERE registry_lock.registry_id = oci_registry_state.registry_id)
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
+                     WHERE purge.registry_id = oci_registry_state.registry_id
+                       AND purge.state = 'collecting')",
                 vals![input.upload_id, input.now],
             )
             .expecting(1),
@@ -1313,7 +1478,12 @@ impl Database {
             Statement::new(
                 "UPDATE oci_registry_state SET mutation_epoch = mutation_epoch + 1,
                     updated_at = ?3
-                 WHERE registry_id = (SELECT registry_id FROM oci_repositories WHERE id = ?2)",
+                 WHERE registry_id = (SELECT registry_id FROM oci_repositories WHERE id = ?2)
+                   AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                     WHERE registry_lock.registry_id = oci_registry_state.registry_id)
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
+                     WHERE purge.registry_id = oci_registry_state.registry_id
+                       AND purge.state = 'collecting')",
                 vals![source_repository_id, destination_repository_id, now],
             )
             .expecting(1),

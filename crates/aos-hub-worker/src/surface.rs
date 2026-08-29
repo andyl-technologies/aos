@@ -34,10 +34,13 @@ use aos_hub_core::storage_credential::{
     DatabaseStorageCredentialResolver, StorageCredentialResolver,
 };
 use aos_hub_core::surface_write::{
-    MultipartAbortOutcome, PartTag, SurfaceWrite, SurfaceWriteProvider,
+    FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceWrite, SurfaceWriteProvider,
 };
 
 use crate::consoleports::WorkerEgressClient;
+use crate::frozen_surface_access::{
+    binding as frozen_access_binding, delete_credential as frozen_delete_credential,
+};
 use crate::keymap;
 use crate::r2_adapter::{R2BucketAdapter, R2Contract, R2ListObject, R2ListPage};
 
@@ -413,7 +416,7 @@ async fn placement_s3_delete_surface(
             placement.name
         );
     }
-    if binding.is_instance_default || binding.kind != "s3" {
+    if binding.is_instance_default || !matches!(binding.kind.as_str(), "s3" | "r2") {
         anyhow::bail!(
             "placement '{}' backend '{}' cannot enforce conditional deletion",
             placement.name,
@@ -644,6 +647,36 @@ impl SurfaceProvider for R2SurfaceProvider {
                 bucket: self.bucket.as_ref().clone(),
             }),
             prefix: placement.prefix.clone(),
+        }))
+    }
+
+    async fn frozen_placement_fetcher(
+        &self,
+        access: &FrozenSurfaceAccess,
+    ) -> Result<Box<dyn SurfaceFetch>> {
+        let binding = frozen_access_binding(&self.db, access).await?;
+        if binding.is_instance_default || binding.kind == "deployment_r2" {
+            anyhow::bail!(
+                "deployment R2 has no atomic conditional-delete capability for GC access"
+            );
+        }
+        anyhow::ensure!(
+            matches!(binding.kind.as_str(), "s3" | "r2"),
+            "frozen placement uses unsupported Worker storage"
+        );
+        let credential = frozen_delete_credential(self.credentials.as_ref(), access).await?;
+        let surface = S3Surface::from_binding(
+            &binding,
+            &access.placement_prefix,
+            credential
+                .as_ref()
+                .map(|credential| credential.secret())
+                .transpose()?,
+        )?
+        .context("frozen placement object-store binding cannot be resolved")?;
+        Ok(Box::new(S3SurfaceFetch {
+            surface,
+            egress: Arc::clone(&self.egress),
         }))
     }
 }
@@ -1409,6 +1442,33 @@ impl SurfaceWriteProvider for R2SurfaceWriteProvider {
             egress: Arc::clone(&self.egress),
         }))
     }
+
+    async fn frozen_placement_deleter(
+        &self,
+        access: &FrozenSurfaceAccess,
+    ) -> Result<Box<dyn SurfaceWrite>> {
+        let binding = frozen_access_binding(&self.db, access).await?;
+        if binding.is_instance_default || binding.kind == "deployment_r2" {
+            anyhow::bail!("deployment R2 cannot enforce atomic conditional deletion");
+        }
+        anyhow::ensure!(
+            matches!(binding.kind.as_str(), "s3" | "r2"),
+            "frozen placement uses unsupported Worker storage"
+        );
+        let credential = frozen_delete_credential(self.credentials.as_ref(), access)
+            .await?
+            .context("object-store frozen deletion requires exact credentials")?;
+        let surface = S3Surface::from_binding(
+            &binding,
+            &access.placement_prefix,
+            Some(credential.secret()?),
+        )?
+        .context("frozen deletion object-store binding cannot be resolved")?;
+        Ok(Box::new(S3Write {
+            surface,
+            egress: Arc::clone(&self.egress),
+        }))
+    }
 }
 
 /// A [`SurfaceWrite`] writing one registry's prefix into an R2 bucket.
@@ -1917,11 +1977,11 @@ impl SurfaceWrite for S3Write {
             .await
             .map_err(|err| anyhow::anyhow!("s3 conditional DELETE: {err}"))?;
         match response.status_code() {
-            200..=299 => Ok(aos_hub_core::surface_write::SurfaceDeleteOutcome::Deleted {
-                etag: expected.etag.clone(),
-                content_hash: expected.content_hash.clone(),
-                size: expected.size,
-            }),
+            200..=299 => Ok(
+                aos_hub_core::surface_write::SurfaceDeleteOutcome::ConditionalDeleteAcknowledged {
+                    etag,
+                },
+            ),
             404 => Ok(aos_hub_core::surface_write::SurfaceDeleteOutcome::NotFound),
             412 => Ok(
                 aos_hub_core::surface_write::SurfaceDeleteOutcome::PreconditionFailed {

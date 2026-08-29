@@ -76,6 +76,8 @@ pub enum MethodClass {
     ControllerObservation,
     /// Cancellation or retry of an existing operation.
     OperationLifecycle,
+    /// Explicit CAS/idempotency replay of one frozen maintenance action.
+    MaintenanceReplay,
     /// A user-authorized identity ceremony whose presented secret is the
     /// mutation precondition rather than an administrator-reviewed plan.
     IdentityCeremony,
@@ -318,6 +320,22 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
                     ));
                 }
             }
+            MethodClass::MaintenanceReplay => {
+                require_durability(
+                    method,
+                    MethodDurability::Durable,
+                    "maintenance replay methods mutate durable action state",
+                    &mut violations,
+                );
+                if path != "ContainerService/RequeueContainerGcPlacementAction"
+                    || method.external_effects
+                {
+                    violations.push(violation(
+                        method,
+                        "maintenance-replay exception is limited to the local GC action requeue",
+                    ));
+                }
+            }
             MethodClass::IdentityCeremony => {
                 require_durability(
                     method,
@@ -347,9 +365,14 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
             });
             continue;
         }
+        let canonical_names =
+            plans[0].method.strip_prefix("Plan") == Some(applies[0].method.as_str());
+        let registry_purge_fence_names = plans[0].service == "ContainerService"
+            && plans[0].method == "PlanContainerRegistryPurgeFence"
+            && applies[0].method == "ApplyContainerRegistryPurgeFence";
         if plans[0].service != applies[0].service
             || plans[0].exposure != applies[0].exposure
-            || plans[0].method.strip_prefix("Plan") != Some(applies[0].method.as_str())
+            || (!canonical_names && !registry_purge_fence_names)
         {
             violations.push(ManifestViolation {
                 subject: pair.into(),
@@ -438,11 +461,29 @@ pub fn validate_complete_method_manifest(
         };
         if matches!(method.class, MethodClass::Plan { .. })
             && descriptor.response != "TopologyPlanResponse"
+            && !(method.path() == "ContainerService/PlanRunContainerGc"
+                && descriptor.response == "ContainerGcPlanResponse")
         {
             violations.push(violation(
                 method,
                 "plan methods must independently return TopologyPlanResponse",
             ));
+        }
+        if matches!(method.class, MethodClass::MaintenanceReplay) {
+            let mut fields = descriptor.request_fields.clone();
+            fields.sort();
+            if !fields.iter().map(String::as_str).eq([
+                "action_id",
+                "expected_resource_version",
+                "idempotency_key",
+                "registry",
+                "run_id",
+            ]) {
+                violations.push(violation(
+                    method,
+                    "maintenance replay must bind the exact registry, run, action, CAS, and idempotency key",
+                ));
+            }
         }
         if matches!(method.class, MethodClass::Plan { .. })
             && (!descriptor
@@ -462,11 +503,23 @@ pub fn validate_complete_method_manifest(
         if matches!(method.class, MethodClass::Apply { .. }) {
             let mut fields = descriptor.request_fields.clone();
             fields.sort();
-            if !fields.iter().map(String::as_str).eq([
+            let canonical = fields.iter().map(String::as_str).eq([
                 "confirmation_hash",
                 "idempotency_key",
                 "plan_id",
-            ]) {
+            ]);
+            let reviewed_apply_cas = [
+                "ContainerService/RepairContainerUntrackedObject",
+                "ContainerService/ApplyContainerRegistryPurgeFence",
+            ]
+            .contains(&method.path().as_str())
+                && fields.iter().map(String::as_str).eq([
+                    "confirmation_hash",
+                    "expected_resource_version",
+                    "idempotency_key",
+                    "plan_id",
+                ]);
+            if !canonical && !reviewed_apply_cas {
                 violations.push(violation(
                     method,
                     "apply requests may contain only plan_id, confirmation_hash, and idempotency_key",
@@ -1565,6 +1618,114 @@ mod tests {
         assert!(validate_complete_method_manifest(&methods, &descriptors)
             .iter()
             .any(|violation| violation.reason.contains("apply requests may contain only")));
+    }
+
+    #[test]
+    fn descriptor_contract_allows_only_the_declared_reviewed_apply_cas_exceptions() {
+        let methods = vec![
+            MethodDescriptor {
+                service: "ContainerService".into(),
+                method: "PlanRepairContainerUntrackedObject".into(),
+                exposure: MethodExposure::Public,
+                durability: MethodDurability::Durable,
+                class: MethodClass::Plan {
+                    pair: "repair_container_untracked_object".into(),
+                },
+                external_effects: false,
+            },
+            MethodDescriptor {
+                service: "ContainerService".into(),
+                method: "RepairContainerUntrackedObject".into(),
+                exposure: MethodExposure::Public,
+                durability: MethodDurability::Durable,
+                class: MethodClass::Apply {
+                    pair: "repair_container_untracked_object".into(),
+                    outcome: ApplyOutcome::Operation,
+                },
+                external_effects: true,
+            },
+            MethodDescriptor {
+                service: "ContainerService".into(),
+                method: "PlanContainerRegistryPurgeFence".into(),
+                exposure: MethodExposure::Public,
+                durability: MethodDurability::Durable,
+                class: MethodClass::Plan {
+                    pair: "container_registry_purge_fence".into(),
+                },
+                external_effects: false,
+            },
+            MethodDescriptor {
+                service: "ContainerService".into(),
+                method: "ApplyContainerRegistryPurgeFence".into(),
+                exposure: MethodExposure::Public,
+                durability: MethodDurability::Durable,
+                class: MethodClass::Apply {
+                    pair: "container_registry_purge_fence".into(),
+                    outcome: ApplyOutcome::Immediate,
+                },
+                external_effects: false,
+            },
+        ];
+        let descriptors = vec![
+            ApiMethodDescriptor {
+                service: "ContainerService".into(),
+                method: "PlanRepairContainerUntrackedObject".into(),
+                request: "PlanRepairContainerUntrackedObjectRequest".into(),
+                response: "TopologyPlanResponse".into(),
+                request_fields: vec![
+                    "registry".into(),
+                    "expected_resource_version".into(),
+                    "idempotency_key".into(),
+                ],
+            },
+            ApiMethodDescriptor {
+                service: "ContainerService".into(),
+                method: "RepairContainerUntrackedObject".into(),
+                request: "RepairContainerUntrackedObjectRequest".into(),
+                response: "OperationResponse".into(),
+                request_fields: vec![
+                    "plan_id".into(),
+                    "confirmation_hash".into(),
+                    "idempotency_key".into(),
+                    "expected_resource_version".into(),
+                ],
+            },
+            ApiMethodDescriptor {
+                service: "ContainerService".into(),
+                method: "PlanContainerRegistryPurgeFence".into(),
+                request: "PlanContainerRegistryPurgeFenceRequest".into(),
+                response: "TopologyPlanResponse".into(),
+                request_fields: vec![
+                    "registry".into(),
+                    "action".into(),
+                    "expected_resource_version".into(),
+                    "idempotency_key".into(),
+                ],
+            },
+            ApiMethodDescriptor {
+                service: "ContainerService".into(),
+                method: "ApplyContainerRegistryPurgeFence".into(),
+                request: "ApplyContainerRegistryPurgeFenceRequest".into(),
+                response: "ContainerRegistryPurgeFenceResponse".into(),
+                request_fields: vec![
+                    "plan_id".into(),
+                    "confirmation_hash".into(),
+                    "idempotency_key".into(),
+                    "expected_resource_version".into(),
+                ],
+            },
+        ];
+        assert!(validate_complete_method_manifest(&methods, &descriptors).is_empty());
+
+        let mut adjacent_methods = methods;
+        adjacent_methods[1].method = "RepairOtherObject".into();
+        let mut adjacent_descriptors = descriptors;
+        adjacent_descriptors[1].method = "RepairOtherObject".into();
+        assert!(
+            validate_complete_method_manifest(&adjacent_methods, &adjacent_descriptors)
+                .iter()
+                .any(|violation| violation.reason.contains("apply requests may contain only"))
+        );
     }
 
     #[test]
