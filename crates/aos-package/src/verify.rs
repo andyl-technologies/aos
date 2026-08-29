@@ -159,13 +159,32 @@ pub fn verify_download_hash(path: &Path, expected: &str) -> Result<()> {
 /// the file cannot be opened, is not valid zstd, or `expected` is a
 /// malformed SRI hash.
 pub fn verify_nar_hash(path: &Path, expected: &str) -> Result<()> {
+    verify_nar_hash_with_compression(path, expected, "zstd")
+}
+
+/// Verifies a NAR hash using the transport encoding declared by narinfo.
+///
+/// # Errors
+///
+/// Returns an error when the payload cannot be read or decoded, the encoding
+/// is unsupported, or the resulting NAR digest differs from `expected`.
+pub fn verify_nar_hash_with_compression(
+    path: &Path,
+    expected: &str,
+    compression: &str,
+) -> Result<()> {
     let file = File::open(path)
         .with_context(|| format!("opening {} for NAR hash verification", path.display()))?;
     let reader = BufReader::new(file);
-    let decoder = zstd::stream::read::Decoder::new(reader)
-        .with_context(|| format!("creating zstd decoder for {}", path.display()))?;
-
-    let actual = sha256_stream(decoder)?;
+    let actual = match compression {
+        "none" => sha256_stream(reader)?,
+        "zstd" => {
+            let decoder = zstd::stream::read::Decoder::new(reader)
+                .with_context(|| format!("creating zstd decoder for {}", path.display()))?;
+            sha256_stream(decoder)?
+        }
+        other => bail!("unsupported NAR compression '{other}'"),
+    };
     if !sha256_hashes_equal(&actual, expected)? {
         return Err(AosError::HashMismatch {
             expected: expected.to_string(),
@@ -345,6 +364,21 @@ fn describe_blessed(blessed: &[NarBytes]) -> String {
 /// size, or - as [`AosError::HashMismatch`] - when the digest/size pair
 /// matches no blessed NAR.
 pub fn verify_nar_blessed(path: &Path, blessed: &[NarBytes]) -> Result<String> {
+    verify_nar_blessed_with_compression(path, blessed, "zstd")
+}
+
+/// Verifies a downloaded NAR against signed blessed bytes using its narinfo
+/// transport encoding.
+///
+/// # Errors
+///
+/// Returns an error when the blessed set is empty, the payload cannot be read
+/// or decoded, the encoding is unsupported, or no blessed identity matches.
+pub fn verify_nar_blessed_with_compression(
+    path: &Path,
+    blessed: &[NarBytes],
+    compression: &str,
+) -> Result<String> {
     let cap =
         blessed.iter().map(|n| n.size).max().ok_or_else(|| {
             anyhow::anyhow!("no blessed NAR to verify {} against", path.display())
@@ -353,8 +387,14 @@ pub fn verify_nar_blessed(path: &Path, blessed: &[NarBytes]) -> Result<String> {
     let file = File::open(path)
         .with_context(|| format!("opening {} for blessed NAR verification", path.display()))?;
     let reader = BufReader::new(file);
-    let mut decoder = zstd::stream::read::Decoder::new(reader)
-        .with_context(|| format!("creating zstd decoder for {}", path.display()))?;
+    let mut decoder: Box<dyn Read> = match compression {
+        "none" => Box::new(reader),
+        "zstd" => Box::new(
+            zstd::stream::read::Decoder::new(reader)
+                .with_context(|| format!("creating zstd decoder for {}", path.display()))?,
+        ),
+        other => bail!("unsupported NAR compression '{other}'"),
+    };
 
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; HASH_BUF_SIZE];
@@ -430,12 +470,13 @@ pub fn verify_downloads(
                     result.store_path,
                 );
             }
-            verify_nar_blessed(&result.local_path, &blessed).with_context(|| {
-                format!(
-                    "verifying {} against the registry store/ graph",
-                    result.store_path
-                )
-            })?;
+            verify_nar_blessed_with_compression(&result.local_path, &blessed, &result.compression)
+                .with_context(|| {
+                    format!(
+                        "verifying {} against the registry store/ graph",
+                        result.store_path
+                    )
+                })?;
         } else {
             if !warned_legacy {
                 printer.warning(
@@ -444,8 +485,12 @@ pub fn verify_downloads(
                 );
                 warned_legacy = true;
             }
-            verify_nar_hash(&result.local_path, &result.nar_hash)
-                .with_context(|| format!("verifying NAR hash for {}", result.store_path))?;
+            verify_nar_hash_with_compression(
+                &result.local_path,
+                &result.nar_hash,
+                &result.compression,
+            )
+            .with_context(|| format!("verifying NAR hash for {}", result.store_path))?;
         }
     }
     Ok(())
@@ -943,6 +988,22 @@ mod tests {
     }
 
     #[test]
+    fn uncompressed_nar_transport_preserves_blessed_identity() {
+        let content = b"canonical uncompressed documentation NAR";
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(content).unwrap();
+        tmp.flush().unwrap();
+        let hash = sha256_stream(content.as_slice()).unwrap();
+        let blessed = vec![blessed_nar(&hash, content.len() as u64)];
+
+        assert_eq!(
+            verify_nar_blessed_with_compression(tmp.path(), &blessed, "none").unwrap(),
+            hash
+        );
+        verify_nar_hash_with_compression(tmp.path(), &hash, "none").unwrap();
+    }
+
+    #[test]
     fn verify_nar_blessed_rejects_size_mismatch_with_right_hash() {
         // Same digest but a wrong blessed size must not verify.
         let content = b"size matters";
@@ -991,6 +1052,7 @@ mod tests {
             local_path: tmp.path().to_path_buf(),
             download_hash,
             nar_hash: narinfo_nar_hash.to_string(),
+            compression: "zstd".to_string(),
             references: Vec::new(),
             deriver: None,
         };

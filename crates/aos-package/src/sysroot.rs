@@ -64,14 +64,14 @@ use crate::policy::admit_package_roots;
 use crate::registry::sb_certs::{self, SbCertsToml};
 use crate::registry::{RegistrySet, store_path_hash};
 use crate::resolve::{collect_unique_metas, resolve_multiple};
-use crate::store::{filter_missing, import_nar};
+use crate::store::filter_missing;
 use crate::types::{
     ConfigGeneration, ConfigGenerationState, CrossAbiReEvalInputs, ImageGeneration,
     ImageGenerationState, ImageSlot, PackageMeta, ProfileScope, ReactivationPlan,
     RecoveryPublication, RecoveryUkiEntry, SysrootImageEntry, SysrootUkiEntry, UkiSlot,
 };
 use crate::unit_diff::{self, UnitDiff};
-use crate::verify::{verify_download_hash, verify_downloads, verify_nar_hash};
+use crate::verify::{verify_download_hash, verify_downloads};
 
 // ---------------------------------------------------------------------------
 // Kernel upgrade mode
@@ -628,11 +628,12 @@ pub async fn install_system(
 
         printer.step(6, 8, "Importing...");
         for result in &results {
-            import_nar(
+            crate::store::import_nar_with_compression(
                 &result.local_path,
                 &result.store_path,
                 &result.references,
                 result.deriver.as_deref(),
+                &result.compression,
             )
             .await
             .with_context(|| format!("importing {}", result.store_path))?;
@@ -3114,13 +3115,18 @@ async fn ensure_image_imported(
         .first()
         .context("image artifact download returned no result")?;
     verify_download_hash(&result.local_path, &result.download_hash)?;
-    verify_nar_hash(&result.local_path, authenticated_hash)
-        .with_context(|| format!("verifying image update NAR for {authenticated_path}"))?;
-    import_nar(
+    crate::verify::verify_nar_hash_with_compression(
+        &result.local_path,
+        authenticated_hash,
+        &result.compression,
+    )
+    .with_context(|| format!("verifying image update NAR for {authenticated_path}"))?;
+    crate::store::import_nar_with_compression(
         &result.local_path,
         &result.store_path,
         &result.references,
         result.deriver.as_deref(),
+        &result.compression,
     )
     .await?;
     if !store_path.exists() {
@@ -3250,13 +3256,18 @@ async fn download_image(
     // registry signature (images sit outside the store/ graph).
     let result = &results[0];
     verify_download_hash(&result.local_path, &result.download_hash)?;
-    verify_nar_hash(&result.local_path, &img.nar_hash)
-        .with_context(|| format!("verifying image NAR for {}", img.store_path))?;
-    import_nar(
+    crate::verify::verify_nar_hash_with_compression(
+        &result.local_path,
+        &img.nar_hash,
+        &result.compression,
+    )
+    .with_context(|| format!("verifying image NAR for {}", img.store_path))?;
+    crate::store::import_nar_with_compression(
         &result.local_path,
         &result.store_path,
         &result.references,
         result.deriver.as_deref(),
+        &result.compression,
     )
     .await?;
 

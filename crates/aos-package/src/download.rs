@@ -98,6 +98,8 @@ pub struct DownloadResult {
     pub download_hash: String,
     /// SHA-256 of the uncompressed NAR (from narinfo `NarHash`).
     pub nar_hash: String,
+    /// Narinfo transport encoding (`zstd` or `none`).
+    pub compression: String,
     /// Runtime references (from narinfo `References`). Needed to build the
     /// export trailer at import time.
     pub references: Vec<String>,
@@ -594,6 +596,7 @@ async fn download_one(
         local_path: dest.to_path_buf(),
         download_hash: file_hash,
         nar_hash: resolved.narinfo.nar_hash.clone(),
+        compression: resolved.narinfo.compression.clone(),
         references: resolved.narinfo.references.clone(),
         deriver: resolved.narinfo.deriver.clone(),
     })
@@ -702,6 +705,7 @@ async fn cached_download_result(
         local_path: dest.to_path_buf(),
         download_hash: file_hash.to_string(),
         nar_hash: resolved.narinfo.nar_hash.clone(),
+        compression: resolved.narinfo.compression.clone(),
         references: resolved.narinfo.references.clone(),
         deriver: resolved.narinfo.deriver.clone(),
     }))

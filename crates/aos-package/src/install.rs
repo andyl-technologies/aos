@@ -54,13 +54,13 @@ use super::provenance;
 use super::registry::{RegistrySet, keys, store_path_hash};
 use super::remove::retained_installed_indexes;
 use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_multiple};
-use super::store::{closure_paths, create_gc_roots, filter_missing, import_nar};
+use super::store::{closure_paths, create_gc_roots, filter_missing};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{
     ApmMeta, InstalledMeta, PackageMeta, package_requires_provenance,
     validate_attestation_provenance_ref, validate_registry_name,
 };
-use super::verify::{verify_downloads, verify_nar_hash};
+use super::verify::verify_downloads;
 use aos_core::error::AosError;
 use aos_core::nar::info as narinfo;
 use aos_core::output::{OutputMode, Printer};
@@ -466,11 +466,12 @@ async fn run_inner(
         // Import NARs into the store.
         printer.step(5, 7, "Importing packages...");
         for result in &results {
-            import_nar(
+            crate::store::import_nar_with_compression(
                 &result.local_path,
                 &result.store_path,
                 &result.references,
                 result.deriver.as_deref(),
+                &result.compression,
             )
             .await
             .with_context(|| format!("importing {}", result.store_path))?;
@@ -861,8 +862,12 @@ fn verify_secondary_artifact_downloads(
                 result.store_path
             );
         }
-        verify_nar_hash(&result.local_path, &artifact.nar_hash)
-            .with_context(|| format!("verifying signed NAR for {}", result.store_path))?;
+        crate::verify::verify_nar_hash_with_compression(
+            &result.local_path,
+            &artifact.nar_hash,
+            &result.compression,
+        )
+        .with_context(|| format!("verifying signed NAR for {}", result.store_path))?;
     }
 
     Ok(())
@@ -2573,6 +2578,7 @@ mod tests {
             local_path: std::path::PathBuf::from("/does/not/exist"),
             download_hash: "sha256:download".to_string(),
             nar_hash: "sha256:image".to_string(),
+            compression: "zstd".to_string(),
             references: vec!["/var/lib/store/ref-dep".to_string()],
             deriver: None,
         };
