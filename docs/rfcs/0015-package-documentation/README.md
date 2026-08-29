@@ -1,14 +1,14 @@
 # RFC-0015: Package documentation as authenticated Nix objects
 
-- **Status:** Proposed (design-only).
+- **Status:** Implemented.
 - **Date:** 2026-08-28.
 - **Audience:** package authors; APM, registry, AOS Hub, Web UI, CLI, and
   language-tooling maintainers; release and cache operators.
 - **Depends on:** RFC-0005's store realization graph, RFC-0011's package-owned
   configuration modules, and RFC-0012's shared native/Worker Hub topology.
-- **Implementation:** none in this RFC. The runtime-module work in pull request
-  #218 lands unchanged; the migration from its handwritten package guides is a
-  later, explicitly gated phase of this proposal.
+- **Implementation:** pull request #219. The runtime-module work from pull
+  request #218 remains intact; its handwritten package-reference pages are
+  replaced by generated, authenticated package documentation.
 
 ## Summary
 
@@ -80,34 +80,32 @@ identity.
 | [`08-implementation-plan.md`](08-implementation-plan.md) | Phased implementation and the explicit handwritten-documentation removal inventory |
 | [`09-decisions-and-open-questions.md`](09-decisions-and-open-questions.md) | Locked choices, rejected alternatives, and bounded questions |
 
-## Relationship to current code
+## Implementation map
 
-The current tree already contains most of the required seams:
+The completed implementation uses these repository seams:
 
-- `PlatformEntry` authenticates payload, expose, and configuration-module
-  companion artifacts. RFC-0015 adds a generic documentation artifact beside
-  them so packages without configuration modules can also publish docs.
+- `PlatformEntry` authenticates payload, expose, configuration-module, and
+  documentation companion artifacts, including packages without configuration
+  modules.
 - `ConfigModuleMeta.declaration_schema` carries sorted option paths and stable
   type signatures. It is the compatibility index, but not rich enough to be the
   human and tooling document proposed here.
-- `SurfaceFetch::fetch_bounded` gives shared native/Worker code a size-checked
-  path for small semantic objects. The documentation reader extends that model
-  with a bounded, streaming, single-file NAR verifier.
-- the shared Hub indexer already derives release artifact snapshots and applies
-  them atomically. Its artifact enumeration currently covers output,
-  source-derivation, and image objects; it must add documentation and also close
-  the adjacent config/expose retention gap.
-- shared Hub browse pages already render from indexed data without JavaScript,
-  while the static registry Web generator produces content-bearing HTML and JSON
-  snapshots. RFC-0015 preserves that floor and adds progressive enhancement,
-  not a client-only replacement.
+- `SurfaceFetch::fetch_bounded` and the WASM-safe documentation model provide a
+  size-checked, streaming, single-file NAR verifier shared by native and Worker
+  deployments.
+- the shared Hub indexer atomically derives release artifact snapshots,
+  documentation locators, and disposable search projections while retaining
+  output, source, image, config, expose, and documentation objects together.
+- shared Hub browse pages and the static registry surface render complete
+  content-bearing HTML and JSON without JavaScript; the authenticated console
+  progressively enhances that common semantic view.
 - the existing `aos-doc` crate scans a mutable source checkout, optionally
   evaluates modules, caches a timestamped Markdown-bearing `DocIndex`, and
   provides `aos doc` search/TUI views for Nix functions, types, language,
   modules, and packages. That remains useful developer documentation, but it is
-  not release-authenticated or Worker-safe as-is. RFC-0015 extracts a shared
-  structured model and adds exact installed/Hub backends without treating the
-  source cache as package-release authority.
+  not release-authenticated or Worker-safe as-is. The implementation extracts a
+  shared structured model and adds exact installed/Hub backends without treating
+  the source cache as package-release authority.
 
 This RFC does not make generated prose canonical for AOS concepts that span
 packages. Architecture, security model, tutorials, incident procedures, and

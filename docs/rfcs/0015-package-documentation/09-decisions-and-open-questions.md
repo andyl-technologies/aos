@@ -87,21 +87,24 @@ terminal docs are complete.
 Rejected because those are presentation derivatives and create multiple sources
 of truth. They may be cached or image-built from the authenticated document.
 
-## Bounded open questions
+## Implemented resolutions
 
 ### Exact v1 limits
 
-The design ceiling is 4 MiB for the uncompressed single-file documentation NAR.
-Phase 0 measurements must choose exact document, string, collection, nesting,
-and search-token limits that comfortably cover current packages under Worker
-budgets. Limits become part of the versioned ingestion policy.
+Version 1 admits a canonical document of at most 4 MiB. The shared validator,
+NAR reader, publisher, native Hub, Worker, APM, and cache all apply the same
+closed-schema and bounded-collection policy before using the object.
 
 ### Canonical JSON specification
 
-The implementation must choose whether to adopt a compatible external
-canonical-JSON profile or specify an AOS subset. In either case, one shared
-encoder and byte fixture corpus is normative; "object key order does not matter"
-is not acceptable for content identity.
+The normative representation is the compact UTF-8 byte sequence produced by
+the WASM-safe `aos-doc-model` encoder over closed Rust structures and ordered
+maps. Decoding re-encodes and compares exact bytes, so alternate whitespace,
+unknown fields, duplicate semantic forms, or noncanonical key ordering fail.
+The shared fixture corpus is used by publisher, native Hub, Worker, APM, and
+tooling.
+
+## Future refinements
 
 ### Documentation-only release UX
 
