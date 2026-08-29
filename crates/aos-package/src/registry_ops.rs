@@ -2319,6 +2319,19 @@ fn validate_release_publish_metadata(
     Ok(())
 }
 
+/// Requires an authenticated roster identity for a package-bearing release.
+fn validate_release_publish_signing_identity(
+    store_path: Option<&str>,
+    key_id: Option<&str>,
+) -> Result<()> {
+    if store_path.is_some() && key_id.is_none() {
+        bail!(
+            "releasing a store path requires --key-id so package provenance is tied to keys.toml"
+        );
+    }
+    Ok(())
+}
+
 fn apply_publish_sb_policy(
     images: &mut [PublishedImage],
     catalog: Option<&SbCertsToml>,
@@ -14631,6 +14644,8 @@ pub struct ReleaseStorePublish {
     pub bless: bool,
     pub message: Option<String>,
     pub registry: String,
+    /// Stable roster identity corresponding to the resolved release key.
+    pub signing_key_id: Option<String>,
 }
 
 impl ReleaseTreeOptions {
@@ -14755,6 +14770,7 @@ pub async fn release(
     printer: &Printer,
 ) -> Result<()> {
     validate_release_publish_metadata(store_path, description, license, maintainer)?;
+    validate_release_publish_signing_identity(store_path, key_id)?;
 
     let version = semver::Version::parse(semver)
         .with_context(|| format!("parsing release semver '{semver}'"))?;
@@ -14799,6 +14815,7 @@ pub async fn release(
         bless,
         message: message.map(ToString::to_string),
         registry: registry_name.clone(),
+        signing_key_id: key_id.map(ToString::to_string),
     });
     let options = ReleaseTreeOptions {
         version,
@@ -14867,7 +14884,7 @@ async fn publish_release_store_path(
         false,
         publish_opts.message.as_deref(),
         Some(signing_key),
-        None,
+        publish_opts.signing_key_id.as_deref(),
         Some(&publish_opts.registry),
         printer,
     )
@@ -18917,6 +18934,51 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn release_store_path_requires_and_preserves_roster_identity() {
+        assert!(validate_release_publish_signing_identity(None, None).is_ok());
+        let error =
+            validate_release_publish_signing_identity(Some("/nix/store/example-package"), None)
+                .unwrap_err();
+        assert!(format!("{error:#}").contains("requires --key-id"));
+        assert!(
+            validate_release_publish_signing_identity(
+                Some("/nix/store/example-package"),
+                Some("initial"),
+            )
+            .is_ok()
+        );
+
+        let publish = ReleaseStorePublish {
+            config: ApmConfig {
+                settings: ApmSettings::default(),
+                registries: Vec::new(),
+                scope: ProfileScope::User,
+            },
+            store_path: "/nix/store/example-package".into(),
+            name: None,
+            version: None,
+            platform: None,
+            description: Some("Example package".into()),
+            homepage: None,
+            license: Some("MIT".into()),
+            maintainer: Some("Andyl, Inc.".into()),
+            sysroot: false,
+            previous: None,
+            source_drv: None,
+            image_payload_paths: Vec::new(),
+            image_disk_paths: Vec::new(),
+            image_info_paths: Vec::new(),
+            image_formats: Vec::new(),
+            image_uki_paths: Vec::new(),
+            bless: false,
+            message: None,
+            registry: "production".into(),
+            signing_key_id: Some("initial".into()),
+        };
+        assert_eq!(publish.signing_key_id.as_deref(), Some("initial"));
     }
 
     #[test]
