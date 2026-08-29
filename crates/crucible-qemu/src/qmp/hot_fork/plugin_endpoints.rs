@@ -7,7 +7,7 @@ use crate::qmp::{QmpCommandKind, QmpDescriptorName, QmpError};
 /// QMP command that retains or releases one authenticated plugin endpoint pair.
 pub const QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND: &str = "crucible-hot-fork-plugin-endpoints";
 /// Version of the retained plugin-endpoint contract.
-pub const QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION: u32 = 1;
+pub const QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION: u32 = 2;
 
 /// Exact Linux identities for one branch-private plugin endpoint pair.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +48,7 @@ impl QmpHotForkPluginEndpointIdentity {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QmpHotForkPluginEndpointState {
     generation: u64,
+    template_generation: u64,
     control_name: Option<QmpDescriptorName>,
     wake_name: Option<QmpDescriptorName>,
     identity: Option<QmpHotForkPluginEndpointIdentity>,
@@ -59,6 +60,14 @@ impl QmpHotForkPluginEndpointState {
     #[must_use]
     pub const fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Returns the exact template generation that admitted this endpoint pair.
+    ///
+    /// Zero means the pair was staged outside a template transaction.
+    #[must_use]
+    pub const fn template_generation(&self) -> u64 {
+        self.template_generation
     }
 
     /// Returns whether QEMU retains both independently duplicated endpoints.
@@ -103,6 +112,7 @@ pub(crate) fn parse_hot_fork_plugin_endpoint_state(
     let required = [
         "schema-version",
         "generation",
+        "template-generation",
         "staged",
         "control-socket-cookie",
         "wake-eventfd-id",
@@ -126,6 +136,10 @@ pub(crate) fn parse_hot_fork_plugin_endpoint_state(
         .ok_or_else(&malformed)?;
     let generation = object
         .get("generation")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let template_generation = object
+        .get("template-generation")
         .and_then(Value::as_u64)
         .ok_or_else(&malformed)?;
     let staged = object
@@ -189,7 +203,8 @@ pub(crate) fn parse_hot_fork_plugin_endpoint_state(
                 && control_unix_stream
                 && wake_eventfd
         } else {
-            control_name.is_none()
+            template_generation == 0
+                && control_name.is_none()
                 && wake_name.is_none()
                 && control_socket_cookie == 0
                 && wake_eventfd_id == 0
@@ -211,6 +226,7 @@ pub(crate) fn parse_hot_fork_plugin_endpoint_state(
     };
     Ok(QmpHotForkPluginEndpointState {
         generation,
+        template_generation,
         control_name,
         wake_name,
         identity,

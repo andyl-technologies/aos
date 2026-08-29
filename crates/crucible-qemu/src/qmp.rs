@@ -66,9 +66,9 @@ pub use hot_fork::{
     QmpHotForkPluginEndpointIdentity, QmpHotForkPluginEndpointState,
     QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState, QmpHotForkProof,
     QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness,
-    QmpHotForkTemplateOutcome, QmpHotForkTemplateState, QmpHotForkThread,
-    QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer, QmpHotForkTimerClock,
-    QmpHotForkTimerInventory,
+    QmpHotForkTemplateOutcome, QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState,
+    QmpHotForkThread, QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer,
+    QmpHotForkTimerClock, QmpHotForkTimerInventory,
 };
 use hot_fork::{
     parse_hot_fork_aio_handler_inventory, parse_hot_fork_aio_inventory,

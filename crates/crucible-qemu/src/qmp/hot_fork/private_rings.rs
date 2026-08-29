@@ -7,12 +7,13 @@ use crate::qmp::{QmpCommandKind, QmpDescriptorName, QmpError};
 /// QMP command that retains or releases one authenticated private-ring descriptor.
 pub const QMP_HOT_FORK_PRIVATE_RINGS_COMMAND: &str = "crucible-hot-fork-private-rings";
 /// Version of the retained private-ring descriptor contract.
-pub const QMP_HOT_FORK_PRIVATE_RINGS_SCHEMA_VERSION: u32 = 1;
+pub const QMP_HOT_FORK_PRIVATE_RINGS_SCHEMA_VERSION: u32 = 2;
 
 /// Exact QEMU-owned state for one retained branch-private ring descriptor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QmpHotForkPrivateRingState {
     generation: u64,
+    template_generation: u64,
     descriptor_name: Option<QmpDescriptorName>,
     device: u64,
     inode: u64,
@@ -31,6 +32,7 @@ impl QmpHotForkPrivateRingState {
     ) -> Self {
         Self {
             generation,
+            template_generation: 0,
             descriptor_name: Some(descriptor_name),
             device,
             inode,
@@ -43,6 +45,14 @@ impl QmpHotForkPrivateRingState {
     #[must_use]
     pub const fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Returns the exact template generation that admitted this descriptor.
+    ///
+    /// Zero means the descriptor was staged outside a template transaction.
+    #[must_use]
+    pub const fn template_generation(&self) -> u64 {
+        self.template_generation
     }
 
     /// Returns whether QEMU retains an independently duplicated descriptor.
@@ -93,6 +103,7 @@ pub(crate) fn parse_hot_fork_private_ring_state(
     let required = [
         "schema-version",
         "generation",
+        "template-generation",
         "staged",
         "device",
         "inode",
@@ -114,6 +125,10 @@ pub(crate) fn parse_hot_fork_private_ring_state(
         .ok_or_else(&malformed)?;
     let generation = object
         .get("generation")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let template_generation = object
+        .get("template-generation")
         .and_then(Value::as_u64)
         .ok_or_else(&malformed)?;
     let staged = object
@@ -160,7 +175,12 @@ pub(crate) fn parse_hot_fork_private_ring_state(
         && if staged {
             generation != 0 && inode != 0 && length != 0 && shrink_sealed
         } else {
-            descriptor_name.is_none() && device == 0 && inode == 0 && length == 0 && !shrink_sealed
+            template_generation == 0
+                && descriptor_name.is_none()
+                && device == 0
+                && inode == 0
+                && length == 0
+                && !shrink_sealed
         };
     if !shape_valid {
         return Err(malformed());
@@ -168,6 +188,7 @@ pub(crate) fn parse_hot_fork_private_ring_state(
 
     Ok(QmpHotForkPrivateRingState {
         generation,
+        template_generation,
         descriptor_name,
         device,
         inode,

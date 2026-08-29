@@ -1,0 +1,302 @@
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 8cc9ede3b..7e7dfb627 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -365,6 +365,7 @@ typedef struct CrucibleHotForkPrivateRingStage {
+     uint64_t inode;
+     uint64_t length;
+     bool shrink_sealed;
++    uint64_t template_generation;
+     uint64_t generation;
+ } CrucibleHotForkPrivateRingStage;
+ 
+@@ -379,6 +380,7 @@ typedef struct CrucibleHotForkPluginEndpointStage {
+     uint64_t control_socket_cookie;
+     uint64_t wake_eventfd_id;
+     uint64_t private_ring_generation;
++    uint64_t template_generation;
+     uint64_t generation;
+ } CrucibleHotForkPluginEndpointStage;
+ 
+@@ -421,6 +423,12 @@ static bool crucible_hot_fork_resource_stage_allowed(Error **errp)
+     return allowed;
+ }
+ 
++static uint64_t crucible_hot_fork_resource_template_generation(void)
++{
++    return crucible_hot_fork_template_active ?
++        crucible_hot_fork_template_generation : 0;
++}
++
+ static bool crucible_hot_fork_private_ring_fd_name_valid(const char *name)
+ {
+     size_t length;
+@@ -562,8 +570,10 @@ crucible_hot_fork_private_ring_report(void)
+     CrucibleHotForkPrivateRingState *report =
+         g_new0(CrucibleHotForkPrivateRingState, 1);
+ 
+-    report->schema_version = 1;
++    report->schema_version = 2;
+     report->generation = crucible_hot_fork_private_ring_stage.generation;
++    report->template_generation =
++        crucible_hot_fork_private_ring_stage.template_generation;
+     report->staged = crucible_hot_fork_private_ring_stage.staged;
+     if (crucible_hot_fork_private_ring_stage.staged) {
+         report->fdname =
+@@ -685,6 +695,8 @@ qmp_crucible_hot_fork_private_rings(
+         crucible_hot_fork_private_ring_stage.inode = expected_inode;
+         crucible_hot_fork_private_ring_stage.length = expected_length;
+         crucible_hot_fork_private_ring_stage.shrink_sealed = true;
++        crucible_hot_fork_private_ring_stage.template_generation =
++            crucible_hot_fork_resource_template_generation();
+         crucible_hot_fork_private_ring_stage.generation++;
+         assert(crucible_hot_fork_private_ring_stage.generation != 0);
+         report = crucible_hot_fork_private_ring_report();
+@@ -735,6 +747,7 @@ qmp_crucible_hot_fork_private_rings(
+         crucible_hot_fork_private_ring_stage.inode = 0;
+         crucible_hot_fork_private_ring_stage.length = 0;
+         crucible_hot_fork_private_ring_stage.shrink_sealed = false;
++        crucible_hot_fork_private_ring_stage.template_generation = 0;
+         crucible_hot_fork_private_ring_stage.generation++;
+         assert(crucible_hot_fork_private_ring_stage.generation != 0);
+         report = crucible_hot_fork_private_ring_report();
+@@ -859,8 +872,10 @@ crucible_hot_fork_plugin_endpoint_report(void)
+     CrucibleHotForkPluginEndpointState *report =
+         g_new0(CrucibleHotForkPluginEndpointState, 1);
+ 
+-    report->schema_version = 1;
++    report->schema_version = 2;
+     report->generation = crucible_hot_fork_plugin_endpoint_stage.generation;
++    report->template_generation =
++        crucible_hot_fork_plugin_endpoint_stage.template_generation;
+     report->staged = crucible_hot_fork_plugin_endpoint_stage.staged;
+     if (crucible_hot_fork_plugin_endpoint_stage.staged) {
+         report->control_fdname = g_strdup(
+@@ -974,6 +989,12 @@ qmp_crucible_hot_fork_plugin_endpoints(
+         if (!crucible_hot_fork_resource_stage_allowed(errp)) {
+             goto out;
+         }
++        if (crucible_hot_fork_private_ring_stage.template_generation !=
++            crucible_hot_fork_resource_template_generation()) {
++            error_setg(errp, "Crucible hot-fork plugin endpoints require "
++                       "private rings from the same template transaction");
++            goto out;
++        }
+         crucible_hot_fork_plugin_endpoint_stage.staged = true;
+         crucible_hot_fork_plugin_endpoint_stage.control_fd = control_candidate;
+         control_candidate = -1;
+@@ -989,6 +1010,8 @@ qmp_crucible_hot_fork_plugin_endpoints(
+             expected_wake_eventfd_id;
+         crucible_hot_fork_plugin_endpoint_stage.private_ring_generation =
+             crucible_hot_fork_private_ring_stage.generation;
++        crucible_hot_fork_plugin_endpoint_stage.template_generation =
++            crucible_hot_fork_private_ring_stage.template_generation;
+         crucible_hot_fork_plugin_endpoint_stage.generation++;
+         assert(crucible_hot_fork_plugin_endpoint_stage.generation != 0);
+         report = crucible_hot_fork_plugin_endpoint_report();
+@@ -1043,6 +1066,7 @@ qmp_crucible_hot_fork_plugin_endpoints(
+         crucible_hot_fork_plugin_endpoint_stage.control_socket_cookie = 0;
+         crucible_hot_fork_plugin_endpoint_stage.wake_eventfd_id = 0;
+         crucible_hot_fork_plugin_endpoint_stage.private_ring_generation = 0;
++        crucible_hot_fork_plugin_endpoint_stage.template_generation = 0;
+         crucible_hot_fork_plugin_endpoint_stage.generation++;
+         assert(crucible_hot_fork_plugin_endpoint_stage.generation != 0);
+         report = crucible_hot_fork_plugin_endpoint_report();
+@@ -1403,6 +1427,48 @@ out:
+     return report;
+ }
+ 
++static CrucibleHotForkTemplateResourceStageState *
++crucible_hot_fork_template_resource_stage_report(void)
++{
++    CrucibleHotForkTemplateResourceStageState *report =
++        g_new0(CrucibleHotForkTemplateResourceStageState, 1);
++    bool resources_staged = crucible_hot_fork_private_ring_stage.staged ||
++        crucible_hot_fork_plugin_endpoint_stage.staged;
++
++    assert(!crucible_hot_fork_plugin_endpoint_stage.staged ||
++           crucible_hot_fork_private_ring_stage.staged);
++    assert(!crucible_hot_fork_plugin_endpoint_stage.staged ||
++           crucible_hot_fork_plugin_endpoint_stage.private_ring_generation ==
++               crucible_hot_fork_private_ring_stage.generation);
++    assert(!crucible_hot_fork_plugin_endpoint_stage.staged ||
++           crucible_hot_fork_plugin_endpoint_stage.template_generation ==
++               crucible_hot_fork_private_ring_stage.template_generation);
++    if (resources_staged &&
++        crucible_hot_fork_private_ring_stage.template_generation != 0) {
++        assert(crucible_hot_fork_private_ring_stage.template_generation ==
++               crucible_hot_fork_template_generation);
++    }
++
++    report->schema_version = 1;
++    report->template_generation = resources_staged ?
++        crucible_hot_fork_private_ring_stage.template_generation : 0;
++    report->private_ring_staged =
++        crucible_hot_fork_private_ring_stage.staged;
++    report->private_ring_generation =
++        crucible_hot_fork_private_ring_stage.generation;
++    report->plugin_endpoints_staged =
++        crucible_hot_fork_plugin_endpoint_stage.staged;
++    report->plugin_endpoint_generation =
++        crucible_hot_fork_plugin_endpoint_stage.generation;
++    report->plugin_private_ring_generation =
++        crucible_hot_fork_plugin_endpoint_stage.private_ring_generation;
++    report->transaction_bound = crucible_hot_fork_template_active &&
++        resources_staged && report->template_generation ==
++            crucible_hot_fork_template_generation;
++    report->readiness_proof_acknowledged = false;
++    return report;
++}
++
+ static CrucibleHotForkTemplateState *
+ crucible_hot_fork_template_report(
+     CrucibleHotForkTemplateOutcome outcome,
+@@ -1426,7 +1492,7 @@ crucible_hot_fork_template_report(
+         acknowledged |= CRUCIBLE_HOT_FORK_PROOF_BLOCK_SNAPSHOT;
+     }
+ 
+-    report->schema_version = 10;
++    report->schema_version = 11;
+     report->generation = crucible_hot_fork_template_generation;
+     report->outcome = outcome;
+     report->transaction_active = crucible_hot_fork_template_active;
+@@ -1437,6 +1503,8 @@ crucible_hot_fork_template_report(
+     report->rcu_barrier = rcu_barrier;
+     report->bh_timer_barrier = bh_timer_barrier;
+     report->block_barrier = block_barrier;
++    report->resource_stage =
++        crucible_hot_fork_template_resource_stage_report();
+     report->rollback_complete = !report->transaction_active &&
+         !plugin_barrier->held && !rcu_barrier->held &&
+         !bh_timer_barrier->held && !block_barrier->held &&
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index ec4cfbcfb..ee3510c8f 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -1306,6 +1306,49 @@
+ { 'enum': 'CrucibleHotForkTemplateOutcome',
+   'data': [ 'idle', 'draining', 'blocked', 'prepared', 'aborted' ] }
+ 
++##
++# @CrucibleHotForkTemplateResourceStageState:
++#
++# Atomic generation binding for branch-private resources retained beside one
++# template transaction. This state does not complete a child disposition or
++# acknowledge a hot-fork readiness proof.
++#
++# @schema-version: resource-stage binding contract version, currently 1
++#
++# @template-generation: exact template generation that originally admitted the
++#     retained resources, or zero when none are staged or they were staged
++#     outside a template transaction
++#
++# @private-ring-staged: whether one private-ring descriptor is retained
++#
++# @private-ring-generation: current private-ring mutation generation
++#
++# @plugin-endpoints-staged: whether one plugin endpoint pair is retained
++#
++# @plugin-endpoint-generation: current endpoint-pair mutation generation
++#
++# @plugin-private-ring-generation: private-ring generation captured by the
++#     retained endpoints, or zero when no endpoint pair is retained
++#
++# @transaction-bound: whether every retained resource belongs to the current
++#     active template generation
++#
++# @readiness-proof-acknowledged: always false; exact generation binding alone
++#     acknowledges no hot-fork readiness proof
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkTemplateResourceStageState',
++  'data': { 'schema-version': 'uint32',
++            'template-generation': 'uint64',
++            'private-ring-staged': 'bool',
++            'private-ring-generation': 'uint64',
++            'plugin-endpoints-staged': 'bool',
++            'plugin-endpoint-generation': 'uint64',
++            'plugin-private-ring-generation': 'uint64',
++            'transaction-bound': 'bool',
++            'readiness-proof-acknowledged': 'bool' } }
++
+ ##
+ # @CrucibleHotForkTemplateState:
+ #
+@@ -1319,9 +1362,10 @@
+ # A complete immutable-root binding retained by the block barrier acknowledges
+ # proof bit 5. Version 10 retains a fully drained incomplete transaction so the
+ # host can stage branch-private resources under the same quiescent source-ring
+-# barrier. The caller must explicitly abort to roll the retained barriers back.
++# barrier. Version 11 binds those stages to the exact template generation. The
++# caller must explicitly abort to roll the retained barriers back.
+ #
+-# @schema-version: transaction contract version, currently 10
++# @schema-version: transaction contract version, currently 11
+ #
+ # @generation: positive process-local transaction generation after the first
+ #     successful prepare, or zero before any transaction
+@@ -1346,6 +1390,9 @@
+ # @block-barrier: native all-block drain state after the operation and any
+ #     asynchronous main-loop transition
+ #
++# @resource-stage: exact private-ring and plugin-endpoint generations retained
++#     by this template generation, without acknowledging readiness
++#
+ # @rollback-complete: whether no transaction barrier remains acquired
+ #
+ # @ready: true exactly for a retained @prepared transaction with every proof
+@@ -1364,6 +1411,7 @@
+             'rcu-barrier': 'CrucibleHotForkRcuBarrierState',
+             'bh-timer-barrier': 'CrucibleHotForkBhTimerBarrierState',
+             'block-barrier': 'CrucibleHotForkBlockBarrierState',
++            'resource-stage': 'CrucibleHotForkTemplateResourceStageState',
+             'rollback-complete': 'bool',
+             'ready': 'bool' } }
+ 
+@@ -1417,10 +1465,13 @@
+ # completes the inherited-resource disposition table, so readiness proof bits
+ # 6 and 7 remain clear.
+ #
+-# @schema-version: retained-descriptor contract version, currently 1
++# @schema-version: retained-descriptor contract version, currently 2
+ #
+ # @generation: process-local positive mutation generation, or zero initially
+ #
++# @template-generation: exact template transaction generation that admitted
++#     the descriptor, or zero when staged outside a template transaction
++#
+ # @staged: whether QEMU retains an independently duplicated descriptor
+ #
+ # @fdname: exact standard-QMP name while @staged
+@@ -1444,6 +1495,7 @@
+ { 'struct': 'CrucibleHotForkPrivateRingState',
+   'data': { 'schema-version': 'uint32',
+             'generation': 'uint64',
++            'template-generation': 'uint64',
+             'staged': 'bool',
+             '*fdname': 'str',
+             'device': 'uint64',
+@@ -1511,10 +1563,13 @@
+ # the endpoints in a fork child nor recreates plugin workers, so readiness
+ # proof bits 6 through 8 remain clear.
+ #
+-# @schema-version: retained-endpoint contract version, currently 1
++# @schema-version: retained-endpoint contract version, currently 2
+ #
+ # @generation: process-local positive mutation generation, or zero initially
+ #
++# @template-generation: exact template transaction generation that admitted
++#     the endpoint pair, or zero when staged outside a template transaction
++#
+ # @staged: whether QEMU retains both independently duplicated endpoints
+ #
+ # @control-fdname: exact standard-QMP control name while @staged
+@@ -1546,6 +1601,7 @@
+ { 'struct': 'CrucibleHotForkPluginEndpointState',
+   'data': { 'schema-version': 'uint32',
+             'generation': 'uint64',
++            'template-generation': 'uint64',
+             'staged': 'bool',
+             '*control-fdname': 'str',
+             '*wake-fdname': 'str',

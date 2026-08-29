@@ -643,6 +643,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0143-crucible-bind-hot-fork-resource-generations.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

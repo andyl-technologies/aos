@@ -306,10 +306,10 @@ pub use qmp::{
     QmpHotForkPluginEndpointIdentity, QmpHotForkPluginEndpointState,
     QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState, QmpHotForkProof,
     QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness,
-    QmpHotForkTemplateOutcome, QmpHotForkTemplateState, QmpHotForkThread,
-    QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer, QmpHotForkTimerClock,
-    QmpHotForkTimerInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunState, QmpRunStateKind,
-    QmpSnapshotTag, QmpTimeoutStream,
+    QmpHotForkTemplateOutcome, QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState,
+    QmpHotForkThread, QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer,
+    QmpHotForkTimerClock, QmpHotForkTimerInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy,
+    QmpRunState, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 pub use quantum::{
     QemuDeviceIoFreezeObservation, QemuDeviceIoFreezeReport, QemuInboundFrame, QemuOutboundFrame,

@@ -993,6 +993,13 @@
       enforces = "HFORK-3,HFORK-8,HFORK-9";
       capability = "the version-10 template coordinator retains a fully drained incomplete transaction until explicit abort and admits exact private-ring and plugin-endpoint staging only while the retained plugin barrier is quiescent, without acknowledging readiness bits 6 through 8 or forking";
     }
+    {
+      file = "0143-crucible-bind-hot-fork-resource-generations.patch";
+      catalogName = "crucible-hot-fork-resource-generation-binding";
+      class = "F";
+      enforces = "HFORK-3,HFORK-8,HFORK-9";
+      capability = "QEMU atomically binds retained private-ring and plugin-endpoint generations to the exact version-11 template transaction, rejects cross-transaction composition, and reports retained-but-unbound resources after abort without acknowledging readiness bits 6 through 8";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

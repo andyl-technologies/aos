@@ -206,8 +206,9 @@ in
             "$out/private-rings-initial.json"
           jq -e -s '
             [.[] | select(has("return"))][-1].return == {
-              "schema-version": 1,
+              "schema-version": 2,
               "generation": 0,
+              "template-generation": 0,
               "staged": false,
               "device": 0,
               "inode": 0,
@@ -224,8 +225,9 @@ in
             "$out/plugin-endpoints-initial.json"
           jq -e -s '
             [.[] | select(has("return"))][-1].return == {
-              "schema-version": 1,
+              "schema-version": 2,
               "generation": 0,
+              "template-generation": 0,
               "staged": false,
               "control-socket-cookie": 0,
               "wake-eventfd-id": 0,
@@ -467,8 +469,9 @@ in
             ."control-cookie" as $control_cookie |
             ."wake-identity" as $wake_identity |
             .stage.return == {
-              "schema-version": 1,
+              "schema-version": 2,
               "generation": 1,
+              "template-generation": 0,
               "staged": true,
               "fdname": $name,
               "device": $identity.device,
@@ -482,8 +485,9 @@ in
             ."control-getfd".return == {} and
             ."wake-getfd".return == {} and
             ."endpoint-stage".return == {
-              "schema-version": 1,
+              "schema-version": 2,
               "generation": 1,
+              "template-generation": 0,
               "staged": true,
               "control-fdname": $control_name,
               "wake-fdname": $wake_name,
@@ -502,8 +506,9 @@ in
             (."endpoint-foreign-release".error | type) == "object" and
             ."endpoint-after-rejected-release".return == ."endpoint-stage".return and
             ."endpoint-release".return == {
-              "schema-version": 1,
+              "schema-version": 2,
               "generation": 2,
+              "template-generation": 0,
               "staged": false,
               "control-socket-cookie": 0,
               "wake-eventfd-id": 0,
@@ -516,8 +521,9 @@ in
             ."wake-closefd".return == {} and
             ."control-closefd".return == {} and
             .release.return == {
-              "schema-version": 1,
+              "schema-version": 2,
               "generation": 2,
+              "template-generation": 0,
               "staged": false,
               "device": 0,
               "inode": 0,
@@ -1280,11 +1286,12 @@ in
               "rcu-barrier",
               "ready",
               "required-proofs",
+              "resource-stage",
               "rollback-complete",
               "schema-version",
               "transaction-active"
             ] and
-            $report."schema-version" == 10 and
+            $report."schema-version" == 11 and
             $report.generation == 0 and
             $report.outcome == "idle" and
             $report."transaction-active" == false and
@@ -1316,6 +1323,17 @@ in
             $report."rcu-barrier".quiescent == false and
             $report."bh-timer-barrier" == $bh_report and
             $report."block-barrier" == $block_report and
+            $report."resource-stage" == {
+              "schema-version": 1,
+              "template-generation": 0,
+              "private-ring-staged": false,
+              "private-ring-generation": 2,
+              "plugin-endpoints-staged": false,
+              "plugin-endpoint-generation": 2,
+              "plugin-private-ring-generation": 0,
+              "transaction-bound": false,
+              "readiness-proof-acknowledged": false
+            } and
             $report."rollback-complete" == true and
             $report.ready == false)
           ' "$out/template-coordinator-query.json" >/dev/null \
@@ -1578,7 +1596,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0142-crucible-retain-hot-fork-resource-staging.patch
+          patch=0143-crucible-bind-hot-fork-resource-generations.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -1638,7 +1656,7 @@ in
           plugin_worker_queue_cloning=false
           plugin_ring_consumer_admission_bound=true
           plugin_ring_proof_acknowledged=false
-          private_ring_stage_schema_version=1
+          private_ring_stage_schema_version=2
           private_ring_stage_initially_absent=true
           private_ring_live_descriptor_transaction=true
           private_ring_exact_identity_and_seal=true
@@ -1646,7 +1664,7 @@ in
           private_ring_two_layer_release=true
           private_ring_disposition_complete=false
           private_ring_readiness_proof_acknowledged=false
-          plugin_endpoint_stage_schema_version=1
+          plugin_endpoint_stage_schema_version=2
           plugin_endpoint_stage_initially_absent=true
           plugin_endpoint_exact_kernel_identity=true
           plugin_endpoint_private_ring_generation_bound=true
@@ -1654,7 +1672,9 @@ in
           plugin_endpoint_two_layer_release=true
           plugin_endpoint_disposition_complete=false
           plugin_endpoint_readiness_proof_acknowledged=false
-          template_coordinator_schema_version=10
+          template_coordinator_schema_version=11
+          template_resource_stage_schema_version=1
+          template_resource_stage_empty_after_release=true
           template_coordinator_idle_stable=true
           template_coordinator_unregistered_shape=true
           template_prepare_without_exact_boundary_rejected=true

@@ -51,7 +51,7 @@ pub use rcu_barrier::{
 pub(crate) use template::parse_hot_fork_template_state;
 pub use template::{
     QMP_HOT_FORK_TEMPLATE_COMMAND, QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION, QmpHotForkTemplateOutcome,
-    QmpHotForkTemplateState,
+    QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState,
 };
 
 /// QMP command name used for the versioned QEMU-owned hot-fork readiness report.
