@@ -3057,8 +3057,7 @@ fn publish_package_documentation(
         );
     }
 
-    let declaration_paths = declarations
-        .iter()
+    let declaration_paths = documented_option_declarations(declarations)
         .map(|declaration| declaration.path_str.as_str())
         .collect::<HashSet<_>>();
     if let Some(foreign) = authored
@@ -3078,8 +3077,7 @@ fn publish_package_documentation(
             blocks: section.blocks,
         })
         .collect::<Vec<_>>();
-    let options = declarations
-        .iter()
+    let options = documented_option_declarations(declarations)
         .map(|declaration| {
             let enrichment = authored.options.get(&declaration.path_str);
             let description = if declaration.description.trim().is_empty() {
@@ -3227,6 +3225,20 @@ fn publish_package_documentation(
     validate_documentation_artifact_meta(&metadata)
         .context("validating published package documentation metadata")?;
     Ok(PublishedDocumentation { metadata, info })
+}
+
+/// Selects the declarations that form the user/tooling documentation surface.
+///
+/// Internal module-system plumbing remains part of the signed config-module
+/// declaration schema and authorization checks, but it is not a package API
+/// and may intentionally use reserved path segments such as
+/// `_aosExposeConfigProjection`.
+fn documented_option_declarations(
+    declarations: &[DerivedOptionDeclaration],
+) -> impl Iterator<Item = &DerivedOptionDeclaration> {
+    declarations
+        .iter()
+        .filter(|declaration| declaration.visibility != Visibility::Internal)
 }
 
 fn documentation_runtime_surface(manifest: Option<&PublishExposeManifest>) -> RuntimeSurface {
@@ -16178,6 +16190,36 @@ mod tests {
     };
     use std::fs;
     use tempfile::TempDir;
+
+    fn documentation_declaration(path: &str, visibility: Visibility) -> DerivedOptionDeclaration {
+        DerivedOptionDeclaration {
+            path: path.split('.').map(str::to_string).collect(),
+            path_str: path.to_string(),
+            type_sig: "boolean".to_string(),
+            option_type: OptionType::Bool,
+            description: "Fixture option.".to_string(),
+            default: None,
+            example: None,
+            visibility,
+            read_only: false,
+            contributable: false,
+            owner: "nginx".to_string(),
+        }
+    }
+
+    #[test]
+    fn package_documentation_excludes_internal_module_plumbing() {
+        let declarations = [
+            documentation_declaration("nginx.enable", Visibility::Public),
+            documentation_declaration("nginx._aosExposeConfigProjection", Visibility::Internal),
+        ];
+
+        let paths = documented_option_declarations(&declarations)
+            .map(|declaration| declaration.path_str.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(paths, ["nginx.enable"]);
+    }
 
     #[test]
     fn portable_filename_accepts_sd_boot_counting_suffix() {
