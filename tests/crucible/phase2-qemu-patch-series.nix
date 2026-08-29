@@ -965,6 +965,13 @@
       enforces = "HFORK-3,HFORK-4,HFORK-5";
       capability = "the version-4 plugin barrier reports shared-ring consumers admitted before the hold and requires every producer and consumer to drain before subsystem quiescence without yet cloning queued bytes or acknowledging proof bit 6";
     }
+    {
+      file = "0139-crucible-retain-hot-fork-private-rings.patch";
+      catalogName = "crucible-hot-fork-private-ring-stage";
+      class = "F";
+      enforces = "HFORK-3,HFORK-8,HFORK-9";
+      capability = "QEMU duplicates and authenticates one bounded standard-QMP getfd entry by name, device, inode, length, regular-file type, and shrink seal, then retains it independently for future child remapping while explicitly keeping readiness bits 6 and 7 clear";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

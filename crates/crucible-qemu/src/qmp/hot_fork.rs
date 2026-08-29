@@ -12,6 +12,7 @@ use super::{QmpCommandKind, QmpError};
 mod bh_timer_barrier;
 mod block_barrier;
 mod plugin;
+mod private_rings;
 mod rcu_barrier;
 mod template;
 
@@ -30,6 +31,11 @@ pub use block_barrier::{
 pub use plugin::{QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory};
 pub(super) use plugin::{
     parse_hot_fork_plugin_barrier_state, parse_hot_fork_plugin_resource_inventory,
+};
+pub(crate) use private_rings::parse_hot_fork_private_ring_state;
+pub use private_rings::{
+    QMP_HOT_FORK_PRIVATE_RINGS_COMMAND, QMP_HOT_FORK_PRIVATE_RINGS_SCHEMA_VERSION,
+    QmpHotForkPrivateRingState,
 };
 pub(crate) use rcu_barrier::parse_hot_fork_rcu_barrier_state;
 pub use rcu_barrier::{

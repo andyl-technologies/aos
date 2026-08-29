@@ -761,28 +761,39 @@ crucible-hfork-rings-v1-<device:16-lower-hex>-<inode:16-lower-hex>-<image-digest
 
 Typed descriptor names contain 1 through 128 bytes from `[a-z0-9-]`. The
 device/inode pair makes distinct still-live memfds non-aliasing, while the
-digest binds the staged descriptor to the exact restored image. QEMU receives
-a duplicate; the node retains the original descriptor, mapping, held ring
-endpoints, source proof, exact name, and image digest. Only an acknowledged
-`getfd` yields the `installed` stage. Standard `closefd` must acknowledge the
-same exact name before an installed mapping can leave node ownership.
+digest binds the staged descriptor to the exact restored image. After `getfd`
+acknowledges the monitor-owned entry, the OOB
+`crucible-hot-fork-private-rings stage` command makes QEMU independently
+duplicate that named descriptor. QEMU requires the same name, device, inode,
+length, regular-file type, and `F_SEAL_SHRINK` before retaining the duplicate.
+Its closed version-1 response reports the exact retained basis and explicitly
+sets `disposition-complete = false` and
+`readiness-proof-acknowledged = false`. The node retains the original
+descriptor, mapping, held ring endpoints, source proof, exact name, and image
+digest. Only both acknowledgements yield the `installed` stage.
 
-Any error once descriptor transfer begins makes QEMU ownership and the stream
-boundary indeterminate. The typed client permanently poisons that QMP stream;
-the node retains the mapping as `transfer-uncertain` and quarantines the QEMU
-generation. A failed `closefd` likewise retains the installed mapping and
-quarantines the generation. Pre-transfer validation failure returns the
-untouched mapping and leaves the node running. This ordering prevents either a
-lost memfd owner or a caller from treating an unacknowledged transfer as a
-definite rejection.
+Release reverses the two ownership layers in order. The custom `release`
+operation requires the same exact name/device/inode/length basis, first closes
+QEMU's independently retained duplicate, and must report an absent stage.
+Standard `closefd` then closes the monitor-owned entry under the same exact
+name. Both acknowledgements are required before an installed mapping can leave
+node ownership.
+
+Any error once descriptor transfer or QEMU-owned adoption begins makes QEMU
+ownership and the stream boundary indeterminate. The typed client permanently
+poisons that QMP stream; the node retains the mapping as `transfer-uncertain`
+and quarantines the QEMU generation. A failed custom release or `closefd`
+likewise retains the installed mapping and quarantines the generation.
+Pre-transfer validation failure returns the untouched mapping and leaves the
+node running. This ordering prevents either a lost memfd owner or a caller from
+treating an unacknowledged transfer as a definite rejection.
 
 This is still not the complete plugin-ring proof: a parked worker may retain a
 received trigger or queued fingerprint work, and no fork child yet receives,
 remaps, authenticates, and releases this private mapping together with those
-worker dispositions and its host continuation. Template-process `getfd`
-staging is not a child disposition: it proves neither inherited-FD closure nor
-child remap/rebind, so proof bit 7 also remains clear. QEMU therefore keeps
-readiness bit 6 clear.
+worker dispositions and its host continuation. Template-process descriptor
+retention is not a child disposition: it proves neither inherited-FD closure
+nor child remap/rebind. QEMU therefore keeps readiness bits 6 and 7 clear.
 
 The next source checkpoint adds a process-lifetime reversible bottom-half and
 timer-source barrier through the OOB

@@ -83,8 +83,8 @@ enum ChannelCall {
     QmpHotForkBlockBackendInventory,
     QmpHotForkPluginResourceInventory,
     QmpHotForkPluginBarrier,
-    QmpHotForkInstallDescriptor(String),
-    QmpHotForkCloseDescriptor(String),
+    QmpHotForkInstallDescriptor(String, crucible_shmem::SetupRegionBackingIdentity),
+    QmpHotForkCloseDescriptor(String, crucible_shmem::SetupRegionBackingIdentity),
     QmpHotForkBottomHalfInventory,
     QmpHotForkMutexInventory,
     QmpHotForkTimerInventory,
@@ -574,12 +574,14 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         &mut self,
         name: &crate::QmpDescriptorName,
         _descriptor: std::os::fd::BorrowedFd<'_>,
+        identity: crucible_shmem::SetupRegionBackingIdentity,
     ) -> Result<(), QemuNodeChannelError> {
         self.log
             .lock()
             .unwrap()
             .push(ChannelCall::QmpHotForkInstallDescriptor(
                 name.as_str().to_owned(),
+                identity,
             ));
         if self.fail_descriptor_install {
             return Err(QemuNodeChannelError::new(
@@ -593,12 +595,14 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
     fn close_hot_fork_private_ring_descriptor(
         &mut self,
         name: &crate::QmpDescriptorName,
+        identity: crucible_shmem::SetupRegionBackingIdentity,
     ) -> Result<(), QemuNodeChannelError> {
         self.log
             .lock()
             .unwrap()
             .push(ChannelCall::QmpHotForkCloseDescriptor(
                 name.as_str().to_owned(),
+                identity,
             ));
         if self.fail_descriptor_close {
             return Err(QemuNodeChannelError::new(
@@ -939,6 +943,7 @@ fn hot_fork_ring_capture_binds_one_unchanged_plugin_barrier() -> Result<(), Box<
     assert_eq!(private.backing_identity().length(), setup_identity.length());
     assert_eq!(private.capture_ring_image(image.canonical_len()?)?, image);
     let expected_name = private.descriptor_name().clone();
+    let mapping_identity = private.backing_identity();
     let proof = node.stage_hot_fork_private_ring_mapping(private)?;
     assert_eq!(
         proof.state(),
@@ -973,8 +978,14 @@ fn hot_fork_ring_capture_binds_one_unchanged_plugin_barrier() -> Result<(), Box<
             ChannelCall::ShmemHotForkIdentity,
             ChannelCall::ShmemHotForkBarrier,
             ChannelCall::QmpHotForkPluginBarrier,
-            ChannelCall::QmpHotForkInstallDescriptor(expected_name.as_str().to_owned()),
-            ChannelCall::QmpHotForkCloseDescriptor(expected_name.as_str().to_owned()),
+            ChannelCall::QmpHotForkInstallDescriptor(
+                expected_name.as_str().to_owned(),
+                mapping_identity,
+            ),
+            ChannelCall::QmpHotForkCloseDescriptor(
+                expected_name.as_str().to_owned(),
+                mapping_identity,
+            ),
         ]
     );
     node.shutdown_child()?;

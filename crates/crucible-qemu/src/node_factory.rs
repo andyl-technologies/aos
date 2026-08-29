@@ -137,17 +137,20 @@ where
         &mut self,
         name: &crate::QmpDescriptorName,
         descriptor: std::os::fd::BorrowedFd<'_>,
+        identity: crucible_shmem::SetupRegionBackingIdentity,
     ) -> Result<(), QemuNodeChannelError> {
         self.vmstate
-            .install_hot_fork_private_ring_descriptor(name, descriptor)
+            .install_hot_fork_private_ring_descriptor(name, descriptor, identity)
     }
 
     #[cfg(target_os = "linux")]
     fn close_hot_fork_private_ring_descriptor(
         &mut self,
         name: &crate::QmpDescriptorName,
+        identity: crucible_shmem::SetupRegionBackingIdentity,
     ) -> Result<(), QemuNodeChannelError> {
-        self.vmstate.close_hot_fork_private_ring_descriptor(name)
+        self.vmstate
+            .close_hot_fork_private_ring_descriptor(name, identity)
     }
 
     fn query_hot_fork_bottom_half_inventory(

@@ -6,6 +6,8 @@
 
 use std::error::Error;
 use std::io::{self, Cursor, Read, Write};
+#[cfg(unix)]
+use std::os::fd::AsFd;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -13,21 +15,23 @@ use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
     QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT,
     QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND, QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
-    QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND, QMP_HOT_FORK_RCU_BARRIER_COMMAND,
-    QMP_HOT_FORK_REQUIRED_PROOFS, QMP_HOT_FORK_TEMPLATE_COMMAND, QMP_QUERY_CPUS_FAST_COMMAND,
-    QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
+    QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND, QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
+    QMP_HOT_FORK_RCU_BARRIER_COMMAND, QMP_HOT_FORK_REQUIRED_PROOFS, QMP_HOT_FORK_TEMPLATE_COMMAND,
+    QMP_QUERY_CPUS_FAST_COMMAND, QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND,
     QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND,
     QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QemuExactSnapshotPolicy, QmpClient,
-    QmpCommandKind, QmpError, QmpGreeting, QmpHotForkBlockSnapshotBinding,
+    QmpCommandKind, QmpDescriptorName, QmpError, QmpGreeting, QmpHotForkBlockSnapshotBinding,
     QmpHotForkBlockSnapshotBindingError, QmpHotForkProof, QmpHotForkTemplateOutcome,
     QmpHotForkThreadDisposition, QmpHotForkTimerClock, QmpIoTimeoutPolicy, QmpJobPollPolicy,
     QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
+#[cfg(unix)]
+use crucible_shmem::mmap_setup_region;
 use serde_json::Value;
 
 const HASH_AB_TAG: &str =
@@ -1636,6 +1640,142 @@ fn predeclared_debug_guest_activation_emits_no_qmp_mutation() -> Result<(), Box<
     let audit = audit_snapshot(&audit);
     let lines = written_json_lines(&audit)?;
     assert_eq!(lines.len(), 1, "activation emitted a QMP mutation");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn private_ring_stage_authenticates_exact_basis_and_releases_qemu_copy()
+-> Result<(), Box<dyn Error>> {
+    let file = tempfile::tempfile()?;
+    file.set_len(4096)?;
+    let mapping = mmap_setup_region(file.as_fd(), 4096)?;
+    let identity = mapping.backing_identity();
+    let name = QmpDescriptorName::new("crucible-hfork-rings-v1-test")?;
+    let staged = format!(
+        concat!(
+            r#"{{"return":{{"schema-version":1,"generation":1,"staged":true,"fdname":"{}","device":{},"inode":{},"length":{},"shrink-sealed":true,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#
+        ),
+        name.as_str(),
+        identity.device(),
+        identity.inode(),
+        identity.length(),
+    );
+    let released = r#"{"return":{"schema-version":1,"generation":2,"staged":false,"device":0,"inode":0,"length":0,"shrink-sealed":false,"disposition-complete":false,"readiness-proof-acknowledged":false}}"#;
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        &staged,
+        &staged,
+        released,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
+
+    let stage = client.stage_hot_fork_private_rings(&name, identity)?;
+    assert_eq!(stage.descriptor_name(), Some(&name));
+    assert_eq!(client.query_hot_fork_private_rings()?, stage);
+    assert!(
+        !client
+            .release_hot_fork_private_rings(&name, identity)?
+            .staged()
+    );
+
+    drop(client);
+    let lines = written_json_lines(&audit_snapshot(&audit))?;
+    let stage_request = json_line(&lines, 1);
+    assert_eq!(
+        oob_execute_name(stage_request),
+        Some(QMP_HOT_FORK_PRIVATE_RINGS_COMMAND)
+    );
+    assert_eq!(
+        stage_request
+            .pointer("/arguments/action")
+            .and_then(Value::as_str),
+        Some("stage")
+    );
+    assert_eq!(
+        stage_request
+            .pointer("/arguments/fdname")
+            .and_then(Value::as_str),
+        Some(name.as_str())
+    );
+    assert_eq!(
+        stage_request
+            .pointer("/arguments/expected-device")
+            .and_then(Value::as_u64),
+        Some(identity.device())
+    );
+    assert_eq!(
+        stage_request
+            .pointer("/arguments/expected-inode")
+            .and_then(Value::as_u64),
+        Some(identity.inode())
+    );
+    assert_eq!(
+        stage_request
+            .pointer("/arguments/expected-length")
+            .and_then(Value::as_u64),
+        Some(identity.length())
+    );
+    assert_eq!(
+        json_line(&lines, 2)
+            .pointer("/arguments/action")
+            .and_then(Value::as_str),
+        Some("query")
+    );
+    assert_eq!(
+        json_line(&lines, 3)
+            .pointer("/arguments/action")
+            .and_then(Value::as_str),
+        Some("release")
+    );
+    assert_eq!(
+        json_line(&lines, 3)
+            .pointer("/arguments/fdname")
+            .and_then(Value::as_str),
+        Some(name.as_str())
+    );
+    assert_eq!(
+        json_line(&lines, 3)
+            .pointer("/arguments/expected-inode")
+            .and_then(Value::as_u64),
+        Some(identity.inode())
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn contradictory_private_ring_stage_poisoned_the_qmp_client() -> Result<(), Box<dyn Error>> {
+    let file = tempfile::tempfile()?;
+    file.set_len(4096)?;
+    let mapping = mmap_setup_region(file.as_fd(), 4096)?;
+    let identity = mapping.backing_identity();
+    let name = QmpDescriptorName::new("crucible-hfork-rings-v1-bad")?;
+    let contradictory = format!(
+        concat!(
+            r#"{{"return":{{"schema-version":1,"generation":1,"staged":true,"fdname":"{}","device":{},"inode":{},"length":{},"shrink-sealed":true,"disposition-complete":true,"readiness-proof-acknowledged":false}}}}"#
+        ),
+        name.as_str(),
+        identity.device(),
+        identity.inode(),
+        identity.length(),
+    );
+    let mut client = QmpClient::connect(scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        &contradictory,
+    ]))?;
+
+    assert!(matches!(
+        client.stage_hot_fork_private_rings(&name, identity),
+        Err(QmpError::MalformedTypedResponse {
+            command: QmpCommandKind::HotForkPrivateRings,
+            ..
+        })
+    ));
+    assert_eq!(client.quit(), Err(QmpError::ConnectionPoisoned));
     Ok(())
 }
 
