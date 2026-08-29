@@ -2422,14 +2422,6 @@ pub struct RpcService {
     pub jwt_keys: JwtKeys,
     /// Externally reachable base URL, used to build the canonical upload URL.
     pub external_url: String,
-    /// Public base URL exposing canonical-slug placements on the
-    /// instance-default storage binding directly.
-    ///
-    /// When configured, public registries on a reconciled complete placement
-    /// inherit a canonical Git URL from this origin unless an explicit Git
-    /// route advertisement exists. This is the common object-store CDN path;
-    /// explicit topology remains authoritative for custom deployments.
-    pub default_public_delivery_url: Option<String>,
     /// The abuse-bound rate limiter (the [`RateLimiter`] port), metering
     /// `CreateOrg` per principal.
     pub ratelimit: Arc<dyn RateLimiter>,
@@ -3077,6 +3069,7 @@ impl RpcService {
                 &req.owner_scope_key,
                 req.page_size,
                 (!req.page_token.is_empty()).then_some(req.page_token.as_str()),
+                req.include_granted,
             )
             .await
             .map_err(RpcError::internal)?;
@@ -5224,6 +5217,7 @@ impl RpcService {
                 &req.owner_scope_key,
                 req.page_size,
                 (!req.page_token.is_empty()).then_some(req.page_token.as_str()),
+                req.include_granted,
             )
             .await
             .map_err(RpcError::internal)?;
@@ -9954,7 +9948,6 @@ impl RpcService {
             db,
             jwt_keys,
             external_url,
-            default_public_delivery_url: None,
             ratelimit,
             surface,
             surface_write,
@@ -9970,16 +9963,6 @@ impl RpcService {
             route_reservation_keyring: None,
             pack_validation: pack_validation_gate(),
         }
-    }
-
-    /// Attaches the public origin for the instance-default storage binding.
-    ///
-    /// Explicit canonical route advertisements always take precedence over
-    /// this derived delivery policy.
-    #[must_use]
-    pub fn with_default_public_delivery_url(mut self, url: String) -> Self {
-        self.default_public_delivery_url = Some(url);
-        self
     }
 
     /// Attaches the runtime DNS verifier for organization-domain challenges.
@@ -12095,10 +12078,13 @@ impl RpcService {
                     &mut provider.access_mode,
                 )?;
             }
-            Some(pb::binding_spec::Provider::DeploymentR2(_)) => {
-                return Err(RpcError::invalid(
-                    "deployment R2 bindings are provisioned only by the serving runtime",
-                ));
+            Some(pb::binding_spec::Provider::DeploymentR2(provider)) => {
+                provider.bucket_binding = provider.bucket_binding.trim().to_string();
+                if provider.bucket_binding != crate::binding::DEPLOYMENT_R2_ATTACHMENT {
+                    return Err(RpcError::invalid(
+                        "deployment R2 bucketBinding must name the REGISTRY_BUCKET runtime attachment",
+                    ));
+                }
             }
             None => return Err(RpcError::invalid("binding provider is required")),
         }
@@ -12388,11 +12374,14 @@ impl RpcService {
     ) -> Result<pb::ListBindingsResponse, RpcError> {
         self.readable_storage_owner(auth, &req.owner_scope_key)
             .await?;
-        let records = self
-            .db
-            .list_bindings_by_scope(&req.owner_scope_key)
-            .await
-            .map_err(RpcError::internal)?;
+        let records = if req.include_granted {
+            self.db
+                .list_bindings_available_to_scope(&req.owner_scope_key)
+                .await
+        } else {
+            self.db.list_bindings_by_scope(&req.owner_scope_key).await
+        }
+        .map_err(RpcError::internal)?;
         let mut bindings = Vec::with_capacity(records.len());
         for record in records {
             bindings.push(self.binding_message(record).await?);
@@ -12608,11 +12597,14 @@ impl RpcService {
                     Some(provider.signing_region.as_str()),
                     Some(provider.access_mode.as_str()),
                 ),
-                Some(pb::binding_spec::Provider::DeploymentR2(_)) => {
-                    return Err(RpcError::internal(anyhow::anyhow!(
-                        "deployment R2 provider escaped plan validation"
-                    )));
-                }
+                Some(pb::binding_spec::Provider::DeploymentR2(provider)) => (
+                    "deployment_r2",
+                    None,
+                    Some(provider.bucket_binding.as_str()),
+                    Some(""),
+                    None,
+                    None,
+                ),
                 None => {
                     return Err(RpcError::internal(anyhow::anyhow!(
                         "binding plan has no provider"
@@ -12644,6 +12636,12 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::internal(anyhow::anyhow!("created binding disappeared")))?;
+        if matches!(record.kind.as_str(), "local_fs" | "deployment_r2") {
+            self.db
+                .ensure_deployment_owned_write_revision(&record)
+                .await
+                .map_err(RpcError::internal)?;
+        }
         let response = pb::BindingResponse {
             binding: Some(self.binding_message(record).await?),
         };
@@ -14084,24 +14082,23 @@ impl RpcService {
         if stable_id.is_empty() {
             return Err(RpcError::invalid("bindingId is required"));
         }
-        let binding = match org_id {
-            Some(id) => self
-                .db
-                .list_bindings(id)
-                .await
-                .map_err(RpcError::internal)?
-                .into_iter()
-                .find(|binding| binding.stable_id == stable_id),
-            None => None,
+        let owner_scope_key = match org_id {
+            Some(id) => {
+                self.db
+                    .org_by_id(id)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| RpcError::not_found("organization"))?
+                    .stable_id
+            }
+            None => "instance".to_owned(),
         };
-        if let Some(binding) = binding {
-            return Ok(binding.id);
-        }
         self.db
-            .instance_default_binding()
+            .list_bindings_available_to_scope(&owner_scope_key)
             .await
             .map_err(RpcError::internal)?
-            .filter(|binding| binding.stable_id == stable_id)
+            .into_iter()
+            .find(|binding| binding.stable_id == stable_id)
             .map(|binding| binding.id)
             .ok_or_else(|| RpcError::not_found("binding"))
     }
@@ -16314,42 +16311,6 @@ impl RpcService {
             req.hash_range.as_ref(),
         )?;
         let binding_id = self.topology_binding_id(org_id, &req.binding_id).await?;
-        let mut warnings = Vec::new();
-        if let SurfaceTarget::Registry(registry_id) = surface {
-            let binding = self
-                .db
-                .binding(binding_id)
-                .await
-                .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::not_found("binding"))?;
-            let registry = self
-                .db
-                .registry_by_id(registry_id)
-                .await
-                .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::not_found("registry"))?;
-            if binding.is_instance_default
-                && registry.visibility == "public"
-                && req.kind == "complete"
-                && req.desired_read_enabled.unwrap_or(false)
-                && (binding
-                    .object_prefix
-                    .as_deref()
-                    .is_some_and(|prefix| !prefix.is_empty())
-                    || req.prefix.trim_matches('/') != registry.slug)
-            {
-                warnings.push(format!(
-                    "default public delivery remains unavailable because the binding-root-relative prefix '{}' does not equal canonical slug '{}'",
-                    [binding.object_prefix.as_deref().unwrap_or(""), &req.prefix]
-                        .into_iter()
-                        .map(|part| part.trim_matches('/'))
-                        .filter(|part| !part.is_empty())
-                        .collect::<Vec<_>>()
-                        .join("/"),
-                    registry.slug
-                ));
-            }
-        }
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
         let (registry_id, cache_id) = Self::topology_surface_ids(surface);
         let input = PlacementCreatePlanInput {
@@ -16372,7 +16333,7 @@ impl RpcService {
                 "create placement '{}' without write authority",
                 input.request.name
             )],
-            warnings,
+            Vec::new(),
             Some(confirmation_hash),
         )
         .await
@@ -22455,10 +22416,7 @@ impl RpcService {
 
     /// The consumer-facing base URL for a registry's git surface.
     ///
-    /// An explicit canonical Git route is authoritative. Without one, a public
-    /// registry on a complete reconciled instance-default placement whose
-    /// prefix equals its canonical slug derives its URL from the configured
-    /// public storage origin.
+    /// The selected canonical Git route is the only source of a consumer URL.
     ///
     /// # Errors
     ///
@@ -22467,59 +22425,13 @@ impl RpcService {
         &self,
         registry: &RegistryRecord,
     ) -> Result<String, RpcError> {
-        if let Some(url) = self
-            .db
+        self.db
             .ready_registry_canonical_url(registry.id)
             .await
             .map_err(RpcError::internal)?
-        {
-            return Ok(url);
-        }
-
-        // An explicit selection is an operator-owned override. Never bypass
-        // its failed readiness evidence with the convenient default path.
-        if self
-            .db
-            .route_advertisement(SurfaceTarget::Registry(registry.id), "git")
-            .await
-            .map_err(RpcError::internal)?
-            .is_some()
-        {
-            return Err(RpcError::FailedPrecondition(
-                "registry canonical Git route is not ready".to_owned(),
-            ));
-        }
-
-        let Some(base) = self.default_public_delivery_url.as_deref() else {
-            return Err(RpcError::FailedPrecondition(
-                "registry canonical Git route is not ready".to_owned(),
-            ));
-        };
-        if registry.visibility != "public" {
-            return Err(RpcError::FailedPrecondition(
-                "non-public registry requires an explicit canonical Git route".to_owned(),
-            ));
-        }
-        let Some(path) = self
-            .db
-            .default_public_slug_delivery_path(SurfaceTarget::Registry(registry.id), &registry.slug)
-            .await
-            .map_err(RpcError::internal)?
-        else {
-            return Err(RpcError::FailedPrecondition(
-                "registry has no published complete canonical-slug placement on default storage"
-                    .to_owned(),
-            ));
-        };
-
-        let mut url = url::Url::parse(base).map_err(RpcError::internal)?;
-        let joined = [url.path().trim_matches('/'), path.trim_matches('/')]
-            .into_iter()
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>()
-            .join("/");
-        url.set_path(&format!("/{joined}/"));
-        Ok(url.to_string())
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("registry canonical Git route is not ready".to_owned())
+            })
     }
 
     /// Resolves the canonical Nix-cache delivery URL for a binary cache.
@@ -36272,14 +36184,30 @@ mod cache_upload_tests {
     }
 
     #[tokio::test]
-    async fn public_registry_derives_git_url_from_default_storage_placement() {
+    async fn registry_without_a_canonical_route_has_no_consumer_url() {
         let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
-        let binding_id = db
-            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
+        let binding = db
+            .ensure_instance_default_binding(
+                "deployment_r2",
+                None,
+                Some(crate::binding::DEPLOYMENT_R2_ATTACHMENT),
+            )
             .await
-            .unwrap()
-            .id;
+            .unwrap();
         let org_id = db.create_org("automatic", "Automatic").await.unwrap();
+        let org = db.org_by_id(org_id).await.unwrap().unwrap();
+        db.grant_consumer_scope(
+            crate::db::GrantResource::Binding {
+                id: binding.id,
+                stable_id: &binding.stable_id,
+            },
+            &org.stable_id,
+            "explicit",
+            "test",
+            "request:automatic-binding-grant",
+        )
+        .await
+        .unwrap();
         let registry_id = db
             .create_managed_registry(org_id, "", "main", "public", &[], false)
             .await
@@ -36288,7 +36216,7 @@ mod cache_upload_tests {
             .create_surface_placement(&NewSurfacePlacementSpec {
                 surface: SurfaceTarget::Registry(registry_id),
                 name: "primary".into(),
-                binding_id,
+                binding_id: binding.id,
                 prefix: "automatic/main".into(),
                 kind: "complete".into(),
                 desired_state: "active".into(),
@@ -36304,93 +36232,10 @@ mod cache_upload_tests {
             .unwrap();
         let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
 
-        let service = service
-            .with_default_public_delivery_url("https://cdn.example.test/storage-root".into());
-        assert_eq!(
-            service.registry_consumer_url(&registry).await.unwrap(),
-            "https://cdn.example.test/storage-root/automatic/main/"
-        );
-    }
-
-    #[tokio::test]
-    async fn public_registry_does_not_advertise_an_opaque_default_placement() {
-        let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
-        let binding_id = db
-            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
-            .await
-            .unwrap()
-            .id;
-        let org_id = db.create_org("automatic", "Automatic").await.unwrap();
-        let registry_id = db
-            .create_managed_registry(org_id, "", "main", "public", &[], false)
-            .await
-            .unwrap();
-        let placement = db
-            .create_surface_placement(&NewSurfacePlacementSpec {
-                surface: SurfaceTarget::Registry(registry_id),
-                name: "primary".into(),
-                binding_id,
-                prefix: "registries/100960088f5b423a93e73b1bcc4082fc".into(),
-                kind: "complete".into(),
-                desired_state: "active".into(),
-                hash_range: None,
-                desired_read_enabled: true,
-                read_order: 0,
-                requires_conditional_writes: false,
-            })
-            .await
-            .unwrap();
-        db.observe_surface_placement(placement.id, "ready", "complete", 1)
-            .await
-            .unwrap();
-        let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
-
-        let service = service.with_default_public_delivery_url("https://cdn.example.test".into());
         assert!(matches!(
             service.registry_consumer_url(&registry).await,
             Err(RpcError::FailedPrecondition(message))
-                if message.contains("canonical-slug placement")
-        ));
-    }
-
-    #[tokio::test]
-    async fn private_registry_does_not_inherit_public_storage_delivery() {
-        let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
-        let binding_id = db
-            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
-            .await
-            .unwrap()
-            .id;
-        let org_id = db.create_org("private-auto", "Private auto").await.unwrap();
-        let registry_id = db
-            .create_managed_registry(org_id, "", "main", "private", &[], false)
-            .await
-            .unwrap();
-        let placement = db
-            .create_surface_placement(&NewSurfacePlacementSpec {
-                surface: SurfaceTarget::Registry(registry_id),
-                name: "primary".into(),
-                binding_id,
-                prefix: "registries/private".into(),
-                kind: "complete".into(),
-                desired_state: "active".into(),
-                hash_range: None,
-                desired_read_enabled: true,
-                read_order: 0,
-                requires_conditional_writes: false,
-            })
-            .await
-            .unwrap();
-        db.observe_surface_placement(placement.id, "ready", "complete", 1)
-            .await
-            .unwrap();
-        let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
-
-        let service = service.with_default_public_delivery_url("https://cdn.example.test".into());
-        assert!(matches!(
-            service.registry_consumer_url(&registry).await,
-            Err(RpcError::FailedPrecondition(message))
-                if message.contains("explicit canonical Git route")
+                if message.contains("canonical Git route")
         ));
     }
 
