@@ -163,6 +163,16 @@
         patch -p1 < ${./envoy-patches/0001-use-system-python.patch}
         patch -p1 < ${./envoy-patches/0003-use-system-cc-toolchains.patch}
         patch -p1 < ${./envoy-patches/0004-bump-rules-rust.patch}
+        # The AOS rules_rust bump changes the crate repository rule digest, but
+        # not Envoy's Cargo.lock-selected dependency graph. Keep the committed
+        # generated graph and advance its exact input checksum instead of
+        # repinning against the live registry index during every fetch.
+        sed -i \
+          's/"checksum": "b864c94e442ea41673dcae0f7039f7afb9ef5c4287962b4464b406f670a8e6d7"/"checksum": "1a3594db8f7293ad95cc02e807d844330cdf741cbb8edcbbbc42b36ee953adba"/' \
+          source/extensions/dynamic_modules/sdk/rust/Cargo.Bazel.lock
+        grep -q \
+          '"checksum": "1a3594db8f7293ad95cc02e807d844330cdf741cbb8edcbbbc42b36ee953adba"' \
+          source/extensions/dynamic_modules/sdk/rust/Cargo.Bazel.lock
         cat >> bazel/rules_rust.patch << 'RULES_RUST_SHEBANG_EOF'
 
     --- crate_universe/src/metadata/cargo_tree_rustc_wrapper.sh
@@ -399,14 +409,11 @@ in
     inherit scrubMap;
 
     # --- Fetch-specific ---
-    depsHash = "sha256-RvilI3wizw1gfq6jtj9t7XJZNTEHc6mVuYVWg0wHDQ4=";
+    depsHash = "sha256-NpOZJqaq2eKswg/ZMIsvxAPMD2r61qfqgpYsam4fR/Y=";
     fetchPostPatch = "";
     bazelFetchFlags = [
       "--extra_toolchains=//bazel/nix:rust_nix_x86_64"
     ];
-    fetchEnv = {
-      CARGO_BAZEL_REPIN = "true";
-    };
     postFetch = ''
       # Fix tcmalloc GCC warning
       find "$bazelOut/external" -path "*/com_github_google_tcmalloc/tcmalloc/copts.bzl" | \
