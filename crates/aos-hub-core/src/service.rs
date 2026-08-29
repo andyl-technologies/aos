@@ -2431,6 +2431,8 @@ pub struct RpcService {
     /// route advertisement exists. This is the common object-store CDN path;
     /// explicit topology remains authoritative for custom deployments.
     pub default_public_delivery_url: Option<String>,
+    /// Independent, fail-closed OCI capability rollout policy.
+    pub container_rollout: crate::container_rollout::ContainerRollout,
     /// The abuse-bound rate limiter (the [`RateLimiter`] port), metering
     /// `CreateOrg` per principal.
     pub ratelimit: Arc<dyn RateLimiter>,
@@ -9959,6 +9961,7 @@ impl RpcService {
             jwt_keys,
             external_url,
             default_public_delivery_url: None,
+            container_rollout: crate::container_rollout::ContainerRollout::default(),
             ratelimit,
             surface,
             surface_write,
@@ -9983,6 +9986,16 @@ impl RpcService {
     #[must_use]
     pub fn with_default_public_delivery_url(mut self, url: String) -> Self {
         self.default_public_delivery_url = Some(url);
+        self
+    }
+
+    /// Attaches the independently configured OCI capability rollout policy.
+    #[must_use]
+    pub fn with_container_rollout(
+        mut self,
+        rollout: crate::container_rollout::ContainerRollout,
+    ) -> Self {
+        self.container_rollout = rollout;
         self
     }
 
@@ -36271,6 +36284,7 @@ mod cache_upload_tests {
                 behaviors: Mutex::new(sealer_behaviors.into()),
             })),
         )
+        .with_container_rollout(crate::container_rollout::ContainerRollout::all_enabled())
         .with_identity_domain_verifier(Arc::new(PublishedIdentityDomain));
         (service, db, lease, format!("Bearer {token}"))
     }

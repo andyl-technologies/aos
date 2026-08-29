@@ -4300,7 +4300,7 @@ fn topology_message_kind<T>() -> String {
 }
 
 /// Prints one generated Connect response in stable CLI form.
-fn print_topology_message<T: Serialize>(printer: &Printer, message: &T) -> Result<()> {
+pub(super) fn print_topology_message<T: Serialize>(printer: &Printer, message: &T) -> Result<()> {
     let value = snake_case_json(serde_json::to_value(message)?);
     if print_hub_json(printer, &topology_message_kind::<T>(), value.clone()) {
         return Ok(());

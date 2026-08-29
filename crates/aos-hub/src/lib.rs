@@ -99,6 +99,7 @@ pub mod image_snapshot;
 pub use aos_hub_core::filter;
 pub mod gitwrite;
 pub mod indexer;
+mod local_fs_delete;
 pub mod mirror;
 pub mod narlist;
 pub mod probe;

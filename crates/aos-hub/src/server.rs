@@ -94,6 +94,8 @@ pub struct AppState {
         Option<Arc<dyn aos_hub_core::topology_probe::IdentityDomainVerifier>>,
     /// Active and retained privacy keys for permanent route URL reservations.
     pub route_reservation_keyring: Option<Arc<dyn aos_hub_core::service::RouteReservationKeyring>>,
+    /// Independent, fail-closed OCI container rollout policy.
+    pub container_rollout: aos_hub_core::container_rollout::ContainerRollout,
 }
 
 impl AppState {
@@ -133,7 +135,18 @@ impl AppState {
             domain_probe_terminator: None,
             identity_domain_verifier: None,
             route_reservation_keyring: None,
+            container_rollout: aos_hub_core::container_rollout::ContainerRollout::default(),
         }
+    }
+
+    /// Attaches the independently configured OCI capability rollout policy.
+    #[must_use]
+    pub fn with_container_rollout(
+        mut self,
+        rollout: aos_hub_core::container_rollout::ContainerRollout,
+    ) -> Self {
+        self.container_rollout = rollout;
+        self
     }
 }
 
@@ -261,6 +274,7 @@ pub async fn router(state: Arc<AppState>) -> Router {
         ),
         Some(Arc::clone(&state.sealer)),
     )
+    .with_container_rollout(state.container_rollout)
     .with_secret_versions(Arc::clone(&state.secret_versions))
     .with_origin_fetch(Arc::new(crate::coreports::ReqwestOriginFetch::new(
         state.http.clone(),
@@ -522,10 +536,11 @@ async fn healthz(State(state): State<Arc<AppState>>) -> Response {
 /// Hand-formats the [exposition format] (no client dependency, per the
 /// hermetic build) from live database counts: total registries and a
 /// per-`state` breakdown, the webhook-delivery queue depth by lifecycle,
-/// managed-cache totals (caches, objects, bytes) and lifetime GC counters
-/// (runs by outcome, bytes reclaimed), and a `build_info` gauge carrying the
-/// crate version as a label. Every series is preceded by its `# HELP`/`# TYPE`
-/// lines.
+/// managed-cache totals, and bounded OCI catalog, provider-inventory, upload,
+/// publication, placement, garbage-collection, and recovery aggregates. A
+/// `build_info` gauge carries the crate version as a label. Every series is
+/// preceded by its `# HELP`/`# TYPE` lines; OCI labels are fixed state/kind
+/// classes rather than tenant or object identities.
 ///
 /// [exposition format]: https://prometheus.io/docs/instrumenting/exposition_formats/
 async fn metrics(State(state): State<Arc<AppState>>) -> Response {
@@ -564,6 +579,25 @@ async fn render_metrics(state: &AppState) -> Result<String, anyhow::Error> {
         *by_state.entry(label).or_default() += 1;
     }
     let (pending, delivered, failed) = state.db.delivery_status_counts().await?;
+    let oci_gc = state
+        .db
+        .oci_gc_metrics(aos_hub_core::clock::now_unix_secs())
+        .await?;
+    let oci = state
+        .db
+        .oci_operations_metrics(aos_hub_core::clock::now_unix_secs())
+        .await?;
+    let reused_objects = oci
+        .catalog_logical_objects
+        .saturating_sub(oci.catalog_unique_objects);
+    let reused_bytes = oci
+        .catalog_logical_bytes
+        .saturating_sub(oci.catalog_unique_bytes);
+    let reuse_ratio = if oci.catalog_logical_bytes == 0 {
+        0.0
+    } else {
+        reused_bytes as f64 / oci.catalog_logical_bytes as f64
+    };
 
     let mut out = String::new();
     let _ = writeln!(
@@ -619,6 +653,147 @@ async fn render_metrics(state: &AppState) -> Result<String, anyhow::Error> {
          # TYPE aos_hub_cache_gc_freed_bytes counter\n\
          aos_hub_cache_gc_freed_bytes {}",
         cm.gc_runs_ok, cm.gc_runs_failed, cm.gc_freed_bytes
+    );
+    let _ = writeln!(
+        out,
+        "# HELP aos_hub_oci_rollout_enabled Whether an OCI capability is enabled.\n\
+         # TYPE aos_hub_oci_rollout_enabled gauge\n\
+         aos_hub_oci_rollout_enabled{{capability=\"pull\"}} {}\n\
+         aos_hub_oci_rollout_enabled{{capability=\"push\"}} {}\n\
+         aos_hub_oci_rollout_enabled{{capability=\"verified_publication\"}} {}\n\
+         aos_hub_oci_rollout_enabled{{capability=\"administration\"}} {}\n\
+         aos_hub_oci_rollout_enabled{{capability=\"garbage_collection\"}} {}",
+        u8::from(state.container_rollout.pull),
+        u8::from(state.container_rollout.push),
+        u8::from(state.container_rollout.verified_publication),
+        u8::from(state.container_rollout.administration),
+        u8::from(state.container_rollout.garbage_collection)
+    );
+    let _ = writeln!(
+        out,
+        "# HELP aos_hub_oci_gc_runs Durable OCI garbage-collection runs by state.\n\
+         # TYPE aos_hub_oci_gc_runs gauge\n\
+         aos_hub_oci_gc_runs{{state=\"planned\"}} {}\n\
+         aos_hub_oci_gc_runs{{state=\"applying\"}} {}\n\
+         aos_hub_oci_gc_runs{{state=\"complete\"}} {}\n\
+         aos_hub_oci_gc_runs{{state=\"failed_or_aborted\"}} {}\n\
+         # HELP aos_hub_oci_gc_bytes OCI bytes reviewed or logically finalized.\n\
+         # TYPE aos_hub_oci_gc_bytes gauge\n\
+         aos_hub_oci_gc_bytes{{state=\"planned\"}} {}\n\
+         aos_hub_oci_gc_bytes{{state=\"finalized\"}} {}\n\
+         # HELP aos_hub_oci_gc_failed_actions Failed conditional-deletion placement actions.\n\
+         # TYPE aos_hub_oci_gc_failed_actions gauge\n\
+         aos_hub_oci_gc_failed_actions {}\n\
+         # HELP aos_hub_oci_gc_blockers Durable fail-closed planning blockers.\n\
+         # TYPE aos_hub_oci_gc_blockers gauge\n\
+         aos_hub_oci_gc_blockers {}\n\
+         # HELP aos_hub_oci_gc_stale_inventories Placements without a current complete inventory.\n\
+         # TYPE aos_hub_oci_gc_stale_inventories gauge\n\
+         aos_hub_oci_gc_stale_inventories {}",
+        oci_gc.planned_runs,
+        oci_gc.applying_runs,
+        oci_gc.completed_runs,
+        oci_gc.failed_runs,
+        oci_gc.planned_bytes,
+        oci_gc.finalized_bytes,
+        oci_gc.failed_actions,
+        oci_gc.blockers,
+        oci_gc.stale_inventories
+    );
+    let _ = writeln!(
+        out,
+        "# HELP aos_hub_oci_catalog_objects OCI repository-object references and registry-unique objects.\n\
+         # TYPE aos_hub_oci_catalog_objects gauge\n\
+         aos_hub_oci_catalog_objects{{kind=\"logical\"}} {}\n\
+         aos_hub_oci_catalog_objects{{kind=\"unique\"}} {}\n\
+         aos_hub_oci_catalog_objects{{kind=\"reused\"}} {}\n\
+         # HELP aos_hub_oci_catalog_bytes OCI logical, registry-unique, and reused catalog bytes.\n\
+         # TYPE aos_hub_oci_catalog_bytes gauge\n\
+         aos_hub_oci_catalog_bytes{{kind=\"logical\"}} {}\n\
+         aos_hub_oci_catalog_bytes{{kind=\"unique\"}} {}\n\
+         aos_hub_oci_catalog_bytes{{kind=\"reused\"}} {}\n\
+         # HELP aos_hub_oci_reuse_ratio Fraction of logical catalog bytes reused through registry deduplication.\n\
+         # TYPE aos_hub_oci_reuse_ratio gauge\n\
+         aos_hub_oci_reuse_ratio {:.6}\n\
+         # HELP aos_hub_oci_provider_inventory_objects Physical objects in current complete provider inventory heads.\n\
+         # TYPE aos_hub_oci_provider_inventory_objects gauge\n\
+         aos_hub_oci_provider_inventory_objects {}\n\
+         # HELP aos_hub_oci_provider_inventory_bytes Physical bytes in current complete provider inventory heads.\n\
+         # TYPE aos_hub_oci_provider_inventory_bytes gauge\n\
+         aos_hub_oci_provider_inventory_bytes {}",
+        oci.catalog_logical_objects,
+        oci.catalog_unique_objects,
+        reused_objects,
+        oci.catalog_logical_bytes,
+        oci.catalog_unique_bytes,
+        reused_bytes,
+        reuse_ratio,
+        oci.provider_inventory_objects,
+        oci.provider_inventory_bytes
+    );
+    let _ = writeln!(
+        out,
+        "# HELP aos_hub_oci_uploads Durable OCI upload sessions by bounded state.\n\
+         # TYPE aos_hub_oci_uploads gauge\n\
+         aos_hub_oci_uploads{{state=\"active\"}} {}\n\
+         aos_hub_oci_uploads{{state=\"completing\"}} {}\n\
+         aos_hub_oci_uploads{{state=\"complete\"}} {}\n\
+         aos_hub_oci_uploads{{state=\"failed\"}} {}\n\
+         aos_hub_oci_uploads{{state=\"cancelled\"}} {}\n\
+         aos_hub_oci_uploads{{state=\"expired_nonterminal\"}} {}\n\
+         # HELP aos_hub_oci_publications Durable verified OCI publications by bounded state.\n\
+         # TYPE aos_hub_oci_publications gauge\n\
+         aos_hub_oci_publications{{state=\"preparing\"}} {}\n\
+         aos_hub_oci_publications{{state=\"committing\"}} {}\n\
+         aos_hub_oci_publications{{state=\"ready\"}} {}\n\
+         aos_hub_oci_publications{{state=\"aborted\"}} {}\n\
+         aos_hub_oci_publications{{state=\"failed\"}} {}\n\
+         aos_hub_oci_publications{{state=\"stuck\"}} {}\n\
+         # HELP aos_hub_oci_publication_ready_latency_seconds Time from publication creation to ready.\n\
+         # TYPE aos_hub_oci_publication_ready_latency_seconds summary\n\
+         aos_hub_oci_publication_ready_latency_seconds_sum {}\n\
+         aos_hub_oci_publication_ready_latency_seconds_count {}",
+        oci.uploads_active,
+        oci.uploads_completing,
+        oci.uploads_complete,
+        oci.uploads_failed,
+        oci.uploads_cancelled,
+        oci.uploads_expired_nonterminal,
+        oci.publications_preparing,
+        oci.publications_committing,
+        oci.publications_ready,
+        oci.publications_aborted,
+        oci.publications_failed,
+        oci.publications_stuck_nonterminal,
+        oci.publication_ready_latency_seconds_sum,
+        oci.publication_ready_latency_count
+    );
+    let _ = writeln!(
+        out,
+        "# HELP aos_hub_oci_placements Enabled OCI placements by bounded health.\n\
+         # TYPE aos_hub_oci_placements gauge\n\
+         aos_hub_oci_placements{{health=\"ready\"}} {}\n\
+         aos_hub_oci_placements{{health=\"unhealthy\"}} {}\n\
+         # HELP aos_hub_oci_inventory_age_seconds Age of current complete provider inventories.\n\
+         # TYPE aos_hub_oci_inventory_age_seconds gauge\n\
+         aos_hub_oci_inventory_age_seconds{{stat=\"max\"}} {}\n\
+         # HELP aos_hub_oci_inventory_events Durable provider-inventory recovery evidence.\n\
+         # TYPE aos_hub_oci_inventory_events gauge\n\
+         aos_hub_oci_inventory_events{{kind=\"failed\"}} {}\n\
+         aos_hub_oci_inventory_events{{kind=\"takeover\"}} {}\n\
+         # HELP aos_hub_oci_gc_recoveries Durable operator GC recovery actions.\n\
+         # TYPE aos_hub_oci_gc_recoveries gauge\n\
+         aos_hub_oci_gc_recoveries{{kind=\"action_requeue\"}} {}\n\
+         # HELP aos_hub_oci_digest_mismatches Current inventory or catalog digest evidence mismatches.\n\
+         # TYPE aos_hub_oci_digest_mismatches gauge\n\
+         aos_hub_oci_digest_mismatches {}",
+        oci.placements_ready,
+        oci.placements_unhealthy,
+        oci.max_inventory_age_seconds,
+        oci.failed_inventory_generations,
+        oci.inventory_takeover_count,
+        oci.gc_requeue_count,
+        oci.digest_mismatches
     );
     let _ = writeln!(
         out,

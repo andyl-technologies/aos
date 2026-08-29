@@ -25,7 +25,8 @@ impl Database {
                      THEN 'claimed'
                    WHEN EXISTS (SELECT 1 FROM oci_blobs stored_blob
                      WHERE stored_blob.registry_id = upload.registry_id
-                       AND stored_blob.digest = ?4)
+                       AND stored_blob.digest = ?4
+                       AND stored_blob.lifecycle_state = 'active')
                      THEN 'present'
                    ELSE NULL END
                  FROM oci_upload_sessions upload

@@ -88,6 +88,7 @@ fn preserve_open_enum_numbers(descriptor: &FileDescriptorSet) -> BuildResult<()>
         ("RegistryMirrorMode", "mode", "mode"),
         ("EndpointIngressKind", "ingress_kind", "ingressKind"),
         ("HubDeliveryKind", "delivery_kind", "deliveryKind"),
+        ("ContainerRegistryPurgeFenceAction", "action", "action"),
     ] {
         let serialize = format!(
             "            let v = {enum_name}::try_from(self.{field_name})\n\
@@ -188,11 +189,13 @@ fn assert_open_enum_field_inventory(descriptor: &FileDescriptorSet) -> BuildResu
         "HubPlacementTarget.delivery_kind:.aos.hub.v1.HubDeliveryKind:single",
         "HubPolicyRevisionTarget.delivery_kind:.aos.hub.v1.HubDeliveryKind:single",
         "PlacementPolicyReplicaGroup.access_class:.aos.hub.v1.AccessClass:single",
+        "PlanContainerRegistryPurgeFenceRequest.action:.aos.hub.v1.ContainerRegistryPurgeFenceAction:single",
         "PolicyFailureContract.retry_on:.aos.hub.v1.PolicyRetryCondition:repeated",
         "RegistryMirror.mode:.aos.hub.v1.RegistryMirrorMode:single",
         "RegistryMirrorSpec.mode:.aos.hub.v1.RegistryMirrorMode:single",
         "TestPlacementPolicyRevisionRequest.access_class:.aos.hub.v1.AccessClass:single",
         "TopologyPinImpact.allowed_actions:.aos.hub.v1.PinResolutionAction:repeated",
+        "ContainerRegistryPurgeFence.action:.aos.hub.v1.ContainerRegistryPurgeFenceAction:single",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -634,7 +637,14 @@ fn verify_checked_capability_manifest(generated: &[ConnectMethod]) -> BuildResul
             }
         }
         for method_name in &service_methods {
-            if let Some(apply_name) = method_name.strip_prefix("Plan") {
+            if let Some(default_apply_name) = method_name.strip_prefix("Plan") {
+                let apply_name = if service_name == "ContainerService"
+                    && *method_name == "PlanContainerRegistryPurgeFence"
+                {
+                    "ApplyContainerRegistryPurgeFence"
+                } else {
+                    default_apply_name
+                };
                 if !service_methods.contains(apply_name) {
                     return Err(failure(format!(
                         "planned capability {service_name}/{method_name} has no {apply_name} apply method"

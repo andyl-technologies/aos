@@ -710,6 +710,17 @@ enum HubTopologyMethod {
     RunContainerGc,
     GetContainerGcRun,
     ListContainerGcRuns,
+    ListContainerGcCandidates,
+    ListContainerGcBlockers,
+    ListContainerGcPlacementActions,
+    RequeueContainerGcPlacementAction,
+    ListContainerUntrackedInventory,
+    PlanRepairContainerUntrackedObject,
+    RepairContainerUntrackedObject,
+    GetContainerUntrackedRepair,
+    PlanContainerRegistryPurgeFence,
+    ApplyContainerRegistryPurgeFence,
+    GetContainerRegistryPurgeFence,
     /// Selects verified container-publication admission.
     BeginContainerPublication,
     /// Selects verified container-publication recovery.
@@ -1218,6 +1229,35 @@ impl HubTopologyMethod {
             RunContainerGc => "aos.hub.v1.ContainerService/RunContainerGc",
             GetContainerGcRun => "aos.hub.v1.ContainerService/GetContainerGcRun",
             ListContainerGcRuns => "aos.hub.v1.ContainerService/ListContainerGcRuns",
+            ListContainerGcCandidates => "aos.hub.v1.ContainerService/ListContainerGcCandidates",
+            ListContainerGcBlockers => "aos.hub.v1.ContainerService/ListContainerGcBlockers",
+            ListContainerGcPlacementActions => {
+                "aos.hub.v1.ContainerService/ListContainerGcPlacementActions"
+            }
+            RequeueContainerGcPlacementAction => {
+                "aos.hub.v1.ContainerService/RequeueContainerGcPlacementAction"
+            }
+            ListContainerUntrackedInventory => {
+                "aos.hub.v1.ContainerService/ListContainerUntrackedInventory"
+            }
+            PlanRepairContainerUntrackedObject => {
+                "aos.hub.v1.ContainerService/PlanRepairContainerUntrackedObject"
+            }
+            RepairContainerUntrackedObject => {
+                "aos.hub.v1.ContainerService/RepairContainerUntrackedObject"
+            }
+            GetContainerUntrackedRepair => {
+                "aos.hub.v1.ContainerService/GetContainerUntrackedRepair"
+            }
+            PlanContainerRegistryPurgeFence => {
+                "aos.hub.v1.ContainerService/PlanContainerRegistryPurgeFence"
+            }
+            ApplyContainerRegistryPurgeFence => {
+                "aos.hub.v1.ContainerService/ApplyContainerRegistryPurgeFence"
+            }
+            GetContainerRegistryPurgeFence => {
+                "aos.hub.v1.ContainerService/GetContainerRegistryPurgeFence"
+            }
             BeginContainerPublication => "aos.hub.v1.ContainerService/BeginContainerPublication",
             GetContainerPublication => "aos.hub.v1.ContainerService/GetContainerPublication",
             CommitContainerPublication => "aos.hub.v1.ContainerService/CommitContainerPublication",
@@ -1641,10 +1681,21 @@ pub mod hub_rpc {
         GetContainerRetentionPolicy: GetContainerRetentionPolicyRequest => ContainerRetentionPolicyResponse;
         PlanSetContainerRetentionPolicy: PlanSetContainerRetentionPolicyRequest => TopologyPlanResponse;
         SetContainerRetentionPolicy: ApplyContainerMutationRequest => ContainerRetentionPolicyResponse;
-        PlanRunContainerGc: PlanRunContainerGcRequest => TopologyPlanResponse;
+        PlanRunContainerGc: PlanRunContainerGcRequest => ContainerGcPlanResponse;
         RunContainerGc: ApplyContainerMutationRequest => OperationResponse;
         GetContainerGcRun: GetContainerGcRunRequest => ContainerGcRunResponse;
         ListContainerGcRuns: ListContainerGcRunsRequest => ListContainerGcRunsResponse;
+        ListContainerGcCandidates: ListContainerGcCandidatesRequest => ListContainerGcCandidatesResponse;
+        ListContainerGcBlockers: ListContainerGcBlockersRequest => ListContainerGcBlockersResponse;
+        ListContainerGcPlacementActions: ListContainerGcPlacementActionsRequest => ListContainerGcPlacementActionsResponse;
+        RequeueContainerGcPlacementAction: RequeueContainerGcPlacementActionRequest => ContainerGcPlacementActionResponse;
+        ListContainerUntrackedInventory: ListContainerUntrackedInventoryRequest => ListContainerUntrackedInventoryResponse;
+        PlanRepairContainerUntrackedObject: PlanRepairContainerUntrackedObjectRequest => TopologyPlanResponse;
+        RepairContainerUntrackedObject: RepairContainerUntrackedObjectRequest => OperationResponse;
+        GetContainerUntrackedRepair: GetContainerUntrackedRepairRequest => ContainerUntrackedRepairResponse;
+        PlanContainerRegistryPurgeFence: PlanContainerRegistryPurgeFenceRequest => TopologyPlanResponse;
+        ApplyContainerRegistryPurgeFence: ApplyContainerRegistryPurgeFenceRequest => ContainerRegistryPurgeFenceResponse;
+        GetContainerRegistryPurgeFence: GetContainerRegistryPurgeFenceRequest => ContainerRegistryPurgeFenceResponse;
         BeginContainerPublication: BeginContainerPublicationRequest => ContainerPublication;
         GetContainerPublication: GetContainerPublicationRequest => ContainerPublication;
         CommitContainerPublication: CommitContainerPublicationRequest => ContainerPublication;
@@ -2191,6 +2242,50 @@ mod tests {
             (
                 HubTopologyMethod::ListContainerGcRuns,
                 "ListContainerGcRuns",
+            ),
+            (
+                HubTopologyMethod::ListContainerGcCandidates,
+                "ListContainerGcCandidates",
+            ),
+            (
+                HubTopologyMethod::ListContainerGcBlockers,
+                "ListContainerGcBlockers",
+            ),
+            (
+                HubTopologyMethod::ListContainerGcPlacementActions,
+                "ListContainerGcPlacementActions",
+            ),
+            (
+                HubTopologyMethod::RequeueContainerGcPlacementAction,
+                "RequeueContainerGcPlacementAction",
+            ),
+            (
+                HubTopologyMethod::ListContainerUntrackedInventory,
+                "ListContainerUntrackedInventory",
+            ),
+            (
+                HubTopologyMethod::PlanRepairContainerUntrackedObject,
+                "PlanRepairContainerUntrackedObject",
+            ),
+            (
+                HubTopologyMethod::RepairContainerUntrackedObject,
+                "RepairContainerUntrackedObject",
+            ),
+            (
+                HubTopologyMethod::GetContainerUntrackedRepair,
+                "GetContainerUntrackedRepair",
+            ),
+            (
+                HubTopologyMethod::PlanContainerRegistryPurgeFence,
+                "PlanContainerRegistryPurgeFence",
+            ),
+            (
+                HubTopologyMethod::ApplyContainerRegistryPurgeFence,
+                "ApplyContainerRegistryPurgeFence",
+            ),
+            (
+                HubTopologyMethod::GetContainerRegistryPurgeFence,
+                "GetContainerRegistryPurgeFence",
             ),
             (
                 HubTopologyMethod::BeginContainerPublication,

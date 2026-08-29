@@ -543,35 +543,322 @@ impl RpcService {
         })
     }
 
-    /// Returns one GC run only after the Phase 7 deletion engine is enabled.
+    /// Returns one durable GC run and its fail-closed blockers.
     ///
     /// # Errors
     ///
-    /// Returns authorization errors first, then unavailable until Phase 7.
+    /// Returns authorization, validation, not-found, or database errors.
     pub async fn get_container_gc_run(
         &self,
         auth: Option<&str>,
         req: pb::GetContainerGcRunRequest,
     ) -> Result<pb::ContainerGcRunResponse, RpcError> {
-        let _ = self
+        let (_, registry) = self
             .container_registry_for_mutation(auth, &req.registry, Permission::RegistryConfigure)
             .await?;
-        Err(container_gc_unavailable())
+        if !self.container_rollout.garbage_collection {
+            return Err(container_gc_rollout_unavailable());
+        }
+        let run = self
+            .db
+            .oci_gc_generation(registry.id, &req.run_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("container GC run"))?;
+        let blockers = self
+            .db
+            .list_oci_gc_blockers(&run.id)
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::ContainerGcRunResponse {
+            run: Some(gc_run_message(&registry.slug, &run, &blockers)),
+            blockers: blockers.iter().map(gc_blocker_message).collect(),
+        })
     }
 
-    /// Lists GC runs only after the Phase 7 deletion engine is enabled.
+    /// Lists durable GC runs using a selector-bound keyset cursor.
     ///
     /// # Errors
     ///
-    /// Returns authorization errors first, then unavailable until Phase 7.
+    /// Returns authorization, pagination, or database errors.
     pub async fn list_container_gc_runs(
         &self,
         auth: Option<&str>,
         req: pb::ListContainerGcRunsRequest,
     ) -> Result<pb::ListContainerGcRunsResponse, RpcError> {
-        let _ = self
+        let (_, registry) = self
             .container_registry_for_mutation(auth, &req.registry, Permission::RegistryConfigure)
             .await?;
-        Err(container_gc_unavailable())
+        if !self.container_rollout.garbage_collection {
+            return Err(container_gc_rollout_unavailable());
+        }
+        let page = self
+            .db
+            .list_oci_gc_generations(
+                registry.id,
+                optional_filter(&req.state),
+                gc_page_size(req.page_size)?,
+                optional_filter(&req.page_token),
+            )
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+        Ok(pb::ListContainerGcRunsResponse {
+            runs: page
+                .items
+                .iter()
+                .map(|run| gc_run_message(&registry.slug, run, &[]))
+                .collect(),
+            next_page_token: page.next_cursor.unwrap_or_default(),
+            mutation_epoch: page.captured_mutation_epoch.to_string(),
+        })
+    }
+
+    /// Lists one GC generation's candidates after authorizing its registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns authorization, pagination, not-found, or database errors.
+    pub async fn list_container_gc_candidates(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListContainerGcCandidatesRequest,
+    ) -> Result<pb::ListContainerGcCandidatesResponse, RpcError> {
+        let (_, registry) = self
+            .container_registry_for_mutation(auth, &req.registry, Permission::RegistryConfigure)
+            .await?;
+        if !self.container_rollout.garbage_collection {
+            return Err(container_gc_rollout_unavailable());
+        }
+        let run = self
+            .db
+            .oci_gc_generation(registry.id, &req.run_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("container GC run"))?;
+        let page = self
+            .db
+            .list_oci_gc_candidates(
+                &run.id,
+                gc_page_size(req.page_size)?,
+                optional_filter(&req.page_token),
+            )
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+        Ok(pb::ListContainerGcCandidatesResponse {
+            candidates: page.items.iter().map(gc_candidate_message).collect(),
+            next_page_token: page.next_cursor.unwrap_or_default(),
+            mutation_epoch: page.captured_mutation_epoch.to_string(),
+        })
+    }
+
+    /// Lists one GC generation's fail-closed blockers after authorization.
+    ///
+    /// # Errors
+    ///
+    /// Returns authorization, not-found, or database errors.
+    pub async fn list_container_gc_blockers(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListContainerGcBlockersRequest,
+    ) -> Result<pb::ListContainerGcBlockersResponse, RpcError> {
+        let (_, registry) = self
+            .container_registry_for_mutation(auth, &req.registry, Permission::RegistryConfigure)
+            .await?;
+        if !self.container_rollout.garbage_collection {
+            return Err(container_gc_rollout_unavailable());
+        }
+        let run = self
+            .db
+            .oci_gc_generation(registry.id, &req.run_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("container GC run"))?;
+        let blockers = self
+            .db
+            .list_oci_gc_blockers(&run.id)
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::ListContainerGcBlockersResponse {
+            blockers: blockers.iter().map(gc_blocker_message).collect(),
+            mutation_epoch: run.captured_mutation_epoch.to_string(),
+        })
+    }
+
+    /// Lists exact conditional-deletion placement actions after authorization.
+    ///
+    /// # Errors
+    ///
+    /// Returns authorization, pagination, not-found, or database errors.
+    pub async fn list_container_gc_placement_actions(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListContainerGcPlacementActionsRequest,
+    ) -> Result<pb::ListContainerGcPlacementActionsResponse, RpcError> {
+        let (_, registry) = self
+            .container_registry_for_mutation(auth, &req.registry, Permission::RegistryConfigure)
+            .await?;
+        if !self.container_rollout.garbage_collection {
+            return Err(container_gc_rollout_unavailable());
+        }
+        let run = self
+            .db
+            .oci_gc_generation(registry.id, &req.run_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("container GC run"))?;
+        let page = self
+            .db
+            .list_oci_gc_placement_actions(
+                &run.id,
+                optional_filter(&req.state),
+                gc_page_size(req.page_size)?,
+                optional_filter(&req.page_token),
+            )
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+        Ok(pb::ListContainerGcPlacementActionsResponse {
+            actions: page.items.iter().map(gc_placement_action_message).collect(),
+            next_page_token: page.next_cursor.unwrap_or_default(),
+            mutation_epoch: page.captured_mutation_epoch.to_string(),
+        })
+    }
+
+    /// Lists exact current-head provider objects without catalog identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication, authorization, rollout, pagination, stale-cursor,
+    /// or database errors.
+    pub async fn list_container_untracked_inventory(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListContainerUntrackedInventoryRequest,
+    ) -> Result<pb::ListContainerUntrackedInventoryResponse, RpcError> {
+        let (_, registry) = self
+            .container_registry_for_mutation(auth, &req.registry, Permission::RegistryConfigure)
+            .await?;
+        if !self.container_rollout.garbage_collection {
+            return Err(container_gc_rollout_unavailable());
+        }
+        let cursor = decode_untracked_inventory_cursor(&req.page_token)?;
+        let page = self
+            .db
+            .list_untracked_oci_provider_inventory(
+                registry.id,
+                cursor.as_ref(),
+                gc_page_size(req.page_size)?,
+            )
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+        Ok(pb::ListContainerUntrackedInventoryResponse {
+            objects: page
+                .items
+                .iter()
+                .map(|record| untracked_inventory_message(&registry.slug, record))
+                .collect(),
+            next_page_token: encode_untracked_inventory_cursor(page.next_cursor.as_ref())?,
+            inventory_epoch: page.captured_mutation_epoch.to_string(),
+        })
+    }
+
+    /// Reads one actor-owned durable untracked-object repair and its evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication, masked ownership, authorization, rollout, or
+    /// database errors.
+    pub async fn get_container_untracked_repair(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetContainerUntrackedRepairRequest,
+    ) -> Result<pb::ContainerUntrackedRepairResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let repair = self
+            .db
+            .oci_untracked_repair_plan_for_actor(&req.plan_id, &claims.sub)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("container untracked repair plan"))?;
+        let registry = self
+            .db
+            .registry_by_id(repair.registry_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("registry"))?;
+        if let Some(org_id) = registry.org_id {
+            if !self
+                .db
+                .org_is_active(org_id)
+                .await
+                .map_err(RpcError::internal)?
+            {
+                return Err(RpcError::not_found("container untracked repair plan"));
+            }
+        }
+        let scope = self.registry_scope(&registry).await?;
+        self.require_permission(&claims, Permission::RegistryConfigure, &scope)
+            .await?;
+        if !self.container_rollout.garbage_collection {
+            return Err(container_gc_rollout_unavailable());
+        }
+        super::mutation::require_public_untracked_repair_kind(repair.repair_kind)?;
+        Ok(pb::ContainerUntrackedRepairResponse {
+            repair: Some(untracked_repair_message(&registry.slug, &repair)?),
+        })
+    }
+
+    /// Reads one actor-owned registry purge-fence review and current readiness.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication, masked ownership, authorization, rollout, or
+    /// database errors.
+    pub async fn get_container_registry_purge_fence(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetContainerRegistryPurgeFenceRequest,
+    ) -> Result<pb::ContainerRegistryPurgeFenceResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let plan = self
+            .db
+            .oci_registry_purge_fence_plan_for_actor(&req.plan_id, &claims.sub)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("container registry purge-fence plan"))?;
+        let registry = self
+            .db
+            .registry_by_id(plan.registry_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("registry"))?;
+        if let Some(org_id) = registry.org_id {
+            if !self
+                .db
+                .org_is_active(org_id)
+                .await
+                .map_err(RpcError::internal)?
+            {
+                return Err(RpcError::not_found("container registry purge-fence plan"));
+            }
+        }
+        let scope = self.registry_scope(&registry).await?;
+        self.require_permission(&claims, Permission::RegistryConfigure, &scope)
+            .await?;
+        if !self.container_rollout.garbage_collection {
+            return Err(container_gc_rollout_unavailable());
+        }
+        let status = self
+            .db
+            .oci_registry_purge_fence_status_for_actor(
+                &req.plan_id,
+                &claims.sub,
+                crate::clock::now_unix_secs(),
+            )
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("container registry purge-fence plan"))?;
+        Ok(pb::ContainerRegistryPurgeFenceResponse {
+            fence: Some(registry_purge_fence_message(&registry.slug, &status)),
+        })
     }
 }

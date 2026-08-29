@@ -458,6 +458,21 @@ async fn spawn_registry(
     auxiliary_repository: bool,
     access_policy_kind: &str,
 ) -> RunningRegistry {
+    spawn_registry_with_rollout(
+        visibility,
+        auxiliary_repository,
+        access_policy_kind,
+        aos_hub_core::container_rollout::ContainerRollout::all_enabled(),
+    )
+    .await
+}
+
+async fn spawn_registry_with_rollout(
+    visibility: &str,
+    auxiliary_repository: bool,
+    access_policy_kind: &str,
+    container_rollout: aos_hub_core::container_rollout::ContainerRollout,
+) -> RunningRegistry {
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
         .unwrap();
@@ -662,6 +677,7 @@ async fn spawn_registry(
         domain_probe_terminator: None,
         identity_domain_verifier: None,
         route_reservation_keyring: None,
+        container_rollout,
     });
     let app = router(state).await;
     let server = tokio::spawn(async move {
@@ -693,6 +709,142 @@ async fn spawn_registry(
 async fn error_code(response: reqwest::Response) -> String {
     let envelope: serde_json::Value = response.json().await.unwrap();
     envelope["errors"][0]["code"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn distribution_rollout_defaults_deny_discovery_and_action_tokens() {
+    let disabled = spawn_registry_with_rollout(
+        "public",
+        false,
+        "public",
+        aos_hub_core::container_rollout::ContainerRollout::default(),
+    )
+    .await;
+    assert_eq!(
+        disabled
+            .http
+            .get(format!("{}v2/", disabled.origin))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        disabled
+            .http
+            .get(format!("{}v2/token", disabled.origin))
+            .query(&[("service", disabled.authority.as_str())])
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        disabled
+            .http
+            .get(format!("{}v2/token", disabled.origin))
+            .query(&[("service", disabled.authority.as_str()), ("scope", ""),])
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+
+    let push_only = spawn_registry_with_rollout(
+        "private",
+        false,
+        "hub_auth",
+        aos_hub_core::container_rollout::ContainerRollout {
+            push: true,
+            ..aos_hub_core::container_rollout::ContainerRollout::default()
+        },
+    )
+    .await;
+    assert_eq!(
+        push_only
+            .http
+            .get(format!("{}v2/", push_only.origin))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let pull_only_token = push_only
+        .http
+        .get(format!("{}v2/token", push_only.origin))
+        .query(&[
+            ("service", push_only.authority.as_str()),
+            ("scope", "repository:aos:pull"),
+        ])
+        .bearer_auth(push_only.hub_bearer.as_deref().unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(pull_only_token.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let combined = push_only
+        .http
+        .get(format!("{}v2/token", push_only.origin))
+        .query(&[
+            ("service", push_only.authority.as_str()),
+            ("scope", "repository:aos:pull,push"),
+        ])
+        .bearer_auth(push_only.hub_bearer.as_deref().unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(combined.status(), StatusCode::OK);
+    let combined: serde_json::Value = combined.json().await.unwrap();
+    let token = combined["token"].as_str().unwrap();
+    let blob_url = format!(
+        "{}v2/aos/blobs/{}",
+        push_only.origin, push_only.image.layer.digest
+    );
+    assert_eq!(
+        push_only
+            .http
+            .head(&blob_url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        push_only
+            .http
+            .get(&blob_url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+
+    let enabled = spawn_registry_with_rollout(
+        "public",
+        false,
+        "public",
+        aos_hub_core::container_rollout::ContainerRollout::all_enabled(),
+    )
+    .await;
+    assert_eq!(
+        enabled
+            .http
+            .get(format!("{}v2/token", enabled.origin))
+            .query(&[("service", enabled.authority.as_str())])
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
 }
 
 #[tokio::test]

@@ -26,6 +26,43 @@ pub(crate) fn container_tag_controls_visible(allows: impl FnOnce(&str) -> bool) 
     allows("publish")
 }
 
+/// Returns the exact retention-policy resource version used by a GC plan.
+pub(crate) fn effective_container_retention_version(value: &str) -> String {
+    if value.is_empty() {
+        "0".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+/// Returns whether a reviewed GC plan can expose its destructive apply control.
+pub(crate) fn container_gc_plan_is_applicable(
+    response: &aos_proto_types::ContainerGcPlanResponse,
+) -> bool {
+    response.blockers.is_empty()
+        && response
+            .run
+            .as_ref()
+            .is_some_and(|run| run.state == "planned")
+}
+
+/// Extracts the positive optimistic-concurrency version frozen by a repair plan.
+pub(crate) fn reviewed_plan_resource_version(
+    response: &aos_proto_types::TopologyPlanResponse,
+) -> Result<String, String> {
+    response
+        .plan
+        .as_ref()
+        .and_then(|plan| {
+            plan.input_versions
+                .iter()
+                .find_map(|value| value.strip_prefix("resource_version="))
+        })
+        .filter(|value| value.parse::<u64>().is_ok_and(|version| version > 0))
+        .map(str::to_string)
+        .ok_or_else(|| "The repair plan omitted its positive resource-version CAS.".to_string())
+}
+
 impl PendingPlan {
     /// Extracts a complete pending plan from an API response.
     pub(crate) fn from_response(
@@ -327,5 +364,60 @@ mod tests {
         assert!(container_tag_controls_visible(|required| {
             permissions.contains(&required)
         }));
+    }
+
+    #[test]
+    fn default_retention_policy_binds_gc_to_version_zero() {
+        assert_eq!(effective_container_retention_version(""), "0");
+        assert_eq!(effective_container_retention_version("7"), "7");
+    }
+
+    #[test]
+    fn blockers_and_non_planned_states_hide_apply_controls() {
+        let planned = aos_proto_types::ContainerGcPlanResponse {
+            run: Some(aos_proto_types::ContainerGcRun {
+                state: "planned".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(container_gc_plan_is_applicable(&planned));
+
+        let mut blocked = planned.clone();
+        blocked.blockers.push(aos_proto_types::ContainerGcBlocker {
+            kind: "stale_inventory".to_string(),
+            detail: "placement inventory is stale".to_string(),
+            ..Default::default()
+        });
+        assert!(!container_gc_plan_is_applicable(&blocked));
+
+        let mut failed = planned;
+        failed.run.as_mut().unwrap().state = "failed".to_string();
+        assert!(!container_gc_plan_is_applicable(&failed));
+    }
+
+    #[test]
+    fn untracked_repair_apply_requires_the_exact_positive_plan_version() {
+        let response = aos_proto_types::TopologyPlanResponse {
+            plan: Some(aos_proto_types::TopologyPlan {
+                input_versions: vec!["resource_version=2".to_string()],
+                ..Default::default()
+            }),
+        };
+        assert_eq!(reviewed_plan_resource_version(&response).unwrap(), "2");
+
+        for value in [
+            "resource_version=0",
+            "resource_version=-1",
+            "mutation_epoch=2",
+        ] {
+            let response = aos_proto_types::TopologyPlanResponse {
+                plan: Some(aos_proto_types::TopologyPlan {
+                    input_versions: vec![value.to_string()],
+                    ..Default::default()
+                }),
+            };
+            assert!(reviewed_plan_resource_version(&response).is_err());
+        }
     }
 }

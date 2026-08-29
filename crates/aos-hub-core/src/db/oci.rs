@@ -545,8 +545,9 @@ fn extend_oci_object_statements(
         Statement::new(
             "INSERT INTO oci_blobs
                (registry_id, digest, byte_size, media_type, surface_object_id,
-                quota_bytes, lifecycle_state, created_at, updated_at)
-             SELECT ?1, ?2, ?3, ?4, object.id, ?3, 'active', ?5, ?5
+                quota_bytes, lifecycle_state, created_at, updated_at,
+                unreferenced_since)
+             SELECT ?1, ?2, ?3, ?4, object.id, ?3, 'active', ?5, ?5, ?5
              FROM surface_objects object
              JOIN object_placements presence
                ON presence.surface_object_id = object.id
@@ -592,6 +593,9 @@ fn extend_oci_object_statements(
         )
         .unchecked(),
     );
+    // Catalog linkage is not itself a retention root. A tag, signed root,
+    // lease, upload, or in-flight publication clears this timestamp; an
+    // untagged direct admission starts its conservative grace immediately.
     statements.push(
         Statement::new(
             "INSERT INTO oci_repository_objects
@@ -861,6 +865,10 @@ fn extend_catalog_identity_guards(
                    FROM oci_blobs WHERE registry_id = ?1),
                  updated_at = ?2
              WHERE registry_id = ?1
+               AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                 WHERE registry_lock.registry_id = ?1)
+               AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
+                 WHERE purge.registry_id = ?1 AND purge.state = 'collecting')
                AND (SELECT COUNT(*) FROM oci_manifests
                  WHERE registry_id = ?1) >= ?3
                AND (SELECT COUNT(*) FROM oci_descriptor_edges
@@ -1415,6 +1423,18 @@ fn build_oci_catalog_statements(
     let mut statements = Vec::<CheckedStatement>::new();
     statements.push(
         Statement::new(
+            "UPDATE registries SET updated_at = updated_at
+             WHERE id = ?1
+               AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                 WHERE registry_lock.registry_id = ?1)
+               AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
+                 WHERE purge.registry_id = ?1 AND purge.state = 'collecting')",
+            vals![input.registry_id],
+        )
+        .expecting(1),
+    );
+    statements.push(
+        Statement::new(
             "INSERT INTO oci_repositories
                (id, registry_id, name, visibility, lifecycle_state,
                 resource_version, created_at, updated_at)
@@ -1522,6 +1542,7 @@ fn build_oci_catalog_statements(
         }
     }
     if let Some(tag) = &input.tag {
+        let tag_history_id = Uuid::new_v4().simple().to_string();
         statements.push(
             Statement::new(
                 "UPDATE oci_repositories SET resource_version = resource_version
@@ -1558,7 +1579,7 @@ fn build_oci_catalog_statements(
                  WHERE repository.registry_id = ?2 AND repository.name = ?3
                    AND (current.digest IS NULL OR current.digest <> ?5)",
                 vals![
-                    Uuid::new_v4().simple().to_string(),
+                    tag_history_id.clone(),
                     input.registry_id,
                     input.repository.as_str(),
                     tag.as_str(),
@@ -1595,6 +1616,39 @@ fn build_oci_catalog_statements(
                 ],
             )
             .unchecked(),
+        );
+        statements.push(
+            Statement::new(
+                "UPDATE oci_blobs
+                 SET unreferenced_since = COALESCE(unreferenced_since, ?4),
+                     updated_at = ?4
+                 WHERE registry_id = ?1
+                   AND digest = (SELECT prior_digest FROM oci_tag_history WHERE id = ?2)
+                   AND digest <> ?3 AND lifecycle_state = 'active'
+                   AND NOT EXISTS (SELECT 1 FROM oci_tags tag
+                     WHERE tag.registry_id = ?1 AND tag.digest = oci_blobs.digest)
+                   AND NOT EXISTS (SELECT 1 FROM oci_release_roots root
+                     WHERE root.registry_id = ?1 AND root.index_digest = oci_blobs.digest)
+                   AND NOT EXISTS (SELECT 1 FROM oci_release_evidence evidence
+                     WHERE evidence.registry_id = ?1
+                       AND evidence.referrer_digest = oci_blobs.digest
+                       AND evidence.verification = 'verified')",
+                vals![
+                    input.registry_id,
+                    tag_history_id,
+                    input.root_digest.to_string(),
+                    now
+                ],
+            )
+            .unchecked(),
+        );
+        statements.push(
+            Statement::new(
+                "UPDATE oci_blobs SET unreferenced_since = NULL, updated_at = ?3
+                 WHERE registry_id = ?1 AND digest = ?2 AND lifecycle_state = 'active'",
+                vals![input.registry_id, input.root_digest.to_string(), now],
+            )
+            .expecting(1),
         );
     }
     extend_catalog_identity_guards(&mut statements, input, manifest_count, edge_count)?;
@@ -2129,7 +2183,11 @@ impl Database {
                 Statement::new(
                     "UPDATE oci_registry_state
                      SET mutation_epoch = mutation_epoch + 1, updated_at = ?2
-                     WHERE registry_id = ?1",
+                     WHERE registry_id = ?1
+                       AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
+                         WHERE registry_lock.registry_id = ?1)
+                       AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
+                         WHERE purge.registry_id = ?1 AND purge.state = 'collecting')",
                     vals![registry_id, now],
                 )
                 .expecting(1),
@@ -3012,6 +3070,80 @@ mod tests {
             .await
             .unwrap();
         (db, registry_id, placement.id)
+    }
+
+    #[tokio::test]
+    async fn first_uploaded_object_evidence_seeds_registry_state_once() {
+        let (db, registry_id, placement_id) = catalog_database().await;
+        assert!(db
+            .backend
+            .query_opt(
+                "SELECT mutation_epoch FROM oci_registry_state WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .await
+            .unwrap()
+            .is_none());
+
+        let digest = Sha256Digest::digest(b"first uploaded object");
+        assert!(db
+            .record_oci_uploaded_object(
+                registry_id,
+                placement_id + 10_000,
+                digest,
+                21,
+                "\"first-upload\"",
+                1_700_000_001,
+            )
+            .await
+            .is_err());
+        assert!(db
+            .backend
+            .query_opt(
+                "SELECT mutation_epoch FROM oci_registry_state WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .await
+            .unwrap()
+            .is_none());
+
+        let evidence = db
+            .record_oci_uploaded_object(
+                registry_id,
+                placement_id,
+                digest,
+                21,
+                "\"first-upload\"",
+                1_700_000_001,
+            )
+            .await
+            .unwrap();
+        assert_eq!(evidence.placement_id, placement_id);
+        assert_eq!(
+            db.record_oci_uploaded_object(
+                registry_id,
+                placement_id,
+                digest,
+                21,
+                "\"first-upload\"",
+                1_700_000_001,
+            )
+            .await
+            .unwrap(),
+            evidence
+        );
+        let mutation_epoch: i64 = db
+            .backend
+            .query_opt(
+                "SELECT mutation_epoch FROM oci_registry_state WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(mutation_epoch, 1, "exact replay must not move the epoch");
     }
 
     async fn record_catalog_bytes(db: &Database, input: &IndexOciRepositoryCatalog) {

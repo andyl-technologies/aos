@@ -64,10 +64,98 @@ pub struct SurfaceDeletePrecondition {
     pub size: Option<i64>,
 }
 
+/// Immutable physical address and topology fence for one provider operation.
+///
+/// Durable cleanup claims construct this value from their reviewed snapshot;
+/// adapters must use [`Self::placement_prefix`] directly and must never select
+/// a current writer. A binding row may be reopened only when its id and
+/// resource version still match this fence. Plan and Apply validate the current
+/// conditional-delete capability, while the durable claim revalidates this
+/// frozen snapshot and its retained credential hold. The adapter therefore
+/// resolves the exact frozen credential without consulting a capability or
+/// credential head that may legitimately advance after Apply. The frozen
+/// capability identity remains part of durable audit evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrozenSurfaceAccess {
+    /// Registry whose physical object is being inspected or deleted.
+    pub registry_id: i64,
+    /// Frozen placement database id.
+    pub placement_id: i64,
+    /// Frozen placement display name for bounded diagnostics.
+    pub placement_name: String,
+    /// Frozen binding-relative placement prefix.
+    pub placement_prefix: String,
+    /// Frozen placement optimistic-concurrency version.
+    pub placement_resource_version: i64,
+    /// Frozen placement writer-critical topology version.
+    pub placement_write_spec_version: i64,
+    /// Frozen ready/complete observation version.
+    pub placement_observation_version: i64,
+    /// Frozen storage binding id.
+    pub binding_id: i64,
+    /// Frozen binding optimistic-concurrency version.
+    pub binding_resource_version: i64,
+    /// Frozen immutable binding-write revision.
+    pub binding_write_revision: i64,
+    /// Exact delete credential purpose, absent for credential-free local IO.
+    pub delete_credential_purpose: Option<String>,
+    /// Exact delete credential generation, absent for credential-free local IO.
+    pub delete_credential_generation: Option<i64>,
+    /// Fingerprint of the positively observed conditional-delete capability.
+    pub delete_capability_fingerprint: String,
+    /// Minimum capability observation resource version frozen for audit.
+    pub delete_capability_resource_version: i64,
+}
+
+impl FrozenSurfaceAccess {
+    /// Validates the common frozen-address fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for missing identities, invalid versions, an unsafe
+    /// prefix, or a half-populated delete credential pair.
+    pub fn validate(&self) -> Result<()> {
+        if self.registry_id <= 0
+            || self.placement_id <= 0
+            || self.placement_name.is_empty()
+            || self.placement_name.len() > 255
+            || self.placement_resource_version <= 0
+            || self.placement_write_spec_version <= 0
+            || self.placement_observation_version <= 0
+            || self.binding_id <= 0
+            || self.binding_resource_version <= 0
+            || self.binding_write_revision <= 0
+            || self.delete_capability_fingerprint.is_empty()
+            || self.delete_capability_fingerprint.len() > 255
+            || self.delete_capability_resource_version <= 0
+            || self.delete_credential_purpose.is_some()
+                != self.delete_credential_generation.is_some()
+            || self
+                .delete_credential_generation
+                .is_some_and(|generation| generation <= 0)
+        {
+            anyhow::bail!("frozen surface access fence is invalid");
+        }
+        if self.placement_prefix.len() > 512
+            || self.placement_prefix != self.placement_prefix.trim_matches('/')
+            || self.placement_prefix != self.placement_prefix.trim()
+            || self.placement_prefix.contains("//")
+            || self
+                .placement_prefix
+                .split('/')
+                .any(|component| matches!(component, "." | ".."))
+            || self.placement_prefix.chars().any(char::is_control)
+        {
+            anyhow::bail!("frozen surface access prefix is invalid");
+        }
+        Ok(())
+    }
+}
+
 /// Verified result of an identity-checked backend deletion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SurfaceDeleteOutcome {
-    /// The exact observed object was deleted.
+    /// The backend returned the deleted object's independently observed identity.
     Deleted {
         /// Entity tag accepted by the backend.
         etag: Option<String>,
@@ -75,6 +163,17 @@ pub enum SurfaceDeleteOutcome {
         content_hash: Option<String>,
         /// Size accepted by the backend.
         size: Option<i64>,
+    },
+    /// An HTTP backend acknowledged an atomic delete guarded by this ETag.
+    ///
+    /// S3-compatible DELETE responses do not return object hash or size. A 2xx
+    /// response instead proves that the submitted strong `If-Match` condition
+    /// was accepted. Callers must bind this ETag to separately verified
+    /// inventory hash and size, and must require an observed valid conditional-
+    /// delete capability for the exact backend revision.
+    ConditionalDeleteAcknowledged {
+        /// Canonical strong ETag submitted in the successful condition.
+        etag: String,
     },
     /// The object was already absent.
     NotFound,
@@ -406,11 +505,62 @@ pub trait SurfaceWriteProvider: BackendBounds {
         expected_binding_resource_version: i64,
         delete_credential_generation: i64,
     ) -> Result<Box<dyn SurfaceWrite>>;
+
+    /// Builds a conditional deleter from one immutable durable-work fence.
+    ///
+    /// Implementations may reopen the frozen binding/revision/capability, but
+    /// must not inspect or select current write authority. They must address
+    /// exactly [`FrozenSurfaceAccess::placement_prefix`] and fail closed when
+    /// any retained version or capability no longer matches.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed or stale fence, unavailable exact
+    /// credentials, or a backend without atomic conditional deletion.
+    async fn frozen_placement_deleter(
+        &self,
+        access: &FrozenSurfaceAccess,
+    ) -> Result<Box<dyn SurfaceWrite>> {
+        let _ = access;
+        anyhow::bail!("this provider does not support frozen conditional deletion")
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{md5_multipart_etag, strong_if_match_etag, PartTag};
+    use super::{md5_multipart_etag, strong_if_match_etag, FrozenSurfaceAccess, PartTag};
+
+    fn frozen_access() -> FrozenSurfaceAccess {
+        FrozenSurfaceAccess {
+            registry_id: 1,
+            placement_id: 2,
+            placement_name: "primary".into(),
+            placement_prefix: "registry/objects".into(),
+            placement_resource_version: 3,
+            placement_write_spec_version: 4,
+            placement_observation_version: 5,
+            binding_id: 6,
+            binding_resource_version: 7,
+            binding_write_revision: 8,
+            delete_credential_purpose: Some("delete".into()),
+            delete_credential_generation: Some(9),
+            delete_capability_fingerprint: "conditional-delete-v1".into(),
+            delete_capability_resource_version: 10,
+        }
+    }
+
+    #[test]
+    fn frozen_surface_access_rejects_unsafe_or_partial_addresses() {
+        assert!(frozen_access().validate().is_ok());
+
+        let mut unsafe_prefix = frozen_access();
+        unsafe_prefix.placement_prefix = "../other-placement".into();
+        assert!(unsafe_prefix.validate().is_err());
+
+        let mut partial_credential = frozen_access();
+        partial_credential.delete_credential_generation = None;
+        assert!(partial_credential.validate().is_err());
+    }
 
     #[test]
     fn exact_delete_etags_are_strong_and_canonical() {

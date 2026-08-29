@@ -340,7 +340,7 @@ pub enum HubContainerGcCmd {
         access: HubAccessArgs,
         registry: String,
         #[arg(long)]
-        if_version: Option<String>,
+        if_version: String,
         #[arg(long)]
         idempotency_key: Option<String>,
     },
@@ -357,8 +357,33 @@ pub enum HubContainerGcCmd {
         #[arg(long)]
         yes: bool,
     },
-    /// Show one garbage-collection plan or run
-    Status {
+    /// Requeue one failed frozen placement action after exact repair
+    Requeue {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        registry: String,
+        run_id: String,
+        action_id: String,
+        #[arg(long)]
+        if_version: String,
+        #[arg(long)]
+        idempotency_key: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Inspect and repair provider objects missing catalog identity
+    Untracked {
+        #[command(subcommand)]
+        command: HubContainerGcUntrackedCmd,
+    },
+    /// Review, apply, or inspect the registry writer fence required for purge
+    PurgeFence {
+        #[command(subcommand)]
+        command: HubContainerGcPurgeFenceCmd,
+    },
+    /// Get one garbage-collection plan or operation
+    #[command(alias = "status")]
+    Get {
         #[command(flatten)]
         access: HubAccessArgs,
         registry: String,
@@ -369,10 +394,85 @@ pub enum HubContainerGcCmd {
         #[command(flatten)]
         access: HubAccessArgs,
         registry: String,
+        /// List runs, candidates, blockers, or placement-actions.
+        #[arg(long, default_value = "runs", value_parser = ["runs", "candidates", "blockers", "placement-actions"])]
+        resource: String,
+        /// Exact run required for candidate, blocker, and placement-action lists.
+        #[arg(long)]
+        run_id: Option<String>,
         #[arg(long)]
         state: Option<String>,
         #[command(flatten)]
         pagination: HubPaginationArgs,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubContainerGcPurgeFenceCmd {
+    /// Plan acquisition or explicit abort of the purge writer fence
+    Plan {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        registry: String,
+        #[arg(long, value_parser = ["begin", "abort"])]
+        action: String,
+        #[arg(long)]
+        if_version: String,
+        #[arg(long)]
+        idempotency_key: Option<String>,
+    },
+    /// Apply one reviewed purge-fence plan
+    Apply {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        #[arg(long)]
+        plan_id: String,
+        #[arg(long)]
+        confirm_hash: String,
+        #[arg(long)]
+        if_version: String,
+        #[arg(long)]
+        idempotency_key: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Read one actor-owned purge-fence plan and current readiness
+    Status {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        plan_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubContainerGcUntrackedCmd {
+    /// List exact current-head untracked provider observations
+    List {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        registry: String,
+        #[command(flatten)]
+        pagination: HubPaginationArgs,
+    },
+    /// Plan an exact conditional delete or apply its reviewed plan
+    Repair {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        registry: Option<String>,
+        #[arg(long)]
+        placement_id: Option<i64>,
+        #[arg(long)]
+        inventory_generation_id: Option<String>,
+        #[arg(long)]
+        object_key: Option<String>,
+        #[command(flatten)]
+        mutation: HubMutationArgs,
+    },
+    /// Read one actor-owned durable repair and its conditional evidence
+    RepairStatus {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        plan_id: String,
     },
 }
 
@@ -559,5 +659,206 @@ mod tests {
             "--yes",
         ])
         .expect("retention apply command");
+    }
+
+    #[test]
+    fn container_gc_exposes_exact_plan_apply_get_and_bounded_lists() {
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "hub",
+                "registry",
+                "container",
+                "gc",
+                "plan",
+                "andyl/main",
+            ])
+            .is_err()
+        );
+        Cli::try_parse_from([
+            "aos",
+            "hub",
+            "registry",
+            "container",
+            "gc",
+            "plan",
+            "andyl/main",
+            "--if-version",
+            "7",
+        ])
+        .expect("GC plan requires the retention policy CAS version");
+        Cli::try_parse_from([
+            "aos",
+            "hub",
+            "registry",
+            "container",
+            "gc",
+            "apply",
+            "--plan-id",
+            "gc-1",
+            "--confirm-hash",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--idempotency-key",
+            "change-1",
+            "--yes",
+        ])
+        .expect("GC apply carries confirmation and idempotency");
+        Cli::try_parse_from([
+            "aos",
+            "hub",
+            "registry",
+            "container",
+            "gc",
+            "requeue",
+            "andyl/main",
+            "gc-1",
+            "action-1",
+            "--if-version",
+            "9",
+            "--idempotency-key",
+            "repair-1",
+            "--yes",
+        ])
+        .expect("GC requeue binds registry, run, action, CAS, and idempotency");
+        Cli::try_parse_from([
+            "aos",
+            "hub",
+            "registry",
+            "container",
+            "gc",
+            "get",
+            "andyl/main",
+            "gc-1",
+        ])
+        .expect("GC get command");
+        Cli::try_parse_from([
+            "aos",
+            "hub",
+            "registry",
+            "container",
+            "gc",
+            "list",
+            "andyl/main",
+            "--resource",
+            "placement-actions",
+            "--run-id",
+            "gc-1",
+            "--state",
+            "failed",
+            "--page-size",
+            "25",
+        ])
+        .expect("GC placement-action keyset list");
+
+        Cli::try_parse_from([
+            "aos",
+            "hub",
+            "registry",
+            "container",
+            "gc",
+            "untracked",
+            "list",
+            "andyl/main",
+            "--page-size",
+            "25",
+            "--page-token",
+            "opaque-current-head-cursor",
+        ])
+        .expect("untracked inventory uses bounded keyset pagination");
+        Cli::try_parse_from([
+            "aos",
+            "hub",
+            "registry",
+            "container",
+            "gc",
+            "untracked",
+            "repair",
+            "andyl/main",
+            "--placement-id",
+            "4",
+            "--inventory-generation-id",
+            "inventory-7",
+            "--object-key",
+            "oci/blobs/sha256/deadbeef",
+            "--if-version",
+            "12",
+            "--plan",
+        ])
+        .expect("untracked repair plan binds head, object, placement, and epoch");
+        Cli::try_parse_from([
+            "aos",
+            "hub",
+            "registry",
+            "container",
+            "gc",
+            "untracked",
+            "repair",
+            "--plan-id",
+            "repair-1",
+            "--confirm-hash",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--if-version",
+            "1",
+            "--idempotency-key",
+            "repair-apply-1",
+            "--yes",
+        ])
+        .expect("untracked repair apply binds plan, confirmation, CAS, and retry key");
+        Cli::try_parse_from([
+            "aos",
+            "hub",
+            "registry",
+            "container",
+            "gc",
+            "untracked",
+            "repair-status",
+            "repair-1",
+        ])
+        .expect("untracked repair status is actor-bound by plan identity");
+        Cli::try_parse_from([
+            "aos",
+            "hub",
+            "registry",
+            "container",
+            "gc",
+            "purge-fence",
+            "plan",
+            "andyl/main",
+            "--action",
+            "begin",
+            "--if-version",
+            "9",
+        ])
+        .expect("purge-fence begin plan binds the registry CAS");
+        Cli::try_parse_from([
+            "aos",
+            "hub",
+            "registry",
+            "container",
+            "gc",
+            "purge-fence",
+            "apply",
+            "--plan-id",
+            "purge-plan-1",
+            "--confirm-hash",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--if-version",
+            "1",
+            "--idempotency-key",
+            "purge-apply-1",
+            "--yes",
+        ])
+        .expect("purge-fence apply binds review, CAS, and retry identity");
+        Cli::try_parse_from([
+            "aos",
+            "hub",
+            "registry",
+            "container",
+            "gc",
+            "purge-fence",
+            "status",
+            "purge-plan-1",
+        ])
+        .expect("purge-fence status is actor-bound by plan identity");
     }
 }

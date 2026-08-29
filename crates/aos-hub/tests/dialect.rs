@@ -1088,9 +1088,11 @@ async fn mysql_contract() {
     drop(upgraded);
 
     assert_mysql_v21_crash_replay_and_concurrent_start(&url).await;
+    assert_mysql_v23_crash_replay_and_concurrent_start(&url).await;
+    assert_mysql_v24_crash_replay_and_concurrent_start(&url).await;
 
     println!(
-        "dialect contract: mysql fresh + v19-to-current + v21 crash/concurrency replay OK ({url})"
+        "dialect contract: mysql fresh + v19-to-current + v21/v23/v24 crash/concurrency replay OK ({url})"
     );
 }
 
@@ -1153,8 +1155,8 @@ async fn seed_legacy_mysql_v19(url: &str) {
     const LEGACY_VERSION: usize = 19;
     assert_eq!(
         MIGRATIONS.len(),
-        LEGACY_VERSION + 2,
-        "the OCI catalog and upload protocol must remain migrations v20-v21"
+        24,
+        "the current schema must include OCI GC review remediation v24"
     );
 
     let mut connection = MySqlConnection::connect(url)
@@ -1281,7 +1283,7 @@ async fn assert_mysql_v21_crash_replay_and_concurrent_start(url: &str) {
     use aos_hub_core::dialect::Dialect;
     use sqlx::{Connection as _, MySqlConnection};
 
-    let migration = MIGRATIONS.last().expect("v21 OCI upload migration");
+    let migration = MIGRATIONS.get(20).expect("v21 OCI upload migration");
     let statements = split_statements(migration);
     assert!(
         migration.contains("CREATE TABLE oci_upload_sessions")
@@ -1324,6 +1326,179 @@ async fn assert_mysql_v21_crash_replay_and_concurrent_start(url: &str) {
     second.expect("second concurrent v21 migrator");
 }
 
+/// Creates the exact shipped v22 schema and marker without applying v23.
+#[cfg(feature = "mysql")]
+async fn seed_current_mysql_v22(url: &str) {
+    use aos_hub_core::backend::split_statements;
+    use aos_hub_core::db::MIGRATIONS;
+    use aos_hub_core::dialect::Dialect;
+    use sqlx::{Connection as _, MySqlConnection};
+
+    seed_current_mysql_v20(url).await;
+    let mut connection = MySqlConnection::connect(url)
+        .await
+        .expect("connecting to mysql to seed v22");
+    for (offset, migration) in MIGRATIONS[20..22].iter().enumerate() {
+        for statement in split_statements(migration) {
+            let translated = Dialect::Mysql
+                .translate(&statement)
+                .expect("translating a pre-GC OCI migration");
+            sqlx::query(&translated.sql)
+                .execute(&mut connection)
+                .await
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "applying mysql migration v{} failed: {error}; SQL: {}",
+                        offset + 21,
+                        translated.sql
+                    )
+                });
+        }
+        sqlx::query("UPDATE schema_version SET version = ?")
+            .bind(i64::try_from(offset + 21).expect("migration version fits int64"))
+            .execute(&mut connection)
+            .await
+            .expect("stamping mysql pre-GC schema version");
+    }
+}
+
+/// Proves every implicit-commit v23 cut replays and concurrent starters converge.
+#[cfg(feature = "mysql")]
+async fn assert_mysql_v23_crash_replay_and_concurrent_start(url: &str) {
+    use aos_hub_core::backend::split_statements;
+    use aos_hub_core::db::MIGRATIONS;
+    use aos_hub_core::dialect::Dialect;
+    use sqlx::{Connection as _, MySqlConnection};
+
+    let migration = MIGRATIONS.get(22).expect("v23 OCI GC migration");
+    let statements = split_statements(migration);
+    assert!(
+        migration.contains("CREATE TABLE oci_provider_inventory_generations")
+            && migration.contains("CREATE TABLE oci_gc_placement_actions"),
+        "v23 must persist exact provider inventory and deletion actions"
+    );
+
+    for cut in 0..=statements.len() {
+        reset_mysql_schema(url).await;
+        seed_current_mysql_v22(url).await;
+        let mut connection = MySqlConnection::connect(url)
+            .await
+            .expect("connecting to inject a v23 migration crash");
+        for statement in &statements[..cut] {
+            let translated = Dialect::Mysql
+                .translate(statement)
+                .expect("translating a v23 crash prefix");
+            let replay_safe = mysql_replay_safe_for_test(&translated.sql);
+            sqlx::query(&replay_safe)
+                .execute(&mut connection)
+                .await
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "injecting v23 crash after statement {cut} failed: {error}; SQL: {replay_safe}"
+                    )
+                });
+        }
+        drop(connection);
+
+        let recovered = Database::connect(url)
+            .await
+            .unwrap_or_else(|error| panic!("v23 recovery after statement {cut}: {error:#}"));
+        drop(recovered);
+    }
+
+    reset_mysql_schema(url).await;
+    seed_current_mysql_v22(url).await;
+    let (first, second) = tokio::join!(Database::connect(url), Database::connect(url));
+    first.expect("first concurrent v23 migrator");
+    second.expect("second concurrent v23 migrator");
+}
+
+/// Creates the exact shipped v23 schema and marker without applying v24.
+#[cfg(feature = "mysql")]
+async fn seed_current_mysql_v23(url: &str) {
+    use aos_hub_core::backend::split_statements;
+    use aos_hub_core::db::MIGRATIONS;
+    use aos_hub_core::dialect::Dialect;
+    use sqlx::{Connection as _, MySqlConnection};
+
+    seed_current_mysql_v22(url).await;
+    let mut connection = MySqlConnection::connect(url)
+        .await
+        .expect("connecting to mysql to seed v23");
+    for statement in split_statements(MIGRATIONS[22]) {
+        let translated = Dialect::Mysql
+            .translate(&statement)
+            .expect("translating the v23 OCI GC migration");
+        sqlx::query(&translated.sql)
+            .execute(&mut connection)
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "applying mysql migration v23 failed: {error}; SQL: {}",
+                    translated.sql
+                )
+            });
+    }
+    sqlx::query("UPDATE schema_version SET version = 23")
+        .execute(&mut connection)
+        .await
+        .expect("stamping mysql schema version 23");
+}
+
+/// Proves every implicit-commit v24 cut replays and concurrent starters converge.
+#[cfg(feature = "mysql")]
+async fn assert_mysql_v24_crash_replay_and_concurrent_start(url: &str) {
+    use aos_hub_core::backend::split_statements;
+    use aos_hub_core::db::MIGRATIONS;
+    use aos_hub_core::dialect::Dialect;
+    use sqlx::{Connection as _, MySqlConnection};
+
+    let migration = MIGRATIONS
+        .get(23)
+        .expect("v24 OCI GC remediation migration");
+    let statements = split_statements(migration);
+    assert!(
+        migration.contains("CREATE TABLE oci_registry_purge_fences")
+            && migration.contains("CREATE TABLE oci_registry_purge_fence_plans")
+            && migration.contains("CREATE TABLE oci_untracked_repair_plans"),
+        "v24 must persist purge fences and reviewed untracked repair authority"
+    );
+
+    for cut in 0..=statements.len() {
+        reset_mysql_schema(url).await;
+        seed_current_mysql_v23(url).await;
+        let mut connection = MySqlConnection::connect(url)
+            .await
+            .expect("connecting to inject a v24 migration crash");
+        for statement in &statements[..cut] {
+            let translated = Dialect::Mysql
+                .translate(statement)
+                .expect("translating a v24 crash prefix");
+            let replay_safe = mysql_replay_safe_for_test(&translated.sql);
+            sqlx::query(&replay_safe)
+                .execute(&mut connection)
+                .await
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "injecting v24 crash after statement {cut} failed: {error}; SQL: {replay_safe}"
+                    )
+                });
+        }
+        drop(connection);
+
+        let recovered = Database::connect(url)
+            .await
+            .unwrap_or_else(|error| panic!("v24 recovery after statement {cut}: {error:#}"));
+        drop(recovered);
+    }
+
+    reset_mysql_schema(url).await;
+    seed_current_mysql_v23(url).await;
+    let (first, second) = tokio::join!(Database::connect(url), Database::connect(url));
+    first.expect("first concurrent v24 migrator");
+    second.expect("second concurrent v24 migrator");
+}
+
 /// Verifies that current production migrations preserve the v19 release key.
 #[cfg(feature = "mysql")]
 async fn assert_mysql_v19_catalog_upgrade(url: &str) {
@@ -1336,7 +1511,7 @@ async fn assert_mysql_v19_catalog_upgrade(url: &str) {
         .fetch_one(&mut connection)
         .await
         .expect("reading the upgraded mysql schema version");
-    assert_eq!(version, 21);
+    assert_eq!(version, 24);
 
     let numeric_release_fk: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)

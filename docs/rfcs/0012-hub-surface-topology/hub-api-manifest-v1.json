@@ -264,7 +264,7 @@
          "method" : "PlanRunContainerGc",
          "path" : "aos.hub.v1.ContainerService/PlanRunContainerGc",
          "request" : "PlanRunContainerGcRequest",
-         "response" : "TopologyPlanResponse",
+         "response" : "ContainerGcPlanResponse",
          "service" : "ContainerService"
       },
       {
@@ -286,6 +286,83 @@
          "path" : "aos.hub.v1.ContainerService/ListContainerGcRuns",
          "request" : "ListContainerGcRunsRequest",
          "response" : "ListContainerGcRunsResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "ListContainerGcCandidates",
+         "path" : "aos.hub.v1.ContainerService/ListContainerGcCandidates",
+         "request" : "ListContainerGcCandidatesRequest",
+         "response" : "ListContainerGcCandidatesResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "ListContainerGcBlockers",
+         "path" : "aos.hub.v1.ContainerService/ListContainerGcBlockers",
+         "request" : "ListContainerGcBlockersRequest",
+         "response" : "ListContainerGcBlockersResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "ListContainerGcPlacementActions",
+         "path" : "aos.hub.v1.ContainerService/ListContainerGcPlacementActions",
+         "request" : "ListContainerGcPlacementActionsRequest",
+         "response" : "ListContainerGcPlacementActionsResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "RequeueContainerGcPlacementAction",
+         "path" : "aos.hub.v1.ContainerService/RequeueContainerGcPlacementAction",
+         "request" : "RequeueContainerGcPlacementActionRequest",
+         "response" : "ContainerGcPlacementActionResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "ListContainerUntrackedInventory",
+         "path" : "aos.hub.v1.ContainerService/ListContainerUntrackedInventory",
+         "request" : "ListContainerUntrackedInventoryRequest",
+         "response" : "ListContainerUntrackedInventoryResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "PlanRepairContainerUntrackedObject",
+         "path" : "aos.hub.v1.ContainerService/PlanRepairContainerUntrackedObject",
+         "request" : "PlanRepairContainerUntrackedObjectRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "RepairContainerUntrackedObject",
+         "path" : "aos.hub.v1.ContainerService/RepairContainerUntrackedObject",
+         "request" : "RepairContainerUntrackedObjectRequest",
+         "response" : "OperationResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "GetContainerUntrackedRepair",
+         "path" : "aos.hub.v1.ContainerService/GetContainerUntrackedRepair",
+         "request" : "GetContainerUntrackedRepairRequest",
+         "response" : "ContainerUntrackedRepairResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "PlanContainerRegistryPurgeFence",
+         "path" : "aos.hub.v1.ContainerService/PlanContainerRegistryPurgeFence",
+         "request" : "PlanContainerRegistryPurgeFenceRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "ApplyContainerRegistryPurgeFence",
+         "path" : "aos.hub.v1.ContainerService/ApplyContainerRegistryPurgeFence",
+         "request" : "ApplyContainerRegistryPurgeFenceRequest",
+         "response" : "ContainerRegistryPurgeFenceResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "GetContainerRegistryPurgeFence",
+         "path" : "aos.hub.v1.ContainerService/GetContainerRegistryPurgeFence",
+         "request" : "GetContainerRegistryPurgeFenceRequest",
+         "response" : "ContainerRegistryPurgeFenceResponse",
          "service" : "ContainerService"
       },
       {

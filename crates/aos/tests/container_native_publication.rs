@@ -708,6 +708,7 @@ async fn spawn_hub(workspace: &Path, trust_key: &str) -> Result<RunningHub> {
         domain_probe_terminator: None,
         identity_domain_verifier: None,
         route_reservation_keyring: None,
+        container_rollout: aos_hub_core::container_rollout::ContainerRollout::all_enabled(),
     });
     let observations = Arc::new(Mutex::new(Vec::new()));
     let app = router(state)

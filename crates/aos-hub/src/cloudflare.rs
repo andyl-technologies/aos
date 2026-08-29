@@ -206,6 +206,8 @@ pub struct DeployConfig {
     pub default_public_delivery_url: Option<String>,
     /// Immutable source/build identity exposed by the deployed Worker.
     pub deployment_id: Option<String>,
+    /// Independent, fail-closed OCI capability rollout policy.
+    pub container_rollout: aos_hub_core::container_rollout::ContainerRollout,
     /// Stable named Durable Object instance containing the Hub database.
     pub database_instance: String,
     /// The magic-link email relay endpoint (`HUB_EMAIL_API_URL` `[vars]`).
@@ -297,6 +299,14 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
     // operator may temporarily change this to `read` or `off` for a staged
     // rollback without migrating or reconciling any database rows.
     vars.push_str("HUB_REQUEST_SHARDING = \"on\"\n");
+    vars.push_str(&format!(
+        "HUB_OCI_PULL_ENABLED = \"{}\"\nHUB_OCI_PUSH_ENABLED = \"{}\"\nHUB_OCI_VERIFIED_PUBLICATION_ENABLED = \"{}\"\nHUB_OCI_ADMINISTRATION_ENABLED = \"{}\"\nHUB_OCI_GC_ENABLED = \"{}\"\n",
+        cfg.container_rollout.pull,
+        cfg.container_rollout.push,
+        cfg.container_rollout.verified_publication,
+        cfg.container_rollout.administration,
+        cfg.container_rollout.garbage_collection,
+    ));
     // Surface the default R2 bucket name so the console's instance-settings page
     // can show where unbound registries/caches push (the R2 binding itself is
     // opaque to the Worker runtime).
@@ -1084,6 +1094,7 @@ pub async fn provision(
         external_url: external_url.to_string(),
         default_public_delivery_url: None,
         deployment_id: deployment_id.map(str::to_string),
+        container_rollout: aos_hub_core::container_rollout::ContainerRollout::default(),
         database_instance: database_instance.to_string(),
         email_relay_url: email_relay_url.map(str::to_string),
         // The `worker` CLI overrides this from its `--email-from` flag before
@@ -1632,6 +1643,7 @@ mod tests {
             external_url: "https://aos.example.com".into(),
             default_public_delivery_url: Some("https://cdn.aos.example.com".into()),
             deployment_id: Some("0123456789abcdef".into()),
+            container_rollout: aos_hub_core::container_rollout::ContainerRollout::all_enabled(),
             database_instance: "hub".into(),
             email_relay_url: None,
             email_from: None,
@@ -1647,6 +1659,23 @@ mod tests {
         assert_eq!(parsed["name"].as_str(), Some("aos-hub"));
         assert_eq!(parsed["main"].as_str(), Some("shim.mjs"));
         assert_eq!(parsed["vars"]["HUB_REQUEST_SHARDING"].as_str(), Some("on"));
+        assert_eq!(
+            parsed["vars"]["HUB_OCI_PULL_ENABLED"].as_str(),
+            Some("true")
+        );
+        assert_eq!(
+            parsed["vars"]["HUB_OCI_PUSH_ENABLED"].as_str(),
+            Some("true")
+        );
+        assert_eq!(
+            parsed["vars"]["HUB_OCI_VERIFIED_PUBLICATION_ENABLED"].as_str(),
+            Some("true")
+        );
+        assert_eq!(
+            parsed["vars"]["HUB_OCI_ADMINISTRATION_ENABLED"].as_str(),
+            Some("true")
+        );
+        assert_eq!(parsed["vars"]["HUB_OCI_GC_ENABLED"].as_str(), Some("true"));
         assert_eq!(
             parsed["vars"]["HUB_EXTERNAL_URL"].as_str(),
             Some("https://aos.example.com")
@@ -1779,6 +1808,7 @@ mod tests {
             external_url: "https://aos.example.com".into(),
             default_public_delivery_url: None,
             deployment_id: None,
+            container_rollout: aos_hub_core::container_rollout::ContainerRollout::default(),
             database_instance: "hub".into(),
             email_relay_url: None,
             email_from: None,
@@ -1806,6 +1836,7 @@ mod tests {
             external_url: "https://aos.example.com".into(),
             default_public_delivery_url: None,
             deployment_id: None,
+            container_rollout: aos_hub_core::container_rollout::ContainerRollout::default(),
             database_instance: "hub".into(),
             email_relay_url: None,
             email_from: None,
@@ -1834,6 +1865,7 @@ mod tests {
             external_url: "https://aos.example.com".into(),
             default_public_delivery_url: None,
             deployment_id: None,
+            container_rollout: aos_hub_core::container_rollout::ContainerRollout::default(),
             database_instance: "hub".into(),
             email_relay_url: None,
             email_from: Some("noreply@example.com".into()),
@@ -1880,6 +1912,7 @@ mod tests {
             external_url: "https://aos.example.com".into(),
             default_public_delivery_url: None,
             deployment_id: None,
+            container_rollout: aos_hub_core::container_rollout::ContainerRollout::default(),
             database_instance: "hub".into(),
             email_relay_url: None,
             email_from: None,
@@ -1984,6 +2017,7 @@ mod tests {
             external_url: "https://aos.example.com".into(),
             default_public_delivery_url: None,
             deployment_id: None,
+            container_rollout: aos_hub_core::container_rollout::ContainerRollout::default(),
             database_instance: "hub".into(),
             email_relay_url: None,
             email_from: None,

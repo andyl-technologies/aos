@@ -2579,6 +2579,61 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     );
     r = rpc_route!(
         r,
+        "/aos.hub.v1.ContainerService/ListContainerGcCandidates",
+        list_container_gc_candidates
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerGcBlockers",
+        list_container_gc_blockers
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerGcPlacementActions",
+        list_container_gc_placement_actions
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/RequeueContainerGcPlacementAction",
+        requeue_container_gc_placement_action
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ListContainerUntrackedInventory",
+        list_container_untracked_inventory
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/PlanRepairContainerUntrackedObject",
+        plan_repair_container_untracked_object
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/RepairContainerUntrackedObject",
+        repair_container_untracked_object
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerUntrackedRepair",
+        get_container_untracked_repair
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/PlanContainerRegistryPurgeFence",
+        plan_container_registry_purge_fence
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/ApplyContainerRegistryPurgeFence",
+        apply_container_registry_purge_fence
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/GetContainerRegistryPurgeFence",
+        get_container_registry_purge_fence
+    );
+    r = rpc_route!(
+        r,
         "/aos.hub.v1.ContainerService/BeginContainerPublication",
         begin_container_publication
     );

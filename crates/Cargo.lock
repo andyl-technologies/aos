@@ -411,6 +411,7 @@ dependencies = [
  "aos-hub",
  "aos-hub-core",
  "aos-oci-types",
+ "aos-proto-types",
  "aos-registry-surface",
  "async-trait",
  "axum",

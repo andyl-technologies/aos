@@ -8150,7 +8150,8 @@ impl Database {
                     resulting_epoch,
                     input.mutation_id
                 ],
-            ).expecting(1),
+            )
+            .expecting(1),
             Statement::new(
                 "UPDATE retention_leases SET state = 'superseded',
                    resource_version = resource_version + 1
@@ -8158,7 +8159,8 @@ impl Database {
                    WHERE id = ?1 AND manual_retention_root_id = ?2)
                    AND manual_retention_root_id = ?2 AND state = 'active'",
                 vals![input.lease_id, input.root_id],
-            ).expecting(1),
+            )
+            .expecting(1),
             Statement::new(
                 "UPDATE manual_retention_roots
                  SET resource_version = resource_version + 1
@@ -8171,7 +8173,8 @@ impl Database {
                     input.cache_id,
                     input.expected_root_version
                 ],
-            ).expecting(1),
+            )
+            .expecting(1),
             Statement::new(
                 "UPDATE manual_retention_lease_heads
                  SET current_lease_id = ?1,
@@ -8189,7 +8192,8 @@ impl Database {
                     input.expected_root_version,
                     input.now
                 ],
-            ).expecting(1),
+            )
+            .expecting(1),
             Statement::new(
                 "INSERT INTO cache_root_reasons
                  (id, cache_id, store_hash, reason_key, source_kind,
@@ -8212,7 +8216,8 @@ impl Database {
                     input.cache_id,
                     (input.expected_root_version + 1).to_string()
                 ],
-            ).expecting(1),
+            )
+            .expecting(1),
             epoch_assertion_statement(
                 &input.mutation_id,
                 input.cache_id,
@@ -8274,7 +8279,8 @@ impl Database {
                        AND root.cache_id = ?4 AND head.current_lease_id = ?1
                        AND root.resource_version = ?5 AND root.deleted_at IS NULL)",
                 vals![lease_id, actor, now, cache_id, expected_root_version],
-            ).expecting(1),
+            )
+            .expecting(1),
             Statement::new(
                 "UPDATE manual_retention_roots
                  SET resource_version = resource_version + 1
@@ -8285,14 +8291,16 @@ impl Database {
                    AND EXISTS (SELECT 1 FROM retention_leases
                      WHERE id = ?2 AND state = 'revoked')",
                 vals![cache_id, lease_id, expected_root_version],
-            ).expecting(1),
+            )
+            .expecting(1),
             Statement::new(
                 "DELETE FROM manual_retention_lease_heads
                  WHERE cache_id = ?1 AND current_lease_id = ?2
                    AND EXISTS (SELECT 1 FROM retention_leases
                      WHERE id = ?2 AND state = 'revoked')",
                 vals![cache_id, lease_id],
-            ).expecting(1),
+            )
+            .expecting(1),
             epoch_assertion_statement(
                 mutation_id,
                 cache_id,
@@ -8342,7 +8350,7 @@ impl Database {
                 "root_generation = root_generation + 1",
             ),
             Statement::new(
-                 "UPDATE retention_leases SET state = 'revoked', revoked_by = ?4,
+                "UPDATE retention_leases SET state = 'revoked', revoked_by = ?4,
                    revoked_at = ?5, resource_version = resource_version + 1
                  WHERE id = (SELECT head.current_lease_id
                    FROM manual_retention_roots root
@@ -8352,19 +8360,22 @@ impl Database {
                      AND root.resource_version = ?3 AND root.deleted_at IS NULL)
                    AND state = 'active'",
                 vals![root_id, cache_id, expected_root_version, actor, now],
-            ).unchecked(),
+            )
+            .unchecked(),
             Statement::new(
                 "DELETE FROM manual_retention_lease_heads
                  WHERE manual_retention_root_id = ?1 AND cache_id = ?2",
                 vals![root_id, cache_id],
-            ).unchecked(),
+            )
+            .unchecked(),
             Statement::new(
                 "UPDATE manual_retention_roots SET deleted_at = ?4,
                    resource_version = resource_version + 1
                  WHERE id = ?1 AND cache_id = ?2 AND resource_version = ?3
                    AND deleted_at IS NULL",
                 vals![root_id, cache_id, expected_root_version, now],
-            ).expecting(1),
+            )
+            .expecting(1),
             epoch_assertion_statement(
                 mutation_id,
                 cache_id,
