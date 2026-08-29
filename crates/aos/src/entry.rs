@@ -109,6 +109,72 @@ async fn run(cli: &Cli) -> Result<()> {
         return commands::package::run(args, &printer).await;
     }
 
+    if let Commands::LanguageServer { system, documents } = &cli.command {
+        return aos_package::run(
+            &aos_package::PackageCommand::Docs {
+                command: aos_package::DocumentationCommand::Lsp {
+                    system: *system,
+                    documents: documents.clone(),
+                },
+            },
+            false,
+            false,
+            &printer,
+        )
+        .await;
+    }
+
+    if let Commands::Doc {
+        source: Some(mode),
+        path,
+        search,
+        system,
+        hub,
+        registry,
+        token,
+        version,
+        platform,
+        ..
+    } = &cli.command
+        && matches!(mode.as_str(), "package" | "hub")
+    {
+        let command = if mode == "hub" || search.is_some() {
+            aos_package::DocumentationCommand::Search {
+                query: search
+                    .clone()
+                    .or_else(|| path.clone())
+                    .ok_or_else(|| anyhow::anyhow!("aos doc hub requires a search query"))?,
+                kind: None,
+                limit: 25,
+                hub: hub.clone(),
+                registry: registry.clone(),
+                token: token.clone(),
+                system: *system,
+            }
+        } else {
+            aos_package::DocumentationCommand::Show {
+                package: path
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("aos doc package requires a package name"))?,
+                version: version.clone(),
+                platform: platform.clone(),
+                format: None,
+                output: None,
+                hub: hub.clone(),
+                registry: registry.clone(),
+                token: token.clone(),
+                system: *system,
+            }
+        };
+        return aos_package::run(
+            &aos_package::PackageCommand::Docs { command },
+            false,
+            false,
+            &printer,
+        )
+        .await;
+    }
+
     // Cache commands use NixCli (classic nix commands), not NixRunner.
     if let Commands::Cache { command } = &cli.command {
         return commands::cache::run(&printer, command).await;
@@ -223,6 +289,7 @@ async fn run(cli: &Cli) -> Result<()> {
             search,
             list,
             rebuild,
+            ..
         } => aos_doc::run(&nix, &printer, source, path, search, list, *rebuild).await,
         // These commands are handled in the early-return block above (before
         // NixRunner construction) and will never reach this match arm. The
@@ -236,6 +303,7 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Hub { .. } => unreachable!(),
         Commands::Image { .. } => unreachable!(),
         Commands::Vm { .. } => unreachable!(),
+        Commands::LanguageServer { .. } => unreachable!(),
     }
 }
 

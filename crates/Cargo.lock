@@ -157,6 +157,7 @@ dependencies = [
  "aos-cache",
  "aos-core",
  "aos-doc",
+ "aos-doc-model",
  "aos-net",
  "aos-package",
  "aos-profile",

@@ -263,6 +263,35 @@ pub enum PackageCommand {
         #[command(subcommand)]
         command: DocumentationCommand,
     },
+    /// Search, inspect, and compare typed package options
+    Options {
+        /// Option operation to run
+        #[command(subcommand)]
+        command: OptionsCommand,
+    },
+    /// Export the canonical package-documentation schema or package model
+    Schema {
+        /// Installed package whose exact structured model should be exported
+        package: Option<String>,
+        /// Hub root URL for a remote package lookup
+        #[arg(long)]
+        hub: Option<String>,
+        /// Hub registry slug for a remote package lookup
+        #[arg(long, requires = "hub")]
+        registry: Option<String>,
+        /// Exact package version
+        #[arg(long)]
+        version: Option<String>,
+        /// Exact package platform
+        #[arg(long)]
+        platform: Option<String>,
+        /// Hub access token
+        #[arg(long, env = "AOS_TOKEN", requires = "hub")]
+        token: Option<String>,
+        /// Read the system package profile instead of the user profile
+        #[arg(long)]
+        system: bool,
+    },
     /// Show package information
     Info {
         /// Package name
@@ -839,6 +868,117 @@ pub enum DocumentationCommand {
         #[arg(long = "document")]
         documents: Vec<PathBuf>,
     },
+    /// Serve the installed documentation browser on a loopback HTTP listener
+    Serve {
+        /// Listener address; non-loopback addresses are rejected
+        #[arg(long, default_value = "127.0.0.1:0")]
+        listen: String,
+        /// Exit after serving one request (useful for automation)
+        #[arg(long, hide = true)]
+        once: bool,
+        /// Read the system package profile instead of the user profile
+        #[arg(long)]
+        system: bool,
+    },
+    /// Explain or collect the profile-scoped generated documentation cache
+    Cache {
+        /// Cache operation to run
+        #[command(subcommand)]
+        command: DocumentationCacheCommand,
+    },
+}
+
+/// Typed option discovery and comparison operations.
+#[derive(Subcommand)]
+pub enum OptionsCommand {
+    /// Search option paths and descriptions
+    Search {
+        /// Terms to search for
+        query: String,
+        /// Maximum number of results
+        #[arg(long, default_value = "25")]
+        limit: usize,
+        /// Hub root URL for a remote search
+        #[arg(long)]
+        hub: Option<String>,
+        /// Hub registry slug for a remote search
+        #[arg(long, requires = "hub")]
+        registry: Option<String>,
+        /// Hub access token
+        #[arg(long, env = "AOS_TOKEN", requires = "hub")]
+        token: Option<String>,
+        /// Search the system profile
+        #[arg(long)]
+        system: bool,
+    },
+    /// Show one exact option path
+    Show {
+        /// Exact display path, including `<wildcard>` segments
+        path: String,
+        /// Restrict the lookup to this package
+        #[arg(long)]
+        package: Option<String>,
+        /// Hub root URL for a remote lookup
+        #[arg(long)]
+        hub: Option<String>,
+        /// Hub registry slug for a remote lookup
+        #[arg(long, requires = "hub")]
+        registry: Option<String>,
+        /// Hub access token
+        #[arg(long, env = "AOS_TOKEN", requires = "hub")]
+        token: Option<String>,
+        /// Search the system profile
+        #[arg(long)]
+        system: bool,
+    },
+    /// Compare option semantics between two exact package versions
+    Compare {
+        /// Package name
+        package: String,
+        /// Source version
+        #[arg(long)]
+        from: String,
+        /// Destination version
+        #[arg(long)]
+        to: String,
+        /// Exact platform
+        #[arg(long)]
+        platform: String,
+        /// Hub root URL
+        #[arg(long)]
+        hub: String,
+        /// Hub registry slug
+        #[arg(long)]
+        registry: String,
+        /// Hub access token
+        #[arg(long, env = "AOS_TOKEN")]
+        token: Option<String>,
+    },
+    /// Emit exact option paths for shell and editor completion
+    Complete {
+        /// Path prefix
+        prefix: String,
+        /// Search the system profile
+        #[arg(long)]
+        system: bool,
+    },
+}
+
+/// Generated documentation cache operations.
+#[derive(Subcommand)]
+pub enum DocumentationCacheCommand {
+    /// Report retained documentation and generated manpage cache entries
+    Status {
+        /// Inspect the system profile cache
+        #[arg(long)]
+        system: bool,
+    },
+    /// Remove generated cache entries not serving as canonical package roots
+    Gc {
+        /// Collect the system profile cache
+        #[arg(long)]
+        system: bool,
+    },
 }
 
 /// Supported package-document renderers.
@@ -1037,6 +1177,7 @@ impl PackageCommand {
             PackageCommand::Clean { system, .. } => *system,
             PackageCommand::TestReconcileExposedUnits { system } => *system,
             PackageCommand::TestVerifyPackageAttestation { system, .. } => *system,
+            PackageCommand::Schema { system, .. } => *system,
             _ => false,
         }
     }
@@ -3075,6 +3216,30 @@ pub async fn run(
     if let PackageCommand::Docs { command } = command {
         return documentation::run(command, printer).await;
     }
+    if let PackageCommand::Options { command } = command {
+        return documentation::run_options(command, printer).await;
+    }
+    if let PackageCommand::Schema {
+        package,
+        hub,
+        registry,
+        version,
+        platform,
+        token,
+        system,
+    } = command
+    {
+        return documentation::run_schema(
+            package.as_deref(),
+            hub.as_deref(),
+            registry.as_deref(),
+            version.as_deref(),
+            platform.as_deref(),
+            token.as_deref(),
+            *system,
+        )
+        .await;
+    }
 
     // The on-host config-eval driver needs no apm config or profile: it reads
     // the registry index and host.nix from disk and shells out to stock nix.
@@ -3798,6 +3963,12 @@ pub async fn run(
         }
         PackageCommand::Docs { .. } => {
             unreachable!("Docs is handled before ApmConfig::load")
+        }
+        PackageCommand::Options { .. } => {
+            unreachable!("Options is handled before ApmConfig::load")
+        }
+        PackageCommand::Schema { .. } => {
+            unreachable!("Schema is handled before ApmConfig::load")
         }
         PackageCommand::GraphCompile { .. } => {
             unreachable!("GraphCompile is handled before ApmConfig::load")
