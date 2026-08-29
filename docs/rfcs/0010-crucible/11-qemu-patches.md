@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **140 patches**. This count is checked against
+The carried series contains **141 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -2345,6 +2345,24 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Inertness:** generation binding neither installs resources in a child nor
   completes any inherited-resource disposition. Readiness bits 6 through 8
   remain clear and no fork operation exists.
+- **Risk:** F.
+
+### crucible-hot-fork-worker-disposition-binding — bind worker dispositions
+
+- **Patch:** `0144-crucible-bind-hot-fork-worker-dispositions.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-8], [HFORK-9].
+- **Mechanism:** version 3 of the plugin-endpoint stage records the exact
+  quiescent plugin-barrier generation and sealed worker mask. It accepts only
+  an empty worker-local state and records equal masks for workers resumed by
+  the parent and workers reinitialized by a future child. Version 12 of the
+  template report keeps the resource transaction bound only while that plan
+  still matches the current retained plugin barrier.
+- **Micro-test:** strict QMP fixtures reject missing, contradictory, stale, or
+  nonempty worker plans; the node transfer path quarantines an acknowledged
+  endpoint pair whose disposition differs from the barrier it observed.
+- **Inertness:** the stage records but does not apply the child reinitializer,
+  transfer execution, or fork. `disposition-complete` remains false, readiness
+  bits 6 through 8 remain clear, and `T-CAM-6.2` remains unchecked.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

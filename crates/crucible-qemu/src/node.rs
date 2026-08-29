@@ -1069,7 +1069,7 @@ pub trait QemuQmpMachineControlChannel: Send {
         _wake: BorrowedFd<'_>,
         _identity: crate::QmpHotForkPluginEndpointIdentity,
         _private_ring_generation: u64,
-    ) -> Result<(), QemuNodeChannelError> {
+    ) -> Result<crate::QmpHotForkPluginEndpointState, QemuNodeChannelError> {
         Err(QemuNodeChannelError::new(
             "install hot-fork plugin endpoints",
             "hot-fork plugin endpoint transfer is not implemented by this QMP channel",

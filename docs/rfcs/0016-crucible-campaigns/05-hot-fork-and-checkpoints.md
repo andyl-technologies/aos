@@ -815,8 +815,12 @@ both entries. QEMU authenticates the socket's Linux `SO_COOKIE`, the eventfd's
 private-ring generation. Standard QMP normalizes received descriptors to
 blocking mode, so the custom stage sets the retained eventfd's shared open-file
 description nonblocking and verifies that state before acceptance. The closed
-version-2 state reports both identities, the same template generation as its
-private-ring dependency, and explicitly keeps
+version-3 state reports both identities, the same template generation as its
+private-ring dependency, and the exact quiescent plugin-barrier generation and
+sealed worker mask captured at template-bound staging. Acceptance requires no
+pending worker-local item or operation. The recorded parent-resume and
+child-reinitialize masks both equal the complete sealed worker mask. This is a
+plan rather than an applied child disposition, so the state explicitly keeps
 `disposition-complete` and
 `readiness-proof-acknowledged` false. Private-ring release is rejected while
 the pair retains its generation. Endpoint release first closes QEMU's
@@ -825,13 +829,13 @@ drops its original pairs only after all acknowledgements. Any transfer or
 release ambiguity poisons QMP, retains the opaque pair, and quarantines the
 QEMU generation.
 
-This is still not the complete plugin-ring proof: a parked worker may retain a
-received trigger or queued fingerprint work, and no fork child yet receives,
-remaps, authenticates, and releases this private mapping together with those
-worker dispositions and its host continuation. Template-process descriptor and
-endpoint retention are not child dispositions: they prove neither inherited-FD
-closure nor child remap/rebind. QEMU therefore keeps readiness bits 6 through 8
-clear.
+This is still not the complete plugin-ring proof. Template-bound staging rejects
+a parked worker that retains a received trigger or queued fingerprint work,
+but no fork child yet receives, remaps, authenticates, and releases the private
+mapping or applies the recorded worker plan together with its host
+continuation. Template-process descriptor and endpoint retention are not child
+dispositions: they prove neither inherited-FD closure nor child remap/rebind.
+QEMU therefore keeps readiness bits 6 through 8 clear.
 
 The next source checkpoint adds a process-lifetime reversible bottom-half and
 timer-source barrier through the OOB
@@ -894,7 +898,7 @@ races and is sufficient for proof bit 3 while retained and quiescent. It does
 not choose child-side descriptor, context, coroutine, or clock disposition;
 those obligations remain separately represented by proof bits 7 and 8.
 
-The retained `PrepareForkTemplate` checkpoint is the version-11 OOB
+The retained `PrepareForkTemplate` checkpoint is the version-12 OOB
 `crucible-hot-fork-template` coordinator:
 
 ```text
@@ -904,19 +908,25 @@ CrucibleHotForkTemplateOutcome =
     idle | draining | blocked | prepared | aborted
 
 CrucibleHotForkTemplateResourceStageState {
-    schema-version: u32 = 1,
+    schema-version: u32 = 2,
     template-generation: u64,
     private-ring-staged: bool,
     private-ring-generation: u64,
     plugin-endpoints-staged: bool,
     plugin-endpoint-generation: u64,
     plugin-private-ring-generation: u64,
+    plugin-barrier-generation: u64,
+    worker-mask: u64,
+    parent-resume-worker-mask: u64,
+    child-reinitialize-worker-mask: u64,
+    pending-worker-mask: u64 = 0,
+    worker-disposition-bound: bool,
     transaction-bound: bool,
     readiness-proof-acknowledged: bool = false,
 }
 
 CrucibleHotForkTemplateState {
-    schema-version: u32 = 11,
+    schema-version: u32 = 12,
     generation: u64,
     outcome: CrucibleHotForkTemplateOutcome,
     transaction-active: bool,
@@ -947,12 +957,17 @@ admission barrier, the bottom-half/timer source barrier, and the plugin callback
 barrier, and retains all four while previously admitted work drains. A repeated
 `prepare` reevaluates the retained transaction. Once all four barriers are
 quiescent, QEMU reports `prepared` only when all nine required bits are present
-in the same transaction. Otherwise the version-11 report continues to report
+in the same transaction. Otherwise the version-12 report continues to report
 `draining` and retains the barriers so the host can capture and stage
-branch-private resources without releasing the source-ring barrier. Version 11 atomically
+branch-private resources without releasing the source-ring barrier. Version 12
+atomically
 reports the exact private-ring and endpoint mutation generations, the
 endpoint-to-ring generation edge, their originating template generation, and
 whether every retained resource is bound to the current active transaction.
+For retained endpoints it also requires the captured barrier generation and
+parent/child worker masks to match the exact current quiescent plugin barrier;
+generation or worker-state drift clears both `worker-disposition-bound` and
+`transaction-bound`.
 Endpoint staging rejects a private-ring stage from a different or already
 aborted transaction. A new transaction starts
 only with an empty resource stage. Private-ring and plugin-endpoint staging

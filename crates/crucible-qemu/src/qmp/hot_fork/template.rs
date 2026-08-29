@@ -15,7 +15,7 @@ use crate::qmp::{QmpCommandKind, QmpError};
 /// QMP command name used for QEMU's retained template-preparation coordinator.
 pub const QMP_HOT_FORK_TEMPLATE_COMMAND: &str = "crucible-hot-fork-template";
 /// Version of the QEMU-owned template-preparation transaction contract.
-pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 11;
+pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 12;
 
 const QMP_HOT_FORK_AIO_PROOF: u64 = 1_u64 << 3;
 const QMP_HOT_FORK_RCU_PROOF: u64 = 1_u64 << 4;
@@ -46,6 +46,11 @@ pub struct QmpHotForkTemplateResourceStageState {
     plugin_endpoints_staged: bool,
     plugin_endpoint_generation: u64,
     plugin_private_ring_generation: u64,
+    plugin_barrier_generation: u64,
+    worker_mask: u64,
+    parent_resume_worker_mask: u64,
+    child_reinitialize_worker_mask: u64,
+    worker_disposition_bound: bool,
     transaction_bound: bool,
 }
 
@@ -84,6 +89,36 @@ impl QmpHotForkTemplateResourceStageState {
     #[must_use]
     pub const fn plugin_private_ring_generation(self) -> u64 {
         self.plugin_private_ring_generation
+    }
+
+    /// Returns the plugin-barrier generation captured by the endpoint stage.
+    #[must_use]
+    pub const fn plugin_barrier_generation(self) -> u64 {
+        self.plugin_barrier_generation
+    }
+
+    /// Returns the exact sealed process-lifetime worker classes.
+    #[must_use]
+    pub const fn worker_mask(self) -> u64 {
+        self.worker_mask
+    }
+
+    /// Returns the worker classes the template parent must resume.
+    #[must_use]
+    pub const fn parent_resume_worker_mask(self) -> u64 {
+        self.parent_resume_worker_mask
+    }
+
+    /// Returns the worker classes a future fork child must reinitialize.
+    #[must_use]
+    pub const fn child_reinitialize_worker_mask(self) -> u64 {
+        self.child_reinitialize_worker_mask
+    }
+
+    /// Returns whether the worker plan matches the current retained barrier.
+    #[must_use]
+    pub const fn worker_disposition_bound(self) -> bool {
+        self.worker_disposition_bound
     }
 
     /// Returns whether every staged resource belongs to the active transaction.
@@ -270,6 +305,7 @@ pub(crate) fn parse_hot_fork_template_state(
         object.get("resource-stage").ok_or_else(&malformed)?,
         generation,
         transaction_active,
+        plugin_barrier,
         &malformed,
     )?;
     let rollback_complete = object
@@ -388,6 +424,7 @@ fn parse_hot_fork_template_resource_stage(
     value: &Value,
     template_generation: u64,
     transaction_active: bool,
+    plugin_barrier: QmpHotForkPluginBarrierState,
     malformed: &impl Fn() -> QmpError,
 ) -> Result<QmpHotForkTemplateResourceStageState, QmpError> {
     let object = value.as_object().ok_or_else(malformed)?;
@@ -399,6 +436,12 @@ fn parse_hot_fork_template_resource_stage(
         "plugin-endpoints-staged",
         "plugin-endpoint-generation",
         "plugin-private-ring-generation",
+        "plugin-barrier-generation",
+        "worker-mask",
+        "parent-resume-worker-mask",
+        "child-reinitialize-worker-mask",
+        "pending-worker-mask",
+        "worker-disposition-bound",
         "transaction-bound",
         "readiness-proof-acknowledged",
     ];
@@ -425,6 +468,12 @@ fn parse_hot_fork_template_resource_stage(
     let plugin_endpoints_staged = bool_field("plugin-endpoints-staged")?;
     let plugin_endpoint_generation = u64_field("plugin-endpoint-generation")?;
     let plugin_private_ring_generation = u64_field("plugin-private-ring-generation")?;
+    let plugin_barrier_generation = u64_field("plugin-barrier-generation")?;
+    let worker_mask = u64_field("worker-mask")?;
+    let parent_resume_worker_mask = u64_field("parent-resume-worker-mask")?;
+    let child_reinitialize_worker_mask = u64_field("child-reinitialize-worker-mask")?;
+    let pending_worker_mask = u64_field("pending-worker-mask")?;
+    let worker_disposition_bound = bool_field("worker-disposition-bound")?;
     let transaction_bound = bool_field("transaction-bound")?;
     let readiness_proof_acknowledged = bool_field("readiness-proof-acknowledged")?;
     let state = QmpHotForkTemplateResourceStageState {
@@ -434,6 +483,11 @@ fn parse_hot_fork_template_resource_stage(
         plugin_endpoints_staged,
         plugin_endpoint_generation,
         plugin_private_ring_generation,
+        plugin_barrier_generation,
+        worker_mask,
+        parent_resume_worker_mask,
+        child_reinitialize_worker_mask,
+        worker_disposition_bound,
         transaction_bound,
     };
     if !resource_stage_shape_valid(
@@ -441,6 +495,8 @@ fn parse_hot_fork_template_resource_stage(
         state,
         template_generation,
         transaction_active,
+        plugin_barrier,
+        pending_worker_mask,
         readiness_proof_acknowledged,
     ) {
         return Err(malformed());
@@ -453,14 +509,42 @@ fn resource_stage_shape_valid(
     state: QmpHotForkTemplateResourceStageState,
     template_generation: u64,
     transaction_active: bool,
+    plugin_barrier: QmpHotForkPluginBarrierState,
+    pending_worker_mask: u64,
     readiness_proof_acknowledged: bool,
 ) -> bool {
     let resources_staged = state.private_ring_staged || state.plugin_endpoints_staged;
-    let expected_bound =
-        transaction_active && resources_staged && state.template_generation == template_generation;
+    let disposition_shape = if state.plugin_endpoints_staged && state.template_generation != 0 {
+        state.plugin_barrier_generation != 0
+            && state.worker_mask != 0
+            && state.parent_resume_worker_mask == state.worker_mask
+            && state.child_reinitialize_worker_mask == state.worker_mask
+            && pending_worker_mask == 0
+    } else {
+        state.plugin_barrier_generation == 0
+            && state.worker_mask == 0
+            && state.parent_resume_worker_mask == 0
+            && state.child_reinitialize_worker_mask == 0
+            && pending_worker_mask == 0
+    };
+    let expected_disposition_bound = transaction_active
+        && state.plugin_endpoints_staged
+        && state.template_generation == template_generation
+        && disposition_shape
+        && plugin_barrier.quiescent()
+        && state.plugin_barrier_generation == plugin_barrier.generation()
+        && state.worker_mask == plugin_barrier.worker_mask()
+        && state.worker_mask == plugin_barrier.parked_worker_mask()
+        && plugin_barrier.pending_worker_mask() == 0
+        && plugin_barrier.worker_operations_in_flight() == 0;
+    let expected_bound = transaction_active
+        && resources_staged
+        && state.template_generation == template_generation
+        && (!state.plugin_endpoints_staged || expected_disposition_bound);
 
-    schema_version == 1
+    schema_version == 2
         && !readiness_proof_acknowledged
+        && disposition_shape
         && (!state.private_ring_staged || state.private_ring_generation != 0)
         && (!state.plugin_endpoints_staged
             || (state.private_ring_staged
@@ -472,15 +556,21 @@ fn resource_stage_shape_valid(
             || state.template_generation == 0
             || state.template_generation == template_generation)
         && (!transaction_active || !resources_staged || expected_bound)
+        && state.worker_disposition_bound == expected_disposition_bound
         && state.transaction_bound == expected_bound
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{QmpHotForkTemplateResourceStageState, resource_stage_shape_valid};
+    use super::{
+        QmpHotForkPluginBarrierState, QmpHotForkTemplateResourceStageState,
+        resource_stage_shape_valid,
+    };
 
     #[test]
     fn resource_stage_requires_exact_template_and_private_ring_generations() {
+        let plugin_barrier = QmpHotForkPluginBarrierState::one_quiescent(6, 9);
+        let worker_mask = plugin_barrier.worker_mask();
         let bound = QmpHotForkTemplateResourceStageState {
             template_generation: 4,
             private_ring_staged: true,
@@ -488,19 +578,34 @@ mod tests {
             plugin_endpoints_staged: true,
             plugin_endpoint_generation: 12,
             plugin_private_ring_generation: 11,
+            plugin_barrier_generation: 6,
+            worker_mask,
+            parent_resume_worker_mask: worker_mask,
+            child_reinitialize_worker_mask: worker_mask,
+            worker_disposition_bound: true,
             transaction_bound: true,
         };
-        assert!(resource_stage_shape_valid(1, bound, 4, true, false));
+        assert!(resource_stage_shape_valid(
+            2,
+            bound,
+            4,
+            true,
+            plugin_barrier,
+            0,
+            false
+        ));
 
         let foreign_template = QmpHotForkTemplateResourceStageState {
             template_generation: 3,
             ..bound
         };
         assert!(!resource_stage_shape_valid(
-            1,
+            2,
             foreign_template,
             4,
             true,
+            plugin_barrier,
+            0,
             false
         ));
 
@@ -508,30 +613,74 @@ mod tests {
             plugin_private_ring_generation: 10,
             ..bound
         };
-        assert!(!resource_stage_shape_valid(1, foreign_ring, 4, true, false));
+        assert!(!resource_stage_shape_valid(
+            2,
+            foreign_ring,
+            4,
+            true,
+            plugin_barrier,
+            0,
+            false
+        ));
 
         let unbound = QmpHotForkTemplateResourceStageState {
             transaction_bound: false,
             ..bound
         };
-        assert!(!resource_stage_shape_valid(1, unbound, 4, true, false));
+        assert!(!resource_stage_shape_valid(
+            2,
+            unbound,
+            4,
+            true,
+            plugin_barrier,
+            0,
+            false
+        ));
 
         let retained_after_abort = QmpHotForkTemplateResourceStageState {
+            worker_disposition_bound: false,
             transaction_bound: false,
             ..bound
         };
         assert!(resource_stage_shape_valid(
-            1,
+            2,
             retained_after_abort,
             4,
             false,
+            plugin_barrier,
+            0,
             false
         ));
         assert!(!resource_stage_shape_valid(
-            1,
+            2,
             retained_after_abort,
             5,
             false,
+            plugin_barrier,
+            0,
+            false
+        ));
+
+        let stale_barrier = QmpHotForkTemplateResourceStageState {
+            plugin_barrier_generation: 5,
+            ..bound
+        };
+        assert!(!resource_stage_shape_valid(
+            2,
+            stale_barrier,
+            4,
+            true,
+            plugin_barrier,
+            0,
+            false
+        ));
+        assert!(!resource_stage_shape_valid(
+            2,
+            bound,
+            4,
+            true,
+            plugin_barrier,
+            worker_mask,
             false
         ));
     }

@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "dd57648c4cb66e4c15536998bbae1eb47a2ee6c761ddfd68a489aa20c3980753";
+  patchBranchBundleSha256 = "30309caff3eeff6012ee9c4bb6e66eebc247466951d983cef556870f3a9c2ac5";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "c63c73da1357cbc4f10cda01236ef50621808440";
+  patchBranchHeadCommit = "a93f25c27fdc50b10e2eb8d739b73482d6877ceb";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1359,12 +1359,22 @@ let
     {
       file = "0143-crucible-bind-hot-fork-resource-generations.patch";
       branchSubject = "crucible: bind hot-fork resource generations";
-      branchCommit = "c63c73da1357cbc4f10cda01236ef50621808440";
+      branchCommit = "07d572751beb5d4275b3d4ef45171a98984b04a0";
       branchTree = "a057df6dd03c38a4701989ffaf4e4146542d03ca";
       catalogName = "crucible-hot-fork-resource-generation-binding";
       class = "F";
       enforces = "HFORK-3,HFORK-8,HFORK-9";
       capability = "QEMU atomically binds retained private-ring and plugin-endpoint generations to the exact version-11 template transaction, rejects cross-transaction composition, and reports retained-but-unbound resources after abort without acknowledging readiness bits 6 through 8";
+    }
+    {
+      file = "0144-crucible-bind-hot-fork-worker-dispositions.patch";
+      branchSubject = "crucible: bind hot-fork worker dispositions";
+      branchCommit = "a93f25c27fdc50b10e2eb8d739b73482d6877ceb";
+      branchTree = "3f33400bca53e690a323510cb40a6f18d502a9a8";
+      catalogName = "crucible-hot-fork-worker-disposition-binding";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-8,HFORK-9";
+      capability = "QEMU binds an explicit empty-local-state parent-resume and child-reinitialize plan for every sealed plugin worker class to the exact quiescent plugin-barrier generation retained by the version-12 template transaction, while leaving child application and readiness bits 6 through 8 incomplete";
     }
   ];
   catalogOnlyCapabilities = [

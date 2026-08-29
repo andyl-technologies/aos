@@ -168,7 +168,7 @@ where
         wake: std::os::fd::BorrowedFd<'_>,
         identity: crate::QmpHotForkPluginEndpointIdentity,
         private_ring_generation: u64,
-    ) -> Result<(), QemuNodeChannelError> {
+    ) -> Result<crate::QmpHotForkPluginEndpointState, QemuNodeChannelError> {
         self.vmstate.install_hot_fork_plugin_endpoints(
             control_name,
             control,

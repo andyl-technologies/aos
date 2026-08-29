@@ -647,6 +647,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0144-crucible-bind-hot-fork-worker-dispositions.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
