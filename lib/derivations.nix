@@ -836,20 +836,34 @@
       )
     );
 
+    # A named output from builtins.derivation is a fresh derivation attrset;
+    # package-level metadata attached to `drv` is not present on `drv.dev`,
+    # `drv.tools`, and other outputs. Preserve the dependency and execution
+    # contract on every output so downstream consumers inherit propagated
+    # dependencies regardless of which output they select.
+    outputMetadata = {
+      inherit meta version propagatedDeps;
+      pname = effectivePname;
+      constraints = {
+        build = meta.build or null;
+        execute = meta.execute or null;
+        target = meta.target or null;
+      };
+    };
+    annotatedOutputs = builtins.listToAttrs (
+      builtins.map (output: {
+        name = output;
+        value = drv.${output} // outputMetadata;
+      })
+      outputs
+    );
+
     # Attach metadata and override mechanism
     result =
       drv
+      // annotatedOutputs
+      // outputMetadata
       // {
-        inherit meta version propagatedDeps;
-        pname = effectivePname;
-
-        # Expose constraints for downstream chaining verification
-        constraints = {
-          build = meta.build or null;
-          execute = meta.execute or null;
-          target = meta.target or null;
-        };
-
         # Override mechanism
         override = overrideArgs:
           if builtins.isFunction overrideArgs

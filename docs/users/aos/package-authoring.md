@@ -115,6 +115,13 @@ declare Perl in `buildDeps` when configure rejects a missing Perl interpreter.
 If a dependency is missing from AOS, package it from source rather than
 reaching into the host or importing nixpkgs.
 
+Select a package's named output, such as `library.dev`, when a downstream build
+needs only that output's headers or package metadata. `mkDerivation` preserves
+the package's `propagatedDeps` on every named output, so downstream search paths
+still contain the transitive dependencies required by those headers and
+`.pc` files. Declare those requirements once on the producing package; do not
+repeat them on each consumer merely because the producer splits its outputs.
+
 `mkDerivation` also enables the repository hardening profile. Keep that profile
 unless an upstream representation is incompatible with one specific flag. For
 example, code that deliberately uses a trailing one-element or zero-length
