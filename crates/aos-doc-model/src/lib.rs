@@ -1490,7 +1490,7 @@ fn validate_literal(value: &Value, depth: usize, items: &mut usize) -> Result<()
         Value::Number(number) if !number.is_i64() && !number.is_u64() => {
             Err(invalid("floating-point literals are forbidden"))
         }
-        Value::String(text) => validate_text("literal string", text),
+        Value::String(text) => validate_literal_text("literal string", text),
         Value::Array(values) => {
             for value in values {
                 validate_literal(value, depth + 1, items)?;
@@ -1499,7 +1499,7 @@ fn validate_literal(value: &Value, depth: usize, items: &mut usize) -> Result<()
         }
         Value::Object(values) => {
             for (key, value) in values {
-                validate_text("literal key", key)?;
+                validate_literal_text("literal key", key)?;
                 validate_literal(value, depth + 1, items)?;
             }
             Ok(())
@@ -1650,6 +1650,17 @@ fn validate_nonempty(label: &str, value: &str) -> Result<()> {
 
 fn validate_text(label: &str, value: &str) -> Result<()> {
     validate_nonempty(label, value)?;
+    validate_safe_text(label, value)
+}
+
+fn validate_literal_text(label: &str, value: &str) -> Result<()> {
+    if value.len() > MAX_TEXT_BYTES {
+        return Err(invalid(format!("{label} is too large")));
+    }
+    validate_safe_text(label, value)
+}
+
+fn validate_safe_text(label: &str, value: &str) -> Result<()> {
     if value.contains('\0') || value.contains("/nix/store/") {
         return Err(invalid(format!("{label} contains forbidden content")));
     }
@@ -2072,6 +2083,21 @@ mod tests {
         let parsed = PackageDocumentation::from_canonical_json(&bytes).expect("decode");
         assert_eq!(parsed, document);
         assert_eq!(parsed.document_sha256().expect("digest").len(), 71);
+    }
+
+    #[test]
+    fn literal_values_preserve_empty_strings_and_attribute_names() {
+        let mut document = fixture();
+        document.options[0].default = Some(DocumentedValue::Literal {
+            value: serde_json::json!({"": "", "nested": [""]}),
+        });
+        document.identity.semantic_schema_sha256 = document
+            .computed_semantic_schema_sha256()
+            .expect("semantic digest");
+
+        let bytes = document.canonical_json().expect("encode");
+        let parsed = PackageDocumentation::from_canonical_json(&bytes).expect("decode");
+        assert_eq!(parsed.options[0].default, document.options[0].default);
     }
 
     #[test]
