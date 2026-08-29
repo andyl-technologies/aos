@@ -23,6 +23,7 @@
       - _NSAccessibilityTabButtonSubrole
       - _NSAccessibilityTableRowSubrole
       - _NSAccessibilityTitleChangedNotification
+      - _NSAccessibilityUnknownSubrole
       - _NSAccessibilityVisibleCharacterRangeAttribute
       - _NSAppearanceNameAqua
       - _NSDocumentTypeDocumentAttribute
