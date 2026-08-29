@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "30309caff3eeff6012ee9c4bb6e66eebc247466951d983cef556870f3a9c2ac5";
+  patchBranchBundleSha256 = "e937ad6763b7e3869831de6159dd3d22cb1c5feab5de3441d85544b422d876e8";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "a93f25c27fdc50b10e2eb8d739b73482d6877ceb";
+  patchBranchHeadCommit = "c1c1791b2604d3c1f3702085c821dc32d81a15a2";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1375,6 +1375,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4,HFORK-8,HFORK-9";
       capability = "QEMU binds an explicit empty-local-state parent-resume and child-reinitialize plan for every sealed plugin worker class to the exact quiescent plugin-barrier generation retained by the version-12 template transaction, while leaving child application and readiness bits 6 through 8 incomplete";
+    }
+    {
+      file = "0145-crucible-exclude-source-rings-from-fork-children.patch";
+      branchSubject = "crucible: exclude source rings from fork children";
+      branchCommit = "c1c1791b2604d3c1f3702085c821dc32d81a15a2";
+      branchTree = "d4f9d4ca3ec6122c349f2348232b4876204c4487";
+      catalogName = "crucible-hot-fork-source-ring-noninheritance";
+      class = "F";
+      enforces = "HFORK-3,HFORK-8,HFORK-9,HFORK-12";
+      capability = "the version-6 plugin barrier applies MADV_DONTFORK to the exact source shared-memory mapping only after callback, ring, and worker admission closes, rolls every hold back on failure, and restores MADV_DOFORK before reopening the retained parent without yet installing a child mapping or acknowledging readiness bits 6 through 8";
     }
   ];
   catalogOnlyCapabilities = [

@@ -1,0 +1,119 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index a99d86d06..d5ab3e88a 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1228,15 +1228,17 @@ QEMU_PLUGIN_API
+ int qemu_plugin_crucible_register_resource_manifest(
+     const struct qemu_plugin_crucible_resource_manifest *manifest);
+ 
+-#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_STATUS_VERSION 5
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_STATUS_VERSION 6
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD 1
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY 2
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_RELEASE 3
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_HELD (1U << 0)
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_TEARDOWN (1U << 1)
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_MAPPING_DONTFORK (1U << 2)
+ #define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_ALL \
+     (QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_HELD | \
+-     QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_TEARDOWN)
++     QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_TEARDOWN | \
++     QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_MAPPING_DONTFORK)
+ 
+ struct qemu_plugin_crucible_hot_fork_barrier_status {
+     uint32_t schema_version;
+@@ -1266,10 +1268,12 @@ typedef int (*qemu_plugin_crucible_hot_fork_barrier_cb_t)(
+  * @userdata: stable opaque pointer passed to @cb
+  *
+  * The callback exposes a reversible admission hold over every live plugin
+- * callback, every shared-memory ring producer, and every sealed worker class.
+- * Holding the barrier is nonblocking: the returned status reports callbacks,
+- * producer publications, and worker operations that were admitted before
+- * their holds and have not returned.
++ * callback, every shared-memory ring producer, every sealed worker class, and
++ * marks the exact source shared-memory mapping MADV_DONTFORK. Holding the
++ * barrier is nonblocking: the returned status reports callbacks, producer
++ * publications, and worker operations that were admitted before their holds
++ * and have not returned. Release restores MADV_DOFORK before reopening the
++ * parent-side producers, consumers, callbacks, or workers.
+  *
+  * Returns zero on success or a negative errno-style status on failure.
+  */
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 6bb11600a..c9bca9d0f 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -174,6 +174,8 @@ crucible_hot_fork_plugin_barrier(uint32_t operation, Error **errp)
+         QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_HELD) != 0;
+     report->teardown_closed = (inventory.status.flags &
+         QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_TEARDOWN) != 0;
++    report->mapping_dontfork = (inventory.status.flags &
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_MAPPING_DONTFORK) != 0;
+     report->in_flight = inventory.status.in_flight;
+     report->ring_count = inventory.status.ring_count;
+     report->rings_held = inventory.status.rings_held;
+@@ -188,6 +190,7 @@ crucible_hot_fork_plugin_barrier(uint32_t operation, Error **errp)
+         inventory.status.worker_operations_in_flight;
+     report->quiescent = report->registered && report->manifest_consistent &&
+         report->held && !report->teardown_closed && report->in_flight == 0 &&
++        report->mapping_dontfork &&
+         report->ring_count != 0 &&
+         report->rings_held == report->ring_count &&
+         report->ring_producers_in_flight == 0 &&
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+index 5c750ae11..3114d8306 100644
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -334,6 +334,11 @@ int qemu_plugin_crucible_hot_fork_barrier(
+         (((status.flags &
+            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_HELD) != 0) !=
+          (status.rings_held == status.ring_count)) ||
++        (((status.flags &
++           QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_MAPPING_DONTFORK) !=
++          0) !=
++         ((status.flags &
++           QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_HELD) != 0)) ||
+         (action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD &&
+          (status.flags &
+           QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_HELD) == 0) ||
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index a045c6a7c..d5efce4ee 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -986,12 +986,13 @@
+ # Exact plugin-owned callback, shared-ring I/O, and process-worker state. A
+ # quiescent response proves that every callback covered by the sealed callback
+ # mask, every producer and consumer for the validated shared-memory ring set,
+-# and every sealed worker class is parked. It does not clone queued ring/worker
+-# bytes, reconstruct child workers, or acknowledge hot-fork readiness proof
+-# bit 6. Version 5 distinguishes an idle parked worker from a parked worker
+-# retaining one dequeued item in thread-local state.
++# and every sealed worker class is parked. Version 6 additionally requires the
++# plugin's exact source shared-memory mapping to carry MADV_DONTFORK while held,
++# and restores MADV_DOFORK before parent release. It does not clone queued
++# ring/worker bytes, install the branch-private child mapping, reconstruct child
++# workers, or acknowledge hot-fork readiness proof bit 6.
+ #
+-# @schema-version: barrier contract version, currently 5
++# @schema-version: barrier contract version, currently 6
+ #
+ # @generation: process-local barrier registration/hold generation
+ #
+@@ -1003,6 +1004,9 @@
+ #
+ # @teardown-closed: whether permanent teardown closure superseded the hold
+ #
++# @mapping-dontfork: whether the exact source shared-memory mapping is excluded
++#     from fork-child inheritance
++#
+ # @in-flight: callbacks admitted before the hold that have not yet returned
+ #
+ # @ring-count: exact number of rings in the validated shared-memory layout
+@@ -1036,6 +1040,7 @@
+             'manifest-consistent': 'bool',
+             'held': 'bool',
+             'teardown-closed': 'bool',
++            'mapping-dontfork': 'bool',
+             'in-flight': 'uint64',
+             'ring-count': 'uint64',
+             'rings-held': 'uint64',

@@ -943,7 +943,11 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     );
     assert_eq!(held.reserved, 0);
     assert_eq!(held.in_flight, 0);
-    assert_eq!(held.flags, crate::QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_HELD);
+    assert_eq!(
+        held.flags,
+        crate::QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_HELD
+            | crate::QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_MAPPING_DONTFORK
+    );
     assert!(held.ring_count > 0);
     assert_eq!(held.rings_held, held.ring_count);
     assert_eq!(held.ring_producers_in_flight, 0);

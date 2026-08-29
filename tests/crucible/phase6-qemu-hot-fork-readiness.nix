@@ -1106,12 +1106,13 @@ in
              select(has("in-flight"))] as $reports |
             ($reports | length) == 2 and $reports[0] == $reports[1] and
             $reports[0] == {
-              "schema-version": 5,
+              "schema-version": 6,
               "generation": 0,
               "registered": false,
               "manifest-consistent": false,
               "held": false,
               "teardown-closed": false,
+              "mapping-dontfork": false,
               "in-flight": 0,
               "ring-count": 0,
               "rings-held": 0,
@@ -1317,12 +1318,13 @@ in
             $report."acknowledged-proofs" == 3 and
             $report."missing-proofs" == 508 and
             $report."plugin-barrier" == {
-              "schema-version": 5,
+              "schema-version": 6,
               "generation": 0,
               "registered": false,
               "manifest-consistent": false,
               "held": false,
               "teardown-closed": false,
+              "mapping-dontfork": false,
               "in-flight": 0,
               "ring-count": 0,
               "rings-held": 0,
@@ -1620,7 +1622,7 @@ in
           check=${attrPath}
           tasks=${taskList}
           gate=gate:hot-fork-readiness
-          patch=0144-crucible-bind-hot-fork-worker-dispositions.patch
+          patch=0145-crucible-exclude-source-rings-from-fork-children.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -1670,9 +1672,10 @@ in
           plugin_resource_inventory_schema_version=2
           plugin_resource_inventory_stable=true
           plugin_resource_inventory_unregistered_shape=true
-          plugin_barrier_schema_version=5
+          plugin_barrier_schema_version=6
           plugin_barrier_stable=true
           plugin_barrier_unregistered_shape=true
+          plugin_mapping_dontfork_unregistered=false
           plugin_barrier_release_unregistered_rejected=true
           plugin_worker_mask_bound=true
           plugin_worker_parking_bound=true

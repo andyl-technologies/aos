@@ -390,22 +390,24 @@ pub const QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD: u32 = 1;
 pub const QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY: u32 = 2;
 /// Hot-fork barrier callback action that releases the reversible hold.
 pub const QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE: u32 = 3;
-/// Current fixed-layout callback, ring, and worker barrier status schema.
-pub const QEMU_PLUGIN_HOT_FORK_BARRIER_STATUS_VERSION: u32 = 5;
+/// Current fixed-layout callback, ring, worker, and mapping barrier schema.
+pub const QEMU_PLUGIN_HOT_FORK_BARRIER_STATUS_VERSION: u32 = 6;
 /// Callback-barrier status flag indicating that the reversible hold is active.
 pub const QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_HELD: u32 = 1_u32 << 0;
 /// Callback-barrier status flag indicating permanent teardown closure.
 pub const QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_TEARDOWN: u32 = 1_u32 << 1;
+/// Callback-barrier status flag indicating the source mapping is `MADV_DONTFORK`.
+pub const QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_MAPPING_DONTFORK: u32 = 1_u32 << 2;
 
 /// Fixed-layout status copied from the plugin callback-admission owner.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct QemuPluginHotForkBarrierStatus {
-    /// Status schema version, currently five.
+    /// Status schema version, currently six.
     pub schema_version: u32,
     /// Exact C ABI structure size.
     pub struct_size: u32,
-    /// Closed flag mask describing held and teardown state.
+    /// Closed flag mask describing held, teardown, and mapping-disposition state.
     pub flags: u32,
     /// Reserved field that must remain zero.
     pub reserved: u32,

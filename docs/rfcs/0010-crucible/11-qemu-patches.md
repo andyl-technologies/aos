@@ -2365,6 +2365,26 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   bits 6 through 8 remain clear, and `T-CAM-6.2` remains unchecked.
 - **Risk:** F.
 
+### crucible-hot-fork-source-ring-noninheritance — exclude source rings
+
+- **Patch:** `0145-crucible-exclude-source-rings-from-fork-children.patch`.
+- **Enforces:** [HFORK-3], [HFORK-8], [HFORK-9], [HFORK-12].
+- **Mechanism:** version 6 of the plugin barrier reports a
+  `mapping-dontfork` predicate. After callback, ring, and worker admission is
+  held, the GPL plugin applies `MADV_DONTFORK` to the exact live setup-region
+  mapping. A failed transition rolls the holds back. Release restores
+  `MADV_DOFORK` before reopening the retained parent, and a failed restore
+  retains every admission hold.
+- **Micro-test:** the permissive mapping owner observes Linux's `dc` VMA flag
+  appear and disappear across the reversible transition. Live plugin and
+  strict QMP fixtures require the mapping flag while held and reject a
+  contradictory quiescent report; the readiness gate pins the version-6
+  unregistered shape.
+- **Inertness:** no child mapping is installed and no child worker is rebuilt.
+  The template remains unready, readiness bits 6 through 8 remain clear, and
+  `T-CAM-6.2` remains unchecked.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

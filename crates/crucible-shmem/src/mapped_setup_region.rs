@@ -38,8 +38,8 @@ mod fault_transports;
 #[path = "mapped_setup_region/hot_fork.rs"]
 mod hot_fork;
 pub use hot_fork::{
-    HOT_FORK_RING_IMAGE_SCHEMA_VERSION, HotForkRingImage, HotForkRingImageError,
-    MappedRingIoBarrierSnapshot,
+    HOT_FORK_RING_IMAGE_SCHEMA_VERSION, HotForkMappingDispositionError, HotForkRingImage,
+    HotForkRingImageError, MappedRingIoBarrierSnapshot,
 };
 
 impl Drop for MappedSetupRegion {
@@ -180,6 +180,72 @@ mod tests {
         let mapped = mmap_setup_region(fd.as_fd(), region_len)?;
         assert_eq!(mapped.region_len(), region_len);
         Ok(())
+    }
+
+    #[test]
+    fn hot_fork_mapping_disposition_is_reversible() -> Result<(), Box<dyn std::error::Error>> {
+        let fd = test_memfd()?;
+        let region_len = REGION_HEADER_SIZE as u64;
+        let truncate = unsafe {
+            // SAFETY: `fd` is live and the header size fits in `off_t`.
+            libc::ftruncate(fd.as_raw_fd(), REGION_HEADER_SIZE as libc::off_t)
+        };
+        if truncate != 0 {
+            return Err(Box::new(io::Error::last_os_error()));
+        }
+        let add_seal = unsafe {
+            // SAFETY: `fd` is a live memfd created with `MFD_ALLOW_SEALING`.
+            libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SHRINK)
+        };
+        if add_seal != 0 {
+            return Err(Box::new(io::Error::last_os_error()));
+        }
+
+        let mapped = mmap_setup_region(fd.as_fd(), region_len)?;
+        assert!(
+            !mapping_vm_flags(mapped.address)?
+                .iter()
+                .any(|flag| flag == "dc")
+        );
+
+        mapped.exclude_from_hot_fork_child()?;
+        assert!(
+            mapping_vm_flags(mapped.address)?
+                .iter()
+                .any(|flag| flag == "dc")
+        );
+
+        mapped.restore_hot_fork_parent_inheritance()?;
+        assert!(
+            !mapping_vm_flags(mapped.address)?
+                .iter()
+                .any(|flag| flag == "dc")
+        );
+        Ok(())
+    }
+
+    fn mapping_vm_flags(address: usize) -> io::Result<Vec<String>> {
+        let smaps = std::fs::read_to_string("/proc/self/smaps")?;
+        let mut selected = false;
+        for line in smaps.lines() {
+            if let Some((range, _rest)) = line.split_once(' ')
+                && let Some((start, end)) = range.split_once('-')
+                && let (Ok(start), Ok(end)) = (
+                    usize::from_str_radix(start, 16),
+                    usize::from_str_radix(end, 16),
+                )
+            {
+                selected = start <= address && address < end;
+                continue;
+            }
+            if selected && let Some(flags) = line.strip_prefix("VmFlags: ") {
+                return Ok(flags.split_ascii_whitespace().map(str::to_owned).collect());
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "mapped setup region was absent from /proc/self/smaps",
+        ))
     }
 
     fn test_memfd() -> io::Result<OwnedFd> {

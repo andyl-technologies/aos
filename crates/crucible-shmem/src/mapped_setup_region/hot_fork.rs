@@ -21,6 +21,23 @@ pub struct MappedRingIoBarrierSnapshot {
     consumers_in_flight: u64,
 }
 
+/// Failure while changing whether a setup-region mapping survives `fork(2)`.
+#[derive(Debug, Error)]
+pub enum HotForkMappingDispositionError {
+    /// The current operating system has no supported mapping-inheritance API.
+    #[error("hot-fork mapping inheritance disposition is unsupported on this platform")]
+    Unsupported,
+    /// Linux rejected the requested mapping-inheritance transition.
+    #[error("{operation} for the hot-fork setup-region mapping failed")]
+    Madvise {
+        /// Stable transition name.
+        operation: &'static str,
+        /// Underlying operating-system failure.
+        #[source]
+        source: std::io::Error,
+    },
+}
+
 impl MappedRingIoBarrierSnapshot {
     /// Returns the exact number of ring headers in the validated region layout.
     #[must_use]
@@ -64,6 +81,68 @@ enum BarrierAction {
 }
 
 impl MappedSetupRegion {
+    /// Excludes this exact mapping from a future `fork(2)` child.
+    ///
+    /// The current process retains normal access. Callers must first stop every
+    /// producer and consumer, retain the mapping owner until the matching
+    /// release, and explicitly install an independently authenticated mapping
+    /// in any child that continues execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HotForkMappingDispositionError`] when the platform does not
+    /// support `MADV_DONTFORK` or the kernel rejects the transition.
+    pub fn exclude_from_hot_fork_child(&self) -> Result<(), HotForkMappingDispositionError> {
+        self.set_hot_fork_mapping_inheritance(false)
+    }
+
+    /// Restores ordinary inheritance for this exact mapping.
+    ///
+    /// This transition is intended for the retained template parent before
+    /// ring producers and consumers reopen.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HotForkMappingDispositionError`] when the platform does not
+    /// support `MADV_DOFORK` or the kernel rejects the transition.
+    pub fn restore_hot_fork_parent_inheritance(
+        &self,
+    ) -> Result<(), HotForkMappingDispositionError> {
+        self.set_hot_fork_mapping_inheritance(true)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn set_hot_fork_mapping_inheritance(
+        &self,
+        inherited: bool,
+    ) -> Result<(), HotForkMappingDispositionError> {
+        let (advice, operation) = if inherited {
+            (libc::MADV_DOFORK, "MADV_DOFORK")
+        } else {
+            (libc::MADV_DONTFORK, "MADV_DONTFORK")
+        };
+        // SAFETY: `base_ptr` and `len` identify the live mapping owned by this
+        // value. `madvise` changes only kernel inheritance metadata; it neither
+        // transfers ownership nor permits access outside the mapped range.
+        let status =
+            unsafe { libc::madvise(self.base_ptr().cast::<libc::c_void>(), self.len, advice) };
+        if status != 0 {
+            return Err(HotForkMappingDispositionError::Madvise {
+                operation,
+                source: std::io::Error::last_os_error(),
+            });
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn set_hot_fork_mapping_inheritance(
+        &self,
+        _inherited: bool,
+    ) -> Result<(), HotForkMappingDispositionError> {
+        Err(HotForkMappingDispositionError::Unsupported)
+    }
+
     /// Captures every queue-backed segment while both ring endpoints are held.
     ///
     /// `maximum_bytes` bounds the complete canonical image, including its
