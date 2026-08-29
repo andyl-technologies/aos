@@ -725,6 +725,8 @@ in {
           mkdir -p "$HOME"
           {APM} registry add {REGISTRY} --name production --priority 900 \\
             --channel stable --trust-key {shlex.quote(trust)}
+          sed -i '/^\\[registry.signing\\]$/a root_owner_signers = ["initial"]' \\
+            "$HOME/.config/apm/registries.d/production.toml"
           {APM} registry list 2>&1 | grep production >/dev/null
           {APM} update --registry production
           {APM} install nginx --registry production --yes
