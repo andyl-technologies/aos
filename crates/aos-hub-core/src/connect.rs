@@ -789,7 +789,8 @@ fn delivery_audience(surface: crate::db::SurfaceTarget, path: &str) -> DeliveryA
 fn is_reserved_control_path(path: &str) -> bool {
     let trimmed = path.trim_start_matches('/');
     trimmed.is_empty()
-        || trimmed.split('/').any(|segment| segment == "-")
+        || (trimmed.split('/').any(|segment| segment == "-")
+            && public_browse_delivery_path(trimmed).is_none())
         || registry_document_path(trimmed).is_some()
         || matches!(
             trimmed,
@@ -812,6 +813,28 @@ fn is_reserved_control_path(path: &str) -> bool {
         || trimmed.starts_with("logout/")
         || trimmed.starts_with("oauth2/")
         || trimmed.starts_with("aos.hub.v1.")
+}
+
+/// Returns the browse-relative path for a public, read-only `/-/` namespace.
+fn public_browse_delivery_path(path: &str) -> Option<&str> {
+    let (slug, rest) = path.trim_start_matches('/').split_once("/-/")?;
+    if slug.is_empty() {
+        return None;
+    }
+    let root = rest.split('/').next().unwrap_or_default();
+    matches!(
+        root,
+        "" | "api"
+            | "channels"
+            | "closure"
+            | "docs"
+            | "health"
+            | "images"
+            | "objects"
+            | "packages"
+            | "releases"
+    )
+    .then_some(rest)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1152,6 +1175,7 @@ async fn serve_resolved_delivery(
     method: axum::http::Method,
     headers: HeaderMap,
     resolved: ResolvedRoute,
+    query: Option<String>,
 ) -> Response {
     let auth = auth_header(&headers);
     let session_secret = crate::web::session::session_secret_from_headers(&headers);
@@ -1202,12 +1226,17 @@ async fn serve_resolved_delivery(
     }
 
     if resolved.audience == DeliveryAudience::Web {
+        let browse_path = resolved
+            .surface_path
+            .strip_prefix("-/")
+            .or_else(|| (resolved.surface_path == "-").then_some(""))
+            .unwrap_or(&resolved.surface_path);
         return browse_dispatch(
             svc,
             headers,
             resolved.route.target_slug,
-            resolved.surface_path,
-            None,
+            browse_path.to_owned(),
+            query,
         )
         .await;
     }
@@ -1383,7 +1412,8 @@ async fn resolved_delivery_handler(
     let Some(resolved) = request.extensions().get::<ResolvedRoute>().cloned() else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    serve_resolved_delivery(from_state(state), method, headers, resolved).await
+    let query = request.uri().query().map(str::to_owned);
+    serve_resolved_delivery(from_state(state), method, headers, resolved, query).await
 }
 
 /// Runs typed delivery-route rewriting before native router dispatch.
@@ -3892,6 +3922,9 @@ mod tests {
         for serving_path in [
             "/acme/main",
             "/acme/main/",
+            "/acme/main/-/docs",
+            "/acme/main/-/docs/nginx/1.30.4/x86_64-linux",
+            "/acme/main/-/api/v1/packages/nginx/documentation",
             "/objects/aa/bb",
             "/nar/archive.nar.zst",
             "/hash.narinfo",
@@ -3901,6 +3934,22 @@ mod tests {
                 "admitted legacy serving path {serving_path}"
             );
         }
+    }
+
+    #[test]
+    fn delivery_browse_paths_admit_reads_but_not_management() {
+        assert_eq!(
+            public_browse_delivery_path("/acme/main/-/docs"),
+            Some("docs")
+        );
+        assert_eq!(
+            public_browse_delivery_path("/acme/project/main/-/api/v1/packages"),
+            Some("api/v1/packages")
+        );
+        assert_eq!(
+            public_browse_delivery_path("/acme/main/-/settings/routes"),
+            None
+        );
     }
 
     #[test]
