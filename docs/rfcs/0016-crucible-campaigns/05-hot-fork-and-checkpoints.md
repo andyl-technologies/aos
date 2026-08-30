@@ -1110,6 +1110,19 @@ after consumption rejects that child. A real-fork regression retains one
 independently contributed result descriptor and proves the parent's plan copy
 remains unconsumed. This is still an unwired application primitive rather than
 a complete supported-profile resource inventory or production fork owner.
+Descriptor replacement composition now uses the same bounded union model as
+retained descriptors and writable-shared mappings. The plugin pair is
+canonicalized by target slot, and further subsystem contributions may merge up
+to 4,096 source-to-target pairs. Every source and target is globally distinct,
+every target is retained, exact duplicates are idempotent, and target
+conflicts, source reuse, source/target cross-aliases, unsorted input, missing
+targets, or over-limit unions fail before changing the accumulated plan. The
+child transaction holds one fixed rollback record per replacement and consumes
+only the sealed canonical table. Its real-fork regression now replaces an
+independently contributed result endpoint rather than merely retaining that
+source. QMP, block, AIO, logging, and the other supported-profile owners do not
+yet provide their concrete contributions, so this still cannot acknowledge
+proof bit 7 or 8.
 Endpoint staging rejects a private-ring stage from a different or already
 aborted transaction. A new transaction starts
 only with an empty resource stage. Private-ring and plugin-endpoint staging
