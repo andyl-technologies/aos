@@ -703,6 +703,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0158-crucible-bind-hot-fork-source-mappings.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

@@ -1982,6 +1982,15 @@ operation is still unwired to QEMU's registered plugin runtime and no production
 fork caller, complete QEMU-subsystem reinitializer, host-continuation pairing,
 or guest-admission release exists; readiness bits 7 and 8 therefore remain
 clear and T-CAM-6.2 remains unchecked.
+Private-ring staging now also binds the source plugin setup-region VMA while the
+exact template transaction is retained. Version 3 streams the parent mapping
+table under the existing fixed record and byte limits and requires one unique
+writable shared mapping whose device, inode, page-aligned length, and zero
+offset match the plugin manifest. It records the process-local source address
+beside the branch-private destination identity; standalone staging explicitly
+retains no source range. The fork caller and registered runtime composition
+remain open, so this binding does not acknowledge readiness bits 7 or 8 and
+T-CAM-6.2 remains unchecked.
 Template-process descriptor/endpoint staging now satisfies plugin-ring proof
 bit 6 only under the retained exact transaction. The internal replacement and
 child-identity primitives, and the registered empty-local-state reinitializer,
