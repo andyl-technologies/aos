@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **154 patches**. This count is checked against
+The carried series contains **155 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -2651,6 +2651,29 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   complete other QEMU subsystem reconstruction, pair the host continuation,
   release guest admission, or acknowledge readiness bits 7 or 8.
   `T-CAM-6.2` remains incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-source-mapping-binding — bind the retained source VMA
+
+- **Patch:** `0158-crucible-bind-hot-fork-source-mappings.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** while the exact template transaction is retained, private-ring
+  staging streams `/proc/self/maps` under the existing 65,536-record,
+  8-KiB-record, and 16-MiB aggregate bounds. It requires exactly one writable
+  shared VMA at offset zero whose device, inode, and page-aligned length match
+  the plugin setup-region manifest. Private-ring schema version 3 retains that
+  process-local source range beside the authenticated branch-private backing;
+  standalone staging explicitly carries no source-range authority.
+- **Micro-test:** a shrink-sealed memfd mapped once is bound to its exact
+  address, length, and zero offset. A second alias and a wrong inode are both
+  rejected. The QMP and Rust-client tests reject contradictory bound/unbound
+  source shapes.
+- **Inertness:** the source address is an observed process-local scalar, not a
+  dereferenceable cross-process pointer. No production fork invokes the
+  registered runtime, constructs the complete child mapping allowlist, pairs
+  the host continuation, releases guest admission, or acknowledges readiness
+  bits 7 or 8. `T-CAM-6.2` remains incomplete.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

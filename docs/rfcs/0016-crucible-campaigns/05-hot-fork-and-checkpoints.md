@@ -1744,9 +1744,14 @@ The supported launch profile optimizes the complete child-ready path:
   a fixed version-2 child-runtime operation that binds the staged template,
   private-ring, endpoint, and plugin-barrier generations; authenticated socket
   and eventfd identities; private-ring device, inode, length, and descriptor;
-  replacement control and wake descriptor numbers; and sealed worker mask. Its
-  plan additionally binds the template's exact nonzero process generation to
-  its checked immediate successor. QEMU advances its fault/evidence lifecycle
+  the exact source setup-region VMA; replacement control and wake descriptor
+  numbers; and sealed worker mask. Private-ring schema version 3 binds
+  that source by its unique writable-shared device, inode, page-aligned length,
+  zero file offset, and process-local address under the bounded procfs mapping
+  profile. A duplicate, partial, missing, or mismatched source mapping fails
+  staging, and standalone staging grants no source-range authority. Its plan
+  additionally binds the template's exact nonzero process generation to its
+  checked immediate successor. QEMU advances its fault/evidence lifecycle
   generation before reconstruction, the plugin independently advances its live
   device owner, and status echoes that exact process and resource basis. QEMU
   now exposes that registered runtime through the OOB version-2
