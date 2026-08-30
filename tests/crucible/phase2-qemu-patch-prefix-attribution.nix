@@ -679,6 +679,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0152-crucible-acknowledge-frozen-hot-fork-plugin-rings.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

@@ -15,11 +15,12 @@ use crate::qmp::{QmpCommandKind, QmpError};
 /// QMP command name used for QEMU's retained template-preparation coordinator.
 pub const QMP_HOT_FORK_TEMPLATE_COMMAND: &str = "crucible-hot-fork-template";
 /// Version of the QEMU-owned template-preparation transaction contract.
-pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 12;
+pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 13;
 
 const QMP_HOT_FORK_AIO_PROOF: u64 = 1_u64 << 3;
 const QMP_HOT_FORK_RCU_PROOF: u64 = 1_u64 << 4;
 const QMP_HOT_FORK_BLOCK_PROOF: u64 = 1_u64 << 5;
+const QMP_HOT_FORK_PLUGIN_RING_PROOF: u64 = 1_u64 << 6;
 
 /// Exact outcome of one hot-fork template coordinator operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +53,7 @@ pub struct QmpHotForkTemplateResourceStageState {
     child_reinitialize_worker_mask: u64,
     worker_disposition_bound: bool,
     transaction_bound: bool,
+    readiness_proof_acknowledged: bool,
 }
 
 impl QmpHotForkTemplateResourceStageState {
@@ -125,6 +127,12 @@ impl QmpHotForkTemplateResourceStageState {
     #[must_use]
     pub const fn transaction_bound(self) -> bool {
         self.transaction_bound
+    }
+
+    /// Returns whether the complete retained pair acknowledges plugin-ring proof bit 6.
+    #[must_use]
+    pub const fn readiness_proof_acknowledged(self) -> bool {
+        self.readiness_proof_acknowledged
     }
 }
 
@@ -341,6 +349,8 @@ pub(crate) fn parse_hot_fork_template_state(
         == (transaction_active && bh_timer_barrier.quiescent());
     let block_proof_valid = (acknowledged_proofs & QMP_HOT_FORK_BLOCK_PROOF != 0)
         == (transaction_active && block_barrier.snapshot_complete());
+    let plugin_ring_proof_valid =
+        plugin_ring_proof_shape_valid(acknowledged_proofs, resource_stage);
     let ordinary_barriers_unheld =
         !plugin_barrier.held() && !rcu_barrier.held() && !bh_timer_barrier.held();
     let all_barriers_held = plugin_barrier.held()
@@ -399,6 +409,7 @@ pub(crate) fn parse_hot_fork_template_state(
         || !rcu_proof_valid
         || !aio_proof_valid
         || !block_proof_valid
+        || !plugin_ring_proof_valid
         || !shape_valid
     {
         return Err(malformed());
@@ -418,6 +429,14 @@ pub(crate) fn parse_hot_fork_template_state(
         rollback_complete,
         ready,
     })
+}
+
+fn plugin_ring_proof_shape_valid(
+    acknowledged_proofs: u64,
+    resource_stage: QmpHotForkTemplateResourceStageState,
+) -> bool {
+    (acknowledged_proofs & QMP_HOT_FORK_PLUGIN_RING_PROOF != 0)
+        == resource_stage.readiness_proof_acknowledged()
 }
 
 fn parse_hot_fork_template_resource_stage(
@@ -489,6 +508,7 @@ fn parse_hot_fork_template_resource_stage(
         child_reinitialize_worker_mask,
         worker_disposition_bound,
         transaction_bound,
+        readiness_proof_acknowledged,
     };
     if !resource_stage_shape_valid(
         schema_version,
@@ -541,9 +561,14 @@ fn resource_stage_shape_valid(
         && resources_staged
         && state.template_generation == template_generation
         && (!state.plugin_endpoints_staged || expected_disposition_bound);
+    let expected_readiness_proof = expected_bound
+        && state.private_ring_staged
+        && state.plugin_endpoints_staged
+        && expected_disposition_bound
+        && plugin_barrier.quiescent();
 
-    schema_version == 2
-        && !readiness_proof_acknowledged
+    schema_version == 3
+        && readiness_proof_acknowledged == expected_readiness_proof
         && disposition_shape
         && (!state.private_ring_staged || state.private_ring_generation != 0)
         && (!state.plugin_endpoints_staged
@@ -563,7 +588,8 @@ fn resource_stage_shape_valid(
 #[cfg(test)]
 mod tests {
     use super::{
-        QmpHotForkPluginBarrierState, QmpHotForkTemplateResourceStageState,
+        QMP_HOT_FORK_PLUGIN_RING_PROOF, QmpHotForkPluginBarrierState,
+        QmpHotForkTemplateResourceStageState, plugin_ring_proof_shape_valid,
         resource_stage_shape_valid,
     };
 
@@ -584,15 +610,16 @@ mod tests {
             child_reinitialize_worker_mask: worker_mask,
             worker_disposition_bound: true,
             transaction_bound: true,
+            readiness_proof_acknowledged: true,
         };
         assert!(resource_stage_shape_valid(
-            2,
+            3,
             bound,
             4,
             true,
             plugin_barrier,
             0,
-            false
+            true
         ));
 
         let foreign_template = QmpHotForkTemplateResourceStageState {
@@ -600,13 +627,13 @@ mod tests {
             ..bound
         };
         assert!(!resource_stage_shape_valid(
-            2,
+            3,
             foreign_template,
             4,
             true,
             plugin_barrier,
             0,
-            false
+            true
         ));
 
         let foreign_ring = QmpHotForkTemplateResourceStageState {
@@ -614,13 +641,13 @@ mod tests {
             ..bound
         };
         assert!(!resource_stage_shape_valid(
-            2,
+            3,
             foreign_ring,
             4,
             true,
             plugin_barrier,
             0,
-            false
+            true
         ));
 
         let unbound = QmpHotForkTemplateResourceStageState {
@@ -628,22 +655,23 @@ mod tests {
             ..bound
         };
         assert!(!resource_stage_shape_valid(
-            2,
+            3,
             unbound,
             4,
             true,
             plugin_barrier,
             0,
-            false
+            true
         ));
 
         let retained_after_abort = QmpHotForkTemplateResourceStageState {
             worker_disposition_bound: false,
             transaction_bound: false,
+            readiness_proof_acknowledged: false,
             ..bound
         };
         assert!(resource_stage_shape_valid(
-            2,
+            3,
             retained_after_abort,
             4,
             false,
@@ -652,7 +680,7 @@ mod tests {
             false
         ));
         assert!(!resource_stage_shape_valid(
-            2,
+            3,
             retained_after_abort,
             5,
             false,
@@ -666,22 +694,47 @@ mod tests {
             ..bound
         };
         assert!(!resource_stage_shape_valid(
-            2,
+            3,
             stale_barrier,
+            4,
+            true,
+            plugin_barrier,
+            0,
+            true
+        ));
+        assert!(!resource_stage_shape_valid(
+            3,
+            bound,
+            4,
+            true,
+            plugin_barrier,
+            worker_mask,
+            true
+        ));
+
+        let forged_proof = QmpHotForkTemplateResourceStageState {
+            readiness_proof_acknowledged: false,
+            ..bound
+        };
+        assert!(!resource_stage_shape_valid(
+            3,
+            forged_proof,
             4,
             true,
             plugin_barrier,
             0,
             false
         ));
-        assert!(!resource_stage_shape_valid(
-            2,
-            bound,
-            4,
-            true,
-            plugin_barrier,
-            worker_mask,
-            false
+
+        assert!(plugin_ring_proof_shape_valid(
+            QMP_HOT_FORK_PLUGIN_RING_PROOF,
+            bound
+        ));
+        assert!(!plugin_ring_proof_shape_valid(0, bound));
+        assert!(plugin_ring_proof_shape_valid(0, forged_proof));
+        assert!(!plugin_ring_proof_shape_valid(
+            QMP_HOT_FORK_PLUGIN_RING_PROOF,
+            forged_proof
         ));
     }
 }

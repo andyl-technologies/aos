@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "90e380a200e00335d66425b50590202e15bb298cb57b46b01a6dcd9fbcd3d467";
+  patchBranchBundleSha256 = "fecabb9216c8573766577fae4088337b0a30957103806c8e0fea67b52994f23d";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "7a2c9a4a5163583c0f25b968c65ebb82d0fb3f86";
+  patchBranchHeadCommit = "627052e5243b38611b135f37685d24ee1a59290c";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1445,6 +1445,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-11,HFORK-12";
       capability = "a Linux-only GPL-side primitive captures the exact parent process generation in a pidfd before fork, admits only that live process's immediate child, arms fail-closed parent-death handling before disposition, and proves under a real fork that child endpoint replacement leaves the parent descriptor table unchanged; it remains internal and unwired until the production coordinator and complete inherited-resource table exist";
+    }
+    {
+      file = "0152-crucible-acknowledge-frozen-hot-fork-plugin-rings.patch";
+      branchSubject = "crucible: acknowledge frozen hot-fork plugin rings";
+      branchCommit = "627052e5243b38611b135f37685d24ee1a59290c";
+      branchTree = "439a3d7f74b7dc73010cac7a36ad949ee91d9bac";
+      catalogName = "crucible-hot-fork-plugin-ring-proof";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-11,HFORK-12";
+      capability = "version-13 template preparation acknowledges plugin-ring proof bit 6 only while the exact shrink-sealed private ring, replacement endpoints, worker plan, and frozen plugin barrier remain bound to one active transaction; descriptor disposition and child reinitialization proofs remain clear";
     }
   ];
   catalogOnlyCapabilities = [
