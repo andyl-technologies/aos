@@ -2912,6 +2912,32 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   incomplete.
 - **Risk:** F.
 
+### crucible-hot-fork-child-qmp-reinitializer-contract — bind child monitor reconstruction
+
+- **Patch:** `0168-crucible-bind-child-qmp-reinitializer.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** QEMU prepares a one-shot adapter bound to the exact retained
+  child-QMP descriptor, Linux socket identity, template generation, and
+  child-QMP mutation generation. A future runtime result is accepted only when
+  it reports complete inherited-monitor disposal, dispatcher and endpoint
+  reconstruction, parser and capability reset, greeting emission, held input,
+  exactly one replacement monitor, and no queued or partially buffered
+  requests. The adapter becomes terminal before invoking that runtime and
+  rejects contradictory success reports.
+- **Micro-test:** strict unit paths prove exact basis matching, complete-status
+  admission, terminal behavior after both success and failure, and rejection of
+  incomplete or contradictory results. Typed host and live-readiness tests pin
+  child-QMP schema version 2, template version 18, resource-stage version 8,
+  and the prepared-but-unconsumed state.
+- **Inertness:** this patch defines and retains only the fail-closed adapter.
+  It does not implement inherited monitor teardown, rebuild the dispatcher,
+  attach the private endpoint, perform the private-stream handshake, invoke
+  `fork(2)`, or acknowledge readiness bit 7 or 8. Remaining supported-profile
+  resources, host-continuation pairing, guest admission, and `T-CAM-6.1`
+  through `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

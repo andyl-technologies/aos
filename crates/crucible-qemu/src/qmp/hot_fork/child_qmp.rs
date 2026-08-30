@@ -7,7 +7,7 @@ use crate::qmp::{QmpCommandKind, QmpDescriptorName, QmpError};
 /// QMP command that retains or releases the branch-private child QMP stream.
 pub const QMP_HOT_FORK_CHILD_QMP_COMMAND: &str = "crucible-hot-fork-child-qmp";
 /// Version of the retained child-QMP endpoint contract.
-pub const QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION: u32 = 1;
+pub const QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION: u32 = 2;
 
 /// Exact QEMU-owned state for one retained branch-private child QMP stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,6 +18,8 @@ pub struct QmpHotForkChildQmpState {
     socket_cookie: u64,
     retained_descriptor: i32,
     resource_plan_bound: bool,
+    reinitializer_prepared: bool,
+    reinitialized: bool,
 }
 
 impl QmpHotForkChildQmpState {
@@ -29,6 +31,7 @@ impl QmpHotForkChildQmpState {
         socket_cookie: u64,
         retained_descriptor: i32,
         resource_plan_bound: bool,
+        reinitializer_prepared: bool,
     ) -> Self {
         Self {
             generation,
@@ -37,6 +40,8 @@ impl QmpHotForkChildQmpState {
             socket_cookie,
             retained_descriptor,
             resource_plan_bound,
+            reinitializer_prepared,
+            reinitialized: false,
         }
     }
 
@@ -92,6 +97,18 @@ impl QmpHotForkChildQmpState {
     pub const fn resource_plan_bound(&self) -> bool {
         self.resource_plan_bound
     }
+
+    /// Returns whether the one-shot child-monitor adapter is exactly bound.
+    #[must_use]
+    pub const fn reinitializer_prepared(&self) -> bool {
+        self.reinitializer_prepared
+    }
+
+    /// Returns whether the child monitor runtime completed exactly.
+    #[must_use]
+    pub const fn reinitialized(&self) -> bool {
+        self.reinitialized
+    }
 }
 
 pub(crate) fn parse_hot_fork_child_qmp_state(
@@ -111,6 +128,7 @@ pub(crate) fn parse_hot_fork_child_qmp_state(
         "retained-fd",
         "resource-plan-bound",
         "nonblocking-unix-stream",
+        "reinitializer-prepared",
         "reinitialized",
         "disposition-complete",
         "readiness-proof-acknowledged",
@@ -157,6 +175,7 @@ pub(crate) fn parse_hot_fork_child_qmp_state(
     let retained_descriptor = descriptor("retained-fd")?;
     let resource_plan_bound = boolean("resource-plan-bound")?;
     let nonblocking_unix_stream = boolean("nonblocking-unix-stream")?;
+    let reinitializer_prepared = boolean("reinitializer-prepared")?;
     let reinitialized = boolean("reinitialized")?;
     let disposition_complete = boolean("disposition-complete")?;
     let readiness_proof_acknowledged = boolean("readiness-proof-acknowledged")?;
@@ -166,16 +185,18 @@ pub(crate) fn parse_hot_fork_child_qmp_state(
         && descriptor_name.is_some()
         && socket_cookie != 0
         && retained_descriptor >= 0
-        && nonblocking_unix_stream;
+        && nonblocking_unix_stream
+        && reinitializer_prepared;
     let absent_shape = template_generation == 0
         && descriptor_name.is_none()
         && socket_cookie == 0
         && retained_descriptor == -1
         && !resource_plan_bound
-        && !nonblocking_unix_stream;
+        && !nonblocking_unix_stream
+        && !reinitializer_prepared;
     let valid = schema_version == u64::from(QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION)
         && staged == descriptor_name.is_some()
-        && !reinitialized
+        && (!reinitialized || (staged && resource_plan_bound))
         && !disposition_complete
         && !readiness_proof_acknowledged
         && if staged { staged_shape } else { absent_shape };
@@ -190,6 +211,8 @@ pub(crate) fn parse_hot_fork_child_qmp_state(
         socket_cookie,
         retained_descriptor,
         resource_plan_bound,
+        reinitializer_prepared,
+        reinitialized,
     })
 }
 
@@ -202,7 +225,7 @@ mod tests {
     #[test]
     fn child_qmp_requires_one_unattached_nonblocking_retained_stream() {
         let staged = json!({
-            "schema-version": 1,
+            "schema-version": 2,
             "generation": 9,
             "template-generation": 3,
             "staged": true,
@@ -211,6 +234,7 @@ mod tests {
             "retained-fd": 34,
             "resource-plan-bound": true,
             "nonblocking-unix-stream": true,
+            "reinitializer-prepared": true,
             "reinitialized": false,
             "disposition-complete": false,
             "readiness-proof-acknowledged": false,
@@ -222,9 +246,10 @@ mod tests {
         assert_eq!(parsed.socket_cookie(), Some(13));
         assert_eq!(parsed.retained_descriptor(), Some(34));
         assert!(parsed.resource_plan_bound());
+        assert!(parsed.reinitializer_prepared());
 
         let mut wrong = staged;
-        wrong["reinitialized"] = json!(true);
+        wrong["reinitializer-prepared"] = json!(false);
         assert!(parse_hot_fork_child_qmp_state(&wrong).is_err());
     }
 }

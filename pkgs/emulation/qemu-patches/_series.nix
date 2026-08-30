@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "6dc8a147743a6f6424a55b52fd83f31bd1b02b42ac11f49c5dd4944ff3f85156";
+  patchBranchBundleSha256 = "fc9387fd796da5dd60493e220624d7ef04894c78cf86b72e43c36d08a609c182";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "589cb306671d509ae87b2a7ca2829dadf1ca15f0";
+  patchBranchHeadCommit = "930b062f85e5fb2fd4a8f9ba321a1fd575bcb24d";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1605,6 +1605,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "QEMU now retains one fresh authenticated branch-private nonblocking QMP stream, composes its exact descriptor into the same sealed child resource plan after private rings and diagnostics and before plugin endpoint commitment, rejects descriptor and socket-identity aliases, and releases the duplicate in reverse ownership order; inherited-monitor closure, parser reconstruction, private endpoint attachment, handshake, remaining block/AIO/console/filesystem contributions, production fork invocation, host continuation pairing, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0168-crucible-bind-child-qmp-reinitializer.patch";
+      branchSubject = "crucible: bind child QMP reinitializer contract";
+      branchCommit = "930b062f85e5fb2fd4a8f9ba321a1fd575bcb24d";
+      branchTree = "cab2ab40ec2bf442cccad8a0e896694ec6cd982c";
+      catalogName = "crucible-hot-fork-child-qmp-reinitializer-contract";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "QEMU now prepares a one-shot child-QMP reinitializer bound to the exact retained descriptor, Linux socket identity, template generation, and QMP generation, and accepts a future child runtime only when it reports complete inherited-monitor disposition, dispatcher and endpoint reconstruction, parser/capability reset, greeting emission, held input, one replacement monitor, and no queued or partial requests; the concrete monitor runtime, child transaction composition, generation handshake over the private stream, remaining supported-profile resources, production fork invocation, host continuation pairing, guest admission, and readiness bits 7 and 8 remain open";
     }
   ];
   catalogOnlyCapabilities = [
