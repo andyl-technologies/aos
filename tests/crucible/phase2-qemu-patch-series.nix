@@ -1070,6 +1070,13 @@
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12";
       capability = "the Linux-only unwired immediate-child primitive authenticates the exact parent generation, blocks signals, replaces both staged plugin endpoint slots, and applies a sorted bounded final table with close_range so every other inherited descriptor is closed; production coordinator admission closure, mapping disposition, child reinitialization, and readiness bits 7 and 8 remain open";
     }
+    {
+      file = "0154-crucible-close-fork-child-descriptor-admission.patch";
+      catalogName = "crucible-hot-fork-child-descriptor-admission";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12";
+      capability = "the Linux-only unwired one-shot child transaction proves close_range support, authenticates the exact immediate child, blocks every blockable signal before retain-table construction, consumes the parent anchor, and requires that exact transaction for closed-table application; mapping disposition, production fork composition, child reinitialization, and readiness bits 7 and 8 remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

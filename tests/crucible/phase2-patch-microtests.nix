@@ -2272,6 +2272,29 @@
         '';
       };
     }
+    {
+      patch = "0154-crucible-close-fork-child-descriptor-admission.patch";
+      check = certifyExactPatch {
+        patchName = "0154-crucible-close-fork-child-descriptor-admission.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-child-descriptor-admission";
+        liveEvidence = ''
+          grep -Fxq 'patch=0154-crucible-close-fork-child-descriptor-admission.patch' "$live_result"
+          grep -Fq 'QemuCrucibleHotForkDescriptorTableTransaction' \
+            ${patchDir}/0154-crucible-close-fork-child-descriptor-admission.patch
+          grep -Fq 'qemu_crucible_hot_fork_begin_descriptor_table' \
+            ${patchDir}/0154-crucible-close-fork-child-descriptor-admission.patch
+          grep -Fq 'transaction->active = false' \
+            ${patchDir}/0154-crucible-close-fork-child-descriptor-admission.patch
+          grep -Fq 'sigismember(&blocked, SIGUSR1)' \
+            ${patchDir}/0154-crucible-close-fork-child-descriptor-admission.patch
+          grep -Fq 'test_inactive_descriptor_transaction_is_unchanged' \
+            ${patchDir}/0154-crucible-close-fork-child-descriptor-admission.patch
+          grep -Fq 'test-crucible-hot-fork-child --tap' \
+            ${../../pkgs/emulation/qemu.nix}
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =
