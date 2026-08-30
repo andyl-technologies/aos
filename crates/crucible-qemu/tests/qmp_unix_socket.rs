@@ -202,7 +202,7 @@ fn vmstate_control_stages_and_releases_both_descriptor_ownership_layers()
         let stage = read_qmp_line(&mut reader)?;
         let stage_response = format!(
             concat!(
-                r#"{{"return":{{"schema-version":2,"generation":1,"template-generation":0,"staged":true,"fdname":"{}","device":{},"inode":{},"length":{},"shrink-sealed":true,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#,
+                r#"{{"return":{{"schema-version":3,"generation":1,"template-generation":0,"staged":true,"fdname":"{}","device":{},"inode":{},"length":{},"shrink-sealed":true,"source-mapping-bound":false,"source-start":0,"source-length":0,"source-offset":0,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#,
                 "\r\n"
             ),
             expected_name.as_str(),
@@ -215,7 +215,7 @@ fn vmstate_control_stages_and_releases_both_descriptor_ownership_layers()
         let release = read_qmp_line(&mut reader)?;
         write_qmp_return(
             reader.get_ref(),
-            b"{\"return\":{\"schema-version\":2,\"generation\":2,\"template-generation\":0,\"staged\":false,\"device\":0,\"inode\":0,\"length\":0,\"shrink-sealed\":false,\"disposition-complete\":false,\"readiness-proof-acknowledged\":false}}\r\n",
+            b"{\"return\":{\"schema-version\":3,\"generation\":2,\"template-generation\":0,\"staged\":false,\"device\":0,\"inode\":0,\"length\":0,\"shrink-sealed\":false,\"source-mapping-bound\":false,\"source-start\":0,\"source-length\":0,\"source-offset\":0,\"disposition-complete\":false,\"readiness-proof-acknowledged\":false}}\r\n",
         )?;
         let closefd = read_qmp_line(&mut reader)?;
         write_qmp_return(reader.get_ref(), b"{\"return\":{}}\r\n")?;

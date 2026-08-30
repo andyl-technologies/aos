@@ -261,6 +261,7 @@ impl QemuNode {
             && qemu_ring.inode() == ring_identity.inode()
             && qemu_ring.length() == ring_identity.length()
             && qemu_ring.shrink_sealed()
+            && qemu_ring.source_mapping_bound()
             && qemu_ring.generation() != 0;
         if !ring_basis_matches {
             return Err(endpoint_rejected(

@@ -1926,7 +1926,7 @@
         evidenceName = "live-qemu-hot-fork-private-ring-stage";
         liveEvidence = ''
           grep -Fxq 'patch=0144-crucible-bind-hot-fork-worker-dispositions.patch' "$live_result"
-          grep -Fxq 'private_ring_stage_schema_version=2' "$live_result"
+          grep -Fxq 'private_ring_stage_schema_version=3' "$live_result"
           grep -Fxq 'private_ring_stage_initially_absent=true' "$live_result"
           grep -Fxq 'private_ring_live_descriptor_transaction=true' "$live_result"
           grep -Fxq 'private_ring_exact_identity_and_seal=true' "$live_result"
@@ -2033,7 +2033,7 @@
           grep -Fxq 'template_coordinator_schema_version=13' "$live_result"
           grep -Fxq 'template_resource_stage_schema_version=3' "$live_result"
           grep -Fxq 'template_resource_stage_empty_after_release=true' "$live_result"
-          grep -Fxq 'private_ring_stage_schema_version=2' "$live_result"
+          grep -Fxq 'private_ring_stage_schema_version=3' "$live_result"
           grep -Fxq 'plugin_endpoint_stage_schema_version=3' "$live_result"
           grep -Fxq 'private_ring_readiness_proof_acknowledged=false' "$live_result"
           grep -Fxq 'plugin_endpoint_readiness_proof_acknowledged=false' "$live_result"
@@ -2359,6 +2359,27 @@
             ${patchDir}/0157-crucible-compose-fork-child-resource-disposition.patch
           grep -Fq 'test-crucible-hot-fork-child --tap' \
             ${../../pkgs/emulation/qemu.nix}
+        '';
+      };
+    }
+    {
+      patch = "0158-crucible-bind-hot-fork-source-mappings.patch";
+      check = certifyExactPatch {
+        patchName = "0158-crucible-bind-hot-fork-source-mappings.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-source-mapping-binding";
+        liveEvidence = ''
+          grep -Fxq 'patch=0158-crucible-bind-hot-fork-source-mappings.patch' "$live_result"
+          grep -Fxq 'private_ring_stage_schema_version=3' "$live_result"
+          grep -Fxq 'private_ring_standalone_source_mapping_unbound=true' "$live_result"
+          grep -Fq 'qemu_crucible_hot_fork_find_source_mapping' \
+            ${patchDir}/0158-crucible-bind-hot-fork-source-mappings.patch
+          grep -Fq 'source_mapping_bound' \
+            ${patchDir}/0158-crucible-bind-hot-fork-source-mappings.patch
+          grep -Fq 'test_source_mapping_binding_is_exact' \
+            ${patchDir}/0158-crucible-bind-hot-fork-source-mappings.patch
+          grep -Fq 'QEMU_CRUCIBLE_HOT_FORK_MAX_MAPPING_BYTES' \
+            ${patchDir}/0158-crucible-bind-hot-fork-source-mappings.patch
         '';
       };
     }

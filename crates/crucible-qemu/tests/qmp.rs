@@ -1725,14 +1725,14 @@ fn private_ring_stage_authenticates_exact_basis_and_releases_qemu_copy()
     let name = QmpDescriptorName::new("crucible-hfork-rings-v1-test")?;
     let staged = format!(
         concat!(
-            r#"{{"return":{{"schema-version":2,"generation":1,"template-generation":0,"staged":true,"fdname":"{}","device":{},"inode":{},"length":{},"shrink-sealed":true,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#
+            r#"{{"return":{{"schema-version":3,"generation":1,"template-generation":0,"staged":true,"fdname":"{}","device":{},"inode":{},"length":{},"shrink-sealed":true,"source-mapping-bound":false,"source-start":0,"source-length":0,"source-offset":0,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#
         ),
         name.as_str(),
         identity.device(),
         identity.inode(),
         identity.length(),
     );
-    let released = r#"{"return":{"schema-version":2,"generation":2,"template-generation":0,"staged":false,"device":0,"inode":0,"length":0,"shrink-sealed":false,"disposition-complete":false,"readiness-proof-acknowledged":false}}"#;
+    let released = r#"{"return":{"schema-version":3,"generation":2,"template-generation":0,"staged":false,"device":0,"inode":0,"length":0,"shrink-sealed":false,"source-mapping-bound":false,"source-start":0,"source-length":0,"source-offset":0,"disposition-complete":false,"readiness-proof-acknowledged":false}}"#;
     let stream = scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
@@ -1746,6 +1746,7 @@ fn private_ring_stage_authenticates_exact_basis_and_releases_qemu_copy()
     let stage = client.stage_hot_fork_private_rings(&name, identity)?;
     assert_eq!(stage.descriptor_name(), Some(&name));
     assert_eq!(stage.template_generation(), 0);
+    assert!(!stage.source_mapping_bound());
     assert_eq!(client.query_hot_fork_private_rings()?, stage);
     assert!(
         !client
@@ -1827,7 +1828,7 @@ fn contradictory_private_ring_stage_poisoned_the_qmp_client() -> Result<(), Box<
     let name = QmpDescriptorName::new("crucible-hfork-rings-v1-bad")?;
     let contradictory = format!(
         concat!(
-            r#"{{"return":{{"schema-version":2,"generation":1,"template-generation":0,"staged":true,"fdname":"{}","device":{},"inode":{},"length":{},"shrink-sealed":true,"disposition-complete":true,"readiness-proof-acknowledged":false}}}}"#
+            r#"{{"return":{{"schema-version":3,"generation":1,"template-generation":0,"staged":true,"fdname":"{}","device":{},"inode":{},"length":{},"shrink-sealed":true,"source-mapping-bound":false,"source-start":0,"source-length":0,"source-offset":0,"disposition-complete":true,"readiness-proof-acknowledged":false}}}}"#
         ),
         name.as_str(),
         identity.device(),

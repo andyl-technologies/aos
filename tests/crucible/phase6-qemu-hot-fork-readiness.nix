@@ -211,7 +211,7 @@ in
             "$out/private-rings-initial.json"
           jq -e -s '
             [.[] | select(has("return"))][-1].return == {
-              "schema-version": 2,
+              "schema-version": 3,
               "generation": 0,
               "template-generation": 0,
               "staged": false,
@@ -219,6 +219,10 @@ in
               "inode": 0,
               "length": 0,
               "shrink-sealed": false,
+              "source-mapping-bound": false,
+              "source-start": 0,
+              "source-length": 0,
+              "source-offset": 0,
               "disposition-complete": false,
               "readiness-proof-acknowledged": false
             }
@@ -487,7 +491,7 @@ in
             ."endpoint-stage".return."control-source-fd" as $control_source_fd |
             ."endpoint-stage".return."wake-source-fd" as $wake_source_fd |
             .stage.return == {
-              "schema-version": 2,
+              "schema-version": 3,
               "generation": 1,
               "template-generation": 0,
               "staged": true,
@@ -496,6 +500,10 @@ in
               "inode": $identity.inode,
               "length": $identity.length,
               "shrink-sealed": true,
+              "source-mapping-bound": false,
+              "source-start": 0,
+              "source-length": 0,
+              "source-offset": 0,
               "disposition-complete": false,
               "readiness-proof-acknowledged": false
             } and
@@ -566,7 +574,7 @@ in
             ."wake-closefd".return == {} and
             ."control-closefd".return == {} and
             .release.return == {
-              "schema-version": 2,
+              "schema-version": 3,
               "generation": 2,
               "template-generation": 0,
               "staged": false,
@@ -574,6 +582,10 @@ in
               "inode": 0,
               "length": 0,
               "shrink-sealed": false,
+              "source-mapping-bound": false,
+              "source-start": 0,
+              "source-length": 0,
+              "source-offset": 0,
               "disposition-complete": false,
               "readiness-proof-acknowledged": false
             } and
@@ -1699,6 +1711,7 @@ in
           patch=0155-crucible-verify-fork-child-mapping-dispositions.patch
           patch=0156-crucible-authenticate-fork-child-shared-mapping-backings.patch
           patch=0157-crucible-compose-fork-child-resource-disposition.patch
+          patch=0158-crucible-bind-hot-fork-source-mappings.patch
           plugin_endpoint_schema_version=4
           plugin_endpoint_source_descriptors_observed=true
           plugin_endpoint_replacement_plan_bound=false
@@ -1766,7 +1779,8 @@ in
           plugin_worker_queue_cloning=false
           plugin_ring_consumer_admission_bound=true
           plugin_ring_proof_acknowledged=false
-          private_ring_stage_schema_version=2
+          private_ring_stage_schema_version=3
+          private_ring_standalone_source_mapping_unbound=true
           private_ring_stage_initially_absent=true
           private_ring_live_descriptor_transaction=true
           private_ring_exact_identity_and_seal=true

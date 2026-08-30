@@ -487,7 +487,7 @@ where
     /// # Errors
     ///
     /// Returns [`QmpError`] when the query fails or QEMU returns a state outside
-    /// the closed version-1 contract.
+    /// the closed version-3 contract.
     pub fn query_hot_fork_private_rings(&mut self) -> Result<QmpHotForkPrivateRingState, QmpError> {
         let response = self.send_command_return(QmpCommand::HotForkPrivateRings {
             action: HotForkPrivateRingAction::Query,
