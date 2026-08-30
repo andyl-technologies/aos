@@ -1056,6 +1056,13 @@
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-11,HFORK-12";
       capability = "the Linux-only GPL-side child identity primitive pins the parent process generation before fork, accepts only its exact live immediate child, arms parent-death termination before disposition, and proves child-only endpoint replacement under a real fork without yet wiring the production coordinator";
     }
+    {
+      file = "0152-crucible-acknowledge-frozen-hot-fork-plugin-rings.patch";
+      catalogName = "crucible-hot-fork-plugin-ring-proof";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-11,HFORK-12";
+      capability = "version-13 template preparation acknowledges plugin-ring proof bit 6 only for an exact transaction-bound private ring, endpoint pair, worker plan, and frozen plugin barrier; descriptor and child-reinitialization proofs remain clear";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

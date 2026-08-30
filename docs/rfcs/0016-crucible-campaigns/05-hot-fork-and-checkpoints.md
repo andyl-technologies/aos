@@ -861,7 +861,8 @@ table remains unchanged. This is still an internal, unwired primitive: the
 production coordinator does not call `fork(2)`, and the identity check alone
 does not close the inherited descriptor table or acknowledge readiness.
 
-This is still not the complete plugin-ring proof. Template-bound staging rejects
+At that checkpoint this was not yet the complete plugin-ring proof.
+Template-bound staging rejects
 a parked worker that retains a received trigger or queued fingerprint work,
 but no fork child yet applies the complete worker plan together with its host
 continuation. The plugin setup owner now retains the exact validated
@@ -875,7 +876,8 @@ or invoked by QEMU, do not recreate the control, teardown, or optional
 fingerprint workers, and do not release the child barrier. Template-process
 descriptor and endpoint retention plus the unwired two-slot helper are
 therefore not child dispositions: they prove neither inherited-FD closure nor
-complete child remap/rebind. QEMU keeps readiness bits 6 through 8 clear.
+complete child remap/rebind. That checkpoint kept readiness bits 6 through 8
+clear; version 13 below composes bit 6 without claiming bits 7 or 8.
 
 The next source checkpoint adds a process-lifetime reversible bottom-half and
 timer-source barrier through the OOB
@@ -938,7 +940,7 @@ races and is sufficient for proof bit 3 while retained and quiescent. It does
 not choose child-side descriptor, context, coroutine, or clock disposition;
 those obligations remain separately represented by proof bits 7 and 8.
 
-The retained `PrepareForkTemplate` checkpoint is the version-12 OOB
+The retained `PrepareForkTemplate` checkpoint is the version-13 OOB
 `crucible-hot-fork-template` coordinator:
 
 ```text
@@ -948,7 +950,7 @@ CrucibleHotForkTemplateOutcome =
     idle | draining | blocked | prepared | aborted
 
 CrucibleHotForkTemplateResourceStageState {
-    schema-version: u32 = 2,
+    schema-version: u32 = 3,
     template-generation: u64,
     private-ring-staged: bool,
     private-ring-generation: u64,
@@ -962,11 +964,11 @@ CrucibleHotForkTemplateResourceStageState {
     pending-worker-mask: u64 = 0,
     worker-disposition-bound: bool,
     transaction-bound: bool,
-    readiness-proof-acknowledged: bool = false,
+    readiness-proof-acknowledged: bool,
 }
 
 CrucibleHotForkTemplateState {
-    schema-version: u32 = 12,
+    schema-version: u32 = 13,
     generation: u64,
     outcome: CrucibleHotForkTemplateOutcome,
     transaction-active: bool,
@@ -997,24 +999,32 @@ admission barrier, the bottom-half/timer source barrier, and the plugin callback
 barrier, and retains all four while previously admitted work drains. A repeated
 `prepare` reevaluates the retained transaction. Once all four barriers are
 quiescent, QEMU reports `prepared` only when all nine required bits are present
-in the same transaction. Otherwise the version-12 report continues to report
+in the same transaction. Otherwise the version-13 report continues to report
 `draining` and retains the barriers so the host can capture and stage
 branch-private resources without releasing the source-ring barrier. Version 12
-atomically
-reports the exact private-ring and endpoint mutation generations, the
+introduced the atomic resource report. It carries the exact private-ring and
+endpoint mutation generations, the
 endpoint-to-ring generation edge, their originating template generation, and
 whether every retained resource is bound to the current active transaction.
 For retained endpoints it also requires the captured barrier generation and
 parent/child worker masks to match the exact current quiescent plugin barrier;
 generation or worker-state drift clears both `worker-disposition-bound` and
 `transaction-bound`.
+Version 13 acknowledges plugin-ring proof bit 6 only when both retained stages,
+the shrink-sealed private ring, the endpoint-to-ring edge, the exact quiescent
+plugin-barrier generation, and the complete parent/child worker-disposition
+plan all remain bound to the active template transaction. The nested
+`readiness-proof-acknowledged` value and outer bit 6 are independently derived
+from that basis and MUST agree; stale, partial, or cross-transaction state
+clears both.
 Endpoint staging rejects a private-ring stage from a different or already
 aborted transaction. A new transaction starts
 only with an empty resource stage. Private-ring and plugin-endpoint staging
 during a transaction is accepted only in the fully held phase, at the exact
 paused/device-flush boundary, and while the retained plugin barrier is
-quiescent. Those retained template resources still do not acknowledge proof
-bits 6 through 8. After abort, the resource report retains the immutable
+quiescent. Those retained template resources do not acknowledge mapping and
+descriptor proof bit 7 or child-reinitialization proof bit 8. After abort, the
+resource report retains the immutable
 origin generation while `transaction-bound` becomes false, so cleanup can
 authenticate ownership without mistaking retained descriptors for a live
 template proof.
