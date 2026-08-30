@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **150 patches**. This count is checked against
+The carried series contains **151 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -2564,6 +2564,28 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   close descriptor admission around table construction. It does not classify
   mappings, reinitialize process-private state, acknowledge readiness bits 7 or
   8, or complete `T-CAM-6.2`.
+- **Risk:** F.
+
+### crucible-hot-fork-child-descriptor-admission — close child admission
+
+- **Patch:** `0154-crucible-close-fork-child-descriptor-admission.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12].
+- **Mechanism:** a Linux-only one-shot child transaction first proves
+  `close_range(2)` support, authenticates the exact immediate child, blocks
+  every blockable signal, and consumes the inherited parent pidfd. Since only
+  the calling thread survives `fork(2)`, the caller then constructs the retain
+  table with asynchronous descriptor admission closed. Closed-table application
+  requires that exact active child transaction and consumes it before endpoint
+  replacement begins; invalid pre-effect arguments remain retryable, while any
+  later failure is destructive.
+- **Micro-test:** the real-fork closed-table path constructs its table only
+  after the transaction begins and proves a blockable signal is masked. A
+  separate regression proves an inactive transaction cannot change any
+  descriptor.
+- **Inertness:** the transaction has no production fork caller, does not assign
+  dispositions to mappings, does not run child reinitialization, and does not
+  acknowledge readiness bits 7 or 8. `T-CAM-6.2` remains incomplete.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

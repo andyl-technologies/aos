@@ -167,6 +167,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0151-crucible-authenticate-immediate-hot-fork-children.patch",
     "0152-crucible-acknowledge-frozen-hot-fork-plugin-rings.patch",
     "0153-crucible-close-inherited-child-descriptor-tables.patch",
+    "0154-crucible-close-fork-child-descriptor-admission.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

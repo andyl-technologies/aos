@@ -687,6 +687,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0154-crucible-close-fork-child-descriptor-admission.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

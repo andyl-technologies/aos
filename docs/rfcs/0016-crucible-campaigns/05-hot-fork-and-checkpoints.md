@@ -871,8 +871,15 @@ unlisted inherited eventfd is closed in the child while the parent's table and
 original endpoints remain unchanged. The operation is deliberately
 destructive after authentication: any failure terminates or quarantines the
 child rather than attempting to reconstruct an ambient descriptor table. It is
-still unwired, does not close descriptor admission while the table is built,
-and does not classify mappings; therefore proof bit 7 remains clear.
+still unwired and does not classify mappings; therefore proof bit 7 remains
+clear. An adjacent one-shot child transaction closes the remaining asynchronous
+descriptor-admission window: it proves `close_range(2)` support, authenticates
+the immediate child, blocks every blockable signal, and consumes the parent
+anchor before the caller constructs the retain table. Closed-table application
+then requires and consumes that exact child transaction. The real-fork
+regression proves the signal mask precedes construction, while an inactive
+transaction cannot mutate the table. Production fork composition and mapping
+disposition remain open, so this does not acknowledge proof bit 7.
 
 At that checkpoint this was not yet the complete plugin-ring proof.
 Template-bound staging rejects

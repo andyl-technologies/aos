@@ -1954,8 +1954,11 @@ the exact endpoint replacements, retains only a sorted table of at most 4,096
 final slots, and uses `close_range(2)` to close every other inherited
 descriptor. Its real-fork regression proves an unlisted descriptor disappears
 only in the child while the parent remains unchanged. The primitive is unwired:
-descriptor admission is not yet closed around table construction and mappings
-are not yet assigned a complete disposition, so proof bit 7 remains clear.
+its adjacent one-shot child transaction now proves `close_range(2)` support,
+authenticates the immediate child, blocks every blockable signal, and consumes
+the parent anchor before retain-table construction. Closed-table application
+requires that exact transaction. Production fork composition and complete
+mapping disposition remain open, so proof bit 7 remains clear.
 Template-process descriptor/endpoint staging now satisfies plugin-ring proof
 bit 6 only under the retained exact transaction. The internal replacement and
 child-identity primitives, and the registered empty-local-state reinitializer,

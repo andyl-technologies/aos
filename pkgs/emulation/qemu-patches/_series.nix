@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "298b6fc21bcec3a5856480e8b929433c92b2307bc19f2eceac054dd0faee6926";
+  patchBranchBundleSha256 = "ff0cd2b52a178201c569fc0a0b1f5f058edb68530efae81510c8dfe11716423a";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "ce50d5d0846eb07888000055761924518f34b1f8";
+  patchBranchHeadCommit = "b5b5d22f79cfb6d062e17e3522ae9148c3c67dec";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1465,6 +1465,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12";
       capability = "a Linux-only unwired immediate-child primitive authenticates the exact parent generation, blocks signals, atomically replaces the staged plugin endpoint slots, and uses a sorted bounded retain table plus close_range to close every other inherited descriptor; any failure after authentication is destructive and mapping disposition, coordinator admission closure, child reinitialization, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0154-crucible-close-fork-child-descriptor-admission.patch";
+      branchSubject = "crucible: close fork-child descriptor admission";
+      branchCommit = "b5b5d22f79cfb6d062e17e3522ae9148c3c67dec";
+      branchTree = "598c93291583e00330a1cef20980503249f079bd";
+      catalogName = "crucible-hot-fork-child-descriptor-admission";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12";
+      capability = "a Linux-only unwired one-shot child transaction proves close_range support, authenticates the exact immediate child, blocks every blockable signal before the caller constructs the retain table, consumes the parent anchor, and requires that exact child transaction for closed-table application; mapping disposition, production fork composition, child reinitialization, and readiness bits 7 and 8 remain open";
     }
   ];
   catalogOnlyCapabilities = [
