@@ -707,6 +707,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0159-crucible-bind-child-runtime-source-mappings.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

@@ -119,6 +119,9 @@ struct HotForkChildResourceBinding {
     plugin_barrier_generation: u64,
     control_socket_cookie: u64,
     wake_eventfd_id: u64,
+    source_mapping_start: u64,
+    source_mapping_length: u64,
+    source_mapping_offset: u64,
 }
 
 impl From<crate::QemuPluginHotForkChildPlan> for HotForkChildResourceBinding {
@@ -132,6 +135,9 @@ impl From<crate::QemuPluginHotForkChildPlan> for HotForkChildResourceBinding {
             plugin_barrier_generation: plan.plugin_barrier_generation,
             control_socket_cookie: plan.control_socket_cookie,
             wake_eventfd_id: plan.wake_eventfd_id,
+            source_mapping_start: plan.source_mapping_start,
+            source_mapping_length: plan.source_mapping_length,
+            source_mapping_offset: plan.source_mapping_offset,
         }
     }
 }
@@ -1617,6 +1623,7 @@ extern "C" fn crucible_qemu_plugin_hot_fork_child_runtime(
                 || plan.private_ring_fd == plan.wake_fd
                 || plan.worker_mask != state.workers.worker_mask()
                 || !hot_fork_child_endpoint_identity_matches(&plan)
+                || !hot_fork_child_mapping_basis_matches(&plan, &state.setup)
             {
                 return -libc::EPROTO;
             }
@@ -1679,6 +1686,9 @@ extern "C" fn crucible_qemu_plugin_hot_fork_child_runtime(
             plugin_barrier_generation: snapshot.binding.plugin_barrier_generation,
             control_socket_cookie: snapshot.binding.control_socket_cookie,
             wake_eventfd_id: snapshot.binding.wake_eventfd_id,
+            source_mapping_start: snapshot.binding.source_mapping_start,
+            source_mapping_length: snapshot.binding.source_mapping_length,
+            source_mapping_offset: snapshot.binding.source_mapping_offset,
             worker_mask: snapshot.workers.worker_mask,
             parked_worker_mask: snapshot.workers.parked_mask,
             pending_worker_mask: snapshot.workers.pending_mask,
@@ -1693,6 +1703,20 @@ const HOT_FORK_ENDPOINT_FDINFO_MAX_BYTES: u64 = 4_096;
 fn hot_fork_child_endpoint_identity_matches(plan: &crate::QemuPluginHotForkChildPlan) -> bool {
     hot_fork_control_socket_cookie(plan.control_fd).ok() == Some(plan.control_socket_cookie)
         && hot_fork_wake_eventfd_id(plan.wake_fd).ok() == Some(plan.wake_eventfd_id)
+}
+
+fn hot_fork_child_mapping_basis_matches(
+    plan: &crate::QemuPluginHotForkChildPlan,
+    setup: &crate::setup::PluginSetupCompletion,
+) -> bool {
+    usize::try_from(plan.source_mapping_start).ok() == Some(setup.mapped_region().mapping_start())
+        && plan.source_mapping_length == setup.mapped_region().region_len()
+        && plan.source_mapping_length == plan.shmem_length
+        && plan.source_mapping_offset == 0
+        && plan
+            .source_mapping_start
+            .checked_add(plan.source_mapping_length)
+            .is_some()
 }
 
 fn hot_fork_child_process_generation_matches(

@@ -14,6 +14,17 @@ impl MappedSetupRegion {
         self.address as *mut u8
     }
 
+    /// Returns the process-local start address reserved for this mapping.
+    ///
+    /// The address remains meaningful after `MADV_DONTFORK` removes the source
+    /// VMA from a fork child, but callers must not dereference it until the
+    /// authenticated child mapping has been installed. This accessor exposes
+    /// geometry only and does not assert that the VMA is currently present.
+    #[must_use]
+    pub const fn mapping_start(&self) -> usize {
+        self.address
+    }
+
     /// Returns the mapped length supplied by the control-protocol `Setup` frame.
     #[must_use]
     pub const fn region_len(&self) -> u64 {

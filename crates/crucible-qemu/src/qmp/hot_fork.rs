@@ -107,7 +107,7 @@ pub const QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION: u32 = 2;
 /// Version of the QEMU-owned plugin callback-and-ring barrier contract.
 pub const QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION: u32 = 6;
 /// Version of the QEMU-owned child-runtime observation contract.
-pub const QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION: u32 = 2;
+pub const QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION: u32 = 3;
 /// Version of the QEMU-owned allocated-bottom-half inventory contract.
 pub const QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION: u32 = 1;
 /// Version of the QEMU-owned mutex ownership inventory contract.
