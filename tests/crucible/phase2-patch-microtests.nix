@@ -2516,6 +2516,31 @@
         '';
       };
     }
+    {
+      patch = "0165-crucible-compose-child-descriptor-replacements.patch";
+      check = certifyExactPatch {
+        patchName = "0165-crucible-compose-child-descriptor-replacements.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-child-descriptor-replacement-composition";
+        liveEvidence = ''
+          grep -Fxq 'patch=0165-crucible-compose-child-descriptor-replacements.patch' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=15' "$live_result"
+          grep -Fxq 'child_resource_contribution_composition=true' "$live_result"
+          grep -Fxq 'sealed_child_resource_plan_application=true' "$live_result"
+          grep -Fxq 'child_descriptor_replacement_composition=true' "$live_result"
+          grep -Fq 'QEMU_CRUCIBLE_HOT_FORK_MAX_DESCRIPTOR_REPLACEMENTS 4096' \
+            ${patchDir}/0165-crucible-compose-child-descriptor-replacements.patch
+          grep -Fq 'qemu_crucible_hot_fork_replace_descriptor_set' \
+            ${patchDir}/0165-crucible-compose-child-descriptor-replacements.patch
+          grep -Fq 'resources->replacements, resources->replacement_count' \
+            ${patchDir}/0165-crucible-compose-child-descriptor-replacements.patch
+          grep -Fq 'QEMU_CRUCIBLE_HOT_FORK_MAX_DESCRIPTOR_REPLACEMENTS - 2' \
+            ${patchDir}/0165-crucible-compose-child-descriptor-replacements.patch
+          grep -Fq '.target_fd = old_result[1]' \
+            ${patchDir}/0165-crucible-compose-child-descriptor-replacements.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

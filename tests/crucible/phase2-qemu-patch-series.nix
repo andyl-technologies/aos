@@ -1147,6 +1147,13 @@
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "QEMU now consumes one inherited sealed child resource union through the authenticated immediate-child transaction: exact preflight binds the same unconsumed plugin reinitializer, successful preflight marks the plan one-shot before descriptor mutation, the destructive path applies only the canonical union, and success records descriptor, child-runtime, mapping, and plan completion; real-fork coverage proves an independently contributed descriptor survives and the parent copy remains unconsumed, while registration of all remaining QEMU subsystem resources, production fork invocation, host continuation pairing, guest admission, and readiness bits 7 and 8 remain open";
     }
+    {
+      file = "0165-crucible-compose-child-descriptor-replacements.patch";
+      catalogName = "crucible-hot-fork-child-descriptor-replacement-composition";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "QEMU now composes up to 4,096 canonical pairwise-disjoint source-to-target descriptor replacements alongside the retained-descriptor and writable-shared-mapping unions: exact duplicates are idempotent, target/source conflicts and missing retained targets fail atomically, the destructive transaction applies only the sealed canonical table, and real-fork coverage replaces one independently contributed result endpoint; complete QMP, block, AIO, logging, and other supported-profile contributions, production fork invocation, host continuation pairing, guest admission, and readiness bits 7 and 8 remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

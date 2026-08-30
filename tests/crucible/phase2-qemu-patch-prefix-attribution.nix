@@ -731,6 +731,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0165-crucible-compose-child-descriptor-replacements.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

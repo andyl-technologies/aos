@@ -2053,6 +2053,17 @@ bases fail without consuming either linear owner. The adapter remains unwired
 to a production fork caller and the current coordinator still has only the
 plugin contribution, so it does not acknowledge bit 7 or 8 and T-CAM-6.1
 through T-CAM-6.3 remain unchecked.
+The same child plan now canonically composes descriptor replacements instead
+of fixing the complete transaction to the plugin's two endpoints. Subsystem
+tables are target-ordered and merge into a 4,096-entry union with global
+source/target uniqueness, retained-target requirements, idempotent exact
+duplicates, and atomic rejection of conflicts, aliases, malformed order, or
+overflow. The bounded child transaction saves every prior target and applies
+only the sealed union. Its real-fork path proves an independently contributed
+result endpoint is replaced and the source is not retained. The coordinator
+still lacks concrete QMP, block, AIO, logging, and remaining supported-profile
+contributions and remains unwired to `fork(2)`, so readiness bits 7 and 8 and
+T-CAM-6.1 through T-CAM-6.3 remain unchecked.
 Template-process descriptor/endpoint staging now satisfies plugin-ring proof
 bit 6 only under the retained exact transaction. The internal replacement and
 child-identity primitives, and the registered empty-local-state reinitializer,

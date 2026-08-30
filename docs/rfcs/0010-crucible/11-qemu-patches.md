@@ -2830,6 +2830,33 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   through `T-CAM-6.3` remain incomplete.
 - **Risk:** F.
 
+### crucible-hot-fork-child-descriptor-replacement-composition — merge branch-private endpoints
+
+- **Patch:** `0165-crucible-compose-child-descriptor-replacements.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** each subsystem may add a strictly target-ordered replacement
+  table to the existing retained-descriptor and writable-shared-mapping
+  contribution. QEMU canonicalizes the plugin's initial pair, merges at most
+  4,096 replacements, and requires all sources and targets to be globally
+  pairwise distinct. Exact duplicates are idempotent; a reused source,
+  differently described target, missing retained target, unsorted table, or
+  over-limit union fails before the accumulated plan changes. The child
+  transaction saves every prior target on its fixed stack, applies the sealed
+  table, and restores all targets if verification rejects the installation.
+- **Micro-test:** composition reaches the exact replacement and retained-table
+  ceilings, rejects source/target cross-aliases and missing targets without
+  mutation, and preserves the prior retained and mapping conflict cases. The
+  real-fork sealed-plan path independently contributes a result-pipe
+  replacement, then reports success only through the installed target while
+  the source is absent from the final child table.
+- **Inertness:** no production subsystem yet supplies QMP, block, AIO, logging,
+  or other non-plugin replacements, and no production caller invokes the fork
+  transaction. Complete supported-profile registration, host-continuation
+  pairing, guest-admission release, and readiness acknowledgements for bits 7
+  and 8 remain absent. `T-CAM-6.1` through `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
