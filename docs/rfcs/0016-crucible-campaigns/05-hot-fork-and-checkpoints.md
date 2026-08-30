@@ -992,7 +992,7 @@ races and is sufficient for proof bit 3 while retained and quiescent. It does
 not choose child-side descriptor, context, coroutine, or clock disposition;
 those obligations remain separately represented by proof bits 7 and 8.
 
-The retained `PrepareForkTemplate` checkpoint is the version-13 OOB
+The retained `PrepareForkTemplate` checkpoint is the version-14 OOB
 `crucible-hot-fork-template` coordinator:
 
 ```text
@@ -1002,7 +1002,7 @@ CrucibleHotForkTemplateOutcome =
     idle | draining | blocked | prepared | aborted
 
 CrucibleHotForkTemplateResourceStageState {
-    schema-version: u32 = 3,
+    schema-version: u32 = 4,
     template-generation: u64,
     private-ring-staged: bool,
     private-ring-generation: u64,
@@ -1016,11 +1016,14 @@ CrucibleHotForkTemplateResourceStageState {
     pending-worker-mask: u64 = 0,
     worker-disposition-bound: bool,
     transaction-bound: bool,
+    parent-process-generation: u64,
+    child-process-generation: u64,
+    plugin-child-plan-bound: bool,
     readiness-proof-acknowledged: bool,
 }
 
 CrucibleHotForkTemplateState {
-    schema-version: u32 = 13,
+    schema-version: u32 = 14,
     generation: u64,
     outcome: CrucibleHotForkTemplateOutcome,
     transaction-active: bool,
@@ -1051,7 +1054,7 @@ admission barrier, the bottom-half/timer source barrier, and the plugin callback
 barrier, and retains all four while previously admitted work drains. A repeated
 `prepare` reevaluates the retained transaction. Once all four barriers are
 quiescent, QEMU reports `prepared` only when all nine required bits are present
-in the same transaction. Otherwise the version-13 report continues to report
+in the same transaction. Otherwise the version-14 report continues to report
 `draining` and retains the barriers so the host can capture and stage
 branch-private resources without releasing the source-ring barrier. Version 12
 introduced the atomic resource report. It carries the exact private-ring and
@@ -1069,6 +1072,16 @@ plan all remain bound to the active template transaction. The nested
 `readiness-proof-acknowledged` value and outer bit 6 are independently derived
 from that basis and MUST agree; stale, partial, or cross-transaction state
 clears both.
+Version 14 additionally derives the complete registered plugin child-runtime
+plan before endpoint ownership is committed. QEMU copies the exact template,
+ring, endpoint, barrier, mapping, descriptor, kernel-identity,
+process-generation, and worker basis into one unconsumed one-shot adapter. The
+nested report exposes the checked adjacent parent and child process generations
+only while that adapter still matches the active transaction. Idempotent
+endpoint staging requires the same copied plan, and exact endpoint release
+clears the parent-process adapter. This is a pre-fork plan binding, not evidence
+that any descriptor was replaced or that the child runtime executed, so it
+does not acknowledge proof bit 7 or 8.
 Endpoint staging rejects a private-ring stage from a different or already
 aborted transaction. A new transaction starts
 only with an empty resource stage. Private-ring and plugin-endpoint staging
@@ -1109,7 +1122,7 @@ complete RCU barrier is quiescent. Proof bit 3 is present exactly while the
 transaction remains active and its complete asynchronous-source barrier is
 quiescent. Proof bit 5 is present exactly while the transaction remains active
 and its complete immutable writable-root binding remains retained by the
-quiescent block barrier. Version 13 additionally composes plugin-ring proof bit
+quiescent block barrier. Version 14 composes plugin-ring proof bit
 6 from the exact transaction-bound frozen ring, endpoint pair, worker plan, and
 plugin barrier. Descriptor/mapping proof bit 7 and child-reinitialization proof
 bit 8 remain clear, so a fully drained transaction stays `draining` and cannot
@@ -1787,7 +1800,12 @@ The supported launch profile optimizes the complete child-ready path:
   real-fork child-resource unit path composes that adapter with exact descriptor
   closure and mapping verification through a fake registered runtime; the
   plugin's actual callback remains covered separately by its exact-plan and
-  remap tests. No production fork caller invokes this composition, and complete
+  remap tests. The version-14 retained template transaction now derives that
+  exact plan and copies it into the one-shot adapter before it admits the
+  endpoint stage. Its report carries the checked parent/child generation pair
+  and whether the unconsumed adapter still matches every retained resource
+  field; replay requires the same plan and exact endpoint release clears the
+  parent copy. No production fork caller invokes this composition, and complete
   non-plugin subsystem reconstruction, host-continuation pairing, guest release,
   and readiness bits 7 and 8 remain open;
 - shared protocol rings are small, frozen separately, and replaced rather than

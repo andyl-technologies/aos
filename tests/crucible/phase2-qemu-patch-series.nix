@@ -1119,6 +1119,13 @@
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "QEMU now prepares a copied fixed-layout child-runtime plan and exposes a one-shot reinitializer for the destructive authenticated child resource transaction; initialization calls the process-global registered plugin runtime exactly once and accepts success only when the exact plan is echoed with callbacks held, the private mapping installed, every sealed worker parked, and no pending local operation; a real-fork unit path composes this adapter with exact descriptor closure and mapping verification, while production fork invocation, complete non-plugin subsystem reinitialization, host continuation pairing, guest admission, and readiness bits 7 and 8 remain open";
     }
+    {
+      file = "0161-crucible-bind-retained-plugin-child-plan.patch";
+      catalogName = "crucible-hot-fork-retained-plugin-child-plan";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "QEMU now derives and copies the exact registered plugin child-runtime plan before admitting a retained endpoint stage, binds the checked adjacent parent and child process generations plus every template, ring, endpoint, barrier, mapping, descriptor, identity, and worker field into one unconsumed one-shot adapter, requires exact plan retention on idempotent staging, and clears the parent adapter on exact release; the version-14 template report exposes that plan binding without acknowledging descriptor/mapping bit 7 or child-reinitialization bit 8, while production fork invocation, complete non-plugin subsystem reinitialization, host continuation pairing, and guest admission remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
