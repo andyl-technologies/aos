@@ -1,0 +1,350 @@
+diff --git a/include/qemu/crucible-hot-fork-child.h b/include/qemu/crucible-hot-fork-child.h
+index 3e955b54e..e64dfa8db 100644
+--- a/include/qemu/crucible-hot-fork-child.h
++++ b/include/qemu/crucible-hot-fork-child.h
+@@ -36,6 +36,8 @@ typedef struct QemuCrucibleHotForkDescriptorTableTransaction {
+ typedef struct QemuCrucibleHotForkSharedMapping {
+     uint64_t start;
+     uint64_t length;
++    uint64_t offset;
++    int backing_fd;
+ } QemuCrucibleHotForkSharedMapping;
+ 
+ typedef int (*QemuCrucibleHotForkDescriptorVerifier)(void *opaque);
+@@ -179,9 +181,10 @@ int qemu_crucible_hot_fork_apply_descriptor_table(
+  * Streams the child's Linux /proc/self/maps file without heap allocation and
+  * rejects every writable shared VMA that is not an exact allowlist entry.  It
+  * also rejects every allowlist entry not present as one exact writable shared
+- * VMA.  Private mappings are admitted as copy-on-write and read-only shared
+- * mappings cannot mutate a sibling.  The allowlist must be strictly ordered,
+- * nonoverlapping, nonempty per entry, and contain at most
++ * VMA backed at the declared offset by the exact retained shrink-sealed memfd.
++ * Private mappings are admitted as copy-on-write and read-only shared mappings
++ * cannot mutate a sibling.  The allowlist must be strictly ordered,
++ * nonoverlapping, page-aligned, nonempty per entry, and contain at most
+  * QEMU_CRUCIBLE_HOT_FORK_MAX_SHARED_MAPPINGS entries.
+  *
+  * The scan accepts at most QEMU_CRUCIBLE_HOT_FORK_MAX_MAPPING_RECORDS records,
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+index 8871277db..9d90d6371 100644
+--- a/tests/unit/test-crucible-hot-fork-child.c
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -214,10 +214,11 @@ static void test_immediate_child_applies_closed_descriptor_table(void)
+     int old_control[2];
+     int new_control[2];
+     int child_result[2];
+-    int retained_fds[3];
++    int retained_fds[4];
+     int old_wake;
+     int new_wake;
+     int inherited_extra;
++    int private_mapping_fd;
+     uint64_t wake = 0;
+     char byte = 0;
+     pid_t child;
+@@ -230,9 +231,16 @@ static void test_immediate_child_applies_closed_descriptor_table(void)
+     old_wake = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+     new_wake = eventfd(0, EFD_CLOEXEC);
+     inherited_extra = eventfd(0, EFD_CLOEXEC);
++    private_mapping_fd = memfd_create(
++        "crucible-hot-fork-child-test", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+     g_assert_cmpint(old_wake, >=, 0);
+     g_assert_cmpint(new_wake, >=, 0);
+     g_assert_cmpint(inherited_extra, >=, 0);
++    g_assert_cmpint(private_mapping_fd, >=, 0);
++    g_assert_cmpint(ftruncate(private_mapping_fd,
++                             qemu_real_host_page_size()), ==, 0);
++    g_assert_cmpint(fcntl(private_mapping_fd, F_ADD_SEALS, F_SEAL_SHRINK),
++                    ==, 0);
+ 
+     replacements[0] = (QemuCrucibleHotForkDescriptorReplacement) {
+         .source_fd = new_control[0],
+@@ -270,6 +278,7 @@ static void test_immediate_child_applies_closed_descriptor_table(void)
+             retained_fds[0] = old_control[0];
+             retained_fds[1] = old_wake;
+             retained_fds[2] = child_result[1];
++            retained_fds[3] = private_mapping_fd;
+             qsort(retained_fds, G_N_ELEMENTS(retained_fds),
+                   sizeof(retained_fds[0]), compare_descriptors);
+             result = qemu_crucible_hot_fork_apply_descriptor_table(
+@@ -282,7 +291,7 @@ static void test_immediate_child_applies_closed_descriptor_table(void)
+         }
+         if (result == 0) {
+             mapping = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
+-                           MAP_SHARED | MAP_ANONYMOUS, -1, 0);
++                           MAP_SHARED, private_mapping_fd, 0);
+             if (mapping == MAP_FAILED) {
+                 result = -errno;
+             }
+@@ -291,6 +300,8 @@ static void test_immediate_child_applies_closed_descriptor_table(void)
+             shared_mapping = (QemuCrucibleHotForkSharedMapping) {
+                 .start = (uintptr_t)mapping,
+                 .length = page_size,
++                .offset = 0,
++                .backing_fd = private_mapping_fd,
+             };
+             result = qemu_crucible_hot_fork_verify_mapping_table(
+                 &transaction, &shared_mapping, 1);
+@@ -320,6 +331,7 @@ static void test_immediate_child_applies_closed_descriptor_table(void)
+     close(old_wake);
+     close(new_wake);
+     close(inherited_extra);
++    close(private_mapping_fd);
+ }
+ 
+ static void test_mapping_table_rejects_unlisted_shared_mapping(void)
+@@ -346,6 +358,50 @@ static void test_mapping_table_rejects_unlisted_shared_mapping(void)
+     g_assert_cmpint(munmap(mapping, page_size), ==, 0);
+ }
+ 
++static int create_sealed_mapping_backing(const char *name, uint64_t length)
++{
++    int fd = memfd_create(name, MFD_CLOEXEC | MFD_ALLOW_SEALING);
++
++    g_assert_cmpint(fd, >=, 0);
++    g_assert_cmpint(ftruncate(fd, length), ==, 0);
++    g_assert_cmpint(fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK), ==, 0);
++    return fd;
++}
++
++static void test_mapping_table_rejects_wrong_shared_backing(void)
++{
++    QemuCrucibleHotForkDescriptorTableTransaction transaction = {
++        .parent_pid = getpid(),
++        .child_pid = getpid(),
++        .active = false,
++        .descriptors_applied = true,
++        .mappings_verified = false,
++    };
++    uint64_t page_size = qemu_real_host_page_size();
++    int actual_fd = create_sealed_mapping_backing(
++        "crucible-hot-fork-actual", page_size);
++    int wrong_fd = create_sealed_mapping_backing(
++        "crucible-hot-fork-wrong", page_size);
++    void *mapping = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
++                         MAP_SHARED, actual_fd, 0);
++    QemuCrucibleHotForkSharedMapping shared_mapping = {
++        .start = (uintptr_t)mapping,
++        .length = page_size,
++        .offset = 0,
++        .backing_fd = wrong_fd,
++    };
++
++    g_assert_true(mapping != MAP_FAILED);
++    g_assert_cmpint(qemu_crucible_hot_fork_verify_mapping_table(
++                        &transaction, &shared_mapping, 1),
++                    ==, -EPERM);
++    g_assert_false(transaction.descriptors_applied);
++    g_assert_false(transaction.mappings_verified);
++    g_assert_cmpint(munmap(mapping, page_size), ==, 0);
++    close(actual_fd);
++    close(wrong_fd);
++}
++
+ static void test_inactive_descriptor_transaction_is_unchanged(void)
+ {
+     QemuCrucibleHotForkDescriptorTableTransaction transaction = {
+@@ -568,6 +624,8 @@ int main(int argc, char **argv)
+                     test_inactive_descriptor_transaction_is_unchanged);
+     g_test_add_func("/crucible/hot-fork-child/unlisted-shared-mapping",
+                     test_mapping_table_rejects_unlisted_shared_mapping);
++    g_test_add_func("/crucible/hot-fork-child/wrong-shared-backing",
++                    test_mapping_table_rejects_wrong_shared_backing);
+     g_test_add_func("/crucible/hot-fork-child/grandchild-rejected",
+                     test_grandchild_cannot_use_parent_identity);
+     g_test_add_func("/crucible/hot-fork-child/exact-replacement",
+diff --git a/util/crucible-hot-fork-child.c b/util/crucible-hot-fork-child.c
+index fb10a6e5b..897f59c16 100644
+--- a/util/crucible-hot-fork-child.c
++++ b/util/crucible-hot-fork-child.c
+@@ -417,17 +417,69 @@ static bool crucible_hot_fork_parse_hex(const char *bytes, size_t length,
+     return true;
+ }
+ 
++static bool crucible_hot_fork_parse_decimal(const char *bytes, size_t length,
++                                            uint64_t *value)
++{
++    uint64_t parsed = 0;
++
++    if (length == 0) {
++        return false;
++    }
++    for (size_t index = 0; index < length; index++) {
++        unsigned int digit;
++
++        if (bytes[index] < '0' || bytes[index] > '9') {
++            return false;
++        }
++        digit = bytes[index] - '0';
++        if (parsed > (UINT64_MAX - digit) / 10) {
++            return false;
++        }
++        parsed = parsed * 10 + digit;
++    }
++    *value = parsed;
++    return true;
++}
++
++static const char *crucible_hot_fork_next_mapping_field(
++    const char *cursor, const char *record_end, const char **field_end)
++{
++    while (cursor < record_end && *cursor == ' ') {
++        cursor++;
++    }
++    if (cursor == record_end) {
++        return NULL;
++    }
++    *field_end = memchr(cursor, ' ', record_end - cursor);
++    if (!*field_end) {
++        *field_end = record_end;
++    }
++    return cursor;
++}
++
+ static int crucible_hot_fork_parse_mapping_record(
+     const char *record,
+     size_t length,
+     uint64_t *start,
+     uint64_t *mapping_length,
++    uint64_t *offset,
++    uint64_t *device_major,
++    uint64_t *device_minor,
++    uint64_t *inode,
+     bool *writable_shared)
+ {
+     const char *range_end = memchr(record, ' ', length);
+     const char *separator;
+     const char *permissions;
+     const char *permissions_end;
++    const char *offset_start;
++    const char *offset_end;
++    const char *device_start;
++    const char *device_end;
++    const char *device_separator;
++    const char *inode_start;
++    const char *inode_end;
++    const char *record_end = record + length;
+     uint64_t end;
+ 
+     if (!range_end || range_end == record) {
+@@ -442,12 +494,9 @@ static int crucible_hot_fork_parse_mapping_record(
+         return -EPROTO;
+     }
+ 
+-    permissions = range_end;
+-    while (permissions < record + length && *permissions == ' ') {
+-        permissions++;
+-    }
+-    permissions_end = memchr(permissions, ' ', record + length - permissions);
+-    if (!permissions_end || permissions_end - permissions != 4 ||
++    permissions = crucible_hot_fork_next_mapping_field(
++        range_end, record_end, &permissions_end);
++    if (!permissions || permissions_end - permissions != 4 ||
+         (permissions[0] != 'r' && permissions[0] != '-') ||
+         (permissions[1] != 'w' && permissions[1] != '-') ||
+         (permissions[2] != 'x' && permissions[2] != '-') ||
+@@ -455,6 +504,29 @@ static int crucible_hot_fork_parse_mapping_record(
+         return -EPROTO;
+     }
+ 
++    offset_start = crucible_hot_fork_next_mapping_field(
++        permissions_end, record_end, &offset_end);
++    device_start = offset_start ? crucible_hot_fork_next_mapping_field(
++        offset_end, record_end, &device_end) : NULL;
++    device_separator = device_start ? memchr(
++        device_start, ':', device_end - device_start) : NULL;
++    inode_start = device_start ? crucible_hot_fork_next_mapping_field(
++        device_end, record_end, &inode_end) : NULL;
++    if (!offset_start || !device_start || !device_separator ||
++        device_separator == device_start ||
++        device_separator + 1 == device_end ||
++        !inode_start || !crucible_hot_fork_parse_hex(
++            offset_start, offset_end - offset_start, offset) ||
++        !crucible_hot_fork_parse_hex(
++            device_start, device_separator - device_start, device_major) ||
++        !crucible_hot_fork_parse_hex(
++            device_separator + 1, device_end - device_separator - 1,
++            device_minor) ||
++        !crucible_hot_fork_parse_decimal(
++            inode_start, inode_end - inode_start, inode)) {
++        return -EPROTO;
++    }
++
+     *mapping_length = end - *start;
+     *writable_shared = permissions[1] == 'w' && permissions[3] == 's';
+     return 0;
+@@ -465,16 +537,33 @@ static bool crucible_hot_fork_shared_mapping_table_is_valid(
+     size_t mapping_count)
+ {
+     uint64_t prior_end = 0;
++    uint64_t page_size = qemu_real_host_page_size();
+ 
+     if ((mapping_count != 0 && !mappings) ||
+-        mapping_count > QEMU_CRUCIBLE_HOT_FORK_MAX_SHARED_MAPPINGS) {
++        mapping_count > QEMU_CRUCIBLE_HOT_FORK_MAX_SHARED_MAPPINGS ||
++        page_size == 0) {
+         return false;
+     }
+     for (size_t index = 0; index < mapping_count; index++) {
++        struct stat backing;
+         uint64_t end;
+-
+-        if (mappings[index].length == 0 ||
+-            mappings[index].start > UINT64_MAX - mappings[index].length) {
++        int seals;
++
++        if (mappings[index].backing_fd < 0 ||
++            mappings[index].length == 0 ||
++            mappings[index].start % page_size != 0 ||
++            mappings[index].length % page_size != 0 ||
++            mappings[index].offset % page_size != 0 ||
++            mappings[index].start > UINT64_MAX - mappings[index].length ||
++            mappings[index].offset > UINT64_MAX - mappings[index].length ||
++            fstat(mappings[index].backing_fd, &backing) < 0 ||
++            !S_ISREG(backing.st_mode) || backing.st_size < 0 ||
++            mappings[index].offset + mappings[index].length >
++                (uint64_t)backing.st_size) {
++            return false;
++        }
++        seals = fcntl(mappings[index].backing_fd, F_GET_SEALS);
++        if (seals < 0 || (seals & F_SEAL_SHRINK) == 0) {
+             return false;
+         }
+         end = mappings[index].start + mappings[index].length;
+@@ -493,18 +582,34 @@ static int crucible_hot_fork_match_mapping_record(
+     size_t mapping_count,
+     size_t *mapping_index)
+ {
++    struct stat backing;
+     uint64_t start;
+     uint64_t mapping_length;
++    uint64_t offset;
++    uint64_t device_major;
++    uint64_t device_minor;
++    uint64_t inode;
+     bool writable_shared;
+     int result = crucible_hot_fork_parse_mapping_record(
+-        record, length, &start, &mapping_length, &writable_shared);
++        record, length, &start, &mapping_length, &offset, &device_major,
++        &device_minor, &inode, &writable_shared);
+ 
+     if (result != 0 || !writable_shared) {
+         return result;
+     }
+     if (*mapping_index >= mapping_count ||
+         mappings[*mapping_index].start != start ||
+-        mappings[*mapping_index].length != mapping_length) {
++        mappings[*mapping_index].length != mapping_length ||
++        mappings[*mapping_index].offset != offset) {
++        return -EPERM;
++    }
++    if (fstat(mappings[*mapping_index].backing_fd, &backing) < 0) {
++        return -errno;
++    }
++    if (device_major > UINT_MAX || device_minor > UINT_MAX ||
++        major(backing.st_dev) != device_major ||
++        minor(backing.st_dev) != device_minor ||
++        (uint64_t)backing.st_ino != inode) {
+         return -EPERM;
+     }
+     (*mapping_index)++;

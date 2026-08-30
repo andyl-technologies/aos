@@ -887,11 +887,15 @@ without heap allocation under the same 65,536-record, 8-KiB-record, and 16-MiB
 aggregate bounds used by the host audit. Private VMAs retain kernel COW
 semantics; read-only shared VMAs cannot mutate a sibling; and every writable
 shared VMA must exactly match one of at most 4,096 sorted, nonoverlapping
-branch-private allowlist ranges in both directions. A real-fork path admits an
-exact private replacement, while a negative regression proves that omitting a
-writable shared VMA rejects the child. The production fork coordinator has not
-yet composed this result with the staged resource manifest, child
-reinitialization, and readiness report, so proof bit 7 remains clear.
+branch-private allowlist ranges in both directions. Each allowed range also
+names one retained shrink-sealed regular-file descriptor and page-aligned file
+offset. The scan authenticates the VMA's device, inode, and offset against that
+descriptor, so a same-sized but different backing cannot satisfy the proof. A
+real-fork path retains and admits one exact sealed memfd replacement; negative
+regressions prove that omitting the VMA or substituting another valid memfd
+rejects the child. The production fork coordinator has not yet composed this
+result with the staged resource manifest, child reinitialization, and readiness
+report, so proof bit 7 remains clear.
 
 At that checkpoint this was not yet the complete plugin-ring proof.
 Template-bound staging rejects

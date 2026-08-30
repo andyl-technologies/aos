@@ -1963,10 +1963,13 @@ The child path now also owns a bounded mapping-disposition verifier. After
 descriptor closure and branch-private remapping it streams `/proc/self/maps`
 without heap allocation under 65,536-record, 8-KiB-record, and 16-MiB aggregate
 limits and requires every writable shared VMA to match one of at most 4,096
-sorted branch-private ranges in both directions. Private mappings remain COW
-and read-only shared mappings cannot mutate siblings. Positive exact-range and
-negative omitted-range regressions are present, but the production fork path
-has not composed this proof with child reinitialization, so bit 7 remains clear.
+sorted branch-private ranges in both directions. Every range now also names an
+exact retained shrink-sealed regular-file descriptor and page-aligned offset;
+the scan authenticates its procfs device/inode/offset tuple against `fstat(2)`.
+Private mappings remain COW and read-only shared mappings cannot mutate
+siblings. Positive exact-backing and negative omitted/wrong-backing regressions
+are present, but the production fork path has not composed this proof with
+child reinitialization, so bit 7 remains clear.
 Template-process descriptor/endpoint staging now satisfies plugin-ring proof
 bit 6 only under the retained exact transaction. The internal replacement and
 child-identity primitives, and the registered empty-local-state reinitializer,

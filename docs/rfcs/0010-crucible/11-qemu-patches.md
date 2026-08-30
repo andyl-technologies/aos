@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **152 patches**. This count is checked against
+The carried series contains **153 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -2607,6 +2607,27 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Inertness:** the verifier has no production fork caller, does not run child
   reinitialization or continuation pairing, and cannot acknowledge readiness
   bits 7 or 8 by itself. `T-CAM-6.2` remains incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-child-shared-backing-authentication — bind exact memfds
+
+- **Patch:**
+  `0156-crucible-authenticate-fork-child-shared-mapping-backings.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** every allowed writable shared range additionally names a
+  page-aligned offset and retained backing descriptor. Before scanning, QEMU
+  requires a regular file large enough for the exact range and
+  `F_SEAL_SHRINK`. During the bounded procfs scan it authenticates the VMA's
+  offset, device, and inode against `fstat(2)` on that descriptor rather than
+  trusting a range-only declaration.
+- **Micro-test:** the real-fork path retains a shrink-sealed memfd through
+  descriptor closure and accepts its exact shared mapping. A second regression
+  maps one same-sized sealed memfd while declaring another and requires
+  destructive rejection before any mapping proof is recorded.
+- **Inertness:** the verifier is still internal and unwired; no production fork
+  caller composes its result with child reinitialization or acknowledges
+  readiness bits 7 or 8. `T-CAM-6.2` remains incomplete.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

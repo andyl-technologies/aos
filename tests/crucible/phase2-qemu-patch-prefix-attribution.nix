@@ -695,6 +695,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0156-crucible-authenticate-fork-child-shared-mapping-backings.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

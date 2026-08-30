@@ -2318,6 +2318,27 @@
         '';
       };
     }
+    {
+      patch = "0156-crucible-authenticate-fork-child-shared-mapping-backings.patch";
+      check = certifyExactPatch {
+        patchName = "0156-crucible-authenticate-fork-child-shared-mapping-backings.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-child-shared-backing-authentication";
+        liveEvidence = ''
+          grep -Fxq 'patch=0156-crucible-authenticate-fork-child-shared-mapping-backings.patch' "$live_result"
+          grep -Fq 'int backing_fd;' \
+            ${patchDir}/0156-crucible-authenticate-fork-child-shared-mapping-backings.patch
+          grep -Fq 'F_GET_SEALS' \
+            ${patchDir}/0156-crucible-authenticate-fork-child-shared-mapping-backings.patch
+          grep -Fq 'major(backing.st_dev)' \
+            ${patchDir}/0156-crucible-authenticate-fork-child-shared-mapping-backings.patch
+          grep -Fq 'test_mapping_table_rejects_wrong_shared_backing' \
+            ${patchDir}/0156-crucible-authenticate-fork-child-shared-mapping-backings.patch
+          grep -Fq 'memfd_create(' \
+            ${patchDir}/0156-crucible-authenticate-fork-child-shared-mapping-backings.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =
