@@ -1692,6 +1692,7 @@ in
           patch=0148-crucible-expose-hot-fork-child-runtime-state.patch
           patch=0149-crucible-bind-hot-fork-endpoint-replacement-slots.patch
           patch=0150-crucible-add-fork-child-endpoint-replacement-primitive.patch
+          patch=0151-crucible-authenticate-immediate-hot-fork-children.patch
           plugin_endpoint_schema_version=4
           plugin_endpoint_source_descriptors_observed=true
           plugin_endpoint_replacement_plan_bound=false

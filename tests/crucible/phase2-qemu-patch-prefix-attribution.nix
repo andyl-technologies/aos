@@ -675,6 +675,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0151-crucible-authenticate-immediate-hot-fork-children.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

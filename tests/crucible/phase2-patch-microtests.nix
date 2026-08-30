@@ -2209,6 +2209,29 @@
         '';
       };
     }
+    {
+      patch = "0151-crucible-authenticate-immediate-hot-fork-children.patch";
+      check = certifyExactPatch {
+        patchName = "0151-crucible-authenticate-immediate-hot-fork-children.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-immediate-child-unit";
+        liveEvidence = ''
+          grep -Fxq 'patch=0151-crucible-authenticate-immediate-hot-fork-children.patch' "$live_result"
+          grep -Fq 'qemu_crucible_hot_fork_capture_parent_identity' \
+            ${patchDir}/0151-crucible-authenticate-immediate-hot-fork-children.patch
+          grep -Fq 'qemu_crucible_hot_fork_authenticate_immediate_child' \
+            ${patchDir}/0151-crucible-authenticate-immediate-hot-fork-children.patch
+          grep -Fq 'PR_SET_PDEATHSIG' \
+            ${patchDir}/0151-crucible-authenticate-immediate-hot-fork-children.patch
+          grep -Fq 'test_immediate_child_replaces_parent_endpoints' \
+            ${patchDir}/0151-crucible-authenticate-immediate-hot-fork-children.patch
+          grep -Fq 'test_grandchild_cannot_use_parent_identity' \
+            ${patchDir}/0151-crucible-authenticate-immediate-hot-fork-children.patch
+          grep -Fq 'test-crucible-hot-fork-child --tap' \
+            ${../../pkgs/emulation/qemu.nix}
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

@@ -1937,11 +1937,15 @@ This remains a retained T-CAM-6.2 subsystem primitive: a pending worker-local
 item is rejected rather than assigned ambiguously, while fork-child descriptor
 inheritance/remapping beyond the now-excluded source ring and unwired two-slot
 helper, invocation of the complete recorded disposition plan,
-host-continuation pairing, child process identity, and final ring release are
-not composed yet. Template-process descriptor/endpoint staging, the internal
-replacement primitive, and the registered empty-local-state reinitializer do
-not satisfy proof bits 6 through 8. All three remain clear and T-CAM-6.2 remains
-unchecked.
+host-continuation pairing, and final ring release are not composed yet. A
+Linux-only GPL-side primitive now pins the exact parent generation in a pidfd,
+admits only its live immediate child, arms parent-death termination, and proves
+child-only endpoint replacement under a real unit-test fork. Production QEMU
+still has no fork caller or complete inherited-resource transaction.
+Template-process descriptor/endpoint staging, the internal replacement and
+child-identity primitives, and the registered empty-local-state reinitializer
+do not satisfy proof bits 6 through 8. All three remain clear and T-CAM-6.2
+remains unchecked.
 Patched QEMU now also owns the versioned `PrepareForkTemplate`
 transaction. Its serialized OOB coordinator starts only at the exact
 paused/device-flush boundary, asynchronously closes graph-writer admission and

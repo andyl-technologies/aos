@@ -1049,6 +1049,13 @@
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-12";
       capability = "the Linux-only GPL-side endpoint replacement helper validates two pairwise-distinct source/target pairs, preserves target descriptor flags, verifies the installed pair, restores both targets on rejection, and reports an unrecoverable poisoned disposition when rollback cannot be proved; it remains internal and unwired pending the immediate-child coordinator";
     }
+    {
+      file = "0151-crucible-authenticate-immediate-hot-fork-children.patch";
+      catalogName = "crucible-hot-fork-immediate-child-identity";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-11,HFORK-12";
+      capability = "the Linux-only GPL-side child identity primitive pins the parent process generation before fork, accepts only its exact live immediate child, arms parent-death termination before disposition, and proves child-only endpoint replacement under a real fork without yet wiring the production coordinator";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

@@ -852,6 +852,15 @@ drops its original pairs only after all acknowledgements. Any transfer or
 release ambiguity poisons QMP, retains the opaque pair, and quarantines the
 QEMU generation.
 
+The adjacent Linux-only child-identity primitive pins the exact parent process
+generation in a pidfd before fork. In a child it requires that pinned live
+generation to remain the direct parent while arming parent-death `SIGKILL`
+before any disposition may proceed. A real-fork unit path proves that only the
+immediate child can apply the two replacements and that the parent's descriptor
+table remains unchanged. This is still an internal, unwired primitive: the
+production coordinator does not call `fork(2)`, and the identity check alone
+does not close the inherited descriptor table or acknowledge readiness.
+
 This is still not the complete plugin-ring proof. Template-bound staging rejects
 a parked worker that retains a received trigger or queued fingerprint work,
 but no fork child yet applies the complete worker plan together with its host

@@ -164,6 +164,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0148-crucible-expose-hot-fork-child-runtime-state.patch",
     "0149-crucible-bind-hot-fork-endpoint-replacement-slots.patch",
     "0150-crucible-add-fork-child-endpoint-replacement-primitive.patch",
+    "0151-crucible-authenticate-immediate-hot-fork-children.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each
