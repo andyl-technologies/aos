@@ -1724,6 +1724,7 @@ in
           patch=0161-crucible-bind-retained-plugin-child-plan.patch
           patch=0162-crucible-bind-plugin-child-resource-tables.patch
           patch=0163-crucible-compose-child-resource-contributions.patch
+          patch=0164-crucible-consume-sealed-child-resource-plans.patch
           plugin_endpoint_schema_version=4
           plugin_endpoint_source_descriptors_observed=true
           plugin_endpoint_replacement_plan_bound=false
@@ -1814,6 +1815,7 @@ in
           plugin_child_plan_report_bound=true
           plugin_child_resource_plan_report_bound=true
           child_resource_contribution_composition=true
+          sealed_child_resource_plan_application=true
           template_resource_stage_schema_version=5
           template_worker_disposition_bound=false
           template_resource_stage_empty_after_release=true

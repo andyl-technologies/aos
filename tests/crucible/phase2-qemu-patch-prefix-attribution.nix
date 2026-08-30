@@ -727,6 +727,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0164-crucible-consume-sealed-child-resource-plans.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
