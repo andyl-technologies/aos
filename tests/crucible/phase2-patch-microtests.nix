@@ -2188,6 +2188,27 @@
         '';
       };
     }
+    {
+      patch = "0150-crucible-add-fork-child-endpoint-replacement-primitive.patch";
+      check = certifyExactPatch {
+        patchName = "0150-crucible-add-fork-child-endpoint-replacement-primitive.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-child-endpoint-replacement-unit";
+        liveEvidence = ''
+          grep -Fxq 'patch=0150-crucible-add-fork-child-endpoint-replacement-primitive.patch' "$live_result"
+          grep -Fq 'qemu_crucible_hot_fork_replace_endpoint_descriptors' \
+            ${patchDir}/0150-crucible-add-fork-child-endpoint-replacement-primitive.patch
+          grep -Fq 'crucible_hot_fork_restore_descriptors' \
+            ${patchDir}/0150-crucible-add-fork-child-endpoint-replacement-primitive.patch
+          grep -Fq 'test_verifier_rejection_rolls_back' \
+            ${patchDir}/0150-crucible-add-fork-child-endpoint-replacement-primitive.patch
+          grep -Fq 'return -EUCLEAN' \
+            ${patchDir}/0150-crucible-add-fork-child-endpoint-replacement-primitive.patch
+          grep -Fq 'test-crucible-hot-fork-child --tap' \
+            ${../../pkgs/emulation/qemu.nix}
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

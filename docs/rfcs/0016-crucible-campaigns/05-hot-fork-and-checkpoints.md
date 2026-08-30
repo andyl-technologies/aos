@@ -835,8 +835,15 @@ four slots are pairwise distinct and neither pair aliases the private-ring
 descriptor. Descriptor numbers are process-local observations rather than
 transferable capabilities. A future child transaction must atomically replace
 both target file descriptions and then authenticate the resulting kernel
-identities before invoking the registered plugin reinitializer. This is a plan
-rather than an applied child disposition, so the state explicitly keeps
+identities before invoking the registered plugin reinitializer. Patched QEMU
+now contains a Linux-only internal helper for that exact two-slot replacement.
+The helper validates the pairwise-distinct shape, preserves target descriptor
+flags, retains both old targets until a caller-owned verifier authenticates the
+installed pair, restores both on rejection, and reports a poisoned disposition
+when rollback cannot be proved. It remains unwired: only the future
+immediate-child coordinator may call it, and any nonzero result requires that
+child to terminate or enter supervisor-owned quarantine. The endpoint state is
+therefore still a plan rather than an applied child disposition, so it keeps
 `disposition-complete` and
 `readiness-proof-acknowledged` false. Private-ring release is rejected while
 the pair retains its generation. Endpoint release first closes QEMU's
@@ -857,9 +864,9 @@ allocation can be rebound to a future child teardown receiver without retaining
 the vanished parent receiver. Those internal transitions are not yet registered
 or invoked by QEMU, do not recreate the control, teardown, or optional
 fingerprint workers, and do not release the child barrier. Template-process
-descriptor and endpoint retention are therefore not child dispositions: they
-prove neither inherited-FD closure nor complete child remap/rebind. QEMU keeps
-readiness bits 6 through 8 clear.
+descriptor and endpoint retention plus the unwired two-slot helper are
+therefore not child dispositions: they prove neither inherited-FD closure nor
+complete child remap/rebind. QEMU keeps readiness bits 6 through 8 clear.
 
 The next source checkpoint adds a process-lifetime reversible bottom-half and
 timer-source barrier through the OOB

@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **141 patches**. This count is checked against
+The carried series contains **142 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -2477,6 +2477,28 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   replacement, invoke the registered child reinitializer, or fork. Descriptor
   numbers grant no authority; readiness bits 6 through 8 and `T-CAM-6.2`
   remain incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-child-endpoint-replacement-primitive — replace two exact slots
+
+- **Patch:** `0150-crucible-add-fork-child-endpoint-replacement-primitive.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-12].
+- **Mechanism:** one Linux-only GPL-side helper accepts exactly two
+  pairwise-distinct source/target descriptor pairs. It duplicates both prior
+  targets for rollback, preserves each target's close-on-exec flag, replaces
+  both file descriptions, and invokes a caller-owned verifier over the
+  installed pair. A rejected verification restores both targets and leaves the
+  sources retained. An incomplete rollback reports `-EUCLEAN`, which requires
+  terminal child quarantine rather than use of any ambiguous descriptor.
+- **Micro-test:** the QEMU package runs a focused unit binary that proves exact
+  control-socket and eventfd replacement, source closure only after accepted
+  verification, target-flag preservation, complete rollback after a verifier
+  rejection, and no mutation for an aliased plan. Patch micro-tests pin the
+  helper, rollback, poison result, and package test invocation.
+- **Inertness:** the helper is internal and has no caller. It does not establish
+  an immediate fork-child context, scan or close the complete inherited
+  descriptor table, invoke the plugin reinitializer, or acknowledge readiness.
+  Bits 6 through 8 stay clear and `T-CAM-6.2` remains unchecked.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
