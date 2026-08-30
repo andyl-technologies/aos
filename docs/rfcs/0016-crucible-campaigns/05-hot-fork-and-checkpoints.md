@@ -881,6 +881,18 @@ regression proves the signal mask precedes construction, while an inactive
 transaction cannot mutate the table. Production fork composition and mapping
 disposition remain open, so this does not acknowledge proof bit 7.
 
+The mapping half now has an equally fail-closed, unwired child primitive. After
+descriptor closure and branch-private remapping, it streams `/proc/self/maps`
+without heap allocation under the same 65,536-record, 8-KiB-record, and 16-MiB
+aggregate bounds used by the host audit. Private VMAs retain kernel COW
+semantics; read-only shared VMAs cannot mutate a sibling; and every writable
+shared VMA must exactly match one of at most 4,096 sorted, nonoverlapping
+branch-private allowlist ranges in both directions. A real-fork path admits an
+exact private replacement, while a negative regression proves that omitting a
+writable shared VMA rejects the child. The production fork coordinator has not
+yet composed this result with the staged resource manifest, child
+reinitialization, and readiness report, so proof bit 7 remains clear.
+
 At that checkpoint this was not yet the complete plugin-ring proof.
 Template-bound staging rejects
 a parked worker that retains a received trigger or queued fingerprint work,

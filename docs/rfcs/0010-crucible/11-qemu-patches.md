@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **151 patches**. This count is checked against
+The carried series contains **152 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -2586,6 +2586,27 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Inertness:** the transaction has no production fork caller, does not assign
   dispositions to mappings, does not run child reinitialization, and does not
   acknowledge readiness bits 7 or 8. `T-CAM-6.2` remains incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-child-mapping-disposition — reject unsafe VMAs
+
+- **Patch:** `0155-crucible-verify-fork-child-mapping-dispositions.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** after the exact child descriptor table is applied, a one-shot
+  Linux verifier streams `/proc/self/maps` without heap allocation. Private
+  VMAs retain kernel COW semantics and read-only shared VMAs cannot mutate a
+  sibling; every writable shared VMA must exactly match one sorted,
+  nonoverlapping branch-private allowlist range, and every allowlisted range
+  must appear exactly once. The scan accepts at most 65,536 records, 8 KiB per
+  record, 16 MiB in aggregate, and 4,096 writable shared ranges.
+- **Micro-test:** the real-fork descriptor path installs and accepts one exact
+  anonymous branch-private shared VMA after table closure. A negative
+  regression omits an otherwise valid writable shared VMA and requires
+  fail-closed rejection.
+- **Inertness:** the verifier has no production fork caller, does not run child
+  reinitialization or continuation pairing, and cannot acknowledge readiness
+  bits 7 or 8 by itself. `T-CAM-6.2` remains incomplete.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

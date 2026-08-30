@@ -691,6 +691,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0155-crucible-verify-fork-child-mapping-dispositions.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

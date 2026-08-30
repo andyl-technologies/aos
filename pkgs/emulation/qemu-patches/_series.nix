@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "ff0cd2b52a178201c569fc0a0b1f5f058edb68530efae81510c8dfe11716423a";
+  patchBranchBundleSha256 = "eb17cb2183f253b64932d3931af314dad15e8502ca8dbdb47ec9d5db34de80b9";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "b5b5d22f79cfb6d062e17e3522ae9148c3c67dec";
+  patchBranchHeadCommit = "bc7f0664ba9ad813058b0a5033dbae9b59f5cff1";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1475,6 +1475,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12";
       capability = "a Linux-only unwired one-shot child transaction proves close_range support, authenticates the exact immediate child, blocks every blockable signal before the caller constructs the retain table, consumes the parent anchor, and requires that exact child transaction for closed-table application; mapping disposition, production fork composition, child reinitialization, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0155-crucible-verify-fork-child-mapping-dispositions.patch";
+      branchSubject = "crucible: verify fork-child mapping dispositions";
+      branchCommit = "bc7f0664ba9ad813058b0a5033dbae9b59f5cff1";
+      branchTree = "4ca38b00ffda912ac89de82954d7cbfacdcc7e96";
+      catalogName = "crucible-hot-fork-child-mapping-disposition";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "after exact child descriptor closure, a Linux-only unwired one-shot verifier streams procfs without heap allocation under 65,536-record, 8-KiB-record, and 16-MiB aggregate bounds; private VMAs remain COW, read-only shared VMAs cannot mutate siblings, and every writable shared VMA must exactly match one sorted bounded branch-private allowlist range in both directions; production fork composition, child reinitialization, and readiness bits 7 and 8 remain open";
     }
   ];
   catalogOnlyCapabilities = [
