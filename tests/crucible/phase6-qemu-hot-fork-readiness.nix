@@ -1389,7 +1389,7 @@ in
               "schema-version",
               "transaction-active"
             ] and
-            $report."schema-version" == 13 and
+            $report."schema-version" == 14 and
             $report.generation == 0 and
             $report.outcome == "idle" and
             $report."transaction-active" == false and
@@ -1423,7 +1423,7 @@ in
             $report."bh-timer-barrier" == $bh_report and
             $report."block-barrier" == $block_report and
             $report."resource-stage" == {
-              "schema-version": 3,
+              "schema-version": 4,
               "template-generation": 0,
               "private-ring-staged": false,
               "private-ring-generation": 2,
@@ -1437,6 +1437,9 @@ in
               "pending-worker-mask": 0,
               "worker-disposition-bound": false,
               "transaction-bound": false,
+              "parent-process-generation": 0,
+              "child-process-generation": 0,
+              "plugin-child-plan-bound": false,
               "readiness-proof-acknowledged": false
             } and
             $report."rollback-complete" == true and
@@ -1717,6 +1720,7 @@ in
           patch=0158-crucible-bind-hot-fork-source-mappings.patch
           patch=0159-crucible-bind-child-runtime-source-mappings.patch
           patch=0160-crucible-compose-registered-fork-child-runtime.patch
+          patch=0161-crucible-bind-retained-plugin-child-plan.patch
           plugin_endpoint_schema_version=4
           plugin_endpoint_source_descriptors_observed=true
           plugin_endpoint_replacement_plan_bound=false
@@ -1803,7 +1807,8 @@ in
           plugin_endpoint_two_layer_release=true
           plugin_endpoint_disposition_complete=false
           plugin_endpoint_readiness_proof_acknowledged=false
-          template_coordinator_schema_version=13
+          template_coordinator_schema_version=14
+          plugin_child_plan_report_bound=true
           template_resource_stage_schema_version=3
           template_worker_disposition_bound=false
           template_resource_stage_empty_after_release=true

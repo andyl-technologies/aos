@@ -715,6 +715,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0161-crucible-bind-retained-plugin-child-plan.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

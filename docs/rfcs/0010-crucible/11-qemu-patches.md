@@ -2723,6 +2723,33 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   and 8 remain absent. `T-CAM-6.2` remains incomplete.
 - **Risk:** F.
 
+### crucible-hot-fork-retained-plugin-child-plan — bind the retained plan
+
+- **Patch:** `0161-crucible-bind-retained-plugin-child-plan.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** before it commits endpoint ownership, the version-14 retained
+  template coordinator derives a fixed-layout version-3 plugin child-runtime
+  plan from the exact active template, branch-private ring, authenticated source
+  VMA, endpoint replacement slots, kernel identities, registered process
+  generation, quiescent plugin barrier, and sealed worker disposition. It copies
+  that plan into QEMU's unconsumed one-shot adapter. Idempotent staging requires
+  the adapter to retain the same plan; exact endpoint release clears the parent
+  copy. The strict nested report carries the adjacent parent and child process
+  generations and a plan-bound bit only while the complete basis still matches.
+- **Micro-test:** QEMU unit coverage exact-compares the copied plan, rejects a
+  changed endpoint generation, and proves reset removes the binding. Strict Rust
+  QMP fixtures accept the complete version-14 report, expose the adjacent
+  generation pair, and reject malformed resource-stage shapes. The live gate
+  pins the expanded idle schema while the exact patch certificate checks the
+  production binding symbols.
+- **Inertness:** plan construction neither forks nor mutates a child descriptor
+  table or mapping. Complete non-plugin QEMU subsystem reinitialization,
+  host-continuation pairing, guest-admission release, and readiness
+  acknowledgements for bits 7 and 8 remain absent. `T-CAM-6.2` remains
+  incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

@@ -1717,7 +1717,7 @@ QEMU now additionally owns a process-lifetime reversible RCU admission/drain
 barrier. Holding at the exact paused/device-flush boundary gates every new
 outer reader and callback submission through a race-closed
 two-phase admission, retains the exact reader/admission/callback/drain state,
-and parks rejected entrants until release. The version-13 template coordinator
+and parks rejected entrants until release. The version-14 template coordinator
 holds this barrier with the plugin callback barrier and acknowledges readiness
 bit 4 only while the complete retained RCU state is quiescent. The RCU worker
 still needs an exact child disposition/reinitializer, so bit 8 remains clear.
@@ -1727,7 +1727,7 @@ GLib dispatch, AioHandler lifecycle and callbacks, coroutine scheduling,
 bottom-half and timer creation, mutation, and callback dispatch. Holding at the
 exact paused/device-flush boundary parks later producers, lets already-admitted
 work and its nested mutations finish, leaves queued sources parked, and keeps
-OOB QMP responsive through nonblocking event-loop admission. The version-13
+OOB QMP responsive through nonblocking event-loop admission. The version-14
 template coordinator retains this barrier with the plugin, RCU, and native
 block barriers,
 and the typed client validates its exact bounded inventories and derived
@@ -1792,7 +1792,7 @@ typed Rust control surface rejects contradictory schemas, bounds, generations,
 owners, and action postconditions. The QEMU unit regression parks a real graph
 writer until a scheduled release, while the live gate proves stable released
 state and no state retention after an invalid hold. This is a concrete
-block-side graph and I/O quiescence prerequisite. The version-13 template
+block-side graph and I/O quiescence prerequisite. The version-14 template
 coordinator schedules acquisition and release on the main AioContext, holds the
 graph and native drain barriers before parking asynchronous sources, and
 releases asynchronous sources before graph and block I/O admission reopen.
@@ -2012,6 +2012,18 @@ callback remains covered by its separate remap tests. The production fork
 caller, complete non-plugin QEMU subsystem reconstruction, host-continuation
 pairing, guest-admission release, and readiness bits 7 and 8 remain open;
 T-CAM-6.2 remains unchecked.
+The retained template coordinator now derives that plan from its exact staged
+private ring, endpoint replacement slots, authenticated source VMA, current
+registered plugin manifest, quiescent barrier, and sealed worker disposition
+before endpoint ownership is committed. Version 14 reports the checked adjacent
+parent and child process generations plus whether the unconsumed adapter still
+matches the active transaction. Idempotent staging requires that exact plan and
+endpoint release clears the parent-process copy. This closes the production
+plan-binding gap between retained resource staging and the one-shot adapter, but
+does not call `fork(2)`, apply the descriptor/mapping transaction, reinitialize
+non-plugin QEMU subsystems, pair the host continuation, or release child guest
+admission. Proof bits 7 and 8 therefore remain clear and T-CAM-6.2 remains
+unchecked.
 Template-process descriptor/endpoint staging now satisfies plugin-ring proof
 bit 6 only under the retained exact transaction. The internal replacement and
 child-identity primitives, and the registered empty-local-state reinitializer,
