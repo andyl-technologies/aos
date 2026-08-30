@@ -987,6 +987,16 @@ in
           # from the pinned XNU source rather than recreating packet ABI.
           cp "$xnuRoot/bsd/netinet/ip_icmp.h" "$out/usr/include/netinet/"
           cp "$xnuRoot/bsd/netinet/icmp6.h" "$out/usr/include/netinet/"
+          # OpenJDK's Darwin IPv6 interface enumeration uses the public XNU
+          # in6_ifreq ioctl ABI. Install its exact public header closure from
+          # the pinned XNU source rather than reconstructing kernel layouts.
+          mkdir -p "$out/usr/include/netinet6"
+          cp "$xnuRoot/bsd/netinet/in_var.h" "$out/usr/include/netinet/"
+          cp "$xnuRoot/bsd/netinet6/in6_var.h" "$out/usr/include/netinet6/"
+          cp "$xnuRoot/bsd/netinet6/scope6_var.h" "$out/usr/include/netinet6/"
+          cp "$xnuRoot/bsd/sys/protosw.h" "$out/usr/include/sys/"
+          cp "$xnuRoot/bsd/sys/kern_event.h" "$out/usr/include/sys/"
+          cp "$xnuRoot/bsd/sys/sys_domain.h" "$out/usr/include/sys/"
           cp "$xnuRoot/bsd/net/if_arp.h" "$out/usr/include/net/"
           cp "$xnuRoot/bsd/net/bpf.h" "$out/usr/include/net/"
           cp "$xnuRoot/bsd/net/ethernet.h" "$out/usr/include/net/"

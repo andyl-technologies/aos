@@ -45,6 +45,7 @@
               '#include <net/bpf.h>' \
               '#include <net/ethernet.h>' \
               '#include <net/if_media.h>' \
+              '#include <netinet/in_var.h>' \
               '#include <netinet/tcp_fsm.h>' \
               '#include <netinet/tcp_timer.h>' \
               '#include <rpc/pmap_prot.h>' \
@@ -62,8 +63,12 @@
               '_Static_assert(PT_CONTINUE == 7, "ptrace continue request");' \
               '_Static_assert(PT_ATTACH == 10, "ptrace attach request");' \
               '_Static_assert(PT_DETACH == 11, "ptrace detach request");' \
+              '_Static_assert(sizeof(((struct in6_ifreq *)0)->ifr_name) == IFNAMSIZ, "IPv6 interface name ABI");' \
+              '_Static_assert(SIOCGIFNETMASK_IN6 == _IOWR('"'"'i'"'"', 37, struct in6_ifreq), "IPv6 netmask ioctl ABI");' \
               'int main(void) {' \
               '  int (*ptraceFunction)(int, pid_t, caddr_t, int) = ptrace;' \
+              '  struct in6_ifreq ipv6Interface = { 0 };' \
+              '  ipv6Interface.ifr_ifru.ifru_addr.sin6_family = AF_INET6;' \
               '  CFStringRef label = CFSTR("aos Darwin SDK");' \
               '  CFStringRef canonicalLanguage = CFLocaleCreateCanonicalLanguageIdentifierFromString(kCFAllocatorDefault, label);' \
               '  CFIndex maximum = CFStringGetMaximumSizeForEncoding(CFStringGetLength(label), kCFStringEncodingUTF8);' \
@@ -123,7 +128,7 @@
               '  if (canonicalLanguage != NULL) CFRelease(canonicalLanguage);' \
               '  struct ether_addr address = { { 0 } };' \
               '  struct bpf_hdr bpfHeader = { 0 };' \
-              '  return ptraceFunction == NULL || label == NULL || canonicalLanguage == NULL || maximum < 0 || convertedCharacters < 0 || usedStringBytes < 0 || zoneName == NULL || systemZone == NULL || pathComparison != kCFCompareEqualTo || !pathHasPrefix || mutablePath == NULL || noCopyString == NULL || collectable == NULL || numberIsFloat || copyResource == NULL || copyStringCallbacks == NULL || identifier == value || !represented || launchStatus == -1 || attributeSize < -1 || attributeListSize < -1 || attributeSetStatus < -1 || attributeRemoveStatus < -1 || address.octet[0] != 0 || bpfHeader.bh_hdrlen != 0 || ETHER_ADDR_LEN != 6 || XATTR_CREATE != 0x0002 || XATTR_REPLACE != 0x0004;' \
+              '  return ptraceFunction == NULL || ipv6Interface.ifr_ifru.ifru_addr.sin6_family != AF_INET6 || label == NULL || canonicalLanguage == NULL || maximum < 0 || convertedCharacters < 0 || usedStringBytes < 0 || zoneName == NULL || systemZone == NULL || pathComparison != kCFCompareEqualTo || !pathHasPrefix || mutablePath == NULL || noCopyString == NULL || collectable == NULL || numberIsFloat || copyResource == NULL || copyStringCallbacks == NULL || identifier == value || !represented || launchStatus == -1 || attributeSize < -1 || attributeListSize < -1 || attributeSetStatus < -1 || attributeRemoveStatus < -1 || address.octet[0] != 0 || bpfHeader.bh_hdrlen != 0 || ETHER_ADDR_LEN != 6 || XATTR_CREATE != 0x0002 || XATTR_REPLACE != 0x0004;' \
               '}' \
               > framework-smoke.c
             "$CC" framework-smoke.c \
