@@ -2295,6 +2295,29 @@
         '';
       };
     }
+    {
+      patch = "0155-crucible-verify-fork-child-mapping-dispositions.patch";
+      check = certifyExactPatch {
+        patchName = "0155-crucible-verify-fork-child-mapping-dispositions.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-child-mapping-disposition";
+        liveEvidence = ''
+          grep -Fxq 'patch=0155-crucible-verify-fork-child-mapping-dispositions.patch' "$live_result"
+          grep -Fq 'QEMU_CRUCIBLE_HOT_FORK_MAX_MAPPING_RECORDS 65536' \
+            ${patchDir}/0155-crucible-verify-fork-child-mapping-dispositions.patch
+          grep -Fq 'QEMU_CRUCIBLE_HOT_FORK_MAX_MAPPING_BYTES (16 * 1024 * 1024)' \
+            ${patchDir}/0155-crucible-verify-fork-child-mapping-dispositions.patch
+          grep -Fq 'qemu_crucible_hot_fork_verify_mapping_table' \
+            ${patchDir}/0155-crucible-verify-fork-child-mapping-dispositions.patch
+          grep -Fq 'MAP_SHARED | MAP_ANONYMOUS' \
+            ${patchDir}/0155-crucible-verify-fork-child-mapping-dispositions.patch
+          grep -Fq 'test_mapping_table_rejects_unlisted_shared_mapping' \
+            ${patchDir}/0155-crucible-verify-fork-child-mapping-dispositions.patch
+          grep -Fq 'test-crucible-hot-fork-child --tap' \
+            ${../../pkgs/emulation/qemu.nix}
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =
