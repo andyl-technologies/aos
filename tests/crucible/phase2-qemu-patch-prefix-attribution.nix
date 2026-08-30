@@ -719,6 +719,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0162-crucible-bind-plugin-child-resource-tables.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

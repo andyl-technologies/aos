@@ -15,7 +15,7 @@ use crate::qmp::{QmpCommandKind, QmpError};
 /// QMP command name used for QEMU's retained template-preparation coordinator.
 pub const QMP_HOT_FORK_TEMPLATE_COMMAND: &str = "crucible-hot-fork-template";
 /// Version of the QEMU-owned template-preparation transaction contract.
-pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 14;
+pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 15;
 
 const QMP_HOT_FORK_AIO_PROOF: u64 = 1_u64 << 3;
 const QMP_HOT_FORK_RCU_PROOF: u64 = 1_u64 << 4;
@@ -56,6 +56,7 @@ pub struct QmpHotForkTemplateResourceStageState {
     parent_process_generation: u64,
     child_process_generation: u64,
     plugin_child_plan_bound: bool,
+    plugin_child_resource_plan_bound: bool,
     readiness_proof_acknowledged: bool,
 }
 
@@ -148,6 +149,12 @@ impl QmpHotForkTemplateResourceStageState {
     #[must_use]
     pub const fn plugin_child_plan_bound(self) -> bool {
         self.plugin_child_plan_bound
+    }
+
+    /// Returns whether QEMU holds the exact plugin child resource tables.
+    #[must_use]
+    pub const fn plugin_child_resource_plan_bound(self) -> bool {
+        self.plugin_child_resource_plan_bound
     }
 
     /// Returns whether the complete retained pair acknowledges plugin-ring proof bit 6.
@@ -486,6 +493,7 @@ fn parse_hot_fork_template_resource_stage(
         "parent-process-generation",
         "child-process-generation",
         "plugin-child-plan-bound",
+        "plugin-child-resource-plan-bound",
         "readiness-proof-acknowledged",
     ];
     if object.len() != fields.len() || !fields.iter().all(|field| object.contains_key(*field)) {
@@ -521,6 +529,7 @@ fn parse_hot_fork_template_resource_stage(
     let parent_process_generation = u64_field("parent-process-generation")?;
     let child_process_generation = u64_field("child-process-generation")?;
     let plugin_child_plan_bound = bool_field("plugin-child-plan-bound")?;
+    let plugin_child_resource_plan_bound = bool_field("plugin-child-resource-plan-bound")?;
     let readiness_proof_acknowledged = bool_field("readiness-proof-acknowledged")?;
     let state = QmpHotForkTemplateResourceStageState {
         template_generation: resource_template_generation,
@@ -538,6 +547,7 @@ fn parse_hot_fork_template_resource_stage(
         parent_process_generation,
         child_process_generation,
         plugin_child_plan_bound,
+        plugin_child_resource_plan_bound,
         readiness_proof_acknowledged,
     };
     if !resource_stage_shape_valid(
@@ -605,9 +615,10 @@ fn resource_stage_shape_valid(
         state.parent_process_generation == 0 && state.child_process_generation == 0
     };
 
-    schema_version == 4
+    schema_version == 5
         && readiness_proof_acknowledged == expected_readiness_proof
         && child_plan_shape
+        && state.plugin_child_resource_plan_bound == state.plugin_child_plan_bound
         && disposition_shape
         && (!state.private_ring_staged || state.private_ring_generation != 0)
         && (!state.plugin_endpoints_staged
@@ -652,10 +663,11 @@ mod tests {
             parent_process_generation: 21,
             child_process_generation: 22,
             plugin_child_plan_bound: true,
+            plugin_child_resource_plan_bound: true,
             readiness_proof_acknowledged: true,
         };
         assert!(resource_stage_shape_valid(
-            4,
+            5,
             bound,
             4,
             true,
@@ -669,7 +681,7 @@ mod tests {
             ..bound
         };
         assert!(!resource_stage_shape_valid(
-            4,
+            5,
             foreign_template,
             4,
             true,
@@ -683,7 +695,7 @@ mod tests {
             ..bound
         };
         assert!(!resource_stage_shape_valid(
-            4,
+            5,
             foreign_ring,
             4,
             true,
@@ -697,8 +709,22 @@ mod tests {
             ..bound
         };
         assert!(!resource_stage_shape_valid(
-            4,
+            5,
             unbound,
+            4,
+            true,
+            plugin_barrier,
+            0,
+            true
+        ));
+
+        let unbound_resource_plan = QmpHotForkTemplateResourceStageState {
+            plugin_child_resource_plan_bound: false,
+            ..bound
+        };
+        assert!(!resource_stage_shape_valid(
+            5,
+            unbound_resource_plan,
             4,
             true,
             plugin_barrier,
@@ -712,11 +738,12 @@ mod tests {
             parent_process_generation: 0,
             child_process_generation: 0,
             plugin_child_plan_bound: false,
+            plugin_child_resource_plan_bound: false,
             readiness_proof_acknowledged: false,
             ..bound
         };
         assert!(resource_stage_shape_valid(
-            4,
+            5,
             retained_after_abort,
             4,
             false,
@@ -725,7 +752,7 @@ mod tests {
             false
         ));
         assert!(!resource_stage_shape_valid(
-            4,
+            5,
             retained_after_abort,
             5,
             false,
@@ -739,7 +766,7 @@ mod tests {
             ..bound
         };
         assert!(!resource_stage_shape_valid(
-            4,
+            5,
             stale_barrier,
             4,
             true,
@@ -748,7 +775,7 @@ mod tests {
             true
         ));
         assert!(!resource_stage_shape_valid(
-            4,
+            5,
             bound,
             4,
             true,
@@ -762,7 +789,7 @@ mod tests {
             ..bound
         };
         assert!(!resource_stage_shape_valid(
-            4,
+            5,
             forged_proof,
             4,
             true,

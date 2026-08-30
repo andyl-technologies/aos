@@ -2750,6 +2750,31 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   incomplete.
 - **Risk:** F.
 
+### crucible-hot-fork-plugin-child-resource-tables — bind exact plugin tables
+
+- **Patch:** `0162-crucible-bind-plugin-child-resource-tables.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** the version-15 retained template coordinator converts the
+  exact copied registered child-runtime plan and staged branch-private control
+  and wake source descriptors into a nondestructive resource-table adapter.
+  The adapter contains exactly two source-to-target replacements, a strictly
+  sorted three-descriptor retain set for the private ring and endpoint targets,
+  and one writable-shared mapping allowlist entry backed by the retained ring
+  at the plan's exact source geometry. Idempotent staging exact-compares the
+  complete source and plan basis; endpoint release clears both adapters.
+- **Micro-test:** QEMU unit coverage checks every replacement, sorted retained
+  descriptor, mapping field, mismatched source and plan rejection, tamper
+  detection, reset, and source/target alias rejection. Strict Rust QMP fixtures
+  require the version-5 nested field and version-15 outer report. The live gate
+  and exact patch certificate pin those public facts.
+- **Inertness:** the adapter neither enumerates non-plugin QEMU resources nor
+  calls the destructive child transaction. Production fork invocation,
+  complete QEMU subsystem reinitialization, host-continuation pairing,
+  guest-admission release, and readiness acknowledgements for bits 7 and 8
+  remain absent. `T-CAM-6.2` remains incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

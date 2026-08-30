@@ -992,7 +992,7 @@ races and is sufficient for proof bit 3 while retained and quiescent. It does
 not choose child-side descriptor, context, coroutine, or clock disposition;
 those obligations remain separately represented by proof bits 7 and 8.
 
-The retained `PrepareForkTemplate` checkpoint is the version-14 OOB
+The retained `PrepareForkTemplate` checkpoint is the version-15 OOB
 `crucible-hot-fork-template` coordinator:
 
 ```text
@@ -1002,7 +1002,7 @@ CrucibleHotForkTemplateOutcome =
     idle | draining | blocked | prepared | aborted
 
 CrucibleHotForkTemplateResourceStageState {
-    schema-version: u32 = 4,
+    schema-version: u32 = 5,
     template-generation: u64,
     private-ring-staged: bool,
     private-ring-generation: u64,
@@ -1019,11 +1019,12 @@ CrucibleHotForkTemplateResourceStageState {
     parent-process-generation: u64,
     child-process-generation: u64,
     plugin-child-plan-bound: bool,
+    plugin-child-resource-plan-bound: bool,
     readiness-proof-acknowledged: bool,
 }
 
 CrucibleHotForkTemplateState {
-    schema-version: u32 = 14,
+    schema-version: u32 = 15,
     generation: u64,
     outcome: CrucibleHotForkTemplateOutcome,
     transaction-active: bool,
@@ -1054,7 +1055,7 @@ admission barrier, the bottom-half/timer source barrier, and the plugin callback
 barrier, and retains all four while previously admitted work drains. A repeated
 `prepare` reevaluates the retained transaction. Once all four barriers are
 quiescent, QEMU reports `prepared` only when all nine required bits are present
-in the same transaction. Otherwise the version-14 report continues to report
+in the same transaction. Otherwise the version-15 report continues to report
 `draining` and retains the barriers so the host can capture and stage
 branch-private resources without releasing the source-ring barrier. Version 12
 introduced the atomic resource report. It carries the exact private-ring and
@@ -1082,6 +1083,17 @@ endpoint staging requires the same copied plan, and exact endpoint release
 clears the parent-process adapter. This is a pre-fork plan binding, not evidence
 that any descriptor was replaced or that the child runtime executed, so it
 does not acknowledge proof bit 7 or 8.
+Version 15 additionally converts the copied runtime plan and the retained
+branch-private control and wake source descriptors into the exact plugin
+portion of a future destructive child transaction. The nondestructive adapter
+contains two source-to-target replacements, a strictly sorted retain set of
+the private-ring, control, and wake targets, and one writable-shared mapping
+allowlist entry backed by the retained private ring at the exact registered
+source range and offset. `plugin-child-resource-plan-bound` is true only while
+those tables, both source descriptors, and the copied runtime plan still match
+the active retained transaction. This does not enumerate the complete QEMU
+descriptor or mapping set and performs no mutation, so proof bits 7 and 8
+remain clear.
 Endpoint staging rejects a private-ring stage from a different or already
 aborted transaction. A new transaction starts
 only with an empty resource stage. Private-ring and plugin-endpoint staging
@@ -1124,7 +1136,8 @@ quiescent. Proof bit 5 is present exactly while the transaction remains active
 and its complete immutable writable-root binding remains retained by the
 quiescent block barrier. Version 14 composes plugin-ring proof bit
 6 from the exact transaction-bound frozen ring, endpoint pair, worker plan, and
-plugin barrier. Descriptor/mapping proof bit 7 and child-reinitialization proof
+plugin barrier. The version-15 resource-table binding remains nondestructive;
+descriptor/mapping proof bit 7 and child-reinitialization proof
 bit 8 remain clear, so a fully drained transaction stays `draining` and cannot
 advertise a usable hot-fork template.
 
