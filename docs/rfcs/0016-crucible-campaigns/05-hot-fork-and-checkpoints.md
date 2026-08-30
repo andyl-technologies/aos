@@ -1176,6 +1176,16 @@ exactly one replacement monitor exists, and neither queued nor partial requests
 remain. This is a fail-closed runtime contract, not the concrete monitor
 implementation or its composition with the authenticated child transaction;
 it does not invoke `fork(2)` or acknowledge proof bit 7 or 8.
+The sealed QMP contribution now carries those exact template and child-QMP
+generations alongside its descriptor and socket identity. The immediate-child
+resource transaction requires both the plugin and QMP reinitializers to match
+their complete sealed bases before descriptor mutation, then consumes them as
+one linear reconstruction step. A same-endpoint adapter from another QMP
+generation is rejected before mutation, and either runtime failure leaves the
+child transaction fail-closed. The QMP runtime remains an injected contract;
+inherited monitor disposal, dispatcher reconstruction, endpoint attachment,
+and the private-stream handshake are still not implemented, and proof bits 7
+and 8 remain clear.
 Endpoint staging rejects a private-ring stage from a different or already
 aborted transaction. A new transaction starts only with an empty resource
 stage. Private-ring, diagnostics, child-QMP, and plugin-endpoint staging during a

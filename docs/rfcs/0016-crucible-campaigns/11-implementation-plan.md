@@ -2103,6 +2103,14 @@ parser/capability reset, greeting emission, held input, one replacement
 monitor, and empty queued/partial-request state. The concrete runtime,
 composition with the child transaction, private-stream generation handshake,
 and complete supported-profile resource inventory remain open.
+The exact template and child-QMP generations are now also part of the sealed
+QMP resource contribution. The immediate-child resource transaction preflights
+that complete basis with the plugin and QMP reinitializers, rejects a foreign
+QMP generation before descriptor mutation, and consumes both adapters through
+one linear child-subsystem callback. Real-fork coverage proves each adapter runs
+exactly once. The QMP runtime is still injected test code: inherited monitor
+disposal, dispatcher construction, private endpoint attachment, the generation
+handshake, and the production fork owner remain open.
 Template-process descriptor/endpoint staging now satisfies plugin-ring proof
 bit 6 only under the retained exact transaction. The internal replacement and
 child-identity primitives, and the registered empty-local-state reinitializer,

@@ -2938,6 +2938,30 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   through `T-CAM-6.3` remain incomplete.
 - **Risk:** F.
 
+### crucible-hot-fork-child-qmp-reinitializer-composition — consume the monitor adapter
+
+- **Patch:** `0169-crucible-compose-child-qmp-reinitializer.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** the sealed branch-private QMP contribution now carries its
+  exact template and child-QMP generations in addition to the descriptor and
+  Linux socket identity. The immediate-child transaction requires both the
+  plugin and QMP reinitializers to match that complete sealed basis before it
+  begins descriptor mutation, then invokes them as one linear child subsystem
+  reconstruction step. Either runtime failure leaves the one-shot transaction
+  consumed and fail-closed.
+- **Micro-test:** the real-fork resource-plan path proves that both adapters run
+  exactly once and complete before shared mappings are admitted. Preflight
+  tests substitute a same-endpoint QMP adapter from another mutation generation
+  and prove rejection occurs before the plan or child transaction is consumed.
+- **Inertness:** the QMP runtime remains an injected test contract; this patch
+  does not dispose inherited monitors, construct the replacement dispatcher,
+  attach the private endpoint, perform its generation handshake, invoke a
+  production fork, or acknowledge readiness bit 7 or 8. Remaining
+  supported-profile resources, host-continuation pairing, guest admission, and
+  `T-CAM-6.1` through `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
