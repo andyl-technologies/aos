@@ -1091,9 +1091,15 @@ the private-ring, control, and wake targets, and one writable-shared mapping
 allowlist entry backed by the retained private ring at the exact registered
 source range and offset. `plugin-child-resource-plan-bound` is true only while
 those tables, both source descriptors, and the copied runtime plan still match
-the active retained transaction. This does not enumerate the complete QEMU
-descriptor or mapping set and performs no mutation, so proof bits 7 and 8
-remain clear.
+the active retained transaction. QEMU now seeds one fixed-capacity canonical
+child plan from that fragment. Additional subsystem contributions must supply
+strictly sorted descriptor and nonoverlapping mapping tables; exact duplicates
+are idempotent, while source retention, conflicting mappings, missing retained
+backings, or either union exceeding 4,096 entries fails atomically. Sealing
+revalidates the complete union, and the report requires the sealed plan to
+contain the exact retained plugin fragment. The current transaction does not
+yet register the remaining QEMU descriptor or mapping set and performs no
+mutation, so proof bits 7 and 8 remain clear.
 Endpoint staging rejects a private-ring stage from a different or already
 aborted transaction. A new transaction starts
 only with an empty resource stage. Private-ring and plugin-endpoint staging

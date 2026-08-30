@@ -2775,6 +2775,33 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   remain absent. `T-CAM-6.2` remains incomplete.
 - **Risk:** F.
 
+### crucible-hot-fork-child-resource-contribution-composition — compose exact tables
+
+- **Patch:** `0163-crucible-compose-child-resource-contributions.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** QEMU starts one bounded child-resource plan from the exact
+  plugin contribution and can merge further immutable subsystem contributions
+  into canonical sorted unions. Exact duplicate descriptors and mappings are
+  idempotent; unsorted inputs, replacement-source retention, differently
+  described overlapping mappings, missing retained backing descriptors, and
+  unions beyond either 4,096-entry ceiling fail before the existing plan is
+  changed. Sealing revalidates the complete union and the retained template
+  report requires that sealed plan to contain its exact plugin basis.
+- **Micro-test:** QEMU unit coverage proves canonical descriptor and mapping
+  order, idempotent duplicate merging, atomic rejection of malformed, aliased,
+  overlapping, and unbacked contributions, immutable sealing, tamper detection,
+  reset, and both exact table ceilings. The full package gate executes all 15
+  child-resource unit cases, while the live and exact-patch gates pin the
+  coordinator composition symbols.
+- **Inertness:** the current coordinator contributes only the already-retained
+  plugin fragment. Registration of QMP, block, AIO, and other supported-profile
+  resources, production fork invocation, destructive child disposition,
+  host-continuation pairing, guest-admission release, and readiness
+  acknowledgements for bits 7 and 8 remain absent. `T-CAM-6.2` remains
+  incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

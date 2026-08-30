@@ -176,6 +176,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0160-crucible-compose-registered-fork-child-runtime.patch",
     "0161-crucible-bind-retained-plugin-child-plan.patch",
     "0162-crucible-bind-plugin-child-resource-tables.patch",
+    "0163-crucible-compose-child-resource-contributions.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

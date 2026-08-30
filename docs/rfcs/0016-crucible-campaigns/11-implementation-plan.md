@@ -2032,6 +2032,16 @@ Version 15 reports this additional binding only while both source descriptors,
 the copied runtime plan, and every generated table remain exact. The adapter is
 nondestructive and does not enumerate the remaining QEMU resources, invoke
 `fork(2)`, or acknowledge proof bit 7 or 8; T-CAM-6.2 remains unchecked.
+QEMU now also places that fragment into one fixed-capacity canonical child plan.
+Further immutable subsystem contributions merge as sorted set unions. Exact
+duplicates are idempotent, while unsorted or over-limit inputs,
+replacement-source retention, conflicting mapping geometry, and mappings whose
+backing descriptor is absent fail before the prior plan changes. Sealing
+revalidates the complete union, and retained-template evidence requires the
+sealed plan to contain the exact plugin basis. The current coordinator supplies
+no non-plugin contribution, so complete supported-profile descriptor and
+mapping registration, the destructive fork caller, and readiness bits 7 and 8
+remain open; T-CAM-6.1 through T-CAM-6.3 remain unchecked.
 Template-process descriptor/endpoint staging now satisfies plugin-ring proof
 bit 6 only under the retained exact transaction. The internal replacement and
 child-identity primitives, and the registered empty-local-state reinitializer,

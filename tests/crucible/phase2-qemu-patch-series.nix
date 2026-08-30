@@ -1133,6 +1133,13 @@
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "QEMU now converts the exact retained plugin child-runtime plan and staged branch-private endpoint sources into a nondestructive, coordinator-owned resource-table adapter containing exactly two source-to-target replacements, three sorted retained descriptors, and one writable-shared mapping allowlist entry backed by the retained private ring; idempotent staging and template reporting require this table basis to remain exact, and release clears it, while complete QEMU descriptor inventory, production fork invocation, destructive child disposition, host continuation pairing, guest admission, and readiness bits 7 and 8 remain open";
     }
+    {
+      file = "0163-crucible-compose-child-resource-contributions.patch";
+      catalogName = "crucible-hot-fork-child-resource-contribution-composition";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "QEMU now composes the exact plugin resource fragment with bounded subsystem contributions into one canonical nondestructive child plan: retained descriptors and writable-shared mappings are sorted, exact duplicates are idempotent, conflicts and replacement-source retention fail atomically, every mapping backing is retained, fixed 4,096-entry limits are enforced, and sealing revalidates the complete union; the retained template report requires this sealed composition to contain its exact plugin basis, while registration of all remaining QEMU subsystem resources, production fork invocation, destructive child disposition, host continuation pairing, guest admission, and readiness bits 7 and 8 remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

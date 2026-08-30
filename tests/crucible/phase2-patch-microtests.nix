@@ -2469,6 +2469,30 @@
         '';
       };
     }
+    {
+      patch = "0163-crucible-compose-child-resource-contributions.patch";
+      check = certifyExactPatch {
+        patchName = "0163-crucible-compose-child-resource-contributions.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-child-resource-contribution-composition";
+        liveEvidence = ''
+          grep -Fxq 'patch=0163-crucible-compose-child-resource-contributions.patch' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=15' "$live_result"
+          grep -Fxq 'plugin_child_resource_plan_report_bound=true' "$live_result"
+          grep -Fxq 'child_resource_contribution_composition=true' "$live_result"
+          grep -Fq 'qemu_crucible_hot_fork_merge_child_resource_contribution' \
+            ${patchDir}/0163-crucible-compose-child-resource-contributions.patch
+          grep -Fq 'qemu_crucible_hot_fork_seal_child_resource_plan' \
+            ${patchDir}/0163-crucible-compose-child-resource-contributions.patch
+          grep -Fq 'QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS' \
+            ${patchDir}/0163-crucible-compose-child-resource-contributions.patch
+          grep -Fq 'resource-plan-composition' \
+            ${patchDir}/0163-crucible-compose-child-resource-contributions.patch
+          grep -Fq 'resource-plan-bounds' \
+            ${patchDir}/0163-crucible-compose-child-resource-contributions.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =
