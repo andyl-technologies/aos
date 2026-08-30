@@ -41,8 +41,7 @@ mod shutdown_and_preemption;
 type SharedLog = Arc<Mutex<Vec<ChannelCall>>>;
 type SharedFaultCommands = Arc<Mutex<Vec<(FaultCommandHeaderV1, Vec<u8>)>>>;
 type SharedFaultEvents = Arc<Mutex<VecDeque<DequeuedFaultEvent>>>;
-type SharedRetainedStreamState =
-    Arc<Mutex<Option<(crate::QmpDescriptorName, u64, u64, bool)>>>;
+type SharedRetainedStreamState = Arc<Mutex<Option<(crate::QmpDescriptorName, u64, u64, bool)>>>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ChannelCall {
@@ -905,6 +904,7 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
             socket_cookie,
             33,
             false,
+            true,
         );
         *self.child_qmp_state.lock().unwrap() =
             Some((name.clone(), socket_cookie, template_generation, false));
@@ -951,6 +951,7 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
             *socket_cookie,
             33,
             *bound,
+            true,
         ))
     }
 
