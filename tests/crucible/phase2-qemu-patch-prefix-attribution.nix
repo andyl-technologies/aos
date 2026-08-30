@@ -723,6 +723,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0163-crucible-compose-child-resource-contributions.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
