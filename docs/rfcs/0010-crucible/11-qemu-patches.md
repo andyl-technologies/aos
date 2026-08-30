@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **142 patches**. This count is checked against
+The carried series contains **150 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -2541,6 +2541,29 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   disposition and child reinitialization required by bits 7 and 8. It remains
   `draining`, no production `fork(2)` caller exists, and `T-CAM-6.2` remains
   unchecked.
+- **Risk:** F.
+
+### crucible-hot-fork-closed-child-descriptor-table — close inherited FDs
+
+- **Patch:** `0153-crucible-close-inherited-child-descriptor-tables.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12].
+- **Mechanism:** a Linux-only GPL-side primitive admits only the exact live
+  immediate child, blocks every blockable signal, atomically replaces the two
+  staged plugin endpoint slots, and applies a strictly sorted table of at most
+  4,096 final descriptors. `close_range(2)` closes every gap and the complete
+  suffix, so no inherited descriptor outside the table survives. The callback
+  authenticates the installed endpoint identities and final table only after
+  every close succeeds. Any post-authentication error is destructive and
+  requires child termination or quarantine.
+- **Micro-test:** the real-fork unit path retains only the replacement control
+  socket, wake eventfd, and test result channel. It proves an unrelated
+  inherited descriptor is closed in the child, both replacement endpoints are
+  usable, and the parent's original descriptor table remains unchanged.
+- **Inertness:** the helper has no production caller and therefore does not yet
+  close descriptor admission around table construction. It does not classify
+  mappings, reinitialize process-private state, acknowledge readiness bits 7 or
+  8, or complete `T-CAM-6.2`.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

@@ -1948,6 +1948,14 @@ Linux-only GPL-side primitive now pins the exact parent generation in a pidfd,
 admits only its live immediate child, arms parent-death termination, and proves
 child-only endpoint replacement under a real unit-test fork. Production QEMU
 still has no fork caller or complete inherited-resource transaction.
+The same internal path now also carries a bounded closed descriptor-table
+primitive. After authenticating the immediate child it blocks signals, applies
+the exact endpoint replacements, retains only a sorted table of at most 4,096
+final slots, and uses `close_range(2)` to close every other inherited
+descriptor. Its real-fork regression proves an unlisted descriptor disappears
+only in the child while the parent remains unchanged. The primitive is unwired:
+descriptor admission is not yet closed around table construction and mappings
+are not yet assigned a complete disposition, so proof bit 7 remains clear.
 Template-process descriptor/endpoint staging now satisfies plugin-ring proof
 bit 6 only under the retained exact transaction. The internal replacement and
 child-identity primitives, and the registered empty-local-state reinitializer,

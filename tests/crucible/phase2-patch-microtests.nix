@@ -2251,6 +2251,27 @@
         '';
       };
     }
+    {
+      patch = "0153-crucible-close-inherited-child-descriptor-tables.patch";
+      check = certifyExactPatch {
+        patchName = "0153-crucible-close-inherited-child-descriptor-tables.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-closed-child-descriptor-table";
+        liveEvidence = ''
+          grep -Fxq 'patch=0153-crucible-close-inherited-child-descriptor-tables.patch' "$live_result"
+          grep -Fq 'qemu_crucible_hot_fork_apply_descriptor_table' \
+            ${patchDir}/0153-crucible-close-inherited-child-descriptor-tables.patch
+          grep -Fq '__NR_close_range' \
+            ${patchDir}/0153-crucible-close-inherited-child-descriptor-tables.patch
+          grep -Fq 'sigprocmask(SIG_SETMASK' \
+            ${patchDir}/0153-crucible-close-inherited-child-descriptor-tables.patch
+          grep -Fq 'test_immediate_child_applies_closed_descriptor_table' \
+            ${patchDir}/0153-crucible-close-inherited-child-descriptor-tables.patch
+          grep -Fq 'test-crucible-hot-fork-child --tap' \
+            ${../../pkgs/emulation/qemu.nix}
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

@@ -683,6 +683,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0153-crucible-close-inherited-child-descriptor-tables.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

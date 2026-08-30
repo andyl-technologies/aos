@@ -1694,6 +1694,7 @@ in
           patch=0150-crucible-add-fork-child-endpoint-replacement-primitive.patch
           patch=0151-crucible-authenticate-immediate-hot-fork-children.patch
           patch=0152-crucible-acknowledge-frozen-hot-fork-plugin-rings.patch
+          patch=0153-crucible-close-inherited-child-descriptor-tables.patch
           plugin_endpoint_schema_version=4
           plugin_endpoint_source_descriptors_observed=true
           plugin_endpoint_replacement_plan_bound=false

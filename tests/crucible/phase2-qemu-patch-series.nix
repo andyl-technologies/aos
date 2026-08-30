@@ -1063,6 +1063,13 @@
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-11,HFORK-12";
       capability = "version-13 template preparation acknowledges plugin-ring proof bit 6 only for an exact transaction-bound private ring, endpoint pair, worker plan, and frozen plugin barrier; descriptor and child-reinitialization proofs remain clear";
     }
+    {
+      file = "0153-crucible-close-inherited-child-descriptor-tables.patch";
+      catalogName = "crucible-hot-fork-closed-child-descriptor-table";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12";
+      capability = "the Linux-only unwired immediate-child primitive authenticates the exact parent generation, blocks signals, replaces both staged plugin endpoint slots, and applies a sorted bounded final table with close_range so every other inherited descriptor is closed; production coordinator admission closure, mapping disposition, child reinitialization, and readiness bits 7 and 8 remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

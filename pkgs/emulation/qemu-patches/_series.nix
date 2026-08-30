@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "fecabb9216c8573766577fae4088337b0a30957103806c8e0fea67b52994f23d";
+  patchBranchBundleSha256 = "298b6fc21bcec3a5856480e8b929433c92b2307bc19f2eceac054dd0faee6926";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "627052e5243b38611b135f37685d24ee1a59290c";
+  patchBranchHeadCommit = "ce50d5d0846eb07888000055761924518f34b1f8";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1455,6 +1455,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-11,HFORK-12";
       capability = "version-13 template preparation acknowledges plugin-ring proof bit 6 only while the exact shrink-sealed private ring, replacement endpoints, worker plan, and frozen plugin barrier remain bound to one active transaction; descriptor disposition and child reinitialization proofs remain clear";
+    }
+    {
+      file = "0153-crucible-close-inherited-child-descriptor-tables.patch";
+      branchSubject = "crucible: close inherited child descriptor tables";
+      branchCommit = "ce50d5d0846eb07888000055761924518f34b1f8";
+      branchTree = "c07773f23910b9cd833e491a6710f1be1d94d102";
+      catalogName = "crucible-hot-fork-closed-child-descriptor-table";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12";
+      capability = "a Linux-only unwired immediate-child primitive authenticates the exact parent generation, blocks signals, atomically replaces the staged plugin endpoint slots, and uses a sorted bounded retain table plus close_range to close every other inherited descriptor; any failure after authentication is destructive and mapping disposition, coordinator admission closure, child reinitialization, and readiness bits 7 and 8 remain open";
     }
   ];
   catalogOnlyCapabilities = [
