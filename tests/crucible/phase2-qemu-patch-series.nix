@@ -1126,6 +1126,13 @@
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "QEMU now derives and copies the exact registered plugin child-runtime plan before admitting a retained endpoint stage, binds the checked adjacent parent and child process generations plus every template, ring, endpoint, barrier, mapping, descriptor, identity, and worker field into one unconsumed one-shot adapter, requires exact plan retention on idempotent staging, and clears the parent adapter on exact release; the version-14 template report exposes that plan binding without acknowledging descriptor/mapping bit 7 or child-reinitialization bit 8, while production fork invocation, complete non-plugin subsystem reinitialization, host continuation pairing, and guest admission remain open";
     }
+    {
+      file = "0162-crucible-bind-plugin-child-resource-tables.patch";
+      catalogName = "crucible-hot-fork-plugin-child-resource-tables";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "QEMU now converts the exact retained plugin child-runtime plan and staged branch-private endpoint sources into a nondestructive, coordinator-owned resource-table adapter containing exactly two source-to-target replacements, three sorted retained descriptors, and one writable-shared mapping allowlist entry backed by the retained private ring; idempotent staging and template reporting require this table basis to remain exact, and release clears it, while complete QEMU descriptor inventory, production fork invocation, destructive child disposition, host continuation pairing, guest admission, and readiness bits 7 and 8 remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
