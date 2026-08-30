@@ -1697,6 +1697,7 @@ in
           patch=0153-crucible-close-inherited-child-descriptor-tables.patch
           patch=0154-crucible-close-fork-child-descriptor-admission.patch
           patch=0155-crucible-verify-fork-child-mapping-dispositions.patch
+          patch=0156-crucible-authenticate-fork-child-shared-mapping-backings.patch
           plugin_endpoint_schema_version=4
           plugin_endpoint_source_descriptors_observed=true
           plugin_endpoint_replacement_plan_bound=false
