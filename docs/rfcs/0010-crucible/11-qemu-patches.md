@@ -2676,6 +2676,27 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   bits 7 or 8. `T-CAM-6.2` remains incomplete.
 - **Risk:** F.
 
+### crucible-hot-fork-child-runtime-source-binding — bind runtime remap geometry
+
+- **Patch:** `0159-crucible-bind-child-runtime-source-mappings.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** fixed-layout child-runtime plan and status version 3 carry the
+  authenticated template setup-region start, length, and zero file offset.
+  QEMU rejects unaligned, overflowing, differently sized, or nonzero-offset
+  geometry before invoking the registered callback. The GPL plugin independently
+  compares that plan with its retained process-local mapping owner before the
+  exact-address branch-private install and echoes the immutable basis afterward.
+- **Micro-test:** Rust layout tests pin the version-3 C ABI size and offsets,
+  plugin tests reject wrong address, length, and offset bases, and the typed QMP
+  parser accepts only a complete installed range while rejecting skipped process
+  generations and contradictory source geometry.
+- **Inertness:** the registered runtime remains unwired to the destructive child
+  resource transaction. No production fork caller, complete QEMU subsystem
+  reinitializer, host continuation pairing, guest-admission release, or readiness
+  acknowledgement for bits 7 and 8 exists. `T-CAM-6.2` remains incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

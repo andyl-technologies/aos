@@ -1917,7 +1917,7 @@ backing identity only after validation, and routes callback teardown signals
 through a sender that can be replaced while the callback and worker barriers
 are held. A focused regression proves a sender retained by callback state stops
 addressing the template receiver and reaches the replacement receiver. QEMU and
-the plugin now additionally register a fixed version-2 child-runtime plan and
+the plugin now additionally register a fixed version-3 child-runtime plan and
 status ABI. The plan and echoed status bind the exact template, private-ring,
 endpoint, plugin-barrier, Linux endpoint-identity, mapping, descriptor, and
 worker basis. It also binds the template's nonzero process generation to its
@@ -1925,7 +1925,7 @@ checked immediate successor. QEMU advances the fault/evidence lifecycle
 generation before reconstruction, while the plugin independently advances its
 live device owner and echoes the same immutable pair. Zero, stale, skipped, and
 overflowed generations fail closed. QEMU also exposes the exact registered
-runtime through the OOB version-2
+runtime through the OOB version-3
 `query-crucible-hot-fork-child-runtime` command. The report binds registration
 to the complete plugin resource manifest and current process generation,
 reports phase/resource/endpoint/worker state, advances its checked local
@@ -1991,6 +1991,15 @@ beside the branch-private destination identity; standalone staging explicitly
 retains no source range. The fork caller and registered runtime composition
 remain open, so this binding does not acknowledge readiness bits 7 or 8 and
 T-CAM-6.2 remains unchecked.
+The registered child-runtime plan and status now carry that exact source start,
+length, and zero file offset across the QEMU/GPL plugin boundary. QEMU rejects
+unaligned, overflowing, differently sized, or nonzero-offset geometry before
+invoking the callback. The plugin independently compares the plan with its
+retained process-local mapping owner before the `MAP_FIXED_NOREPLACE` install
+and echoes the same immutable basis in every later status. This closes the
+source-address agreement needed by the future composed reinitializer, but the
+operation remains unwired and therefore does not acknowledge readiness bits 7
+or 8 or complete T-CAM-6.2.
 Template-process descriptor/endpoint staging now satisfies plugin-ring proof
 bit 6 only under the retained exact transaction. The internal replacement and
 child-identity primitives, and the registered empty-local-state reinitializer,

@@ -449,9 +449,9 @@ pub const QEMU_PLUGIN_HOT_FORK_CHILD_QUERY: u32 = 2;
 /// Fork-child runtime callback action that releases reconstructed workers.
 pub const QEMU_PLUGIN_HOT_FORK_CHILD_RELEASE: u32 = 3;
 /// Current fixed-layout fork-child runtime plan schema.
-pub const QEMU_PLUGIN_HOT_FORK_CHILD_PLAN_VERSION: u32 = 2;
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_PLAN_VERSION: u32 = 3;
 /// Current fixed-layout fork-child runtime status schema.
-pub const QEMU_PLUGIN_HOT_FORK_CHILD_STATUS_VERSION: u32 = 2;
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_STATUS_VERSION: u32 = 3;
 /// Child status phase before this process attempts reconstruction.
 pub const QEMU_PLUGIN_HOT_FORK_CHILD_PHASE_TEMPLATE: u32 = 0;
 /// Child status phase while the one-shot reconstruction call owns mutation.
@@ -477,11 +477,11 @@ pub const QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_FAILED: u32 = 1_u32 << 4;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct QemuPluginHotForkChildPlan {
-    /// Plan schema version, currently two.
+    /// Plan schema version, currently three.
     pub schema_version: u32,
     /// Exact C ABI structure size.
     pub struct_size: u32,
-    /// Closed flag mask; version one requires zero.
+    /// Closed flag mask; version three requires zero.
     pub flags: u32,
     /// Reserved field that must remain zero.
     pub reserved: u32,
@@ -509,6 +509,12 @@ pub struct QemuPluginHotForkChildPlan {
     pub shmem_inode: u64,
     /// Exact branch-private shared-memory mapping length.
     pub shmem_length: u64,
+    /// Authenticated template setup-region VMA start address.
+    pub source_mapping_start: u64,
+    /// Exact authenticated template setup-region VMA length.
+    pub source_mapping_length: u64,
+    /// Exact authenticated template setup-region file offset; version three requires zero.
+    pub source_mapping_offset: u64,
     /// Descriptor carrying the branch-private shared-memory object.
     pub private_ring_fd: i32,
     /// Replacement control socket at the template manifest descriptor number.
@@ -523,7 +529,7 @@ pub struct QemuPluginHotForkChildPlan {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct QemuPluginHotForkChildStatus {
-    /// Status schema version, currently two.
+    /// Status schema version, currently three.
     pub schema_version: u32,
     /// Exact C ABI structure size.
     pub struct_size: u32,
@@ -547,6 +553,12 @@ pub struct QemuPluginHotForkChildStatus {
     pub control_socket_cookie: u64,
     /// Linux eventfd identity of the installed wake descriptor.
     pub wake_eventfd_id: u64,
+    /// Authenticated template setup-region VMA start used for installation.
+    pub source_mapping_start: u64,
+    /// Exact authenticated template setup-region VMA length.
+    pub source_mapping_length: u64,
+    /// Exact authenticated template setup-region file offset.
+    pub source_mapping_offset: u64,
     /// Exact sealed process-lifetime worker-class mask.
     pub worker_mask: u64,
     /// Replacement worker classes parked at their held operation boundary.

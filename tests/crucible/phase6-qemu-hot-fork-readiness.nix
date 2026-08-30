@@ -1145,7 +1145,7 @@ in
              select(has("readiness-proof-acknowledged"))] as $reports |
             ($reports | length) == 2 and $reports[0] == $reports[1] and
             $reports[0] == {
-              "schema-version": 2,
+              "schema-version": 3,
               "generation": 0,
               "registered": false,
               "manifest-consistent": false,
@@ -1165,6 +1165,9 @@ in
               "plugin-barrier-generation": 0,
               "control-socket-cookie": 0,
               "wake-eventfd-id": 0,
+              "source-mapping-start": 0,
+              "source-mapping-length": 0,
+              "source-mapping-offset": 0,
               "worker-mask": 0,
               "parked-worker-mask": 0,
               "pending-worker-mask": 0,
@@ -1712,6 +1715,7 @@ in
           patch=0156-crucible-authenticate-fork-child-shared-mapping-backings.patch
           patch=0157-crucible-compose-fork-child-resource-disposition.patch
           patch=0158-crucible-bind-hot-fork-source-mappings.patch
+          patch=0159-crucible-bind-child-runtime-source-mappings.patch
           plugin_endpoint_schema_version=4
           plugin_endpoint_source_descriptors_observed=true
           plugin_endpoint_replacement_plan_bound=false
@@ -1764,7 +1768,7 @@ in
           plugin_resource_inventory_schema_version=2
           plugin_resource_inventory_stable=true
           plugin_resource_inventory_unregistered_shape=true
-          child_runtime_schema_version=2
+          child_runtime_schema_version=3
           child_runtime_stable=true
           child_runtime_unregistered_shape=true
           child_runtime_readiness_proof_acknowledged=false

@@ -999,6 +999,41 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
             ..exact_endpoint_plan
         }
     ));
+    let source_mapping_start =
+        u64::try_from(runtime._callbacks.setup().mapped_region().mapping_start())
+            .unwrap_or_else(|error| panic!("mapping start should fit the fixed ABI: {error}"));
+    let exact_mapping_plan = crate::QemuPluginHotForkChildPlan {
+        shmem_length: length,
+        source_mapping_start,
+        source_mapping_length: length,
+        source_mapping_offset: 0,
+        ..crate::QemuPluginHotForkChildPlan::default()
+    };
+    assert!(hot_fork_child_mapping_basis_matches(
+        &exact_mapping_plan,
+        runtime._callbacks.setup(),
+    ));
+    assert!(!hot_fork_child_mapping_basis_matches(
+        &crate::QemuPluginHotForkChildPlan {
+            source_mapping_start: source_mapping_start + 4096,
+            ..exact_mapping_plan
+        },
+        runtime._callbacks.setup(),
+    ));
+    assert!(!hot_fork_child_mapping_basis_matches(
+        &crate::QemuPluginHotForkChildPlan {
+            source_mapping_length: length - 1,
+            ..exact_mapping_plan
+        },
+        runtime._callbacks.setup(),
+    ));
+    assert!(!hot_fork_child_mapping_basis_matches(
+        &crate::QemuPluginHotForkChildPlan {
+            source_mapping_offset: 4096,
+            ..exact_mapping_plan
+        },
+        runtime._callbacks.setup(),
+    ));
     let exact_generation_plan = crate::QemuPluginHotForkChildPlan {
         parent_process_generation: 1,
         child_process_generation: 2,
@@ -1050,11 +1085,11 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     );
     assert_eq!(
         std::mem::size_of::<crate::QemuPluginHotForkChildPlan>(),
-        128
+        152
     );
     assert_eq!(
         std::mem::size_of::<crate::QemuPluginHotForkChildStatus>(),
-        112
+        136
     );
     assert_eq!(
         std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, parent_process_generation),
@@ -1084,8 +1119,12 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
         88
     );
     assert_eq!(
-        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, private_ring_fd),
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, source_mapping_start),
         112
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, private_ring_fd),
+        136
     );
     assert_eq!(
         std::mem::offset_of!(
@@ -1117,8 +1156,12 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
         64
     );
     assert_eq!(
-        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, worker_mask),
+        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, source_mapping_start),
         80
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, worker_mask),
+        104
     );
     assert_eq!(child.flags, 0);
     assert_eq!(child.phase, u32::from(CHILD_RUNTIME_TEMPLATE));
