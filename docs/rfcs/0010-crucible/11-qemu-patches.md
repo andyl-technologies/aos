@@ -2883,6 +2883,35 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   7 and 8 and `T-CAM-6.1` through `T-CAM-6.3` remain incomplete.
 - **Risk:** F.
 
+### crucible-hot-fork-branch-private-child-qmp — retain a private monitor stream
+
+- **Patch:** `0167-crucible-retain-branch-private-child-qmp.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** the host creates a fresh connected AF_UNIX socket pair for a
+  future child monitor and imports only the child endpoint through standard
+  QMP `getfd`. QEMU authenticates the exact Linux `SO_COOKIE`, requires the
+  stream to be empty and nonblocking, rejects aliasing with diagnostics and
+  plugin control resources, and adds the retained descriptor to the same
+  canonical child resource plan. Plugin endpoint commitment requires private
+  rings, diagnostics, and child QMP from one template generation before it
+  seals that plan. Exact cleanup releases plugin endpoints, the QEMU-retained
+  child-QMP duplicate, the monitor name, diagnostics, and private rings in
+  reverse ownership order.
+- **Micro-test:** the sealed-plan unit paths require the QMP contribution,
+  include it in exact retained-descriptor bounds, and prove that it survives
+  immediate-child descriptor closure without being attached to a monitor.
+  Typed host tests pin the version-1 QMP schema, descriptor transfer, exact
+  template and socket identity, sealed-plan binding, and release ordering.
+- **Inertness:** the host retains both fresh socket endpoints, but neither QEMU
+  nor the host closes the inherited monitor, resets parser state, attaches the
+  private endpoint, or performs the child handshake. Block, AIO, console,
+  filesystem, and remaining supported-profile contributions are also absent.
+  Production fork invocation, host-continuation pairing, guest admission,
+  readiness bits 7 and 8, and `T-CAM-6.1` through `T-CAM-6.3` remain
+  incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

@@ -2038,8 +2038,9 @@ duplicates are idempotent, while unsorted or over-limit inputs,
 replacement-source retention, conflicting mapping geometry, and mappings whose
 backing descriptor is absent fail before the prior plan changes. Sealing
 revalidates the complete union, and retained-template evidence requires the
-sealed plan to contain the exact plugin basis. The coordinator now supplies one
-non-plugin diagnostics contribution described below; complete supported-profile
+sealed plan to contain the exact plugin basis. The coordinator now supplies
+the non-plugin diagnostics and retained child-QMP contributions described below;
+complete supported-profile
 descriptor and mapping registration, the destructive fork caller, and readiness
 bits 7 and 8 remain open; T-CAM-6.1 through T-CAM-6.3 remain unchecked.
 The inherited sealed plan now also has a one-shot child application adapter.
@@ -2051,8 +2052,8 @@ real-fork path proves an independently contributed descriptor is retained and
 the parent's plan copy is unchanged; malformed, unsealed, tampered, or foreign
 bases fail without consuming either linear owner. The adapter remains unwired
 to a production fork caller and the current coordinator still has only the
-plugin and diagnostics contributions, so it does not acknowledge bit 7 or 8 and T-CAM-6.1
-through T-CAM-6.3 remain unchecked.
+plugin, diagnostics, and retained child-QMP contributions, so it does not
+acknowledge bit 7 or 8 and T-CAM-6.1 through T-CAM-6.3 remain unchecked.
 The same child plan now canonically composes descriptor replacements instead
 of fixing the complete transaction to the plugin's two endpoints. Subsystem
 tables are target-ordered and merge into a 4,096-entry union with global
@@ -2061,7 +2062,7 @@ duplicates, and atomic rejection of conflicts, aliases, malformed order, or
 overflow. The bounded child transaction saves every prior target and applies
 only the sealed union. Its real-fork path proves an independently contributed
 result endpoint is replaced and the source is not retained. The coordinator
-still lacks concrete QMP, block, AIO, and remaining supported-profile
+still lacks concrete block, AIO, and remaining supported-profile
 contributions and remains unwired to `fork(2)`, so readiness bits 7 and 8 and
 T-CAM-6.1 through T-CAM-6.3 remain unchecked.
 The first non-plugin contribution is now branch-private child diagnostics. The
@@ -2082,6 +2083,19 @@ release drains through EOF before returning a capture bound to the descriptor
 name, `SO_COOKIE`, and template generation. The production fork owner that
 drives this consumer while a child is live, all remaining supported-profile
 resource contributions, and readiness bits 7 and 8 remain open.
+The next non-plugin contribution retains a future child's private QMP stream.
+The Linux node creates a distinct connected nonblocking Unix stream pair after
+diagnostics staging, keeps both original endpoints, transfers the child endpoint
+with standard `getfd`, and asks the version-1 OOB child-QMP operation to
+duplicate and authenticate its exact Linux `SO_COOKIE`. Version 17 of the
+template report and version 7 of its nested resource stage expose the child-QMP
+mutation generation and exact sealed-plan binding. Plugin endpoint staging now
+requires and merges that retain contribution; exact release reverses plugin,
+child-QMP, diagnostics, and private-ring ownership. This checkpoint does not
+close the inherited monitor, attach the retained endpoint, reset monitor parser
+state, perform a generation handshake, invoke `fork(2)`, or acknowledge
+readiness bit 7 or 8. The concrete child monitor reinitializer and complete
+supported-profile resource inventory remain open.
 Template-process descriptor/endpoint staging now satisfies plugin-ring proof
 bit 6 only under the retained exact transaction. The internal replacement and
 child-identity primitives, and the registered empty-local-state reinitializer,

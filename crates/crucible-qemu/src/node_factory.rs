@@ -228,6 +228,37 @@ where
         self.vmstate.query_hot_fork_child_diagnostics()
     }
 
+    #[cfg(target_os = "linux")]
+    fn install_hot_fork_child_qmp(
+        &mut self,
+        name: &crate::QmpDescriptorName,
+        descriptor: std::os::fd::BorrowedFd<'_>,
+        socket_cookie: u64,
+        template_generation: u64,
+    ) -> Result<crate::QmpHotForkChildQmpState, QemuNodeChannelError> {
+        self.vmstate.install_hot_fork_child_qmp(
+            name,
+            descriptor,
+            socket_cookie,
+            template_generation,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn close_hot_fork_child_qmp(
+        &mut self,
+        name: &crate::QmpDescriptorName,
+        socket_cookie: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate.close_hot_fork_child_qmp(name, socket_cookie)
+    }
+
+    fn query_hot_fork_child_qmp(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildQmpState, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_child_qmp()
+    }
+
     fn query_hot_fork_bottom_half_inventory(
         &mut self,
     ) -> Result<crate::QmpHotForkBottomHalfInventory, QemuNodeChannelError> {
