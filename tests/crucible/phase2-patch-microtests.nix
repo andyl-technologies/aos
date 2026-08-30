@@ -2616,6 +2616,31 @@
         '';
       };
     }
+    {
+      patch = "0169-crucible-compose-child-qmp-reinitializer.patch";
+      check = certifyExactPatch {
+        patchName = "0169-crucible-compose-child-qmp-reinitializer.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-child-qmp-reinitializer-composition";
+        liveEvidence = ''
+          grep -Fxq 'patch=0169-crucible-compose-child-qmp-reinitializer.patch' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=18' "$live_result"
+          grep -Fxq 'template_resource_stage_schema_version=8' "$live_result"
+          grep -Fxq 'child_qmp_schema_version=2' "$live_result"
+          grep -Fxq 'child_qmp_initially_absent=true' "$live_result"
+          grep -Fq 'template_generation' \
+            ${patchDir}/0169-crucible-compose-child-qmp-reinitializer.patch
+          grep -Fq 'qmp_generation' \
+            ${patchDir}/0169-crucible-compose-child-qmp-reinitializer.patch
+          grep -Fq 'crucible_hot_fork_reinitialize_child_subsystems' \
+            ${patchDir}/0169-crucible-compose-child-qmp-reinitializer.patch
+          grep -Fq 'foreign_qmp_reinitializer' \
+            ${patchDir}/0169-crucible-compose-child-qmp-reinitializer.patch
+          grep -Fq 'qmp_runtime.calls != 1' \
+            ${patchDir}/0169-crucible-compose-child-qmp-reinitializer.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =
