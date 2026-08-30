@@ -1959,6 +1959,14 @@ authenticates the immediate child, blocks every blockable signal, and consumes
 the parent anchor before retain-table construction. Closed-table application
 requires that exact transaction. Production fork composition and complete
 mapping disposition remain open, so proof bit 7 remains clear.
+The child path now also owns a bounded mapping-disposition verifier. After
+descriptor closure and branch-private remapping it streams `/proc/self/maps`
+without heap allocation under 65,536-record, 8-KiB-record, and 16-MiB aggregate
+limits and requires every writable shared VMA to match one of at most 4,096
+sorted branch-private ranges in both directions. Private mappings remain COW
+and read-only shared mappings cannot mutate siblings. Positive exact-range and
+negative omitted-range regressions are present, but the production fork path
+has not composed this proof with child reinitialization, so bit 7 remains clear.
 Template-process descriptor/endpoint staging now satisfies plugin-ring proof
 bit 6 only under the retained exact transaction. The internal replacement and
 child-identity primitives, and the registered empty-local-state reinitializer,
