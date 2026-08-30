@@ -1,0 +1,421 @@
+diff --git a/include/qemu/crucible-hot-fork-child.h b/include/qemu/crucible-hot-fork-child.h
+index e64dfa8db..66977196c 100644
+--- a/include/qemu/crucible-hot-fork-child.h
++++ b/include/qemu/crucible-hot-fork-child.h
+@@ -30,6 +30,7 @@ typedef struct QemuCrucibleHotForkDescriptorTableTransaction {
+     pid_t child_pid;
+     bool active;
+     bool descriptors_applied;
++    bool child_reinitialized;
+     bool mappings_verified;
+ } QemuCrucibleHotForkDescriptorTableTransaction;
+ 
+@@ -41,6 +42,7 @@ typedef struct QemuCrucibleHotForkSharedMapping {
+ } QemuCrucibleHotForkSharedMapping;
+ 
+ typedef int (*QemuCrucibleHotForkDescriptorVerifier)(void *opaque);
++typedef int (*QemuCrucibleHotForkChildReinitializer)(void *opaque);
+ 
+ /**
+  * qemu_crucible_hot_fork_capture_parent_identity() - pin the fork parent
+@@ -209,4 +211,46 @@ int qemu_crucible_hot_fork_verify_mapping_table(
+     const QemuCrucibleHotForkSharedMapping *shared_mappings,
+     size_t shared_mapping_count);
+ 
++/**
++ * qemu_crucible_hot_fork_apply_child_resources() - rebuild child resources
++ * @transaction: active authenticated immediate-child transaction
++ * @replacements: exact control and wake source-to-target descriptor pairs
++ * @retained_fds: sorted final descriptor table retained by the child
++ * @retained_fd_count: number of entries in @retained_fds
++ * @verify_descriptors: complete installed descriptor-table verifier
++ * @descriptor_opaque: caller-owned value passed to @verify_descriptors
++ * @reinitialize: child-only mapping and held-worker reconstruction operation
++ * @reinitialize_opaque: caller-owned value passed to @reinitialize
++ * @shared_mappings: exact writable shared VMAs expected after reconstruction
++ * @shared_mapping_count: number of entries in @shared_mappings
++ *
++ * Validates every immutable table before mutation, closes descriptor admission,
++ * applies the exact retained descriptor table, invokes one child reinitializer,
++ * and then authenticates the resulting writable-shared mapping table.  The
++ * reinitializer must leave every recreated worker and callback path held; this
++ * operation does not release guest or canonical-event admission. Every mapping
++ * backing descriptor must appear in the exact retained descriptor table.
++ *
++ * Once descriptor replacement begins, every nonzero result is destructive:
++ * the caller must terminate or quarantine the child.  A zero result records
++ * all three completed phases in @transaction.  This composition covers only
++ * the explicitly supplied resources and does not itself acknowledge QEMU
++ * readiness bit 7 or 8.
++ *
++ * Returns zero after exact descriptor, reinitializer, and mapping disposition,
++ * or a negative errno-style status on failure.
++ */
++int qemu_crucible_hot_fork_apply_child_resources(
++    QemuCrucibleHotForkDescriptorTableTransaction *transaction,
++    const QemuCrucibleHotForkDescriptorReplacement
++        replacements[QEMU_CRUCIBLE_HOT_FORK_ENDPOINT_REPLACEMENT_COUNT],
++    const int *retained_fds,
++    size_t retained_fd_count,
++    QemuCrucibleHotForkDescriptorVerifier verify_descriptors,
++    void *descriptor_opaque,
++    QemuCrucibleHotForkChildReinitializer reinitialize,
++    void *reinitialize_opaque,
++    const QemuCrucibleHotForkSharedMapping *shared_mappings,
++    size_t shared_mapping_count);
++
+ #endif
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+index 9d90d6371..5d93ad78c 100644
+--- a/tests/unit/test-crucible-hot-fork-child.c
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -30,6 +30,14 @@ typedef struct ClosedDescriptorTableVerification {
+     int closed_fd;
+ } ClosedDescriptorTableVerification;
+ 
++typedef struct ChildResourceReinitializer {
++    void *address;
++    uint64_t length;
++    int backing_fd;
++    void *installed_mapping;
++    bool called;
++} ChildResourceReinitializer;
++
+ static int verify_endpoint_pair(void *opaque)
+ {
+     EndpointVerification *verification = opaque;
+@@ -77,6 +85,21 @@ static int verify_closed_descriptor_table(void *opaque)
+     return 0;
+ }
+ 
++static int reinitialize_child_resources(void *opaque)
++{
++    ChildResourceReinitializer *reinitializer = opaque;
++
++    reinitializer->called = true;
++    reinitializer->installed_mapping = mmap(
++        reinitializer->address, reinitializer->length,
++        PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED_NOREPLACE,
++        reinitializer->backing_fd, 0);
++    if (reinitializer->installed_mapping == MAP_FAILED) {
++        return -errno;
++    }
++    return 0;
++}
++
+ static int compare_descriptors(const void *left, const void *right)
+ {
+     int left_fd = *(const int *)left;
+@@ -219,6 +242,8 @@ static void test_immediate_child_applies_closed_descriptor_table(void)
+     int new_wake;
+     int inherited_extra;
+     int private_mapping_fd;
++    uint64_t page_size = qemu_real_host_page_size();
++    void *source_mapping;
+     uint64_t wake = 0;
+     char byte = 0;
+     pid_t child;
+@@ -237,10 +262,13 @@ static void test_immediate_child_applies_closed_descriptor_table(void)
+     g_assert_cmpint(new_wake, >=, 0);
+     g_assert_cmpint(inherited_extra, >=, 0);
+     g_assert_cmpint(private_mapping_fd, >=, 0);
+-    g_assert_cmpint(ftruncate(private_mapping_fd,
+-                             qemu_real_host_page_size()), ==, 0);
++    g_assert_cmpint(ftruncate(private_mapping_fd, page_size), ==, 0);
+     g_assert_cmpint(fcntl(private_mapping_fd, F_ADD_SEALS, F_SEAL_SHRINK),
+                     ==, 0);
++    source_mapping = mmap(NULL, page_size, PROT_NONE,
++                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    g_assert_true(source_mapping != MAP_FAILED);
++    g_assert_cmpint(madvise(source_mapping, page_size, MADV_DONTFORK), ==, 0);
+ 
+     replacements[0] = (QemuCrucibleHotForkDescriptorReplacement) {
+         .source_fd = new_control[0],
+@@ -259,10 +287,20 @@ static void test_immediate_child_applies_closed_descriptor_table(void)
+     child = fork();
+     g_assert_cmpint(child, >=, 0);
+     if (child == 0) {
+-        QemuCrucibleHotForkSharedMapping shared_mapping;
++        QemuCrucibleHotForkSharedMapping shared_mapping = {
++            .start = (uintptr_t)source_mapping,
++            .length = page_size,
++            .offset = 0,
++            .backing_fd = private_mapping_fd,
++        };
++        ChildResourceReinitializer reinitializer = {
++            .address = source_mapping,
++            .length = page_size,
++            .backing_fd = private_mapping_fd,
++            .installed_mapping = MAP_FAILED,
++            .called = false,
++        };
+         sigset_t blocked;
+-        uintptr_t page_size;
+-        void *mapping = MAP_FAILED;
+         int result;
+ 
+         close(child_result[0]);
+@@ -281,33 +319,20 @@ static void test_immediate_child_applies_closed_descriptor_table(void)
+             retained_fds[3] = private_mapping_fd;
+             qsort(retained_fds, G_N_ELEMENTS(retained_fds),
+                   sizeof(retained_fds[0]), compare_descriptors);
+-            result = qemu_crucible_hot_fork_apply_descriptor_table(
++            result = qemu_crucible_hot_fork_apply_child_resources(
+                 &transaction, replacements, retained_fds,
+                 G_N_ELEMENTS(retained_fds), verify_closed_descriptor_table,
+-                &verification);
++                &verification, reinitialize_child_resources, &reinitializer,
++                &shared_mapping, 1);
+         }
+-        if (result == 0) {
+-            page_size = qemu_real_host_page_size();
++        if (result == 0 &&
++            (!transaction.descriptors_applied ||
++             !transaction.child_reinitialized ||
++             !transaction.mappings_verified || !reinitializer.called)) {
++            result = -EIO;
+         }
+-        if (result == 0) {
+-            mapping = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
+-                           MAP_SHARED, private_mapping_fd, 0);
+-            if (mapping == MAP_FAILED) {
+-                result = -errno;
+-            }
+-        }
+-        if (result == 0) {
+-            shared_mapping = (QemuCrucibleHotForkSharedMapping) {
+-                .start = (uintptr_t)mapping,
+-                .length = page_size,
+-                .offset = 0,
+-                .backing_fd = private_mapping_fd,
+-            };
+-            result = qemu_crucible_hot_fork_verify_mapping_table(
+-                &transaction, &shared_mapping, 1);
+-        }
+-        if (mapping != MAP_FAILED) {
+-            munmap(mapping, page_size);
++        if (reinitializer.installed_mapping != MAP_FAILED) {
++            munmap(reinitializer.installed_mapping, page_size);
+         }
+         write_child_result(child_result[1], result);
+         _exit(0);
+@@ -332,6 +357,70 @@ static void test_immediate_child_applies_closed_descriptor_table(void)
+     close(new_wake);
+     close(inherited_extra);
+     close(private_mapping_fd);
++    g_assert_cmpint(munmap(source_mapping, page_size), ==, 0);
++}
++
++static void test_child_resource_preflight_preserves_descriptors(void)
++{
++    QemuCrucibleHotForkDescriptorTableTransaction transaction = {
++        .parent_pid = 2,
++        .child_pid = getpid(),
++        .active = true,
++    };
++    QemuCrucibleHotForkDescriptorReplacement replacements[2];
++    uint64_t page_size = qemu_real_host_page_size();
++    QemuCrucibleHotForkSharedMapping unretained_mapping = {
++        .start = qemu_real_host_page_size(),
++        .length = qemu_real_host_page_size(),
++        .offset = 0,
++    };
++    ChildResourceReinitializer reinitializer = {
++        .installed_mapping = MAP_FAILED,
++    };
++    int descriptors[4];
++    int retained_fds[2];
++    int unretained_backing;
++
++    for (size_t index = 0; index < G_N_ELEMENTS(descriptors); index++) {
++        descriptors[index] = eventfd(0, EFD_CLOEXEC);
++        g_assert_cmpint(descriptors[index], >=, 0);
++    }
++    replacements[0] = (QemuCrucibleHotForkDescriptorReplacement) {
++        .source_fd = descriptors[0],
++        .target_fd = descriptors[1],
++    };
++    replacements[1] = (QemuCrucibleHotForkDescriptorReplacement) {
++        .source_fd = descriptors[2],
++        .target_fd = descriptors[3],
++    };
++    retained_fds[0] = descriptors[1];
++    retained_fds[1] = descriptors[3];
++    qsort(retained_fds, G_N_ELEMENTS(retained_fds),
++          sizeof(retained_fds[0]), compare_descriptors);
++    unretained_backing = memfd_create(
++        "crucible-hot-fork-unretained", MFD_CLOEXEC | MFD_ALLOW_SEALING);
++    g_assert_cmpint(unretained_backing, >=, 0);
++    g_assert_cmpint(ftruncate(unretained_backing, page_size), ==, 0);
++    g_assert_cmpint(fcntl(unretained_backing, F_ADD_SEALS, F_SEAL_SHRINK),
++                    ==, 0);
++    unretained_mapping.backing_fd = unretained_backing;
++
++    g_assert_cmpint(qemu_crucible_hot_fork_apply_child_resources(
++                        &transaction, replacements, retained_fds,
++                        G_N_ELEMENTS(retained_fds), accept_endpoints, NULL,
++                        reinitialize_child_resources, &reinitializer,
++                        &unretained_mapping, 1),
++                    ==, -EINVAL);
++    g_assert_true(transaction.active);
++    g_assert_false(transaction.descriptors_applied);
++    g_assert_false(transaction.child_reinitialized);
++    g_assert_false(transaction.mappings_verified);
++    g_assert_false(reinitializer.called);
++    for (size_t index = 0; index < G_N_ELEMENTS(descriptors); index++) {
++        g_assert_cmpint(fcntl(descriptors[index], F_GETFD), >=, 0);
++        close(descriptors[index]);
++    }
++    close(unretained_backing);
+ }
+ 
+ static void test_mapping_table_rejects_unlisted_shared_mapping(void)
+@@ -354,6 +443,7 @@ static void test_mapping_table_rejects_unlisted_shared_mapping(void)
+                         &transaction, NULL, 0),
+                     ==, -EPERM);
+     g_assert_false(transaction.descriptors_applied);
++    g_assert_false(transaction.child_reinitialized);
+     g_assert_false(transaction.mappings_verified);
+     g_assert_cmpint(munmap(mapping, page_size), ==, 0);
+ }
+@@ -396,6 +486,7 @@ static void test_mapping_table_rejects_wrong_shared_backing(void)
+                         &transaction, &shared_mapping, 1),
+                     ==, -EPERM);
+     g_assert_false(transaction.descriptors_applied);
++    g_assert_false(transaction.child_reinitialized);
+     g_assert_false(transaction.mappings_verified);
+     g_assert_cmpint(munmap(mapping, page_size), ==, 0);
+     close(actual_fd);
+@@ -620,6 +711,8 @@ int main(int argc, char **argv)
+                     test_immediate_child_replaces_parent_endpoints);
+     g_test_add_func("/crucible/hot-fork-child/closed-descriptor-table",
+                     test_immediate_child_applies_closed_descriptor_table);
++    g_test_add_func("/crucible/hot-fork-child/resource-preflight",
++                    test_child_resource_preflight_preserves_descriptors);
+     g_test_add_func("/crucible/hot-fork-child/inactive-descriptor-transaction",
+                     test_inactive_descriptor_transaction_is_unchanged);
+     g_test_add_func("/crucible/hot-fork-child/unlisted-shared-mapping",
+diff --git a/util/crucible-hot-fork-child.c b/util/crucible-hot-fork-child.c
+index 897f59c16..d7cb1c2b9 100644
+--- a/util/crucible-hot-fork-child.c
++++ b/util/crucible-hot-fork-child.c
+@@ -311,6 +311,7 @@ int qemu_crucible_hot_fork_begin_descriptor_table(
+     transaction->child_pid = -1;
+     transaction->active = false;
+     transaction->descriptors_applied = false;
++    transaction->child_reinitialized = false;
+     transaction->mappings_verified = false;
+ 
+     result = crucible_hot_fork_probe_close_range();
+@@ -333,6 +334,7 @@ int qemu_crucible_hot_fork_begin_descriptor_table(
+     transaction->child_pid = getpid();
+     transaction->active = true;
+     transaction->descriptors_applied = false;
++    transaction->child_reinitialized = false;
+     transaction->mappings_verified = false;
+     return 0;
+ }
+@@ -361,6 +363,7 @@ int qemu_crucible_hot_fork_apply_descriptor_table(
+ 
+     transaction->active = false;
+     transaction->descriptors_applied = false;
++    transaction->child_reinitialized = false;
+     transaction->mappings_verified = false;
+     result = qemu_crucible_hot_fork_replace_endpoint_descriptors(
+         replacements, crucible_hot_fork_accept_descriptor_replacements, NULL);
+@@ -575,6 +578,33 @@ static bool crucible_hot_fork_shared_mapping_table_is_valid(
+     return true;
+ }
+ 
++static bool crucible_hot_fork_mapping_backings_are_retained(
++    const QemuCrucibleHotForkSharedMapping *mappings,
++    size_t mapping_count,
++    const int *retained_fds,
++    size_t retained_fd_count)
++{
++    for (size_t mapping = 0; mapping < mapping_count; mapping++) {
++        size_t lower = 0;
++        size_t upper = retained_fd_count;
++
++        while (lower < upper) {
++            size_t middle = lower + (upper - lower) / 2;
++
++            if (retained_fds[middle] < mappings[mapping].backing_fd) {
++                lower = middle + 1;
++            } else {
++                upper = middle;
++            }
++        }
++        if (lower == retained_fd_count ||
++            retained_fds[lower] != mappings[mapping].backing_fd) {
++            return false;
++        }
++    }
++    return true;
++}
++
+ static int crucible_hot_fork_match_mapping_record(
+     const char *record,
+     size_t length,
+@@ -724,7 +754,61 @@ int qemu_crucible_hot_fork_verify_mapping_table(
+     result = crucible_hot_fork_scan_mapping_table(shared_mappings,
+                                                   shared_mapping_count);
+     if (result == 0) {
++        transaction->descriptors_applied = true;
+         transaction->mappings_verified = true;
+     }
+     return result;
+ }
++
++int qemu_crucible_hot_fork_apply_child_resources(
++    QemuCrucibleHotForkDescriptorTableTransaction *transaction,
++    const QemuCrucibleHotForkDescriptorReplacement replacements[2],
++    const int *retained_fds,
++    size_t retained_fd_count,
++    QemuCrucibleHotForkDescriptorVerifier verify_descriptors,
++    void *descriptor_opaque,
++    QemuCrucibleHotForkChildReinitializer reinitialize,
++    void *reinitialize_opaque,
++    const QemuCrucibleHotForkSharedMapping *shared_mappings,
++    size_t shared_mapping_count)
++{
++    int result;
++
++    if (!transaction) {
++        return -EINVAL;
++    }
++    if (!transaction->active || transaction->parent_pid <= 1 ||
++        transaction->child_pid != getpid()) {
++        return -EPERM;
++    }
++    if (!verify_descriptors || !reinitialize ||
++        !crucible_hot_fork_retained_table_is_valid(
++            replacements, retained_fds, retained_fd_count) ||
++        !crucible_hot_fork_shared_mapping_table_is_valid(
++            shared_mappings, shared_mapping_count) ||
++        !crucible_hot_fork_mapping_backings_are_retained(
++            shared_mappings, shared_mapping_count,
++            retained_fds, retained_fd_count)) {
++        return -EINVAL;
++    }
++
++    result = qemu_crucible_hot_fork_apply_descriptor_table(
++        transaction, replacements, retained_fds, retained_fd_count,
++        verify_descriptors, descriptor_opaque);
++    if (result != 0) {
++        return result;
++    }
++
++    result = reinitialize(reinitialize_opaque);
++    if (result > 0 || result == -EUCLEAN) {
++        result = -EPROTO;
++    }
++    if (result != 0) {
++        transaction->descriptors_applied = false;
++        return result;
++    }
++    transaction->child_reinitialized = true;
++
++    return qemu_crucible_hot_fork_verify_mapping_table(
++        transaction, shared_mappings, shared_mapping_count);
++}

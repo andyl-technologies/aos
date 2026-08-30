@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **153 patches**. This count is checked against
+The carried series contains **154 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -2628,6 +2628,29 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Inertness:** the verifier is still internal and unwired; no production fork
   caller composes its result with child reinitialization or acknowledges
   readiness bits 7 or 8. `T-CAM-6.2` remains incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-child-resource-transaction — order child disposition
+
+- **Patch:** `0157-crucible-compose-fork-child-resource-disposition.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** one immediate-child operation preflights the complete retained
+  descriptor and writable-shared mapping tables before mutation, closes
+  descriptor admission, applies exact endpoint replacement and descriptor
+  closure, invokes one child reinitializer that must leave recreated workers
+  held, and only then authenticates the resulting mapping table. Invalid tables
+  preserve the active transaction; every failure after replacement begins is
+  destructive and requires child termination or quarantine.
+- **Micro-test:** the real-fork path uses `MADV_DONTFORK` to omit the source VMA,
+  applies the exact closed descriptor table, reconstructs the replacement VMA,
+  and requires all three transaction phases. A separate unretained-backing
+  preflight proves that no endpoint changes and the reinitializer is not called.
+- **Inertness:** the composition remains internal and unwired. It does not
+  invoke the registered QEMU/plugin reinitializer from a production fork,
+  complete other QEMU subsystem reconstruction, pair the host continuation,
+  release guest admission, or acknowledge readiness bits 7 or 8.
+  `T-CAM-6.2` remains incomplete.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
