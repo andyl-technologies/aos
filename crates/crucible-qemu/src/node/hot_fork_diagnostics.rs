@@ -257,6 +257,14 @@ impl QemuHotForkChildDiagnosticStage {
         }
     }
 
+    pub(super) const fn template_generation(&self) -> u64 {
+        match self {
+            Self::Installed(endpoint) | Self::TransferUncertain(endpoint) => {
+                endpoint.template_generation
+            }
+        }
+    }
+
     pub(super) fn bind_replacement_plan(
         &mut self,
         state: &crate::QmpHotForkChildDiagnosticState,
@@ -347,6 +355,11 @@ impl QemuNode {
         if self.hot_fork_child_diagnostic_stage.is_some() {
             return Err(diagnostic_rejected(
                 "node already retains a child diagnostics stage",
+            ));
+        }
+        if self.hot_fork_child_qmp_stage.is_some() {
+            return Err(diagnostic_rejected(
+                "child diagnostics must precede child QMP staging",
             ));
         }
         if self.hot_fork_plugin_endpoint_stage.is_some() {
@@ -520,6 +533,12 @@ impl QemuNode {
             return Err(QemuNodeChannelError::new(
                 "release hot-fork child diagnostics",
                 "plugin endpoints must release their sealed plan first",
+            ));
+        }
+        if self.hot_fork_child_qmp_stage.is_some() {
+            return Err(QemuNodeChannelError::new(
+                "release hot-fork child diagnostics",
+                "child QMP must release its retained template contribution first",
             ));
         }
         let (name, socket_cookie) = match self.hot_fork_child_diagnostic_stage.as_ref() {

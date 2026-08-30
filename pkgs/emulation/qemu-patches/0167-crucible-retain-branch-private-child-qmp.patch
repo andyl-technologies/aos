@@ -1,0 +1,1158 @@
+diff --git a/include/system/crucible-hot-fork-plugin-child.h b/include/system/crucible-hot-fork-plugin-child.h
+index dcb296ae5..0049a2ebf 100644
+--- a/include/system/crucible-hot-fork-plugin-child.h
++++ b/include/system/crucible-hot-fork-plugin-child.h
+@@ -34,9 +34,16 @@ typedef struct QemuCrucibleHotForkDiagnosticsChildResourcePlan {
+     bool prepared;
+ } QemuCrucibleHotForkDiagnosticsChildResourcePlan;
+ 
++typedef struct QemuCrucibleHotForkQmpChildResourcePlan {
++    uint64_t socket_cookie;
++    int retained_fd;
++    bool prepared;
++} QemuCrucibleHotForkQmpChildResourcePlan;
++
+ typedef struct QemuCrucibleHotForkChildResourcePlan {
+     QemuCrucibleHotForkPluginChildResourcePlan plugin;
+     QemuCrucibleHotForkDiagnosticsChildResourcePlan diagnostics;
++    QemuCrucibleHotForkQmpChildResourcePlan qmp;
+     QemuCrucibleHotForkDescriptorReplacement
+         replacements[QEMU_CRUCIBLE_HOT_FORK_MAX_DESCRIPTOR_REPLACEMENTS];
+     size_t replacement_count;
+@@ -161,6 +168,44 @@ bool qemu_crucible_hot_fork_diagnostics_child_resources_prepared_for(
+ void qemu_crucible_hot_fork_reset_diagnostics_child_resources(
+     QemuCrucibleHotForkDiagnosticsChildResourcePlan *resources);
+ 
++/**
++ * qemu_crucible_hot_fork_prepare_qmp_child_resources() - retain private QMP
++ * @resources: caller-owned QMP resource contribution
++ * @source_fd: retained branch-private connected stream descriptor
++ * @socket_cookie: exact nonzero Linux SO_COOKIE authenticated at staging
++ *
++ * Builds the supported-profile QMP contribution that keeps one fresh private
++ * endpoint through immediate-child descriptor closure.  It deliberately does
++ * not close the inherited monitor or attach the retained endpoint; the later
++ * QMP child reinitializer owns those destructive steps.
++ *
++ * Returns zero after exact preparation or -EINVAL for an invalid source or
++ * identity.
++ */
++int qemu_crucible_hot_fork_prepare_qmp_child_resources(
++    QemuCrucibleHotForkQmpChildResourcePlan *resources,
++    int source_fd, uint64_t socket_cookie);
++
++/**
++ * qemu_crucible_hot_fork_qmp_child_resources_prepared_for() - match QMP basis
++ * @resources: caller-owned QMP resource contribution
++ * @source_fd: exact retained stream descriptor
++ * @socket_cookie: exact staged Linux SO_COOKIE
++ *
++ * Returns true exactly when @resources contains the canonical retained QMP
++ * endpoint contribution for the supplied basis.
++ */
++bool qemu_crucible_hot_fork_qmp_child_resources_prepared_for(
++    const QemuCrucibleHotForkQmpChildResourcePlan *resources,
++    int source_fd, uint64_t socket_cookie);
++
++/**
++ * qemu_crucible_hot_fork_reset_qmp_child_resources() - clear QMP adapter
++ * @resources: caller-owned QMP contribution no longer retained
++ */
++void qemu_crucible_hot_fork_reset_qmp_child_resources(
++    QemuCrucibleHotForkQmpChildResourcePlan *resources);
++
+ /**
+  * qemu_crucible_hot_fork_begin_child_resource_plan() - start composition
+  * @resources: caller-owned complete-plan storage
+@@ -224,6 +269,22 @@ int qemu_crucible_hot_fork_merge_diagnostics_child_resources(
+     QemuCrucibleHotForkChildResourcePlan *resources,
+     const QemuCrucibleHotForkDiagnosticsChildResourcePlan *diagnostics);
+ 
++/**
++ * qemu_crucible_hot_fork_merge_qmp_child_resources() - retain private QMP
++ * @resources: open complete child resource plan
++ * @qmp: exact prepared branch-private QMP contribution
++ *
++ * Atomically merges and binds the QMP endpoint retain set.  Exact repeated
++ * composition is idempotent; a different source or identity conflicts with
++ * the already bound contribution.
++ *
++ * Returns zero after exact composition, -EPERM for a closed plan, -EINVAL for
++ * an invalid/conflicting contribution, or -E2BIG at a table bound.
++ */
++int qemu_crucible_hot_fork_merge_qmp_child_resources(
++    QemuCrucibleHotForkChildResourcePlan *resources,
++    const QemuCrucibleHotForkQmpChildResourcePlan *qmp);
++
+ /**
+  * qemu_crucible_hot_fork_seal_child_resource_plan() - close composition
+  * @resources: open caller-owned complete plan
+@@ -265,6 +326,17 @@ bool qemu_crucible_hot_fork_child_resource_plan_contains_diagnostics(
+     const QemuCrucibleHotForkChildResourcePlan *resources,
+     const QemuCrucibleHotForkDiagnosticsChildResourcePlan *diagnostics);
+ 
++/**
++ * qemu_crucible_hot_fork_child_resource_plan_contains_qmp() - match QMP basis
++ * @resources: sealed complete child resource plan
++ * @qmp: exact prepared branch-private QMP contribution
++ *
++ * Returns true exactly when the sealed plan retains @qmp without conflict.
++ */
++bool qemu_crucible_hot_fork_child_resource_plan_contains_qmp(
++    const QemuCrucibleHotForkChildResourcePlan *resources,
++    const QemuCrucibleHotForkQmpChildResourcePlan *qmp);
++
+ /**
+  * qemu_crucible_hot_fork_apply_child_resource_plan() - consume a sealed plan
+  * @resources: inherited, sealed complete resource plan
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 5a7fc32f4..a88032744 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -412,12 +412,24 @@ typedef struct CrucibleHotForkDiagnosticStage {
+ } CrucibleHotForkDiagnosticStage;
+ 
+ static CrucibleHotForkDiagnosticStage crucible_hot_fork_diagnostic_stage;
++typedef struct CrucibleHotForkQmpStage {
++    bool staged;
++    int fd;
++    char *fdname;
++    uint64_t socket_cookie;
++    uint64_t template_generation;
++    uint64_t generation;
++} CrucibleHotForkQmpStage;
++
++static CrucibleHotForkQmpStage crucible_hot_fork_qmp_stage;
+ static QemuCrucibleHotForkPluginChildReinitializer
+     crucible_hot_fork_plugin_child_reinitializer;
+ static QemuCrucibleHotForkPluginChildResourcePlan
+     crucible_hot_fork_plugin_child_resources;
+ static QemuCrucibleHotForkDiagnosticsChildResourcePlan
+     crucible_hot_fork_diagnostics_child_resources;
++static QemuCrucibleHotForkQmpChildResourcePlan
++    crucible_hot_fork_qmp_child_resources;
+ static QemuCrucibleHotForkChildResourcePlan
+     crucible_hot_fork_child_resource_plan;
+ 
+@@ -825,6 +837,12 @@ qmp_crucible_hot_fork_private_rings(
+                        "while plugin endpoints retain their generation");
+             goto out;
+         }
++        if (crucible_hot_fork_diagnostic_stage.staged ||
++            crucible_hot_fork_qmp_stage.staged) {
++            error_setg(errp, "Cannot release Crucible hot-fork private rings "
++                       "while child control resources remain retained");
++            goto out;
++        }
+         close(crucible_hot_fork_private_ring_stage.fd);
+         crucible_hot_fork_private_ring_stage.fd = -1;
+         g_clear_pointer(&crucible_hot_fork_private_ring_stage.fdname, g_free);
+@@ -911,7 +929,7 @@ static bool crucible_hot_fork_control_socket_cookie(
+ #endif
+ }
+ 
+-static bool crucible_hot_fork_diagnostic_socket_cookie(
++static bool crucible_hot_fork_nonblocking_socket_cookie(
+     int fd, uint64_t *cookie, Error **errp)
+ {
+     int flags;
+@@ -922,13 +940,13 @@ static bool crucible_hot_fork_diagnostic_socket_cookie(
+     flags = fcntl(fd, F_GETFL);
+     if (flags < 0) {
+         error_setg_errno(errp, errno,
+-                         "Could not inspect Crucible diagnostic flags");
++                         "Could not inspect Crucible child stream flags");
+         return false;
+     }
+     if ((flags & O_NONBLOCK) == 0) {
+         if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+             error_setg_errno(errp, errno,
+-                             "Could not make Crucible diagnostics nonblocking");
++                             "Could not make Crucible child stream nonblocking");
+             return false;
+         }
+         flags = fcntl(fd, F_GETFL);
+@@ -936,9 +954,9 @@ static bool crucible_hot_fork_diagnostic_socket_cookie(
+     if (flags < 0 || (flags & O_NONBLOCK) == 0) {
+         if (flags < 0) {
+             error_setg_errno(errp, errno,
+-                             "Could not verify Crucible diagnostic flags");
++                             "Could not verify Crucible child stream flags");
+         } else {
+-            error_setg(errp, "Crucible diagnostics remained blocking");
++            error_setg(errp, "Crucible child stream remained blocking");
+         }
+         return false;
+     }
+@@ -1368,7 +1386,7 @@ qmp_crucible_hot_fork_child_diagnostics(
+         if (candidate < 0) {
+             goto out;
+         }
+-        if (!crucible_hot_fork_diagnostic_socket_cookie(
++        if (!crucible_hot_fork_nonblocking_socket_cookie(
+                 candidate, &observed_socket_cookie, errp)) {
+             goto out;
+         }
+@@ -1450,6 +1468,11 @@ qmp_crucible_hot_fork_child_diagnostics(
+                        "before plugin endpoints release the sealed plan");
+             goto out;
+         }
++        if (crucible_hot_fork_qmp_stage.staged) {
++            error_setg(errp, "Cannot release Crucible hot-fork diagnostics "
++                       "before child QMP releases");
++            goto out;
++        }
+         close(crucible_hot_fork_diagnostic_stage.fd);
+         crucible_hot_fork_diagnostic_stage.fd = -1;
+         g_clear_pointer(&crucible_hot_fork_diagnostic_stage.fdname, g_free);
+@@ -1474,6 +1497,208 @@ out:
+     return report;
+ }
+ 
++static bool crucible_hot_fork_qmp_resource_plan_bound(void)
++{
++    return crucible_hot_fork_qmp_stage.staged &&
++        qemu_crucible_hot_fork_qmp_child_resources_prepared_for(
++            &crucible_hot_fork_qmp_child_resources,
++            crucible_hot_fork_qmp_stage.fd,
++            crucible_hot_fork_qmp_stage.socket_cookie) &&
++        qemu_crucible_hot_fork_child_resource_plan_contains_qmp(
++            &crucible_hot_fork_child_resource_plan,
++            &crucible_hot_fork_qmp_child_resources);
++}
++
++static CrucibleHotForkQmpState *crucible_hot_fork_qmp_report(void)
++{
++    CrucibleHotForkQmpState *report =
++        g_new0(CrucibleHotForkQmpState, 1);
++
++    report->schema_version = 1;
++    report->generation = crucible_hot_fork_qmp_stage.generation;
++    report->template_generation =
++        crucible_hot_fork_qmp_stage.template_generation;
++    report->staged = crucible_hot_fork_qmp_stage.staged;
++    if (report->staged) {
++        report->fdname = g_strdup(crucible_hot_fork_qmp_stage.fdname);
++    }
++    report->socket_cookie = crucible_hot_fork_qmp_stage.socket_cookie;
++    report->retained_fd = report->staged ?
++        crucible_hot_fork_qmp_stage.fd : -1;
++    report->resource_plan_bound = crucible_hot_fork_qmp_resource_plan_bound();
++    report->nonblocking_unix_stream = report->staged;
++    report->reinitialized = false;
++    report->disposition_complete = false;
++    report->readiness_proof_acknowledged = false;
++    return report;
++}
++
++static bool crucible_hot_fork_qmp_stage_matches(
++    const char *fdname, uint64_t socket_cookie)
++{
++    return crucible_hot_fork_qmp_stage.staged && fdname &&
++        strcmp(crucible_hot_fork_qmp_stage.fdname, fdname) == 0 &&
++        crucible_hot_fork_qmp_stage.socket_cookie == socket_cookie;
++}
++
++CrucibleHotForkQmpState *qmp_crucible_hot_fork_child_qmp(
++    CrucibleHotForkQmpAction action, const char *fdname,
++    bool has_expected_socket_cookie, uint64_t expected_socket_cookie,
++    Error **errp)
++{
++    CrucibleHotForkQmpState *report = NULL;
++    CrucibleHotForkPluginBarrierState *plugin_barrier = NULL;
++    uint64_t observed_socket_cookie = 0;
++    uint64_t next_generation;
++    int candidate = -1;
++    int result;
++
++    g_mutex_lock(&crucible_hot_fork_template_lock);
++    switch (action) {
++    case CRUCIBLE_HOT_FORK_QMP_ACTION_STAGE:
++        if (!fdname || !has_expected_socket_cookie ||
++            expected_socket_cookie == 0 ||
++            !crucible_hot_fork_private_ring_fd_name_valid(fdname)) {
++            error_setg(errp, "Crucible hot-fork child QMP requires one "
++                       "exact bounded descriptor identity");
++            goto out;
++        }
++        if (!crucible_hot_fork_template_active) {
++            error_setg(errp, "Crucible hot-fork child QMP requires an active "
++                       "retained template");
++            goto out;
++        }
++        if (!crucible_hot_fork_private_ring_stage.staged ||
++            crucible_hot_fork_private_ring_stage.template_generation !=
++                crucible_hot_fork_template_generation ||
++            !crucible_hot_fork_diagnostic_stage.staged ||
++            crucible_hot_fork_diagnostic_stage.template_generation !=
++                crucible_hot_fork_template_generation) {
++            error_setg(errp, "Crucible hot-fork child QMP requires private "
++                       "rings and diagnostics from the same template");
++            goto out;
++        }
++        if (!crucible_hot_fork_resource_stage_allowed(
++                &plugin_barrier, errp)) {
++            goto out;
++        }
++        candidate = monitor_dup_fd(monitor_cur(), fdname, errp);
++        if (candidate < 0) {
++            goto out;
++        }
++        if (!crucible_hot_fork_nonblocking_socket_cookie(
++                candidate, &observed_socket_cookie, errp)) {
++            goto out;
++        }
++        if (observed_socket_cookie != expected_socket_cookie) {
++            error_setg(errp, "Crucible hot-fork child QMP identity mismatch");
++            goto out;
++        }
++        if (expected_socket_cookie ==
++                crucible_hot_fork_diagnostic_stage.socket_cookie) {
++            error_setg(errp, "Crucible hot-fork child QMP aliases the "
++                       "diagnostics stream");
++            goto out;
++        }
++        if (candidate == QEMU_CRUCIBLE_HOT_FORK_DIAGNOSTIC_TARGET_FD ||
++            candidate == crucible_hot_fork_diagnostic_stage.fd ||
++            candidate == crucible_hot_fork_private_ring_stage.fd) {
++            error_setg(errp, "Crucible hot-fork child QMP aliases another "
++                       "retained resource");
++            goto out;
++        }
++        if (crucible_hot_fork_qmp_stage.staged) {
++            if (!crucible_hot_fork_qmp_stage_matches(
++                    fdname, expected_socket_cookie) ||
++                crucible_hot_fork_qmp_stage.template_generation !=
++                    crucible_hot_fork_template_generation) {
++                error_setg(errp, "Different Crucible hot-fork child QMP "
++                           "endpoint is already staged");
++                goto out;
++            }
++            report = crucible_hot_fork_qmp_report();
++            goto out;
++        }
++        if (crucible_hot_fork_plugin_endpoint_stage.staged) {
++            error_setg(errp, "Crucible hot-fork child QMP must be staged "
++                       "before plugin endpoints seal the child plan");
++            goto out;
++        }
++        if (crucible_hot_fork_qmp_stage.generation == UINT64_MAX) {
++            error_setg(errp, "Crucible hot-fork child QMP generation is "
++                       "exhausted");
++            goto out;
++        }
++        result = qemu_crucible_hot_fork_prepare_qmp_child_resources(
++            &crucible_hot_fork_qmp_child_resources, candidate,
++            expected_socket_cookie);
++        if (result != 0) {
++            error_setg_errno(errp, -result,
++                             "Could not prepare Crucible hot-fork child QMP "
++                             "resources");
++            goto out;
++        }
++        next_generation = crucible_hot_fork_qmp_stage.generation + 1;
++        crucible_hot_fork_qmp_stage.staged = true;
++        crucible_hot_fork_qmp_stage.fd = candidate;
++        candidate = -1;
++        crucible_hot_fork_qmp_stage.fdname = g_strdup(fdname);
++        crucible_hot_fork_qmp_stage.socket_cookie = expected_socket_cookie;
++        crucible_hot_fork_qmp_stage.template_generation =
++            crucible_hot_fork_template_generation;
++        crucible_hot_fork_qmp_stage.generation = next_generation;
++        report = crucible_hot_fork_qmp_report();
++        break;
++    case CRUCIBLE_HOT_FORK_QMP_ACTION_QUERY:
++        if (fdname || has_expected_socket_cookie) {
++            error_setg(errp, "Crucible hot-fork child QMP query accepts no "
++                       "descriptor identity");
++            goto out;
++        }
++        report = crucible_hot_fork_qmp_report();
++        break;
++    case CRUCIBLE_HOT_FORK_QMP_ACTION_RELEASE:
++        if (!fdname || !has_expected_socket_cookie ||
++            !crucible_hot_fork_qmp_stage_matches(
++                fdname, expected_socket_cookie)) {
++            error_setg(errp, "Crucible hot-fork child QMP release requires "
++                       "the exact retained basis");
++            goto out;
++        }
++        if (crucible_hot_fork_template_active) {
++            error_setg(errp, "Cannot release Crucible hot-fork child QMP "
++                       "during template preparation");
++            goto out;
++        }
++        if (crucible_hot_fork_plugin_endpoint_stage.staged) {
++            error_setg(errp, "Cannot release Crucible hot-fork child QMP "
++                       "before plugin endpoints release the sealed plan");
++            goto out;
++        }
++        close(crucible_hot_fork_qmp_stage.fd);
++        crucible_hot_fork_qmp_stage.fd = -1;
++        g_clear_pointer(&crucible_hot_fork_qmp_stage.fdname, g_free);
++        crucible_hot_fork_qmp_stage.staged = false;
++        crucible_hot_fork_qmp_stage.socket_cookie = 0;
++        crucible_hot_fork_qmp_stage.template_generation = 0;
++        qemu_crucible_hot_fork_reset_qmp_child_resources(
++            &crucible_hot_fork_qmp_child_resources);
++        crucible_hot_fork_qmp_stage.generation++;
++        assert(crucible_hot_fork_qmp_stage.generation != 0);
++        report = crucible_hot_fork_qmp_report();
++        break;
++    default:
++        g_assert_not_reached();
++    }
++out:
++    g_free(plugin_barrier);
++    if (candidate >= 0) {
++        close(candidate);
++    }
++    g_mutex_unlock(&crucible_hot_fork_template_lock);
++    return report;
++}
++
+ CrucibleHotForkPluginEndpointState *
+ qmp_crucible_hot_fork_plugin_endpoints(
+     CrucibleHotForkPluginEndpointAction action,
+@@ -1599,6 +1824,18 @@ qmp_crucible_hot_fork_plugin_endpoints(
+                        "branch-private diagnostics from the same template");
+             goto out;
+         }
++        if (plugin_barrier &&
++            (!crucible_hot_fork_qmp_stage.staged ||
++             crucible_hot_fork_qmp_stage.template_generation !=
++                 crucible_hot_fork_resource_template_generation() ||
++             !qemu_crucible_hot_fork_qmp_child_resources_prepared_for(
++                 &crucible_hot_fork_qmp_child_resources,
++                 crucible_hot_fork_qmp_stage.fd,
++                 crucible_hot_fork_qmp_stage.socket_cookie))) {
++            error_setg(errp, "Crucible hot-fork plugin endpoints require "
++                       "branch-private QMP from the same template");
++            goto out;
++        }
+         if (plugin_barrier) {
+             qemu_plugin_crucible_hot_fork_inventory(&resources);
+             if (!resources.complete ||
+@@ -1611,10 +1848,18 @@ qmp_crucible_hot_fork_plugin_endpoints(
+                 control_candidate == resources.manifest.wake_fd ||
+                 wake_candidate == resources.manifest.control_fd ||
+                 wake_candidate == resources.manifest.wake_fd ||
++                expected_control_socket_cookie ==
++                    crucible_hot_fork_diagnostic_stage.socket_cookie ||
++                expected_control_socket_cookie ==
++                    crucible_hot_fork_qmp_stage.socket_cookie ||
+                 crucible_hot_fork_diagnostic_stage.fd ==
+                     resources.manifest.control_fd ||
+                 crucible_hot_fork_diagnostic_stage.fd ==
+                     resources.manifest.wake_fd ||
++                crucible_hot_fork_qmp_stage.fd ==
++                    resources.manifest.control_fd ||
++                crucible_hot_fork_qmp_stage.fd ==
++                    resources.manifest.wake_fd ||
+                 crucible_hot_fork_private_ring_stage.fd ==
+                     resources.manifest.control_fd ||
+                 crucible_hot_fork_private_ring_stage.fd ==
+@@ -1670,6 +1915,11 @@ qmp_crucible_hot_fork_plugin_endpoints(
+                         &crucible_hot_fork_child_resource_plan,
+                         &crucible_hot_fork_diagnostics_child_resources);
+             }
++            if (result == 0) {
++                result = qemu_crucible_hot_fork_merge_qmp_child_resources(
++                    &crucible_hot_fork_child_resource_plan,
++                    &crucible_hot_fork_qmp_child_resources);
++            }
+             if (result == 0) {
+                 result = qemu_crucible_hot_fork_seal_child_resource_plan(
+                     &crucible_hot_fork_child_resource_plan);
+@@ -2256,6 +2506,7 @@ crucible_hot_fork_template_resource_stage_report(
+         g_new0(CrucibleHotForkTemplateResourceStageState, 1);
+     bool resources_staged = crucible_hot_fork_private_ring_stage.staged ||
+         crucible_hot_fork_diagnostic_stage.staged ||
++        crucible_hot_fork_qmp_stage.staged ||
+         crucible_hot_fork_plugin_endpoint_stage.staged;
+     uint64_t parent_process_generation = 0;
+     uint64_t child_process_generation = 0;
+@@ -2264,8 +2515,12 @@ crucible_hot_fork_template_resource_stage_report(
+            crucible_hot_fork_private_ring_stage.staged);
+     assert(!crucible_hot_fork_diagnostic_stage.staged ||
+            crucible_hot_fork_private_ring_stage.staged);
++    assert(!crucible_hot_fork_qmp_stage.staged ||
++           (crucible_hot_fork_private_ring_stage.staged &&
++            crucible_hot_fork_diagnostic_stage.staged));
+     assert(!crucible_hot_fork_plugin_endpoint_stage.staged ||
+-           crucible_hot_fork_diagnostic_stage.staged);
++           (crucible_hot_fork_diagnostic_stage.staged &&
++            crucible_hot_fork_qmp_stage.staged));
+     assert(!crucible_hot_fork_plugin_endpoint_stage.staged ||
+            crucible_hot_fork_plugin_endpoint_stage.private_ring_generation ==
+                crucible_hot_fork_private_ring_stage.generation);
+@@ -2275,13 +2530,16 @@ crucible_hot_fork_template_resource_stage_report(
+     assert(!crucible_hot_fork_diagnostic_stage.staged ||
+            crucible_hot_fork_diagnostic_stage.template_generation ==
+                crucible_hot_fork_private_ring_stage.template_generation);
++    assert(!crucible_hot_fork_qmp_stage.staged ||
++           crucible_hot_fork_qmp_stage.template_generation ==
++               crucible_hot_fork_private_ring_stage.template_generation);
+     if (resources_staged &&
+         crucible_hot_fork_private_ring_stage.template_generation != 0) {
+         assert(crucible_hot_fork_private_ring_stage.template_generation ==
+                crucible_hot_fork_template_generation);
+     }
+ 
+-    report->schema_version = 6;
++    report->schema_version = 7;
+     report->template_generation = resources_staged ?
+         crucible_hot_fork_private_ring_stage.template_generation : 0;
+     report->private_ring_staged =
+@@ -2295,6 +2553,10 @@ crucible_hot_fork_template_resource_stage_report(
+     report->diagnostics_resource_plan_bound =
+         crucible_hot_fork_template_active &&
+         crucible_hot_fork_diagnostic_resource_plan_bound();
++    report->qmp_staged = crucible_hot_fork_qmp_stage.staged;
++    report->qmp_generation = crucible_hot_fork_qmp_stage.generation;
++    report->qmp_resource_plan_bound = crucible_hot_fork_template_active &&
++        crucible_hot_fork_qmp_resource_plan_bound();
+     report->plugin_endpoints_staged =
+         crucible_hot_fork_plugin_endpoint_stage.staged;
+     report->plugin_endpoint_generation =
+@@ -2320,6 +2582,9 @@ crucible_hot_fork_template_resource_stage_report(
+         (!crucible_hot_fork_diagnostic_stage.staged ||
+          crucible_hot_fork_diagnostic_stage.template_generation ==
+              crucible_hot_fork_template_generation) &&
++        (!crucible_hot_fork_qmp_stage.staged ||
++         crucible_hot_fork_qmp_stage.template_generation ==
++             crucible_hot_fork_template_generation) &&
+         (!crucible_hot_fork_plugin_endpoint_stage.staged ||
+          report->worker_disposition_bound);
+     report->plugin_child_plan_bound =
+@@ -2331,12 +2596,14 @@ crucible_hot_fork_template_resource_stage_report(
+     report->plugin_child_resource_plan_bound =
+         report->plugin_child_plan_bound &&
+         crucible_hot_fork_plugin_child_resource_plan_bound(plugin_barrier) &&
+-        report->diagnostics_resource_plan_bound;
++        report->diagnostics_resource_plan_bound &&
++        report->qmp_resource_plan_bound;
+     report->parent_process_generation = parent_process_generation;
+     report->child_process_generation = child_process_generation;
+     report->readiness_proof_acknowledged =
+         crucible_hot_fork_template_active && plugin_barrier->quiescent &&
+         report->private_ring_staged && report->diagnostics_staged &&
++        report->qmp_staged &&
+         report->plugin_endpoints_staged &&
+         report->worker_disposition_bound && report->transaction_bound;
+     return report;
+@@ -2354,11 +2621,14 @@ static uint64_t crucible_hot_fork_template_acknowledged_proofs(
+         crucible_hot_fork_private_ring_stage.staged &&
+         crucible_hot_fork_private_ring_stage.shrink_sealed &&
+         crucible_hot_fork_diagnostic_stage.staged &&
++        crucible_hot_fork_qmp_stage.staged &&
+         crucible_hot_fork_plugin_endpoint_stage.staged &&
+         crucible_hot_fork_private_ring_stage.template_generation ==
+             crucible_hot_fork_template_generation &&
+         crucible_hot_fork_diagnostic_stage.template_generation ==
+             crucible_hot_fork_template_generation &&
++        crucible_hot_fork_qmp_stage.template_generation ==
++            crucible_hot_fork_template_generation &&
+         crucible_hot_fork_plugin_endpoint_stage.template_generation ==
+             crucible_hot_fork_template_generation &&
+         crucible_hot_fork_plugin_endpoint_stage.private_ring_generation ==
+@@ -2394,7 +2664,7 @@ crucible_hot_fork_template_report(
+     uint64_t acknowledged = crucible_hot_fork_template_acknowledged_proofs(
+         plugin_barrier, rcu_barrier, bh_timer_barrier, block_barrier);
+ 
+-    report->schema_version = 16;
++    report->schema_version = 17;
+     report->generation = crucible_hot_fork_template_generation;
+     report->outcome = outcome;
+     report->transaction_active = crucible_hot_fork_template_active;
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 44038334e..2c88aedd1 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -1465,11 +1465,12 @@
+ # Version 4 additionally reports whether QEMU has copied the exact registered
+ # plugin child-runtime plan into its one-shot inherited adapter. Version 5
+ # reports the sealed complete child resource plan. Version 6 additionally
+-# binds one branch-private nonblocking diagnostics stream into that plan. It
+-# does not complete a descriptor disposition or invoke that child
+-# reinitializer.
++# binds one branch-private nonblocking diagnostics stream into that plan.
++# Version 7 also retains one fresh branch-private QMP stream in the same plan.
++# It does not close the inherited monitor, attach the new endpoint, complete a
++# descriptor disposition, or invoke that child reinitializer.
+ #
+-# @schema-version: resource-stage binding contract version, currently 6
++# @schema-version: resource-stage binding contract version, currently 7
+ #
+ # @template-generation: exact template generation that originally admitted the
+ #     retained resources, or zero when none are staged or they were staged
+@@ -1486,6 +1487,13 @@
+ # @diagnostics-resource-plan-bound: whether the exact diagnostics source and
+ #     inherited stderr target are present in the sealed complete child plan
+ #
++# @qmp-staged: whether one branch-private child QMP stream is retained
++#
++# @qmp-generation: current child QMP mutation generation
++#
++# @qmp-resource-plan-bound: whether the exact child QMP descriptor is retained
++#     by the sealed complete child plan
++#
+ # @plugin-endpoints-staged: whether one plugin endpoint pair is retained
+ #
+ # @plugin-endpoint-generation: current endpoint-pair mutation generation
+@@ -1543,6 +1551,9 @@
+             'diagnostics-staged': 'bool',
+             'diagnostic-generation': 'uint64',
+             'diagnostics-resource-plan-bound': 'bool',
++            'qmp-staged': 'bool',
++            'qmp-generation': 'uint64',
++            'qmp-resource-plan-bound': 'bool',
+             'plugin-endpoints-staged': 'bool',
+             'plugin-endpoint-generation': 'uint64',
+             'plugin-private-ring-generation': 'uint64',
+@@ -1584,11 +1595,13 @@
+ # exact nondestructive plugin descriptor-replacement, retained-descriptor, and
+ # writable-shared-mapping tables. Version 16 requires a fresh authenticated
+ # branch-private diagnostics stream and composes its source-to-stderr
+-# replacement into the same sealed child resource plan. Complete QEMU child disposition remains
+-# open, so this does not acknowledge proof bit 7 or 8.
++# replacement into the same sealed child resource plan. Version 17 additionally
++# retains one authenticated branch-private QMP stream in that plan without
++# closing or reconstructing the inherited monitor. Complete QEMU child
++# disposition remains open, so this does not acknowledge proof bit 7 or 8.
+ # The caller must explicitly abort to roll the retained barriers back.
+ #
+-# @schema-version: transaction contract version, currently 16
++# @schema-version: transaction contract version, currently 17
+ #
+ # @generation: positive process-local transaction generation after the first
+ #     successful prepare, or zero before any transaction
+@@ -2042,6 +2055,106 @@
+   'returns': 'CrucibleHotForkDiagnosticState',
+   'allow-oob': true }
+ 
++##
++# @CrucibleHotForkQmpAction:
++#
++# Retained branch-private QMP endpoint operation.
++#
++# @stage: duplicate and authenticate one standard-QMP `getfd` entry
++#
++# @query: observe the retained stream without changing it
++#
++# @release: close the exact QEMU-retained duplicate; the monitor's `getfd`
++#     entry remains separately owned until standard QMP `closefd`
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'enum': 'CrucibleHotForkQmpAction',
++  'data': [ 'stage', 'query', 'release' ] }
++
++##
++# @CrucibleHotForkQmpState:
++#
++# Exact QEMU-owned state for one branch-private nonblocking QMP stream. Version
++# 1 authenticates the connected AF_UNIX stream by Linux SO_COOKIE and retains
++# its descriptor in the sealed child resource plan. Inherited monitor closure,
++# parser reset, generation handshake, and attachment remain the responsibility
++# of the future QMP child reinitializer.
++#
++# @schema-version: retained QMP endpoint contract version, currently 1
++#
++# @generation: process-local positive mutation generation, or zero initially
++#
++# @template-generation: exact template transaction generation that admitted
++#     the stream, or zero when absent
++#
++# @staged: whether QEMU retains one independently duplicated stream
++#
++# @fdname: exact standard-QMP descriptor name while @staged
++#
++# @socket-cookie: authenticated Linux SO_COOKIE, or zero when absent
++#
++# @retained-fd: QEMU-owned branch-private stream descriptor while staged,
++#     otherwise -1
++#
++# @resource-plan-bound: whether that exact descriptor is retained by the
++#     sealed complete child resource plan
++#
++# @nonblocking-unix-stream: whether the retained endpoint is one connected,
++#     empty, nonblocking AF_UNIX stream socket
++#
++# @reinitialized: always false until inherited-monitor teardown and private
++#     endpoint attachment land
++#
++# @disposition-complete: always false until the complete child disposition
++#     transaction lands
++#
++# @readiness-proof-acknowledged: always false; this primitive acknowledges no
++#     hot-fork readiness proof
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkQmpState',
++  'data': { 'schema-version': 'uint32',
++            'generation': 'uint64',
++            'template-generation': 'uint64',
++            'staged': 'bool',
++            '*fdname': 'str',
++            'socket-cookie': 'uint64',
++            'retained-fd': 'int',
++            'resource-plan-bound': 'bool',
++            'nonblocking-unix-stream': 'bool',
++            'reinitialized': 'bool',
++            'disposition-complete': 'bool',
++            'readiness-proof-acknowledged': 'bool' } }
++
++##
++# @crucible-hot-fork-child-qmp:
++#
++# Retains or observes one authenticated duplicate of a standard-QMP `getfd`
++# entry for a future child's private QMP connection. Stage accepts only one
++# connected, empty AF_UNIX stream with the exact Linux SO_COOKIE and makes the
++# retained description nonblocking. Query accepts no identity fields. Release
++# requires the exact retained basis and does not close the standard-QMP name.
++#
++# @action: requested retained-descriptor operation
++#
++# @fdname: exact standard-QMP name, required for @stage and @release
++#
++# @expected-socket-cookie: exact expected Linux SO_COOKIE, required for @stage
++#     and @release
++#
++# Returns: @CrucibleHotForkQmpState
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'crucible-hot-fork-child-qmp',
++  'data': { 'action': 'CrucibleHotForkQmpAction',
++            '*fdname': 'str',
++            '*expected-socket-cookie': 'uint64' },
++  'returns': 'CrucibleHotForkQmpState',
++  'allow-oob': true }
++
+ ##
+ # @CrucibleHotForkMutex:
+ #
+diff --git a/system/crucible-hot-fork-plugin-child.c b/system/crucible-hot-fork-plugin-child.c
+index b398e726e..80c1d1dbb 100644
+--- a/system/crucible-hot-fork-plugin-child.c
++++ b/system/crucible-hot-fork-plugin-child.c
+@@ -254,6 +254,43 @@ void qemu_crucible_hot_fork_reset_diagnostics_child_resources(
+     }
+ }
+ 
++int qemu_crucible_hot_fork_prepare_qmp_child_resources(
++    QemuCrucibleHotForkQmpChildResourcePlan *resources,
++    int source_fd, uint64_t socket_cookie)
++{
++    if (!resources || source_fd < 0 || socket_cookie == 0) {
++        return -EINVAL;
++    }
++
++    *resources = (QemuCrucibleHotForkQmpChildResourcePlan) {
++        .socket_cookie = socket_cookie,
++        .retained_fd = source_fd,
++        .prepared = true,
++    };
++    return 0;
++}
++
++bool qemu_crucible_hot_fork_qmp_child_resources_prepared_for(
++    const QemuCrucibleHotForkQmpChildResourcePlan *resources,
++    int source_fd, uint64_t socket_cookie)
++{
++    QemuCrucibleHotForkQmpChildResourcePlan expected = { 0 };
++
++    return resources && resources->prepared &&
++        qemu_crucible_hot_fork_prepare_qmp_child_resources(
++            &expected, source_fd, socket_cookie) == 0 &&
++        resources->socket_cookie == expected.socket_cookie &&
++        resources->retained_fd == expected.retained_fd;
++}
++
++void qemu_crucible_hot_fork_reset_qmp_child_resources(
++    QemuCrucibleHotForkQmpChildResourcePlan *resources)
++{
++    if (resources) {
++        *resources = (QemuCrucibleHotForkQmpChildResourcePlan) { 0 };
++    }
++}
++
+ static bool crucible_hot_fork_plugin_replacement_sources(
+     const QemuCrucibleHotForkPluginChildResourcePlan *resources,
+     int *control_source_fd,
+@@ -668,6 +705,20 @@ int qemu_crucible_hot_fork_merge_child_resource_contribution(
+             shared_mappings, shared_mapping_count)) {
+         return -EINVAL;
+     }
++    if (resources->qmp.prepared) {
++        for (index = 0; index < replacement_count; index++) {
++            if (replacements[index].source_fd == resources->qmp.retained_fd ||
++                replacements[index].target_fd == resources->qmp.retained_fd) {
++                return -EINVAL;
++            }
++        }
++        for (index = 0; index < shared_mapping_count; index++) {
++            if (shared_mappings[index].backing_fd ==
++                    resources->qmp.retained_fd) {
++                return -EINVAL;
++            }
++        }
++    }
+     if (crucible_hot_fork_replacement_tables_conflict(
+             resources->replacements, resources->replacement_count,
+             replacements, replacement_count)) {
+@@ -791,6 +842,46 @@ int qemu_crucible_hot_fork_merge_diagnostics_child_resources(
+     return result;
+ }
+ 
++int qemu_crucible_hot_fork_merge_qmp_child_resources(
++    QemuCrucibleHotForkChildResourcePlan *resources,
++    const QemuCrucibleHotForkQmpChildResourcePlan *qmp)
++{
++    size_t index;
++    int result;
++
++    if (!resources || !qmp || !qmp->prepared ||
++        !qemu_crucible_hot_fork_qmp_child_resources_prepared_for(
++            qmp, qmp->retained_fd, qmp->socket_cookie)) {
++        return -EINVAL;
++    }
++    if (!resources->building || resources->sealed || resources->attempted ||
++        resources->applied) {
++        return -EPERM;
++    }
++    if (resources->qmp.prepared &&
++        !qemu_crucible_hot_fork_qmp_child_resources_prepared_for(
++            &resources->qmp, qmp->retained_fd, qmp->socket_cookie)) {
++        return -EINVAL;
++    }
++    for (index = 0; index < resources->replacement_count; index++) {
++        if (resources->replacements[index].target_fd == qmp->retained_fd) {
++            return -EINVAL;
++        }
++    }
++    for (index = 0; index < resources->shared_mapping_count; index++) {
++        if (resources->shared_mappings[index].backing_fd == qmp->retained_fd) {
++            return -EINVAL;
++        }
++    }
++
++    result = qemu_crucible_hot_fork_merge_child_resource_contribution(
++        resources, NULL, 0, &qmp->retained_fd, 1, NULL, 0);
++    if (result == 0) {
++        resources->qmp = *qmp;
++    }
++    return result;
++}
++
+ static bool crucible_hot_fork_plan_contains_plugin(
+     const QemuCrucibleHotForkChildResourcePlan *resources,
+     const QemuCrucibleHotForkPluginChildResourcePlan *plugin)
+@@ -884,6 +975,34 @@ static bool crucible_hot_fork_plan_contains_diagnostics(
+     return false;
+ }
+ 
++static bool crucible_hot_fork_plan_contains_qmp(
++    const QemuCrucibleHotForkChildResourcePlan *resources,
++    const QemuCrucibleHotForkQmpChildResourcePlan *qmp)
++{
++    size_t index;
++
++    if (!qmp || !qmp->prepared ||
++        !qemu_crucible_hot_fork_qmp_child_resources_prepared_for(
++            &resources->qmp, qmp->retained_fd, qmp->socket_cookie) ||
++        !crucible_hot_fork_fd_table_contains(
++            resources->retained_fds, resources->retained_fd_count,
++            qmp->retained_fd)) {
++        return false;
++    }
++    for (index = 0; index < resources->replacement_count; index++) {
++        if (resources->replacements[index].source_fd == qmp->retained_fd ||
++            resources->replacements[index].target_fd == qmp->retained_fd) {
++            return false;
++        }
++    }
++    for (index = 0; index < resources->shared_mapping_count; index++) {
++        if (resources->shared_mappings[index].backing_fd == qmp->retained_fd) {
++            return false;
++        }
++    }
++    return true;
++}
++
+ static bool crucible_hot_fork_child_resource_plan_valid(
+     const QemuCrucibleHotForkChildResourcePlan *resources,
+     const QemuCrucibleHotForkPluginChildResourcePlan *plugin)
+@@ -905,7 +1024,8 @@ static bool crucible_hot_fork_child_resource_plan_valid(
+             resources->shared_mappings, resources->shared_mapping_count) ||
+         !crucible_hot_fork_plan_contains_plugin(resources, plugin) ||
+         !crucible_hot_fork_plan_contains_diagnostics(
+-            resources, &resources->diagnostics)) {
++            resources, &resources->diagnostics) ||
++        !crucible_hot_fork_plan_contains_qmp(resources, &resources->qmp)) {
+         return false;
+     }
+     for (index = 0; index < resources->replacement_count; index++) {
+@@ -964,6 +1084,17 @@ bool qemu_crucible_hot_fork_child_resource_plan_contains_diagnostics(
+         crucible_hot_fork_plan_contains_diagnostics(resources, diagnostics);
+ }
+ 
++bool qemu_crucible_hot_fork_child_resource_plan_contains_qmp(
++    const QemuCrucibleHotForkChildResourcePlan *resources,
++    const QemuCrucibleHotForkQmpChildResourcePlan *qmp)
++{
++    return resources && qmp && resources->sealed &&
++        !resources->building && !resources->attempted && !resources->applied &&
++        crucible_hot_fork_child_resource_plan_valid(
++            resources, &resources->plugin) &&
++        crucible_hot_fork_plan_contains_qmp(resources, qmp);
++}
++
+ void qemu_crucible_hot_fork_reset_child_resource_plan(
+     QemuCrucibleHotForkChildResourcePlan *resources)
+ {
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+index 58fb8257a..1dec30caf 100644
+--- a/tests/unit/test-crucible-hot-fork-child.c
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -207,6 +207,20 @@ static void merge_fake_diagnostics(
+         ==, 0);
+ }
+ 
++static void merge_fake_qmp(
++    QemuCrucibleHotForkChildResourcePlan *resources, int source_fd,
++    uint64_t socket_cookie)
++{
++    QemuCrucibleHotForkQmpChildResourcePlan qmp = { 0 };
++
++    g_assert_cmpint(qemu_crucible_hot_fork_prepare_qmp_child_resources(
++                        &qmp, source_fd, socket_cookie),
++                    ==, 0);
++    g_assert_cmpint(qemu_crucible_hot_fork_merge_qmp_child_resources(
++                        resources, &qmp),
++                    ==, 0);
++}
++
+ static void write_child_result(int fd, int result)
+ {
+     ssize_t written;
+@@ -339,6 +353,7 @@ static void test_immediate_child_applies_sealed_resource_plan(void)
+     int child_result[2];
+     int old_result[2];
+     int diagnostic_stream[2];
++    int qmp_stream[2];
+     int old_wake;
+     int new_wake;
+     int inherited_extra;
+@@ -358,6 +373,9 @@ static void test_immediate_child_applies_sealed_resource_plan(void)
+     g_assert_cmpint(socketpair(AF_UNIX,
+                                SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
+                                0, diagnostic_stream), ==, 0);
++    g_assert_cmpint(socketpair(AF_UNIX,
++                               SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
++                               0, qmp_stream), ==, 0);
+     old_wake = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+     new_wake = eventfd(0, EFD_CLOEXEC);
+     inherited_extra = eventfd(0, EFD_CLOEXEC);
+@@ -425,6 +443,8 @@ static void test_immediate_child_applies_sealed_resource_plan(void)
+         qemu_crucible_hot_fork_merge_diagnostics_child_resources(
+             resource_plan, &diagnostics),
+         ==, 0);
++    merge_fake_qmp(resource_plan, qmp_stream[1],
++                   exact_socket_cookie(qmp_stream[1]));
+     result_replacement = (QemuCrucibleHotForkDescriptorReplacement) {
+         .source_fd = child_result[1],
+         .target_fd = old_result[1],
+@@ -498,6 +518,7 @@ static void test_immediate_child_applies_sealed_resource_plan(void)
+     close(old_result[1]);
+     close(new_control[0]);
+     close(diagnostic_stream[1]);
++    close(qmp_stream[1]);
+     g_assert_cmpint(read_child_result(child_result[0]), ==, 0);
+     g_assert_false(resource_plan->attempted);
+     g_assert_false(resource_plan->applied);
+@@ -512,6 +533,7 @@ static void test_immediate_child_applies_sealed_resource_plan(void)
+     close(child_result[0]);
+     close(old_result[0]);
+     close(diagnostic_stream[0]);
++    close(qmp_stream[0]);
+     close(old_control[0]);
+     close(old_control[1]);
+     close(new_control[1]);
+@@ -745,6 +767,7 @@ static void test_child_resource_plan_composition_is_exact(void)
+     struct qemu_plugin_crucible_hot_fork_child_plan foreign_plan = plan;
+     QemuCrucibleHotForkPluginChildResourcePlan plugin;
+     QemuCrucibleHotForkDiagnosticsChildResourcePlan diagnostics = { 0 };
++    QemuCrucibleHotForkQmpChildResourcePlan qmp = { 0 };
+     QemuCrucibleHotForkPluginChildReinitializer reinitializer = { 0 };
+     QemuCrucibleHotForkPluginChildReinitializer foreign_reinitializer = { 0 };
+     QemuCrucibleHotForkDescriptorTableTransaction transaction = {
+@@ -777,6 +800,10 @@ static void test_child_resource_plan_composition_is_exact(void)
+         .source_fd = 22,
+         .target_fd = 12,
+     };
++    const QemuCrucibleHotForkDescriptorReplacement qmp_target_alias = {
++        .source_fd = 23,
++        .target_fd = 42,
++    };
+     QemuCrucibleHotForkSharedMapping mapping = {
+         .start = 3 * page_size,
+         .length = page_size,
+@@ -795,6 +822,12 @@ static void test_child_resource_plan_composition_is_exact(void)
+         .offset = 0,
+         .backing_fd = 10,
+     };
++    QemuCrucibleHotForkSharedMapping qmp_mapping_alias = {
++        .start = 6 * page_size,
++        .length = page_size,
++        .offset = 0,
++        .backing_fd = 42,
++    };
+ 
+     foreign_plan.template_generation++;
+     g_assert_cmpint(qemu_crucible_hot_fork_prepare_plugin_child_resources(
+@@ -817,6 +850,7 @@ static void test_child_resource_plan_composition_is_exact(void)
+         qemu_crucible_hot_fork_merge_diagnostics_child_resources(
+             resources, &diagnostics),
+         ==, 0);
++    merge_fake_qmp(resources, 42, 43);
+     g_assert_true(resources->building);
+     g_assert_false(resources->sealed);
+     g_assert_cmpint(qemu_crucible_hot_fork_merge_child_resource_contribution(
+@@ -830,13 +864,14 @@ static void test_child_resource_plan_composition_is_exact(void)
+     g_assert_cmpint(resources->replacements[2].target_fd, ==, 5);
+     g_assert_cmpint(resources->replacements[3].source_fd, ==, 20);
+     g_assert_cmpint(resources->replacements[3].target_fd, ==, 9);
+-    g_assert_cmpuint(resources->retained_fd_count, ==, 6);
++    g_assert_cmpuint(resources->retained_fd_count, ==, 7);
+     g_assert_cmpint(resources->retained_fds[0], ==, 2);
+     g_assert_cmpint(resources->retained_fds[1], ==, 3);
+     g_assert_cmpint(resources->retained_fds[2], ==, 4);
+     g_assert_cmpint(resources->retained_fds[3], ==, 5);
+     g_assert_cmpint(resources->retained_fds[4], ==, 7);
+     g_assert_cmpint(resources->retained_fds[5], ==, 9);
++    g_assert_cmpint(resources->retained_fds[6], ==, 42);
+     g_assert_cmpuint(resources->shared_mapping_count, ==, 2);
+     g_assert_cmpuint(resources->shared_mappings[0].start, ==, page_size);
+     g_assert_cmpuint(resources->shared_mappings[1].start, ==, 3 * page_size);
+@@ -847,7 +882,7 @@ static void test_child_resource_plan_composition_is_exact(void)
+                         &mapping, 1),
+                     ==, 0);
+     g_assert_cmpuint(resources->replacement_count, ==, 4);
+-    g_assert_cmpuint(resources->retained_fd_count, ==, 6);
++    g_assert_cmpuint(resources->retained_fd_count, ==, 7);
+     g_assert_cmpuint(resources->shared_mapping_count, ==, 2);
+     g_assert_cmpint(qemu_crucible_hot_fork_merge_child_resource_contribution(
+                         resources, NULL, 0, unsorted_fds,
+@@ -879,7 +914,13 @@ static void test_child_resource_plan_composition_is_exact(void)
+     g_assert_cmpint(qemu_crucible_hot_fork_merge_child_resource_contribution(
+                         resources, NULL, 0, NULL, 0, &missing_backing, 1),
+                     ==, -EINVAL);
+-    g_assert_cmpuint(resources->retained_fd_count, ==, 6);
++    g_assert_cmpint(qemu_crucible_hot_fork_merge_child_resource_contribution(
++                        resources, &qmp_target_alias, 1, NULL, 0, NULL, 0),
++                    ==, -EINVAL);
++    g_assert_cmpint(qemu_crucible_hot_fork_merge_child_resource_contribution(
++                        resources, NULL, 0, NULL, 0, &qmp_mapping_alias, 1),
++                    ==, -EINVAL);
++    g_assert_cmpuint(resources->retained_fd_count, ==, 7);
+     g_assert_cmpuint(resources->shared_mapping_count, ==, 2);
+     g_assert_cmpuint(resources->replacement_count, ==, 4);
+     g_assert_cmpint(qemu_crucible_hot_fork_apply_child_resource_plan(
+@@ -900,6 +941,8 @@ static void test_child_resource_plan_composition_is_exact(void)
+     g_assert_true(
+         qemu_crucible_hot_fork_child_resource_plan_contains_diagnostics(
+             resources, &diagnostics));
++    g_assert_true(qemu_crucible_hot_fork_child_resource_plan_contains_qmp(
++        resources, &resources->qmp));
+     g_assert_cmpint(qemu_crucible_hot_fork_merge_child_resource_contribution(
+                         resources, NULL, 0, NULL, 0, NULL, 0),
+                     ==, -EPERM);
+@@ -925,6 +968,20 @@ static void test_child_resource_plan_composition_is_exact(void)
+     g_assert_false(
+         qemu_crucible_hot_fork_child_resource_plan_contains_plugin(
+             resources, &plugin));
++    g_assert_cmpint(qemu_crucible_hot_fork_begin_child_resource_plan(
++                        resources, &plugin),
++                    ==, 0);
++    g_assert_cmpint(qemu_crucible_hot_fork_merge_child_resource_contribution(
++                        resources, &qmp_target_alias, 1,
++                        &qmp_target_alias.target_fd, 1, NULL, 0),
++                    ==, 0);
++    g_assert_cmpint(qemu_crucible_hot_fork_prepare_qmp_child_resources(
++                        &qmp, 42, 43),
++                    ==, 0);
++    g_assert_cmpint(qemu_crucible_hot_fork_merge_qmp_child_resources(
++                        resources, &qmp),
++                    ==, -EINVAL);
++    qemu_crucible_hot_fork_reset_child_resource_plan(resources);
+ }
+ 
+ static void test_child_resource_plan_bounds_are_exact(void)
+@@ -974,8 +1031,13 @@ static void test_child_resource_plan_bounds_are_exact(void)
+         .source_fd = 10000,
+         .target_fd = plan.private_ring_fd,
+     };
+-    for (index = 1;
+-         index < QEMU_CRUCIBLE_HOT_FORK_MAX_DESCRIPTOR_REPLACEMENTS - 3;
++    retained_fds[1] = 44;
++    replacements[1] = (QemuCrucibleHotForkDescriptorReplacement) {
++        .source_fd = 10001,
++        .target_fd = 44,
++    };
++    for (index = 2;
++         index < QEMU_CRUCIBLE_HOT_FORK_MAX_DESCRIPTOR_REPLACEMENTS - 4;
+          index++) {
+         replacements[index] = (QemuCrucibleHotForkDescriptorReplacement) {
+             .source_fd = 10000 + index,
+@@ -987,15 +1049,16 @@ static void test_child_resource_plan_bounds_are_exact(void)
+                         resources, &plugin),
+                     ==, 0);
+     merge_fake_diagnostics(resources, 40, 41);
++    merge_fake_qmp(resources, 42, 43);
+     g_assert_cmpint(qemu_crucible_hot_fork_merge_child_resource_contribution(
+                         resources, replacements,
+-                        QEMU_CRUCIBLE_HOT_FORK_MAX_DESCRIPTOR_REPLACEMENTS - 3,
++                        QEMU_CRUCIBLE_HOT_FORK_MAX_DESCRIPTOR_REPLACEMENTS - 4,
+                         retained_fds,
+-                        QEMU_CRUCIBLE_HOT_FORK_MAX_DESCRIPTOR_REPLACEMENTS - 3,
++                        QEMU_CRUCIBLE_HOT_FORK_MAX_DESCRIPTOR_REPLACEMENTS - 4,
+                         NULL, 0),
+                     ==, 0);
+     g_assert_cmpuint(resources->replacement_count, ==,
+-                     QEMU_CRUCIBLE_HOT_FORK_MAX_DESCRIPTOR_REPLACEMENTS);
++                     QEMU_CRUCIBLE_HOT_FORK_MAX_DESCRIPTOR_REPLACEMENTS - 1);
+     g_assert_cmpuint(resources->retained_fd_count, ==,
+                      QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS);
+     replacements[0] = (QemuCrucibleHotForkDescriptorReplacement) {
+@@ -1018,9 +1081,10 @@ static void test_child_resource_plan_bounds_are_exact(void)
+                         resources, &plugin),
+                     ==, 0);
+     merge_fake_diagnostics(resources, 40, 41);
++    merge_fake_qmp(resources, 42, 43);
+     g_assert_cmpint(qemu_crucible_hot_fork_merge_child_resource_contribution(
+                         resources, NULL, 0, retained_fds,
+-                        QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS - 4,
++                        QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS - 5,
+                         NULL, 0),
+                     ==, 0);
+     g_assert_cmpuint(resources->retained_fd_count, ==,
+@@ -1029,7 +1093,7 @@ static void test_child_resource_plan_bounds_are_exact(void)
+                         resources, NULL, 0,
+                         &retained_fds[
+                             QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS -
+-                            4],
++                            5],
+                         1, NULL, 0),
+                     ==, -E2BIG);
+ 
+@@ -1038,6 +1102,7 @@ static void test_child_resource_plan_bounds_are_exact(void)
+                         resources, &plugin),
+                     ==, 0);
+     merge_fake_diagnostics(resources, 40, 41);
++    merge_fake_qmp(resources, 42, 43);
+     for (index = 0;
+          index < QEMU_CRUCIBLE_HOT_FORK_MAX_SHARED_MAPPINGS;
+          index++) {

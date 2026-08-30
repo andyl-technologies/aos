@@ -1,46 +1,42 @@
-//! QEMU-owned retention of one branch-private child diagnostics stream.
+//! QEMU-owned retention of one branch-private child QMP stream.
 
 use serde_json::Value;
 
 use crate::qmp::{QmpCommandKind, QmpDescriptorName, QmpError};
 
-/// QMP command that retains or releases the branch-private diagnostics stream.
-pub const QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND: &str = "crucible-hot-fork-child-diagnostics";
-/// Version of the retained child-diagnostics contract.
-pub const QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION: u32 = 1;
-/// Inherited descriptor slot replaced by the branch-private diagnostics stream.
-pub const QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD: i32 = 2;
+/// QMP command that retains or releases the branch-private child QMP stream.
+pub const QMP_HOT_FORK_CHILD_QMP_COMMAND: &str = "crucible-hot-fork-child-qmp";
+/// Version of the retained child-QMP endpoint contract.
+pub const QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION: u32 = 1;
 
-/// Exact QEMU-owned state for one retained branch-private diagnostics stream.
+/// Exact QEMU-owned state for one retained branch-private child QMP stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct QmpHotForkChildDiagnosticState {
+pub struct QmpHotForkChildQmpState {
     generation: u64,
     template_generation: u64,
     descriptor_name: Option<QmpDescriptorName>,
     socket_cookie: u64,
-    source_descriptor: i32,
-    target_descriptor: i32,
-    replacement_plan_bound: bool,
+    retained_descriptor: i32,
+    resource_plan_bound: bool,
 }
 
-impl QmpHotForkChildDiagnosticState {
+impl QmpHotForkChildQmpState {
     #[cfg(test)]
     pub(crate) fn one_template_staged(
         generation: u64,
         template_generation: u64,
         descriptor_name: QmpDescriptorName,
         socket_cookie: u64,
-        source_descriptor: i32,
-        replacement_plan_bound: bool,
+        retained_descriptor: i32,
+        resource_plan_bound: bool,
     ) -> Self {
         Self {
             generation,
             template_generation,
             descriptor_name: Some(descriptor_name),
             socket_cookie,
-            source_descriptor,
-            target_descriptor: QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD,
-            replacement_plan_bound,
+            retained_descriptor,
+            resource_plan_bound,
         }
     }
 
@@ -78,41 +74,31 @@ impl QmpHotForkChildDiagnosticState {
         }
     }
 
-    /// Returns QEMU's retained replacement-source descriptor while staged.
+    /// Returns QEMU's retained child-QMP descriptor while staged.
     ///
     /// The process-local descriptor number is observational and grants no
-    /// authority to apply or release the contribution.
+    /// authority to attach or release the endpoint.
     #[must_use]
-    pub const fn source_descriptor(&self) -> Option<i32> {
+    pub const fn retained_descriptor(&self) -> Option<i32> {
         if self.staged() {
-            Some(self.source_descriptor)
+            Some(self.retained_descriptor)
         } else {
             None
         }
     }
 
-    /// Returns the exact inherited descriptor slot replaced in the child.
+    /// Returns whether the exact retain contribution is in the sealed plan.
     #[must_use]
-    pub const fn target_descriptor(&self) -> Option<i32> {
-        if self.staged() {
-            Some(self.target_descriptor)
-        } else {
-            None
-        }
-    }
-
-    /// Returns whether the exact contribution is in the sealed complete plan.
-    #[must_use]
-    pub const fn replacement_plan_bound(&self) -> bool {
-        self.replacement_plan_bound
+    pub const fn resource_plan_bound(&self) -> bool {
+        self.resource_plan_bound
     }
 }
 
-pub(crate) fn parse_hot_fork_child_diagnostic_state(
+pub(crate) fn parse_hot_fork_child_qmp_state(
     value: &Value,
-) -> Result<QmpHotForkChildDiagnosticState, QmpError> {
+) -> Result<QmpHotForkChildQmpState, QmpError> {
     let malformed = || QmpError::MalformedTypedResponse {
-        command: QmpCommandKind::HotForkChildDiagnostics,
+        command: QmpCommandKind::HotForkChildQmp,
         response: value.to_string(),
     };
     let object = value.as_object().ok_or_else(&malformed)?;
@@ -122,10 +108,10 @@ pub(crate) fn parse_hot_fork_child_diagnostic_state(
         "template-generation",
         "staged",
         "socket-cookie",
-        "source-fd",
-        "target-fd",
-        "replacement-plan-bound",
+        "retained-fd",
+        "resource-plan-bound",
         "nonblocking-unix-stream",
+        "reinitialized",
         "disposition-complete",
         "readiness-proof-acknowledged",
     ];
@@ -168,10 +154,10 @@ pub(crate) fn parse_hot_fork_child_diagnostic_state(
         })
         .transpose()?;
     let socket_cookie = unsigned("socket-cookie")?;
-    let source_descriptor = descriptor("source-fd")?;
-    let target_descriptor = descriptor("target-fd")?;
-    let replacement_plan_bound = boolean("replacement-plan-bound")?;
+    let retained_descriptor = descriptor("retained-fd")?;
+    let resource_plan_bound = boolean("resource-plan-bound")?;
     let nonblocking_unix_stream = boolean("nonblocking-unix-stream")?;
+    let reinitialized = boolean("reinitialized")?;
     let disposition_complete = boolean("disposition-complete")?;
     let readiness_proof_acknowledged = boolean("readiness-proof-acknowledged")?;
 
@@ -179,19 +165,17 @@ pub(crate) fn parse_hot_fork_child_diagnostic_state(
         && template_generation != 0
         && descriptor_name.is_some()
         && socket_cookie != 0
-        && source_descriptor >= 0
-        && source_descriptor != QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD
-        && target_descriptor == QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD
+        && retained_descriptor >= 0
         && nonblocking_unix_stream;
     let absent_shape = template_generation == 0
         && descriptor_name.is_none()
         && socket_cookie == 0
-        && source_descriptor == -1
-        && target_descriptor == -1
-        && !replacement_plan_bound
+        && retained_descriptor == -1
+        && !resource_plan_bound
         && !nonblocking_unix_stream;
-    let valid = schema_version == u64::from(QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION)
+    let valid = schema_version == u64::from(QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION)
         && staged == descriptor_name.is_some()
+        && !reinitialized
         && !disposition_complete
         && !readiness_proof_acknowledged
         && if staged { staged_shape } else { absent_shape };
@@ -199,14 +183,13 @@ pub(crate) fn parse_hot_fork_child_diagnostic_state(
         return Err(malformed());
     }
 
-    Ok(QmpHotForkChildDiagnosticState {
+    Ok(QmpHotForkChildQmpState {
         generation,
         template_generation,
         descriptor_name,
         socket_cookie,
-        source_descriptor,
-        target_descriptor,
-        replacement_plan_bound,
+        retained_descriptor,
+        resource_plan_bound,
     })
 }
 
@@ -217,31 +200,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn child_diagnostics_require_exact_nonblocking_stderr_replacement() {
+    fn child_qmp_requires_one_unattached_nonblocking_retained_stream() {
         let staged = json!({
             "schema-version": 1,
-            "generation": 7,
+            "generation": 9,
             "template-generation": 3,
             "staged": true,
-            "fdname": "crucible-hfork-diagnostics-v1-000000000000000b",
-            "socket-cookie": 11,
-            "source-fd": 30,
-            "target-fd": 2,
-            "replacement-plan-bound": true,
+            "fdname": "crucible-hfork-qmp-v1-000000000000000d",
+            "socket-cookie": 13,
+            "retained-fd": 34,
+            "resource-plan-bound": true,
             "nonblocking-unix-stream": true,
+            "reinitialized": false,
             "disposition-complete": false,
             "readiness-proof-acknowledged": false,
         });
-        let Ok(parsed) = parse_hot_fork_child_diagnostic_state(&staged) else {
-            panic!("exact diagnostics state should parse");
+        let Ok(parsed) = parse_hot_fork_child_qmp_state(&staged) else {
+            panic!("exact child QMP state should parse");
         };
         assert!(parsed.staged());
-        assert_eq!(parsed.socket_cookie(), Some(11));
-        assert_eq!(parsed.target_descriptor(), Some(2));
-        assert!(parsed.replacement_plan_bound());
+        assert_eq!(parsed.socket_cookie(), Some(13));
+        assert_eq!(parsed.retained_descriptor(), Some(34));
+        assert!(parsed.resource_plan_bound());
 
         let mut wrong = staged;
-        wrong["target-fd"] = json!(1);
-        assert!(parse_hot_fork_child_diagnostic_state(&wrong).is_err());
+        wrong["reinitialized"] = json!(true);
+        assert!(parse_hot_fork_child_qmp_state(&wrong).is_err());
     }
 }

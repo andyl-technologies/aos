@@ -619,6 +619,12 @@ impl QemuNode {
                 "child diagnostics still retain this template generation",
             ));
         }
+        if self.hot_fork_child_qmp_stage.is_some() {
+            return Err(QemuNodeChannelError::new(
+                "release hot-fork private ring mapping",
+                "child QMP still retains this template generation",
+            ));
+        }
         let (name, identity) = match self.hot_fork_private_ring_stage.as_ref() {
             Some(QemuHotForkPrivateRingStage::Installed(mapping)) => (
                 mapping.descriptor_name().clone(),
