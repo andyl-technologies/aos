@@ -762,7 +762,7 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
     fn install_hot_fork_child_diagnostics(
         &mut self,
         name: &crate::QmpDescriptorName,
-        _descriptor: std::os::fd::BorrowedFd<'_>,
+        descriptor: std::os::fd::BorrowedFd<'_>,
         socket_cookie: u64,
         template_generation: u64,
     ) -> Result<crate::QmpHotForkChildDiagnosticState, QemuNodeChannelError> {
@@ -780,6 +780,22 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
                 "injected descriptor transfer failure",
             ));
         }
+        let mut diagnostic_writer = std::os::unix::net::UnixStream::from(
+            descriptor.try_clone_to_owned().map_err(|source| {
+                QemuNodeChannelError::new(
+                    "install hot-fork child diagnostics",
+                    format!("clone scripted child diagnostics endpoint failed: {source}"),
+                )
+            })?,
+        );
+        diagnostic_writer
+            .write_all(b"scripted child diagnostics")
+            .map_err(|source| {
+                QemuNodeChannelError::new(
+                    "install hot-fork child diagnostics",
+                    format!("write scripted child diagnostics failed: {source}"),
+                )
+            })?;
         let state = crate::QmpHotForkChildDiagnosticState::one_template_staged(
             1,
             template_generation,
@@ -1402,6 +1418,10 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
         crate::QemuHotForkChildDiagnosticStageState::Installed
     );
     assert!(!diagnostics.replacement_plan_bound());
+    let diagnostic_drain = node.drain_hot_fork_child_diagnostics()?;
+    assert_eq!(diagnostic_drain.bytes_read(), 26);
+    assert_eq!(diagnostic_drain.total_retained(), 26);
+    assert!(!diagnostic_drain.eof());
 
     let proof = node.stage_hot_fork_plugin_endpoints()?;
     assert_eq!(
@@ -1433,7 +1453,20 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
             .ok_or("diagnostics stage disappeared after plugin release")?
             .replacement_plan_bound()
     );
-    node.release_hot_fork_child_diagnostics()?;
+    let diagnostic_capture = node.release_hot_fork_child_diagnostics()?;
+    assert_eq!(
+        diagnostic_capture.descriptor_name(),
+        diagnostics.descriptor_name()
+    );
+    assert_eq!(
+        diagnostic_capture.socket_cookie(),
+        diagnostics.socket_cookie()
+    );
+    assert_eq!(
+        diagnostic_capture.template_generation(),
+        diagnostics.template_generation()
+    );
+    assert_eq!(diagnostic_capture.bytes(), b"scripted child diagnostics");
     node.release_hot_fork_private_ring_mapping()?;
     assert!(recorded(&log).iter().any(|call| {
         matches!(

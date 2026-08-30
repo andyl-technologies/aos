@@ -2075,9 +2075,13 @@ generation and exact plan binding. Plugin endpoint staging merges the
 source-to-stderr replacement and retained target before sealing the complete
 plan; the immediate child reauthenticates the resulting stream after applying
 the plan. Exact release reverses that ownership order. This closes one concrete
-logging descriptor obligation, but the bounded host consumer, production fork
-owner, all remaining supported-profile resource contributions, and readiness
-bits 7 and 8 remain open.
+logging descriptor obligation. The node now also owns a nonblocking host drain
+with a cumulative 16 MiB limit for each diagnostics generation. Repeated drains
+preserve the bound; overflow quarantines instead of truncating, and exact
+release drains through EOF before returning a capture bound to the descriptor
+name, `SO_COOKIE`, and template generation. The production fork owner that
+drives this consumer while a child is live, all remaining supported-profile
+resource contributions, and readiness bits 7 and 8 remain open.
 Template-process descriptor/endpoint staging now satisfies plugin-ring proof
 bit 6 only under the retained exact transaction. The internal replacement and
 child-identity primitives, and the registered empty-local-state reinitializer,

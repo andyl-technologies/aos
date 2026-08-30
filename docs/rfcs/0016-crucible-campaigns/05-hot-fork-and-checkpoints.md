@@ -1137,7 +1137,15 @@ replacement plus retained stderr target into the sealed child resource plan
 before plugin endpoint staging can commit. The child application adapter
 reauthenticates the resulting connected nonblocking stream after descriptor
 replacement. Plugin endpoints must release first; diagnostics then release the
-QEMU duplicate before the monitor name and host owners. This supplies
+QEMU duplicate before the monitor name and host owners. The node exposes a
+nonblocking host drain that retains at most 16 MiB cumulatively for one
+diagnostics generation. Repeated drains do not reset that bound, and an
+available byte beyond it fails the node closed instead of truncating the
+stream. Exact release shuts down the final node-owned writer, drains through
+EOF, and returns the complete capture bound to the descriptor name,
+`SO_COOKIE`, and template generation. The eventual production fork owner MUST
+drive the drain often enough to release socket backpressure while a child is
+live. This supplies
 branch-private child diagnostics without enumerating the remaining QMP, block,
 AIO, console, or filesystem resources, invoking `fork(2)`, or acknowledging
 proof bit 7 or 8.

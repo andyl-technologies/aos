@@ -67,8 +67,9 @@ pub use error::{QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeError};
 use hot_fork_diagnostics::QemuHotForkChildDiagnosticStage;
 #[cfg(target_os = "linux")]
 pub use hot_fork_diagnostics::{
-    QemuHotForkChildDiagnosticStageError, QemuHotForkChildDiagnosticStageProof,
-    QemuHotForkChildDiagnosticStageState,
+    MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES, QemuHotForkChildDiagnosticCapture,
+    QemuHotForkChildDiagnosticDrain, QemuHotForkChildDiagnosticStageError,
+    QemuHotForkChildDiagnosticStageProof, QemuHotForkChildDiagnosticStageState,
 };
 #[cfg(target_os = "linux")]
 use hot_fork_plugin_endpoints::QemuHotForkPluginEndpointStage;
