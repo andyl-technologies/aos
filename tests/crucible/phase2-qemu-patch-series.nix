@@ -1035,6 +1035,13 @@
       enforces = "HFORK-3,HFORK-8,HFORK-9,HFORK-11,HFORK-12";
       capability = "the out-of-band version-2 child-runtime observation binds registration to the complete plugin resource manifest and exact process generation, reports exact phase/resource/endpoint/worker state with a stable mutation generation, and remains inert without acknowledging readiness bits 6 through 8";
     }
+    {
+      file = "0149-crucible-bind-hot-fork-endpoint-replacement-slots.patch";
+      catalogName = "crucible-hot-fork-endpoint-replacement-plan";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-8,HFORK-9,HFORK-12";
+      capability = "version 4 of the retained plugin-endpoint stage binds exact QEMU-owned replacement sources to the distinct sealed plugin-manifest control and wake slots under the current template basis, while leaving application and readiness bits 6 through 8 incomplete";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

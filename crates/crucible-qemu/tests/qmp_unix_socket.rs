@@ -280,7 +280,7 @@ fn vmstate_control_orders_both_plugin_endpoint_ownership_layers() -> Result<(), 
         let stage = read_qmp_line(&mut reader)?;
         let stage_response = format!(
             concat!(
-                r#"{{"return":{{"schema-version":3,"generation":1,"template-generation":0,"staged":true,"control-fdname":"{}","wake-fdname":"{}","control-socket-cookie":101,"wake-eventfd-id":202,"private-ring-generation":7,"plugin-barrier-generation":0,"worker-mask":0,"parent-resume-worker-mask":0,"child-reinitialize-worker-mask":0,"pending-worker-mask":0,"worker-disposition-planned":false,"control-unix-stream":true,"wake-eventfd":true,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#,
+                r#"{{"return":{{"schema-version":4,"generation":1,"template-generation":0,"staged":true,"control-fdname":"{}","wake-fdname":"{}","control-socket-cookie":101,"wake-eventfd-id":202,"control-source-fd":30,"wake-source-fd":31,"control-target-fd":-1,"wake-target-fd":-1,"private-ring-generation":7,"plugin-barrier-generation":0,"worker-mask":0,"parent-resume-worker-mask":0,"child-reinitialize-worker-mask":0,"pending-worker-mask":0,"worker-disposition-planned":false,"replacement-plan-bound":false,"control-unix-stream":true,"wake-eventfd":true,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#,
                 "\r\n"
             ),
             expected_control_name.as_str(),
@@ -291,7 +291,7 @@ fn vmstate_control_orders_both_plugin_endpoint_ownership_layers() -> Result<(), 
         let release = read_qmp_line(&mut reader)?;
         write_qmp_return(
             reader.get_ref(),
-            b"{\"return\":{\"schema-version\":3,\"generation\":2,\"template-generation\":0,\"staged\":false,\"control-socket-cookie\":0,\"wake-eventfd-id\":0,\"private-ring-generation\":0,\"plugin-barrier-generation\":0,\"worker-mask\":0,\"parent-resume-worker-mask\":0,\"child-reinitialize-worker-mask\":0,\"pending-worker-mask\":0,\"worker-disposition-planned\":false,\"control-unix-stream\":false,\"wake-eventfd\":false,\"disposition-complete\":false,\"readiness-proof-acknowledged\":false}}\r\n",
+            b"{\"return\":{\"schema-version\":4,\"generation\":2,\"template-generation\":0,\"staged\":false,\"control-socket-cookie\":0,\"wake-eventfd-id\":0,\"control-source-fd\":-1,\"wake-source-fd\":-1,\"control-target-fd\":-1,\"wake-target-fd\":-1,\"private-ring-generation\":0,\"plugin-barrier-generation\":0,\"worker-mask\":0,\"parent-resume-worker-mask\":0,\"child-reinitialize-worker-mask\":0,\"pending-worker-mask\":0,\"worker-disposition-planned\":false,\"replacement-plan-bound\":false,\"control-unix-stream\":false,\"wake-eventfd\":false,\"disposition-complete\":false,\"readiness-proof-acknowledged\":false}}\r\n",
         )?;
         let wake_closefd = read_qmp_line(&mut reader)?;
         write_qmp_return(reader.get_ref(), b"{\"return\":{}}\r\n")?;

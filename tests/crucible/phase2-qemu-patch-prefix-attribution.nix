@@ -667,6 +667,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0149-crucible-bind-hot-fork-endpoint-replacement-slots.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

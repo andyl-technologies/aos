@@ -230,12 +230,16 @@ in
             "$out/plugin-endpoints-initial.json"
           jq -e -s '
             [.[] | select(has("return"))][-1].return == {
-              "schema-version": 3,
+              "schema-version": 4,
               "generation": 0,
               "template-generation": 0,
               "staged": false,
               "control-socket-cookie": 0,
               "wake-eventfd-id": 0,
+              "control-source-fd": -1,
+              "wake-source-fd": -1,
+              "control-target-fd": -1,
+              "wake-target-fd": -1,
               "private-ring-generation": 0,
               "plugin-barrier-generation": 0,
               "worker-mask": 0,
@@ -243,6 +247,7 @@ in
               "child-reinitialize-worker-mask": 0,
               "pending-worker-mask": 0,
               "worker-disposition-planned": false,
+              "replacement-plan-bound": false,
               "control-unix-stream": false,
               "wake-eventfd": false,
               "disposition-complete": false,
@@ -479,6 +484,8 @@ in
             ."wake-name" as $wake_name |
             ."control-cookie" as $control_cookie |
             ."wake-identity" as $wake_identity |
+            ."endpoint-stage".return."control-source-fd" as $control_source_fd |
+            ."endpoint-stage".return."wake-source-fd" as $wake_source_fd |
             .stage.return == {
               "schema-version": 2,
               "generation": 1,
@@ -495,8 +502,13 @@ in
             .query.return == .stage.return and
             ."control-getfd".return == {} and
             ."wake-getfd".return == {} and
+            ($control_source_fd | type) == "number" and
+            ($wake_source_fd | type) == "number" and
+            $control_source_fd >= 0 and
+            $wake_source_fd >= 0 and
+            $control_source_fd != $wake_source_fd and
             ."endpoint-stage".return == {
-              "schema-version": 3,
+              "schema-version": 4,
               "generation": 1,
               "template-generation": 0,
               "staged": true,
@@ -504,6 +516,10 @@ in
               "wake-fdname": $wake_name,
               "control-socket-cookie": $control_cookie,
               "wake-eventfd-id": $wake_identity,
+              "control-source-fd": $control_source_fd,
+              "wake-source-fd": $wake_source_fd,
+              "control-target-fd": -1,
+              "wake-target-fd": -1,
               "private-ring-generation": 1,
               "plugin-barrier-generation": 0,
               "worker-mask": 0,
@@ -511,6 +527,7 @@ in
               "child-reinitialize-worker-mask": 0,
               "pending-worker-mask": 0,
               "worker-disposition-planned": false,
+              "replacement-plan-bound": false,
               "control-unix-stream": true,
               "wake-eventfd": true,
               "disposition-complete": false,
@@ -523,12 +540,16 @@ in
             (."endpoint-foreign-release".error | type) == "object" and
             ."endpoint-after-rejected-release".return == ."endpoint-stage".return and
             ."endpoint-release".return == {
-              "schema-version": 3,
+              "schema-version": 4,
               "generation": 2,
               "template-generation": 0,
               "staged": false,
               "control-socket-cookie": 0,
               "wake-eventfd-id": 0,
+              "control-source-fd": -1,
+              "wake-source-fd": -1,
+              "control-target-fd": -1,
+              "wake-target-fd": -1,
               "private-ring-generation": 0,
               "plugin-barrier-generation": 0,
               "worker-mask": 0,
@@ -536,6 +557,7 @@ in
               "child-reinitialize-worker-mask": 0,
               "pending-worker-mask": 0,
               "worker-disposition-planned": false,
+              "replacement-plan-bound": false,
               "control-unix-stream": false,
               "wake-eventfd": false,
               "disposition-complete": false,
@@ -1668,6 +1690,10 @@ in
           patch=0146-crucible-register-hot-fork-child-runtime.patch
           patch=0147-crucible-bind-hot-fork-child-process-generation.patch
           patch=0148-crucible-expose-hot-fork-child-runtime-state.patch
+          patch=0149-crucible-bind-hot-fork-endpoint-replacement-slots.patch
+          plugin_endpoint_schema_version=4
+          plugin_endpoint_source_descriptors_observed=true
+          plugin_endpoint_replacement_plan_bound=false
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3

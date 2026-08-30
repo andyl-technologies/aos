@@ -824,12 +824,19 @@ both entries. QEMU authenticates the socket's Linux `SO_COOKIE`, the eventfd's
 private-ring generation. Standard QMP normalizes received descriptors to
 blocking mode, so the custom stage sets the retained eventfd's shared open-file
 description nonblocking and verifies that state before acceptance. The closed
-version-3 state reports both identities, the same template generation as its
+version-4 state reports both identities, the same template generation as its
 private-ring dependency, and the exact quiescent plugin-barrier generation and
 sealed worker mask captured at template-bound staging. Acceptance requires no
 pending worker-local item or operation. The recorded parent-resume and
-child-reinitialize masks both equal the complete sealed worker mask. This is a
-plan rather than an applied child disposition, so the state explicitly keeps
+child-reinitialize masks both equal the complete sealed worker mask. The state
+also binds QEMU's two retained source descriptors to the exact, distinct
+control and wake descriptor slots sealed in the plugin resource manifest. All
+four slots are pairwise distinct and neither pair aliases the private-ring
+descriptor. Descriptor numbers are process-local observations rather than
+transferable capabilities. A future child transaction must atomically replace
+both target file descriptions and then authenticate the resulting kernel
+identities before invoking the registered plugin reinitializer. This is a plan
+rather than an applied child disposition, so the state explicitly keeps
 `disposition-complete` and
 `readiness-proof-acknowledged` false. Private-ring release is rejected while
 the pair retains its generation. Endpoint release first closes QEMU's

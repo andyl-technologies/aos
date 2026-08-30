@@ -37,6 +37,7 @@ pub struct QemuHotForkPluginEndpointStageProof {
     template_generation: u64,
     plugin_barrier_generation: u64,
     worker_mask: u64,
+    replacement_plan: Option<crate::QmpHotForkPluginEndpointDescriptorPlan>,
 }
 
 impl QemuHotForkPluginEndpointStageProof {
@@ -87,6 +88,15 @@ impl QemuHotForkPluginEndpointStageProof {
     pub const fn worker_mask(&self) -> u64 {
         self.worker_mask
     }
+
+    /// Returns QEMU's exact retained endpoint replacement plan.
+    ///
+    /// The process-local descriptor numbers are observational and do not grant
+    /// authority to apply the plan or release either endpoint owner.
+    #[must_use]
+    pub const fn replacement_plan(&self) -> Option<crate::QmpHotForkPluginEndpointDescriptorPlan> {
+        self.replacement_plan
+    }
 }
 
 pub(super) struct QemuHotForkPluginEndpointPair {
@@ -103,6 +113,7 @@ pub(super) struct QemuHotForkPluginEndpointPair {
     template_generation: u64,
     plugin_barrier_generation: u64,
     worker_mask: u64,
+    replacement_plan: Option<crate::QmpHotForkPluginEndpointDescriptorPlan>,
 }
 
 impl std::fmt::Debug for QemuHotForkPluginEndpointPair {
@@ -116,6 +127,7 @@ impl std::fmt::Debug for QemuHotForkPluginEndpointPair {
             .field("template_generation", &self.template_generation)
             .field("plugin_barrier_generation", &self.plugin_barrier_generation)
             .field("worker_mask", &self.worker_mask)
+            .field("replacement_plan", &self.replacement_plan)
             .finish_non_exhaustive()
     }
 }
@@ -134,6 +146,7 @@ impl QemuHotForkPluginEndpointPair {
             template_generation: self.template_generation,
             plugin_barrier_generation: self.plugin_barrier_generation,
             worker_mask: self.worker_mask,
+            replacement_plan: self.replacement_plan,
         }
     }
 }
@@ -310,7 +323,8 @@ impl QemuNode {
             && qemu_endpoints.worker_mask() == plugin.worker_mask()
             && qemu_endpoints.parent_resume_worker_mask() == plugin.worker_mask()
             && qemu_endpoints.child_reinitialize_worker_mask() == plugin.worker_mask()
-            && qemu_endpoints.worker_disposition_planned();
+            && qemu_endpoints.worker_disposition_planned()
+            && qemu_endpoints.replacement_plan().is_some();
         if !disposition_matches {
             let source = QemuNodeChannelError::new(
                 "install hot-fork plugin endpoints",
@@ -324,6 +338,7 @@ impl QemuNode {
         endpoints.template_generation = qemu_endpoints.template_generation();
         endpoints.plugin_barrier_generation = qemu_endpoints.plugin_barrier_generation();
         endpoints.worker_mask = qemu_endpoints.worker_mask();
+        endpoints.replacement_plan = qemu_endpoints.replacement_plan();
 
         let proof = endpoints.proof(QemuHotForkPluginEndpointStageState::Installed);
         self.hot_fork_plugin_endpoint_stage =
@@ -445,6 +460,7 @@ fn create_plugin_endpoint_pair(
         template_generation: 0,
         plugin_barrier_generation: 0,
         worker_mask: 0,
+        replacement_plan: None,
     })
 }
 
