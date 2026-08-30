@@ -2339,6 +2339,29 @@
         '';
       };
     }
+    {
+      patch = "0157-crucible-compose-fork-child-resource-disposition.patch";
+      check = certifyExactPatch {
+        patchName = "0157-crucible-compose-fork-child-resource-disposition.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-child-resource-transaction";
+        liveEvidence = ''
+          grep -Fxq 'patch=0157-crucible-compose-fork-child-resource-disposition.patch' "$live_result"
+          grep -Fq 'qemu_crucible_hot_fork_apply_child_resources' \
+            ${patchDir}/0157-crucible-compose-fork-child-resource-disposition.patch
+          grep -Fq 'result = reinitialize(reinitialize_opaque);' \
+            ${patchDir}/0157-crucible-compose-fork-child-resource-disposition.patch
+          grep -Fq 'qemu_crucible_hot_fork_verify_mapping_table(' \
+            ${patchDir}/0157-crucible-compose-fork-child-resource-disposition.patch
+          grep -Fq 'test_child_resource_preflight_preserves_descriptors' \
+            ${patchDir}/0157-crucible-compose-fork-child-resource-disposition.patch
+          grep -Fq '!transaction.child_reinitialized' \
+            ${patchDir}/0157-crucible-compose-fork-child-resource-disposition.patch
+          grep -Fq 'test-crucible-hot-fork-child --tap' \
+            ${../../pkgs/emulation/qemu.nix}
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "43e1118cf3c52e3bac22107c210e6ec01ad962ada23c41ddaf760aa235c50f0a";
+  patchBranchBundleSha256 = "cec31f75f56e863deeff8c5562b358815dd60fa15f44cd0f81e68c14a2240121";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "a01a356af00367a17ebd3eb400b96225e5c7c0ff";
+  patchBranchHeadCommit = "787b99372d9d17689b9631b28202fc15b4405611";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1495,6 +1495,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "the unwired child mapping verifier now requires every exact writable shared range to name a retained page-aligned offset in one shrink-sealed regular-file descriptor, then authenticates the procfs device/inode/offset tuple against fstat before accepting the VMA; a wrong same-sized backing consumes and rejects the child transaction; production fork composition, child reinitialization, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0157-crucible-compose-fork-child-resource-disposition.patch";
+      branchSubject = "crucible: compose fork-child resource disposition";
+      branchCommit = "787b99372d9d17689b9631b28202fc15b4405611";
+      branchTree = "659c7705998393e0744748923bad77619b36184f";
+      catalogName = "crucible-hot-fork-child-resource-transaction";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "one unwired immediate-child transaction now preflights the complete retained descriptor and writable-shared mapping tables, closes descriptor admission, applies exact endpoint replacements and descriptor closure, invokes one held child reinitializer, and authenticates the resulting mapping table in that order; invalid tables preserve the active child transaction while any failure after replacement is destructive; production fork invocation, complete QEMU subsystem reinitialization, host continuation pairing, guest admission, and readiness bits 7 and 8 remain open";
     }
   ];
   catalogOnlyCapabilities = [

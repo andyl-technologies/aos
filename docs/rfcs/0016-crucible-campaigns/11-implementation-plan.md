@@ -1970,6 +1970,18 @@ Private mappings remain COW and read-only shared mappings cannot mutate
 siblings. Positive exact-backing and negative omitted/wrong-backing regressions
 are present, but the production fork path has not composed this proof with
 child reinitialization, so bit 7 remains clear.
+The child primitives are now ordered by one destructive composed operation:
+complete descriptor and mapping tables are validated first, descriptor
+admission and the inherited table are closed, one held child reinitializer is
+invoked, and the resulting writable-shared mapping set is authenticated last.
+The real-fork regression uses this operation to reconstruct an omitted mapping
+and requires descriptor, reinitializer, and mapping phases, while a mapping
+backing omitted from the retained table is rejected without mutation or
+callback invocation. The
+operation is still unwired to QEMU's registered plugin runtime and no production
+fork caller, complete QEMU-subsystem reinitializer, host-continuation pairing,
+or guest-admission release exists; readiness bits 7 and 8 therefore remain
+clear and T-CAM-6.2 remains unchecked.
 Template-process descriptor/endpoint staging now satisfies plugin-ring proof
 bit 6 only under the retained exact transaction. The internal replacement and
 child-identity primitives, and the registered empty-local-state reinitializer,

@@ -1091,6 +1091,13 @@
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "the unwired child mapping verifier now requires every exact writable shared range to name a retained page-aligned offset in one shrink-sealed regular-file descriptor, then authenticates the procfs device/inode/offset tuple against fstat before accepting the VMA; a wrong same-sized backing consumes and rejects the child transaction; production fork composition, child reinitialization, and readiness bits 7 and 8 remain open";
     }
+    {
+      file = "0157-crucible-compose-fork-child-resource-disposition.patch";
+      catalogName = "crucible-hot-fork-child-resource-transaction";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "one unwired immediate-child transaction now preflights the complete retained descriptor and writable-shared mapping tables, closes descriptor admission, applies exact endpoint replacements and descriptor closure, invokes one held child reinitializer, and authenticates the resulting mapping table in that order; invalid tables preserve the active child transaction while any failure after replacement is destructive; production fork invocation, complete QEMU subsystem reinitialization, host continuation pairing, guest admission, and readiness bits 7 and 8 remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
