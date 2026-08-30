@@ -231,6 +231,25 @@ impl QemuNode {
                 "node already retains a plugin endpoint stage",
             ));
         }
+        match self.hot_fork_child_diagnostic_stage.as_ref() {
+            Some(stage @ QemuHotForkChildDiagnosticStage::Installed(_))
+                if !stage.replacement_plan_bound() => {}
+            Some(QemuHotForkChildDiagnosticStage::Installed(_)) => {
+                return Err(endpoint_rejected(
+                    "child diagnostics are already bound to another sealed plan",
+                ));
+            }
+            Some(QemuHotForkChildDiagnosticStage::TransferUncertain(_)) => {
+                return Err(endpoint_rejected(
+                    "child diagnostics transfer ownership is uncertain",
+                ));
+            }
+            None => {
+                return Err(endpoint_rejected(
+                    "plugin endpoints require branch-private child diagnostics",
+                ));
+            }
+        }
 
         let ring = match self.hot_fork_private_ring_stage.as_ref() {
             Some(QemuHotForkPrivateRingStage::Installed(ring)) => ring,
@@ -336,6 +355,34 @@ impl QemuNode {
                 Some(QemuHotForkPluginEndpointStage::TransferUncertain(endpoints));
             return Err(QemuHotForkPluginEndpointStageError::TransferUncertain { source });
         }
+        let qemu_diagnostics = match self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_child_diagnostics()
+        {
+            Ok(state) => state,
+            Err(source) => {
+                self.lifecycle_state = crate::QemuNodeLifecycleState::Quarantined;
+                self.hot_fork_plugin_endpoint_stage =
+                    Some(QemuHotForkPluginEndpointStage::TransferUncertain(endpoints));
+                return Err(QemuHotForkPluginEndpointStageError::TransferUncertain { source });
+            }
+        };
+        let diagnostic_bind = self
+            .hot_fork_child_diagnostic_stage
+            .as_mut()
+            .ok_or_else(|| endpoint_rejected("child diagnostics stage disappeared"))
+            .and_then(|stage| {
+                stage
+                    .bind_replacement_plan(&qemu_diagnostics)
+                    .map_err(endpoint_rejected_source)
+            });
+        if let Err(QemuHotForkPluginEndpointStageError::Rejected { source }) = diagnostic_bind {
+            self.lifecycle_state = crate::QemuNodeLifecycleState::Quarantined;
+            self.hot_fork_plugin_endpoint_stage =
+                Some(QemuHotForkPluginEndpointStage::TransferUncertain(endpoints));
+            return Err(QemuHotForkPluginEndpointStageError::TransferUncertain { source });
+        }
         endpoints.template_generation = qemu_endpoints.template_generation();
         endpoints.plugin_barrier_generation = qemu_endpoints.plugin_barrier_generation();
         endpoints.worker_mask = qemu_endpoints.worker_mask();
@@ -402,7 +449,12 @@ impl QemuNode {
             return Err(source);
         }
         match self.hot_fork_plugin_endpoint_stage.take() {
-            Some(QemuHotForkPluginEndpointStage::Installed(_)) => Ok(()),
+            Some(QemuHotForkPluginEndpointStage::Installed(_)) => {
+                if let Some(diagnostics) = self.hot_fork_child_diagnostic_stage.as_mut() {
+                    diagnostics.unbind_replacement_plan();
+                }
+                Ok(())
+            }
             Some(QemuHotForkPluginEndpointStage::TransferUncertain(_)) | None => {
                 Err(QemuNodeChannelError::new(
                     "release hot-fork plugin endpoints",
@@ -477,7 +529,7 @@ fn create_nonblocking_eventfd() -> io::Result<OwnedFd> {
     }
 }
 
-fn socket_cookie(descriptor: RawFd) -> io::Result<u64> {
+pub(super) fn socket_cookie(descriptor: RawFd) -> io::Result<u64> {
     let mut cookie = 0_u64;
     let mut length = std::mem::size_of::<u64>() as libc::socklen_t;
     let status =

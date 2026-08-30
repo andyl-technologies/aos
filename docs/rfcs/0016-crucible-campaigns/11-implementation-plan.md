@@ -1717,7 +1717,7 @@ QEMU now additionally owns a process-lifetime reversible RCU admission/drain
 barrier. Holding at the exact paused/device-flush boundary gates every new
 outer reader and callback submission through a race-closed
 two-phase admission, retains the exact reader/admission/callback/drain state,
-and parks rejected entrants until release. The version-15 template coordinator
+and parks rejected entrants until release. The version-16 template coordinator
 holds this barrier with the plugin callback barrier and acknowledges readiness
 bit 4 only while the complete retained RCU state is quiescent. The RCU worker
 still needs an exact child disposition/reinitializer, so bit 8 remains clear.
@@ -1727,7 +1727,7 @@ GLib dispatch, AioHandler lifecycle and callbacks, coroutine scheduling,
 bottom-half and timer creation, mutation, and callback dispatch. Holding at the
 exact paused/device-flush boundary parks later producers, lets already-admitted
 work and its nested mutations finish, leaves queued sources parked, and keeps
-OOB QMP responsive through nonblocking event-loop admission. The version-15
+OOB QMP responsive through nonblocking event-loop admission. The version-16
 template coordinator retains this barrier with the plugin, RCU, and native
 block barriers,
 and the typed client validates its exact bounded inventories and derived
@@ -1792,7 +1792,7 @@ typed Rust control surface rejects contradictory schemas, bounds, generations,
 owners, and action postconditions. The QEMU unit regression parks a real graph
 writer until a scheduled release, while the live gate proves stable released
 state and no state retention after an invalid hold. This is a concrete
-block-side graph and I/O quiescence prerequisite. The version-15 template
+block-side graph and I/O quiescence prerequisite. The version-16 template
 coordinator schedules acquisition and release on the main AioContext, holds the
 graph and native drain barriers before parking asynchronous sources, and
 releases asynchronous sources before graph and block I/O admission reopen.
@@ -2038,10 +2038,10 @@ duplicates are idempotent, while unsorted or over-limit inputs,
 replacement-source retention, conflicting mapping geometry, and mappings whose
 backing descriptor is absent fail before the prior plan changes. Sealing
 revalidates the complete union, and retained-template evidence requires the
-sealed plan to contain the exact plugin basis. The current coordinator supplies
-no non-plugin contribution, so complete supported-profile descriptor and
-mapping registration, the destructive fork caller, and readiness bits 7 and 8
-remain open; T-CAM-6.1 through T-CAM-6.3 remain unchecked.
+sealed plan to contain the exact plugin basis. The coordinator now supplies one
+non-plugin diagnostics contribution described below; complete supported-profile
+descriptor and mapping registration, the destructive fork caller, and readiness
+bits 7 and 8 remain open; T-CAM-6.1 through T-CAM-6.3 remain unchecked.
 The inherited sealed plan now also has a one-shot child application adapter.
 It exact-compares the unconsumed plugin reinitializer, revalidates the complete
 union before mutation, consumes the plan before the destructive descriptor
@@ -2051,7 +2051,7 @@ real-fork path proves an independently contributed descriptor is retained and
 the parent's plan copy is unchanged; malformed, unsealed, tampered, or foreign
 bases fail without consuming either linear owner. The adapter remains unwired
 to a production fork caller and the current coordinator still has only the
-plugin contribution, so it does not acknowledge bit 7 or 8 and T-CAM-6.1
+plugin and diagnostics contributions, so it does not acknowledge bit 7 or 8 and T-CAM-6.1
 through T-CAM-6.3 remain unchecked.
 The same child plan now canonically composes descriptor replacements instead
 of fixing the complete transaction to the plugin's two endpoints. Subsystem
@@ -2061,9 +2061,23 @@ duplicates, and atomic rejection of conflicts, aliases, malformed order, or
 overflow. The bounded child transaction saves every prior target and applies
 only the sealed union. Its real-fork path proves an independently contributed
 result endpoint is replaced and the source is not retained. The coordinator
-still lacks concrete QMP, block, AIO, logging, and remaining supported-profile
+still lacks concrete QMP, block, AIO, and remaining supported-profile
 contributions and remains unwired to `fork(2)`, so readiness bits 7 and 8 and
 T-CAM-6.1 through T-CAM-6.3 remain unchecked.
+The first non-plugin contribution is now branch-private child diagnostics. The
+Linux node creates a fresh connected nonblocking Unix stream pair, retains the
+host consumer, transfers the child endpoint with standard `getfd`, and asks the
+version-1 OOB diagnostics operation to duplicate and authenticate its exact
+`SO_COOKIE`. Staging requires the same retained template and private-ring
+generation and must precede plugin endpoints. Version 16 of the template report
+and version 6 of its nested resource stage expose the diagnostics mutation
+generation and exact plan binding. Plugin endpoint staging merges the
+source-to-stderr replacement and retained target before sealing the complete
+plan; the immediate child reauthenticates the resulting stream after applying
+the plan. Exact release reverses that ownership order. This closes one concrete
+logging descriptor obligation, but the bounded host consumer, production fork
+owner, all remaining supported-profile resource contributions, and readiness
+bits 7 and 8 remain open.
 Template-process descriptor/endpoint staging now satisfies plugin-ring proof
 bit 6 only under the retained exact transaction. The internal replacement and
 child-identity primitives, and the registered empty-local-state reinitializer,

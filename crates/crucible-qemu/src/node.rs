@@ -52,6 +52,9 @@ mod error;
 mod exact_snapshot;
 mod fault_events;
 #[cfg(target_os = "linux")]
+#[path = "node/hot_fork_diagnostics.rs"]
+mod hot_fork_diagnostics;
+#[cfg(target_os = "linux")]
 #[path = "node/hot_fork_plugin_endpoints.rs"]
 mod hot_fork_plugin_endpoints;
 #[cfg(unix)]
@@ -60,6 +63,13 @@ mod hot_fork_ring_image;
 #[cfg(target_os = "linux")]
 mod process_identity;
 pub use error::{QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeError};
+#[cfg(target_os = "linux")]
+use hot_fork_diagnostics::QemuHotForkChildDiagnosticStage;
+#[cfg(target_os = "linux")]
+pub use hot_fork_diagnostics::{
+    QemuHotForkChildDiagnosticStageError, QemuHotForkChildDiagnosticStageProof,
+    QemuHotForkChildDiagnosticStageState,
+};
 #[cfg(target_os = "linux")]
 use hot_fork_plugin_endpoints::QemuHotForkPluginEndpointStage;
 #[cfg(target_os = "linux")]
@@ -1110,6 +1120,59 @@ pub trait QemuQmpMachineControlChannel: Send {
         ))
     }
 
+    /// Imports one branch-private child diagnostics stream into QEMU.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when this channel cannot transfer Unix
+    /// descriptors or QEMU cannot authenticate the exact stream and template.
+    #[cfg(target_os = "linux")]
+    fn install_hot_fork_child_diagnostics(
+        &mut self,
+        _name: &crate::QmpDescriptorName,
+        _descriptor: BorrowedFd<'_>,
+        _socket_cookie: u64,
+        _template_generation: u64,
+    ) -> Result<crate::QmpHotForkChildDiagnosticState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "install hot-fork child diagnostics",
+            "hot-fork child diagnostics transfer is not implemented by this QMP channel",
+        ))
+    }
+
+    /// Closes the exact child diagnostics stream retained by QEMU and monitor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when either ownership layer cannot be
+    /// released in exact order.
+    #[cfg(target_os = "linux")]
+    fn close_hot_fork_child_diagnostics(
+        &mut self,
+        _name: &crate::QmpDescriptorName,
+        _socket_cookie: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "close hot-fork child diagnostics",
+            "hot-fork child diagnostics close is not implemented by this QMP channel",
+        ))
+    }
+
+    /// Queries QEMU's exact retained child diagnostics state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the query or strict response
+    /// validation fails.
+    fn query_hot_fork_child_diagnostics(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildDiagnosticState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query hot-fork child diagnostics",
+            "hot-fork child diagnostics query is not implemented by this QMP channel",
+        ))
+    }
+
     /// Queries QEMU's exact bounded allocated-bottom-half inventory.
     ///
     /// # Errors
@@ -1253,6 +1316,8 @@ pub struct QemuNode {
     channels: QemuNodeChannels,
     #[cfg(target_os = "linux")]
     hot_fork_private_ring_stage: Option<QemuHotForkPrivateRingStage>,
+    #[cfg(target_os = "linux")]
+    hot_fork_child_diagnostic_stage: Option<QemuHotForkChildDiagnosticStage>,
     #[cfg(target_os = "linux")]
     hot_fork_plugin_endpoint_stage: Option<QemuHotForkPluginEndpointStage>,
     lifecycle_state: QemuNodeLifecycleState,
@@ -1444,6 +1509,8 @@ impl QemuNode {
             channels,
             #[cfg(target_os = "linux")]
             hot_fork_private_ring_stage: None,
+            #[cfg(target_os = "linux")]
+            hot_fork_child_diagnostic_stage: None,
             #[cfg(target_os = "linux")]
             hot_fork_plugin_endpoint_stage: None,
             lifecycle_state: QemuNodeLifecycleState::Running,

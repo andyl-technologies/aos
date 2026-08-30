@@ -40,10 +40,12 @@ pub use hot_fork::{
     QMP_HOT_FORK_BLOCK_BACKEND_NAME_MAX_BYTES, QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
     QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES,
     QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX, QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION,
-    QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES, QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION,
-    QMP_HOT_FORK_MUTEX_INVENTORY_MAX, QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION,
-    QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND, QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION,
-    QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND, QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION,
+    QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES, QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
+    QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD,
+    QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION, QMP_HOT_FORK_MUTEX_INVENTORY_MAX,
+    QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND,
+    QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND,
+    QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION,
     QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
     QMP_HOT_FORK_PRIVATE_RINGS_SCHEMA_VERSION, QMP_HOT_FORK_RCU_BARRIER_COMMAND,
     QMP_HOT_FORK_RCU_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_RCU_INVENTORY_MAX,
@@ -63,24 +65,25 @@ pub use hot_fork::{
     QmpHotForkBlockBackend, QmpHotForkBlockBackendInventory, QmpHotForkBlockBarrierState,
     QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,
     QmpHotForkBlockSnapshotRoot, QmpHotForkBottomHalf, QmpHotForkBottomHalfInventory,
-    QmpHotForkChildRuntimePhase, QmpHotForkChildRuntimeState, QmpHotForkMutex,
-    QmpHotForkMutexInventory, QmpHotForkPluginBarrierState, QmpHotForkPluginEndpointDescriptorPlan,
-    QmpHotForkPluginEndpointIdentity, QmpHotForkPluginEndpointState,
-    QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState, QmpHotForkProof,
-    QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness,
-    QmpHotForkTemplateOutcome, QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState,
-    QmpHotForkThread, QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer,
-    QmpHotForkTimerClock, QmpHotForkTimerInventory,
+    QmpHotForkChildDiagnosticState, QmpHotForkChildRuntimePhase, QmpHotForkChildRuntimeState,
+    QmpHotForkMutex, QmpHotForkMutexInventory, QmpHotForkPluginBarrierState,
+    QmpHotForkPluginEndpointDescriptorPlan, QmpHotForkPluginEndpointIdentity,
+    QmpHotForkPluginEndpointState, QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState,
+    QmpHotForkProof, QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader,
+    QmpHotForkReadiness, QmpHotForkTemplateOutcome, QmpHotForkTemplateResourceStageState,
+    QmpHotForkTemplateState, QmpHotForkThread, QmpHotForkThreadDisposition,
+    QmpHotForkThreadInventory, QmpHotForkTimer, QmpHotForkTimerClock, QmpHotForkTimerInventory,
 };
 use hot_fork::{
     parse_hot_fork_aio_handler_inventory, parse_hot_fork_aio_inventory,
     parse_hot_fork_bh_timer_barrier_state, parse_hot_fork_block_backend_inventory,
     parse_hot_fork_block_barrier_state, parse_hot_fork_bottom_half_inventory,
-    parse_hot_fork_child_runtime_state, parse_hot_fork_mutex_inventory,
-    parse_hot_fork_plugin_barrier_state, parse_hot_fork_plugin_endpoint_state,
-    parse_hot_fork_plugin_resource_inventory, parse_hot_fork_private_ring_state,
-    parse_hot_fork_rcu_barrier_state, parse_hot_fork_rcu_inventory, parse_hot_fork_readiness,
-    parse_hot_fork_template_state, parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
+    parse_hot_fork_child_diagnostic_state, parse_hot_fork_child_runtime_state,
+    parse_hot_fork_mutex_inventory, parse_hot_fork_plugin_barrier_state,
+    parse_hot_fork_plugin_endpoint_state, parse_hot_fork_plugin_resource_inventory,
+    parse_hot_fork_private_ring_state, parse_hot_fork_rcu_barrier_state,
+    parse_hot_fork_rcu_inventory, parse_hot_fork_readiness, parse_hot_fork_template_state,
+    parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
 };
 pub use snapshot_tag::QmpSnapshotTag;
 pub use vmstate_control::QemuQmpVmStateControlChannel;
@@ -633,6 +636,109 @@ where
                         command: QmpCommandKind::HotForkPluginEndpoints,
                         response: String::from(
                             "plugin endpoint release did not report a positive absent generation",
+                        ),
+                    })
+                } else {
+                    Ok(state)
+                }
+            });
+        self.poison_after_descriptor_mutation_error(result)
+    }
+
+    /// Makes QEMU retain one branch-private child diagnostics stream.
+    ///
+    /// The stream must already be imported with [`Self::install_descriptor`].
+    /// QEMU authenticates its Linux `SO_COOKIE`, requires a connected empty
+    /// AF_UNIX stream, and makes the retained description nonblocking. The
+    /// template-bound contribution replaces only the fork child's inherited
+    /// stderr slot after complete resource-plan composition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails, QEMU rejects the exact
+    /// stream or template basis, or its response violates the closed schema.
+    /// Every error poisons the client because retained ownership may then be
+    /// ambiguous.
+    pub fn stage_hot_fork_child_diagnostics(
+        &mut self,
+        name: &QmpDescriptorName,
+        socket_cookie: u64,
+        template_generation: u64,
+    ) -> Result<QmpHotForkChildDiagnosticState, QmpError> {
+        let result = self
+            .send_command_return(QmpCommand::HotForkChildDiagnostics {
+                action: HotForkChildDiagnosticAction::Stage,
+                name: Some(name),
+                socket_cookie: Some(socket_cookie),
+            })
+            .and_then(|response| parse_hot_fork_child_diagnostic_state(&response.value))
+            .and_then(|state| {
+                let exact_basis = state.staged()
+                    && state.descriptor_name() == Some(name)
+                    && state.socket_cookie() == Some(socket_cookie)
+                    && state.template_generation() == template_generation
+                    && state.target_descriptor()
+                        == Some(QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD)
+                    && !state.replacement_plan_bound();
+                if exact_basis {
+                    Ok(state)
+                } else {
+                    Err(QmpError::MalformedTypedResponse {
+                        command: QmpCommandKind::HotForkChildDiagnostics,
+                        response: format!(
+                            "child diagnostics stage did not retain {name:?}/{socket_cookie}/{template_generation}"
+                        ),
+                    })
+                }
+            });
+        self.poison_after_descriptor_mutation_error(result)
+    }
+
+    /// Reads QEMU's exact retained branch-private child diagnostics state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the query fails or the response violates the
+    /// closed version-1 contract.
+    pub fn query_hot_fork_child_diagnostics(
+        &mut self,
+    ) -> Result<QmpHotForkChildDiagnosticState, QmpError> {
+        let response = self.send_command_return(QmpCommand::HotForkChildDiagnostics {
+            action: HotForkChildDiagnosticAction::Query,
+            name: None,
+            socket_cookie: None,
+        })?;
+        parse_hot_fork_child_diagnostic_state(&response.value)
+    }
+
+    /// Releases QEMU's exact independently retained diagnostics stream.
+    ///
+    /// The standard monitor-owned descriptor name remains until the caller
+    /// closes it after this command confirms the QEMU-owned duplicate is gone.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails, the exact basis no longer
+    /// matches, or the response still reports a retained stream. Every error
+    /// poisons the client because descriptor ownership may be ambiguous.
+    pub fn release_hot_fork_child_diagnostics(
+        &mut self,
+        name: &QmpDescriptorName,
+        socket_cookie: u64,
+    ) -> Result<QmpHotForkChildDiagnosticState, QmpError> {
+        let result = self
+            .send_command_return(QmpCommand::HotForkChildDiagnostics {
+                action: HotForkChildDiagnosticAction::Release,
+                name: Some(name),
+                socket_cookie: Some(socket_cookie),
+            })
+            .and_then(|response| parse_hot_fork_child_diagnostic_state(&response.value))
+            .and_then(|state| {
+                if state.staged() || state.generation() == 0 {
+                    Err(QmpError::MalformedTypedResponse {
+                        command: QmpCommandKind::HotForkChildDiagnostics,
+                        response: String::from(
+                            "child diagnostics release did not report a positive absent generation",
                         ),
                     })
                 } else {
@@ -1950,6 +2056,8 @@ pub enum QmpCommandKind {
     HotForkPrivateRings,
     /// QEMU-owned branch-private plugin endpoint retention operation.
     HotForkPluginEndpoints,
+    /// QEMU-owned branch-private child diagnostics retention operation.
+    HotForkChildDiagnostics,
     /// QEMU-owned hot-fork allocated-bottom-half inventory query.
     QueryHotForkBottomHalfInventory,
     /// QEMU-owned hot-fork mutex ownership inventory query.
@@ -1999,6 +2107,7 @@ impl QmpCommandKind {
             Self::HotForkTemplate => QMP_HOT_FORK_TEMPLATE_COMMAND,
             Self::HotForkPrivateRings => QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
             Self::HotForkPluginEndpoints => QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND,
+            Self::HotForkChildDiagnostics => QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
             Self::QueryHotForkBottomHalfInventory => {
                 QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND
             }
@@ -2078,6 +2187,13 @@ enum HotForkPluginEndpointAction {
     Release,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HotForkChildDiagnosticAction {
+    Stage,
+    Query,
+    Release,
+}
+
 impl HotForkTemplateAction {
     const fn wire_name(self) -> &'static str {
         match self {
@@ -2099,6 +2215,16 @@ impl HotForkPrivateRingAction {
 }
 
 impl HotForkPluginEndpointAction {
+    const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Stage => "stage",
+            Self::Query => "query",
+            Self::Release => "release",
+        }
+    }
+}
+
+impl HotForkChildDiagnosticAction {
     const fn wire_name(self) -> &'static str {
         match self {
             Self::Stage => "stage",
@@ -2210,6 +2336,11 @@ enum QmpCommand<'a> {
         wake_name: Option<&'a QmpDescriptorName>,
         identity: Option<QmpHotForkPluginEndpointIdentity>,
     },
+    HotForkChildDiagnostics {
+        action: HotForkChildDiagnosticAction,
+        name: Option<&'a QmpDescriptorName>,
+        socket_cookie: Option<u64>,
+    },
     QueryHotForkBottomHalfInventory,
     QueryHotForkMutexInventory,
     QueryHotForkTimerInventory,
@@ -2257,6 +2388,7 @@ impl QmpCommand<'_> {
             Self::HotForkTemplate { .. } => QmpCommandKind::HotForkTemplate,
             Self::HotForkPrivateRings { .. } => QmpCommandKind::HotForkPrivateRings,
             Self::HotForkPluginEndpoints { .. } => QmpCommandKind::HotForkPluginEndpoints,
+            Self::HotForkChildDiagnostics { .. } => QmpCommandKind::HotForkChildDiagnostics,
             Self::QueryHotForkBottomHalfInventory => {
                 QmpCommandKind::QueryHotForkBottomHalfInventory
             }
@@ -2464,6 +2596,33 @@ impl QmpCommand<'_> {
                 }
                 json!({
                     "exec-oob": QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND,
+                    "arguments": Value::Object(arguments),
+                })
+            }
+            Self::HotForkChildDiagnostics {
+                action,
+                name,
+                socket_cookie,
+            } => {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert(
+                    String::from("action"),
+                    Value::String(action.wire_name().to_owned()),
+                );
+                if let Some(name) = name {
+                    arguments.insert(
+                        String::from("fdname"),
+                        Value::String(name.as_str().to_owned()),
+                    );
+                }
+                if let Some(socket_cookie) = socket_cookie {
+                    arguments.insert(
+                        String::from("expected-socket-cookie"),
+                        Value::from(*socket_cookie),
+                    );
+                }
+                json!({
+                    "exec-oob": QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
                     "arguments": Value::Object(arguments),
                 })
             }

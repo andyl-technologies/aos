@@ -15,7 +15,7 @@ use crate::qmp::{QmpCommandKind, QmpError};
 /// QMP command name used for QEMU's retained template-preparation coordinator.
 pub const QMP_HOT_FORK_TEMPLATE_COMMAND: &str = "crucible-hot-fork-template";
 /// Version of the QEMU-owned template-preparation transaction contract.
-pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 15;
+pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 16;
 
 const QMP_HOT_FORK_AIO_PROOF: u64 = 1_u64 << 3;
 const QMP_HOT_FORK_RCU_PROOF: u64 = 1_u64 << 4;
@@ -44,6 +44,9 @@ pub struct QmpHotForkTemplateResourceStageState {
     template_generation: u64,
     private_ring_staged: bool,
     private_ring_generation: u64,
+    diagnostics_staged: bool,
+    diagnostic_generation: u64,
+    diagnostics_resource_plan_bound: bool,
     plugin_endpoints_staged: bool,
     plugin_endpoint_generation: u64,
     plugin_private_ring_generation: u64,
@@ -77,6 +80,24 @@ impl QmpHotForkTemplateResourceStageState {
     #[must_use]
     pub const fn private_ring_generation(self) -> u64 {
         self.private_ring_generation
+    }
+
+    /// Returns whether QEMU retains one branch-private diagnostics stream.
+    #[must_use]
+    pub const fn diagnostics_staged(self) -> bool {
+        self.diagnostics_staged
+    }
+
+    /// Returns the current child-diagnostics mutation generation.
+    #[must_use]
+    pub const fn diagnostic_generation(self) -> u64 {
+        self.diagnostic_generation
+    }
+
+    /// Returns whether the diagnostics contribution is in the sealed plan.
+    #[must_use]
+    pub const fn diagnostics_resource_plan_bound(self) -> bool {
+        self.diagnostics_resource_plan_bound
     }
 
     /// Returns whether QEMU retains one branch-private plugin endpoint pair.
@@ -480,6 +501,9 @@ fn parse_hot_fork_template_resource_stage(
         "template-generation",
         "private-ring-staged",
         "private-ring-generation",
+        "diagnostics-staged",
+        "diagnostic-generation",
+        "diagnostics-resource-plan-bound",
         "plugin-endpoints-staged",
         "plugin-endpoint-generation",
         "plugin-private-ring-generation",
@@ -516,6 +540,9 @@ fn parse_hot_fork_template_resource_stage(
     let resource_template_generation = u64_field("template-generation")?;
     let private_ring_staged = bool_field("private-ring-staged")?;
     let private_ring_generation = u64_field("private-ring-generation")?;
+    let diagnostics_staged = bool_field("diagnostics-staged")?;
+    let diagnostic_generation = u64_field("diagnostic-generation")?;
+    let diagnostics_resource_plan_bound = bool_field("diagnostics-resource-plan-bound")?;
     let plugin_endpoints_staged = bool_field("plugin-endpoints-staged")?;
     let plugin_endpoint_generation = u64_field("plugin-endpoint-generation")?;
     let plugin_private_ring_generation = u64_field("plugin-private-ring-generation")?;
@@ -535,6 +562,9 @@ fn parse_hot_fork_template_resource_stage(
         template_generation: resource_template_generation,
         private_ring_staged,
         private_ring_generation,
+        diagnostics_staged,
+        diagnostic_generation,
+        diagnostics_resource_plan_bound,
         plugin_endpoints_staged,
         plugin_endpoint_generation,
         plugin_private_ring_generation,
@@ -573,7 +603,8 @@ fn resource_stage_shape_valid(
     pending_worker_mask: u64,
     readiness_proof_acknowledged: bool,
 ) -> bool {
-    let resources_staged = state.private_ring_staged || state.plugin_endpoints_staged;
+    let resources_staged =
+        state.private_ring_staged || state.diagnostics_staged || state.plugin_endpoints_staged;
     let disposition_shape = if state.plugin_endpoints_staged && state.template_generation != 0 {
         state.plugin_barrier_generation != 0
             && state.worker_mask != 0
@@ -603,6 +634,7 @@ fn resource_stage_shape_valid(
         && (!state.plugin_endpoints_staged || expected_disposition_bound);
     let expected_readiness_proof = expected_bound
         && state.private_ring_staged
+        && state.diagnostics_staged
         && state.plugin_endpoints_staged
         && expected_disposition_bound
         && plugin_barrier.quiescent();
@@ -615,12 +647,17 @@ fn resource_stage_shape_valid(
         state.parent_process_generation == 0 && state.child_process_generation == 0
     };
 
-    schema_version == 5
+    schema_version == 6
         && readiness_proof_acknowledged == expected_readiness_proof
         && child_plan_shape
+        && state.diagnostics_resource_plan_bound == state.plugin_child_plan_bound
         && state.plugin_child_resource_plan_bound == state.plugin_child_plan_bound
         && disposition_shape
         && (!state.private_ring_staged || state.private_ring_generation != 0)
+        && (!state.diagnostics_staged || state.diagnostic_generation != 0)
+        && (!state.diagnostics_staged || state.private_ring_staged)
+        && (!state.plugin_endpoints_staged || state.diagnostics_staged)
+        && (state.diagnostics_staged || !state.diagnostics_resource_plan_bound)
         && (!state.plugin_endpoints_staged
             || (state.private_ring_staged
                 && state.plugin_endpoint_generation != 0
@@ -651,6 +688,9 @@ mod tests {
             template_generation: 4,
             private_ring_staged: true,
             private_ring_generation: 11,
+            diagnostics_staged: true,
+            diagnostic_generation: 13,
+            diagnostics_resource_plan_bound: true,
             plugin_endpoints_staged: true,
             plugin_endpoint_generation: 12,
             plugin_private_ring_generation: 11,
@@ -667,7 +707,7 @@ mod tests {
             readiness_proof_acknowledged: true,
         };
         assert!(resource_stage_shape_valid(
-            5,
+            6,
             bound,
             4,
             true,
@@ -681,7 +721,7 @@ mod tests {
             ..bound
         };
         assert!(!resource_stage_shape_valid(
-            5,
+            6,
             foreign_template,
             4,
             true,
@@ -695,7 +735,7 @@ mod tests {
             ..bound
         };
         assert!(!resource_stage_shape_valid(
-            5,
+            6,
             foreign_ring,
             4,
             true,
@@ -709,7 +749,7 @@ mod tests {
             ..bound
         };
         assert!(!resource_stage_shape_valid(
-            5,
+            6,
             unbound,
             4,
             true,
@@ -723,7 +763,7 @@ mod tests {
             ..bound
         };
         assert!(!resource_stage_shape_valid(
-            5,
+            6,
             unbound_resource_plan,
             4,
             true,
@@ -738,12 +778,13 @@ mod tests {
             parent_process_generation: 0,
             child_process_generation: 0,
             plugin_child_plan_bound: false,
+            diagnostics_resource_plan_bound: false,
             plugin_child_resource_plan_bound: false,
             readiness_proof_acknowledged: false,
             ..bound
         };
         assert!(resource_stage_shape_valid(
-            5,
+            6,
             retained_after_abort,
             4,
             false,
@@ -752,9 +793,9 @@ mod tests {
             false
         ));
         assert!(!resource_stage_shape_valid(
-            5,
+            6,
             retained_after_abort,
-            5,
+            6,
             false,
             plugin_barrier,
             0,
@@ -766,7 +807,7 @@ mod tests {
             ..bound
         };
         assert!(!resource_stage_shape_valid(
-            5,
+            6,
             stale_barrier,
             4,
             true,
@@ -775,7 +816,7 @@ mod tests {
             true
         ));
         assert!(!resource_stage_shape_valid(
-            5,
+            6,
             bound,
             4,
             true,

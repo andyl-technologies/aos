@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "4231974b0c91f218e195fe356c9a8be3215713cac1ba191c57fdc3f45d947ed8";
+  patchBranchBundleSha256 = "6e3809b84bfd4e648e8e3d4e16b7dfa55640b104e36f576433a431543f7b8acf";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "1ead5a277be1a5ab6c7fa859d662895349b494b0";
+  patchBranchHeadCommit = "058cc4417894d2f3bc493c76db61df0584fc3fd8";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1479,7 +1479,7 @@ let
     {
       file = "0155-crucible-verify-fork-child-mapping-dispositions.patch";
       branchSubject = "crucible: verify fork-child mapping dispositions";
-      branchCommit = "bc7f0664ba9ad813058b0a5033dbae9b59f5cff1";
+      branchCommit = "6949c210e43a5f21d73e543c8ea6268c7d3f251d";
       branchTree = "4ca38b00ffda912ac89de82954d7cbfacdcc7e96";
       catalogName = "crucible-hot-fork-child-mapping-disposition";
       class = "F";
@@ -1489,7 +1489,7 @@ let
     {
       file = "0156-crucible-authenticate-fork-child-shared-mapping-backings.patch";
       branchSubject = "crucible: authenticate fork-child shared mapping backings";
-      branchCommit = "a01a356af00367a17ebd3eb400b96225e5c7c0ff";
+      branchCommit = "bd727031089cbd55a08e5e5bfc465283acf65ee2";
       branchTree = "8b593b38721ede9364bcbbe244780ddea211cd51";
       catalogName = "crucible-hot-fork-child-shared-backing-authentication";
       class = "F";
@@ -1499,7 +1499,7 @@ let
     {
       file = "0157-crucible-compose-fork-child-resource-disposition.patch";
       branchSubject = "crucible: compose fork-child resource disposition";
-      branchCommit = "787b99372d9d17689b9631b28202fc15b4405611";
+      branchCommit = "a2d1ee2323465ea181730505008cd7f41840ff10";
       branchTree = "659c7705998393e0744748923bad77619b36184f";
       catalogName = "crucible-hot-fork-child-resource-transaction";
       class = "F";
@@ -1509,7 +1509,7 @@ let
     {
       file = "0158-crucible-bind-hot-fork-source-mappings.patch";
       branchSubject = "crucible: bind hot-fork source mappings";
-      branchCommit = "f3a8a3bce78abc5827302837c612f75010bf0eb0";
+      branchCommit = "04c0d2f8ecc834c80c35f4f8ea656425ea3886f1";
       branchTree = "5221663c094b7e34b9027e660e46c5082c020007";
       catalogName = "crucible-hot-fork-source-mapping-binding";
       class = "F";
@@ -1519,7 +1519,7 @@ let
     {
       file = "0159-crucible-bind-child-runtime-source-mappings.patch";
       branchSubject = "crucible: bind child runtime source mappings";
-      branchCommit = "664aa53c99abcd2582a5387bdf71082aaa660606";
+      branchCommit = "8d3ddd1afa8695b82c4124d7e326ac18644777d5";
       branchTree = "9c24d3740b23298e7d4de792870743275ce4aa8a";
       catalogName = "crucible-hot-fork-child-runtime-source-binding";
       class = "F";
@@ -1529,7 +1529,7 @@ let
     {
       file = "0160-crucible-compose-registered-fork-child-runtime.patch";
       branchSubject = "crucible: compose registered fork-child runtime";
-      branchCommit = "fa538536649817c76da3b92e23ed98141f698dd2";
+      branchCommit = "0d61cac25fc7672cacb54051d97ef67c33f2ff04";
       branchTree = "4dbe5ca459c04c417ca34b2d337f29c757b8686f";
       catalogName = "crucible-hot-fork-registered-child-runtime-composition";
       class = "F";
@@ -1539,7 +1539,7 @@ let
     {
       file = "0161-crucible-bind-retained-plugin-child-plan.patch";
       branchSubject = "crucible: bind retained plugin child plan";
-      branchCommit = "70698154807fc1be25ed22f0644392a0d0a75d9c";
+      branchCommit = "2720e6ef1898f1cbcd9b34c7bcb5152c0631b91f";
       branchTree = "b65f116f23ae3d9f6cd1c9c9d5bffb84e949f4c6";
       catalogName = "crucible-hot-fork-retained-plugin-child-plan";
       class = "F";
@@ -1549,7 +1549,7 @@ let
     {
       file = "0162-crucible-bind-plugin-child-resource-tables.patch";
       branchSubject = "crucible: bind plugin child resource tables";
-      branchCommit = "9f64cea0e14c7078ab2f10f72c81b874ad6efe9b";
+      branchCommit = "7a754e81a81bcccba5b105cb4f98ae80c0a00af1";
       branchTree = "80a511f4d522b3e713f18f0c88c60f371276c0f9";
       catalogName = "crucible-hot-fork-plugin-child-resource-tables";
       class = "F";
@@ -1559,7 +1559,7 @@ let
     {
       file = "0163-crucible-compose-child-resource-contributions.patch";
       branchSubject = "crucible: compose child resource contributions";
-      branchCommit = "6ab11c3cdc91eb728aedc364e392eb6c35b7ca91";
+      branchCommit = "52548d6a332f246b0f7f8d2adc9b0ba4577dee38";
       branchTree = "39d87edbe4958aebe2abe56662daef9b577f5241";
       catalogName = "crucible-hot-fork-child-resource-contribution-composition";
       class = "F";
@@ -1569,7 +1569,7 @@ let
     {
       file = "0164-crucible-consume-sealed-child-resource-plans.patch";
       branchSubject = "crucible: consume sealed child resource plans";
-      branchCommit = "5ff1be89a42c33c178d15628fe4f17a59fc2502e";
+      branchCommit = "9cea3c1468292a46f8d32566cd22a02fb0281d42";
       branchTree = "a459ddd0d4235bb50f51932d1d5337ff23bd4697";
       catalogName = "crucible-hot-fork-sealed-child-resource-plan-application";
       class = "F";
@@ -1579,12 +1579,22 @@ let
     {
       file = "0165-crucible-compose-child-descriptor-replacements.patch";
       branchSubject = "crucible: compose child descriptor replacements";
-      branchCommit = "1ead5a277be1a5ab6c7fa859d662895349b494b0";
+      branchCommit = "29b9d76ff7c5782f89b6d894d9ca52c609037a6b";
       branchTree = "d6aa34977493dd9e29393b35e8c02f43cf8608f3";
       catalogName = "crucible-hot-fork-child-descriptor-replacement-composition";
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "QEMU now composes up to 4,096 canonical pairwise-disjoint source-to-target descriptor replacements alongside the retained-descriptor and writable-shared-mapping unions: exact duplicates are idempotent, target/source conflicts and missing retained targets fail atomically, the destructive transaction applies only the sealed canonical table, and real-fork coverage replaces one independently contributed result endpoint; complete QMP, block, AIO, logging, and other supported-profile contributions, production fork invocation, host continuation pairing, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0166-crucible-bind-branch-private-child-diagnostics.patch";
+      branchSubject = "crucible: bind branch-private child diagnostics";
+      branchCommit = "058cc4417894d2f3bc493c76db61df0584fc3fd8";
+      branchTree = "8044c68ac49434ea837979903d4f22d2114c3be2";
+      catalogName = "crucible-hot-fork-branch-private-child-diagnostics";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "QEMU now retains one authenticated branch-private nonblocking diagnostics stream, composes its exact source-to-stderr replacement and retained target into the sealed child resource plan before plugin endpoint commitment, reauthenticates the resulting child stream after descriptor application, and releases every duplicate in reverse ownership order; remaining QMP, block, AIO, console, filesystem, and supported-profile contributions, production fork invocation, bounded diagnostics consumption, host continuation pairing, guest admission, and readiness bits 7 and 8 remain open";
     }
   ];
   catalogOnlyCapabilities = [

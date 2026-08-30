@@ -582,6 +582,65 @@ where
             .map_err(QemuNodeChannelError::from)
     }
 
+    /// Imports one branch-private child diagnostics stream into QEMU.
+    ///
+    /// The caller retains both stream endpoints. This imports one monitor-owned
+    /// `getfd` copy, then makes QEMU independently duplicate and authenticate
+    /// the child endpoint. Complete plan composition remains a later operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when descriptor transfer fails or QEMU
+    /// does not acknowledge the exact stream and template basis.
+    pub fn install_hot_fork_child_diagnostics(
+        &mut self,
+        name: &QmpDescriptorName,
+        descriptor: BorrowedFd<'_>,
+        socket_cookie: u64,
+        template_generation: u64,
+    ) -> Result<crate::QmpHotForkChildDiagnosticState, QemuNodeChannelError> {
+        self.client
+            .install_descriptor(name, descriptor)
+            .map_err(QemuNodeChannelError::from)?;
+        self.client
+            .stage_hot_fork_child_diagnostics(name, socket_cookie, template_generation)
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Releases QEMU-owned and monitor-owned child diagnostics descriptors.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when either exact ownership layer
+    /// cannot be released in order.
+    pub fn close_hot_fork_child_diagnostics(
+        &mut self,
+        name: &QmpDescriptorName,
+        socket_cookie: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.client
+            .release_hot_fork_child_diagnostics(name, socket_cookie)
+            .map_err(QemuNodeChannelError::from)?;
+        self.client
+            .close_descriptor(name)
+            .map(|_complete| ())
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Queries QEMU's exact retained child diagnostics stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O or strict response
+    /// validation fails.
+    pub fn query_hot_fork_child_diagnostics(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildDiagnosticState, QemuNodeChannelError> {
+        self.client
+            .query_hot_fork_child_diagnostics()
+            .map_err(QemuNodeChannelError::from)
+    }
+
     /// Queries QEMU's exact bounded allocated-bottom-half inventory.
     ///
     /// # Errors

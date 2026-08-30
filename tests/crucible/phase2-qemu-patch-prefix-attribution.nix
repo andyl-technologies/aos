@@ -735,6 +735,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0166-crucible-bind-branch-private-child-diagnostics.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
