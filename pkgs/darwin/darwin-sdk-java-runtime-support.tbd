@@ -42,4 +42,5 @@ exports:
       - _JRSUIControlShouldScrollToClick
       - _JRSUIGetKey
       - _JRSUIRendererCreate
+      - _JRSUIRendererRelease
 ...

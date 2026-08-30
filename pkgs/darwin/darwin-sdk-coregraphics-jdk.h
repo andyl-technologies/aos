@@ -184,6 +184,7 @@ CGError CGDisplayRegisterReconfigurationCallback(CGDisplayReconfigurationCallBac
 CGError CGDisplayRelease(CGDirectDisplayID);
 CGError CGDisplayRemoveReconfigurationCallback(CGDisplayReconfigurationCallBack, void *);
 CGSize CGDisplayScreenSize(CGDirectDisplayID);
+CGError CGGetActiveDisplayList(CGDisplayCount, CGDirectDisplayID *, CGDisplayCount *);
 CGError CGEnableEventStateCombining(boolean_t);
 CGEventRef CGEventCreate(CGEventSourceRef);
 CGEventRef CGEventCreateKeyboardEvent(CGEventSourceRef, CGKeyCode, bool);

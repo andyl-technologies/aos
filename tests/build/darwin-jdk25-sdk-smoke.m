@@ -163,6 +163,7 @@ const void *aos_jdk25_function_exports[] = {
   AOS_FUNCTION(CGBitmapContextGetBitmapInfo),
   AOS_FUNCTION(CGDirectDisplayCopyCurrentMetalDevice),
   AOS_FUNCTION(CGDisplayModeGetPixelWidth),
+  AOS_FUNCTION(CGGetActiveDisplayList),
   AOS_FUNCTION(CGEventSetFlags),
   AOS_FUNCTION(CGEventSourceCreate),
   AOS_FUNCTION(CGEventSourceFlagsState),

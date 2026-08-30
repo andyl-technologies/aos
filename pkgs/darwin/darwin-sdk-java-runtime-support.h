@@ -144,6 +144,7 @@ enum { kJRSUI_PartHit_unknown = -1, kJRSUI_PartHit_none = 0,
   kJRSUI_PartHit_arrowMaxInside = 7, kJRSUI_PartHit_arrowMinInside = 8 };
 
 JRSUIRendererRef JRSUIRendererCreate(void);
+void JRSUIRendererRelease(JRSUIRendererRef renderer);
 JRSUIControlRef JRSUIControlCreate(Boolean isFlipped);
 void JRSUIControlRelease(JRSUIControlRef control);
 void JRSUIControlDraw(JRSUIRendererRef renderer, JRSUIControlRef control,

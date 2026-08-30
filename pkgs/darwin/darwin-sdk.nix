@@ -498,6 +498,8 @@
     void CGDisplayModeRelease(CGDisplayModeRef mode);
     CGDisplayModeRef CGDisplayModeRetain(CGDisplayModeRef mode);
     CGSize CGDisplayScreenSize(CGDirectDisplayID display);
+    CGError CGGetActiveDisplayList(CGDisplayCount maxDisplays,
+      CGDirectDisplayID *activeDisplays, CGDisplayCount *displayCount);
     CGError CGGetOnlineDisplayList(uint32_t maxDisplays,
       CGDirectDisplayID *onlineDisplays, uint32_t *displayCount);
     #endif
@@ -664,6 +666,7 @@
           - _CGDisplayModeRelease
           - _CGDisplayModeRetain
           - _CGDisplayScreenSize
+          - _CGGetActiveDisplayList
           - _CGEnableEventStateCombining
           - _CGEventCreate
           - _CGEventCreateKeyboardEvent
