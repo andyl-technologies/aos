@@ -2153,7 +2153,7 @@
         evidenceName = "live-qemu-hot-fork-child-runtime-observation";
         liveEvidence = ''
           grep -Fxq 'patch=0148-crucible-expose-hot-fork-child-runtime-state.patch' "$live_result"
-          grep -Fxq 'child_runtime_schema_version=2' "$live_result"
+          grep -Fxq 'child_runtime_schema_version=3' "$live_result"
           grep -Fxq 'child_runtime_stable=true' "$live_result"
           grep -Fxq 'child_runtime_unregistered_shape=true' "$live_result"
           grep -Fxq 'child_runtime_readiness_proof_acknowledged=false' "$live_result"
@@ -2380,6 +2380,29 @@
             ${patchDir}/0158-crucible-bind-hot-fork-source-mappings.patch
           grep -Fq 'QEMU_CRUCIBLE_HOT_FORK_MAX_MAPPING_BYTES' \
             ${patchDir}/0158-crucible-bind-hot-fork-source-mappings.patch
+        '';
+      };
+    }
+    {
+      patch = "0159-crucible-bind-child-runtime-source-mappings.patch";
+      check = certifyExactPatch {
+        patchName = "0159-crucible-bind-child-runtime-source-mappings.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-child-runtime-source-binding";
+        liveEvidence = ''
+          grep -Fxq 'patch=0159-crucible-bind-child-runtime-source-mappings.patch' "$live_result"
+          grep -Fxq 'child_runtime_schema_version=3' "$live_result"
+          grep -Fxq 'child_runtime_readiness_proof_acknowledged=false' "$live_result"
+          grep -Fq 'QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PLAN_VERSION 3' \
+            ${patchDir}/0159-crucible-bind-child-runtime-source-mappings.patch
+          grep -Fq 'source_mapping_start' \
+            ${patchDir}/0159-crucible-bind-child-runtime-source-mappings.patch
+          grep -Fq 'source_mapping_length != plan->shmem_length' \
+            ${patchDir}/0159-crucible-bind-child-runtime-source-mappings.patch
+          grep -Fq 'status.source_mapping_start != plan->source_mapping_start' \
+            ${patchDir}/0159-crucible-bind-child-runtime-source-mappings.patch
+          grep -Fq 'report->readiness_proof_acknowledged = false' \
+            ${patchDir}/0148-crucible-expose-hot-fork-child-runtime-state.patch
         '';
       };
     }

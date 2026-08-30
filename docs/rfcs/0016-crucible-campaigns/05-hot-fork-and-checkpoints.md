@@ -1741,7 +1741,7 @@ The supported launch profile optimizes the complete child-ready path:
 - the live source protocol-ring mapping is now frozen and marked
   `MADV_DONTFORK` by the version-6 plugin barrier, then restored with
   `MADV_DOFORK` before the parent reopens. QEMU and the GPL plugin now register
-  a fixed version-2 child-runtime operation that binds the staged template,
+  a fixed version-3 child-runtime operation that binds the staged template,
   private-ring, endpoint, and plugin-barrier generations; authenticated socket
   and eventfd identities; private-ring device, inode, length, and descriptor;
   the exact source setup-region VMA; replacement control and wake descriptor
@@ -1754,13 +1754,18 @@ The supported launch profile optimizes the complete child-ready path:
   checked immediate successor. QEMU advances its fault/evidence lifecycle
   generation before reconstruction, the plugin independently advances its live
   device owner, and status echoes that exact process and resource basis. QEMU
-  now exposes that registered runtime through the OOB version-2
+  now exposes that registered runtime through the OOB version-3
   `query-crucible-hot-fork-child-runtime` observation. The exact report binds
   callback registration to the complete resource manifest and current process
   generation, carries the child phase, staged resource generations,
   authenticated endpoint identities, and worker state, and advances its
   checked process-local generation only when registration or observed status
-  changes. Repeated identical queries are stable and the report's readiness
+  changes. Version 3 also carries the exact source VMA start, length, and zero
+  offset in both the initialization plan and persistent status. QEMU rejects a
+  non-page-aligned, overflowing, differently sized, or nonzero-offset plan; the
+  plugin independently requires that geometry to equal its retained mapping
+  owner before installing the replacement. Repeated identical queries are
+  stable and the report's readiness
   acknowledgement is always false. The
   plugin independently
   authenticates both replacement endpoint identities, installs the exact private

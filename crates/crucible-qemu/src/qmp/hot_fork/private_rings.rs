@@ -248,9 +248,7 @@ pub(crate) fn parse_hot_fork_private_ring_state(
                 && shrink_sealed
                 && (source_mapping_bound == (template_generation != 0))
                 && if source_mapping_bound {
-                    source_start != 0
-                        && source_length == length
-                        && source_offset == 0
+                    source_start != 0 && source_length == length && source_offset == 0
                 } else {
                     source_start == 0 && source_length == 0 && source_offset == 0
                 }
@@ -313,8 +311,10 @@ mod tests {
 
     #[test]
     fn template_stage_requires_exact_source_mapping_basis() {
-        let exact = parse_hot_fork_private_ring_state(&template_stage())
-            .expect("exact source mapping should parse");
+        let exact = match parse_hot_fork_private_ring_state(&template_stage()) {
+            Ok(state) => state,
+            Err(error) => panic!("exact source mapping should parse: {error}"),
+        };
         assert!(exact.source_mapping_bound());
         assert_eq!(exact.source_start(), 8192);
         assert_eq!(exact.source_length(), 4096);

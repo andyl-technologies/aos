@@ -44,6 +44,9 @@ pub struct QmpHotForkChildRuntimeState {
     plugin_barrier_generation: u64,
     control_socket_cookie: u64,
     wake_eventfd_id: u64,
+    source_mapping_start: u64,
+    source_mapping_length: u64,
+    source_mapping_offset: u64,
     worker_mask: u64,
     parked_worker_mask: u64,
     pending_worker_mask: u64,
@@ -165,6 +168,24 @@ impl QmpHotForkChildRuntimeState {
         self.wake_eventfd_id
     }
 
+    /// Returns the authenticated template setup-region VMA start.
+    #[must_use]
+    pub const fn source_mapping_start(self) -> u64 {
+        self.source_mapping_start
+    }
+
+    /// Returns the exact authenticated template setup-region VMA length.
+    #[must_use]
+    pub const fn source_mapping_length(self) -> u64 {
+        self.source_mapping_length
+    }
+
+    /// Returns the exact authenticated template setup-region file offset.
+    #[must_use]
+    pub const fn source_mapping_offset(self) -> u64 {
+        self.source_mapping_offset
+    }
+
     /// Returns the complete sealed process-worker mask.
     #[must_use]
     pub const fn worker_mask(self) -> u64 {
@@ -219,6 +240,9 @@ pub(crate) fn parse_hot_fork_child_runtime_state(
         "plugin-barrier-generation",
         "control-socket-cookie",
         "wake-eventfd-id",
+        "source-mapping-start",
+        "source-mapping-length",
+        "source-mapping-offset",
         "worker-mask",
         "parked-worker-mask",
         "pending-worker-mask",
@@ -268,6 +292,9 @@ pub(crate) fn parse_hot_fork_child_runtime_state(
     let plugin_barrier_generation = unsigned("plugin-barrier-generation")?;
     let control_socket_cookie = unsigned("control-socket-cookie")?;
     let wake_eventfd_id = unsigned("wake-eventfd-id")?;
+    let source_mapping_start = unsigned("source-mapping-start")?;
+    let source_mapping_length = unsigned("source-mapping-length")?;
+    let source_mapping_offset = unsigned("source-mapping-offset")?;
     let worker_mask = unsigned("worker-mask")?;
     let parked_worker_mask = unsigned("parked-worker-mask")?;
     let pending_worker_mask = unsigned("pending-worker-mask")?;
@@ -288,7 +315,13 @@ pub(crate) fn parse_hot_fork_child_runtime_state(
         && plugin_endpoint_generation != 0
         && plugin_barrier_generation != 0
         && control_socket_cookie != 0
-        && wake_eventfd_id != 0;
+        && wake_eventfd_id != 0
+        && source_mapping_start != 0
+        && source_mapping_length != 0
+        && source_mapping_offset == 0
+        && source_mapping_start
+            .checked_add(source_mapping_length)
+            .is_some();
     let child_basis_absent = parent_process_generation == 0
         && child_process_generation == 0
         && template_generation == 0
@@ -296,7 +329,10 @@ pub(crate) fn parse_hot_fork_child_runtime_state(
         && plugin_endpoint_generation == 0
         && plugin_barrier_generation == 0
         && control_socket_cookie == 0
-        && wake_eventfd_id == 0;
+        && wake_eventfd_id == 0
+        && source_mapping_start == 0
+        && source_mapping_length == 0
+        && source_mapping_offset == 0;
     let phase_shape = match phase {
         QmpHotForkChildRuntimePhase::Template => {
             child_basis_absent
@@ -371,6 +407,9 @@ pub(crate) fn parse_hot_fork_child_runtime_state(
         plugin_barrier_generation,
         control_socket_cookie,
         wake_eventfd_id,
+        source_mapping_start,
+        source_mapping_length,
+        source_mapping_offset,
         worker_mask,
         parked_worker_mask,
         pending_worker_mask,
@@ -386,7 +425,7 @@ mod tests {
 
     fn template_state() -> Value {
         json!({
-            "schema-version": 2,
+            "schema-version": 3,
             "generation": 2,
             "registered": true,
             "manifest-consistent": true,
@@ -406,6 +445,9 @@ mod tests {
             "plugin-barrier-generation": 0,
             "control-socket-cookie": 0,
             "wake-eventfd-id": 0,
+            "source-mapping-start": 0,
+            "source-mapping-length": 0,
+            "source-mapping-offset": 0,
             "worker-mask": 3,
             "parked-worker-mask": 0,
             "pending-worker-mask": 0,
@@ -425,21 +467,42 @@ mod tests {
         assert_eq!(exact.process_generation(), 11);
         assert_eq!(exact.phase(), QmpHotForkChildRuntimePhase::Template);
 
-        let mut skipped = template_state();
-        skipped["phase"] = json!("workers-held");
-        skipped["callbacks-held"] = json!(true);
-        skipped["mapping-installed"] = json!(true);
-        skipped["workers-ready"] = json!(true);
-        skipped["parent-process-generation"] = json!(11);
+        let mut workers_held = template_state();
+        workers_held["phase"] = json!("workers-held");
+        workers_held["callbacks-held"] = json!(true);
+        workers_held["mapping-installed"] = json!(true);
+        workers_held["workers-ready"] = json!(true);
+        workers_held["parent-process-generation"] = json!(11);
+        workers_held["child-process-generation"] = json!(12);
+        workers_held["template-generation"] = json!(1);
+        workers_held["private-ring-generation"] = json!(2);
+        workers_held["plugin-endpoint-generation"] = json!(3);
+        workers_held["plugin-barrier-generation"] = json!(4);
+        workers_held["control-socket-cookie"] = json!(5);
+        workers_held["wake-eventfd-id"] = json!(6);
+        workers_held["source-mapping-start"] = json!(4096);
+        workers_held["source-mapping-length"] = json!(8192);
+        workers_held["source-mapping-offset"] = json!(0);
+        workers_held["parked-worker-mask"] = json!(3);
+        let installed = match parse_hot_fork_child_runtime_state(&workers_held) {
+            Ok(state) => state,
+            Err(error) => panic!("exact installed mapping basis should decode: {error}"),
+        };
+        assert_eq!(installed.source_mapping_start(), 4096);
+        assert_eq!(installed.source_mapping_length(), 8192);
+        assert_eq!(installed.source_mapping_offset(), 0);
+
+        let mut skipped = workers_held.clone();
         skipped["child-process-generation"] = json!(13);
-        skipped["template-generation"] = json!(1);
-        skipped["private-ring-generation"] = json!(2);
-        skipped["plugin-endpoint-generation"] = json!(3);
-        skipped["plugin-barrier-generation"] = json!(4);
-        skipped["control-socket-cookie"] = json!(5);
-        skipped["wake-eventfd-id"] = json!(6);
-        skipped["parked-worker-mask"] = json!(3);
         assert!(parse_hot_fork_child_runtime_state(&skipped).is_err());
+
+        let mut unbound_mapping = workers_held.clone();
+        unbound_mapping["source-mapping-start"] = json!(0);
+        assert!(parse_hot_fork_child_runtime_state(&unbound_mapping).is_err());
+
+        let mut nonzero_offset = workers_held;
+        nonzero_offset["source-mapping-offset"] = json!(4096);
+        assert!(parse_hot_fork_child_runtime_state(&nonzero_offset).is_err());
 
         let mut promoted = template_state();
         promoted["readiness-proof-acknowledged"] = json!(true);
