@@ -233,11 +233,13 @@ pub use mapped_quantum::{QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHo
 pub use node::QemuHotForkPluginRingImage;
 #[cfg(target_os = "linux")]
 pub use node::{
-    QemuHotForkChildDiagnosticStageError, QemuHotForkChildDiagnosticStageProof,
-    QemuHotForkChildDiagnosticStageState, QemuHotForkPluginEndpointStageError,
-    QemuHotForkPluginEndpointStageProof, QemuHotForkPluginEndpointStageState,
-    QemuHotForkPrivateRingMapping, QemuHotForkPrivateRingStageError,
-    QemuHotForkPrivateRingStageProof, QemuHotForkPrivateRingStageState,
+    MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES, QemuHotForkChildDiagnosticCapture,
+    QemuHotForkChildDiagnosticDrain, QemuHotForkChildDiagnosticStageError,
+    QemuHotForkChildDiagnosticStageProof, QemuHotForkChildDiagnosticStageState,
+    QemuHotForkPluginEndpointStageError, QemuHotForkPluginEndpointStageProof,
+    QemuHotForkPluginEndpointStageState, QemuHotForkPrivateRingMapping,
+    QemuHotForkPrivateRingStageError, QemuHotForkPrivateRingStageProof,
+    QemuHotForkPrivateRingStageState,
 };
 pub use node::{
     QemuLogicalTimeCalibration, QemuNode, QemuNodeChannelError, QemuNodeChannelPlane,
