@@ -1866,7 +1866,7 @@ acknowledgement. Release requires the same exact basis and closes the
 QEMU-owned duplicate before standard `closefd` closes the monitor entry.
 With that ring generation retained, the node now also creates fresh opaque
 AF_UNIX control and nonblocking-eventfd wake pairs, transfers both child ends
-through standard `getfd`, and asks the version-3
+through standard `getfd`, and asks the version-4
 `crucible-hot-fork-plugin-endpoints` operation to authenticate their exact
 Linux kernel identities, empty state, distinct names, and private-ring
 generation. QEMU independently retains both endpoints until exact release;
@@ -1876,7 +1876,10 @@ two monitor names, and quarantines every ambiguous transfer or close.
 The endpoint state records the same template generation as its private-ring
 dependency plus the exact quiescent plugin-barrier generation and sealed worker
 mask. It accepts only empty worker-local state and records equal complete masks
-for parent resume and future child reinitialization. The version-12 template
+for parent resume and future child reinitialization. It also binds the two
+retained QEMU source descriptors to the distinct control and wake descriptor
+slots in the sealed plugin resource manifest, without applying either
+replacement. The version-12 template
 report atomically binds both resource mutation generations, that dependency
 edge, and the worker plan to the active transaction;
 after abort it preserves the origin generation but marks the retained stage

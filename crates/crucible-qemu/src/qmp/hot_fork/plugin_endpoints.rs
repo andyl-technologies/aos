@@ -8,7 +8,7 @@ use crate::qmp::{QmpCommandKind, QmpDescriptorName, QmpError};
 /// QMP command that retains or releases one authenticated plugin endpoint pair.
 pub const QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND: &str = "crucible-hot-fork-plugin-endpoints";
 /// Version of the retained plugin-endpoint contract.
-pub const QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION: u32 = 3;
+pub const QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION: u32 = 4;
 
 /// Exact Linux identities for one branch-private plugin endpoint pair.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +45,46 @@ impl QmpHotForkPluginEndpointIdentity {
     }
 }
 
+/// Exact descriptor-copy plan retained for branch-private plugin endpoints.
+///
+/// Descriptor numbers are process-local observations, not transferable
+/// capabilities. A future fork-child transaction must still apply and
+/// authenticate both replacements before invoking the registered plugin
+/// reinitializer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QmpHotForkPluginEndpointDescriptorPlan {
+    control_source: i32,
+    wake_source: i32,
+    control_target: i32,
+    wake_target: i32,
+}
+
+impl QmpHotForkPluginEndpointDescriptorPlan {
+    /// Returns QEMU's retained replacement-control descriptor.
+    #[must_use]
+    pub const fn control_source(self) -> i32 {
+        self.control_source
+    }
+
+    /// Returns QEMU's retained replacement-wake descriptor.
+    #[must_use]
+    pub const fn wake_source(self) -> i32 {
+        self.wake_source
+    }
+
+    /// Returns the sealed plugin control-descriptor slot to replace.
+    #[must_use]
+    pub const fn control_target(self) -> i32 {
+        self.control_target
+    }
+
+    /// Returns the sealed plugin wake-descriptor slot to replace.
+    #[must_use]
+    pub const fn wake_target(self) -> i32 {
+        self.wake_target
+    }
+}
+
 /// Exact QEMU-owned state and planned worker disposition for retained
 /// branch-private plugin endpoints.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,6 +94,9 @@ pub struct QmpHotForkPluginEndpointState {
     control_name: Option<QmpDescriptorName>,
     wake_name: Option<QmpDescriptorName>,
     identity: Option<QmpHotForkPluginEndpointIdentity>,
+    control_source_descriptor: i32,
+    wake_source_descriptor: i32,
+    replacement_plan: Option<QmpHotForkPluginEndpointDescriptorPlan>,
     private_ring_generation: u64,
     plugin_barrier_generation: u64,
     worker_mask: u64,
@@ -80,6 +123,14 @@ impl QmpHotForkPluginEndpointState {
             control_name: Some(control_name),
             wake_name: Some(wake_name),
             identity: Some(identity),
+            control_source_descriptor: 30,
+            wake_source_descriptor: 31,
+            replacement_plan: Some(QmpHotForkPluginEndpointDescriptorPlan {
+                control_source: 30,
+                wake_source: 31,
+                control_target: 3,
+                wake_target: 4,
+            }),
             private_ring_generation,
             plugin_barrier_generation: plugin_barrier.generation(),
             worker_mask,
@@ -125,6 +176,38 @@ impl QmpHotForkPluginEndpointState {
     #[must_use]
     pub const fn identity(&self) -> Option<QmpHotForkPluginEndpointIdentity> {
         self.identity
+    }
+
+    /// Returns QEMU's retained replacement-control descriptor while staged.
+    ///
+    /// This process-local number grants no descriptor authority to the caller.
+    #[must_use]
+    pub const fn control_source_descriptor(&self) -> Option<i32> {
+        if self.identity.is_some() {
+            Some(self.control_source_descriptor)
+        } else {
+            None
+        }
+    }
+
+    /// Returns QEMU's retained replacement-wake descriptor while staged.
+    ///
+    /// This process-local number grants no descriptor authority to the caller.
+    #[must_use]
+    pub const fn wake_source_descriptor(&self) -> Option<i32> {
+        if self.identity.is_some() {
+            Some(self.wake_source_descriptor)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the exact source-to-target replacement plan when template-bound.
+    ///
+    /// The plan is observational and has not yet been applied in a child.
+    #[must_use]
+    pub const fn replacement_plan(&self) -> Option<QmpHotForkPluginEndpointDescriptorPlan> {
+        self.replacement_plan
     }
 
     /// Returns the exact retained private-ring generation bound at staging.
@@ -183,6 +266,10 @@ pub(crate) fn parse_hot_fork_plugin_endpoint_state(
         "staged",
         "control-socket-cookie",
         "wake-eventfd-id",
+        "control-source-fd",
+        "wake-source-fd",
+        "control-target-fd",
+        "wake-target-fd",
         "private-ring-generation",
         "plugin-barrier-generation",
         "worker-mask",
@@ -190,6 +277,7 @@ pub(crate) fn parse_hot_fork_plugin_endpoint_state(
         "child-reinitialize-worker-mask",
         "pending-worker-mask",
         "worker-disposition-planned",
+        "replacement-plan-bound",
         "control-unix-stream",
         "wake-eventfd",
         "disposition-complete",
@@ -239,6 +327,17 @@ pub(crate) fn parse_hot_fork_plugin_endpoint_state(
         .get("wake-eventfd-id")
         .and_then(Value::as_u64)
         .ok_or_else(&malformed)?;
+    let descriptor = |field| {
+        object
+            .get(field)
+            .and_then(Value::as_i64)
+            .and_then(|descriptor| i32::try_from(descriptor).ok())
+            .ok_or_else(&malformed)
+    };
+    let control_source_descriptor = descriptor("control-source-fd")?;
+    let wake_source_descriptor = descriptor("wake-source-fd")?;
+    let control_target_descriptor = descriptor("control-target-fd")?;
+    let wake_target_descriptor = descriptor("wake-target-fd")?;
     let private_ring_generation = object
         .get("private-ring-generation")
         .and_then(Value::as_u64)
@@ -267,6 +366,10 @@ pub(crate) fn parse_hot_fork_plugin_endpoint_state(
         .get("worker-disposition-planned")
         .and_then(Value::as_bool)
         .ok_or_else(&malformed)?;
+    let replacement_plan_bound = object
+        .get("replacement-plan-bound")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
     let control_unix_stream = object
         .get("control-unix-stream")
         .and_then(Value::as_bool)
@@ -292,7 +395,20 @@ pub(crate) fn parse_hot_fork_plugin_endpoint_state(
         && parent_resume_worker_mask == 0
         && child_reinitialize_worker_mask == 0
         && pending_worker_mask == 0
-        && !worker_disposition_planned;
+        && !worker_disposition_planned
+        && !replacement_plan_bound
+        && control_target_descriptor == -1
+        && wake_target_descriptor == -1;
+    let descriptors_pairwise_distinct = control_source_descriptor >= 0
+        && wake_source_descriptor >= 0
+        && control_target_descriptor >= 0
+        && wake_target_descriptor >= 0
+        && control_source_descriptor != wake_source_descriptor
+        && control_source_descriptor != control_target_descriptor
+        && control_source_descriptor != wake_target_descriptor
+        && wake_source_descriptor != control_target_descriptor
+        && wake_source_descriptor != wake_target_descriptor
+        && control_target_descriptor != wake_target_descriptor;
     let template_worker_shape = template_generation != 0
         && plugin_barrier_generation != 0
         && worker_mask != 0
@@ -301,7 +417,9 @@ pub(crate) fn parse_hot_fork_plugin_endpoint_state(
         && parent_resume_worker_mask == worker_mask
         && child_reinitialize_worker_mask == worker_mask
         && pending_worker_mask == 0
-        && worker_disposition_planned;
+        && worker_disposition_planned
+        && replacement_plan_bound
+        && descriptors_pairwise_distinct;
     let shape_valid = schema_version == u64::from(QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION)
         && !disposition_complete
         && !readiness_proof_acknowledged
@@ -310,6 +428,9 @@ pub(crate) fn parse_hot_fork_plugin_endpoint_state(
         && if staged {
             generation != 0
                 && names_distinct
+                && control_source_descriptor >= 0
+                && wake_source_descriptor >= 0
+                && control_source_descriptor != wake_source_descriptor
                 && control_socket_cookie != 0
                 && wake_eventfd_id != 0
                 && private_ring_generation != 0
@@ -322,6 +443,10 @@ pub(crate) fn parse_hot_fork_plugin_endpoint_state(
                 && wake_name.is_none()
                 && control_socket_cookie == 0
                 && wake_eventfd_id == 0
+                && control_source_descriptor == -1
+                && wake_source_descriptor == -1
+                && control_target_descriptor == -1
+                && wake_target_descriptor == -1
                 && private_ring_generation == 0
                 && standalone_worker_shape
                 && !control_unix_stream
@@ -339,12 +464,25 @@ pub(crate) fn parse_hot_fork_plugin_endpoint_state(
     } else {
         None
     };
+    let replacement_plan = if replacement_plan_bound {
+        Some(QmpHotForkPluginEndpointDescriptorPlan {
+            control_source: control_source_descriptor,
+            wake_source: wake_source_descriptor,
+            control_target: control_target_descriptor,
+            wake_target: wake_target_descriptor,
+        })
+    } else {
+        None
+    };
     Ok(QmpHotForkPluginEndpointState {
         generation,
         template_generation,
         control_name,
         wake_name,
         identity,
+        control_source_descriptor,
+        wake_source_descriptor,
+        replacement_plan,
         private_ring_generation,
         plugin_barrier_generation,
         worker_mask,

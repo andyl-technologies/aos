@@ -1,0 +1,243 @@
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index c559f6f99..a7a4928b5 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -378,6 +378,9 @@ typedef struct CrucibleHotForkPluginEndpointStage {
+     bool staged;
+     int control_fd;
+     int wake_fd;
++    int control_target_fd;
++    int wake_target_fd;
++    bool replacement_plan_bound;
+     char *control_fdname;
+     char *wake_fdname;
+     uint64_t control_socket_cookie;
+@@ -890,7 +893,7 @@ crucible_hot_fork_plugin_endpoint_report(void)
+     CrucibleHotForkPluginEndpointState *report =
+         g_new0(CrucibleHotForkPluginEndpointState, 1);
+ 
+-    report->schema_version = 3;
++    report->schema_version = 4;
+     report->generation = crucible_hot_fork_plugin_endpoint_stage.generation;
+     report->template_generation =
+         crucible_hot_fork_plugin_endpoint_stage.template_generation;
+@@ -905,6 +908,18 @@ crucible_hot_fork_plugin_endpoint_report(void)
+         crucible_hot_fork_plugin_endpoint_stage.control_socket_cookie;
+     report->wake_eventfd_id =
+         crucible_hot_fork_plugin_endpoint_stage.wake_eventfd_id;
++    report->control_source_fd =
++        crucible_hot_fork_plugin_endpoint_stage.staged ?
++            crucible_hot_fork_plugin_endpoint_stage.control_fd : -1;
++    report->wake_source_fd =
++        crucible_hot_fork_plugin_endpoint_stage.staged ?
++            crucible_hot_fork_plugin_endpoint_stage.wake_fd : -1;
++    report->control_target_fd =
++        crucible_hot_fork_plugin_endpoint_stage.replacement_plan_bound ?
++            crucible_hot_fork_plugin_endpoint_stage.control_target_fd : -1;
++    report->wake_target_fd =
++        crucible_hot_fork_plugin_endpoint_stage.replacement_plan_bound ?
++            crucible_hot_fork_plugin_endpoint_stage.wake_target_fd : -1;
+     report->private_ring_generation =
+         crucible_hot_fork_plugin_endpoint_stage.private_ring_generation;
+     report->plugin_barrier_generation =
+@@ -921,12 +936,26 @@ crucible_hot_fork_plugin_endpoint_report(void)
+         crucible_hot_fork_plugin_endpoint_stage.template_generation != 0 &&
+         crucible_hot_fork_plugin_endpoint_stage.plugin_barrier_generation !=
+             0 &&
++        crucible_hot_fork_plugin_endpoint_stage.replacement_plan_bound &&
+         crucible_hot_fork_plugin_endpoint_stage.worker_mask != 0 &&
+         crucible_hot_fork_plugin_endpoint_stage.parent_resume_worker_mask ==
+             crucible_hot_fork_plugin_endpoint_stage.worker_mask &&
+         crucible_hot_fork_plugin_endpoint_stage.
+             child_reinitialize_worker_mask ==
+                 crucible_hot_fork_plugin_endpoint_stage.worker_mask;
++    report->replacement_plan_bound = report->worker_disposition_planned &&
++        report->control_source_fd >= 0 && report->wake_source_fd >= 0 &&
++        report->control_target_fd >= 0 && report->wake_target_fd >= 0 &&
++        report->control_source_fd != report->wake_source_fd &&
++        report->control_target_fd != report->wake_target_fd &&
++        report->control_source_fd != report->control_target_fd &&
++        report->control_source_fd != report->wake_target_fd &&
++        report->wake_source_fd != report->control_target_fd &&
++        report->wake_source_fd != report->wake_target_fd &&
++        report->control_source_fd != crucible_hot_fork_private_ring_stage.fd &&
++        report->wake_source_fd != crucible_hot_fork_private_ring_stage.fd &&
++        report->control_target_fd != crucible_hot_fork_private_ring_stage.fd &&
++        report->wake_target_fd != crucible_hot_fork_private_ring_stage.fd;
+     report->control_unix_stream =
+         crucible_hot_fork_plugin_endpoint_stage.staged;
+     report->wake_eventfd = crucible_hot_fork_plugin_endpoint_stage.staged;
+@@ -955,7 +984,36 @@ static bool crucible_hot_fork_plugin_endpoint_stage_matches(
+ static bool crucible_hot_fork_plugin_worker_disposition_matches(
+     const CrucibleHotForkPluginBarrierState *plugin_barrier)
+ {
++    QemuPluginCrucibleHotForkInventory resources;
++
++    qemu_plugin_crucible_hot_fork_inventory(&resources);
+     return plugin_barrier && plugin_barrier->quiescent &&
++        crucible_hot_fork_plugin_endpoint_stage.replacement_plan_bound &&
++        resources.complete && resources.manifest.process_generation != 0 &&
++        resources.manifest.process_generation != UINT64_MAX &&
++        resources.manifest.control_fd >= 0 &&
++        resources.manifest.wake_fd >= 0 &&
++        resources.manifest.control_fd != resources.manifest.wake_fd &&
++        crucible_hot_fork_plugin_endpoint_stage.control_target_fd ==
++            resources.manifest.control_fd &&
++        crucible_hot_fork_plugin_endpoint_stage.wake_target_fd ==
++            resources.manifest.wake_fd &&
++        crucible_hot_fork_plugin_endpoint_stage.control_fd !=
++            resources.manifest.control_fd &&
++        crucible_hot_fork_plugin_endpoint_stage.control_fd !=
++            resources.manifest.wake_fd &&
++        crucible_hot_fork_plugin_endpoint_stage.wake_fd !=
++            resources.manifest.control_fd &&
++        crucible_hot_fork_plugin_endpoint_stage.wake_fd !=
++            resources.manifest.wake_fd &&
++        crucible_hot_fork_plugin_endpoint_stage.control_fd !=
++            crucible_hot_fork_private_ring_stage.fd &&
++        crucible_hot_fork_plugin_endpoint_stage.wake_fd !=
++            crucible_hot_fork_private_ring_stage.fd &&
++        resources.manifest.control_fd !=
++            crucible_hot_fork_private_ring_stage.fd &&
++        resources.manifest.wake_fd !=
++            crucible_hot_fork_private_ring_stage.fd &&
+         plugin_barrier->generation ==
+             crucible_hot_fork_plugin_endpoint_stage.plugin_barrier_generation &&
+         plugin_barrier->worker_mask ==
+@@ -980,6 +1038,7 @@ qmp_crucible_hot_fork_plugin_endpoints(
+ {
+     CrucibleHotForkPluginEndpointState *report = NULL;
+     CrucibleHotForkPluginBarrierState *plugin_barrier = NULL;
++    QemuPluginCrucibleHotForkInventory resources = { 0 };
+     uint64_t observed_control_socket_cookie = 0;
+     uint64_t observed_wake_eventfd_id = 0;
+     int control_candidate = -1;
+@@ -1064,6 +1123,27 @@ qmp_crucible_hot_fork_plugin_endpoints(
+                        "private rings from the same template transaction");
+             goto out;
+         }
++        if (plugin_barrier) {
++            qemu_plugin_crucible_hot_fork_inventory(&resources);
++            if (!resources.complete ||
++                resources.manifest.process_generation == 0 ||
++                resources.manifest.process_generation == UINT64_MAX ||
++                resources.manifest.control_fd < 0 ||
++                resources.manifest.wake_fd < 0 ||
++                resources.manifest.control_fd == resources.manifest.wake_fd ||
++                control_candidate == resources.manifest.control_fd ||
++                control_candidate == resources.manifest.wake_fd ||
++                wake_candidate == resources.manifest.control_fd ||
++                wake_candidate == resources.manifest.wake_fd ||
++                crucible_hot_fork_private_ring_stage.fd ==
++                    resources.manifest.control_fd ||
++                crucible_hot_fork_private_ring_stage.fd ==
++                    resources.manifest.wake_fd) {
++                error_setg(errp, "Crucible hot-fork plugin endpoint "
++                           "replacement slots are not exact and distinct");
++                goto out;
++            }
++        }
+         crucible_hot_fork_plugin_endpoint_stage.staged = true;
+         crucible_hot_fork_plugin_endpoint_stage.control_fd = control_candidate;
+         control_candidate = -1;
+@@ -1077,6 +1157,14 @@ qmp_crucible_hot_fork_plugin_endpoints(
+             expected_control_socket_cookie;
+         crucible_hot_fork_plugin_endpoint_stage.wake_eventfd_id =
+             expected_wake_eventfd_id;
++        if (plugin_barrier) {
++            crucible_hot_fork_plugin_endpoint_stage.control_target_fd =
++                resources.manifest.control_fd;
++            crucible_hot_fork_plugin_endpoint_stage.wake_target_fd =
++                resources.manifest.wake_fd;
++            crucible_hot_fork_plugin_endpoint_stage.replacement_plan_bound =
++                true;
++        }
+         crucible_hot_fork_plugin_endpoint_stage.private_ring_generation =
+             crucible_hot_fork_private_ring_stage.generation;
+         crucible_hot_fork_plugin_endpoint_stage.template_generation =
+@@ -1144,6 +1232,9 @@ qmp_crucible_hot_fork_plugin_endpoints(
+         crucible_hot_fork_plugin_endpoint_stage.staged = false;
+         crucible_hot_fork_plugin_endpoint_stage.control_socket_cookie = 0;
+         crucible_hot_fork_plugin_endpoint_stage.wake_eventfd_id = 0;
++        crucible_hot_fork_plugin_endpoint_stage.control_target_fd = 0;
++        crucible_hot_fork_plugin_endpoint_stage.wake_target_fd = 0;
++        crucible_hot_fork_plugin_endpoint_stage.replacement_plan_bound = false;
+         crucible_hot_fork_plugin_endpoint_stage.private_ring_generation = 0;
+         crucible_hot_fork_plugin_endpoint_stage.template_generation = 0;
+         crucible_hot_fork_plugin_endpoint_stage.plugin_barrier_generation = 0;
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 047ab1c2a..5b9589610 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -1724,14 +1724,15 @@
+ # @CrucibleHotForkPluginEndpointState:
+ #
+ # Exact QEMU-owned state for one authenticated branch-private plugin endpoint
+-# pair. For a template-bound stage, version 3 records the exact quiescent
+-# plugin-barrier generation and the complete worker masks that the parent must
+-# resume and the child must reinitialize. It rejects nonempty worker-local
+-# state. This is still a plan: it neither installs the endpoints in a fork
+-# child nor recreates plugin workers, so readiness proof bits 6 through 8
+-# remain clear.
++# pair. For a template-bound stage, version 4 records the exact quiescent
++# plugin-barrier generation, complete worker masks, retained source descriptor
++# slots, and distinct manifest-owned destination slots. The future child must
++# atomically replace both destination file descriptions before it invokes the
++# registered plugin reinitializer. It rejects nonempty worker-local state.
++# This is still a plan: it neither applies the descriptor replacement nor
++# recreates plugin workers, so readiness proof bits 6 through 8 remain clear.
+ #
+-# @schema-version: retained-endpoint contract version, currently 3
++# @schema-version: retained-endpoint contract version, currently 4
+ #
+ # @generation: process-local positive mutation generation, or zero initially
+ #
+@@ -1749,6 +1750,18 @@
+ # @wake-eventfd-id: authenticated Linux `/proc/self/fdinfo` eventfd identity,
+ #     or zero when absent
+ #
++# @control-source-fd: QEMU-owned descriptor carrying the replacement control
++#     file description while staged, otherwise -1
++#
++# @wake-source-fd: QEMU-owned descriptor carrying the replacement wake file
++#     description while staged, otherwise -1
++#
++# @control-target-fd: exact manifest-owned control descriptor slot the child
++#     must replace, or -1 until a template-bound plan is accepted
++#
++# @wake-target-fd: exact manifest-owned wake descriptor slot the child must
++#     replace, or -1 until a template-bound plan is accepted
++#
+ # @private-ring-generation: exact retained private-ring generation captured at
+ #     staging, or zero when absent
+ #
+@@ -1770,6 +1783,10 @@
+ # @worker-disposition-planned: whether the complete parent/child worker plan
+ #     is retained under a nonzero template and plugin-barrier generation
+ #
++# @replacement-plan-bound: whether the retained source and target descriptor
++#     pairs are exact, pairwise distinct, and bound to the sealed plugin
++#     manifest under the worker plan
++#
+ # @control-unix-stream: whether the retained control endpoint is one connected,
+ #     empty AF_UNIX stream socket
+ #
+@@ -1793,6 +1810,10 @@
+             '*wake-fdname': 'str',
+             'control-socket-cookie': 'uint64',
+             'wake-eventfd-id': 'uint64',
++            'control-source-fd': 'int',
++            'wake-source-fd': 'int',
++            'control-target-fd': 'int',
++            'wake-target-fd': 'int',
+             'private-ring-generation': 'uint64',
+             'plugin-barrier-generation': 'uint64',
+             'worker-mask': 'uint64',
+@@ -1800,6 +1821,7 @@
+             'child-reinitialize-worker-mask': 'uint64',
+             'pending-worker-mask': 'uint64',
+             'worker-disposition-planned': 'bool',
++            'replacement-plan-bound': 'bool',
+             'control-unix-stream': 'bool',
+             'wake-eventfd': 'bool',
+             'disposition-complete': 'bool',

@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "17e4198242a678ffbc294030f98fa0c14c5062dcc7b82375fac89d9fe82b7774";
+  patchBranchBundleSha256 = "be6bfbc2afe48c9d475bcb64d8166924e6534b748214de346342322d80afad7a";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "8ea1fd757e50424073947a748f77048eb2aa32c1";
+  patchBranchHeadCommit = "919480a08ebbd728a2d93934ea4770e1f8fa4210";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1415,6 +1415,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-8,HFORK-9,HFORK-11,HFORK-12";
       capability = "QEMU exposes an out-of-band version-2 observation of the registered fork-child runtime, exact resource-manifest and process-generation binding, phase, resource generations, endpoint identities, and worker state; identical observations retain one stable generation, while the command remains inert and does not acknowledge readiness bits 6 through 8";
+    }
+    {
+      file = "0149-crucible-bind-hot-fork-endpoint-replacement-slots.patch";
+      branchSubject = "crucible: bind hot-fork endpoint replacement slots";
+      branchCommit = "919480a08ebbd728a2d93934ea4770e1f8fa4210";
+      branchTree = "353392598992409fb8a768c0d1f4a1e92c4d1c01";
+      catalogName = "crucible-hot-fork-endpoint-replacement-plan";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-8,HFORK-9,HFORK-12";
+      capability = "version 4 of the retained plugin-endpoint stage binds each exact QEMU-owned branch-private source descriptor to the distinct sealed plugin-manifest control and wake descriptor slots under the same template, private-ring, barrier, and worker basis; the plan remains observational and unapplied, so readiness bits 6 through 8 stay clear";
     }
   ];
   catalogOnlyCapabilities = [

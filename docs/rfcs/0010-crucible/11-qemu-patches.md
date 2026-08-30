@@ -2458,6 +2458,27 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   acknowledges readiness bits 6 through 8. `T-CAM-6.2` remains unchecked.
 - **Risk:** F.
 
+### crucible-hot-fork-endpoint-replacement-plan — bind descriptor slots
+
+- **Patch:** `0149-crucible-bind-hot-fork-endpoint-replacement-slots.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-12].
+- **Mechanism:** version 4 of the retained plugin-endpoint stage records the
+  exact QEMU-owned control and wake source descriptors and binds them to the
+  distinct control and wake slots from the complete sealed plugin resource
+  manifest. It rejects every source/target alias, every private-ring alias,
+  incomplete or drifting manifests, and retry-time plan drift under the exact
+  template, private-ring, barrier, and worker basis.
+- **Micro-test:** typed Rust fixtures require the exact closed field set and
+  pairwise-distinct plan, node proofs retain the observational plan, patch
+  micro-tests pin the manifest comparison, and the live readiness gate proves
+  the version-4 standalone source observation while the template-only targets
+  remain absent.
+- **Inertness:** the stage records but does not apply either descriptor
+  replacement, invoke the registered child reinitializer, or fork. Descriptor
+  numbers grant no authority; readiness bits 6 through 8 and `T-CAM-6.2`
+  remain incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
