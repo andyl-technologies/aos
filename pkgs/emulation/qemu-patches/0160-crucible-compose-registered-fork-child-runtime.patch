@@ -1,0 +1,536 @@
+diff --git a/MAINTAINERS b/MAINTAINERS
+index 4f148e271..8c1176b67 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -3841,6 +3841,7 @@ F: plugins/
+ F: include/qemu/crucible-fault.h
+ F: include/qemu/crucible-hot-fork-child.h
+ F: include/qemu/crucible-hot-fork-plugin.h
++F: include/system/crucible-hot-fork-plugin-child.h
+ F: plugins/crucible-fault-instruction.c
+ F: plugins/crucible-fault-memory.c
+ F: tests/unit/test-crucible-hot-fork-child.c
+@@ -3849,6 +3850,7 @@ F: tests/tcg/plugins/
+ F: tests/functional/test_aarch64_tcg_plugins.py
+ F: contrib/plugins/
+ F: scripts/qemu-plugin-symbols.py
++F: system/crucible-hot-fork-plugin-child.c
+ F: util/crucible-hot-fork-child.c
+ 
+ AArch64 TCG target
+diff --git a/include/system/crucible-hot-fork-plugin-child.h b/include/system/crucible-hot-fork-plugin-child.h
+new file mode 100644
+index 000000000..b1b0ece0d
+--- /dev/null
++++ b/include/system/crucible-hot-fork-plugin-child.h
+@@ -0,0 +1,71 @@
++/*
++ * Crucible registered plugin fork-child reinitializer
++ *
++ * Copyright (c) Andyl, Inc.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef QEMU_CRUCIBLE_HOT_FORK_PLUGIN_CHILD_H
++#define QEMU_CRUCIBLE_HOT_FORK_PLUGIN_CHILD_H
++
++#include "qemu/crucible-hot-fork-plugin.h"
++
++typedef struct QemuCrucibleHotForkPluginChildReinitializer {
++    struct qemu_plugin_crucible_hot_fork_child_plan plan;
++    QemuPluginCrucibleHotForkChildRuntimeInventory inventory;
++    bool prepared;
++    bool attempted;
++    bool initialized;
++} QemuCrucibleHotForkPluginChildReinitializer;
++
++/**
++ * qemu_crucible_hot_fork_plugin_child_plan_valid() - validate one plan
++ * @plan: immutable registered plugin child-runtime plan
++ *
++ * Applies the complete process-independent shape and geometry checks shared by
++ * the registered runtime entry point and the child transaction adapter.
++ * Process-local resource identity remains authenticated by the registered
++ * runtime immediately before mutation.
++ *
++ * Returns true exactly when @plan has the closed current schema and valid
++ * fixed-layout resource geometry.
++ */
++bool qemu_crucible_hot_fork_plugin_child_plan_valid(
++    const struct qemu_plugin_crucible_hot_fork_child_plan *plan);
++
++/**
++ * qemu_crucible_hot_fork_prepare_plugin_child_reinitializer() - copy a plan
++ * @reinitializer: caller-owned storage inherited by the future fork child
++ * @plan: immutable registered plugin child-runtime plan
++ *
++ * Validates and copies the complete plan before a destructive child resource
++ * transaction.  Repreparing the caller-owned storage before fork replaces the
++ * prior plan.  Once child initialization is attempted, that inherited copy is
++ * one-shot and cannot be retried.
++ *
++ * Returns zero after exact preparation or -EINVAL for an invalid argument or
++ * plan.
++ */
++int qemu_crucible_hot_fork_prepare_plugin_child_reinitializer(
++    QemuCrucibleHotForkPluginChildReinitializer *reinitializer,
++    const struct qemu_plugin_crucible_hot_fork_child_plan *plan);
++
++/**
++ * qemu_crucible_hot_fork_reinitialize_plugin_child() - invoke held runtime
++ * @opaque: prepared QemuCrucibleHotForkPluginChildReinitializer
++ *
++ * Invokes the process-global registered plugin runtime exactly once with the
++ * copied initialization plan.  Success additionally requires the registered
++ * runtime to echo the exact plan in a complete workers-held state: callbacks
++ * remain closed, the private mapping is installed, and every sealed worker is
++ * parked without pending local work.  This function matches
++ * QemuCrucibleHotForkChildReinitializer and is intended to run only inside the
++ * authenticated destructive child resource transaction.
++ *
++ * Returns zero after exact held initialization, -EPERM when the context is not
++ * prepared or was already attempted, -EPROTO for a contradictory successful
++ * runtime response, or the registered runtime's negative errno-style failure.
++ */
++int qemu_crucible_hot_fork_reinitialize_plugin_child(void *opaque);
++
++#endif
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+index 99bf8bcd4..0b3f7c660 100644
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -12,6 +12,7 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qemu/main-loop.h"
++#include "system/crucible-hot-fork-plugin-child.h"
+ #include "qemu/error-report.h"
+ #include "qemu/accel.h"
+ #include "hw/core/cpu.h"
+@@ -452,37 +453,7 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+          action != QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_QUERY &&
+          action != QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_RELEASE) ||
+         (action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_INITIALIZE &&
+-         (!plan ||
+-          plan->schema_version !=
+-              QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PLAN_VERSION ||
+-          plan->struct_size != sizeof(*plan) || plan->flags != 0 ||
+-          plan->reserved != 0 || plan->reserved_fd != -1 ||
+-          plan->parent_process_generation == 0 ||
+-          plan->parent_process_generation == UINT64_MAX ||
+-          plan->child_process_generation !=
+-              plan->parent_process_generation + 1 ||
+-          plan->template_generation == 0 ||
+-          plan->private_ring_generation == 0 ||
+-          plan->plugin_endpoint_generation == 0 ||
+-          plan->plugin_barrier_generation == 0 ||
+-          plan->control_socket_cookie == 0 ||
+-          plan->wake_eventfd_id == 0 ||
+-          plan->private_ring_fd < 0 || plan->control_fd < 0 ||
+-          plan->wake_fd < 0 || plan->control_fd == plan->wake_fd ||
+-          plan->private_ring_fd == plan->control_fd ||
+-          plan->private_ring_fd == plan->wake_fd ||
+-          plan->shmem_inode == 0 || plan->shmem_length == 0 ||
+-          plan->source_mapping_start == 0 ||
+-          plan->source_mapping_length != plan->shmem_length ||
+-          plan->source_mapping_offset != 0 ||
+-          !QEMU_IS_ALIGNED(plan->source_mapping_start,
+-                           qemu_real_host_page_size()) ||
+-          !QEMU_IS_ALIGNED(plan->source_mapping_length,
+-                           qemu_real_host_page_size()) ||
+-          plan->source_mapping_start > UINTPTR_MAX ||
+-          plan->source_mapping_length > SIZE_MAX ||
+-          plan->source_mapping_start >
+-              UINTPTR_MAX - plan->source_mapping_length))) {
++         !qemu_crucible_hot_fork_plugin_child_plan_valid(plan))) {
+         return -EINVAL;
+     }
+ 
+diff --git a/system/crucible-hot-fork-plugin-child.c b/system/crucible-hot-fork-plugin-child.c
+new file mode 100644
+index 000000000..b9a01330b
+--- /dev/null
++++ b/system/crucible-hot-fork-plugin-child.c
+@@ -0,0 +1,128 @@
++/*
++ * Crucible registered plugin fork-child reinitializer
++ *
++ * Copyright (c) Andyl, Inc.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++
++#include "system/crucible-hot-fork-plugin-child.h"
++
++bool qemu_crucible_hot_fork_plugin_child_plan_valid(
++    const struct qemu_plugin_crucible_hot_fork_child_plan *plan)
++{
++    return plan &&
++        plan->schema_version ==
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PLAN_VERSION &&
++        plan->struct_size == sizeof(*plan) && plan->flags == 0 &&
++        plan->reserved == 0 && plan->reserved_fd == -1 &&
++        plan->parent_process_generation != 0 &&
++        plan->parent_process_generation != UINT64_MAX &&
++        plan->child_process_generation ==
++            plan->parent_process_generation + 1 &&
++        plan->template_generation != 0 &&
++        plan->private_ring_generation != 0 &&
++        plan->plugin_endpoint_generation != 0 &&
++        plan->plugin_barrier_generation != 0 &&
++        plan->control_socket_cookie != 0 && plan->wake_eventfd_id != 0 &&
++        plan->private_ring_fd >= 0 && plan->control_fd >= 0 &&
++        plan->wake_fd >= 0 && plan->control_fd != plan->wake_fd &&
++        plan->private_ring_fd != plan->control_fd &&
++        plan->private_ring_fd != plan->wake_fd &&
++        plan->shmem_inode != 0 && plan->shmem_length != 0 &&
++        plan->source_mapping_start != 0 &&
++        plan->source_mapping_length == plan->shmem_length &&
++        plan->source_mapping_offset == 0 &&
++        QEMU_IS_ALIGNED(plan->source_mapping_start,
++                        qemu_real_host_page_size()) &&
++        QEMU_IS_ALIGNED(plan->source_mapping_length,
++                        qemu_real_host_page_size()) &&
++        plan->source_mapping_start <= UINTPTR_MAX &&
++        plan->source_mapping_length <= SIZE_MAX &&
++        plan->source_mapping_start <=
++            UINTPTR_MAX - plan->source_mapping_length;
++}
++
++int qemu_crucible_hot_fork_prepare_plugin_child_reinitializer(
++    QemuCrucibleHotForkPluginChildReinitializer *reinitializer,
++    const struct qemu_plugin_crucible_hot_fork_child_plan *plan)
++{
++    if (!reinitializer ||
++        !qemu_crucible_hot_fork_plugin_child_plan_valid(plan)) {
++        return -EINVAL;
++    }
++
++    *reinitializer = (QemuCrucibleHotForkPluginChildReinitializer) {
++        .plan = *plan,
++        .prepared = true,
++    };
++    return 0;
++}
++
++static bool crucible_hot_fork_plugin_child_status_matches(
++    const QemuCrucibleHotForkPluginChildReinitializer *reinitializer)
++{
++    const struct qemu_plugin_crucible_hot_fork_child_plan *plan =
++        &reinitializer->plan;
++    const QemuPluginCrucibleHotForkChildRuntimeInventory *inventory =
++        &reinitializer->inventory;
++    const struct qemu_plugin_crucible_hot_fork_child_status *status =
++        &inventory->status;
++    const uint32_t expected_flags =
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_CALLBACKS_HELD |
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED |
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_WORKERS_READY;
++
++    return inventory->registered && inventory->manifest_consistent &&
++        inventory->generation != 0 && inventory->plugin_id != 0 &&
++        status->schema_version ==
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_STATUS_VERSION &&
++        status->struct_size == sizeof(*status) &&
++        status->flags == expected_flags &&
++        status->phase ==
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_WORKERS_HELD &&
++        status->parent_process_generation ==
++            plan->parent_process_generation &&
++        status->child_process_generation == plan->child_process_generation &&
++        status->template_generation == plan->template_generation &&
++        status->private_ring_generation == plan->private_ring_generation &&
++        status->plugin_endpoint_generation ==
++            plan->plugin_endpoint_generation &&
++        status->plugin_barrier_generation ==
++            plan->plugin_barrier_generation &&
++        status->control_socket_cookie == plan->control_socket_cookie &&
++        status->wake_eventfd_id == plan->wake_eventfd_id &&
++        status->source_mapping_start == plan->source_mapping_start &&
++        status->source_mapping_length == plan->source_mapping_length &&
++        status->source_mapping_offset == plan->source_mapping_offset &&
++        status->worker_mask == plan->worker_mask &&
++        status->parked_worker_mask == status->worker_mask &&
++        status->pending_worker_mask == 0 &&
++        status->worker_operations_in_flight == 0;
++}
++
++int qemu_crucible_hot_fork_reinitialize_plugin_child(void *opaque)
++{
++    QemuCrucibleHotForkPluginChildReinitializer *reinitializer = opaque;
++    int result;
++
++    if (!reinitializer || !reinitializer->prepared ||
++        reinitializer->attempted) {
++        return -EPERM;
++    }
++
++    reinitializer->attempted = true;
++    result = qemu_plugin_crucible_hot_fork_child_runtime(
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_INITIALIZE,
++        &reinitializer->plan, &reinitializer->inventory);
++    if (result != 0) {
++        return result;
++    }
++    if (!crucible_hot_fork_plugin_child_status_matches(reinitializer)) {
++        return -EPROTO;
++    }
++
++    reinitializer->initialized = true;
++    return 0;
++}
+diff --git a/system/meson.build b/system/meson.build
+index eec07a945..8845527d5 100644
+--- a/system/meson.build
++++ b/system/meson.build
+@@ -11,6 +11,7 @@ system_ss.add(files(
+   'bootdevice.c',
+   'cpus.c',
+   'cpu-timers.c',
++  'crucible-hot-fork-plugin-child.c',
+   'datadir.c',
+   'dirtylimit.c',
+   'dma-helpers.c',
+diff --git a/tests/unit/meson.build b/tests/unit/meson.build
+index de6d508bb..d7ae96cad 100644
+--- a/tests/unit/meson.build
++++ b/tests/unit/meson.build
+@@ -142,7 +142,9 @@ if have_system
+     'test-yank': ['socket-helpers.c', qom, io, chardev]
+   }
+   if host_os == 'linux'
+-    tests += {'test-crucible-hot-fork-child': []}
++    tests += {'test-crucible-hot-fork-child': [
++      meson.project_source_root() / 'system/crucible-hot-fork-plugin-child.c'
++    ]}
+   endif
+   if config_host_data.get('CONFIG_INOTIFY1')
+     tests += {'test-util-filemonitor': []}
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+index f07b13824..78f13ae50 100644
+--- a/tests/unit/test-crucible-hot-fork-child.c
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -11,6 +11,7 @@
+ #include <sys/socket.h>
+ 
+ #include "qemu/crucible-hot-fork-child.h"
++#include "system/crucible-hot-fork-plugin-child.h"
+ 
+ typedef struct EndpointVerification {
+     int control_fd;
+@@ -38,6 +39,70 @@ typedef struct ChildResourceReinitializer {
+     bool called;
+ } ChildResourceReinitializer;
+ 
++static int reinitialize_child_resources(void *opaque);
++
++typedef struct FakePluginChildRuntime {
++    ChildResourceReinitializer *mapping;
++    uint32_t phase;
++    unsigned int calls;
++} FakePluginChildRuntime;
++
++static FakePluginChildRuntime fake_plugin_child_runtime;
++
++int qemu_plugin_crucible_hot_fork_child_runtime(
++    uint32_t action,
++    const struct qemu_plugin_crucible_hot_fork_child_plan *plan,
++    QemuPluginCrucibleHotForkChildRuntimeInventory *inventory)
++{
++    struct qemu_plugin_crucible_hot_fork_child_status *status;
++    int result;
++
++    if (action != QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_INITIALIZE ||
++        !plan || !inventory) {
++        return -EINVAL;
++    }
++    fake_plugin_child_runtime.calls++;
++    if (fake_plugin_child_runtime.mapping) {
++        result = reinitialize_child_resources(
++            fake_plugin_child_runtime.mapping);
++        if (result != 0) {
++            return result;
++        }
++    }
++
++    *inventory = (QemuPluginCrucibleHotForkChildRuntimeInventory) {
++        .generation = 1,
++        .plugin_id = 1,
++        .registered = true,
++        .manifest_consistent = true,
++    };
++    status = &inventory->status;
++    *status = (struct qemu_plugin_crucible_hot_fork_child_status) {
++        .schema_version =
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_STATUS_VERSION,
++        .struct_size = sizeof(*status),
++        .flags =
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_CALLBACKS_HELD |
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED |
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_WORKERS_READY,
++        .phase = fake_plugin_child_runtime.phase,
++        .parent_process_generation = plan->parent_process_generation,
++        .child_process_generation = plan->child_process_generation,
++        .template_generation = plan->template_generation,
++        .private_ring_generation = plan->private_ring_generation,
++        .plugin_endpoint_generation = plan->plugin_endpoint_generation,
++        .plugin_barrier_generation = plan->plugin_barrier_generation,
++        .control_socket_cookie = plan->control_socket_cookie,
++        .wake_eventfd_id = plan->wake_eventfd_id,
++        .source_mapping_start = plan->source_mapping_start,
++        .source_mapping_length = plan->source_mapping_length,
++        .source_mapping_offset = plan->source_mapping_offset,
++        .worker_mask = plan->worker_mask,
++        .parked_worker_mask = plan->worker_mask,
++    };
++    return 0;
++}
++
+ static int verify_endpoint_pair(void *opaque)
+ {
+     EndpointVerification *verification = opaque;
+@@ -300,12 +365,53 @@ static void test_immediate_child_applies_closed_descriptor_table(void)
+             .installed_mapping = MAP_FAILED,
+             .called = false,
+         };
++        QemuCrucibleHotForkPluginChildReinitializer plugin_reinitializer;
++        struct qemu_plugin_crucible_hot_fork_child_plan plugin_plan = {
++            .schema_version =
++                QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PLAN_VERSION,
++            .struct_size = sizeof(plugin_plan),
++            .parent_process_generation = 1,
++            .child_process_generation = 2,
++            .template_generation = 1,
++            .private_ring_generation = 1,
++            .plugin_endpoint_generation = 1,
++            .plugin_barrier_generation = 1,
++            .control_socket_cookie = 1,
++            .wake_eventfd_id = 1,
++            .shmem_length = page_size,
++            .source_mapping_start = (uintptr_t)source_mapping,
++            .source_mapping_length = page_size,
++            .source_mapping_offset = 0,
++            .private_ring_fd = private_mapping_fd,
++            .control_fd = old_control[0],
++            .wake_fd = old_wake,
++            .reserved_fd = -1,
++            .worker_mask = QEMU_PLUGIN_CRUCIBLE_WORKER_REQUIRED,
++        };
++        struct stat private_mapping_metadata;
+         sigset_t blocked;
+         int result;
+ 
+         close(child_result[0]);
+-        result = qemu_crucible_hot_fork_begin_descriptor_table(
+-            &identity, &transaction);
++        result = fstat(private_mapping_fd, &private_mapping_metadata);
++        if (result != 0) {
++            result = -errno;
++        } else {
++            plugin_plan.shmem_device = private_mapping_metadata.st_dev;
++            plugin_plan.shmem_inode = private_mapping_metadata.st_ino;
++            fake_plugin_child_runtime = (FakePluginChildRuntime) {
++                .mapping = &reinitializer,
++                .phase =
++                    QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_WORKERS_HELD,
++            };
++            result =
++                qemu_crucible_hot_fork_prepare_plugin_child_reinitializer(
++                    &plugin_reinitializer, &plugin_plan);
++        }
++        if (result == 0) {
++            result = qemu_crucible_hot_fork_begin_descriptor_table(
++                &identity, &transaction);
++        }
+         if (result == 0) {
+             if (sigprocmask(SIG_SETMASK, NULL, &blocked) < 0 ||
+                 sigismember(&blocked, SIGUSR1) != 1) {
+@@ -322,13 +428,18 @@ static void test_immediate_child_applies_closed_descriptor_table(void)
+             result = qemu_crucible_hot_fork_apply_child_resources(
+                 &transaction, replacements, retained_fds,
+                 G_N_ELEMENTS(retained_fds), verify_closed_descriptor_table,
+-                &verification, reinitialize_child_resources, &reinitializer,
++                &verification,
++                qemu_crucible_hot_fork_reinitialize_plugin_child,
++                &plugin_reinitializer,
+                 &shared_mapping, 1);
+         }
+         if (result == 0 &&
+             (!transaction.descriptors_applied ||
+              !transaction.child_reinitialized ||
+-             !transaction.mappings_verified || !reinitializer.called)) {
++             !transaction.mappings_verified || !reinitializer.called ||
++             !plugin_reinitializer.attempted ||
++             !plugin_reinitializer.initialized ||
++             fake_plugin_child_runtime.calls != 1)) {
+             result = -EIO;
+         }
+         if (reinitializer.installed_mapping != MAP_FAILED) {
+@@ -423,6 +534,57 @@ static void test_child_resource_preflight_preserves_descriptors(void)
+     close(unretained_backing);
+ }
+ 
++static void test_plugin_child_reinitializer_is_held_and_one_shot(void)
++{
++    uint64_t page_size = qemu_real_host_page_size();
++    struct qemu_plugin_crucible_hot_fork_child_plan plan = {
++        .schema_version = QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PLAN_VERSION,
++        .struct_size = sizeof(plan),
++        .parent_process_generation = 10,
++        .child_process_generation = 11,
++        .template_generation = 1,
++        .private_ring_generation = 2,
++        .plugin_endpoint_generation = 3,
++        .plugin_barrier_generation = 4,
++        .control_socket_cookie = 5,
++        .wake_eventfd_id = 6,
++        .shmem_device = 7,
++        .shmem_inode = 8,
++        .shmem_length = page_size,
++        .source_mapping_start = page_size,
++        .source_mapping_length = page_size,
++        .source_mapping_offset = 0,
++        .private_ring_fd = 3,
++        .control_fd = 4,
++        .wake_fd = 5,
++        .reserved_fd = -1,
++        .worker_mask = QEMU_PLUGIN_CRUCIBLE_WORKER_REQUIRED,
++    };
++    QemuCrucibleHotForkPluginChildReinitializer reinitializer;
++
++    fake_plugin_child_runtime = (FakePluginChildRuntime) {
++        .phase = QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_INITIALIZING,
++    };
++    g_assert_cmpint(qemu_crucible_hot_fork_prepare_plugin_child_reinitializer(
++                        &reinitializer, &plan),
++                    ==, 0);
++    g_assert_cmpint(qemu_crucible_hot_fork_reinitialize_plugin_child(
++                        &reinitializer),
++                    ==, -EPROTO);
++    g_assert_true(reinitializer.attempted);
++    g_assert_false(reinitializer.initialized);
++    g_assert_cmpuint(fake_plugin_child_runtime.calls, ==, 1);
++    g_assert_cmpint(qemu_crucible_hot_fork_reinitialize_plugin_child(
++                        &reinitializer),
++                    ==, -EPERM);
++    g_assert_cmpuint(fake_plugin_child_runtime.calls, ==, 1);
++
++    plan.source_mapping_length--;
++    g_assert_cmpint(qemu_crucible_hot_fork_prepare_plugin_child_reinitializer(
++                        &reinitializer, &plan),
++                    ==, -EINVAL);
++}
++
+ static void test_source_mapping_binding_is_exact(void)
+ {
+     QemuCrucibleHotForkSourceMapping mapping = { 0 };
+@@ -754,6 +916,8 @@ int main(int argc, char **argv)
+                     test_immediate_child_applies_closed_descriptor_table);
+     g_test_add_func("/crucible/hot-fork-child/resource-preflight",
+                     test_child_resource_preflight_preserves_descriptors);
++    g_test_add_func("/crucible/hot-fork-child/plugin-runtime-one-shot",
++                    test_plugin_child_reinitializer_is_held_and_one_shot);
+     g_test_add_func("/crucible/hot-fork-child/source-mapping-binding",
+                     test_source_mapping_binding_is_exact);
+     g_test_add_func("/crucible/hot-fork-child/inactive-descriptor-transaction",

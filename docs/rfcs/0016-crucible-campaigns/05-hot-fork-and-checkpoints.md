@@ -906,10 +906,12 @@ then authenticates the resulting mapping table. A real-fork regression
 reconstructs one exact `MADV_DONTFORK` mapping after descriptor closure and
 requires all three recorded phases. An unretained-backing preflight leaves the
 active transaction and every endpoint unchanged and never calls the
-reinitializer. This operation remains unwired to QEMU's registered plugin
-runtime and covers only the explicitly supplied resources. It neither pairs
-the host continuation nor releases guest admission, so proof bits 7 and 8
-remain clear.
+reinitializer. The transaction now has a prepared one-shot adapter for QEMU's
+registered plugin runtime, and the real-fork unit path composes that adapter
+through a fake registered runtime. No production fork caller invokes it, and
+the operation covers only the explicitly supplied resources. It neither
+reconstructs every non-plugin subsystem, pairs the host continuation, nor
+releases guest admission, so proof bits 7 and 8 remain clear.
 
 At that checkpoint this was not yet the complete plugin-ring proof.
 Template-bound staging rejects
@@ -1778,8 +1780,16 @@ The supported launch profile optimizes the complete child-ready path:
   proves the child writes the private backing while the parent's source mapping
   and backing identity remain unchanged. Stale, skipped, zero, and overflowed
   process generations fail before child admission. The QEMU fork transaction
-  does not yet invoke or release this registered operation, so observation
-  confers no readiness bit;
+  now has a prepared one-shot adapter that copies a valid plan and invokes the
+  process-global registered runtime exactly once. It accepts completion only
+  when the exact plan is echoed with callbacks held, the private mapping
+  installed, every sealed worker parked, and no pending operation. The
+  real-fork child-resource unit path composes that adapter with exact descriptor
+  closure and mapping verification through a fake registered runtime; the
+  plugin's actual callback remains covered separately by its exact-plan and
+  remap tests. No production fork caller invokes this composition, and complete
+  non-plugin subsystem reconstruction, host-continuation pairing, guest release,
+  and readiness bits 7 and 8 remain open;
 - shared protocol rings are small, frozen separately, and replaced rather than
   forcing the main RAM mapping to be shared;
 - child sockets, memfds, overlay descriptors, directory identities, cgroup

@@ -711,6 +711,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0160-crucible-compose-registered-fork-child-runtime.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

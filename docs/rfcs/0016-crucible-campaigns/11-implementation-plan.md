@@ -1997,9 +1997,21 @@ unaligned, overflowing, differently sized, or nonzero-offset geometry before
 invoking the callback. The plugin independently compares the plan with its
 retained process-local mapping owner before the `MAP_FIXED_NOREPLACE` install
 and echoes the same immutable basis in every later status. This closes the
-source-address agreement needed by the future composed reinitializer, but the
-operation remains unwired and therefore does not acknowledge readiness bits 7
-or 8 or complete T-CAM-6.2.
+source-address agreement required by the composed adapter described next; by
+itself the binding does not acknowledge readiness bits 7 or 8 or complete
+T-CAM-6.2.
+QEMU now also owns a prepared one-shot adapter for the registered plugin child
+runtime. Preparation copies a plan that passes the same complete
+process-independent validator used by the registered entry point. Execution
+invokes the process-global callback exactly once and accepts only an exact
+postcondition with callbacks held, the private mapping installed, every sealed
+worker parked, and no pending local operation. The real-fork child-resource
+unit path composes this adapter with descriptor closure and mapping
+verification through a fake registered runtime, while the plugin's actual
+callback remains covered by its separate remap tests. The production fork
+caller, complete non-plugin QEMU subsystem reconstruction, host-continuation
+pairing, guest-admission release, and readiness bits 7 and 8 remain open;
+T-CAM-6.2 remains unchecked.
 Template-process descriptor/endpoint staging now satisfies plugin-ring proof
 bit 6 only under the retained exact transaction. The internal replacement and
 child-identity primitives, and the registered empty-local-state reinitializer,

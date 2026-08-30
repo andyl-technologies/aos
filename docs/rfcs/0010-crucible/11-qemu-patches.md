@@ -2697,6 +2697,32 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   acknowledgement for bits 7 and 8 exists. `T-CAM-6.2` remains incomplete.
 - **Risk:** F.
 
+### crucible-hot-fork-registered-child-runtime-composition — compose the runtime adapter
+
+- **Patch:** `0160-crucible-compose-registered-fork-child-runtime.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** QEMU copies a valid fixed-layout version-3 child-runtime plan
+  into a prepared one-shot adapter. The adapter invokes the process-global
+  registered plugin runtime exactly once and accepts success only when the
+  returned status echoes the exact immutable plan and proves callbacks held,
+  the branch-private mapping installed, every sealed worker parked, and no
+  pending local operation. The registered entry point and adapter share the
+  complete process-independent plan validator; process-local resource identity
+  remains reauthenticated by the registered runtime immediately before its
+  mutation.
+- **Micro-test:** the real-fork child resource transaction composes descriptor
+  closure, the registered-runtime adapter, and exact post-remap mapping
+  verification. A fake registered runtime proves the adapter rejects an
+  initializing status and is nonretryable after its first attempt; the plugin's
+  production callback remains covered by its separate exact-plan and remap
+  tests.
+- **Inertness:** no production fork caller invokes the composed adapter, and
+  complete non-plugin QEMU subsystem reinitialization, host-continuation
+  pairing, guest-admission release, and readiness acknowledgements for bits 7
+  and 8 remain absent. `T-CAM-6.2` remains incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
