@@ -2605,7 +2605,7 @@ in
           @interface NSValue : NSObject <NSCopying>
           @end
 
-          @interface NSNumber : NSObject
+          @interface NSNumber : NSValue
           + (NSNumber *)numberWithBool:(BOOL)value;
           + (NSNumber *)numberWithInt:(int)value;
           + (NSNumber *)numberWithUnsignedChar:(unsigned char)value;

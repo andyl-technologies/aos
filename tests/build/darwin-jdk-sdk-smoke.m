@@ -86,6 +86,7 @@ int main(int argc, char **argv) {
 
   NSNumber *number = [NSNumber numberWithFloat:1.0f];
   number = [NSNumber numberWithChar:(char)[number floatValue]];
+  NSValue *numericValue = [NSNumber numberWithInt:1];
   NSMutableData *data = [NSMutableData dataWithLength:8];
   [data getBytes:[data mutableBytes]];
 
@@ -242,5 +243,5 @@ int main(int argc, char **argv) {
   if (observer != NULL) CFRelease(observer);
   if (cfData != NULL) CFRelease(cfData);
   if (cfDate != NULL) CFRelease(cfDate);
-  return argv == NULL || character == 0 || absoluteInterval < NSTimeIntervalSince1970 || cfAbsoluteTime == 0 || cfDate == NULL || number == nil || data.length == 0 || objectEnumerator == nil || keyEnumerator == nil || setEnumerator == nil || keys.count == 0 || set == nil || roundTrip == nil || returnValue == NULL || size.width != point.x || range.length == rect.size.height || indexed == nil || keyword == 0 || aeDesc == NULL || descriptorData == nil || integer == 0 || boolean || itemCount < 0 || descriptorType == 0 || tiff == nil || !propertyRetained || dataSymbols[0] == NULL || arrayType == 0 || dictionaryType == 0 || languageCodes == NULL || mainRunLoop == NULL || runtimeObject == nil || runtimeValue == nil || fromFile == single || !contained || resource == nil || processIdentifier == 0 || stack == nil || !mainThread || url == nil || keyed == nil || unsignedNumber == nil || !changed || scriptResult == nil || !locked || !recycled || !selected || operationTag == 0;
+  return argv == NULL || character == 0 || absoluteInterval < NSTimeIntervalSince1970 || cfAbsoluteTime == 0 || cfDate == NULL || number == nil || numericValue == nil || data.length == 0 || objectEnumerator == nil || keyEnumerator == nil || setEnumerator == nil || keys.count == 0 || set == nil || roundTrip == nil || returnValue == NULL || size.width != point.x || range.length == rect.size.height || indexed == nil || keyword == 0 || aeDesc == NULL || descriptorData == nil || integer == 0 || boolean || itemCount < 0 || descriptorType == 0 || tiff == nil || !propertyRetained || dataSymbols[0] == NULL || arrayType == 0 || dictionaryType == 0 || languageCodes == NULL || mainRunLoop == NULL || runtimeObject == nil || runtimeValue == nil || fromFile == single || !contained || resource == nil || processIdentifier == 0 || stack == nil || !mainThread || url == nil || keyed == nil || unsignedNumber == nil || !changed || scriptResult == nil || !locked || !recycled || !selected || operationTag == 0;
 }
