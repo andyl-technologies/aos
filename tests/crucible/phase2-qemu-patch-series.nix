@@ -1042,6 +1042,13 @@
       enforces = "HFORK-3,HFORK-4,HFORK-8,HFORK-9,HFORK-12";
       capability = "version 4 of the retained plugin-endpoint stage binds exact QEMU-owned replacement sources to the distinct sealed plugin-manifest control and wake slots under the current template basis, while leaving application and readiness bits 6 through 8 incomplete";
     }
+    {
+      file = "0150-crucible-add-fork-child-endpoint-replacement-primitive.patch";
+      catalogName = "crucible-hot-fork-child-endpoint-replacement-primitive";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-12";
+      capability = "the Linux-only GPL-side endpoint replacement helper validates two pairwise-distinct source/target pairs, preserves target descriptor flags, verifies the installed pair, restores both targets on rejection, and reports an unrecoverable poisoned disposition when rollback cannot be proved; it remains internal and unwired pending the immediate-child coordinator";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

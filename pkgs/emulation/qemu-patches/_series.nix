@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "be6bfbc2afe48c9d475bcb64d8166924e6534b748214de346342322d80afad7a";
+  patchBranchBundleSha256 = "873471e9701a7bf8365dc8a9680e6f8a082644cdbd1b128ce24b6c4cb2831358";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "919480a08ebbd728a2d93934ea4770e1f8fa4210";
+  patchBranchHeadCommit = "2b93f6627bc2773f676abf096b6b5e2dab8bf707";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1425,6 +1425,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4,HFORK-8,HFORK-9,HFORK-12";
       capability = "version 4 of the retained plugin-endpoint stage binds each exact QEMU-owned branch-private source descriptor to the distinct sealed plugin-manifest control and wake descriptor slots under the same template, private-ring, barrier, and worker basis; the plan remains observational and unapplied, so readiness bits 6 through 8 stay clear";
+    }
+    {
+      file = "0150-crucible-add-fork-child-endpoint-replacement-primitive.patch";
+      branchSubject = "crucible: add fork-child endpoint replacement primitive";
+      branchCommit = "2b93f6627bc2773f676abf096b6b5e2dab8bf707";
+      branchTree = "b4f8f75c8dc13d2658a9e78ef8818844e980998f";
+      catalogName = "crucible-hot-fork-child-endpoint-replacement-primitive";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-12";
+      capability = "a Linux-only GPL-side helper validates exactly two pairwise-distinct retained source and manifest target descriptor slots, preserves target descriptor flags, replaces both descriptions, invokes a caller-supplied exact post-replacement verifier, restores both prior targets on a rejected verification, and reports an unrecoverable poisoned disposition when rollback cannot be proved; the helper remains internal and unwired until the immediate-child coordinator and complete inherited-resource table exist";
     }
   ];
   catalogOnlyCapabilities = [

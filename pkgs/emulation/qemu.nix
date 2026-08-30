@@ -284,6 +284,7 @@ in
               build/tests/unit/test-rcu-list --tap -p /rcu/hot-fork/barrier
               build/tests/unit/test-aio --tap -p /aio/hot-fork/bh-timer-barrier
               build/tests/unit/test-block-backend --tap
+              build/tests/unit/test-crucible-hot-fork-child --tap
             ''
             else ''
               true

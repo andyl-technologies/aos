@@ -671,6 +671,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0150-crucible-add-fork-child-endpoint-replacement-primitive.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
