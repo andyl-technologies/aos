@@ -861,6 +861,19 @@ table remains unchanged. This is still an internal, unwired primitive: the
 production coordinator does not call `fork(2)`, and the identity check alone
 does not close the inherited descriptor table or acknowledge readiness.
 
+The adjacent closed-table primitive advances that internal child path without
+claiming readiness. It authenticates and consumes the immediate-child identity,
+blocks every blockable signal, applies the exact two endpoint replacements, and
+requires a strictly sorted final descriptor table of at most 4,096 slots. Linux
+`close_range(2)` closes every gap and the complete suffix before a caller-owned
+verifier authenticates the installed table. A real-fork regression proves an
+unlisted inherited eventfd is closed in the child while the parent's table and
+original endpoints remain unchanged. The operation is deliberately
+destructive after authentication: any failure terminates or quarantines the
+child rather than attempting to reconstruct an ambient descriptor table. It is
+still unwired, does not close descriptor admission while the table is built,
+and does not classify mappings; therefore proof bit 7 remains clear.
+
 At that checkpoint this was not yet the complete plugin-ring proof.
 Template-bound staging rejects
 a parked worker that retains a received trigger or queued fingerprint work,
@@ -1057,10 +1070,11 @@ complete RCU barrier is quiescent. Proof bit 3 is present exactly while the
 transaction remains active and its complete asynchronous-source barrier is
 quiescent. Proof bit 5 is present exactly while the transaction remains active
 and its complete immutable writable-root binding remains retained by the
-quiescent block barrier. Version 7 still does not compose the remaining
-plugin-ring, descriptor/mapping, or child-reinitialization barriers; therefore
-it rolls a fully drained transaction back as `blocked` and cannot advertise a
-usable hot-fork template.
+quiescent block barrier. Version 13 additionally composes plugin-ring proof bit
+6 from the exact transaction-bound frozen ring, endpoint pair, worker plan, and
+plugin barrier. Descriptor/mapping proof bit 7 and child-reinitialization proof
+bit 8 remain clear, so a fully drained transaction stays `draining` and cannot
+advertise a usable hot-fork template.
 
 The standalone AioContext, AIO-handler, and block-backend responses remain
 observational. The retained asynchronous-source barrier composes the context,
