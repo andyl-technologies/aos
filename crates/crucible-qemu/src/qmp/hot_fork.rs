@@ -12,6 +12,7 @@ use super::{QmpCommandKind, QmpError};
 mod bh_timer_barrier;
 mod block_barrier;
 mod child_runtime;
+mod diagnostics;
 mod plugin;
 mod plugin_endpoints;
 mod private_rings;
@@ -32,6 +33,11 @@ pub use block_barrier::{
 };
 pub(crate) use child_runtime::parse_hot_fork_child_runtime_state;
 pub use child_runtime::{QmpHotForkChildRuntimePhase, QmpHotForkChildRuntimeState};
+pub(crate) use diagnostics::parse_hot_fork_child_diagnostic_state;
+pub use diagnostics::{
+    QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND, QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION,
+    QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD, QmpHotForkChildDiagnosticState,
+};
 pub use plugin::{QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory};
 pub(super) use plugin::{
     parse_hot_fork_plugin_barrier_state, parse_hot_fork_plugin_resource_inventory,

@@ -179,6 +179,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0163-crucible-compose-child-resource-contributions.patch",
     "0164-crucible-consume-sealed-child-resource-plans.patch",
     "0165-crucible-compose-child-descriptor-replacements.patch",
+    "0166-crucible-bind-branch-private-child-diagnostics.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

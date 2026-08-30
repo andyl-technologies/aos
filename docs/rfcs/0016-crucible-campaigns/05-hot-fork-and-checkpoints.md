@@ -992,7 +992,7 @@ races and is sufficient for proof bit 3 while retained and quiescent. It does
 not choose child-side descriptor, context, coroutine, or clock disposition;
 those obligations remain separately represented by proof bits 7 and 8.
 
-The retained `PrepareForkTemplate` checkpoint is the version-15 OOB
+The retained `PrepareForkTemplate` checkpoint is the version-16 OOB
 `crucible-hot-fork-template` coordinator:
 
 ```text
@@ -1002,10 +1002,13 @@ CrucibleHotForkTemplateOutcome =
     idle | draining | blocked | prepared | aborted
 
 CrucibleHotForkTemplateResourceStageState {
-    schema-version: u32 = 5,
+    schema-version: u32 = 6,
     template-generation: u64,
     private-ring-staged: bool,
     private-ring-generation: u64,
+    diagnostics-staged: bool,
+    diagnostic-generation: u64,
+    diagnostics-resource-plan-bound: bool,
     plugin-endpoints-staged: bool,
     plugin-endpoint-generation: u64,
     plugin-private-ring-generation: u64,
@@ -1024,7 +1027,7 @@ CrucibleHotForkTemplateResourceStageState {
 }
 
 CrucibleHotForkTemplateState {
-    schema-version: u32 = 15,
+    schema-version: u32 = 16,
     generation: u64,
     outcome: CrucibleHotForkTemplateOutcome,
     transaction-active: bool,
@@ -1055,7 +1058,7 @@ admission barrier, the bottom-half/timer source barrier, and the plugin callback
 barrier, and retains all four while previously admitted work drains. A repeated
 `prepare` reevaluates the retained transaction. Once all four barriers are
 quiescent, QEMU reports `prepared` only when all nine required bits are present
-in the same transaction. Otherwise the version-15 report continues to report
+in the same transaction. Otherwise the version-16 report continues to report
 `draining` and retains the barriers so the host can capture and stage
 branch-private resources without releasing the source-ring barrier. Version 12
 introduced the atomic resource report. It carries the exact private-ring and
@@ -1066,8 +1069,9 @@ For retained endpoints it also requires the captured barrier generation and
 parent/child worker masks to match the exact current quiescent plugin barrier;
 generation or worker-state drift clears both `worker-disposition-bound` and
 `transaction-bound`.
-Version 13 acknowledges plugin-ring proof bit 6 only when both retained stages,
-the shrink-sealed private ring, the endpoint-to-ring edge, the exact quiescent
+Version 13 acknowledges plugin-ring proof bit 6 only when every required
+retained resource stage, the shrink-sealed private ring, the endpoint-to-ring
+edge, the exact quiescent
 plugin-barrier generation, and the complete parent/child worker-disposition
 plan all remain bound to the active template transaction. The nested
 `readiness-proof-acknowledged` value and outer bit 6 are independently derived
@@ -1120,13 +1124,27 @@ targets, or over-limit unions fail before changing the accumulated plan. The
 child transaction holds one fixed rollback record per replacement and consumes
 only the sealed canonical table. Its real-fork regression now replaces an
 independently contributed result endpoint rather than merely retaining that
-source. QMP, block, AIO, logging, and the other supported-profile owners do not
+source. QMP, block, AIO, and the other supported-profile owners do not
 yet provide their concrete contributions, so this still cannot acknowledge
 proof bit 7 or 8.
+Version 16 adds the first non-plugin child contribution. The host creates a
+fresh connected nonblocking Unix stream pair, retains its consumer endpoint,
+and transfers the child endpoint through standard QMP `getfd`. The
+`crucible-hot-fork-child-diagnostics` operation independently duplicates and
+authenticates that endpoint by its Linux `SO_COOKIE`, requires the exact active
+template and private-ring generation, and binds one source-to-stderr
+replacement plus retained stderr target into the sealed child resource plan
+before plugin endpoint staging can commit. The child application adapter
+reauthenticates the resulting connected nonblocking stream after descriptor
+replacement. Plugin endpoints must release first; diagnostics then release the
+QEMU duplicate before the monitor name and host owners. This supplies
+branch-private child diagnostics without enumerating the remaining QMP, block,
+AIO, console, or filesystem resources, invoking `fork(2)`, or acknowledging
+proof bit 7 or 8.
 Endpoint staging rejects a private-ring stage from a different or already
-aborted transaction. A new transaction starts
-only with an empty resource stage. Private-ring and plugin-endpoint staging
-during a transaction is accepted only in the fully held phase, at the exact
+aborted transaction. A new transaction starts only with an empty resource
+stage. Private-ring, diagnostics, and plugin-endpoint staging during a
+transaction is accepted only in the fully held phase, at the exact
 paused/device-flush boundary, and while the retained plugin barrier is
 quiescent. Those retained template resources do not acknowledge mapping and
 descriptor proof bit 7 or child-reinitialization proof bit 8. After abort, the
@@ -1163,9 +1181,10 @@ complete RCU barrier is quiescent. Proof bit 3 is present exactly while the
 transaction remains active and its complete asynchronous-source barrier is
 quiescent. Proof bit 5 is present exactly while the transaction remains active
 and its complete immutable writable-root binding remains retained by the
-quiescent block barrier. Version 14 composes plugin-ring proof bit
-6 from the exact transaction-bound frozen ring, endpoint pair, worker plan, and
-plugin barrier. The version-15 resource-table binding remains nondestructive;
+quiescent block barrier. Version 16 composes plugin-ring proof bit
+6 from the exact transaction-bound frozen ring, diagnostics stream, endpoint
+pair, worker plan, and plugin barrier. The resource-table binding remains
+nondestructive;
 descriptor/mapping proof bit 7 and child-reinitialization proof
 bit 8 remain clear, so a fully drained transaction stays `draining` and cannot
 advertise a usable hot-fork template.

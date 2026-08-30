@@ -85,6 +85,15 @@ enum ChannelCall {
     QmpHotForkPluginBarrier,
     QmpHotForkInstallDescriptor(String, crucible_shmem::SetupRegionBackingIdentity),
     QmpHotForkCloseDescriptor(String, crucible_shmem::SetupRegionBackingIdentity),
+    QmpHotForkInstallDiagnostics {
+        name: String,
+        socket_cookie: u64,
+        template_generation: u64,
+    },
+    QmpHotForkCloseDiagnostics {
+        name: String,
+        socket_cookie: u64,
+    },
     QmpHotForkInstallPluginEndpoints {
         control_name: String,
         wake_name: String,
@@ -163,6 +172,7 @@ struct ScriptedQmpMachineControl {
             )>,
         >,
     >,
+    diagnostic_state: Arc<Mutex<Option<(crate::QmpDescriptorName, u64, u64, bool)>>>,
     fail_descriptor_install: bool,
     fail_descriptor_close: bool,
     fail_endpoint_install: bool,
@@ -701,6 +711,15 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         } else {
             plugin_barrier
         };
+        let mut diagnostics = self.diagnostic_state.lock().unwrap();
+        let Some((_name, _socket_cookie, _template_generation, bound)) = diagnostics.as_mut()
+        else {
+            return Err(QemuNodeChannelError::new(
+                "install hot-fork plugin endpoints",
+                "scripted diagnostics stage is absent",
+            ));
+        };
+        *bound = true;
         Ok(crate::QmpHotForkPluginEndpointState::one_template_staged(
             1,
             1,
@@ -732,7 +751,89 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
                 "injected endpoint close failure",
             ));
         }
+        if let Some((_name, _socket_cookie, _template_generation, bound)) =
+            self.diagnostic_state.lock().unwrap().as_mut()
+        {
+            *bound = false;
+        }
         Ok(())
+    }
+
+    fn install_hot_fork_child_diagnostics(
+        &mut self,
+        name: &crate::QmpDescriptorName,
+        _descriptor: std::os::fd::BorrowedFd<'_>,
+        socket_cookie: u64,
+        template_generation: u64,
+    ) -> Result<crate::QmpHotForkChildDiagnosticState, QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpHotForkInstallDiagnostics {
+                name: name.as_str().to_owned(),
+                socket_cookie,
+                template_generation,
+            });
+        if self.fail_descriptor_install {
+            return Err(QemuNodeChannelError::new(
+                "install hot-fork child diagnostics",
+                "injected descriptor transfer failure",
+            ));
+        }
+        let state = crate::QmpHotForkChildDiagnosticState::one_template_staged(
+            1,
+            template_generation,
+            name.clone(),
+            socket_cookie,
+            32,
+            false,
+        );
+        *self.diagnostic_state.lock().unwrap() =
+            Some((name.clone(), socket_cookie, template_generation, false));
+        Ok(state)
+    }
+
+    fn close_hot_fork_child_diagnostics(
+        &mut self,
+        name: &crate::QmpDescriptorName,
+        socket_cookie: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpHotForkCloseDiagnostics {
+                name: name.as_str().to_owned(),
+                socket_cookie,
+            });
+        if self.fail_descriptor_close {
+            return Err(QemuNodeChannelError::new(
+                "close hot-fork child diagnostics",
+                "injected descriptor close failure",
+            ));
+        }
+        *self.diagnostic_state.lock().unwrap() = None;
+        Ok(())
+    }
+
+    fn query_hot_fork_child_diagnostics(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildDiagnosticState, QemuNodeChannelError> {
+        let state = self.diagnostic_state.lock().unwrap();
+        let (name, socket_cookie, template_generation, bound) =
+            state.as_ref().ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "query hot-fork child diagnostics",
+                    "scripted diagnostics stage is absent",
+                )
+            })?;
+        Ok(crate::QmpHotForkChildDiagnosticState::one_template_staged(
+            1,
+            *template_generation,
+            name.clone(),
+            *socket_cookie,
+            32,
+            *bound,
+        ))
     }
 
     fn query_hot_fork_bottom_half_inventory(
@@ -1295,6 +1396,12 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
     let capture = node.capture_hot_fork_plugin_ring_image(image.canonical_len()?)?;
     let private = node.materialize_hot_fork_private_ring_mapping(capture)?;
     node.stage_hot_fork_private_ring_mapping(private)?;
+    let diagnostics = node.stage_hot_fork_child_diagnostics()?;
+    assert_eq!(
+        diagnostics.state(),
+        crate::QemuHotForkChildDiagnosticStageState::Installed
+    );
+    assert!(!diagnostics.replacement_plan_bound());
 
     let proof = node.stage_hot_fork_plugin_endpoints()?;
     assert_eq!(
@@ -1320,6 +1427,13 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
 
     node.release_hot_fork_plugin_endpoints()?;
     assert!(node.hot_fork_plugin_endpoint_stage().is_none());
+    assert!(
+        !node
+            .hot_fork_child_diagnostic_stage()
+            .ok_or("diagnostics stage disappeared after plugin release")?
+            .replacement_plan_bound()
+    );
+    node.release_hot_fork_child_diagnostics()?;
     node.release_hot_fork_private_ring_mapping()?;
     assert!(recorded(&log).iter().any(|call| {
         matches!(
@@ -1368,6 +1482,7 @@ fn hot_fork_plugin_endpoint_transfer_failure_retains_and_quarantines_owner()
     let capture = node.capture_hot_fork_plugin_ring_image(image.canonical_len()?)?;
     let private = node.materialize_hot_fork_private_ring_mapping(capture)?;
     node.stage_hot_fork_private_ring_mapping(private)?;
+    node.stage_hot_fork_child_diagnostics()?;
 
     let error = node
         .stage_hot_fork_plugin_endpoints()
@@ -1406,6 +1521,7 @@ fn hot_fork_plugin_endpoint_worker_disposition_mismatch_quarantines_owner()
     let capture = node.capture_hot_fork_plugin_ring_image(image.canonical_len()?)?;
     let private = node.materialize_hot_fork_private_ring_mapping(capture)?;
     node.stage_hot_fork_private_ring_mapping(private)?;
+    node.stage_hot_fork_child_diagnostics()?;
 
     let error = node
         .stage_hot_fork_plugin_endpoints()
@@ -1756,6 +1872,7 @@ fn scripted_hot_fork_capture_node(
             plugin_barriers: Some(Arc::new(Mutex::new(plugin_barriers.into_iter().collect()))),
             last_plugin_barrier: Arc::new(Mutex::new(None)),
             private_ring_state: Arc::new(Mutex::new(None)),
+            diagnostic_state: Arc::new(Mutex::new(None)),
             fail_descriptor_install: matches!(descriptor_script, DescriptorScript::InstallFailure),
             fail_descriptor_close: matches!(descriptor_script, DescriptorScript::CloseFailure),
             fail_endpoint_install: matches!(
@@ -1887,6 +2004,7 @@ fn scripted_node_with_fault_events(
             plugin_barriers: None,
             last_plugin_barrier: Arc::new(Mutex::new(None)),
             private_ring_state: Arc::new(Mutex::new(None)),
+            diagnostic_state: Arc::new(Mutex::new(None)),
             fail_descriptor_install: false,
             fail_descriptor_close: false,
             fail_endpoint_install: false,
@@ -1981,6 +2099,7 @@ fn scripted_node_with_coverage(
             plugin_barriers: None,
             last_plugin_barrier: Arc::new(Mutex::new(None)),
             private_ring_state: Arc::new(Mutex::new(None)),
+            diagnostic_state: Arc::new(Mutex::new(None)),
             fail_descriptor_install: false,
             fail_descriptor_close: false,
             fail_endpoint_install: false,
