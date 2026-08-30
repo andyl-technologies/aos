@@ -1879,7 +1879,13 @@ mask. It accepts only empty worker-local state and records equal complete masks
 for parent resume and future child reinitialization. It also binds the two
 retained QEMU source descriptors to the distinct control and wake descriptor
 slots in the sealed plugin resource manifest, without applying either
-replacement. The version-12 template
+replacement. QEMU now also carries a Linux-only internal two-slot replacement
+helper. It validates a pairwise-distinct plan, preserves target descriptor
+flags, retains rollback copies, invokes a caller-supplied exact verifier after
+replacement, restores both old targets on rejection, and reports a poisoned
+disposition when rollback cannot be proved. The helper has no caller yet and
+cannot establish the required immediate-child context or complete inherited-FD
+table. The version-12 template
 report atomically binds both resource mutation generations, that dependency
 edge, and the worker plan to the active transaction;
 after abort it preserves the origin generation but marks the retained stage
@@ -1929,12 +1935,13 @@ rebound the staged endpoint generation in an actual fork child, released child
 admission, or reported a child disposition.
 This remains a retained T-CAM-6.2 subsystem primitive: a pending worker-local
 item is rejected rather than assigned ambiguously, while fork-child descriptor
-inheritance/remapping beyond the now-excluded source ring, invocation of the
-complete recorded disposition plan, host-continuation pairing, child process
-identity, and final ring release are not composed yet. Template-process
-descriptor/endpoint staging and the registered empty-local-state reinitializer
-do not satisfy proof bits 6 through 8. All three remain clear and T-CAM-6.2
-remains unchecked.
+inheritance/remapping beyond the now-excluded source ring and unwired two-slot
+helper, invocation of the complete recorded disposition plan,
+host-continuation pairing, child process identity, and final ring release are
+not composed yet. Template-process descriptor/endpoint staging, the internal
+replacement primitive, and the registered empty-local-state reinitializer do
+not satisfy proof bits 6 through 8. All three remain clear and T-CAM-6.2 remains
+unchecked.
 Patched QEMU now also owns the versioned `PrepareForkTemplate`
 transaction. Its serialized OOB coordinator starts only at the exact
 paused/device-flush boundary, asynchronously closes graph-writer admission and
