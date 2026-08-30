@@ -663,6 +663,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0148-crucible-expose-hot-fork-child-runtime-state.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

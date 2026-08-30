@@ -106,6 +106,12 @@ where
         self.vmstate.query_hot_fork_plugin_resource_inventory()
     }
 
+    fn query_hot_fork_child_runtime(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildRuntimeState, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_child_runtime()
+    }
+
     fn query_hot_fork_plugin_barrier(
         &mut self,
     ) -> Result<crate::QmpHotForkPluginBarrierState, QemuNodeChannelError> {

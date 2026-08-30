@@ -2145,6 +2145,27 @@
         '';
       };
     }
+    {
+      patch = "0148-crucible-expose-hot-fork-child-runtime-state.patch";
+      check = certifyExactPatch {
+        patchName = "0148-crucible-expose-hot-fork-child-runtime-state.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-child-runtime-observation";
+        liveEvidence = ''
+          grep -Fxq 'patch=0148-crucible-expose-hot-fork-child-runtime-state.patch' "$live_result"
+          grep -Fxq 'child_runtime_schema_version=2' "$live_result"
+          grep -Fxq 'child_runtime_stable=true' "$live_result"
+          grep -Fxq 'child_runtime_unregistered_shape=true' "$live_result"
+          grep -Fxq 'child_runtime_readiness_proof_acknowledged=false' "$live_result"
+          grep -Fq 'query-crucible-hot-fork-child-runtime' \
+            ${patchDir}/0148-crucible-expose-hot-fork-child-runtime-state.patch
+          grep -Fq 'report->readiness_proof_acknowledged = false' \
+            ${patchDir}/0148-crucible-expose-hot-fork-child-runtime-state.patch
+          grep -Fq 'manifest.process_generation' \
+            ${patchDir}/0148-crucible-expose-hot-fork-child-runtime-state.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

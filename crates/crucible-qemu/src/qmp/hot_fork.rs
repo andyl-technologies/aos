@@ -11,6 +11,7 @@ use super::{QmpCommandKind, QmpError};
 
 mod bh_timer_barrier;
 mod block_barrier;
+mod child_runtime;
 mod plugin;
 mod plugin_endpoints;
 mod private_rings;
@@ -29,6 +30,8 @@ pub use block_barrier::{
     QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,
     QmpHotForkBlockSnapshotRoot,
 };
+pub(crate) use child_runtime::parse_hot_fork_child_runtime_state;
+pub use child_runtime::{QmpHotForkChildRuntimePhase, QmpHotForkChildRuntimeState};
 pub use plugin::{QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory};
 pub(super) use plugin::{
     parse_hot_fork_plugin_barrier_state, parse_hot_fork_plugin_resource_inventory,
@@ -72,6 +75,8 @@ pub const QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND: &str =
 /// QMP command name used for QEMU's sealed plugin-resource inventory.
 pub const QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND: &str =
     "query-crucible-hot-fork-plugin-resource-inventory";
+/// QMP command name used for QEMU's registered child-runtime observation.
+pub const QMP_QUERY_HOT_FORK_CHILD_RUNTIME_COMMAND: &str = "query-crucible-hot-fork-child-runtime";
 /// QMP command name used for the reversible plugin callback barrier.
 pub const QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND: &str = "crucible-hot-fork-plugin-barrier";
 /// QMP command name used for QEMU's bounded allocated-bottom-half inventory.
@@ -100,6 +105,8 @@ pub const QMP_HOT_FORK_BLOCK_BACKEND_INVENTORY_SCHEMA_VERSION: u32 = 1;
 pub const QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION: u32 = 2;
 /// Version of the QEMU-owned plugin callback-and-ring barrier contract.
 pub const QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION: u32 = 6;
+/// Version of the QEMU-owned child-runtime observation contract.
+pub const QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION: u32 = 2;
 /// Version of the QEMU-owned allocated-bottom-half inventory contract.
 pub const QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION: u32 = 1;
 /// Version of the QEMU-owned mutex ownership inventory contract.

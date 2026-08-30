@@ -20,16 +20,18 @@ use crucible_qemu::{
     QMP_HOT_FORK_REQUIRED_PROOFS, QMP_HOT_FORK_TEMPLATE_COMMAND, QMP_QUERY_CPUS_FAST_COMMAND,
     QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_CHILD_RUNTIME_COMMAND,
+    QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND,
     QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND,
     QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QemuExactSnapshotPolicy, QmpClient,
     QmpCommandKind, QmpDescriptorName, QmpError, QmpGreeting, QmpHotForkBlockSnapshotBinding,
-    QmpHotForkBlockSnapshotBindingError, QmpHotForkPluginEndpointIdentity, QmpHotForkProof,
-    QmpHotForkTemplateOutcome, QmpHotForkThreadDisposition, QmpHotForkTimerClock,
-    QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
+    QmpHotForkBlockSnapshotBindingError, QmpHotForkChildRuntimePhase,
+    QmpHotForkPluginEndpointIdentity, QmpHotForkProof, QmpHotForkTemplateOutcome,
+    QmpHotForkThreadDisposition, QmpHotForkTimerClock, QmpIoTimeoutPolicy, QmpJobPollPolicy,
+    QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 #[cfg(unix)]
 use crucible_shmem::mmap_setup_region;
@@ -654,6 +656,50 @@ fn hot_fork_plugin_resource_inventory_is_exact_and_oob() -> Result<(), Box<dyn E
     assert_eq!(
         oob_execute_name(json_line(&lines, 1)),
         Some(QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND)
+    );
+    Ok(())
+}
+
+#[test]
+fn hot_fork_child_runtime_is_exact_and_oob() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":2,"generation":7,"registered":true,"manifest-consistent":true,"plugin-id":12,"process-generation":10,"phase":"workers-held","callbacks-held":true,"mapping-installed":true,"workers-ready":true,"active":false,"failed":false,"parent-process-generation":9,"child-process-generation":10,"template-generation":3,"private-ring-generation":4,"plugin-endpoint-generation":5,"plugin-barrier-generation":6,"control-socket-cookie":7,"wake-eventfd-id":8,"worker-mask":3,"parked-worker-mask":3,"pending-worker-mask":1,"worker-operations-in-flight":0,"readiness-proof-acknowledged":false}}"#,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
+
+    let runtime = client.query_hot_fork_child_runtime()?;
+    assert_eq!(runtime.generation(), 7);
+    assert!(runtime.registered());
+    assert!(runtime.manifest_consistent());
+    assert_eq!(runtime.plugin_id(), 12);
+    assert_eq!(runtime.process_generation(), 10);
+    assert_eq!(runtime.phase(), QmpHotForkChildRuntimePhase::WorkersHeld);
+    assert!(runtime.callbacks_held());
+    assert!(runtime.mapping_installed());
+    assert!(runtime.workers_ready());
+    assert!(!runtime.active());
+    assert!(!runtime.failed());
+    assert_eq!(runtime.parent_process_generation(), 9);
+    assert_eq!(runtime.child_process_generation(), 10);
+    assert_eq!(runtime.template_generation(), 3);
+    assert_eq!(runtime.private_ring_generation(), 4);
+    assert_eq!(runtime.plugin_endpoint_generation(), 5);
+    assert_eq!(runtime.plugin_barrier_generation(), 6);
+    assert_eq!(runtime.control_socket_cookie(), 7);
+    assert_eq!(runtime.wake_eventfd_id(), 8);
+    assert_eq!(runtime.worker_mask(), 3);
+    assert_eq!(runtime.parked_worker_mask(), 3);
+    assert_eq!(runtime.pending_worker_mask(), 1);
+    assert_eq!(runtime.worker_operations_in_flight(), 0);
+
+    drop(client);
+    let lines = written_json_lines(&audit_snapshot(&audit))?;
+    assert_eq!(
+        oob_execute_name(json_line(&lines, 1)),
+        Some(QMP_QUERY_HOT_FORK_CHILD_RUNTIME_COMMAND)
     );
     Ok(())
 }

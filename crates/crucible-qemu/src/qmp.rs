@@ -40,10 +40,10 @@ pub use hot_fork::{
     QMP_HOT_FORK_BLOCK_BACKEND_NAME_MAX_BYTES, QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
     QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES,
     QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX, QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION,
-    QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES, QMP_HOT_FORK_MUTEX_INVENTORY_MAX,
-    QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND,
-    QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND,
-    QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION,
+    QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES, QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION,
+    QMP_HOT_FORK_MUTEX_INVENTORY_MAX, QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION,
+    QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND, QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION,
+    QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND, QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION,
     QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
     QMP_HOT_FORK_PRIVATE_RINGS_SCHEMA_VERSION, QMP_HOT_FORK_RCU_BARRIER_COMMAND,
     QMP_HOT_FORK_RCU_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_RCU_INVENTORY_MAX,
@@ -54,7 +54,8 @@ pub use hot_fork::{
     QMP_HOT_FORK_TIMER_INVENTORY_MAX, QMP_HOT_FORK_TIMER_INVENTORY_SCHEMA_VERSION,
     QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_CHILD_RUNTIME_COMMAND,
+    QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND, QmpHotForkAioContext, QmpHotForkAioHandler,
@@ -62,23 +63,23 @@ pub use hot_fork::{
     QmpHotForkBlockBackend, QmpHotForkBlockBackendInventory, QmpHotForkBlockBarrierState,
     QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,
     QmpHotForkBlockSnapshotRoot, QmpHotForkBottomHalf, QmpHotForkBottomHalfInventory,
-    QmpHotForkMutex, QmpHotForkMutexInventory, QmpHotForkPluginBarrierState,
-    QmpHotForkPluginEndpointIdentity, QmpHotForkPluginEndpointState,
-    QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState, QmpHotForkProof,
-    QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness,
-    QmpHotForkTemplateOutcome, QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState,
-    QmpHotForkThread, QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer,
-    QmpHotForkTimerClock, QmpHotForkTimerInventory,
+    QmpHotForkChildRuntimePhase, QmpHotForkChildRuntimeState, QmpHotForkMutex,
+    QmpHotForkMutexInventory, QmpHotForkPluginBarrierState, QmpHotForkPluginEndpointIdentity,
+    QmpHotForkPluginEndpointState, QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState,
+    QmpHotForkProof, QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader,
+    QmpHotForkReadiness, QmpHotForkTemplateOutcome, QmpHotForkTemplateResourceStageState,
+    QmpHotForkTemplateState, QmpHotForkThread, QmpHotForkThreadDisposition,
+    QmpHotForkThreadInventory, QmpHotForkTimer, QmpHotForkTimerClock, QmpHotForkTimerInventory,
 };
 use hot_fork::{
     parse_hot_fork_aio_handler_inventory, parse_hot_fork_aio_inventory,
     parse_hot_fork_bh_timer_barrier_state, parse_hot_fork_block_backend_inventory,
     parse_hot_fork_block_barrier_state, parse_hot_fork_bottom_half_inventory,
-    parse_hot_fork_mutex_inventory, parse_hot_fork_plugin_barrier_state,
-    parse_hot_fork_plugin_endpoint_state, parse_hot_fork_plugin_resource_inventory,
-    parse_hot_fork_private_ring_state, parse_hot_fork_rcu_barrier_state,
-    parse_hot_fork_rcu_inventory, parse_hot_fork_readiness, parse_hot_fork_template_state,
-    parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
+    parse_hot_fork_child_runtime_state, parse_hot_fork_mutex_inventory,
+    parse_hot_fork_plugin_barrier_state, parse_hot_fork_plugin_endpoint_state,
+    parse_hot_fork_plugin_resource_inventory, parse_hot_fork_private_ring_state,
+    parse_hot_fork_rcu_barrier_state, parse_hot_fork_rcu_inventory, parse_hot_fork_readiness,
+    parse_hot_fork_template_state, parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
 };
 pub use snapshot_tag::QmpSnapshotTag;
 pub use vmstate_control::QemuQmpVmStateControlChannel;
@@ -917,6 +918,26 @@ where
     ) -> Result<QmpHotForkPluginResourceInventory, QmpError> {
         let response = self.send_command_return(QmpCommand::QueryHotForkPluginResourceInventory)?;
         parse_hot_fork_plugin_resource_inventory(&response.value)
+    }
+
+    /// Returns QEMU's exact registered fork-child runtime state.
+    ///
+    /// The OOB query invokes only the runtime's observational action and binds
+    /// it to the complete plugin resource manifest and current process
+    /// generation. It neither initializes nor releases a child and cannot
+    /// acknowledge hot-fork proof bit 8.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails or the response violates
+    /// the closed schema, registration/manifest relationship, process-
+    /// generation succession, worker masks, phase flags, or inert-template
+    /// shape.
+    pub fn query_hot_fork_child_runtime(
+        &mut self,
+    ) -> Result<QmpHotForkChildRuntimeState, QmpError> {
+        let response = self.send_command_return(QmpCommand::QueryHotForkChildRuntime)?;
+        parse_hot_fork_child_runtime_state(&response.value)
     }
 
     /// Holds the reversible Crucible plugin callback barrier.
@@ -1912,6 +1933,8 @@ pub enum QmpCommandKind {
     QueryHotForkBlockBackendInventory,
     /// QEMU-owned sealed plugin-resource inventory query.
     QueryHotForkPluginResourceInventory,
+    /// QEMU-owned registered fork-child runtime query.
+    QueryHotForkChildRuntime,
     /// QEMU-owned reversible plugin callback-barrier operation.
     HotForkPluginBarrier,
     /// QEMU-owned reversible RCU admission/drain-barrier operation.
@@ -1967,6 +1990,7 @@ impl QmpCommandKind {
             Self::QueryHotForkPluginResourceInventory => {
                 QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND
             }
+            Self::QueryHotForkChildRuntime => QMP_QUERY_HOT_FORK_CHILD_RUNTIME_COMMAND,
             Self::HotForkPluginBarrier => QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND,
             Self::HotForkRcuBarrier => QMP_HOT_FORK_RCU_BARRIER_COMMAND,
             Self::HotForkBhTimerBarrier => QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND,
@@ -2157,6 +2181,7 @@ enum QmpCommand<'a> {
     QueryHotForkAioHandlerInventory,
     QueryHotForkBlockBackendInventory,
     QueryHotForkPluginResourceInventory,
+    QueryHotForkChildRuntime,
     HotForkPluginBarrier {
         action: HotForkPluginBarrierAction,
     },
@@ -2223,6 +2248,7 @@ impl QmpCommand<'_> {
             Self::QueryHotForkPluginResourceInventory => {
                 QmpCommandKind::QueryHotForkPluginResourceInventory
             }
+            Self::QueryHotForkChildRuntime => QmpCommandKind::QueryHotForkChildRuntime,
             Self::HotForkPluginBarrier { .. } => QmpCommandKind::HotForkPluginBarrier,
             Self::HotForkRcuBarrier { .. } => QmpCommandKind::HotForkRcuBarrier,
             Self::HotForkBhTimerBarrier { .. } => QmpCommandKind::HotForkBhTimerBarrier,
@@ -2314,6 +2340,9 @@ impl QmpCommand<'_> {
             }),
             Self::QueryHotForkPluginResourceInventory => json!({
                 "exec-oob": QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND,
+            }),
+            Self::QueryHotForkChildRuntime => json!({
+                "exec-oob": QMP_QUERY_HOT_FORK_CHILD_RUNTIME_COMMAND,
             }),
             Self::HotForkPluginBarrier { action } => json!({
                 "exec-oob": QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND,

@@ -2435,6 +2435,29 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   clear. `T-CAM-6.2` remains unchecked.
 - **Risk:** F.
 
+### crucible-hot-fork-child-runtime-observation — expose exact child state
+
+- **Patch:** `0148-crucible-expose-hot-fork-child-runtime-state.patch`.
+- **Enforces:** [HFORK-3], [HFORK-8], [HFORK-9], [HFORK-11], [HFORK-12].
+- **Mechanism:** the OOB
+  `query-crucible-hot-fork-child-runtime` command exposes version 2 of QEMU's
+  process-local registered child-runtime inventory. The report binds the
+  callback registration to the complete plugin resource manifest and current
+  process generation, then carries the exact phase, held/reconstructed flags,
+  parent/child generations, staged resource generations, authenticated
+  endpoint identities, and worker disposition state. Repeated identical
+  observations retain one generation; registration or a status mutation
+  advances it with checked overflow.
+- **Micro-test:** typed Rust parser and QMP transport tests require the exact
+  field set, OOB command, manifest/generation relation, phase-specific basis,
+  worker masks, immediate-successor process generation, and permanently false
+  readiness acknowledgement. The live gate proves stock rejection and an exact
+  stable unregistered response from patched QEMU.
+- **Inertness:** the query invokes only the registered operation's observational
+  action. It does not fork, initialize, release, or admit a child and never
+  acknowledges readiness bits 6 through 8. `T-CAM-6.2` remains unchecked.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
