@@ -111,6 +111,8 @@ struct HotForkChildWorkerOwner {
 /// Exact QEMU-staged resource basis installed into one fork child.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct HotForkChildResourceBinding {
+    parent_process_generation: u64,
+    child_process_generation: u64,
     template_generation: u64,
     private_ring_generation: u64,
     plugin_endpoint_generation: u64,
@@ -122,6 +124,8 @@ struct HotForkChildResourceBinding {
 impl From<crate::QemuPluginHotForkChildPlan> for HotForkChildResourceBinding {
     fn from(plan: crate::QemuPluginHotForkChildPlan) -> Self {
         Self {
+            parent_process_generation: plan.parent_process_generation,
+            child_process_generation: plan.child_process_generation,
             template_generation: plan.template_generation,
             private_ring_generation: plan.private_ring_generation,
             plugin_endpoint_generation: plan.plugin_endpoint_generation,
@@ -159,6 +163,9 @@ enum HotForkChildRuntimeError {
     /// The callback, ring, or worker barrier was not fully quiescent.
     #[error("fork-child runtime requires the complete held template barrier")]
     TemplateNotQuiescent,
+    /// The staged child generation was not the exact successor of this runtime.
+    #[error("fork-child process generation did not exactly advance the template")]
+    ProcessGeneration,
     /// The private setup-region mapping could not be installed and revalidated.
     #[error("fork-child private setup mapping failed")]
     Mapping {
@@ -350,6 +357,7 @@ pub(crate) struct OwnedCallbackRuntimeState {
     child_mapping_installed: AtomicBool,
     child_binding: Mutex<Option<HotForkChildResourceBinding>>,
     child_workers: Mutex<Option<HotForkChildWorkerOwner>>,
+    process_generation: u64,
     slot_index: u32,
     control_fd: std::os::fd::RawFd,
     request_shutdown: QemuRequestShutdownFn,
@@ -363,6 +371,7 @@ impl OwnedCallbackRuntimeState {
         worker_mask: u64,
         setup: PluginSetupCompletion,
         teardown_router: Arc<LiveRuntimeTeardownRouter>,
+        process_generation: u64,
         slot_index: u32,
         control_fd: std::os::fd::RawFd,
         request_shutdown: QemuRequestShutdownFn,
@@ -380,6 +389,7 @@ impl OwnedCallbackRuntimeState {
             child_mapping_installed: AtomicBool::new(false),
             child_binding: Mutex::new(None),
             child_workers: Mutex::new(None),
+            process_generation,
             slot_index,
             control_fd,
             request_shutdown,
@@ -460,6 +470,13 @@ impl OwnedCallbackRuntimeState {
         {
             return Err(HotForkChildRuntimeError::TemplateNotQuiescent);
         }
+        if binding.parent_process_generation != self.process_generation
+            || binding.parent_process_generation == 0
+            || binding.parent_process_generation.checked_add(1)
+                != Some(binding.child_process_generation)
+        {
+            return Err(HotForkChildRuntimeError::ProcessGeneration);
+        }
 
         let control = crate::abi::duplicate_control_stream(self.control_fd)
             .map_err(|source| HotForkChildRuntimeError::DuplicateControl { source })?;
@@ -494,6 +511,13 @@ impl OwnedCallbackRuntimeState {
             .map_err(|source| HotForkChildRuntimeError::WorkerReset { source })?;
 
         if let Some(live) = self.live_vcpu_time.as_mut() {
+            live.as_mut()
+                .get_mut()
+                .rebind_hot_fork_process_generation(
+                    binding.parent_process_generation,
+                    binding.child_process_generation,
+                )
+                .map_err(|_source| HotForkChildRuntimeError::ProcessGeneration)?;
             live.as_mut()
                 .get_mut()
                 .reinitialize_hot_fork_child_workers(Arc::clone(&self.workers))
@@ -555,6 +579,7 @@ impl OwnedCallbackRuntimeState {
             return Err(HotForkChildRuntimeError::WorkerOwner);
         }
         *installed_binding = Some(binding);
+        self.process_generation = binding.child_process_generation;
         self.child_runtime_state
             .store(CHILD_RUNTIME_WORKERS_HELD, Ordering::Release);
         Ok(self.hot_fork_child_snapshot())
@@ -1072,6 +1097,7 @@ impl RequiredOwnedCallbacksRegistered {
                 plugin_worker_mask(args),
                 setup,
                 LiveRuntimeTeardownRouter::new(teardown_sender),
+                args.process_generation(),
                 args.slot(),
                 args.sim_fd(),
                 test_hot_fork_child_request_shutdown,
@@ -1576,6 +1602,7 @@ extern "C" fn crucible_qemu_plugin_hot_fork_child_runtime(
                 || usize::try_from(plan.struct_size).ok() != Some(expected_size)
                 || plan.flags != 0
                 || plan.reserved != 0
+                || !hot_fork_child_process_generation_matches(&plan, state.process_generation)
                 || plan.template_generation == 0
                 || plan.private_ring_generation == 0
                 || plan.plugin_endpoint_generation == 0
@@ -1644,6 +1671,8 @@ extern "C" fn crucible_qemu_plugin_hot_fork_child_runtime(
             struct_size,
             flags,
             phase: u32::from(snapshot.phase),
+            parent_process_generation: snapshot.binding.parent_process_generation,
+            child_process_generation: snapshot.binding.child_process_generation,
             template_generation: snapshot.binding.template_generation,
             private_ring_generation: snapshot.binding.private_ring_generation,
             plugin_endpoint_generation: snapshot.binding.plugin_endpoint_generation,
@@ -1664,6 +1693,15 @@ const HOT_FORK_ENDPOINT_FDINFO_MAX_BYTES: u64 = 4_096;
 fn hot_fork_child_endpoint_identity_matches(plan: &crate::QemuPluginHotForkChildPlan) -> bool {
     hot_fork_control_socket_cookie(plan.control_fd).ok() == Some(plan.control_socket_cookie)
         && hot_fork_wake_eventfd_id(plan.wake_fd).ok() == Some(plan.wake_eventfd_id)
+}
+
+fn hot_fork_child_process_generation_matches(
+    plan: &crate::QemuPluginHotForkChildPlan,
+    current: u64,
+) -> bool {
+    current != 0
+        && plan.parent_process_generation == current
+        && current.checked_add(1) == Some(plan.child_process_generation)
 }
 
 fn hot_fork_control_socket_cookie(descriptor: std::os::fd::RawFd) -> io::Result<u64> {
@@ -1753,6 +1791,7 @@ fn hot_fork_child_runtime_status(error: HotForkChildRuntimeError) -> std::os::ra
             .filter(|errno| *errno > 0)
             .map_or(-libc::EIO, |errno| -errno),
         HotForkChildRuntimeError::TemplateNotQuiescent
+        | HotForkChildRuntimeError::ProcessGeneration
         | HotForkChildRuntimeError::Mapping { .. }
         | HotForkChildRuntimeError::TeardownRoute
         | HotForkChildRuntimeError::WorkerReset { .. }
@@ -2177,6 +2216,7 @@ where
         plugin_worker_mask(&args),
         setup,
         Arc::clone(&teardown_router),
+        args.process_generation(),
         args.slot(),
         args.sim_fd(),
         capabilities.request_shutdown,

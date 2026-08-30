@@ -999,6 +999,38 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
             ..exact_endpoint_plan
         }
     ));
+    let exact_generation_plan = crate::QemuPluginHotForkChildPlan {
+        parent_process_generation: 1,
+        child_process_generation: 2,
+        ..crate::QemuPluginHotForkChildPlan::default()
+    };
+    assert!(hot_fork_child_process_generation_matches(
+        &exact_generation_plan,
+        1,
+    ));
+    assert!(!hot_fork_child_process_generation_matches(
+        &crate::QemuPluginHotForkChildPlan {
+            parent_process_generation: 2,
+            child_process_generation: 3,
+            ..exact_generation_plan
+        },
+        1,
+    ));
+    assert!(!hot_fork_child_process_generation_matches(
+        &crate::QemuPluginHotForkChildPlan {
+            child_process_generation: 3,
+            ..exact_generation_plan
+        },
+        1,
+    ));
+    assert!(!hot_fork_child_process_generation_matches(
+        &crate::QemuPluginHotForkChildPlan {
+            parent_process_generation: u64::MAX,
+            child_process_generation: 0,
+            ..exact_generation_plan
+        },
+        u64::MAX,
+    ));
     assert_eq!(
         invoke_hot_fork_child_runtime(
             crate::QEMU_PLUGIN_HOT_FORK_CHILD_INITIALIZE,
@@ -1018,56 +1050,80 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     );
     assert_eq!(
         std::mem::size_of::<crate::QemuPluginHotForkChildPlan>(),
-        112
+        128
     );
     assert_eq!(
         std::mem::size_of::<crate::QemuPluginHotForkChildStatus>(),
-        96
+        112
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, parent_process_generation),
+        16
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, child_process_generation),
+        24
     );
     assert_eq!(
         std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, template_generation),
-        16
+        32
     );
     assert_eq!(
         std::mem::offset_of!(
             crate::QemuPluginHotForkChildPlan,
             plugin_endpoint_generation
         ),
-        32
+        48
     );
     assert_eq!(
         std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, control_socket_cookie),
-        56
-    );
-    assert_eq!(
-        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, shmem_device),
         72
     );
     assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, shmem_device),
+        88
+    );
+    assert_eq!(
         std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, private_ring_fd),
-        96
+        112
+    );
+    assert_eq!(
+        std::mem::offset_of!(
+            crate::QemuPluginHotForkChildStatus,
+            parent_process_generation
+        ),
+        16
+    );
+    assert_eq!(
+        std::mem::offset_of!(
+            crate::QemuPluginHotForkChildStatus,
+            child_process_generation
+        ),
+        24
     );
     assert_eq!(
         std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, template_generation),
-        16
+        32
     );
     assert_eq!(
         std::mem::offset_of!(
             crate::QemuPluginHotForkChildStatus,
             plugin_endpoint_generation
         ),
-        32
-    );
-    assert_eq!(
-        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, control_socket_cookie),
         48
     );
     assert_eq!(
-        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, worker_mask),
+        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, control_socket_cookie),
         64
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, worker_mask),
+        80
     );
     assert_eq!(child.flags, 0);
     assert_eq!(child.phase, u32::from(CHILD_RUNTIME_TEMPLATE));
+    assert_eq!(child.parent_process_generation, 0);
+    assert_eq!(child.child_process_generation, 0);
     assert_eq!(child.template_generation, 0);
     assert_eq!(child.private_ring_generation, 0);
     assert_eq!(child.plugin_endpoint_generation, 0);

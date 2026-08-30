@@ -1624,6 +1624,7 @@ in
           gate=gate:hot-fork-readiness
           patch=0145-crucible-exclude-source-rings-from-fork-children.patch
           patch=0146-crucible-register-hot-fork-child-runtime.patch
+          patch=0147-crucible-bind-hot-fork-child-process-generation.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3

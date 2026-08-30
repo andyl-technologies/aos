@@ -1663,7 +1663,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-plugin-callback-barrier";
         liveEvidence = ''
-          grep -Fxq 'plugin_barrier_schema_version=5' "$live_result"
+          grep -Fxq 'plugin_barrier_schema_version=6' "$live_result"
           grep -Fxq 'plugin_barrier_stable=true' "$live_result"
           grep -Fxq 'plugin_barrier_unregistered_shape=true' "$live_result"
           grep -Fxq 'plugin_barrier_release_unregistered_rejected=true' "$live_result"
@@ -1847,7 +1847,7 @@
         evidenceName = "live-qemu-hot-fork-ring-producer-barrier";
         liveEvidence = ''
           grep -Fxq 'patch=0144-crucible-bind-hot-fork-worker-dispositions.patch' "$live_result"
-          grep -Fxq 'plugin_barrier_schema_version=5' "$live_result"
+          grep -Fxq 'plugin_barrier_schema_version=6' "$live_result"
           grep -Fxq 'plugin_barrier_unregistered_shape=true' "$live_result"
           grep -Fxq 'plugin_ring_proof_acknowledged=false' "$live_result"
           grep -Fxq 'template_coordinator_schema_version=12' "$live_result"
@@ -1884,7 +1884,7 @@
         evidenceName = "live-qemu-hot-fork-plugin-worker-barrier";
         liveEvidence = ''
           grep -Fxq 'patch=0144-crucible-bind-hot-fork-worker-dispositions.patch' "$live_result"
-          grep -Fxq 'plugin_barrier_schema_version=5' "$live_result"
+          grep -Fxq 'plugin_barrier_schema_version=6' "$live_result"
           grep -Fxq 'plugin_worker_mask_bound=true' "$live_result"
           grep -Fxq 'plugin_worker_parking_bound=true' "$live_result"
           grep -Fxq 'plugin_worker_queue_cloning=false' "$live_result"
@@ -1906,7 +1906,7 @@
         evidenceName = "live-qemu-hot-fork-ring-consumer-barrier";
         liveEvidence = ''
           grep -Fxq 'patch=0144-crucible-bind-hot-fork-worker-dispositions.patch' "$live_result"
-          grep -Fxq 'plugin_barrier_schema_version=5' "$live_result"
+          grep -Fxq 'plugin_barrier_schema_version=6' "$live_result"
           grep -Fxq 'plugin_ring_consumer_admission_bound=true' "$live_result"
           grep -Fxq 'plugin_ring_proof_acknowledged=false' "$live_result"
           grep -Fq 'ring_consumers_in_flight' \
@@ -1955,7 +1955,7 @@
         evidenceName = "live-qemu-hot-fork-worker-local-state";
         liveEvidence = ''
           grep -Fxq 'patch=0144-crucible-bind-hot-fork-worker-dispositions.patch' "$live_result"
-          grep -Fxq 'plugin_barrier_schema_version=5' "$live_result"
+          grep -Fxq 'plugin_barrier_schema_version=6' "$live_result"
           grep -Fxq 'plugin_worker_pending_local_bound=true' "$live_result"
           grep -Fxq 'plugin_ring_proof_acknowledged=false' "$live_result"
           grep -Fxq 'template_coordinator_schema_version=12' "$live_result"
@@ -2120,6 +2120,28 @@
             ${patchDir}/0146-crucible-register-hot-fork-child-runtime.patch
           grep -Fq 'previous_status.plugin_endpoint_generation' \
             ${patchDir}/0146-crucible-register-hot-fork-child-runtime.patch
+        '';
+      };
+    }
+    {
+      patch = "0147-crucible-bind-hot-fork-child-process-generation.patch";
+      check = certifyExactPatch {
+        patchName = "0147-crucible-bind-hot-fork-child-process-generation.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-child-process-generation";
+        liveEvidence = ''
+          grep -Fxq 'patch=0147-crucible-bind-hot-fork-child-process-generation.patch' "$live_result"
+          grep -Fxq 'template_ready=false' "$live_result"
+          grep -Fq 'QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PLAN_VERSION 2' \
+            ${patchDir}/0147-crucible-bind-hot-fork-child-process-generation.patch
+          grep -Fq 'parent_process_generation' \
+            ${patchDir}/0147-crucible-bind-hot-fork-child-process-generation.patch
+          grep -Fq 'child_process_generation' \
+            ${patchDir}/0147-crucible-bind-hot-fork-child-process-generation.patch
+          grep -Fq 'qemu_crucible_fault_lifecycle_rebind_process_generation' \
+            ${patchDir}/0147-crucible-bind-hot-fork-child-process-generation.patch
+          grep -Fq 'qemu_crucible_fault_lifecycle_process_generation' \
+            ${patchDir}/0147-crucible-bind-hot-fork-child-process-generation.patch
         '';
       };
     }

@@ -1902,16 +1902,20 @@ backing identity only after validation, and routes callback teardown signals
 through a sender that can be replaced while the callback and worker barriers
 are held. A focused regression proves a sender retained by callback state stops
 addressing the template receiver and reaches the replacement receiver. QEMU and
-the plugin now additionally register a fixed version-1 child-runtime plan and
+the plugin now additionally register a fixed version-2 child-runtime plan and
 status ABI. The plan and echoed status bind the exact template, private-ring,
 endpoint, plugin-barrier, Linux endpoint-identity, mapping, descriptor, and
-worker basis. The plugin operation independently authenticates both kernel
+worker basis. It also binds the template's nonzero process generation to its
+checked immediate successor. QEMU advances the fault/evidence lifecycle
+generation before reconstruction, while the plugin independently advances its
+live device owner and echoes the same immutable pair. Zero, stale, skipped, and
+overflowed generations fail closed. The plugin operation independently authenticates both kernel
 endpoint identities, validates the exact staged mapping and descriptor basis,
 installs and revalidates the private setup region, resets
 only a complete inherited parked-worker set, replaces the callback route, and
 starts fresh held control, teardown, and optional fingerprint workers. The
 operation is retained but QEMU has not yet invoked it from the fork transaction,
-rebound the staged endpoint generation and process generation, released child
+rebound the staged endpoint generation in an actual fork child, released child
 admission, or reported a child disposition.
 This remains a retained T-CAM-6.2 subsystem primitive: a pending worker-local
 item is rejected rather than assigned ambiguously, while fork-child descriptor
