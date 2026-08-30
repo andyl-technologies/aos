@@ -1021,6 +1021,13 @@
       enforces = "HFORK-3,HFORK-4,HFORK-8,HFORK-9,HFORK-12";
       capability = "QEMU and the plugin share a fixed version-1 child-runtime ABI that binds the exact template, private-ring, endpoint, plugin-barrier, kernel endpoint, mapping, descriptor, and worker basis while retaining the reconstruction callback without invoking a child transaction or acknowledging readiness bits 6 through 8";
     }
+    {
+      file = "0147-crucible-bind-hot-fork-child-process-generation.patch";
+      catalogName = "crucible-hot-fork-child-process-generation";
+      class = "F";
+      enforces = "HFORK-3,HFORK-8,HFORK-9,HFORK-11,HFORK-12";
+      capability = "the fixed version-2 child-runtime ABI advances one exact nonzero process generation in both QEMU lifecycle state and the plugin live-device owner, and rejects stale, skipped, overflowed, or drifting generation bases without invoking a child transaction or acknowledging readiness bits 6 through 8";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

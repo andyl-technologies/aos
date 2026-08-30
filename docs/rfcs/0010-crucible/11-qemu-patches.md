@@ -2414,6 +2414,27 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   remains unchecked.
 - **Risk:** F.
 
+### crucible-hot-fork-child-process-generation — bind one child incarnation
+
+- **Patch:** `0147-crucible-bind-hot-fork-child-process-generation.patch`.
+- **Enforces:** [HFORK-3], [HFORK-8], [HFORK-9], [HFORK-11], [HFORK-12].
+- **Mechanism:** version 2 of the fixed child-runtime plan carries the exact
+  nonzero process generation sealed by the template manifest and the checked
+  immediate successor assigned to the child. QEMU rejects zero, overflow,
+  skipped, or stale parents before invoking reconstruction, advances its
+  lifecycle generation, and requires every later status to retain that exact
+  successor. The plugin independently validates the same pair against its
+  process-local owner, advances its live device generation only during the
+  one-shot held transition, and echoes both generations in status.
+- **Micro-test:** Rust ABI tests freeze the version-2 layout and exercise exact,
+  stale-parent, skipped-child, and overflow pairs. Patch micro-tests require the
+  QEMU-side manifest comparison, lifecycle rebind, and query/release drift
+  checks while the live readiness gate remains false.
+- **Inertness:** the registered operation still has no QEMU fork-transaction
+  caller, so no parent process is rebound and readiness bits 6 through 8 remain
+  clear. `T-CAM-6.2` remains unchecked.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

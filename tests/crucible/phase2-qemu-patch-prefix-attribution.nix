@@ -659,6 +659,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0147-crucible-bind-hot-fork-child-process-generation.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

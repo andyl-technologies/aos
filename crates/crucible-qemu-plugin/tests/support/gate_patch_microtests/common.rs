@@ -160,6 +160,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0144-crucible-bind-hot-fork-worker-dispositions.patch",
     "0145-crucible-exclude-source-rings-from-fork-children.patch",
     "0146-crucible-register-hot-fork-child-runtime.patch",
+    "0147-crucible-bind-hot-fork-child-process-generation.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

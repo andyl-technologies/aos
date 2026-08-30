@@ -449,9 +449,9 @@ pub const QEMU_PLUGIN_HOT_FORK_CHILD_QUERY: u32 = 2;
 /// Fork-child runtime callback action that releases reconstructed workers.
 pub const QEMU_PLUGIN_HOT_FORK_CHILD_RELEASE: u32 = 3;
 /// Current fixed-layout fork-child runtime plan schema.
-pub const QEMU_PLUGIN_HOT_FORK_CHILD_PLAN_VERSION: u32 = 1;
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_PLAN_VERSION: u32 = 2;
 /// Current fixed-layout fork-child runtime status schema.
-pub const QEMU_PLUGIN_HOT_FORK_CHILD_STATUS_VERSION: u32 = 1;
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_STATUS_VERSION: u32 = 2;
 /// Child status phase before this process attempts reconstruction.
 pub const QEMU_PLUGIN_HOT_FORK_CHILD_PHASE_TEMPLATE: u32 = 0;
 /// Child status phase while the one-shot reconstruction call owns mutation.
@@ -477,7 +477,7 @@ pub const QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_FAILED: u32 = 1_u32 << 4;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct QemuPluginHotForkChildPlan {
-    /// Plan schema version, currently one.
+    /// Plan schema version, currently two.
     pub schema_version: u32,
     /// Exact C ABI structure size.
     pub struct_size: u32,
@@ -485,6 +485,10 @@ pub struct QemuPluginHotForkChildPlan {
     pub flags: u32,
     /// Reserved field that must remain zero.
     pub reserved: u32,
+    /// Exact process generation retained by the fork template.
+    pub parent_process_generation: u64,
+    /// Exact successor process generation assigned to this child.
+    pub child_process_generation: u64,
     /// Exact template transaction generation that admitted every staged resource.
     pub template_generation: u64,
     /// Exact branch-private ring mutation generation.
@@ -519,7 +523,7 @@ pub struct QemuPluginHotForkChildPlan {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct QemuPluginHotForkChildStatus {
-    /// Status schema version, currently one.
+    /// Status schema version, currently two.
     pub schema_version: u32,
     /// Exact C ABI structure size.
     pub struct_size: u32,
@@ -527,6 +531,10 @@ pub struct QemuPluginHotForkChildStatus {
     pub flags: u32,
     /// Closed internal child-runtime phase.
     pub phase: u32,
+    /// Exact process generation inherited from the fork template.
+    pub parent_process_generation: u64,
+    /// Exact successor process generation installed in this child.
+    pub child_process_generation: u64,
     /// Exact template transaction generation installed in this child.
     pub template_generation: u64,
     /// Exact branch-private ring generation installed in this child.

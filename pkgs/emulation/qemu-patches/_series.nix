@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "5774b272645839595b78fedaa9bd57055859c2d8e31ab16520448373f9db54a5";
+  patchBranchBundleSha256 = "8e259b48a29115779b4a0bd1d266471e1cc0eafba68169641e875daac5b231c2";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "23d9630233d07787bdd70518edafb3344a91b068";
+  patchBranchHeadCommit = "c2e0bf4fe2f445566ad53826f79e7f0ddddf103f";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1379,7 +1379,7 @@ let
     {
       file = "0145-crucible-exclude-source-rings-from-fork-children.patch";
       branchSubject = "crucible: exclude source rings from fork children";
-      branchCommit = "c1c1791b2604d3c1f3702085c821dc32d81a15a2";
+      branchCommit = "6df033a3865051191872874935ce71e3c90bc4e4";
       branchTree = "d4f9d4ca3ec6122c349f2348232b4876204c4487";
       catalogName = "crucible-hot-fork-source-ring-noninheritance";
       class = "F";
@@ -1389,12 +1389,22 @@ let
     {
       file = "0146-crucible-register-hot-fork-child-runtime.patch";
       branchSubject = "crucible: register hot-fork child runtime";
-      branchCommit = "23d9630233d07787bdd70518edafb3344a91b068";
+      branchCommit = "8b3ce9670d7f45611036606a0bcf0c6f1d1b707e";
       branchTree = "ff5cd5015e3f3c2008effe6b8b91ce6384304847";
       catalogName = "crucible-hot-fork-child-runtime-registration";
       class = "F";
       enforces = "HFORK-3,HFORK-4,HFORK-8,HFORK-9,HFORK-12";
       capability = "QEMU and the plugin share a fixed version-1 child-runtime plan and status ABI that binds and echoes the exact template, private-ring, endpoint, plugin-barrier, kernel endpoint, mapping, descriptor, and worker basis; QEMU retains the exact process-lifetime reconstruction callback, and the plugin can install a validated private ring mapping and rebuild held workers without yet invoking the callback from the fork transaction or acknowledging readiness bits 6 through 8";
+    }
+    {
+      file = "0147-crucible-bind-hot-fork-child-process-generation.patch";
+      branchSubject = "crucible: bind hot-fork child process generation";
+      branchCommit = "c2e0bf4fe2f445566ad53826f79e7f0ddddf103f";
+      branchTree = "c7d18a0a9bf6ba6a78a0cfd99e54282998323697";
+      catalogName = "crucible-hot-fork-child-process-generation";
+      class = "F";
+      enforces = "HFORK-3,HFORK-8,HFORK-9,HFORK-11,HFORK-12";
+      capability = "the version-2 child-runtime plan binds the exact nonzero template process generation to its checked immediate successor; QEMU advances its fault/evidence lifecycle generation before reconstruction, the plugin independently advances its live device owner, and status/query/release must retain that exact generation basis without yet invoking the callback from a fork transaction or acknowledging readiness bits 6 through 8";
     }
   ];
   catalogOnlyCapabilities = [

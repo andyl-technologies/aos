@@ -209,6 +209,20 @@
         fullSourceNeedle = "bool terminal_cursor = !exact_boundary && cpu &&";
       }
     ];
+    "0136-crucible-seal-hot-fork-plugin-workers.patch" = [
+      {
+        identifier = "QEMU_PLUGIN_CRUCIBLE_WORKER_ALL";
+        path = "include/qemu/qemu-plugin.h";
+        fullSourceNeedle =
+          "#define QEMU_PLUGIN_CRUCIBLE_WORKER_ALL ((UINT64_C(1) << 3) - 1)";
+      }
+      {
+        identifier = "QEMU_PLUGIN_CRUCIBLE_WORKER_REQUIRED";
+        path = "include/qemu/qemu-plugin.h";
+        fullSourceNeedle =
+          "#define QEMU_PLUGIN_CRUCIBLE_WORKER_REQUIRED ((UINT64_C(1) << 2) - 1)";
+      }
+    ];
   };
 
   # These patches intentionally change QEMU's executable test corpus rather
