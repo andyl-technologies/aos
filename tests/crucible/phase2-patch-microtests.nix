@@ -2641,6 +2641,29 @@
         '';
       };
     }
+    {
+      patch = "0170-crucible-report-complete-child-qmp-disposition.patch";
+      check = certifyExactPatch {
+        patchName = "0170-crucible-report-complete-child-qmp-disposition.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-child-qmp-disposition-report";
+        liveEvidence = ''
+          grep -Fxq 'patch=0170-crucible-report-complete-child-qmp-disposition.patch' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=18' "$live_result"
+          grep -Fxq 'template_resource_stage_schema_version=8' "$live_result"
+          grep -Fxq 'child_qmp_schema_version=2' "$live_result"
+          grep -Fxq 'child_qmp_initially_absent=true' "$live_result"
+          grep -Fq 'qemu_crucible_hot_fork_qmp_child_reinitializer_complete' \
+            ${patchDir}/0170-crucible-report-complete-child-qmp-disposition.patch
+          grep -Fq 'report->disposition_complete =' \
+            ${patchDir}/0170-crucible-report-complete-child-qmp-disposition.patch
+          grep -Fq 'current retained QMP endpoint contract version, currently 2' \
+            ${patchDir}/0170-crucible-report-complete-child-qmp-disposition.patch
+          grep -Fq 'readiness_proof_acknowledged = false' \
+            ${patchDir}/0170-crucible-report-complete-child-qmp-disposition.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =
