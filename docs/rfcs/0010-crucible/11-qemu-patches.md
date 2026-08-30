@@ -2823,8 +2823,8 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   and a tampered sealed table without consumption; a second child application
   is rejected.
 - **Inertness:** no production caller invokes `fork(2)` or this destructive
-  adapter, and the retained coordinator still supplies only the plugin
-  contribution. Complete QMP, block, AIO, and other supported-profile resource
+  adapter, and the retained coordinator still supplies only the plugin and
+  diagnostics contributions. Complete QMP, block, AIO, and other supported-profile resource
   registration, host-continuation pairing, guest-admission release, and
   readiness acknowledgements for bits 7 and 8 remain absent. `T-CAM-6.1`
   through `T-CAM-6.3` remain incomplete.
@@ -2850,11 +2850,37 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   real-fork sealed-plan path independently contributes a result-pipe
   replacement, then reports success only through the installed target while
   the source is absent from the final child table.
-- **Inertness:** no production subsystem yet supplies QMP, block, AIO, logging,
-  or other non-plugin replacements, and no production caller invokes the fork
+- **Inertness:** no production subsystem yet supplies QMP, block, AIO, or the
+  remaining non-plugin replacements, and no production caller invokes the fork
   transaction. Complete supported-profile registration, host-continuation
   pairing, guest-admission release, and readiness acknowledgements for bits 7
   and 8 remain absent. `T-CAM-6.1` through `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-branch-private-child-diagnostics — bind private stderr
+
+- **Patch:** `0166-crucible-bind-branch-private-child-diagnostics.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** QEMU duplicates one standard-QMP `getfd` entry only under the
+  exact active template and private-ring generation, authenticates the
+  connected AF_UNIX stream by Linux `SO_COOKIE`, makes it nonblocking, and
+  contributes one source-to-stderr replacement plus retained target to the
+  canonical sealed child resource plan. Plugin endpoint commitment requires
+  and seals this contribution. The immediate-child adapter reauthenticates the
+  resulting stderr stream after applying the descriptor union. Exact cleanup
+  releases plugin endpoints, the QEMU diagnostics duplicate, the monitor name,
+  and the host owners in reverse order.
+- **Micro-test:** the real-fork resource-plan path installs a fresh diagnostics
+  socket at stderr and proves the child authenticates it while the parent keeps
+  its original stderr. Composition tests require the exact diagnostics basis,
+  include it in global descriptor bounds, and reject malformed or missing
+  contributions. Typed host tests cover strict schema, command serialization,
+  kernel identity, template binding, and release ordering.
+- **Inertness:** no production fork caller or bounded diagnostics consumer uses
+  the retained endpoint. QMP, block, AIO, console, filesystem, and the remaining
+  supported-profile resource contributions are still absent, so readiness bits
+  7 and 8 and `T-CAM-6.1` through `T-CAM-6.3` remain incomplete.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
