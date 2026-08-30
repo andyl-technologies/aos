@@ -897,6 +897,20 @@ rejects the child. The production fork coordinator has not yet composed this
 result with the staged resource manifest, child reinitialization, and readiness
 report, so proof bit 7 remains clear.
 
+The internal child path now orders those operations through one composed
+resource transaction. It preflights the complete retained descriptor and
+writable-shared mapping tables before mutation, closes descriptor admission,
+applies the exact endpoint replacements and descriptor table, invokes one
+reinitializer that must leave recreated workers and callbacks held, and only
+then authenticates the resulting mapping table. A real-fork regression
+reconstructs one exact `MADV_DONTFORK` mapping after descriptor closure and
+requires all three recorded phases. An unretained-backing preflight leaves the
+active transaction and every endpoint unchanged and never calls the
+reinitializer. This operation remains unwired to QEMU's registered plugin
+runtime and covers only the explicitly supplied resources. It neither pairs
+the host continuation nor releases guest admission, so proof bits 7 and 8
+remain clear.
+
 At that checkpoint this was not yet the complete plugin-ring proof.
 Template-bound staging rejects
 a parked worker that retains a received trigger or queued fingerprint work,

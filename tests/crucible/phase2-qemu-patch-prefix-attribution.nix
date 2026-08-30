@@ -699,6 +699,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0157-crucible-compose-fork-child-resource-disposition.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
