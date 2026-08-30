@@ -156,6 +156,7 @@ int main(void) {
   BOOL javaMenu = [menu isJavaMenu];
   JRSAccessibilityUnregisterUniqueIdForUIElement(nil);
   JRSUIControlRelease(control);
+  JRSUIRendererRelease(renderer);
   return partBounds.size.width == offset || bounds.size.height == hit || scroll ||
     !JRSFontStyleUsesFractionalMetrics(style) || !javaMenu ||
     JRSAppIsCommandLineKey == JRSAppIsUIElementKey || JRSAppIsBackgroundOnlyKey == nil;
