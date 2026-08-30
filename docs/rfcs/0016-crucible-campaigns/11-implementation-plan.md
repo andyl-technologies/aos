@@ -2042,6 +2042,17 @@ sealed plan to contain the exact plugin basis. The current coordinator supplies
 no non-plugin contribution, so complete supported-profile descriptor and
 mapping registration, the destructive fork caller, and readiness bits 7 and 8
 remain open; T-CAM-6.1 through T-CAM-6.3 remain unchecked.
+The inherited sealed plan now also has a one-shot child application adapter.
+It exact-compares the unconsumed plugin reinitializer, revalidates the complete
+union before mutation, consumes the plan before the destructive descriptor
+phase, and marks it applied only after descriptor closure, held plugin-runtime
+reconstruction, and writable-shared mapping authentication all succeed. A
+real-fork path proves an independently contributed descriptor is retained and
+the parent's plan copy is unchanged; malformed, unsealed, tampered, or foreign
+bases fail without consuming either linear owner. The adapter remains unwired
+to a production fork caller and the current coordinator still has only the
+plugin contribution, so it does not acknowledge bit 7 or 8 and T-CAM-6.1
+through T-CAM-6.3 remain unchecked.
 Template-process descriptor/endpoint staging now satisfies plugin-ring proof
 bit 6 only under the retained exact transaction. The internal replacement and
 child-identity primitives, and the registered empty-local-state reinitializer,
