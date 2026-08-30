@@ -2493,6 +2493,29 @@
         '';
       };
     }
+    {
+      patch = "0164-crucible-consume-sealed-child-resource-plans.patch";
+      check = certifyExactPatch {
+        patchName = "0164-crucible-consume-sealed-child-resource-plans.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-sealed-child-resource-plan-application";
+        liveEvidence = ''
+          grep -Fxq 'patch=0164-crucible-consume-sealed-child-resource-plans.patch' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=15' "$live_result"
+          grep -Fxq 'plugin_child_resource_plan_report_bound=true' "$live_result"
+          grep -Fxq 'child_resource_contribution_composition=true' "$live_result"
+          grep -Fxq 'sealed_child_resource_plan_application=true' "$live_result"
+          grep -Fq 'qemu_crucible_hot_fork_apply_child_resource_plan' \
+            ${patchDir}/0164-crucible-consume-sealed-child-resource-plans.patch
+          grep -Fq 'resources->attempted = true' \
+            ${patchDir}/0164-crucible-consume-sealed-child-resource-plans.patch
+          grep -Fq 'resources->applied = true' \
+            ${patchDir}/0164-crucible-consume-sealed-child-resource-plans.patch
+          grep -Fq 'sealed-resource-plan' \
+            ${patchDir}/0164-crucible-consume-sealed-child-resource-plans.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

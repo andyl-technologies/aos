@@ -1098,8 +1098,18 @@ are idempotent, while source retention, conflicting mappings, missing retained
 backings, or either union exceeding 4,096 entries fails atomically. Sealing
 revalidates the complete union, and the report requires the sealed plan to
 contain the exact retained plugin fragment. The current transaction does not
-yet register the remaining QEMU descriptor or mapping set and performs no
-mutation, so proof bits 7 and 8 remain clear.
+yet register the remaining QEMU descriptor or mapping set, so proof bits 7 and
+8 remain clear. An adjacent child-only adapter now consumes one inherited
+sealed plan through the authenticated immediate-child transaction. It requires
+the same unconsumed plugin reinitializer, revalidates the complete union, and
+marks the plan attempted before descriptor mutation. The destructive path then
+uses only that union for descriptor closure, held plugin reconstruction, and
+writable-shared mapping authentication; exact success marks the plan applied.
+Preflight mismatch leaves both linear owners available, while every failure
+after consumption rejects that child. A real-fork regression retains one
+independently contributed result descriptor and proves the parent's plan copy
+remains unconsumed. This is still an unwired application primitive rather than
+a complete supported-profile resource inventory or production fork owner.
 Endpoint staging rejects a private-ring stage from a different or already
 aborted transaction. A new transaction starts
 only with an empty resource stage. Private-ring and plugin-endpoint staging

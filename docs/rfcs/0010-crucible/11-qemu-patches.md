@@ -2802,6 +2802,34 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   incomplete.
 - **Risk:** F.
 
+### crucible-hot-fork-sealed-child-resource-plan-application — consume one exact union
+
+- **Patch:** `0164-crucible-consume-sealed-child-resource-plans.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** QEMU exact-compares an inherited sealed plan with the same
+  unconsumed plugin reinitializer before entering the authenticated
+  immediate-child transaction. Successful preflight consumes the plan before
+  descriptor mutation; the destructive path uses only the plan's canonical
+  replacements, retained descriptors, and writable-shared mappings. Exact
+  descriptor closure, held plugin reconstruction, and mapping authentication
+  mark the plan applied. Preflight rejection retains both linear owners, while
+  every failure after consumption is one-shot and rejects the child.
+- **Micro-test:** the real-fork resource transaction now consumes the sealed
+  adapter, retains one independently contributed result descriptor, closes an
+  unlisted inherited descriptor, reconstructs the private mapping, invokes the
+  registered plugin runtime once, and proves the parent's plan copy remains
+  unconsumed. Negative coverage rejects an open plan, a foreign reinitializer,
+  and a tampered sealed table without consumption; a second child application
+  is rejected.
+- **Inertness:** no production caller invokes `fork(2)` or this destructive
+  adapter, and the retained coordinator still supplies only the plugin
+  contribution. Complete QMP, block, AIO, and other supported-profile resource
+  registration, host-continuation pairing, guest-admission release, and
+  readiness acknowledgements for bits 7 and 8 remain absent. `T-CAM-6.1`
+  through `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
