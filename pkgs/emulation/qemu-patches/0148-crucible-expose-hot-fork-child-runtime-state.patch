@@ -1,0 +1,301 @@
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index c9bca9d0f..c559f6f99 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -1423,6 +1423,92 @@ out:
+     return report;
+ }
+ 
++CrucibleHotForkChildRuntimeState *
++qmp_query_crucible_hot_fork_child_runtime(Error **errp)
++{
++    CrucibleHotForkChildRuntimeState *report = NULL;
++    QemuPluginCrucibleHotForkChildRuntimeInventory runtime;
++    QemuPluginCrucibleHotForkInventory resources;
++    const struct qemu_plugin_crucible_hot_fork_child_status *status;
++    int result;
++
++    g_mutex_lock(&crucible_hot_fork_template_lock);
++    result = qemu_plugin_crucible_hot_fork_child_runtime(
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_QUERY, NULL, &runtime);
++    if (result != 0) {
++        error_setg_errno(errp, -result,
++                         "Crucible hot-fork child-runtime query failed");
++        goto out;
++    }
++    qemu_plugin_crucible_hot_fork_inventory(&resources);
++    if (runtime.registered &&
++        (!runtime.manifest_consistent || !resources.complete ||
++         resources.manifest.plugin_id != runtime.plugin_id ||
++         resources.manifest.process_generation == 0)) {
++        error_setg(errp, "Crucible hot-fork child runtime is not bound to "
++                   "one complete plugin resource manifest");
++        goto out;
++    }
++
++    report = g_new0(CrucibleHotForkChildRuntimeState, 1);
++    status = &runtime.status;
++    report->schema_version =
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_STATUS_VERSION;
++    report->generation = runtime.generation;
++    report->registered = runtime.registered;
++    report->manifest_consistent = runtime.manifest_consistent;
++    report->plugin_id = runtime.registered ? runtime.plugin_id : 0;
++    report->process_generation = runtime.manifest_consistent ?
++        resources.manifest.process_generation : 0;
++    switch (status->phase) {
++    case QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_TEMPLATE:
++        report->phase = CRUCIBLE_HOT_FORK_CHILD_RUNTIME_PHASE_TEMPLATE;
++        break;
++    case QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_INITIALIZING:
++        report->phase = CRUCIBLE_HOT_FORK_CHILD_RUNTIME_PHASE_INITIALIZING;
++        break;
++    case QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_WORKERS_HELD:
++        report->phase = CRUCIBLE_HOT_FORK_CHILD_RUNTIME_PHASE_WORKERS_HELD;
++        break;
++    case QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_ACTIVE:
++        report->phase = CRUCIBLE_HOT_FORK_CHILD_RUNTIME_PHASE_ACTIVE;
++        break;
++    case QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PHASE_FAILED:
++        report->phase = CRUCIBLE_HOT_FORK_CHILD_RUNTIME_PHASE_FAILED;
++        break;
++    default:
++        g_assert_not_reached();
++    }
++    report->callbacks_held = (status->flags &
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_CALLBACKS_HELD) != 0;
++    report->mapping_installed = (status->flags &
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED) != 0;
++    report->workers_ready = (status->flags &
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_WORKERS_READY) != 0;
++    report->active = (status->flags &
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_ACTIVE) != 0;
++    report->failed = (status->flags &
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_FLAG_FAILED) != 0;
++    report->parent_process_generation = status->parent_process_generation;
++    report->child_process_generation = status->child_process_generation;
++    report->template_generation = status->template_generation;
++    report->private_ring_generation = status->private_ring_generation;
++    report->plugin_endpoint_generation =
++        status->plugin_endpoint_generation;
++    report->plugin_barrier_generation = status->plugin_barrier_generation;
++    report->control_socket_cookie = status->control_socket_cookie;
++    report->wake_eventfd_id = status->wake_eventfd_id;
++    report->worker_mask = status->worker_mask;
++    report->parked_worker_mask = status->parked_worker_mask;
++    report->pending_worker_mask = status->pending_worker_mask;
++    report->worker_operations_in_flight =
++        status->worker_operations_in_flight;
++    report->readiness_proof_acknowledged = false;
++out:
++    g_mutex_unlock(&crucible_hot_fork_template_lock);
++    return report;
++}
++
+ CrucibleHotForkRcuBarrierState *
+ qmp_crucible_hot_fork_rcu_barrier(
+     CrucibleHotForkRcuBarrierAction action, Error **errp)
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+index 66f397d95..e2e5c6e9b 100644
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -511,6 +511,19 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+     userdata = qemu_plugin_crucible_child_runtime_userdata;
+     previous_status =
+         qemu_plugin_crucible_child_runtime_inventory.status;
++    if (action != QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_QUERY &&
++        qemu_plugin_crucible_child_runtime_inventory.generation ==
++            UINT64_MAX) {
++        qemu_mutex_unlock(&qemu_plugin_crucible_resource_lock);
++        qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
++        return -EOVERFLOW;
++    }
++    if (action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_INITIALIZE &&
++        qemu_plugin_crucible_resource_inventory.generation == UINT64_MAX) {
++        qemu_mutex_unlock(&qemu_plugin_crucible_resource_lock);
++        qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
++        return -EOVERFLOW;
++    }
+     qemu_mutex_unlock(&qemu_plugin_crucible_resource_lock);
+ 
+     if (action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_INITIALIZE) {
+@@ -521,6 +534,11 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+             qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
+             return result;
+         }
++        qemu_mutex_lock(&qemu_plugin_crucible_resource_lock);
++        qemu_plugin_crucible_resource_inventory.manifest.process_generation =
++            plan->child_process_generation;
++        qemu_plugin_crucible_resource_inventory.generation++;
++        qemu_mutex_unlock(&qemu_plugin_crucible_resource_lock);
+     }
+     result = cb(action, plan, &status, userdata);
+     if (result != 0) {
+@@ -633,10 +651,21 @@ int qemu_plugin_crucible_hot_fork_child_runtime(
+     qemu_mutex_lock(&qemu_plugin_crucible_resource_lock);
+     previous_generation =
+         qemu_plugin_crucible_child_runtime_inventory.generation;
++    if ((!qemu_plugin_crucible_child_runtime_inventory.manifest_consistent ||
++         memcmp(&qemu_plugin_crucible_child_runtime_inventory.status,
++                &status, sizeof(status)) != 0) &&
++        previous_generation == UINT64_MAX) {
++        qemu_mutex_unlock(&qemu_plugin_crucible_resource_lock);
++        qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
++        return -EOVERFLOW;
++    }
+     qemu_plugin_crucible_child_runtime_inventory.status = status;
++    if (!qemu_plugin_crucible_child_runtime_inventory.manifest_consistent ||
++        memcmp(&previous_status, &status, sizeof(status)) != 0) {
++        qemu_plugin_crucible_child_runtime_inventory.generation =
++            previous_generation + 1;
++    }
+     qemu_plugin_crucible_child_runtime_inventory.manifest_consistent = true;
+-    qemu_plugin_crucible_child_runtime_inventory.generation =
+-        previous_generation + 1;
+     *inventory = qemu_plugin_crucible_child_runtime_inventory;
+     qemu_mutex_unlock(&qemu_plugin_crucible_resource_lock);
+     qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index d5efce4ee..047ab1c2a 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -1070,6 +1070,139 @@
+   'returns': 'CrucibleHotForkPluginBarrierState',
+   'allow-oob': true }
+ 
++##
++# @CrucibleHotForkChildRuntimePhase:
++#
++# Process-local phase reported by the registered fork-child reinitializer.
++#
++# @template: the template process has not installed a child resource plan
++#
++# @initializing: child reconstruction has started but is not complete
++#
++# @workers-held: the private mapping and replacement workers are installed
++#     behind their inherited holds
++#
++# @active: child admission was released into ordinary execution
++#
++# @failed: child reconstruction failed closed
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'enum': 'CrucibleHotForkChildRuntimePhase',
++  'data': [ 'template', 'initializing', 'workers-held', 'active', 'failed' ] }
++
++##
++# @CrucibleHotForkChildRuntimeState:
++#
++# Exact QEMU-owned observation of the registered plugin child-runtime
++# operation. Querying invokes only the operation's observational action; it
++# does not fork, install resources, release admission, or acknowledge proof
++# bit 8.
++#
++# @schema-version: child-runtime status contract version, currently 2
++#
++# @generation: process-local registration/status mutation generation
++#
++# @registered: whether one process-lifetime child-runtime callback is installed
++#
++# @manifest-consistent: whether the callback and complete resource manifest
++#     name the same plugin
++#
++# @plugin-id: nonzero plugin identity while registered, otherwise zero
++#
++# @process-generation: exact current manifest process generation while the
++#     runtime is manifest-consistent, otherwise zero
++#
++# @phase: current child-runtime phase
++#
++# @callbacks-held: whether inherited callback admission remains held
++#
++# @mapping-installed: whether the branch-private setup mapping is installed
++#
++# @workers-ready: whether every sealed child worker is recreated and held
++#
++# @active: whether child admission was released; equivalent to @phase active
++#
++# @failed: whether reconstruction failed; equivalent to @phase failed
++#
++# @parent-process-generation: exact parent generation accepted by a child
++#     transition, or zero in the template phase
++#
++# @child-process-generation: checked immediate successor installed in the
++#     child, or zero in the template phase
++#
++# @template-generation: exact source template generation, or zero before
++#     child initialization
++#
++# @private-ring-generation: exact staged private-ring generation, or zero
++#     before child initialization
++#
++# @plugin-endpoint-generation: exact staged endpoint generation, or zero
++#     before child initialization
++#
++# @plugin-barrier-generation: exact inherited barrier generation, or zero
++#     before child initialization
++#
++# @control-socket-cookie: authenticated replacement socket identity, or zero
++#     before child initialization
++#
++# @wake-eventfd-id: authenticated replacement eventfd identity, or zero before
++#     child initialization
++#
++# @worker-mask: complete sealed process-worker mask
++#
++# @parked-worker-mask: worker classes parked at an operation boundary
++#
++# @pending-worker-mask: parked workers retaining one pre-admission item
++#
++# @worker-operations-in-flight: admitted worker operations not yet returned
++#
++# @readiness-proof-acknowledged: always false; registration and observation do
++#     not prove every QEMU child reinitializer
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkChildRuntimeState',
++  'data': { 'schema-version': 'uint32',
++            'generation': 'uint64',
++            'registered': 'bool',
++            'manifest-consistent': 'bool',
++            'plugin-id': 'uint64',
++            'process-generation': 'uint64',
++            'phase': 'CrucibleHotForkChildRuntimePhase',
++            'callbacks-held': 'bool',
++            'mapping-installed': 'bool',
++            'workers-ready': 'bool',
++            'active': 'bool',
++            'failed': 'bool',
++            'parent-process-generation': 'uint64',
++            'child-process-generation': 'uint64',
++            'template-generation': 'uint64',
++            'private-ring-generation': 'uint64',
++            'plugin-endpoint-generation': 'uint64',
++            'plugin-barrier-generation': 'uint64',
++            'control-socket-cookie': 'uint64',
++            'wake-eventfd-id': 'uint64',
++            'worker-mask': 'uint64',
++            'parked-worker-mask': 'uint64',
++            'pending-worker-mask': 'uint64',
++            'worker-operations-in-flight': 'uint64',
++            'readiness-proof-acknowledged': 'bool' } }
++
++##
++# @query-crucible-hot-fork-child-runtime:
++#
++# Observes the exact registered plugin child-runtime operation and its resource
++# manifest binding. The command never initializes or releases a child.
++#
++# Returns: @CrucibleHotForkChildRuntimeState
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'query-crucible-hot-fork-child-runtime',
++  'returns': 'CrucibleHotForkChildRuntimeState',
++  'allow-oob': true }
++
+ ##
+ # @CrucibleHotForkRcuBarrierAction:
+ #

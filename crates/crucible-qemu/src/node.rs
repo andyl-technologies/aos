@@ -938,6 +938,21 @@ pub trait QemuQmpMachineControlChannel: Send {
         ))
     }
 
+    /// Queries QEMU's exact registered fork-child runtime state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
+    /// versioned response validation fails.
+    fn query_hot_fork_child_runtime(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildRuntimeState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query_hot_fork_child_runtime",
+            "hot-fork child-runtime observation is not implemented by this QMP channel",
+        ))
+    }
+
     /// Queries the retained Crucible plugin callback/ring/worker barrier.
     ///
     /// # Errors
@@ -2096,6 +2111,24 @@ impl QemuNode {
             ),
             inventory,
         )
+    }
+
+    /// Queries QEMU's registered fork-child runtime without mutating it.
+    ///
+    /// The response binds callback registration to the complete plugin
+    /// resource manifest and current process generation. It does not
+    /// initialize a child or acknowledge hot-fork proof bit 8.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O or strict response
+    /// validation fails.
+    pub fn query_hot_fork_child_runtime(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildRuntimeState, QemuNodeChannelError> {
+        self.channels
+            .qmp_machine_control
+            .query_hot_fork_child_runtime()
     }
 
     /// Starts or advances QEMU's retained hot-fork template transaction.

@@ -1664,7 +1664,15 @@ The supported launch profile optimizes the complete child-ready path:
   plan additionally binds the template's exact nonzero process generation to
   its checked immediate successor. QEMU advances its fault/evidence lifecycle
   generation before reconstruction, the plugin independently advances its live
-  device owner, and status echoes that exact process and resource basis. The
+  device owner, and status echoes that exact process and resource basis. QEMU
+  now exposes that registered runtime through the OOB version-2
+  `query-crucible-hot-fork-child-runtime` observation. The exact report binds
+  callback registration to the complete resource manifest and current process
+  generation, carries the child phase, staged resource generations,
+  authenticated endpoint identities, and worker state, and advances its
+  checked process-local generation only when registration or observed status
+  changes. Repeated identical queries are stable and the report's readiness
+  acknowledgement is always false. The
   plugin independently
   authenticates both replacement endpoint identities, installs the exact private
   mapping, revalidates the retained ABI/layout contract, replaces callback-held
@@ -1675,8 +1683,9 @@ The supported launch profile optimizes the complete child-ready path:
   to be absent, and maps with `MAP_FIXED_NOREPLACE`. A real `fork(2)` regression
   proves the child writes the private backing while the parent's source mapping
   and backing identity remain unchanged. Stale, skipped, zero, and overflowed
-  process generations fail before child admission. The QEMU fork transaction does not yet
-  invoke or release this registered operation, so it confers no readiness bit;
+  process generations fail before child admission. The QEMU fork transaction
+  does not yet invoke or release this registered operation, so observation
+  confers no readiness bit;
 - shared protocol rings are small, frozen separately, and replaced rather than
   forcing the main RAM mapping to be shared;
 - child sockets, memfds, overlay descriptors, directory identities, cgroup

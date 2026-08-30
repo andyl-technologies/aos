@@ -1909,7 +1909,14 @@ worker basis. It also binds the template's nonzero process generation to its
 checked immediate successor. QEMU advances the fault/evidence lifecycle
 generation before reconstruction, while the plugin independently advances its
 live device owner and echoes the same immutable pair. Zero, stale, skipped, and
-overflowed generations fail closed. The plugin operation independently authenticates both kernel
+overflowed generations fail closed. QEMU also exposes the exact registered
+runtime through the OOB version-2
+`query-crucible-hot-fork-child-runtime` command. The report binds registration
+to the complete plugin resource manifest and current process generation,
+reports phase/resource/endpoint/worker state, advances its checked local
+generation only for registration or an observed status mutation, and
+permanently reports the child-runtime readiness proof as unacknowledged.
+The plugin operation independently authenticates both kernel
 endpoint identities, validates the exact staged mapping and descriptor basis,
 installs and revalidates the private setup region, resets
 only a complete inherited parked-worker set, replaces the callback route, and

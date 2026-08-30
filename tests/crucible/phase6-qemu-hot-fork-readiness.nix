@@ -127,6 +127,11 @@ in
           jq -e -s 'any(.[]; has("error"))' "$out/stock-plugin-resource-inventory.json" >/dev/null \
             || fail "stock QEMU unexpectedly exposed the Crucible plugin-resource inventory command"
           qmp "$stock_socket" \
+            '{"exec-oob":"query-crucible-hot-fork-child-runtime"}' \
+            "$out/stock-child-runtime.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/stock-child-runtime.json" >/dev/null \
+            || fail "stock QEMU unexpectedly exposed the Crucible child-runtime command"
+          qmp "$stock_socket" \
             '{"exec-oob":"crucible-hot-fork-plugin-barrier","arguments":{"action":"query"}}' \
             "$out/stock-plugin-barrier.json"
           jq -e -s 'any(.[]; has("error"))' "$out/stock-plugin-barrier.json" >/dev/null \
@@ -1099,6 +1104,43 @@ in
             || { cat "$out/plugin-resource-inventory.json" >&2; fail "QEMU plugin-resource inventory changed without registration"; }
 
           qmp_pair "$patched_socket" \
+            '{"exec-oob":"query-crucible-hot-fork-child-runtime"}' \
+            "$out/child-runtime.json"
+          jq -e -s '
+            [.[] | select(has("return")) | .return |
+             select(has("readiness-proof-acknowledged"))] as $reports |
+            ($reports | length) == 2 and $reports[0] == $reports[1] and
+            $reports[0] == {
+              "schema-version": 2,
+              "generation": 0,
+              "registered": false,
+              "manifest-consistent": false,
+              "plugin-id": 0,
+              "process-generation": 0,
+              "phase": "template",
+              "callbacks-held": false,
+              "mapping-installed": false,
+              "workers-ready": false,
+              "active": false,
+              "failed": false,
+              "parent-process-generation": 0,
+              "child-process-generation": 0,
+              "template-generation": 0,
+              "private-ring-generation": 0,
+              "plugin-endpoint-generation": 0,
+              "plugin-barrier-generation": 0,
+              "control-socket-cookie": 0,
+              "wake-eventfd-id": 0,
+              "worker-mask": 0,
+              "parked-worker-mask": 0,
+              "pending-worker-mask": 0,
+              "worker-operations-in-flight": 0,
+              "readiness-proof-acknowledged": false
+            }
+          ' "$out/child-runtime.json" >/dev/null \
+            || { cat "$out/child-runtime.json" >&2; fail "QEMU unregistered child runtime was not exact and stable"; }
+
+          qmp_pair "$patched_socket" \
             '{"exec-oob":"crucible-hot-fork-plugin-barrier","arguments":{"action":"query"}}' \
             "$out/plugin-barrier-query.json"
           jq -e -s '
@@ -1625,6 +1667,7 @@ in
           patch=0145-crucible-exclude-source-rings-from-fork-children.patch
           patch=0146-crucible-register-hot-fork-child-runtime.patch
           patch=0147-crucible-bind-hot-fork-child-process-generation.patch
+          patch=0148-crucible-expose-hot-fork-child-runtime-state.patch
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -1674,6 +1717,10 @@ in
           plugin_resource_inventory_schema_version=2
           plugin_resource_inventory_stable=true
           plugin_resource_inventory_unregistered_shape=true
+          child_runtime_schema_version=2
+          child_runtime_stable=true
+          child_runtime_unregistered_shape=true
+          child_runtime_readiness_proof_acknowledged=false
           plugin_barrier_schema_version=6
           plugin_barrier_stable=true
           plugin_barrier_unregistered_shape=true

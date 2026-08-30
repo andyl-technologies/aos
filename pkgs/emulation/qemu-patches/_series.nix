@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "8e259b48a29115779b4a0bd1d266471e1cc0eafba68169641e875daac5b231c2";
+  patchBranchBundleSha256 = "17e4198242a678ffbc294030f98fa0c14c5062dcc7b82375fac89d9fe82b7774";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "c2e0bf4fe2f445566ad53826f79e7f0ddddf103f";
+  patchBranchHeadCommit = "8ea1fd757e50424073947a748f77048eb2aa32c1";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1405,6 +1405,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-8,HFORK-9,HFORK-11,HFORK-12";
       capability = "the version-2 child-runtime plan binds the exact nonzero template process generation to its checked immediate successor; QEMU advances its fault/evidence lifecycle generation before reconstruction, the plugin independently advances its live device owner, and status/query/release must retain that exact generation basis without yet invoking the callback from a fork transaction or acknowledging readiness bits 6 through 8";
+    }
+    {
+      file = "0148-crucible-expose-hot-fork-child-runtime-state.patch";
+      branchSubject = "crucible: expose hot-fork child runtime state";
+      branchCommit = "8ea1fd757e50424073947a748f77048eb2aa32c1";
+      branchTree = "fad8187fd01eb636d4b48c0b4915c9e5aa6d76b4";
+      catalogName = "crucible-hot-fork-child-runtime-observation";
+      class = "F";
+      enforces = "HFORK-3,HFORK-8,HFORK-9,HFORK-11,HFORK-12";
+      capability = "QEMU exposes an out-of-band version-2 observation of the registered fork-child runtime, exact resource-manifest and process-generation binding, phase, resource generations, endpoint identities, and worker state; identical observations retain one stable generation, while the command remains inert and does not acknowledge readiness bits 6 through 8";
     }
   ];
   catalogOnlyCapabilities = [
