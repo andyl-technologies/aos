@@ -1305,6 +1305,13 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
     assert_eq!(proof.template_generation(), 1);
     assert_eq!(proof.plugin_barrier_generation(), barrier.generation());
     assert_eq!(proof.worker_mask(), barrier.worker_mask());
+    let replacement = proof
+        .replacement_plan()
+        .ok_or("installed endpoint proof omitted the replacement plan")?;
+    assert_eq!(replacement.control_source(), 30);
+    assert_eq!(replacement.wake_source(), 31);
+    assert_eq!(replacement.control_target(), 3);
+    assert_eq!(replacement.wake_target(), 4);
     assert_ne!(proof.control_name(), proof.wake_name());
     assert_ne!(proof.identity().control_socket_cookie(), 0);
     assert_ne!(proof.identity().wake_eventfd_id(), 0);

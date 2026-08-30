@@ -39,7 +39,8 @@ pub(super) use plugin::{
 pub(crate) use plugin_endpoints::parse_hot_fork_plugin_endpoint_state;
 pub use plugin_endpoints::{
     QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND, QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION,
-    QmpHotForkPluginEndpointIdentity, QmpHotForkPluginEndpointState,
+    QmpHotForkPluginEndpointDescriptorPlan, QmpHotForkPluginEndpointIdentity,
+    QmpHotForkPluginEndpointState,
 };
 pub(crate) use private_rings::parse_hot_fork_private_ring_state;
 pub use private_rings::{

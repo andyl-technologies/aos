@@ -2166,6 +2166,28 @@
         '';
       };
     }
+    {
+      patch = "0149-crucible-bind-hot-fork-endpoint-replacement-slots.patch";
+      check = certifyExactPatch {
+        patchName = "0149-crucible-bind-hot-fork-endpoint-replacement-slots.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "live-qemu-hot-fork-endpoint-replacement-plan";
+        liveEvidence = ''
+          grep -Fxq 'patch=0149-crucible-bind-hot-fork-endpoint-replacement-slots.patch' "$live_result"
+          grep -Fxq 'plugin_endpoint_schema_version=4' "$live_result"
+          grep -Fxq 'plugin_endpoint_source_descriptors_observed=true' "$live_result"
+          grep -Fxq 'plugin_endpoint_replacement_plan_bound=false' "$live_result"
+          grep -Fq 'control-source-fd' \
+            ${patchDir}/0149-crucible-bind-hot-fork-endpoint-replacement-slots.patch
+          grep -Fq 'wake-target-fd' \
+            ${patchDir}/0149-crucible-bind-hot-fork-endpoint-replacement-slots.patch
+          grep -Fq 'resources.manifest.control_fd' \
+            ${patchDir}/0149-crucible-bind-hot-fork-endpoint-replacement-slots.patch
+          grep -Fq 'report->replacement_plan_bound' \
+            ${patchDir}/0149-crucible-bind-hot-fork-endpoint-replacement-slots.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =
