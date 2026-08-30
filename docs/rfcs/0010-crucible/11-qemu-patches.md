@@ -2501,6 +2501,27 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   Bits 6 through 8 stay clear and `T-CAM-6.2` remains unchecked.
 - **Risk:** F.
 
+### crucible-hot-fork-immediate-child-identity — pin the exact fork lineage
+
+- **Patch:** `0151-crucible-authenticate-immediate-hot-fork-children.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-11], [HFORK-12].
+- **Mechanism:** a Linux-only GPL-side primitive opens an exact pidfd for the
+  quiescent parent before fork. The inherited identity admits only a process
+  whose direct-parent PID is that pinned, still-live process generation, and
+  arms `PR_SET_PDEATHSIG(SIGKILL)` before it returns success. Parent identity
+  is checked on both sides of the pidfd liveness probe, so parent exit or
+  reparenting fails closed rather than authorizing a PID-shaped substitute.
+- **Micro-test:** the QEMU package runs a real-fork unit path. It proves that
+  the exact immediate child authenticates and applies the two-slot replacement
+  while the parent's original socket and eventfd descriptions remain
+  unchanged. A grandchild inheriting the same value is rejected, and invoking
+  child authentication in the capture owner is rejected.
+- **Inertness:** only the unit test calls `fork(2)`. Production QEMU has no
+  caller, complete inherited-descriptor disposition, child QMP channel,
+  reinitializer composition, or readiness acknowledgement. Bits 6 through 8
+  stay clear and `T-CAM-6.2` remains unchecked.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

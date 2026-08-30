@@ -1,0 +1,367 @@
+diff --git a/include/qemu/crucible-hot-fork-child.h b/include/qemu/crucible-hot-fork-child.h
+index e08d5749b..185ea3614 100644
+--- a/include/qemu/crucible-hot-fork-child.h
++++ b/include/qemu/crucible-hot-fork-child.h
+@@ -10,6 +10,11 @@
+ 
+ #define QEMU_CRUCIBLE_HOT_FORK_ENDPOINT_REPLACEMENT_COUNT 2
+ 
++typedef struct QemuCrucibleHotForkParentIdentity {
++    pid_t parent_pid;
++    int parent_pidfd;
++} QemuCrucibleHotForkParentIdentity;
++
+ typedef struct QemuCrucibleHotForkDescriptorReplacement {
+     int source_fd;
+     int target_fd;
+@@ -17,6 +22,48 @@ typedef struct QemuCrucibleHotForkDescriptorReplacement {
+ 
+ typedef int (*QemuCrucibleHotForkDescriptorVerifier)(void *opaque);
+ 
++/**
++ * qemu_crucible_hot_fork_capture_parent_identity() - pin the fork parent
++ * @identity: caller-owned identity storage
++ *
++ * Opens an exact Linux pidfd for the calling process before a later fork.
++ * The resulting value is inherited by the child and must not be copied into
++ * an unrelated process or altered by the caller.
++ *
++ * Returns zero on success or a negative errno-style status on failure.
++ */
++int qemu_crucible_hot_fork_capture_parent_identity(
++    QemuCrucibleHotForkParentIdentity *identity);
++
++/**
++ * qemu_crucible_hot_fork_authenticate_immediate_child() - verify fork lineage
++ * @identity: parent identity captured before fork
++ *
++ * Requires the caller to be the immediate child of the exact live process
++ * generation pinned by @identity.  On success the child is armed with
++ * SIGKILL parent-death handling before returning, so the authenticated parent
++ * cannot disappear while the child continues the disposition transaction.
++ *
++ * This function is single-purpose post-fork code.  The caller must terminate
++ * the child after any error and must retain @identity until every operation
++ * requiring the parent anchor is complete.
++ *
++ * Returns zero on success or a negative errno-style status on failure.
++ */
++int qemu_crucible_hot_fork_authenticate_immediate_child(
++    const QemuCrucibleHotForkParentIdentity *identity);
++
++/**
++ * qemu_crucible_hot_fork_release_parent_identity() - release a parent anchor
++ * @identity: identity previously captured by the caller
++ *
++ * Closes the pidfd and invalidates @identity.  Parent and child descriptor
++ * tables are independent after fork, so each surviving process releases its
++ * own inherited copy at the appropriate disposition boundary.
++ */
++void qemu_crucible_hot_fork_release_parent_identity(
++    QemuCrucibleHotForkParentIdentity *identity);
++
+ /**
+  * qemu_crucible_hot_fork_replace_endpoint_descriptors() - replace endpoints
+  * @replacements: exact control and wake source-to-target descriptor pairs
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+index ba2fcab5f..c1d507409 100644
+--- a/tests/unit/test-crucible-hot-fork-child.c
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -19,6 +19,11 @@ typedef struct EndpointVerification {
+     int result;
+ } EndpointVerification;
+ 
++typedef struct ForkChildVerification {
++    int control_fd;
++    int wake_fd;
++} ForkChildVerification;
++
+ static int verify_endpoint_pair(void *opaque)
+ {
+     EndpointVerification *verification = opaque;
+@@ -33,6 +38,172 @@ static int verify_endpoint_pair(void *opaque)
+     return verification->result;
+ }
+ 
++static int verify_fork_child_endpoints(void *opaque)
++{
++    ForkChildVerification *verification = opaque;
++    char byte = 'f';
++    uint64_t wake = 1;
++
++    if (send(verification->control_fd, &byte, 1, 0) != 1) {
++        return errno != 0 ? -errno : -EIO;
++    }
++    if (write(verification->wake_fd, &wake, sizeof(wake)) != sizeof(wake)) {
++        return errno != 0 ? -errno : -EIO;
++    }
++    return 0;
++}
++
++static void write_child_result(int fd, int result)
++{
++    ssize_t written;
++
++    do {
++        written = write(fd, &result, sizeof(result));
++    } while (written < 0 && errno == EINTR);
++}
++
++static int read_child_result(int fd)
++{
++    int result = -EIO;
++    ssize_t received;
++
++    do {
++        received = read(fd, &result, sizeof(result));
++    } while (received < 0 && errno == EINTR);
++    g_assert_cmpint(received, ==, sizeof(result));
++    return result;
++}
++
++static void wait_for_child(pid_t child)
++{
++    int status;
++    pid_t waited;
++
++    do {
++        waited = waitpid(child, &status, 0);
++    } while (waited < 0 && errno == EINTR);
++    g_assert_cmpint(waited, ==, child);
++    g_assert_true(WIFEXITED(status));
++    g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++}
++
++static void test_immediate_child_replaces_parent_endpoints(void)
++{
++    QemuCrucibleHotForkParentIdentity identity;
++    QemuCrucibleHotForkDescriptorReplacement replacements[2];
++    ForkChildVerification verification;
++    int old_control[2];
++    int new_control[2];
++    int child_result[2];
++    int old_wake;
++    int new_wake;
++    uint64_t wake = 0;
++    char byte = 'p';
++    pid_t child;
++
++    g_assert_cmpint(qemu_crucible_hot_fork_capture_parent_identity(&identity),
++                    ==, 0);
++    g_assert_cmpint(qemu_crucible_hot_fork_authenticate_immediate_child(
++                        &identity),
++                    ==, -EPERM);
++    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, old_control), ==, 0);
++    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, new_control), ==, 0);
++    g_assert_cmpint(pipe2(child_result, O_CLOEXEC), ==, 0);
++    old_wake = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
++    new_wake = eventfd(0, EFD_CLOEXEC);
++    g_assert_cmpint(old_wake, >=, 0);
++    g_assert_cmpint(new_wake, >=, 0);
++
++    replacements[0] = (QemuCrucibleHotForkDescriptorReplacement) {
++        .source_fd = new_control[0],
++        .target_fd = old_control[0],
++    };
++    replacements[1] = (QemuCrucibleHotForkDescriptorReplacement) {
++        .source_fd = new_wake,
++        .target_fd = old_wake,
++    };
++    verification = (ForkChildVerification) {
++        .control_fd = old_control[0],
++        .wake_fd = old_wake,
++    };
++
++    child = fork();
++    g_assert_cmpint(child, >=, 0);
++    if (child == 0) {
++        int result;
++
++        close(child_result[0]);
++        result = qemu_crucible_hot_fork_authenticate_immediate_child(
++            &identity);
++        if (result == 0) {
++            result = qemu_crucible_hot_fork_replace_endpoint_descriptors(
++                replacements, verify_fork_child_endpoints, &verification);
++        }
++        qemu_crucible_hot_fork_release_parent_identity(&identity);
++        write_child_result(child_result[1], result);
++        _exit(0);
++    }
++
++    close(child_result[1]);
++    close(new_control[0]);
++    g_assert_cmpint(read_child_result(child_result[0]), ==, 0);
++    g_assert_cmpint(recv(new_control[1], &byte, 1, 0), ==, 1);
++    g_assert_cmpint(byte, ==, 'f');
++    g_assert_cmpint(read(new_wake, &wake, sizeof(wake)), ==, sizeof(wake));
++    g_assert_cmpuint(wake, ==, 1);
++
++    g_assert_cmpint(send(old_control[1], &byte, 1, 0), ==, 1);
++    g_assert_cmpint(recv(old_control[0], &byte, 1, 0), ==, 1);
++    g_assert_cmpint(read(old_wake, &wake, sizeof(wake)), ==, -1);
++    g_assert_cmpint(errno, ==, EAGAIN);
++    wait_for_child(child);
++
++    qemu_crucible_hot_fork_release_parent_identity(&identity);
++    close(child_result[0]);
++    close(old_control[0]);
++    close(old_control[1]);
++    close(new_control[1]);
++    close(old_wake);
++    close(new_wake);
++}
++
++static void test_grandchild_cannot_use_parent_identity(void)
++{
++    QemuCrucibleHotForkParentIdentity identity;
++    int grandchild_result[2];
++    pid_t child;
++
++    g_assert_cmpint(qemu_crucible_hot_fork_capture_parent_identity(&identity),
++                    ==, 0);
++    g_assert_cmpint(pipe2(grandchild_result, O_CLOEXEC), ==, 0);
++
++    child = fork();
++    g_assert_cmpint(child, >=, 0);
++    if (child == 0) {
++        pid_t grandchild = fork();
++
++        if (grandchild < 0) {
++            write_child_result(grandchild_result[1], -errno);
++            _exit(0);
++        }
++        if (grandchild == 0) {
++            int result =
++                qemu_crucible_hot_fork_authenticate_immediate_child(&identity);
++
++            write_child_result(grandchild_result[1], result);
++            _exit(0);
++        }
++        waitpid(grandchild, NULL, 0);
++        _exit(0);
++    }
++
++    close(grandchild_result[1]);
++    g_assert_cmpint(read_child_result(grandchild_result[0]), ==, -EPERM);
++    wait_for_child(child);
++    qemu_crucible_hot_fork_release_parent_identity(&identity);
++    close(grandchild_result[0]);
++}
++
+ static void test_exact_replacement(void)
+ {
+     int old_control[2];
+@@ -178,6 +349,10 @@ static void test_invalid_shape_is_unchanged(void)
+ int main(int argc, char **argv)
+ {
+     g_test_init(&argc, &argv, NULL);
++    g_test_add_func("/crucible/hot-fork-child/immediate-child-replacement",
++                    test_immediate_child_replaces_parent_endpoints);
++    g_test_add_func("/crucible/hot-fork-child/grandchild-rejected",
++                    test_grandchild_cannot_use_parent_identity);
+     g_test_add_func("/crucible/hot-fork-child/exact-replacement",
+                     test_exact_replacement);
+     g_test_add_func("/crucible/hot-fork-child/verifier-rollback",
+diff --git a/util/crucible-hot-fork-child.c b/util/crucible-hot-fork-child.c
+index 826d4278c..5900ea765 100644
+--- a/util/crucible-hot-fork-child.c
++++ b/util/crucible-hot-fork-child.c
+@@ -7,6 +7,9 @@
+ 
+ #include "qemu/osdep.h"
+ 
++#include <sys/prctl.h>
++#include <sys/syscall.h>
++
+ #include "qemu/crucible-hot-fork-child.h"
+ 
+ typedef struct QemuCrucibleHotForkSavedDescriptor {
+@@ -15,6 +18,87 @@ typedef struct QemuCrucibleHotForkSavedDescriptor {
+     int target_flags;
+ } QemuCrucibleHotForkSavedDescriptor;
+ 
++static int crucible_hot_fork_pidfd_open(pid_t pid)
++{
++    return syscall(__NR_pidfd_open, pid, 0);
++}
++
++static int crucible_hot_fork_pidfd_probe(int pidfd)
++{
++    return syscall(__NR_pidfd_send_signal, pidfd, 0, NULL, 0);
++}
++
++int qemu_crucible_hot_fork_capture_parent_identity(
++    QemuCrucibleHotForkParentIdentity *identity)
++{
++    int pidfd;
++
++    if (!identity) {
++        return -EINVAL;
++    }
++    identity->parent_pid = -1;
++    identity->parent_pidfd = -1;
++
++    pidfd = crucible_hot_fork_pidfd_open(getpid());
++    if (pidfd < 0) {
++        return -errno;
++    }
++    if (fcntl(pidfd, F_GETFD) < 0) {
++        int result = -errno;
++
++        close(pidfd);
++        return result;
++    }
++
++    identity->parent_pid = getpid();
++    identity->parent_pidfd = pidfd;
++    return 0;
++}
++
++int qemu_crucible_hot_fork_authenticate_immediate_child(
++    const QemuCrucibleHotForkParentIdentity *identity)
++{
++    pid_t child_pid;
++
++    if (!identity || identity->parent_pid <= 1 ||
++        identity->parent_pidfd < 0) {
++        return -EINVAL;
++    }
++
++    child_pid = getpid();
++    if (child_pid == identity->parent_pid ||
++        getppid() != identity->parent_pid) {
++        return -EPERM;
++    }
++
++    if (prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) < 0) {
++        return -errno;
++    }
++    if (getppid() != identity->parent_pid) {
++        return -ESRCH;
++    }
++    if (crucible_hot_fork_pidfd_probe(identity->parent_pidfd) < 0) {
++        return -errno;
++    }
++    if (getppid() != identity->parent_pid) {
++        return -ESRCH;
++    }
++    return 0;
++}
++
++void qemu_crucible_hot_fork_release_parent_identity(
++    QemuCrucibleHotForkParentIdentity *identity)
++{
++    if (!identity) {
++        return;
++    }
++    if (identity->parent_pidfd >= 0) {
++        close(identity->parent_pidfd);
++    }
++    identity->parent_pid = -1;
++    identity->parent_pidfd = -1;
++}
++
+ static int crucible_hot_fork_dup3_flags(int descriptor_flags)
+ {
+     return (descriptor_flags & FD_CLOEXEC) != 0 ? O_CLOEXEC : 0;
