@@ -2086,7 +2086,7 @@ resource contributions, and readiness bits 7 and 8 remain open.
 The next non-plugin contribution retains a future child's private QMP stream.
 The Linux node creates a distinct connected nonblocking Unix stream pair after
 diagnostics staging, keeps both original endpoints, transfers the child endpoint
-with standard `getfd`, and asks the version-1 OOB child-QMP operation to
+with standard `getfd`, and asks the version-2 OOB child-QMP operation to
 duplicate and authenticate its exact Linux `SO_COOKIE`. Version 17 of the
 template report and version 7 of its nested resource stage expose the child-QMP
 mutation generation and exact sealed-plan binding. Plugin endpoint staging now
@@ -2094,8 +2094,15 @@ requires and merges that retain contribution; exact release reverses plugin,
 child-QMP, diagnostics, and private-ring ownership. This checkpoint does not
 close the inherited monitor, attach the retained endpoint, reset monitor parser
 state, perform a generation handshake, invoke `fork(2)`, or acknowledge
-readiness bit 7 or 8. The concrete child monitor reinitializer and complete
-supported-profile resource inventory remain open.
+readiness bit 7 or 8.
+Version 18 of the template report, version 8 of its resource stage, and version
+2 of the child-QMP operation now prepare a one-shot adapter bound to the exact
+endpoint and transaction generations. Its runtime result is accepted only for
+complete inherited-monitor disposition, dispatcher and endpoint reconstruction,
+parser/capability reset, greeting emission, held input, one replacement
+monitor, and empty queued/partial-request state. The concrete runtime,
+composition with the child transaction, private-stream generation handshake,
+and complete supported-profile resource inventory remain open.
 Template-process descriptor/endpoint staging now satisfies plugin-ring proof
 bit 6 only under the retained exact transaction. The internal replacement and
 child-identity primitives, and the registered empty-local-state reinitializer,

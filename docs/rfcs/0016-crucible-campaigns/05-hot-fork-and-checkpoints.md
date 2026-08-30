@@ -1155,7 +1155,7 @@ proof bit 7 or 8.
 Version 17 adds a second non-plugin contribution for a fresh branch-private QMP
 connection. After diagnostics staging, the host creates another connected
 nonblocking Unix stream pair and transfers the child endpoint through standard
-QMP `getfd`. The version-1 `crucible-hot-fork-child-qmp` operation duplicates
+QMP `getfd`. The `crucible-hot-fork-child-qmp` operation duplicates
 and authenticates that endpoint by Linux `SO_COOKIE`, requires the same active
 template generation, rejects diagnostics aliasing, and retains the descriptor
 in the sealed child plan before plugin endpoint staging can commit. QEMU and
@@ -1166,6 +1166,16 @@ child-QMP QEMU duplicate, monitor name, and node pair, then diagnostics and the
 private ring. This contribution therefore preserves exact future monitor
 authority without claiming that monitor reconstruction or child disposition
 has occurred; proof bits 7 and 8 remain clear.
+Version 18 and child-QMP schema version 2 additionally prepare a one-shot
+child-monitor adapter bound to the exact retained descriptor, Linux socket
+identity, template generation, and child-QMP mutation generation. A future
+child runtime is accepted only if it reports that inherited monitors were
+disposed, the dispatcher and private endpoint were rebuilt, parser and
+capability state were reset, the QMP greeting was emitted, input remains held,
+exactly one replacement monitor exists, and neither queued nor partial requests
+remain. This is a fail-closed runtime contract, not the concrete monitor
+implementation or its composition with the authenticated child transaction;
+it does not invoke `fork(2)` or acknowledge proof bit 7 or 8.
 Endpoint staging rejects a private-ring stage from a different or already
 aborted transaction. A new transaction starts only with an empty resource
 stage. Private-ring, diagnostics, child-QMP, and plugin-endpoint staging during a
@@ -1206,9 +1216,10 @@ complete RCU barrier is quiescent. Proof bit 3 is present exactly while the
 transaction remains active and its complete asynchronous-source barrier is
 quiescent. Proof bit 5 is present exactly while the transaction remains active
 and its complete immutable writable-root binding remains retained by the
-quiescent block barrier. Version 17 composes plugin-ring proof bit
+quiescent block barrier. Version 18 composes plugin-ring proof bit
 6 from the exact transaction-bound frozen ring, diagnostics stream, retained
-child-QMP stream, endpoint pair, worker plan, and plugin barrier. The
+child-QMP stream and prepared reinitializer, endpoint pair, worker plan, and
+plugin barrier. The
 resource-table binding remains
 nondestructive;
 descriptor/mapping proof bit 7 and child-reinitialization proof

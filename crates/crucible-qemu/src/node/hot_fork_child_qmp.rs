@@ -137,6 +137,8 @@ impl QemuHotForkChildQmpStage {
             && state.socket_cookie() == Some(endpoint.socket_cookie)
             && state.template_generation() == endpoint.template_generation
             && state.retained_descriptor().is_some()
+            && state.reinitializer_prepared()
+            && !state.reinitialized()
             && state.resource_plan_bound();
         if !exact {
             return Err(QemuNodeChannelError::new(
@@ -191,7 +193,9 @@ impl QemuNode {
     /// and must precede plugin endpoint staging, which seals the complete child
     /// resource plan. The host and node retain the fresh socket pair while QEMU
     /// owns an authenticated duplicate of the child endpoint. No inherited
-    /// monitor is closed or reconstructed and no fork occurs here.
+    /// monitor is closed or reconstructed and no fork occurs here. QEMU does
+    /// prepare a one-shot adapter that binds the future child runtime to this
+    /// exact endpoint and template/QMP generation basis.
     ///
     /// # Errors
     ///
@@ -262,6 +266,8 @@ impl QemuNode {
             && qemu_state.socket_cookie() == Some(endpoint.socket_cookie)
             && qemu_state.template_generation() == template_generation
             && qemu_state.retained_descriptor().is_some()
+            && qemu_state.reinitializer_prepared()
+            && !qemu_state.reinitialized()
             && !qemu_state.resource_plan_bound();
         if !exact {
             let source = QemuNodeChannelError::new(

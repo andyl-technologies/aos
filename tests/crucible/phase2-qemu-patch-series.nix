@@ -1168,6 +1168,13 @@
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "QEMU now retains one fresh authenticated branch-private nonblocking QMP stream, composes its exact descriptor into the same sealed child resource plan after private rings and diagnostics and before plugin endpoint commitment, rejects descriptor and socket-identity aliases, and releases the duplicate in reverse ownership order; inherited-monitor closure, parser reconstruction, private endpoint attachment, handshake, remaining block/AIO/console/filesystem contributions, production fork invocation, host continuation pairing, guest admission, and readiness bits 7 and 8 remain open";
     }
+    {
+      file = "0168-crucible-bind-child-qmp-reinitializer.patch";
+      catalogName = "crucible-hot-fork-child-qmp-reinitializer-contract";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "QEMU now prepares a one-shot child-QMP reinitializer bound to the exact retained descriptor, Linux socket identity, template generation, and QMP generation, and accepts a future child runtime only when it reports complete inherited-monitor disposition, dispatcher and endpoint reconstruction, parser/capability reset, greeting emission, held input, one replacement monitor, and no queued or partial requests; the concrete monitor runtime, child transaction composition, generation handshake over the private stream, remaining supported-profile resources, production fork invocation, host continuation pairing, guest admission, and readiness bits 7 and 8 remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
