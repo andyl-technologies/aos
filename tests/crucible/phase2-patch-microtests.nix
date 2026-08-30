@@ -2406,6 +2406,26 @@
         '';
       };
     }
+    {
+      patch = "0160-crucible-compose-registered-fork-child-runtime.patch";
+      check = certifyExactPatch {
+        patchName = "0160-crucible-compose-registered-fork-child-runtime.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-registered-child-runtime-composition";
+        liveEvidence = ''
+          grep -Fxq 'patch=0160-crucible-compose-registered-fork-child-runtime.patch' "$live_result"
+          grep -Fxq 'plugin_child_runtime_adapter_one_shot=true' "$live_result"
+          grep -Fq 'qemu_crucible_hot_fork_prepare_plugin_child_reinitializer' \
+            ${patchDir}/0160-crucible-compose-registered-fork-child-runtime.patch
+          grep -Fq 'qemu_crucible_hot_fork_reinitialize_plugin_child' \
+            ${patchDir}/0160-crucible-compose-registered-fork-child-runtime.patch
+          grep -Fq 'qemu_plugin_crucible_hot_fork_child_runtime(' \
+            ${patchDir}/0160-crucible-compose-registered-fork-child-runtime.patch
+          grep -Fq 'plugin-runtime-one-shot' \
+            ${patchDir}/0160-crucible-compose-registered-fork-child-runtime.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

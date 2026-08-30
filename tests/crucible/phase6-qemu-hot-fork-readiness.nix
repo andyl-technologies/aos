@@ -1716,6 +1716,7 @@ in
           patch=0157-crucible-compose-fork-child-resource-disposition.patch
           patch=0158-crucible-bind-hot-fork-source-mappings.patch
           patch=0159-crucible-bind-child-runtime-source-mappings.patch
+          patch=0160-crucible-compose-registered-fork-child-runtime.patch
           plugin_endpoint_schema_version=4
           plugin_endpoint_source_descriptors_observed=true
           plugin_endpoint_replacement_plan_bound=false
@@ -1772,6 +1773,7 @@ in
           child_runtime_stable=true
           child_runtime_unregistered_shape=true
           child_runtime_readiness_proof_acknowledged=false
+          plugin_child_runtime_adapter_one_shot=true
           plugin_barrier_schema_version=6
           plugin_barrier_stable=true
           plugin_barrier_unregistered_shape=true
