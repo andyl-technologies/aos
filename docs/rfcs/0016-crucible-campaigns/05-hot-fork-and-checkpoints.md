@@ -1186,6 +1186,13 @@ child transaction fail-closed. The QMP runtime remains an injected contract;
 inherited monitor disposal, dispatcher reconstruction, endpoint attachment,
 and the private-stream handshake are still not implemented, and proof bits 7
 and 8 remain clear.
+The version-2 child-QMP report now derives `disposition-complete` from that
+exact accepted one-shot status instead of hard-coding false. Prepared but
+unattempted, contradictory, failed, and reset adapters remain incomplete; the
+accepted result must still match the retained descriptor, socket identity,
+template generation, QMP generation, complete flags, single monitor, and empty
+queued/parser state. This makes a future child query accurately observable but
+does not supply the concrete runtime or acknowledge proof bit 7 or 8.
 Endpoint staging rejects a private-ring stage from a different or already
 aborted transaction. A new transaction starts only with an empty resource
 stage. Private-ring, diagnostics, child-QMP, and plugin-endpoint staging during a

@@ -1182,6 +1182,13 @@
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "QEMU now binds the exact template and child-QMP generations into the sealed QMP resource contribution, rejects a same-endpoint reinitializer from another generation before descriptor mutation, and consumes the plugin and child-QMP reinitializers together inside one authenticated immediate-child resource transaction; the concrete monitor runtime, private-stream handshake, remaining supported-profile resources, production fork invocation, host continuation pairing, guest admission, and readiness bits 7 and 8 remain open";
     }
+    {
+      file = "0170-crucible-report-complete-child-qmp-disposition.patch";
+      catalogName = "crucible-hot-fork-child-qmp-disposition-report";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "QEMU now derives child-QMP disposition-complete from the exact accepted one-shot status, exposes it through the version-2 child-QMP report, and keeps failed or contradictory attempts permanently incomplete; the concrete monitor runtime, private-stream handshake, remaining supported-profile resources, production fork invocation, host continuation pairing, guest admission, and readiness bits 7 and 8 remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

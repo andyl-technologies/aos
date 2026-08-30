@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "b80514c120801e063268203f2549294be4fa3f689dcb787344ac836c7a105bf3";
+  patchBranchBundleSha256 = "2b18c4df4078ed77a3b2f9288d2e0003568e208f8840ed6f7f14419b237627ca";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "22014548f9755595eace0bf4dbde442fb6f0d97c";
+  patchBranchHeadCommit = "b36e6925a3aed14d7e0be8cf082a67c1860f5c5e";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1625,6 +1625,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "QEMU now binds the exact template and child-QMP generations into the sealed QMP resource contribution, rejects a same-endpoint reinitializer from another generation before descriptor mutation, and consumes the plugin and child-QMP reinitializers together inside one authenticated immediate-child resource transaction; the concrete monitor runtime, private-stream handshake, remaining supported-profile resources, production fork invocation, host continuation pairing, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0170-crucible-report-complete-child-qmp-disposition.patch";
+      branchSubject = "crucible: report complete child QMP disposition";
+      branchCommit = "b36e6925a3aed14d7e0be8cf082a67c1860f5c5e";
+      branchTree = "e8a60f0627f77fdc355c41ccef7d08c94ea66d50";
+      catalogName = "crucible-hot-fork-child-qmp-disposition-report";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "QEMU now derives child-QMP disposition-complete from the exact accepted one-shot status, exposes it through the version-2 child-QMP report, and keeps failed or contradictory attempts permanently incomplete; the concrete monitor runtime, private-stream handshake, remaining supported-profile resources, production fork invocation, host continuation pairing, guest admission, and readiness bits 7 and 8 remain open";
     }
   ];
   catalogOnlyCapabilities = [

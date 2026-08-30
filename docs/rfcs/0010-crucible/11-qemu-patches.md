@@ -2962,6 +2962,28 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   `T-CAM-6.1` through `T-CAM-6.3` remain incomplete.
 - **Risk:** F.
 
+### crucible-hot-fork-child-qmp-disposition-report — expose accepted completion
+
+- **Patch:** `0170-crucible-report-complete-child-qmp-disposition.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** the child-QMP report now derives `disposition-complete` from
+  the exact accepted one-shot runtime status rather than hard-coding false. The
+  public predicate requires the prepared, attempted, and initialized adapter
+  plus the retained descriptor, socket identity, template generation, QMP
+  generation, complete flags, one monitor, and empty queued/parser state.
+- **Micro-test:** exact, contradictory, runtime-failure, and reset cases prove
+  that only the complete accepted status becomes observable. The real-fork
+  composition additionally requires the accepted predicate before the child
+  can report success.
+- **Inertness:** the accepted status still comes from an injected test runtime.
+  This patch does not dispose inherited monitors, construct the replacement
+  dispatcher, attach the private endpoint, perform its generation handshake,
+  invoke a production fork, or acknowledge readiness bit 7 or 8. Remaining
+  supported-profile resources, host-continuation pairing, guest admission, and
+  `T-CAM-6.1` through `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

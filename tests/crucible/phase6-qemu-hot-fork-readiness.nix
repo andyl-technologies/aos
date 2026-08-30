@@ -1787,6 +1787,7 @@ in
           patch=0167-crucible-retain-branch-private-child-qmp.patch
           patch=0168-crucible-bind-child-qmp-reinitializer.patch
           patch=0169-crucible-compose-child-qmp-reinitializer.patch
+          patch=0170-crucible-report-complete-child-qmp-disposition.patch
           plugin_endpoint_schema_version=4
           plugin_endpoint_source_descriptors_observed=true
           plugin_endpoint_replacement_plan_bound=false

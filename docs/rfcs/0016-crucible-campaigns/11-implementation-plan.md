@@ -2111,6 +2111,12 @@ one linear child-subsystem callback. Real-fork coverage proves each adapter runs
 exactly once. The QMP runtime is still injected test code: inherited monitor
 disposal, dispatcher construction, private endpoint attachment, the generation
 handshake, and the production fork owner remain open.
+The version-2 child-QMP query now reports `disposition-complete` exactly when
+that composed one-shot adapter accepted the complete retained-basis status.
+Prepared, contradictory, failed, and reset adapters remain observably
+incomplete, and the real-fork unit path requires the accepted predicate. This
+closes the child-side reporting seam without implementing the monitor runtime
+or promoting readiness bit 7 or 8.
 Template-process descriptor/endpoint staging now satisfies plugin-ring proof
 bit 6 only under the retained exact transaction. The internal replacement and
 child-identity primitives, and the registered empty-local-state reinitializer,
