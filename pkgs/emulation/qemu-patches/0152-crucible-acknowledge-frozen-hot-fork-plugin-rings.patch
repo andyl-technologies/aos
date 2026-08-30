@@ -1,0 +1,166 @@
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index a7a4928b5..d27d46afe 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -1712,7 +1712,7 @@ crucible_hot_fork_template_resource_stage_report(
+                crucible_hot_fork_template_generation);
+     }
+ 
+-    report->schema_version = 2;
++    report->schema_version = 3;
+     report->template_generation = resources_staged ?
+         crucible_hot_fork_private_ring_stage.template_generation : 0;
+     report->private_ring_staged =
+@@ -1743,21 +1743,32 @@ crucible_hot_fork_template_resource_stage_report(
+             crucible_hot_fork_template_generation &&
+         (!crucible_hot_fork_plugin_endpoint_stage.staged ||
+          report->worker_disposition_bound);
+-    report->readiness_proof_acknowledged = false;
++    report->readiness_proof_acknowledged =
++        crucible_hot_fork_template_active && plugin_barrier->quiescent &&
++        report->private_ring_staged && report->plugin_endpoints_staged &&
++        report->worker_disposition_bound && report->transaction_bound;
+     return report;
+ }
+ 
+-static CrucibleHotForkTemplateState *
+-crucible_hot_fork_template_report(
+-    CrucibleHotForkTemplateOutcome outcome,
+-    CrucibleHotForkPluginBarrierState *plugin_barrier,
+-    CrucibleHotForkRcuBarrierState *rcu_barrier,
+-    CrucibleHotForkBhTimerBarrierState *bh_timer_barrier,
+-    CrucibleHotForkBlockBarrierState *block_barrier)
++static uint64_t crucible_hot_fork_template_acknowledged_proofs(
++    const CrucibleHotForkPluginBarrierState *plugin_barrier,
++    const CrucibleHotForkRcuBarrierState *rcu_barrier,
++    const CrucibleHotForkBhTimerBarrierState *bh_timer_barrier,
++    const CrucibleHotForkBlockBarrierState *block_barrier)
+ {
+-    CrucibleHotForkTemplateState *report =
+-        g_new0(CrucibleHotForkTemplateState, 1);
+     uint64_t acknowledged = crucible_hot_fork_acknowledged_proofs();
++    bool plugin_ring_proof = crucible_hot_fork_template_active &&
++        plugin_barrier->quiescent &&
++        crucible_hot_fork_private_ring_stage.staged &&
++        crucible_hot_fork_private_ring_stage.shrink_sealed &&
++        crucible_hot_fork_plugin_endpoint_stage.staged &&
++        crucible_hot_fork_private_ring_stage.template_generation ==
++            crucible_hot_fork_template_generation &&
++        crucible_hot_fork_plugin_endpoint_stage.template_generation ==
++            crucible_hot_fork_template_generation &&
++        crucible_hot_fork_plugin_endpoint_stage.private_ring_generation ==
++            crucible_hot_fork_private_ring_stage.generation &&
++        crucible_hot_fork_plugin_worker_disposition_matches(plugin_barrier);
+ 
+     if (crucible_hot_fork_template_active && rcu_barrier->quiescent) {
+         acknowledged |= CRUCIBLE_HOT_FORK_PROOF_RCU;
+@@ -1769,8 +1780,26 @@ crucible_hot_fork_template_report(
+         block_barrier->snapshot_complete) {
+         acknowledged |= CRUCIBLE_HOT_FORK_PROOF_BLOCK_SNAPSHOT;
+     }
++    if (plugin_ring_proof) {
++        acknowledged |= CRUCIBLE_HOT_FORK_PROOF_PLUGIN_RINGS;
++    }
++    return acknowledged;
++}
++
++static CrucibleHotForkTemplateState *
++crucible_hot_fork_template_report(
++    CrucibleHotForkTemplateOutcome outcome,
++    CrucibleHotForkPluginBarrierState *plugin_barrier,
++    CrucibleHotForkRcuBarrierState *rcu_barrier,
++    CrucibleHotForkBhTimerBarrierState *bh_timer_barrier,
++    CrucibleHotForkBlockBarrierState *block_barrier)
++{
++    CrucibleHotForkTemplateState *report =
++        g_new0(CrucibleHotForkTemplateState, 1);
++    uint64_t acknowledged = crucible_hot_fork_template_acknowledged_proofs(
++        plugin_barrier, rcu_barrier, bh_timer_barrier, block_barrier);
+ 
+-    report->schema_version = 12;
++    report->schema_version = 13;
+     report->generation = crucible_hot_fork_template_generation;
+     report->outcome = outcome;
+     report->transaction_active = crucible_hot_fork_template_active;
+@@ -2008,10 +2037,8 @@ qmp_crucible_hot_fork_template(
+             outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_DRAINING;
+             break;
+         }
+-        acknowledged = crucible_hot_fork_acknowledged_proofs() |
+-            CRUCIBLE_HOT_FORK_PROOF_AIO_BH_TIMERS |
+-            CRUCIBLE_HOT_FORK_PROOF_RCU |
+-            CRUCIBLE_HOT_FORK_PROOF_BLOCK_SNAPSHOT;
++        acknowledged = crucible_hot_fork_template_acknowledged_proofs(
++            plugin_barrier, rcu_barrier, bh_timer_barrier, block_barrier);
+         if (acknowledged == CRUCIBLE_HOT_FORK_REQUIRED_PROOFS) {
+             outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_PREPARED;
+             break;
+@@ -2025,10 +2052,9 @@ qmp_crucible_hot_fork_template(
+         } else if (plugin_barrier->quiescent && rcu_barrier->quiescent &&
+                    bh_timer_barrier->quiescent && block_barrier->quiescent &&
+                    block_barrier->snapshot_complete &&
+-                   (crucible_hot_fork_acknowledged_proofs() |
+-                    CRUCIBLE_HOT_FORK_PROOF_AIO_BH_TIMERS |
+-                    CRUCIBLE_HOT_FORK_PROOF_RCU |
+-                    CRUCIBLE_HOT_FORK_PROOF_BLOCK_SNAPSHOT) ==
++                   crucible_hot_fork_template_acknowledged_proofs(
++                       plugin_barrier, rcu_barrier, bh_timer_barrier,
++                       block_barrier) ==
+                    CRUCIBLE_HOT_FORK_REQUIRED_PROOFS) {
+             outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_PREPARED;
+         } else {
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 5b9589610..35562bf88 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -1448,10 +1448,11 @@
+ # @CrucibleHotForkTemplateResourceStageState:
+ #
+ # Atomic generation binding for branch-private resources retained beside one
+-# template transaction. This state does not complete a child disposition or
+-# acknowledge a hot-fork readiness proof.
++# template transaction. Version 3 acknowledges the plugin-ring proof only when
++# both retained resources still match the exact active quiescent transaction.
++# It does not complete a descriptor disposition or child reinitializer.
+ #
+-# @schema-version: resource-stage binding contract version, currently 2
++# @schema-version: resource-stage binding contract version, currently 3
+ #
+ # @template-generation: exact template generation that originally admitted the
+ #     retained resources, or zero when none are staged or they were staged
+@@ -1490,8 +1491,8 @@
+ # @transaction-bound: whether every retained resource belongs to the current
+ #     active template generation and any worker disposition remains current
+ #
+-# @readiness-proof-acknowledged: always false; exact generation binding alone
+-#     acknowledges no hot-fork readiness proof
++# @readiness-proof-acknowledged: whether the exact private ring and endpoint
++#     pair, worker plan, and frozen plugin barrier acknowledge proof bit 6
+ #
+ # Since: 10.0 (Crucible downstream extension)
+ ##
+@@ -1527,10 +1528,12 @@
+ # host can stage branch-private resources under the same quiescent source-ring
+ # barrier. Version 11 binds those stages to the exact template generation.
+ # Version 12 additionally binds an explicit empty-local-state parent-resume and
+-# child-reinitialize worker plan to the exact plugin-barrier generation. The
+-# caller must explicitly abort to roll the retained barriers back.
++# child-reinitialize worker plan to the exact plugin-barrier generation.
++# Version 13 acknowledges plugin-ring proof bit 6 only while the complete
++# retained resource pair remains bound to that active quiescent transaction.
++# The caller must explicitly abort to roll the retained barriers back.
+ #
+-# @schema-version: transaction contract version, currently 12
++# @schema-version: transaction contract version, currently 13
+ #
+ # @generation: positive process-local transaction generation after the first
+ #     successful prepare, or zero before any transaction
+@@ -1556,7 +1559,7 @@
+ #     asynchronous main-loop transition
+ #
+ # @resource-stage: exact private-ring and plugin-endpoint generations retained
+-#     by this template generation, without acknowledging readiness
++#     by this template generation and their composed plugin-ring proof
+ #
+ # @rollback-complete: whether no transaction barrier remains acquired
+ #

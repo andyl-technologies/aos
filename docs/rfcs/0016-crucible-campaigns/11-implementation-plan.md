@@ -1717,7 +1717,7 @@ QEMU now additionally owns a process-lifetime reversible RCU admission/drain
 barrier. Holding at the exact paused/device-flush boundary gates every new
 outer reader and callback submission through a race-closed
 two-phase admission, retains the exact reader/admission/callback/drain state,
-and parks rejected entrants until release. The version-12 template coordinator
+and parks rejected entrants until release. The version-13 template coordinator
 holds this barrier with the plugin callback barrier and acknowledges readiness
 bit 4 only while the complete retained RCU state is quiescent. The RCU worker
 still needs an exact child disposition/reinitializer, so bit 8 remains clear.
@@ -1727,7 +1727,7 @@ GLib dispatch, AioHandler lifecycle and callbacks, coroutine scheduling,
 bottom-half and timer creation, mutation, and callback dispatch. Holding at the
 exact paused/device-flush boundary parks later producers, lets already-admitted
 work and its nested mutations finish, leaves queued sources parked, and keeps
-OOB QMP responsive through nonblocking event-loop admission. The version-12
+OOB QMP responsive through nonblocking event-loop admission. The version-13
 template coordinator retains this barrier with the plugin, RCU, and native
 block barriers,
 and the typed client validates its exact bounded inventories and derived
@@ -1792,7 +1792,7 @@ typed Rust control surface rejects contradictory schemas, bounds, generations,
 owners, and action postconditions. The QEMU unit regression parks a real graph
 writer until a scheduled release, while the live gate proves stable released
 state and no state retention after an invalid hold. This is a concrete
-block-side graph and I/O quiescence prerequisite. The version-12 template
+block-side graph and I/O quiescence prerequisite. The version-13 template
 coordinator schedules acquisition and release on the main AioContext, holds the
 graph and native drain barriers before parking asynchronous sources, and
 releases asynchronous sources before graph and block I/O admission reopen.
@@ -1885,11 +1885,17 @@ flags, retains rollback copies, invokes a caller-supplied exact verifier after
 replacement, restores both old targets on rejection, and reports a poisoned
 disposition when rollback cannot be proved. The helper has no caller yet and
 cannot establish the required immediate-child context or complete inherited-FD
-table. The version-12 template
+table. Version 12 of the template
 report atomically binds both resource mutation generations, that dependency
 edge, and the worker plan to the active transaction;
 after abort it preserves the origin generation but marks the retained stage
 unbound. Cross-transaction endpoint composition fails closed.
+Version 13 promotes plugin-ring readiness bit 6 only while the shrink-sealed
+private ring, both endpoint identities, the quiescent plugin barrier, and the
+complete parent/child worker plan remain exact members of that same active
+transaction. The nested resource-stage acknowledgement and outer proof bitmap
+must agree, and either clears on generation, seal, barrier, worker, or
+transaction drift.
 Transfer or adoption ambiguity poisons QMP, retains the mapping as uncertain,
 and quarantines the node; either release
 ambiguity retains the installed mapping and also quarantines. Focused typed and
@@ -1942,10 +1948,11 @@ Linux-only GPL-side primitive now pins the exact parent generation in a pidfd,
 admits only its live immediate child, arms parent-death termination, and proves
 child-only endpoint replacement under a real unit-test fork. Production QEMU
 still has no fork caller or complete inherited-resource transaction.
-Template-process descriptor/endpoint staging, the internal replacement and
-child-identity primitives, and the registered empty-local-state reinitializer
-do not satisfy proof bits 6 through 8. All three remain clear and T-CAM-6.2
-remains unchecked.
+Template-process descriptor/endpoint staging now satisfies plugin-ring proof
+bit 6 only under the retained exact transaction. The internal replacement and
+child-identity primitives, and the registered empty-local-state reinitializer,
+still do not satisfy mapping/descriptor bit 7 or child-reinitialization bit 8.
+Both remain clear and T-CAM-6.2 remains unchecked.
 Patched QEMU now also owns the versioned `PrepareForkTemplate`
 transaction. Its serialized OOB coordinator starts only at the exact
 paused/device-flush boundary, asynchronously closes graph-writer admission and
@@ -1955,9 +1962,11 @@ drains, and lets the
 Apache client query or abort that retained state without blocking QMP. A
 quiescent transaction is reported as `prepared`
 only when all nine readiness bits are present in the same generation. Version
-12 retains the fully drained transaction as `draining`, permitting
+13 retains the fully drained transaction as `draining`, permitting
 branch-private ring and endpoint staging only under that exact quiescent source
-barrier and binding both stages plus the exact worker plan to that transaction.
+barrier, binding both stages plus the exact worker plan to that transaction,
+and acknowledging plugin-ring bit 6 only while that complete basis remains
+exact.
 The caller must explicitly
 abort before resuming or abandoning the
 template; `blocked` remains the fail-closed outcome for subsystem acquisition
@@ -1972,8 +1981,9 @@ leaves every barrier retained for a later prepare/query/abort retry. The current
 coordinator acknowledges
 RCU bit 4 and AIO bit 3 only while their complete retained barriers are
 quiescent, and block bit 5 only while the exact immutable writable-root binding
-remains complete. Plugin-ring bit 6, mapping/descriptor bit 7, and
-child-reinitialization bit 8 remain clear, every fully drained preparation
+remains complete. Plugin-ring bit 6 is present only for the exact frozen
+resource transaction. Mapping/descriptor bit 7 and child-reinitialization bit
+8 remain clear, every fully drained preparation
 remains retained until explicit abort, no fork operation exists, and
 T-CAM-6.2 remains unchecked.
 QEMU now also exposes a version-1, 65,536-entry POSIX `QemuMutex` and

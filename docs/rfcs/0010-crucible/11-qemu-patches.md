@@ -2522,6 +2522,27 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   stay clear and `T-CAM-6.2` remains unchecked.
 - **Risk:** F.
 
+### crucible-hot-fork-plugin-ring-proof — bind the frozen plugin resources
+
+- **Patch:** `0152-crucible-acknowledge-frozen-hot-fork-plugin-rings.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-11], [HFORK-12].
+- **Mechanism:** version 13 of the retained template coordinator composes
+  readiness bit 6 only while the exact branch-private ring, plugin endpoints,
+  quiescent plugin barrier, and complete parent/child worker-disposition plan
+  all remain bound to the same active transaction. The nested resource-stage
+  schema is version 3 and reports the independently checked acknowledgement;
+  the outer bitmap and nested result must agree. Generation, shrink-seal,
+  endpoint-to-ring, barrier, or worker-plan drift clears the proof.
+- **Micro-test:** the typed Rust decoder accepts the exact version-13/version-3
+  proof shape and rejects forged outer or nested acknowledgements. Patch
+  micro-tests pin the QEMU proof bit, exact worker-disposition predicate, and
+  transaction-bound acknowledgement assignment.
+- **Inertness:** the coordinator still lacks the complete inherited-descriptor
+  disposition and child reinitialization required by bits 7 and 8. It remains
+  `draining`, no production `fork(2)` caller exists, and `T-CAM-6.2` remains
+  unchecked.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
