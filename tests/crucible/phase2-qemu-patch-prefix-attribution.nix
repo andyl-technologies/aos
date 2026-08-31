@@ -759,6 +759,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0172-crucible-inventory-qmp-monitor-state.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

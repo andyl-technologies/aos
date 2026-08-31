@@ -100,6 +100,9 @@ pub const QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND: &str =
 /// QMP command name used for QEMU's bounded live-timer inventory.
 pub const QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND: &str =
     "query-crucible-hot-fork-timer-inventory";
+/// QMP command name used for QEMU's bounded monitor/parser inventory.
+pub const QMP_QUERY_HOT_FORK_MONITOR_INVENTORY_COMMAND: &str =
+    "query-crucible-hot-fork-monitor-inventory";
 
 /// Version of the QEMU-owned hot-fork proof-bit contract.
 pub const QMP_HOT_FORK_READINESS_SCHEMA_VERSION: u32 = 1;
@@ -125,6 +128,8 @@ pub const QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION: u32 = 1;
 pub const QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION: u32 = 1;
 /// Version of the QEMU-owned live-timer inventory contract.
 pub const QMP_HOT_FORK_TIMER_INVENTORY_SCHEMA_VERSION: u32 = 1;
+/// Version of the QEMU-owned monitor/parser inventory contract.
+pub const QMP_HOT_FORK_MONITOR_INVENTORY_SCHEMA_VERSION: u32 = 1;
 
 /// Complete proof bitmap required by the version-1 hot-fork contract.
 pub const QMP_HOT_FORK_REQUIRED_PROOFS: u64 = (1_u64 << 9) - 1;
@@ -144,6 +149,8 @@ pub const QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX: usize = 65_536;
 pub const QMP_HOT_FORK_MUTEX_INVENTORY_MAX: usize = 65_536;
 /// Maximum unique pending or callback-active timers retained by one response.
 pub const QMP_HOT_FORK_TIMER_INVENTORY_MAX: usize = 65_536;
+/// Maximum monitors charged by one inventory response.
+pub const QMP_HOT_FORK_MONITOR_INVENTORY_MAX: usize = 256;
 /// Maximum UTF-8 bytes retained for one QEMU thread name.
 pub const QMP_HOT_FORK_THREAD_NAME_MAX_BYTES: usize = 256;
 /// Maximum UTF-8 bytes retained for one QEMU bottom-half diagnostic name.
@@ -1382,6 +1389,166 @@ impl QmpHotForkTimerInventory {
     #[must_use]
     pub fn timers(&self) -> &[QmpHotForkTimer] {
         &self.timers
+    }
+}
+
+/// Exact bounded observational snapshot of QEMU monitor and parser state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QmpHotForkMonitorInventory {
+    generation: u64,
+    complete: bool,
+    overflowed: bool,
+    monitor_count: u32,
+    qmp_monitors: u32,
+    hmp_monitors: u32,
+    io_thread_monitors: u32,
+    suspended_monitors: u32,
+    negotiating_monitors: u32,
+    oob_enabled_monitors: u32,
+    queued_requests: u64,
+    parser_buffered_bytes: u64,
+    partial_parsers: u32,
+    unstable_monitors: u32,
+}
+
+impl QmpHotForkMonitorInventory {
+    #[cfg(test)]
+    pub(crate) const fn one_supported() -> Self {
+        Self {
+            generation: 1,
+            complete: true,
+            overflowed: false,
+            monitor_count: 1,
+            qmp_monitors: 1,
+            hmp_monitors: 0,
+            io_thread_monitors: 1,
+            suspended_monitors: 0,
+            negotiating_monitors: 0,
+            oob_enabled_monitors: 1,
+            queued_requests: 0,
+            parser_buffered_bytes: 0,
+            partial_parsers: 0,
+            unstable_monitors: 0,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn incomplete() -> Self {
+        Self {
+            complete: false,
+            unstable_monitors: 1,
+            ..Self::one_supported()
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn one_queued() -> Self {
+        Self {
+            queued_requests: 1,
+            ..Self::one_supported()
+        }
+    }
+
+    /// Returns the process-local monitor lifecycle generation.
+    #[must_use]
+    pub const fn generation(self) -> u64 {
+        self.generation
+    }
+
+    /// Returns whether every bounded monitor/parser record was stable.
+    #[must_use]
+    pub const fn complete(self) -> bool {
+        self.complete
+    }
+
+    /// Returns whether a count or aggregate exceeded its retained bound.
+    #[must_use]
+    pub const fn overflowed(self) -> bool {
+        self.overflowed
+    }
+
+    /// Returns the retained monitor count.
+    #[must_use]
+    pub const fn monitor_count(self) -> u32 {
+        self.monitor_count
+    }
+
+    /// Returns the number of retained QMP monitors.
+    #[must_use]
+    pub const fn qmp_monitors(self) -> u32 {
+        self.qmp_monitors
+    }
+
+    /// Returns the number of retained human monitors.
+    #[must_use]
+    pub const fn hmp_monitors(self) -> u32 {
+        self.hmp_monitors
+    }
+
+    /// Returns the number of monitors hosted by the monitor I/O thread.
+    #[must_use]
+    pub const fn io_thread_monitors(self) -> u32 {
+        self.io_thread_monitors
+    }
+
+    /// Returns the number of monitors whose input is suspended.
+    #[must_use]
+    pub const fn suspended_monitors(self) -> u32 {
+        self.suspended_monitors
+    }
+
+    /// Returns QMP monitors still negotiating capabilities.
+    #[must_use]
+    pub const fn negotiating_monitors(self) -> u32 {
+        self.negotiating_monitors
+    }
+
+    /// Returns QMP monitors with out-of-band commands enabled.
+    #[must_use]
+    pub const fn oob_enabled_monitors(self) -> u32 {
+        self.oob_enabled_monitors
+    }
+
+    /// Returns queued in-band QMP requests.
+    #[must_use]
+    pub const fn queued_requests(self) -> u64 {
+        self.queued_requests
+    }
+
+    /// Returns bytes retained by partial JSON parser state.
+    #[must_use]
+    pub const fn parser_buffered_bytes(self) -> u64 {
+        self.parser_buffered_bytes
+    }
+
+    /// Returns parsers retaining a partial JSON message.
+    #[must_use]
+    pub const fn partial_parsers(self) -> u32 {
+        self.partial_parsers
+    }
+
+    /// Returns QMP monitors whose parser was busy during the snapshot.
+    #[must_use]
+    pub const fn unstable_monitors(self) -> u32 {
+        self.unstable_monitors
+    }
+
+    /// Returns whether this is the one supported parent-template profile.
+    #[must_use]
+    pub const fn is_supported_parent_profile(self) -> bool {
+        self.complete
+            && !self.overflowed
+            && self.monitor_count == 1
+            && self.qmp_monitors == 1
+            && self.hmp_monitors == 0
+            && self.io_thread_monitors == 1
+            && self.suspended_monitors == 0
+            && self.negotiating_monitors == 0
+            && self.oob_enabled_monitors == 1
+            && self.queued_requests == 0
+            && self.parser_buffered_bytes == 0
+            && self.partial_parsers == 0
+            && self.unstable_monitors == 0
     }
 }
 
@@ -2815,5 +2982,105 @@ pub(super) fn parse_hot_fork_timer_inventory(
         complete,
         overflowed,
         timers,
+    })
+}
+
+pub(super) fn parse_hot_fork_monitor_inventory(
+    value: &Value,
+) -> Result<QmpHotForkMonitorInventory, QmpError> {
+    let malformed = || QmpError::MalformedTypedResponse {
+        command: QmpCommandKind::QueryHotForkMonitorInventory,
+        response: value.to_string(),
+    };
+    let object = value.as_object().ok_or_else(&malformed)?;
+    let fields = [
+        "schema-version",
+        "generation",
+        "complete",
+        "overflowed",
+        "monitor-count",
+        "qmp-monitors",
+        "hmp-monitors",
+        "io-thread-monitors",
+        "suspended-monitors",
+        "negotiating-monitors",
+        "oob-enabled-monitors",
+        "queued-requests",
+        "parser-buffered-bytes",
+        "partial-parsers",
+        "unstable-monitors",
+    ];
+    if object.len() != fields.len() || !fields.iter().all(|field| object.contains_key(*field)) {
+        return Err(malformed());
+    }
+
+    let u32_field = |name| {
+        object
+            .get(name)
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(&malformed)
+    };
+    let schema_version = u32_field("schema-version")?;
+    let generation = object
+        .get("generation")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let complete = object
+        .get("complete")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
+    let overflowed = object
+        .get("overflowed")
+        .and_then(Value::as_bool)
+        .ok_or_else(&malformed)?;
+    let monitor_count = u32_field("monitor-count")?;
+    let qmp_monitors = u32_field("qmp-monitors")?;
+    let hmp_monitors = u32_field("hmp-monitors")?;
+    let io_thread_monitors = u32_field("io-thread-monitors")?;
+    let suspended_monitors = u32_field("suspended-monitors")?;
+    let negotiating_monitors = u32_field("negotiating-monitors")?;
+    let oob_enabled_monitors = u32_field("oob-enabled-monitors")?;
+    let queued_requests = object
+        .get("queued-requests")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let parser_buffered_bytes = object
+        .get("parser-buffered-bytes")
+        .and_then(Value::as_u64)
+        .ok_or_else(&malformed)?;
+    let partial_parsers = u32_field("partial-parsers")?;
+    let unstable_monitors = u32_field("unstable-monitors")?;
+
+    if schema_version != QMP_HOT_FORK_MONITOR_INVENTORY_SCHEMA_VERSION
+        || usize::try_from(monitor_count).ok() > Some(QMP_HOT_FORK_MONITOR_INVENTORY_MAX)
+        || qmp_monitors.checked_add(hmp_monitors) != Some(monitor_count)
+        || io_thread_monitors > monitor_count
+        || suspended_monitors > monitor_count
+        || negotiating_monitors > qmp_monitors
+        || oob_enabled_monitors > qmp_monitors
+        || partial_parsers > qmp_monitors
+        || unstable_monitors > qmp_monitors
+        || (partial_parsers == 0 && parser_buffered_bytes != 0)
+        || complete != (!overflowed && unstable_monitors == 0)
+    {
+        return Err(malformed());
+    }
+
+    Ok(QmpHotForkMonitorInventory {
+        generation,
+        complete,
+        overflowed,
+        monitor_count,
+        qmp_monitors,
+        hmp_monitors,
+        io_thread_monitors,
+        suspended_monitors,
+        negotiating_monitors,
+        oob_enabled_monitors,
+        queued_requests,
+        parser_buffered_bytes,
+        partial_parsers,
+        unstable_monitors,
     })
 }

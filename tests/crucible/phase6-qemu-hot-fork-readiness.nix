@@ -186,6 +186,11 @@ in
             "$out/stock-timer-inventory.json"
           jq -e -s 'any(.[]; has("error"))' "$out/stock-timer-inventory.json" >/dev/null \
             || fail "stock QEMU unexpectedly exposed the Crucible timer inventory command"
+          qmp "$stock_socket" \
+            '{"exec-oob":"query-crucible-hot-fork-monitor-inventory"}' \
+            "$out/stock-monitor-inventory.json"
+          jq -e -s 'any(.[]; has("error"))' "$out/stock-monitor-inventory.json" >/dev/null \
+            || fail "stock QEMU unexpectedly exposed the Crucible monitor inventory command"
           qmp "$stock_socket" '{"execute":"quit"}' "$out/stock-quit.json"
           wait "$qemu_pid"
           qemu_pid=""
@@ -1753,6 +1758,34 @@ in
           ' "$out/timer-inventory-2.json" >/dev/null \
             || { cat "$out/timer-inventory-1.json" >&2; cat "$out/timer-inventory-2.json" >&2; fail "QEMU timer inventory changed without a pending or callback transition"; }
 
+          qmp_pair "$patched_socket" \
+            '{"exec-oob":"query-crucible-hot-fork-monitor-inventory"}' \
+            "$out/monitor-inventory.json"
+          jq -e -s '
+            [.[] | select(has("return")) | .return |
+             select(has("monitor-count"))] as $reports |
+            ($reports | length) == 2 and
+            $reports[0] == $reports[1] and
+            $reports[0] == {
+              "schema-version": 1,
+              "generation": 1,
+              "complete": true,
+              "overflowed": false,
+              "monitor-count": 1,
+              "qmp-monitors": 1,
+              "hmp-monitors": 0,
+              "io-thread-monitors": 1,
+              "suspended-monitors": 0,
+              "negotiating-monitors": 0,
+              "oob-enabled-monitors": 1,
+              "queued-requests": 0,
+              "parser-buffered-bytes": 0,
+              "partial-parsers": 0,
+              "unstable-monitors": 0
+            }
+          ' "$out/monitor-inventory.json" >/dev/null \
+            || { cat "$out/monitor-inventory.json" >&2; fail "QEMU monitor inventory was not the exact supported parent profile"; }
+
           qmp "$patched_socket" '{"execute":"quit"}' "$out/patched-quit.json"
           wait "$qemu_pid"
           qemu_pid=""
@@ -1789,6 +1822,7 @@ in
           patch=0169-crucible-compose-child-qmp-reinitializer.patch
           patch=0170-crucible-report-complete-child-qmp-disposition.patch
           patch=0171-crucible-preserve-child-qmp-query-basis.patch
+          patch=0172-crucible-inventory-qmp-monitor-state.patch
           plugin_endpoint_schema_version=4
           plugin_endpoint_source_descriptors_observed=true
           plugin_endpoint_replacement_plan_bound=false
@@ -1908,6 +1942,9 @@ in
           timer_inventory_bound=65536
           timer_inventory_stable=true
           timer_inventory_exact=true
+          monitor_inventory_schema_version=1
+          monitor_inventory_bound=256
+          monitor_inventory_supported_profile=true
           timer_proof_acknowledged=false
           incomplete_report_ready=false
           stock_commands_absent=true

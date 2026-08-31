@@ -2185,6 +2185,16 @@ separate retained asynchronous-source barrier covers timer, bottom-half,
 AioContext, handler, and coroutine admission and dispatch, so its quiescent
 state supplies readiness bit 3. Child-side clock and context reconstruction
 remain separate proof-bit-8 obligations.
+QEMU now additionally exposes a version-1, 256-monitor OOB inventory of monitor
+topology, dispatcher queues, and partial JSON parser state. The host brackets
+its procfs capture with identical reports and accepts only one stable
+OOB-enabled I/O-thread QMP monitor with no HMP monitor, suspension,
+negotiation, queued request, buffered parser byte, partial parser, or unstable
+record. Parser observation is bounded and nonblocking under the global monitor
+lock: a parser racing another input callback makes the report incomplete. This
+is an observational prerequisite only. It does not dispose inherited monitors,
+build the child dispatcher, attach the retained private endpoint, release child
+input, invoke `fork(2)`, or acknowledge readiness bit 7 or 8.
 These are executable T-CAM-6.1 audit prerequisites, not completion of the task:
 the internal registry identifies two non-coordinator subsystem owners but has
 no safe non-coordinator child disposition. The retained AIO/BH/timer and RCU

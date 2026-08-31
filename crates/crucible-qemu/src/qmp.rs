@@ -43,7 +43,8 @@ pub use hot_fork::{
     QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES, QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
     QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD,
     QMP_HOT_FORK_CHILD_QMP_COMMAND, QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION,
-    QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION, QMP_HOT_FORK_MUTEX_INVENTORY_MAX,
+    QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION, QMP_HOT_FORK_MONITOR_INVENTORY_MAX,
+    QMP_HOT_FORK_MONITOR_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_MUTEX_INVENTORY_MAX,
     QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND,
     QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND,
     QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION,
@@ -58,7 +59,7 @@ pub use hot_fork::{
     QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_CHILD_RUNTIME_COMMAND,
-    QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_MONITOR_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND, QmpHotForkAioContext, QmpHotForkAioHandler,
@@ -67,8 +68,8 @@ pub use hot_fork::{
     QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,
     QmpHotForkBlockSnapshotRoot, QmpHotForkBottomHalf, QmpHotForkBottomHalfInventory,
     QmpHotForkChildDiagnosticState, QmpHotForkChildQmpState, QmpHotForkChildRuntimePhase,
-    QmpHotForkChildRuntimeState, QmpHotForkMutex, QmpHotForkMutexInventory,
-    QmpHotForkPluginBarrierState, QmpHotForkPluginEndpointDescriptorPlan,
+    QmpHotForkChildRuntimeState, QmpHotForkMonitorInventory, QmpHotForkMutex,
+    QmpHotForkMutexInventory, QmpHotForkPluginBarrierState, QmpHotForkPluginEndpointDescriptorPlan,
     QmpHotForkPluginEndpointIdentity, QmpHotForkPluginEndpointState,
     QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState, QmpHotForkProof,
     QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness,
@@ -81,11 +82,12 @@ use hot_fork::{
     parse_hot_fork_bh_timer_barrier_state, parse_hot_fork_block_backend_inventory,
     parse_hot_fork_block_barrier_state, parse_hot_fork_bottom_half_inventory,
     parse_hot_fork_child_diagnostic_state, parse_hot_fork_child_qmp_state,
-    parse_hot_fork_child_runtime_state, parse_hot_fork_mutex_inventory,
-    parse_hot_fork_plugin_barrier_state, parse_hot_fork_plugin_endpoint_state,
-    parse_hot_fork_plugin_resource_inventory, parse_hot_fork_private_ring_state,
-    parse_hot_fork_rcu_barrier_state, parse_hot_fork_rcu_inventory, parse_hot_fork_readiness,
-    parse_hot_fork_template_state, parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
+    parse_hot_fork_child_runtime_state, parse_hot_fork_monitor_inventory,
+    parse_hot_fork_mutex_inventory, parse_hot_fork_plugin_barrier_state,
+    parse_hot_fork_plugin_endpoint_state, parse_hot_fork_plugin_resource_inventory,
+    parse_hot_fork_private_ring_state, parse_hot_fork_rcu_barrier_state,
+    parse_hot_fork_rcu_inventory, parse_hot_fork_readiness, parse_hot_fork_template_state,
+    parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
 };
 pub use snapshot_tag::QmpSnapshotTag;
 pub use vmstate_control::QemuQmpVmStateControlChannel;
@@ -1525,6 +1527,23 @@ where
         parse_hot_fork_timer_inventory(&response.value)
     }
 
+    /// Returns QEMU's exact bounded observational monitor/parser inventory.
+    ///
+    /// This query neither rebuilds child monitor state nor acknowledges the
+    /// child-runtime hot-fork proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the request or response fails, or when the
+    /// response violates the closed schema, monitor bound, aggregate
+    /// relationships, or completeness rule.
+    pub fn query_hot_fork_monitor_inventory(
+        &mut self,
+    ) -> Result<QmpHotForkMonitorInventory, QmpError> {
+        let response = self.send_command_return(QmpCommand::QueryHotForkMonitorInventory)?;
+        parse_hot_fork_monitor_inventory(&response.value)
+    }
+
     fn read_greeting(&mut self) -> Result<QmpGreeting, QmpError> {
         let deadline = QmpOperationDeadline::new(self.io_timeout_policy.greeting_timeout);
         let response = self.read_json_line("read QMP greeting", &deadline)?;
@@ -2168,6 +2187,8 @@ pub enum QmpCommandKind {
     QueryHotForkMutexInventory,
     /// QEMU-owned hot-fork live-timer inventory query.
     QueryHotForkTimerInventory,
+    /// QEMU-owned hot-fork monitor/parser inventory query.
+    QueryHotForkMonitorInventory,
     /// Graceful QEMU quit.
     Quit,
     /// Import one Unix descriptor under a stable name.
@@ -2218,6 +2239,7 @@ impl QmpCommandKind {
             }
             Self::QueryHotForkMutexInventory => QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
             Self::QueryHotForkTimerInventory => QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND,
+            Self::QueryHotForkMonitorInventory => QMP_QUERY_HOT_FORK_MONITOR_INVENTORY_COMMAND,
             Self::Quit => QMP_QUIT_COMMAND_NAME,
             Self::GetFd => QMP_GETFD_COMMAND,
             Self::CloseFd => QMP_CLOSEFD_COMMAND,
@@ -2471,6 +2493,7 @@ enum QmpCommand<'a> {
     QueryHotForkBottomHalfInventory,
     QueryHotForkMutexInventory,
     QueryHotForkTimerInventory,
+    QueryHotForkMonitorInventory,
     Quit,
     GetFd {
         name: &'a QmpDescriptorName,
@@ -2522,6 +2545,7 @@ impl QmpCommand<'_> {
             }
             Self::QueryHotForkMutexInventory => QmpCommandKind::QueryHotForkMutexInventory,
             Self::QueryHotForkTimerInventory => QmpCommandKind::QueryHotForkTimerInventory,
+            Self::QueryHotForkMonitorInventory => QmpCommandKind::QueryHotForkMonitorInventory,
             Self::Quit => QmpCommandKind::Quit,
             Self::GetFd { .. } => QmpCommandKind::GetFd,
             Self::CloseFd { .. } => QmpCommandKind::CloseFd,
@@ -2789,6 +2813,9 @@ impl QmpCommand<'_> {
             }),
             Self::QueryHotForkTimerInventory => json!({
                 "execute": QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND,
+            }),
+            Self::QueryHotForkMonitorInventory => json!({
+                "exec-oob": QMP_QUERY_HOT_FORK_MONITOR_INVENTORY_COMMAND,
             }),
             Self::Quit => json!({
                 "execute": QMP_QUIT_COMMAND_NAME,

@@ -118,6 +118,7 @@ enum ChannelCall {
     QmpHotForkBottomHalfInventory,
     QmpHotForkMutexInventory,
     QmpHotForkTimerInventory,
+    QmpHotForkMonitorInventory,
     QmpTerminalLifecycle {
         action: ContentHash,
         evidence: ContentHash,
@@ -988,6 +989,16 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         Ok(crate::QmpHotForkTimerInventory::empty())
     }
 
+    fn query_hot_fork_monitor_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkMonitorInventory, QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpHotForkMonitorInventory);
+        Ok(crate::QmpHotForkMonitorInventory::one_supported())
+    }
+
     fn complete_terminal_lifecycle_exit(
         &mut self,
         action: ContentHash,
@@ -1789,6 +1800,8 @@ fn hot_fork_audit_brackets_plugin_inventory_around_one_exact_child_process()
             ChannelCall::QmpHotForkBottomHalfInventory,
             ChannelCall::QmpHotForkMutexInventory,
             ChannelCall::QmpHotForkTimerInventory,
+            ChannelCall::QmpHotForkMonitorInventory,
+            ChannelCall::QmpHotForkMonitorInventory,
             ChannelCall::QmpHotForkTimerInventory,
             ChannelCall::QmpHotForkMutexInventory,
             ChannelCall::QmpHotForkBottomHalfInventory,
