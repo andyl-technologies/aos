@@ -310,6 +310,8 @@ enum CampaignCommand {
     Fixture(CampaignFixtureArgs),
     /// Validate strict campaign import manifests without opening repository state.
     ValidateImport(CampaignValidateImportArgs),
+    /// Compile strict human-authored campaign policy manifests.
+    Policy(CampaignPolicyArgs),
     /// Create a named campaign from canonical imported lineage and policy records.
     Create(CampaignCreateArgs),
     /// List authenticated current campaign heads.
@@ -485,6 +487,28 @@ struct CampaignValidateImportArgs {
     /// Strict import manifest to validate; repeated manifests share one bound.
     #[arg(value_name = "MANIFEST", required = true)]
     manifests: Vec<PathBuf>,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignPolicyArgs {
+    #[command(subcommand)]
+    command: CampaignPolicyCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignPolicyCommand {
+    /// Compile a strict TOML policy into its canonical binary record.
+    Compile(CampaignPolicyCompileArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignPolicyCompileArgs {
+    /// Strict version-one campaign policy TOML.
+    #[arg(value_name = "INPUT")]
+    input: PathBuf,
+    /// New file that will receive the canonical binary policy record.
+    #[arg(long, value_name = "OUTPUT", required = true)]
+    output: PathBuf,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]

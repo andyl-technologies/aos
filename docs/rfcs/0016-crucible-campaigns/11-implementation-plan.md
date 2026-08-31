@@ -2265,8 +2265,12 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   opportunity/declaration/domain reads.
   Up to sixteen repeated predicates form a conjunction; resolution scans to
   authenticated EOF under a 4,096-opportunity ceiling and rejects absent or
-  ambiguous matches before publication. Rich manifest authoring and policy-file
-  selector expressions remain open.
+  ambiguous matches before publication. Strict offline policy authoring now
+  compiles a bounded, deny-unknown-fields version-one TOML schema through the
+  same public typed constructors used by canonical decoding, rejects duplicate
+  semantic keys before output, and durably creates one non-overwriting binary
+  policy record while reporting its exact content identity. Rich lineage and
+  scenario manifest authoring and policy-file selector expressions remain open.
 - [ ] **T-CAM-8.2** Implement graph/frontier/choices/findings/explain/compare
   queries with branch-point/source/provenance views, pagination, and versioned
   JSON. Snapshot-bound graph/frontier/choices/findings traversal is exposed

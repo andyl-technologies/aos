@@ -121,6 +121,7 @@ campaign explicitly admits defaults; otherwise validation fails.
 ## 07.3 CLI lifecycle
 
 ```text
+crucible campaign policy compile POLICY.toml --output POLICY.bin
 crucible campaign create NAME --lineage LINEAGE.bin --policy POLICY.bin \
   [--start-command COMMAND]
 crucible campaign validate NAME|POLICY
@@ -159,6 +160,17 @@ the result is self-contained rather than depending on previously imported
 repository state. It streams one body at a time and reports the exact derived
 configuration and generator identities in every supported output format.
 The command intentionally takes neither `--socket` nor `--principal`.
+The same offline boundary provides `campaign policy compile`. Its strict
+version-one TOML schema names the exact scenario semantic ID, 32-byte lowercase
+hexadecimal seed, campaign mode, one closed explorer variant, ordered choice
+generator references, objectives, guidance weights, stop conditions, fairness,
+retention, and default-admission intent. The compiler admits at most 16 MiB,
+rejects unknown fields and duplicate semantic keys, constructs the public typed
+policy values so every canonical invariant is shared with repository decoding,
+and only then durably installs a new canonical binary record without replacing
+an existing path. It reports the exact content-derived `CampaignPolicyId`.
+Referenced generators remain separately verifier-imported immutable records;
+the authoring file does not bypass the dependency-ordered import closure.
 `create` then creates the first snapshot and named ref or exactly replays the
 authenticated genesis basis. With `--start-command`, the client immediately
 submits a separate `Resume` command whose precondition is the exact genesis

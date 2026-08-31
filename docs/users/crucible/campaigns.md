@@ -83,6 +83,77 @@ explains the modeled network policy represented by the generated fixture; its
 future-looking execution narrative is not a substitute for
 `crucible campaign --help`.
 
+Author a campaign policy as strict TOML and compile it offline before creating
+the campaign:
+
+```sh
+./result/bin/crucible campaign policy compile ./policy.toml \
+  --output ./policy.bin \
+  --format json
+```
+
+The compiler reads at most 16 MiB, rejects unknown fields, duplicate semantic
+keys, noncanonical identities, invalid exact arithmetic, and unsupported
+explorer parameters before creating the output. It writes a new owner-only
+file durably and never replaces an existing path. The report contains the
+canonical `CampaignPolicyId` and encoded byte count. A version-one manifest has
+the following field shape; replace the example scenario and generator
+identities with exact values derived from your verified import closure:
+
+```toml
+schema_version = 1
+scenario = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+campaign_seed = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+mode = "strict"
+stop_conditions = ["scenario-complete"]
+admit_scenario_defaults = false
+
+[explorer]
+kind = "tree-search"
+exploration_weight_micros = 1250000
+novelty_bonus_micros = 250000
+fairness_bonus_micros = 100000
+
+[explorer.widening]
+k_numerator = 2
+k_denominator = 1
+alpha_numerator = 1
+alpha_denominator = 2
+initial_children = 2
+maximum_children = 64
+minimum_visits_per_child = 1
+
+[[choices]]
+selector = "network.latency"
+generator = "crucible.campaign.candidate-generator-spec@policy-v1-CONTENT_HASH"
+required = true
+
+[[objectives]]
+measurement = "recovery-time"
+goal = "minimize"
+weight_micros = 1000000
+
+[[guidance]]
+signal = "coverage-rarity"
+weight_micros = 500000
+
+[fairness]
+breadth_first_percent = 10
+novelty_reserve = 4
+
+[retention]
+retain_all_findings = true
+survivor_limit = 32
+exact_findings = true
+exact_user_pins = true
+```
+
+`mode` is `strict`, `streaming`, or `statistical`; objective goals are
+`minimize` or `maximize`. The explorer may instead be `kind = "beam"` with
+`width` and `novelty_reserve`, or `kind = "exhaustive"` with
+`maximum_cardinality`. Every choice generator is an exact canonical generator
+record ID and must already occur in the daemon's verified import closure.
+
 ## Start the single-host owner
 
 The campaign endpoint is a managed Unix socket. Its state directory, peer
