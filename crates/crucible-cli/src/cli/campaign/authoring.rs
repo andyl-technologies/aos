@@ -7,12 +7,30 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 
 use rustix::fs::{CWD, RenameFlags};
+use serde::Serialize;
 
-pub(super) fn read_bounded_utf8(
+const SCENARIO_BODY_NAME: &str = "scenario.bin";
+const SCHEDULE_BODY_NAME: &str = "schedule.bin";
+const IMPORT_MANIFEST_NAME: &str = "import.toml";
+
+#[derive(Serialize)]
+struct ConfigurationImportManifest<'a> {
+    schema: &'static str,
+    version: u32,
+    configuration: [ConfigurationImportEntry<'a>; 1],
+}
+
+#[derive(Serialize)]
+struct ConfigurationImportEntry<'a> {
+    scenario: &'a Path,
+    schedule: &'a Path,
+}
+
+pub(super) fn read_bounded_bytes(
     path: &Path,
     kind: &str,
     maximum_bytes: usize,
-) -> Result<String, CliError> {
+) -> Result<Vec<u8>, CliError> {
     let file = File::open(path).map_err(|error| {
         CliError::Io(io::Error::new(
             error.kind(),
@@ -33,7 +51,71 @@ pub(super) fn read_bounded_utf8(
     if bytes.len() > maximum_bytes {
         return Err(usage_error(format!("{kind} exceeds {maximum_bytes} bytes")));
     }
+    Ok(bytes)
+}
+
+pub(super) fn read_bounded_utf8(
+    path: &Path,
+    kind: &str,
+    maximum_bytes: usize,
+) -> Result<String, CliError> {
+    let bytes = read_bounded_bytes(path, kind, maximum_bytes)?;
     String::from_utf8(bytes).map_err(|_| usage_error(format!("{kind} is not valid UTF-8")))
+}
+
+/// Writes one strict scenario/schedule import bundle without replacing output.
+pub(super) fn write_configuration_import_bundle(
+    output: &Path,
+    kind: &str,
+    scenario_body: &[u8],
+    schedule_body: &[u8],
+) -> Result<PathBuf, CliError> {
+    write_new_bundle(output, kind, |staged, final_| {
+        let final_scenario = final_.join(SCENARIO_BODY_NAME);
+        let final_schedule = final_.join(SCHEDULE_BODY_NAME);
+        let manifest = ConfigurationImportManifest {
+            schema: "crucible.campaign-import",
+            version: 1,
+            configuration: [ConfigurationImportEntry {
+                scenario: &final_scenario,
+                schedule: &final_schedule,
+            }],
+        };
+        let manifest = toml::to_string(&manifest).map_err(|error| {
+            backend_error(format!(
+                "campaign configuration import manifest encoding failed: {error}"
+            ))
+        })?;
+
+        write_new_record(
+            &staged.join(SCENARIO_BODY_NAME),
+            "campaign scenario body",
+            scenario_body,
+        )?;
+        write_new_record(
+            &staged.join(SCHEDULE_BODY_NAME),
+            "campaign configuration schedule",
+            schedule_body,
+        )?;
+        write_new_record(
+            &staged.join(IMPORT_MANIFEST_NAME),
+            "campaign configuration import manifest",
+            manifest.as_bytes(),
+        )
+    })
+    .map(|(directory, ())| directory)
+}
+
+pub(super) const fn scenario_body_name() -> &'static str {
+    SCENARIO_BODY_NAME
+}
+
+pub(super) const fn schedule_body_name() -> &'static str {
+    SCHEDULE_BODY_NAME
+}
+
+pub(super) const fn import_manifest_name() -> &'static str {
+    IMPORT_MANIFEST_NAME
 }
 
 pub(super) fn write_new_record(path: &Path, kind: &str, bytes: &[u8]) -> Result<(), CliError> {

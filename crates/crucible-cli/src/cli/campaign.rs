@@ -7,6 +7,8 @@ use super::*;
 
 #[path = "campaign/authoring.rs"]
 mod authoring;
+#[path = "campaign/configuration.rs"]
+mod configuration;
 #[path = "campaign/explain.rs"]
 mod explain;
 #[path = "campaign/fixture.rs"]
@@ -24,6 +26,7 @@ mod scenario;
 #[path = "campaign/snapshot.rs"]
 mod snapshot;
 
+use configuration::{compile_campaign_configuration, render_campaign_configuration_compilation};
 use explain::{
     query_campaign_attempt_explanation, query_campaign_explanation,
     query_campaign_finding_explanation, render_campaign_attempt_explanation,
@@ -325,6 +328,20 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
         );
         return Ok(());
     }
+    if let CampaignCommand::Configuration(configuration) = &args.command {
+        let report = match &configuration.command {
+            CampaignConfigurationCommand::Compile(compile) => compile_campaign_configuration(
+                &compile.scenario,
+                &compile.schedule,
+                &compile.output,
+            )?,
+        };
+        println!(
+            "{}",
+            render_campaign_configuration_compilation(&report, cli.output_format())?
+        );
+        return Ok(());
+    }
     if let CampaignCommand::Policy(policy) = &args.command {
         let report = match &policy.command {
             CampaignPolicyCommand::Compile(compile) => {
@@ -407,6 +424,14 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
         CampaignCommand::Fixture(_) => {
             return Err(backend_error(
                 "offline campaign fixture generation reached the connected dispatch path",
+            ));
+        }
+        CampaignCommand::Scenario(_)
+        | CampaignCommand::Configuration(_)
+        | CampaignCommand::Policy(_)
+        | CampaignCommand::Lineage(_) => {
+            return Err(backend_error(
+                "offline campaign authoring reached the connected dispatch path",
             ));
         }
         CampaignCommand::Create(_) | CampaignCommand::Derive(_) => {
@@ -504,6 +529,7 @@ fn prepare_campaign_command(
         CampaignCommand::Fixture(_) => Ok(None),
         CampaignCommand::ValidateImport(_) => Ok(None),
         CampaignCommand::Scenario(_) => Ok(None),
+        CampaignCommand::Configuration(_) => Ok(None),
         CampaignCommand::Policy(_) => Ok(None),
         CampaignCommand::Lineage(_) => Ok(None),
         CampaignCommand::Create(create) => {
@@ -2152,6 +2178,7 @@ fn campaign_mutation_spec(
         CampaignCommand::ValidateImport(_)
         | CampaignCommand::Fixture(_)
         | CampaignCommand::Scenario(_)
+        | CampaignCommand::Configuration(_)
         | CampaignCommand::Policy(_)
         | CampaignCommand::Lineage(_)
         | CampaignCommand::Create(_)

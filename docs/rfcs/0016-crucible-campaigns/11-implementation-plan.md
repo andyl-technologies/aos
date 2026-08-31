@@ -2276,8 +2276,11 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   the engine's complete strict current-schema TOML, derives an empty genesis
   schedule plus both semantic and verifier-backed artifact identities, and
   atomically installs a new bounded scenario/schedule/import-manifest directory
-  without opening repository state. Non-genesis schedule authoring and
-  policy-file selector expressions remain open.
+  without opening repository state. Non-genesis configuration authoring now
+  admits a nonempty byte-canonical Schedule V2, rejects legacy/empty/unresolved-
+  selection inputs, independently verifies the derived configuration artifact,
+  and installs the same bounded no-replace import bundle. Human-authored
+  decision schemas and policy-file selector expressions remain open.
 - [ ] **T-CAM-8.2** Implement graph/frontier/choices/findings/explain/compare
   queries with branch-point/source/provenance views, pagination, and versioned
   JSON. Snapshot-bound graph/frontier/choices/findings traversal is exposed
