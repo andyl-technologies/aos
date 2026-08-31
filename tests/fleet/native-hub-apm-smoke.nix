@@ -348,6 +348,20 @@ in {
           publisher.succeed(hub_command("org show acme", token))
       )["data"]["organization"]
       org_scope = org["stable_id"]
+      reviewed(
+          publisher,
+          "public-network-grant",
+          "network-policy grant instance:public "
+          f"--consumer-scope {shlex.quote(org_scope)}",
+          token,
+      )
+      reviewed(
+          publisher,
+          "instance-binding-grant",
+          "binding grant instance-default "
+          f"--consumer-scope {shlex.quote(org_scope)}",
+          token,
+      )
       public_boundary = json.loads(
           publisher.succeed(
               hub_command("network-policy show instance:public", token)
