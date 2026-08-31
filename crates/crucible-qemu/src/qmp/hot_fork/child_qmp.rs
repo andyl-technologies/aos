@@ -7,13 +7,14 @@ use crate::qmp::{QmpCommandKind, QmpDescriptorName, QmpError};
 /// QMP command that retains or releases the branch-private child QMP stream.
 pub const QMP_HOT_FORK_CHILD_QMP_COMMAND: &str = "crucible-hot-fork-child-qmp";
 /// Version of the retained child-QMP endpoint contract.
-pub const QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION: u32 = 2;
+pub const QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION: u32 = 3;
 
 /// Exact QEMU-owned state for one retained branch-private child QMP stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QmpHotForkChildQmpState {
     generation: u64,
     template_generation: u64,
+    monitor_generation: u64,
     descriptor_name: Option<QmpDescriptorName>,
     socket_cookie: u64,
     retained_descriptor: i32,
@@ -25,9 +26,11 @@ pub struct QmpHotForkChildQmpState {
 
 impl QmpHotForkChildQmpState {
     #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn one_template_staged(
         generation: u64,
         template_generation: u64,
+        monitor_generation: u64,
         descriptor_name: QmpDescriptorName,
         socket_cookie: u64,
         retained_descriptor: i32,
@@ -37,6 +40,7 @@ impl QmpHotForkChildQmpState {
         Self {
             generation,
             template_generation,
+            monitor_generation,
             descriptor_name: Some(descriptor_name),
             socket_cookie,
             retained_descriptor,
@@ -57,6 +61,12 @@ impl QmpHotForkChildQmpState {
     #[must_use]
     pub const fn template_generation(&self) -> u64 {
         self.template_generation
+    }
+
+    /// Returns the exact supported parent-monitor lifecycle generation.
+    #[must_use]
+    pub const fn monitor_generation(&self) -> u64 {
+        self.monitor_generation
     }
 
     /// Returns whether QEMU retains one independently duplicated stream.
@@ -131,6 +141,7 @@ pub(crate) fn parse_hot_fork_child_qmp_state(
         "schema-version",
         "generation",
         "template-generation",
+        "monitor-generation",
         "staged",
         "socket-cookie",
         "retained-fd",
@@ -170,6 +181,7 @@ pub(crate) fn parse_hot_fork_child_qmp_state(
     let schema_version = unsigned("schema-version")?;
     let generation = unsigned("generation")?;
     let template_generation = unsigned("template-generation")?;
+    let monitor_generation = unsigned("monitor-generation")?;
     let staged = boolean("staged")?;
     let descriptor_name = object
         .get("fdname")
@@ -190,12 +202,14 @@ pub(crate) fn parse_hot_fork_child_qmp_state(
 
     let staged_shape = generation != 0
         && template_generation != 0
+        && monitor_generation != 0
         && descriptor_name.is_some()
         && socket_cookie != 0
         && retained_descriptor >= 0
         && nonblocking_unix_stream
         && reinitializer_prepared;
     let absent_shape = template_generation == 0
+        && monitor_generation == 0
         && descriptor_name.is_none()
         && socket_cookie == 0
         && retained_descriptor == -1
@@ -215,6 +229,7 @@ pub(crate) fn parse_hot_fork_child_qmp_state(
     Ok(QmpHotForkChildQmpState {
         generation,
         template_generation,
+        monitor_generation,
         descriptor_name,
         socket_cookie,
         retained_descriptor,
@@ -234,9 +249,10 @@ mod tests {
     #[test]
     fn child_qmp_requires_one_unattached_nonblocking_retained_stream() {
         let staged = json!({
-            "schema-version": 2,
+            "schema-version": 3,
             "generation": 9,
             "template-generation": 3,
+            "monitor-generation": 5,
             "staged": true,
             "fdname": "crucible-hfork-qmp-v1-000000000000000d",
             "socket-cookie": 13,
@@ -254,6 +270,7 @@ mod tests {
         assert!(parsed.staged());
         assert_eq!(parsed.socket_cookie(), Some(13));
         assert_eq!(parsed.retained_descriptor(), Some(34));
+        assert_eq!(parsed.monitor_generation(), 5);
         assert!(parsed.resource_plan_bound());
         assert!(parsed.reinitializer_prepared());
         assert!(!parsed.disposition_complete());
@@ -261,8 +278,9 @@ mod tests {
         let mut child = staged.clone();
         child["reinitialized"] = json!(true);
         child["disposition-complete"] = json!(true);
-        let child =
-            parse_hot_fork_child_qmp_state(&child).expect("complete child QMP state should parse");
+        let Ok(child) = parse_hot_fork_child_qmp_state(&child) else {
+            panic!("complete child QMP state should parse");
+        };
         assert!(child.reinitialized());
         assert!(child.disposition_complete());
 

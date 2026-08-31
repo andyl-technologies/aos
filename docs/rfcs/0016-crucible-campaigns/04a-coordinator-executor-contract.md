@@ -2806,7 +2806,11 @@ remain identical around process capture and to contain at most 256 records. The
 only supported parent profile is one stable OOB-enabled I/O-thread QMP monitor,
 zero HMP monitors, zero suspended or negotiating monitors, and no queued request
 or partial JSON parser state. A busy parser makes the report incomplete. This
-inventory is observational and does not satisfy the separate child monitor
+profile is revalidated when the private child-QMP endpoint is staged, and its
+exact positive lifecycle generation is bound into the sealed resource plan,
+one-shot child runtime status, and authenticated private-channel query. A
+changed or foreign generation fails closed. The inventory and binding remain
+observational prerequisites and do not satisfy the separate child monitor
 reconstruction or fork authority.
 
 The driver owns selection application, stop-boundary execution, and candidate

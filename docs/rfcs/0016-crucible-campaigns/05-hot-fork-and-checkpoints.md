@@ -1176,6 +1176,16 @@ exactly one replacement monitor exists, and neither queued nor partial requests
 remain. This is a fail-closed runtime contract, not the concrete monitor
 implementation or its composition with the authenticated child transaction;
 it does not invoke `fork(2)` or acknowledge proof bit 7 or 8.
+Version 19, resource-stage version 9, and child-QMP schema version 3 admit that
+endpoint only while QEMU observes the complete supported parent-monitor
+profile: one OOB-enabled I/O-thread QMP monitor, no HMP monitor, suspension,
+negotiation, queued request, partial parser, or unstable parser observation.
+The exact positive monitor lifecycle generation is copied into the sealed QMP
+resource contribution, the one-shot runtime basis and status, and the private
+child-channel query. A changed or foreign generation therefore fails before
+resource-plan composition or host-channel acceptance. This binds the audited
+profile to the future child transaction; it still does not dispose or recreate
+the inherited monitor.
 The sealed QMP contribution now carries those exact template and child-QMP
 generations alongside its descriptor and socket identity. The immediate-child
 resource transaction requires both the plugin and QMP reinitializers to match
@@ -1186,13 +1196,14 @@ child transaction fail-closed. The QMP runtime remains an injected contract;
 inherited monitor disposal, dispatcher reconstruction, endpoint attachment,
 and the private-stream handshake are still not implemented, and proof bits 7
 and 8 remain clear.
-The version-2 child-QMP report now derives `disposition-complete` from that
+The version-3 child-QMP report now derives `disposition-complete` from that
 exact accepted one-shot status instead of hard-coding false. Prepared but
 unattempted, contradictory, failed, and reset adapters remain incomplete; the
 accepted result must still match the retained descriptor, socket identity,
-template generation, QMP generation, complete flags, single monitor, and empty
-queued/parser state. This makes a future child query accurately observable but
-does not supply the concrete runtime or acknowledge proof bit 7 or 8.
+template generation, QMP generation, monitor generation, complete flags,
+single monitor, and empty queued/parser state. This makes a future child query
+accurately observable but does not supply the concrete runtime or acknowledge
+proof bit 7 or 8.
 After successful child application, the immutable reinitializer and sealed-plan
 bases now remain exactly queryable without making either one reusable. The host
 records the child-QMP mutation generation in the staged proof and may transfer
@@ -1202,9 +1213,9 @@ ordinary QMP greeting and capability negotiation, then makes
 `crucible-hot-fork-child-qmp(query)` the first typed operation. The connection
 is exposed as a child VMState control channel only when the response matches the
 retained descriptor name, Linux `SO_COOKIE`, template generation, QMP
-generation, applied resource-plan membership, and accepted complete
-disposition. Any exchange or basis failure consumes the endpoint and fails
-closed. This implements the host authentication half of the private-stream
+generation, monitor generation, applied resource-plan membership, and accepted
+complete disposition. Any exchange or basis failure consumes the endpoint and
+fails closed. This implements the host authentication half of the private-stream
 generation handshake; the concrete child monitor runtime, input release, and
 production fork owner remain open, so proof bits 7 and 8 stay clear.
 Endpoint staging rejects a private-ring stage from a different or already
@@ -1247,7 +1258,7 @@ complete RCU barrier is quiescent. Proof bit 3 is present exactly while the
 transaction remains active and its complete asynchronous-source barrier is
 quiescent. Proof bit 5 is present exactly while the transaction remains active
 and its complete immutable writable-root binding remains retained by the
-quiescent block barrier. Version 18 composes plugin-ring proof bit
+quiescent block barrier. Version 19 composes plugin-ring proof bit
 6 from the exact transaction-bound frozen ring, diagnostics stream, retained
 child-QMP stream and prepared reinitializer, endpoint pair, worker plan, and
 plugin barrier. The

@@ -26,6 +26,7 @@ pub struct QemuHotForkChildQmpStageProof {
     socket_cookie: u64,
     template_generation: u64,
     qmp_generation: u64,
+    monitor_generation: u64,
     resource_plan_bound: bool,
 }
 
@@ -60,6 +61,12 @@ impl QemuHotForkChildQmpStageProof {
         self.qmp_generation
     }
 
+    /// Returns the exact supported parent-monitor lifecycle generation.
+    #[must_use]
+    pub const fn monitor_generation(&self) -> u64 {
+        self.monitor_generation
+    }
+
     /// Returns whether the stream is retained in the sealed child plan.
     #[must_use]
     pub const fn resource_plan_bound(&self) -> bool {
@@ -80,6 +87,7 @@ pub struct QemuHotForkChildQmpHostEndpoint {
     socket_cookie: u64,
     template_generation: u64,
     qmp_generation: u64,
+    monitor_generation: u64,
 }
 
 impl QemuHotForkChildQmpHostEndpoint {
@@ -105,6 +113,12 @@ impl QemuHotForkChildQmpHostEndpoint {
     #[must_use]
     pub const fn qmp_generation(&self) -> u64 {
         self.qmp_generation
+    }
+
+    /// Returns the supported parent-monitor generation bound at staging.
+    #[must_use]
+    pub const fn monitor_generation(&self) -> u64 {
+        self.monitor_generation
     }
 
     /// Negotiates and authenticates the private child QMP connection.
@@ -136,6 +150,7 @@ impl QemuHotForkChildQmpHostEndpoint {
             && state.socket_cookie() == Some(self.socket_cookie)
             && state.template_generation() == self.template_generation
             && state.generation() == self.qmp_generation
+            && state.monitor_generation() == self.monitor_generation
             && state.retained_descriptor().is_some()
             && state.resource_plan_bound()
             && state.reinitializer_prepared()
@@ -180,6 +195,7 @@ pub(super) struct QemuHotForkChildQmpPair {
     socket_cookie: u64,
     template_generation: u64,
     qmp_generation: u64,
+    monitor_generation: u64,
     resource_plan_bound: bool,
 }
 
@@ -191,6 +207,7 @@ impl std::fmt::Debug for QemuHotForkChildQmpPair {
             .field("socket_cookie", &self.socket_cookie)
             .field("template_generation", &self.template_generation)
             .field("qmp_generation", &self.qmp_generation)
+            .field("monitor_generation", &self.monitor_generation)
             .field("host_endpoint_available", &self.host.is_some())
             .field("resource_plan_bound", &self.resource_plan_bound)
             .finish_non_exhaustive()
@@ -205,6 +222,7 @@ impl QemuHotForkChildQmpPair {
             socket_cookie: self.socket_cookie,
             template_generation: self.template_generation,
             qmp_generation: self.qmp_generation,
+            monitor_generation: self.monitor_generation,
             resource_plan_bound: self.resource_plan_bound,
         }
     }
@@ -252,6 +270,7 @@ impl QemuHotForkChildQmpStage {
             && state.socket_cookie() == Some(endpoint.socket_cookie)
             && state.template_generation() == endpoint.template_generation
             && state.generation() == endpoint.qmp_generation
+            && state.monitor_generation() == endpoint.monitor_generation
             && state.retained_descriptor().is_some()
             && state.reinitializer_prepared()
             && !state.reinitialized()
@@ -382,6 +401,7 @@ impl QemuNode {
             && qemu_state.socket_cookie() == Some(endpoint.socket_cookie)
             && qemu_state.template_generation() == template_generation
             && qemu_state.generation() != 0
+            && qemu_state.monitor_generation() != 0
             && qemu_state.retained_descriptor().is_some()
             && qemu_state.reinitializer_prepared()
             && !qemu_state.reinitialized()
@@ -397,6 +417,7 @@ impl QemuNode {
             return Err(QemuHotForkChildQmpStageError::TransferUncertain { source });
         }
         endpoint.qmp_generation = qemu_state.generation();
+        endpoint.monitor_generation = qemu_state.monitor_generation();
         endpoint.resource_plan_bound = false;
         let proof = endpoint.proof(QemuHotForkChildQmpStageState::Installed);
         self.hot_fork_child_qmp_stage = Some(QemuHotForkChildQmpStage::Installed(endpoint));
@@ -460,6 +481,7 @@ impl QemuNode {
             socket_cookie: endpoint.socket_cookie,
             template_generation: endpoint.template_generation,
             qmp_generation: endpoint.qmp_generation,
+            monitor_generation: endpoint.monitor_generation,
         })
     }
 
@@ -557,12 +579,15 @@ fn create_qmp_pair(
         socket_cookie,
         template_generation,
         qmp_generation: 0,
+        monitor_generation: 0,
         resource_plan_bound: false,
     })
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
     use std::io::{BufRead, BufReader, Write};
     use std::thread;
 
@@ -576,6 +601,7 @@ mod tests {
         socket_cookie: u64,
         template_generation: u64,
         qmp_generation: u64,
+        monitor_generation: u64,
         disposition_complete: bool,
     ) -> thread::JoinHandle<()> {
         let descriptor_name = descriptor_name.as_str().to_owned();
@@ -601,9 +627,10 @@ mod tests {
             assert!(request.contains("crucible-hot-fork-child-qmp"));
             let response = json!({
                 "return": {
-                    "schema-version": 2,
+                    "schema-version": 3,
                     "generation": qmp_generation,
                     "template-generation": template_generation,
+                    "monitor-generation": monitor_generation,
                     "staged": true,
                     "fdname": descriptor_name,
                     "socket-cookie": socket_cookie,
@@ -630,6 +657,7 @@ mod tests {
             socket_cookie: 41,
             template_generation: 7,
             qmp_generation: 11,
+            monitor_generation: 13,
         }
     }
 
@@ -638,7 +666,7 @@ mod tests {
         let (host, child) = UnixStream::pair().expect("child QMP socket pair");
         let name = crate::QmpDescriptorName::new("crucible-hfork-qmp-v1-0000000000000029")
             .expect("child QMP descriptor name");
-        let server = scripted_child_qmp(child, &name, 41, 7, 11, true);
+        let server = scripted_child_qmp(child, &name, 41, 7, 11, 13, true);
 
         let channel = endpoint(host, name).connect();
         assert!(channel.is_ok());
@@ -650,7 +678,21 @@ mod tests {
         let (host, child) = UnixStream::pair().expect("child QMP socket pair");
         let name = crate::QmpDescriptorName::new("crucible-hfork-qmp-v1-0000000000000029")
             .expect("child QMP descriptor name");
-        let server = scripted_child_qmp(child, &name, 41, 7, 12, true);
+        let server = scripted_child_qmp(child, &name, 41, 7, 12, 13, true);
+
+        assert!(matches!(
+            endpoint(host, name).connect(),
+            Err(QemuHotForkChildQmpHandshakeError::BasisMismatch)
+        ));
+        server.join().expect("scripted child QMP server");
+    }
+
+    #[test]
+    fn child_qmp_host_endpoint_rejects_a_foreign_monitor_generation() {
+        let (host, child) = UnixStream::pair().expect("child QMP socket pair");
+        let name = crate::QmpDescriptorName::new("crucible-hfork-qmp-v1-0000000000000029")
+            .expect("child QMP descriptor name");
+        let server = scripted_child_qmp(child, &name, 41, 7, 11, 14, true);
 
         assert!(matches!(
             endpoint(host, name).connect(),
@@ -664,7 +706,7 @@ mod tests {
         let (host, child) = UnixStream::pair().expect("child QMP socket pair");
         let name = crate::QmpDescriptorName::new("crucible-hfork-qmp-v1-0000000000000029")
             .expect("child QMP descriptor name");
-        let server = scripted_child_qmp(child, &name, 41, 7, 11, false);
+        let server = scripted_child_qmp(child, &name, 41, 7, 11, 13, false);
 
         assert!(matches!(
             endpoint(host, name).connect(),
