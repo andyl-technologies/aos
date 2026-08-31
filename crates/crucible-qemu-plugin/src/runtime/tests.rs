@@ -538,6 +538,7 @@ fn coverage_callback_model_apis() -> crate::QemuBasicBlockCoverageApis {
         coverage_callback_model_scoreboard_new,
         coverage_callback_model_scoreboard_free,
         coverage_callback_model_u64_set,
+        coverage_callback_model_num_vcpus,
     )
 }
 
@@ -573,6 +574,10 @@ extern "C" fn coverage_callback_model_u64_set(
     _vcpu_index: std::os::raw::c_uint,
     _value: u64,
 ) {
+}
+
+extern "C" fn coverage_callback_model_num_vcpus() -> std::os::raw::c_int {
+    1
 }
 
 extern "C" fn coverage_callback_model_tb_vaddr(_tb: *const crate::QemuPluginTb) -> u64 {

@@ -1304,14 +1304,13 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   above immutable ceilings, and unsupported locality. The local supervisor
   facade refuses startup unless advertised ceilings exactly equal enforced
   slots, CPU, memory, disk, and execution-quanta limits. The concrete host
-  resource guard's Linux cgroup/quota owner, the versioned
-  paused-restore reset of the plugin coverage novelty bitmap/ring plus host
-  consumer state, coverage-aware live advancement and canonical coverage
+  resource guard's Linux cgroup/quota owner and the ABI-v21 paused-restore
+  reset of the plugin coverage novelty bitmap/ring plus host consumer state are
+  implemented. Coverage-aware modeled-driver execution and canonical coverage
   projection, hot-fork realization,
   full out-of-process campaign flight, and complete component conformance gate
-  remain open. Until that reset exists, real-node coverage-enabled warm restore
-  fails closed rather than retaining priming events or suppressing post-restore
-  coverage.
+  remain open. The reset fails closed before authoritative execution on any
+  producer, acknowledgement, native-pause, or consumer mismatch.
 - [x] **T-CAM-4.10** Replace repeated full-history validation on local owner
   mutations with bounded immutable validated-head/lifecycle checkpoints and
   authenticated membership and result-locator indexes; promote only after ref
@@ -1827,8 +1826,8 @@ The GPL plugin now also registers one process-lifetime reversible callback,
 shared-ring I/O, sealed-worker, and source-mapping barrier. A version-6 OOB QMP operation
 holds, observes, and releases that barrier. Holding is accepted only at the
 exact paused/device-flush boundary, rejects later live device and coverage
-callbacks, holds producer and consumer admission in every ABI-v20 shared-memory
-ring, and closes later operations by the RUN-control, teardown, and optional
+callbacks, holds producer and consumer admission in every ABI-v20-or-newer
+shared-memory ring, and closes later operations by the RUN-control, teardown, and optional
 fingerprint workers without blocking QMP. It then applies `MADV_DONTFORK` to
 the exact live setup-region mapping; failure rolls every hold back. Release
 restores `MADV_DOFORK` before it reopens any parent admission, and failure keeps

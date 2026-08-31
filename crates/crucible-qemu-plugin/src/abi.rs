@@ -155,6 +155,7 @@ const QEMU_PLUGIN_REGISTER_VCPU_TB_EXEC_COND_CB_SYMBOL_C: &[u8] =
 const QEMU_PLUGIN_SCOREBOARD_NEW_SYMBOL_C: &[u8] = b"qemu_plugin_scoreboard_new\0";
 const QEMU_PLUGIN_SCOREBOARD_FREE_SYMBOL_C: &[u8] = b"qemu_plugin_scoreboard_free\0";
 const QEMU_PLUGIN_U64_SET_SYMBOL_C: &[u8] = b"qemu_plugin_u64_set\0";
+const QEMU_PLUGIN_NUM_VCPUS_SYMBOL_C: &[u8] = b"qemu_plugin_num_vcpus\0";
 const QEMU_PLUGIN_ICOUNT_AT_TB_ENTRY_SYMBOL_C: &[u8] = b"qemu_plugin_icount_at_tb_entry\0";
 const QEMU_PLUGIN_REGISTER_FLUSH_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_flush_cb\0";
 const QEMU_PLUGIN_TB_VADDR_SYMBOL_C: &[u8] = b"qemu_plugin_tb_vaddr\0";
@@ -1993,6 +1994,7 @@ pub(crate) fn resolve_qemu_basic_block_coverage_apis()
     let scoreboard_new = resolve_process_symbol(QEMU_PLUGIN_SCOREBOARD_NEW_SYMBOL_C);
     let scoreboard_free = resolve_process_symbol(QEMU_PLUGIN_SCOREBOARD_FREE_SYMBOL_C);
     let u64_set = resolve_process_symbol(QEMU_PLUGIN_U64_SET_SYMBOL_C);
+    let num_vcpus = resolve_process_symbol(QEMU_PLUGIN_NUM_VCPUS_SYMBOL_C);
     let require = |symbol: *mut c_void, name| {
         if symbol.is_null() {
             Err(QemuPluginAbiError::RuntimeApiCapability { symbol: name })
@@ -2023,6 +2025,7 @@ pub(crate) fn resolve_qemu_basic_block_coverage_apis()
     let scoreboard_new = require(scoreboard_new, crate::QEMU_PLUGIN_SCOREBOARD_NEW_SYMBOL)?;
     let scoreboard_free = require(scoreboard_free, crate::QEMU_PLUGIN_SCOREBOARD_FREE_SYMBOL)?;
     let u64_set = require(u64_set, crate::QEMU_PLUGIN_U64_SET_SYMBOL)?;
+    let num_vcpus = require(num_vcpus, crate::QEMU_PLUGIN_NUM_VCPUS_SYMBOL)?;
 
     // SAFETY: all non-null addresses were resolved by their exact QEMU 10
     // public-plugin symbol names and are converted to matching `extern "C"`
@@ -2044,6 +2047,7 @@ pub(crate) fn resolve_qemu_basic_block_coverage_apis()
             std::mem::transmute::<*mut c_void, crate::QemuPluginScoreboardNewFn>(scoreboard_new),
             std::mem::transmute::<*mut c_void, crate::QemuPluginScoreboardFreeFn>(scoreboard_free),
             std::mem::transmute::<*mut c_void, crate::QemuPluginU64SetFn>(u64_set),
+            std::mem::transmute::<*mut c_void, crate::QemuPluginNumVcpusFn>(num_vcpus),
         )
     })
 }

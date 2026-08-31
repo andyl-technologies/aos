@@ -736,9 +736,9 @@ plan; the focused mapping regression observes the `dc` `VmFlags` bit appear on
 hold and disappear on release.
 
 This is a retained barrier over the callback classes covered by the sealed
-manifest, every ABI-v20 shared-memory ring producer and consumer including
-Apache host endpoints, and the mandatory RUN-control/teardown workers plus the
-optional fingerprint digest worker. While this retained state is quiescent,
+manifest, every ABI-v20-or-newer shared-memory ring producer and consumer
+including Apache host endpoints, and the mandatory RUN-control/teardown workers
+plus the optional fingerprint digest worker. While this retained state is quiescent,
 the host can now capture a bounded, versioned image of every ring-backed range
 and restore it into an identical inactive branch-private mapping. The image
 authenticates exact geometry, held endpoints, cursor capacity, queued bytes,
