@@ -344,9 +344,11 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
     }
     if let CampaignCommand::Policy(policy) = &args.command {
         let report = match &policy.command {
-            CampaignPolicyCommand::Compile(compile) => {
-                compile_campaign_policy(&compile.input, &compile.output)?
-            }
+            CampaignPolicyCommand::Compile(compile) => compile_campaign_policy(
+                &compile.input,
+                compile.scenario.as_deref(),
+                &compile.output,
+            )?,
         };
         println!(
             "{}",
