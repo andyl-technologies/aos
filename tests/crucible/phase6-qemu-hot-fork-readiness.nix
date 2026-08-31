@@ -269,7 +269,7 @@ in
             "$out/child-qmp-initial.json"
           jq -e -s '
             [.[] | select(has("return"))][-1].return == {
-              "schema-version": 4,
+              "schema-version": 5,
               "generation": 0,
               "template-generation": 0,
               "monitor-generation": 0,
@@ -279,6 +279,7 @@ in
               "resource-plan-bound": false,
               "nonblocking-unix-stream": false,
               "monitor-basis-bound": false,
+              "monitor-disposition-bound": false,
               "reinitializer-prepared": false,
               "reinitialized": false,
               "disposition-complete": false,
@@ -1447,7 +1448,7 @@ in
               "schema-version",
               "transaction-active"
             ] and
-            $report."schema-version" == 20 and
+            $report."schema-version" == 21 and
             $report.generation == 0 and
             $report.outcome == "idle" and
             $report."transaction-active" == false and
@@ -1481,7 +1482,7 @@ in
             $report."bh-timer-barrier" == $bh_report and
             $report."block-barrier" == $block_report and
             $report."resource-stage" == {
-              "schema-version": 10,
+              "schema-version": 11,
               "template-generation": 0,
               "private-ring-staged": false,
               "private-ring-generation": 2,
@@ -1827,14 +1828,16 @@ in
           patch=0172-crucible-inventory-qmp-monitor-state.patch
           patch=0173-crucible-bind-supported-child-qmp-profile.patch
           patch=0174-crucible-bind-child-monitor-ownership-basis.patch
+          patch=0175-crucible-bind-child-monitor-chardev-disposition.patch
           plugin_endpoint_schema_version=4
           plugin_endpoint_source_descriptors_observed=true
           plugin_endpoint_replacement_plan_bound=false
           child_diagnostics_schema_version=1
           child_diagnostics_initially_absent=true
-          child_qmp_schema_version=4
+          child_qmp_schema_version=5
           child_qmp_initially_absent=true
           child_qmp_monitor_basis_bound=false
+          child_qmp_monitor_disposition_bound=false
           schema_version=1
           required_proofs=511
           precise_sim_rr_proofs=3
@@ -1918,13 +1921,13 @@ in
           plugin_endpoint_two_layer_release=true
           plugin_endpoint_disposition_complete=false
           plugin_endpoint_readiness_proof_acknowledged=false
-          template_coordinator_schema_version=20
+          template_coordinator_schema_version=21
           plugin_child_plan_report_bound=true
           plugin_child_resource_plan_report_bound=true
           child_resource_contribution_composition=true
           sealed_child_resource_plan_application=true
           child_descriptor_replacement_composition=true
-          template_resource_stage_schema_version=10
+          template_resource_stage_schema_version=11
           template_worker_disposition_bound=false
           template_resource_stage_empty_after_release=true
           template_coordinator_idle_stable=true

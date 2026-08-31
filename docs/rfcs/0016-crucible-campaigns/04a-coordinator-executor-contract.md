@@ -2821,6 +2821,13 @@ whether the basis is bound, never its process-private pointers. This closes an
 ownership prerequisite for future monitor reconstruction but still does not
 dispose or recreate a monitor, invoke `fork(2)`, release input, or acknowledge
 readiness bit 7 or 8.
+Template contract version 21, resource-stage version 11, and child-QMP version
+5 additionally retain the exact inherited `Chardev` and require that it remain
+the admitted monitor's connected GMainContext-capable frontend with backend
+disconnect and add-client operations. QAPI exposes only
+`monitor-disposition-bound`. This authenticates the concrete endpoint owner and
+operations that a future child transition must consume; it still does not call
+those operations or advance either readiness bit.
 
 The driver owns selection application, stop-boundary execution, and candidate
 construction but never assignment or daemon-epoch identity. This adapter cannot
