@@ -105,6 +105,29 @@ and is never replaced. It contains `scenario.bin`, an empty genesis
 semantic scenario/genesis IDs and their verifier-derived scenario and
 configuration artifact IDs; use those four values in the lineage manifest.
 
+To import a recorded non-genesis configuration, pair the same canonical
+scenario TOML with a nonempty compact Schedule V2:
+
+```sh
+./result/bin/crucible campaign configuration compile ./scenario.toml \
+  ./schedule.bin \
+  --output ./configuration-bundle \
+  --format json
+./result/bin/crucible campaign validate-import \
+  ./configuration-bundle/import.toml \
+  --format json
+```
+
+Configuration compilation accepts at most 32 MiB for each input, requires the
+schedule to round-trip byte-for-byte through the current canonical Schedule V2
+codec, and rejects an empty schedule or an unresolved campaign `Selection`.
+Selections require repository-backed opportunity/domain authentication and are
+therefore imported through the daemon rather than asserted by an offline
+author. The compiler derives and independently decodes the exact configuration
+artifact before atomically installing the same three-file, no-replace import
+bundle. Its report includes the scenario and configuration semantic IDs,
+verifier-derived artifact IDs, and decision count.
+
 Author the campaign lineage and policy as strict TOML and compile both offline
 before creating the campaign:
 

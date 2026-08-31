@@ -381,6 +381,8 @@ fn parse_campaign_seed(encoded: &str) -> Result<CampaignSeed, CliError> {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- authoring tests use exact panic localization.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

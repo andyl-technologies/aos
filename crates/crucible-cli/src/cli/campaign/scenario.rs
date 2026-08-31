@@ -9,13 +9,13 @@ use crucible_daemon::{
 };
 use serde::Serialize;
 
-use super::authoring::{read_bounded_utf8, write_new_bundle, write_new_record};
+use super::authoring::{
+    import_manifest_name, read_bounded_utf8, scenario_body_name, schedule_body_name,
+    write_configuration_import_bundle,
+};
 
 const CAMPAIGN_SCENARIO_COMPILATION_REPORT_SCHEMA: &str =
     "crucible.cli.campaign-scenario-compilation.v1";
-const SCENARIO_BODY_NAME: &str = "scenario.bin";
-const SCHEDULE_BODY_NAME: &str = "schedule.bin";
-const IMPORT_MANIFEST_NAME: &str = "import.toml";
 
 /// Result of compiling one canonical scenario and its empty genesis schedule.
 #[derive(Debug, Serialize)]
@@ -30,19 +30,6 @@ pub(super) struct CampaignScenarioCompilationReport {
     scenario_artifact: String,
     genesis: String,
     genesis_artifact: String,
-}
-
-#[derive(Serialize)]
-struct ScenarioImportManifest<'a> {
-    schema: &'static str,
-    version: u32,
-    configuration: [ScenarioImportConfiguration<'a>; 1],
-}
-
-#[derive(Serialize)]
-struct ScenarioImportConfiguration<'a> {
-    scenario: &'a Path,
-    schedule: &'a Path,
 }
 
 pub(super) fn compile_campaign_scenario(
@@ -87,47 +74,19 @@ pub(super) fn compile_campaign_scenario(
         .id()
         .to_hex();
 
-    let (directory, ()) =
-        write_new_bundle(output, "campaign scenario bundle", |staged, final_| {
-            let final_scenario = final_.join(SCENARIO_BODY_NAME);
-            let final_schedule = final_.join(SCHEDULE_BODY_NAME);
-            let manifest = ScenarioImportManifest {
-                schema: "crucible.campaign-import",
-                version: 1,
-                configuration: [ScenarioImportConfiguration {
-                    scenario: &final_scenario,
-                    schedule: &final_schedule,
-                }],
-            };
-            let manifest = toml::to_string(&manifest).map_err(|error| {
-                backend_error(format!(
-                    "campaign scenario import manifest encoding failed: {error}"
-                ))
-            })?;
-
-            write_new_record(
-                &staged.join(SCENARIO_BODY_NAME),
-                "campaign scenario body",
-                &scenario_body,
-            )?;
-            write_new_record(
-                &staged.join(SCHEDULE_BODY_NAME),
-                "campaign genesis schedule",
-                &schedule_body,
-            )?;
-            write_new_record(
-                &staged.join(IMPORT_MANIFEST_NAME),
-                "campaign scenario import manifest",
-                manifest.as_bytes(),
-            )
-        })?;
+    let directory = write_configuration_import_bundle(
+        output,
+        "campaign scenario bundle",
+        &scenario_body,
+        &schedule_body,
+    )?;
 
     Ok(CampaignScenarioCompilationReport {
         schema: CAMPAIGN_SCENARIO_COMPILATION_REPORT_SCHEMA,
         input: input.display().to_string(),
-        manifest: directory.join(IMPORT_MANIFEST_NAME).display().to_string(),
-        scenario_body: directory.join(SCENARIO_BODY_NAME).display().to_string(),
-        schedule_body: directory.join(SCHEDULE_BODY_NAME).display().to_string(),
+        manifest: directory.join(import_manifest_name()).display().to_string(),
+        scenario_body: directory.join(scenario_body_name()).display().to_string(),
+        schedule_body: directory.join(schedule_body_name()).display().to_string(),
         directory: directory.display().to_string(),
         scenario: scenario_id,
         scenario_artifact: scenario_artifact_id.to_string(),
@@ -214,14 +173,14 @@ mod tests {
 
         let report = compile_campaign_scenario(&input, &output).expect("compile scenario");
         let decoded = ScenarioDefForm::from_compact_binary(
-            &std::fs::read(output.join(SCENARIO_BODY_NAME)).expect("read scenario body"),
+            &std::fs::read(output.join(scenario_body_name())).expect("read scenario body"),
         )
         .expect("decode scenario body");
         let schedule = Schedule::from_compact_binary(
-            &std::fs::read(output.join(SCHEDULE_BODY_NAME)).expect("read schedule body"),
+            &std::fs::read(output.join(schedule_body_name())).expect("read schedule body"),
         )
         .expect("decode schedule body");
-        let validation = validate_campaign_import_manifests(&[output.join(IMPORT_MANIFEST_NAME)])
+        let validation = validate_campaign_import_manifests(&[output.join(import_manifest_name())])
             .expect("validate generated import manifest");
 
         assert_eq!(decoded, scenario);

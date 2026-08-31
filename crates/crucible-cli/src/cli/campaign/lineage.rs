@@ -131,6 +131,8 @@ fn parse_semantic_hash(encoded: &str, field: &str) -> Result<CampaignHash, CliEr
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- authoring tests use exact panic localization.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
