@@ -2203,6 +2203,15 @@ resource-plan composition, and the child handshake reject a changed or foreign
 generation. This closes the gap between the observational audit and the future
 child monitor transaction without implementing destructive monitor
 reconstruction, `fork(2)`, input release, or readiness bit 7 or 8.
+Version 20 of the template report, version 10 of its resource stage, and version
+4 of the child-QMP report now retain the exact admitted `MonitorQMP`, monitor
+`IOThread`, dispatcher coroutine, and lifecycle generation as one QEMU-private
+ownership basis. Staging revalidates the complete profile and exact retained
+objects immediately before commit and during idempotent restage; release clears
+the basis. Only `monitor-basis-bound` crosses QAPI. The next increment must
+consume this basis in a destructive, fail-closed child monitor reconstruction;
+this checkpoint still does not invoke `fork(2)`, release input, or acknowledge
+readiness bit 7 or 8.
 These are executable T-CAM-6.1 audit prerequisites, not completion of the task:
 the internal registry identifies two non-coordinator subsystem owners but has
 no safe non-coordinator child disposition. The retained AIO/BH/timer and RCU
