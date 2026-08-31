@@ -2182,6 +2182,31 @@ fn campaign_status_watch_and_list_parse_under_the_nested_cli() {
         }) if manifests == &[PathBuf::from("/tmp/campaign-import.toml")]
     ));
 
+    let scenario = Cli::try_parse_from([
+        "crucible",
+        "campaign",
+        "scenario",
+        "compile",
+        "/tmp/scenario.toml",
+        "--output",
+        "/tmp/scenario-bundle",
+    ])
+    .expect("offline campaign scenario compilation arguments");
+    assert!(matches!(
+        scenario.command,
+        Commands::Campaign(CampaignArgs {
+            socket: None,
+            principal: None,
+            command: CampaignCommand::Scenario(CampaignScenarioArgs {
+                command: CampaignScenarioCommand::Compile(CampaignScenarioCompileArgs {
+                    ref input,
+                    ref output,
+                }),
+            }),
+        }) if input == &PathBuf::from("/tmp/scenario.toml")
+            && output == &PathBuf::from("/tmp/scenario-bundle")
+    ));
+
     let policy = Cli::try_parse_from([
         "crucible",
         "campaign",

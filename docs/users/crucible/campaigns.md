@@ -83,6 +83,28 @@ explains the modeled network policy represented by the generated fixture; its
 future-looking execution narrative is not a substitute for
 `crucible campaign --help`.
 
+Compile a full canonical Crucible scenario TOML into a new importable genesis
+bundle when starting from an authored scenario rather than the reference
+fixture:
+
+```sh
+./result/bin/crucible campaign scenario compile ./scenario.toml \
+  --output ./scenario-bundle \
+  --format json
+./result/bin/crucible campaign validate-import \
+  ./scenario-bundle/import.toml \
+  --format json
+```
+
+The compiler accepts the same strict current scenario schema used by ordinary
+Crucible runs, including topology, events, properties, measurements, and
+selectable declarations. Input and each resulting import body are bounded by
+the 32 MiB campaign-import limit. The output directory is installed atomically
+and is never replaced. It contains `scenario.bin`, an empty genesis
+`schedule.bin`, and an absolute-path `import.toml`. The report gives the exact
+semantic scenario/genesis IDs and their verifier-derived scenario and
+configuration artifact IDs; use those four values in the lineage manifest.
+
 Author the campaign lineage and policy as strict TOML and compile both offline
 before creating the campaign:
 
@@ -115,14 +137,15 @@ control = 2
 shared-memory = 5
 ```
 
-Both compilers reject unknown fields, noncanonical identities, and invalid
-typed values before creating output. They write new owner-only files durably
-and never replace existing paths. Each report contains the exact canonical
-record ID and encoded byte count. The policy compiler reads at most 16 MiB and
-also rejects duplicate semantic keys, invalid exact arithmetic, and unsupported
-explorer parameters. A version-one policy manifest has the following field
-shape; replace the example scenario and artifact/generator identities with
-exact values derived from your verified import closure:
+The lineage and policy compilers reject unknown fields, noncanonical
+identities, and invalid typed values before creating output. They write new
+owner-only files durably and never replace existing paths. Each report contains
+the exact canonical record ID and encoded byte count. The policy compiler reads
+at most 16 MiB and also rejects duplicate semantic keys, invalid exact
+arithmetic, and unsupported explorer parameters. A version-one policy manifest
+has the following field shape; replace the example scenario and
+artifact/generator identities with exact values derived from your verified
+import closure:
 
 ```toml
 schema_version = 1
