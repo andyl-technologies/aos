@@ -1955,6 +1955,7 @@ pub(super) fn build_live_node(
                 capture_icount: capture.capture_icount,
                 initial_network,
                 emitted_frames: priming.emitted_frames,
+                observable_events: priming.observable_events,
             },
         )?;
     }
@@ -2035,12 +2036,14 @@ pub(super) fn build_live_node(
                 )
             })?;
     }
-    node.synchronize_observed_time().map_err(|source| {
+    let ready_boundary = node.synchronize_observed_time().map_err(|source| {
         QemuLiveNodeStepGateError::node_op("synchronize primed icount", source)
     })?;
+    if !restoring_checkpoint {
+        node = node.with_priming_observable_events(priming.observable_events, ready_boundary);
+    }
     Ok(node)
 }
-
 #[path = "node_step_gate/support.rs"]
 mod support;
 

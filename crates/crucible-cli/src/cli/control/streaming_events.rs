@@ -67,6 +67,88 @@ pub(crate) async fn drain_terminal_event_log(
     Ok(())
 }
 
+// crucible-lint: allow rust-allow -- the bounded stop carries distinct control, status, and event-stream ownership domains.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn stop_budget_timed_out_session<C>(
+    client: &C,
+    // crucible-lint: allow host-nondeterminism-state -- the typed client stream is observation transport; the session engine remains authoritative.
+    control: &mut crucible_api::ClientControlStream,
+    command_id: &mut u64,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+    final_state: String,
+    initial: crucible_api::SessionSummary,
+    mut watch_statuses: Vec<String>,
+    watch_streams_live_status: bool,
+    event_timeout_ms: u64,
+    streamed_events: &mut Vec<String>,
+    streamed_event_frames: &mut Vec<Vec<u8>>,
+    coverage_events: &mut Vec<crucible::ObservableEvent>,
+    streamed_event_cursor: &mut u64,
+) -> Result<RunObservation, CliError>
+where
+    // crucible-lint: allow host-nondeterminism-state -- the typed client only transports authoritative session summaries and commands.
+    C: ControlClient + Sync,
+{
+    let stopped = if initial.state == LiveStateKind::Stopped {
+        initial
+    } else {
+        acknowledge_stream_command(
+            control,
+            command_id,
+            SessionCommandKind::ExhaustBudget,
+            acknowledged_commands,
+        )
+        .await?;
+        let mut stopped = initial;
+        for _ in 0..RUN_INTERACTIVE_ACK_QUANTA_BOUND {
+            let sessions = client.list_sessions().await.map_err(control_client_error)?;
+            let Some(session) = sessions
+                .sessions
+                .iter()
+                .find(|summary| summary.session == stopped.session)
+            else {
+                break;
+            };
+            stopped = session.clone();
+            if watch_streams_live_status {
+                watch_statuses.push(run_watch_status(session));
+            }
+            if session.state == LiveStateKind::Stopped {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        stopped
+    };
+
+    drain_terminal_event_log(
+        control,
+        stopped.event_log_len,
+        event_timeout_ms,
+        streamed_events,
+        streamed_event_frames,
+        coverage_events,
+        streamed_event_cursor,
+    )
+    .await?;
+
+    Ok(RunObservation {
+        final_state,
+        outcome: stopped.outcome,
+        terminal_savepoint: stopped.terminal_savepoint,
+        terminal_configuration: query_run_terminal_configuration(
+            control,
+            command_id,
+            acknowledged_commands,
+        )
+        .await?,
+        frontier_ticks: stopped.frontier.ticks,
+        quanta: stopped.quanta_stepped,
+        budget_timed_out: stopped.outcome == Some(OutcomeKind::Timeout),
+        watch_statuses,
+    })
+}
+
 fn streaming_event_summary(frame: &crucible_api::StreamingEventFrame) -> String {
     use crucible_api::{OpenSetAttributeValue, OpenSetEventSource};
 
@@ -267,6 +349,7 @@ pub(crate) fn coverage_feedback_from_streamed_events(
 }
 
 pub(crate) async fn query_run_terminal_configuration(
+    // crucible-lint: allow host-nondeterminism-state -- the typed stream returns an engine-owned canonical configuration snapshot.
     control: &crucible_api::ClientControlStream,
     command_id: &mut u64,
     acknowledged_commands: &mut Vec<SessionCommandKind>,
