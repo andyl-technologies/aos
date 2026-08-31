@@ -21,6 +21,8 @@
   freetype,
   xorg-stubs,
   bootstrapTools,
+  krb5,
+  java-native-foundation,
   openjdk-9,
 }: let
   mkOpenJDKBootstrap = import ./_openjdk-bootstrap.nix {
@@ -46,6 +48,7 @@
       freetype
       xorg-stubs
       bootstrapTools
+      krb5
       ;
   };
 in
@@ -55,4 +58,5 @@ in
     build = "13";
     srcHash = "sha256-Oc4SONWyBm/+HBoJ2HwXB2Ywn+GCkPJ6SrfRWETTTcE=";
     prevJdk = openjdk-9;
+    extraDarwinFrameworks = [java-native-foundation];
   }

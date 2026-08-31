@@ -21,6 +21,8 @@
   freetype,
   xorg-stubs,
   bootstrapTools,
+  krb5,
+  java-native-foundation,
   openjdk-13,
 }: let
   mkOpenJDKBootstrap = import ./_openjdk-bootstrap.nix {
@@ -46,6 +48,7 @@
       freetype
       xorg-stubs
       bootstrapTools
+      krb5
       ;
   };
 in
@@ -55,4 +58,12 @@ in
     build = "12";
     srcHash = "sha256-WC49gFq3RYIzIlD5X5hFYIyPPTJzqpKvb2g8RdGk+Og=";
     prevJdk = openjdk-13;
+    extraDarwinFrameworks = [java-native-foundation];
+    # This release's interim javac corrupts module state when the cross images
+    # target is parallel, eventually asserting that java.xml.crypto has no root
+    # package. Serialize only the Darwin cross build; native output stays exact.
+    buildJobs =
+      if stdenv.isCross && stdenv.hostPlatform.isDarwin
+      then 1
+      else null;
   }

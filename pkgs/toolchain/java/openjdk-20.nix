@@ -21,6 +21,7 @@
   freetype,
   xorg-stubs,
   bootstrapTools,
+  krb5,
   openjdk-19,
 }: let
   mkOpenJDKBootstrap = import ./_openjdk-bootstrap.nix {
@@ -46,6 +47,7 @@
       freetype
       xorg-stubs
       bootstrapTools
+      krb5
       ;
   };
 in
