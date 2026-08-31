@@ -2272,7 +2272,11 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   policy record while reporting its exact content identity. The adjacent strict
   lineage compiler binds semantic scenario/genesis identities to their exact
   imported artifacts and every execution-compatibility version through the
-  same bounded non-overwriting path. Rich scenario manifest authoring and
+  same bounded non-overwriting path. Canonical scenario authoring now consumes
+  the engine's complete strict current-schema TOML, derives an empty genesis
+  schedule plus both semantic and verifier-backed artifact identities, and
+  atomically installs a new bounded scenario/schedule/import-manifest directory
+  without opening repository state. Non-genesis schedule authoring and
   policy-file selector expressions remain open.
 - [ ] **T-CAM-8.2** Implement graph/frontier/choices/findings/explain/compare
   queries with branch-point/source/provenance views, pagination, and versioned

@@ -310,6 +310,8 @@ enum CampaignCommand {
     Fixture(CampaignFixtureArgs),
     /// Validate strict campaign import manifests without opening repository state.
     ValidateImport(CampaignValidateImportArgs),
+    /// Compile canonical scenario TOML into an importable genesis bundle.
+    Scenario(CampaignScenarioArgs),
     /// Compile strict human-authored campaign policy manifests.
     Policy(CampaignPolicyArgs),
     /// Compile strict human-authored campaign lineage manifests.
@@ -489,6 +491,28 @@ struct CampaignValidateImportArgs {
     /// Strict import manifest to validate; repeated manifests share one bound.
     #[arg(value_name = "MANIFEST", required = true)]
     manifests: Vec<PathBuf>,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignScenarioArgs {
+    #[command(subcommand)]
+    command: CampaignScenarioCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignScenarioCommand {
+    /// Compile canonical scenario TOML and an empty genesis schedule.
+    Compile(CampaignScenarioCompileArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignScenarioCompileArgs {
+    /// Canonical Crucible scenario TOML using the current scenario schema.
+    #[arg(value_name = "INPUT")]
+    input: PathBuf,
+    /// New directory that will receive scenario.bin, schedule.bin, and import.toml.
+    #[arg(long, value_name = "DIR", required = true)]
+    output: PathBuf,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
