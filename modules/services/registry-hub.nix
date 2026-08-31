@@ -94,8 +94,10 @@ in {
       default = "/var/lib/aos-hub";
       description = ''
         State directory holding the hub's sqlite database (hub.db) and any
-        local_fs storage-binding roots. Provisioned as a systemd
-        StateDirectory owned by the service account.
+        local_fs storage-binding roots. The native Hub provisions its
+        deployment-owned instance-default binding at the `storage` directory
+        beneath this root. The root is provisioned as a systemd StateDirectory
+        owned by the service account.
       '';
     };
 
