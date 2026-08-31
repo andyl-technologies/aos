@@ -1196,6 +1196,13 @@
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "after exact one-shot child-QMP initialization, QEMU preserves the immutable descriptor, socket, template-generation, QMP-generation, and applied sealed-plan basis for a private child query without making the adapter reusable; failed, reset, foreign, or partially applied state remains unbound, while the concrete monitor runtime, endpoint handshake, remaining supported-profile resources, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
     }
+    {
+      file = "0172-crucible-inventory-qmp-monitor-state.patch";
+      catalogName = "crucible-hot-fork-monitor-inventory";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "QEMU now exposes one bounded versioned observational inventory of monitor topology, dispatcher queues, and partial JSON parser state; the host accepts only one stable OOB-enabled I/O-thread QMP monitor with empty queue/parser state, while destructive child monitor reconstruction, fork invocation, guest admission, and readiness bits 7 and 8 remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

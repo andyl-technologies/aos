@@ -2801,6 +2801,14 @@ discards other setup-era observations before authoritative installation.
 Only errors explicitly classified as store or executor unavailability are
 retryable; coarse store/executor failures and invalid checkpoints, ancestry,
 authorization, replay-oracle evidence, or ready-point policy fail terminally.
+The retained-template audit also requires QEMU's version-1 monitor inventory to
+remain identical around process capture and to contain at most 256 records. The
+only supported parent profile is one stable OOB-enabled I/O-thread QMP monitor,
+zero HMP monitors, zero suspended or negotiating monitors, and no queued request
+or partial JSON parser state. A busy parser makes the report incomplete. This
+inventory is observational and does not satisfy the separate child monitor
+reconstruction or fork authority.
+
 The driver owns selection application, stop-boundary execution, and candidate
 construction but never assignment or daemon-epoch identity. This adapter cannot
 report `hot-fork`; only the future QEMU-owned fork protocol may do so after its

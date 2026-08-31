@@ -3009,6 +3009,30 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   incomplete.
 - **Risk:** F.
 
+### crucible-hot-fork-monitor-inventory — bound monitor and parser state
+
+- **Patch:** `0172-crucible-inventory-qmp-monitor-state.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** QEMU owns a version-1 OOB inventory of at most 256 monitors.
+  It reports the monitor lifecycle generation, QMP/HMP and I/O-thread counts,
+  suspended and negotiating monitors, OOB capability state, queued requests,
+  partial-parser bytes, partial parsers, and parser snapshots that raced input.
+  A recursive per-monitor parser lock lets the querying OOB monitor inspect its
+  own reset parser. The global inventory never blocks on another parser while
+  holding the monitor-list lock; a failed try-lock makes the report incomplete.
+- **Micro-test:** the live Phase 6 gate rejects stock QEMU, requires two
+  identical reports, and pins the supported parent profile to one stable
+  OOB-enabled I/O-thread QMP monitor with no HMP monitor, suspension,
+  negotiation, queued request, partial parser, or unstable record. Strict Rust
+  decoding rechecks every count relationship and the 256-monitor bound.
+- **Inertness:** this operation is observational. It neither disposes inherited
+  monitors nor constructs a child dispatcher, attaches the private endpoint,
+  releases guest input, invokes a fork, or acknowledges readiness bit 7 or 8.
+  The concrete child monitor runtime and `T-CAM-6.1` through `T-CAM-6.3` remain
+  incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
