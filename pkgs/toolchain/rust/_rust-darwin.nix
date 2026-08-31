@@ -494,7 +494,9 @@ in
             -e "s|/build/rustc-${version}-src/build/|/rustc/${version}/bootstrap/|g" \
             -e "s|/build/rustc-${version}-src|/rustc/${version}|g" \
             "$install_log"
-          if grep -F '/build/' "$install_log" >/dev/null; then
+          # Canonical remapped source paths can contain ordinary `build/`
+          # components. Reject only the original absolute sandbox source root.
+          if grep -F "/build/rustc-${version}-src" "$install_log" >/dev/null; then
             echo "Rust install.log retains its sandbox source root" >&2
             exit 1
           fi
