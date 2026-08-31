@@ -2243,6 +2243,8 @@ fn campaign_status_watch_and_list_parse_under_the_nested_cli() {
         "policy",
         "compile",
         "/tmp/policy.toml",
+        "--scenario",
+        "/tmp/scenario.toml",
         "--output",
         "/tmp/policy.bin",
     ])
@@ -2255,10 +2257,12 @@ fn campaign_status_watch_and_list_parse_under_the_nested_cli() {
             command: CampaignCommand::Policy(CampaignPolicyArgs {
                 command: CampaignPolicyCommand::Compile(CampaignPolicyCompileArgs {
                     ref input,
+                    scenario: Some(ref scenario),
                     ref output,
                 }),
             }),
         }) if input == &PathBuf::from("/tmp/policy.toml")
+            && scenario == &PathBuf::from("/tmp/scenario.toml")
             && output == &PathBuf::from("/tmp/policy.bin")
     ));
 

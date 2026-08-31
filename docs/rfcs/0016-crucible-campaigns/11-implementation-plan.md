@@ -2280,7 +2280,10 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   admits a nonempty byte-canonical Schedule V2, rejects legacy/empty/unresolved-
   selection inputs, independently verifies the derived configuration artifact,
   and installs the same bounded no-replace import bundle. Human-authored
-  decision schemas and policy-file selector expressions remain open.
+  decision schemas remain open. Policy authoring now resolves exact selectable
+  IDs and bounded all-tags predicates through an exact matching canonical
+  scenario, rejects absent/ambiguous/drifted selectors before output, and emits
+  the unchanged stable-name canonical policy identity.
 - [ ] **T-CAM-8.2** Implement graph/frontier/choices/findings/explain/compare
   queries with branch-point/source/provenance views, pagination, and versioned
   JSON. Snapshot-bound graph/frontier/choices/findings traversal is exposed

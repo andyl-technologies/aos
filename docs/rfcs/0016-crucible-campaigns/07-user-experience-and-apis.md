@@ -124,7 +124,7 @@ campaign explicitly admits defaults; otherwise validation fails.
 crucible campaign scenario compile SCENARIO.toml --output BUNDLE
 crucible campaign configuration compile SCENARIO.toml SCHEDULE.bin --output BUNDLE
 crucible campaign lineage compile LINEAGE.toml --output LINEAGE.bin
-crucible campaign policy compile POLICY.toml --output POLICY.bin
+crucible campaign policy compile POLICY.toml [--scenario SCENARIO.toml] --output POLICY.bin
 crucible campaign create NAME --lineage LINEAGE.bin --policy POLICY.bin \
   [--start-command COMMAND]
 crucible campaign validate NAME|POLICY
@@ -200,6 +200,18 @@ rejects unknown fields and duplicate semantic keys, constructs the public typed
 policy values so every canonical invariant is shared with repository decoding,
 and only then durably installs a new canonical binary record without replacing
 an existing path. It reports the exact content-derived `CampaignPolicyId`.
+The original plain-string choice selector names one stable declaration and
+requires no scenario input. An authored selector may alternatively be the
+closed inline-table form `{kind="selectable", id=SELECTABLE_ID}` or
+`{kind="tags", all=[TAG...]}` when `--scenario` supplies the strict canonical
+scenario TOML. The scenario semantic ID MUST equal the policy's scenario. An
+exact ID MUST occur in its declaration catalog. A tag predicate is a conjunction
+of 1 through 16 unique canonical tags and MUST match exactly one declaration;
+zero or multiple matches fail before output. Both expressions resolve to the
+declaration's stable name before the unchanged canonical `CampaignPolicy` is
+constructed, so name, ID, and tag spellings that select the same declaration
+produce byte-identical policy records. Selector resolution is offline and does
+not grant repository authority.
 Referenced scenario/configuration artifacts and generators remain separately
 verifier-imported immutable records; neither authoring file bypasses the
 dependency-ordered import closure.
@@ -324,7 +336,8 @@ and examines at most 256 opportunities by default or an explicit
 `--selector-scan-limit` within `1..=4096`. The selected
 effective domain is then fetched and exact-checked against the opportunity;
 `--opportunity` and `--domain` remain the unambiguous low-level form. Richer
-policy-file selector expressions remain future porcelain over the same records.
+policy-file expressions beyond the implemented exact-ID and bounded all-tags
+forms remain future porcelain over the same records.
 Finite values are validated against the choice
 opportunity at the named parent; they are pulled lazily under budget and do not
 immediately create VMs. `--all` is accepted only for a proven finite domain

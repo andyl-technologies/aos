@@ -559,6 +559,9 @@ struct CampaignPolicyCompileArgs {
     /// Strict version-one campaign policy TOML.
     #[arg(value_name = "INPUT")]
     input: PathBuf,
+    /// Canonical scenario TOML used to resolve selectable IDs and tag predicates.
+    #[arg(long, value_name = "SCENARIO")]
+    scenario: Option<PathBuf>,
     /// New file that will receive the canonical binary policy record.
     #[arg(long, value_name = "OUTPUT", required = true)]
     output: PathBuf,

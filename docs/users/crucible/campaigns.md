@@ -136,6 +136,7 @@ before creating the campaign:
   --output ./lineage.bin \
   --format json
 ./result/bin/crucible campaign policy compile ./policy.toml \
+  --scenario ./scenario.toml \
   --output ./policy.bin \
   --format json
 ```
@@ -194,7 +195,7 @@ maximum_children = 64
 minimum_visits_per_child = 1
 
 [[choices]]
-selector = "network.latency"
+selector = { kind = "tags", all = ["latency", "network"] }
 generator = "crucible.campaign.candidate-generator-spec@policy-v1-CONTENT_HASH"
 required = true
 
@@ -217,6 +218,18 @@ survivor_limit = 32
 exact_findings = true
 exact_user_pins = true
 ```
+
+A choice `selector` may remain a plain stable declaration name, which preserves
+the original offline format and needs no scenario file. With `--scenario`, it
+may instead be `{ kind = "selectable", id = "..." }` or a conjunction
+`{ kind = "tags", all = ["...", "..."] }`. The supplied scenario must have
+the exact semantic ID named by the policy. An exact ID must occur in that
+scenario; a tag conjunction contains 1 through 16 unique canonical tags and
+must match exactly one declaration. The compiler resolves either expression to
+that declaration's stable name before constructing the existing canonical
+`CampaignPolicy`, so equivalent name, ID, and tag forms produce byte-identical
+policy records. Missing scenario context, absent IDs, ambiguous predicates,
+duplicate tags, and scenario drift fail before output is created.
 
 `mode` is `strict`, `streaming`, or `statistical`; objective goals are
 `minimize` or `maximize`. The explorer may instead be `kind = "beam"` with

@@ -4,11 +4,13 @@ use super::*;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crucible::ScenarioDefForm;
 use crucible_campaign::{
-    CampaignMode, CampaignSeed, ChoicePolicy, ExactRational, ExplorerPolicy, FairnessPolicy,
-    GuidanceWeight, Objective, ObjectiveGoal, ProgressiveWideningPolicy, PuctPolicy,
-    RetentionPolicy, ScenarioDefId,
+    CampaignHash, CampaignMode, CampaignSeed, ChoiceClassContext, ChoicePolicy, ExactRational,
+    ExplorerPolicy, FairnessPolicy, GuidanceWeight, Objective, ObjectiveGoal,
+    ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy, ScenarioDefId, SelectableId,
 };
+use crucible_daemon::MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES;
 use serde::{Deserialize, Serialize};
 
 use super::authoring::{read_bounded_utf8, write_new_record};
@@ -17,6 +19,7 @@ const CAMPAIGN_POLICY_AUTHORING_SCHEMA_VERSION: u32 = 1;
 const MAX_CAMPAIGN_POLICY_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 const CAMPAIGN_POLICY_COMPILATION_REPORT_SCHEMA: &str =
     "crucible.cli.campaign-policy-compilation.v1";
+const MAX_AUTHORED_CHOICE_SELECTOR_TAGS: usize = 16;
 
 /// Result of compiling one strict authored policy.
 #[derive(Debug, Serialize)]
@@ -91,9 +94,23 @@ struct AuthoredProgressiveWidening {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AuthoredChoicePolicy {
-    selector: String,
+    selector: AuthoredChoiceSelector,
     generator: String,
     required: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum AuthoredChoiceSelector {
+    Name(String),
+    Expression(AuthoredChoiceSelectorExpression),
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+enum AuthoredChoiceSelectorExpression {
+    Selectable { id: String },
+    Tags { all: Vec<String> },
 }
 
 #[derive(Deserialize)]
@@ -136,6 +153,7 @@ struct AuthoredRetentionPolicy {
 
 pub(super) fn compile_campaign_policy(
     input: &Path,
+    scenario_input: Option<&Path>,
     output: &Path,
 ) -> Result<CampaignPolicyCompilationReport, CliError> {
     let text = read_bounded_utf8(
@@ -149,7 +167,22 @@ pub(super) fn compile_campaign_policy(
             input.display()
         ))
     })?;
-    let policy = authored.into_policy()?;
+    let scenario = scenario_input
+        .map(|path| {
+            let text = read_bounded_utf8(
+                path,
+                "campaign policy selector scenario",
+                MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES,
+            )?;
+            ScenarioDefForm::from_canonical_toml(&text).map_err(|error| {
+                usage_error(format!(
+                    "invalid canonical selector scenario at {}: {error}",
+                    path.display()
+                ))
+            })
+        })
+        .transpose()?;
+    let policy = authored.into_policy(scenario.as_ref())?;
     let policy_id = policy
         .id()
         .map_err(|error| usage_error(format!("invalid authored campaign policy: {error}")))?;
@@ -190,7 +223,10 @@ pub(super) fn render_campaign_policy_compilation(
 }
 
 impl AuthoredCampaignPolicy {
-    fn into_policy(self) -> Result<CampaignPolicy, CliError> {
+    fn into_policy(
+        self,
+        selector_scenario: Option<&ScenarioDefForm>,
+    ) -> Result<CampaignPolicy, CliError> {
         if self.schema_version != CAMPAIGN_POLICY_AUTHORING_SCHEMA_VERSION {
             return Err(usage_error(format!(
                 "unsupported campaign policy manifest schema version {}; expected {}",
@@ -199,9 +235,17 @@ impl AuthoredCampaignPolicy {
         }
         let scenario = ScenarioDefId::parse(&self.scenario)
             .map_err(|error| usage_error(format!("invalid policy scenario ID: {error}")))?;
+        if let Some(selector_scenario) = selector_scenario
+            && scenario
+                != ScenarioDefId::from_hash(CampaignHash::from_bytes(selector_scenario.id().bytes))
+        {
+            return Err(usage_error(
+                "campaign policy scenario does not match the selector-resolution scenario",
+            ));
+        }
         let campaign_seed = parse_campaign_seed(&self.campaign_seed)?;
         let explorer = self.explorer.into_policy()?;
-        let choices = collect_choices(self.choices)?;
+        let choices = collect_choices(self.choices, selector_scenario)?;
         let objectives = collect_objectives(self.objectives)?;
         let guidance = collect_guidance(self.guidance)?;
         let stop_conditions = collect_stop_conditions(self.stop_conditions)?;
@@ -290,21 +334,77 @@ impl AuthoredProgressiveWidening {
 
 fn collect_choices(
     authored: Vec<AuthoredChoicePolicy>,
+    scenario: Option<&ScenarioDefForm>,
 ) -> Result<BTreeMap<String, ChoicePolicy>, CliError> {
     let mut choices = BTreeMap::new();
     for entry in authored {
+        let selector = resolve_choice_selector(entry.selector, scenario)?;
         let generator = CandidateGeneratorSpecId::parse(&entry.generator)
             .map_err(|error| usage_error(format!("invalid choice generator ID: {error}")))?;
-        let policy = ChoicePolicy::new(entry.selector.clone(), generator, entry.required)
+        let policy = ChoicePolicy::new(selector.clone(), generator, entry.required)
             .map_err(|error| usage_error(format!("invalid choice policy: {error}")))?;
-        if choices.insert(entry.selector.clone(), policy).is_some() {
+        if choices.insert(selector.clone(), policy).is_some() {
             return Err(usage_error(format!(
-                "duplicate choice selector {:?}",
-                entry.selector
+                "duplicate choice selector {selector:?}"
             )));
         }
     }
     Ok(choices)
+}
+
+fn resolve_choice_selector(
+    selector: AuthoredChoiceSelector,
+    scenario: Option<&ScenarioDefForm>,
+) -> Result<String, CliError> {
+    let expression = match selector {
+        AuthoredChoiceSelector::Name(name) => return Ok(name),
+        AuthoredChoiceSelector::Expression(expression) => expression,
+    };
+    let scenario = scenario.ok_or_else(|| {
+        usage_error("selectable-ID and tag choice selectors require --scenario <SCENARIO>")
+    })?;
+    match expression {
+        AuthoredChoiceSelectorExpression::Selectable { id } => {
+            let id = SelectableId::parse(&id)
+                .map_err(|error| usage_error(format!("invalid selectable selector ID: {error}")))?;
+            scenario
+                .selectables()
+                .declarations()
+                .get(&id)
+                .map(|declaration| declaration.name().to_owned())
+                .ok_or_else(|| {
+                    usage_error("selectable selector ID is absent from the supplied scenario")
+                })
+        }
+        AuthoredChoiceSelectorExpression::Tags { all } => {
+            if all.is_empty() || all.len() > MAX_AUTHORED_CHOICE_SELECTOR_TAGS {
+                return Err(usage_error(format!(
+                    "choice tag selector must contain 1..={MAX_AUTHORED_CHOICE_SELECTOR_TAGS} tags"
+                )));
+            }
+            let tag_count = all.len();
+            let tags = all.into_iter().collect::<BTreeSet<_>>();
+            if tags.len() != tag_count {
+                return Err(usage_error("choice tag selector contains duplicate tags"));
+            }
+            ChoiceClassContext::new(tags.clone())
+                .map_err(|error| usage_error(format!("invalid choice selector tags: {error}")))?;
+            let mut matches = scenario
+                .selectables()
+                .declarations()
+                .values()
+                .filter(|declaration| declaration.semantic_tags().is_superset(&tags));
+            let selected = matches.next().ok_or_else(|| {
+                usage_error("choice tag selector matches no declaration in the supplied scenario")
+            })?;
+            if matches.next().is_some() {
+                return Err(usage_error(
+                    "choice tag selector is ambiguous in the supplied scenario",
+                ));
+            }
+            Ok(selected.name().to_owned())
+        }
+    }
 }
 
 fn collect_objectives(
@@ -386,7 +486,11 @@ fn parse_campaign_seed(encoded: &str) -> Result<CampaignSeed, CliError> {
 mod tests {
     use super::*;
 
-    use crucible_campaign::{CampaignHash, CampaignPolicy};
+    use crucible::{ScenarioSelectableLimits, ScenarioSelectables};
+    use crucible_campaign::{
+        BooleanDomain, CampaignPolicy, ChoiceClassContext, ChoiceDomain, ChoiceSource, ChoiceValue,
+        SelectableDeclaration,
+    };
     use crucible_cas::content_store::{ContentId, ObjectKind};
     use tempfile::tempdir;
 
@@ -455,6 +559,65 @@ exact_user_pins = true
         )
     }
 
+    fn manifest_for_scenario(scenario: &ScenarioDefForm) -> String {
+        let original = CampaignHash::derive(
+            "crucible.cli.test.authored-policy-scenario.v1",
+            b"authored-policy-scenario",
+        )
+        .to_hex();
+        manifest().replace(
+            &format!("scenario = \"{original}\""),
+            &format!("scenario = \"{}\"", scenario.id().to_hex()),
+        )
+    }
+
+    fn selector_scenario() -> (ScenarioDefForm, SelectableId) {
+        let fixture = crucible::happy_path_scenario().expect("happy-path scenario");
+        let base = ScenarioDefForm::from_components(
+            fixture.scenario.world(),
+            &crucible::Plan::empty(),
+            &crucible::Properties::empty(),
+            fixture.scenario.seed(),
+        )
+        .expect("authored scenario");
+        let latency = SelectableDeclaration::new(
+            "network.latency",
+            ChoiceSource::Scheduler {
+                producer: String::from("campaign-policy-test"),
+            },
+            ChoiceDomain::Boolean(BooleanDomain::new(1).expect("Boolean domain")),
+            ChoiceValue::Boolean(false),
+            ChoiceClassContext::new(BTreeSet::new()).expect("class context"),
+            BTreeSet::from([String::from("network"), String::from("latency")]),
+            true,
+        )
+        .expect("latency selectable");
+        let latency_id = latency.id().expect("latency selectable ID");
+        let loss = SelectableDeclaration::new(
+            "network.loss",
+            ChoiceSource::Scheduler {
+                producer: String::from("campaign-policy-test"),
+            },
+            ChoiceDomain::Boolean(BooleanDomain::new(1).expect("Boolean domain")),
+            ChoiceValue::Boolean(false),
+            ChoiceClassContext::new(BTreeSet::new()).expect("class context"),
+            BTreeSet::from([String::from("network"), String::from("loss")]),
+            false,
+        )
+        .expect("loss selectable");
+        let selectables = ScenarioSelectables::new(
+            base.world(),
+            ScenarioSelectableLimits::default(),
+            vec![latency, loss],
+        )
+        .expect("scenario selectables");
+        (
+            base.with_selectables(selectables)
+                .expect("scenario with selectables"),
+            latency_id,
+        )
+    }
+
     #[test]
     fn strict_manifest_compiles_to_canonical_policy() {
         let temporary = tempdir().expect("temporary directory");
@@ -462,7 +625,7 @@ exact_user_pins = true
         let output = temporary.path().join("policy.bin");
         std::fs::write(&input, manifest()).expect("write manifest");
 
-        let report = compile_campaign_policy(&input, &output).expect("compile policy");
+        let report = compile_campaign_policy(&input, None, &output).expect("compile policy");
         let bytes = std::fs::read(&output).expect("read policy");
         let policy = CampaignPolicy::from_canonical_bytes(&bytes).expect("decode policy");
 
@@ -490,7 +653,7 @@ exact_user_pins = true
         );
         std::fs::write(&input, duplicate).expect("write manifest");
 
-        assert!(compile_campaign_policy(&input, &output).is_err());
+        assert!(compile_campaign_policy(&input, None, &output).is_err());
         assert!(!output.exists());
 
         std::fs::write(
@@ -498,7 +661,7 @@ exact_user_pins = true
             manifest().replace("mode = \"strict\"", "mode = \"strict\"\nunknown = true"),
         )
         .expect("write unknown-field manifest");
-        assert!(compile_campaign_policy(&input, &output).is_err());
+        assert!(compile_campaign_policy(&input, None, &output).is_err());
         assert!(!output.exists());
     }
 
@@ -510,7 +673,107 @@ exact_user_pins = true
         std::fs::write(&input, manifest()).expect("write manifest");
         std::fs::write(&output, b"existing").expect("write existing output");
 
-        assert!(compile_campaign_policy(&input, &output).is_err());
+        assert!(compile_campaign_policy(&input, None, &output).is_err());
         assert_eq!(std::fs::read(&output).expect("read existing"), b"existing");
+    }
+
+    #[test]
+    fn selectable_id_and_tag_predicates_compile_to_the_same_canonical_policy() {
+        let temporary = tempdir().expect("temporary directory");
+        let (scenario, latency_id) = selector_scenario();
+        let scenario_input = temporary.path().join("scenario.toml");
+        std::fs::write(
+            &scenario_input,
+            scenario.to_canonical_toml().expect("canonical scenario"),
+        )
+        .expect("write scenario");
+        let plain_input = temporary.path().join("plain.toml");
+        let id_input = temporary.path().join("id.toml");
+        let tags_input = temporary.path().join("tags.toml");
+        let plain_output = temporary.path().join("plain.bin");
+        let id_output = temporary.path().join("id.bin");
+        let tags_output = temporary.path().join("tags.bin");
+        let manifest = manifest_for_scenario(&scenario);
+        std::fs::write(&plain_input, &manifest).expect("write plain policy");
+        std::fs::write(
+            &id_input,
+            manifest.replace(
+                "selector = \"network.latency\"",
+                &format!("selector = {{ kind = \"selectable\", id = \"{latency_id}\" }}"),
+            ),
+        )
+        .expect("write selectable-ID policy");
+        std::fs::write(
+            &tags_input,
+            manifest.replace(
+                "selector = \"network.latency\"",
+                "selector = { kind = \"tags\", all = [\"latency\", \"network\"] }",
+            ),
+        )
+        .expect("write tag policy");
+
+        compile_campaign_policy(&plain_input, None, &plain_output).expect("compile plain policy");
+        compile_campaign_policy(&id_input, Some(&scenario_input), &id_output)
+            .expect("compile selectable-ID policy");
+        compile_campaign_policy(&tags_input, Some(&scenario_input), &tags_output)
+            .expect("compile tag policy");
+
+        let plain = std::fs::read(plain_output).expect("read plain policy");
+        assert_eq!(std::fs::read(id_output).expect("read ID policy"), plain);
+        assert_eq!(std::fs::read(tags_output).expect("read tag policy"), plain);
+    }
+
+    #[test]
+    fn selector_resolution_rejects_missing_context_ambiguity_and_scenario_drift() {
+        let temporary = tempdir().expect("temporary directory");
+        let (scenario, latency_id) = selector_scenario();
+        let scenario_input = temporary.path().join("scenario.toml");
+        std::fs::write(
+            &scenario_input,
+            scenario.to_canonical_toml().expect("canonical scenario"),
+        )
+        .expect("write scenario");
+        let input = temporary.path().join("policy.toml");
+        let output = temporary.path().join("policy.bin");
+        let by_id = manifest_for_scenario(&scenario).replace(
+            "selector = \"network.latency\"",
+            &format!("selector = {{ kind = \"selectable\", id = \"{latency_id}\" }}"),
+        );
+        std::fs::write(&input, &by_id).expect("write ID policy");
+        assert!(compile_campaign_policy(&input, None, &output).is_err());
+        assert!(!output.exists());
+
+        let ambiguous = manifest_for_scenario(&scenario).replace(
+            "selector = \"network.latency\"",
+            "selector = { kind = \"tags\", all = [\"network\"] }",
+        );
+        std::fs::write(&input, ambiguous).expect("write ambiguous policy");
+        assert!(compile_campaign_policy(&input, Some(&scenario_input), &output).is_err());
+        assert!(!output.exists());
+
+        let unknown_id = typed_id(
+            "crucible.campaign.selectable-declaration",
+            ObjectKind::CampaignFact,
+            b"unknown-authored-policy-selectable",
+        );
+        let absent = manifest_for_scenario(&scenario).replace(
+            "selector = \"network.latency\"",
+            &format!("selector = {{ kind = \"selectable\", id = \"{unknown_id}\" }}"),
+        );
+        std::fs::write(&input, absent).expect("write absent-ID policy");
+        assert!(compile_campaign_policy(&input, Some(&scenario_input), &output).is_err());
+        assert!(!output.exists());
+
+        let duplicate_tags = manifest_for_scenario(&scenario).replace(
+            "selector = \"network.latency\"",
+            "selector = { kind = \"tags\", all = [\"network\", \"network\"] }",
+        );
+        std::fs::write(&input, duplicate_tags).expect("write duplicate-tag policy");
+        assert!(compile_campaign_policy(&input, Some(&scenario_input), &output).is_err());
+        assert!(!output.exists());
+
+        std::fs::write(&input, manifest()).expect("write drifted policy");
+        assert!(compile_campaign_policy(&input, Some(&scenario_input), &output).is_err());
+        assert!(!output.exists());
     }
 }
