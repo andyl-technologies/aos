@@ -11,6 +11,8 @@ mod explain;
 mod fixture;
 #[path = "campaign/object.rs"]
 mod object;
+#[path = "campaign/policy.rs"]
+mod policy;
 #[path = "campaign/ranking.rs"]
 mod ranking;
 #[path = "campaign/snapshot.rs"]
@@ -25,6 +27,7 @@ use explain::{
 };
 use fixture::{generate_worked_network_fixture, render_worked_network_fixture};
 use object::{query_campaign_object, render_campaign_object, validate_campaign_object_basis};
+use policy::{compile_campaign_policy, render_campaign_policy_compilation};
 use ranking::{
     query_campaign_rankings, render_campaign_rankings, validate_campaign_rankings_command,
 };
@@ -302,6 +305,18 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
         );
         return Ok(());
     }
+    if let CampaignCommand::Policy(policy) = &args.command {
+        let report = match &policy.command {
+            CampaignPolicyCommand::Compile(compile) => {
+                compile_campaign_policy(&compile.input, &compile.output)?
+            }
+        };
+        println!(
+            "{}",
+            render_campaign_policy_compilation(&report, cli.output_format())?
+        );
+        return Ok(());
+    }
 
     let socket = args
         .socket
@@ -456,6 +471,7 @@ fn prepare_campaign_command(
     match command {
         CampaignCommand::Fixture(_) => Ok(None),
         CampaignCommand::ValidateImport(_) => Ok(None),
+        CampaignCommand::Policy(_) => Ok(None),
         CampaignCommand::Create(create) => {
             let campaign = campaign_name(&create.name)?;
             let lineage = CampaignLineage::from_canonical_bytes(&read_campaign_record(
@@ -2101,6 +2117,7 @@ fn campaign_mutation_spec(
         }
         CampaignCommand::ValidateImport(_)
         | CampaignCommand::Fixture(_)
+        | CampaignCommand::Policy(_)
         | CampaignCommand::Create(_)
         | CampaignCommand::List(_)
         | CampaignCommand::Attach(_)
