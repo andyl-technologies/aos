@@ -221,23 +221,24 @@
         sed -i '/emsdk/d' bazel/repositories_extra.bzl
         sed -i '/_emsdk/d' bazel/repositories.bzl
 
-        # Remove bazel_toolchains (RBE exec properties — not needed for local build)
+        # Remove Envoy's upstream bazel_toolchains repository. Execution policy
+        # remains external and can still be supplied by the system Bazel rc.
         sed -i '/bazel_toolchains/d' bazel/repositories.bzl
 
         # Stub out RBE BUILD files that use @bazel_toolchains
         # Provide stub platform targets so references from other BUILD files work
         cat > bazel/rbe/toolchains/BUILD << 'RBE_EOF'
-    # AOS: RBE disabled — provide stub platform target
+    # AOS: upstream RBE platform disabled — provide stub platform target
     platform(
         name = "rbe_linux_gcc_platform",
         visibility = ["//visibility:public"],
     )
     RBE_EOF
         cat > bazel/platforms/rbe/BUILD << 'RBE_EOF'
-    # AOS: RBE disabled
+    # AOS: upstream RBE platform disabled
     RBE_EOF
         if [ -f mobile/bazel/platforms/rbe/BUILD ]; then
-          echo '# AOS: RBE disabled' > mobile/bazel/platforms/rbe/BUILD
+          echo '# AOS: upstream RBE platform disabled' > mobile/bazel/platforms/rbe/BUILD
         fi
 
         # Remove -Werror (GCC may produce warnings Clang doesn't)
@@ -457,7 +458,7 @@ in
     bazelBuildFlags = [
       "-c opt"
       "--config=gcc"
-      "--spawn_strategy=standalone"
+      "--spawn_strategy=remote,standalone"
       "--extra_toolchains=@local_jdk//:all"
       "--java_runtime_version=local_jdk"
       "--tool_java_runtime_version=local_jdk"
