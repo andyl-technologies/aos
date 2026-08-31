@@ -2182,6 +2182,31 @@ fn campaign_status_watch_and_list_parse_under_the_nested_cli() {
         }) if manifests == &[PathBuf::from("/tmp/campaign-import.toml")]
     ));
 
+    let policy = Cli::try_parse_from([
+        "crucible",
+        "campaign",
+        "policy",
+        "compile",
+        "/tmp/policy.toml",
+        "--output",
+        "/tmp/policy.bin",
+    ])
+    .expect("offline campaign policy compilation arguments");
+    assert!(matches!(
+        policy.command,
+        Commands::Campaign(CampaignArgs {
+            socket: None,
+            principal: None,
+            command: CampaignCommand::Policy(CampaignPolicyArgs {
+                command: CampaignPolicyCommand::Compile(CampaignPolicyCompileArgs {
+                    ref input,
+                    ref output,
+                }),
+            }),
+        }) if input == &PathBuf::from("/tmp/policy.toml")
+            && output == &PathBuf::from("/tmp/policy.bin")
+    ));
+
     let missing_connection = Cli::try_parse_from(["crucible", "campaign", "status", "example"])
         .expect("connected campaign arguments are checked before dispatch");
     let Commands::Campaign(missing_connection_args) = &missing_connection.command else {
