@@ -217,7 +217,7 @@ process-local pointer or host-layout fact crosses the ABI.
 The region header carries the identity and shape of the region: a magic number,
 the ABI version, the configured node count and queue capacity, the computed
 frame sub-region offsets, the global control flags, and the per-direction fault
-payload-arena size. ABI v20 mappers derive the coverage, fingerprint-sample,
+payload-arena size. ABI v21 mappers derive the coverage, fingerprint-sample,
 white-box marker, device-I/O, guest-introspection, and fault transport tail
 sections from that validated frame extent, the VM count, and fixed ABI
 constants. The header is the first thing a mapper reads and the thing
@@ -230,7 +230,7 @@ touches a slot.
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 
 /// Current ABI version. Bumped on any layout or semantics change (§13.6).
-pub const ABI_VERSION: u32 = 20;
+pub const ABI_VERSION: u32 = 21;
 
 /// Compile-time maximum number of node slots in the region.
 /// An ABI detail (§13.5); the engine's topology model MUST NOT depend on it.
@@ -622,7 +622,8 @@ and release-stores `read_idx` only after copying the record.
 
 The ring capacity and coverage-map cardinality are both 65,536. The callback
 enqueues only the first transition of a map byte from zero, so a conforming
-producer can publish at most 65,536 records over its process lifetime. It never
+producer can publish at most 65,536 records in one authoritative restore
+generation. It never
 allocates, locks, blocks, performs I/O, evicts an older record, or writes a
 second output stream in the TB callback. `QueueFull` is therefore an invariant
 failure and aborts the run loudly; it is not routine backpressure.
@@ -635,6 +636,26 @@ event log before another backend step. A final teardown drain is returned from
 the backend quantum loop, admitted with the same dense event-log sequence
 validation, and published by the session actor before shutdown completes. No
 host-side coverage collection is a persistent record parallel to that log.
+
+ABI v21 binds coverage reset to the existing logical-time restore request and
+acknowledgement. While the fresh QEMU generation remains stopped, the plugin
+validates the coverage ring, release-publishes `write_idx = read_idx` to discard
+all boot/setup observations, zeros its process-local novelty map, and writes
+zero through `qemu_plugin_u64_set` for every `(vcpu, map_index)` entry in the
+existing QEMU scoreboard allocation. It MUST complete all of those operations
+before release-publishing `logical_time_restore_ack = request_generation`.
+Translated callbacks keep pointers into that same scoreboard allocation; the
+reset MUST NOT replace or free it.
+
+After observing the exact request/ack generation, the host MUST first confirm
+that native QEMU is paused. It then requires `read_idx == write_idx`, adopts
+that unchanged consumer cursor as its next coverage sequence, clears its host
+novelty bitmap and last-coverage coordinate, and only then may install the
+restored node as authoritative. Any malformed ring, missing scoreboard
+capability, invalid vCPU count, partial reset, acknowledgement mismatch, or
+post-ack queued entry fails the realization and requires kill-and-reap. Runtime
+control-socket traffic remains forbidden; the transaction uses only the
+versioned shared-memory request/ack and the already-required plugin wake.
 
 - **[SHM-38]** Each logical VM MUST own exactly one coverage ring with the
   QEMU plugin as sole producer and host adapter as sole consumer. Publication
@@ -653,6 +674,15 @@ host-side coverage collection is a persistent record parallel to that log.
   FIFO batch to the unified event log before the next step or teardown. *Gate:*
   `gate:basic-block-coverage`. *Spec:* §13.3.5, forward-ref
   [`19-observability-event-log.md`](19-observability-event-log.md).
+
+- **[SHM-40A]** A logical-time warm restore with coverage enabled MUST reset the
+  producer scoreboard, producer novelty map, producer ring, and host novelty
+  state at one exact paused restore generation in the ABI-v21 order above. The
+  plugin acknowledgement commits its complete half; the host MUST confirm both
+  that acknowledgement and native pause before committing its half. Any
+  incomplete or conflicting reset fails closed before authoritative execution.
+  *Gate:* `gate:abi-conformance`, `gate:basic-block-coverage`. *Spec:*
+  §13.3.5, §13.8.
 
 ### 13.3.6 Fingerprint sample slots
 
@@ -993,7 +1023,7 @@ little-endian grammar is:
 HotForkRingImageV1 {
     magic: [u8; 8] = "CRHFRI01",
     schema_version: u32 = 1,
-    abi_version: u32 = 20,
+    abi_version: u32 = 21,
     region_size: u64,
     vm_node_count: u32,
     queue_capacity: u32,
@@ -1318,7 +1348,10 @@ producer publications while its low bits count publications admitted before
 the hold. ABI v20 likewise replaces eight bytes of the consumer cache-line
 padding with a reversible consumer-admission state. A hot-fork barrier holds
 both endpoints of every ring and waits for both counts to drain before
-reporting the ring transport quiescent. Older peers are rejected rather than
+reporting the ring transport quiescent. ABI v21 leaves the layout unchanged and
+changes logical-time restore acknowledgement semantics: coverage-enabled peers
+must complete the producer/consumer generation reset in §13.3.5 before the
+restored guest becomes authoritative. Older peers are rejected rather than
 inferred or supported through a compatibility path. The handshake
 ([`14-protocol.md`](14-protocol.md)) validates it before any node trusts a byte of
 the region. ABI v2 is intentionally incompatible with v1 because v2 adds the

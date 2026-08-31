@@ -2787,17 +2787,17 @@ concrete packaged comparison factory and its full real-node flight remain
 mandatory before the packaged executor may advertise exact restore and before
 the full campaign/QEMU gate may claim completion.
 
-Coverage-enabled warm restore remains fail-closed in this implementation slice.
-Boot-barrier priming occurs before `loadvm`, while the current QEMU plugin emits
-each coverage-map index at most once for the process. Draining priming events
-would both contaminate the resumed log and permanently hide later post-restore
-coverage. A conforming coverage-enabled implementation therefore MUST reset the
-producer novelty bitmap, producer ring, and host consumer state together at an
-authenticated paused restore generation before installing the authoritative
-event log. That versioned QEMU/shared-memory reset transaction, coverage-aware
-live advancement, and projection into canonical campaign coverage evidence
-remain part of the modeled-driver/full-flight gate. Coverage-free realization
-discards other setup-era observations before authoritative installation.
+Coverage-enabled warm restore uses the ABI-v21 logical-time restore generation
+as its exact reset transaction. Before acknowledging that generation, the
+paused plugin clears every per-vCPU novelty-scoreboard entry, its process-local
+coverage map, and setup-era producer-ring entries. After observing the exact
+acknowledgement and confirming native QEMU pause, the host requires an empty
+ring and clears its consumer sequence, coordinate, and novelty state. Only then
+may the restored node become authoritative. Any partial reset fails the
+realization and reaps the fresh child. Coverage-aware modeled-driver execution,
+projection into canonical campaign coverage evidence, and the full packaged
+real-node flight remain part of the later full-flight gate. Other setup-era
+observations are discarded at the same pre-authoritative boundary.
 Only errors explicitly classified as store or executor unavailability are
 retryable; coarse store/executor failures and invalid checkpoints, ancestry,
 authorization, replay-oracle evidence, or ready-point policy fail terminally.

@@ -298,7 +298,7 @@ fn qemu_node_rejects_a_coverage_quantum_without_an_event_log() -> Result<(), Box
 }
 
 #[test]
-fn qemu_node_rejects_authoritative_warm_restore_without_coverage_generation_reset()
+fn qemu_node_discards_pre_authoritative_observations_after_coverage_generation_reset()
 -> Result<(), Box<dyn Error>> {
     let log = shared_log();
     let setup_event =
@@ -307,14 +307,11 @@ fn qemu_node_rejects_authoritative_warm_restore_without_coverage_generation_rese
         Arc::clone(&log),
         ScriptedNodeOptions::default(),
         std::iter::empty(),
-        [vec![setup_event]],
-        std::iter::empty(),
+        std::iter::empty::<Vec<ObservableEvent>>(),
+        [setup_event],
     )?;
 
-    let error = node
-        .prepare_authoritative_observation_stream()
-        .expect_err("publish-once setup coverage must fail closed");
-    assert!(matches!(error, QemuNodeError::CoverageEventLog { .. }));
+    assert_eq!(node.prepare_authoritative_observation_stream()?, 1);
 
     let mut event_log = EventLog::new();
     let (shutdown, _) = node.shutdown_child_with_event_log(&mut event_log)?;
