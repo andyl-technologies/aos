@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "8f4b5f5714344f6d982d99f87935b16fdcecdc61d3234d2866d862de7703c299";
+  patchBranchBundleSha256 = "b1372e98a6fbaa76d0071407955d7cf04b127b8625472a27d3574301eca729b4";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "6e31b768d81b558db06cef95768a79d69e55be2d";
+  patchBranchHeadCommit = "e009e3f95777c8fdad0b194d5fd22634f62e7cb1";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1675,6 +1675,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "child-QMP staging now retains the exact admitted MonitorQMP object, monitor I/O thread, dispatcher coroutine, and lifecycle generation as one QEMU-private future-child ownership basis, revalidates that basis before commit and idempotent restage, and clears it on release; destructive monitor reconstruction, fork invocation, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0175-crucible-bind-child-monitor-chardev-disposition.patch";
+      branchSubject = "crucible: bind child monitor chardev disposition";
+      branchCommit = "e009e3f95777c8fdad0b194d5fd22634f62e7cb1";
+      branchTree = "9b472a4eeaa5b4e51b974742d82b07c78b0eb009";
+      catalogName = "crucible-hot-fork-child-monitor-chardev-disposition";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "child-QMP staging now retains the exact inherited chardev beside the admitted monitor, I/O thread, dispatcher, and lifecycle generation, and requires that backend to support disconnect and add-client disposition before sealing the future-child basis; destructive monitor reconstruction, fork invocation, guest admission, and readiness bits 7 and 8 remain open";
     }
   ];
   catalogOnlyCapabilities = [

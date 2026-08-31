@@ -1,0 +1,229 @@
+diff --git a/monitor/monitor-internal.h b/monitor/monitor-internal.h
+index b336f77dd..9ce3d434b 100644
+--- a/monitor/monitor-internal.h
++++ b/monitor/monitor-internal.h
+@@ -179,6 +179,7 @@ typedef struct MonitorHotForkChildBasis {
+     MonitorQMP *monitor;
+     IOThread *iothread;
+     Coroutine *dispatcher;
++    Chardev *chardev;
+     bool prepared;
+ } MonitorHotForkChildBasis;
+ 
+@@ -212,6 +213,8 @@ int monitor_hot_fork_prepare_child_basis(
+     MonitorHotForkChildBasis *basis, uint64_t expected_generation);
+ bool monitor_hot_fork_child_basis_prepared_for(
+     const MonitorHotForkChildBasis *basis, uint64_t expected_generation);
++bool monitor_hot_fork_child_disposition_prepared_for(
++    const MonitorHotForkChildBasis *basis, uint64_t expected_generation);
+ bool monitor_hot_fork_child_basis_matches_current(
+     const MonitorHotForkChildBasis *basis, uint64_t expected_generation);
+ void monitor_hot_fork_reset_child_basis(MonitorHotForkChildBasis *basis);
+diff --git a/monitor/monitor.c b/monitor/monitor.c
+index 1b0cb95b7..4e50e48df 100644
+--- a/monitor/monitor.c
++++ b/monitor/monitor.c
+@@ -724,10 +724,28 @@ bool monitor_hot_fork_inventory_is_supported(
+         inventory->unstable_monitors == 0;
+ }
+ 
++static Chardev *monitor_hot_fork_child_chardev(MonitorQMP *monitor)
++{
++    Chardev *chardev;
++    ChardevClass *klass;
++
++    chardev = qemu_chr_fe_get_driver(&monitor->common.chr);
++    if (!chardev || chardev->be != &monitor->common.chr ||
++        !qemu_chr_has_feature(chardev, QEMU_CHAR_FEATURE_GCONTEXT)) {
++        return NULL;
++    }
++    klass = CHARDEV_GET_CLASS(chardev);
++    if (!klass->chr_disconnect || !klass->chr_add_client) {
++        return NULL;
++    }
++    return chardev;
++}
++
+ int monitor_hot_fork_prepare_child_basis(
+     MonitorHotForkChildBasis *basis, uint64_t expected_generation)
+ {
+     MonitorHotForkInventory inventory;
++    Chardev *chardev;
+     Monitor *mon;
+     int result = 0;
+ 
+@@ -751,12 +769,19 @@ int monitor_hot_fork_prepare_child_basis(
+         result = -EPROTO;
+         goto out;
+     }
++    chardev = monitor_hot_fork_child_chardev(
++        container_of(mon, MonitorQMP, common));
++    if (!chardev) {
++        result = -ENOTSUP;
++        goto out;
++    }
+ 
+     *basis = (MonitorHotForkChildBasis) {
+         .generation = expected_generation,
+         .monitor = container_of(mon, MonitorQMP, common),
+         .iothread = mon_iothread,
+         .dispatcher = qmp_dispatcher_co,
++        .chardev = chardev,
+         .prepared = true,
+     };
+ out:
+@@ -772,6 +797,13 @@ bool monitor_hot_fork_child_basis_prepared_for(
+         basis->iothread && basis->dispatcher;
+ }
+ 
++bool monitor_hot_fork_child_disposition_prepared_for(
++    const MonitorHotForkChildBasis *basis, uint64_t expected_generation)
++{
++    return monitor_hot_fork_child_basis_prepared_for(
++               basis, expected_generation) && basis->chardev;
++}
++
+ bool monitor_hot_fork_child_basis_matches_current(
+     const MonitorHotForkChildBasis *basis, uint64_t expected_generation)
+ {
+@@ -793,6 +825,7 @@ bool monitor_hot_fork_child_basis_matches_current(
+         basis->monitor == container_of(mon, MonitorQMP, common) &&
+         basis->iothread == mon_iothread &&
+         basis->dispatcher == qmp_dispatcher_co &&
++        basis->chardev == monitor_hot_fork_child_chardev(basis->monitor) &&
+         !qmp_dispatcher_co_shutdown;
+     qemu_mutex_unlock(&monitor_lock);
+     return matches;
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 2e1987202..24cd94355 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -1504,7 +1504,7 @@ out:
+ static bool crucible_hot_fork_qmp_resource_plan_bound(void)
+ {
+     return crucible_hot_fork_qmp_stage.staged &&
+-        monitor_hot_fork_child_basis_prepared_for(
++        monitor_hot_fork_child_disposition_prepared_for(
+             &crucible_hot_fork_qmp_child_basis,
+             crucible_hot_fork_qmp_stage.monitor_generation) &&
+         qemu_crucible_hot_fork_qmp_child_resources_prepared_for(
+@@ -1527,7 +1527,7 @@ static CrucibleHotForkQmpState *crucible_hot_fork_qmp_report(void)
+     CrucibleHotForkQmpState *report =
+         g_new0(CrucibleHotForkQmpState, 1);
+ 
+-    report->schema_version = 4;
++    report->schema_version = 5;
+     report->generation = crucible_hot_fork_qmp_stage.generation;
+     report->template_generation =
+         crucible_hot_fork_qmp_stage.template_generation;
+@@ -1546,8 +1546,12 @@ static CrucibleHotForkQmpState *crucible_hot_fork_qmp_report(void)
+         monitor_hot_fork_child_basis_prepared_for(
+             &crucible_hot_fork_qmp_child_basis,
+             crucible_hot_fork_qmp_stage.monitor_generation);
++    report->monitor_disposition_bound = report->staged &&
++        monitor_hot_fork_child_disposition_prepared_for(
++            &crucible_hot_fork_qmp_child_basis,
++            crucible_hot_fork_qmp_stage.monitor_generation);
+     report->reinitializer_prepared = report->staged &&
+-        report->monitor_basis_bound &&
++        report->monitor_basis_bound && report->monitor_disposition_bound &&
+         qemu_crucible_hot_fork_qmp_child_reinitializer_bound_for(
+             &crucible_hot_fork_qmp_child_reinitializer,
+             &crucible_hot_fork_qmp_child_resources);
+@@ -2620,7 +2624,7 @@ crucible_hot_fork_template_resource_stage_report(
+                crucible_hot_fork_template_generation);
+     }
+ 
+-    report->schema_version = 10;
++    report->schema_version = 11;
+     report->template_generation = resources_staged ?
+         crucible_hot_fork_private_ring_stage.template_generation : 0;
+     report->private_ring_staged =
+@@ -2745,7 +2749,7 @@ crucible_hot_fork_template_report(
+     uint64_t acknowledged = crucible_hot_fork_template_acknowledged_proofs(
+         plugin_barrier, rcu_barrier, bh_timer_barrier, block_barrier);
+ 
+-    report->schema_version = 20;
++    report->schema_version = 21;
+     report->generation = crucible_hot_fork_template_generation;
+     report->outcome = outcome;
+     report->transaction_active = crucible_hot_fork_template_active;
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 109b43761..d4788f966 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -1471,10 +1471,12 @@
+ # additionally binds the complete supported parent-monitor profile and exact
+ # lifecycle generation. Version 10 retains that exact monitor object, monitor
+ # I/O thread, and dispatcher as one QEMU-private future-child ownership basis.
+-# It does not close the inherited monitor, attach the new endpoint, or complete
+-# a child descriptor disposition.
++# Version 11 also binds the exact inherited chardev and requires its backend to
++# support disconnect and add-client disposition.  It does not close the
++# inherited monitor, attach the new endpoint, or complete a child descriptor
++# disposition.
+ #
+-# @schema-version: resource-stage binding contract version, currently 10
++# @schema-version: resource-stage binding contract version, currently 11
+ #
+ # @template-generation: exact template generation that originally admitted the
+ #     retained resources, or zero when none are staged or they were staged
+@@ -1607,11 +1609,13 @@
+ # profile and carries its exact lifecycle generation through the sealed child
+ # plan. Version 20 retains the exact supported monitor object, monitor I/O
+ # thread, and dispatcher as a QEMU-private ownership basis for future child
+-# disposition. Complete QEMU child disposition remains open, so this does not
+-# acknowledge proof bit 7 or 8.
++# disposition. Version 21 also binds the inherited chardev and verifies that
++# its backend supports the required disconnect/add-client transition. Complete
++# QEMU child disposition remains open, so this does not acknowledge proof bit
++# 7 or 8.
+ # The caller must explicitly abort to roll the retained barriers back.
+ #
+-# @schema-version: transaction contract version, currently 20
++# @schema-version: transaction contract version, currently 21
+ #
+ # @generation: positive process-local transaction generation after the first
+ #     successful prepare, or zero before any transaction
+@@ -2086,15 +2090,17 @@
+ # @CrucibleHotForkQmpState:
+ #
+ # Exact QEMU-owned state for one branch-private nonblocking QMP stream. Version
+-# 4 authenticates the connected AF_UNIX stream by Linux SO_COOKIE, retains its
++# 5 authenticates the connected AF_UNIX stream by Linux SO_COOKIE, retains its
+ # descriptor in the sealed child resource plan, and binds the complete supported
+ # parent-monitor profile, lifecycle generation, exact monitor object, monitor
+-# I/O thread, and dispatcher into one QEMU-private child basis and the one-shot
+-# child reinitializer.  After successful child application, the immutable
+-# retained basis remains queryable without making the consumed adapter reusable.
+-# The concrete inherited-monitor runtime remains open.
++# I/O thread, dispatcher, and exact inherited chardev into one QEMU-private
++# child basis and the one-shot child reinitializer.  The chardev backend must
++# support disconnect and add-client disposition.  After successful child
++# application, the immutable retained basis remains queryable without making
++# the consumed adapter reusable.  The concrete inherited-monitor runtime
++# remains open.
+ #
+-# @schema-version: retained QMP endpoint contract version, currently 4
++# @schema-version: retained QMP endpoint contract version, currently 5
+ #
+ # @generation: process-local positive mutation generation, or zero initially
+ #
+@@ -2124,6 +2130,9 @@
+ #     monitor I/O thread, dispatcher, and lifecycle generation as one private
+ #     future-child ownership basis
+ #
++# @monitor-disposition-bound: whether that private basis also retains the exact
++#     inherited chardev with disconnect and add-client backend operations
++#
+ # @reinitializer-prepared: whether the one-shot adapter was prepared for the
+ #     exact endpoint, template generation, and QMP generation; remains true
+ #     after a successful attempt and does not mean the adapter is reusable
+@@ -2152,6 +2161,7 @@
+             'resource-plan-bound': 'bool',
+             'nonblocking-unix-stream': 'bool',
+             'monitor-basis-bound': 'bool',
++            'monitor-disposition-bound': 'bool',
+             'reinitializer-prepared': 'bool',
+             'reinitialized': 'bool',
+             'disposition-complete': 'bool',

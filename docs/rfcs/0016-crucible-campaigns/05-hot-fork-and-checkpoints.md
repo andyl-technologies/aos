@@ -1196,6 +1196,14 @@ pointers remain inside the GPL process. This makes future destructive monitor
 reconstruction target exact retained owners; it does not perform that
 reconstruction, invoke `fork(2)`, release input, or acknowledge proof bit 7 or
 8.
+Version 21, resource-stage version 11, and child-QMP schema version 5 extend
+that private basis with the exact inherited `Chardev`. Staging requires it to
+remain the admitted monitor's connected frontend, support GMainContext
+dispatch, and expose both backend disconnect and add-client operations. Only
+`monitor-disposition-bound` crosses QAPI. This proves that the retained owner
+has the concrete endpoint operations required by a future child transition;
+it does not invoke either operation, reconstruct the monitor, fork, release
+input, or acknowledge proof bit 7 or 8.
 The sealed QMP contribution now carries those exact template and child-QMP
 generations alongside its descriptor and socket identity. The immediate-child
 resource transaction requires both the plugin and QMP reinitializers to match

@@ -771,6 +771,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0175-crucible-bind-child-monitor-chardev-disposition.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
