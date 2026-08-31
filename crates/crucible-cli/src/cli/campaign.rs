@@ -19,6 +19,8 @@ mod object;
 mod policy;
 #[path = "campaign/ranking.rs"]
 mod ranking;
+#[path = "campaign/scenario.rs"]
+mod scenario;
 #[path = "campaign/snapshot.rs"]
 mod snapshot;
 
@@ -36,6 +38,7 @@ use policy::{compile_campaign_policy, render_campaign_policy_compilation};
 use ranking::{
     query_campaign_rankings, render_campaign_rankings, validate_campaign_rankings_command,
 };
+use scenario::{compile_campaign_scenario, render_campaign_scenario_compilation};
 use snapshot::{
     query_campaign_snapshot, render_campaign_snapshot, validate_campaign_snapshot_command,
 };
@@ -310,6 +313,18 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
         );
         return Ok(());
     }
+    if let CampaignCommand::Scenario(scenario) = &args.command {
+        let report = match &scenario.command {
+            CampaignScenarioCommand::Compile(compile) => {
+                compile_campaign_scenario(&compile.input, &compile.output)?
+            }
+        };
+        println!(
+            "{}",
+            render_campaign_scenario_compilation(&report, cli.output_format())?
+        );
+        return Ok(());
+    }
     if let CampaignCommand::Policy(policy) = &args.command {
         let report = match &policy.command {
             CampaignPolicyCommand::Compile(compile) => {
@@ -488,6 +503,7 @@ fn prepare_campaign_command(
     match command {
         CampaignCommand::Fixture(_) => Ok(None),
         CampaignCommand::ValidateImport(_) => Ok(None),
+        CampaignCommand::Scenario(_) => Ok(None),
         CampaignCommand::Policy(_) => Ok(None),
         CampaignCommand::Lineage(_) => Ok(None),
         CampaignCommand::Create(create) => {
@@ -2135,6 +2151,7 @@ fn campaign_mutation_spec(
         }
         CampaignCommand::ValidateImport(_)
         | CampaignCommand::Fixture(_)
+        | CampaignCommand::Scenario(_)
         | CampaignCommand::Policy(_)
         | CampaignCommand::Lineage(_)
         | CampaignCommand::Create(_)

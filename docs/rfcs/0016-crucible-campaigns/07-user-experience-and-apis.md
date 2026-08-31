@@ -121,6 +121,7 @@ campaign explicitly admits defaults; otherwise validation fails.
 ## 07.3 CLI lifecycle
 
 ```text
+crucible campaign scenario compile SCENARIO.toml --output BUNDLE
 crucible campaign lineage compile LINEAGE.toml --output LINEAGE.bin
 crucible campaign policy compile POLICY.toml --output POLICY.bin
 crucible campaign create NAME --lineage LINEAGE.bin --policy POLICY.bin \
@@ -161,12 +162,23 @@ the result is self-contained rather than depending on previously imported
 repository state. It streams one body at a time and reports the exact derived
 configuration and generator identities in every supported output format.
 The command intentionally takes neither `--socket` nor `--principal`.
-The same offline boundary provides `campaign lineage compile` and
-`campaign policy compile`. The strict lineage format binds the semantic
-scenario and genesis configuration to their exact verifier-imported artifact
-IDs and fixes Crucible, QEMU, component-protocol, scenario-schema, and exact-
-closure-schema compatibility. It admits at most 1 MiB and reports the exact
-content-derived `CampaignLineageId`. The strict
+The same offline boundary provides `campaign scenario compile`,
+`campaign lineage compile`, and `campaign policy compile`. Scenario compilation
+accepts at most 32 MiB of strict current-schema canonical scenario TOML and
+constructs the same validated `ScenarioDefForm` used by execution. It derives
+an empty genesis `Schedule`, checks both compact bodies against the 32 MiB
+import-file limit, and atomically installs one new owner-private directory
+containing `scenario.bin`, `schedule.bin`, and an absolute-path strict import
+manifest. An existing destination is never replaced. The result reports the
+exact semantic `ScenarioDefId` and genesis `ConfigurationId` together with the
+verifier-derived `ScenarioArtifactId` and `ConfigurationArtifactId`; no
+repository or daemon is opened.
+
+The strict lineage format binds the semantic scenario and genesis configuration
+to those exact verifier-imported artifact IDs and fixes Crucible, QEMU,
+component-protocol, scenario-schema, and exact-closure-schema compatibility. It
+admits at most 1 MiB and reports the exact content-derived
+`CampaignLineageId`. The strict
 version-one TOML schema names the exact scenario semantic ID, 32-byte lowercase
 hexadecimal seed, campaign mode, one closed explorer variant, ordered choice
 generator references, objectives, guidance weights, stop conditions, fairness,
