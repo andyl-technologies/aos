@@ -2212,6 +2212,14 @@ the basis. Only `monitor-basis-bound` crosses QAPI. The next increment must
 consume this basis in a destructive, fail-closed child monitor reconstruction;
 this checkpoint still does not invoke `fork(2)`, release input, or acknowledge
 readiness bit 7 or 8.
+Version 21 of the template report, version 11 of its resource stage, and version
+5 of the child-QMP report now bind the exact inherited `Chardev` into that
+private ownership basis. The chardev must still belong to the admitted monitor,
+support GMainContext dispatch, and provide backend disconnect and add-client
+operations at commit and restage. Only `monitor-disposition-bound` is public.
+This closes the concrete endpoint-operation precondition but does not call
+either operation; destructive monitor reconstruction, `fork(2)`, input release,
+and readiness bits 7 and 8 remain open.
 These are executable T-CAM-6.1 audit prerequisites, not completion of the task:
 the internal registry identifies two non-coordinator subsystem owners but has
 no safe non-coordinator child disposition. The retained AIO/BH/timer and RCU

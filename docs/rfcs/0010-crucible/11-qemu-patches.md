@@ -3082,6 +3082,29 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   incomplete.
 - **Risk:** F.
 
+### crucible-hot-fork-child-monitor-chardev-disposition — bind the inherited endpoint owner
+
+- **Patch:** `0175-crucible-bind-child-monitor-chardev-disposition.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** the private child ownership basis now also retains the exact
+  inherited `Chardev`. Staging requires that it remain the admitted monitor's
+  connected frontend, support GMainContext dispatch, and expose both backend
+  disconnect and add-client operations. Exact restage repeats that comparison.
+  Child-QMP contract version 5 exposes only
+  `monitor-disposition-bound`; resource-stage contract version 11 and template
+  transaction version 21 bind the stricter contribution.
+- **Micro-test:** the live Phase 6 report pins all three schema versions and the
+  initially absent disposition proof. Structural checks require exact frontend
+  ownership, both backend operations, and the private disposition predicate.
+- **Inertness:** this patch proves that the retained inherited endpoint has the
+  operations needed by a future child transition. It does not call those
+  operations, dispose the inherited monitor, create a child dispatcher, attach
+  the private endpoint, invoke a fork, release guest input, or acknowledge
+  readiness bit 7 or 8. Destructive reconstruction and `T-CAM-6.1` through
+  `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
