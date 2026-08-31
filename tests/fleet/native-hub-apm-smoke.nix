@@ -358,7 +358,7 @@ in {
       reviewed(
           publisher,
           "instance-binding-grant",
-          "binding grant instance-default "
+          "binding grant instance:default "
           f"--consumer-scope {shlex.quote(org_scope)}",
           token,
       )
