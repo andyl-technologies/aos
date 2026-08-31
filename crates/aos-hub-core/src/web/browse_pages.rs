@@ -1570,11 +1570,6 @@ pub fn documentation_index_page(
 ) -> String {
     let slug = &registry.slug;
     let mut body = registry_nav(slug, "docs");
-    body.push_str(
-        "<header class=\"docs-hero\"><p class=\"eyebrow\">Exact installable reference</p>\
-         <h1>Package documentation</h1>\
-         <p class=\"lede\">Browse configuration options, services, listeners, credentials, and capabilities extracted from signed package Nix objects. Every detail page re-verifies its canonical object before rendering.</p></header>",
-    );
     let _ = write!(
         body,
         "<form method=\"get\" class=\"docs-search\" role=\"search\">\
@@ -1607,8 +1602,15 @@ pub fn documentation_index_page(
             if results.len() == 1 { "" } else { "s" },
             escape(query.unwrap_or_default()),
         );
+    } else if results.is_empty() {
+        body.push_str("<p class=\"dim\">No indexed package documentation is available.</p>");
     } else {
-        body.push_str("<p class=\"dim\">Enter a term to search the indexed reference. Try a package name, option path, unit, credential handle, or capability.</p>");
+        let _ = write!(
+            body,
+            "<p class=\"dim\">Browse {} indexed documentation entr{}.</p>",
+            results.len(),
+            if results.len() == 1 { "y" } else { "ies" },
+        );
     }
 
     if !results.is_empty() {
@@ -3879,6 +3881,29 @@ mod tests {
         assert!(!search_html.contains("<script>option</script>"));
         assert!(search_html.contains("&lt;script&gt;option&lt;/script&gt;"));
         assert!(search_html.contains("Enable &amp; start"));
+        assert!(!search_html.contains("Exact installable reference"));
+        assert!(!search_html.contains("<h1>Package documentation</h1>"));
+
+        let browse_html = documentation_index_page(
+            &registry,
+            None,
+            &[crate::db::PackageDocumentationSearchResult {
+                package_name: "nginx".into(),
+                package_version: "1.30.4".into(),
+                platform: "x86_64-linux".into(),
+                kind: "package".into(),
+                key: "nginx".into(),
+                title: "nginx".into(),
+                summary: "HTTP server".into(),
+                score: 0,
+            }],
+            Some(""),
+            None,
+            Instant::now(),
+            &anon(),
+        );
+        assert!(browse_html.contains("Browse 1 indexed documentation entry."));
+        assert!(browse_html.contains("HTTP server"));
     }
 
     #[tokio::test]
