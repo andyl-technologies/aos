@@ -205,7 +205,25 @@ let
       fi
     '';
   };
+
+  # Preserve the native phase bytes while avoiding grep -q's intentional
+  # early pipe close for large Mach-O archives in Darwin cross builds.
+  darwinCrossFixupPhase = let
+    script =
+      builtins.replaceStrings
+      [
+        "    if ! echo \"$header\" | grep -q \"$expected_cpu\"; then\n      echo \"Mach-O architecture mismatch in $f: expected $expected_cpu\" >&2\n      echo \"$header\" >&2\n      exit 1\n    fi"
+      ]
+      [
+        "    case \"$header\" in\n      *\"$expected_cpu\"*) ;;\n      *)\n        echo \"Mach-O architecture mismatch in $f: expected $expected_cpu\" >&2\n        echo \"$header\" >&2\n        exit 1\n        ;;\n    esac"
+      ]
+      fixupPhase.script;
+  in
+    assert script != fixupPhase.script;
+      fixupPhase // {inherit script;};
 in rec {
+  inherit fixupPhase darwinCrossFixupPhase;
+
   # GNU Autoconf (configure / make / make install)
   autoconfPhases = {
     doCheck ? true,

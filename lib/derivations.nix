@@ -216,6 +216,22 @@
     '';
   };
 
+  # Preserve the native phase bytes while avoiding grep -q's intentional
+  # early pipe close for large Mach-O archives in Darwin cross builds.
+  darwinCrossFixupPhase = let
+    script =
+      builtins.replaceStrings
+      [
+        "      if ! echo \"$header\" | grep -q \"$expected_cpu\"; then\n        echo \"Mach-O architecture mismatch in $f: expected $expected_cpu\" >&2\n        echo \"$header\" >&2\n        exit 1\n      fi"
+      ]
+      [
+        "      case \"$header\" in\n        *\"$expected_cpu\"*) ;;\n        *)\n          echo \"Mach-O architecture mismatch in $f: expected $expected_cpu\" >&2\n          echo \"$header\" >&2\n          exit 1\n          ;;\n      esac"
+      ]
+      fixupPhase.script;
+  in
+    assert script != fixupPhase.script;
+      fixupPhase // {inherit script;};
+
   # Scrub phase: rewrite build-time /nix/store/<hash>- references inside
   # the output so the Nix reference scanner doesn't pull build-only
   # toolchain paths into the runtime closure. Runs after fixup for every
@@ -683,11 +699,19 @@
     # scrubPhase always runs last, regardless of whether the caller
     # supplied a custom fixup. Inlining it into fixup would skip it
     # whenever cargo/go/bazel templates override the fixup phase.
+    defaultFixupPhase =
+      if
+        buildPlatform.system
+        != outputPlatform.system
+        && outputPlatform.objectFormat == "macho"
+      then darwinCrossFixupPhase
+      else fixupPhase;
+
     allPhases =
       (
         if builtins.any (p: p.name == "fixup") finalPhases
         then finalPhases
-        else finalPhases ++ [fixupPhase]
+        else finalPhases ++ [defaultFixupPhase]
       )
       ++ [
         scrubPhase
