@@ -13,6 +13,9 @@
   target = stdenv.hostPlatform.config;
   sdk = stdenv.sdk;
   runtimes = stdenv.darwinRuntimes;
+  llvmVersionMatch = builtins.match "([0-9]+)\\..*" llvm.version;
+  llvmVersionMajor = builtins.elemAt llvmVersionMatch 0;
+  llvmResourceInclude = "${llvm}/lib/clang/${llvmVersionMajor}/include";
   targetResourceDir = "${builtins.placeholder "out"}/lib/clang/aos-darwin";
 in
   mkDerivation {
@@ -33,8 +36,12 @@ in
         name = "install";
         script = ''
           mkdir -p "$out/bin" "$out/nix-support" "$out/lib/clang/aos-darwin/lib"
-          llvm_resource_dir=$(${llvm}/bin/clang -print-resource-dir)
-          ln -s "$llvm_resource_dir/include" "$out/lib/clang/aos-darwin/include"
+          if [ ! -d ${llvmResourceInclude} ]; then
+            printf 'missing LLVM resource include directory: %s\n' \
+              ${llvmResourceInclude} >&2
+            exit 1
+          fi
+          ln -s ${llvmResourceInclude} "$out/lib/clang/aos-darwin/include"
           ln -s ${runtimes}/lib/darwin "$out/lib/clang/aos-darwin/lib/darwin"
 
           cat > "$out/bin/clang" <<'AOS_DARWIN_CLANG'
