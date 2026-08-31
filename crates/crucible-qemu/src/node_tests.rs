@@ -1526,7 +1526,9 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
         child_qmp.state(),
         crate::QemuHotForkChildQmpStageState::Installed
     );
+    assert_eq!(child_qmp.qmp_generation(), 1);
     assert!(!child_qmp.resource_plan_bound());
+    assert!(node.take_hot_fork_child_qmp_host_endpoint().is_err());
     let diagnostic_drain = node.drain_hot_fork_child_diagnostics()?;
     assert_eq!(diagnostic_drain.bytes_read(), 26);
     assert_eq!(diagnostic_drain.total_retained(), 26);
@@ -1557,6 +1559,19 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
             .ok_or("child QMP stage disappeared after plugin seal")?
             .resource_plan_bound()
     );
+    let child_qmp_host = node.take_hot_fork_child_qmp_host_endpoint()?;
+    assert_eq!(
+        child_qmp_host.descriptor_name(),
+        child_qmp.descriptor_name()
+    );
+    assert_eq!(child_qmp_host.socket_cookie(), child_qmp.socket_cookie());
+    assert_eq!(
+        child_qmp_host.template_generation(),
+        child_qmp.template_generation()
+    );
+    assert_eq!(child_qmp_host.qmp_generation(), child_qmp.qmp_generation());
+    assert!(node.take_hot_fork_child_qmp_host_endpoint().is_err());
+    drop(child_qmp_host);
     assert!(node.release_hot_fork_private_ring_mapping().is_err());
 
     node.release_hot_fork_plugin_endpoints()?;

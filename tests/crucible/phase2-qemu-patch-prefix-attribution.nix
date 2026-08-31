@@ -739,6 +739,26 @@
       kind = "recorded";
       symbols = [];
     };
+    "0167-crucible-retain-branch-private-child-qmp.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0168-crucible-bind-child-qmp-reinitializer.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0169-crucible-compose-child-qmp-reinitializer.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0170-crucible-report-complete-child-qmp-disposition.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0171-crucible-preserve-child-qmp-query-basis.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

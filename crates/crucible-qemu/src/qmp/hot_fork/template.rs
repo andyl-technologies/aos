@@ -721,6 +721,7 @@ mod tests {
     fn resource_stage_requires_exact_template_and_private_ring_generations() {
         let plugin_barrier = QmpHotForkPluginBarrierState::one_quiescent(6, 9);
         let worker_mask = plugin_barrier.worker_mask();
+        let schema_version = 8;
         let bound = QmpHotForkTemplateResourceStageState {
             template_generation: 4,
             private_ring_staged: true,
@@ -747,7 +748,7 @@ mod tests {
             readiness_proof_acknowledged: true,
         };
         assert!(resource_stage_shape_valid(
-            7,
+            schema_version,
             bound,
             4,
             true,
@@ -761,7 +762,7 @@ mod tests {
             ..bound
         };
         assert!(!resource_stage_shape_valid(
-            7,
+            schema_version,
             foreign_template,
             4,
             true,
@@ -775,7 +776,7 @@ mod tests {
             ..bound
         };
         assert!(!resource_stage_shape_valid(
-            7,
+            schema_version,
             foreign_ring,
             4,
             true,
@@ -789,7 +790,7 @@ mod tests {
             ..bound
         };
         assert!(!resource_stage_shape_valid(
-            7,
+            schema_version,
             unbound,
             4,
             true,
@@ -803,7 +804,7 @@ mod tests {
             ..bound
         };
         assert!(!resource_stage_shape_valid(
-            7,
+            schema_version,
             unbound_resource_plan,
             4,
             true,
@@ -825,7 +826,7 @@ mod tests {
             ..bound
         };
         assert!(resource_stage_shape_valid(
-            7,
+            schema_version,
             retained_after_abort,
             4,
             false,
@@ -834,7 +835,7 @@ mod tests {
             false
         ));
         assert!(!resource_stage_shape_valid(
-            7,
+            schema_version,
             retained_after_abort,
             7,
             false,
@@ -848,7 +849,7 @@ mod tests {
             ..bound
         };
         assert!(!resource_stage_shape_valid(
-            7,
+            schema_version,
             stale_barrier,
             4,
             true,
@@ -857,7 +858,7 @@ mod tests {
             true
         ));
         assert!(!resource_stage_shape_valid(
-            7,
+            schema_version,
             bound,
             4,
             true,

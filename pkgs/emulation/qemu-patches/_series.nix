@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "2b18c4df4078ed77a3b2f9288d2e0003568e208f8840ed6f7f14419b237627ca";
+  patchBranchBundleSha256 = "ea88a7c4618d8c9192a1120e63e8744ad0d829d883235cca8d21724a51eeee35";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "b36e6925a3aed14d7e0be8cf082a67c1860f5c5e";
+  patchBranchHeadCommit = "71a6afc7eb453d635de198a38e8bec8ab21935ed";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1635,6 +1635,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "QEMU now derives child-QMP disposition-complete from the exact accepted one-shot status, exposes it through the version-2 child-QMP report, and keeps failed or contradictory attempts permanently incomplete; the concrete monitor runtime, private-stream handshake, remaining supported-profile resources, production fork invocation, host continuation pairing, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0171-crucible-preserve-child-qmp-query-basis.patch";
+      branchSubject = "crucible: preserve child QMP query basis";
+      branchCommit = "71a6afc7eb453d635de198a38e8bec8ab21935ed";
+      branchTree = "e4dbf5fae3dee52c72cfd0f0d8e3417e4bc2c163";
+      catalogName = "crucible-hot-fork-child-qmp-query-basis";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "after exact one-shot child-QMP initialization, QEMU preserves the immutable descriptor, socket, template-generation, QMP-generation, and applied sealed-plan basis for a private child query without making the adapter reusable; failed, reset, foreign, or partially applied state remains unbound, while the concrete monitor runtime, endpoint handshake, remaining supported-profile resources, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
     }
   ];
   catalogOnlyCapabilities = [

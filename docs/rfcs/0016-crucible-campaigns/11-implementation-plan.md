@@ -2117,6 +2117,17 @@ Prepared, contradictory, failed, and reset adapters remain observably
 incomplete, and the real-fork unit path requires the accepted predicate. This
 closes the child-side reporting seam without implementing the monitor runtime
 or promoting readiness bit 7 or 8.
+The successfully consumed child copy now preserves an immutable query basis:
+its exact descriptor, socket identity, template/QMP generations, and applied
+sealed-plan membership remain observable while the one-shot adapter remains
+non-reusable. On the host, the staged proof carries the QMP generation and a
+linear endpoint can leave the template owner only after the resource plan is
+sealed. Its connection path negotiates QMP and requires the first typed child
+query to match every retained field plus `reinitialized` and
+`disposition-complete` before returning a control channel. Foreign-generation
+and incomplete-disposition regressions fail closed. The child monitor runtime,
+input release, and production fork owner still have to make that handshake live
+before either readiness bit can advance.
 Template-process descriptor/endpoint staging now satisfies plugin-ring proof
 bit 6 only under the retained exact transaction. The internal replacement and
 child-identity primitives, and the registered empty-local-state reinitializer,

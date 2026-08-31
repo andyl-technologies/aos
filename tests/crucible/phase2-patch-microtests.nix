@@ -2664,6 +2664,29 @@
         '';
       };
     }
+    {
+      patch = "0171-crucible-preserve-child-qmp-query-basis.patch";
+      check = certifyExactPatch {
+        patchName = "0171-crucible-preserve-child-qmp-query-basis.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-child-qmp-query-basis";
+        liveEvidence = ''
+          grep -Fxq 'patch=0171-crucible-preserve-child-qmp-query-basis.patch' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=18' "$live_result"
+          grep -Fxq 'template_resource_stage_schema_version=8' "$live_result"
+          grep -Fxq 'child_qmp_schema_version=2' "$live_result"
+          grep -Fxq 'child_qmp_initially_absent=true' "$live_result"
+          grep -Fq 'qemu_crucible_hot_fork_qmp_child_reinitializer_bound_for' \
+            ${patchDir}/0171-crucible-preserve-child-qmp-query-basis.patch
+          grep -Fq 'resources->attempted && resources->applied' \
+            ${patchDir}/0171-crucible-preserve-child-qmp-query-basis.patch
+          grep -Fq 'qemu_crucible_hot_fork_child_resource_plan_contains_qmp' \
+            ${patchDir}/0171-crucible-preserve-child-qmp-query-basis.patch
+          grep -Fq '!reinitializer->attempted && !reinitializer->initialized' \
+            ${patchDir}/0171-crucible-preserve-child-qmp-query-basis.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

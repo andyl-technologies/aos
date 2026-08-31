@@ -1193,6 +1193,20 @@ accepted result must still match the retained descriptor, socket identity,
 template generation, QMP generation, complete flags, single monitor, and empty
 queued/parser state. This makes a future child query accurately observable but
 does not supply the concrete runtime or acknowledge proof bit 7 or 8.
+After successful child application, the immutable reinitializer and sealed-plan
+bases now remain exactly queryable without making either one reusable. The host
+records the child-QMP mutation generation in the staged proof and may transfer
+its socket endpoint exactly once only after plugin endpoint commitment has
+sealed the complete resource plan. Connecting that linear endpoint performs the
+ordinary QMP greeting and capability negotiation, then makes
+`crucible-hot-fork-child-qmp(query)` the first typed operation. The connection
+is exposed as a child VMState control channel only when the response matches the
+retained descriptor name, Linux `SO_COOKIE`, template generation, QMP
+generation, applied resource-plan membership, and accepted complete
+disposition. Any exchange or basis failure consumes the endpoint and fails
+closed. This implements the host authentication half of the private-stream
+generation handshake; the concrete child monitor runtime, input release, and
+production fork owner remain open, so proof bits 7 and 8 stay clear.
 Endpoint staging rejects a private-ring stage from a different or already
 aborted transaction. A new transaction starts only with an empty resource
 stage. Private-ring, diagnostics, child-QMP, and plugin-endpoint staging during a

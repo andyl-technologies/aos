@@ -2984,6 +2984,31 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   `T-CAM-6.1` through `T-CAM-6.3` remain incomplete.
 - **Risk:** F.
 
+### crucible-hot-fork-child-qmp-query-basis — preserve post-apply identity
+
+- **Patch:** `0171-crucible-preserve-child-qmp-query-basis.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** QEMU separates immutable reinitializer-basis matching from
+  one-shot availability. A successful attempt therefore remains bound to the
+  exact retained descriptor, Linux socket identity, template generation, and
+  child-QMP generation, while `prepared-for` still rejects reuse. The sealed
+  resource plan likewise reports the exact QMP contribution after successful
+  application but not during a partial or failed application. The version-2
+  child-QMP query uses those persistent predicates, so its accepted disposition
+  remains independently authenticatable over the future private monitor.
+- **Micro-test:** unit coverage proves a completed adapter remains basis-bound
+  but not reusable, and the real-fork resource transaction proves the applied
+  plan retains the exact QMP contribution. Reset, foreign, failed, and
+  contradictory cases retain their fail-closed behavior.
+- **Inertness:** the concrete monitor runtime and production fork owner remain
+  absent. The host can validate this query only after a future child attaches
+  and releases its private monitor; this patch does not perform that attachment,
+  release guest admission, or acknowledge readiness bit 7 or 8. Remaining
+  supported-profile resources and `T-CAM-6.1` through `T-CAM-6.3` remain
+  incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
