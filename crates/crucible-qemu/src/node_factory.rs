@@ -277,6 +277,12 @@ where
         self.vmstate.query_hot_fork_timer_inventory()
     }
 
+    fn query_hot_fork_monitor_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkMonitorInventory, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_monitor_inventory()
+    }
+
     fn complete_terminal_lifecycle_exit(
         &mut self,
         action: crucible::ContentHash,

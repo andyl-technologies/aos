@@ -1282,6 +1282,21 @@ pub trait QemuQmpMachineControlChannel: Send {
         ))
     }
 
+    /// Queries QEMU's exact bounded monitor/parser inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
+    /// versioned response validation fails.
+    fn query_hot_fork_monitor_inventory(
+        &mut self,
+    ) -> Result<crate::QmpHotForkMonitorInventory, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query_hot_fork_monitor_inventory",
+            "hot-fork monitor inventory is not implemented by this QMP channel",
+        ))
+    }
+
     /// Completes an authenticated terminal lifecycle transition without
     /// expecting QEMU to resume guest execution.
     ///
@@ -2148,9 +2163,22 @@ impl QemuNode {
             .qmp_machine_control
             .query_hot_fork_timer_inventory()
             .map_err(crate::QemuHotForkAuditError::TimerInventory)?;
+        let monitors_before = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_monitor_inventory()
+            .map_err(crate::QemuHotForkAuditError::MonitorInventory)?;
 
         let inventory =
             crate::hot_fork_audit::capture_linux_qemu_hot_fork_process_inventory(&process)?;
+        let monitors_after = self
+            .channels
+            .qmp_machine_control
+            .query_hot_fork_monitor_inventory()
+            .map_err(crate::QemuHotForkAuditError::MonitorInventory)?;
+        if monitors_before != monitors_after {
+            return Err(crate::QemuHotForkAuditError::MonitorInventoryChanged);
+        }
         let timers_after = self
             .channels
             .qmp_machine_control
@@ -2243,6 +2271,7 @@ impl QemuNode {
                 bottom_halves_before,
                 mutexes_before,
                 timers_before,
+                monitors_before,
             ),
             inventory,
         )

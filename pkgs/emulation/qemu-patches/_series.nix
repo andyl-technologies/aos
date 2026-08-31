@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "ea88a7c4618d8c9192a1120e63e8744ad0d829d883235cca8d21724a51eeee35";
+  patchBranchBundleSha256 = "3c6a73c03e7bb6510edb8132147288989bf458d201c3d53386386658f64c9804";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "71a6afc7eb453d635de198a38e8bec8ab21935ed";
+  patchBranchHeadCommit = "7b5b7603b7de9d29374ddb4d730a3df332a18b60";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1645,6 +1645,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "after exact one-shot child-QMP initialization, QEMU preserves the immutable descriptor, socket, template-generation, QMP-generation, and applied sealed-plan basis for a private child query without making the adapter reusable; failed, reset, foreign, or partially applied state remains unbound, while the concrete monitor runtime, endpoint handshake, remaining supported-profile resources, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0172-crucible-inventory-qmp-monitor-state.patch";
+      branchSubject = "crucible: inventory QMP monitor state";
+      branchCommit = "7b5b7603b7de9d29374ddb4d730a3df332a18b60";
+      branchTree = "658072bac6e34fe4bbc1c3f82b45794a2b72024d";
+      catalogName = "crucible-hot-fork-monitor-inventory";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "QEMU now exposes one bounded versioned observational inventory of monitor topology, dispatcher queues, and partial JSON parser state; the host accepts only one stable OOB-enabled I/O-thread QMP monitor with empty queue/parser state, while destructive child monitor reconstruction, fork invocation, guest admission, and readiness bits 7 and 8 remain open";
     }
   ];
   catalogOnlyCapabilities = [

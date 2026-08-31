@@ -22,7 +22,7 @@ use crucible_qemu::{
     QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_CHILD_RUNTIME_COMMAND,
-    QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_MONITOR_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND,
@@ -1503,6 +1503,59 @@ fn hot_fork_timer_inventory_rejects_malformed_contracts() -> Result<(), Box<dyn 
             client.query_hot_fork_timer_inventory(),
             Err(QmpError::MalformedTypedResponse {
                 command: QmpCommandKind::QueryHotForkTimerInventory,
+                ..
+            })
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn hot_fork_monitor_inventory_is_exact_bounded_and_oob() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":8,"complete":true,"overflowed":false,"monitor-count":1,"qmp-monitors":1,"hmp-monitors":0,"io-thread-monitors":1,"suspended-monitors":0,"negotiating-monitors":0,"oob-enabled-monitors":1,"queued-requests":0,"parser-buffered-bytes":0,"partial-parsers":0,"unstable-monitors":0}}"#,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
+
+    let inventory = client.query_hot_fork_monitor_inventory()?;
+    assert_eq!(inventory.generation(), 8);
+    assert!(inventory.complete());
+    assert!(!inventory.overflowed());
+    assert_eq!(inventory.monitor_count(), 1);
+    assert_eq!(inventory.qmp_monitors(), 1);
+    assert_eq!(inventory.hmp_monitors(), 0);
+    assert_eq!(inventory.io_thread_monitors(), 1);
+    assert!(inventory.is_supported_parent_profile());
+
+    drop(client);
+    let lines = written_json_lines(&audit_snapshot(&audit))?;
+    assert_eq!(
+        oob_execute_name(json_line(&lines, 1)),
+        Some(QMP_QUERY_HOT_FORK_MONITOR_INVENTORY_COMMAND)
+    );
+    Ok(())
+}
+
+#[test]
+fn hot_fork_monitor_inventory_rejects_malformed_contracts() -> Result<(), Box<dyn Error>> {
+    for response in [
+        r#"{"return":{"schema-version":2,"generation":1,"complete":true,"overflowed":false,"monitor-count":1,"qmp-monitors":1,"hmp-monitors":0,"io-thread-monitors":1,"suspended-monitors":0,"negotiating-monitors":0,"oob-enabled-monitors":1,"queued-requests":0,"parser-buffered-bytes":0,"partial-parsers":0,"unstable-monitors":0}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"monitor-count":2,"qmp-monitors":1,"hmp-monitors":0,"io-thread-monitors":1,"suspended-monitors":0,"negotiating-monitors":0,"oob-enabled-monitors":1,"queued-requests":0,"parser-buffered-bytes":0,"partial-parsers":0,"unstable-monitors":0}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"monitor-count":1,"qmp-monitors":1,"hmp-monitors":0,"io-thread-monitors":1,"suspended-monitors":0,"negotiating-monitors":0,"oob-enabled-monitors":1,"queued-requests":0,"parser-buffered-bytes":1,"partial-parsers":0,"unstable-monitors":0}}"#,
+        r#"{"return":{"schema-version":1,"generation":1,"complete":true,"overflowed":false,"monitor-count":1,"qmp-monitors":1,"hmp-monitors":0,"io-thread-monitors":1,"suspended-monitors":0,"negotiating-monitors":0,"oob-enabled-monitors":1,"queued-requests":0,"parser-buffered-bytes":0,"partial-parsers":0,"unstable-monitors":1}}"#,
+    ] {
+        let mut client = QmpClient::connect(scripted_qmp([
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            response,
+        ]))?;
+        assert!(matches!(
+            client.query_hot_fork_monitor_inventory(),
+            Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::QueryHotForkMonitorInventory,
                 ..
             })
         ));

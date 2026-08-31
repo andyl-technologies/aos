@@ -2687,6 +2687,27 @@
         '';
       };
     }
+    {
+      patch = "0172-crucible-inventory-qmp-monitor-state.patch";
+      check = certifyExactPatch {
+        patchName = "0172-crucible-inventory-qmp-monitor-state.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-monitor-inventory";
+        liveEvidence = ''
+          grep -Fxq 'patch=0172-crucible-inventory-qmp-monitor-state.patch' "$live_result"
+          grep -Fxq 'monitor_inventory_schema_version=1' "$live_result"
+          grep -Fxq 'monitor_inventory_supported_profile=true' "$live_result"
+          grep -Fq "'allow-oob': true" \
+            ${patchDir}/0172-crucible-inventory-qmp-monitor-state.patch
+          grep -Fq 'qemu_rec_mutex_trylock(&qmp_mon->qmp_parser_lock)' \
+            ${patchDir}/0172-crucible-inventory-qmp-monitor-state.patch
+          grep -Fq 'inventory->unstable_monitors++' \
+            ${patchDir}/0172-crucible-inventory-qmp-monitor-state.patch
+          grep -Fq 'MONITOR_HOT_FORK_INVENTORY_MAX 256' \
+            ${patchDir}/0172-crucible-inventory-qmp-monitor-state.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

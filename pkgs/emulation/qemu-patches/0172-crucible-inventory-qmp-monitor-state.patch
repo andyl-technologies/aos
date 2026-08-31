@@ -1,0 +1,328 @@
+diff --git a/monitor/monitor-internal.h b/monitor/monitor-internal.h
+index 5676eb334..de4ce7017 100644
+--- a/monitor/monitor-internal.h
++++ b/monitor/monitor-internal.h
+@@ -134,6 +134,8 @@ struct MonitorHMP {
+ typedef struct {
+     Monitor common;
+     JSONMessageParser parser;
++    /* Protects the parser while input and inventory queries may race. */
++    QemuRecMutex qmp_parser_lock;
+     bool pretty;
+     /*
+      * When a client connects, we're in capabilities negotiation mode.
+@@ -153,6 +155,25 @@ typedef struct {
+     GQueue *qmp_requests;
+ } MonitorQMP;
+ 
++#define MONITOR_HOT_FORK_INVENTORY_MAX 256
++
++typedef struct MonitorHotForkInventory {
++    uint64_t generation;
++    bool complete;
++    bool overflowed;
++    uint32_t monitor_count;
++    uint32_t qmp_monitors;
++    uint32_t hmp_monitors;
++    uint32_t io_thread_monitors;
++    uint32_t suspended_monitors;
++    uint32_t negotiating_monitors;
++    uint32_t oob_enabled_monitors;
++    uint64_t queued_requests;
++    uint64_t parser_buffered_bytes;
++    uint32_t partial_parsers;
++    uint32_t unstable_monitors;
++} MonitorHotForkInventory;
++
+ /**
+  * Is @mon a QMP monitor?
+  */
+@@ -176,6 +197,7 @@ void monitor_data_init(Monitor *mon, bool is_qmp, bool skip_flush,
+ void monitor_data_destroy(Monitor *mon);
+ int monitor_can_read(void *opaque);
+ void monitor_list_append(Monitor *mon);
++void monitor_hot_fork_inventory(MonitorHotForkInventory *inventory);
+ void monitor_fdsets_cleanup(void);
+ 
+ void qmp_send_response(MonitorQMP *mon, const QDict *rsp);
+diff --git a/monitor/monitor.c b/monitor/monitor.c
+index c5a5d3087..a66a2942b 100644
+--- a/monitor/monitor.c
++++ b/monitor/monitor.c
+@@ -72,6 +72,17 @@ static GHashTable *coroutine_mon; /* Maps Coroutine* to Monitor* */
+ 
+ MonitorList mon_list;
+ static bool monitor_destroyed;
++static uint64_t monitor_hot_fork_generation;
++static bool monitor_hot_fork_generation_overflowed;
++
++static void monitor_hot_fork_generation_advance(void)
++{
++    if (monitor_hot_fork_generation == UINT64_MAX) {
++        monitor_hot_fork_generation_overflowed = true;
++        return;
++    }
++    monitor_hot_fork_generation++;
++}
+ 
+ Monitor *monitor_cur(void)
+ {
+@@ -606,6 +617,7 @@ void monitor_list_append(Monitor *mon)
+      */
+     if (!monitor_destroyed) {
+         QTAILQ_INSERT_HEAD(&mon_list, mon, entry);
++        monitor_hot_fork_generation_advance();
+         mon = NULL;
+     }
+     qemu_mutex_unlock(&monitor_lock);
+@@ -616,6 +628,80 @@ void monitor_list_append(Monitor *mon)
+     }
+ }
+ 
++void monitor_hot_fork_inventory(MonitorHotForkInventory *inventory)
++{
++    Monitor *mon;
++
++    memset(inventory, 0, sizeof(*inventory));
++    qemu_mutex_lock(&monitor_lock);
++    inventory->generation = monitor_hot_fork_generation;
++    inventory->overflowed = monitor_hot_fork_generation_overflowed;
++
++    QTAILQ_FOREACH(mon, &mon_list, entry) {
++        MonitorQMP *qmp_mon;
++        uint64_t parser_bytes;
++        bool parser_partial;
++
++        if (inventory->monitor_count == MONITOR_HOT_FORK_INVENTORY_MAX) {
++            inventory->overflowed = true;
++            break;
++        }
++        inventory->monitor_count++;
++        inventory->io_thread_monitors += mon->use_io_thread;
++        inventory->suspended_monitors += qatomic_read(&mon->suspend_cnt) != 0;
++        if (!monitor_is_qmp(mon)) {
++            inventory->hmp_monitors++;
++            continue;
++        }
++
++        inventory->qmp_monitors++;
++        qmp_mon = container_of(mon, MonitorQMP, common);
++        if (qemu_rec_mutex_trylock(&qmp_mon->qmp_parser_lock) != 0) {
++            inventory->unstable_monitors++;
++            continue;
++        }
++        qemu_mutex_lock(&qmp_mon->qmp_queue_lock);
++        inventory->negotiating_monitors +=
++            qmp_mon->commands == &qmp_cap_negotiation_commands;
++        inventory->oob_enabled_monitors +=
++            qmp_mon->capab[QMP_CAPABILITY_OOB];
++        if (UINT64_MAX - inventory->queued_requests <
++            qmp_mon->qmp_requests->length) {
++            inventory->overflowed = true;
++        } else {
++            inventory->queued_requests += qmp_mon->qmp_requests->length;
++        }
++        parser_bytes = qmp_mon->parser.token_size;
++        if (qmp_mon->parser.lexer.state !=
++            qmp_mon->parser.lexer.start_state &&
++            qmp_mon->parser.lexer.token) {
++            if (UINT64_MAX - parser_bytes < qmp_mon->parser.lexer.token->len) {
++                inventory->overflowed = true;
++                parser_bytes = UINT64_MAX;
++            } else {
++                parser_bytes += qmp_mon->parser.lexer.token->len;
++            }
++        }
++        if (UINT64_MAX - inventory->parser_buffered_bytes < parser_bytes) {
++            inventory->overflowed = true;
++        } else {
++            inventory->parser_buffered_bytes += parser_bytes;
++        }
++        parser_partial = parser_bytes != 0 ||
++            !g_queue_is_empty(&qmp_mon->parser.tokens) ||
++            qmp_mon->parser.brace_count != 0 ||
++            qmp_mon->parser.bracket_count != 0 ||
++            qmp_mon->parser.lexer.state !=
++                qmp_mon->parser.lexer.start_state;
++        inventory->partial_parsers += parser_partial;
++        qemu_mutex_unlock(&qmp_mon->qmp_queue_lock);
++        qemu_rec_mutex_unlock(&qmp_mon->qmp_parser_lock);
++    }
++    inventory->complete = !inventory->overflowed &&
++        inventory->unstable_monitors == 0;
++    qemu_mutex_unlock(&monitor_lock);
++}
++
+ static void monitor_iothread_init(void)
+ {
+     mon_iothread = iothread_create("mon_iothread", &error_abort);
+@@ -689,6 +775,7 @@ void monitor_cleanup(void)
+     while (!QTAILQ_EMPTY(&mon_list)) {
+         Monitor *mon = QTAILQ_FIRST(&mon_list);
+         QTAILQ_REMOVE(&mon_list, mon, entry);
++        monitor_hot_fork_generation_advance();
+         /* Permit QAPI event emission from character frontend release */
+         qemu_mutex_unlock(&monitor_lock);
+         monitor_flush(mon);
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 0e934f9a4..1f7fab220 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -3501,6 +3501,33 @@ qmp_query_crucible_hot_fork_mutex_inventory(Error **errp)
+ #endif
+ }
+ 
++CrucibleHotForkMonitorInventory *
++qmp_query_crucible_hot_fork_monitor_inventory(Error **errp)
++{
++    CrucibleHotForkMonitorInventory *report =
++        g_new0(CrucibleHotForkMonitorInventory, 1);
++    MonitorHotForkInventory inventory;
++
++    (void)errp;
++    monitor_hot_fork_inventory(&inventory);
++    report->schema_version = 1;
++    report->generation = inventory.generation;
++    report->complete = inventory.complete;
++    report->overflowed = inventory.overflowed;
++    report->monitor_count = inventory.monitor_count;
++    report->qmp_monitors = inventory.qmp_monitors;
++    report->hmp_monitors = inventory.hmp_monitors;
++    report->io_thread_monitors = inventory.io_thread_monitors;
++    report->suspended_monitors = inventory.suspended_monitors;
++    report->negotiating_monitors = inventory.negotiating_monitors;
++    report->oob_enabled_monitors = inventory.oob_enabled_monitors;
++    report->queued_requests = inventory.queued_requests;
++    report->parser_buffered_bytes = inventory.parser_buffered_bytes;
++    report->partial_parsers = inventory.partial_parsers;
++    report->unstable_monitors = inventory.unstable_monitors;
++    return report;
++}
++
+ static CrucibleHotForkTimerClock
+ crucible_hot_fork_timer_clock(QEMUClockType type)
+ {
+diff --git a/monitor/qmp.c b/monitor/qmp.c
+index 2f46cf9e4..68426d09f 100644
+--- a/monitor/qmp.c
++++ b/monitor/qmp.c
+@@ -429,7 +429,9 @@ static void monitor_qmp_read(void *opaque, const uint8_t *buf, int size)
+ {
+     MonitorQMP *mon = opaque;
+ 
++    qemu_rec_mutex_lock(&mon->qmp_parser_lock);
+     json_message_parser_feed(&mon->parser, (const char *) buf, size);
++    qemu_rec_mutex_unlock(&mon->qmp_parser_lock);
+ }
+ 
+ static QDict *qmp_greeting(MonitorQMP *mon)
+@@ -475,9 +477,11 @@ static void monitor_qmp_event(void *opaque, QEMUChrEvent event)
+          * is closed.
+          */
+         monitor_qmp_cleanup_queue_and_resume(mon);
++        qemu_rec_mutex_lock(&mon->qmp_parser_lock);
+         json_message_parser_destroy(&mon->parser);
+         json_message_parser_init(&mon->parser, handle_qmp_command,
+                                  mon, NULL);
++        qemu_rec_mutex_unlock(&mon->qmp_parser_lock);
+         monitor_fdsets_cleanup();
+         break;
+     case CHR_EVENT_BREAK:
+@@ -491,6 +495,7 @@ static void monitor_qmp_event(void *opaque, QEMUChrEvent event)
+ void monitor_data_destroy_qmp(MonitorQMP *mon)
+ {
+     json_message_parser_destroy(&mon->parser);
++    qemu_rec_mutex_destroy(&mon->qmp_parser_lock);
+     qemu_mutex_destroy(&mon->qmp_queue_lock);
+     monitor_qmp_cleanup_req_queue_locked(mon);
+     g_queue_free(mon->qmp_requests);
+@@ -526,6 +531,7 @@ void monitor_init_qmp(Chardev *chr, bool pretty, Error **errp)
+ 
+     mon->pretty = pretty;
+ 
++    qemu_rec_mutex_init(&mon->qmp_parser_lock);
+     qemu_mutex_init(&mon->qmp_queue_lock);
+     mon->qmp_requests = g_queue_new();
+ 
+diff --git a/qapi/run-state.json b/qapi/run-state.json
+index 1c4aa3e09..68f1d92ce 100644
+--- a/qapi/run-state.json
++++ b/qapi/run-state.json
+@@ -2260,6 +2260,77 @@
+ { 'command': 'query-crucible-hot-fork-mutex-inventory',
+   'returns': 'CrucibleHotForkMutexInventory' }
+ 
++##
++# @CrucibleHotForkMonitorInventory:
++#
++# Bounded observational snapshot of QEMU monitor, dispatcher-queue, and JSON
++# parser state.  Busy parser state makes the report incomplete rather than
++# blocking while the global monitor-list lock is held.
++#
++# @schema-version: inventory contract version, currently 1
++#
++# @generation: monotonic process-local monitor create/destroy counter
++#
++# @complete: true exactly when the inventory did not overflow and every QMP
++#     parser was observed without racing another input callback
++#
++# @overflowed: whether the monitor or aggregate bound was exceeded
++#
++# @monitor-count: retained monitors, bounded to 256
++#
++# @qmp-monitors: retained QMP monitors
++#
++# @hmp-monitors: retained human monitors
++#
++# @io-thread-monitors: retained monitors using the monitor I/O thread
++#
++# @suspended-monitors: retained monitors whose input is suspended
++#
++# @negotiating-monitors: QMP monitors awaiting capabilities negotiation
++#
++# @oob-enabled-monitors: QMP monitors with OOB commands enabled
++#
++# @queued-requests: queued in-band QMP requests
++#
++# @parser-buffered-bytes: bytes retained by partial JSON parser state
++#
++# @partial-parsers: parsers retaining a partial JSON message
++#
++# @unstable-monitors: QMP monitors whose parser lock was busy
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkMonitorInventory',
++  'data': { 'schema-version': 'uint32',
++            'generation': 'uint64',
++            'complete': 'bool',
++            'overflowed': 'bool',
++            'monitor-count': 'uint32',
++            'qmp-monitors': 'uint32',
++            'hmp-monitors': 'uint32',
++            'io-thread-monitors': 'uint32',
++            'suspended-monitors': 'uint32',
++            'negotiating-monitors': 'uint32',
++            'oob-enabled-monitors': 'uint32',
++            'queued-requests': 'uint64',
++            'parser-buffered-bytes': 'uint64',
++            'partial-parsers': 'uint32',
++            'unstable-monitors': 'uint32' } }
++
++##
++# @query-crucible-hot-fork-monitor-inventory:
++#
++# Query one bounded monitor and parser snapshot.  This command is
++# observational: it does not rebuild child monitor state or authorize a fork.
++#
++# Returns: @CrucibleHotForkMonitorInventory
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'query-crucible-hot-fork-monitor-inventory',
++  'returns': 'CrucibleHotForkMonitorInventory',
++  'allow-oob': true }
++
+ ##
+ # @CrucibleHotForkTimerClock:
+ #

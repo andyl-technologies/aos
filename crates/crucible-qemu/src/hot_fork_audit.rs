@@ -17,8 +17,9 @@ use thiserror::Error;
 use crate::{
     QemuNodeChannelError, QemuNodeError, QemuProcessIdentity, QmpHotForkAioHandlerInventory,
     QmpHotForkAioInventory, QmpHotForkBlockBackendInventory, QmpHotForkBottomHalfInventory,
-    QmpHotForkMutexInventory, QmpHotForkPluginResourceInventory, QmpHotForkRcuInventory,
-    QmpHotForkReadiness, QmpHotForkThreadInventory, QmpHotForkTimerInventory,
+    QmpHotForkMonitorInventory, QmpHotForkMutexInventory, QmpHotForkPluginResourceInventory,
+    QmpHotForkRcuInventory, QmpHotForkReadiness, QmpHotForkThreadInventory,
+    QmpHotForkTimerInventory,
 };
 
 /// Maximum threads, descriptors, or mappings retained by one audit.
@@ -185,12 +186,13 @@ pub(crate) struct QemuHotForkQmpInventory {
     bottom_halves: QmpHotForkBottomHalfInventory,
     mutexes: QmpHotForkMutexInventory,
     timers: QmpHotForkTimerInventory,
+    monitors: QmpHotForkMonitorInventory,
 }
 
 impl QemuHotForkQmpInventory {
     #[allow(
         clippy::too_many_arguments,
-        reason = "the constructor preserves the one-to-one order of the ten exact QMP inventories"
+        reason = "the constructor preserves the one-to-one order of the eleven exact QMP inventories"
     )]
     pub(crate) const fn new(
         readiness: QmpHotForkReadiness,
@@ -203,6 +205,7 @@ impl QemuHotForkQmpInventory {
         bottom_halves: QmpHotForkBottomHalfInventory,
         mutexes: QmpHotForkMutexInventory,
         timers: QmpHotForkTimerInventory,
+        monitors: QmpHotForkMonitorInventory,
     ) -> Self {
         Self {
             readiness,
@@ -215,6 +218,7 @@ impl QemuHotForkQmpInventory {
             bottom_halves,
             mutexes,
             timers,
+            monitors,
         }
     }
 }
@@ -232,6 +236,7 @@ pub struct QemuHotForkAudit {
     qemu_bottom_halves: QmpHotForkBottomHalfInventory,
     qemu_mutexes: QmpHotForkMutexInventory,
     qemu_timers: QmpHotForkTimerInventory,
+    qemu_monitors: QmpHotForkMonitorInventory,
     process: QemuHotForkProcessInventory,
     externally_created_thread_ids: Vec<u32>,
 }
@@ -252,6 +257,7 @@ impl QemuHotForkAudit {
             bottom_halves: qemu_bottom_halves,
             mutexes: qemu_mutexes,
             timers: qemu_timers,
+            monitors: qemu_monitors,
         } = qmp;
 
         if !qemu_threads.complete() {
@@ -280,6 +286,12 @@ impl QemuHotForkAudit {
         }
         if !qemu_timers.complete() {
             return Err(QemuHotForkAuditError::TimerInventoryIncomplete);
+        }
+        if !qemu_monitors.complete() {
+            return Err(QemuHotForkAuditError::MonitorInventoryIncomplete);
+        }
+        if !qemu_monitors.is_supported_parent_profile() {
+            return Err(QemuHotForkAuditError::UnsupportedMonitorProfile);
         }
 
         let mut qemu_index = 0_usize;
@@ -409,6 +421,7 @@ impl QemuHotForkAudit {
             qemu_bottom_halves,
             qemu_mutexes,
             qemu_timers,
+            qemu_monitors,
             process,
             externally_created_thread_ids,
         })
@@ -474,6 +487,12 @@ impl QemuHotForkAudit {
         &self.qemu_timers
     }
 
+    /// Returns QEMU's matching bounded monitor/parser inventory.
+    #[must_use]
+    pub const fn qemu_monitors(&self) -> QmpHotForkMonitorInventory {
+        self.qemu_monitors
+    }
+
     /// Returns the matching stable process inventory.
     #[must_use]
     pub const fn process(&self) -> &QemuHotForkProcessInventory {
@@ -526,6 +545,9 @@ pub enum QemuHotForkAuditError {
     /// The QEMU-owned live-timer inventory query failed.
     #[error("QEMU hot-fork live-timer inventory query failed")]
     TimerInventory(#[source] QemuNodeChannelError),
+    /// The QEMU-owned monitor/parser inventory query failed.
+    #[error("QEMU hot-fork monitor/parser inventory query failed")]
+    MonitorInventory(#[source] QemuNodeChannelError),
     /// QEMU was not at the exact paused/device-flush boundary.
     #[error("QEMU is not at the exact paused boundary required for hot-fork audit")]
     NotExactPausedBoundary,
@@ -559,6 +581,9 @@ pub enum QemuHotForkAuditError {
     /// QEMU's observational live-timer inventory changed around procfs capture.
     #[error("QEMU hot-fork live-timer inventory changed during process inventory")]
     TimerInventoryChanged,
+    /// QEMU's monitor/parser inventory changed around procfs capture.
+    #[error("QEMU hot-fork monitor/parser inventory changed during process inventory")]
+    MonitorInventoryChanged,
     /// QEMU could not report every live mutex with valid ownership state.
     #[error("QEMU hot-fork mutex inventory is incomplete")]
     MutexInventoryIncomplete,
@@ -583,6 +608,12 @@ pub enum QemuHotForkAuditError {
     /// QEMU could not report every live timer with structurally valid state.
     #[error("QEMU hot-fork live-timer inventory is incomplete")]
     TimerInventoryIncomplete,
+    /// QEMU could not report every monitor and parser with stable bounded state.
+    #[error("QEMU hot-fork monitor/parser inventory is incomplete")]
+    MonitorInventoryIncomplete,
+    /// QEMU's monitor topology is outside the supported parent-template profile.
+    #[error("QEMU hot-fork monitor/parser inventory is not the supported parent profile")]
+    UnsupportedMonitorProfile,
     /// QEMU could not report every allocated bottom half with stable valid state.
     #[error("QEMU hot-fork bottom-half inventory is incomplete")]
     BottomHalfInventoryIncomplete,
@@ -1254,6 +1285,7 @@ mod tests {
             bottom_halves,
             mutexes,
             timers,
+            QmpHotForkMonitorInventory::one_supported(),
         )
     }
 
@@ -1515,6 +1547,36 @@ mod tests {
                 process.clone(),
             ),
             Err(QemuHotForkAuditError::TimerInventoryIncomplete)
+        ));
+
+        let mut incomplete_monitor = qmp_inventory(
+            readiness,
+            QmpHotForkThreadInventory::one_coordinator(10),
+            QmpHotForkRcuInventory::from_reader_ids(&[10]),
+            QmpHotForkAioInventory::one_idle(1, 10),
+            QmpHotForkBottomHalfInventory::one_idle(1, 1),
+            QmpHotForkMutexInventory::one_owned(1, 10),
+            QmpHotForkTimerInventory::empty(),
+        );
+        incomplete_monitor.monitors = QmpHotForkMonitorInventory::incomplete();
+        assert!(matches!(
+            QemuHotForkAudit::new(incomplete_monitor, process.clone()),
+            Err(QemuHotForkAuditError::MonitorInventoryIncomplete)
+        ));
+
+        let mut unsupported_monitor = qmp_inventory(
+            readiness,
+            QmpHotForkThreadInventory::one_coordinator(10),
+            QmpHotForkRcuInventory::from_reader_ids(&[10]),
+            QmpHotForkAioInventory::one_idle(1, 10),
+            QmpHotForkBottomHalfInventory::one_idle(1, 1),
+            QmpHotForkMutexInventory::one_owned(1, 10),
+            QmpHotForkTimerInventory::empty(),
+        );
+        unsupported_monitor.monitors = QmpHotForkMonitorInventory::one_queued();
+        assert!(matches!(
+            QemuHotForkAudit::new(unsupported_monitor, process.clone()),
+            Err(QemuHotForkAuditError::UnsupportedMonitorProfile)
         ));
 
         assert!(matches!(

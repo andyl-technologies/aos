@@ -11,11 +11,11 @@ use super::{
     QmpClient, QmpCommandComplete, QmpDescriptorName, QmpError, QmpHotForkAioHandlerInventory,
     QmpHotForkAioInventory, QmpHotForkBhTimerBarrierState, QmpHotForkBlockBackendInventory,
     QmpHotForkBlockBarrierState, QmpHotForkBlockSnapshotBinding, QmpHotForkBottomHalfInventory,
-    QmpHotForkChildRuntimeState, QmpHotForkMutexInventory, QmpHotForkPluginBarrierState,
-    QmpHotForkPluginResourceInventory, QmpHotForkRcuBarrierState, QmpHotForkRcuInventory,
-    QmpHotForkReadiness, QmpHotForkTemplateState, QmpHotForkThreadInventory,
-    QmpHotForkTimerInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind,
-    QmpSnapshotTag, QmpTimeoutStream,
+    QmpHotForkChildRuntimeState, QmpHotForkMonitorInventory, QmpHotForkMutexInventory,
+    QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory, QmpHotForkRcuBarrierState,
+    QmpHotForkRcuInventory, QmpHotForkReadiness, QmpHotForkTemplateState,
+    QmpHotForkThreadInventory, QmpHotForkTimerInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy,
+    QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 use crate::{
     QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
@@ -739,6 +739,20 @@ where
     ) -> Result<QmpHotForkTimerInventory, QemuNodeChannelError> {
         self.client
             .query_hot_fork_timer_inventory()
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Returns QEMU's bounded monitor/parser inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP transport or strict response
+    /// validation fails.
+    pub fn query_hot_fork_monitor_inventory(
+        &mut self,
+    ) -> Result<QmpHotForkMonitorInventory, QemuNodeChannelError> {
+        self.client
+            .query_hot_fork_monitor_inventory()
             .map_err(QemuNodeChannelError::from)
     }
 
