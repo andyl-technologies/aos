@@ -3,6 +3,8 @@
   mkDerivation,
   fetchurl,
   lib,
+  stdenv,
+  buildPackages,
   bash,
   coreutils,
   which,
@@ -26,12 +28,15 @@
   bazel-bootstrap,
   bootstrapTools,
   gcc-libs,
+  llvm,
 }: let
   mkBazel = import ./_bazel.nix {
     inherit
       mkDerivation
       fetchurl
       lib
+      stdenv
+      buildPackages
       bash
       coreutils
       which
@@ -55,6 +60,7 @@
       bazel-bootstrap
       bootstrapTools
       gcc-libs
+      llvm
       ;
   };
 in
