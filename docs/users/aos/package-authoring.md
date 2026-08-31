@@ -217,6 +217,17 @@ hostnames, verify that the pinned payloads are byte-identical and select the
 hostname already used by the dependency closure instead of widening its
 network-origin set.
 
+Leave Bazel action placement to the system Bazel configuration when its local
+default works in the package sandbox. Do not add a global
+`--spawn_strategy=standalone` package flag: command-line package flags override
+the system configuration and prevent an available remote executor from
+receiving actions. When nested Bazel sandboxing is unavailable and a package
+needs standalone execution as its portable local fallback, use
+`--spawn_strategy=remote,standalone`; Bazel then consumes a remote executor from
+the system configuration when present and otherwise falls back locally. If one
+action class cannot run remotely, scope its strategy by mnemonic instead of
+forcing the entire build local, and document why that exception is required.
+
 Do not retain Bazel's `host_platform`, `internal_platforms_do_not_use`, or
 `local_config_*` repositories in a fixed-output dependency closure. They
 describe the fetch executor rather than a source dependency. Remove those
