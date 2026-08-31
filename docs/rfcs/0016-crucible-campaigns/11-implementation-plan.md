@@ -2283,7 +2283,12 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   decision schemas remain open. Policy authoring now resolves exact selectable
   IDs and bounded all-tags predicates through an exact matching canonical
   scenario, rejects absent/ambiguous/drifted selectors before output, and emits
-  the unchanged stable-name canonical policy identity.
+  the unchanged stable-name canonical policy identity. The documented
+  `campaign validate` porcelain now has two non-ambiguous trust boundaries:
+  `--policy FILE` performs a bounded offline canonical decode/re-encode and ID
+  derivation, while `validate NAME` authenticates the current named head through
+  the existing request-bound checked service and reports its exact lifecycle
+  projection.
 - [ ] **T-CAM-8.2** Implement graph/frontier/choices/findings/explain/compare
   queries with branch-point/source/provenance views, pagination, and versioned
   JSON. Snapshot-bound graph/frontier/choices/findings traversal is exposed

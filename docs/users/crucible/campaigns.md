@@ -139,6 +139,7 @@ before creating the campaign:
   --scenario ./scenario.toml \
   --output ./policy.bin \
   --format json
+./result/bin/crucible campaign validate --policy ./policy.bin --format json
 ```
 
 The lineage compiler reads at most 1 MiB. Its version-one format binds the
@@ -230,6 +231,24 @@ that declaration's stable name before constructing the existing canonical
 `CampaignPolicy`, so equivalent name, ID, and tag forms produce byte-identical
 policy records. Missing scenario context, absent IDs, ambiguous predicates,
 duplicate tags, and scenario drift fail before output is created.
+
+`campaign validate --policy FILE` performs the final bounded canonical policy
+decode, byte-for-byte re-encode, and content-ID derivation offline. It never
+opens a daemon or repository. After campaign creation, use the connected form
+to authenticate the exact current owner projection:
+
+```text
+./result/bin/crucible campaign \
+  --socket /run/crucible/campaign.sock \
+  --principal operator \
+  validate network-recovery \
+  --format json
+```
+
+That form uses the same checked `GetCampaign` request as status inspection and
+reports the authenticated snapshot, lineage, policy, and lifecycle state. The
+explicit `--policy` flag keeps offline file validation unambiguous with campaign
+names that contain slash-separated segments.
 
 `mode` is `strict`, `streaming`, or `statistical`; objective goals are
 `minimize` or `maximize`. The explorer may instead be `kind = "beam"` with

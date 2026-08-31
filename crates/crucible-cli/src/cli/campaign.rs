@@ -25,6 +25,8 @@ mod ranking;
 mod scenario;
 #[path = "campaign/snapshot.rs"]
 mod snapshot;
+#[path = "campaign/validation.rs"]
+mod validation;
 
 use configuration::{compile_campaign_configuration, render_campaign_configuration_compilation};
 use explain::{
@@ -44,6 +46,9 @@ use ranking::{
 use scenario::{compile_campaign_scenario, render_campaign_scenario_compilation};
 use snapshot::{
     query_campaign_snapshot, render_campaign_snapshot, validate_campaign_snapshot_command,
+};
+use validation::{
+    query_campaign_validation, render_campaign_validation, validate_campaign_policy_file,
 };
 
 use std::collections::BTreeSet;
@@ -316,6 +321,16 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
         );
         return Ok(());
     }
+    if let CampaignCommand::Validate(validate) = &args.command
+        && let Some(policy) = validate.policy.as_deref()
+    {
+        let report = validate_campaign_policy_file(policy)?;
+        println!(
+            "{}",
+            render_campaign_validation(&report, cli.output_format())?
+        );
+        return Ok(());
+    }
     if let CampaignCommand::Scenario(scenario) = &args.command {
         let report = match &scenario.command {
             CampaignScenarioCommand::Compile(compile) => {
@@ -422,6 +437,10 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             return Err(backend_error(
                 "offline campaign import validation reached the connected dispatch path",
             ));
+        }
+        CampaignCommand::Validate(validate) => {
+            let report = query_campaign_validation(&client, principal, validate)?;
+            render_campaign_validation(&report, cli.output_format())?
         }
         CampaignCommand::Fixture(_) => {
             return Err(backend_error(
@@ -530,6 +549,7 @@ fn prepare_campaign_command(
     match command {
         CampaignCommand::Fixture(_) => Ok(None),
         CampaignCommand::ValidateImport(_) => Ok(None),
+        CampaignCommand::Validate(_) => Ok(None),
         CampaignCommand::Scenario(_) => Ok(None),
         CampaignCommand::Configuration(_) => Ok(None),
         CampaignCommand::Policy(_) => Ok(None),
@@ -2178,6 +2198,7 @@ fn campaign_mutation_spec(
             ))
         }
         CampaignCommand::ValidateImport(_)
+        | CampaignCommand::Validate(_)
         | CampaignCommand::Fixture(_)
         | CampaignCommand::Scenario(_)
         | CampaignCommand::Configuration(_)

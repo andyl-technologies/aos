@@ -919,6 +919,89 @@ fn campaign_status_and_watch_use_the_checked_loopback_transport() {
 }
 
 #[test]
+fn campaign_validation_authenticates_connected_and_offline_targets() {
+    let validate = CampaignValidateArgs {
+        name: Some("example".to_owned()),
+        policy: None,
+    };
+    let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
+    let server = thread::spawn(move || {
+        serve_loopback_campaign_once(&mut server_stream, &FixedHeadService)
+            .expect("serve one campaign validation");
+    });
+    let service = LoopbackCampaignService::new(client_stream).expect("loopback client");
+    let client = CampaignClient::new(service);
+    let report = query_campaign_validation(
+        &client,
+        CampaignPrincipal::new("operator").expect("campaign principal"),
+        &validate,
+    )
+    .expect("checked campaign validation");
+    server.join().expect("campaign server thread");
+    let validation::CampaignValidationReport::Campaign {
+        campaign,
+        snapshot: current,
+        state,
+        ..
+    } = &report
+    else {
+        panic!("connected validation report");
+    };
+    assert_eq!(campaign, "example");
+    assert_eq!(current, &snapshot("current").to_string());
+    assert_eq!(*state, "running");
+    let rendered =
+        render_campaign_validation(&report, OutputFormat::Json).expect("campaign validation JSON");
+    let value: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+    assert_eq!(
+        value["schema"],
+        validation::CAMPAIGN_VALIDATION_REPORT_SCHEMA
+    );
+    assert_eq!(value["subject"], "campaign");
+
+    let temporary = tempfile::tempdir().expect("temporary policy input");
+    let path = temporary.path().join("policy.bin");
+    let (_, policy) = campaign_records();
+    let canonical = policy.canonical_bytes();
+    std::fs::write(&path, &canonical).expect("write canonical policy");
+    let report = validate_campaign_policy_file(&path).expect("offline policy validation");
+    let validation::CampaignValidationReport::Policy {
+        policy: validated,
+        encoded_bytes,
+        choice_policies,
+        ..
+    } = &report
+    else {
+        panic!("offline policy validation report");
+    };
+    assert_eq!(validated, &policy.id().expect("policy ID").to_string());
+    assert_eq!(*encoded_bytes, canonical.len());
+    assert_eq!(*choice_policies, 0);
+    assert!(
+        render_campaign_validation(&report, OutputFormat::Markdown)
+            .expect("policy validation Markdown")
+            .contains("| subject | policy |")
+    );
+    let invocation = Cli::try_parse_from([
+        std::ffi::OsString::from("crucible"),
+        std::ffi::OsString::from("campaign"),
+        std::ffi::OsString::from("validate"),
+        std::ffi::OsString::from("--policy"),
+        path.as_os_str().to_owned(),
+    ])
+    .expect("offline validation invocation");
+    let Commands::Campaign(args) = &invocation.command else {
+        panic!("campaign validation command");
+    };
+    run_campaign_invocation(&invocation, args).expect("offline validation without a socket");
+
+    let mut malformed = canonical;
+    malformed.push(0);
+    std::fs::write(&path, malformed).expect("write malformed policy");
+    assert!(validate_campaign_policy_file(&path).is_err());
+}
+
+#[test]
 fn campaign_runtime_attachment_validates_before_connect_and_renders_status() {
     let valid = CampaignCommand::Attach(CampaignAttachArgs {
         name: "example".to_owned(),
@@ -2181,6 +2264,59 @@ fn campaign_status_watch_and_list_parse_under_the_nested_cli() {
             }),
         }) if manifests == &[PathBuf::from("/tmp/campaign-import.toml")]
     ));
+
+    let validate_policy = Cli::try_parse_from([
+        "crucible",
+        "campaign",
+        "validate",
+        "--policy",
+        "/tmp/policy.bin",
+    ])
+    .expect("offline campaign policy validation arguments");
+    assert!(matches!(
+        validate_policy.command,
+        Commands::Campaign(CampaignArgs {
+            socket: None,
+            principal: None,
+            command: CampaignCommand::Validate(CampaignValidateArgs {
+                name: None,
+                policy: Some(ref policy),
+            }),
+        }) if policy == &PathBuf::from("/tmp/policy.bin")
+    ));
+
+    let validate_campaign = Cli::try_parse_from([
+        "crucible",
+        "campaign",
+        "--socket",
+        "/run/crucible/campaign.sock",
+        "--principal",
+        "operator",
+        "validate",
+        "example",
+    ])
+    .expect("connected campaign validation arguments");
+    assert!(matches!(
+        validate_campaign.command,
+        Commands::Campaign(CampaignArgs {
+            command: CampaignCommand::Validate(CampaignValidateArgs {
+                name: Some(ref name),
+                policy: None,
+            }),
+            ..
+        }) if name == "example"
+    ));
+    assert!(
+        Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "validate",
+            "example",
+            "--policy",
+            "/tmp/policy.bin",
+        ])
+        .is_err()
+    );
 
     let scenario = Cli::try_parse_from([
         "crucible",

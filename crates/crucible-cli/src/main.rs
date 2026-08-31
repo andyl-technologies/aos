@@ -294,10 +294,10 @@ enum Commands {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignArgs {
-    /// Connected daemon socket; required except for offline fixture and import operations.
+    /// Connected daemon socket; omitted only for offline authoring and validation.
     #[arg(long, value_name = "path")]
     socket: Option<PathBuf>,
-    /// Authenticated principal; required except for offline fixture and import operations.
+    /// Authenticated principal; omitted only for offline authoring and validation.
     #[arg(long, value_name = "principal")]
     principal: Option<String>,
     #[command(subcommand)]
@@ -310,6 +310,8 @@ enum CampaignCommand {
     Fixture(CampaignFixtureArgs),
     /// Validate strict campaign import manifests without opening repository state.
     ValidateImport(CampaignValidateImportArgs),
+    /// Authenticate a named campaign or validate one canonical policy file.
+    Validate(CampaignValidateArgs),
     /// Compile canonical scenario TOML into an importable genesis bundle.
     Scenario(CampaignScenarioArgs),
     /// Compile a canonical non-genesis schedule into an importable configuration bundle.
@@ -493,6 +495,20 @@ struct CampaignValidateImportArgs {
     /// Strict import manifest to validate; repeated manifests share one bound.
     #[arg(value_name = "MANIFEST", required = true)]
     manifests: Vec<PathBuf>,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignValidateArgs {
+    /// Canonical campaign name to authenticate through the connected service.
+    #[arg(
+        value_name = "NAME",
+        required_unless_present = "policy",
+        conflicts_with = "policy"
+    )]
+    name: Option<String>,
+    /// Canonical binary CampaignPolicy record to validate offline.
+    #[arg(long, value_name = "FILE", required_unless_present = "name")]
+    policy: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
