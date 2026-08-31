@@ -5,10 +5,14 @@ use super::cli_campaign_import::{
 };
 use super::*;
 
+#[path = "campaign/authoring.rs"]
+mod authoring;
 #[path = "campaign/explain.rs"]
 mod explain;
 #[path = "campaign/fixture.rs"]
 mod fixture;
+#[path = "campaign/lineage.rs"]
+mod lineage;
 #[path = "campaign/object.rs"]
 mod object;
 #[path = "campaign/policy.rs"]
@@ -26,6 +30,7 @@ use explain::{
     validate_campaign_finding_explain_command,
 };
 use fixture::{generate_worked_network_fixture, render_worked_network_fixture};
+use lineage::{compile_campaign_lineage, render_campaign_lineage_compilation};
 use object::{query_campaign_object, render_campaign_object, validate_campaign_object_basis};
 use policy::{compile_campaign_policy, render_campaign_policy_compilation};
 use ranking::{
@@ -317,6 +322,18 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
         );
         return Ok(());
     }
+    if let CampaignCommand::Lineage(lineage) = &args.command {
+        let report = match &lineage.command {
+            CampaignLineageCommand::Compile(compile) => {
+                compile_campaign_lineage(&compile.input, &compile.output)?
+            }
+        };
+        println!(
+            "{}",
+            render_campaign_lineage_compilation(&report, cli.output_format())?
+        );
+        return Ok(());
+    }
 
     let socket = args
         .socket
@@ -472,6 +489,7 @@ fn prepare_campaign_command(
         CampaignCommand::Fixture(_) => Ok(None),
         CampaignCommand::ValidateImport(_) => Ok(None),
         CampaignCommand::Policy(_) => Ok(None),
+        CampaignCommand::Lineage(_) => Ok(None),
         CampaignCommand::Create(create) => {
             let campaign = campaign_name(&create.name)?;
             let lineage = CampaignLineage::from_canonical_bytes(&read_campaign_record(
@@ -2118,6 +2136,7 @@ fn campaign_mutation_spec(
         CampaignCommand::ValidateImport(_)
         | CampaignCommand::Fixture(_)
         | CampaignCommand::Policy(_)
+        | CampaignCommand::Lineage(_)
         | CampaignCommand::Create(_)
         | CampaignCommand::List(_)
         | CampaignCommand::Attach(_)

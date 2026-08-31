@@ -312,6 +312,8 @@ enum CampaignCommand {
     ValidateImport(CampaignValidateImportArgs),
     /// Compile strict human-authored campaign policy manifests.
     Policy(CampaignPolicyArgs),
+    /// Compile strict human-authored campaign lineage manifests.
+    Lineage(CampaignLineageArgs),
     /// Create a named campaign from canonical imported lineage and policy records.
     Create(CampaignCreateArgs),
     /// List authenticated current campaign heads.
@@ -507,6 +509,28 @@ struct CampaignPolicyCompileArgs {
     #[arg(value_name = "INPUT")]
     input: PathBuf,
     /// New file that will receive the canonical binary policy record.
+    #[arg(long, value_name = "OUTPUT", required = true)]
+    output: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignLineageArgs {
+    #[command(subcommand)]
+    command: CampaignLineageCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignLineageCommand {
+    /// Compile a strict TOML lineage into its canonical binary record.
+    Compile(CampaignLineageCompileArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignLineageCompileArgs {
+    /// Strict version-one campaign lineage TOML.
+    #[arg(value_name = "INPUT")]
+    input: PathBuf,
+    /// New file that will receive the canonical binary lineage record.
     #[arg(long, value_name = "OUTPUT", required = true)]
     output: PathBuf,
 }

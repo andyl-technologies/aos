@@ -83,22 +83,46 @@ explains the modeled network policy represented by the generated fixture; its
 future-looking execution narrative is not a substitute for
 `crucible campaign --help`.
 
-Author a campaign policy as strict TOML and compile it offline before creating
-the campaign:
+Author the campaign lineage and policy as strict TOML and compile both offline
+before creating the campaign:
 
 ```sh
+./result/bin/crucible campaign lineage compile ./lineage.toml \
+  --output ./lineage.bin \
+  --format json
 ./result/bin/crucible campaign policy compile ./policy.toml \
   --output ./policy.bin \
   --format json
 ```
 
-The compiler reads at most 16 MiB, rejects unknown fields, duplicate semantic
-keys, noncanonical identities, invalid exact arithmetic, and unsupported
-explorer parameters before creating the output. It writes a new owner-only
-file durably and never replaces an existing path. The report contains the
-canonical `CampaignPolicyId` and encoded byte count. A version-one manifest has
-the following field shape; replace the example scenario and generator
-identities with exact values derived from your verified import closure:
+The lineage compiler reads at most 1 MiB. Its version-one format binds the
+semantic scenario and genesis configuration to their exact imported artifact
+IDs and fixes every execution-compatibility version:
+
+```toml
+schema_version = 1
+scenario = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+scenario_content = "crucible.campaign.scenario-artifact@scenario-v1-CONTENT_HASH"
+genesis = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+genesis_content = "crucible.campaign.configuration-artifact@configuration-v1-CONTENT_HASH"
+crucible_version = "crucible-0.1.0"
+qemu_build = "qemu-10.0-crucible"
+scenario_schema = 3
+exact_closure_schema = 4
+
+[protocol_versions]
+control = 2
+shared-memory = 5
+```
+
+Both compilers reject unknown fields, noncanonical identities, and invalid
+typed values before creating output. They write new owner-only files durably
+and never replace existing paths. Each report contains the exact canonical
+record ID and encoded byte count. The policy compiler reads at most 16 MiB and
+also rejects duplicate semantic keys, invalid exact arithmetic, and unsupported
+explorer parameters. A version-one policy manifest has the following field
+shape; replace the example scenario and artifact/generator identities with
+exact values derived from your verified import closure:
 
 ```toml
 schema_version = 1
