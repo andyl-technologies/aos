@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "3c6a73c03e7bb6510edb8132147288989bf458d201c3d53386386658f64c9804";
+  patchBranchBundleSha256 = "3db7db439ff9dc2223754ed382f7f4ea6cd2cce2d6a12639a4ab1cd838dc1203";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "7b5b7603b7de9d29374ddb4d730a3df332a18b60";
+  patchBranchHeadCommit = "cae81bfebca94bbf613711cc1863c2d2665083b9";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1599,7 +1599,7 @@ let
     {
       file = "0167-crucible-retain-branch-private-child-qmp.patch";
       branchSubject = "crucible: retain branch-private child QMP";
-      branchCommit = "589cb306671d509ae87b2a7ca2829dadf1ca15f0";
+      branchCommit = "9b66d142e64ecd05298499f8f3bcf024b696c7bc";
       branchTree = "4f457f0f90ecb4a6bc54b5559af746b84ce18a1e";
       catalogName = "crucible-hot-fork-branch-private-child-qmp";
       class = "F";
@@ -1609,7 +1609,7 @@ let
     {
       file = "0168-crucible-bind-child-qmp-reinitializer.patch";
       branchSubject = "crucible: bind child QMP reinitializer contract";
-      branchCommit = "930b062f85e5fb2fd4a8f9ba321a1fd575bcb24d";
+      branchCommit = "dfc315cfdd3f7af62f15450606dc120e6f932c4f";
       branchTree = "cab2ab40ec2bf442cccad8a0e896694ec6cd982c";
       catalogName = "crucible-hot-fork-child-qmp-reinitializer-contract";
       class = "F";
@@ -1619,7 +1619,7 @@ let
     {
       file = "0169-crucible-compose-child-qmp-reinitializer.patch";
       branchSubject = "crucible: compose child QMP reinitializer";
-      branchCommit = "22014548f9755595eace0bf4dbde442fb6f0d97c";
+      branchCommit = "20cb702a5b126bec2f514c61e78011767a580938";
       branchTree = "ffec9df2924f070b16caa00cf60f99eecdef57af";
       catalogName = "crucible-hot-fork-child-qmp-reinitializer-composition";
       class = "F";
@@ -1629,7 +1629,7 @@ let
     {
       file = "0170-crucible-report-complete-child-qmp-disposition.patch";
       branchSubject = "crucible: report complete child QMP disposition";
-      branchCommit = "b36e6925a3aed14d7e0be8cf082a67c1860f5c5e";
+      branchCommit = "c3281f23002bf9fd49a66a7fbf1deed59064d633";
       branchTree = "e8a60f0627f77fdc355c41ccef7d08c94ea66d50";
       catalogName = "crucible-hot-fork-child-qmp-disposition-report";
       class = "F";
@@ -1639,7 +1639,7 @@ let
     {
       file = "0171-crucible-preserve-child-qmp-query-basis.patch";
       branchSubject = "crucible: preserve child QMP query basis";
-      branchCommit = "71a6afc7eb453d635de198a38e8bec8ab21935ed";
+      branchCommit = "64496aac109bb339b34ac4cf0f9a68f54d49f454";
       branchTree = "e4dbf5fae3dee52c72cfd0f0d8e3417e4bc2c163";
       catalogName = "crucible-hot-fork-child-qmp-query-basis";
       class = "F";
@@ -1649,12 +1649,22 @@ let
     {
       file = "0172-crucible-inventory-qmp-monitor-state.patch";
       branchSubject = "crucible: inventory QMP monitor state";
-      branchCommit = "7b5b7603b7de9d29374ddb4d730a3df332a18b60";
+      branchCommit = "86fb1bec0ed131d594dc496353b8cf7eed55c3c7";
       branchTree = "658072bac6e34fe4bbc1c3f82b45794a2b72024d";
       catalogName = "crucible-hot-fork-monitor-inventory";
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "QEMU now exposes one bounded versioned observational inventory of monitor topology, dispatcher queues, and partial JSON parser state; the host accepts only one stable OOB-enabled I/O-thread QMP monitor with empty queue/parser state, while destructive child monitor reconstruction, fork invocation, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0173-crucible-bind-supported-child-qmp-profile.patch";
+      branchSubject = "crucible: bind supported child QMP profile";
+      branchCommit = "cae81bfebca94bbf613711cc1863c2d2665083b9";
+      branchTree = "3ee7e148bcd724bdd8905b2eaaa31ccf461f6779";
+      catalogName = "crucible-hot-fork-child-qmp-profile-binding";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "child-QMP staging now admits only the complete single-monitor supported profile and binds its exact lifecycle generation through the sealed resource plan, one-shot runtime status, and authenticated private-channel query; destructive monitor reconstruction, fork invocation, guest admission, and readiness bits 7 and 8 remain open";
     }
   ];
   catalogOnlyCapabilities = [

@@ -269,9 +269,10 @@ in
             "$out/child-qmp-initial.json"
           jq -e -s '
             [.[] | select(has("return"))][-1].return == {
-              "schema-version": 2,
+              "schema-version": 3,
               "generation": 0,
               "template-generation": 0,
+              "monitor-generation": 0,
               "staged": false,
               "socket-cookie": 0,
               "retained-fd": -1,
@@ -1445,7 +1446,7 @@ in
               "schema-version",
               "transaction-active"
             ] and
-            $report."schema-version" == 18 and
+            $report."schema-version" == 19 and
             $report.generation == 0 and
             $report.outcome == "idle" and
             $report."transaction-active" == false and
@@ -1479,7 +1480,7 @@ in
             $report."bh-timer-barrier" == $bh_report and
             $report."block-barrier" == $block_report and
             $report."resource-stage" == {
-              "schema-version": 8,
+              "schema-version": 9,
               "template-generation": 0,
               "private-ring-staged": false,
               "private-ring-generation": 2,
@@ -1823,12 +1824,13 @@ in
           patch=0170-crucible-report-complete-child-qmp-disposition.patch
           patch=0171-crucible-preserve-child-qmp-query-basis.patch
           patch=0172-crucible-inventory-qmp-monitor-state.patch
+          patch=0173-crucible-bind-supported-child-qmp-profile.patch
           plugin_endpoint_schema_version=4
           plugin_endpoint_source_descriptors_observed=true
           plugin_endpoint_replacement_plan_bound=false
           child_diagnostics_schema_version=1
           child_diagnostics_initially_absent=true
-          child_qmp_schema_version=2
+          child_qmp_schema_version=3
           child_qmp_initially_absent=true
           schema_version=1
           required_proofs=511
@@ -1913,13 +1915,13 @@ in
           plugin_endpoint_two_layer_release=true
           plugin_endpoint_disposition_complete=false
           plugin_endpoint_readiness_proof_acknowledged=false
-          template_coordinator_schema_version=18
+          template_coordinator_schema_version=19
           plugin_child_plan_report_bound=true
           plugin_child_resource_plan_report_bound=true
           child_resource_contribution_composition=true
           sealed_child_resource_plan_application=true
           child_descriptor_replacement_composition=true
-          template_resource_stage_schema_version=8
+          template_resource_stage_schema_version=9
           template_worker_disposition_bound=false
           template_resource_stage_empty_after_release=true
           template_coordinator_idle_stable=true

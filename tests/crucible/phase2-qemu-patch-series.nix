@@ -1203,6 +1203,13 @@
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "QEMU now exposes one bounded versioned observational inventory of monitor topology, dispatcher queues, and partial JSON parser state; the host accepts only one stable OOB-enabled I/O-thread QMP monitor with empty queue/parser state, while destructive child monitor reconstruction, fork invocation, guest admission, and readiness bits 7 and 8 remain open";
     }
+    {
+      file = "0173-crucible-bind-supported-child-qmp-profile.patch";
+      catalogName = "crucible-hot-fork-child-qmp-profile-binding";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "child-QMP staging now admits only the complete single-monitor supported profile and binds its exact lifecycle generation through the sealed resource plan, one-shot runtime status, and authenticated private-channel query; destructive monitor reconstruction, fork invocation, guest admission, and readiness bits 7 and 8 remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
