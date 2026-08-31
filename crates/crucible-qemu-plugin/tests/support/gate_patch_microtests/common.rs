@@ -184,6 +184,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0168-crucible-bind-child-qmp-reinitializer.patch",
     "0169-crucible-compose-child-qmp-reinitializer.patch",
     "0170-crucible-report-complete-child-qmp-disposition.patch",
+    "0171-crucible-preserve-child-qmp-query-basis.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

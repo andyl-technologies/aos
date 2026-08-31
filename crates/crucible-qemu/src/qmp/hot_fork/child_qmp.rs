@@ -20,6 +20,7 @@ pub struct QmpHotForkChildQmpState {
     resource_plan_bound: bool,
     reinitializer_prepared: bool,
     reinitialized: bool,
+    disposition_complete: bool,
 }
 
 impl QmpHotForkChildQmpState {
@@ -42,6 +43,7 @@ impl QmpHotForkChildQmpState {
             resource_plan_bound,
             reinitializer_prepared,
             reinitialized: false,
+            disposition_complete: false,
         }
     }
 
@@ -108,6 +110,12 @@ impl QmpHotForkChildQmpState {
     #[must_use]
     pub const fn reinitialized(&self) -> bool {
         self.reinitialized
+    }
+
+    /// Returns whether the child accepted the exact complete QMP disposition.
+    #[must_use]
+    pub const fn disposition_complete(&self) -> bool {
+        self.disposition_complete
     }
 }
 
@@ -196,8 +204,8 @@ pub(crate) fn parse_hot_fork_child_qmp_state(
         && !reinitializer_prepared;
     let valid = schema_version == u64::from(QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION)
         && staged == descriptor_name.is_some()
+        && reinitialized == disposition_complete
         && (!reinitialized || (staged && resource_plan_bound))
-        && !disposition_complete
         && !readiness_proof_acknowledged
         && if staged { staged_shape } else { absent_shape };
     if !valid {
@@ -213,6 +221,7 @@ pub(crate) fn parse_hot_fork_child_qmp_state(
         resource_plan_bound,
         reinitializer_prepared,
         reinitialized,
+        disposition_complete,
     })
 }
 
@@ -247,6 +256,15 @@ mod tests {
         assert_eq!(parsed.retained_descriptor(), Some(34));
         assert!(parsed.resource_plan_bound());
         assert!(parsed.reinitializer_prepared());
+        assert!(!parsed.disposition_complete());
+
+        let mut child = staged.clone();
+        child["reinitialized"] = json!(true);
+        child["disposition-complete"] = json!(true);
+        let child =
+            parse_hot_fork_child_qmp_state(&child).expect("complete child QMP state should parse");
+        assert!(child.reinitialized());
+        assert!(child.disposition_complete());
 
         let mut wrong = staged;
         wrong["reinitializer-prepared"] = json!(false);

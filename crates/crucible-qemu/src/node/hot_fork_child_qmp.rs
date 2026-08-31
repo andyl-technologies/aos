@@ -25,6 +25,7 @@ pub struct QemuHotForkChildQmpStageProof {
     descriptor_name: crate::QmpDescriptorName,
     socket_cookie: u64,
     template_generation: u64,
+    qmp_generation: u64,
     resource_plan_bound: bool,
 }
 
@@ -53,6 +54,12 @@ impl QemuHotForkChildQmpStageProof {
         self.template_generation
     }
 
+    /// Returns the exact child-QMP mutation generation.
+    #[must_use]
+    pub const fn qmp_generation(&self) -> u64 {
+        self.qmp_generation
+    }
+
     /// Returns whether the stream is retained in the sealed child plan.
     #[must_use]
     pub const fn resource_plan_bound(&self) -> bool {
@@ -60,14 +67,119 @@ impl QemuHotForkChildQmpStageProof {
     }
 }
 
+/// Linear host endpoint for one future hot-fork child's private QMP channel.
+///
+/// The endpoint carries the complete retained basis established while the
+/// template was quiescent. Connecting consumes the endpoint, negotiates QMP,
+/// and authenticates the child process's query before returning a control
+/// channel. It grants no authority over the template parent's QMP connection.
+#[derive(Debug)]
+pub struct QemuHotForkChildQmpHostEndpoint {
+    host: UnixStream,
+    descriptor_name: crate::QmpDescriptorName,
+    socket_cookie: u64,
+    template_generation: u64,
+    qmp_generation: u64,
+}
+
+impl QemuHotForkChildQmpHostEndpoint {
+    /// Returns the retained child-QMP descriptor name.
+    #[must_use]
+    pub const fn descriptor_name(&self) -> &crate::QmpDescriptorName {
+        &self.descriptor_name
+    }
+
+    /// Returns the retained child endpoint's Linux `SO_COOKIE`.
+    #[must_use]
+    pub const fn socket_cookie(&self) -> u64 {
+        self.socket_cookie
+    }
+
+    /// Returns the template generation that admitted this endpoint.
+    #[must_use]
+    pub const fn template_generation(&self) -> u64 {
+        self.template_generation
+    }
+
+    /// Returns the retained child-QMP mutation generation.
+    #[must_use]
+    pub const fn qmp_generation(&self) -> u64 {
+        self.qmp_generation
+    }
+
+    /// Negotiates and authenticates the private child QMP connection.
+    ///
+    /// The first post-negotiation operation queries the child's inherited
+    /// retained state. The returned channel is exposed only when QEMU reports
+    /// the exact descriptor name, socket identity, template/QMP generations,
+    /// sealed resource contribution, and accepted complete disposition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuHotForkChildQmpHandshakeError`] when QMP negotiation or
+    /// the exact child-state query fails. The consumed stream is not reusable
+    /// after any failure.
+    pub fn connect(
+        self,
+    ) -> Result<crate::QemuQmpVmStateControlChannel<UnixStream>, QemuHotForkChildQmpHandshakeError>
+    {
+        self.host
+            .set_nonblocking(false)
+            .map_err(|source| QemuHotForkChildQmpHandshakeError::Configure { source })?;
+        let mut client = crate::QmpClient::connect(self.host)
+            .map_err(|source| QemuHotForkChildQmpHandshakeError::Qmp { source })?;
+        let state = client
+            .query_hot_fork_child_qmp()
+            .map_err(|source| QemuHotForkChildQmpHandshakeError::Qmp { source })?;
+        let exact = state.staged()
+            && state.descriptor_name() == Some(&self.descriptor_name)
+            && state.socket_cookie() == Some(self.socket_cookie)
+            && state.template_generation() == self.template_generation
+            && state.generation() == self.qmp_generation
+            && state.retained_descriptor().is_some()
+            && state.resource_plan_bound()
+            && state.reinitializer_prepared()
+            && state.reinitialized()
+            && state.disposition_complete();
+        if !exact {
+            return Err(QemuHotForkChildQmpHandshakeError::BasisMismatch);
+        }
+
+        Ok(crate::QemuQmpVmStateControlChannel::new(client))
+    }
+}
+
+/// Failure to authenticate one private hot-fork child QMP channel.
+#[derive(Debug, Error)]
+pub enum QemuHotForkChildQmpHandshakeError {
+    /// The retained host stream could not enter blocking QMP mode.
+    #[error("configure private hot-fork child QMP stream failed: {source}")]
+    Configure {
+        /// Exact socket configuration failure.
+        #[source]
+        source: io::Error,
+    },
+    /// QMP greeting, negotiation, query, or strict decoding failed.
+    #[error("private hot-fork child QMP exchange failed: {source}")]
+    Qmp {
+        /// Exact typed QMP failure.
+        #[source]
+        source: crate::QmpError,
+    },
+    /// The child query did not match the retained template endpoint basis.
+    #[error("private hot-fork child QMP basis did not match the retained template endpoint")]
+    BasisMismatch,
+}
+
 pub(super) struct QemuHotForkChildQmpPair {
-    // Both endpoints remain node-owned until a later monitor reinitializer
-    // consumes them or exact cleanup releases the staged contribution.
-    _host: UnixStream,
+    // The node retains both endpoints until the sealed plan permits one linear
+    // host-end transfer; the child endpoint remains for exact stage cleanup.
+    host: Option<UnixStream>,
     child: UnixStream,
     descriptor_name: crate::QmpDescriptorName,
     socket_cookie: u64,
     template_generation: u64,
+    qmp_generation: u64,
     resource_plan_bound: bool,
 }
 
@@ -78,6 +190,8 @@ impl std::fmt::Debug for QemuHotForkChildQmpPair {
             .field("descriptor_name", &self.descriptor_name)
             .field("socket_cookie", &self.socket_cookie)
             .field("template_generation", &self.template_generation)
+            .field("qmp_generation", &self.qmp_generation)
+            .field("host_endpoint_available", &self.host.is_some())
             .field("resource_plan_bound", &self.resource_plan_bound)
             .finish_non_exhaustive()
     }
@@ -90,6 +204,7 @@ impl QemuHotForkChildQmpPair {
             descriptor_name: self.descriptor_name.clone(),
             socket_cookie: self.socket_cookie,
             template_generation: self.template_generation,
+            qmp_generation: self.qmp_generation,
             resource_plan_bound: self.resource_plan_bound,
         }
     }
@@ -136,6 +251,7 @@ impl QemuHotForkChildQmpStage {
             && state.descriptor_name() == Some(&endpoint.descriptor_name)
             && state.socket_cookie() == Some(endpoint.socket_cookie)
             && state.template_generation() == endpoint.template_generation
+            && state.generation() == endpoint.qmp_generation
             && state.retained_descriptor().is_some()
             && state.reinitializer_prepared()
             && !state.reinitialized()
@@ -265,6 +381,7 @@ impl QemuNode {
             && qemu_state.descriptor_name() == Some(&endpoint.descriptor_name)
             && qemu_state.socket_cookie() == Some(endpoint.socket_cookie)
             && qemu_state.template_generation() == template_generation
+            && qemu_state.generation() != 0
             && qemu_state.retained_descriptor().is_some()
             && qemu_state.reinitializer_prepared()
             && !qemu_state.reinitialized()
@@ -279,6 +396,7 @@ impl QemuNode {
                 Some(QemuHotForkChildQmpStage::TransferUncertain(endpoint));
             return Err(QemuHotForkChildQmpStageError::TransferUncertain { source });
         }
+        endpoint.qmp_generation = qemu_state.generation();
         endpoint.resource_plan_bound = false;
         let proof = endpoint.proof(QemuHotForkChildQmpStageState::Installed);
         self.hot_fork_child_qmp_stage = Some(QemuHotForkChildQmpStage::Installed(endpoint));
@@ -291,6 +409,58 @@ impl QemuNode {
         self.hot_fork_child_qmp_stage
             .as_ref()
             .map(QemuHotForkChildQmpStage::proof)
+    }
+
+    /// Transfers the linear host endpoint for the future child's QMP channel.
+    ///
+    /// The complete child resource plan must already retain the exact endpoint.
+    /// The template continues to own its QEMU-side stage and can release that
+    /// contribution independently after the fork owner has consumed this host
+    /// endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the stage is absent, ownership is
+    /// uncertain, the resource plan is not sealed, or the endpoint was already
+    /// transferred.
+    pub fn take_hot_fork_child_qmp_host_endpoint(
+        &mut self,
+    ) -> Result<QemuHotForkChildQmpHostEndpoint, QemuNodeChannelError> {
+        let endpoint = match self.hot_fork_child_qmp_stage.as_mut() {
+            Some(QemuHotForkChildQmpStage::Installed(endpoint)) => endpoint,
+            Some(QemuHotForkChildQmpStage::TransferUncertain(_)) => {
+                return Err(QemuNodeChannelError::new(
+                    "take hot-fork child QMP host endpoint",
+                    "child QMP transfer ownership is uncertain",
+                ));
+            }
+            None => {
+                return Err(QemuNodeChannelError::new(
+                    "take hot-fork child QMP host endpoint",
+                    "node retains no child QMP stage",
+                ));
+            }
+        };
+        if !endpoint.resource_plan_bound {
+            return Err(QemuNodeChannelError::new(
+                "take hot-fork child QMP host endpoint",
+                "child QMP endpoint is not retained by a sealed resource plan",
+            ));
+        }
+        let host = endpoint.host.take().ok_or_else(|| {
+            QemuNodeChannelError::new(
+                "take hot-fork child QMP host endpoint",
+                "child QMP host endpoint was already transferred",
+            )
+        })?;
+
+        Ok(QemuHotForkChildQmpHostEndpoint {
+            host,
+            descriptor_name: endpoint.descriptor_name.clone(),
+            socket_cookie: endpoint.socket_cookie,
+            template_generation: endpoint.template_generation,
+            qmp_generation: endpoint.qmp_generation,
+        })
     }
 
     /// Releases one acknowledged child QMP stage in exact ownership order.
@@ -381,11 +551,125 @@ fn create_qmp_pair(
             .map_err(|source| QemuHotForkChildQmpError::DescriptorName { source })?;
 
     Ok(QemuHotForkChildQmpPair {
-        _host: host,
+        host: Some(host),
         child,
         descriptor_name,
         socket_cookie,
         template_generation,
+        qmp_generation: 0,
         resource_plan_bound: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{BufRead, BufReader, Write};
+    use std::thread;
+
+    use serde_json::json;
+
+    use super::*;
+
+    fn scripted_child_qmp(
+        mut stream: UnixStream,
+        descriptor_name: &crate::QmpDescriptorName,
+        socket_cookie: u64,
+        template_generation: u64,
+        qmp_generation: u64,
+        disposition_complete: bool,
+    ) -> thread::JoinHandle<()> {
+        let descriptor_name = descriptor_name.as_str().to_owned();
+        thread::spawn(move || {
+            stream
+                .write_all(b"{\"QMP\":{\"version\":{},\"capabilities\":[\"oob\"]}}\r\n")
+                .expect("write child QMP greeting");
+            let reader_stream = stream.try_clone().expect("clone scripted QMP stream");
+            let mut reader = BufReader::new(reader_stream);
+            let mut request = String::new();
+            reader
+                .read_line(&mut request)
+                .expect("read QMP capabilities request");
+            assert!(request.contains("qmp_capabilities"));
+            stream
+                .write_all(b"{\"return\":{}}\r\n")
+                .expect("write QMP capabilities response");
+
+            request.clear();
+            reader
+                .read_line(&mut request)
+                .expect("read child QMP state query");
+            assert!(request.contains("crucible-hot-fork-child-qmp"));
+            let response = json!({
+                "return": {
+                    "schema-version": 2,
+                    "generation": qmp_generation,
+                    "template-generation": template_generation,
+                    "staged": true,
+                    "fdname": descriptor_name,
+                    "socket-cookie": socket_cookie,
+                    "retained-fd": 33,
+                    "resource-plan-bound": true,
+                    "nonblocking-unix-stream": true,
+                    "reinitializer-prepared": true,
+                    "reinitialized": disposition_complete,
+                    "disposition-complete": disposition_complete,
+                    "readiness-proof-acknowledged": false,
+                }
+            });
+            writeln!(stream, "{response}").expect("write child QMP state response");
+        })
+    }
+
+    fn endpoint(
+        host: UnixStream,
+        descriptor_name: crate::QmpDescriptorName,
+    ) -> QemuHotForkChildQmpHostEndpoint {
+        QemuHotForkChildQmpHostEndpoint {
+            host,
+            descriptor_name,
+            socket_cookie: 41,
+            template_generation: 7,
+            qmp_generation: 11,
+        }
+    }
+
+    #[test]
+    fn child_qmp_host_endpoint_authenticates_complete_generation_basis() {
+        let (host, child) = UnixStream::pair().expect("child QMP socket pair");
+        let name = crate::QmpDescriptorName::new("crucible-hfork-qmp-v1-0000000000000029")
+            .expect("child QMP descriptor name");
+        let server = scripted_child_qmp(child, &name, 41, 7, 11, true);
+
+        let channel = endpoint(host, name).connect();
+        assert!(channel.is_ok());
+        server.join().expect("scripted child QMP server");
+    }
+
+    #[test]
+    fn child_qmp_host_endpoint_rejects_a_foreign_generation() {
+        let (host, child) = UnixStream::pair().expect("child QMP socket pair");
+        let name = crate::QmpDescriptorName::new("crucible-hfork-qmp-v1-0000000000000029")
+            .expect("child QMP descriptor name");
+        let server = scripted_child_qmp(child, &name, 41, 7, 12, true);
+
+        assert!(matches!(
+            endpoint(host, name).connect(),
+            Err(QemuHotForkChildQmpHandshakeError::BasisMismatch)
+        ));
+        server.join().expect("scripted child QMP server");
+    }
+
+    #[test]
+    fn child_qmp_host_endpoint_rejects_an_incomplete_disposition() {
+        let (host, child) = UnixStream::pair().expect("child QMP socket pair");
+        let name = crate::QmpDescriptorName::new("crucible-hfork-qmp-v1-0000000000000029")
+            .expect("child QMP descriptor name");
+        let server = scripted_child_qmp(child, &name, 41, 7, 11, false);
+
+        assert!(matches!(
+            endpoint(host, name).connect(),
+            Err(QemuHotForkChildQmpHandshakeError::BasisMismatch)
+        ));
+        server.join().expect("scripted child QMP server");
+    }
 }
