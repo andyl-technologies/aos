@@ -2269,8 +2269,11 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   compiles a bounded, deny-unknown-fields version-one TOML schema through the
   same public typed constructors used by canonical decoding, rejects duplicate
   semantic keys before output, and durably creates one non-overwriting binary
-  policy record while reporting its exact content identity. Rich lineage and
-  scenario manifest authoring and policy-file selector expressions remain open.
+  policy record while reporting its exact content identity. The adjacent strict
+  lineage compiler binds semantic scenario/genesis identities to their exact
+  imported artifacts and every execution-compatibility version through the
+  same bounded non-overwriting path. Rich scenario manifest authoring and
+  policy-file selector expressions remain open.
 - [ ] **T-CAM-8.2** Implement graph/frontier/choices/findings/explain/compare
   queries with branch-point/source/provenance views, pagination, and versioned
   JSON. Snapshot-bound graph/frontier/choices/findings traversal is exposed

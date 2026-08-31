@@ -3,7 +3,6 @@
 use super::*;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Read, Write};
 
 use crucible_campaign::{
     CampaignMode, CampaignSeed, ChoicePolicy, ExactRational, ExplorerPolicy, FairnessPolicy,
@@ -11,6 +10,8 @@ use crucible_campaign::{
     RetentionPolicy, ScenarioDefId,
 };
 use serde::{Deserialize, Serialize};
+
+use super::authoring::{read_bounded_utf8, write_new_record};
 
 const CAMPAIGN_POLICY_AUTHORING_SCHEMA_VERSION: u32 = 1;
 const MAX_CAMPAIGN_POLICY_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
@@ -137,7 +138,11 @@ pub(super) fn compile_campaign_policy(
     input: &Path,
     output: &Path,
 ) -> Result<CampaignPolicyCompilationReport, CliError> {
-    let text = read_policy_manifest(input)?;
+    let text = read_bounded_utf8(
+        input,
+        "campaign policy manifest",
+        MAX_CAMPAIGN_POLICY_MANIFEST_BYTES,
+    )?;
     let authored: AuthoredCampaignPolicy = toml::from_str(&text).map_err(|error| {
         usage_error(format!(
             "invalid campaign policy manifest at {}: {error}",
@@ -150,7 +155,7 @@ pub(super) fn compile_campaign_policy(
         .map_err(|error| usage_error(format!("invalid authored campaign policy: {error}")))?;
     let bytes = policy.canonical_bytes();
 
-    write_new_policy_record(output, &bytes)?;
+    write_new_record(output, "campaign policy record", &bytes)?;
     Ok(CampaignPolicyCompilationReport {
         schema: CAMPAIGN_POLICY_COMPILATION_REPORT_SCHEMA,
         input: input.display().to_string(),
@@ -373,93 +378,6 @@ fn parse_campaign_seed(encoded: &str) -> Result<CampaignSeed, CliError> {
             .map_err(|_| usage_error("campaign_seed contains invalid hexadecimal"))?;
     }
     Ok(CampaignSeed::from_bytes(bytes))
-}
-
-fn read_policy_manifest(path: &Path) -> Result<String, CliError> {
-    let file = File::open(path).map_err(|error| {
-        CliError::Io(io::Error::new(
-            error.kind(),
-            format!(
-                "could not open campaign policy manifest at {}: {error}",
-                path.display()
-            ),
-        ))
-    })?;
-    let maximum = u64::try_from(MAX_CAMPAIGN_POLICY_MANIFEST_BYTES)
-        .map_err(|_| backend_error("campaign policy manifest bound exceeds u64"))?;
-    let mut bytes = Vec::new();
-    file.take(maximum.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|error| {
-            CliError::Io(io::Error::new(
-                error.kind(),
-                format!(
-                    "could not read campaign policy manifest at {}: {error}",
-                    path.display()
-                ),
-            ))
-        })?;
-    if bytes.len() > MAX_CAMPAIGN_POLICY_MANIFEST_BYTES {
-        return Err(usage_error(format!(
-            "campaign policy manifest exceeds {MAX_CAMPAIGN_POLICY_MANIFEST_BYTES} bytes"
-        )));
-    }
-    String::from_utf8(bytes).map_err(|_| usage_error("campaign policy manifest is not valid UTF-8"))
-}
-
-fn write_new_policy_record(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|error| {
-        CliError::Io(io::Error::new(
-            error.kind(),
-            format!(
-                "could not create temporary campaign policy record in {}: {error}",
-                parent.display()
-            ),
-        ))
-    })?;
-    temporary.write_all(bytes).map_err(|error| {
-        CliError::Io(io::Error::new(
-            error.kind(),
-            format!(
-                "could not write campaign policy record at {}: {error}",
-                path.display()
-            ),
-        ))
-    })?;
-    temporary.as_file().sync_all().map_err(|error| {
-        CliError::Io(io::Error::new(
-            error.kind(),
-            format!(
-                "could not sync campaign policy record at {}: {error}",
-                path.display()
-            ),
-        ))
-    })?;
-    temporary.persist_noclobber(path).map_err(|error| {
-        CliError::Io(io::Error::new(
-            error.error.kind(),
-            format!(
-                "could not install new campaign policy record at {}: {}",
-                path.display(),
-                error.error
-            ),
-        ))
-    })?;
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| {
-            CliError::Io(io::Error::new(
-                error.kind(),
-                format!(
-                    "could not sync campaign policy output directory {}: {error}",
-                    parent.display()
-                ),
-            ))
-        })
 }
 
 #[cfg(test)]

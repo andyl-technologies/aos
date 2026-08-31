@@ -2207,6 +2207,31 @@ fn campaign_status_watch_and_list_parse_under_the_nested_cli() {
             && output == &PathBuf::from("/tmp/policy.bin")
     ));
 
+    let lineage = Cli::try_parse_from([
+        "crucible",
+        "campaign",
+        "lineage",
+        "compile",
+        "/tmp/lineage.toml",
+        "--output",
+        "/tmp/lineage.bin",
+    ])
+    .expect("offline campaign lineage compilation arguments");
+    assert!(matches!(
+        lineage.command,
+        Commands::Campaign(CampaignArgs {
+            socket: None,
+            principal: None,
+            command: CampaignCommand::Lineage(CampaignLineageArgs {
+                command: CampaignLineageCommand::Compile(CampaignLineageCompileArgs {
+                    ref input,
+                    ref output,
+                }),
+            }),
+        }) if input == &PathBuf::from("/tmp/lineage.toml")
+            && output == &PathBuf::from("/tmp/lineage.bin")
+    ));
+
     let missing_connection = Cli::try_parse_from(["crucible", "campaign", "status", "example"])
         .expect("connected campaign arguments are checked before dispatch");
     let Commands::Campaign(missing_connection_args) = &missing_connection.command else {
