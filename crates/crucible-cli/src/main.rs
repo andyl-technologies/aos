@@ -316,6 +316,8 @@ enum CampaignCommand {
     Scenario(CampaignScenarioArgs),
     /// Compile a canonical non-genesis schedule into an importable configuration bundle.
     Configuration(CampaignConfigurationArgs),
+    /// Compile strict human-authored decisions into canonical Schedule V2 bytes.
+    Schedule(CampaignScheduleArgs),
     /// Compile strict human-authored campaign policy manifests.
     Policy(CampaignPolicyArgs),
     /// Compile strict human-authored campaign lineage manifests.
@@ -555,6 +557,28 @@ struct CampaignConfigurationCompileArgs {
     schedule: PathBuf,
     /// New directory that will receive scenario.bin, schedule.bin, and import.toml.
     #[arg(long, value_name = "DIR", required = true)]
+    output: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignScheduleArgs {
+    #[command(subcommand)]
+    command: CampaignScheduleCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignScheduleCommand {
+    /// Compile a strict TOML decision list into canonical Schedule V2 bytes.
+    Compile(CampaignScheduleCompileArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignScheduleCompileArgs {
+    /// Strict version-one campaign decision TOML.
+    #[arg(value_name = "INPUT")]
+    input: PathBuf,
+    /// New file that will receive the canonical Schedule V2 body.
+    #[arg(long, value_name = "OUTPUT", required = true)]
     output: PathBuf,
 }
 

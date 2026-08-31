@@ -109,6 +109,9 @@ To import a recorded non-genesis configuration, pair the same canonical
 scenario TOML with a nonempty compact Schedule V2:
 
 ```sh
+./result/bin/crucible campaign schedule compile ./decisions.toml \
+  --output ./schedule.bin \
+  --format json
 ./result/bin/crucible campaign configuration compile ./scenario.toml \
   ./schedule.bin \
   --output ./configuration-bundle \
@@ -127,6 +130,54 @@ author. The compiler derives and independently decodes the exact configuration
 artifact before atomically installing the same three-file, no-replace import
 bundle. Its report includes the scenario and configuration semantic IDs,
 verifier-derived artifact IDs, and decision count.
+
+When a Schedule V2 is not already recorded, `campaign schedule compile` accepts
+a strict version-one TOML decision list. It supports the four current offline-
+authorable decision shapes and both preemption actions:
+
+```toml
+schema_version = 1
+
+[[decisions]]
+kind = "delivery-order"
+at_ticks = 100
+
+[[decisions.order]]
+virtual_time_ticks = 100
+consumer = { node = "server", kind = "vm" }
+producer = { node = "network", kind = "network" }
+sequence = 7
+
+[[decisions]]
+kind = "rng-draw"
+stream_domain = "crucible.network.loss"
+stream_name = "client--server"
+value = 42
+
+[[decisions]]
+kind = "override"
+point = "scheduler.network.delivery"
+choice = "drop"
+
+[[decisions]]
+kind = "preemption"
+node = "server"
+retired = 100000
+action = "vcpu-switch"
+from_vcpu = 0
+to_vcpu = 1
+```
+
+An interrupt preemption instead uses `action = "interrupt-at"` with
+`target_vcpu` and `irq`. The manifest and output are each bounded to 32 MiB;
+the manifest contains 1 through 65,536 decisions, each delivery order contains
+1 through 65,536 events, and authored strings are bounded to 4,096 bytes without
+NUL or line breaks. The compiler rejects unknown fields and variants, re-decodes
+and byte-compares the canonical Schedule V2, and never replaces an existing
+output. It does not author legacy `AppRandom` or campaign `Selection` decisions.
+Selections require authenticated opportunity/domain/origin resolution, and
+runtime replay remains the final authority that an authored scheduling point is
+valid for the scenario.
 
 Author the campaign lineage and policy as strict TOML and compile both offline
 before creating the campaign:

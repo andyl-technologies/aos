@@ -23,6 +23,8 @@ mod policy;
 mod ranking;
 #[path = "campaign/scenario.rs"]
 mod scenario;
+#[path = "campaign/schedule.rs"]
+mod schedule;
 #[path = "campaign/snapshot.rs"]
 mod snapshot;
 #[path = "campaign/validation.rs"]
@@ -44,6 +46,7 @@ use ranking::{
     query_campaign_rankings, render_campaign_rankings, validate_campaign_rankings_command,
 };
 use scenario::{compile_campaign_scenario, render_campaign_scenario_compilation};
+use schedule::{compile_campaign_schedule, render_campaign_schedule_compilation};
 use snapshot::{
     query_campaign_snapshot, render_campaign_snapshot, validate_campaign_snapshot_command,
 };
@@ -357,6 +360,18 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
         );
         return Ok(());
     }
+    if let CampaignCommand::Schedule(schedule) = &args.command {
+        let report = match &schedule.command {
+            CampaignScheduleCommand::Compile(compile) => {
+                compile_campaign_schedule(&compile.input, &compile.output)?
+            }
+        };
+        println!(
+            "{}",
+            render_campaign_schedule_compilation(&report, cli.output_format())?
+        );
+        return Ok(());
+    }
     if let CampaignCommand::Policy(policy) = &args.command {
         let report = match &policy.command {
             CampaignPolicyCommand::Compile(compile) => compile_campaign_policy(
@@ -449,6 +464,7 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
         }
         CampaignCommand::Scenario(_)
         | CampaignCommand::Configuration(_)
+        | CampaignCommand::Schedule(_)
         | CampaignCommand::Policy(_)
         | CampaignCommand::Lineage(_) => {
             return Err(backend_error(
@@ -552,6 +568,7 @@ fn prepare_campaign_command(
         CampaignCommand::Validate(_) => Ok(None),
         CampaignCommand::Scenario(_) => Ok(None),
         CampaignCommand::Configuration(_) => Ok(None),
+        CampaignCommand::Schedule(_) => Ok(None),
         CampaignCommand::Policy(_) => Ok(None),
         CampaignCommand::Lineage(_) => Ok(None),
         CampaignCommand::Create(create) => {
@@ -2202,6 +2219,7 @@ fn campaign_mutation_spec(
         | CampaignCommand::Fixture(_)
         | CampaignCommand::Scenario(_)
         | CampaignCommand::Configuration(_)
+        | CampaignCommand::Schedule(_)
         | CampaignCommand::Policy(_)
         | CampaignCommand::Lineage(_)
         | CampaignCommand::Create(_)

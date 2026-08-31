@@ -2279,8 +2279,11 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   without opening repository state. Non-genesis configuration authoring now
   admits a nonempty byte-canonical Schedule V2, rejects legacy/empty/unresolved-
   selection inputs, independently verifies the derived configuration artifact,
-  and installs the same bounded no-replace import bundle. Human-authored
-  decision schemas remain open. Policy authoring now resolves exact selectable
+  and installs the same bounded no-replace import bundle. Strict offline
+  decision authoring now compiles bounded `delivery-order`, `rng-draw`,
+  `override`, and both `preemption` forms into a byte-checked canonical Schedule
+  V2 without exposing legacy app-random or repository-authenticated selection
+  construction. Policy authoring now resolves exact selectable
   IDs and bounded all-tags predicates through an exact matching canonical
   scenario, rejects absent/ambiguous/drifted selectors before output, and emits
   the unchanged stable-name canonical policy identity. The documented
