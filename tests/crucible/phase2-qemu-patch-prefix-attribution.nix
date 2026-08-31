@@ -767,6 +767,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0174-crucible-bind-child-monitor-ownership-basis.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

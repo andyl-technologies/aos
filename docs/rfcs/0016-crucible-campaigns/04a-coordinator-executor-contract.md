@@ -2812,6 +2812,15 @@ one-shot child runtime status, and authenticated private-channel query. A
 changed or foreign generation fails closed. The inventory and binding remain
 observational prerequisites and do not satisfy the separate child monitor
 reconstruction or fork authority.
+Template contract version 20, resource-stage version 10, and child-QMP version
+4 additionally retain the exact admitted `MonitorQMP`, monitor `IOThread`, and
+dispatcher coroutine with that generation as one QEMU-private ownership basis.
+Staging revalidates the complete profile and exact objects immediately before
+commit and on an idempotent restage; release clears the basis. QAPI exposes only
+whether the basis is bound, never its process-private pointers. This closes an
+ownership prerequisite for future monitor reconstruction but still does not
+dispose or recreate a monitor, invoke `fork(2)`, release input, or acknowledge
+readiness bit 7 or 8.
 
 The driver owns selection application, stop-boundary execution, and candidate
 construction but never assignment or daemon-epoch identity. This adapter cannot

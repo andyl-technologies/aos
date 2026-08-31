@@ -1210,6 +1210,13 @@
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "child-QMP staging now admits only the complete single-monitor supported profile and binds its exact lifecycle generation through the sealed resource plan, one-shot runtime status, and authenticated private-channel query; destructive monitor reconstruction, fork invocation, guest admission, and readiness bits 7 and 8 remain open";
     }
+    {
+      file = "0174-crucible-bind-child-monitor-ownership-basis.patch";
+      catalogName = "crucible-hot-fork-child-monitor-ownership-basis";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "child-QMP staging now retains the exact admitted MonitorQMP object, monitor I/O thread, dispatcher coroutine, and lifecycle generation as one QEMU-private future-child ownership basis, revalidates that basis before commit and idempotent restage, and clears it on release; destructive monitor reconstruction, fork invocation, guest admission, and readiness bits 7 and 8 remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

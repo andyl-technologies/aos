@@ -153,6 +153,7 @@ impl QemuHotForkChildQmpHostEndpoint {
             && state.monitor_generation() == self.monitor_generation
             && state.retained_descriptor().is_some()
             && state.resource_plan_bound()
+            && state.monitor_basis_bound()
             && state.reinitializer_prepared()
             && state.reinitialized()
             && state.disposition_complete();
@@ -272,6 +273,7 @@ impl QemuHotForkChildQmpStage {
             && state.generation() == endpoint.qmp_generation
             && state.monitor_generation() == endpoint.monitor_generation
             && state.retained_descriptor().is_some()
+            && state.monitor_basis_bound()
             && state.reinitializer_prepared()
             && !state.reinitialized()
             && state.resource_plan_bound();
@@ -329,8 +331,9 @@ impl QemuNode {
     /// resource plan. The host and node retain the fresh socket pair while QEMU
     /// owns an authenticated duplicate of the child endpoint. No inherited
     /// monitor is closed or reconstructed and no fork occurs here. QEMU does
-    /// prepare a one-shot adapter that binds the future child runtime to this
-    /// exact endpoint and template/QMP generation basis.
+    /// prepare a one-shot adapter and retain the exact supported monitor,
+    /// I/O-thread, dispatcher, and lifecycle-generation basis that a future
+    /// child runtime must consume with this endpoint and transaction.
     ///
     /// # Errors
     ///
@@ -403,6 +406,7 @@ impl QemuNode {
             && qemu_state.generation() != 0
             && qemu_state.monitor_generation() != 0
             && qemu_state.retained_descriptor().is_some()
+            && qemu_state.monitor_basis_bound()
             && qemu_state.reinitializer_prepared()
             && !qemu_state.reinitialized()
             && !qemu_state.resource_plan_bound();
@@ -627,7 +631,7 @@ mod tests {
             assert!(request.contains("crucible-hot-fork-child-qmp"));
             let response = json!({
                 "return": {
-                    "schema-version": 3,
+                    "schema-version": 4,
                     "generation": qmp_generation,
                     "template-generation": template_generation,
                     "monitor-generation": monitor_generation,
@@ -637,6 +641,7 @@ mod tests {
                     "retained-fd": 33,
                     "resource-plan-bound": true,
                     "nonblocking-unix-stream": true,
+                    "monitor-basis-bound": true,
                     "reinitializer-prepared": true,
                     "reinitialized": disposition_complete,
                     "disposition-complete": disposition_complete,
