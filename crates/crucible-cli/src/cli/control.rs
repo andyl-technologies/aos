@@ -383,10 +383,9 @@ where
             client,
             session,
             |summary| {
-                matches!(
-                    summary.state,
-                    LiveStateKind::Paused | LiveStateKind::Stopped
-                ) && summary.quanta_stepped > before.quanta_stepped
+                summary.state == LiveStateKind::Stopped
+                    || (summary.state == LiveStateKind::Paused
+                        && summary.quanta_stepped > before.quanta_stepped)
             },
             "completed bounded-run quantum boundary",
             Duration::from_millis(RUN_INTERACTIVE_ACK_QUANTA_BOUND),
@@ -706,6 +705,11 @@ where
                 session.clone(),
                 watch_statuses,
                 run_plan.watch_streams_live_status,
+                run_plan.observer_profile.event_timeout_ms,
+                streamed_events,
+                streamed_event_frames,
+                coverage_events,
+                streamed_event_cursor,
             )
             .await;
         }
@@ -719,6 +723,11 @@ where
                 session.clone(),
                 watch_statuses,
                 run_plan.watch_streams_live_status,
+                run_plan.observer_profile.event_timeout_ms,
+                streamed_events,
+                streamed_event_frames,
+                coverage_events,
+                streamed_event_cursor,
             )
             .await;
         }
@@ -843,71 +852,6 @@ pub(super) async fn observe_next_state_update(
         Ok(Err(error)) => Err(control_client_error(error)),
         Err(_) => Ok(false),
     }
-}
-
-// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn stop_budget_timed_out_session<C>(
-    client: &C,
-    // crucible-lint: allow host-nondeterminism-state -- the typed client stream is observation transport; the session engine remains authoritative.
-    control: &crucible_api::ClientControlStream,
-    command_id: &mut u64,
-    acknowledged_commands: &mut Vec<SessionCommandKind>,
-    final_state: String,
-    initial: crucible_api::SessionSummary,
-    mut watch_statuses: Vec<String>,
-    watch_streams_live_status: bool,
-) -> Result<RunObservation, CliError>
-where
-    C: ControlClient + Sync,
-{
-    let stopped = if initial.state == LiveStateKind::Stopped {
-        initial
-    } else {
-        acknowledge_stream_command(
-            control,
-            command_id,
-            SessionCommandKind::ExhaustBudget,
-            acknowledged_commands,
-        )
-        .await?;
-        let mut stopped = initial;
-        for _ in 0..RUN_INTERACTIVE_ACK_QUANTA_BOUND {
-            let sessions = client.list_sessions().await.map_err(control_client_error)?;
-            let Some(session) = sessions
-                .sessions
-                .iter()
-                .find(|summary| summary.session == stopped.session)
-            else {
-                break;
-            };
-            stopped = session.clone();
-            if watch_streams_live_status {
-                watch_statuses.push(run_watch_status(session));
-            }
-            if session.state == LiveStateKind::Stopped {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-        stopped
-    };
-
-    Ok(RunObservation {
-        final_state,
-        outcome: stopped.outcome,
-        terminal_savepoint: stopped.terminal_savepoint,
-        terminal_configuration: query_run_terminal_configuration(
-            control,
-            command_id,
-            acknowledged_commands,
-        )
-        .await?,
-        frontier_ticks: stopped.frontier.ticks,
-        quanta: stopped.quanta_stepped,
-        budget_timed_out: stopped.outcome == Some(OutcomeKind::Timeout),
-        watch_statuses,
-    })
 }
 
 // crucible-lint: allow host-nondeterminism-state -- formatting a validated API summary cannot admit host-derived engine state.

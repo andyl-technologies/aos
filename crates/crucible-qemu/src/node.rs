@@ -791,6 +791,7 @@ pub struct QemuNode {
     active_gdbstub: Option<QemuGdbstubProxyServer>,
     pending_preemption: Option<crucible::PreemptionDecision>,
     pending_network_outputs: Vec<QemuNodeEmittedFrame>,
+    pending_priming_observations: Vec<ObservableEvent>,
     next_network_output_sequence: u64,
     console_observation: Option<QemuConsoleObservation>,
     fault_capabilities: Vec<FaultCapabilityRowV1>,
@@ -977,6 +978,7 @@ impl QemuNode {
             active_gdbstub: None,
             pending_preemption: None,
             pending_network_outputs: Vec::new(),
+            pending_priming_observations: Vec::new(),
             next_network_output_sequence: 0,
             console_observation: None,
             fault_capabilities: Vec::new(),
@@ -1392,6 +1394,33 @@ impl QemuNode {
         self
     }
 
+    /// Retains setup-time observations for the first authoritative scheduler drain.
+    #[must_use]
+    pub(crate) fn with_priming_observable_events(
+        mut self,
+        mut events: Vec<ObservableEvent>,
+        ready_boundary: VirtualTime,
+    ) -> Self {
+        for event in &mut events {
+            event.set_observation_time(ready_boundary);
+        }
+        self.pending_priming_observations = events;
+        self
+    }
+
+    fn drain_scheduler_observable_events(&mut self) -> Result<Vec<ObservableEvent>, QemuNodeError> {
+        let mut boundary_events = self
+            .channels
+            .shmem_hot_path
+            .drain_observable_events()
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            })?;
+        let mut events = std::mem::take(&mut self.pending_priming_observations);
+        events.append(&mut boundary_events);
+        Ok(events)
+    }
+
     /// Attaches a configured mediated gdbstub channel to this node wrapper.
     #[must_use]
     pub fn with_gdbstub(mut self, gdbstub: QemuGdbstubChannelConfig) -> Self {
@@ -1727,13 +1756,7 @@ impl QemuNode {
         event_log: &mut EventLog,
     ) -> Result<(AdvanceOutcome, SchedulerEventLogAppend), QemuNodeError> {
         let report = self.advance_to_ceiling_report(ceiling)?;
-        let events = self
-            .channels
-            .shmem_hot_path
-            .drain_observable_events()
-            .map_err(|source| {
-                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
-            })?;
+        let events = self.drain_scheduler_observable_events()?;
         let appended = event_log
             .append_observable_events(events)
             .map_err(|source| QemuNodeError::CoverageEventLog {
@@ -2181,13 +2204,7 @@ impl QemuNode {
         &mut self,
         event_log: &mut EventLog,
     ) -> Result<(QemuShutdownReport, SchedulerEventLogAppend), QemuNodeError> {
-        let events = self
-            .channels
-            .shmem_hot_path
-            .drain_observable_events()
-            .map_err(|source| {
-                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
-            })?;
+        let events = self.drain_scheduler_observable_events()?;
         let appended = event_log
             .append_observable_events(events)
             .map_err(|source| QemuNodeError::CoverageEventLog {
@@ -2305,15 +2322,8 @@ impl SimulationBackend for QemuNode {
 
     fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, BackendError> {
         let mut events = self
-            .channels
-            .shmem_hot_path
-            .drain_observable_events()
-            .map_err(|source| {
-                BackendError::from(QemuNodeError::from_channel(
-                    QemuNodeChannelPlane::ShmemHotPath,
-                    source,
-                ))
-            })?;
+            .drain_scheduler_observable_events()
+            .map_err(BackendError::from)?;
         if let Some(console) = self.console_observation.as_mut() {
             let bytes = console
                 .spool
