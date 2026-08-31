@@ -122,6 +122,7 @@ campaign explicitly admits defaults; otherwise validation fails.
 
 ```text
 crucible campaign scenario compile SCENARIO.toml --output BUNDLE
+crucible campaign schedule compile DECISIONS.toml --output SCHEDULE.bin
 crucible campaign configuration compile SCENARIO.toml SCHEDULE.bin --output BUNDLE
 crucible campaign lineage compile LINEAGE.toml --output LINEAGE.bin
 crucible campaign policy compile POLICY.toml [--scenario SCENARIO.toml] --output POLICY.bin
@@ -175,6 +176,21 @@ manifest. An existing destination is never replaced. The result reports the
 exact semantic `ScenarioDefId` and genesis `ConfigurationId` together with the
 verifier-derived `ScenarioArtifactId` and `ConfigurationArtifactId`; no
 repository or daemon is opened.
+
+`campaign schedule compile` accepts at most 32 MiB of strict, deny-unknown-
+fields version-one TOML and writes a nonempty canonical Schedule V2 without
+replacing an existing path. The closed `[[decisions]]` variants are
+`delivery-order`, `rng-draw`, `override`, and `preemption`; preemption carries
+an `action` of `vcpu-switch` or `interrupt-at`. One manifest contains at most
+65,536 decisions, one delivery order contains 1 through 65,536 events, and each
+authored string contains 1 through 4,096 bytes without NUL or line breaks. The
+compiler re-decodes and byte-compares its output before success and reports the
+exact Schedule content hash, count, and byte length. It intentionally cannot
+author legacy `AppRandom` decisions or structurally embedded `Selection`
+decisions: new app-random schedules use the typed model, while selections
+require repository-backed opportunity, domain, and origin validation. Runtime
+replay remains authoritative for whether an authored scheduling point exists
+in the selected scenario.
 
 `campaign configuration compile` admits a nonempty compact Schedule V2 beside
 the same strict canonical scenario TOML. Each input and output body is bounded
