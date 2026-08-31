@@ -803,7 +803,7 @@ where
     /// # Errors
     ///
     /// Returns [`QmpError`] when the query fails or the response violates the
-    /// closed version-1 contract.
+    /// closed version-2 contract.
     pub fn query_hot_fork_child_qmp(&mut self) -> Result<QmpHotForkChildQmpState, QmpError> {
         let response = self.send_command_return(QmpCommand::HotForkChildQmp {
             action: HotForkChildQmpAction::Query,

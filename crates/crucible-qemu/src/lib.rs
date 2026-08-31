@@ -236,6 +236,7 @@ pub use node::{
     MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES, QemuHotForkChildDiagnosticCapture,
     QemuHotForkChildDiagnosticDrain, QemuHotForkChildDiagnosticStageError,
     QemuHotForkChildDiagnosticStageProof, QemuHotForkChildDiagnosticStageState,
+    QemuHotForkChildQmpHandshakeError, QemuHotForkChildQmpHostEndpoint,
     QemuHotForkChildQmpStageError, QemuHotForkChildQmpStageProof, QemuHotForkChildQmpStageState,
     QemuHotForkPluginEndpointStageError, QemuHotForkPluginEndpointStageProof,
     QemuHotForkPluginEndpointStageState, QemuHotForkPrivateRingMapping,

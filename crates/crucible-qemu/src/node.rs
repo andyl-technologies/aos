@@ -70,6 +70,7 @@ pub use error::{QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeError};
 use hot_fork_child_qmp::QemuHotForkChildQmpStage;
 #[cfg(target_os = "linux")]
 pub use hot_fork_child_qmp::{
+    QemuHotForkChildQmpHandshakeError, QemuHotForkChildQmpHostEndpoint,
     QemuHotForkChildQmpStageError, QemuHotForkChildQmpStageProof, QemuHotForkChildQmpStageState,
 };
 #[cfg(target_os = "linux")]
