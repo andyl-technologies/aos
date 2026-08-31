@@ -352,12 +352,13 @@
                   \) -print | while IFS= read -r file; do
                     audit_build_path "$file"
 
-                    # GDB auto-load helpers conventionally include the full
-                    # shared-library SONAME before their `-gdb.py` suffix.
-                    # Audit their text for build paths, but do not classify
-                    # the Python source as a shared object from its basename.
+                    # GDB auto-load helpers and dSYM relocation maps
+                    # conventionally include the full shared-library name in
+                    # their source or metadata basename. Audit their text for
+                    # build paths, but do not classify them as shared objects.
                     case "$file" in
                       *-gdb.py) continue ;;
+                      *.dSYM/Contents/Resources/Relocations/*/*.dylib.yml) continue ;;
                     esac
 
                     magic=$(od -An -tx1 -N4 "$file" 2>/dev/null | tr -d ' \n')

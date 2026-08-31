@@ -364,6 +364,12 @@
         configModuleDependencies = preparedConfigModule.dependencyOutputs;
       }
       else {};
+    darwinCrossPhases = builtins.map (
+      phase:
+        if builtins.isAttrs phase && (phase.name or null) == "fixup"
+        then phases.darwinCrossFixupPhase
+        else phase
+    ) (args.phases or []);
     lowerArgs =
       # `configModule` is an mkDerivation-level arg consumed here, not passed
       # down to the raw builder (mirrors how `expose` is handled).
@@ -378,6 +384,13 @@
           builtins.map spliceBuildDependency (args.buildDeps or [])
           ++ [resolvedBuildPackages.nuke-references];
         passthru = (args.passthru or {}) // exposeAttrs // configModuleAttrs;
+      }
+      // lib.optionalAttrs (
+        args ? phases
+        && stdenv.buildPlatform.system != stdenv.hostPlatform.system
+        && stdenv.hostPlatform.objectFormat == "macho"
+      ) {
+        phases = darwinCrossPhases;
       }
       // exposeAttrs;
     drv = rawMkDerivation lowerArgs;
