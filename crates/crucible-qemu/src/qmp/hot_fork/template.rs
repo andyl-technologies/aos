@@ -15,7 +15,7 @@ use crate::qmp::{QmpCommandKind, QmpError};
 /// QMP command name used for QEMU's retained template-preparation coordinator.
 pub const QMP_HOT_FORK_TEMPLATE_COMMAND: &str = "crucible-hot-fork-template";
 /// Version of the QEMU-owned template-preparation transaction contract.
-pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 19;
+pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 20;
 
 const QMP_HOT_FORK_AIO_PROOF: u64 = 1_u64 << 3;
 const QMP_HOT_FORK_RCU_PROOF: u64 = 1_u64 << 4;
@@ -680,7 +680,7 @@ fn resource_stage_shape_valid(
         state.parent_process_generation == 0 && state.child_process_generation == 0
     };
 
-    schema_version == 9
+    schema_version == 10
         && readiness_proof_acknowledged == expected_readiness_proof
         && child_plan_shape
         && state.diagnostics_resource_plan_bound == state.plugin_child_plan_bound
@@ -721,7 +721,7 @@ mod tests {
     fn resource_stage_requires_exact_template_and_private_ring_generations() {
         let plugin_barrier = QmpHotForkPluginBarrierState::one_quiescent(6, 9);
         let worker_mask = plugin_barrier.worker_mask();
-        let schema_version = 9;
+        let schema_version = 10;
         let bound = QmpHotForkTemplateResourceStageState {
             template_generation: 4,
             private_ring_staged: true,

@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "3db7db439ff9dc2223754ed382f7f4ea6cd2cce2d6a12639a4ab1cd838dc1203";
+  patchBranchBundleSha256 = "8f4b5f5714344f6d982d99f87935b16fdcecdc61d3234d2866d862de7703c299";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "cae81bfebca94bbf613711cc1863c2d2665083b9";
+  patchBranchHeadCommit = "6e31b768d81b558db06cef95768a79d69e55be2d";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1665,6 +1665,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "child-QMP staging now admits only the complete single-monitor supported profile and binds its exact lifecycle generation through the sealed resource plan, one-shot runtime status, and authenticated private-channel query; destructive monitor reconstruction, fork invocation, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0174-crucible-bind-child-monitor-ownership-basis.patch";
+      branchSubject = "crucible: bind child monitor ownership basis";
+      branchCommit = "6e31b768d81b558db06cef95768a79d69e55be2d";
+      branchTree = "83b6ea9265c7b2a78f74575f3b1f84326bd85362";
+      catalogName = "crucible-hot-fork-child-monitor-ownership-basis";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "child-QMP staging now retains the exact admitted MonitorQMP object, monitor I/O thread, dispatcher coroutine, and lifecycle generation as one QEMU-private future-child ownership basis, revalidates that basis before commit and idempotent restage, and clears it on release; destructive monitor reconstruction, fork invocation, guest admission, and readiness bits 7 and 8 remain open";
     }
   ];
   catalogOnlyCapabilities = [

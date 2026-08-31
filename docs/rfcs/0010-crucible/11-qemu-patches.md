@@ -3057,6 +3057,31 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   remain incomplete.
 - **Risk:** F.
 
+### crucible-hot-fork-child-monitor-ownership-basis — retain exact monitor owners
+
+- **Patch:** `0174-crucible-bind-child-monitor-ownership-basis.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** child-QMP staging captures the exact admitted `MonitorQMP`,
+  monitor `IOThread`, dispatcher coroutine, and positive monitor lifecycle
+  generation as one QEMU-private ownership basis. QEMU revalidates the full
+  supported profile and exact retained objects immediately before committing
+  the endpoint, repeats that check for an idempotent restage, and clears the
+  basis on release. Child-QMP contract version 4 exposes only the boolean
+  `monitor-basis-bound`; native pointers never cross QAPI or shared memory.
+  Resource-stage contract version 10 and template transaction version 20 bind
+  the stricter contribution.
+- **Micro-test:** the live Phase 6 report pins all three schema versions and the
+  initially absent ownership basis. Structural checks require the private basis
+  type and its prepare, current-profile comparison, and reset operations.
+- **Inertness:** the retained basis is future child-reconstruction authority,
+  not reconstruction itself. This patch does not dispose the inherited
+  monitor, build a child dispatcher, attach the endpoint, invoke a fork,
+  release guest input, or acknowledge readiness bit 7 or 8. Destructive
+  monitor reconstruction and `T-CAM-6.1` through `T-CAM-6.3` remain
+  incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

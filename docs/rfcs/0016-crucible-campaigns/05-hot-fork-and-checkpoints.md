@@ -1186,6 +1186,16 @@ child-channel query. A changed or foreign generation therefore fails before
 resource-plan composition or host-channel acceptance. This binds the audited
 profile to the future child transaction; it still does not dispose or recreate
 the inherited monitor.
+Version 20, resource-stage version 10, and child-QMP schema version 4 retain the
+exact admitted `MonitorQMP`, monitor `IOThread`, dispatcher coroutine, and
+lifecycle generation as one QEMU-private child ownership basis. Staging checks
+the basis against a fresh complete supported-profile inventory immediately
+before commit, idempotent restage repeats that exact comparison, and release
+clears it. The public report exposes only `monitor-basis-bound`, so native QEMU
+pointers remain inside the GPL process. This makes future destructive monitor
+reconstruction target exact retained owners; it does not perform that
+reconstruction, invoke `fork(2)`, release input, or acknowledge proof bit 7 or
+8.
 The sealed QMP contribution now carries those exact template and child-QMP
 generations alongside its descriptor and socket identity. The immediate-child
 resource transaction requires both the plugin and QMP reinitializers to match
