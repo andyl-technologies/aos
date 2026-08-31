@@ -763,6 +763,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0173-crucible-bind-supported-child-qmp-profile.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

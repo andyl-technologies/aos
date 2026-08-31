@@ -2194,6 +2194,15 @@ lock: a parser racing another input callback makes the report incomplete. This
 is an observational prerequisite only. It does not dispose inherited monitors,
 build the child dispatcher, attach the retained private endpoint, release child
 input, invoke `fork(2)`, or acknowledge readiness bit 7 or 8.
+Version 19 of the template report, version 9 of its resource stage, and version
+3 of the child-QMP report now require that complete supported profile when the
+private endpoint is staged. QEMU carries the exact positive monitor lifecycle
+generation through the sealed QMP resource contribution, one-shot child runtime
+basis and status, and host-authenticated private-channel query. Repeated stage,
+resource-plan composition, and the child handshake reject a changed or foreign
+generation. This closes the gap between the observational audit and the future
+child monitor transaction without implementing destructive monitor
+reconstruction, `fork(2)`, input release, or readiness bit 7 or 8.
 These are executable T-CAM-6.1 audit prerequisites, not completion of the task:
 the internal registry identifies two non-coordinator subsystem owners but has
 no safe non-coordinator child disposition. The retained AIO/BH/timer and RCU

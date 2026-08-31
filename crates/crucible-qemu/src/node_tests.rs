@@ -901,6 +901,7 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         let state = crate::QmpHotForkChildQmpState::one_template_staged(
             1,
             template_generation,
+            7,
             name.clone(),
             socket_cookie,
             33,
@@ -948,6 +949,7 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         Ok(crate::QmpHotForkChildQmpState::one_template_staged(
             1,
             *template_generation,
+            7,
             name.clone(),
             *socket_cookie,
             33,
@@ -1538,6 +1540,7 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
         crate::QemuHotForkChildQmpStageState::Installed
     );
     assert_eq!(child_qmp.qmp_generation(), 1);
+    assert_eq!(child_qmp.monitor_generation(), 7);
     assert!(!child_qmp.resource_plan_bound());
     assert!(node.take_hot_fork_child_qmp_host_endpoint().is_err());
     let diagnostic_drain = node.drain_hot_fork_child_diagnostics()?;
@@ -1581,6 +1584,10 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
         child_qmp.template_generation()
     );
     assert_eq!(child_qmp_host.qmp_generation(), child_qmp.qmp_generation());
+    assert_eq!(
+        child_qmp_host.monitor_generation(),
+        child_qmp.monitor_generation()
+    );
     assert!(node.take_hot_fork_child_qmp_host_endpoint().is_err());
     drop(child_qmp_host);
     assert!(node.release_hot_fork_private_ring_mapping().is_err());
