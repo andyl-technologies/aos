@@ -127,7 +127,8 @@ crucible campaign lineage compile LINEAGE.toml --output LINEAGE.bin
 crucible campaign policy compile POLICY.toml [--scenario SCENARIO.toml] --output POLICY.bin
 crucible campaign create NAME --lineage LINEAGE.bin --policy POLICY.bin \
   [--start-command COMMAND]
-crucible campaign validate NAME|POLICY
+crucible campaign validate NAME
+crucible campaign validate --policy POLICY.bin
 crucible campaign start NAME --expected SNAPSHOT --command COMMAND
 crucible campaign pause NAME --expected SNAPSHOT --command COMMAND \
   [--active drain|checkpoint|retry]
@@ -215,6 +216,17 @@ not grant repository authority.
 Referenced scenario/configuration artifacts and generators remain separately
 verifier-imported immutable records; neither authoring file bypasses the
 dependency-ordered import closure.
+`campaign validate --policy POLICY.bin` is a bounded offline operation. It
+strictly decodes the complete canonical policy body, re-encodes it byte for
+byte, re-derives its content identity, and reports its scenario, mode, encoded
+size, and bounded semantic-entry counts without opening a daemon, socket, or
+repository. `campaign validate NAME` is instead a connected authenticated read:
+it sends the ordinary request-bound `GetCampaign` operation through the checked
+client, so success proves the exact current snapshot, lineage, policy, and
+lifecycle projection accepted by the repository owner. The explicit `--policy`
+form prevents a slash-containing campaign name from being confused with a
+filesystem path. Both successful forms use the versioned
+`crucible.cli.campaign-validation.v1` machine report.
 `create` then creates the first snapshot and named ref or exactly replays the
 authenticated genesis basis. With `--start-command`, the client immediately
 submits a separate `Resume` command whose precondition is the exact genesis
