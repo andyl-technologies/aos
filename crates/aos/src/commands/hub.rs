@@ -4904,6 +4904,28 @@ fn parse_binding_ref(value: &str) -> Result<hub_types::BindingRef> {
     })
 }
 
+async fn binding_grant_stable_id(
+    client: &HubClient,
+    reference: &str,
+    mutation: &HubMutationArgs,
+) -> Result<String> {
+    if mutation.plan_id.is_some() || (!reference.contains([':', '/'])) {
+        return Ok(reference.to_string());
+    }
+    let response: hub_types::GetBindingResponse = client
+        .call_topology(
+            HubTopologyMethod::GetBinding,
+            &hub_types::GetBindingRequest {
+                binding: Some(parse_binding_ref(reference)?),
+            },
+        )
+        .await?;
+    Ok(response
+        .binding
+        .context("Hub returned no binding for the canonical reference")?
+        .stable_id)
+}
+
 fn parse_storage_endpoint(value: &str) -> Result<hub_types::StorageEndpoint> {
     let url = reqwest::Url::parse(value).context("parsing storage endpoint URL")?;
     if url.scheme() != "https" {
@@ -5229,11 +5251,13 @@ async fn binding(printer: &Printer, command: &HubBindingCmd) -> Result<()> {
             consumer_scope,
             mutation,
         } => {
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let binding_stable_id = binding_grant_stable_id(&client, binding_ref, mutation).await?;
             consumer_scope_mutation(
                 printer,
                 access,
                 "binding",
-                binding_ref,
+                &binding_stable_id,
                 0,
                 consumer_scope,
                 mutation,
@@ -5248,11 +5272,13 @@ async fn binding(printer: &Printer, command: &HubBindingCmd) -> Result<()> {
             consumer_scope,
             mutation,
         } => {
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let binding_stable_id = binding_grant_stable_id(&client, binding_ref, mutation).await?;
             consumer_scope_mutation(
                 printer,
                 access,
                 "binding",
-                binding_ref,
+                &binding_stable_id,
                 0,
                 consumer_scope,
                 mutation,
