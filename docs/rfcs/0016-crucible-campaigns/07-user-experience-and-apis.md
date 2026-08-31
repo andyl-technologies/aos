@@ -122,6 +122,7 @@ campaign explicitly admits defaults; otherwise validation fails.
 
 ```text
 crucible campaign scenario compile SCENARIO.toml --output BUNDLE
+crucible campaign configuration compile SCENARIO.toml SCHEDULE.bin --output BUNDLE
 crucible campaign lineage compile LINEAGE.toml --output LINEAGE.bin
 crucible campaign policy compile POLICY.toml --output POLICY.bin
 crucible campaign create NAME --lineage LINEAGE.bin --policy POLICY.bin \
@@ -173,6 +174,18 @@ manifest. An existing destination is never replaced. The result reports the
 exact semantic `ScenarioDefId` and genesis `ConfigurationId` together with the
 verifier-derived `ScenarioArtifactId` and `ConfigurationArtifactId`; no
 repository or daemon is opened.
+
+`campaign configuration compile` admits a nonempty compact Schedule V2 beside
+the same strict canonical scenario TOML. Each input and output body is bounded
+to 32 MiB. The supplied schedule MUST round-trip byte-for-byte through the
+current Schedule V2 codec; legacy encodings, empty schedules, and unresolved
+campaign selections are rejected before output. Selection-bearing schedules
+require repository-backed resolution and are not offline-authoritative. The
+compiler derives and independently decodes the exact configuration artifact,
+then atomically installs the same no-replace `scenario.bin`, `schedule.bin`, and
+absolute-path import manifest bundle. Its versioned report retains both input
+paths, semantic scenario/configuration IDs, verifier-derived artifact IDs, and
+the exact decision count.
 
 The strict lineage format binds the semantic scenario and genesis configuration
 to those exact verifier-imported artifact IDs and fixes Crucible, QEMU,

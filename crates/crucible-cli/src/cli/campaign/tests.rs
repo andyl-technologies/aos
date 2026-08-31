@@ -2207,6 +2207,36 @@ fn campaign_status_watch_and_list_parse_under_the_nested_cli() {
             && output == &PathBuf::from("/tmp/scenario-bundle")
     ));
 
+    let configuration = Cli::try_parse_from([
+        "crucible",
+        "campaign",
+        "configuration",
+        "compile",
+        "/tmp/scenario.toml",
+        "/tmp/schedule.bin",
+        "--output",
+        "/tmp/configuration-bundle",
+    ])
+    .expect("offline campaign configuration compilation arguments");
+    assert!(matches!(
+        configuration.command,
+        Commands::Campaign(CampaignArgs {
+            socket: None,
+            principal: None,
+            command: CampaignCommand::Configuration(CampaignConfigurationArgs {
+                command: CampaignConfigurationCommand::Compile(
+                    CampaignConfigurationCompileArgs {
+                        ref scenario,
+                        ref schedule,
+                        ref output,
+                    },
+                ),
+            }),
+        }) if scenario == &PathBuf::from("/tmp/scenario.toml")
+            && schedule == &PathBuf::from("/tmp/schedule.bin")
+            && output == &PathBuf::from("/tmp/configuration-bundle")
+    ));
+
     let policy = Cli::try_parse_from([
         "crucible",
         "campaign",
