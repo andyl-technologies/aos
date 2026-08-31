@@ -663,8 +663,12 @@ in {
       # served by the same native Hub process. The selected endpoint publishes
       # a strong ETag that addresses the immutable documentation object.
       consumer.succeed(
+          f"{CURL} -fsS '{REGISTRY}-/docs?q=&kind=' "
+          "| grep -q 'Typed virtual hosts'"
+      )
+      consumer.succeed(
           f"{CURL} -fsS '{REGISTRY}-/docs?q=virtual' "
-          "| grep -q 'Package documentation'"
+          "| grep -q 'nginx.virtualHosts'"
       )
       consumer.succeed(
           f"{CURL} -fsS {REGISTRY}-/docs/nginx/${pkgs.nginx.version}/x86_64-linux "

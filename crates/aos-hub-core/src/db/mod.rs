@@ -13984,6 +13984,76 @@ impl Database {
         Ok(results)
     }
 
+    /// Lists deterministic documentation projections for initial browsing.
+    ///
+    /// With no kind, this returns one package row per exact documented
+    /// version and platform. A selected kind returns that bounded projection
+    /// directly, without pretending an empty query is full-text search.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn browse_package_documentation(
+        &self,
+        registry_id: i64,
+        kind: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<PackageDocumentationSearchResult>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit.min(100)).context("documentation browse limit overflow")?;
+        let rows = if let Some(kind) = kind.filter(|kind| *kind != "package") {
+            self.backend
+                .query(
+                    "SELECT package_name, package_version, platform, kind,
+                            document_key, title, summary
+                     FROM package_documentation_search
+                     WHERE registry_id = ?1 AND kind = ?2
+                     ORDER BY package_name, package_version, platform, document_key
+                     LIMIT ?3",
+                    &vals![registry_id, kind, limit],
+                )
+                .await?
+        } else {
+            self.backend
+                .query(
+                    "SELECT documentation.package_name,
+                            documentation.package_version,
+                            documentation.platform,
+                            'package',
+                            documentation.package_name,
+                            documentation.package_name,
+                            package.description
+                     FROM package_documentation documentation
+                     JOIN packages package
+                       ON package.registry_id = documentation.registry_id
+                      AND package.name = documentation.package_name
+                     WHERE documentation.registry_id = ?1
+                     ORDER BY documentation.package_name,
+                              documentation.package_version,
+                              documentation.platform
+                     LIMIT ?2",
+                    &vals![registry_id, limit],
+                )
+                .await?
+        };
+        rows.into_iter()
+            .map(|row| {
+                Ok(PackageDocumentationSearchResult {
+                    package_name: row.get(0)?,
+                    package_version: row.get(1)?,
+                    platform: row.get(2)?,
+                    kind: row.get(3)?,
+                    key: row.get(4)?,
+                    title: row.get(5)?,
+                    summary: row.get(6)?,
+                    score: 0,
+                })
+            })
+            .collect()
+    }
+
     /// Lists signed direct-delivery images belonging to verified releases.
     ///
     /// The rows come only from exact commits named by verified signed release
@@ -27155,6 +27225,11 @@ source_nar_hash = ""
         assert_eq!(search.len(), 1);
         assert_eq!(search[0].key, "curl.listenPort");
         assert_eq!(search[0].score, 180);
+        let browse = db.browse_package_documentation(id, None, 10).await.unwrap();
+        assert_eq!(browse.len(), 1);
+        assert_eq!(browse[0].package_name, "curl");
+        assert_eq!(browse[0].kind, "package");
+        assert_eq!(browse[0].summary, "URL transfers");
         let retention_releases = db.list_retention_release_snapshots(id).await.unwrap();
         assert_eq!(retention_releases.len(), 1);
         assert_eq!(retention_releases[0].artifacts[0].store_hash, "abc");
@@ -27218,6 +27293,11 @@ source_nar_hash = ""
             .is_none());
         assert!(db
             .search_package_documentation(id, "listen", None, 10)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(db
+            .browse_package_documentation(id, None, 10)
             .await
             .unwrap()
             .is_empty());

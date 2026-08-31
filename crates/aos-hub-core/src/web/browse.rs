@@ -892,7 +892,11 @@ pub async fn documentation_search(
             .search_package_documentation(registry.id, term, kind, 100)
             .await
             .unwrap_or_default(),
-        None => Vec::new(),
+        None => svc
+            .db
+            .browse_package_documentation(registry.id, kind, 100)
+            .await
+            .unwrap_or_default(),
     };
     let session = session_indicator(svc, headers).await;
     Rendered::Html(pages::documentation_index_page(

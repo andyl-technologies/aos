@@ -1455,17 +1455,6 @@ label.inline {
 .diff .dl-meta { color: var(--dim); }
 .diff-file { margin: 1rem 0 0.2rem; }
 
-/* Canonical package documentation. The layout stays useful with no script;
- * the management console progressively reuses the same visual vocabulary. */
-.docs-hero {
-  margin: 1.6rem 0 1rem;
-  padding: clamp(1rem, 3vw, 2rem);
-  border: 1px solid var(--rule);
-  border-top: 4px solid var(--accent);
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, transparent), transparent 58%),
-    color-mix(in srgb, var(--ink) 2%, var(--paper));
-}
 .eyebrow, .section-kicker {
   margin: 0 0 0.35rem;
   color: var(--accent);
