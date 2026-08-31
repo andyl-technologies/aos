@@ -357,6 +357,13 @@ in {
       )
       reviewed(
           publisher,
+          "instance-binding-create",
+          "binding create --name default --stable-id instance-default "
+          "--kind local-fs --root /var/lib/aos-hub/storage",
+          token,
+      )
+      reviewed(
+          publisher,
           "instance-binding-grant",
           "binding grant instance:default "
           f"--consumer-scope {shlex.quote(org_scope)}",
