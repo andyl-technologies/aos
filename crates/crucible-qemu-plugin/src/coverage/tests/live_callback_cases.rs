@@ -87,6 +87,75 @@ fn coverage_callback_abi_model_captures_block_pc_length_and_exact_entry_icount()
 }
 
 #[test]
+fn paused_restore_resets_scoreboard_map_and_setup_ring_before_reemission() {
+    let _callback_model_guard = crate::runtime::isolate_coverage_callback_model_for_test();
+    CALLBACK_MODEL_TRANSLATION_CALLBACK.store(0, Ordering::SeqCst);
+    CALLBACK_MODEL_EXEC_CALLBACK.store(0, Ordering::SeqCst);
+    CALLBACK_MODEL_ICOUNT.store(41, Ordering::SeqCst);
+    CALLBACK_MODEL_SCOREBOARD_SET_CALLS.store(0, Ordering::SeqCst);
+    let callback = coverage_callback(PluginCoverage::new(PluginSwitch::On, 16));
+    let coverage_header = RingHeader::new();
+    let mut coverage_entries = vec![CoverageEntry::default(); 16];
+    let output = callback_model_shmem_producer(&coverage_header, &mut coverage_entries);
+    let mut owner = LiveBasicBlockCoverage::register(
+        0xC0DE,
+        callback,
+        callback_model_apis(),
+        output,
+        Arc::new(LiveCallbackQuiescence::new()),
+    )
+    .unwrap_or_else(|error| panic!("coverage callback model should register: {error}"));
+
+    let translate_address = CALLBACK_MODEL_TRANSLATION_CALLBACK.load(Ordering::SeqCst);
+    let translate =
+        // SAFETY: the registration stub stored this exact translation callback ABI.
+        unsafe { std::mem::transmute::<usize, QemuVcpuTbTransCbFn>(translate_address) };
+    let mut tb = TestTb {
+        guest_pc: 0x4010,
+        insns: vec![TestInsn { size: 4 }],
+    };
+    translate(0xC0DE, std::ptr::from_mut(&mut tb).cast::<QemuPluginTb>());
+    let execute_address = CALLBACK_MODEL_EXEC_CALLBACK.load(Ordering::SeqCst);
+    let execute =
+        // SAFETY: translation registered this exact execution callback ABI.
+        unsafe { std::mem::transmute::<usize, QemuVcpuTbExecCbFn>(execute_address) };
+    let userdata = CALLBACK_MODEL_EXEC_USERDATA.load(Ordering::SeqCst);
+    execute(2, userdata as *mut c_void);
+    assert_eq!(coverage_header.read_index(), 0);
+    assert_eq!(coverage_header.write_index(), 1);
+    assert_eq!(
+        CALLBACK_MODEL_SCOREBOARD_SET_CALLS.load(Ordering::SeqCst),
+        1
+    );
+
+    reset_live_coverage_for_restore(7)
+        .unwrap_or_else(|error| panic!("paused coverage reset should succeed: {error}"));
+    assert_eq!(coverage_header.read_index(), 0);
+    assert_eq!(coverage_header.write_index(), 0);
+    assert!(owner.map_entries().iter().all(|entry| *entry == 0));
+    assert_eq!(
+        CALLBACK_MODEL_SCOREBOARD_SET_CALLS.load(Ordering::SeqCst),
+        1 + 4 * 16
+    );
+    assert_eq!(CALLBACK_MODEL_SEEN_VALUE.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        reset_live_coverage_for_restore(8),
+        Err(CoverageError::RestoreGenerationReused {
+            applied: 7,
+            requested: 8,
+        })
+    );
+
+    CALLBACK_MODEL_ICOUNT.store(900, Ordering::SeqCst);
+    execute(2, userdata as *mut c_void);
+    let observations = owner.drain_observations();
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0].current_icount(), 900);
+    assert_eq!(observations[0].guest_pc(), 0x4010);
+    assert!(observations[0].was_new());
+}
+
+#[test]
 fn coverage_callback_owner_fails_loudly_when_novelty_scoreboard_allocation_fails() {
     let _callback_model_guard = crate::runtime::isolate_coverage_callback_model_for_test();
     let callback = coverage_callback(PluginCoverage::new(PluginSwitch::On, 16));

@@ -203,8 +203,10 @@ pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// logical VM without changing any prior section offset.
 /// Version 19 assigns producer cache-line padding to reversible hot-fork
 /// producer admission. Version 20 assigns consumer cache-line padding to the
-/// matching reversible consumer admission barrier.
-pub const ABI_VERSION: u32 = 20;
+/// matching reversible consumer admission barrier. Version 21 makes the
+/// logical-time restore acknowledgement commit an atomic coverage-generation
+/// reset before the restored guest can become authoritative.
+pub const ABI_VERSION: u32 = 21;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///

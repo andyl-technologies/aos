@@ -309,6 +309,34 @@ impl RingHeader {
         Ok(())
     }
 
+    /// Discards every queued coverage observation at a paused restore boundary.
+    ///
+    /// This producer-side operation preserves the consumer-owned read index and
+    /// release-publishes the producer index at that exact cursor. The caller
+    /// must hold an authenticated pause that prevents both coverage callbacks
+    /// and the host consumer from running for the duration of the operation.
+    /// It is used only by the ABI-versioned logical-time restore transaction;
+    /// ordinary queue consumers must drain entries instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when producer admission is held, the coverage
+    /// slice has invalid capacity, or the shared indices are corrupt.
+    pub fn discard_coverage_at_restore(
+        &self,
+        entries: &[CoverageEntry],
+    ) -> Result<u64, SpscRingError> {
+        let _producer = self
+            .enter_producer()
+            .ok_or(SpscRingError::ProducerBarrierHeld)?;
+        let capacity = validated_capacity(entries)?;
+        let tail = self.write_idx.load(Ordering::Relaxed);
+        let head = self.read_idx.load(Ordering::Acquire);
+        let _live = live_count(head, tail, capacity)?;
+        self.write_idx.store(head, Ordering::Release);
+        Ok(head)
+    }
+
     /// Enqueues one observational white-box marker into producer-owned storage.
     ///
     /// The plugin copies the complete marker before release-publishing the new

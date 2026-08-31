@@ -7,7 +7,7 @@
 name = "crucible-shmem"
 kind = "process-shared-memory"
 license = "MIT OR Apache-2.0"
-abi_version = 20
+abi_version = 21
 magic_ascii = "CRUCSHM1"
 target = "x86_64-unknown-linux-gnu"
 byte_order = "little"
@@ -121,6 +121,15 @@ producer = "qemu-plugin"
 consumer = "apache-host"
 command_results_are_events = false
 overflow = "fail-run-without-dropping-event"
+
+[coverage_restore]
+semantic_version = 1
+transaction = "logical-time-restore-request-ack"
+plugin_commit = "discard-ring+zero-local-map+zero-retained-per-vcpu-scoreboard-before-ack"
+host_commit = "confirm-native-pause+require-empty-ring+clear-consumer-state"
+scoreboard_replacement = "forbidden"
+control_frame = "forbidden"
+failure = "fail-realization-before-authoritative-execution"
 
 [conformance]
 c_header = "../include/crucible_shmem_abi.h"

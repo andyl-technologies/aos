@@ -576,6 +576,66 @@ impl QemuMappedQuantumShmemHotPath {
         }
         Ok(())
     }
+
+    /// Commits the host half of one acknowledged coverage restore generation.
+    ///
+    /// The plugin resets its per-vCPU novelty scoreboard, local coverage map,
+    /// and producer cursor before release-publishing the logical-time restore
+    /// acknowledgement. The host invokes this method while native QEMU remains
+    /// paused, verifies the exact acknowledgement and empty ring, and only then
+    /// clears its own novelty and monotonic-coordinate state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the restore generation is not
+    /// acknowledged exactly, the mapped ring is malformed, or setup-era
+    /// coverage remains queued after the plugin acknowledgement.
+    pub(crate) fn commit_coverage_restore_generation(
+        &mut self,
+        generation: u32,
+    ) -> Result<(), QemuNodeChannelError> {
+        if self.coverage_bridge.is_none() {
+            return Ok(());
+        }
+        let slot = self
+            .region
+            .node_slot(self.config.vm_slot)
+            .map_err(|error| {
+                QemuNodeChannelError::new("reset coverage generation", error.to_string())
+            })?;
+        let snapshot = slot.snapshot();
+        if snapshot.logical_time_restore_request != generation
+            || snapshot.logical_time_restore_ack != generation
+        {
+            return Err(QemuNodeChannelError::new(
+                "reset coverage generation",
+                format!(
+                    "restore generation {generation} is not exactly acknowledged: request={}, ack={}",
+                    snapshot.logical_time_restore_request, snapshot.logical_time_restore_ack
+                ),
+            ));
+        }
+        let ring = self
+            .region
+            .coverage_ring_mut(self.config.vm_slot)
+            .map_err(|error| {
+                QemuNodeChannelError::new("reset coverage generation", error.to_string())
+            })?;
+        let read_index = ring.header.read_index();
+        let write_index = ring.header.write_index();
+        if write_index != read_index {
+            return Err(QemuNodeChannelError::new(
+                "reset coverage generation",
+                format!(
+                    "plugin acknowledged restore with coverage cursors read={read_index}, write={write_index}"
+                ),
+            ));
+        }
+        self.next_coverage_sequence = read_index;
+        self.last_coverage_icount = None;
+        self.seen_coverage_map_indices.fill(false);
+        Ok(())
+    }
 }
 
 impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
@@ -1166,6 +1226,10 @@ use support::*;
 #[cfg(test)]
 #[path = "mapped_quantum/fault_event_tests.rs"]
 mod fault_event_tests;
+
+#[cfg(test)]
+#[path = "mapped_quantum/coverage_tests.rs"]
+mod coverage_tests;
 
 #[cfg(test)]
 #[path = "mapped_quantum/fingerprint_tests.rs"]

@@ -1276,6 +1276,18 @@ where
             },
         ));
     }
+    if let Err(source) = prepared_setup
+        .shmem_hot_path
+        .commit_coverage_restore_generation(restore_generation)
+    {
+        return Err(reap_failed_restore_child(
+            child,
+            QemuNodeFactoryError::LogicalTimeRestoreBoundary {
+                stage: "commit coverage generation reset",
+                message: source.to_string(),
+            },
+        ));
+    }
     prepared_setup
         .shmem_hot_path
         .clear_logical_time_restore_pause();

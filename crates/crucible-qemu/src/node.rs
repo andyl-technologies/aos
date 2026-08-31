@@ -2725,24 +2725,15 @@ impl QemuNode {
     /// Prepares the paused node's observable stream for authoritative execution.
     ///
     /// Warm-restore setup and boot-barrier priming execute before VMState load
-    /// establishes the canonical runtime. Non-coverage setup observations can
-    /// therefore be discarded at this pre-install boundary. Basic-block
-    /// coverage is fail-closed: the current plugin publishes each map index at
-    /// most once per process, so draining its setup queue cannot reset novelty
-    /// consumed during priming. Coverage-enabled warm restore requires a future
-    /// versioned producer/consumer generation-reset transaction.
+    /// establishes the canonical runtime. The ABI-versioned logical-time
+    /// restore acknowledgement resets coverage producer and consumer novelty
+    /// state while QEMU is paused; this final drain discards the remaining
+    /// non-coverage setup observations before the node becomes authoritative.
     ///
     /// # Errors
     ///
     /// Returns [`QemuNodeError`] when the shared-memory queue cannot be drained.
     pub fn prepare_authoritative_observation_stream(&mut self) -> Result<usize, QemuNodeError> {
-        if self.channels.shmem_hot_path.coverage_enabled() {
-            return Err(QemuNodeError::CoverageEventLog {
-                message: String::from(
-                    "coverage-enabled warm restore lacks a producer/consumer generation reset",
-                ),
-            });
-        }
         self.channels
             .shmem_hot_path
             .drain_observable_events()

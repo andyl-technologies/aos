@@ -47,7 +47,7 @@ pub trait QemuRealizedNodeBackend: Backend {
     /// # Errors
     ///
     /// Returns [`BackendError`] when setup observations cannot be discarded or
-    /// coverage generation reset is unavailable.
+    /// the authenticated coverage-generation reset did not complete.
     fn prepare_authoritative_observation_stream(&mut self) -> Result<(), BackendError>;
 
     /// Advances one live quantum while appending observable events to `event_log`.

@@ -2239,8 +2239,8 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Patch:** `0138-crucible-drain-hot-fork-ring-consumers.patch`.
 - **Enforces:** [HFORK-3], [HFORK-4], [HFORK-5].
 - **Mechanism:** the version-4 plugin barrier adds the aggregate count of ring
-  consumers admitted before the hold. Quiescence requires every ABI-v20 ring's
-  producer and consumer barriers to be held and both admitted-operation counts
+  consumers admitted before the hold. Quiescence requires every
+  ABI-v20-or-newer ring's producer and consumer barriers to be held and both admitted-operation counts
   to reach zero, making its queued bytes and indices stable for a later clone.
 - **Micro-test:** shared-memory fixtures race consumer admission with the hold,
   reject dequeue while held, and prove mapped aggregate hold/release covers
