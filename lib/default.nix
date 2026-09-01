@@ -181,6 +181,10 @@
       inherit types system;
       inherit serviceTypes;
       inherit aosDoc;
+      literalExpression = text: {
+        _type = "literalExpression";
+        inherit text;
+      };
       inherit
         (platformMod)
         mkPlatform

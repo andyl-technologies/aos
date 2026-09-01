@@ -3122,14 +3122,17 @@ fn derive_system_documentation(
   catalog = import <aos-documentation-base-lib/lib/service-documentation.nix>;
   service = catalog.services.{} or null;
   evaluated = base.evalHostConfig {{}};
+  publicDeclarations = builtins.filter
+    (declaration: declaration.visibility != "internal")
+    (base.lib.optionSurface evaluated);
   matchesPrefix = prefix: declaration:
     declaration.pathStr == prefix || base.lib.hasPrefix "${{prefix}}." declaration.pathStr;
   selected =
     if service == null || service.ownership == "package" then []
-    else if service.ownership == "platform" then base.lib.optionSurface evaluated
+    else if service.ownership == "platform" then publicDeclarations
     else builtins.filter
       (declaration: builtins.any (prefix: matchesPrefix prefix declaration) service.optionPrefixes)
-      (base.lib.optionSurface evaluated);
+      publicDeclarations;
 in assert catalog.schema == "aos.service-documentation/v1";
   if service == null || service.ownership == "package" then null else {{
     declarations = builtins.map (declaration: {{
