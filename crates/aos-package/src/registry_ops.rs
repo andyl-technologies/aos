@@ -1718,6 +1718,9 @@ description = ""
 /// library used by the restricted, no-IFD options-only evaluation. The signed
 /// provenance binds the payload, config output, base lib, and (when present)
 /// expose manifest in one statement.
+/// `--documentation-base-lib` additionally extracts image-owned service
+/// options selected by the base library's canonical Nix service catalog. It
+/// changes documentation only and never grants package configuration authority.
 ///
 /// # Errors
 ///
@@ -1756,6 +1759,7 @@ pub async fn publish(
     expose_manifest_path: Option<&str>,
     config_module_path: Option<&str>,
     config_base_lib_path: Option<&str>,
+    documentation_base_lib_path: Option<&str>,
     config_dependencies: &[String],
     bless: bool,
     no_ca: bool,
@@ -1839,6 +1843,10 @@ pub async fn publish(
         .map(introspect_store_path)
         .transpose()
         .context("introspecting config base-lib")?;
+    let documentation_base_lib_info = documentation_base_lib_path
+        .map(introspect_store_path)
+        .transpose()
+        .context("introspecting documentation base-lib")?;
     let config_dependency_outputs = parse_config_dependency_outputs(config_dependencies, &info)?;
     let config_module_bundle = match (config_module_info.as_ref(), config_base_lib_info.as_ref()) {
         (Some(output), Some(base_lib)) => Some(read_publish_config_module(
@@ -1852,6 +1860,10 @@ pub async fn publish(
         _ => bail!("--config-module and --config-base-lib must be specified together"),
     };
     let config_module = config_module_bundle.as_ref().map(|bundle| &bundle.metadata);
+    let system_documentation = documentation_base_lib_info
+        .map(|base_lib| derive_system_documentation(base_lib, pkg_name))
+        .transpose()?
+        .flatten();
     // Bind the exact disk, canonical per-format metadata, and paired UKI
     // before catalog construction. Committed Secure Boot policy is enforced
     // below.
@@ -1895,6 +1907,17 @@ pub async fn publish(
     let expose_manifest_digest = expose_manifest_path
         .map(|path| read_publish_manifest_digest(Path::new(path)))
         .transpose()?;
+    let documentation_declarations = config_module_bundle
+        .as_ref()
+        .into_iter()
+        .flat_map(|bundle| bundle.declarations.iter().cloned())
+        .chain(
+            system_documentation
+                .as_ref()
+                .into_iter()
+                .flat_map(|surface| surface.declarations.iter().cloned()),
+        )
+        .collect::<Vec<_>>();
     let documentation = publish_package_documentation(
         pkg_name,
         pkg_version,
@@ -1906,12 +1929,10 @@ pub async fn publish(
         source_info.as_ref(),
         config_module,
         config_module_bundle.as_ref().map(|bundle| &bundle.authored),
+        system_documentation.as_ref(),
         expose_manifest.as_ref(),
         expose_artifact_info.as_ref(),
-        config_module_bundle
-            .as_ref()
-            .map(|bundle| bundle.declarations.as_slice())
-            .unwrap_or_default(),
+        &documentation_declarations,
     )?;
     let provenance_signer = Some(resolve_package_provenance_signer(
         &dir,
@@ -3075,6 +3096,108 @@ in builtins.map (decl: {{
     })
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DerivedSystemDocumentation {
+    declarations: Vec<DerivedOptionDeclaration>,
+    units: Vec<String>,
+}
+
+#[derive(Debug)]
+struct PublishedSystemDocumentation {
+    base_lib: StorePathInfo,
+    declarations: Vec<DerivedOptionDeclaration>,
+    units: Vec<String>,
+}
+
+/// Extracts system-owned service options from the immutable Nix catalog in an
+/// image evaluation base library.
+fn derive_system_documentation(
+    base_lib: StorePathInfo,
+    package_name: &str,
+) -> Result<Option<PublishedSystemDocumentation>> {
+    let expression = format!(
+        r#"let
+  base = import <aos-documentation-base-lib>;
+  catalog = import <aos-documentation-base-lib/lib/service-documentation.nix>;
+  service = catalog.services.{} or null;
+  evaluated = base.evalHostConfig {{}};
+  matchesPrefix = prefix: declaration:
+    declaration.pathStr == prefix || base.lib.hasPrefix "${{prefix}}." declaration.pathStr;
+  selected =
+    if service == null || service.ownership == "package" then []
+    else if service.ownership == "platform" then base.lib.optionSurface evaluated
+    else builtins.filter
+      (declaration: builtins.any (prefix: matchesPrefix prefix declaration) service.optionPrefixes)
+      (base.lib.optionSurface evaluated);
+in assert catalog.schema == "aos.service-documentation/v1";
+  if service == null || service.ownership == "package" then null else {{
+    declarations = builtins.map (declaration: {{
+      inherit (declaration)
+        path pathStr typeSig type description default example visibility readOnly
+        contributable;
+      owner = "aos";
+    }}) selected;
+    units = service.units or [];
+  }}"#,
+        nix_publish_string(package_name),
+    );
+    let search_path = format!("aos-documentation-base-lib={}", base_lib.path);
+    let evaluator = std::env::var_os("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|directory| directory.join("nix-instantiate"))
+                .find(|candidate| candidate.is_file())
+        })
+        .context("cannot find nix-instantiate in the AOS command path")?;
+    let output = Command::new(evaluator)
+        .env_clear()
+        .args([
+            "--eval",
+            "--strict",
+            "--json",
+            "--option",
+            "restrict-eval",
+            "true",
+            "--option",
+            "allow-import-from-derivation",
+            "false",
+            "-I",
+            &search_path,
+            "--expr",
+            &expression,
+        ])
+        .output()
+        .with_context(|| {
+            format!("extracting system-owned documentation for package '{package_name}'")
+        })?;
+    if !output.status.success() {
+        bail!(
+            "system-owned documentation evaluation failed for package '{package_name}': {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let surface: Option<DerivedSystemDocumentation> = serde_json::from_slice(&output.stdout)
+        .with_context(|| {
+            format!("parsing system-owned documentation for package '{package_name}'")
+        })?;
+    let Some(mut surface) = surface else {
+        return Ok(None);
+    };
+    if surface.declarations.is_empty() {
+        bail!(
+            "system-owned documentation catalog entry for package '{package_name}' selects no options"
+        );
+    }
+    surface.units.sort();
+    surface.units.dedup();
+    Ok(Some(PublishedSystemDocumentation {
+        base_lib,
+        declarations: surface.declarations,
+        units: surface.units,
+    }))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn publish_package_documentation(
     name: &str,
@@ -3087,6 +3210,7 @@ fn publish_package_documentation(
     source: Option<&StorePathInfo>,
     config_module: Option<&ConfigModuleMeta>,
     config_manifest: Option<&PublishConfigModuleManifest>,
+    system_documentation: Option<&PublishedSystemDocumentation>,
     expose_manifest: Option<&PublishExposeManifest>,
     expose_artifact: Option<&StorePathInfo>,
     declarations: &[DerivedOptionDeclaration],
@@ -3190,6 +3314,9 @@ fn publish_package_documentation(
             config_module_nar_hash: config_module
                 .map(|module| documentation_nar_identity(&module.config_output.nar_hash))
                 .transpose()?,
+            system_module_nar_hash: system_documentation
+                .map(|surface| documentation_nar_identity(&surface.base_lib.nar_hash))
+                .transpose()?,
             expose_artifact_nar_hash: expose_artifact
                 .map(|artifact| documentation_nar_identity(&artifact.nar_hash))
                 .transpose()?,
@@ -3199,7 +3326,7 @@ fn publish_package_documentation(
         },
         sections,
         options,
-        runtime: documentation_runtime_surface(expose_manifest),
+        runtime: documentation_runtime_surface(expose_manifest, system_documentation),
     };
     document.identity.semantic_schema_sha256 = document
         .computed_semantic_schema_sha256()
@@ -3268,6 +3395,9 @@ fn publish_package_documentation(
         document_sha256,
         document_size: bytes.len() as u64,
         semantic_schema_sha256: document.identity.semantic_schema_sha256,
+        system_module_nar_hash: system_documentation
+            .map(|surface| documentation_nar_identity(&surface.base_lib.nar_hash))
+            .transpose()?,
         references: Vec::new(),
     };
     validate_documentation_artifact_meta(&metadata)
@@ -3289,9 +3419,28 @@ fn documented_option_declarations(
         .filter(|declaration| declaration.visibility != Visibility::Internal)
 }
 
-fn documentation_runtime_surface(manifest: Option<&PublishExposeManifest>) -> RuntimeSurface {
+fn documentation_runtime_surface(
+    manifest: Option<&PublishExposeManifest>,
+    system_documentation: Option<&PublishedSystemDocumentation>,
+) -> RuntimeSurface {
     let Some(manifest) = manifest else {
-        return RuntimeSurface::default();
+        let units = system_documentation
+            .into_iter()
+            .flat_map(|surface| surface.units.iter())
+            .map(|name| RuntimeUnit {
+                name: name.clone(),
+                kind: name
+                    .rsplit_once('.')
+                    .map_or("unit", |(_, kind)| kind)
+                    .to_string(),
+                summary: "System-owned service unit".to_string(),
+                requires: Vec::new(),
+            })
+            .collect();
+        return RuntimeSurface {
+            units,
+            ..RuntimeSurface::default()
+        };
     };
     let expose = &manifest.expose;
     let permissions = &manifest.permissions;
@@ -14927,6 +15076,7 @@ async fn publish_release_store_path(
         None,
         None,
         None,
+        None,
         &[],
         publish_opts.bless,
         false,
@@ -17325,6 +17475,7 @@ mod tests {
             semantic_schema_sha256:
                 "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
                     .to_string(),
+            system_module_nar_hash: None,
             references: vec![],
         };
         let attestation = AttestationMeta {

@@ -3192,6 +3192,7 @@ mod tests {
                 semantic_schema_sha256: format!("sha256:{}", "0".repeat(64)),
                 runtime_nar_hash: format!("sha256:{}", "1".repeat(64)),
                 config_module_nar_hash: None,
+                system_module_nar_hash: None,
                 expose_artifact_nar_hash: None,
                 source_nar_hash: format!("sha256:{}", "2".repeat(64)),
             },

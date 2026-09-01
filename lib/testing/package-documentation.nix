@@ -2,6 +2,7 @@
 {
   lib,
   pkgs,
+  system,
 }: let
   allowedConceptualGuides = [
     "README.md"
@@ -25,27 +26,45 @@
   observedGuides = lib.sort builtins.lessThan (lib.filter
     (name: lib.hasSuffix ".md" name)
     (builtins.attrNames (builtins.readDir ../../docs/users/aos)));
-  configurablePackages = [
-    pkgs.aos-registry-server
-    pkgs.cilium
-    pkgs.cloudcore
-    pkgs.conntrack-tools
-    pkgs.containerd
-    pkgs.edgecore
-    pkgs.envoy
-    pkgs.etcd
-    pkgs.garage
-    pkgs.k3s-combined
-    pkgs.k3s-control-plane
-    pkgs.k3s-worker
-    pkgs.krb5
-    pkgs.longhorn-manager
-    pkgs.mariadb
-    pkgs.nginx
-    pkgs.openldap
-    pkgs.postgresql
-    pkgs.rsync
-  ];
+  serviceCatalog = import ../service-documentation.nix;
+  serviceNames = builtins.attrNames serviceCatalog.services;
+  packageServiceNames =
+    builtins.filter
+    (name: serviceCatalog.services.${name}.ownership == "package")
+    serviceNames;
+  configurablePackages =
+    builtins.map
+    (name:
+      pkgs.${name}
+      or (throw "service documentation catalog references missing package '${name}'"))
+    packageServiceNames;
+  optionSurface = lib.optionSurface system;
+  prefixMatches = prefix: option:
+    option.pathStr == prefix || lib.hasPrefix "${prefix}." option.pathStr;
+  systemServiceNames =
+    builtins.filter
+    (name: builtins.elem serviceCatalog.services.${name}.ownership ["platform" "system"])
+    serviceNames;
+  undocumentedSystemServices =
+    builtins.filter (
+      name: let
+        service = serviceCatalog.services.${name};
+        selected =
+          builtins.filter
+          (option:
+            option.visibility
+            != "internal"
+            && (service.ownership
+              == "platform"
+              || builtins.any (prefix: prefixMatches prefix option) service.optionPrefixes))
+          optionSurface;
+      in
+        selected
+        == []
+        || builtins.any (option: option.description == "") selected
+        || (service.units or []) == []
+    )
+    systemServiceNames;
 in
   if observedGuides != allowedConceptualGuides
   then
@@ -54,6 +73,10 @@ in
       option/runtime reference belongs in configModule.documentation so every
       authenticated documentation surface is generated from one Nix authority.
     ''
+  else if serviceCatalog.schema != "aos.service-documentation/v1"
+  then throw "unsupported service documentation catalog schema"
+  else if undocumentedSystemServices != []
+  then throw "system service documentation is missing typed options, descriptions, or units: ${builtins.concatStringsSep ", " undocumentedSystemServices}"
   else
     pkgs.mkDerivation {
       pname = "package-documentation-policy-check";

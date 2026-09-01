@@ -106,6 +106,9 @@ pub struct DocumentationIdentity {
     /// Optional config-module NAR hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_module_nar_hash: Option<String>,
+    /// Optional image base-module NAR hash for system-owned options.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_module_nar_hash: Option<String>,
     /// Optional expose-artifact NAR hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose_artifact_nar_hash: Option<String>,
@@ -736,6 +739,10 @@ impl PackageDocumentation {
         validate_optional_digest(
             "config-module NAR hash",
             self.identity.config_module_nar_hash.as_deref(),
+        )?;
+        validate_optional_digest(
+            "system-module NAR hash",
+            self.identity.system_module_nar_hash.as_deref(),
         )?;
         validate_optional_digest(
             "expose-artifact NAR hash",
@@ -2014,6 +2021,7 @@ mod tests {
                 semantic_schema_sha256: format!("sha256:{}", "0".repeat(64)),
                 runtime_nar_hash: format!("sha256:{}", "1".repeat(64)),
                 config_module_nar_hash: Some(format!("sha256:{}", "2".repeat(64))),
+                system_module_nar_hash: None,
                 expose_artifact_nar_hash: Some(format!("sha256:{}", "3".repeat(64))),
                 source_nar_hash: format!("sha256:{}", "4".repeat(64)),
             },

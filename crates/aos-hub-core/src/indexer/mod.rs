@@ -1625,6 +1625,11 @@ async fn verify_package_documentation(
                         "package documentation config-module identity mismatch"
                     );
                 }
+                anyhow::ensure!(
+                    document.identity.system_module_nar_hash.as_deref()
+                        == artifact.system_module_nar_hash.as_deref(),
+                    "package documentation system-module identity mismatch"
+                );
                 if let Some(expose) = &entry.expose_artifact {
                     anyhow::ensure!(
                         document
@@ -2616,6 +2621,7 @@ mod tests {
                 semantic_schema_sha256: format!("sha256:{}", "0".repeat(64)),
                 runtime_nar_hash: format!("sha256:{}", "1".repeat(64)),
                 config_module_nar_hash: Some(format!("sha256:{}", "2".repeat(64))),
+                system_module_nar_hash: None,
                 expose_artifact_nar_hash: Some(format!("sha256:{}", "3".repeat(64))),
                 source_nar_hash: format!("sha256:{}", "4".repeat(64)),
             },
@@ -2663,6 +2669,7 @@ mod tests {
                 document_sha256: format!("sha256:{document_digest}"),
                 document_size: u64::try_from(contents.len()).expect("document size"),
                 semantic_schema_sha256: document.identity.semantic_schema_sha256.clone(),
+                system_module_nar_hash: None,
                 references: Vec::new(),
             },
         )

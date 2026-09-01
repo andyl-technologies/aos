@@ -74,7 +74,7 @@ in {
     package = lib.mkOption {
       type = lib.types.package;
       default = pkgs.aos-hub;
-      defaultText = lib.literalExpression "pkgs.aos-hub";
+      defaultText = "pkgs.aos-hub";
       description = "The aos-hub package to run.";
     };
 
