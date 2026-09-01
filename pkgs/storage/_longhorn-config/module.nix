@@ -33,26 +33,26 @@ in {
     };
   };
 
-  config = mkIf cfg.enable {
-    k3s.integrations = {
-      csi.longhorn.nodeLabels."node.longhorn.io/create-default-disk" = cfg.nodeLabel;
-      resources.longhorn = {
-        priority = 200;
-        content = ''
-          apiVersion: helm.cattle.io/v1
-          kind: HelmChart
-          metadata:
-            name: longhorn
-            namespace: kube-system
-          spec:
-            chart: longhorn
-            repo: https://charts.longhorn.io
-            targetNamespace: longhorn-system
-            version: ${package.version}
-            valuesContent: |-
-          ${lib.concatMapStringsSep "\n" (line: "      ${line}") (lib.splitString "\n" values)}
-        '';
-      };
+  config = {
+    k3s.integrations.csi.longhorn = mkIf cfg.enable {
+      nodeLabels."node.longhorn.io/create-default-disk" = cfg.nodeLabel;
+    };
+    k3s.integrations.resources.longhorn = mkIf cfg.enable {
+      priority = 200;
+      content = ''
+        apiVersion: helm.cattle.io/v1
+        kind: HelmChart
+        metadata:
+          name: longhorn
+          namespace: kube-system
+        spec:
+          chart: longhorn
+          repo: https://charts.longhorn.io
+          targetNamespace: longhorn-system
+          version: ${package.version}
+          valuesContent: |-
+        ${lib.concatMapStringsSep "\n" (line: "      ${line}") (lib.splitString "\n" values)}
+      '';
     };
   };
 }
