@@ -384,7 +384,7 @@ pub enum UpsertOutcome {
 pub fn upsert_realisation(
     registry_dir: &Path,
     ia_hash: &str,
-    realisation: Realisation,
+    mut realisation: Realisation,
     bless: bool,
 ) -> Result<UpsertOutcome> {
     let path = entry_path(registry_dir, ia_hash)?;
@@ -395,6 +395,13 @@ pub fn upsert_realisation(
     } else {
         StoreEntry::default()
     };
+
+    // Closure discovery does not promise a stable dependency traversal order.
+    // Normalize the set before comparing it with the canonical on-disk form;
+    // otherwise two packages sharing one closure member can append duplicate
+    // realizations merely because Nix returned the same edges in another order.
+    realisation.deps.sort();
+    realisation.deps.dedup();
 
     if entry.realisations.contains(&realisation) {
         return Ok(UpsertOutcome::AlreadyPresent);
@@ -607,6 +614,43 @@ mod tests {
         assert!(tmp.path().join(STORE_DIR).join("r4").join(ia).exists());
         // r1 (D_A/D_C), r1_bad (D_B/D_C), r2 (D_A/D_A) ⇒ 3 realisations.
         assert_eq!(map.get(ia).unwrap().realisations.len(), 3);
+    }
+
+    #[test]
+    fn upsert_treats_reordered_dependency_edges_as_identical() {
+        let tmp = TempDir::new().unwrap();
+        let ia = "r4q1m2kp8v3x";
+        let dependency_a = DepEdge {
+            dep_ia: "a4q1m2kp8v3x".to_string(),
+            dep_ca: None,
+        };
+        let dependency_b = DepEdge {
+            dep_ia: "b4q1m2kp8v3x".to_string(),
+            dep_ca: Some(D_C.to_string()),
+        };
+        let first = Realisation {
+            nar: nar(D_A, 10),
+            ca: None,
+            deps: vec![dependency_b.clone(), dependency_a.clone()],
+        };
+
+        assert_eq!(
+            upsert_realisation(tmp.path(), ia, first, false).unwrap(),
+            UpsertOutcome::Created
+        );
+        let path = entry_path(tmp.path(), ia).unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let reordered_with_duplicate = Realisation {
+            nar: nar(D_A, 10),
+            ca: None,
+            deps: vec![dependency_a.clone(), dependency_b, dependency_a],
+        };
+        assert_eq!(
+            upsert_realisation(tmp.path(), ia, reordered_with_duplicate, false).unwrap(),
+            UpsertOutcome::AlreadyPresent
+        );
+        assert_eq!(std::fs::read(path).unwrap(), before);
     }
 
     #[test]

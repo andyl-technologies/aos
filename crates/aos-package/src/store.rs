@@ -64,37 +64,62 @@ pub async fn import_nar(
     references: &[String],
     deriver: Option<&str>,
 ) -> Result<String> {
-    // Decompress .nar.zst -> .nar alongside the original file.
-    let decompressed = nar_path.with_extension("");
-    let zstd_output = Command::new("zstd")
-        .args([
-            "-d",
-            "-f",
-            &nar_path.display().to_string(),
-            "-o",
-            &decompressed.display().to_string(),
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .context("running zstd decompression")?;
+    import_nar_with_compression(nar_path, expected_store_path, references, deriver, "zstd").await
+}
 
-    if !zstd_output.status.success() {
-        let stderr = String::from_utf8_lossy(&zstd_output.stderr);
-        bail!(
-            "zstd decompression failed for {}: {}",
-            nar_path.display(),
-            stderr.trim()
-        );
-    }
+/// Imports a NAR using the transport encoding declared by its narinfo.
+///
+/// # Errors
+///
+/// Returns an error when the payload cannot be decoded, the encoding is
+/// unsupported, Nix rejects the import, or the imported path is unexpected.
+pub async fn import_nar_with_compression(
+    nar_path: &Path,
+    expected_store_path: &str,
+    references: &[String],
+    deriver: Option<&str>,
+    compression: &str,
+) -> Result<String> {
+    let nar_data = match compression {
+        "none" => tokio::fs::read(nar_path)
+            .await
+            .with_context(|| format!("reading uncompressed NAR {}", nar_path.display()))?,
+        "zstd" => {
+            // Decompress .nar.zst -> .nar alongside the original file.
+            let decompressed = nar_path.with_extension("");
+            let zstd_output = Command::new("zstd")
+                .args([
+                    "-d",
+                    "-f",
+                    &nar_path.display().to_string(),
+                    "-o",
+                    &decompressed.display().to_string(),
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await
+                .context("running zstd decompression")?;
 
-    let nar_data = tokio::fs::read(&decompressed)
-        .await
-        .with_context(|| format!("reading decompressed NAR {}", decompressed.display()))?;
+            if !zstd_output.status.success() {
+                let stderr = String::from_utf8_lossy(&zstd_output.stderr);
+                bail!(
+                    "zstd decompression failed for {}: {}",
+                    nar_path.display(),
+                    stderr.trim()
+                );
+            }
 
-    // Clean up the decompressed file now that it's in memory.
-    let _ = tokio::fs::remove_file(&decompressed).await;
+            let nar_data = tokio::fs::read(&decompressed)
+                .await
+                .with_context(|| format!("reading decompressed NAR {}", decompressed.display()))?;
+
+            // Clean up the decompressed file now that it's in memory.
+            let _ = tokio::fs::remove_file(&decompressed).await;
+            nar_data
+        }
+        other => bail!("unsupported NAR compression '{other}'"),
+    };
 
     // Resolve the store directory references are rooted under, so bare
     // basenames from the narinfo become full paths in the export trailer.
@@ -242,18 +267,24 @@ pub async fn filter_missing(store_paths: &[String]) -> Result<Vec<String>> {
 /// For packages with a non-empty `source_drv`:
 ///   `gen_dir/src/{drv_hash}` -> `{source_drv}`
 ///
+/// For packages with canonical documentation:
+///   `gen_dir/docs/{documentation_hash}` -> `{documentation_store_path}`
+///
 /// Uses `std::os::unix::fs::symlink` for atomic symlink creation.
 ///
 /// # Errors
 ///
-/// Returns an error if the `usr/`/`src/` directories cannot be created or a
+/// Returns an error if the `usr/`/`src/`/`docs/` directories cannot be created or a
 /// symlink cannot be created or renamed into place.
 pub fn create_gc_roots(gen_dir: &Path, packages: &[PackageMeta]) -> Result<()> {
     let usr_dir = gen_dir.join("usr");
     let src_dir = gen_dir.join("src");
+    let docs_dir = gen_dir.join("docs");
 
     std::fs::create_dir_all(&usr_dir).with_context(|| format!("creating {}", usr_dir.display()))?;
     std::fs::create_dir_all(&src_dir).with_context(|| format!("creating {}", src_dir.display()))?;
+    std::fs::create_dir_all(&docs_dir)
+        .with_context(|| format!("creating {}", docs_dir.display()))?;
 
     for meta in packages {
         // Create usr/{hash} -> store_path
@@ -276,6 +307,18 @@ pub fn create_gc_roots(gen_dir: &Path, packages: &[PackageMeta]) -> Result<()> {
                     "creating GC root {} -> {}",
                     src_link.display(),
                     meta.source_drv
+                )
+            })?;
+        }
+
+        if let Some(documentation) = &meta.documentation {
+            let documentation_hash = store_path_hash(&documentation.store_path);
+            let docs_link = docs_dir.join(documentation_hash);
+            atomic_symlink(&documentation.store_path, &docs_link).with_context(|| {
+                format!(
+                    "creating documentation GC root {} -> {}",
+                    docs_link.display(),
+                    documentation.store_path
                 )
             })?;
         }
@@ -670,6 +713,7 @@ mod tests {
             expose: None,
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: Default::default(),
             bpf_lsm: None,
             attestation: Default::default(),

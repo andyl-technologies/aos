@@ -146,11 +146,7 @@ in
         "etcd.client.advertiseUrls"
         "etcd.client.enableGrpcGateway"
         "etcd.client.listenUrls"
-        "etcd.client.tls.certificate"
-        "etcd.client.tls.clientCertificateAuth"
-        "etcd.client.tls.enable"
-        "etcd.client.tls.privateKey"
-        "etcd.client.tls.trustedCa"
+        "etcd.client.tls"
         "etcd.cluster.members"
         "etcd.cluster.state"
         "etcd.cluster.token"
@@ -159,11 +155,7 @@ in
         "etcd.name"
         "etcd.peer.advertiseUrls"
         "etcd.peer.listenUrls"
-        "etcd.peer.tls.certificate"
-        "etcd.peer.tls.clientCertificateAuth"
-        "etcd.peer.tls.enable"
-        "etcd.peer.tls.privateKey"
-        "etcd.peer.tls.trustedCa"
+        "etcd.peer.tls"
         "etcd.storage.autoCompaction.mode"
         "etcd.storage.autoCompaction.retention"
         "etcd.storage.quotaBackendBytes"
@@ -181,6 +173,20 @@ in
         units = [];
         users = [];
         groups = [];
+      };
+      documentation = {
+        summary = "etcd — distributed reliable key-value store";
+        sections = {
+          topology = lib.aosDoc.section "Cluster topology" [
+            (lib.aosDoc.paragraph "The local member must appear in cluster.members and its peer URLs must exactly match peer.advertiseUrls. Use etcdctl membership operations before changing the declared topology of a live cluster.")
+          ];
+          transport = lib.aosDoc.section "Transport security" [
+            (lib.aosDoc.paragraph "Client and peer certificates, private keys, and CA bundles are opaque references delivered only through systemd credentials. HTTPS is required whenever TLS is enabled.")
+          ];
+          lifecycle = lib.aosDoc.section "State and activation" [
+            (lib.aosDoc.paragraph "Configuration changes restart etcd while retaining its database in /var/lib/aos-pkg-etcd. Binding beyond loopback also requires explicit firewall policy.")
+          ];
+        };
       };
     };
 

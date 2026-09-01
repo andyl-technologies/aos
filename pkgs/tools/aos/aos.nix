@@ -126,6 +126,7 @@
     "aos-cache"
     "aos-core"
     "aos-doc"
+    "aos-doc-model"
     "aos-hub"
     "aos-hub-core"
     "aos-hub-worker"

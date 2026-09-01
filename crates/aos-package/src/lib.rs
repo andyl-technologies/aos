@@ -56,6 +56,8 @@ pub(crate) mod credential;
 pub(crate) mod credential_artifact;
 pub mod deps;
 pub mod desired;
+pub mod documentation;
+mod documentation_lsp;
 pub mod download;
 pub(crate) mod ebpf_lsm;
 pub(crate) mod exposed_units;
@@ -314,6 +316,41 @@ pub enum PackageCommand {
         #[arg(long)]
         registry: Option<String>,
         /// Query the system scope instead of the user scope
+        #[arg(long)]
+        system: bool,
+    },
+    /// Browse canonical package documentation and editor metadata
+    Docs {
+        /// Documentation operation to run
+        #[command(subcommand)]
+        command: DocumentationCommand,
+    },
+    /// Search, inspect, and compare typed package options
+    Options {
+        /// Option operation to run
+        #[command(subcommand)]
+        command: OptionsCommand,
+    },
+    /// Export the canonical package-documentation schema or package model
+    Schema {
+        /// Installed package whose exact structured model should be exported
+        package: Option<String>,
+        /// Hub root URL for a remote package lookup
+        #[arg(long)]
+        hub: Option<String>,
+        /// Hub registry slug for a remote package lookup
+        #[arg(long, requires = "hub")]
+        registry: Option<String>,
+        /// Exact package version
+        #[arg(long)]
+        version: Option<String>,
+        /// Exact package platform
+        #[arg(long)]
+        platform: Option<String>,
+        /// Hub access token
+        #[arg(long, env = "AOS_TOKEN", requires = "hub")]
+        token: Option<String>,
+        /// Read the system package profile instead of the user profile
         #[arg(long)]
         system: bool,
     },
@@ -806,6 +843,219 @@ pub enum PackageCommand {
     },
 }
 
+/// Canonical package-documentation operations.
+#[derive(Subcommand)]
+pub enum DocumentationCommand {
+    /// Search installed documentation or a Hub index
+    Search {
+        /// Terms to search for
+        query: String,
+        /// Restrict results to package, option, service, credential, or capability
+        #[arg(long)]
+        kind: Option<String>,
+        /// Maximum number of results
+        #[arg(long, default_value = "25")]
+        limit: usize,
+        /// Hub root URL for a remote search
+        #[arg(long)]
+        hub: Option<String>,
+        /// Hub registry slug for a remote search
+        #[arg(long, requires = "hub")]
+        registry: Option<String>,
+        /// Hub access token for private registries
+        #[arg(long, env = "AOS_TOKEN", requires = "hub")]
+        token: Option<String>,
+        /// Search the system package profile instead of the user profile
+        #[arg(long)]
+        system: bool,
+    },
+    /// Render one exact package document
+    Show {
+        /// Package name
+        package: String,
+        /// Exact version for a remote selection
+        #[arg(long)]
+        version: Option<String>,
+        /// Exact platform for a remote selection
+        #[arg(long)]
+        platform: Option<String>,
+        /// Plain text, canonical JSON, standalone HTML, or roff
+        #[arg(long, value_enum)]
+        format: Option<DocumentationOutput>,
+        /// Write rendered bytes to this file instead of stdout
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Hub root URL for a remote lookup
+        #[arg(long)]
+        hub: Option<String>,
+        /// Hub registry slug for a remote lookup
+        #[arg(long, requires = "hub")]
+        registry: Option<String>,
+        /// Hub access token for private registries
+        #[arg(long, env = "AOS_TOKEN", requires = "hub")]
+        token: Option<String>,
+        /// Read the system package profile instead of the user profile
+        #[arg(long)]
+        system: bool,
+    },
+    /// Print the closed JSON Schema used by documentation tooling
+    Schema {
+        /// Fetch the schema from this Hub instead of using the checked local schema
+        #[arg(long)]
+        hub: Option<String>,
+        /// Hub access token
+        #[arg(long, env = "AOS_TOKEN", requires = "hub")]
+        token: Option<String>,
+    },
+    /// Render or install an offline package manpage
+    Man {
+        /// Installed package name
+        package: String,
+        /// Install the generated manpage into APM's profile-scoped cache
+        #[arg(long)]
+        install: bool,
+        /// Print only the installed cache path
+        #[arg(long, requires = "install")]
+        print_path: bool,
+        /// Use the system package profile and cache
+        #[arg(long)]
+        system: bool,
+    },
+    /// Serve completion, hover, diagnostics, and schema over LSP stdio
+    Lsp {
+        /// Read the system package profile instead of the user profile
+        #[arg(long)]
+        system: bool,
+        /// Add a canonical documentation JSON file outside the installed profile
+        #[arg(long = "document")]
+        documents: Vec<PathBuf>,
+    },
+    /// Serve the installed documentation browser on a loopback HTTP listener
+    Serve {
+        /// Listener address; non-loopback addresses are rejected
+        #[arg(long, default_value = "127.0.0.1:0")]
+        listen: String,
+        /// Exit after serving one request (useful for automation)
+        #[arg(long, hide = true)]
+        once: bool,
+        /// Read the system package profile instead of the user profile
+        #[arg(long)]
+        system: bool,
+    },
+    /// Explain or collect the profile-scoped generated documentation cache
+    Cache {
+        /// Cache operation to run
+        #[command(subcommand)]
+        command: DocumentationCacheCommand,
+    },
+}
+
+/// Typed option discovery and comparison operations.
+#[derive(Subcommand)]
+pub enum OptionsCommand {
+    /// Search option paths and descriptions
+    Search {
+        /// Terms to search for
+        query: String,
+        /// Maximum number of results
+        #[arg(long, default_value = "25")]
+        limit: usize,
+        /// Hub root URL for a remote search
+        #[arg(long)]
+        hub: Option<String>,
+        /// Hub registry slug for a remote search
+        #[arg(long, requires = "hub")]
+        registry: Option<String>,
+        /// Hub access token
+        #[arg(long, env = "AOS_TOKEN", requires = "hub")]
+        token: Option<String>,
+        /// Search the system profile
+        #[arg(long)]
+        system: bool,
+    },
+    /// Show one exact option path
+    Show {
+        /// Exact display path, including `<wildcard>` segments
+        path: String,
+        /// Restrict the lookup to this package
+        #[arg(long)]
+        package: Option<String>,
+        /// Hub root URL for a remote lookup
+        #[arg(long)]
+        hub: Option<String>,
+        /// Hub registry slug for a remote lookup
+        #[arg(long, requires = "hub")]
+        registry: Option<String>,
+        /// Hub access token
+        #[arg(long, env = "AOS_TOKEN", requires = "hub")]
+        token: Option<String>,
+        /// Search the system profile
+        #[arg(long)]
+        system: bool,
+    },
+    /// Compare option semantics between two exact package versions
+    Compare {
+        /// Package name
+        package: String,
+        /// Source version
+        #[arg(long)]
+        from: String,
+        /// Destination version
+        #[arg(long)]
+        to: String,
+        /// Exact platform
+        #[arg(long)]
+        platform: String,
+        /// Hub root URL
+        #[arg(long)]
+        hub: String,
+        /// Hub registry slug
+        #[arg(long)]
+        registry: String,
+        /// Hub access token
+        #[arg(long, env = "AOS_TOKEN")]
+        token: Option<String>,
+    },
+    /// Emit exact option paths for shell and editor completion
+    Complete {
+        /// Path prefix
+        prefix: String,
+        /// Search the system profile
+        #[arg(long)]
+        system: bool,
+    },
+}
+
+/// Generated documentation cache operations.
+#[derive(Subcommand)]
+pub enum DocumentationCacheCommand {
+    /// Report retained documentation and generated manpage cache entries
+    Status {
+        /// Inspect the system profile cache
+        #[arg(long)]
+        system: bool,
+    },
+    /// Remove generated cache entries not serving as canonical package roots
+    Gc {
+        /// Collect the system profile cache
+        #[arg(long)]
+        system: bool,
+    },
+}
+
+/// Supported package-document renderers.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum DocumentationOutput {
+    /// Human-readable terminal reference
+    Plain,
+    /// Exact canonical JSON
+    Json,
+    /// Standalone safe HTML
+    Html,
+    /// Troff/groff manpage source
+    Man,
+}
+
 #[derive(Subcommand)]
 pub enum RuntimeConfigCommand {
     /// Show the active immutable set and mutable worktree state.
@@ -989,6 +1239,7 @@ impl PackageCommand {
             PackageCommand::Clean { system, .. } => *system,
             PackageCommand::TestReconcileExposedUnits { system } => *system,
             PackageCommand::TestVerifyPackageAttestation { system, .. } => *system,
+            PackageCommand::Schema { system, .. } => *system,
             _ => false,
         }
     }
@@ -1288,6 +1539,9 @@ pub enum RegistryCommand {
         /// Trusted AOS base-lib store path used for the publish-time options-only eval
         #[arg(long = "config-base-lib", requires = "config_module")]
         config_base_lib: Option<String>,
+        /// Trusted AOS base library used to extract system-owned service options
+        #[arg(long = "documentation-base-lib")]
+        documentation_base_lib: Option<String>,
         /// Named runtime output exposed to the config module (`name=/nix/store/...`)
         #[arg(long = "config-dependency", requires = "config_module")]
         config_dependencies: Vec<String>,
@@ -3022,6 +3276,36 @@ pub async fn run(
         return run_runtime_config_command(command, printer).await;
     }
 
+    // Documentation reads retained installed objects or the public Hub API and
+    // needs neither mutable registry checkout state nor a writable profile.
+    if let PackageCommand::Docs { command } = command {
+        return documentation::run(command, printer).await;
+    }
+    if let PackageCommand::Options { command } = command {
+        return documentation::run_options(command, printer).await;
+    }
+    if let PackageCommand::Schema {
+        package,
+        hub,
+        registry,
+        version,
+        platform,
+        token,
+        system,
+    } = command
+    {
+        return documentation::run_schema(
+            package.as_deref(),
+            hub.as_deref(),
+            registry.as_deref(),
+            version.as_deref(),
+            platform.as_deref(),
+            token.as_deref(),
+            *system,
+        )
+        .await;
+    }
+
     // The on-host config-eval driver needs no apm config or profile: it reads
     // the registry index and host.nix from disk and shells out to stock nix.
     // Dispatch it before `ApmConfig::load` (mirrors the systemd-client vehicle).
@@ -3741,6 +4025,15 @@ pub async fn run(
         }
         PackageCommand::Config { .. } => {
             unreachable!("Config is handled before ApmConfig::load")
+        }
+        PackageCommand::Docs { .. } => {
+            unreachable!("Docs is handled before ApmConfig::load")
+        }
+        PackageCommand::Options { .. } => {
+            unreachable!("Options is handled before ApmConfig::load")
+        }
+        PackageCommand::Schema { .. } => {
+            unreachable!("Schema is handled before ApmConfig::load")
         }
         PackageCommand::GraphCompile { .. } => {
             unreachable!("GraphCompile is handled before ApmConfig::load")
@@ -4826,6 +5119,7 @@ async fn run_registry(
             expose_manifest,
             config_module,
             config_base_lib,
+            documentation_base_lib,
             config_dependencies,
             bless,
             no_ca,
@@ -4856,6 +5150,7 @@ async fn run_registry(
                 expose_manifest.as_deref(),
                 config_module.as_deref(),
                 config_base_lib.as_deref(),
+                documentation_base_lib.as_deref(),
                 config_dependencies,
                 *bless,
                 *no_ca,
@@ -6378,6 +6673,7 @@ mod tests {
             expose: None,
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta {

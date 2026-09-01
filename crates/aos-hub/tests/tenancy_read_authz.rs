@@ -165,6 +165,7 @@ async fn seed_inventory(db: &Database, registry_id: i64) {
         caches: Vec::new(),
         roster: Vec::new(),
         packages: vec![package],
+        package_documentation: Vec::new(),
         releases: Vec::new(),
         release_artifact_snapshots: Vec::new(),
         release_images: Vec::new(),

@@ -281,6 +281,33 @@ pub enum Commands {
         /// Force rebuild index
         #[arg(long)]
         rebuild: bool,
+        /// Select the system installed-package profile in package mode
+        #[arg(long)]
+        system: bool,
+        /// Hub base URL in package or hub mode
+        #[arg(long, env = "AOS_HUB")]
+        hub: Option<String>,
+        /// Hub registry slug in package or hub mode
+        #[arg(long)]
+        registry: Option<String>,
+        /// Hub access token
+        #[arg(long, env = "AOS_TOKEN")]
+        token: Option<String>,
+        /// Exact package version
+        #[arg(long)]
+        version: Option<String>,
+        /// Exact package platform
+        #[arg(long)]
+        platform: Option<String>,
+    },
+    /// Serve canonical package option hints over Language Server Protocol stdio
+    LanguageServer {
+        /// Read the system installed-package profile
+        #[arg(long)]
+        system: bool,
+        /// Add an exact canonical documentation object
+        #[arg(long = "document")]
+        documents: Vec<std::path::PathBuf>,
     },
 }
 

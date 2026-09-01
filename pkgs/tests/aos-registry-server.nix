@@ -208,9 +208,19 @@ in
         max = 2;
       };
       declares = [
-        "aos-registry-server.cache"
+        "aos-registry-server.cache.anonymousRead"
+        "aos-registry-server.cache.bootstrapSocket"
+        "aos-registry-server.cache.bootstrapSocketGroup"
+        "aos-registry-server.cache.enable"
+        "aos-registry-server.cache.listenAddress"
+        "aos-registry-server.cache.maxConcurrentBuilds"
+        "aos-registry-server.cache.port"
         "aos-registry-server.enable"
-        "aos-registry-server.git"
+        "aos-registry-server.git.basePath"
+        "aos-registry-server.git.enable"
+        "aos-registry-server.git.exportAll"
+        "aos-registry-server.git.listenAddress"
+        "aos-registry-server.git.port"
       ];
       ownsRoots = [
         {
@@ -219,6 +229,17 @@ in
           contributable = [];
         }
       ];
+      documentation = {
+        summary = "AOS exposed registry and binary cache server package";
+        sections = {
+          services = lib.aosDoc.section "Registry services" [
+            (lib.aosDoc.paragraph "Git smart transport and binary-cache HTTP listeners can be enabled independently. State roots, views, bootstrap sockets, and anonymous-read policy remain explicit typed values.")
+          ];
+          lifecycle = lib.aosDoc.section "Activation" [
+            (lib.aosDoc.paragraph "The generated environment artifacts are validated before activation. Listener and state changes restart only the affected exposed service.")
+          ];
+        };
+      };
     };
 
     meta = {

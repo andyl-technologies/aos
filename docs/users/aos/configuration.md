@@ -80,6 +80,45 @@ Machine-wide package sets can be reconciled from a reviewed desired-state
 file with `apm install --system --from`. See [Manage packages](packages.md) for
 registry trust, user and system scopes, upgrades, and rollback.
 
+## Discover package configuration
+
+Package option and service reference is generated from the exact signed Nix
+interface selected by a registry release. It is not maintained in a parallel
+Markdown page. Browse a remote registry before installation:
+
+```sh
+apm docs search proxy --hub https://hub.example \
+  --registry acme/production
+apm options search virtualHost --hub https://hub.example \
+  --registry acme/production
+apm schema nginx --hub https://hub.example \
+  --registry acme/production
+```
+
+After installation, the same commands default to the documentation Nix object
+retained by the active package profile. They continue to work without a
+registry, cache, or network connection:
+
+```sh
+apm docs show nginx
+apm options show nginx.enable --package nginx
+apm docs man nginx --install
+apm docs serve
+```
+
+Editors can use that same closed schema and exact package identity through the
+standard-LSP server:
+
+```sh
+aos language-server
+```
+
+Configure an editor to start that command over stdio. Completion, hover,
+definition, links, symbols, diagnostics, and quick fixes are advisory because
+the language server never evaluates an editor buffer. Review the authoritative
+result with `apm config diff` before applying it. `apm options complete` exposes
+the same bounded option-path completion to shells and other editor clients.
+
 ## Understand runtime `host.nix`
 
 Runtime activation follows one transaction:

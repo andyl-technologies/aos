@@ -95,6 +95,7 @@ in {
       kubeconfig = mkOption {
         type = secretRef "Opaque Kubernetes API kubeconfig reference.";
         default = {};
+        description = "Opaque credential reference for CloudCore's Kubernetes API kubeconfig.";
       };
       qps = mkOption {
         type = positiveInt;
@@ -111,10 +112,12 @@ in {
       enable = mkOption {
         type = types.bool;
         default = true;
+        description = "Enable CloudHub's HTTPS enrollment listener.";
       };
       address = mkOption {
         type = address;
         default = "0.0.0.0";
+        description = "Address on which CloudHub accepts HTTPS enrollment requests.";
       };
       port = mkOption {
         type = types.port;
@@ -127,10 +130,12 @@ in {
       enable = mkOption {
         type = types.bool;
         default = true;
+        description = "Enable CloudHub's WebSocket listener for connected edge nodes.";
       };
       address = mkOption {
         type = address;
         default = "0.0.0.0";
+        description = "Address on which CloudHub accepts WebSocket connections from edge nodes.";
       };
       port = mkOption {
         type = types.port;
@@ -143,18 +148,22 @@ in {
       caCertificate = mkOption {
         type = secretRef "Opaque CloudCore CA certificate reference.";
         default = {};
+        description = "Opaque credential reference for the CloudHub certificate authority certificate.";
       };
       caPrivateKey = mkOption {
         type = secretRef "Opaque CloudCore CA private-key reference.";
         default = {};
+        description = "Opaque credential reference for the CloudHub certificate authority private key.";
       };
       serverCertificate = mkOption {
         type = secretRef "Opaque CloudCore server certificate reference.";
         default = {};
+        description = "Opaque credential reference for the CloudHub server certificate.";
       };
       serverPrivateKey = mkOption {
         type = secretRef "Opaque CloudCore server private-key reference.";
         default = {};
+        description = "Opaque credential reference for the CloudHub server private key.";
       };
     };
   };

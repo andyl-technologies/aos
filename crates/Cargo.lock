@@ -157,6 +157,7 @@ dependencies = [
  "aos-cache",
  "aos-core",
  "aos-doc",
+ "aos-doc-model",
  "aos-net",
  "aos-package",
  "aos-profile",
@@ -266,6 +267,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-doc-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "aos-hub"
 version = "0.1.0"
 dependencies = [
@@ -324,6 +335,7 @@ dependencies = [
 name = "aos-hub-console"
 version = "0.1.0"
 dependencies = [
+ "aos-doc-model",
  "aos-hub-console-contract",
  "aos-proto-types",
  "gloo-net",
@@ -350,6 +362,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "aos-doc-model",
  "aos-hub-console-contract",
  "aos-proto-types",
  "aos-registry-surface",
@@ -460,8 +473,11 @@ dependencies = [
  "aos-boot-identity",
  "aos-cache",
  "aos-core",
+ "aos-doc-model",
  "aos-net",
+ "aos-proto-types",
  "aos-registry-surface",
+ "aos-remote",
  "aos-systemd",
  "async-trait",
  "base64 0.22.1",

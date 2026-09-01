@@ -6,7 +6,14 @@
   ...
 }: let
   inherit (lib) mkIf mkOption types;
-  package = builtins.fromJSON (builtins.readFile "${outputs.self}/share/longhorn-package.json");
+  # The package manifest records the authenticated engine companions as store
+  # paths, so readFile preserves their string context. fromJSON intentionally
+  # rejects context-bearing input. This module consumes only the version; the
+  # companions remain retained and authenticated independently through
+  # configModule.dependencies and runtimeDeps.
+  package = builtins.fromJSON (builtins.unsafeDiscardStringContext (
+    builtins.readFile "${outputs.self}/share/longhorn-package.json"
+  ));
   cfg = config.longhorn;
   values = ''
     defaultSettings:
@@ -33,26 +40,24 @@ in {
     };
   };
 
-  config = mkIf cfg.enable {
-    k3s.integrations = {
-      csi.longhorn.nodeLabels."node.longhorn.io/create-default-disk" = cfg.nodeLabel;
-      resources.longhorn = {
-        priority = 200;
-        content = ''
-          apiVersion: helm.cattle.io/v1
-          kind: HelmChart
-          metadata:
-            name: longhorn
-            namespace: kube-system
-          spec:
-            chart: longhorn
-            repo: https://charts.longhorn.io
-            targetNamespace: longhorn-system
-            version: ${package.version}
-            valuesContent: |-
-          ${lib.concatMapStringsSep "\n" (line: "      ${line}") (lib.splitString "\n" values)}
-        '';
-      };
-    };
+  config.k3s.integrations.csi.longhorn = mkIf cfg.enable {
+    nodeLabels."node.longhorn.io/create-default-disk" = cfg.nodeLabel;
+  };
+  config.k3s.integrations.resources.longhorn = mkIf cfg.enable {
+    priority = 200;
+    content = ''
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
+      metadata:
+        name: longhorn
+        namespace: kube-system
+      spec:
+        chart: longhorn
+        repo: https://charts.longhorn.io
+        targetNamespace: longhorn-system
+        version: ${package.version}
+        valuesContent: |-
+      ${lib.concatMapStringsSep "\n" (line: "      ${line}") (lib.splitString "\n" values)}
+    '';
   };
 }

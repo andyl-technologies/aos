@@ -6,8 +6,11 @@ license.workspace = true
 
 [dependencies]
 aos-core = { workspace = true }
+aos-doc-model = { workspace = true }
 aos-cache = { workspace = true }
 aos-net = { workspace = true }
+aos-remote = { workspace = true }
+aos-proto-types = { workspace = true }
 aos-systemd = { workspace = true }
 aos-registry-surface = { workspace = true }
 aos-boot-identity = { workspace = true }

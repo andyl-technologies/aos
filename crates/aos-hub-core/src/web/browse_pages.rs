@@ -85,6 +85,7 @@ fn registry_nav(slug: &str, active: &str) -> String {
     let items = [
         ("overview", format!("/{slug}/"), "Overview"),
         ("packages", format!("/{slug}/-/packages"), "Packages"),
+        ("docs", format!("/{slug}/-/docs"), "Docs"),
         ("images", format!("/{slug}/-/images"), "Images"),
         ("channels", format!("/{slug}/-/channels"), "Channels"),
         ("releases", format!("/{slug}/-/releases"), "Releases"),
@@ -1175,6 +1176,19 @@ pub struct PackageClosure {
     pub reverse_total: usize,
 }
 
+/// Canonical documentation rendered beside one package selection.
+#[derive(Debug, Clone)]
+pub struct PackageDocumentationPanel {
+    /// Reverified closed-schema document.
+    pub document: aos_doc_model::PackageDocumentation,
+    /// Exact signed Nix store object carrying the JSON bytes.
+    pub store_path: String,
+    /// Exact canonical document digest.
+    pub document_sha256: String,
+    /// NAR identity of the store object.
+    pub nar_hash: String,
+}
+
 /// One package's detail page — the data-rich closure browser.
 ///
 /// Renders, in order: a header with name + latest version + the prominent
@@ -1196,6 +1210,8 @@ pub fn package_page(
     closure: &PackageClosure,
     setup: &RegistrySetup,
     snapshot: Option<&str>,
+    documentation: Option<&PackageDocumentationPanel>,
+    documentation_unavailable: bool,
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
@@ -1204,7 +1220,7 @@ pub fn package_page(
     // Header: name, latest version, then the description prominently.
     let latest = detail.versions.first().map(|v| v.version.as_str());
     let mut body = registry_nav(slug, "packages");
-    let _ = write!(body, "<h1>{}", escape(&detail.name));
+    let _ = write!(body, "<h1 id=\"overview\">{}", escape(&detail.name));
     if let Some(latest) = latest {
         let _ = write!(body, " <span class=\"dim\">{}</span>", escape(latest));
     }
@@ -1225,6 +1241,9 @@ pub fn package_page(
             escape(&detail.description)
         );
     }
+    body.push_str(
+        "<nav class=\"package-section-nav\" aria-label=\"Package documentation sections\"><a href=\"#overview\">Overview</a><a href=\"#configure\">Configure</a><a href=\"#runtime\">Services</a><a href=\"#dependencies\">Dependencies</a><a href=\"#versions\">Versions</a><a href=\"#integrity\">Integrity</a></nav>",
+    );
 
     // The union of every version's platforms, as chips near the top.
     let mut all_platforms: Vec<&str> = detail
@@ -1298,12 +1317,48 @@ pub fn package_page(
         );
     }
 
+    body.push_str("<section id=\"configure\" class=\"package-docs\"><div class=\"section-heading\"><div><p class=\"eyebrow\">Canonical reference</p><h2>Configuration &amp; runtime</h2></div>");
+    let _ = write!(
+        body,
+        "<a class=\"button secondary\" href=\"/{}/-/docs?q={}\">Search all docs</a></div>",
+        escape(slug),
+        escape(&detail.name),
+    );
+    if let Some(documentation) = documentation {
+        let document = &documentation.document;
+        let _ = write!(
+            body,
+            "<p id=\"integrity\" class=\"dim docs-provenance\">Verified from <code>{}</code> · document {} · NAR {}</p>",
+            escape(&documentation.store_path),
+            hash_value(&documentation.document_sha256),
+            hash_value(&documentation.nar_hash),
+        );
+        body.push_str(&document.render_html_fragment());
+        let _ = write!(
+            body,
+            "<p><a href=\"/{}/-/docs/{}/{}/{}\">Open a permanent version/platform reference</a> · <a href=\"/{}/-/api/docs/{}/{}/{}\">canonical JSON</a></p>",
+            escape(slug),
+            escape(&document.package.name),
+            escape(&document.package.version),
+            escape(&document.package.platform),
+            escape(slug),
+            escape(&document.package.name),
+            escape(&document.package.version),
+            escape(&document.package.platform),
+        );
+    } else if documentation_unavailable {
+        body.push_str("<aside class=\"notice warning\"><strong>Documentation temporarily unavailable.</strong> The signed locator exists, but its Nix object could not be reverified. Runtime package metadata is still shown below.</aside>");
+    } else {
+        body.push_str("<p class=\"dim\">This package version predates canonical structured documentation.</p>");
+    }
+    body.push_str("</section>");
+
     // Dependencies: the closure edges of the latest primary platform, made
     // legible — resolvable hashes link to their package page, the rest fall
     // back to a narinfo permalink.
     let _ = writeln!(
         body,
-        "<h2>Dependencies ({})</h2>",
+        "<h2 id=\"dependencies\">Dependencies ({})</h2>",
         closure.dependencies.len(),
     );
     if closure.dependencies.is_empty() {
@@ -1366,7 +1421,7 @@ pub fn package_page(
         }
     }
 
-    body.push_str("<h2>Versions</h2>\n");
+    body.push_str("<h2 id=\"versions\">Versions</h2>\n");
     body.push_str(
         "<div class=\"table-scroll\" role=\"region\" aria-label=\"Package artifacts\" tabindex=\"0\">\n\
          <table class=\"artifact-table\"><thead><tr><th>version</th><th>platform</th><th>NAR</th><th>closure</th></tr></thead>\n",
@@ -1495,6 +1550,152 @@ pub fn package_page(
             &[
                 (format!("/{slug}/-/packages"), "packages".into()),
                 (String::new(), detail.name.clone()),
+            ],
+        ),
+        &body,
+        &state_line(status, started),
+        session,
+    )
+}
+
+/// Renders the searchable package-documentation index.
+pub fn documentation_index_page(
+    registry: &RegistryRecord,
+    status: Option<&IndexStatus>,
+    results: &[crate::db::PackageDocumentationSearchResult],
+    query: Option<&str>,
+    kind: Option<&str>,
+    started: Instant,
+    session: &SessionIndicator,
+) -> String {
+    let slug = &registry.slug;
+    let mut body = registry_nav(slug, "docs");
+    let _ = write!(
+        body,
+        "<form method=\"get\" class=\"docs-search\" role=\"search\">\
+         <label><span>Search documentation</span><input autofocus type=\"search\" name=\"q\" value=\"{}\" placeholder=\"TLS, listen port, restart, credential…\"></label>\
+         <label><span>Kind</span><select name=\"kind\">",
+        escape(query.unwrap_or("")),
+    );
+    for (value, label) in [
+        ("", "Everything"),
+        ("package", "Packages"),
+        ("option", "Options"),
+        ("service", "Services"),
+        ("credential", "Credentials"),
+        ("capability", "Capabilities"),
+    ] {
+        let selected = (kind == Some(value)).then_some(" selected").unwrap_or("");
+        let _ = write!(
+            body,
+            "<option value=\"{}\"{}>{}</option>",
+            value, selected, label
+        );
+    }
+    body.push_str("</select></label><button>Search</button></form>");
+
+    if query.is_some_and(|query| !query.trim().is_empty()) {
+        let _ = write!(
+            body,
+            "<p class=\"dim\">{} ranked result{} for <strong>{}</strong></p>",
+            results.len(),
+            if results.len() == 1 { "" } else { "s" },
+            escape(query.unwrap_or_default()),
+        );
+    } else if results.is_empty() {
+        body.push_str("<p class=\"dim\">No indexed package documentation is available.</p>");
+    } else {
+        let _ = write!(
+            body,
+            "<p class=\"dim\">Browse {} indexed documentation entr{}.</p>",
+            results.len(),
+            if results.len() == 1 { "y" } else { "ies" },
+        );
+    }
+
+    if !results.is_empty() {
+        body.push_str("<ol class=\"docs-results\">");
+        for result in results {
+            let _ = write!(
+                body,
+                "<li><a href=\"/{}/-/docs/{}/{}/{}\"><span class=\"doc-kind\">{}</span><strong>{}</strong><span>{}</span><code>{} {} · {}</code></a></li>",
+                escape(slug),
+                escape(&result.package_name),
+                escape(&result.package_version),
+                escape(&result.platform),
+                escape(&result.kind),
+                escape(&result.title),
+                escape(&result.summary),
+                escape(&result.package_name),
+                escape(&result.package_version),
+                escape(&result.platform),
+            );
+        }
+        body.push_str("</ol>");
+    }
+    let _ = write!(
+        body,
+        "<p class=\"docs-tools\"><a href=\"/{}/-/api/docs/schema\">JSON Schema</a> · <code>apm docs search &lt;query&gt;</code> · editor completion via <code>apm docs lsp</code></p>",
+        escape(slug),
+    );
+    page_with_session(
+        "Package documentation",
+        &registry_crumbs(slug, &[(format!("/{slug}/-/docs"), "documentation".into())]),
+        &body,
+        &state_line(status, started),
+        session,
+    )
+}
+
+/// Renders one permanent exact package/version/platform documentation page.
+pub fn documentation_page(
+    registry: &RegistryRecord,
+    status: Option<&IndexStatus>,
+    documentation: &PackageDocumentationPanel,
+    started: Instant,
+    session: &SessionIndicator,
+) -> String {
+    let slug = &registry.slug;
+    let document = &documentation.document;
+    let mut body = registry_nav(slug, "docs");
+    body.push_str("<div class=\"docs-detail-toolbar\">");
+    let _ = write!(
+        body,
+        "<a href=\"/{}/-/docs\">← Search documentation</a><span><a href=\"/{}/-/api/docs/{}/{}/{}\">Canonical JSON</a> · <a href=\"/{}/-/api/docs/schema\">JSON Schema</a></span>",
+        escape(slug),
+        escape(slug),
+        escape(&document.package.name),
+        escape(&document.package.version),
+        escape(&document.package.platform),
+        escape(slug),
+    );
+    body.push_str("</div>");
+    let _ = write!(
+        body,
+        "<div class=\"docs-provenance-card\"><div><span>Version</span><strong>{}</strong></div><div><span>Platform</span><strong>{}</strong></div><div><span>Document</span>{}</div><div><span>Semantic schema</span>{}</div><details><summary>Signed Nix object</summary><code>{}</code><p>NAR {}</p></details></div>",
+        escape(&document.package.version),
+        escape(&document.package.platform),
+        hash_value(&documentation.document_sha256),
+        hash_value(&document.identity.semantic_schema_sha256),
+        escape(&documentation.store_path),
+        hash_value(&documentation.nar_hash),
+    );
+    body.push_str(&document.render_html_fragment());
+    body.push_str("<section class=\"docs-offline\"><h2>Use offline</h2><p>This same object is retained with the installed package profile.</p><pre>");
+    let _ = write!(
+        body,
+        "apm docs show {}\napm docs show {} --format man\napm docs schema",
+        escape(&document.package.name),
+        escape(&document.package.name),
+    );
+    body.push_str("</pre></section>");
+    page_with_session(
+        &format!("{} documentation", document.package.name),
+        &registry_crumbs(
+            slug,
+            &[
+                (format!("/{slug}/-/docs"), "documentation".into()),
+                (String::new(), document.package.name.clone()),
             ],
         ),
         &body,
@@ -2976,6 +3177,40 @@ mod tests {
         RegistrySetup::new(registry, None, Some(url), caches)
     }
 
+    fn documentation_panel(summary: &str) -> PackageDocumentationPanel {
+        let mut document = aos_doc_model::PackageDocumentation {
+            schema: aos_doc_model::DOCUMENT_SCHEMA.into(),
+            package: aos_doc_model::DocumentedPackage {
+                name: "nginx".into(),
+                version: "1.30.4".into(),
+                platform: "x86_64-linux".into(),
+                summary: summary.into(),
+                homepage: Some("https://nginx.org/".into()),
+                license: "BSD-2-Clause".into(),
+            },
+            identity: aos_doc_model::DocumentationIdentity {
+                semantic_schema_sha256: format!("sha256:{}", "0".repeat(64)),
+                runtime_nar_hash: format!("sha256:{}", "1".repeat(64)),
+                config_module_nar_hash: None,
+                system_module_nar_hash: None,
+                expose_artifact_nar_hash: None,
+                source_nar_hash: format!("sha256:{}", "2".repeat(64)),
+            },
+            sections: Vec::new(),
+            options: Vec::new(),
+            runtime: aos_doc_model::RuntimeSurface::default(),
+        };
+        document.identity.semantic_schema_sha256 = document
+            .computed_semantic_schema_sha256()
+            .expect("semantic schema");
+        PackageDocumentationPanel {
+            document,
+            store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-nginx-docs.json".into(),
+            document_sha256: format!("sha256:{}", "3".repeat(64)),
+            nar_hash: format!("sha256:{}", "4".repeat(64)),
+        }
+    }
+
     fn indexed_image(format: &str, release: &str) -> IndexedSystemImage {
         use aos_registry_surface::manifest::{
             immutable_image_info_object_key, immutable_image_object_key, ImageCompression,
@@ -3399,6 +3634,8 @@ mod tests {
             &closure,
             &setup,
             None,
+            None,
+            false,
             Instant::now(),
             &anon(),
         );
@@ -3416,6 +3653,8 @@ mod tests {
             &closure,
             &setup,
             None,
+            None,
+            false,
             Instant::now(),
             &anon(),
         );
@@ -3468,11 +3707,13 @@ mod tests {
             &closure,
             &setup,
             None,
+            None,
+            false,
             Instant::now(),
             &anon(),
         );
         // Header carries the latest version and a prominent description.
-        assert!(html.contains("<h1>curl <span class=\"dim\">8.5.0</span>"));
+        assert!(html.contains("<h1 id=\"overview\">curl <span class=\"dim\">8.5.0</span>"));
         assert!(html.contains("class=\"lede\">URL transfers"));
         // Platform chips near the top.
         assert!(html.contains("class=\"chip\">x86_64-linux"));
@@ -3532,6 +3773,8 @@ mod tests {
             &PackageClosure::default(),
             &setup,
             None,
+            None,
+            false,
             Instant::now(),
             &anon(),
         );
@@ -3567,6 +3810,8 @@ mod tests {
             &PackageClosure::default(),
             &setup,
             None,
+            None,
+            false,
             Instant::now(),
             &anon(),
         );
@@ -3574,6 +3819,92 @@ mod tests {
         assert!(html.contains("&lt;script&gt;x&lt;/script&gt;"));
         assert!(!html.contains("<img src=x onerror=1>"));
         assert!(html.contains("&lt;img src=x onerror=1&gt;"));
+    }
+
+    #[test]
+    fn documentation_pages_render_verified_content_and_escape_search_rows() {
+        let registry = registry();
+        let panel = documentation_panel("HTTP <proxy> service");
+        let detail = PackageDetail {
+            name: "nginx".into(),
+            description: "HTTP server".into(),
+            homepage: None,
+            license: "BSD-2-Clause".into(),
+            maintainer: "aos".into(),
+            sysroot: false,
+            versions: Vec::new(),
+        };
+        let setup = setup(&registry, "https://hub.example/demo", &[]);
+        let package_html = package_page(
+            &registry,
+            None,
+            &detail,
+            &PackageClosure::default(),
+            &setup,
+            None,
+            Some(&panel),
+            false,
+            Instant::now(),
+            &anon(),
+        );
+        assert!(package_html.contains("Configuration &amp; runtime"));
+        assert!(package_html.contains("aria-label=\"Package documentation sections\""));
+        assert!(package_html.contains("href=\"#integrity\""));
+        assert!(package_html.contains("HTTP &lt;proxy&gt; service"));
+        assert!(!package_html.contains("HTTP <proxy> service"));
+        assert!(package_html.contains("/-/api/docs/nginx/1.30.4/x86_64-linux"));
+
+        let detail_html = documentation_page(&registry, None, &panel, Instant::now(), &anon());
+        assert!(
+            detail_html.contains("Exact installable reference")
+                || detail_html.contains("Canonical JSON")
+        );
+        assert!(detail_html.contains("apm docs show nginx"));
+
+        let search_html = documentation_index_page(
+            &registry,
+            None,
+            &[crate::db::PackageDocumentationSearchResult {
+                package_name: "nginx".into(),
+                package_version: "1.30.4".into(),
+                platform: "x86_64-linux".into(),
+                kind: "option".into(),
+                key: "nginx.enable".into(),
+                title: "<script>option</script>".into(),
+                summary: "Enable & start".into(),
+                score: 100,
+            }],
+            Some("enable"),
+            Some("option"),
+            Instant::now(),
+            &anon(),
+        );
+        assert!(!search_html.contains("<script>option</script>"));
+        assert!(search_html.contains("&lt;script&gt;option&lt;/script&gt;"));
+        assert!(search_html.contains("Enable &amp; start"));
+        assert!(!search_html.contains("Exact installable reference"));
+        assert!(!search_html.contains("<h1>Package documentation</h1>"));
+
+        let browse_html = documentation_index_page(
+            &registry,
+            None,
+            &[crate::db::PackageDocumentationSearchResult {
+                package_name: "nginx".into(),
+                package_version: "1.30.4".into(),
+                platform: "x86_64-linux".into(),
+                kind: "package".into(),
+                key: "nginx".into(),
+                title: "nginx".into(),
+                summary: "HTTP server".into(),
+                score: 0,
+            }],
+            Some(""),
+            None,
+            Instant::now(),
+            &anon(),
+        );
+        assert!(browse_html.contains("Browse 1 indexed documentation entry."));
+        assert!(browse_html.contains("HTTP server"));
     }
 
     #[tokio::test]

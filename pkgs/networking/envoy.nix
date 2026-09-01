@@ -726,6 +726,27 @@ in
           ];
         }
       ];
+      documentation = {
+        summary = "Envoy proxy — high-performance L7 proxy and communication bus";
+        sections = {
+          quickstart = lib.aosDoc.section "Quick start" [
+            (lib.aosDoc.paragraph "Install Envoy, enable envoy.enable, and declare listeners and clusters. Every rendered bootstrap is checked with Envoy validation before the service starts.")
+            (lib.aosDoc.code "nix" ''
+              {
+                aos.apm.desiredPackages = ["envoy"];
+                envoy.enable = true;
+                envoy.listeners.http.port = 10000;
+              }
+            '')
+          ];
+          lifecycle = lib.aosDoc.section "Runtime lifecycle" [
+            (lib.aosDoc.paragraph "Systemd owns restarts, so hot restart is disabled. The administration endpoint remains loopback-only and its access log uses the managed package log directory.")
+          ];
+          credentials = lib.aosDoc.section "TLS and xDS credentials" [
+            (lib.aosDoc.paragraph "Static TLS handles use opaque system-credential references and are bound only when selected. SDS names xDS resources rather than embedding secret material.")
+          ];
+        };
+      };
     };
 
     expose = {

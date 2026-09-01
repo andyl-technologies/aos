@@ -174,6 +174,9 @@ pub struct PlatformEntry {
     /// Configuration-only module output and its declared interface.
     #[serde(default)]
     pub config_module: Option<ConfigModuleMeta>,
+    /// Canonical RFC-0016 package documentation store object.
+    #[serde(default)]
+    pub documentation: Option<DocumentationArtifactMeta>,
 }
 
 impl PlatformEntry {
@@ -1724,6 +1727,13 @@ pub struct PermissionsMeta {
     /// Whether the package requests host-root-equivalent users.
     #[serde(default, rename = "privileged-users", skip_serializing_if = "is_false")]
     pub privileged_users: bool,
+    /// Static non-root service accounts derived from authenticated units.
+    #[serde(
+        default,
+        rename = "static-users",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub static_users: Vec<String>,
     /// Host-fulfilled kernel modules requested by the package.
     #[serde(
         default,
@@ -1757,6 +1767,7 @@ impl PermissionsMeta {
             && self.host_paths.is_empty()
             && !self.cgroup_delegate
             && !self.privileged_users
+            && self.static_users.is_empty()
             && self.kernel_modules.is_empty()
             && self.syscalls.is_none()
             && self.security_label.is_none()
@@ -1828,6 +1839,11 @@ impl PermissionsMeta {
         if self.privileged_users {
             holes.push("privileged-users".into());
         }
+        holes.extend(
+            self.static_users
+                .iter()
+                .map(|user| format!("static-user:{user}")),
+        );
         if syscall_profile != SyscallProfile::Restricted {
             holes.push(format!("syscalls:{}", syscall_profile.as_manifest_str()));
         }
@@ -2365,6 +2381,37 @@ mod root_config_tests {
 // ---------------------------------------------------------------------------
 // Configuration-module schema represented as pure manifest data.
 // ---------------------------------------------------------------------------
+
+/// Signed identity of a canonical package-documentation Nix store object.
+///
+/// The object is one non-executable regular-file NAR with no references. Its
+/// JSON bytes describe this exact package version/platform, but deliberately do
+/// not repeat the store path so prose never creates a retention edge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentationArtifactMeta {
+    /// Closed canonical document format identifier.
+    pub format: String,
+    /// Store path of the single-file documentation object.
+    pub store_path: String,
+    /// Hash of the uncompressed NAR.
+    pub nar_hash: String,
+    /// Uncompressed NAR size in bytes.
+    pub nar_size: u64,
+    /// SHA-256 digest of the exact canonical JSON file bytes.
+    pub document_sha256: String,
+    /// Exact canonical JSON file size in bytes.
+    pub document_size: u64,
+    /// Digest over configuration semantics, excluding explanatory prose.
+    pub semantic_schema_sha256: String,
+    /// NAR identity of the trusted image base library used to extract
+    /// system-owned options, when this package is configured by the image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_module_nar_hash: Option<String>,
+    /// Direct references. Version 1 requires this to be empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<String>,
+}
 
 /// Stores metadata for a package's second `config` output.
 ///

@@ -5,6 +5,7 @@
   go,
   longhorn-engine,
   longhorn-instance-manager,
+  lib,
 }: let
   version = "1.8.1";
 in
@@ -20,7 +21,10 @@ in
     };
 
     buildDeps = [go];
-    runtimeDeps = [];
+    # The signed add-on resource bundle refers to these payloads as its
+    # authenticated runtime companions. Keep them in the package closure so
+    # publication, installation, rollback, and GC retain one complete add-on.
+    runtimeDeps = [longhorn-engine longhorn-instance-manager];
 
     phases = [
       {
@@ -49,7 +53,11 @@ in
         script = ''
           mkdir -p $out/bin $out/share
           install -m 755 longhorn-manager $out/bin/
-          printf '%s\n' '${builtins.toJSON {inherit version;}}' > $out/share/longhorn-package.json
+          printf '%s\n' '${builtins.toJSON {
+            inherit version;
+            engine = longhorn-engine;
+            instanceManager = longhorn-instance-manager;
+          }}' > $out/share/longhorn-package.json
         '';
       }
     ];
@@ -61,8 +69,6 @@ in
         max = 2;
       };
       declares = [
-        "k3s.integrations.csi.longhorn"
-        "k3s.integrations.resources.longhorn"
         "longhorn.defaultReplicaCount"
         "longhorn.enable"
         "longhorn.nodeLabel"
@@ -85,6 +91,12 @@ in
       ];
       dependencies = {
         inherit longhorn-engine longhorn-instance-manager;
+      };
+      documentation = {
+        summary = "Longhorn Manager — distributed block storage orchestrator";
+        sections.integration = lib.aosDoc.section "k3s integration" [
+          (lib.aosDoc.paragraph "Longhorn contributes only its signed CSI settings, node label, and ordered resource bundle. Engine and instance-manager payloads are retained dependencies, not separate host daemons.")
+        ];
       };
     };
 

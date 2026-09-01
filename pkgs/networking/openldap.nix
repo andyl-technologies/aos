@@ -115,7 +115,19 @@ in
         min = 1;
         max = 2;
       };
-      declares = ["openldap.database.maxBytes" "openldap.enable" "openldap.listenUrls" "openldap.rootDn" "openldap.rootPassword" "openldap.suffix" "openldap.tls"];
+      declares = [
+        "openldap.database.maxBytes"
+        "openldap.enable"
+        "openldap.listenUrls"
+        "openldap.rootDn"
+        "openldap.rootPassword"
+        "openldap.suffix"
+        "openldap.tls.certificate"
+        "openldap.tls.enable"
+        "openldap.tls.privateKey"
+        "openldap.tls.trustedCa"
+        "openldap.tls.verifyClient"
+      ];
       ownsRoots = [
         {
           root = "openldap";
@@ -128,6 +140,17 @@ in
         units = [];
         users = ["openldap"];
         groups = ["openldap"];
+      };
+      documentation = {
+        summary = "OpenLDAP client libraries, tools, and directory server";
+        sections = {
+          directory = lib.aosDoc.section "Directory state" [
+            (lib.aosDoc.paragraph "The suffix and root DN define a durable package-owned database. Changing identity fields does not migrate existing directory data automatically.")
+          ];
+          credentials = lib.aosDoc.section "Credentials and TLS" [
+            (lib.aosDoc.paragraph "Root password and TLS key material use opaque references delivered through service credentials; plaintext values are not accepted by the module.")
+          ];
+        };
       };
     };
 

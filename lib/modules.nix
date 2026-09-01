@@ -44,6 +44,63 @@
   };
   isNoDefault = v: builtins.isAttrs v && v ? _type && v._type == "noDefault";
 
+  # Documentation extraction is declaration-only and must never turn a lazy
+  # default into a build, store reference, secret, or evaluator effect. This
+  # closed normalizer admits only bounded JSON-shaped values. `tryEval` at the
+  # call site converts every unsafe or unforceable value into an omitted
+  # default/example while `defaultText` remains available as human text.
+  normalizeDocumentationLiteral = depth: value:
+    if depth > 32
+    then throw "documentation literal nesting exceeds 32"
+    else if value == null || builtins.isBool value || builtins.isInt value
+    then value
+    else if builtins.isString value
+    then
+      if builtins.hasContext value || builtins.match ".*/nix/store/.*" value != null
+      then throw "documentation literal contains Nix store context"
+      else value
+    else if builtins.isList value
+    then builtins.map (normalizeDocumentationLiteral (depth + 1)) value
+    else if
+      builtins.isAttrs value
+      && !((value.type or null) == "derivation")
+      && !(value ? _type)
+    then builtins.mapAttrs (_: normalizeDocumentationLiteral (depth + 1)) value
+    else throw "documentation literal is not closed JSON data";
+
+  documentedLiteral = value: let
+    evaluated = builtins.tryEval (builtins.deepSeq (normalizeDocumentationLiteral 0 value) (normalizeDocumentationLiteral 0 value));
+  in
+    if evaluated.success
+    then {
+      kind = "literal";
+      value = evaluated.value;
+    }
+    else null;
+
+  documentedText = value:
+    if
+      builtins.isString value
+      && !builtins.hasContext value
+      && builtins.match ".*/nix/store/.*" value == null
+    then {
+      kind = "text";
+      text = value;
+    }
+    else null;
+
+  documentedExample = value:
+    if
+      builtins.isAttrs value
+      && (value._type or null) == "literalExpression"
+      && builtins.isString (value.text or null)
+      && !builtins.hasContext value.text
+    then {
+      kind = "text";
+      inherit (value) text;
+    }
+    else documentedLiteral value;
+
   mkOption = {
     type ? types.anything,
     default ? _noDefault,
@@ -1688,11 +1745,44 @@
       _optionDecls = builtins.map (
         key: let
           decl = optionMap.${key};
+          option = decl.option;
+          literalDefault =
+            if isNoDefault option.default
+            then null
+            else documentedLiteral option.default;
+          textDefault =
+            if option.defaultText == null
+            then null
+            else documentedText option.defaultText;
         in {
           path = decl.path;
           pathStr = key;
-          typeSig = decl.option.type.description;
-          contributable = decl.option.contributable or false;
+          typeSig = option.type.description;
+          type =
+            option.type._aosDocType or {
+              kind = "opaque";
+              signature = option.type.description;
+            };
+          description =
+            if builtins.isString option.description && !builtins.hasContext option.description
+            then option.description
+            else "";
+          default =
+            if literalDefault != null
+            then literalDefault
+            else textDefault;
+          example =
+            if option.example == null
+            then null
+            else documentedExample option.example;
+          visibility =
+            if option.internal or false
+            then "internal"
+            else if !(option.visible or true)
+            then "hidden"
+            else "public";
+          readOnly = option.readOnly or false;
+          contributable = option.contributable or false;
           owner = ownerForProvenance (decl.provenance or "@base");
         }
       ) (builtins.attrNames optionMap);

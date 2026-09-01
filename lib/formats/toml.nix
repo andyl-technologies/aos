@@ -41,6 +41,13 @@
     // {
       name = "toml";
       description = "TOML value";
+      # TOML values are recursively nested.  Publishing the recursively
+      # expanded `oneOf` would never reach a finite documentation object, so
+      # expose the stable format contract at this boundary instead.
+      _aosDocType = {
+        kind = "opaque";
+        signature = "TOML value";
+      };
     };
 
   inherit (builtins) isAttrs isBool isFloat isInt isList isString;

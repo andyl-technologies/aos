@@ -59,8 +59,8 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::db::{
-    ChannelSummary, Database, IndexSnapshot, RegistryRecord, ReleaseArtifactSnapshot,
-    ReleaseImageSnapshot, ReleaseRow, ReleaseSnapshotArtifact,
+    ChannelSummary, Database, IndexSnapshot, IndexedPackageDocumentation, RegistryRecord,
+    ReleaseArtifactSnapshot, ReleaseImageSnapshot, ReleaseRow, ReleaseSnapshotArtifact,
 };
 use crate::fetch::SurfaceFetch;
 
@@ -734,6 +734,7 @@ async fn index_registry_inner(
     }
     let image_presence = deduplicated_presence;
 
+    let package_documentation = verify_package_documentation(fetch, &tree.packages).await?;
     let snapshot = IndexSnapshot {
         commit: commit_oid.to_hex(),
         name: tree.root.registry.name.clone(),
@@ -743,6 +744,7 @@ async fn index_registry_inner(
         cache_stack,
         roster: roster_rows,
         packages: tree.packages,
+        package_documentation,
         releases,
         release_artifact_snapshots,
         release_images,
@@ -832,6 +834,43 @@ fn release_snapshot_artifacts(
                         artifact_kind: "source_derivation".to_string(),
                         store_hash: store_hash_component(&entry.source_drv),
                         store_path: entry.source_drv.clone(),
+                    });
+                }
+                if let Some(expose) = &entry.expose_artifact {
+                    artifacts.push(ReleaseSnapshotArtifact {
+                        package_name: package.package.name.clone(),
+                        package_version: version.version.clone(),
+                        platform: platform.clone(),
+                        artifact_kind: "expose".to_string(),
+                        store_hash: store_hash_component(&expose.store_path),
+                        store_path: expose.store_path.clone(),
+                    });
+                }
+                if let Some(config) = &entry.config_module {
+                    for (kind, output) in [
+                        ("config", Some(&config.config_output)),
+                        ("evaluation_base_lib", config.evaluation_base_lib.as_ref()),
+                    ] {
+                        if let Some(output) = output {
+                            artifacts.push(ReleaseSnapshotArtifact {
+                                package_name: package.package.name.clone(),
+                                package_version: version.version.clone(),
+                                platform: platform.clone(),
+                                artifact_kind: kind.to_string(),
+                                store_hash: store_hash_component(&output.store_path),
+                                store_path: output.store_path.clone(),
+                            });
+                        }
+                    }
+                }
+                if let Some(documentation) = &entry.documentation {
+                    artifacts.push(ReleaseSnapshotArtifact {
+                        package_name: package.package.name.clone(),
+                        package_version: version.version.clone(),
+                        platform: platform.clone(),
+                        artifact_kind: "documentation".to_string(),
+                        store_hash: store_hash_component(&documentation.store_path),
+                        store_path: documentation.store_path.clone(),
                     });
                 }
                 for image in &entry.images {
@@ -1402,6 +1441,231 @@ fn insert_expected_image_artifact(
 }
 
 const MAX_IMAGE_NARINFO_BYTES: usize = 64 * 1024;
+
+#[derive(Debug)]
+struct DocumentationNarInfo {
+    store_path: String,
+    url: String,
+    compression: String,
+    file_hash: String,
+    file_size: u64,
+    nar_hash: String,
+    nar_size: u64,
+    references: Vec<String>,
+}
+
+fn parse_documentation_narinfo(text: &str) -> Result<DocumentationNarInfo> {
+    let mut fields = BTreeMap::<&str, &str>::new();
+    let mut references = Vec::new();
+    for line in text.lines() {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        if name == "References" {
+            anyhow::ensure!(
+                references.is_empty(),
+                "documentation narinfo repeats References"
+            );
+            references = value.split_whitespace().map(str::to_string).collect();
+            continue;
+        }
+        if matches!(
+            name,
+            "StorePath" | "URL" | "Compression" | "FileHash" | "FileSize" | "NarHash" | "NarSize"
+        ) {
+            anyhow::ensure!(
+                fields.insert(name, value).is_none(),
+                "documentation narinfo repeats {name}"
+            );
+        }
+    }
+    let required = |name| {
+        fields
+            .get(name)
+            .copied()
+            .with_context(|| format!("documentation narinfo has no {name}"))
+    };
+    Ok(DocumentationNarInfo {
+        store_path: required("StorePath")?.to_string(),
+        url: required("URL")?.to_string(),
+        compression: required("Compression")?.to_string(),
+        file_hash: required("FileHash")?.to_string(),
+        file_size: required("FileSize")?
+            .parse()
+            .context("documentation narinfo has an invalid FileSize")?,
+        nar_hash: required("NarHash")?.to_string(),
+        nar_size: required("NarSize")?
+            .parse()
+            .context("documentation narinfo has an invalid NarSize")?,
+        references,
+    })
+}
+
+/// Fetches and verifies one immutable canonical package-documentation object.
+///
+/// This is the common native/Worker read path used both while indexing and by
+/// API/Web detail reads. It accepts only the signed uncompressed single-file
+/// NAR profile; SQL locators never substitute for the canonical object bytes.
+///
+/// # Errors
+///
+/// Returns an error when the narinfo/NAR/document is absent, malformed,
+/// oversized, non-canonical, or disagrees with the signed locator/selection.
+pub async fn fetch_package_documentation(
+    fetch: &dyn SurfaceFetch,
+    package_name: &str,
+    package_version: &str,
+    platform: &str,
+    artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
+) -> Result<aos_doc_model::PackageDocumentation> {
+    let store_hash = aos_registry_surface::store::store_path_hash(&artifact.store_path)?;
+    let narinfo_key = format!("{store_hash}.narinfo");
+    let narinfo_bytes = fetch
+        .fetch_bounded(&narinfo_key, MAX_IMAGE_NARINFO_BYTES)
+        .await?
+        .with_context(|| format!("package documentation narinfo '{narinfo_key}' is unavailable"))?;
+    let narinfo_text = std::str::from_utf8(&narinfo_bytes)
+        .context("package documentation narinfo is not UTF-8")?;
+    let narinfo = parse_documentation_narinfo(narinfo_text)?;
+    anyhow::ensure!(
+        narinfo.store_path == artifact.store_path
+            && narinfo.compression == "none"
+            && narinfo.references.is_empty()
+            && narinfo.nar_size == artifact.nar_size
+            && aos_registry_surface::store::normalize_digest(&narinfo.nar_hash)?
+                == aos_registry_surface::store::normalize_digest(&artifact.nar_hash)?,
+        "package documentation narinfo disagrees with signed metadata for {package_name}/{package_version}/{platform}"
+    );
+    anyhow::ensure!(
+        narinfo.url.starts_with("nar/")
+            && narinfo.url.ends_with(".nar")
+            && narinfo
+                .url
+                .split('/')
+                .all(|component| !component.is_empty() && component != "." && component != ".."),
+        "package documentation narinfo has an unsafe URL"
+    );
+    let nar_limit = aos_doc_model::MAX_DOCUMENT_BYTES
+        .checked_add(512)
+        .context("documentation NAR limit overflow")?;
+    let nar_bytes = fetch
+        .fetch_bounded(&narinfo.url, nar_limit)
+        .await?
+        .with_context(|| format!("package documentation NAR '{}' is unavailable", narinfo.url))?;
+    anyhow::ensure!(
+        nar_bytes.len() as u64 == narinfo.file_size
+            && hex::encode(Sha256::digest(&nar_bytes))
+                == aos_registry_surface::store::canonical_digest_hex(&narinfo.file_hash)?,
+        "package documentation cache-file identity mismatch"
+    );
+    anyhow::ensure!(
+        nar_bytes.len() as u64 == artifact.nar_size
+            && hex::encode(Sha256::digest(&nar_bytes))
+                == aos_registry_surface::store::canonical_digest_hex(&artifact.nar_hash)?,
+        "package documentation NAR identity mismatch"
+    );
+    let document_bytes = aos_doc_model::decode_single_file_nar(&nar_bytes)?;
+    anyhow::ensure!(
+        document_bytes.len() as u64 == artifact.document_size
+            && hex::encode(Sha256::digest(document_bytes))
+                == aos_registry_surface::store::canonical_digest_hex(&artifact.document_sha256,)?,
+        "package documentation JSON identity mismatch"
+    );
+    let document = aos_doc_model::PackageDocumentation::from_canonical_json(document_bytes)?;
+    anyhow::ensure!(
+        document.package.name == package_name
+            && document.package.version == package_version
+            && document.package.platform == platform
+            && document.identity.semantic_schema_sha256 == artifact.semantic_schema_sha256,
+        "package documentation selection identity mismatch"
+    );
+    document.verify_semantic_schema_sha256()?;
+    Ok(document)
+}
+
+async fn verify_package_documentation(
+    fetch: &dyn SurfaceFetch,
+    packages: &[aos_registry_surface::manifest::PackageToml],
+) -> Result<Vec<IndexedPackageDocumentation>> {
+    let mut indexed = Vec::new();
+    for package in packages {
+        for version in &package.versions {
+            for (platform, entry) in &version.platforms {
+                let Some(artifact) = &entry.documentation else {
+                    continue;
+                };
+                let document = fetch_package_documentation(
+                    fetch,
+                    &package.package.name,
+                    &version.version,
+                    platform,
+                    artifact,
+                )
+                .await?;
+                anyhow::ensure!(
+                    documentation_digest_matches(
+                        &document.identity.runtime_nar_hash,
+                        &entry.nar_hash,
+                    )?,
+                    "package documentation runtime identity mismatch"
+                );
+                if let Some(config) = &entry.config_module {
+                    anyhow::ensure!(
+                        document
+                            .identity
+                            .config_module_nar_hash
+                            .as_deref()
+                            .map(|digest| documentation_digest_matches(
+                                digest,
+                                &config.config_output.nar_hash,
+                            ))
+                            .transpose()?
+                            == Some(true),
+                        "package documentation config-module identity mismatch"
+                    );
+                }
+                anyhow::ensure!(
+                    document.identity.system_module_nar_hash.as_deref()
+                        == artifact.system_module_nar_hash.as_deref(),
+                    "package documentation system-module identity mismatch"
+                );
+                if let Some(expose) = &entry.expose_artifact {
+                    anyhow::ensure!(
+                        document
+                            .identity
+                            .expose_artifact_nar_hash
+                            .as_deref()
+                            .map(|digest| documentation_digest_matches(digest, &expose.nar_hash))
+                            .transpose()?
+                            == Some(true),
+                        "package documentation expose-artifact identity mismatch"
+                    );
+                }
+                indexed.push(IndexedPackageDocumentation {
+                    package_name: package.package.name.clone(),
+                    package_version: version.version.clone(),
+                    platform: platform.clone(),
+                    artifact: artifact.clone(),
+                    search: document.search_documents(),
+                });
+            }
+        }
+    }
+    indexed.sort_by(|left, right| {
+        (&left.package_name, &left.package_version, &left.platform).cmp(&(
+            &right.package_name,
+            &right.package_version,
+            &right.platform,
+        ))
+    });
+    Ok(indexed)
+}
+
+fn documentation_digest_matches(left: &str, right: &str) -> Result<bool> {
+    Ok(aos_registry_surface::store::canonical_digest_hex(left)?
+        == aos_registry_surface::store::canonical_digest_hex(right)?)
+}
 
 struct ImageNarInfo {
     store_path: String,
@@ -2301,6 +2565,155 @@ mod tests {
         fn describe(&self) -> String {
             "missing-replica".into()
         }
+    }
+
+    struct DocumentationFetch {
+        objects: BTreeMap<String, Vec<u8>>,
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for DocumentationFetch {
+        async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            Ok(self.objects.get(path).cloned())
+        }
+
+        fn describe(&self) -> String {
+            "documentation-fixture".into()
+        }
+    }
+
+    fn push_nar_string(output: &mut Vec<u8>, value: &[u8]) {
+        output.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        output.extend_from_slice(value);
+        while output.len() % 8 != 0 {
+            output.push(0);
+        }
+    }
+
+    fn documentation_nar(contents: &[u8]) -> Vec<u8> {
+        let mut output = Vec::new();
+        for value in [
+            b"nix-archive-1".as_slice(),
+            b"(".as_slice(),
+            b"type".as_slice(),
+            b"regular".as_slice(),
+            b"contents".as_slice(),
+            contents,
+            b")".as_slice(),
+        ] {
+            push_nar_string(&mut output, value);
+        }
+        output
+    }
+
+    fn documentation_fixture() -> aos_doc_model::PackageDocumentation {
+        let mut document = aos_doc_model::PackageDocumentation {
+            schema: aos_doc_model::DOCUMENT_SCHEMA.into(),
+            package: aos_doc_model::DocumentedPackage {
+                name: "nginx".into(),
+                version: "1.30.4".into(),
+                platform: "x86_64-linux".into(),
+                summary: "HTTP and reverse proxy service".into(),
+                homepage: Some("https://nginx.org/".into()),
+                license: "BSD-2-Clause".into(),
+            },
+            identity: aos_doc_model::DocumentationIdentity {
+                semantic_schema_sha256: format!("sha256:{}", "0".repeat(64)),
+                runtime_nar_hash: format!("sha256:{}", "1".repeat(64)),
+                config_module_nar_hash: Some(format!("sha256:{}", "2".repeat(64))),
+                system_module_nar_hash: None,
+                expose_artifact_nar_hash: Some(format!("sha256:{}", "3".repeat(64))),
+                source_nar_hash: format!("sha256:{}", "4".repeat(64)),
+            },
+            sections: Vec::new(),
+            options: Vec::new(),
+            runtime: aos_doc_model::RuntimeSurface::default(),
+        };
+        document.identity.semantic_schema_sha256 = document
+            .computed_semantic_schema_sha256()
+            .expect("semantic identity");
+        document
+    }
+
+    fn documentation_surface(
+        document: &aos_doc_model::PackageDocumentation,
+    ) -> (
+        DocumentationFetch,
+        aos_registry_surface::manifest::DocumentationArtifactMeta,
+    ) {
+        let contents = document.canonical_json().expect("canonical documentation");
+        let nar = documentation_nar(&contents);
+        let nar_digest = hex::encode(Sha256::digest(&nar));
+        let document_digest = hex::encode(Sha256::digest(&contents));
+        let store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-nginx-docs.json";
+        let narinfo = format!(
+            "StorePath: {store_path}\nURL: nar/nginx-docs.nar\nCompression: none\nFileHash: sha256:{nar_digest}\nFileSize: {}\nNarHash: sha256:{nar_digest}\nNarSize: {}\nReferences: \n",
+            nar.len(),
+            nar.len()
+        );
+        (
+            DocumentationFetch {
+                objects: BTreeMap::from([
+                    (
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.narinfo".into(),
+                        narinfo.into_bytes(),
+                    ),
+                    ("nar/nginx-docs.nar".into(), nar),
+                ]),
+            },
+            aos_registry_surface::manifest::DocumentationArtifactMeta {
+                format: aos_doc_model::DOCUMENT_FORMAT.into(),
+                store_path: store_path.into(),
+                nar_hash: format!("sha256:{nar_digest}"),
+                nar_size: u64::try_from(documentation_nar(&contents).len()).expect("NAR size"),
+                document_sha256: format!("sha256:{document_digest}"),
+                document_size: u64::try_from(contents.len()).expect("document size"),
+                semantic_schema_sha256: document.identity.semantic_schema_sha256.clone(),
+                system_module_nar_hash: None,
+                references: Vec::new(),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn documentation_reads_reverify_the_signed_nix_object() {
+        let document = documentation_fixture();
+        let (surface, artifact) = documentation_surface(&document);
+        let fetched =
+            fetch_package_documentation(&surface, "nginx", "1.30.4", "x86_64-linux", &artifact)
+                .await
+                .expect("verified documentation");
+        assert_eq!(fetched, document);
+
+        let mut wrong_identity = artifact.clone();
+        wrong_identity.document_sha256 = format!("sha256:{}", "f".repeat(64));
+        assert!(fetch_package_documentation(
+            &surface,
+            "nginx",
+            "1.30.4",
+            "x86_64-linux",
+            &wrong_identity,
+        )
+        .await
+        .is_err());
+        assert!(fetch_package_documentation(
+            &surface,
+            "foreign-package",
+            "1.30.4",
+            "x86_64-linux",
+            &artifact,
+        )
+        .await
+        .is_err());
+    }
+
+    #[test]
+    fn documentation_identity_compares_digest_bytes_not_spelling() {
+        let hex = format!("sha256:{}", "0".repeat(64));
+        let sri = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
+        assert!(documentation_digest_matches(&hex, sri).unwrap());
+        assert!(documentation_digest_matches(&hex, &format!("sha256:{}", "0".repeat(52))).unwrap());
     }
 
     #[tokio::test]

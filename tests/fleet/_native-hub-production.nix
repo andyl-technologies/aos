@@ -110,6 +110,7 @@
     # inspection toolkit an operator image carries. These are AOS-built tools;
     # they do not provide package payloads or seeded Hub state.
     environment.systemPackages = [
+      pkgs.diffutils
       pkgs.gawk
       pkgs.grep
       pkgs.sed
@@ -124,6 +125,15 @@
   };
 
   consumerBaseline = {
+    # The user journey installs nginx from the signed Hub registry. Its exposed
+    # service requests host networking and a bounded capability, so the
+    # qualification consumer must exercise normal permission admission with an
+    # explicit host policy instead of bypassing the package policy gate.
+    environment.etc."aos/policy.toml" = {
+      text = "tier = \"privileged\"\n";
+      mode = "0644";
+    };
+
     systemd.services.aos-upgrade-removed = {
       description = "Upgrade qualification service removed by generation two";
       wantedBy = ["multi-user.target"];

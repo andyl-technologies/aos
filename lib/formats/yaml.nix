@@ -38,6 +38,12 @@
     // {
       name = "yaml";
       description = "YAML value";
+      # YAML values are recursive; a finite opaque format node is the
+      # canonical structured-documentation representation.
+      _aosDocType = {
+        kind = "opaque";
+        signature = "YAML value";
+      };
     };
 in {
   type = yamlValue;

@@ -12,6 +12,7 @@ members = [
     "aos-cache",
     "aos-remote",
     "aos-doc",
+    "aos-doc-model",
     "aos-package",
     "aos-hub-console-contract",
     "aos-hub-core",
@@ -201,6 +202,7 @@ aos-server = { path = "aos-server" }
 aos-cache = { path = "aos-cache" }
 aos-remote = { path = "aos-remote" }
 aos-doc = { path = "aos-doc" }
+aos-doc-model = { path = "aos-doc-model" }
 aos-package = { path = "aos-package" }
 aos-hub-console-contract = { path = "aos-hub-console-contract" }
 aos-hub-core = { path = "aos-hub-core" }

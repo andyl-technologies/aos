@@ -214,6 +214,20 @@ in
         users = ["garage"];
         groups = ["garage"];
       };
+      documentation = {
+        summary = "Garage — S3-compatible distributed object storage service";
+        sections = {
+          lifecycle = lib.aosDoc.section "State and lifecycle" [
+            (lib.aosDoc.paragraph "Garage retains metadata and object data in package state and performs compatible migrations during startup. Configuration changes restart the daemon rather than pretending TOML is reloadable.")
+          ];
+          cluster = lib.aosDoc.section "Cluster identity" [
+            (lib.aosDoc.paragraph "The RPC secret is a 32-byte cluster key encoded as 64 hexadecimal characters. Bootstrap peers and public addresses must remain stable across members.")
+          ];
+          credentials = lib.aosDoc.section "Administration credentials" [
+            (lib.aosDoc.paragraph "RPC, administrator, and metrics tokens are opaque references projected through service credentials and *_FILE interfaces, never TOML or process arguments.")
+          ];
+        };
+      };
     };
 
     checks = {

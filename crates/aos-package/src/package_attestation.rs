@@ -2825,6 +2825,7 @@ mod tests {
                     nar_size: manifest.len() as u64,
                 }),
                 config_module: None,
+            documentation: None,
                 permissions: PermissionsMeta {
                     network: Some(NetworkPermission::Private),
                     host_paths: vec![HostPathPermission {
@@ -2871,6 +2872,7 @@ mod tests {
             expose: None,
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta {

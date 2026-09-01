@@ -292,6 +292,15 @@ fn browse_response(rendered: Rendered) -> Response {
         Rendered::Json(body) => {
             ([(header::CONTENT_TYPE, "application/json")], body).into_response()
         }
+        Rendered::ImmutableJson { body, etag } => (
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+                (header::ETAG, &format!("\"{etag}\"")),
+            ],
+            body,
+        )
+            .into_response(),
         Rendered::Redirect(location) => {
             axum::response::Redirect::permanent(&location).into_response()
         }
@@ -349,20 +358,65 @@ async fn browse_dispatch(
         };
         return browse_response(rendered);
     }
-    let rendered = match rest.strip_prefix("api/") {
+    let api_rest = rest
+        .strip_prefix("api/v1/")
+        .or_else(|| rest.strip_prefix("api/"));
+    let rendered = match api_rest {
         Some(api) => match api {
             "registry" => browse::api_registry(&svc, &slug).await,
             "packages" => browse::api_packages(&svc, &slug).await,
+            "docs/search" => browse::api_documentation_search(&svc, &slug, &q).await,
+            "docs/schema" => browse::api_documentation_schema(&svc, &slug).await,
             "channels" => browse::api_channels(&svc, &slug).await,
             "releases" => browse::api_releases(&svc, &slug).await,
-            other => match other.strip_prefix("packages/") {
-                Some(name) if !name.is_empty() => browse::api_package(&svc, &slug, name).await,
-                _ => Rendered::NotFound,
-            },
+            other => {
+                if let Some(digest) = other
+                    .strip_prefix("documentation/")
+                    .filter(|digest| !digest.is_empty() && !digest.contains('/'))
+                {
+                    browse::api_documentation_artifact(&svc, &slug, digest).await
+                } else if let Some(name) = other
+                    .strip_prefix("packages/")
+                    .filter(|name| !name.is_empty())
+                {
+                    if let Some((package, suffix)) = name.split_once('/') {
+                        match suffix {
+                            "documentation" => {
+                                browse::api_package_documentation(&svc, &slug, package, &q).await
+                            }
+                            "options" => {
+                                browse::api_package_options(&svc, &slug, package, &q).await
+                            }
+                            "compare" => {
+                                browse::api_documentation_compare(&svc, &slug, package, &q).await
+                            }
+                            option if option.starts_with("options/") => {
+                                browse::api_package_option(
+                                    &svc,
+                                    &slug,
+                                    package,
+                                    option.trim_start_matches("options/"),
+                                    &q,
+                                )
+                                .await
+                            }
+                            _ => Rendered::NotFound,
+                        }
+                    } else {
+                        browse::api_package(&svc, &slug, name).await
+                    }
+                } else if let Some(selection) = documentation_selection(other, "docs/") {
+                    browse::api_documentation(&svc, &slug, selection.0, selection.1, selection.2)
+                        .await
+                } else {
+                    Rendered::NotFound
+                }
+            }
         },
         None => match rest.as_str() {
             "" => browse::registry_home(&svc, &headers, &slug).await,
             "packages" => browse::packages(&svc, &headers, &slug, &q).await,
+            "docs" => browse::documentation_search(&svc, &headers, &slug, &q).await,
             "images" => browse::images(&svc, &headers, &slug, &q).await,
             "channels" => browse::channels(&svc, &headers, &slug, &q).await,
             "releases" => browse::releases(&svc, &headers, &slug, &q).await,
@@ -370,6 +424,16 @@ async fn browse_dispatch(
             other => {
                 if let Some(name) = other.strip_prefix("packages/").filter(|n| !n.is_empty()) {
                     browse::package(&svc, &headers, &slug, name, &q).await
+                } else if let Some(selection) = documentation_selection(other, "docs/") {
+                    browse::documentation(
+                        &svc,
+                        &headers,
+                        &slug,
+                        selection.0,
+                        selection.1,
+                        selection.2,
+                    )
+                    .await
                 } else if let Some(name) = other.strip_prefix("channels/").filter(|n| !n.is_empty())
                 {
                     browse::channel(&svc, &headers, &slug, name, &q).await
@@ -380,6 +444,17 @@ async fn browse_dispatch(
         },
     };
     browse_response(rendered)
+}
+
+fn documentation_selection<'a>(path: &'a str, prefix: &str) -> Option<(&'a str, &'a str, &'a str)> {
+    let mut segments = path.strip_prefix(prefix)?.split('/');
+    let package = segments.next().filter(|segment| !segment.is_empty())?;
+    let version = segments.next().filter(|segment| !segment.is_empty())?;
+    let platform = segments.next().filter(|segment| !segment.is_empty())?;
+    segments
+        .next()
+        .is_none()
+        .then_some((package, version, platform))
 }
 
 /// Mount one `aos.hub.v1` method as a `POST` route delegating to the
@@ -714,7 +789,8 @@ fn delivery_audience(surface: crate::db::SurfaceTarget, path: &str) -> DeliveryA
 fn is_reserved_control_path(path: &str) -> bool {
     let trimmed = path.trim_start_matches('/');
     trimmed.is_empty()
-        || trimmed.split('/').any(|segment| segment == "-")
+        || (trimmed.split('/').any(|segment| segment == "-")
+            && public_browse_delivery_path(trimmed).is_none())
         || registry_document_path(trimmed).is_some()
         || matches!(
             trimmed,
@@ -737,6 +813,28 @@ fn is_reserved_control_path(path: &str) -> bool {
         || trimmed.starts_with("logout/")
         || trimmed.starts_with("oauth2/")
         || trimmed.starts_with("aos.hub.v1.")
+}
+
+/// Returns the browse-relative path for a public, read-only `/-/` namespace.
+fn public_browse_delivery_path(path: &str) -> Option<&str> {
+    let (slug, rest) = path.trim_start_matches('/').split_once("/-/")?;
+    if slug.is_empty() {
+        return None;
+    }
+    let root = rest.split('/').next().unwrap_or_default();
+    matches!(
+        root,
+        "" | "api"
+            | "channels"
+            | "closure"
+            | "docs"
+            | "health"
+            | "images"
+            | "objects"
+            | "packages"
+            | "releases"
+    )
+    .then_some(rest)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1045,8 +1143,19 @@ pub async fn rewrite_for_route(
         .extensions()
         .get::<crate::delivery_attestation::VerifiedDeliveryAttestation>()
         .cloned();
-    if let Err(error) = require_route_access(svc, route, access_headers, attestation).await {
-        return Err(error_response(&error));
+    // Browser reads apply the registry visibility matrix in `browse_dispatch`:
+    // hidden registries deliberately look absent instead of issuing an
+    // authentication challenge. Keep transport-attested route boundaries here,
+    // while allowing public and hub-auth Web routes to reach that finer-grained
+    // registry authorization layer.
+    let browse_namespace = surface_path == "-" || surface_path.starts_with("-/");
+    let browse_authorizes_registry = audience == DeliveryAudience::Web
+        && browse_namespace
+        && matches!(route.access_policy_kind.as_str(), "public" | "hub_auth");
+    if !browse_authorizes_registry {
+        if let Err(error) = require_route_access(svc, route, access_headers, attestation).await {
+            return Err(error_response(&error));
+        }
     }
     if route.mode == "direct" {
         return Err(StatusCode::MISDIRECTED_REQUEST.into_response());
@@ -1077,6 +1186,7 @@ async fn serve_resolved_delivery(
     method: axum::http::Method,
     headers: HeaderMap,
     resolved: ResolvedRoute,
+    query: Option<String>,
 ) -> Response {
     let auth = auth_header(&headers);
     let session_secret = crate::web::session::session_secret_from_headers(&headers);
@@ -1127,12 +1237,17 @@ async fn serve_resolved_delivery(
     }
 
     if resolved.audience == DeliveryAudience::Web {
+        let browse_path = resolved
+            .surface_path
+            .strip_prefix("-/")
+            .or_else(|| (resolved.surface_path == "-").then_some(""))
+            .unwrap_or(&resolved.surface_path);
         return browse_dispatch(
             svc,
             headers,
             resolved.route.target_slug,
-            resolved.surface_path,
-            None,
+            browse_path.to_owned(),
+            query,
         )
         .await;
     }
@@ -1308,7 +1423,8 @@ async fn resolved_delivery_handler(
     let Some(resolved) = request.extensions().get::<ResolvedRoute>().cloned() else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    serve_resolved_delivery(from_state(state), method, headers, resolved).await
+    let query = request.uri().query().map(str::to_owned);
+    serve_resolved_delivery(from_state(state), method, headers, resolved, query).await
 }
 
 /// Runs typed delivery-route rewriting before native router dispatch.
@@ -2248,6 +2364,42 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     // PackageService
     r = rpc_route!(r, "/aos.hub.v1.PackageService/ListPackages", list_packages);
     r = rpc_route!(r, "/aos.hub.v1.PackageService/GetPackage", get_package);
+    // DocumentationService
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DocumentationService/GetPackageDocumentation",
+        get_package_documentation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DocumentationService/SearchPackageDocumentation",
+        search_package_documentation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DocumentationService/ListPackageOptions",
+        list_package_options
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DocumentationService/GetPackageOption",
+        get_package_option
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DocumentationService/ComparePackageDocumentation",
+        compare_package_documentation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DocumentationService/GetDocumentationArtifact",
+        get_documentation_artifact
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DocumentationService/GetPackageDocumentationSchema",
+        get_package_documentation_schema
+    );
     // ChannelService
     r = rpc_route!(r, "/aos.hub.v1.ChannelService/ListChannels", list_channels);
     r = rpc_route!(r, "/aos.hub.v1.ChannelService/GetChannel", get_channel);
@@ -3781,6 +3933,9 @@ mod tests {
         for serving_path in [
             "/acme/main",
             "/acme/main/",
+            "/acme/main/-/docs",
+            "/acme/main/-/docs/nginx/1.30.4/x86_64-linux",
+            "/acme/main/-/api/v1/packages/nginx/documentation",
             "/objects/aa/bb",
             "/nar/archive.nar.zst",
             "/hash.narinfo",
@@ -3790,6 +3945,22 @@ mod tests {
                 "admitted legacy serving path {serving_path}"
             );
         }
+    }
+
+    #[test]
+    fn delivery_browse_paths_admit_reads_but_not_management() {
+        assert_eq!(
+            public_browse_delivery_path("/acme/main/-/docs"),
+            Some("docs")
+        );
+        assert_eq!(
+            public_browse_delivery_path("/acme/project/main/-/api/v1/packages"),
+            Some("api/v1/packages")
+        );
+        assert_eq!(
+            public_browse_delivery_path("/acme/main/-/settings/routes"),
+            None
+        );
     }
 
     #[test]

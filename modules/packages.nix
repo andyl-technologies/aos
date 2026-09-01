@@ -160,7 +160,8 @@
                 requires: [],
                 owns_roots: $config_meta[0].owns_roots,
                 contributes: $config_meta[0].contributes,
-                provides_capabilities: $config_meta[0].provides_capabilities
+                provides_capabilities: $config_meta[0].provides_capabilities,
+                artifacts: ($config_meta[0].artifacts // {})
               }
               end
             ),

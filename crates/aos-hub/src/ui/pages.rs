@@ -132,6 +132,8 @@ pub fn package_page(
         closure,
         &setup,
         None,
+        None,
+        false,
         started,
         &current_session_indicator(),
     )

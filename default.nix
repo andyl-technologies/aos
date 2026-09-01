@@ -1145,6 +1145,10 @@ in {
     trivial-builders = import ./lib/testing/trivial-builders.nix {inherit pkgs lib;};
     module-args = import ./lib/testing/module-args.nix {inherit pkgs lib;};
     module-enforcement = import ./lib/testing/module-enforcement.nix {inherit pkgs lib;};
+    package-documentation = import ./lib/testing/package-documentation.nix {
+      inherit pkgs lib;
+      system = serverSystem;
+    };
     # Off-host config-eval preflight and flat-to-module parity gates.
     # (operability.md). Pure eval-time, next to checks.eval, cheap on every PR.
     config-eval = import ./lib/testing/config-eval.nix {inherit pkgs lib;};
@@ -1187,6 +1191,7 @@ in {
           eval
           module-args
           module-enforcement
+          package-documentation
           package-expose
           aos-registry-server-config
           registry-hub
@@ -1294,6 +1299,7 @@ in {
         "install-from-image"
         "k3s-combined-worker"
         "k3s-control-plane-worker"
+        "kubelet-runtime-config"
         "measured-boot"
         "on-host-config-eval"
         "package-attestation-quote"

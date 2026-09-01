@@ -37,10 +37,10 @@ use super::profile::meta::{
 use super::registry::{RegistrySet, store_path_hash};
 use super::remove::retained_installed_indexes;
 use super::resolve::resolve_multiple;
-use super::store::{closure_paths, create_gc_roots, filter_missing, import_nar};
+use super::store::{closure_paths, create_gc_roots, filter_missing};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{ApmMeta, ExposeMeta, InstalledMeta, PackageMeta, SysrootImageEntry};
-use super::verify::{verify_downloads, verify_nar_hash};
+use super::verify::verify_downloads;
 use aos_core::error::AosError;
 use aos_core::output::{OutputMode, Printer};
 
@@ -187,7 +187,8 @@ pub async fn run(
         .await
         .context("computing post-upgrade profile roots")?;
     let obsolete_hashes = obsolete_installed_hashes(&installed, &needed_hashes);
-    let expose_artifacts = collect_expose_artifacts(&to_upgrade)?;
+    let mut expose_artifacts = collect_expose_artifacts(&to_upgrade)?;
+    collect_documentation_artifacts(&upgrade_closures, &mut expose_artifacts)?;
 
     // Sysroot-lock check for upgraded packages.
     if !matches!(ignore_lock, IgnoreSysrootLock::All) {
@@ -321,11 +322,12 @@ pub async fn run(
         // Import NARs into the store.
         printer.step(5, 7, "Importing packages...");
         for result in &results {
-            import_nar(
+            crate::store::import_nar_with_compression(
                 &result.local_path,
                 &result.store_path,
                 &result.references,
                 result.deriver.as_deref(),
+                &result.compression,
             )
             .await
             .with_context(|| format!("importing {}", result.store_path))?;
@@ -405,6 +407,7 @@ pub async fn run(
                     expose: meta.expose.clone(),
                     expose_artifact: meta.expose_artifact.clone(),
                     config_module: meta.config_module.clone(),
+                    documentation: meta.documentation.clone(),
                     permissions: meta.permissions.clone(),
                     bpf_lsm: meta.bpf_lsm.clone(),
                     attestation: meta.attestation.clone(),
@@ -901,6 +904,34 @@ fn collect_expose_artifacts(
     Ok(artifacts)
 }
 
+fn collect_documentation_artifacts(
+    closures: &[(String, Vec<PackageMeta>)],
+    artifacts: &mut Vec<SecondaryArtifactDownload>,
+) -> Result<()> {
+    let mut seen = artifacts
+        .iter()
+        .enumerate()
+        .map(|(index, artifact)| (artifact.store_path.clone(), index))
+        .collect::<HashMap<_, _>>();
+    for (registry_name, packages) in closures {
+        for package in packages {
+            let Some(documentation) = &package.documentation else {
+                continue;
+            };
+            push_secondary_artifact(
+                artifacts,
+                &mut seen,
+                registry_name,
+                &documentation.store_path,
+                &documentation.nar_hash,
+                true,
+                true,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn push_secondary_artifact(
     artifacts: &mut Vec<SecondaryArtifactDownload>,
     seen: &mut HashMap<String, usize>,
@@ -914,7 +945,7 @@ fn push_secondary_artifact(
         let previous = &artifacts[previous_index];
         if previous.nar_hash != nar_hash {
             anyhow::bail!(
-                "secondary expose store path '{}' has conflicting signed NAR hashes",
+                "secondary artifact store path '{}' has conflicting signed NAR hashes",
                 store_path
             );
         }
@@ -922,7 +953,7 @@ fn push_secondary_artifact(
             || previous.requires_empty_references != requires_empty_references
         {
             anyhow::bail!(
-                "secondary expose store path '{}' is declared with incompatible roles",
+                "secondary artifact store path '{}' is declared with incompatible roles",
                 store_path
             );
         }
@@ -954,12 +985,16 @@ fn verify_secondary_artifact_downloads(
         };
         if artifact.requires_empty_references && !result.references.is_empty() {
             anyhow::bail!(
-                "expose image '{}' has runtime references but signed image metadata covers only the image NAR",
+                "secondary artifact '{}' must have an empty reference set",
                 result.store_path
             );
         }
-        verify_nar_hash(&result.local_path, &artifact.nar_hash)
-            .with_context(|| format!("verifying signed NAR for {}", result.store_path))?;
+        crate::verify::verify_nar_hash_with_compression(
+            &result.local_path,
+            &artifact.nar_hash,
+            &result.compression,
+        )
+        .with_context(|| format!("verifying signed NAR for {}", result.store_path))?;
     }
 
     Ok(())
@@ -1125,6 +1160,7 @@ mod tests {
                 expose: None,
                 expose_artifact: None,
                 config_module: None,
+                documentation: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -1156,6 +1192,7 @@ mod tests {
             expose: None,
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: Default::default(),
             bpf_lsm: None,
             attestation: Default::default(),
@@ -1299,6 +1336,7 @@ mod tests {
             local_path: std::path::PathBuf::from("/does/not/exist"),
             download_hash: "sha256:download".to_string(),
             nar_hash: "sha256:image".to_string(),
+            compression: "zstd".to_string(),
             references: vec!["/var/lib/store/ref-dep".to_string()],
             deriver: None,
         };
@@ -1313,7 +1351,7 @@ mod tests {
         let err = verify_secondary_artifact_downloads(&[result], &[artifact])
             .expect_err("referenced expose image should be rejected");
 
-        assert!(err.to_string().contains("runtime references"));
+        assert!(err.to_string().contains("empty reference set"));
     }
 
     // A newer version of curl for the registry (different hash).
@@ -1746,6 +1784,7 @@ nar_size = 42
                     expose: None,
                     expose_artifact: None,
                     config_module: None,
+                    documentation: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
                     attestation: Default::default(),
@@ -1780,6 +1819,7 @@ nar_size = 42
                     expose: None,
                     expose_artifact: None,
                     config_module: None,
+                    documentation: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
                     attestation: Default::default(),
@@ -1832,6 +1872,7 @@ nar_size = 42
                     expose: None,
                     expose_artifact: None,
                     config_module: None,
+                    documentation: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
                     attestation: Default::default(),
@@ -1866,6 +1907,7 @@ nar_size = 42
                     expose: None,
                     expose_artifact: None,
                     config_module: None,
+                    documentation: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
                     attestation: Default::default(),
@@ -1919,6 +1961,7 @@ nar_size = 42
                     expose: None,
                     expose_artifact: None,
                     config_module: None,
+                    documentation: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
                     attestation: Default::default(),
@@ -1953,6 +1996,7 @@ nar_size = 42
                     expose: None,
                     expose_artifact: None,
                     config_module: None,
+                    documentation: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
                     attestation: Default::default(),

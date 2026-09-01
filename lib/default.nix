@@ -158,6 +158,7 @@
     inherit types;
     inherit (modules) mkOption;
   };
+  aosDoc = import ./documentation.nix;
 
   platformMod = import ./platform.nix;
   derivations = import ./derivations.nix {inherit system bash;};
@@ -179,6 +180,11 @@
     // {
       inherit types system;
       inherit serviceTypes;
+      inherit aosDoc;
+      literalExpression = text: {
+        _type = "literalExpression";
+        inherit text;
+      };
       inherit
         (platformMod)
         mkPlatform

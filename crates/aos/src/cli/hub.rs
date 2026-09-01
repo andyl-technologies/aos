@@ -180,6 +180,11 @@ pub enum HubCmd {
         #[command(subcommand)]
         command: HubRegistryCmd,
     },
+    /// Browse canonical package documentation through the Hub API
+    Docs {
+        #[command(subcommand)]
+        command: HubDocumentationCmd,
+    },
     /// Manage binary-cache definitions, retention, population, and garbage collection
     Cache {
         #[command(subcommand)]
@@ -239,6 +244,96 @@ pub enum HubCmd {
     Operation {
         #[command(subcommand)]
         command: HubOperationCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubDocumentationCmd {
+    /// Search package documentation
+    Search {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        query: String,
+        #[arg(long)]
+        registry: String,
+        #[arg(long)]
+        kind: Option<String>,
+        #[command(flatten)]
+        pagination: HubPaginationArgs,
+    },
+    /// Fetch one exact package documentation object
+    Package {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        package: String,
+        #[arg(long)]
+        registry: String,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long)]
+        platform: Option<String>,
+    },
+    /// List or select an exact typed option
+    Option {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        package: String,
+        #[arg(long)]
+        registry: String,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long)]
+        platform: Option<String>,
+        #[arg(long)]
+        prefix: Option<String>,
+        #[arg(long)]
+        owner: Option<String>,
+        #[arg(long = "type")]
+        option_type: Option<String>,
+        #[arg(long)]
+        contributable: Option<bool>,
+        #[command(flatten)]
+        pagination: HubPaginationArgs,
+    },
+    /// Compare two package documentation versions
+    Compare {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        package: String,
+        #[arg(long)]
+        registry: String,
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        platform: String,
+    },
+    /// Verify and write one exact canonical documentation object
+    Fetch {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        package: String,
+        #[arg(long)]
+        registry: String,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long)]
+        platform: Option<String>,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Print the canonical browser URL for one package
+    Open {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        package: String,
+        #[arg(long)]
+        registry: String,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long)]
+        platform: Option<String>,
     },
 }
 
