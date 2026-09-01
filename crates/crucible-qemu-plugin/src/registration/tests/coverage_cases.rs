@@ -6,7 +6,9 @@ use super::*;
 fn registration_coverage_off_installs_no_callback_without_capability() {
     let mut sequence = PluginRegistrationSequence::new();
     record_steps_through_wake_fd(&mut sequence);
-    let args = registration_args("simfd=3,slot=0,coverage=off");
+    let args = registration_args(
+        "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,coverage=off",
+    );
 
     let capabilities = sequence
         .register_callbacks_for_test(

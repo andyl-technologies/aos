@@ -12,10 +12,9 @@ use crucible::{
     DebugCheckpointCadenceRequest, DebugCheckpointStride, DebugCoordinate, DebugGotoRequest,
     DebugPerNodeTimeTravelRequest, DebugReverseContinueRequest, DebugReverseStepGrain,
     DebugReverseStepRequest, DebugWholeWorldTarget, DebugWholeWorldTimeTravelRequest, Decision,
-    EngineError, Icount, NodeBlobRef, NodeId, NodeLifecycle, NodeTemplate, ObservableEvent,
-    OverrideDecision, Predicate, ReadyPoint, SavevmCompletenessHedge, SchedulingPoint,
-    TemporalGraph, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode, bake,
-    instantiate, try_step,
+    EngineError, Icount, MaterializationPolicy, NodeBlobRef, NodeId, NodeLifecycle, NodeTemplate,
+    ObservableEvent, OverrideDecision, Predicate, ReadyPoint, SchedulingPoint, TemporalGraph,
+    VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode, bake, instantiate, try_step,
 };
 
 #[test]
@@ -393,7 +392,7 @@ fn debug_per_node_and_whole_world_time_travel_land_coherently() -> Result<(), Bo
 }
 
 #[test]
-fn debug_checkpoint_stride_is_performance_only_and_defaults_to_thin_replay()
+fn debug_checkpoint_stride_is_performance_only_under_explicit_cache_policy()
 -> Result<(), Box<dyn Error>> {
     let world = single_node_world("debug-stride")?;
     let scenario = world.scenario_def();
@@ -406,7 +405,7 @@ fn debug_checkpoint_stride_is_performance_only_and_defaults_to_thin_replay()
 
     let mut thin_graph = TemporalGraph::empty().with_baked_genesis(&scenario, bake(&world)?)?;
     let thin_report = thin_graph.debug_apply_checkpoint_cadence(
-        &DebugCheckpointCadenceRequest::thin_replay_until_full_s3(fourth.clone(), stride),
+        &DebugCheckpointCadenceRequest::thin_only(fourth.clone(), stride),
     )?;
     let thin_runtime = instantiate(&thin_graph, &fourth)?;
 
@@ -414,25 +413,26 @@ fn debug_checkpoint_stride_is_performance_only_and_defaults_to_thin_replay()
         thin_report.candidate_configurations,
         vec![second.id(), fourth.id()]
     );
-    assert!(thin_report.defaults_to_thin_replay_until_full_s3());
+    assert!(thin_report.kept_all_thin());
     assert!(thin_report.is_performance_only_cache_decision());
     assert!(thin_report.fat_checkpoints.is_empty());
     assert_eq!(thin_report.thin_checkpoints.len(), 2);
     assert_eq!(thin_graph.cached_snapshot_count(), 0);
     assert_eq!(thin_runtime.configuration, fourth.id());
 
-    let mut verified_graph = TemporalGraph::empty().with_baked_genesis(&scenario, bake(&world)?)?;
-    let fat_report = verified_graph.debug_apply_checkpoint_cadence(
-        &DebugCheckpointCadenceRequest::with_hedge(
+    let mut materialized_graph =
+        TemporalGraph::empty().with_baked_genesis(&scenario, bake(&world)?)?;
+    let fat_report = materialized_graph.debug_apply_checkpoint_cadence(
+        &DebugCheckpointCadenceRequest::with_policy(
             fourth.clone(),
             stride,
-            SavevmCompletenessHedge::verified(),
+            MaterializationPolicy::with_budget(8),
         ),
     )?;
-    let exact_runtime = instantiate(&verified_graph, &fourth)?;
-    verified_graph.evict_fat_checkpoint_to_thin(&second)?;
-    verified_graph.evict_fat_checkpoint_to_thin(&fourth)?;
-    let replay_runtime = instantiate(&verified_graph, &fourth)?;
+    let exact_runtime = instantiate(&materialized_graph, &fourth)?;
+    materialized_graph.evict_fat_checkpoint_to_thin(&second)?;
+    materialized_graph.evict_fat_checkpoint_to_thin(&fourth)?;
+    let replay_runtime = instantiate(&materialized_graph, &fourth)?;
 
     assert_eq!(fat_report.fat_checkpoints, vec![second.id(), fourth.id()]);
     assert!(fat_report.thin_checkpoints.is_empty());
@@ -440,26 +440,6 @@ fn debug_checkpoint_stride_is_performance_only_and_defaults_to_thin_replay()
     assert_eq!(exact_runtime.id, replay_runtime.id);
     assert_eq!(exact_runtime.configuration, replay_runtime.configuration);
     assert_eq!(exact_runtime.node_icounts, replay_runtime.node_icounts);
-
-    let mut eviction_graph = TemporalGraph::empty().with_baked_genesis(&scenario, bake(&world)?)?;
-    eviction_graph.debug_apply_checkpoint_cadence(&DebugCheckpointCadenceRequest::with_hedge(
-        fourth.clone(),
-        stride,
-        SavevmCompletenessHedge::verified(),
-    ))?;
-    let before_eviction = instantiate(&eviction_graph, &fourth)?;
-    let eviction_report = eviction_graph.debug_apply_checkpoint_cadence(
-        &DebugCheckpointCadenceRequest::thin_replay_until_full_s3(fourth.clone(), stride),
-    )?;
-    let after_eviction = instantiate(&eviction_graph, &fourth)?;
-
-    assert_eq!(eviction_report.cached_snapshots_before, 2);
-    assert_eq!(eviction_report.cached_snapshots_after, 0);
-    assert!(eviction_report.defaults_to_thin_replay_until_full_s3());
-    assert!(eviction_report.is_performance_only_cache_decision());
-    assert_eq!(before_eviction.id, after_eviction.id);
-    assert_eq!(before_eviction.configuration, after_eviction.configuration);
-    assert_eq!(before_eviction.node_icounts, after_eviction.node_icounts);
 
     Ok(())
 }

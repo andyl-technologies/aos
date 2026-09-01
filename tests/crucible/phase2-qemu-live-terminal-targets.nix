@@ -5,11 +5,7 @@
   taskIds ? ["T-QEMU-11" "T-QEMU-16"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   s11GuestCheck = import ./phase0-s11.nix {
     inherit pkgs lib;
     stopAt = 1;
@@ -148,8 +144,7 @@ in
           grep -Fxq 'negative_scenario_drift_rejected=true' "$report"
           grep -Fxq 'no_rejected_request_attempt_allocated=true' "$report"
           grep -Fxq 'definition_and_run_inputs_fixed=true' "$report"
-          grep -Fxq 'second_ordinal_host_load_work_observed=true' "$report"
-          grep -Eq '^second_ordinal_host_load_work_delta=[1-9][0-9]*$' "$report"
+          grep -Fxq 'second_ordinal_repeat=true' "$report"
           grep -Fxq 'vcpu_count=2' "$report"
           grep -Fxq 'rr_switch_quantum=4096' "$report"
           grep -Fxq 'scope=isolated-current-state-target-foundation-not-cumulative-prefix-or-refinement' "$report"

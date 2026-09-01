@@ -17,7 +17,8 @@ use crucible::{
 use thiserror::Error;
 
 use crate::{
-    QemuHostWorkerOutcome, QemuHostWorkerPool, QemuHostWorkerPoolError, QemuLiveNodeStepGateConfig,
+    QemuHostWorkerOutcome, QemuHostWorkerPool, QemuHostWorkerPoolError, QemuLaunchPluginSwitch,
+    QemuLiveNodeStepGateConfig,
 };
 
 use super::node_step_gate::{LiveNodeIdentity, build_live_node};
@@ -59,8 +60,9 @@ pub struct QemuLiveHostParallelReport {
 pub fn run_qemu_live_host_parallel_gate(
     config: &QemuLiveNodeStepGateConfig,
 ) -> Result<QemuLiveHostParallelReport, QemuLiveHostParallelGateError> {
-    let serial = run_dispatch(config, "host-parallel-serial", 1)?;
-    let parallel = run_dispatch(config, "host-parallel-parallel", HOST_PARALLEL_NODES.len())?;
+    let config = host_parallel_config(config);
+    let serial = run_dispatch(&config, "host-parallel-serial", 1)?;
+    let parallel = run_dispatch(&config, "host-parallel-parallel", HOST_PARALLEL_NODES.len())?;
 
     let state_bit_identical = serial.fingerprints == parallel.fingerprints;
     let time_bit_identical =
@@ -103,6 +105,11 @@ pub fn run_qemu_live_host_parallel_gate(
     })
 }
 
+/// Enables the state evidence that the gate reads after each dispatch.
+fn host_parallel_config(config: &QemuLiveNodeStepGateConfig) -> QemuLiveNodeStepGateConfig {
+    config.clone().with_fingerprint(QemuLaunchPluginSwitch::On)
+}
+
 struct DispatchEvidence {
     realized_parallelism: usize,
     wall: Duration,
@@ -130,6 +137,7 @@ fn run_dispatch(
                     crash_detector: name,
                 },
                 None,
+                false,
             )
             .map_err(|error| BackendError::Rejected {
                 message: format!("build live host-worker node {name}: {error}"),
@@ -239,6 +247,24 @@ fn evidence_hash(
 fn node(name: &str) -> NodeId {
     NodeId {
         name: name.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_parallel_gate_enables_fingerprinting_before_launch() {
+        let input = QemuLiveNodeStepGateConfig::new(
+            "qemu-system-x86_64",
+            "libcrucible_qemu_plugin.so",
+            "vmlinuz",
+            "bios-256k.bin",
+            "run",
+        );
+        let configured = host_parallel_config(&input);
+        assert!(format!("{configured:?}").contains("fingerprint: On"));
     }
 }
 

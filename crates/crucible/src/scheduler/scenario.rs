@@ -17,7 +17,7 @@ pub struct SchedulerScenarioNode {
 }
 
 /// The generated liveness activity state for one scheduler node.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SchedulerNodeActivity {
     /// The node has work and may be selected by PICK.
     Runnable,
@@ -558,8 +558,8 @@ pub(super) fn topology_change_trigger_label(
     trigger: SchedulerTopologyChangeTrigger,
 ) -> &'static str {
     match trigger {
-        SchedulerTopologyChangeTrigger::FaultActivation => "fault-activation",
-        SchedulerTopologyChangeTrigger::Heal => "heal",
+        SchedulerTopologyChangeTrigger::EdgeRemoval => "edge-removal",
+        SchedulerTopologyChangeTrigger::EdgeRestore => "edge-restore",
         SchedulerTopologyChangeTrigger::LatencyChange => "latency-change",
     }
 }
@@ -631,14 +631,9 @@ pub(super) fn exact_local_event_material(event: &ExactLocalEvent) -> String {
             virtual_time.nanos,
             scheduler_node_material(sub_node),
         ),
-        ExactLocalEvent::FaultActivation {
-            virtual_time,
-            fault,
-        } => format!(
-            "exact_local_event=fault\nexact_local_event_ns={}\nfault_name_len={}\nfault_name={}",
+        ExactLocalEvent::SignalFaultEvaluation { virtual_time } => format!(
+            "exact_local_event=signal_fault_evaluation\nexact_local_event_ns={}",
             virtual_time.nanos,
-            fault.name.len(),
-            fault.name,
         ),
     }
 }
@@ -677,21 +672,6 @@ pub(super) fn scheduled_event_payload_material(payload: &ScheduledEventPayload) 
             completion.delivery_icount.retired,
             hex_bytes(&completion.payload),
         ),
-        ScheduledEventPayload::FaultActivation(fault) => format!(
-            "payload=fault-activation\npayload_fault_len={}\npayload_fault={}",
-            fault.name.len(),
-            fault.name,
-        ),
-        ScheduledEventPayload::ProbabilisticFault(choice) => format!(
-            "payload=probabilistic-fault\npayload_fault_len={}\npayload_fault={}\npayload_stream_domain_len={}\npayload_stream_domain={}\npayload_stream_name_len={}\npayload_stream_name={}\npayload_rate_basis_points={}",
-            choice.fault.name.len(),
-            choice.fault.name,
-            choice.stream.domain.len(),
-            choice.stream.domain,
-            choice.stream.name.len(),
-            choice.stream.name,
-            choice.rate.basis_points(),
-        ),
         ScheduledEventPayload::Control(operation) => {
             format!("payload=control\n{}", control_operation_material(operation))
         }
@@ -706,19 +686,11 @@ pub(super) fn control_operation_material(operation: &ControlOperation) -> String
         control_operation_kind_label(&operation.kind)
     ));
     match &operation.kind {
-        ControlOperationKind::InjectFault { tag, fault } => {
-            lines.push(trigger_fault_tag_material("control_tag", tag));
-            lines.push(fault.canonical_material());
-        }
-        ControlOperationKind::HealFault { tag } => {
-            lines.push(trigger_fault_tag_material("control_tag", tag));
-        }
         ControlOperationKind::Pause
         | ControlOperationKind::Resume
         | ControlOperationKind::Step
         | ControlOperationKind::Snapshot
         | ControlOperationKind::Fork
-        | ControlOperationKind::Inject
         | ControlOperationKind::Query => {}
     }
     lines.join("\n")
@@ -731,9 +703,6 @@ pub(super) fn control_operation_kind_label(kind: &ControlOperationKind) -> &'sta
         ControlOperationKind::Step => "step",
         ControlOperationKind::Snapshot => "snapshot",
         ControlOperationKind::Fork => "fork",
-        ControlOperationKind::Inject => "inject",
-        ControlOperationKind::InjectFault { .. } => "inject-fault",
-        ControlOperationKind::HealFault { .. } => "heal-fault",
         ControlOperationKind::Query => "query",
     }
 }

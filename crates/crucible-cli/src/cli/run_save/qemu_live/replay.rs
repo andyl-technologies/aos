@@ -13,6 +13,8 @@ pub(crate) fn run_live_qemu_artifact_replay(
     scenario: crucible::ScenarioDefForm,
     schedule: &crucible::Schedule,
     contract: &LiveQemuReplayContract,
+    resolved_effect_trace: Option<crucible::ResolvedEffectTrace>,
+    signal_artifacts: Option<std::sync::Arc<crucible::MemoryDagStore>>,
 ) -> Result<(RunInvocationPlan, RunWorkflowReport), CliError> {
     let terminal_condition = match contract.terminal_condition.as_str() {
         "quiescence" => RunTerminalCondition::Quiescence,
@@ -81,6 +83,9 @@ pub(crate) fn run_live_qemu_artifact_replay(
     }
     if let Some(quantum_budget) = contract.lifecycle_quantum_budget {
         config = config.with_quantum_budget(quantum_budget);
+    }
+    if let Some(signal_artifacts) = signal_artifacts {
+        config = config.with_signal_artifacts(signal_artifacts);
     }
     let mut branch_evidence = None;
     match &contract.branch {
@@ -165,17 +170,16 @@ pub(crate) fn run_live_qemu_artifact_replay(
             );
         }
     }
-    let fault_choices = replay_indexed_fault_choices(schedule, &contract.fault_choice_indices)?;
     let network_choices =
         replay_indexed_network_choices(schedule, &contract.network_choice_indices)?;
-    if !fault_choices.is_empty() {
-        config = config.with_branch_fault_choices(fault_choices);
-    }
     if !network_choices.is_empty() {
         config = config.with_branch_network_choices(network_choices);
     }
     if contract.coverage {
         config = config.with_coverage(production_api::ProductionPluginSwitch::On);
+    }
+    if let Some(trace) = resolved_effect_trace {
+        config = config.with_fault_replay(trace);
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -207,10 +211,7 @@ pub(crate) fn run_live_qemu_artifact_replay(
                     &resume_plan,
                     evidence,
                     ResumeInteractiveCommandDriver::Preparsed(&[]),
-                    replay_has_exact_branch_choices(
-                        &contract.fault_choice_indices,
-                        &contract.network_choice_indices,
-                    ),
+                    replay_has_exact_branch_choices(&contract.network_choice_indices),
                 ),
             )?
             .run
@@ -220,17 +221,14 @@ pub(crate) fn run_live_qemu_artifact_replay(
             &run_plan,
             InteractiveCommandDriver::Preparsed(&[]),
             false,
-            replay_has_exact_branch_choices(
-                &contract.fault_choice_indices,
-                &contract.network_choice_indices,
-            ),
+            replay_has_exact_branch_choices(&contract.network_choice_indices),
         ))?
     };
     Ok((run_plan, report))
 }
 
-fn replay_has_exact_branch_choices(fault_indices: &[u64], network_indices: &[u64]) -> bool {
-    !fault_indices.is_empty() || !network_indices.is_empty()
+fn replay_has_exact_branch_choices(network_indices: &[u64]) -> bool {
+    !network_indices.is_empty()
 }
 
 fn replay_branch_evidence(
@@ -265,30 +263,6 @@ fn replay_branch_base(
     })
 }
 
-fn replay_indexed_fault_choices(
-    schedule: &crucible::Schedule,
-    indices: &[u64],
-) -> Result<Vec<crucible::Decision>, CliError> {
-    let mut choices = Vec::with_capacity(indices.len().saturating_mul(2));
-    for index in indices {
-        let index = usize::try_from(*index)
-            .map_err(|_| artifact_error("fault choice index cannot be represented"))?;
-        let pair = schedule
-            .decisions()
-            .get(index..index.saturating_add(2))
-            .ok_or_else(|| artifact_error("fault choice index exceeds the model schedule"))?;
-        if !matches!(pair[0], crucible::Decision::RngDraw(_))
-            || !matches!(pair[1], crucible::Decision::FaultFires(_))
-        {
-            return Err(artifact_error(
-                "fault choice index does not identify an RNG/fault decision pair",
-            ));
-        }
-        choices.extend_from_slice(pair);
-    }
-    Ok(choices)
-}
-
 fn replay_indexed_network_choices(
     schedule: &crucible::Schedule,
     indices: &[u64],
@@ -317,11 +291,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn replay_validates_fault_only_and_network_only_choice_streams() {
-        assert!(!replay_has_exact_branch_choices(&[], &[]));
-        assert!(replay_has_exact_branch_choices(&[3], &[]));
-        assert!(replay_has_exact_branch_choices(&[], &[5]));
-        assert!(replay_has_exact_branch_choices(&[3], &[5]));
+    fn replay_requires_an_exact_network_choice_stream_when_branching() {
+        assert!(!replay_has_exact_branch_choices(&[]));
+        assert!(replay_has_exact_branch_choices(&[5]));
     }
 
     #[test]

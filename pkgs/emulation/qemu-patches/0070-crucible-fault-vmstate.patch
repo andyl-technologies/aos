@@ -1,0 +1,156 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 8d0ed1876..d2e89855f 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1998,6 +1998,31 @@ size_t qemu_plugin_crucible_fault_accelerator_manifest(
+     struct qemu_plugin_crucible_fault_accelerator_capability *out,
+     size_t capacity);
+ 
++/** Immutable identity for the complete realized Crucible fault system. */
++struct qemu_plugin_crucible_fault_system_manifest {
++    uint32_t semantic_version;
++    uint32_t vmstate_format_version;
++    uint32_t vmstate_section_count;
++    uint32_t reserved;
++    uint8_t vmstate_sections_sha256[32];
++    const char *system_capability;
++    const char *vmstate_capability;
++    const char *qemu_build_id;
++    const char *qemu_patch_series_hash;
++    const char *shmem_header_hash;
++};
++
++/**
++ * qemu_plugin_crucible_fault_system_manifest() - query final fault identity
++ * @out: complete destination row
++ *
++ * Returns zero only after the realized VMState registry is exact and complete.
++ * A negative errno means the process must not pass Crucible launch admission.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fault_system_manifest(
++    struct qemu_plugin_crucible_fault_system_manifest *out);
++
+ /** Binds one manifest row to the canonical public object identity. */
+ QEMU_PLUGIN_API
+ int qemu_plugin_crucible_fault_clock_bind(
+diff --git a/plugins/crucible-fault-vmstate.c b/plugins/crucible-fault-vmstate.c
+index 486b17a13..9843d6135 100644
+--- a/plugins/crucible-fault-vmstate.c
++++ b/plugins/crucible-fault-vmstate.c
+@@ -25,6 +25,16 @@
+ #define CRUCIBLE_FAULT_VMSTATE_MAX_SECTION_BYTES (64 * MiB)
+ #define CRUCIBLE_FAULT_VMSTATE_MAX_TOTAL_BYTES (256 * MiB)
+ 
++#ifndef QEMU_CRUCIBLE_BUILD_ID
++#define QEMU_CRUCIBLE_BUILD_ID "unconfigured"
++#endif
++#ifndef QEMU_CRUCIBLE_PATCH_SERIES_HASH
++#define QEMU_CRUCIBLE_PATCH_SERIES_HASH "unconfigured"
++#endif
++#ifndef QEMU_CRUCIBLE_SHMEM_HEADER_HASH
++#define QEMU_CRUCIBLE_SHMEM_HEADER_HASH "unconfigured"
++#endif
++
+ typedef struct CrucibleFaultVmstateStaged {
+     const QemuCrucibleFaultVmstateSection *section;
+     const uint8_t *payload;
+@@ -41,6 +51,8 @@ static size_t crucible_fault_vmstate_expected_deferred;
+ static size_t crucible_fault_vmstate_counted_deferred;
+ static bool crucible_fault_vmstate_has_expected_reservations;
+ static bool crucible_fault_vmstate_has_expected_deferred;
++static void crucible_fault_vmstate_sha256(const uint8_t *bytes, size_t len,
++                                          uint8_t digest[32]);
+ 
+ static const char *const crucible_fault_vmstate_required[] = {
+     "clock",
+@@ -54,6 +66,10 @@ static const char *const crucible_fault_vmstate_required[] = {
+     "vcpu-service",
+ };
+ 
++static const char *const crucible_fault_vmstate_optional[] = {
++    "accelerator",
++};
++
+ static int crucible_fault_vmstate_section_compare(gconstpointer left,
+                                                   gconstpointer right)
+ {
+@@ -112,21 +128,73 @@ void qemu_crucible_fault_vmstate_count_deferred(size_t count)
+ 
+ static int crucible_fault_vmstate_registry_validate(void)
+ {
++    size_t required = G_N_ELEMENTS(crucible_fault_vmstate_required);
++    size_t section_index = 0;
++
+     if (!crucible_fault_vmstate_sections ||
+-        crucible_fault_vmstate_sections->len !=
+-            G_N_ELEMENTS(crucible_fault_vmstate_required)) {
++        (crucible_fault_vmstate_sections->len != required &&
++         crucible_fault_vmstate_sections->len !=
++             required + G_N_ELEMENTS(crucible_fault_vmstate_optional))) {
+         return -EINVAL;
+     }
+-    for (size_t i = 0; i < G_N_ELEMENTS(crucible_fault_vmstate_required); i++) {
++    if (crucible_fault_vmstate_sections->len != required &&
++        strcmp(((QemuCrucibleFaultVmstateSection *)g_ptr_array_index(
++                   crucible_fault_vmstate_sections, 0))->name,
++               crucible_fault_vmstate_optional[0]) != 0) {
++        return -EINVAL;
++    }
++    if (crucible_fault_vmstate_sections->len != required) {
++        section_index = 1;
++    }
++    for (size_t required_index = 0; required_index < required;
++         required_index++, section_index++) {
+         const QemuCrucibleFaultVmstateSection *section =
+-            g_ptr_array_index(crucible_fault_vmstate_sections, i);
+-        if (strcmp(section->name, crucible_fault_vmstate_required[i]) != 0) {
++            g_ptr_array_index(crucible_fault_vmstate_sections, section_index);
++        if (strcmp(section->name,
++                   crucible_fault_vmstate_required[required_index]) != 0) {
+             return -EINVAL;
+         }
+     }
+     return 0;
+ }
+ 
++int qemu_plugin_crucible_fault_system_manifest(
++    struct qemu_plugin_crucible_fault_system_manifest *out)
++{
++    g_autoptr(GByteArray) sections = NULL;
++
++    if (!out || crucible_fault_vmstate_registry_validate() != 0 ||
++        strcmp(QEMU_CRUCIBLE_BUILD_ID, "unconfigured") == 0 ||
++        strcmp(QEMU_CRUCIBLE_PATCH_SERIES_HASH, "unconfigured") == 0 ||
++        strcmp(QEMU_CRUCIBLE_SHMEM_HEADER_HASH, "unconfigured") == 0) {
++        return -EINVAL;
++    }
++    sections = g_byte_array_new();
++    for (size_t i = 0; i < crucible_fault_vmstate_sections->len; i++) {
++        const QemuCrucibleFaultVmstateSection *section =
++            g_ptr_array_index(crucible_fault_vmstate_sections, i);
++        uint8_t version[4];
++
++        g_byte_array_append(sections, (const uint8_t *)section->name,
++                            strlen(section->name) + 1);
++        stl_be_p(version, section->version);
++        g_byte_array_append(sections, version, sizeof(version));
++    }
++    *out = (struct qemu_plugin_crucible_fault_system_manifest) {
++        .semantic_version = 1,
++        .vmstate_format_version = CRUCIBLE_FAULT_VMSTATE_VERSION,
++        .vmstate_section_count = crucible_fault_vmstate_sections->len,
++        .system_capability = "qemu.fault-system.complete.v1",
++        .vmstate_capability = "qemu.fault-vmstate.v1",
++        .qemu_build_id = QEMU_CRUCIBLE_BUILD_ID,
++        .qemu_patch_series_hash = QEMU_CRUCIBLE_PATCH_SERIES_HASH,
++        .shmem_header_hash = QEMU_CRUCIBLE_SHMEM_HEADER_HASH,
++    };
++    crucible_fault_vmstate_sha256(
++        sections->data, sections->len, out->vmstate_sections_sha256);
++    return 0;
++}
++
+ void qemu_crucible_fault_vmstate_put_u8(GByteArray *bytes, uint8_t value)
+ {
+     g_byte_array_append(bytes, &value, sizeof(value));

@@ -1,14 +1,12 @@
-//! Second half of `assert_covers_carried_qemu_patch_series`: the plugin ABI
-//! surface, per-patch nix fixtures, `qemu.nix`, and the roster-wide aggregate
-//! result-line checks.
+//! Second half of `assert_covers_carried_qemu_patch_series`: plugin ABI, Nix
+//! fixtures, `qemu.nix`, and roster-wide aggregate result-line checks.
 
 use std::error::Error;
 use std::fs;
 
 use super::common::{EXPECTED_PATCHES, assert_contains, required, workspace_root};
 
-/// Asserts the plugin ABI, per-patch nix fixtures, `qemu.nix`, and the
-/// aggregate result-line contract for every carried patch.
+/// Asserts plugin ABI, Nix fixtures, and aggregate contracts for every patch.
 ///
 /// # Errors
 ///
@@ -17,9 +15,8 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
     let root = workspace_root()?;
     let aggregate = fs::read_to_string(root.join("tests/crucible/phase2-patch-microtests.nix"))?;
 
-    // The ABI module is split across `abi.rs` and the `abi/inert_callbacks.rs`
-    // child module (the inert scaffold callbacks live there); concatenate both so
-    // needles for either half resolve against a single checked-source haystack.
+    // Concatenate `abi.rs` and `abi/inert_callbacks.rs` so needles for the inert
+    // scaffold and the primary ABI resolve against one checked-source haystack.
     let abi = format!(
         "{}\n{}",
         fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/abi.rs"))?,
@@ -49,11 +46,15 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
     assert_contains(&network_tx, "pub type QemuRegisterNetTxCbFn");
     assert_contains(&network_tx, "resolve_qemu_register_net_tx_cb_symbol");
 
-    let network_rx =
-        fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/network_rx.rs"))?;
-    assert_contains(&network_rx, "resolve_qemu_net_send_symbol");
-    assert_contains(&network_rx, "resolve_qemu_net_flush_symbol");
-    assert_contains(&network_rx, "resolve_qemu_net_can_receive_symbol");
+    let network_rx = format!(
+        "{}\n{}",
+        fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/network_rx.rs"))?,
+        fs::read_to_string(
+            root.join("crates/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs"),
+        )?,
+    );
+    assert_contains(&network_rx, "resolve_qemu_net_inject_symbol");
+    assert_contains(&network_rx, "QEMU_PLUGIN_NET_INJECT_SYMBOL");
 
     let whitebox_doorbell =
         fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/whitebox_doorbell.rs"))?;
@@ -333,31 +334,36 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
     );
     assert_contains(
         &qemu_rr_quantum_icount,
-        "accelerator = \"sim,thread=single\";",
+        "simS11 = import ./phase0-s11.nix {inherit pkgs lib;};",
     );
-    assert_contains(&qemu_rr_quantum_icount, "cadence = 1048576;");
-    assert_contains(&qemu_rr_quantum_icount, "requireGuestPass = false;");
-    assert_contains(&qemu_rr_quantum_icount, "stopAt = 4194304;");
-    assert_contains(&qemu_rr_quantum_icount, "vcpus=2");
+    assert_contains(
+        &qemu_rr_quantum_icount,
+        "require_line \"$s11_result\" \"cadence=100000000\"",
+    );
+    assert_contains(
+        &qemu_rr_quantum_icount,
+        "require_line \"$s11_result\" \"require_guest_pass=1\"",
+    );
+    assert_contains(&qemu_rr_quantum_icount, "vcpus=4");
     assert_contains(
         &qemu_rr_quantum_icount,
         "require_line \"$s11_result\" \"accelerator=sim,thread=single\"",
     );
     assert_contains(
         &qemu_rr_quantum_icount,
-        "require_line \"$s11_result\" \"run_horizon=plugin-stop_at-4194304\"",
+        "require_line \"$s11_result\" \"run_horizon=plugin-stop_at-4000000000\"",
     );
     assert_contains(
         &qemu_rr_quantum_icount,
-        "require_line \"$s11_result\" \"periodic_samples_expected=4\"",
+        "require_line \"$s11_result\" \"periodic_samples_expected=40\"",
     );
     assert_contains(
         &qemu_rr_quantum_icount,
-        "require_line \"$s11_result\" \"periodic_samples_observed=4\"",
+        "require_line \"$s11_result\" \"periodic_samples_observed=40\"",
     );
     assert_contains(
         &qemu_rr_quantum_icount,
-        "require_line \"$s11_result\" \"samples=5\"",
+        "require_line \"$s11_result\" \"samples=41\"",
     );
     assert_contains(
         &qemu_rr_quantum_icount,
@@ -445,9 +451,19 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
     assert_contains(&qemu_det_ipi, "accelerator = \"sim,thread=single\";");
     assert_contains(&qemu_det_ipi, "stopAt = 4194304;");
     assert_contains(&qemu_det_ipi, "select(.kind == \"det_ipi\")");
-    assert_contains(&qemu_det_ipi, "any($events[]; .delivery_mode == 0)");
-    assert_contains(&qemu_det_ipi, "any($events[]; .delivery_mode == 5)");
-    assert_contains(&qemu_det_ipi, "any($events[]; .delivery_mode == 6)");
+    assert_contains(&qemu_det_ipi, "([ $events[].det_ipi_event ] == [1, 2, 3])");
+    assert_contains(&qemu_det_ipi, "($events[0].delivery_mode == 5)");
+    assert_contains(&qemu_det_ipi, "($events[1].delivery_mode == 6)");
+    assert_contains(&qemu_det_ipi, "($events[2].delivery_mode == 0)");
+    assert_contains(&qemu_det_ipi, "($events[2].vector == 81)");
+    assert_contains(
+        &qemu_det_ipi,
+        "($events[2].src_vcpu == $events[1].dst_vcpu)",
+    );
+    assert_contains(
+        &qemu_det_ipi,
+        "($events[2].dst_vcpu == $events[1].src_vcpu)",
+    );
     assert_contains(&qemu_det_ipi, "deterministic_ipi_fixed_mode_trace=true");
     assert_contains(&qemu_det_ipi, "deterministic_ipi_init_mode_trace=true");
     assert_contains(&qemu_det_ipi, "deterministic_ipi_sipi_mode_trace=true");
@@ -457,8 +473,10 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
     );
     assert_contains(
         &qemu_det_ipi,
-        "stock_negative_control_scope=non-sim-and-self-IPI-use-upstream-path",
+        "stock_negative_control_scope=executed-non-sim-fallback",
     );
+    assert_contains(&qemu_det_ipi, "stock_negative_control_det_ipi_events=0");
+    assert_contains(&qemu_det_ipi, "stock_negative_control_guest_execution=true");
 
     let qemu_vcpu_introspect =
         fs::read_to_string(root.join("tests/crucible/phase2-qemu-vcpu-introspect.nix"))?;
@@ -575,7 +593,6 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
         assert_contains(&aggregate, patch);
         assert_contains(&aggregate, "grep -q '^patch=${test.patch}$' \"$result\"");
         assert_contains(&aggregate, "grep -q '^patched_fixture_exercised=true$'");
-        assert_contains(&aggregate, "grep -q '^stock_negative_control=true$'");
     }
 
     Ok(())

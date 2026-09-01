@@ -9,10 +9,10 @@
 use std::os::fd::BorrowedFd;
 
 use crucible_shmem::{
-    FrameEntry, FrameEntryError, FutexError, LookaheadGateError, MappedDirectedRingMut,
+    FrameDeliveryKey, FrameEntry, FrameEntryError, LookaheadGateError, MappedDirectedRingMut,
     MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError, NodeSlotError,
-    NodeSlotSnapshot, SLOT_NET_ROUTER, SetupRegionMapError, SpscRingError,
-    authorize_advance_ceiling, mmap_setup_region,
+    NodeSlotSnapshot, SLOT_NET_ROUTER, SchedulerWakePublicationError, SetupRegionMapError,
+    SpscRingError, authorize_advance_ceiling, mmap_setup_region,
 };
 use thiserror::Error;
 
@@ -24,6 +24,10 @@ pub const LIVE_NETWORK_PROBE_PAYLOAD: &[u8] = b"crucible-network-probe-v1";
 pub const LIVE_NETWORK_REPLY_PAYLOAD: &[u8] = b"crucible-network-reply-v1";
 /// Guest-to-router acknowledgement payload.
 pub const LIVE_NETWORK_ACK_PAYLOAD: &[u8] = b"crucible-network-ack-v1";
+/// Router frame used before guest-driver initialization to force real backpressure.
+pub const LIVE_NETWORK_BACKPRESSURE_PAYLOAD: &[u8] = b"crucible-network-backpressure-v1";
+/// Guest acknowledgement for the exact boot-time backpressure canary.
+pub const LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD: &[u8] = b"crucible-network-backpressure-ack-v1";
 /// Fixed logical latency between probe emission and reply delivery.
 ///
 /// The deliberately broad window lets the guest enter its blocking receive
@@ -33,6 +37,8 @@ pub const LIVE_NETWORK_REPLY_LATENCY_ICOUNT: u64 = 100_000_000;
 
 const ETHERNET_HEADER_LEN: usize = 14;
 const MINIMUM_ETHERNET_FRAME_LEN: usize = 60;
+const BROADCAST_MAC: [u8; 6] = [0xff; 6];
+const GUEST_MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
 const ROUTER_MAC: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
 
 /// One guest TX frame observed by the live network servicer.
@@ -55,6 +61,8 @@ pub struct LiveNetworkIoSnapshot {
     pub reply_delivery_icount: Option<u64>,
     /// Whether the guest emitted the post-RX acknowledgement frame.
     pub acknowledgement_seen: bool,
+    /// Whether guest userspace acknowledged the exact retained boot-time frame.
+    pub backpressure_acknowledgement_seen: bool,
 }
 
 /// Result of one network-ring servicing pass.
@@ -66,6 +74,8 @@ pub struct LiveNetworkIoServiceStep {
     pub reply_enqueued: bool,
     /// Whether an acknowledgement was observed during this pass.
     pub acknowledgement_seen: bool,
+    /// Whether this pass observed the retained-frame acknowledgement.
+    pub backpressure_acknowledgement_seen: bool,
 }
 
 /// Host-side deterministic router for a single live guest.
@@ -98,6 +108,45 @@ impl QemuLiveNetworkIoServicer {
         })
     }
 
+    /// Builds the boot-time frame that must encounter the unready guest NIC.
+    ///
+    /// The caller publishes these bytes through the production scheduler hot
+    /// path, which assigns the canonical router sequence and validates that its
+    /// delivery coordinate is strictly in the future.
+    #[must_use]
+    pub fn boot_backpressure_probe() -> Vec<u8> {
+        let mut payload = vec![0_u8; MINIMUM_ETHERNET_FRAME_LEN];
+        payload[..6].fill(0xff);
+        payload[6..12].copy_from_slice(&ROUTER_MAC);
+        payload[12..14].copy_from_slice(&LIVE_NETWORK_ETHERTYPE);
+        payload[14..14 + LIVE_NETWORK_BACKPRESSURE_PAYLOAD.len()]
+            .copy_from_slice(LIVE_NETWORK_BACKPRESSURE_PAYLOAD);
+        payload
+    }
+
+    /// Advances the servicer's router sequence after a hot-path publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error if the hot path did not publish the sequence the
+    /// servicer expected to precede its next deterministic reply.
+    pub fn observe_router_publication(
+        &mut self,
+        frame: FrameDeliveryKey,
+    ) -> Result<(), QemuLiveNetworkIoServicerError> {
+        if frame.src_node != SLOT_NET_ROUTER as u32 || frame.seq != self.reply_sequence {
+            return Err(QemuLiveNetworkIoServicerError::RouterSequenceMismatch {
+                expected: self.reply_sequence,
+                actual: frame,
+            });
+        }
+        self.reply_sequence = self
+            .reply_sequence
+            .checked_add(1)
+            .ok_or(QemuLiveNetworkIoServicerError::ReplySequenceOverflow)?;
+        Ok(())
+    }
+
     /// Drains guest TX and schedules the fixed reply for the first valid probe.
     ///
     /// The reply is stamped at `probe.emit_icount + 100_000_000`. Enqueue publication
@@ -127,7 +176,133 @@ impl QemuLiveNetworkIoServicer {
         &mut self,
         before_reply: impl FnOnce(),
     ) -> Result<LiveNetworkIoServiceStep, QemuLiveNetworkIoServicerError> {
+        let mut step = LiveNetworkIoServiceStep::default();
+        let mut before_reply = Some(before_reply);
+        loop {
+            // Release the mapped ring borrow before processing the frame. A
+            // completed scheduler quantum may own the same outbound consumer,
+            // so both sources feed one observation path without overlapping
+            // mutable mappings or losing a completion-drained frame.
+            let frame = {
+                let router_slot = SLOT_NET_ROUTER as u32;
+                let pair = self
+                    .region
+                    .node_directed_ring_pair_mut(
+                        self.vm_slot,
+                        self.vm_slot,
+                        router_slot,
+                        router_slot,
+                        self.vm_slot,
+                    )
+                    .map_err(|source| QemuLiveNetworkIoServicerError::RegionAccess { source })?;
+                pair.first
+                    .header
+                    .dequeue(pair.first.entries)
+                    .map_err(|source| QemuLiveNetworkIoServicerError::Ring { source })?
+            };
+            let Some(frame) = frame else {
+                break;
+            };
+            let payload = frame
+                .payload()
+                .map_err(|source| QemuLiveNetworkIoServicerError::Frame { source })?
+                .to_vec();
+            let observation = LiveNetworkTxObservation {
+                emit_icount: frame.delivery_icount,
+                sequence: frame.seq,
+                payload,
+            };
+            self.process_observation(observation, &mut step, &mut before_reply)?;
+        }
+        Ok(step)
+    }
+
+    /// Processes frames drained by scheduler-quantum completion.
+    ///
+    /// The scheduler hot path and the live router are alternate consumers of
+    /// the same guest-to-router SPSC ring. A quantum that completes between
+    /// router service passes owns any frames it drains; feeding those owned
+    /// frames through this method preserves the single-consumer contract while
+    /// retaining the exact ACK/probe semantics of [`Self::service`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::service`], plus a sequence-range
+    /// error if a completion report cannot be represented by the shared-memory
+    /// frame sequence domain.
+    pub fn service_completed_frames_with_before_reply(
+        &mut self,
+        frames: Vec<crate::QemuNodeEmittedFrame>,
+        before_reply: impl FnOnce(),
+    ) -> Result<LiveNetworkIoServiceStep, QemuLiveNetworkIoServicerError> {
+        let mut step = LiveNetworkIoServiceStep::default();
+        let mut before_reply = Some(before_reply);
+        for frame in frames {
+            let sequence = u32::try_from(frame.sequence).map_err(|_error| {
+                QemuLiveNetworkIoServicerError::OutboundSequenceOutOfRange {
+                    sequence: frame.sequence,
+                }
+            })?;
+            let observation = LiveNetworkTxObservation {
+                emit_icount: frame.emit_icount.retired,
+                sequence,
+                payload: frame.payload,
+            };
+            self.process_observation(observation, &mut step, &mut before_reply)?;
+        }
+        Ok(step)
+    }
+
+    fn process_observation(
+        &mut self,
+        observation: LiveNetworkTxObservation,
+        step: &mut LiveNetworkIoServiceStep,
+        before_reply: &mut Option<impl FnOnce()>,
+    ) -> Result<(), QemuLiveNetworkIoServicerError> {
+        step.drained += 1;
+        if is_live_network_ack(&observation.payload) {
+            step.acknowledgement_seen = true;
+            self.snapshot.acknowledgement_seen = true;
+        }
+        if is_live_network_backpressure_ack(&observation.payload) {
+            step.backpressure_acknowledgement_seen = true;
+            self.snapshot.backpressure_acknowledgement_seen = true;
+        }
+
+        if self.snapshot.reply_delivery_icount.is_none()
+            && is_live_network_probe(&observation.payload)
+        {
+            self.publish_reply(&observation, before_reply)?;
+            step.reply_enqueued = true;
+        }
+        self.snapshot.tx_frames.push(observation);
+        Ok(())
+    }
+
+    fn publish_reply(
+        &mut self,
+        observation: &LiveNetworkTxObservation,
+        before_reply: &mut Option<impl FnOnce()>,
+    ) -> Result<(), QemuLiveNetworkIoServicerError> {
+        let delivery_icount = observation
+            .emit_icount
+            .checked_add(LIVE_NETWORK_REPLY_LATENCY_ICOUNT)
+            .ok_or(QemuLiveNetworkIoServicerError::DeliveryIcountOverflow {
+                emit_icount: observation.emit_icount,
+            })?;
+        let reply_payload = live_network_reply(&observation.payload)?;
         let router_slot = SLOT_NET_ROUTER as u32;
+        let reply = FrameEntry::new(
+            delivery_icount,
+            router_slot,
+            self.reply_sequence,
+            &reply_payload,
+        )
+        .map_err(|source| QemuLiveNetworkIoServicerError::Frame { source })?;
+        if let Some(before_reply) = before_reply.take() {
+            before_reply();
+        }
+
         let pair = self
             .region
             .node_directed_ring_pair_mut(
@@ -139,78 +314,36 @@ impl QemuLiveNetworkIoServicer {
             )
             .map_err(|source| QemuLiveNetworkIoServicerError::RegionAccess { source })?;
         let MappedNodeRingPairMut {
-            node_slot,
-            first,
-            second,
+            node_slot, second, ..
         } = pair;
-        let MappedDirectedRingMut {
-            header: outbound_header,
-            entries: outbound_entries,
-            ..
-        } = first;
         let MappedDirectedRingMut {
             header: inbound_header,
             entries: inbound_entries,
             ..
         } = second;
-
-        let mut step = LiveNetworkIoServiceStep::default();
-        let mut before_reply = Some(before_reply);
-        while let Some(frame) = outbound_header
-            .dequeue(outbound_entries)
-            .map_err(|source| QemuLiveNetworkIoServicerError::Ring { source })?
-        {
-            let payload = frame
-                .payload()
-                .map_err(|source| QemuLiveNetworkIoServicerError::Frame { source })?
-                .to_vec();
-            let observation = LiveNetworkTxObservation {
-                emit_icount: frame.delivery_icount,
-                sequence: frame.seq,
-                payload,
-            };
-            step.drained += 1;
-            if is_live_network_ack(&observation.payload) {
-                step.acknowledgement_seen = true;
-                self.snapshot.acknowledgement_seen = true;
-            }
-
-            if self.snapshot.reply_delivery_icount.is_none()
-                && is_live_network_probe(&observation.payload)
-            {
-                let delivery_icount = observation
-                    .emit_icount
-                    .checked_add(LIVE_NETWORK_REPLY_LATENCY_ICOUNT)
-                    .ok_or(QemuLiveNetworkIoServicerError::DeliveryIcountOverflow {
-                        emit_icount: observation.emit_icount,
-                    })?;
-                let reply_payload = live_network_reply(&observation.payload)?;
-                let reply = FrameEntry::new(
-                    delivery_icount,
-                    router_slot,
-                    self.reply_sequence,
-                    &reply_payload,
-                )
-                .map_err(|source| QemuLiveNetworkIoServicerError::Frame { source })?;
-                if let Some(before_reply) = before_reply.take() {
-                    before_reply();
-                }
-                inbound_header
-                    .enqueue(inbound_entries, &reply)
-                    .map_err(|source| QemuLiveNetworkIoServicerError::Ring { source })?;
-                self.reply_sequence = self
-                    .reply_sequence
-                    .checked_add(1)
-                    .ok_or(QemuLiveNetworkIoServicerError::ReplySequenceOverflow)?;
-                self.snapshot.reply_delivery_icount = Some(delivery_icount);
-                node_slot
-                    .wake_for_frame_delivery()
-                    .map_err(|source| QemuLiveNetworkIoServicerError::Wake { source })?;
-                step.reply_enqueued = true;
-            }
-            self.snapshot.tx_frames.push(observation);
-        }
-        Ok(step)
+        let slot_snapshot = node_slot.snapshot();
+        let delivery_ceiling = slot_snapshot.max_advance_icount.min(delivery_icount);
+        let ceiling =
+            authorize_advance_ceiling(slot_snapshot.current_icount, delivery_ceiling, None)
+                .map_err(
+                    |source| QemuLiveNetworkIoServicerError::CeilingAuthorization { source },
+                )?;
+        node_slot
+            .publish_scheduler_inbox_and_ceiling(
+                self.vm_slot,
+                router_slot,
+                inbound_header,
+                inbound_entries,
+                std::slice::from_ref(&reply),
+                ceiling,
+            )
+            .map_err(|source| QemuLiveNetworkIoServicerError::ReplyPublication { source })?;
+        self.reply_sequence = self
+            .reply_sequence
+            .checked_add(1)
+            .ok_or(QemuLiveNetworkIoServicerError::ReplySequenceOverflow)?;
+        self.snapshot.reply_delivery_icount = Some(delivery_icount);
+        Ok(())
     }
 
     /// Returns a copy of all deterministic evidence observed so far.
@@ -261,12 +394,25 @@ impl QemuLiveNetworkIoServicer {
     }
 }
 
-fn is_live_network_probe(frame: &[u8]) -> bool {
-    ethernet_payload(frame) == Some(LIVE_NETWORK_PROBE_PAYLOAD)
+pub(super) fn is_live_network_probe(frame: &[u8]) -> bool {
+    ethernet_addresses(frame) == Some((&BROADCAST_MAC, &GUEST_MAC))
+        && ethernet_payload(frame) == Some(LIVE_NETWORK_PROBE_PAYLOAD)
 }
 
-fn is_live_network_ack(frame: &[u8]) -> bool {
-    ethernet_payload(frame) == Some(LIVE_NETWORK_ACK_PAYLOAD)
+pub(super) fn is_live_network_ack(frame: &[u8]) -> bool {
+    ethernet_addresses(frame) == Some((&ROUTER_MAC, &GUEST_MAC))
+        && ethernet_payload(frame) == Some(LIVE_NETWORK_ACK_PAYLOAD)
+}
+
+pub(crate) fn is_live_network_backpressure_ack(frame: &[u8]) -> bool {
+    ethernet_addresses(frame) == Some((&ROUTER_MAC, &GUEST_MAC))
+        && ethernet_payload(frame) == Some(LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD)
+}
+
+fn ethernet_addresses(frame: &[u8]) -> Option<(&[u8; 6], &[u8; 6])> {
+    let destination = frame.get(..6)?.try_into().ok()?;
+    let source = frame.get(6..12)?.try_into().ok()?;
+    Some((destination, source))
 }
 
 fn ethernet_payload(frame: &[u8]) -> Option<&[u8]> {
@@ -335,18 +481,34 @@ pub enum QemuLiveNetworkIoServicerError {
     /// The response sequence counter overflowed.
     #[error("live network reply sequence overflowed")]
     ReplySequenceOverflow,
+    /// A scheduler hot-path publication disagreed with the router sequence.
+    #[error(
+        "live network router sequence mismatch: expected {expected}, observed frame {actual:?}"
+    )]
+    RouterSequenceMismatch {
+        /// Sequence the servicer expected the hot path to publish.
+        expected: u32,
+        /// Actual canonical frame key found in shared memory.
+        actual: FrameDeliveryKey,
+    },
+    /// A completion report carried a frame sequence outside the ABI domain.
+    #[error("live network outbound sequence {sequence} exceeds the u32 ABI domain")]
+    OutboundSequenceOutOfRange {
+        /// Sequence reported by scheduler-quantum completion.
+        sequence: u64,
+    },
     /// A probe was too short to contain an Ethernet source address.
     #[error("live network probe is malformed at {length} bytes")]
     MalformedProbe {
         /// Observed frame length.
         length: usize,
     },
-    /// Waking the parked plugin after frame publication failed.
-    #[error("could not wake live network guest after reply publication")]
-    Wake {
-        /// Typed futex failure.
+    /// Ordered reply, ceiling, and wake publication failed.
+    #[error("could not publish live network reply, ceiling, and wake atomically")]
+    ReplyPublication {
+        /// Typed ordered scheduler-wake failure.
         #[source]
-        source: FutexError,
+        source: SchedulerWakePublicationError,
     },
     /// The requested event-boundary ceiling was invalid.
     #[error("live network scheduler ceiling authorization failed")]
@@ -368,10 +530,10 @@ pub enum QemuLiveNetworkIoServicerError {
 mod tests {
     use super::*;
 
-    fn frame_with(payload: &[u8]) -> Vec<u8> {
+    fn frame_with(destination: [u8; 6], source: [u8; 6], payload: &[u8]) -> Vec<u8> {
         let mut frame = vec![0_u8; MINIMUM_ETHERNET_FRAME_LEN];
-        frame[..6].copy_from_slice(&[0xff; 6]);
-        frame[6..12].copy_from_slice(&[0x52, 0x54, 0x00, 0x12, 0x34, 0x56]);
+        frame[..6].copy_from_slice(&destination);
+        frame[6..12].copy_from_slice(&source);
         frame[12..14].copy_from_slice(&LIVE_NETWORK_ETHERTYPE);
         frame[14..14 + payload.len()].copy_from_slice(payload);
         frame
@@ -380,17 +542,40 @@ mod tests {
     #[test]
     fn probe_and_ack_are_exact_protocol_payloads() {
         assert!(is_live_network_probe(&frame_with(
+            BROADCAST_MAC,
+            GUEST_MAC,
             LIVE_NETWORK_PROBE_PAYLOAD
         )));
         assert!(!is_live_network_probe(&frame_with(
+            BROADCAST_MAC,
+            GUEST_MAC,
             LIVE_NETWORK_ACK_PAYLOAD
         )));
-        assert!(is_live_network_ack(&frame_with(LIVE_NETWORK_ACK_PAYLOAD)));
+        assert!(is_live_network_ack(&frame_with(
+            ROUTER_MAC,
+            GUEST_MAC,
+            LIVE_NETWORK_ACK_PAYLOAD
+        )));
+        assert!(is_live_network_backpressure_ack(&frame_with(
+            ROUTER_MAC,
+            GUEST_MAC,
+            LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD
+        )));
+        assert!(!is_live_network_ack(&frame_with(
+            BROADCAST_MAC,
+            GUEST_MAC,
+            LIVE_NETWORK_ACK_PAYLOAD
+        )));
+        assert!(!is_live_network_ack(&frame_with(
+            ROUTER_MAC,
+            ROUTER_MAC,
+            LIVE_NETWORK_ACK_PAYLOAD
+        )));
     }
 
     #[test]
     fn reply_targets_guest_source_and_uses_router_source() {
-        let probe = frame_with(LIVE_NETWORK_PROBE_PAYLOAD);
+        let probe = frame_with(BROADCAST_MAC, GUEST_MAC, LIVE_NETWORK_PROBE_PAYLOAD);
         let reply = live_network_reply(&probe).unwrap_or_else(|error| {
             panic!("valid probe should build a reply: {error}");
         });

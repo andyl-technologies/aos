@@ -6,13 +6,12 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  replayTest = builtins.readFile ../../crates/crucible/tests/event_graph_replay_oracle.rs;
+  replayTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/event_graph_replay_oracle.rs;
+  };
   replayGate = builtins.readFile ../../crates/crucible/tests/gate_replay_oracle.rs;
   assertionProximityTest = builtins.readFile ../../crates/crucible/tests/assertion_proximity_gradient.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
@@ -83,7 +82,7 @@
       }
       {
         label = "plan-carried graph replay";
-        needle = "plan should carry the event graph under replay";
+        needle = "scenario_form.plan().event_graph().clone()";
       }
       {
         label = "self-contained reproduction artifact";
@@ -128,14 +127,6 @@
       {
         label = "event-log content hash validation";
         needle = "entry.has_valid_content_hash()";
-      }
-      {
-        label = "fault injection action";
-        needle = "Action::inject_fault";
-      }
-      {
-        label = "fault heal action";
-        needle = "Action::heal_fault";
       }
       {
         label = "pass action";

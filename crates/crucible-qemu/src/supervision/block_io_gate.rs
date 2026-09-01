@@ -11,6 +11,8 @@
 
 use std::collections::VecDeque;
 use std::fs;
+use std::io::{ErrorKind, Read};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
@@ -18,11 +20,18 @@ use std::time::Duration;
 use crucible::{
     EventLog, Icount, IoEventKind, NodeId, ObservableEvent, SchedulerError, VirtualTime,
 };
+use crucible_device::block::{
+    BlockDuplicatePolicy, BlockFaultResult, BlockOp, BlockTransitionPending,
+    BlockTransitionResolved, BlockTransitionState, BlockTransitionTopology,
+    BlockTransitionUnadmitted, BlockTransitionUndelivered, BlockTransportRequestIds,
+    ResolvedBlockControllerTransition, ResolvedBlockFaultDirective,
+};
 use crucible_shmem::{
-    MappedSetupRegion, RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region,
+    MappedSetupRegion, RegionAllocation, RegionConfig, SLOT_NET_ROUTER, icount_to_virtual_ns,
+    mmap_setup_region,
 };
 
-use self::support::{GateSendAuthorizer, HostLoad};
+use self::support::{GateSendAuthorizer, HostAdversary};
 use super::block_io_servicer::{
     BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, QemuLiveBlockIoServiceStep,
     QemuLiveBlockIoServicer, QemuLiveBlockIoServicerError,
@@ -57,8 +66,6 @@ const GATE_SLOT: u32 = 0;
 const GATE_QUEUE_CAPACITY: u32 = 4;
 /// Conservative guest memory size for the block-I/O run.
 const GATE_MEMORY_MIB: u32 = 128;
-/// Number of background threads used to stress host scheduling on the load run.
-const HOST_LOAD_WORKERS: usize = 4;
 /// Host poll interval while driving and servicing the guest.
 const PRIME_POLL_INTERVAL: Duration = Duration::from_millis(1);
 /// Consecutive no-progress polls (at [`PRIME_POLL_INTERVAL`]) before the drive
@@ -86,7 +93,8 @@ pub struct QemuLiveBlockIoGateConfig {
     device_size_bytes: u64,
     busy_ceiling_icount: u64,
     completion_timeout: Duration,
-    second_run_host_load: bool,
+    second_run_scheduler_preemption: bool,
+    transport_reset_probe: bool,
 }
 
 impl QemuLiveBlockIoGateConfig {
@@ -110,7 +118,8 @@ impl QemuLiveBlockIoGateConfig {
             device_size_bytes: DEFAULT_DEVICE_SIZE_BYTES,
             busy_ceiling_icount: DEFAULT_BUSY_CEILING_ICOUNT,
             completion_timeout: Duration::from_secs(60),
-            second_run_host_load: true,
+            second_run_scheduler_preemption: true,
+            transport_reset_probe: false,
         }
     }
 
@@ -149,10 +158,20 @@ impl QemuLiveBlockIoGateConfig {
         self
     }
 
-    /// Returns this configuration with host CPU load on the second run toggled.
+    /// Returns this configuration with bounded scheduler preemption on the second run toggled.
     #[must_use]
-    pub const fn with_second_run_host_load(mut self, second_run_host_load: bool) -> Self {
-        self.second_run_host_load = second_run_host_load;
+    pub const fn with_second_run_scheduler_preemption(
+        mut self,
+        second_run_scheduler_preemption: bool,
+    ) -> Self {
+        self.second_run_scheduler_preemption = second_run_scheduler_preemption;
+        self
+    }
+
+    /// Returns this configuration in the live transport-reset certification mode.
+    #[must_use]
+    pub const fn with_transport_reset_probe(mut self, enabled: bool) -> Self {
+        self.transport_reset_probe = enabled;
         self
     }
 }
@@ -186,6 +205,8 @@ struct BlockIoRunOutcome {
     race: DeviceHostWorkRaceEvidence,
     completion_observations: Vec<BlockCompletionObservation>,
     canonical_log: Vec<u8>,
+    console: Vec<u8>,
+    transport_reset_injected: bool,
 }
 
 /// Host-race evidence accumulated by one gate leg.
@@ -206,10 +227,10 @@ pub struct QemuLiveBlockIoReport {
     pub diagnostics: BlockIoDiagnosticsSnapshot,
     /// The reference run's node shut down cleanly.
     pub orderly_child_exit: bool,
-    /// The second run (under host CPU load) matched the first observation.
-    pub deterministic_under_host_load: bool,
-    /// Host CPU load was actually applied during the second run.
-    pub host_load_applied: bool,
+    /// The second run (under bounded scheduler preemption) matched the first observation.
+    pub deterministic_under_scheduler_preemption: bool,
+    /// Bounded scheduler preemption was actually applied during the second run.
+    pub scheduler_preemption_applied: bool,
     /// The second run delayed a due host response without changing observations.
     pub delayed_response_applied: bool,
     /// The host-wins leg finished COMPUTE before the guest reached completion.
@@ -220,6 +241,10 @@ pub struct QemuLiveBlockIoReport {
     pub completion_pinned_before_dispatch: bool,
     /// All three legs produced byte-identical canonical I/O logs.
     pub canonical_logs_identical: bool,
+    /// Exact errno observed by the guest after the live reset, when requested.
+    pub transport_reset_guest_errno: Option<i32>,
+    /// Guest-observed virtio configuration interrupt delta, when requested.
+    pub transport_reset_config_interrupt_delta: Option<u64>,
 }
 
 /// Drives the certifying live block-I/O gate and reports the observed behaviour.
@@ -238,6 +263,39 @@ pub struct QemuLiveBlockIoReport {
 pub fn run_qemu_live_block_io_gate(
     config: &QemuLiveBlockIoGateConfig,
 ) -> Result<QemuLiveBlockIoReport, QemuLiveBlockIoGateError> {
+    if config.transport_reset_probe {
+        let probe = run_one_scenario(config, RunRole::Synchronous)?;
+        let console = String::from_utf8_lossy(&probe.console);
+        let guest_errno = console_value(&console, "CRUCIBLE_BLOCK_RESET_ERRNO=")
+            .and_then(|value| value.parse::<i32>().ok());
+        let config_interrupt_delta = console_value(&console, "CRUCIBLE_BLOCK_CONFIG_IRQ_DELTA=")
+            .and_then(|value| value.parse::<u64>().ok());
+        if !probe.transport_reset_injected
+            || guest_errno != Some(libc::EIO)
+            || config_interrupt_delta.is_none_or(|delta| delta == 0)
+        {
+            return Err(QemuLiveBlockIoGateError::TransportResetEvidence {
+                injected: probe.transport_reset_injected,
+                guest_errno,
+                config_interrupt_delta,
+                console: console.into_owned(),
+            });
+        }
+        return Ok(QemuLiveBlockIoReport {
+            advance: probe.advance,
+            diagnostics: probe.diagnostics,
+            orderly_child_exit: probe.orderly_child_exit,
+            deterministic_under_scheduler_preemption: false,
+            scheduler_preemption_applied: false,
+            delayed_response_applied: false,
+            host_wins_race_proven: false,
+            guest_wins_race_proven: false,
+            completion_pinned_before_dispatch: false,
+            canonical_logs_identical: true,
+            transport_reset_guest_errno: guest_errno,
+            transport_reset_config_interrupt_delta: config_interrupt_delta,
+        });
+    }
     let reference = run_one_scenario(config, RunRole::Synchronous)?;
     let host_wins = run_one_scenario(config, RunRole::HostWins)?;
     let guest_wins = run_one_scenario(config, RunRole::GuestWins)?;
@@ -263,17 +321,25 @@ pub fn run_qemu_live_block_io_gate(
         advance: reference.advance,
         diagnostics: reference.diagnostics,
         orderly_child_exit: reference.orderly_child_exit,
-        deterministic_under_host_load: true,
-        host_load_applied: config.second_run_host_load,
+        deterministic_under_scheduler_preemption: true,
+        scheduler_preemption_applied: config.second_run_scheduler_preemption,
         delayed_response_applied: guest_wins.race.guest_won_race,
         host_wins_race_proven: true,
         guest_wins_race_proven: true,
         completion_pinned_before_dispatch,
         canonical_logs_identical: true,
+        transport_reset_guest_errno: None,
+        transport_reset_config_interrupt_delta: None,
     })
 }
 
-/// Which scenario run this is, controlling the run subdirectory and host load.
+fn console_value<'a>(console: &'a str, prefix: &str) -> Option<&'a str> {
+    console
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(prefix))
+}
+
+/// Which scenario run this is, controlling the run subdirectory and scheduler preemption.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RunRole {
     Synchronous,
@@ -290,7 +356,7 @@ impl RunRole {
         }
     }
 
-    const fn applies_host_load(self) -> bool {
+    const fn applies_scheduler_preemption(self) -> bool {
         matches!(self, Self::GuestWins)
     }
 
@@ -304,7 +370,7 @@ impl RunRole {
 
 enum BlockServiceMode {
     Synchronous(Box<QemuLiveBlockIoServicer>),
-    Asynchronous(QemuLiveBlockHostWorkPool),
+    Asynchronous(Box<QemuLiveBlockHostWorkPool>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -332,8 +398,6 @@ fn run_one_scenario(
         }
     })?;
 
-    let host_load = HostLoad::start_if(role.applies_host_load() && config.second_run_host_load);
-
     let mut candidate = LaunchProfileCandidate::default().with_memory_mib(GATE_MEMORY_MIB);
     if let Some(cmdline) = &config.kernel_cmdline {
         candidate = candidate.with_kernel_cmdline(cmdline.clone());
@@ -350,21 +414,27 @@ fn run_one_scenario(
             source,
         })?;
 
-    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT);
+    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
+        .with_fault_target_node(GATE_NODE);
     // No QMP and no QemuNode here: this gate drives a raw hot path so the
     // block ring can be serviced concurrently with getting the guest off the boot
     // barrier. With a block device attached, unserviced SLOT_BLK_IO blocks the
     // guest in early boot, so the node-step priming quantum (which does not
     // service block I/O) cannot even release the boot barrier -- the node bring-up
     // is infeasible until this device-horizon behaviour is understood.
-    let command = QemuLaunchCommandBuilder::new(
+    let mut command_builder = QemuLaunchCommandBuilder::new_for_live_gate(
         profile,
         vm_launch_config(config),
         path_text(&config.qemu_executable),
         plugin,
-    )
-    .build()
-    .map_err(|source| QemuLiveBlockIoGateError::LaunchCommand { source })?;
+        crate::LivePluginGuestArchitecture::X86_64,
+    );
+    if config.transport_reset_probe {
+        command_builder = command_builder.with_console_capture();
+    }
+    let command = command_builder
+        .build()
+        .map_err(|source| QemuLiveBlockIoGateError::LaunchCommand { source })?;
 
     let region_config = RegionConfig::new(1, GATE_QUEUE_CAPACITY, 0);
     let allocation = RegionAllocation::new(region_config)
@@ -377,11 +447,29 @@ fn run_one_scenario(
     .map_err(|source| QemuLiveBlockIoGateError::Spawn { source })?;
     let (mut child, resources) = spawned.into_parts();
 
-    let mut setup =
-        complete_qemu_host_plugin_setup(resources.into_setup_resources(), region_config, GATE_SLOT)
-            .map_err(|source| QemuLiveBlockIoGateError::HostSetup { source })?;
+    let mut setup = complete_qemu_host_plugin_setup(
+        resources.into_setup_resources(),
+        region_config,
+        GATE_SLOT,
+        command.fault_capability_requirement(),
+    )
+    .map_err(|source| QemuLiveBlockIoGateError::HostSetup { source })?;
     if !setup.setup_ack().can_schedule() {
         return Err(QemuLiveBlockIoGateError::SetupAckNotReady);
+    }
+    let mut console = config
+        .transport_reset_probe
+        .then(|| {
+            crate::unix_socket_path::connect(
+                &run_directory.join(crate::QEMU_CONSOLE_SOCKET_FILE_NAME),
+            )
+        })
+        .transpose()
+        .map_err(|source| QemuLiveBlockIoGateError::Console { source })?;
+    if let Some(console) = console.as_mut() {
+        console
+            .set_nonblocking(true)
+            .map_err(|source| QemuLiveBlockIoGateError::Console { source })?;
     }
 
     let diagnostics = BlockIoDiagnostics::shared();
@@ -396,7 +484,7 @@ fn run_one_scenario(
             )
             .map_err(|source| QemuLiveBlockIoGateError::BlockServicer { source })?,
         )),
-        RunRole::HostWins | RunRole::GuestWins => BlockServiceMode::Asynchronous(
+        RunRole::HostWins | RunRole::GuestWins => BlockServiceMode::Asynchronous(Box::new(
             QemuLiveBlockHostWorkPool::from_shmem_fd(
                 setup.shmem_as_fd(),
                 setup.region().region_len,
@@ -405,7 +493,7 @@ fn run_one_scenario(
                 config.device_size_bytes,
             )
             .map_err(|source| QemuLiveBlockIoGateError::HostWorkPool { source })?,
-        ),
+        )),
     };
 
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
@@ -420,6 +508,13 @@ fn run_one_scenario(
     let mut advance = BlockIoAdvanceOutcome::PausedBelowCeiling { icount: 0 };
     let mut race = DeviceHostWorkRaceEvidence::default();
     let mut completion_log = BlockCompletionLogState::default();
+    let mut console_bytes = Vec::new();
+    let mut transport_reset_injected = false;
+    let mut host_adversary = HostAdversary::start_if(
+        role.applies_scheduler_preemption() && config.second_run_scheduler_preemption,
+        child.process_id(),
+    )
+    .map_err(|source| QemuLiveBlockIoGateError::SchedulerPreemption { source })?;
     for quantum in 1..=MAX_BLOCK_IO_QUANTA {
         let ceiling = config.busy_ceiling_icount.saturating_mul(quantum);
         advance = drive_and_service(
@@ -432,26 +527,34 @@ fn run_one_scenario(
             role,
             &mut race,
             &mut completion_log,
+            console.as_mut(),
+            &mut console_bytes,
+            config.transport_reset_probe,
+            &mut transport_reset_injected,
+            icount_shift,
+            config.device_size_bytes,
             DriveOptions {
                 ceiling,
                 timeout: config.completion_timeout,
             },
+            &mut host_adversary,
         )?;
         if matches!(advance, BlockIoAdvanceOutcome::Failed { .. }) {
             break;
         }
     }
+    drain_console(console.as_mut(), &mut console_bytes)?;
 
-    // Teardown: ask the plugin to quit, then reap. Dropping the child force-kills
-    // if it is still alive, so no QEMU is orphaned on an early return.
+    // Join the signal controller while this exact child is still authenticated
+    // and alive; teardown must never race a raw signal against PID reuse.
+    HostAdversary::finish_if_present(&mut host_adversary)
+        .map_err(|source| QemuLiveBlockIoGateError::SchedulerPreemption { source })?;
     let _ = QemuPluginIpcControlChannel::send_quit(&mut setup);
     let orderly_child_exit = reap_child(&mut child, config.completion_timeout);
 
     drop(hot_path);
     drop(setup);
     drop(child);
-    drop(host_load);
-
     let canonical_log = canonical_block_io_log(&completion_log.delivered)?;
     Ok(BlockIoRunOutcome {
         advance,
@@ -460,6 +563,8 @@ fn run_one_scenario(
         race,
         completion_observations: completion_log.delivered,
         canonical_log,
+        console: console_bytes,
+        transport_reset_injected,
     })
 }
 
@@ -497,9 +602,16 @@ fn drive_and_service(
     role: RunRole,
     race: &mut DeviceHostWorkRaceEvidence,
     completion_log: &mut BlockCompletionLogState,
+    mut console: Option<&mut UnixStream>,
+    console_bytes: &mut Vec<u8>,
+    transport_reset_probe: bool,
+    transport_reset_injected: &mut bool,
+    icount_shift: u8,
+    device_size_bytes: u64,
     options: DriveOptions,
+    host_adversary: &mut Option<HostAdversary>,
 ) -> Result<BlockIoAdvanceOutcome, QemuLiveBlockIoGateError> {
-    let pending = QemuShmemHotPathChannel::start_quantum(
+    let mut pending = QemuShmemHotPathChannel::start_quantum(
         hot_path,
         crucible::ExecutionHorizon {
             icount: Icount {
@@ -508,12 +620,15 @@ fn drive_and_service(
         },
     )
     .map_err(|source| QemuLiveBlockIoGateError::drive("start block-io drive quantum", source))?;
+    HostAdversary::certify_mapped_quantum_pending(host_adversary, hot_path, &mut pending)
+        .map_err(|source| QemuLiveBlockIoGateError::SchedulerPreemption { source })?;
 
     let max_polls = bounded_drive_polls(options.timeout);
     let mut last_icount = 0_u64;
     let mut stall_polls = 0_u64;
     let mut outcome = BlockIoAdvanceOutcome::PausedBelowCeiling { icount: 0 };
     for _ in 0..max_polls {
+        drain_console(console.as_deref_mut(), console_bytes)?;
         let snapshot = observer
             .node_slot(GATE_SLOT)
             .map_err(|source| QemuLiveBlockIoGateError::DriveSlot { source })?
@@ -531,6 +646,34 @@ fn drive_and_service(
                     .pin_next_request_completion()
                     .map_err(|source| QemuLiveBlockIoGateError::BlockServicer { source })?;
                 let new_request = pin.observed.is_some();
+                if transport_reset_probe
+                    && !*transport_reset_injected
+                    && let Some(observed) = pin.observed.as_ref()
+                    && let Some(request) = observed.request.as_ref()
+                    && request.op == BlockOp::Write
+                {
+                    let execution_nanos =
+                        icount_to_virtual_ns(observed.request_icount, icount_shift)
+                            .map_err(|source| QemuLiveBlockIoGateError::VirtualTime { source })?;
+                    let mut directive =
+                        ResolvedBlockFaultDirective::fault_free(request, device_size_bytes);
+                    directive.request_sequence = observed.request_sequence;
+                    directive.execution_nanos = execution_nanos;
+                    directive
+                        .configure_duplicate_completions(
+                            request.request_id,
+                            1,
+                            1,
+                            BlockDuplicatePolicy::Reset(live_reset_transition()),
+                        )
+                        .map_err(|source| QemuLiveBlockIoGateError::BlockServicer {
+                            source: QemuLiveBlockIoServicerError::Device { source },
+                        })?;
+                    servicer
+                        .install_storage_fault_directive(request.identity(), directive)
+                        .map_err(|source| QemuLiveBlockIoGateError::BlockServicer { source })?;
+                    *transport_reset_injected = true;
+                }
                 let delivery_due = pin
                     .next_completion_icount
                     .is_some_and(|deadline| snapshot.current_icount >= deadline);
@@ -633,6 +776,41 @@ fn drive_and_service(
 
     let _ = QemuShmemHotPathChannel::finish_quantum(hot_path, pending);
     Ok(outcome)
+}
+
+fn drain_console(
+    console: Option<&mut UnixStream>,
+    output: &mut Vec<u8>,
+) -> Result<(), QemuLiveBlockIoGateError> {
+    let Some(console) = console else {
+        return Ok(());
+    };
+    let mut buffer = [0_u8; 4096];
+    loop {
+        match console.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(len) => output.extend_from_slice(&buffer[..len]),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(()),
+            Err(source) => return Err(QemuLiveBlockIoGateError::Console { source }),
+        }
+    }
+}
+
+fn live_reset_transition() -> ResolvedBlockControllerTransition {
+    ResolvedBlockControllerTransition {
+        failure_result: BlockFaultResult::IoError,
+        unadmitted: BlockTransitionUnadmitted::Reject,
+        queued: BlockTransitionPending::Fail,
+        executing: BlockTransitionPending::RetryPreserveId,
+        resolved: BlockTransitionResolved::Complete,
+        completed_undelivered: BlockTransitionUndelivered::Complete,
+        controller_buffer: BlockTransitionState::Preserve,
+        volatile_cache: BlockTransitionState::Preserve,
+        request_ids: BlockTransportRequestIds::NewEpochFromZero,
+        duplicate_history: BlockTransitionState::Lose,
+        topology: BlockTransitionTopology::ReenumerateDeclared,
+        recovery_nanos: 60_000_000_000,
+    }
 }
 
 fn record_service_step(

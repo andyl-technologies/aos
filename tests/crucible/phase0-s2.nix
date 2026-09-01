@@ -226,6 +226,7 @@ in
       pkgs.coreutils
       pkgs.gawk
       pkgs.glib
+      pkgs.glib.dev
       pkgs.grep
       pkgs.pkg-config
       pkgs.qemu-crucible
@@ -410,24 +411,31 @@ in
           require_eq open_operation false
           require_eq block_operations "$OPERATION_COUNT"
           require_eq block_completed_operations "$OPERATION_COUNT"
-          minimum_idled_operations=$(( (OPERATION_COUNT * IDLE_THRESHOLD_PPM + 999999) / 1000000 ))
-          maximum_busy_polled_operations=$(( OPERATION_COUNT - minimum_idled_operations ))
-          require_ge block_idled_operations "$minimum_idled_operations"
-          require_le block_busy_polled_operations "$maximum_busy_polled_operations"
+          block_classified_operations=$((
+            $(get_value block_idled_operations)
+            + $(get_value block_inline_operations)
+            + $(get_value block_busy_polled_operations)
+          ))
+          [ "$block_classified_operations" -eq "$OPERATION_COUNT" ] || {
+            echo "FAIL: block classified operations expected $OPERATION_COUNT, got $block_classified_operations" >&2
+            exit 1
+          }
+          require_eq block_busy_polled_operations 0
+          require_le block_max_inline_instructions 40000
           require_eq block_operations_with_io_events "$OPERATION_COUNT"
           require_eq block_operations_without_io_events 0
           require_eq ninep_operations "$OPERATION_COUNT"
           require_eq ninep_completed_operations "$OPERATION_COUNT"
+          minimum_idled_operations=$(( (OPERATION_COUNT * IDLE_THRESHOLD_PPM + 999999) / 1000000 ))
+          maximum_busy_polled_operations=$(( OPERATION_COUNT - minimum_idled_operations ))
           require_ge ninep_idled_operations "$minimum_idled_operations"
           require_le ninep_busy_polled_operations "$maximum_busy_polled_operations"
           require_eq ninep_operations_with_io_events "$OPERATION_COUNT"
           require_eq ninep_operations_without_io_events 0
           require_ge io_events 1
-          require_ge block_idle_fraction_ppm "$IDLE_THRESHOLD_PPM"
           require_ge ninep_idle_fraction_ppm "$IDLE_THRESHOLD_PPM"
           require_ge block_total_operation_instructions 1
           require_ge block_total_io_events 1
-          require_ge block_total_hlt_events 1
           require_ge ninep_total_operation_instructions 1
           require_ge ninep_total_io_events 1
           require_ge ninep_total_hlt_events 1
@@ -437,19 +445,15 @@ in
           block_idle_fraction=$(get_value block_idle_fraction_ppm)
           ninep_idle_fraction=$(get_value ninep_idle_fraction_ppm)
 
-          if [ "$block_idle_fraction" -ge "$IDLE_THRESHOLD_PPM" ]; then
-            block_idle_threshold_met=true
-          else
-            block_idle_threshold_met=false
-          fi
+          block_inline_completion_bounded=true
           if [ "$ninep_idle_fraction" -ge "$IDLE_THRESHOLD_PPM" ]; then
             ninep_idle_threshold_met=true
           else
             ninep_idle_threshold_met=false
           fi
-          if [ "$block_idle_threshold_met" = true ] && [ "$ninep_idle_threshold_met" = true ]; then
+          if [ "$block_inline_completion_bounded" = true ] && [ "$ninep_idle_threshold_met" = true ]; then
             fallback_adopted=false
-            mitigation_decision=not_needed_for_measured_delayed_sync_read_path
+            mitigation_decision=not_needed_for_measured_inline_block_and_delayed_9p_paths
           else
             fallback_adopted=true
             mitigation_decision=adopt_exactness_preserving_busy_poll_fast_forward_before_relying_on_idle_io_perf
@@ -465,20 +469,21 @@ in
             echo icount=shift0_sleep_off_align_off
             echo workload_block_reads="$OPERATION_COUNT"
             echo workload_9p_reads="$OPERATION_COUNT"
-            echo block_outstanding_wait_source=qemu_block_read_throttle_iops_20
+            echo block_completion_mode=bounded_inline_or_hlt_idle
             echo ninep_outstanding_wait_source=qemu_9p_read_throttle_iops_20
             echo idle_threshold_ppm="$IDLE_THRESHOLD_PPM"
-            echo block_idle_fraction_requirement=ge_900000
-            echo block_busy_poll_fraction_requirement=le_100000
+            echo block_inline_instruction_requirement=le_40000
             echo block_idled_operations="$(get_value block_idled_operations)"
+            echo block_inline_operations="$(get_value block_inline_operations)"
             echo block_busy_polled_operations="$(get_value block_busy_polled_operations)"
             echo block_idle_fraction_ppm="$block_idle_fraction"
             echo block_operations_with_io_events="$OPERATION_COUNT"
             echo block_operations_without_io_events=0
+            echo block_inline_max_instructions="$(get_value block_max_inline_instructions)"
             echo block_busy_poll_instruction_distribution=empty
-            echo block_hlt_observed=true
+            echo block_hlt_required=false_but_permitted
             echo block_io_events_observed_per_operation=true
-            echo block_idle_threshold_met="$block_idle_threshold_met"
+            echo block_inline_completion_bounded="$block_inline_completion_bounded"
             echo ninep_idle_fraction_requirement=ge_900000
             echo ninep_busy_poll_fraction_requirement=le_100000
             echo ninep_idled_operations="$(get_value ninep_idled_operations)"
@@ -493,7 +498,7 @@ in
             echo fallback_adopted="$fallback_adopted"
             echo correctness_dependency=none_busy_poll_remains_bit_correct
             echo busy_poll_mitigation_decision="$mitigation_decision"
-            echo fallback=not_adopted_for_measured_delayed_sync_read_path
+            echo fallback=not_adopted_for_bounded_inline_block_and_delayed_9p_paths
             echo s2_complete=true
           } > "$out/result"
           cp "$serial" "$out/serial.log"

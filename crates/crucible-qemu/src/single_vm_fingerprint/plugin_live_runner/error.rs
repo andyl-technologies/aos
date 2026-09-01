@@ -32,6 +32,12 @@ pub enum PluginFingerprintRunnerError {
         /// Underlying I/O error.
         source: std::io::Error,
     },
+    /// The bounded scheduler-preemption adversary could not run or clean up.
+    #[error("bounded scheduler-preemption adversary failed")]
+    SchedulerPreemption {
+        /// Underlying controller, signal, or watchdog error.
+        source: crate::BoundedSchedulerPreemptionError,
+    },
     /// A stale translation-prefetch report could not be removed.
     #[error("cannot prepare translation-prefetch report path {path}")]
     PrepareTranslationPrefetchReport {
@@ -115,11 +121,11 @@ pub enum PluginFingerprintRunnerError {
     /// The two raw dumps did not cover the same register/RAM topology.
     #[error("both terminal state-dump sides must cover the same vCPU and RAM topology")]
     StateDumpTopologyMismatch,
-    /// The live plugin did not acknowledge the scheduled fault activation.
+    /// The live plugin did not acknowledge the scheduled signal effect boundary.
     #[error(
-        "fault activation at icount {target_icount} was not consumed: expected sequence {expected_sequence}, observed {observed_sequence}"
+        "signal effect boundary at icount {target_icount} was not consumed: expected sequence {expected_sequence}, observed {observed_sequence}"
     )]
-    FaultActivationNotConsumed {
+    SignalEffectBoundaryNotConsumed {
         /// Exact activation boundary.
         target_icount: u64,
         /// Published mailbox sequence.

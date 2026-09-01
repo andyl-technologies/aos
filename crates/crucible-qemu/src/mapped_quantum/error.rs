@@ -1,6 +1,9 @@
 //! Errors raised while binding or operating the mapped quantum hot path.
 
-use crucible_shmem::{MappedSetupRegionAccessError, PreemptionMailboxError, RegionControlError};
+use crucible_shmem::{
+    FaultEventError, FaultTransportError, MappedSetupRegionAccessError, PreemptionMailboxError,
+    RegionControlError,
+};
 use thiserror::Error;
 
 use crate::{QemuCoverageError, QemuNodeChannelError, QemuQuantumError};
@@ -25,6 +28,18 @@ pub enum QemuMappedQuantumShmemHotPathError {
     PreemptionMailbox {
         /// Underlying scheduler-to-plugin mailbox error.
         source: PreemptionMailboxError,
+    },
+    /// The lossless fault command or result transport rejected an operation.
+    #[error("mapped QEMU fault transport failed: {source}")]
+    FaultTransport {
+        /// Exact ring, arena, or envelope failure.
+        source: FaultTransportError,
+    },
+    /// A plugin-to-host fault event failed framing or authentication.
+    #[error("mapped QEMU fault event failed: {source}")]
+    FaultEvent {
+        /// Exact event or transport validation failure.
+        source: FaultEventError,
     },
     /// The borrowed quantum adapter rejected the selected view.
     #[error("mapped QEMU quantum hot-path binding failed")]

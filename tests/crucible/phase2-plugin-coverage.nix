@@ -6,11 +6,7 @@
   openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginArgs = builtins.readFile ../../crates/crucible-qemu-plugin/src/args.rs;
@@ -37,9 +33,21 @@
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs)
   ];
   shmemSpscTest = builtins.readFile ../../crates/crucible-shmem/tests/gate_layer1_injection.rs;
-  mappedSetupRegion = builtins.readFile ../../crates/crucible-shmem/src/mapped_setup_region.rs;
+  mappedSetupRegion = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-shmem/src/mapped_setup_region.rs;
+  };
   qemuMappedQuantum = builtins.readFile ../../crates/crucible-qemu/src/mapped_quantum.rs;
-  qemuNode = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
+  qemuNode = builtins.concatStringsSep "\n" [
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/src/node.rs;
+    })
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/src/node_tests.rs;
+    })
+  ];
   mappedQuantumTest = builtins.readFile ../../crates/crucible-qemu/tests/mapped_quantum.rs;
   backendBoundary = builtins.readFile ../../crates/crucible/src/backend.rs;
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
@@ -211,7 +219,7 @@
     ++ failuresFor "crates/crucible-shmem split modules" shmemLib [
       {
         label = "coverage transport ABI version";
-        needle = "pub const ABI_VERSION: u32 = 6;";
+        needle = "pub const ABI_VERSION: u32 = 17;";
       }
       {
         label = "coverage queue bounded by map cardinality";
@@ -654,6 +662,7 @@ in
 
       buildDeps = [
         pkgs.glib
+        pkgs.glib.dev
         pkgs.pkg-config
         pkgs.qemu-crucible
         pkgs.rust

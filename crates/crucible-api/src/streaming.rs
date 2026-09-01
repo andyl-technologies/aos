@@ -6,11 +6,9 @@
 //! same session command set and dispatch accepted commands through the same
 //! `crucible-session` actor mailbox.
 
-use std::sync::Arc;
-
 use crucible::{
     BackendError, DebugAttachReport, DebugGotoReport, DebugNonCanonicalBranchReport,
-    DebugReverseContinueReport, DebugReverseStepReport, EngineError, FaultTag, SchedulerError,
+    DebugReverseContinueReport, DebugReverseStepReport, EngineError, SchedulerError,
 };
 use crucible_session::{
     BreakpointId, CommandReply, LifecycleStateKind, LifecycleTransition, LiveQueryKind,
@@ -19,6 +17,7 @@ use crucible_session::{
     SessionStateTransitionBus, SessionStateTransitionFrame, SessionStateTransitionStream,
     lifecycle_transition,
 };
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
@@ -39,7 +38,6 @@ pub const STREAMING_COMMAND_MAX_ACTOR_YIELDS: u64 = 128;
 #[path = "streaming/equivalence.rs"]
 mod equivalence;
 pub use equivalence::*;
-
 /// Validates that `Control` and `Watch`+`Send` expose equivalent command capabilities.
 ///
 /// # Errors
@@ -337,7 +335,6 @@ pub struct SendResponse {
 }
 
 enum CommandReplyObserver {
-    FaultTag(oneshot::Receiver<Result<FaultTag, SessionError>>),
     Unit(oneshot::Receiver<Result<(), SessionError>>),
     BreakpointId(oneshot::Receiver<Result<BreakpointId, SessionError>>),
     BreakpointRemoval(oneshot::Receiver<Result<bool, SessionError>>),
@@ -365,7 +362,6 @@ impl CommandReplyObserver {
         StreamingApiError,
     > {
         let rejected = match self {
-            Self::FaultTag(receiver) => rejected_from_reply(receiver, command).await?,
             Self::Unit(receiver) => rejected_from_reply(receiver, command).await?,
             Self::BreakpointId(receiver) => match await_reply(receiver, command).await? {
                 Ok(id) => return Ok((CommandResultStatus::Accepted, None, Some(id), None)),
@@ -800,20 +796,6 @@ fn command_with_reply_observer(
     command: SessionCommand,
 ) -> (SessionCommand, Option<CommandReplyObserver>) {
     let (command, observer) = match command {
-        SessionCommand::InjectFault { spec, .. } => {
-            let (reply, receiver) = CommandReply::channel();
-            (
-                SessionCommand::InjectFault { spec, reply },
-                Some(CommandReplyObserver::FaultTag(receiver)),
-            )
-        }
-        SessionCommand::HealFault { tag, .. } => {
-            let (reply, receiver) = CommandReply::channel();
-            (
-                SessionCommand::HealFault { tag, reply },
-                Some(CommandReplyObserver::Unit(receiver)),
-            )
-        }
         SessionCommand::SetBreakpoint { spec, .. } => {
             let (reply, receiver) = CommandReply::channel();
             (
@@ -964,11 +946,6 @@ fn engine_error_rejection_kind(error: &EngineError) -> CommandRejectionKind {
     match error {
         EngineError::CheckpointNotRecorded { .. }
         | EngineError::MissingBakedGenesis { .. }
-        | EngineError::PlanFaultUnknownNode { .. }
-        | EngineError::PlanFaultUnknownLink { .. }
-        | EngineError::PlanFaultUnknownLinkId { .. }
-        | EngineError::PlanFaultUnknownDevice { .. }
-        | EngineError::PlanHealUnknownTag { .. }
         | EngineError::PropertyPredicateUnknownNode { .. }
         | EngineError::PropertyPredicateUnknownAssertion { .. }
         | EngineError::DebugAttachUnknownNode { .. }
@@ -981,14 +958,12 @@ fn engine_error_rejection_kind(error: &EngineError) -> CommandRejectionKind {
         | EngineError::WorldNodeUnsupportedWorkloadPattern { .. }
         | EngineError::WorldNodeUnsupportedWorkloadSpikeMode { .. }
         | EngineError::WorldNodeUnsupportedWorkloadTimeSource { .. }
-        | EngineError::PlanFaultUnsupportedParam { .. }
         | EngineError::DebugBreakpointRequiresAllowMutate { .. }
         | EngineError::EventLogReplayUnsupported { .. } => CommandRejectionKind::Unsupported,
         EngineError::SchedulePrefix(error) => schedule_error_rejection_kind(error),
         _ => CommandRejectionKind::Internal,
     }
 }
-
 fn schedule_error_rejection_kind(error: &crucible::ScheduleError) -> CommandRejectionKind {
     let _ = error;
     CommandRejectionKind::InvalidArgument
@@ -998,9 +973,11 @@ fn scheduler_error_rejection_kind(error: &SchedulerError) -> CommandRejectionKin
     match error {
         SchedulerError::NotImplemented { .. } => CommandRejectionKind::Unsupported,
         SchedulerError::Backend(error) => backend_error_rejection_kind(error),
-        SchedulerError::BoundaryViolation { .. } => CommandRejectionKind::Internal,
         SchedulerError::TimeConversion(_) | SchedulerError::TopologyActivationInPast { .. } => {
             CommandRejectionKind::InvalidArgument
+        }
+        SchedulerError::BoundaryViolation { .. } | SchedulerError::ResourceLimit { .. } => {
+            CommandRejectionKind::Internal
         }
     }
 }
@@ -1011,6 +988,7 @@ const fn backend_error_rejection_kind(error: &BackendError) -> CommandRejectionK
             CommandRejectionKind::Unsupported
         }
         BackendError::Rejected { .. } => CommandRejectionKind::InvalidArgument,
+        BackendError::ResourceLimit { .. } => CommandRejectionKind::Internal,
     }
 }
 

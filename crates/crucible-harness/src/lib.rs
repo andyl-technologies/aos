@@ -234,6 +234,18 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         status: GateStatus::Implemented,
     },
     GateSpec {
+        name: "gate:checkpoint-materialization",
+        phase: GatePhase::Phase6,
+        owner: "crucible",
+        status: GateStatus::Implemented,
+    },
+    GateSpec {
+        name: "gate:state-space-search",
+        phase: GatePhase::Phase6,
+        owner: "crucible",
+        status: GateStatus::Implemented,
+    },
+    GateSpec {
         name: "gate:perf-bench",
         phase: GatePhase::Phase7,
         owner: "crucible-harness",
@@ -247,6 +259,12 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
     },
     GateSpec {
         name: "gate:campaign-continuity",
+        phase: GatePhase::Phase7,
+        owner: "crucible-harness",
+        status: GateStatus::Implemented,
+    },
+    GateSpec {
+        name: "gate:signal-fault-system",
         phase: GatePhase::Phase7,
         owner: "crucible-harness",
         status: GateStatus::Implemented,

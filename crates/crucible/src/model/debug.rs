@@ -569,21 +569,11 @@ pub(super) fn push_debug_control_operation_lines(
         debug_control_operation_kind_label(&operation.kind)
     ));
     match &operation.kind {
-        ControlOperationKind::InjectFault { tag, fault } => {
-            lines.push(format!("{prefix}.tag_len={}", tag.name.len()));
-            lines.push(format!("{prefix}.tag={}", tag.name));
-            lines.push(fault.canonical_material());
-        }
-        ControlOperationKind::HealFault { tag } => {
-            lines.push(format!("{prefix}.tag_len={}", tag.name.len()));
-            lines.push(format!("{prefix}.tag={}", tag.name));
-        }
         ControlOperationKind::Pause
         | ControlOperationKind::Resume
         | ControlOperationKind::Step
         | ControlOperationKind::Snapshot
         | ControlOperationKind::Fork
-        | ControlOperationKind::Inject
         | ControlOperationKind::Query => {}
     }
 }
@@ -595,9 +585,6 @@ pub(super) fn debug_control_operation_kind_label(kind: &ControlOperationKind) ->
         ControlOperationKind::Step => "step",
         ControlOperationKind::Snapshot => "snapshot",
         ControlOperationKind::Fork => "fork",
-        ControlOperationKind::Inject => "inject",
-        ControlOperationKind::InjectFault { .. } => "inject-fault",
-        ControlOperationKind::HealFault { .. } => "heal-fault",
         ControlOperationKind::Query => "query",
     }
 }
@@ -2831,7 +2818,106 @@ impl DebugWholeWorldTimeTravelReport {
     }
 }
 
-#[path = "debug/checkpoint_cadence.rs"]
-mod checkpoint_cadence;
+/// Non-zero opportunistic checkpoint stride for debug time travel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DebugCheckpointStride {
+    every: NonZeroUsize,
+}
 
-pub use checkpoint_cadence::*;
+impl DebugCheckpointStride {
+    /// Builds a non-zero checkpoint stride.
+    #[must_use]
+    pub fn new(every: usize) -> Option<Self> {
+        NonZeroUsize::new(every).map(|every| Self { every })
+    }
+
+    /// Returns the stride interval.
+    #[must_use]
+    pub const fn every(self) -> usize {
+        self.every.get()
+    }
+
+    pub(super) fn includes_prefix(self, prefix_len: usize) -> bool {
+        prefix_len > 0 && prefix_len.is_multiple_of(self.every())
+    }
+}
+
+/// Request to apply an opportunistic checkpoint cadence.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugCheckpointCadenceRequest {
+    /// Configuration whose prefix region should receive cadence checkpoints.
+    pub current: Configuration,
+    /// Non-zero checkpoint stride.
+    pub stride: DebugCheckpointStride,
+    /// Advisory cache budget used for selected cadence points.
+    pub policy: MaterializationPolicy,
+}
+
+impl DebugCheckpointCadenceRequest {
+    /// Builds a checkpoint-cadence request with an explicit cache policy.
+    #[must_use]
+    pub fn with_policy(
+        current: Configuration,
+        stride: DebugCheckpointStride,
+        policy: MaterializationPolicy,
+    ) -> Self {
+        Self {
+            current,
+            stride,
+            policy,
+        }
+    }
+
+    /// Builds a cadence request that retains every selected point as thin.
+    #[must_use]
+    pub fn thin_only(current: Configuration, stride: DebugCheckpointStride) -> Self {
+        Self::with_policy(current, stride, MaterializationPolicy::thin_only())
+    }
+}
+
+/// Report for opportunistic checkpoint cadence application.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugCheckpointCadenceReport {
+    /// Configuration whose prefix region was considered.
+    pub current_configuration: ContentHash,
+    /// Non-zero stride that selected candidate prefixes.
+    pub stride: DebugCheckpointStride,
+    /// Cache policy used for every candidate prefix.
+    pub policy: MaterializationPolicy,
+    /// Candidate prefix configuration ids selected by the stride.
+    pub candidate_configurations: Vec<ContentHash>,
+    /// Candidate ids cached as fat checkpoints.
+    pub fat_checkpoints: Vec<ContentHash>,
+    /// Candidate ids kept as thin replay checkpoints.
+    pub thin_checkpoints: Vec<ContentHash>,
+    /// Fat cache count before applying the cadence.
+    pub cached_snapshots_before: usize,
+    /// Fat cache count after applying the cadence.
+    pub cached_snapshots_after: usize,
+}
+
+impl DebugCheckpointCadenceReport {
+    /// Returns whether the cache policy kept every cadence point thin.
+    #[must_use]
+    pub fn kept_all_thin(&self) -> bool {
+        self.fat_checkpoints.is_empty()
+            && self.thin_checkpoints.len() == self.candidate_configurations.len()
+    }
+
+    /// Returns whether checkpoint cadence only changed cache materialization.
+    #[must_use]
+    pub fn is_performance_only_cache_decision(&self) -> bool {
+        let classified = self
+            .fat_checkpoints
+            .iter()
+            .chain(self.thin_checkpoints.iter())
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let candidates = self
+            .candidate_configurations
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        classified == candidates
+    }
+}

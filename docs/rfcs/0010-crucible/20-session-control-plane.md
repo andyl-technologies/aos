@@ -19,7 +19,7 @@ sketched in 05 §10. Requirement IDs here use the prefix `SESS`.
 The design has one organizing idea, stated once: **the session is an actor that
 owns all runtime state and processes every control command and every unit of
 execution as a queued message, stepping in bounded quanta and yielding between
-them.** That single decision is what makes pause/resume/step/inject ordinary
+them.** That single decision is what makes pause/resume/step/query ordinary
 queued commands serviced at well-defined quantum boundaries instead of
 mutex-held-for-seconds operations — which is exactly the `gate:control-responsive`
 property. Everything else in this file follows from it.
@@ -53,7 +53,7 @@ control plane is unresponsive precisely when responsiveness matters.
 Crucible refuses this. The session is an **actor**: a single task that owns all
 mutable runtime state and is reached *only* by message. There is no shared mutex
 over the engine, because there is no shared engine — there is one task that owns
-it. Control operations (pause, resume, step, inject, fork, save, query) are
+it. Control operations (pause, resume, step, fork, save, query) are
 **messages enqueued to the actor's mailbox**; execution is the actor stepping the
 scheduler **one bounded quantum at a time** and checking its mailbox between
 quanta. A pause is just a message the actor reads at the next quantum boundary —
@@ -133,7 +133,7 @@ pub enum SessionState {
     /// mailbox between quanta ([SESS-2]).
     Running,
     /// At a quantum boundary, idle on the mailbox. Inspect / step / fork /
-    /// save / inject are valid here.
+    /// save and query are valid here.
     Paused { reason: PauseReason },
     /// Terminal. Carries how the run ended.
     Stopped { outcome: Outcome },
@@ -203,13 +203,13 @@ The complete, defined transitions. Every cell not listed is a no-op-with-error
 ([SESS-6], [SESS-19]).
 
 ```text
-  from \ command   start/instantiate   continue   pause   step    stop    inject/heal   set/rm bp   savepoint   fork    query
-  ──────────────   ─────────────────   ────────   ─────   ────    ────    ───────────   ─────────   ─────────   ────    ─────
-  Loaded           → Paused(Instan.)   error      error   error   →Stop   error         ok (stays)  error       error   ok
-  Running          error               error*     →Paused →Running† →Stop queued(§5)    queued(§5)  queued(§5)  →Paused** ok(live)
-  Paused           error               →Running   ok      →Running† →Stop ok            ok          ok          ok      ok
-  Stopped          error               error      error   error   error   error         error       error       ok***   ok
-  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  from \ command   start/instantiate   continue   pause   step      stop    set/rm bp   savepoint   fork      query
+  ──────────────   ─────────────────   ────────   ─────   ───────   ────    ─────────   ─────────   ───────   ─────
+  Loaded           → Paused(Instan.)   error      error   error     →Stop   ok (stays)  error       error     ok
+  Running          error               error*     →Paused →Running† →Stop   queued(§5)  queued(§5)  →Paused** ok(live)
+  Paused           error               →Running   ok      →Running† →Stop   ok          ok          ok        ok
+  Stopped          error               error      error   error     error   error       error       ok***     ok
+  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
   *   already Running  ** fork requires a pause point; a Running fork first pauses (§7)
   *** fork from a Stopped session is fork-from-its-final-checkpoint (a valid prefix is the tip)
   †   bounded step execution has started; it polls the mailbox between quanta and later pauses
@@ -218,7 +218,7 @@ The complete, defined transitions. Every cell not listed is a no-op-with-error
 
 - **[SESS-7]** Every transition MUST be applied **on the actor task**, never by an
   external caller mutating session state directly. Commands that arrive while
-  `Running` and that mutate scheduler-owned state (inject/heal, savepoint, fork,
+  `Running` and that mutate actor- or scheduler-owned state (savepoint, fork,
   set/remove breakpoint) MUST be **queued and applied at a quantum boundary**
   (§5), never mid-quantum, so they take effect at a deterministic point ([SESS-2],
   08 [SCHED-3]). *Gate:* `gate:control-responsive`. *Spec:* §2.1, §5.
@@ -342,11 +342,6 @@ pub enum Command {
     Step { mode: StepMode },
     /// End the run. Any non-terminal state → Stopped(Stopped).
     Stop,
-    /// Inject a fault into the scheduler's active-fault set (17), applied at a
-    /// quantum boundary. Returns a `FaultTag` for later healing.
-    InjectFault { spec: FaultSpec, reply: Reply<FaultTag> },
-    /// Heal a previously injected fault by tag (17), applied at a boundary.
-    HealFault { tag: FaultTag },
     /// Add a predicate-based breakpoint (§6). Returns its id.
     SetBreakpoint { spec: BreakpointSpec, reply: Reply<BreakpointId> },
     /// Remove a breakpoint by id (§6).
@@ -364,10 +359,16 @@ pub enum Command {
 }
 
 /// `Reply<T>` is a oneshot the actor fulfils when the command completes, so a
-/// command that produces a value (a fault tag, a savepoint, a fork handle) is
+/// command that produces a value (a query result, a savepoint, a fork handle) is
 /// still a fire-and-await message — the caller never touches session state.
 pub type Reply<T> = tokio::sync::oneshot::Sender<Result<T, SessionError>>;
 ```
+
+Faults are not imperative session commands. The admitted signal-driven fault
+plan is part of scenario identity, and its typed bindings apply and remove
+effects at deterministic adapter opportunities. Changing that plan creates a
+new scenario or fork; there is no `InjectFault`, `HealFault`, `FaultSpec`, or
+`FaultTag` compatibility path in the session command set.
 
 ### 4.1 Command → model/graph/scheduler mapping
 
@@ -379,8 +380,6 @@ pub type Reply<T> = tokio::sync::oneshot::Sender<Result<T, SessionError>>;
   pause              Running → Paused(User)     stop stepping at boundary           (§3, §5)
   step(mode)         →Running→Paused(StepDone)  bounded advance, then pause         (§4.3, 08)
   stop               * → Stopped(Stopped)       scheduler shutdown; backend.shutdown (08, §4)
-  inject_fault       queued → applied@boundary  scheduler.active_faults.insert      (17)
-  heal_fault         queued → applied@boundary  scheduler.active_faults.remove      (17)
   set/remove bp      ok (any non-terminal)      breakpoints.{add,remove}            (§6)
   create_savepoint   ok at boundary             materialize fat checkpoint @config.id (07 §3/§4)
   fork               ok at a pause point        instantiate(prefix) → child session (05 §5/§6, 07)
@@ -388,7 +387,7 @@ pub type Reply<T> = tokio::sync::oneshot::Sender<Result<T, SessionError>>;
 ```
 
 - **[SESS-10]** The control-command set MUST be the closed set in §4 — `start`,
-  `continue`, `pause`, `step`, `stop`, `inject_fault`, `heal_fault`,
+  `continue`, `pause`, `step`, `stop`,
   `set_breakpoint`, `remove_breakpoint`, `create_savepoint`, `fork`, `query` —
   and each MUST map to the operation named in §4.1 on the execution model (05),
   temporal graph (07), or scheduler (08). A command that produces a value MUST
@@ -525,21 +524,8 @@ commands are special: they do not mutate scheduler state, they only change wheth
 the loop steps, so they take effect at the very next boundary check with no
 deferral queue needed beyond that.
 
-```text
-  operator issues inject_fault at wall-clock T_host (Running)
-        │
-        ▼ enqueued to mailbox
-  actor loop, next iteration: pops command BEFORE stepping
-        │
-        ▼ command recorded in the control log (§8) keyed by the boundary
-  applied at the next quantum boundary → scheduler.active_faults.insert
-        │
-        ▼ takes effect at virtual-time boundary B (deterministic)
-  every replay of this run applies the same fault at the same boundary B
-```
-
-- **[SESS-13]** A scheduler-state-mutating command (`inject_fault`, `heal_fault`,
-  `create_savepoint`, `set_breakpoint`, `remove_breakpoint`, `fork`) issued while
+- **[SESS-13]** A state-mutating command (`create_savepoint`, `set_breakpoint`,
+  `remove_breakpoint`, `fork`) issued while
   `Running` MUST be applied at a **quantum boundary**, never mid-quantum, so its
   effect lands at a deterministic configuration in virtual time (08). The session
   MUST record, in the control log (§8), the boundary at which each such command
@@ -608,8 +594,7 @@ pub enum Disposition {
     Suspend,
     /// Emit a deterministic control-plane trace marker and keep running.
     Trace,
-    /// Run a bounded, side-effect-scoped action (e.g. auto-savepoint, inject a
-    /// follow-on fault) at the firing boundary, then keep running.
+    /// Run a bounded terminal-verdict action at the firing boundary.
     Action(BreakpointAction),
 }
 ```
@@ -640,9 +625,9 @@ pub enum Disposition {
   the canonical run: setting, removing, or firing a `Suspend`/`Trace` breakpoint
   MUST NOT change the canonical event log or the schedule (the entries themselves,
   their order, and their virtual times are identical whether or not a breakpoint
-  is set). An `Action` disposition that *does* mutate scheduler state (inject a
-  fault, savepoint) MUST be recorded in the control log (§8) exactly as an
-  operator command would be, so the run remains reproducible. *Gate:*
+  is set). An `Action` disposition may apply only its fully supported,
+  deterministic terminal-verdict actions; unsupported action kinds are rejected
+  with a typed error. *Gate:*
   `gate:replay-oracle`. *Spec:* §6, §8; cross-ref 19 (canonical vs observational).
 
 - **[SESS-30]** A breakpoint MUST carry a fire **policy**: `OneShot` (auto-removed
@@ -725,19 +710,19 @@ than there is at the model level.
 
 This is the subtle, load-bearing section. The whole point of Crucible is that a
 run is `reduce(ScenarioDef, Schedule)` (INV-1) — but an *interactive* run has an
-operator poking at it: injecting faults, healing them, forking, savepointing. If
+operator poking at it: forking, savepointing, and changing execution flow. If
 those interventions were not part of the recorded model, an "interactively
 debugged" run would not reproduce, defeating [G-6] (reproduce-then-explore). Two
 rules make operator control fully reproducible.
 
-**Rule 1 — control operations are recorded.** Every operator intervention that
-changes scheduler-owned state (`inject_fault`, `heal_fault`, and any `Action`
-breakpoint that mutates state) is recorded in a **control log** as a `Decision`
-(05 §3) or a control-log entry keyed by the **virtual-time boundary** at which it
-was applied (§5), not by the host wall-clock at which it was issued. The schedule
-(05) therefore *includes* the operator's interventions, so re-reducing the
-configuration reproduces them at the same boundaries. An interactively-debugged
-run emits the same reproduction artifact (24 §12) as a scripted one.
+**Rule 1 — mutating control operations are recorded.** Every supported operator
+intervention that changes scheduler-owned state is recorded in a **control log**
+as a `Decision` (05 §3) or a control-log entry keyed by the **virtual-time
+boundary** at which it was applied (§5), not by the host wall-clock at which it
+was issued. The schedule (05) therefore *includes* the operator's interventions,
+so re-reducing the configuration reproduces them at the same boundaries. An
+interactively-debugged run emits the same reproduction artifact (24 §12) as a
+scripted one.
 
 **Rule 2 — control operations introduce no nondeterminism.** Because every
 mutating command takes effect at a deterministic quantum boundary (§5), and
@@ -751,9 +736,6 @@ are excluded from the schedule entirely; they are pure observation.
 ```text
   command class            recorded in schedule?   affects State?   determinism rule
   ──────────────────────   ─────────────────────   ──────────────   ────────────────────────
-  inject_fault / heal      yes (as a Decision/      yes, at the      Rule 1 + Rule 2:
-                           control-log entry)       boundary         recorded + boundary-applied
-  Action breakpoint (mut.) yes                       yes              same as inject_fault
   create_savepoint         no (cache op, 07 §4)      no               materialization is a cache
   fork                     starts a NEW config       no (to parent)   child = prefix + new decisions
   pause / continue / stop  no                        no (control      Rule 2: changes only whether
@@ -762,9 +744,8 @@ are excluded from the schedule entirely; they are pure observation.
   query                    no                        no               lock-free read (§4 lock-free)
 ```
 
-- **[SESS-20]** Every control operation that changes scheduler-owned state
-  (`inject_fault`, `heal_fault`, a state-mutating `Action` breakpoint) MUST be
-  recorded — as a `Decision` (05 §3) or a control-log entry — keyed by the
+- **[SESS-20]** Every supported control operation that changes scheduler-owned
+  state MUST be recorded — as a `Decision` (05 §3) or a control-log entry — keyed by the
   virtual-time boundary at which it was applied (§5), so the run's reproduction
   artifact (24 §12) reproduces the operator's interventions bit-identically.
   An interactively-controlled run MUST be as reproducible as a scripted one.
@@ -918,7 +899,7 @@ pub trait SimulationBackend {
     fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError>;
 
     /// Apply a backend-level effect at a quantum boundary (start/stop a node,
-    /// activate/heal a fault, set a link property), as directed by the
+    /// apply a scheduler-selected node, storage, or link effect), as directed by the
     /// scheduler after a deferred command (§5).
     ///
     /// # Errors
@@ -1097,16 +1078,16 @@ pub enum SessionError {
     command payloads and operation mappings are completed separately by
     `T-SESS-4`.
 - [x] **T-SESS-4** Implement the closed command set (start/continue/pause/step/
-  stop/inject_fault/heal_fault/set+remove breakpoint/create_savepoint/fork/query)
+  stop/set+remove breakpoint/create_savepoint/fork/query)
   with `reply` oneshots, mapping each to its model/graph/scheduler operation
   (§4.1); make start/continue/fork single `instantiate` call sites (05 §5). —
   satisfies [SESS-10], [SESS-11]; spec §4, §4.1.
   - Completed by `checks.crucible.phase5.sessionCommandSet`:
     `crucible-session` now carries the reply-bearing §4 command payloads for
-    typed fault injection/healing, breakpoint insert/remove, savepoint creation,
+    breakpoint insert/remove, savepoint creation,
     fork, and query. The engine maps breakpoint commands into the actor-owned
     registry, savepoint/fork through `TemporalGraph::save_checkpoint`, running
-    fault/query commands through queued scheduler control operations, and actor
+    query commands through queued scheduler control operations, and actor
     command rejection into typed reply completion. Focused tests cover successful
     reply delivery across engine boundaries and side-effect-free rejection
     replies. Reply-bearing debugger and guest-introspection commands use the same
@@ -1189,15 +1170,14 @@ pub enum SessionError {
     snapshot unchanged, and direct checkpoint fork helpers reject loaded/running
     parents until the caller pauses at a boundary.
 - [x] **T-SESS-9** Implement control-operation determinism: record every
-  state-mutating intervention (inject/heal, mutating Action breakpoints) as a
+  supported state-mutating intervention as a
   Decision/control-log entry keyed by virtual-time boundary; prove an
   interactively-controlled run reproduces bit-identically from its artifact and
   that operator wall-clock timing cannot influence State. — satisfies [SESS-20],
   [SESS-21], [SESS-22]; spec §8; cross-ref 24 §12.
   - Completed by `checks.crucible.phase5.sessionControlDeterminism`:
-    accepted inject/heal commands now apply scheduler-owned control and append a
-    deterministic `SessionControlLogEntry` at both running and paused
-    boundaries, using the current frontier/quanta rather than host time.
+    accepted mutating controls append a deterministic `SessionControlLogEntry`
+    at actor boundaries, using the current frontier/quanta rather than host time.
     `SessionControlReplayArtifact` captures the producer initial configuration,
     final boundary snapshot, and control log, and
     `Engine::replay_control_replay_artifact` replays every scheduler-control
@@ -1232,9 +1212,10 @@ pub enum SessionError {
   - Completed by `checks.crucible.phase5.sessionSimulationBackend`:
     `SimulationBackend` is the shared backend boundary for scheduler-supplied
     `step_to`, boundary-applied effects, backend snapshots/restores,
-    scheduler-mirrored `now`, fingerprint sampling, and shutdown. The pure
-    mock, `SimBackend`, in-process `SimDouble`, and QEMU `QemuNode` implement the
-    same trait, with focused tests covering object-safe mock dispatch,
+    scheduler-mirrored `now`, fingerprint sampling, and shutdown. The test-only
+    pure mock, `SimBackend`, in-process `SimDouble`, and QEMU `QemuNode`
+    implement the same trait; default production builds do not export or
+    compile the mock. Focused tests cover object-safe mock dispatch,
     scheduler-owned time rejection, full-state SimDouble snapshot/restore,
     rejection of trait-level SimDouble outbound sends without scheduler
     authorization, and QEMU channel routing plus restore-time mirror updates

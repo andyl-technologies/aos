@@ -488,7 +488,7 @@ the in-process double, gated by `gate:abi-conformance`
 - **[API-27]** A **reference client and conformance suite** MUST exist that drives
   the **full session lifecycle** — `Hello`, `ListScenarios`, `CreateSession`
   (scenario ref and inline def; seeded; start-paused), attach via `Control` and via
-  `Watch`+`Send`, `continue`/`pause`/`step`, `inject_fault`/`heal_fault`,
+  `Watch`+`Send`, `continue`/`pause`/`step`, signal/binding scenario admission,
   `set`/`remove` breakpoint, `create_savepoint`, `fork`, `query`,
   `GetReproduction`, `DestroySession`, and epoch-guard rejection — and asserts
   identical observable behavior against **both** the QEMU backend (10) and the

@@ -65,10 +65,6 @@ where
         self.observed.observable_events()
     }
 
-    fn fault_facts(&self) -> &[ObservedFaultFact] {
-        self.observed.fault_facts()
-    }
-
     fn scheduler_quiescence(&self) -> Option<&SchedulerQuiescence> {
         self.scheduler_quiescence
     }
@@ -268,7 +264,6 @@ where
         | Condition::NodeState { .. }
         | Condition::AssertionState { .. }
         | Condition::Quiescent
-        | Condition::FaultActive { .. }
         | Condition::Named { .. }
         | Condition::GuestMarker { .. }
         | Condition::Not { .. } => boolean_condition_distance(evaluator, condition),
@@ -370,7 +365,6 @@ pub(super) fn push_observed_state_facts(
     observable_events: &mut Vec<ObservableEvent>,
     black_box_observation_kinds: &mut BTreeSet<BlackBoxObservationKind>,
     ordering_facts: &mut Vec<ObservedOrderingFact>,
-    fault_facts: &mut Vec<ObservedFaultFact>,
 ) -> Result<(), ConditionEvaluationError> {
     match entry.payload() {
         SchedulerEventLogPayload::Observable(payload) => {
@@ -390,7 +384,6 @@ pub(super) fn push_observed_state_facts(
                 entry.at(),
                 event,
                 ordering_facts,
-                fault_facts,
             );
         }
         SchedulerEventLogPayload::Decision(Decision::DeliveryOrder(order)) => {
@@ -400,26 +393,7 @@ pub(super) fn push_observed_state_facts(
                 order: order.order.clone(),
             });
         }
-        SchedulerEventLogPayload::Decision(Decision::FaultFires(fault)) => {
-            fault_facts.push(ObservedFaultFact::ProbabilisticOutcome {
-                sequence: entry.sequence(),
-                at: entry.at(),
-                fault: fault.fault.clone(),
-                fired: fault.fired,
-            });
-        }
-        SchedulerEventLogPayload::Decision(Decision::ControlFault(control)) => {
-            push_control_fault_fact(
-                entry.sequence(),
-                entry.at(),
-                control.sequence,
-                &control.action,
-                fault_facts,
-            );
-        }
-        SchedulerEventLogPayload::TriggerActionApplied(application) => {
-            push_trigger_fault_fact(entry.sequence(), entry.at(), application, fault_facts);
-        }
+        SchedulerEventLogPayload::TriggerActionApplied(_) => {}
         SchedulerEventLogPayload::Decision(
             Decision::RngDraw(_)
             | Decision::Override(_)
@@ -428,6 +402,7 @@ pub(super) fn push_observed_state_facts(
         )
         | SchedulerEventLogPayload::EvaluationBoundary(_)
         | SchedulerEventLogPayload::TriggerFired(_)
+        | SchedulerEventLogPayload::FaultObservation(_)
         | SchedulerEventLogPayload::Diagnostic(_) => {}
     }
     Ok(())
@@ -451,9 +426,7 @@ pub(super) fn push_condition_runtime_facts(
             Action::CancelTimer { name } => {
                 timer_fires.remove(name);
             }
-            Action::InjectFault { .. }
-            | Action::HealFault { .. }
-            | Action::StartNode { .. }
+            Action::StartNode { .. }
             | Action::StopNode { .. }
             | Action::CreateSavepoint { .. }
             | Action::Fork { .. }
@@ -466,6 +439,7 @@ pub(super) fn push_condition_runtime_facts(
         | SchedulerEventLogPayload::Decision(_)
         | SchedulerEventLogPayload::Observable(_)
         | SchedulerEventLogPayload::EvaluationBoundary(_)
+        | SchedulerEventLogPayload::FaultObservation(_)
         | SchedulerEventLogPayload::Diagnostic(_) => {}
     }
 }
@@ -574,7 +548,6 @@ pub(super) fn push_resolved_happening_observed_facts(
     at: VirtualTime,
     event: &ScheduledEvent,
     ordering_facts: &mut Vec<ObservedOrderingFact>,
-    fault_facts: &mut Vec<ObservedFaultFact>,
 ) {
     ordering_facts.push(ObservedOrderingFact::ResolvedHappening {
         sequence,
@@ -583,90 +556,9 @@ pub(super) fn push_resolved_happening_observed_facts(
         class: scheduled_event_resolve_class(event),
     });
     match &event.payload {
-        ScheduledEventPayload::FaultActivation(fault) => {
-            fault_facts.push(ObservedFaultFact::ScheduledActivation {
-                sequence,
-                at,
-                fault: fault.clone(),
-            });
-        }
-        ScheduledEventPayload::ProbabilisticFault(choice) => {
-            fault_facts.push(ObservedFaultFact::ScheduledProbabilisticChoice {
-                sequence,
-                at,
-                fault: choice.fault.clone(),
-            });
-        }
         ScheduledEventPayload::BackendInput(_)
         | ScheduledEventPayload::IoCompletion(_)
         | ScheduledEventPayload::Control(_) => {}
-    }
-}
-
-pub(super) fn push_control_fault_fact(
-    sequence: u64,
-    at: VirtualTime,
-    control_sequence: u64,
-    action: &ControlFaultAction,
-    fault_facts: &mut Vec<ObservedFaultFact>,
-) {
-    match action {
-        ControlFaultAction::Inject { tag, fault } => {
-            fault_facts.push(ObservedFaultFact::ControlInjected {
-                sequence,
-                at,
-                control_sequence,
-                tag: tag.clone(),
-                fault: fault.clone(),
-            });
-        }
-        ControlFaultAction::Heal { tag } => {
-            fault_facts.push(ObservedFaultFact::ControlHealed {
-                sequence,
-                at,
-                control_sequence,
-                tag: tag.clone(),
-            });
-        }
-    }
-}
-
-pub(super) fn push_trigger_fault_fact(
-    sequence: u64,
-    at: VirtualTime,
-    application: &crate::scheduler::TriggerActionApplication,
-    fault_facts: &mut Vec<ObservedFaultFact>,
-) {
-    match &application.action {
-        Action::InjectFault { tag, fault } => {
-            fault_facts.push(ObservedFaultFact::TriggerInjected {
-                sequence,
-                at,
-                trigger_sequence: application.sequence,
-                event: application.event.clone(),
-                tag: tag.clone(),
-                fault: fault.clone(),
-            });
-        }
-        Action::HealFault { tag } => {
-            fault_facts.push(ObservedFaultFact::TriggerHealed {
-                sequence,
-                at,
-                trigger_sequence: application.sequence,
-                event: application.event.clone(),
-                tag: tag.clone(),
-            });
-        }
-        Action::ArmTimer { .. }
-        | Action::CancelTimer { .. }
-        | Action::StartNode { .. }
-        | Action::StopNode { .. }
-        | Action::CreateSavepoint { .. }
-        | Action::Fork { .. }
-        | Action::Pass
-        | Action::Fail { .. }
-        | Action::Log { .. }
-        | Action::Group(_) => {}
     }
 }
 
@@ -726,7 +618,6 @@ where
         Condition::Quiescent => evaluator
             .scheduler_quiescence()
             .is_some_and(SchedulerQuiescence::is_quiescent),
-        Condition::FaultActive { tag } => fault_tag_is_active(evaluator.fault_facts(), tag),
         Condition::Named { name, nodes } => evaluator.leaf_is_true(ConditionLeaf::Named {
             name: name.as_str(),
             nodes,
@@ -758,34 +649,6 @@ where
         }
         Condition::Not { predicate } => !evaluate_condition(evaluator, predicate),
     }
-}
-
-pub(super) fn fault_tag_is_active(facts: &[ObservedFaultFact], expected_tag: &FaultTag) -> bool {
-    let mut active = false;
-    for fact in facts {
-        match fact {
-            ObservedFaultFact::ControlInjected { tag, .. }
-            | ObservedFaultFact::TriggerInjected { tag, .. }
-                if tag == expected_tag =>
-            {
-                active = true;
-            }
-            ObservedFaultFact::ControlHealed { tag, .. }
-            | ObservedFaultFact::TriggerHealed { tag, .. }
-                if tag == expected_tag =>
-            {
-                active = false;
-            }
-            ObservedFaultFact::ScheduledActivation { .. }
-            | ObservedFaultFact::ScheduledProbabilisticChoice { .. }
-            | ObservedFaultFact::ProbabilisticOutcome { .. }
-            | ObservedFaultFact::ControlInjected { .. }
-            | ObservedFaultFact::ControlHealed { .. }
-            | ObservedFaultFact::TriggerInjected { .. }
-            | ObservedFaultFact::TriggerHealed { .. } => {}
-        }
-    }
-    active
 }
 
 pub(super) fn observable_event_matches(
@@ -1040,7 +903,6 @@ pub struct ConditionEvaluation<O> {
     timer_fires: BTreeMap<TimerId, VirtualTime>,
     observable_events: Vec<ObservableEvent>,
     ordering_facts: Vec<ObservedOrderingFact>,
-    fault_facts: Vec<ObservedFaultFact>,
     scheduler_quiescence: Option<SchedulerQuiescence>,
     white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
     once_latches: Vec<Condition>,
@@ -1060,7 +922,6 @@ impl<O> ConditionEvaluation<O> {
             timer_fires: prefix.timer_fires,
             observable_events: prefix.observable_events,
             ordering_facts: prefix.ordering_facts,
-            fault_facts: prefix.fault_facts,
             scheduler_quiescence: None,
             white_box_policies: BTreeMap::new(),
             once_latches: Vec::new(),
@@ -1089,7 +950,6 @@ impl<O> ConditionEvaluation<O> {
             event_log_offset: self.event_log_offset,
             observable_events: &self.observable_events,
             ordering_facts: &self.ordering_facts,
-            fault_facts: &self.fault_facts,
         }
     }
 
@@ -1325,10 +1185,6 @@ where
 
     fn scheduler_quiescence(&self) -> Option<&SchedulerQuiescence> {
         self.scheduler_quiescence.as_ref()
-    }
-
-    fn fault_facts(&self) -> &[ObservedFaultFact] {
-        &self.fault_facts
     }
 
     fn white_box_policy_for_node(&self, node: &NodeId) -> Option<WhiteBoxPolicy> {

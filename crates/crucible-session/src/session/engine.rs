@@ -179,6 +179,46 @@ impl<L> Engine<L> {
         }
     }
 
+    /// Builds a paused engine from one checkpoint already recorded in `graph`.
+    ///
+    /// The temporal graph remains the authority for reconstructing the model
+    /// runtime. `quantum_loop` must already own the corresponding concrete
+    /// backend continuation; this constructor does not replay or instantiate a
+    /// second execution backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::Engine`] when `checkpoint` or its configuration
+    /// is absent from `graph`, or when the graph cannot realize its runtime.
+    pub fn from_recorded_checkpoint(
+        mut graph: TemporalGraph,
+        quantum_loop: L,
+        checkpoint: ContentHash,
+    ) -> Result<Self, SessionError> {
+        let checkpoint_record =
+            graph
+                .checkpoint_record(checkpoint)
+                .cloned()
+                .ok_or(SessionError::Engine(EngineError::CheckpointNotRecorded {
+                    checkpoint,
+                }))?;
+        let configuration =
+            graph
+                .checkpoint_configuration(checkpoint)
+                .cloned()
+                .ok_or(SessionError::Engine(EngineError::CheckpointNotRecorded {
+                    checkpoint,
+                }))?;
+        let resumed = graph.resume_checkpoint(checkpoint)?;
+        Ok(Self::from_realized_checkpoint(
+            configuration,
+            graph,
+            quantum_loop,
+            resumed.runtime,
+            &checkpoint_record,
+        ))
+    }
+
     /// Returns the current engine state.
     #[must_use]
     pub fn state(&self) -> &EngineState {
@@ -416,7 +456,10 @@ impl<L> Engine<L> {
         &mut self,
         from: CheckpointRef,
         child_quantum_loop: C,
-    ) -> Result<SessionFork<C>, SessionError> {
+    ) -> Result<SessionFork<C>, SessionError>
+    where
+        L: QuantumLoop,
+    {
         let parent_state = self.state.clone();
         if !matches!(
             parent_state,
@@ -681,16 +724,6 @@ impl<L> Engine<L> {
             sequence: self.next_control_sequence,
             kind,
         });
-    }
-
-    fn apply_control_operation_at_boundary(
-        &mut self,
-        kind: ControlOperationKind,
-    ) -> Result<(), SessionError>
-    where
-        L: QuantumLoop,
-    {
-        self.apply_control_operations_at_boundary(vec![kind])
     }
 
     fn apply_control_operations_at_boundary(
@@ -978,12 +1011,10 @@ impl<L> Engine<L> {
         }
         scheduler_controls.extend(planned_controls);
         if !violations.is_empty() {
-            self.shutdown_quantum_loop()?;
             self.pending_control.clear();
             self.active_step = None;
             self.enter_stopped(TerminalCause::Failed(violations))?;
         } else if passed {
-            self.shutdown_quantum_loop()?;
             self.pending_control.clear();
             self.active_step = None;
             self.enter_stopped(TerminalCause::Passed)?;
@@ -992,34 +1023,15 @@ impl<L> Engine<L> {
     }
 
     fn plan_breakpoint_action(action: &Action) -> Result<Vec<ControlOperationKind>, SessionError> {
-        let mut scheduler_controls = Vec::new();
-        Self::plan_breakpoint_action_into(action, &mut scheduler_controls)?;
-        Ok(scheduler_controls)
+        Self::validate_breakpoint_action(action)?;
+        Ok(Vec::new())
     }
 
-    fn plan_breakpoint_action_into(
-        action: &Action,
-        scheduler_controls: &mut Vec<ControlOperationKind>,
-    ) -> Result<(), SessionError> {
+    fn validate_breakpoint_action(action: &Action) -> Result<(), SessionError> {
         match action {
-            Action::InjectFault { tag, fault } => {
-                let Some(fault) = fault.table_fault() else {
-                    return Err(SessionError::UnsupportedBreakpointFault {
-                        action: "inject-fault",
-                        reason: "fault has no scheduler-control representation",
-                    });
-                };
-                scheduler_controls.push(ControlOperationKind::InjectFault {
-                    tag: tag.clone(),
-                    fault,
-                });
-            }
-            Action::HealFault { tag } => {
-                scheduler_controls.push(ControlOperationKind::HealFault { tag: tag.clone() });
-            }
             Action::Group(actions) => {
                 for action in actions {
-                    Self::plan_breakpoint_action_into(action, scheduler_controls)?;
+                    Self::validate_breakpoint_action(action)?;
                 }
             }
             Action::ArmTimer { .. }
@@ -1049,7 +1061,10 @@ impl<L> Engine<L> {
     pub(super) fn resolve_fork_checkpoint(
         &mut self,
         from: CheckpointRef,
-    ) -> Result<Checkpoint, SessionError> {
+    ) -> Result<Checkpoint, SessionError>
+    where
+        L: QuantumLoop,
+    {
         match from {
             CheckpointRef::Current => self.save_current_checkpoint(),
             CheckpointRef::Checkpoint(checkpoint) => self
@@ -1291,7 +1306,6 @@ impl<L: QuantumLoop> Engine<L> {
                 };
             }
             SessionCommandKind::Stop => {
-                self.shutdown_quantum_loop()?;
                 self.pending_control.clear();
                 self.active_step = None;
                 self.enter_stopped(TerminalCause::OperatorStop)?;
@@ -1306,14 +1320,10 @@ impl<L: QuantumLoop> Engine<L> {
             | SessionCommandKind::StepAssertion
             | SessionCommandKind::StepTimer
             | SessionCommandKind::StepDuration
-            | SessionCommandKind::Inject
-            | SessionCommandKind::InjectFault
-            | SessionCommandKind::HealFault
             | SessionCommandKind::SetBreakpoint
             | SessionCommandKind::RemoveBreakpoint
             | SessionCommandKind::CreateSavepoint
             | SessionCommandKind::Query
-            | SessionCommandKind::Snapshot
             | SessionCommandKind::AttachGdb
             | SessionCommandKind::DebugGoto
             | SessionCommandKind::DebugReverseStep
@@ -1408,12 +1418,6 @@ impl<L: QuantumLoop> Engine<L> {
                     Err(self.invalid_transition(command.clone()))
                 }
             },
-            SessionCommand::Snapshot => {
-                if matches!(self.state, EngineState::Running) {
-                    self.admit_control_operation(ControlOperationKind::Snapshot);
-                }
-                Ok(self.snapshot())
-            }
             SessionCommand::Fork { from, reply } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } | EngineState::Stopped { .. } => {
                     let checkpoint = self.resolve_fork_checkpoint(*from)?;
@@ -1429,62 +1433,6 @@ impl<L: QuantumLoop> Engine<L> {
                     Ok(self.snapshot())
                 }
                 EngineState::Loaded => Err(self.invalid_transition(command.clone())),
-            },
-            SessionCommand::Inject => match self.state {
-                EngineState::Running | EngineState::Paused { .. } => {
-                    self.reject_debug_forward_without_branch(&command)?;
-                    let control = ControlOperationKind::Inject;
-                    let event_log_sequence_before = usize_to_u64(self.event_log_len());
-                    self.apply_control_operation_at_boundary(control.clone())?;
-                    self.record_boundary_control_at(
-                        &command,
-                        Some(control),
-                        event_log_sequence_before,
-                    );
-                    Ok(self.snapshot())
-                }
-                EngineState::Loaded | EngineState::Stopped { .. } => {
-                    Err(self.invalid_transition(command.clone()))
-                }
-            },
-            SessionCommand::InjectFault { spec, reply } => match self.state {
-                EngineState::Running | EngineState::Paused { .. } => {
-                    self.reject_debug_forward_without_branch(&command)?;
-                    let control = ControlOperationKind::InjectFault {
-                        tag: spec.tag.clone(),
-                        fault: spec.fault.clone(),
-                    };
-                    let event_log_sequence_before = usize_to_u64(self.event_log_len());
-                    self.apply_control_operation_at_boundary(control.clone())?;
-                    self.record_boundary_control_at(
-                        &command,
-                        Some(control),
-                        event_log_sequence_before,
-                    );
-                    reply.complete(Ok(spec.tag.clone()));
-                    Ok(self.snapshot())
-                }
-                EngineState::Loaded | EngineState::Stopped { .. } => {
-                    Err(self.invalid_transition(command.clone()))
-                }
-            },
-            SessionCommand::HealFault { tag, reply } => match self.state {
-                EngineState::Running | EngineState::Paused { .. } => {
-                    self.reject_debug_forward_without_branch(&command)?;
-                    let control = ControlOperationKind::HealFault { tag: tag.clone() };
-                    let event_log_sequence_before = usize_to_u64(self.event_log_len());
-                    self.apply_control_operation_at_boundary(control.clone())?;
-                    self.record_boundary_control_at(
-                        &command,
-                        Some(control),
-                        event_log_sequence_before,
-                    );
-                    reply.complete(Ok(()));
-                    Ok(self.snapshot())
-                }
-                EngineState::Loaded | EngineState::Stopped { .. } => {
-                    Err(self.invalid_transition(command.clone()))
-                }
             },
             SessionCommand::SetBreakpoint { spec, reply } => match self.state {
                 EngineState::Loaded | EngineState::Running | EngineState::Paused { .. } => {
@@ -1536,7 +1484,6 @@ impl<L: QuantumLoop> Engine<L> {
                 if matches!(self.state, EngineState::Stopped { .. }) {
                     Err(self.invalid_transition(command.clone()))
                 } else {
-                    self.shutdown_quantum_loop()?;
                     if matches!(self.state, EngineState::Running) {
                         self.record_boundary_control(&command, None);
                     }
@@ -1581,6 +1528,9 @@ impl<L: QuantumLoop> Engine<L> {
                         frontiers: self.quantum_loop.search_frontiers()?,
                         pending_branch_choices: self.quantum_loop.pending_search_branch_choices(),
                     },
+                    QueryKind::ResolvedEffectTrace => {
+                        QueryResult::ResolvedEffectTrace(self.quantum_loop.resolved_effect_trace()?)
+                    }
                     QueryKind::ExecutionFingerprint { node } => QueryResult::ExecutionFingerprint(
                         self.quantum_loop.sample_fingerprint(node.clone())?,
                     ),
@@ -1861,8 +1811,7 @@ impl<L: QuantumLoop> Engine<L> {
             };
             self.active_step = None;
         }
-        if let Some(verdict) = self.quantum_loop.take_terminal_verdict() {
-            self.shutdown_quantum_loop()?;
+        if let Some(verdict) = self.quantum_loop.terminal_verdict_for_stop() {
             self.pending_control.clear();
             self.active_step = None;
             match verdict {
@@ -1885,7 +1834,6 @@ impl<L: QuantumLoop> Engine<L> {
                 .as_ref()
                 .is_some_and(SchedulerQuiescence::is_quiescent)
         {
-            self.shutdown_quantum_loop()?;
             self.pending_control.clear();
             self.enter_stopped(TerminalCause::Passed)?;
         }

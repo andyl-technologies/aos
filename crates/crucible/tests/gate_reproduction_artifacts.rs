@@ -8,13 +8,13 @@ use std::error::Error;
 
 use crucible::{
     ChoiceTag, Configuration, ContentHash, CoverageGuidedCorpusConfig, CoverageGuidedFuzzConfig,
-    Decision, EngineError, EventLogCoverageFeedback, FamilySpace, FaultDensity, FaultDensityRange,
-    FindingDiscoveryPath, FindingReproductionArtifact, FindingReproductionArtifactError,
-    GenesisCheckpoint, Icount, MarkerId, MaterializationPolicy, MaterializationTrigger,
-    MemoryDagStore, NodeTemplate, ObservableEvent, OverrideDecision, Plan, Properties, ReadyPoint,
-    ScenarioDefForm, ScenarioFamily, SchedulingPoint, SearchBudget, SearchFailureOracle,
-    SearchFrontierChoices, SearchStrategy, Seed, SeedSpace, TemporalGraph, TopologyShape,
-    TopologySizeRange, WhiteBoxPolicy, World, WorldNode, bake, try_step,
+    Decision, EngineError, EventLogCoverageFeedback, FamilySpace, FindingDiscoveryPath,
+    FindingReproductionArtifact, FindingReproductionArtifactError, GenesisCheckpoint, Icount,
+    MarkerId, MaterializationPolicy, MaterializationTrigger, MemoryDagStore, NodeTemplate,
+    ObservableEvent, OverrideDecision, Plan, Properties, ReadyPoint, ScenarioDefForm,
+    ScenarioFamily, SchedulingPoint, SearchBudget, SearchFailureOracle, SearchFrontierChoices,
+    SearchStrategy, Seed, SeedSpace, TemporalGraph, TopologyShape, TopologySizeRange,
+    WhiteBoxPolicy, World, WorldNode, bake, try_step,
 };
 
 #[test]
@@ -206,10 +206,8 @@ fn bake_with_search_frontier_choices(
 }
 
 fn fuzz_family() -> Result<ScenarioFamily, EngineError> {
-    let density_one = FaultDensity::from_millionths(1)?;
     let space = FamilySpace::new(
         SeedSpace::explicit(vec![Seed::from_u64(0x11)])?,
-        FaultDensityRange::new(FaultDensity::ZERO, density_one)?,
         TopologySizeRange::new(2, 2)?,
         vec![TopologyShape::Ring],
     )?;

@@ -165,7 +165,9 @@ mod tests {
             node_count: 4,
         });
         let mut io = ScriptedIo::from_input(ack);
-        let args = plugin_args("simfd=3,slot=2");
+        let args = plugin_args(
+            "simfd=3,slot=2,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576",
+        );
 
         let handshake = perform_plugin_handshake(&mut io, &args)
             .unwrap_or_else(|error| panic!("handshake should succeed: {error}"));
@@ -187,7 +189,9 @@ mod tests {
 
     #[test]
     fn plugin_handshake_rejects_launch_slot_outside_node_count() {
-        let args = plugin_args("simfd=3,slot=4");
+        let args = plugin_args(
+            "simfd=3,slot=4,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576",
+        );
         let negotiated = NegotiatedHandshake {
             proto_version: CONTROL_PROTOCOL_VERSION,
             abi_version: ABI_VERSION,
@@ -206,7 +210,9 @@ mod tests {
 
     #[test]
     fn plugin_handshake_rejects_launch_slot_disagreement() {
-        let args = plugin_args("simfd=3,slot=1");
+        let args = plugin_args(
+            "simfd=3,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576",
+        );
         let negotiated = NegotiatedHandshake {
             proto_version: CONTROL_PROTOCOL_VERSION,
             abi_version: ABI_VERSION,
@@ -225,7 +231,7 @@ mod tests {
 
     #[test]
     fn plugin_handshake_preserves_protocol_failures() {
-        assert_eq!(ABI_VERSION, 6);
+        assert_eq!(ABI_VERSION, 17);
         for host_abi in [1, ABI_VERSION + 1] {
             let ack = control_encode_host_msg(&HostMsg::HelloAck {
                 proto_version: CONTROL_PROTOCOL_VERSION,
@@ -234,7 +240,9 @@ mod tests {
                 node_count: 1,
             });
             let mut io = ScriptedIo::from_input(ack);
-            let args = plugin_args("simfd=3,slot=0");
+            let args = plugin_args(
+                "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576",
+            );
 
             assert!(matches!(
                 perform_plugin_handshake(&mut io, &args),

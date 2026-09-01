@@ -1,0 +1,70 @@
+diff --git a/hw/net/virtio-net.c b/hw/net/virtio-net.c
+index bd37651da..7712e6f19 100644
+--- a/hw/net/virtio-net.c
++++ b/hw/net/virtio-net.c
+@@ -3124,14 +3124,25 @@ static int virtio_net_post_load_device(void *opaque, int version_id)
+ 
+     if (virtio_vdev_has_feature(vdev, VIRTIO_NET_F_GUEST_ANNOUNCE) &&
+         virtio_vdev_has_feature(vdev, VIRTIO_NET_F_CTRL_VQ)) {
+-        qemu_announce_timer_reset(&n->announce_timer, migrate_announce_params(),
+-                                  QEMU_CLOCK_VIRTUAL,
+-                                  virtio_net_announce_timer, n);
+-        if (n->announce_timer.round) {
+-            timer_mod(n->announce_timer.tm,
+-                      qemu_clock_get_ms(n->announce_timer.type));
+-        } else {
++        if (migration_crucible_load_active()) {
++            /*
++             * An exact Crucible restore returns to the same modeled network.
++             * Synthesizing migration announcements here would create guest
++             * traffic absent from uninterrupted execution.
++             */
+             qemu_announce_timer_del(&n->announce_timer, false);
++            n->announce_timer.round = 0;
++        } else {
++            qemu_announce_timer_reset(&n->announce_timer,
++                                      migrate_announce_params(),
++                                      QEMU_CLOCK_VIRTUAL,
++                                      virtio_net_announce_timer, n);
++            if (n->announce_timer.round) {
++                timer_mod(n->announce_timer.tm,
++                          qemu_clock_get_ms(n->announce_timer.type));
++            } else {
++                qemu_announce_timer_del(&n->announce_timer, false);
++            }
+         }
+     }
+ 
+diff --git a/include/migration/misc.h b/include/migration/misc.h
+index 0be31c515..d4a22c882 100644
+--- a/include/migration/misc.h
++++ b/include/migration/misc.h
+@@ -69,6 +69,7 @@ bool migration_crucible_raw_state_export_sealed(void);
+ /* Track every entry into the central VMState deserialization loop. */
+ int migration_crucible_load_begin(void);
+ void migration_crucible_load_end(bool successful);
++bool migration_crucible_load_active(void);
+ 
+ typedef enum MigrationEventType {
+     MIG_EVENT_PRECOPY_SETUP,
+diff --git a/migration/migration.c b/migration/migration.c
+index ed3c8db45..4231e3015 100644
+--- a/migration/migration.c
++++ b/migration/migration.c
+@@ -1284,6 +1284,16 @@ void migration_crucible_load_end(bool successful)
+     qemu_crucible_fault_clock_vmstate_load_end(successful);
+ }
+ 
++bool migration_crucible_load_active(void)
++{
++    bool active;
++
++    qemu_mutex_lock(&crucible_raw_state_mutex);
++    active = crucible_active_loaders != 0;
++    qemu_mutex_unlock(&crucible_raw_state_mutex);
++    return active;
++}
++
+ static bool migration_is_active(void)
+ {
+     MigrationState *s = current_migration;

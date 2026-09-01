@@ -33,7 +33,7 @@
   qemuNixRequirements = [
     {
       label = "deterministic getrandom patch wiring";
-      needle = "patch -p1 < \${./qemu-patches/0008-crucible-det-getrandom.patch}";
+      needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
     }
   ];
 

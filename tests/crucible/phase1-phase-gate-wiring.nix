@@ -25,6 +25,7 @@
   catalogGates =
     builtins.sort builtins.lessThan
     (lib.unique (lib.concatMap gateNameFromCatalogLine catalogGateLines));
+  wiredCatalogGates = catalogGates;
 
   phaseGateTargets = [
     {
@@ -140,6 +141,18 @@
       gate = "gate:basic-block-coverage";
     }
     {
+      phase = "phase6";
+      attr = "checkpointMaterialization";
+      attrPath = "checks.crucible.phase6.checkpointMaterialization";
+      gate = "gate:checkpoint-materialization";
+    }
+    {
+      phase = "phase6";
+      attr = "stateSpaceSearch";
+      attrPath = "checks.crucible.phase6.stateSpaceSearch";
+      gate = "gate:state-space-search";
+    }
+    {
       phase = "phase7";
       attr = "perfBench";
       gate = "gate:perf-bench";
@@ -158,6 +171,11 @@
       phase = "phase7";
       attr = "campaignContinuity";
       gate = "gate:campaign-continuity";
+    }
+    {
+      phase = "phase7";
+      attr = "signalFaultSystem";
+      gate = "gate:signal-fault-system";
     }
   ];
 
@@ -178,7 +196,7 @@
     phaseGateTargets)));
 
   missingCatalogWiring =
-    builtins.filter (gate: !(builtins.elem gate expectedGateNames)) catalogGates;
+    builtins.filter (gate: !(builtins.elem gate expectedGateNames)) wiredCatalogGates;
   unknownPhaseGates =
     builtins.filter (gate: !(builtins.elem gate catalogGates)) expectedGateNames;
 

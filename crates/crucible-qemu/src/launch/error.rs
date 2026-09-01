@@ -7,6 +7,19 @@ use super::QemuPreSpawnLaunchValidationError;
 /// Reports an invalid QEMU launch command.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QemuLaunchCommandError {
+    /// A process generation cannot use the reserved zero value.
+    #[error("QEMU plugin process generation must be nonzero")]
+    ZeroProcessGeneration,
+    /// A plugin resource limit was zero or exceeded its compiled ceiling.
+    #[error("QEMU plugin resource limit `{field}` value {configured} is outside 1..={hard}")]
+    InvalidPluginResourceLimit {
+        /// Stable public resource-limit field.
+        field: &'static str,
+        /// Rejected configured value.
+        configured: u64,
+        /// Immutable compiled ceiling.
+        hard: u64,
+    },
     /// App-random was configured without enabling the white-box callback.
     #[error("app-random QEMU launch requires white-box mode")]
     AppRandomWhileWhiteboxDisabled,
@@ -27,6 +40,30 @@ pub enum QemuLaunchCommandError {
     /// A translation-prefetch experiment lacked a safe absolute report path.
     #[error("translation-prefetch report path must be absolute and comma-free")]
     InvalidTranslationPrefetchReportPath,
+    /// The executable name did not identify an implemented fault architecture.
+    #[error("QEMU executable does not identify an x86_64 or aarch64 fault backend: `{executable}`")]
+    UnsupportedFaultCapabilityArchitecture {
+        /// Executable path whose basename was unsupported.
+        executable: String,
+    },
+    /// The supplied capability declaration was not a canonical exact manifest.
+    #[error("QEMU launch requires an exact admitted World node fault-capability manifest")]
+    InvalidFaultCapabilityRequirement,
+    /// A production launch was not bound to an admitted World node manifest.
+    #[error("production QEMU launch capability requirement is not World-bound")]
+    UnboundFaultCapabilityRequirement,
+    /// The VM and plugin target do not match the manifest's scenario node.
+    #[error("QEMU VM, plugin, and fault-capability node identities do not match")]
+    FaultCapabilityNodeMismatch,
+    /// The realized accelerator attachment differs from the admitted manifest.
+    #[error("QEMU accelerator attachment does not match the fault-capability manifest")]
+    AcceleratorCapabilityMismatch,
+    /// The QEMU system executable architecture differs from the World manifest.
+    #[error("QEMU executable architecture does not match the fault-capability manifest")]
+    FaultCapabilityArchitectureMismatch,
+    /// The launch CPU model does not match the manifest's realized CPU type.
+    #[error("QEMU launch CPU model does not match the fault-capability manifest")]
+    FaultCapabilityCpuModelMismatch,
     /// White-box mode lacked a live QEMU port-map validation.
     #[error("white-box QEMU launch requires live setup collision validation")]
     MissingWhiteboxSetupValidation,
@@ -53,6 +90,9 @@ pub enum QemuLaunchCommandError {
         /// Invalid overlay file name.
         file_name: String,
     },
+    /// An initrd was supplied for a firmware-only launch with no direct kernel.
+    #[error("QEMU initrd launch requires a directly loaded kernel")]
+    InitrdWithoutKernel,
     /// The QMP socket file name was not a stable relative file name.
     #[error("QMP socket file name must be stable relative text, got `{file_name}`")]
     InvalidQmpSocketFileName {

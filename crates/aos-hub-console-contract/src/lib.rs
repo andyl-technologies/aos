@@ -362,6 +362,13 @@ pub const INSTANCE_PAGES: &[PageSpec] = &[
         "bindings",
         "bindings",
     ),
+    PageSpec::new(
+        "storage-new",
+        "Create binding",
+        "",
+        "bindings/new",
+        "bindings",
+    ),
     PageSpec::new("domains", "Domains", "Infrastructure", "domains", "domains"),
     PageSpec::new("domains-new", "Add domain", "", "domains/new", "domains"),
     PageSpec::new(

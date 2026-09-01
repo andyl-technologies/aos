@@ -120,7 +120,6 @@ Confirm that the shell contains the staging runtime values, then deploy:
   --name aos-hub-staging \
   --domain aos.staging.andyl.org \
   --external-url https://aos.staging.andyl.org \
-  --default-public-delivery-url https://cdn.aos.staging.andyl.org \
   --deployment-id "$deployment_id" \
   --database-instance hub-v2 \
   --rate-limit-namespace-base 2000 \
@@ -139,20 +138,13 @@ retained only as rollback data and is not compatible with this Worker schema.
 
 Connect
 `cdn.aos.staging.andyl.org` to the `aos-hub-staging-surfaces` bucket from the
-Cloudflare R2 custom-domain UI or its provider API, then pass that origin as
-`--default-public-delivery-url` on every install and deploy. Every public
-registry with a reconciled complete placement on the instance-default binding
-whose object prefix exactly equals its canonical Hub slug then derives its Git
-URL as `<origin>/<slug>/`. The policy is evaluated continuously, but fails
-closed for arbitrary or opaque placement prefixes instead of exposing physical
-storage identity to clients.
-
-Use explicit domains, endpoints, gateways, routes, and advertisements for
-private registries, non-default bindings, alternate access policies, or a
-different canonical URL. An explicit Git advertisement is authoritative and
-suppresses derived delivery even while unhealthy, preserving fail-closed custom
-policy. Requests to the default public origin bypass the Hub Worker, so the
-derived policy is deliberately limited to public registries.
+Cloudflare R2 custom-domain UI or its provider API. Then use the Hub CLI or API
+to create an explicit domain, endpoint, gateway, and route for that attachment;
+grant each instance-owned resource to the consuming organization and advertise
+the route for `git`, `web`, and `nix_cache`. A deployment must not synthesize
+topology or grants from Worker bindings, custom domains, or environment
+variables. Operators must be able to inventory the complete effective
+configuration through the same CLI, API, and Web console used to change it.
 
 The first install provisions the R2 bucket, KV namespace, Durable Object
 migration, custom domain, and Worker secrets. After the first successful install,

@@ -434,7 +434,8 @@ pub(crate) fn signal_child(
 ) -> Result<(), QemuShutdownTargetError> {
     let pid = libc::pid_t::try_from(pid)
         .map_err(|error| QemuShutdownTargetError::new(operation, error.to_string()))?;
-    // SAFETY: `kill` is called with a pid returned by `std::process::Child`.
+    // SAFETY: `pid` was range-checked into `pid_t`; `kill` reads no Rust
+    // memory. Callers must authenticate external PIDs before using this helper.
     let result = unsafe { libc::kill(pid, signal) };
     if result == 0 {
         Ok(())

@@ -63,16 +63,19 @@ invariants/requirements it enforces.
 | `gate:scheduler-liveness` | L3 scheduler actor | INV-8; HARN-18 | The scheduler always reaches quiescence or its time limit; no deadlock/livelock. |
 | `gate:control-responsive` | L4 control plane | INV-8; HARN-19 | A control op is acknowledged within a bounded number of quanta. |
 | `gate:any-guest` | L2 guest boot | INV-5, G-2; HARN-6 | An unmodified guest boots deterministically with no image mutation. |
-| `gate:qemu-inert` | AOS QEMU package + patch series | INV-7, G-7; HARN-20, HARN-21 | Sim-off QEMU is behaviorally identical to upstream; each patch has a passing micro-test. |
+| `gate:qemu-inert` | AOS QEMU package + patch series | INV-7, G-7; HARN-20, HARN-21 | Sim-off guest and upstream management behavior are identical; the exact Crucible host-control extension is rejected without changing stopped run state; each patch has a passing micro-test. |
 | `gate:abi-conformance` | L1 boundary ABIs | G-8; HARN-32, HARN-33, HARN-34 | Shmem layout, protocol, and RPC match frozen golden vectors. |
 | `gate:license-boundary` | Repository and Crucible/QEMU boundary (Always) | BOUND-1..BOUND-12 | `crucible-harness` rejects dependency, license-scope, protocol-shape, package-source, or corresponding-source violations. |
 | `gate:patch-microtests` | QEMU patch series (per-patch) | INV-7; HARN-20 | Every patch in the series has a focused, passing behavioral test. |
 | `gate:adversarial-determinism` | Cross-layer (Phase ≥ L2) | INV-1, INV-4, INV-9; HARN-11 | N runs under hostile host conditions yield byte-identical canonical logs. |
 | `gate:e2e-determinism` | Final acceptance (all layers) | All headline invariants; HARN-22, HARN-23 | A representative multi-VM, fault-injected scenario runs bit-identically across adversarial conditions and reproduces from its artifact. |
 | `gate:basic-block-coverage` | L2/L3 coverage observation | INV-4, INV-7; ADV-21, PLUG-35..PLUG-37 | An opt-in loaded-QEMU run emits the expected guest-PC/block-length coverage stream with no fingerprint effect; off mode installs no callback. |
+| `gate:checkpoint-materialization` | L3 temporal graph (Phase 6) | INV-1, INV-2, INV-6; ADV-6, FAULT-27 | An exact fat checkpoint persists a complete content-addressed state closure, while a thin checkpoint remains only an advisory reconstruction cache. |
+| `gate:state-space-search` | L3 temporal graph and scheduler (Phase 6) | INV-1, INV-2, INV-4; ADV-7, FAULT-26 | Search expands only authenticated, genuine runtime decisions; materializes each frontier from canonical state; and deduplicates children by configuration identity. |
 | `gate:perf-bench` | Cross-layer (Phase ≥ L2), regression | G-9; PERF-1..PERF-34 | Cost-model metrics meet their baselines and no metric regresses beyond threshold. Unlike every other gate this is a *regression* gate (per-metric baselines), not a byte-identity check; it MUST never trade determinism for speed (defined in [`25-performance-targets.md`](25-performance-targets.md) §25.11). |
 | `gate:fleet-equivalence` | Cross-layer (Phase ≥ L3) | DCE-16, DCE-17, DCE-20; G-6 | Single-host and fleet search over the same `(family, seed, budget)` discover the same content-addressed finding-set with byte-identical artifacts; discovery order may differ. |
 | `gate:campaign-continuity` | Cross-layer (Phase ≥ L3) | DCE-11, DCE-12, DCE-26; PERF-28 | Seeding run N+1 from run N's campaign reproduces each corpus entry bit-identically, accumulated coverage is monotone non-decreasing across runs, and cross-provenance reuse is refused. |
+| `gate:signal-fault-system` | Cross-layer (Phase 7) | RFC-0014 executable contract | The closed signal-driven network, storage/9p, and node fault system has exhaustive per-kind evidence, live-boundary coverage, replay identity, documentation, and no retired or specification-only executable path. |
 
 The first twelve names — `gate:layer0-determinism`, `gate:single-vm-fingerprint`,
 `gate:layer1-injection`, `gate:replay-oracle`, `gate:divergence-bisect`,
@@ -87,6 +90,11 @@ it remains red until its loaded-QEMU proof is green. `gate:fleet-equivalence`
 and `gate:campaign-continuity` (owned
 by [`35-distributed-continuous-exploration.md`](35-distributed-continuous-exploration.md))
 are likewise canonical.
+
+`gate:signal-fault-system` is the terminal fault-system acceptance gate. It
+aggregates the closed effect registry, production adapter capability manifests,
+live boundary tests, replay/search evidence, documentation coverage, and the
+repository guard that rejects retired fault APIs and executable sensor effects.
 
 `gate:license-boundary` is an **Always** gate owned by `crucible-harness`; it
 runs on every boundary-affecting change and at release construction.
@@ -230,8 +238,11 @@ runs on every boundary-affecting change and at release construction.
   patched source and exercise it with sim mode **off**, comparing its observable
   behavior against an unpatched reference build over a behavioral corpus (boot,
   device I/O, migration, snapshot, QMP surface).
-- **Pass/fail:** sim-off behavior is identical to the unpatched reference across
-  the corpus; the plugin is not loaded and no sim flag is set.
+- **Pass/fail:** sim-off guest and upstream management behavior are identical to
+  the unpatched reference across the corpus; the plugin is not loaded and no sim
+  flag is set. The only permitted QMP command-set delta is the enumerated
+  terminal-lifecycle host-control command, which MUST fail closed and leave the
+  stopped VM in its original run state without sim mode.
 - **Guards:** the AOS QEMU package + patch series. **Enforces:** INV-7, G-7.
 
 #### `gate:abi-conformance`
@@ -749,8 +760,11 @@ Forward ref: [`11-qemu-patches.md`](11-qemu-patches.md).
   the patched source, run with **sim mode off** (plugin not loaded, no sim
   flags), is behaviorally identical to an unpatched reference build across a
   behavioral corpus (boot a stock image, device I/O, snapshot/restore, migration
-  surface, the QMP command set). Pass/fail is identical observable behavior; any
-  difference is a violation of INV-7 and blocks the AOS QEMU package from shipping.
+  surface, and the upstream QMP command set). The gate MUST separately prove that
+  the exact enumerated Crucible terminal-lifecycle QMP extension fails closed
+  and leaves a stopped VM in its original run state without sim mode. Any other
+  observable difference is a violation of INV-7 and blocks the AOS QEMU package
+  from shipping.
   This is what lets AOS use one QEMU for both production and simulation (G-7).
 
 The inertness corpus is hermetic and from-source per AOS build principles: the
@@ -859,15 +873,18 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   phase5  gate:control-responsive            (control plane)
   phase6  gate:replay-oracle                 (active search)
   phase6  gate:basic-block-coverage           (loaded-QEMU coverage boundary)
+  phase6  gate:checkpoint-materialization    (exact durable search state)
+  phase6  gate:state-space-search            (authenticated frontier expansion)
   phase7  gate:perf-bench                    (performance regression)
   phase7  gate:e2e-determinism               (final acceptance)
   phase7  gate:fleet-equivalence             (distributed equivalence)
   phase7  gate:campaign-continuity           (coverage ratchet)
+  phase7  gate:signal-fault-system           (complete signal fault system)
 ```
 
 - **[HARN-30]** A phase's gate(s) MUST be green before the next phase's tasks are
-  worked, and `gate:e2e-determinism` MUST remain in the terminal Phase 7 gate
-  set. The in-process double (§3) is what makes the Phase 1 foundation and
+  worked, and `gate:signal-fault-system` MUST remain the terminal Phase 7 gate,
+  after `gate:e2e-determinism` and the other production acceptance gates. The in-process double (§3) is what makes the Phase 1 foundation and
   Phase 4 mock end-to-end checks fast enough to iterate on, and must therefore
   be built in Phase 1 before the layers that depend on it.
 
@@ -920,7 +937,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
     `PluginNetworkTx` before asserting byte-for-byte schedule equality, with the
     plugin-to-engine dependency documented as a test-only HARN-16 cross-check.
     The installed production plugin gate records every completed busy, idle,
-    and idle-jump quantum in that same typed vocabulary, requires the host-load
+    and idle-jump quantum in that same typed vocabulary, requires the scheduler-preemption
     run to reproduce the schedule exactly, builds a `SimInstructionScript` from
     the live reached-icount sequence, replays the exact requested horizons
     through `SimDouble`, and compares the versioned, length-prefixed canonical
@@ -942,7 +959,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   unmodified guest twice, compare fingerprint streams; on mismatch emit streams +
   bisection result). — satisfies [HARN-5]; spec §4.3.
   - Completed by the same live gate. The ordinary pass boots one unmodified
-    fixed guest twice and proves identical streams under second-run host load.
+    fixed guest twice and proves identical streams under bounded scheduler preemption.
     The negative-control pass forces a real QEMU divergence, performs
     ordinal-aware RESTART refinement to the exact first differing instruction,
     and emits both sides' complete architectural register bytes, paired
@@ -1005,13 +1022,13 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   scoped [HARN-6] gate, [G-2]; spec §1.2.
   Completed by `checks.crucible.phase2.gates.anyGuest`: a generic AOS Linux
   kernel/initramfs fixture runs under diskless and guest-visible CoW-block launch
-  profiles twice on real QEMU with the host-side trace plugin, the diskless cadence fingerprint streams match exactly
-  through the host QMP-quit window after a generic serial completion marker, both
-  CoW traces pass structural validation while the profile writes through
-  `/dev/vda` and leaves the copied base image byte-identical, and the optional
-  white-box path is consumed as a separate unused, non-perturbing host/plugin
-  contract. Broader off-the-shelf guest image coverage remains outside this
-  completed initial matrix.
+  profiles twice on real QEMU with the host-side trace plugin, both cadence
+  fingerprint streams match exactly through the host QMP-quit window after a
+  generic serial completion marker, the CoW profile writes through `/dev/vda`
+  and leaves the copied base image byte-identical, and the optional white-box
+  path is consumed as a separate unused, non-perturbing host/plugin contract.
+  Broader off-the-shelf guest image coverage remains outside this completed
+  initial matrix.
 - [x] **T-HARN-17** Freeze the boundary-ABI golden vectors (shmem layout,
   protocol frames, RPC messages) and implement `gate:abi-conformance` with version
   checks and the bump-on-change rule. — satisfies [HARN-32], [G-8]; spec §8.1.
@@ -1128,7 +1145,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   identity drift. This closes the shared mock artifact machine-profile route;
   physical AOS VM/fleet reproduction remains with the packaging and fleet gates.
 - [x] **T-HARN-26** Wire the full gate ordering into the phase plan and enforce
-  green-before-advance, with `gate:e2e-determinism` terminal and the `SimDouble`
+  green-before-advance, with `gate:signal-fault-system` terminal and the `SimDouble`
   available from Phase 1. — satisfies [HARN-3], [HARN-30]; spec §13.
   Completed by `checks.crucible.phase1.phaseGateOrdering`:
   `crucible_harness::phase_plan` now records every ordered phase-gate
@@ -1138,8 +1155,8 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   Nix attr path, validates the canonical plan against unknown catalog gates,
   duplicate attr paths, out-of-order phases, missing phase exits, bad terminal
   markers, and SimDouble-before-Phase-1 dependencies, and marks the Phase 7
-  `gate:e2e-determinism` occurrence as the terminal final-acceptance
-  determinism gate. `tests/crucible/default.nix` now wraps gate attrs with
+  `gate:signal-fault-system` occurrence as the terminal final-acceptance gate.
+  `tests/crucible/default.nix` now wraps gate attrs with
   green-before-advance derivations so later gate occurrences build only after
   prior gate occurrences and the required Phase 1 `SimDouble` check are green.
   The `phase_plan` integration test cross-checks the Rust ordering against this

@@ -89,6 +89,7 @@ pub(super) fn cli_fork_workflow_routes_local_qemu_into_live_guest_configuration(
             streamed_event_frames: Vec::new(),
             coverage_feedback: crucible::EventLogCoverageFeedback::from_event_log(&[]),
             execution_fingerprints: Vec::new(),
+            resolved_effect_trace: None,
             acknowledged_commands: vec![SessionCommandKind::Query, SessionCommandKind::Stop],
             watch_statuses: Vec::new(),
         },

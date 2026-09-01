@@ -7,11 +7,7 @@
   qemuLiveWhiteboxDoorbell ? import ./phase2-qemu-live-whitebox-doorbell.nix {inherit pkgs lib;},
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   phase2SingleVmFingerprintDefinition = import ./phase1-single-vm-fingerprint-gate.nix {
     inherit pkgs lib;
@@ -211,7 +207,7 @@
     ++ failuresFor "tests/crucible/phase4-guest-host-emitter-absence.nix" emitterAbsenceGate [
       {
         label = "emitter absence preserves black-box function";
-        needle = "preserved=determinism,faults,coverage,observable-io,backend-fingerprint";
+        needle = "preserved=determinism,signal-faults,coverage,observable-io,backend-fingerprint";
       }
       {
         label = "canonical gate wiring pointer";

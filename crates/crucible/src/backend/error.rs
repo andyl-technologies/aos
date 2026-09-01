@@ -21,6 +21,19 @@ pub enum BackendError {
         /// A deterministic diagnostic message.
         message: String,
     },
+    /// A backend-owned production resource reservation failed.
+    ResourceLimit {
+        /// Closed resource field whose reservation failed.
+        field: &'static str,
+        /// Existing admitted usage in field units.
+        current: u64,
+        /// Additional requested usage in field units.
+        requested: u64,
+        /// Scenario-authored ceiling in field units.
+        configured: u64,
+        /// Compiled ceiling in field units.
+        hard: u64,
+    },
 }
 
 impl fmt::Display for BackendError {
@@ -33,6 +46,16 @@ impl fmt::Display for BackendError {
                 write!(f, "backend capability {capability} is unsupported")
             }
             Self::Rejected { message } => f.write_str(message),
+            Self::ResourceLimit {
+                field,
+                current,
+                requested,
+                configured,
+                hard,
+            } => write!(
+                f,
+                "backend resource `{field}` cannot reserve {requested} units at current {current}; configured {configured}, hard {hard}"
+            ),
         }
     }
 }

@@ -11,6 +11,7 @@
   decisionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/31-decision-register.md;
   defaultChecks = builtins.readFile ./default.nix;
   backend = builtins.readFile ../../crates/crucible/src/backend.rs;
+  backendTests = builtins.readFile ../../crates/crucible/src/backend/tests.rs;
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   simBackend = import ./_crucible-local-and-test-backends-source.nix;
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
@@ -78,6 +79,8 @@
         label = "typed unsupported backend error";
         needle = "BackendError::Unsupported";
       }
+    ]
+    ++ failuresFor "crates/crucible/src/backend/tests.rs" backendTests [
       {
         label = "mock rejects gdbstub";
         needle = "mock_simulation_backend_rejects_gdbstub_capability_with_typed_error";
@@ -142,15 +145,15 @@
       }
       {
         label = "debug goto delegates to temporal graph";
-        needle = "self.graph.debug_goto";
+        needle = "candidate_graph.debug_goto";
       }
       {
         label = "reverse-step delegates to temporal graph";
-        needle = "self.graph.debug_reverse_step";
+        needle = "candidate_graph.debug_reverse_step";
       }
       {
         label = "reverse-continue delegates to temporal graph";
-        needle = "self.graph.debug_reverse_continue";
+        needle = "candidate_graph.debug_reverse_continue";
       }
       {
         label = "non-canonical branch guard";
@@ -166,7 +169,7 @@
       }
       {
         label = "actor truncates stale debug future before marker append";
-        needle = "condition_event_log.truncate(base_len)";
+        needle = "self.event_log.truncate_to_len(base_len)";
       }
       {
         label = "direct engine rejects missing branch event-log prefix";

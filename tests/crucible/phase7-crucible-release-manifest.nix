@@ -17,6 +17,7 @@
   doorbellAbi = builtins.readFile ../../crates/crucible-protocol/src/doorbell_abi.rs;
   apiRpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
+  crucibleCargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
 
   firstLineWith = label: prefix: content: let
     matches = builtins.filter (line: lib.hasPrefix prefix line) (lib.splitString "\n" content);
@@ -31,7 +32,6 @@
     lib.removeSuffix "\";"
     (lib.removePrefix prefix (firstLineWith label prefix content));
   crucibleVersion = sourceStringConst "Crucible package version" "  version = \"" cruciblePackageNix;
-  crucibleCargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
   pluginCargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
   shmemAbiVersion = sourceConst "shmem ABI version" "pub const ABI_VERSION: u32 = " shmemLib;
   guestHostProtocolVersion =
@@ -139,6 +139,9 @@
     ++ lib.optionals (manifest.crucible.cargoDeps.hash != crucibleCargoDepsHash) [
       "release manifest cargo deps hash ${manifest.crucible.cargoDeps.hash} does not match package hash ${crucibleCargoDepsHash}"
     ]
+    ++ lib.optionals (pluginCargoDepsHash != crucibleCargoDepsHash) [
+      "crucible-qemu-plugin cargo deps hash ${pluginCargoDepsHash} does not match Crucible workspace hash ${crucibleCargoDepsHash}"
+    ]
     ++ lib.optionals (manifest.crucible.cargoDeps.kind != "fetchCargoVendor") [
       "release manifest cargo deps kind is not fetchCargoVendor"
     ]
@@ -150,9 +153,6 @@
     ]
     ++ lib.optionals (manifest.crucible.source.sourceStoreHash != sourceStoreHash) [
       "release manifest source store hash ${manifest.crucible.source.sourceStoreHash} does not match filtered source hash ${sourceStoreHash}"
-    ]
-    ++ lib.optionals (pluginCargoDepsHash != crucibleCargoDepsHash) [
-      "crucible-qemu-plugin cargo deps hash ${pluginCargoDepsHash} does not match Crucible workspace hash ${crucibleCargoDepsHash}"
     ]
     ++ lib.optionals (manifest.qemu.version != qemuPackageMetadataProbe.series.qemuVersion) [
       "release manifest QEMU version ${manifest.qemu.version} does not match QEMU series ${qemuPackageMetadataProbe.series.qemuVersion}"
@@ -203,7 +203,7 @@
     ) [
       "release manifest SSH component is incomplete"
     ]
-    ++ lib.optionals (manifest.components.qemu.licenses != ["GPL-2.0-only" "GPL-2.0-or-later" "MIT"]) [
+    ++ lib.optionals (manifest.components.qemu.licenses != ["GPL-2.0-only" "GPL-2.0-or-later" "MIT" "BSD-2-Clause" "BSD-3-Clause"]) [
       "release manifest QEMU component license inventory is incomplete"
     ]
     ++ lib.optionals (manifest.components.qemu.combinedWorkLicense != "GPL-2.0-only") [
@@ -221,10 +221,10 @@
     ++ lib.optionals (manifest.components.qemu.releaseVia != "crucible") [
       "release manifest must route patched QEMU through the suite"
     ]
-    ++ lib.optionals (manifest.components.correspondingSource.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later"]) [
+    ++ lib.optionals (manifest.components.correspondingSource.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "BSD-2-Clause" "BSD-3-Clause"]) [
       "release manifest corresponding-source license inventory is incomplete"
     ]
-    ++ lib.optionals (manifest.licensing.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later" "BSD-2-Clause"]) [
+    ++ lib.optionals (manifest.licensing.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later" "BSD-2-Clause" "BSD-3-Clause"]) [
       "release manifest aggregate project license inventory is incomplete"
     ]
     ++ lib.optionals (manifest.licensing.licenseSetScope != "primary-project-components") [
@@ -363,6 +363,10 @@
         needle = "hash = cargoDepsHash;";
       }
       {
+        label = "cargo deps hash comes from the shared pin";
+        needle = "cargoDepsHash = import ./_cargo-deps-hash.nix;";
+      }
+      {
         label = "release manifest env installed";
         needle = "$out/share/aos/crucible/release-manifest.env";
       }
@@ -396,7 +400,7 @@
     ++ failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginPackageNix [
       {
         label = "plugin cargo deps vendored";
-        needle = "cargoDeps = fetchCargoDeps";
+        needle = "cargoDeps = fetchCargoVendor";
       }
       {
         label = "plugin cargo deps source root";
@@ -468,7 +472,7 @@
       }
       {
         label = "aggregate project licenses include packaged operator clients";
-        needle = "aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause";
+        needle = "aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause,BSD-3-Clause";
       }
       {
         label = "debug gateway component";
@@ -576,7 +580,7 @@ in
           grep -q "^rpc_abi=$RPC_ABI$" "$manifest_env"
           grep -q '^reproducibility_timestamp_policy=no-wall-clock-timestamps$' "$manifest_env"
           grep -q '^boundary_crates_license=MIT$' "$manifest_env"
-          grep -q '^qemu_component_licenses=GPL-2.0-only,GPL-2.0-or-later,MIT$' "$manifest_env"
+          grep -q '^qemu_component_licenses=GPL-2.0-only,GPL-2.0-or-later,MIT,BSD-2-Clause,BSD-3-Clause$' "$manifest_env"
           grep -q '^qemu_combined_work_license=GPL-2.0-only$' "$manifest_env"
           grep -q '^qemu_created_source_license=GPL-2.0-or-later$' "$manifest_env"
           grep -q '^qemu_generated_boundary_header_license_option=MIT$' "$manifest_env"
@@ -588,7 +592,7 @@ in
           grep -q '^ssh_package=openssh$' "$manifest_env"
           grep -q '^ssh_license=BSD-2-Clause$' "$manifest_env"
           grep -q '^ssh_boundary=operator-guest-bridge-client$' "$manifest_env"
-          grep -q '^aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause$' "$manifest_env"
+          grep -q '^aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause,BSD-3-Clause$' "$manifest_env"
           grep -q '^aggregate_license_scope=primary-project-components$' "$manifest_env"
           grep -q '^third_party_license_metadata=vendored-source-manifests$' "$manifest_env"
           grep -q '^publication_root_package=crucible$' "$manifest_env"
@@ -611,7 +615,7 @@ in
             printf 'shmem_abi=%s\n' "$SHMEM_ABI"
             printf 'guest_host_protocol_abi=%s\n' "$GUEST_HOST_PROTOCOL_ABI"
             printf 'rpc_abi=%s\n' "$RPC_ABI"
-            printf '%s\n' 'cargo_deps=fetchCargoDeps'
+            printf '%s\n' 'cargo_deps=fetchCargoVendor'
             printf '%s\n' 'cargo_deps_vendored=true'
             printf '%s\n' 'timestamp_policy=no-wall-clock-timestamps'
             printf '%s\n' 'host_path_policy=no-host-paths'

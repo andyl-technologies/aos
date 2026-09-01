@@ -8,6 +8,7 @@ use super::QemuLiveNetworkIoServicerError;
 use crate::{
     LaunchProfileError, QemuHostPluginSetupError, QemuLaunchCommandError,
     QemuMappedQuantumShmemHotPathError, QemuNodeChannelError, QmpError,
+    supervision::bounded_scheduler_preemption::BoundedSchedulerPreemptionError,
 };
 
 /// Failure produced by the live network-I/O certification.
@@ -62,6 +63,12 @@ pub enum QemuLiveNetworkIoGateError {
     /// The plugin setup acknowledgement did not permit scheduling.
     #[error("live network plugin setup acknowledgement was not ready")]
     SetupAckNotReady,
+    /// The resource-bounded host-scheduling adversary failed.
+    #[error("live network bounded scheduler preemption failed")]
+    SchedulerPreemption {
+        /// Typed signal, watchdog, or wall-bound failure.
+        source: BoundedSchedulerPreemptionError,
+    },
     /// The network router mapping or ring operation failed.
     #[error("live network servicer failed")]
     NetworkServicer {
@@ -89,8 +96,53 @@ pub enum QemuLiveNetworkIoGateError {
         source: QemuNodeChannelError,
     },
     /// The guest failed to leave the plugin startup barrier.
-    #[error("live network guest did not reach the priming ceiling")]
-    PrimeDidNotReach,
+    #[error("live network guest did not reach priming ceiling {ceiling}: {evidence}")]
+    PrimeDidNotReach {
+        /// The exact scheduler ceiling that was not reached.
+        ceiling: u64,
+        /// Final node-slot state or the error that prevented observing it.
+        evidence: String,
+    },
+    /// Real QEMU did not retain the pre-driver frame in canonical shared memory.
+    #[error("live network boot-time frame did not prove guest backpressure: {evidence}")]
+    BootBackpressureNotRetained {
+        /// Canonical inbound-ring state observed at the first boundary.
+        evidence: String,
+    },
+    /// A retained frame remained after the guest NIC became ready.
+    #[error("live network retained frame {frame:?} did not deliver on canonical retry")]
+    BackpressureRetryDidNotDeliver {
+        /// The deterministic boot-time frame key.
+        frame: crucible_shmem::FrameDeliveryKey,
+    },
+    /// The first retained retry was not observed at its canonical deadline.
+    #[error(
+        "live network retained frame {frame:?} did not retry exactly at {expected_retry_icount}: {evidence}"
+    )]
+    BackpressureRetryCoordinate {
+        /// The deterministic boot-time frame key.
+        frame: crucible_shmem::FrameDeliveryKey,
+        /// The retry coordinate derived from the persisted last attempt.
+        expected_retry_icount: u64,
+        /// Node and transport evidence observed around the retry boundary.
+        evidence: String,
+    },
+    /// Guest userspace did not acknowledge the exact retained frame.
+    #[error(
+        "live network retained frame {frame:?} left shared memory without a guest acknowledgement: {evidence}"
+    )]
+    BackpressureAcknowledgementDidNotArrive {
+        /// The deterministic boot-time frame key.
+        frame: crucible_shmem::FrameDeliveryKey,
+        /// Guest TX and node evidence captured after retry.
+        evidence: String,
+    },
+    /// The fresh-process retained-network exact snapshot proof failed.
+    #[error("live retained-network exact snapshot certification failed")]
+    RetainedExactSnapshot {
+        /// Exact-snapshot launch, capture, restore, or continuation failure.
+        source: crate::QemuLiveNodeStepGateError,
+    },
     /// The probe/reply discovery quantum did not park with a scheduled reply.
     #[error(
         "live network probe discovery did not schedule a reply and park at its ceiling: {evidence}"

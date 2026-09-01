@@ -5,11 +5,7 @@
   taskIds ? ["T-OBS-11"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   session = import ./_crucible-session-source.nix {inherit lib;};
   sessionGate = builtins.readFile ../../crates/crucible-session/tests/gate_control_responsive.rs;
@@ -143,10 +139,6 @@
       {
         label = "observational diagnostic emitted";
         needle = "SchedulerEventLogPayload::Diagnostic";
-      }
-      {
-        label = "command control fault entry emitted";
-        needle = "Decision::ControlFault(ControlFaultDecision";
       }
     ]
     ++ failuresFor "crates/crucible-api/src/lib.rs" apiLib [

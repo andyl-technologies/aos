@@ -1,8 +1,242 @@
-//! Live-backend attachment, observation, crash, checkpoint, and restart boundaries.
+//! Live-backend attachment, observation, checkpoint, and counter boundaries.
 
 use super::*;
 
 impl SingleScheduler {
+    /// Validates one VM identity without changing scheduler state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name
+    /// exactly one VM scheduler node.
+    pub fn validate_vm_node_activity_target(&self, node: &NodeId) -> Result<(), SchedulerError> {
+        let _index = self.vm_node_index(node)?;
+        Ok(())
+    }
+
+    /// Requires one VM to have the scheduler activity owned by a lifecycle stage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `node` is not a VM or
+    /// its authoritative scheduler activity differs from `expected`.
+    pub fn require_vm_node_activity(
+        &self,
+        node: &NodeId,
+        expected: SchedulerNodeActivity,
+    ) -> Result<(), SchedulerError> {
+        let index = self.vm_node_index(node)?;
+        let actual = self.nodes[index].activity;
+        if actual != expected {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "VM node `{}` has scheduler activity {actual:?}, expected {expected:?}",
+                    node.name
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    /// Returns the scheduler-owned activity of one VM node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `node` is not a VM.
+    pub fn vm_node_activity(&self, node: &NodeId) -> Result<SchedulerNodeActivity, SchedulerError> {
+        let index = self.vm_node_index(node)?;
+        Ok(self.nodes[index].activity)
+    }
+
+    /// Replaces one VM's scheduler activity at an authenticated lifecycle boundary.
+    ///
+    /// `Halted` models a powered-off VM that may later return to `Runnable`;
+    /// `Done` models permanent failure. The node counter is preserved so a
+    /// replacement QEMU process generation can resume the same logical timeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name
+    /// exactly one VM scheduler node.
+    pub fn set_vm_node_activity(
+        &mut self,
+        node: &NodeId,
+        activity: SchedulerNodeActivity,
+    ) -> Result<(), SchedulerError> {
+        let index = self.vm_node_index(node)?;
+        self.nodes[index].activity = activity;
+        if matches!(
+            activity,
+            SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
+        ) {
+            self.device_horizons.remove(node);
+        }
+        Ok(())
+    }
+
+    /// Atomically changes activity for a set of VM scheduler nodes.
+    ///
+    /// Every identity is validated before any scheduler state changes. This is
+    /// used when one fault boundary closes or replaces multiple VM process
+    /// generations as a single transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when any identity is absent or is not a VM.
+    /// The scheduler is unchanged on error.
+    pub fn set_vm_node_activities(
+        &mut self,
+        activities: &[(NodeId, SchedulerNodeActivity)],
+    ) -> Result<(), SchedulerError> {
+        for (node, _) in activities {
+            let _index = self.vm_node_index(node)?;
+        }
+        for (node, activity) in activities {
+            let index = self.vm_node_index(node)?;
+            self.nodes[index].activity = *activity;
+            if matches!(
+                activity,
+                SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
+            ) {
+                self.device_horizons.remove(node);
+            }
+        }
+        Ok(())
+    }
+
+    /// Atomically gives one activity to a validated VM-node set without allocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when any identity is absent or is not a VM.
+    pub fn set_vm_nodes_activity(
+        &mut self,
+        nodes: &[NodeId],
+        activity: SchedulerNodeActivity,
+    ) -> Result<(), SchedulerError> {
+        for node in nodes {
+            let _index = self.vm_node_index(node)?;
+        }
+        for node in nodes {
+            let index = self.vm_node_index(node)?;
+            self.nodes[index].activity = activity;
+            if matches!(
+                activity,
+                SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
+            ) {
+                self.device_horizons.remove(node);
+            }
+        }
+        Ok(())
+    }
+
+    /// Captures every scheduler-owned network continuation component.
+    #[must_use]
+    pub fn network_checkpoint(&self) -> SchedulerNetworkCheckpoint {
+        SchedulerNetworkCheckpoint {
+            links: self
+                .world_network_links
+                .iter()
+                .map(
+                    |((link, direction), runtime)| SchedulerNetworkLinkCheckpoint {
+                        link: link.clone(),
+                        direction: *direction,
+                        state: runtime.link.snapshot(),
+                    },
+                )
+                .collect(),
+            rng_positions: self
+                .world_network_rng_positions
+                .iter()
+                .map(|(link, position)| (link.clone(), *position))
+                .collect(),
+            signal_fault_wakeup_nanos: self.signal_fault_wakeup.map(|wakeup| wakeup.nanos),
+        }
+    }
+
+    /// Atomically restores scheduler-owned links, RNG cursors, and fault wakeup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] if checkpoint link/RNG
+    /// identities differ from the admitted World or a link snapshot is invalid.
+    pub fn restore_network_checkpoint(
+        &mut self,
+        checkpoint: &SchedulerNetworkCheckpoint,
+    ) -> Result<(), SchedulerError> {
+        let mut staged = self.clone();
+        let checkpoint_keys = checkpoint
+            .links
+            .iter()
+            .map(|link| (link.link.clone(), link.direction))
+            .collect::<BTreeSet<_>>();
+        let runtime_keys = staged
+            .world_network_links
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if checkpoint_keys.len() != checkpoint.links.len() || checkpoint_keys != runtime_keys {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "network checkpoint directed links differ from the admitted World",
+                ),
+            });
+        }
+        if checkpoint
+            .rng_positions
+            .iter()
+            .map(|(link, _position)| link)
+            .ne(staged.world_network_rng_positions.keys())
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "network checkpoint RNG links differ from the admitted World",
+                ),
+            });
+        }
+        let mut restored = BTreeMap::new();
+        for link in &checkpoint.links {
+            let state = crucible_device::NetLink::restore(&link.state).map_err(|error| {
+                SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "restore network checkpoint link `{}` {:?}: {error}",
+                        link.link.name, link.direction
+                    ),
+                }
+            })?;
+            restored.insert((link.link.clone(), link.direction), state);
+        }
+        let wakeup = checkpoint.signal_fault_wakeup_nanos;
+        if wakeup.is_some_and(|coordinate| coordinate <= staged.frontier.ticks) {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "network checkpoint fault wakeup is not after the scheduler frontier",
+                ),
+            });
+        }
+        for (key, link) in restored {
+            let runtime = staged.world_network_links.get_mut(&key).ok_or_else(|| {
+                SchedulerError::BoundaryViolation {
+                    message: String::from("validated network checkpoint link disappeared"),
+                }
+            })?;
+            runtime.link = link;
+        }
+        for (link, position) in &checkpoint.rng_positions {
+            let runtime_position = staged
+                .world_network_rng_positions
+                .get_mut(link)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: String::from("validated network checkpoint RNG link disappeared"),
+                })?;
+            *runtime_position = *position;
+        }
+        staged.signal_fault_wakeup = wakeup.map(|nanos| SimInstant { nanos });
+        staged.refresh_device_horizons()?;
+        *self = staged;
+        Ok(())
+    }
+
     /// Attaches the scheduler-owned directed links declared by `world`.
     ///
     /// This is the live-backend counterpart to [`SingleScheduler::from_world`]:
@@ -29,9 +263,7 @@ impl SingleScheduler {
             .keys()
             .map(|(link, _direction)| (link.clone(), 0))
             .collect();
-        let active = self.trigger_actions.combined_faults();
-        self.apply_trigger_device_faults(&active)
-            .map_err(SchedulerWorldInstantiationError::from)
+        Ok(())
     }
 
     /// Atomically appends observations and their completed evaluation boundary.
@@ -51,156 +283,16 @@ impl SingleScheduler {
             .append_observations_at_boundary(events, at, kind)
     }
 
-    /// Previews ready-point process relaunches implied by boundary heal controls.
-    ///
-    /// A live backend uses this preview to create a replacement process before
-    /// the same boundary can select the scheduler node that the heal resumes.
-    /// The authoritative state change still occurs only when the control is
-    /// applied by [`QuantumLoop::drive_quantum`].
-    #[must_use]
-    pub fn preview_ready_point_control_restarts(
-        &self,
-        control: &[ControlOperation],
-    ) -> Vec<(NodeId, NodeCounter)> {
-        control
-            .iter()
-            .filter_map(|operation| {
-                let ControlOperationKind::HealFault { tag } = &operation.kind else {
-                    return None;
-                };
-                let Fault::Node(crate::NodeFault::Crash { node, restart }) =
-                    self.trigger_actions.active_taxonomy_faults.get(tag)?
-                else {
-                    return None;
-                };
-                matches!(restart, RestartPolicy::FromReadyPoint)
-                    .then(|| {
-                        self.nodes
-                            .iter()
-                            .find(|runtime| {
-                                runtime.id.kind == SchedulingNodeKind::Vm
-                                    && runtime.id.node == *node
-                            })
-                            .map(|runtime| (node.clone(), runtime.ready_counter))
-                    })
-                    .flatten()
-            })
-            .collect()
-    }
-
-    /// Previews checkpoint-based process relaunches implied by heal controls.
-    #[must_use]
-    pub fn preview_checkpoint_control_restarts(&self, control: &[ControlOperation]) -> Vec<NodeId> {
-        control
-            .iter()
-            .filter_map(|operation| {
-                let ControlOperationKind::HealFault { tag } = &operation.kind else {
-                    return None;
-                };
-                let Fault::Node(crate::NodeFault::Crash { node, restart }) =
-                    self.trigger_actions.active_taxonomy_faults.get(tag)?
-                else {
-                    return None;
-                };
-                (*restart == RestartPolicy::FromLastCheckpoint).then(|| node.clone())
-            })
-            .collect()
-    }
-
-    /// Applies a crash fault to a VM scheduler node.
-    ///
-    /// The crash stops the runtime, removes all incident effective topology
-    /// edges, clears exact local wakeups, discards scheduler-owned events whose
-    /// producer or consumer is the crashed node, and voids all in-flight device
-    /// completions targeting the node. The returned application records the
-    /// deterministic discard set used for replay.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name a
-    /// VM scheduler node or the node is already crashed. Returns
-    /// [`SchedulerError::TimeConversion`] when the crash activation time cannot
-    /// be projected.
-    pub fn apply_node_crash(
-        &mut self,
-        sequence: u64,
-        node: &NodeId,
-        restart: RestartPolicy,
-    ) -> Result<SchedulerNodeCrashApplication, SchedulerError> {
-        let index = self.vm_node_index(node)?;
-        if self.node_execution_stopped(&self.nodes[index]) {
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!("node crash or stop already active for {}", node.name),
-            });
-        }
-
-        let scheduler_node = self.nodes[index].id.clone();
-        let at = self.node_current_time(&self.nodes[index])?;
-        let counter = self.nodes[index].counter;
-        let previous_activity = self.nodes[index].activity;
-        let timing_faults_at_crash = self.nodes[index].timing_faults;
-        let checkpoint = self.nodes[index].last_checkpoint.clone();
-        let removed_edges = self.incident_effective_edges(&scheduler_node);
-        let removed_endpoints = removed_edges
-            .iter()
-            .map(SchedulerLookaheadEdge::endpoint)
-            .collect::<Vec<_>>();
-        let discarded_events = self.discard_pending_events_for_node(&scheduler_node);
-        let discarded_io = self.discard_device_completions_for_node(node);
-        self.preemption_requests
-            .retain(|decision| decision.node != *node);
-        self.device_horizons.remove(node);
-
-        self.nodes[index].crash = Some(RuntimeNodeCrashState {
-            activation_sequence: sequence,
-            restart,
-            previous_activity,
-            counter_at_crash: counter,
-            timing_faults_at_crash,
-            removed_edges: removed_edges.clone(),
-            checkpoint: checkpoint.clone(),
-        });
-        self.nodes[index].activity = SchedulerNodeActivity::Halted;
-        self.nodes[index].exact_local_event = ExactLocalEvent::NoArmedTimer;
-        self.nodes[index].vcpu_idle_states.clear();
-
-        if !removed_endpoints.is_empty() {
-            self.schedule_topology_change(SchedulerTopologyChange::partition(
-                sequence,
-                removed_endpoints,
-            ))?;
-        }
-        self.frontier = frontier_for(&self.nodes, self.timeline.shift())?;
-
-        let application = SchedulerNodeCrashApplication {
-            sequence,
-            node: node.clone(),
-            restart,
-            at,
-            counter,
-            previous_activity,
-            discarded_events,
-            discarded_io,
-            removed_edges,
-            checkpoint,
-        };
-        self.node_crash_applications.push(application.clone());
-        Ok(application)
-    }
-
     /// Records the current VM node counter as its last checkpoint anchor.
     ///
-    /// This scheduler-side anchor is the crash/restart contract needed by
-    /// [`RestartPolicy::FromLastCheckpoint`]. Materialized VM/device state lives
-    /// in the temporal graph; the scheduler records the counter/time identity
-    /// that a checkpoint restore must resume from.
+    /// Materialized VM/device state lives in the temporal graph; the scheduler
+    /// records the counter/time identity that a checkpoint restore resumes from.
     ///
     /// # Errors
     ///
     /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name a
-    /// VM scheduler node or that node is currently stopped by a crash. Returns
-    /// [`SchedulerError::TimeConversion`] when the checkpoint time cannot be
-    /// projected.
+    /// VM scheduler node. Returns [`SchedulerError::TimeConversion`] when the
+    /// checkpoint time cannot be projected.
     pub fn record_node_checkpoint(
         &mut self,
         node: &NodeId,
@@ -218,19 +310,14 @@ impl SingleScheduler {
     /// # Errors
     ///
     /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name a
-    /// VM scheduler node or that node is currently stopped by a crash. Returns
-    /// [`SchedulerError::TimeConversion`] when `counter` cannot be projected.
+    /// VM scheduler node. Returns [`SchedulerError::TimeConversion`] when
+    /// `counter` cannot be projected.
     pub fn record_node_checkpoint_at(
         &mut self,
         node: &NodeId,
         counter: NodeCounter,
     ) -> Result<SchedulerNodeCheckpoint, SchedulerError> {
         let index = self.vm_node_index(node)?;
-        if self.node_execution_stopped(&self.nodes[index]) {
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!("cannot checkpoint stopped node {}", node.name),
-            });
-        }
         let checkpoint = SchedulerNodeCheckpoint {
             node: node.clone(),
             counter,
@@ -333,210 +420,10 @@ impl SingleScheduler {
         counter: NodeCounter,
     ) -> Result<(), SchedulerError> {
         let index = self.vm_node_index(node)?;
-        if self.node_execution_stopped(&self.nodes[index]) {
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!("cannot rebase stopped node {}", node.name),
-            });
-        }
         let anchor_time = self.node_current_time(&self.nodes[index])?;
         self.nodes[index].counter = counter;
-        self.nodes[index].timing_faults.anchor_counter = counter;
-        self.nodes[index].timing_faults.anchor_time = anchor_time;
+        self.nodes[index].time_mapping.anchor_counter = counter;
+        self.nodes[index].time_mapping.anchor_time = anchor_time;
         Ok(())
-    }
-
-    /// Heals an active crash fault and applies the node's restart policy.
-    ///
-    /// [`RestartPolicy::FromReadyPoint`] reboots the node from the baked counter
-    /// admitted when the scheduler was constructed.
-    /// [`RestartPolicy::FromLastCheckpoint`] resumes from the node's last
-    /// recorded pre-crash checkpoint. Both policies re-anchor the node's active
-    /// timing projection at the current frontier and queue restoration of the
-    /// edges removed by the crash.
-    /// [`RestartPolicy::StayDown`] records the heal but leaves the node stopped
-    /// until a future explicit restart command.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name a
-    /// VM scheduler node or no crash is active for the node.
-    pub fn heal_node_crash(
-        &mut self,
-        sequence: u64,
-        node: &NodeId,
-    ) -> Result<SchedulerNodeRestartApplication, SchedulerError> {
-        let index = self.vm_node_index(node)?;
-        let Some(state) = self.nodes[index].crash.clone() else {
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!("node crash is not active for {}", node.name),
-            });
-        };
-        if state.restart == RestartPolicy::FromLastCheckpoint && state.checkpoint.is_none() {
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!(
-                    "checkpoint restart requested for {} without a recorded pre-crash checkpoint",
-                    node.name
-                ),
-            });
-        }
-        let Some(state) = self.nodes[index].crash.take() else {
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!("node crash is not active for {}", node.name),
-            });
-        };
-
-        let restart_time = SimInstant {
-            nanos: self.frontier.ticks,
-        };
-        if state.restart == RestartPolicy::StayDown {
-            self.nodes[index].stopped_crash = Some(RuntimeNodeStoppedState {
-                activation_sequence: state.activation_sequence,
-                previous_activity: state.previous_activity,
-                timing_faults_at_stop: state.timing_faults_at_crash,
-                removed_edges: state.removed_edges,
-            });
-            let application = SchedulerNodeRestartApplication {
-                sequence,
-                node: node.clone(),
-                restart: state.restart,
-                at: restart_time,
-                restarted: false,
-                counter: self.nodes[index].counter,
-                restored_edges: Vec::new(),
-                checkpoint: state.checkpoint,
-            };
-            self.node_restart_applications.push(application.clone());
-            return Ok(application);
-        }
-
-        let checkpoint = match state.restart {
-            RestartPolicy::FromLastCheckpoint => state.checkpoint.clone(),
-            RestartPolicy::FromReadyPoint | RestartPolicy::StayDown => state.checkpoint.clone(),
-        };
-        let counter = match state.restart {
-            RestartPolicy::FromReadyPoint => self.nodes[index].ready_counter,
-            RestartPolicy::FromLastCheckpoint => checkpoint
-                .as_ref()
-                .map(|checkpoint| checkpoint.counter)
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "checkpoint restart requested for {} without a recorded pre-crash checkpoint",
-                        node.name
-                    ),
-                })?,
-            RestartPolicy::StayDown => state.counter_at_crash,
-        };
-        let mut timing_faults = state.timing_faults_at_crash;
-        timing_faults.anchor_counter = counter;
-        timing_faults.anchor_time = restart_time;
-
-        self.nodes[index].counter = counter;
-        self.nodes[index].timing_faults = timing_faults;
-        self.nodes[index].activity = state.previous_activity;
-        self.nodes[index].exact_local_event = ExactLocalEvent::NoArmedTimer;
-        self.nodes[index].vcpu_idle_states.clear();
-        if state.restart == RestartPolicy::FromReadyPoint {
-            self.nodes[index].last_checkpoint = None;
-        }
-
-        if !state.removed_edges.is_empty() {
-            self.schedule_topology_change(SchedulerTopologyChange::heal(
-                sequence,
-                state.removed_edges.clone(),
-            ))?;
-        }
-        self.frontier = frontier_for(&self.nodes, self.timeline.shift())?;
-
-        let application = SchedulerNodeRestartApplication {
-            sequence,
-            node: node.clone(),
-            restart: state.restart,
-            at: restart_time,
-            restarted: true,
-            counter,
-            restored_edges: state.removed_edges,
-            checkpoint,
-        };
-        self.node_restart_applications.push(application.clone());
-        Ok(application)
-    }
-
-    /// Explicitly restarts a node left stopped by [`RestartPolicy::StayDown`].
-    ///
-    /// The restart uses the baked ready-point counter and restores the effective
-    /// topology edges that were suppressed while the node was down.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name a
-    /// VM scheduler node or the node is not waiting in the StayDown stopped
-    /// state.
-    pub fn restart_stopped_node(
-        &mut self,
-        sequence: u64,
-        node: &NodeId,
-    ) -> Result<SchedulerNodeRestartApplication, SchedulerError> {
-        let index = self.vm_node_index(node)?;
-        let Some(state) = self.nodes[index].stopped_crash.take() else {
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!("node is not stopped after crash: {}", node.name),
-            });
-        };
-
-        let restart_time = SimInstant {
-            nanos: self.frontier.ticks,
-        };
-        let counter = self.nodes[index].ready_counter;
-        let mut timing_faults = state.timing_faults_at_stop;
-        timing_faults.anchor_counter = counter;
-        timing_faults.anchor_time = restart_time;
-
-        self.nodes[index].counter = counter;
-        self.nodes[index].timing_faults = timing_faults;
-        self.nodes[index].activity = state.previous_activity;
-        self.nodes[index].exact_local_event = ExactLocalEvent::NoArmedTimer;
-        self.nodes[index].vcpu_idle_states.clear();
-        self.nodes[index].last_checkpoint = None;
-
-        if !state.removed_edges.is_empty() {
-            self.schedule_topology_change(SchedulerTopologyChange::heal(
-                sequence,
-                state.removed_edges.clone(),
-            ))?;
-        }
-        self.frontier = frontier_for(&self.nodes, self.timeline.shift())?;
-
-        let application = SchedulerNodeRestartApplication {
-            sequence,
-            node: node.clone(),
-            restart: RestartPolicy::StayDown,
-            at: restart_time,
-            restarted: true,
-            counter,
-            restored_edges: state.removed_edges,
-            checkpoint: None,
-        };
-        self.node_restart_applications.push(application.clone());
-        Ok(application)
-    }
-
-    /// Returns whether a VM node is currently crashed.
-    #[must_use]
-    pub fn is_node_crashed(&self, node: &NodeId) -> bool {
-        self.nodes.iter().any(|runtime| {
-            runtime.id.node == *node
-                && runtime.id.kind == SchedulingNodeKind::Vm
-                && runtime.crash.is_some()
-        })
-    }
-
-    /// Returns whether a VM node is stopped after a healed StayDown crash.
-    #[must_use]
-    pub fn is_node_stopped_after_crash(&self, node: &NodeId) -> bool {
-        self.nodes.iter().any(|runtime| {
-            runtime.id.node == *node
-                && runtime.id.kind == SchedulingNodeKind::Vm
-                && runtime.stopped_crash.is_some()
-        })
     }
 }

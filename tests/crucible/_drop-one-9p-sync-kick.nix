@@ -56,7 +56,7 @@ in
 
           grep -Fxq 'sim_leg_forwarded=true' "$LIVE_NINEP_GATE/result"
           grep -Fxq 'guest_progressed_past_ninep_io=true' "$LIVE_NINEP_GATE/result"
-          grep -Fxq 'deterministic_under_host_load=true' "$LIVE_NINEP_GATE/result"
+          grep -Fxq 'deterministic_under_scheduler_preemption=true' "$LIVE_NINEP_GATE/result"
 
           cp "$EXACT_DISPATCH_PROBE/prefix-sim-9p.txt" "$out/"
           cp "$EXACT_DISPATCH_PROBE/patched-sim-9p.txt" "$out/"
@@ -70,7 +70,7 @@ in
           semantic_form=variant-host-notifier-dispatch-vs-full-inline-handler
           full_live_9p_gate=$LIVE_NINEP_GATE
           full_live_9p_forwarding=true
-          full_live_9p_deterministic_under_host_load=true
+          full_live_9p_deterministic_under_scheduler_preemption=true
           variant_exact_source_dispatch=host-notifier
           full_exact_source_dispatch=inline-handler
           exact_source_fixture_executed=true

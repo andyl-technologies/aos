@@ -94,9 +94,6 @@
       kind = "interface";
       symbols = [
         "qemu_plugin_net_inject"
-        "qemu_plugin_net_send"
-        "qemu_plugin_net_flush"
-        "qemu_plugin_net_can_receive"
       ];
     };
     "0010-crucible-plugin-time-advance.patch" = {
@@ -255,6 +252,283 @@
       symbols = [];
     };
     "0046-crucible-translation-prefetch-helper.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0047-crucible-fault-command-abi.patch" = {
+      kind = "interface";
+      symbols = [
+        "qemu_plugin_crucible_fault_capabilities"
+        "qemu_plugin_crucible_fault_submit"
+        "qemu_plugin_crucible_fault_cancel"
+        "qemu_plugin_crucible_fault_peek"
+        "qemu_plugin_crucible_fault_poll"
+      ];
+    };
+    "0048-crucible-fault-safe-boundary.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0049-crucible-memory-boundary-mutate.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0050-crucible-memory-access-faults.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0051-crucible-add-architecture-register-fault-mutations.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0052-crucible-instruction-and-exception-faults.patch" = {
+      kind = "interface";
+      symbols = ["qemu_plugin_crucible_fault_instruction_manifest"];
+    };
+    "0053-crucible-interrupt-faults.patch" = {
+      kind = "interface";
+      symbols = ["qemu_plugin_crucible_fault_interrupt_manifest"];
+    };
+    "0054-crucible-inject-architecture-hardware-errors.patch" = {
+      kind = "interface";
+      symbols = ["qemu_plugin_crucible_fault_hardware_error_manifest"];
+    };
+    "0055-crucible-vcpu-service-control.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0056-crucible-node-lifecycle-faults.patch" = {
+      kind = "interface";
+      symbols = ["qemu_plugin_crucible_fault_ready_marker"];
+    };
+    "0060-crucible-block-typed-errors.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0061-crucible-block-discard.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0062-crucible-block-transport-reset.patch" = {
+      kind = "interface";
+      symbols = ["qemu_plugin_register_blk_event_cb"];
+    };
+    "0063-crucible-plugin-vmstop.patch" = {
+      kind = "interface";
+      symbols = ["qemu_plugin_request_vmstop"];
+    };
+    "0064-crucible-terminal-lifecycle-completion.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0065-crucible-authenticated-terminal-lifecycle.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0066-crucible-immutable-process-generation.patch" = {
+      kind = "interface";
+      symbols = ["qemu_plugin_crucible_lifecycle_set_process_generation"];
+    };
+    "0067-crucible-serialize-and-harden-core-fault-state.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0068-crucible-guest-clock-faults.patch" = {
+      kind = "interface";
+      symbols = [
+        "qemu_plugin_crucible_fault_clock_manifest"
+        "qemu_plugin_crucible_fault_clock_bind"
+        "qemu_plugin_crucible_fault_clock_bindings_seal"
+      ];
+    };
+    "0069-crucible-accelerator-fault-device.patch" = {
+      kind = "interface";
+      symbols = [
+        "qemu_plugin_register_accelerator_cb"
+        "qemu_plugin_crucible_fault_accelerator_manifest"
+      ];
+    };
+    "0070-crucible-fault-vmstate.patch" = {
+      kind = "interface";
+      symbols = ["qemu_plugin_crucible_fault_system_manifest"];
+    };
+    "0071-crucible-lifecycle-precondition.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0072-crucible-typed-node-result-schema.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0073-crucible-device-wait-vmstop.patch" = {
+      kind = "interface";
+      symbols = ["qemu_plugin_register_control_boundary_cb"];
+    };
+    "0074-crucible-arm-accelerator-result-opportunities.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0075-crucible-restore-authenticated-fault-event-requests.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0076-crucible-9p-completion-wake-registration.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0077-crucible-serialize-rr-cursor.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0078-crucible-fingerprint-guest-state-domains.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0079-crucible-stopped-state-control-progress.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0080-crucible-inactive-retention-clock-guard.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0081-crucible-deferred-result-evidence-test.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0082-crucible-deterministic-instruction-input-state.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0083-crucible-inert-clock-restore.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0084-crucible-exact-restore-network-announcement.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0085-crucible-register-rejection-atomicity.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0086-crucible-genesis-observation-boundary.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0087-crucible-deterministic-rcu-quiescence.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0088-crucible-deterministic-host-kick-boundary.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0089-crucible-exact-boundary-vcpu-introspection.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0090-crucible-active-tcg-kick-boundary.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0091-crucible-canonical-rr-genesis-cursor.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0092-crucible-canonical-terminal-rr-cursor.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0093-crucible-canonical-register-cursor.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0094-crucible-retention-virtual-time-origin.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0095-crucible-raw-pte-update-identity.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0096-crucible-physical-page-table-region-fixture.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0097-crucible-canonicalize-memory-retry-identity.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0098-crucible-inactive-nested-tsc-guard.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0099-crucible-valid-aarch64-abort-fixture.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0100-crucible-aarch64-memory-exception-vectors.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0101-crucible-canonicalize-snapshot-rr-resume.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0102-crucible-bql-exact-register-capture.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0103-crucible-isolate-checkpoint-control-wake.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0104-crucible-preserve-checkpoint-block-durability.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0105-crucible-selector-control-plane-fixtures.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0106-crucible-defer-active-slice-host-wakes.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0107-crucible-anchor-rr-cursor-genesis.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0108-crucible-deterministic-network-kick.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0109-crucible-control-boundary-node-faults.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0110-crucible-release-halted-rr-turn.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0111-crucible-accelerator-service-schema.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0112-crucible-compile-affected-clock-sources.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0113-crucible-restore-accelerator-rule-indexes.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0114-crucible-authenticate-fault-result-payloads.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0115-crucible-clock-impulse-read-error-policies.patch" = {
       kind = "recorded";
       symbols = [];
     };

@@ -2,10 +2,6 @@
 
 use super::*;
 
-pub(super) fn loadvm_probe_authorization() -> crucible_qemu::QemuLoadvmCommandAuthorization {
-    QemuSavevmCompletenessPolicy::phase0_fallback().authorize_loadvm_probe()
-}
-
 pub(super) fn scripted_qmp<const N: usize>(lines: [&str; N]) -> ScriptedQmpStream {
     let mut input = Vec::new();
     for line in lines {

@@ -1,0 +1,4553 @@
+diff --git a/hw/intc/apic.c b/hw/intc/apic.c
+index b6b1b605d..4406617ee 100644
+--- a/hw/intc/apic.c
++++ b/hw/intc/apic.c
+@@ -28,6 +28,7 @@
+ #include "qemu/host-utils.h"
+ #include "qemu/accel.h"
+ #include "qemu/plugin.h"
++#include "qemu/crucible-fault.h"
+ #include "exec/cpu-common.h"
+ #include "system/kvm.h"
+ #include "system/cpu-timers.h"
+@@ -52,6 +53,8 @@ typedef struct CrucibleSimDetIpiEvent {
+     uint8_t vector_num;
+     uint8_t trigger_mode;
+     uint64_t event_id;
++    uint64_t source_sequence;
++    uint64_t routing_generation;
+ } CrucibleSimDetIpiEvent;
+ 
+ static GQueue crucible_sim_det_ipi_queue = G_QUEUE_INIT;
+@@ -63,7 +66,11 @@ static bool crucible_sim_det_ipi_draining;
+ DECLARE_INSTANCE_CHECKER(APICCommonState, APIC,
+                          TYPE_APIC)
+ 
+-static void apic_set_irq(APICCommonState *s, int vector_num, int trigger_mode);
++static bool apic_crucible_route(APICCommonState *s, CPUState *src_cpu,
++                                int vector_num, int trigger_mode,
++                                uint16_t fallback_family,
++                                uint64_t source_sequence,
++                                uint64_t routing_generation);
+ static void apic_update_irq(APICCommonState *s);
+ static void apic_startup(APICCommonState *s, int vector_num);
+ static void apic_get_delivery_bitmask(uint32_t *deliver_bitmask,
+@@ -167,6 +174,35 @@ static void apic_vapic_base_update(APICCommonState *s)
+     apic_sync_vapic(s, SYNC_TO_VAPIC);
+ }
+ 
++static void apic_crucible_nmi_inject(
++    const QemuCrucibleInterruptEvent *event, void *opaque)
++{
++    APICCommonState *s = opaque;
++
++    (void)event;
++    cpu_interrupt(CPU(s->cpu), CPU_INTERRUPT_NMI);
++}
++
++static void apic_crucible_nmi(APICCommonState *s)
++{
++    QemuCrucibleInterruptEvent event = {
++        .family = QEMU_CRUCIBLE_INTERRUPT_X86_NMI,
++        .trigger = QEMU_CRUCIBLE_INTERRUPT_TRIGGER_EDGE,
++        .polarity = QEMU_CRUCIBLE_INTERRUPT_POLARITY_HIGH,
++        .model_phase = QEMU_CRUCIBLE_INTERRUPT_PHASE_ROUTE,
++        .target_vcpu = CPU(s->cpu)->cpu_index,
++        .vector = 2,
++        .source_sequence =
++            qemu_crucible_fault_interrupt_source_current_sequence(),
++    };
++
++    if (qemu_crucible_fault_interrupt_intercept(
++            &event, apic_crucible_nmi_inject, s)) {
++        apic_crucible_nmi_inject(&event, s);
++    }
++    qemu_crucible_fault_interrupt_committed(&event);
++}
++
+ static void apic_local_deliver(APICCommonState *s, int vector)
+ {
+     uint32_t lvt = s->lvt[vector];
+@@ -183,7 +219,7 @@ static void apic_local_deliver(APICCommonState *s, int vector)
+         break;
+ 
+     case APIC_DM_NMI:
+-        cpu_interrupt(CPU(s->cpu), CPU_INTERRUPT_NMI);
++        apic_crucible_nmi(s);
+         break;
+ 
+     case APIC_DM_EXTINT:
+@@ -195,7 +231,13 @@ static void apic_local_deliver(APICCommonState *s, int vector)
+         if ((vector == APIC_LVT_LINT0 || vector == APIC_LVT_LINT1) &&
+             (lvt & APIC_LVT_LEVEL_TRIGGER))
+             trigger_mode = APIC_TRIGGER_LEVEL;
+-        apic_set_irq(s, lvt & 0xff, trigger_mode);
++        apic_crucible_route(
++            s, NULL, lvt & 0xff, trigger_mode,
++            vector == APIC_LVT_TIMER ?
++                QEMU_CRUCIBLE_INTERRUPT_X86_TIMER :
++                QEMU_CRUCIBLE_INTERRUPT_X86_LOCAL_APIC_FIXED,
++            qemu_crucible_fault_interrupt_source_current_sequence(),
++            qemu_crucible_fault_interrupt_current_routing_generation());
+     }
+ }
+ 
+@@ -286,6 +328,10 @@ static bool crucible_sim_det_ipi_enqueue(CPUState *src_cpu,
+     event->vector_num = vector_num;
+     event->trigger_mode = trigger_mode;
+     event->event_id = ++crucible_sim_det_ipi_next_event_id;
++    event->source_sequence =
++        qemu_crucible_fault_interrupt_source_current_sequence();
++    event->routing_generation =
++        qemu_crucible_fault_interrupt_current_routing_generation();
+     g_queue_push_tail(&crucible_sim_det_ipi_queue, event);
+     return true;
+ }
+@@ -318,7 +364,12 @@ static void crucible_sim_det_ipi_deliver_event(
+     switch (event->delivery_mode) {
+     case APIC_DM_LOWPRI:
+     case APIC_DM_FIXED:
+-        apic_set_irq(target_apic, event->vector_num, event->trigger_mode);
++        apic_crucible_route(
++            target_apic,
++            event->src_vcpu == UINT_MAX ? NULL :
++                qemu_get_cpu(event->src_vcpu), event->vector_num,
++            event->trigger_mode, QEMU_CRUCIBLE_INTERRUPT_X86_IPI,
++            event->source_sequence, event->routing_generation);
+         break;
+     case APIC_DM_SMI:
+         cpu_interrupt(dst_cpu, CPU_INTERRUPT_SMI);
+@@ -362,6 +413,8 @@ int crucible_sim_det_ipi_deliver_commanded(unsigned int target_vcpu,
+     X86CPU *x86_cpu;
+     APICCommonState *target_apic;
+     uint64_t delivery_icount;
++    uint64_t source_sequence;
++    uint64_t routing_generation;
+     unsigned int src_vcpu = UINT_MAX;
+ 
+     if (vector > UINT8_MAX) {
+@@ -379,7 +432,14 @@ int crucible_sim_det_ipi_deliver_commanded(unsigned int target_vcpu,
+     }
+ 
+     target_apic = APIC_COMMON(x86_cpu->apic_state);
+-    apic_set_irq(target_apic, vector, APIC_TRIGGER_EDGE);
++    source_sequence =
++        qemu_crucible_fault_interrupt_source_current_sequence();
++    routing_generation =
++        qemu_crucible_fault_interrupt_current_routing_generation();
++    apic_crucible_route(target_apic, current_cpu, vector,
++                        APIC_TRIGGER_EDGE,
++                        QEMU_CRUCIBLE_INTERRUPT_X86_IPI,
++                        source_sequence, routing_generation);
+ 
+     if (current_cpu) {
+         src_vcpu = current_cpu->cpu_index;
+@@ -398,6 +458,13 @@ static void apic_bus_deliver(CPUState *src_cpu,
+                              uint8_t trigger_mode)
+ {
+     APICCommonState *apic_iter;
++    bool source_owner = qemu_crucible_fault_interrupt_source_enter(
++        src_cpu ? QEMU_CRUCIBLE_INTERRUPT_X86_IPI :
++                  QEMU_CRUCIBLE_INTERRUPT_X86_MSI);
++    uint64_t source_sequence =
++        qemu_crucible_fault_interrupt_source_current_sequence();
++    uint64_t routing_generation =
++        qemu_crucible_fault_interrupt_current_routing_generation();
+ 
+     switch (delivery_mode) {
+         case APIC_DM_LOWPRI:
+@@ -418,11 +485,14 @@ static void apic_bus_deliver(CPUState *src_cpu,
+                                                        delivery_mode,
+                                                        vector_num,
+                                                        trigger_mode)) {
+-                        apic_set_irq(apic_iter, vector_num, trigger_mode);
++                        apic_crucible_route(
++                            apic_iter, src_cpu, vector_num, trigger_mode,
++                            QEMU_CRUCIBLE_INTERRUPT_X86_MSI,
++                            source_sequence, routing_generation);
+                     }
+                 }
+             }
+-            return;
++            goto out;
+ 
+         case APIC_DM_FIXED:
+             break;
+@@ -435,17 +505,17 @@ static void apic_bus_deliver(CPUState *src_cpu,
+                     cpu_interrupt(CPU(apic_iter->cpu), CPU_INTERRUPT_SMI);
+                 }
+             );
+-            return;
++            goto out;
+ 
+         case APIC_DM_NMI:
+             foreach_apic(apic_iter, deliver_bitmask,
+                 if (!crucible_sim_det_ipi_enqueue(src_cpu, apic_iter,
+                                                   delivery_mode, vector_num,
+                                                   trigger_mode)) {
+-                    cpu_interrupt(CPU(apic_iter->cpu), CPU_INTERRUPT_NMI);
++                    apic_crucible_nmi(apic_iter);
+                 }
+             );
+-            return;
++            goto out;
+ 
+         case APIC_DM_INIT:
+             /* normal INIT IPI sent to processors */
+@@ -456,22 +526,27 @@ static void apic_bus_deliver(CPUState *src_cpu,
+                     cpu_interrupt(CPU(apic_iter->cpu), CPU_INTERRUPT_INIT);
+                 }
+             );
+-            return;
++            goto out;
+ 
+         case APIC_DM_EXTINT:
+             /* handled in I/O APIC code */
+             break;
+ 
+         default:
+-            return;
++            goto out;
+     }
+ 
+     foreach_apic(apic_iter, deliver_bitmask,
+         if (!crucible_sim_det_ipi_enqueue(src_cpu, apic_iter, delivery_mode,
+                                           vector_num, trigger_mode)) {
+-            apic_set_irq(apic_iter, vector_num, trigger_mode);
++            apic_crucible_route(
++                apic_iter, src_cpu, vector_num, trigger_mode,
++                QEMU_CRUCIBLE_INTERRUPT_X86_MSI,
++                source_sequence, routing_generation);
+         }
+     );
++out:
++    qemu_crucible_fault_interrupt_source_leave(source_owner);
+ }
+ 
+ static void apic_deliver_irq(uint32_t dest, uint8_t dest_mode,
+@@ -665,11 +740,24 @@ void apic_poll_irq(DeviceState *dev)
+     apic_update_irq(s);
+ }
+ 
+-static void apic_set_irq(APICCommonState *s, int vector_num, int trigger_mode)
++static void apic_set_irq_with_source(APICCommonState *s, int vector_num,
++                                     int trigger_mode, uint16_t family,
++                                     uint16_t polarity, bool retain_pending,
++                                     uint64_t source_sequence,
++                                     uint64_t routing_generation)
+ {
+-    kvm_report_irq_delivered(!apic_get_bit(s->irr, vector_num));
++    bool newly_pending = !apic_get_bit(s->irr, vector_num);
++
++    kvm_report_irq_delivered(newly_pending);
+ 
+     apic_set_bit(s->irr, vector_num);
++    if (newly_pending || !retain_pending) {
++        s->crucible_interrupt_family[vector_num] = family;
++        s->crucible_interrupt_polarity[vector_num] = polarity;
++        s->crucible_interrupt_source_sequence[vector_num] = source_sequence;
++        s->crucible_interrupt_routing_generation[vector_num] =
++            routing_generation;
++    }
+     if (trigger_mode)
+         apic_set_bit(s->tmr, vector_num);
+     else
+@@ -687,6 +775,112 @@ static void apic_set_irq(APICCommonState *s, int vector_num, int trigger_mode)
+     apic_update_irq(s);
+ }
+ 
++static void apic_crucible_inject(const QemuCrucibleInterruptEvent *event,
++                                 void *opaque)
++{
++    APICCommonState *s = opaque;
++
++    apic_set_irq_with_source(
++        s, event->vector,
++        event->trigger == QEMU_CRUCIBLE_INTERRUPT_TRIGGER_LEVEL ?
++            APIC_TRIGGER_LEVEL : APIC_TRIGGER_EDGE,
++        event->family, event->polarity, event->retain_pending,
++        event->source_sequence,
++        event->routing_generation);
++}
++
++static void apic_crucible_inject_target(
++    const QemuCrucibleInterruptEvent *event, void *opaque)
++{
++    CPUState *cpu = qemu_get_cpu(event->target_vcpu);
++    X86CPU *x86_cpu;
++
++    (void)opaque;
++    if (!cpu) {
++        error_report("Crucible APIC injection target disappeared");
++        abort();
++    }
++    x86_cpu = X86_CPU(cpu);
++    if (!x86_cpu->apic_state) {
++        error_report("Crucible APIC injection target has no local APIC");
++        abort();
++    }
++    if (event->family == QEMU_CRUCIBLE_INTERRUPT_X86_NMI) {
++        apic_crucible_nmi_inject(
++            event, APIC_COMMON(x86_cpu->apic_state));
++    } else {
++        apic_crucible_inject(event, APIC_COMMON(x86_cpu->apic_state));
++    }
++}
++
++static bool apic_crucible_route_validate(
++    const QemuCrucibleInterruptEvent *event, void *opaque)
++{
++    CPUState *cpu;
++    X86CPU *x86_cpu;
++
++    (void)opaque;
++    cpu = qemu_get_cpu(event->target_vcpu);
++    if (!cpu) {
++        return false;
++    }
++    x86_cpu = X86_CPU(cpu);
++    if (!x86_cpu->apic_state) {
++        return false;
++    }
++    if (event->family == QEMU_CRUCIBLE_INTERRUPT_X86_NMI) {
++        return event->vector == 2;
++    }
++    return event->vector >= 16 && event->vector <= 255 &&
++        (!event->release_phase ||
++         !apic_get_bit(APIC_COMMON(x86_cpu->apic_state)->irr,
++                       event->vector));
++}
++
++static bool apic_crucible_route(APICCommonState *s, CPUState *src_cpu,
++                                int vector_num, int trigger_mode,
++                                uint16_t fallback_family,
++                                uint64_t source_sequence,
++                                uint64_t routing_generation)
++{
++    QemuCrucibleInterruptEvent event = {
++        .family = src_cpu ? QEMU_CRUCIBLE_INTERRUPT_X86_IPI :
++            qemu_crucible_fault_interrupt_source_current(fallback_family),
++        .trigger = trigger_mode == APIC_TRIGGER_LEVEL ?
++            QEMU_CRUCIBLE_INTERRUPT_TRIGGER_LEVEL :
++            QEMU_CRUCIBLE_INTERRUPT_TRIGGER_EDGE,
++        .polarity = qemu_crucible_fault_interrupt_source_current_polarity(
++            QEMU_CRUCIBLE_INTERRUPT_POLARITY_HIGH),
++        .model_phase = QEMU_CRUCIBLE_INTERRUPT_PHASE_ROUTE,
++        .target_vcpu = CPU(s->cpu)->cpu_index,
++        .vector = vector_num,
++        .priority = vector_num >> 4,
++        .source_sequence = source_sequence,
++        .routing_generation = routing_generation,
++    };
++
++    if (qemu_crucible_fault_interrupt_intercept(
++            &event, apic_crucible_inject, s)) {
++        if (event.vector != vector_num &&
++            (apic_get_bit(s->irr, event.vector) ||
++             apic_get_bit(s->isr, event.vector))) {
++            qemu_crucible_fault_interrupt_commit_error();
++            qemu_crucible_fault_interrupt_committed(&event);
++            return false;
++        }
++        event.priority = event.vector >> 4;
++        apic_crucible_inject(&event, s);
++        qemu_crucible_fault_interrupt_committed(&event);
++        return true;
++    }
++    if (event.disposition == 1 && trigger_mode == APIC_TRIGGER_LEVEL &&
++        event.family == QEMU_CRUCIBLE_INTERRUPT_X86_IO_APIC) {
++        ioapic_eoi_broadcast(vector_num);
++    }
++    qemu_crucible_fault_interrupt_committed(&event);
++    return false;
++}
++
+ static void apic_eoi(APICCommonState *s)
+ {
+     int isrv;
+@@ -916,7 +1110,9 @@ static bool apic_check_pic(APICCommonState *s)
+ int apic_get_interrupt(DeviceState *dev)
+ {
+     APICCommonState *s = APIC(dev);
++    QemuCrucibleInterruptEvent event;
+     int intno;
++    int original_intno;
+ 
+     /* if the APIC is installed or enabled, we let the 8259 handle the
+        IRQs */
+@@ -938,11 +1134,94 @@ int apic_get_interrupt(DeviceState *dev)
+         apic_sync_vapic(s, SYNC_TO_VAPIC);
+         return s->spurious_vec & 0xff;
+     }
+-    apic_reset_bit(s->irr, intno);
++    original_intno = intno;
++    {
++        event = (QemuCrucibleInterruptEvent) {
++            .family = s->crucible_interrupt_family[intno] != 0 ?
++                s->crucible_interrupt_family[intno] :
++                QEMU_CRUCIBLE_INTERRUPT_X86_LOCAL_APIC_FIXED,
++            .trigger = apic_get_bit(s->tmr, intno) ?
++                QEMU_CRUCIBLE_INTERRUPT_TRIGGER_LEVEL :
++                QEMU_CRUCIBLE_INTERRUPT_TRIGGER_EDGE,
++            .polarity = s->crucible_interrupt_polarity[intno] != 0 ?
++                s->crucible_interrupt_polarity[intno] :
++                QEMU_CRUCIBLE_INTERRUPT_POLARITY_HIGH,
++            .model_phase = QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER,
++            .target_vcpu = CPU(s->cpu)->cpu_index,
++            .vector = intno,
++            .priority = intno >> 4,
++            .source_sequence =
++                s->crucible_interrupt_source_sequence[intno],
++            .routing_generation =
++                s->crucible_interrupt_routing_generation[intno],
++        };
++        {
++            QemuCrucibleInterruptEvent provenance;
++
++            if (qemu_crucible_fault_interrupt_provenance_get(
++                    event.family, event.target_vcpu, event.vector,
++                    &provenance)) {
++                qemu_crucible_fault_interrupt_provenance_clear(
++                    event.family, event.target_vcpu, event.vector);
++                event = provenance;
++                event.model_phase = QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER;
++            }
++        }
++
++        if (!qemu_crucible_fault_interrupt_intercept(
++                &event, apic_crucible_inject, s)) {
++            apic_reset_bit(s->irr, original_intno);
++            if (event.disposition == 1 &&
++                apic_get_bit(s->tmr, original_intno)) {
++                ioapic_eoi_broadcast(original_intno);
++            }
++            s->crucible_interrupt_family[original_intno] = 0;
++            s->crucible_interrupt_polarity[original_intno] = 0;
++            s->crucible_interrupt_source_sequence[original_intno] = 0;
++            s->crucible_interrupt_routing_generation[original_intno] = 0;
++            apic_sync_vapic(s, SYNC_TO_VAPIC);
++            apic_update_irq(s);
++            qemu_crucible_fault_interrupt_committed(&event);
++            return -1;
++        }
++        intno = event.vector;
++        if (intno != original_intno) {
++            event.priority = intno >> 4;
++            if (apic_get_bit(s->irr, intno) ||
++                apic_get_bit(s->isr, intno) ||
++                !qemu_crucible_fault_interrupt_provenance_can_set(&event)) {
++                qemu_crucible_fault_interrupt_commit_error();
++                qemu_crucible_fault_interrupt_committed(&event);
++                return -1;
++            }
++            apic_reset_bit(s->irr, original_intno);
++            apic_reset_bit(s->tmr, original_intno);
++            s->crucible_interrupt_family[original_intno] = 0;
++            s->crucible_interrupt_polarity[original_intno] = 0;
++            s->crucible_interrupt_source_sequence[original_intno] = 0;
++            s->crucible_interrupt_routing_generation[original_intno] = 0;
++            event.release_phase = QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER;
++            if (!qemu_crucible_fault_interrupt_provenance_set(
++                    &event, true)) {
++                g_assert_not_reached();
++            }
++            apic_crucible_inject(&event, s);
++            apic_sync_vapic(s, SYNC_TO_VAPIC);
++            apic_update_irq(s);
++            qemu_crucible_fault_interrupt_committed(&event);
++            return -1;
++        }
++    }
++    apic_reset_bit(s->irr, original_intno);
+     apic_set_bit(s->isr, intno);
++    s->crucible_interrupt_family[original_intno] = 0;
++    s->crucible_interrupt_polarity[original_intno] = 0;
++    s->crucible_interrupt_source_sequence[original_intno] = 0;
++    s->crucible_interrupt_routing_generation[original_intno] = 0;
+     apic_sync_vapic(s, SYNC_TO_VAPIC);
+ 
+     apic_update_irq(s);
++    qemu_crucible_fault_interrupt_committed(&event);
+ 
+     return intno;
+ }
+@@ -1331,6 +1610,11 @@ static const MemoryRegionOps apic_io_ops = {
+ static void apic_realize(DeviceState *dev, Error **errp)
+ {
+     APICCommonState *s = APIC(dev);
++    uint64_t route_delivery =
++        (1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_ROUTE - 1)) |
++        (1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER - 1));
++    uint64_t route =
++        1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_ROUTE - 1);
+ 
+     if (kvm_enabled()) {
+         warn_report("Userspace local APIC is deprecated for KVM.");
+@@ -1359,6 +1643,70 @@ static void apic_realize(DeviceState *dev, Error **errp)
+     }
+     local_apics[s->initial_apic_id] = s;
+ 
++    if (!qemu_crucible_fault_interrupt_register_injector(
++            QEMU_CRUCIBLE_INTERRUPT_X86_LOCAL_APIC_FIXED,
++            apic_crucible_inject_target, NULL) ||
++        !qemu_crucible_fault_interrupt_register_injector(
++            QEMU_CRUCIBLE_INTERRUPT_X86_IPI,
++            apic_crucible_inject_target, NULL) ||
++        !qemu_crucible_fault_interrupt_register_injector(
++            QEMU_CRUCIBLE_INTERRUPT_X86_IO_APIC,
++            apic_crucible_inject_target, NULL) ||
++        !qemu_crucible_fault_interrupt_register_injector(
++            QEMU_CRUCIBLE_INTERRUPT_X86_MSI,
++            apic_crucible_inject_target, NULL) ||
++        !qemu_crucible_fault_interrupt_register_injector(
++            QEMU_CRUCIBLE_INTERRUPT_X86_MSIX,
++            apic_crucible_inject_target, NULL) ||
++        !qemu_crucible_fault_interrupt_register_injector(
++            QEMU_CRUCIBLE_INTERRUPT_X86_NMI,
++            apic_crucible_inject_target, NULL) ||
++        !qemu_crucible_fault_interrupt_register_injector(
++            QEMU_CRUCIBLE_INTERRUPT_X86_TIMER,
++            apic_crucible_inject_target, NULL) ||
++        !qemu_crucible_fault_interrupt_register_route_validator(
++            QEMU_CRUCIBLE_INTERRUPT_X86_LOCAL_APIC_FIXED,
++            apic_crucible_route_validate, NULL) ||
++        !qemu_crucible_fault_interrupt_register_route_validator(
++            QEMU_CRUCIBLE_INTERRUPT_X86_IPI,
++            apic_crucible_route_validate, NULL) ||
++        !qemu_crucible_fault_interrupt_register_route_validator(
++            QEMU_CRUCIBLE_INTERRUPT_X86_IO_APIC,
++            apic_crucible_route_validate, NULL) ||
++        !qemu_crucible_fault_interrupt_register_route_validator(
++            QEMU_CRUCIBLE_INTERRUPT_X86_MSI,
++            apic_crucible_route_validate, NULL) ||
++        !qemu_crucible_fault_interrupt_register_route_validator(
++            QEMU_CRUCIBLE_INTERRUPT_X86_MSIX,
++            apic_crucible_route_validate, NULL) ||
++        !qemu_crucible_fault_interrupt_register_route_validator(
++            QEMU_CRUCIBLE_INTERRUPT_X86_NMI,
++            apic_crucible_route_validate, NULL) ||
++        !qemu_crucible_fault_interrupt_register_route_validator(
++            QEMU_CRUCIBLE_INTERRUPT_X86_TIMER,
++            apic_crucible_route_validate, NULL)) {
++        error_setg(errp, "conflicting Crucible x86 interrupt injector");
++        return;
++    }
++    if (!qemu_crucible_fault_interrupt_register_family(
++            QEMU_CRUCIBLE_INTERRUPT_X86_LOCAL_APIC_FIXED,
++            route_delivery, "qemu-10.0-apic-crucible-v1",
++            255, UINT32_MAX) ||
++        !qemu_crucible_fault_interrupt_register_family(
++            QEMU_CRUCIBLE_INTERRUPT_X86_IPI,
++            route_delivery, "qemu-10.0-apic-crucible-v1",
++            255, UINT32_MAX) ||
++        !qemu_crucible_fault_interrupt_register_family(
++            QEMU_CRUCIBLE_INTERRUPT_X86_NMI,
++            route, "qemu-10.0-apic-crucible-v1", 2, UINT32_MAX) ||
++        !qemu_crucible_fault_interrupt_register_family(
++            QEMU_CRUCIBLE_INTERRUPT_X86_TIMER,
++            route_delivery, "qemu-10.0-apic-crucible-v1",
++            255, UINT32_MAX)) {
++        error_setg(errp, "conflicting Crucible APIC family realization");
++        return;
++    }
++
+     msi_nonbroken = true;
+ }
+ 
+diff --git a/hw/intc/apic_common.c b/hw/intc/apic_common.c
+index 2a3e878c4..7bddd0f70 100644
+--- a/hw/intc/apic_common.c
++++ b/hw/intc/apic_common.c
+@@ -210,6 +210,14 @@ void apic_init_reset(DeviceState *dev)
+     memset(s->isr, 0, sizeof(s->isr));
+     memset(s->tmr, 0, sizeof(s->tmr));
+     memset(s->irr, 0, sizeof(s->irr));
++    memset(s->crucible_interrupt_family, 0,
++           sizeof(s->crucible_interrupt_family));
++    memset(s->crucible_interrupt_polarity, 0,
++           sizeof(s->crucible_interrupt_polarity));
++    memset(s->crucible_interrupt_source_sequence, 0,
++           sizeof(s->crucible_interrupt_source_sequence));
++    memset(s->crucible_interrupt_routing_generation, 0,
++           sizeof(s->crucible_interrupt_routing_generation));
+     for (i = 0; i < APIC_LVT_NB; i++) {
+         s->lvt[i] = APIC_LVT_MASKED;
+     }
+@@ -372,6 +380,36 @@ static const VMStateDescription vmstate_apic_common_sipi = {
+     }
+ };
+ 
++static bool apic_common_crucible_interrupt_needed(void *opaque)
++{
++    APICCommonState *s = APIC_COMMON(opaque);
++
++    for (size_t i = 0; i < 256; i++) {
++        if (s->crucible_interrupt_family[i] != 0) {
++            return true;
++        }
++    }
++    return false;
++}
++
++static const VMStateDescription vmstate_apic_common_crucible_interrupt = {
++    .name = "apic/crucible-interrupt",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = apic_common_crucible_interrupt_needed,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT16_ARRAY(crucible_interrupt_family,
++                             APICCommonState, 256),
++        VMSTATE_UINT16_ARRAY(crucible_interrupt_polarity,
++                             APICCommonState, 256),
++        VMSTATE_UINT64_ARRAY(crucible_interrupt_source_sequence,
++                             APICCommonState, 256),
++        VMSTATE_UINT64_ARRAY(crucible_interrupt_routing_generation,
++                             APICCommonState, 256),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
+ static const VMStateDescription vmstate_apic_common = {
+     .name = "apic",
+     .version_id = 3,
+@@ -404,6 +442,7 @@ static const VMStateDescription vmstate_apic_common = {
+     },
+     .subsections = (const VMStateDescription * const []) {
+         &vmstate_apic_common_sipi,
++        &vmstate_apic_common_crucible_interrupt,
+         NULL
+     }
+ };
+diff --git a/hw/intc/arm_gic.c b/hw/intc/arm_gic.c
+index 3581ff8e8..cb6cdcd17 100644
+--- a/hw/intc/arm_gic.c
++++ b/hw/intc/arm_gic.c
+@@ -19,6 +19,8 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/crucible-fault.h"
++#include "qemu/error-report.h"
+ #include "hw/irq.h"
+ #include "hw/sysbus.h"
+ #include "gic_internal.h"
+@@ -94,9 +96,12 @@ static inline void gic_get_best_irq(GICState *s, int cpu,
+     for (irq = 0; irq < s->num_irq; irq++) {
+         if (GIC_DIST_TEST_ENABLED(irq, cm) && gic_test_pending(s, irq, cm) &&
+             (!GIC_DIST_TEST_ACTIVE(irq, cm)) &&
+-            (irq < GIC_INTERNAL || GIC_DIST_TARGET(irq) & cm)) {
+-            if (GIC_DIST_GET_PRIORITY(irq, cpu) < *best_prio) {
+-                *best_prio = GIC_DIST_GET_PRIORITY(irq, cpu);
++            (irq < GIC_INTERNAL ||
++             ((s->crucible_interrupt_target[irq] != 0 ?
++                   s->crucible_interrupt_target[irq] :
++                   GIC_DIST_TARGET(irq)) & cm))) {
++            if (gic_get_priority(s, irq, cpu) < *best_prio) {
++                *best_prio = gic_get_priority(s, irq, cpu);
+                 *best_irq = irq;
+             }
+         }
+@@ -389,6 +394,10 @@ static void gic_set_irq(void *opaque, int irq, int level)
+      */
+     GICState *s = (GICState *)opaque;
+     int cm, target;
++    uint64_t source_sequence =
++        qemu_crucible_fault_interrupt_source_current_sequence();
++    uint64_t routing_generation =
++        qemu_crucible_fault_interrupt_current_routing_generation();
+     if (irq < (s->num_irq - GIC_INTERNAL)) {
+         /* The first external input line is internal interrupt 32.  */
+         cm = ALL_CPU_MASK;
+@@ -408,6 +417,21 @@ static void gic_set_irq(void *opaque, int irq, int level)
+     if (level == GIC_DIST_TEST_LEVEL(irq, cm)) {
+         return;
+     }
++    if (level) {
++        for (int cpu = 0; cpu < s->num_cpu; cpu++) {
++            if (target & (1 << cpu)) {
++                s->crucible_interrupt_family[irq][cpu] =
++                    qemu_crucible_fault_interrupt_source_current(
++                        irq < GIC_INTERNAL ?
++                            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_PPI :
++                            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SPI);
++                s->crucible_interrupt_source_sequence[irq][cpu] =
++                    source_sequence;
++                s->crucible_interrupt_routing_generation[irq][cpu] =
++                    routing_generation;
++            }
++        }
++    }
+ 
+     if (s->revision == REV_11MPCORE) {
+         gic_set_irq_11mpcore(s, irq, level, cm, target);
+@@ -596,9 +620,72 @@ static inline uint32_t gic_clear_pending_sgi(GICState *s, int irq, int cpu)
+     return ret;
+ }
+ 
++static void gic_crucible_interrupt_inject(
++    const QemuCrucibleInterruptEvent *event, void *opaque)
++{
++    GICState *s = opaque;
++    uint32_t mask;
++    bool pending;
++
++    if (event->target_vcpu >= s->num_cpu || event->vector >= s->num_irq) {
++        error_report("Crucible GICv2 injection target disappeared");
++        abort();
++    }
++    mask = 1U << event->target_vcpu;
++    pending = gic_test_pending(s, event->vector, mask);
++    if (event->vector >= GIC_INTERNAL) {
++        if (gic_test_pending(s, event->vector, ALL_CPU_MASK) &&
++            event->retain_pending) {
++            s->crucible_interrupt_target[event->vector] |= mask;
++        } else {
++            s->crucible_interrupt_target[event->vector] = mask;
++        }
++    }
++    if (!pending || !event->retain_pending) {
++        s->crucible_interrupt_priority[event->vector][event->target_vcpu] =
++            event->priority;
++        s->crucible_interrupt_priority_valid[event->vector] |= mask;
++        s->crucible_interrupt_family[event->vector][event->target_vcpu] =
++            event->family;
++        s->crucible_interrupt_source_sequence[event->vector]
++                                                       [event->target_vcpu] =
++            event->source_sequence;
++        s->crucible_interrupt_routing_generation[event->vector]
++                                                          [event->target_vcpu] =
++            event->routing_generation;
++    }
++    GIC_DIST_SET_PENDING(event->vector, mask);
++    if (event->vector < GIC_NR_SGIS) {
++        s->sgi_pending[event->vector][event->target_vcpu] |=
++            1U << event->controller_source;
++    }
++    gic_update(s);
++}
++
++static bool gic_crucible_interrupt_route_validate(
++    const QemuCrucibleInterruptEvent *event, void *opaque)
++{
++    GICState *s = opaque;
++    uint32_t mask;
++
++    if (event->target_vcpu >= s->num_cpu || event->vector >= s->num_irq ||
++        (event->vector < GIC_NR_SGIS &&
++         event->controller_source >= s->num_cpu)) {
++        return false;
++    }
++    if (!event->release_phase) {
++        return true;
++    }
++    mask = event->vector < GIC_INTERNAL ?
++        1U << event->target_vcpu : ALL_CPU_MASK;
++    return !gic_test_pending(s, event->vector, mask);
++}
++
+ uint32_t gic_acknowledge_irq(GICState *s, int cpu, MemTxAttrs attrs)
+ {
+     int ret, irq;
++    bool crucible_intercepted = false;
++    QemuCrucibleInterruptEvent event = { 0 };
+ 
+     /* gic_get_current_pending_irq() will return 1022 or 1023 appropriately
+      * for the case where this GIC supports grouping and the pending interrupt
+@@ -618,6 +705,110 @@ uint32_t gic_acknowledge_irq(GICState *s, int cpu, MemTxAttrs attrs)
+         return 1023;
+     }
+ 
++    if (!gic_is_vcpu(cpu)) {
++        event = (QemuCrucibleInterruptEvent) {
++            .family = irq < GIC_NR_SGIS ?
++                QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SGI :
++                (s->crucible_interrupt_family[irq][cpu] != 0 ?
++                    s->crucible_interrupt_family[irq][cpu] :
++                    (irq < GIC_INTERNAL ?
++                        QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_PPI :
++                        QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SPI)),
++            .trigger = GIC_DIST_TEST_EDGE_TRIGGER(irq) ?
++                QEMU_CRUCIBLE_INTERRUPT_TRIGGER_EDGE :
++                QEMU_CRUCIBLE_INTERRUPT_TRIGGER_LEVEL,
++            .polarity = QEMU_CRUCIBLE_INTERRUPT_POLARITY_HIGH,
++            .model_phase = QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER,
++            .target_vcpu = cpu,
++            .vector = irq,
++            .controller_source = irq < GIC_NR_SGIS ?
++                ctz32(s->sgi_pending[irq][cpu]) : 0,
++            .priority = gic_get_priority(s, irq, cpu),
++            .source_sequence =
++                s->crucible_interrupt_source_sequence[irq][cpu],
++            .routing_generation =
++                s->crucible_interrupt_routing_generation[irq][cpu],
++        };
++        {
++            QemuCrucibleInterruptEvent provenance;
++
++            if (qemu_crucible_fault_interrupt_provenance_get(
++                    event.family, event.target_vcpu, event.vector,
++                    &provenance)) {
++                qemu_crucible_fault_interrupt_provenance_clear(
++                    event.family, event.target_vcpu, event.vector);
++                event = provenance;
++                event.model_phase = QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER;
++            }
++        }
++
++        if (event.source_sequence == 0) {
++            event.source_sequence =
++                qemu_crucible_fault_interrupt_source_next_sequence();
++        }
++        if (event.routing_generation == 0) {
++            event.routing_generation =
++                qemu_crucible_fault_interrupt_current_routing_generation();
++        }
++
++        if (!qemu_crucible_fault_interrupt_intercept(
++                &event, gic_crucible_interrupt_inject, s)) {
++            if (irq < GIC_NR_SGIS) {
++                gic_clear_pending_sgi(s, irq, cpu);
++            } else {
++                gic_clear_pending(s, irq, cpu);
++            }
++            if (event.disposition == 1 &&
++                !GIC_DIST_TEST_EDGE_TRIGGER(irq) &&
++                GIC_DIST_TEST_LEVEL(irq, 1 << cpu)) {
++                GIC_DIST_SET_PENDING(irq, 1 << cpu);
++            }
++            s->crucible_interrupt_family[irq][cpu] = 0;
++            s->crucible_interrupt_source_sequence[irq][cpu] = 0;
++            s->crucible_interrupt_routing_generation[irq][cpu] = 0;
++            if (irq >= GIC_INTERNAL) {
++                s->crucible_interrupt_target[irq] &= ~(1U << cpu);
++            }
++            s->crucible_interrupt_priority_valid[irq] &= ~(1U << cpu);
++            gic_update(s);
++            qemu_crucible_fault_interrupt_committed(&event);
++            return 1023;
++        }
++        crucible_intercepted = true;
++        if (event.vector != irq) {
++            uint32_t replacement_mask = event.vector < GIC_INTERNAL ?
++                1U << cpu : ALL_CPU_MASK;
++
++            if (gic_test_pending(s, event.vector, replacement_mask) ||
++                !qemu_crucible_fault_interrupt_provenance_can_set(&event)) {
++                qemu_crucible_fault_interrupt_commit_error();
++                qemu_crucible_fault_interrupt_committed(&event);
++                return 1023;
++            }
++            if (irq < GIC_NR_SGIS) {
++                gic_clear_pending_sgi(s, irq, cpu);
++            } else {
++                gic_clear_pending(s, irq, cpu);
++            }
++            s->crucible_interrupt_family[irq][cpu] = 0;
++            s->crucible_interrupt_source_sequence[irq][cpu] = 0;
++            s->crucible_interrupt_routing_generation[irq][cpu] = 0;
++            if (irq >= GIC_INTERNAL) {
++                s->crucible_interrupt_target[irq] &= ~(1U << cpu);
++            }
++            s->crucible_interrupt_priority_valid[irq] &= ~(1U << cpu);
++            event.release_phase = QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER;
++            if (!qemu_crucible_fault_interrupt_provenance_set(
++                    &event, true)) {
++                g_assert_not_reached();
++            }
++            gic_crucible_interrupt_inject(&event, s);
++            gic_update(s);
++            qemu_crucible_fault_interrupt_committed(&event);
++            return 1023;
++        }
++    }
++
+     gic_activate_irq(s, cpu, irq);
+ 
+     if (s->revision == REV_11MPCORE) {
+@@ -640,6 +831,9 @@ uint32_t gic_acknowledge_irq(GICState *s, int cpu, MemTxAttrs attrs)
+     } else {
+         gic_update(s);
+     }
++    if (crucible_intercepted) {
++        qemu_crucible_fault_interrupt_committed(&event);
++    }
+     DPRINTF("ACK %d\n", irq);
+     return ret;
+ }
+@@ -2104,6 +2298,7 @@ static void arm_gic_realize(DeviceState *dev, Error **errp)
+     SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
+     ARMGICClass *agc = ARM_GIC_GET_CLASS(s);
+     Error *local_err = NULL;
++    g_autofree char *controller_version = NULL;
+ 
+     agc->parent_realize(dev, &local_err);
+     if (local_err) {
+@@ -2132,6 +2327,54 @@ static void arm_gic_realize(DeviceState *dev, Error **errp)
+      * interface (s->vifaceiomem[0]) and virtual CPU interface).
+      */
+     gic_init_irqs_and_mmio(s, gic_set_irq, gic_ops, gic_virt_ops);
++    if (!qemu_crucible_fault_interrupt_register_injector(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SGI,
++            gic_crucible_interrupt_inject, s) ||
++        !qemu_crucible_fault_interrupt_register_injector(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_PPI,
++            gic_crucible_interrupt_inject, s) ||
++        !qemu_crucible_fault_interrupt_register_injector(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SPI,
++            gic_crucible_interrupt_inject, s) ||
++        !qemu_crucible_fault_interrupt_register_injector(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_TIMER,
++            gic_crucible_interrupt_inject, s) ||
++        !qemu_crucible_fault_interrupt_register_route_validator(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SGI,
++            gic_crucible_interrupt_route_validate, s) ||
++        !qemu_crucible_fault_interrupt_register_route_validator(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_PPI,
++            gic_crucible_interrupt_route_validate, s) ||
++        !qemu_crucible_fault_interrupt_register_route_validator(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SPI,
++            gic_crucible_interrupt_route_validate, s) ||
++        !qemu_crucible_fault_interrupt_register_route_validator(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_TIMER,
++            gic_crucible_interrupt_route_validate, s)) {
++        error_setg(errp, "conflicting Crucible AArch64 interrupt injector");
++        return;
++    }
++    controller_version = g_strdup_printf(
++        "qemu-10.0-gicv%u-crucible-v1", s->revision);
++    if (!qemu_crucible_fault_interrupt_register_family(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SGI,
++            1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER - 1),
++            controller_version, 15, s->num_cpu) ||
++        !qemu_crucible_fault_interrupt_register_family(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_PPI,
++            1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER - 1),
++            controller_version, 31, s->num_cpu) ||
++        !qemu_crucible_fault_interrupt_register_family(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SPI,
++            1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER - 1),
++            controller_version, s->num_irq - 1, s->num_cpu) ||
++        !qemu_crucible_fault_interrupt_register_family(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_TIMER,
++            1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER - 1),
++            controller_version, 31, s->num_cpu)) {
++        error_setg(errp, "conflicting Crucible GICv2 family realization");
++        return;
++    }
+ 
+     /* Extra core-specific regions for the CPU interfaces. This is
+      * necessary for "franken-GIC" implementations, for example on
+diff --git a/hw/intc/arm_gic_common.c b/hw/intc/arm_gic_common.c
+index 5ac56e338..99c085868 100644
+--- a/hw/intc/arm_gic_common.c
++++ b/hw/intc/arm_gic_common.c
+@@ -98,6 +98,42 @@ static const VMStateDescription vmstate_gic_virt_state = {
+     }
+ };
+ 
++static bool gic_crucible_interrupt_needed(void *opaque)
++{
++    GICState *s = opaque;
++
++    for (size_t irq = 0; irq < GIC_MAXIRQ; irq++) {
++        for (size_t cpu = 0; cpu < GIC_NCPU; cpu++) {
++            if (s->crucible_interrupt_family[irq][cpu] != 0) {
++                return true;
++            }
++        }
++    }
++    return false;
++}
++
++static const VMStateDescription vmstate_gic_crucible_interrupt = {
++    .name = "arm_gic/crucible-interrupt",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = gic_crucible_interrupt_needed,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT16_2DARRAY(crucible_interrupt_family, GICState,
++                               GIC_MAXIRQ, GIC_NCPU),
++        VMSTATE_UINT64_2DARRAY(crucible_interrupt_source_sequence, GICState,
++                               GIC_MAXIRQ, GIC_NCPU),
++        VMSTATE_UINT64_2DARRAY(crucible_interrupt_routing_generation,
++                               GICState, GIC_MAXIRQ, GIC_NCPU),
++        VMSTATE_UINT8_ARRAY(crucible_interrupt_target,
++                            GICState, GIC_MAXIRQ),
++        VMSTATE_UINT8_2DARRAY(crucible_interrupt_priority, GICState,
++                              GIC_MAXIRQ, GIC_NCPU),
++        VMSTATE_UINT8_ARRAY(crucible_interrupt_priority_valid,
++                            GICState, GIC_MAXIRQ),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
+ static const VMStateDescription vmstate_gic = {
+     .name = "arm_gic",
+     .version_id = 12,
+@@ -124,6 +160,7 @@ static const VMStateDescription vmstate_gic = {
+     },
+     .subsections = (const VMStateDescription * const []) {
+         &vmstate_gic_virt_state,
++        &vmstate_gic_crucible_interrupt,
+         NULL
+     }
+ };
+@@ -283,6 +320,18 @@ static void arm_gic_common_reset_hold(Object *obj, ResetType type)
+     }
+ 
+     memset(s->irq_state, 0, GIC_MAXIRQ * sizeof(gic_irq_state));
++    memset(s->crucible_interrupt_family, 0,
++           sizeof(s->crucible_interrupt_family));
++    memset(s->crucible_interrupt_source_sequence, 0,
++           sizeof(s->crucible_interrupt_source_sequence));
++    memset(s->crucible_interrupt_routing_generation, 0,
++           sizeof(s->crucible_interrupt_routing_generation));
++    memset(s->crucible_interrupt_target, 0,
++           sizeof(s->crucible_interrupt_target));
++    memset(s->crucible_interrupt_priority, 0,
++           sizeof(s->crucible_interrupt_priority));
++    memset(s->crucible_interrupt_priority_valid, 0,
++           sizeof(s->crucible_interrupt_priority_valid));
+     arm_gic_common_reset_irq_state(s, 0, resetprio);
+ 
+     if (s->virt_extn) {
+diff --git a/hw/intc/arm_gicv3.c b/hw/intc/arm_gicv3.c
+index 58e18fff5..c6f0a155a 100644
+--- a/hw/intc/arm_gicv3.c
++++ b/hw/intc/arm_gicv3.c
+@@ -17,6 +17,8 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qapi/error.h"
++#include "qemu/crucible-fault.h"
++#include "qemu/error-report.h"
+ #include "qemu/module.h"
+ #include "hw/intc/arm_gicv3.h"
+ #include "gicv3_internal.h"
+@@ -164,9 +166,14 @@ static bool gicv3_get_priority(GICv3CPUState *cs, bool is_redist, int irq,
+     }
+ 
+     if (is_redist) {
+-        *prio = cs->gicr_ipriorityr[irq];
++        *prio = cs->crucible_interrupt_priority_valid & (1U << irq) ?
++            cs->crucible_interrupt_priority[irq] :
++            cs->gicr_ipriorityr[irq];
+     } else {
+-        *prio = cs->gic->gicd_ipriority[irq];
++        *prio = cs->gic->crucible_interrupt_priority_valid[
++                    BIT32_WORD(irq)] & BIT32_MASK(irq) ?
++            cs->gic->crucible_interrupt_priority[irq] :
++            cs->gic->gicd_ipriority[irq];
+     }
+ 
+     return false;
+@@ -280,7 +287,9 @@ static void gicv3_update_noirqset(GICv3State *s, int start, int len)
+         if (!(pend & (1 << (i & 0x1f)))) {
+             continue;
+         }
+-        cs = s->gicd_irouter_target[i];
++        cs = s->crucible_interrupt_target[i] >= 0 ?
++            &s->cpu[s->crucible_interrupt_target[i]] :
++            s->gicd_irouter_target[i];
+         if (!cs) {
+             /* Interrupts targeting no implemented CPU should remain pending
+              * and not be forwarded to any CPU.
+@@ -382,6 +391,15 @@ static void gicv3_set_irq(void *opaque, int irq, int level)
+ 
+     if (irq < (s->num_irq - GIC_INTERNAL)) {
+         /* external interrupt (SPI) */
++        if (level) {
++            s->crucible_interrupt_family[irq + GIC_INTERNAL] =
++                qemu_crucible_fault_interrupt_source_current(
++                    QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SPI);
++            s->crucible_interrupt_source_sequence[irq + GIC_INTERNAL] =
++                qemu_crucible_fault_interrupt_source_current_sequence();
++            s->crucible_interrupt_routing_generation[irq + GIC_INTERNAL] =
++                qemu_crucible_fault_interrupt_current_routing_generation();
++        }
+         gicv3_dist_set_irq(s, irq + GIC_INTERNAL, level);
+     } else {
+         /* per-cpu interrupt (PPI) */
+@@ -395,10 +413,158 @@ static void gicv3_set_irq(void *opaque, int irq, int level)
+          * model wires up interrupts.
+          */
+         assert(irq >= GIC_NR_SGIS);
++        if (level) {
++            s->cpu[cpu].crucible_interrupt_family[irq] =
++                qemu_crucible_fault_interrupt_source_current(
++                    QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_PPI);
++            s->cpu[cpu].crucible_interrupt_source_sequence[irq] =
++                qemu_crucible_fault_interrupt_source_current_sequence();
++            s->cpu[cpu].crucible_interrupt_routing_generation[irq] =
++                qemu_crucible_fault_interrupt_current_routing_generation();
++        }
+         gicv3_redist_set_irq(&s->cpu[cpu], irq, level);
+     }
+ }
+ 
++static void gicv3_crucible_interrupt_inject(
++    const QemuCrucibleInterruptEvent *event, void *opaque)
++{
++    GICv3State *s = opaque;
++    GICv3CPUState *cs;
++
++    if (event->target_vcpu >= s->num_cpu) {
++        error_report("Crucible GICv3 injection target disappeared");
++        abort();
++    }
++    cs = &s->cpu[event->target_vcpu];
++    if (event->vector < GIC_INTERNAL) {
++        bool pending = cs->gicr_ipendr0 & (1U << event->vector);
++
++        cs->gicr_ipendr0 |= 1U << event->vector;
++        if (!pending || !event->retain_pending) {
++            cs->crucible_interrupt_family[event->vector] = event->family;
++            cs->crucible_interrupt_source_sequence[event->vector] =
++                event->source_sequence;
++            cs->crucible_interrupt_routing_generation[event->vector] =
++                event->routing_generation;
++            cs->crucible_interrupt_priority[event->vector] =
++                event->priority;
++            cs->crucible_interrupt_priority_valid |= 1U << event->vector;
++        }
++        gicv3_redist_update(cs);
++    } else if (event->vector < s->num_irq) {
++        bool pending = s->pending[BIT32_WORD(event->vector)] &
++            BIT32_MASK(event->vector);
++
++        if (!pending || !event->retain_pending) {
++            s->crucible_interrupt_target[event->vector] =
++                event->target_vcpu;
++        }
++        gicv3_gicd_pending_set(s, event->vector);
++        if (!pending || !event->retain_pending) {
++            s->crucible_interrupt_family[event->vector] = event->family;
++            s->crucible_interrupt_source_sequence[event->vector] =
++                event->source_sequence;
++            s->crucible_interrupt_routing_generation[event->vector] =
++                event->routing_generation;
++            s->crucible_interrupt_priority[event->vector] = event->priority;
++            s->crucible_interrupt_priority_valid[
++                BIT32_WORD(event->vector)] |= BIT32_MASK(event->vector);
++        }
++        gicv3_update(s, event->vector, 1);
++    } else if (event->vector >= GICV3_LPI_INTID_START &&
++               event->vector <= ((1U << 24) - 1)) {
++        uint64_t pending_base = cs->gicr_pendbaser &
++            R_GICR_PENDBASER_PHYADDR_MASK;
++        uint8_t pending_byte;
++        bool pending;
++
++        if (address_space_read(
++                &s->dma_as, pending_base + event->vector / 8,
++                MEMTXATTRS_UNSPECIFIED, &pending_byte,
++                sizeof(pending_byte)) != MEMTX_OK) {
++            return;
++        }
++        pending = extract32(pending_byte, event->vector % 8, 1);
++        if (!pending || !event->retain_pending) {
++            if (!qemu_crucible_fault_interrupt_provenance_set(event, true)) {
++                return;
++            }
++        }
++        gicv3_redist_process_lpi(cs, event->vector, 1);
++    } else {
++        error_report("Crucible GICv3 injection vector disappeared");
++        abort();
++    }
++}
++
++static bool gicv3_crucible_route_validate(
++    const QemuCrucibleInterruptEvent *event, void *opaque)
++{
++    GICv3State *s = opaque;
++    GICv3CPUState *cs;
++    uint64_t idbits, config_base;
++    uint8_t config, pending_byte;
++    uint8_t priority;
++
++    if (event->target_vcpu >= s->num_cpu) {
++        return false;
++    }
++    cs = &s->cpu[event->target_vcpu];
++    if (event->family != QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_LPI) {
++        if (event->vector >= s->num_irq) {
++            return false;
++        }
++        if (!event->release_phase) {
++            return true;
++        }
++        return event->vector < GIC_INTERNAL ?
++            !(cs->gicr_ipendr0 & (1U << event->vector)) :
++            !gicv3_gicd_pending_test(s, event->vector);
++    }
++    if (event->vector < GICV3_LPI_INTID_START) {
++        return false;
++    }
++    idbits = MIN(FIELD_EX64(cs->gicr_propbaser,
++                           GICR_PROPBASER, IDBITS),
++                 GICD_TYPER_IDBITS);
++    if (!(cs->gicr_ctlr & GICR_CTLR_ENABLE_LPIS) ||
++        event->vector > (1ULL << (idbits + 1)) - 1) {
++        return false;
++    }
++    config_base = cs->gicr_propbaser & R_GICR_PROPBASER_PHYADDR_MASK;
++    if (address_space_read(
++            &s->dma_as,
++            config_base + event->vector - GICV3_LPI_INTID_START,
++            MEMTXATTRS_UNSPECIFIED, &config, sizeof(config)) != MEMTX_OK ||
++        !(config & LPI_CTE_ENABLED)) {
++        return false;
++    }
++    if (s->gicd_ctlr & GICD_CTLR_DS) {
++        priority = config & LPI_PRIORITY_MASK;
++    } else {
++        priority = ((config & LPI_PRIORITY_MASK) >> 1) | 0x80;
++    }
++    if (event->priority != priority || event->source_sequence == 0) {
++        return event->priority == priority;
++    }
++    if (address_space_read(
++            &s->dma_as,
++            (cs->gicr_pendbaser & R_GICR_PENDBASER_PHYADDR_MASK) +
++                event->vector / 8,
++            MEMTXATTRS_UNSPECIFIED, &pending_byte,
++            sizeof(pending_byte)) != MEMTX_OK) {
++        return false;
++    }
++    if (event->release_phase &&
++        extract32(pending_byte, event->vector % 8, 1)) {
++        return false;
++    }
++    return (event->retain_pending &&
++            extract32(pending_byte, event->vector % 8, 1)) ||
++        qemu_crucible_fault_interrupt_provenance_can_set(event);
++}
++
+ static void arm_gicv3_post_load(GICv3State *s)
+ {
+     int i;
+@@ -440,6 +606,8 @@ static void arm_gic_realize(DeviceState *dev, Error **errp)
+     GICv3State *s = ARM_GICV3(dev);
+     ARMGICv3Class *agc = ARM_GICV3_GET_CLASS(s);
+     Error *local_err = NULL;
++    uint64_t delivery =
++        1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER - 1);
+ 
+     agc->parent_realize(dev, &local_err);
+     if (local_err) {
+@@ -449,6 +617,63 @@ static void arm_gic_realize(DeviceState *dev, Error **errp)
+ 
+     gicv3_init_irqs_and_mmio(s, gicv3_set_irq, gic_ops);
+ 
++    if (!qemu_crucible_fault_interrupt_register_injector(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SGI,
++            gicv3_crucible_interrupt_inject, s) ||
++        !qemu_crucible_fault_interrupt_register_injector(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_PPI,
++            gicv3_crucible_interrupt_inject, s) ||
++        !qemu_crucible_fault_interrupt_register_injector(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SPI,
++            gicv3_crucible_interrupt_inject, s) ||
++        !qemu_crucible_fault_interrupt_register_injector(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_TIMER,
++            gicv3_crucible_interrupt_inject, s) ||
++        (s->lpi_enable &&
++         !qemu_crucible_fault_interrupt_register_injector(
++             QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_LPI,
++             gicv3_crucible_interrupt_inject, s)) ||
++        (s->lpi_enable &&
++         !qemu_crucible_fault_interrupt_register_route_validator(
++             QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_LPI,
++             gicv3_crucible_route_validate, s)) ||
++        !qemu_crucible_fault_interrupt_register_route_validator(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SGI,
++            gicv3_crucible_route_validate, s) ||
++        !qemu_crucible_fault_interrupt_register_route_validator(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_PPI,
++            gicv3_crucible_route_validate, s) ||
++        !qemu_crucible_fault_interrupt_register_route_validator(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SPI,
++            gicv3_crucible_route_validate, s) ||
++        !qemu_crucible_fault_interrupt_register_route_validator(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_TIMER,
++            gicv3_crucible_route_validate, s)) {
++        error_setg(errp, "conflicting Crucible AArch64 interrupt injector");
++        return;
++    }
++    if (!qemu_crucible_fault_interrupt_register_family(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SGI, delivery,
++            "qemu-10.0-gicv3-crucible-v1", 15, s->num_cpu) ||
++        !qemu_crucible_fault_interrupt_register_family(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_PPI, delivery,
++            "qemu-10.0-gicv3-crucible-v1", 31, s->num_cpu) ||
++        !qemu_crucible_fault_interrupt_register_family(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SPI, delivery,
++            "qemu-10.0-gicv3-crucible-v1",
++            s->num_irq - 1, s->num_cpu) ||
++        !qemu_crucible_fault_interrupt_register_family(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_TIMER, delivery,
++            "qemu-10.0-gicv3-crucible-v1", 31, s->num_cpu) ||
++        (s->lpi_enable &&
++         !qemu_crucible_fault_interrupt_register_family(
++             QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_LPI, delivery,
++             "qemu-10.0-gicv3-crucible-v1",
++             (1U << 24) - 1, s->num_cpu))) {
++        error_setg(errp, "conflicting Crucible GICv3 family realization");
++        return;
++    }
++
+     gicv3_init_cpuif(s);
+ }
+ 
+diff --git a/hw/intc/arm_gicv3_common.c b/hw/intc/arm_gicv3_common.c
+index 76b2283c9..12f56cf38 100644
+--- a/hw/intc/arm_gicv3_common.c
++++ b/hw/intc/arm_gicv3_common.c
+@@ -25,6 +25,7 @@
+ #include "qapi/error.h"
+ #include "qemu/module.h"
+ #include "qemu/error-report.h"
++#include "qemu/crucible-fault.h"
+ #include "hw/core/cpu.h"
+ #include "hw/intc/arm_gicv3_common.h"
+ #include "hw/qdev-properties.h"
+@@ -182,6 +183,37 @@ static const VMStateDescription vmstate_gicv3_cpu_nmi = {
+     }
+ };
+ 
++static bool gicv3_cpu_crucible_interrupt_needed(void *opaque)
++{
++    GICv3CPUState *cs = opaque;
++
++    for (size_t i = 0; i < GIC_INTERNAL; i++) {
++        if (cs->crucible_interrupt_family[i] != 0) {
++            return true;
++        }
++    }
++    return false;
++}
++
++static const VMStateDescription vmstate_gicv3_cpu_crucible_interrupt = {
++    .name = "arm_gicv3_cpu/crucible-interrupt",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = gicv3_cpu_crucible_interrupt_needed,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT16_ARRAY(crucible_interrupt_family,
++                             GICv3CPUState, GIC_INTERNAL),
++        VMSTATE_UINT64_ARRAY(crucible_interrupt_source_sequence,
++                             GICv3CPUState, GIC_INTERNAL),
++        VMSTATE_UINT64_ARRAY(crucible_interrupt_routing_generation,
++                             GICv3CPUState, GIC_INTERNAL),
++        VMSTATE_UINT8_ARRAY(crucible_interrupt_priority,
++                            GICv3CPUState, GIC_INTERNAL),
++        VMSTATE_UINT32(crucible_interrupt_priority_valid, GICv3CPUState),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
+ static const VMStateDescription vmstate_gicv3_cpu = {
+     .name = "arm_gicv3_cpu",
+     .version_id = 1,
+@@ -215,6 +247,7 @@ static const VMStateDescription vmstate_gicv3_cpu = {
+         &vmstate_gicv3_cpu_sre_el1,
+         &vmstate_gicv3_gicv4,
+         &vmstate_gicv3_cpu_nmi,
++        &vmstate_gicv3_cpu_crucible_interrupt,
+         NULL
+     }
+ };
+@@ -275,6 +308,40 @@ const VMStateDescription vmstate_gicv3_gicd_nmi = {
+     }
+ };
+ 
++static bool gicv3_crucible_interrupt_needed(void *opaque)
++{
++    GICv3State *s = opaque;
++
++    for (size_t i = 0; i < GICV3_MAXIRQ; i++) {
++        if (s->crucible_interrupt_family[i] != 0) {
++            return true;
++        }
++    }
++    return false;
++}
++
++static const VMStateDescription vmstate_gicv3_crucible_interrupt = {
++    .name = "arm_gicv3/crucible-interrupt",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = gicv3_crucible_interrupt_needed,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT16_ARRAY(crucible_interrupt_family,
++                             GICv3State, GICV3_MAXIRQ),
++        VMSTATE_UINT64_ARRAY(crucible_interrupt_source_sequence,
++                             GICv3State, GICV3_MAXIRQ),
++        VMSTATE_UINT64_ARRAY(crucible_interrupt_routing_generation,
++                             GICv3State, GICV3_MAXIRQ),
++        VMSTATE_INT16_ARRAY(crucible_interrupt_target,
++                            GICv3State, GICV3_MAXIRQ),
++        VMSTATE_UINT8_ARRAY(crucible_interrupt_priority,
++                            GICv3State, GICV3_MAXIRQ),
++        VMSTATE_UINT32_ARRAY(crucible_interrupt_priority_valid,
++                             GICv3State, GICV3_BMP_SIZE),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
+ static const VMStateDescription vmstate_gicv3 = {
+     .name = "arm_gicv3",
+     .version_id = 1,
+@@ -304,6 +371,7 @@ static const VMStateDescription vmstate_gicv3 = {
+     .subsections = (const VMStateDescription * const []) {
+         &vmstate_gicv3_gicd_no_migration_shift_bug,
+         &vmstate_gicv3_gicd_nmi,
++        &vmstate_gicv3_crucible_interrupt,
+         NULL
+     }
+ };
+@@ -503,6 +571,9 @@ static void arm_gicv3_common_reset_hold(Object *obj, ResetType type)
+     for (i = 0; i < s->num_cpu; i++) {
+         GICv3CPUState *cs = &s->cpu[i];
+ 
++        qemu_crucible_fault_interrupt_provenance_clear_target(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_LPI, cs->cpu->cpu_index);
++
+         cs->level = 0;
+         cs->gicr_ctlr = 0;
+         if (s->lpi_enable) {
+@@ -534,6 +605,15 @@ static void arm_gicv3_common_reset_hold(Object *obj, ResetType type)
+         cs->gicr_igrpmodr0 = 0;
+         cs->gicr_nsacr = 0;
+         memset(cs->gicr_ipriorityr, 0, sizeof(cs->gicr_ipriorityr));
++        memset(cs->crucible_interrupt_family, 0,
++               sizeof(cs->crucible_interrupt_family));
++        memset(cs->crucible_interrupt_source_sequence, 0,
++               sizeof(cs->crucible_interrupt_source_sequence));
++        memset(cs->crucible_interrupt_routing_generation, 0,
++               sizeof(cs->crucible_interrupt_routing_generation));
++        memset(cs->crucible_interrupt_priority, 0,
++               sizeof(cs->crucible_interrupt_priority));
++        cs->crucible_interrupt_priority_valid = 0;
+ 
+         cs->hppi.prio = 0xff;
+         cs->hppi.nmi = false;
+@@ -566,6 +646,19 @@ static void arm_gicv3_common_reset_hold(Object *obj, ResetType type)
+     memset(s->edge_trigger, 0, sizeof(s->edge_trigger));
+     memset(s->gicd_ipriority, 0, sizeof(s->gicd_ipriority));
+     memset(s->gicd_irouter, 0, sizeof(s->gicd_irouter));
++    memset(s->crucible_interrupt_family, 0,
++           sizeof(s->crucible_interrupt_family));
++    memset(s->crucible_interrupt_source_sequence, 0,
++           sizeof(s->crucible_interrupt_source_sequence));
++    memset(s->crucible_interrupt_routing_generation, 0,
++           sizeof(s->crucible_interrupt_routing_generation));
++    for (i = 0; i < GICV3_MAXIRQ; i++) {
++        s->crucible_interrupt_target[i] = -1;
++    }
++    memset(s->crucible_interrupt_priority, 0,
++           sizeof(s->crucible_interrupt_priority));
++    memset(s->crucible_interrupt_priority_valid, 0,
++           sizeof(s->crucible_interrupt_priority_valid));
+     memset(s->gicd_nsacr, 0, sizeof(s->gicd_nsacr));
+     /* GICD_IROUTER are UNKNOWN at reset so in theory the guest must
+      * write these to get sane behaviour and we need not populate the
+diff --git a/hw/intc/arm_gicv3_cpuif.c b/hw/intc/arm_gicv3_cpuif.c
+index de37465bc..42e7b80c1 100644
+--- a/hw/intc/arm_gicv3_cpuif.c
++++ b/hw/intc/arm_gicv3_cpuif.c
+@@ -16,6 +16,7 @@
+ #include "qemu/bitops.h"
+ #include "qemu/log.h"
+ #include "qemu/main-loop.h"
++#include "qemu/crucible-fault.h"
+ #include "trace.h"
+ #include "gicv3_internal.h"
+ #include "hw/irq.h"
+@@ -1187,6 +1188,222 @@ static void icc_activate_irq(GICv3CPUState *cs, int irq)
+     }
+ }
+ 
++static void gicv3_cpuif_crucible_inject(
++    const QemuCrucibleInterruptEvent *event, void *opaque)
++{
++    GICv3CPUState *cs = opaque;
++
++    if (event->vector < GIC_INTERNAL) {
++        bool pending = cs->gicr_ipendr0 & (1U << event->vector);
++
++        cs->gicr_ipendr0 |= 1U << event->vector;
++        if (!pending || !event->retain_pending) {
++            cs->crucible_interrupt_family[event->vector] = event->family;
++            cs->crucible_interrupt_source_sequence[event->vector] =
++                event->source_sequence;
++            cs->crucible_interrupt_routing_generation[event->vector] =
++                event->routing_generation;
++            cs->crucible_interrupt_priority[event->vector] =
++                event->priority;
++            cs->crucible_interrupt_priority_valid |= 1U << event->vector;
++        }
++        gicv3_redist_update(cs);
++    } else if (event->vector < cs->gic->num_irq) {
++        bool pending =
++            cs->gic->pending[BIT32_WORD(event->vector)] &
++            BIT32_MASK(event->vector);
++
++        if (!pending || !event->retain_pending) {
++            cs->gic->crucible_interrupt_target[event->vector] =
++                event->target_vcpu;
++        }
++        gicv3_gicd_pending_set(cs->gic, event->vector);
++        if (!pending || !event->retain_pending) {
++            cs->gic->crucible_interrupt_family[event->vector] =
++                event->family;
++            cs->gic->crucible_interrupt_source_sequence[event->vector] =
++                event->source_sequence;
++            cs->gic->crucible_interrupt_routing_generation[event->vector] =
++                event->routing_generation;
++            cs->gic->crucible_interrupt_priority[event->vector] =
++                event->priority;
++            cs->gic->crucible_interrupt_priority_valid[
++                BIT32_WORD(event->vector)] |= BIT32_MASK(event->vector);
++        }
++        gicv3_update(cs->gic, event->vector, 1);
++    } else {
++        gicv3_redist_process_lpi(cs, event->vector, 1);
++    }
++}
++
++static bool gicv3_cpuif_crucible_pending(GICv3CPUState *cs, uint32_t irq)
++{
++    uint8_t pending;
++
++    if (irq < GIC_INTERNAL) {
++        return cs->gicr_ipendr0 & (1U << irq);
++    }
++    if (irq < cs->gic->num_irq) {
++        return gicv3_gicd_pending_test(cs->gic, irq);
++    }
++    if (irq < GICV3_LPI_INTID_START) {
++        return true;
++    }
++    if (address_space_read(
++            &cs->gic->dma_as,
++            (cs->gicr_pendbaser & R_GICR_PENDBASER_PHYADDR_MASK) + irq / 8,
++            MEMTXATTRS_UNSPECIFIED, &pending, sizeof(pending)) != MEMTX_OK) {
++        return true;
++    }
++    return extract32(pending, irq % 8, 1);
++}
++
++static void gicv3_cpuif_crucible_clear_pending(
++    GICv3CPUState *cs, uint32_t intid)
++{
++    if (intid < GIC_INTERNAL) {
++        cs->gicr_ipendr0 &= ~(1U << intid);
++        cs->crucible_interrupt_family[intid] = 0;
++        cs->crucible_interrupt_source_sequence[intid] = 0;
++        cs->crucible_interrupt_routing_generation[intid] = 0;
++        cs->crucible_interrupt_priority_valid &= ~(1U << intid);
++        gicv3_redist_update(cs);
++    } else if (intid < cs->gic->num_irq) {
++        gicv3_gicd_pending_clear(cs->gic, intid);
++        cs->gic->crucible_interrupt_family[intid] = 0;
++        cs->gic->crucible_interrupt_source_sequence[intid] = 0;
++        cs->gic->crucible_interrupt_routing_generation[intid] = 0;
++        cs->gic->crucible_interrupt_target[intid] = -1;
++        cs->gic->crucible_interrupt_priority_valid[BIT32_WORD(intid)] &=
++            ~BIT32_MASK(intid);
++        gicv3_update(cs->gic, intid, 1);
++    } else {
++        gicv3_redist_lpi_pending(cs, intid, 0);
++        qemu_crucible_fault_interrupt_provenance_clear(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_LPI,
++            cs->cpu->cpu_index, intid);
++    }
++}
++
++static bool gicv3_cpuif_crucible_intercept(
++    GICv3CPUState *cs, uint64_t *intid)
++{
++    QemuCrucibleInterruptEvent event = { 0 };
++    uint32_t irq = *intid;
++    bool edge;
++
++    if (gicv3_intid_is_special(irq)) {
++        return true;
++    }
++    if (irq < GIC_INTERNAL) {
++        edge = extract32(cs->edge_trigger, irq, 1);
++        event.family = irq < GIC_NR_SGIS ?
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SGI :
++            (cs->crucible_interrupt_family[irq] != 0 ?
++                cs->crucible_interrupt_family[irq] :
++                QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_PPI);
++    } else if (irq < GICV3_LPI_INTID_START) {
++        edge = gicv3_gicd_edge_trigger_test(cs->gic, irq);
++        event.family = cs->gic->crucible_interrupt_family[irq] != 0 ?
++            cs->gic->crucible_interrupt_family[irq] :
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SPI;
++    } else {
++        edge = true;
++        event.family = QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_LPI;
++    }
++    event.trigger = edge ? QEMU_CRUCIBLE_INTERRUPT_TRIGGER_EDGE :
++        QEMU_CRUCIBLE_INTERRUPT_TRIGGER_LEVEL;
++    event.polarity = QEMU_CRUCIBLE_INTERRUPT_POLARITY_HIGH;
++    event.model_phase = QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER;
++    event.target_vcpu = cs->cpu->cpu_index;
++    event.vector = irq;
++    event.priority = cs->hppi.prio;
++    if (qemu_crucible_fault_interrupt_provenance_get(
++            event.family, cs->cpu->cpu_index, irq, &event)) {
++        qemu_crucible_fault_interrupt_provenance_clear(
++            event.family, cs->cpu->cpu_index, irq);
++        event.model_phase = QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER;
++        event.priority = cs->hppi.prio;
++    } else {
++        event.source_sequence = irq < GIC_INTERNAL ?
++            cs->crucible_interrupt_source_sequence[irq] :
++            (irq < cs->gic->num_irq ?
++                cs->gic->crucible_interrupt_source_sequence[irq] :
++                qemu_crucible_fault_interrupt_source_current_sequence());
++        event.routing_generation = irq < GIC_INTERNAL ?
++            cs->crucible_interrupt_routing_generation[irq] :
++            (irq < cs->gic->num_irq ?
++                cs->gic->crucible_interrupt_routing_generation[irq] : 0);
++    }
++    if (event.source_sequence == 0) {
++        event.source_sequence =
++            qemu_crucible_fault_interrupt_source_next_sequence();
++    }
++    if (event.routing_generation == 0) {
++        event.routing_generation =
++            qemu_crucible_fault_interrupt_current_routing_generation();
++    }
++    event.duplicate_ordinal = 0;
++    event.disposition = 0;
++
++    if (!qemu_crucible_fault_interrupt_intercept(
++            &event, gicv3_cpuif_crucible_inject, cs)) {
++        gicv3_cpuif_crucible_clear_pending(cs, irq);
++        if (event.disposition == 1 && !edge) {
++            if (irq < GIC_INTERNAL && extract32(cs->level, irq, 1)) {
++                cs->gicr_ipendr0 |= 1U << irq;
++                gicv3_redist_update(cs);
++            } else if (irq < cs->gic->num_irq &&
++                       gicv3_gicd_level_test(cs->gic, irq)) {
++                cs->gic->crucible_interrupt_target[irq] =
++                    event.target_vcpu;
++                gicv3_gicd_pending_set(cs->gic, irq);
++                gicv3_update(cs->gic, irq, 1);
++            }
++        }
++        *intid = INTID_SPURIOUS;
++        qemu_crucible_fault_interrupt_committed(&event);
++        return false;
++    }
++    if (event.vector != irq) {
++        if (gicv3_cpuif_crucible_pending(cs, event.vector) ||
++            !qemu_crucible_fault_interrupt_route_valid(&event) ||
++            !qemu_crucible_fault_interrupt_provenance_can_set(&event)) {
++            qemu_crucible_fault_interrupt_commit_error();
++            *intid = INTID_SPURIOUS;
++            qemu_crucible_fault_interrupt_committed(&event);
++            return false;
++        }
++        gicv3_cpuif_crucible_clear_pending(cs, irq);
++        event.release_phase = QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER;
++        if (!qemu_crucible_fault_interrupt_provenance_set(
++                &event, true)) {
++            g_assert_not_reached();
++        }
++        gicv3_cpuif_crucible_inject(&event, cs);
++        *intid = INTID_SPURIOUS;
++        qemu_crucible_fault_interrupt_committed(&event);
++        return false;
++    } else if (irq < GIC_INTERNAL) {
++        cs->crucible_interrupt_family[irq] = 0;
++        cs->crucible_interrupt_source_sequence[irq] = 0;
++        cs->crucible_interrupt_routing_generation[irq] = 0;
++        cs->crucible_interrupt_priority_valid &= ~(1U << irq);
++    } else if (irq < cs->gic->num_irq) {
++        cs->gic->crucible_interrupt_family[irq] = 0;
++        cs->gic->crucible_interrupt_source_sequence[irq] = 0;
++        cs->gic->crucible_interrupt_routing_generation[irq] = 0;
++        cs->gic->crucible_interrupt_target[irq] = -1;
++        cs->gic->crucible_interrupt_priority_valid[BIT32_WORD(irq)] &=
++            ~BIT32_MASK(irq);
++    } else {
++        qemu_crucible_fault_interrupt_provenance_clear(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_LPI,
++            cs->cpu->cpu_index, irq);
++    }
++    return true;
++}
++
+ static uint64_t icc_hppir0_value(GICv3CPUState *cs, CPUARMState *env)
+ {
+     /* Return the highest priority pending interrupt register value
+@@ -1275,9 +1492,11 @@ static uint64_t icc_iar0_read(CPUARMState *env, const ARMCPRegInfo *ri)
+         intid = icc_hppir0_value(cs, env);
+     }
+ 
++    gicv3_cpuif_crucible_intercept(cs, &intid);
+     if (!gicv3_intid_is_special(intid)) {
+         icc_activate_irq(cs, intid);
+     }
++    qemu_crucible_fault_interrupt_committed(NULL);
+ 
+     trace_gicv3_icc_iar0_read(gicv3_redist_affid(cs), intid);
+     return intid;
+@@ -1299,6 +1518,7 @@ static uint64_t icc_iar1_read(CPUARMState *env, const ARMCPRegInfo *ri)
+         intid = icc_hppir1_value(cs, env);
+     }
+ 
++    gicv3_cpuif_crucible_intercept(cs, &intid);
+     if (!gicv3_intid_is_special(intid)) {
+         if (cs->hppi.nmi && env->cp15.sctlr_el[el] & SCTLR_NMI) {
+             intid = INTID_NMI;
+@@ -1306,6 +1526,7 @@ static uint64_t icc_iar1_read(CPUARMState *env, const ARMCPRegInfo *ri)
+             icc_activate_irq(cs, intid);
+         }
+     }
++    qemu_crucible_fault_interrupt_committed(NULL);
+ 
+     trace_gicv3_icc_iar1_read(gicv3_redist_affid(cs), intid);
+     return intid;
+@@ -1326,6 +1547,7 @@ static uint64_t icc_nmiar1_read(CPUARMState *env, const ARMCPRegInfo *ri)
+         intid = icc_hppir1_value(cs, env);
+     }
+ 
++    gicv3_cpuif_crucible_intercept(cs, &intid);
+     if (!gicv3_intid_is_special(intid)) {
+         if (!cs->hppi.nmi) {
+             intid = INTID_SPURIOUS;
+@@ -1333,6 +1555,7 @@ static uint64_t icc_nmiar1_read(CPUARMState *env, const ARMCPRegInfo *ri)
+             icc_activate_irq(cs, intid);
+         }
+     }
++    qemu_crucible_fault_interrupt_committed(NULL);
+ 
+     trace_gicv3_icc_nmiar1_read(gicv3_redist_affid(cs), intid);
+     return intid;
+diff --git a/hw/intc/arm_gicv3_redist.c b/hw/intc/arm_gicv3_redist.c
+index 90b238fac..ebdfe0258 100644
+--- a/hw/intc/arm_gicv3_redist.c
++++ b/hw/intc/arm_gicv3_redist.c
+@@ -11,6 +11,7 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qemu/log.h"
++#include "qemu/crucible-fault.h"
+ #include "trace.h"
+ #include "gicv3_internal.h"
+ 
+@@ -879,6 +880,11 @@ void gicv3_redist_lpi_pending(GICv3CPUState *cs, int irq, int level)
+         /* no change in the value of pending bit, return */
+         return;
+     }
++    if (!level) {
++        qemu_crucible_fault_interrupt_provenance_clear(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_LPI,
++            cs->cpu->cpu_index, irq);
++    }
+ 
+     /*
+      * check if this LPI is better than the current hpplpi, if yes
+@@ -933,7 +939,10 @@ void gicv3_redist_mov_lpi(GICv3CPUState *src, GICv3CPUState *dest, int irq)
+      */
+     uint64_t idbits;
+     uint32_t pendt_size;
+-    uint64_t src_baddr;
++    uint64_t src_baddr, dest_baddr;
++    uint8_t dest_pending = UINT8_MAX;
++    QemuCrucibleInterruptEvent provenance;
++    bool has_provenance;
+ 
+     if (!(src->gicr_ctlr & GICR_CTLR_ENABLE_LPIS) ||
+         !(dest->gicr_ctlr & GICR_CTLR_ENABLE_LPIS)) {
+@@ -951,11 +960,21 @@ void gicv3_redist_mov_lpi(GICv3CPUState *src, GICv3CPUState *dest, int irq)
+     }
+ 
+     src_baddr = src->gicr_pendbaser & R_GICR_PENDBASER_PHYADDR_MASK;
++    dest_baddr = dest->gicr_pendbaser & R_GICR_PENDBASER_PHYADDR_MASK;
++    address_space_read(&src->gic->dma_as, dest_baddr + irq / 8,
++                       MEMTXATTRS_UNSPECIFIED, &dest_pending,
++                       sizeof(dest_pending));
++    has_provenance = qemu_crucible_fault_interrupt_provenance_get(
++        QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_LPI,
++        src->cpu->cpu_index, irq, &provenance);
+ 
+     if (!set_pending_table_bit(src, src_baddr, irq, 0)) {
+         /* Not pending on source, nothing to do */
+         return;
+     }
++    qemu_crucible_fault_interrupt_provenance_clear(
++        QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_LPI,
++        src->cpu->cpu_index, irq);
+     if (irq == src->hpplpi.irq) {
+         /*
+          * We just made this LPI not-pending so only need to update
+@@ -965,6 +984,12 @@ void gicv3_redist_mov_lpi(GICv3CPUState *src, GICv3CPUState *dest, int irq)
+     }
+     /* Mark it pending on the destination */
+     gicv3_redist_lpi_pending(dest, irq, 1);
++    if (has_provenance &&
++        !extract32(dest_pending, irq % 8, 1)) {
++        provenance.target_vcpu = dest->cpu->cpu_index;
++        g_assert(qemu_crucible_fault_interrupt_provenance_set(
++            &provenance, true));
++    }
+ }
+ 
+ void gicv3_redist_movall_lpis(GICv3CPUState *src, GICv3CPUState *dest)
+@@ -1001,6 +1026,7 @@ void gicv3_redist_movall_lpis(GICv3CPUState *src, GICv3CPUState *dest)
+ 
+     for (i = GICV3_LPI_INTID_START / 8; i < pendt_size / 8; i++) {
+         uint8_t src_pend, dest_pend;
++        uint8_t old_dest_pend;
+ 
+         address_space_read(as, src_baddr + i, MEMTXATTRS_UNSPECIFIED,
+                            &src_pend, sizeof(src_pend));
+@@ -1009,6 +1035,30 @@ void gicv3_redist_movall_lpis(GICv3CPUState *src, GICv3CPUState *dest)
+         }
+         address_space_read(as, dest_baddr + i, MEMTXATTRS_UNSPECIFIED,
+                            &dest_pend, sizeof(dest_pend));
++        old_dest_pend = dest_pend;
++        for (int bit = 0; bit < 8; bit++) {
++            QemuCrucibleInterruptEvent provenance;
++            uint32_t irq = i * 8 + bit;
++            bool move_provenance = false;
++
++            if (!(src_pend & (1U << bit))) {
++                continue;
++            }
++            if (qemu_crucible_fault_interrupt_provenance_get(
++                    QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_LPI,
++                    src->cpu->cpu_index, irq, &provenance) &&
++                !(old_dest_pend & (1U << bit))) {
++                provenance.target_vcpu = dest->cpu->cpu_index;
++                move_provenance = true;
++            }
++            qemu_crucible_fault_interrupt_provenance_clear(
++                QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_LPI,
++                src->cpu->cpu_index, irq);
++            if (move_provenance) {
++                g_assert(qemu_crucible_fault_interrupt_provenance_set(
++                    &provenance, true));
++            }
++        }
+         dest_pend |= src_pend;
+         src_pend = 0;
+         address_space_write(as, src_baddr + i, MEMTXATTRS_UNSPECIFIED,
+diff --git a/hw/intc/gic_internal.h b/hw/intc/gic_internal.h
+index 8ddbf554c..367098dfa 100644
+--- a/hw/intc/gic_internal.h
++++ b/hw/intc/gic_internal.h
+@@ -319,7 +319,9 @@ static inline int gic_get_priority(GICState *s, int irq, int cpu)
+         uint32_t *entry = gic_get_lr_entry(s, irq, cpu);
+         return GICH_LR_PRIORITY(*entry);
+     } else {
+-        return GIC_DIST_GET_PRIORITY(irq, cpu);
++        return s->crucible_interrupt_priority_valid[irq] & (1U << cpu) ?
++            s->crucible_interrupt_priority[irq][cpu] :
++            GIC_DIST_GET_PRIORITY(irq, cpu);
+     }
+ }
+ 
+diff --git a/hw/intc/i8259.c b/hw/intc/i8259.c
+index d88b20f40..63fc57e0e 100644
+--- a/hw/intc/i8259.c
++++ b/hw/intc/i8259.c
+@@ -23,6 +23,10 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/crucible-fault.h"
++#include "qemu/error-report.h"
++#include "qapi/error.h"
++#include "hw/core/cpu.h"
+ #include "hw/intc/i8259.h"
+ #include "hw/irq.h"
+ #include "hw/isa/isa.h"
+@@ -124,6 +128,16 @@ static void pic_set_irq(void *opaque, int irq, int level)
+     int mask = 1 << irq;
+     int irq_index = s->master ? irq : irq + 8;
+ 
++    if (level && !(s->last_irr & mask)) {
++        s->crucible_interrupt_family[irq] =
++            QEMU_CRUCIBLE_INTERRUPT_X86_PIC;
++        s->crucible_interrupt_source_sequence[irq] =
++            qemu_crucible_fault_interrupt_source_current_sequence();
++        s->crucible_interrupt_routing_generation[irq] =
++            qemu_crucible_fault_interrupt_current_routing_generation();
++        s->crucible_interrupt_vector_valid &= ~(1U << irq);
++    }
++
+     trace_pic_set_irq(s->master, irq, level);
+     pic_stat_update_irq(irq_index, level);
+ 
+@@ -173,35 +187,202 @@ static void pic_intack(PICCommonState *s, int irq)
+     pic_update_irq(s);
+ }
+ 
++static void pic_crucible_interrupt_inject(
++    const QemuCrucibleInterruptEvent *event, void *opaque)
++{
++    PICCommonState *pic = isa_pic;
++    int irq;
++
++    (void)opaque;
++
++    if (event->controller_source < 16) {
++        pic = event->controller_source < 8 ? isa_pic : slave_pic;
++        irq = event->controller_source & 7;
++    } else {
++        irq = event->vector & 15;
++        pic = irq < 8 ? isa_pic : slave_pic;
++        irq &= 7;
++    }
++    if (!(pic->irr & (1U << irq)) || !event->retain_pending) {
++        pic->crucible_interrupt_family[irq] = event->family;
++        pic->crucible_interrupt_source_sequence[irq] = event->source_sequence;
++        pic->crucible_interrupt_routing_generation[irq] =
++            event->routing_generation;
++        pic->crucible_interrupt_vector[irq] = event->vector;
++        pic->crucible_interrupt_vector_valid |= 1U << irq;
++    }
++    pic->irr |= 1U << irq;
++    pic_update_irq(pic);
++}
++
++static bool pic_crucible_interrupt_route_validate(
++    const QemuCrucibleInterruptEvent *event, void *opaque)
++{
++    PICCommonState *pic;
++    int irq;
++
++    (void)opaque;
++    if (event->family != QEMU_CRUCIBLE_INTERRUPT_X86_PIC) {
++        return false;
++    }
++    if (event->controller_source < 16) {
++        pic = event->controller_source < 8 ? isa_pic : slave_pic;
++        irq = event->controller_source & 7;
++    } else {
++        irq = event->vector & 15;
++        pic = irq < 8 ? isa_pic : slave_pic;
++        irq &= 7;
++    }
++    return event->priority == irq &&
++        (!event->release_phase || !(pic->irr & (1U << irq)));
++}
++
+ int pic_read_irq(PICCommonState *s)
+ {
+     int irq, intno;
++    bool had_irq;
++    bool acknowledge_master = false;
++    bool intercepted = false;
++    QemuCrucibleInterruptEvent event = { 0 };
++    PICCommonState *source_pic = s;
++    int source_irq;
+ 
+     irq = pic_get_irq(s);
++    had_irq = irq >= 0;
+     if (irq >= 0) {
+-        int irq2;
+-
+         if (irq == 2) {
+-            irq2 = pic_get_irq(slave_pic);
+-            if (irq2 >= 0) {
+-                pic_intack(slave_pic, irq2);
++            acknowledge_master = true;
++            source_irq = pic_get_irq(slave_pic);
++            if (source_irq >= 0) {
++                source_pic = slave_pic;
+             } else {
+                 /* spurious IRQ on slave controller */
+-                irq2 = 7;
++                source_irq = 7;
++                had_irq = false;
+             }
+-            intno = slave_pic->irq_base + irq2;
+-            pic_intack(s, irq);
+-            irq = irq2 + 8;
++            intno = slave_pic->irq_base + source_irq;
++            irq = source_irq + 8;
+         } else {
++            source_irq = irq;
+             intno = s->irq_base + irq;
+-            pic_intack(s, irq);
+         }
+     } else {
+         /* spurious IRQ on host controller */
+         irq = 7;
++        source_irq = irq;
+         intno = s->irq_base + irq;
+     }
+ 
++    if (had_irq && current_cpu) {
++        bool level = source_pic->ltim ||
++                     (source_pic->elcr & (1U << source_irq));
++        if (source_pic->crucible_interrupt_vector_valid &
++            (1U << source_irq)) {
++            intno = source_pic->crucible_interrupt_vector[source_irq];
++        }
++        event = (QemuCrucibleInterruptEvent) {
++            .family = QEMU_CRUCIBLE_INTERRUPT_X86_PIC,
++            .trigger = level ? QEMU_CRUCIBLE_INTERRUPT_TRIGGER_LEVEL :
++                QEMU_CRUCIBLE_INTERRUPT_TRIGGER_EDGE,
++            .polarity = QEMU_CRUCIBLE_INTERRUPT_POLARITY_HIGH,
++            .model_phase = QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER,
++            .target_vcpu = current_cpu->cpu_index,
++            .vector = intno,
++            .controller_source = source_irq +
++                (source_pic == slave_pic ? 8 : 0),
++            .priority = source_irq,
++            .source_sequence =
++                source_pic->crucible_interrupt_source_sequence[source_irq],
++            .routing_generation =
++                source_pic->crucible_interrupt_routing_generation[source_irq],
++        };
++        {
++            QemuCrucibleInterruptEvent provenance;
++
++            if (qemu_crucible_fault_interrupt_provenance_get(
++                    event.family, event.target_vcpu, event.vector,
++                    &provenance)) {
++                qemu_crucible_fault_interrupt_provenance_clear(
++                    event.family, event.target_vcpu, event.vector);
++                event = provenance;
++                event.model_phase = QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER;
++            }
++        }
++
++        if (!qemu_crucible_fault_interrupt_intercept(
++                &event, pic_crucible_interrupt_inject, s)) {
++            if (event.disposition == 2 || !level) {
++                source_pic->irr &= ~(1U << source_irq);
++                source_pic->crucible_interrupt_family[source_irq] = 0;
++                source_pic->crucible_interrupt_source_sequence[source_irq] = 0;
++                source_pic->crucible_interrupt_routing_generation[
++                    source_irq] = 0;
++                source_pic->crucible_interrupt_vector_valid &=
++                    ~(1U << source_irq);
++                pic_update_irq(source_pic);
++                if (source_pic == slave_pic) {
++                    s->irr &= ~(1U << 2);
++                    pic_update_irq(s);
++                }
++            }
++            qemu_crucible_fault_interrupt_committed(&event);
++            return -1;
++        }
++        intercepted = true;
++        if (event.vector != intno) {
++            PICCommonState *replacement_pic =
++                event.controller_source < 8 ? isa_pic : slave_pic;
++            int replacement_irq = event.controller_source & 7;
++
++            if ((replacement_pic != source_pic ||
++                 replacement_irq != source_irq) &&
++                (replacement_pic->irr & (1U << replacement_irq))) {
++                qemu_crucible_fault_interrupt_commit_error();
++                qemu_crucible_fault_interrupt_committed(&event);
++                return -1;
++            }
++            if (!qemu_crucible_fault_interrupt_provenance_can_set(&event)) {
++                qemu_crucible_fault_interrupt_commit_error();
++                qemu_crucible_fault_interrupt_committed(&event);
++                return -1;
++            }
++            source_pic->irr &= ~(1U << source_irq);
++            source_pic->crucible_interrupt_family[source_irq] = 0;
++            source_pic->crucible_interrupt_source_sequence[source_irq] = 0;
++            source_pic->crucible_interrupt_routing_generation[source_irq] = 0;
++            source_pic->crucible_interrupt_vector_valid &=
++                ~(1U << source_irq);
++            event.release_phase = QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER;
++            if (!qemu_crucible_fault_interrupt_provenance_set(
++                    &event, true)) {
++                g_assert_not_reached();
++            }
++            pic_crucible_interrupt_inject(&event, s);
++            qemu_crucible_fault_interrupt_committed(&event);
++            return -1;
++        }
++        intno = event.vector;
++    }
++
++    if (had_irq) {
++        if (source_pic == slave_pic) {
++            pic_intack(slave_pic, source_irq);
++            pic_intack(s, 2);
++        } else {
++            pic_intack(s, source_irq);
++        }
++        source_pic->crucible_interrupt_family[source_irq] = 0;
++        source_pic->crucible_interrupt_source_sequence[source_irq] = 0;
++        source_pic->crucible_interrupt_routing_generation[source_irq] = 0;
++        source_pic->crucible_interrupt_vector_valid &=
++            ~(1U << source_irq);
++    } else if (acknowledge_master) {
++        pic_intack(s, 2);
++    }
++    if (intercepted) {
++        qemu_crucible_fault_interrupt_committed(&event);
++    }
++
+ #ifdef DEBUG_IRQ_LATENCY
+     printf("IRQ%d latency=%0.3fus\n",
+            irq,
+@@ -401,6 +582,20 @@ static void pic_realize(DeviceState *dev, Error **errp)
+     qdev_init_gpio_out(dev, s->int_out, ARRAY_SIZE(s->int_out));
+     qdev_init_gpio_in(dev, pic_set_irq, 8);
+ 
++    if (!qemu_crucible_fault_interrupt_register_family(
++            QEMU_CRUCIBLE_INTERRUPT_X86_PIC,
++            1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER - 1),
++            "qemu-10.0-i8259-crucible-v1", 255, 1) ||
++        !qemu_crucible_fault_interrupt_register_injector(
++            QEMU_CRUCIBLE_INTERRUPT_X86_PIC,
++            pic_crucible_interrupt_inject, NULL) ||
++        !qemu_crucible_fault_interrupt_register_route_validator(
++            QEMU_CRUCIBLE_INTERRUPT_X86_PIC,
++            pic_crucible_interrupt_route_validate, NULL)) {
++        error_setg(errp, "conflicting Crucible PIC family realization");
++        return;
++    }
++
+     pc->parent_realize(dev, errp);
+ }
+ 
+diff --git a/hw/intc/i8259_common.c b/hw/intc/i8259_common.c
+index c77ff683b..ce8756c63 100644
+--- a/hw/intc/i8259_common.c
++++ b/hw/intc/i8259_common.c
+@@ -50,6 +50,15 @@ void pic_reset_common(PICCommonState *s)
+     s->special_fully_nested_mode = 0;
+     s->init4 = 0;
+     s->single_mode = 0;
++    memset(s->crucible_interrupt_family, 0,
++           sizeof(s->crucible_interrupt_family));
++    memset(s->crucible_interrupt_source_sequence, 0,
++           sizeof(s->crucible_interrupt_source_sequence));
++    memset(s->crucible_interrupt_routing_generation, 0,
++           sizeof(s->crucible_interrupt_routing_generation));
++    memset(s->crucible_interrupt_vector, 0,
++           sizeof(s->crucible_interrupt_vector));
++    s->crucible_interrupt_vector_valid = 0;
+     /* Note: ELCR and LTIM are not reset */
+ }
+ 
+@@ -162,6 +171,35 @@ static const VMStateDescription vmstate_pic_ltim = {
+     }
+ };
+ 
++static bool pic_common_crucible_interrupt_needed(void *opaque)
++{
++    PICCommonState *s = opaque;
++
++    for (size_t i = 0; i < 8; i++) {
++        if (s->crucible_interrupt_family[i] != 0) {
++            return true;
++        }
++    }
++    return false;
++}
++
++static const VMStateDescription vmstate_pic_crucible_interrupt = {
++    .name = "i8259/crucible-interrupt",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = pic_common_crucible_interrupt_needed,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT16_ARRAY(crucible_interrupt_family, PICCommonState, 8),
++        VMSTATE_UINT64_ARRAY(crucible_interrupt_source_sequence,
++                             PICCommonState, 8),
++        VMSTATE_UINT64_ARRAY(crucible_interrupt_routing_generation,
++                             PICCommonState, 8),
++        VMSTATE_UINT32_ARRAY(crucible_interrupt_vector, PICCommonState, 8),
++        VMSTATE_UINT8(crucible_interrupt_vector_valid, PICCommonState),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
+ static const VMStateDescription vmstate_pic_common = {
+     .name = "i8259",
+     .version_id = 1,
+@@ -189,6 +227,7 @@ static const VMStateDescription vmstate_pic_common = {
+     },
+     .subsections = (const VMStateDescription * const []) {
+         &vmstate_pic_ltim,
++        &vmstate_pic_crucible_interrupt,
+         NULL
+     }
+ };
+diff --git a/hw/intc/ioapic.c b/hw/intc/ioapic.c
+index 8cd1d85e0..9013d6da7 100644
+--- a/hw/intc/ioapic.c
++++ b/hw/intc/ioapic.c
+@@ -21,6 +21,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/crucible-fault.h"
+ #include "qapi/error.h"
+ #include "monitor/monitor.h"
+ #include "hw/i386/apic.h"
+@@ -39,6 +40,7 @@
+ #define APIC_DELIVERY_MODE_SHIFT 8
+ #define APIC_POLARITY_SHIFT 14
+ #define APIC_TRIG_MODE_SHIFT 15
++#define IOAPIC_LVT_POLARITY_SHIFT 13
+ 
+ static IOAPICCommonState *ioapics[MAX_IOAPICS];
+ 
+@@ -135,7 +137,16 @@ static void ioapic_service(IOAPICCommonState *s)
+                  * the IOAPIC message into a MSI one, and its
+                  * address space will decide whether we need a
+                  * translation. */
+-                stl_le_phys(ioapic_as, info.addr, info.data);
++                {
++                    bool source_owner =
++                        qemu_crucible_fault_interrupt_source_enter_polarity(
++                            QEMU_CRUCIBLE_INTERRUPT_X86_IO_APIC,
++                            (entry >> IOAPIC_LVT_POLARITY_SHIFT) & 1 ?
++                                QEMU_CRUCIBLE_INTERRUPT_POLARITY_LOW :
++                                QEMU_CRUCIBLE_INTERRUPT_POLARITY_HIGH);
++                    stl_le_phys(ioapic_as, info.addr, info.data);
++                    qemu_crucible_fault_interrupt_source_leave(source_owner);
++                }
+             }
+         }
+     }
+@@ -449,6 +460,7 @@ static void ioapic_machine_done_notify(Notifier *notifier, void *data)
+ static void ioapic_realize(DeviceState *dev, Error **errp)
+ {
+     IOAPICCommonState *s = IOAPIC_COMMON(dev);
++    g_autofree char *controller_version = NULL;
+ 
+     if (s->version != 0x11 && s->version != 0x20) {
+         error_setg(errp, "IOAPIC only supports version 0x11 or 0x20 "
+@@ -464,6 +476,17 @@ static void ioapic_realize(DeviceState *dev, Error **errp)
+ 
+     qdev_init_gpio_in(dev, ioapic_set_irq, IOAPIC_NUM_PINS);
+ 
++    controller_version = g_strdup_printf(
++        "qemu-10.0-ioapic-%02x-crucible-v1", s->version);
++    if (!qemu_crucible_fault_interrupt_register_family(
++            QEMU_CRUCIBLE_INTERRUPT_X86_IO_APIC,
++            (1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_ROUTE - 1)) |
++                (1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER - 1)),
++            controller_version, 255, UINT32_MAX)) {
++        error_setg(errp, "conflicting Crucible IOAPIC family realization");
++        return;
++    }
++
+     ioapics[ioapic_no] = s;
+     s->machine_done.notify = ioapic_machine_done_notify;
+     qemu_add_machine_init_done_notifier(&s->machine_done);
+diff --git a/hw/pci/msi.c b/hw/pci/msi.c
+index b9f5b4592..ece027037 100644
+--- a/hw/pci/msi.c
++++ b/hw/pci/msi.c
+@@ -22,6 +22,7 @@
+ #include "hw/pci/msi.h"
+ #include "hw/xen/xen.h"
+ #include "qemu/range.h"
++#include "qemu/crucible-fault.h"
+ #include "qapi/error.h"
+ #include "system/xen.h"
+ 
+@@ -203,6 +204,14 @@ int msi_init(struct PCIDevice *dev, uint8_t offset,
+         error_setg(errp, "MSI is not supported by interrupt controller");
+         return -ENOTSUP;
+     }
++    if (!qemu_crucible_fault_interrupt_register_family(
++            QEMU_CRUCIBLE_INTERRUPT_X86_MSI,
++            (1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_ROUTE - 1)) |
++                (1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER - 1)),
++            "qemu-10.0-msi-crucible-v1", 255, UINT32_MAX)) {
++        error_setg(errp, "conflicting Crucible MSI family realization");
++        return -EINVAL;
++    }
+ 
+     MSI_DEV_PRINTF(dev,
+                    "init offset: 0x%"PRIx8" vector: %"PRId8
+@@ -377,7 +386,11 @@ void msi_notify(PCIDevice *dev, unsigned int vector)
+ 
+ void msi_send_message(PCIDevice *dev, MSIMessage msg)
+ {
++    bool source_owner = qemu_crucible_fault_interrupt_source_enter(
++        QEMU_CRUCIBLE_INTERRUPT_X86_MSI);
++
+     dev->msi_trigger(dev, msg);
++    qemu_crucible_fault_interrupt_source_leave(source_owner);
+ }
+ 
+ /* Normally called by pci_default_write_config(). */
+diff --git a/hw/pci/msix.c b/hw/pci/msix.c
+index 66f27b9d7..53de0d09c 100644
+--- a/hw/pci/msix.c
++++ b/hw/pci/msix.c
+@@ -15,6 +15,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/crucible-fault.h"
+ #include "qemu/log.h"
+ #include "hw/pci/msi.h"
+ #include "hw/pci/msix.h"
+@@ -333,6 +334,14 @@ int msix_init(struct PCIDevice *dev, unsigned short nentries,
+         error_setg(errp, "MSI-X is not supported by interrupt controller");
+         return -ENOTSUP;
+     }
++    if (!qemu_crucible_fault_interrupt_register_family(
++            QEMU_CRUCIBLE_INTERRUPT_X86_MSIX,
++            (1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_ROUTE - 1)) |
++                (1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER - 1)),
++            "qemu-10.0-msix-crucible-v1", 255, UINT32_MAX)) {
++        error_setg(errp, "conflicting Crucible MSI-X family realization");
++        return -EINVAL;
++    }
+ 
+     if (nentries < 1 || nentries > PCI_MSIX_FLAGS_QSIZE + 1) {
+         error_setg(errp, "The number of MSI-X vectors is invalid");
+@@ -534,6 +543,7 @@ int msix_enabled(PCIDevice *dev)
+ void msix_notify(PCIDevice *dev, unsigned vector)
+ {
+     MSIMessage msg;
++    bool source_owner;
+ 
+     assert(vector < dev->msix_entries_nr);
+ 
+@@ -548,7 +558,10 @@ void msix_notify(PCIDevice *dev, unsigned vector)
+ 
+     msg = msix_get_message(dev, vector);
+ 
++    source_owner = qemu_crucible_fault_interrupt_source_enter(
++        QEMU_CRUCIBLE_INTERRUPT_X86_MSIX);
+     msi_send_message(dev, msg);
++    qemu_crucible_fault_interrupt_source_leave(source_owner);
+ }
+ 
+ void msix_reset(PCIDevice *dev)
+diff --git a/include/hw/i386/apic_internal.h b/include/hw/i386/apic_internal.h
+index d6e85833d..8adfed4b2 100644
+--- a/include/hw/i386/apic_internal.h
++++ b/include/hw/i386/apic_internal.h
+@@ -171,6 +171,10 @@ struct APICCommonState {
+     uint32_t isr[8];  /* in service register */
+     uint32_t tmr[8];  /* trigger mode register */
+     uint32_t irr[8]; /* interrupt request register */
++    uint16_t crucible_interrupt_family[256];
++    uint16_t crucible_interrupt_polarity[256];
++    uint64_t crucible_interrupt_source_sequence[256];
++    uint64_t crucible_interrupt_routing_generation[256];
+     uint32_t lvt[APIC_LVT_NB];
+     uint32_t esr; /* error register */
+     uint32_t icr[2];
+diff --git a/include/hw/intc/arm_gic_common.h b/include/hw/intc/arm_gic_common.h
+index 97fea4102..540c09f92 100644
+--- a/include/hw/intc/arm_gic_common.h
++++ b/include/hw/intc/arm_gic_common.h
+@@ -95,6 +95,12 @@ struct GICState {
+      * read by the target CPU.
+      */
+     uint8_t sgi_pending[GIC_NR_SGIS][GIC_NCPU];
++    uint16_t crucible_interrupt_family[GIC_MAXIRQ][GIC_NCPU];
++    uint64_t crucible_interrupt_source_sequence[GIC_MAXIRQ][GIC_NCPU];
++    uint64_t crucible_interrupt_routing_generation[GIC_MAXIRQ][GIC_NCPU];
++    uint8_t crucible_interrupt_target[GIC_MAXIRQ];
++    uint8_t crucible_interrupt_priority[GIC_MAXIRQ][GIC_NCPU];
++    uint8_t crucible_interrupt_priority_valid[GIC_MAXIRQ];
+ 
+     uint16_t priority_mask[GIC_NCPU_VCPU];
+     uint16_t running_priority[GIC_NCPU_VCPU];
+diff --git a/include/hw/intc/arm_gicv3_common.h b/include/hw/intc/arm_gicv3_common.h
+index a3d6a0e50..d04f9b76e 100644
+--- a/include/hw/intc/arm_gicv3_common.h
++++ b/include/hw/intc/arm_gicv3_common.h
+@@ -152,6 +152,11 @@ struct GICv3CPUState {
+     uint32_t gicr_igrpmodr0;
+     uint32_t gicr_nsacr;
+     uint8_t gicr_ipriorityr[GIC_INTERNAL];
++    uint16_t crucible_interrupt_family[GIC_INTERNAL];
++    uint64_t crucible_interrupt_source_sequence[GIC_INTERNAL];
++    uint64_t crucible_interrupt_routing_generation[GIC_INTERNAL];
++    uint8_t crucible_interrupt_priority[GIC_INTERNAL];
++    uint32_t crucible_interrupt_priority_valid;
+     /* VLPI_base page registers */
+     uint64_t gicr_vpropbaser;
+     uint64_t gicr_vpendbaser;
+@@ -261,6 +266,12 @@ struct GICv3State {
+     GIC_DECLARE_BITMAP(nmi);          /* GICD_INMIR */
+     uint8_t gicd_ipriority[GICV3_MAXIRQ];
+     uint64_t gicd_irouter[GICV3_MAXIRQ];
++    uint16_t crucible_interrupt_family[GICV3_MAXIRQ];
++    uint64_t crucible_interrupt_source_sequence[GICV3_MAXIRQ];
++    uint64_t crucible_interrupt_routing_generation[GICV3_MAXIRQ];
++    int16_t crucible_interrupt_target[GICV3_MAXIRQ];
++    uint8_t crucible_interrupt_priority[GICV3_MAXIRQ];
++    GIC_DECLARE_BITMAP(crucible_interrupt_priority_valid);
+     /* Cached information: pointer to the cpu i/f for the CPUs specified
+      * in the IROUTER registers
+      */
+diff --git a/include/hw/isa/i8259_internal.h b/include/hw/isa/i8259_internal.h
+index f9dcc4163..d5c5294fe 100644
+--- a/include/hw/isa/i8259_internal.h
++++ b/include/hw/isa/i8259_internal.h
+@@ -62,6 +62,11 @@ struct PICCommonState {
+     uint8_t elcr; /* PIIX edge/trigger selection*/
+     uint8_t elcr_mask;
+     uint8_t ltim; /* Edge/Level Bank Select (pre-PIIX, chip-wide) */
++    uint16_t crucible_interrupt_family[8];
++    uint64_t crucible_interrupt_source_sequence[8];
++    uint64_t crucible_interrupt_routing_generation[8];
++    uint32_t crucible_interrupt_vector[8];
++    uint8_t crucible_interrupt_vector_valid;
+     qemu_irq int_out[1];
+     uint32_t master; /* reflects /SP input pin */
+     uint32_t iobase;
+diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
+index 4ff51630a..92f634dd2 100644
+--- a/include/qemu/crucible-fault.h
++++ b/include/qemu/crucible-fault.h
+@@ -208,6 +208,107 @@ bool qemu_crucible_fault_instruction_ensure_registered(void);
+ void qemu_crucible_fault_instruction_rules_changed(void);
+ void qemu_crucible_fault_instruction_event_terminal(void);
+ 
++bool qemu_crucible_fault_interrupt_ensure_registered(void);
++int qemu_crucible_fault_interrupt_validate(
++    const QemuCrucibleFaultRule *rule);
++void qemu_crucible_fault_interrupt_rules_changed(void);
++void qemu_crucible_fault_interrupt_event_terminal(void);
++
++/*
++ * Architecture interrupt-controller interception contract.  These objects are
++ * private QEMU process state: only their closed scalar projection is exported
++ * through qemu-plugin.h.
++ */
++#define QEMU_CRUCIBLE_INTERRUPT_PHASE_RAISE 23
++#define QEMU_CRUCIBLE_INTERRUPT_PHASE_ROUTE 24
++#define QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER 26
++#define QEMU_CRUCIBLE_INTERRUPT_SCOPE_X86_64 2
++#define QEMU_CRUCIBLE_INTERRUPT_SCOPE_AARCH64 3
++
++enum QemuCrucibleInterruptFamily {
++    QEMU_CRUCIBLE_INTERRUPT_X86_LOCAL_APIC_FIXED = 1,
++    QEMU_CRUCIBLE_INTERRUPT_X86_IPI = 2,
++    QEMU_CRUCIBLE_INTERRUPT_X86_IO_APIC = 3,
++    QEMU_CRUCIBLE_INTERRUPT_X86_PIC = 4,
++    QEMU_CRUCIBLE_INTERRUPT_X86_MSI = 5,
++    QEMU_CRUCIBLE_INTERRUPT_X86_MSIX = 6,
++    QEMU_CRUCIBLE_INTERRUPT_X86_NMI = 7,
++    QEMU_CRUCIBLE_INTERRUPT_X86_TIMER = 8,
++    QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SGI = 9,
++    QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_PPI = 10,
++    QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SPI = 11,
++    QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_LPI = 12,
++    QEMU_CRUCIBLE_INTERRUPT_ARM_TIMER = 13,
++};
++
++#define QEMU_CRUCIBLE_INTERRUPT_TRIGGER_EDGE 1
++#define QEMU_CRUCIBLE_INTERRUPT_TRIGGER_LEVEL 2
++#define QEMU_CRUCIBLE_INTERRUPT_POLARITY_HIGH 1
++#define QEMU_CRUCIBLE_INTERRUPT_POLARITY_LOW 2
++
++typedef struct QemuCrucibleInterruptEvent {
++    uint16_t family;
++    uint16_t trigger;
++    uint16_t polarity;
++    uint16_t model_phase;
++    uint32_t target_vcpu;
++    uint32_t vector;
++    uint32_t controller_source;
++    uint16_t priority;
++    uint16_t disposition;
++    uint16_t release_phase;
++    bool retain_pending;
++    uint64_t source_sequence;
++    uint64_t routing_generation;
++    uint32_t duplicate_ordinal;
++} QemuCrucibleInterruptEvent;
++
++typedef void (*QemuCrucibleInterruptInjectFn)(
++    const QemuCrucibleInterruptEvent *event, void *opaque);
++typedef bool (*QemuCrucibleInterruptRouteValidateFn)(
++    const QemuCrucibleInterruptEvent *event, void *opaque);
++
++/* Returns false when the architecture path must consume/suppress the event. */
++bool qemu_crucible_fault_interrupt_intercept(
++    QemuCrucibleInterruptEvent *event,
++    QemuCrucibleInterruptInjectFn inject, void *opaque);
++void qemu_crucible_fault_interrupt_committed(
++    const QemuCrucibleInterruptEvent *event);
++void qemu_crucible_fault_interrupt_commit_error(void);
++bool qemu_crucible_fault_interrupt_source_enter(uint16_t family);
++bool qemu_crucible_fault_interrupt_source_enter_polarity(
++    uint16_t family, uint16_t polarity);
++void qemu_crucible_fault_interrupt_source_leave(bool owner);
++uint16_t qemu_crucible_fault_interrupt_source_current(uint16_t fallback);
++uint16_t qemu_crucible_fault_interrupt_source_current_polarity(
++    uint16_t fallback);
++uint64_t qemu_crucible_fault_interrupt_source_current_sequence(void);
++uint64_t qemu_crucible_fault_interrupt_current_routing_generation(void);
++uint64_t qemu_crucible_fault_interrupt_source_next_sequence(void);
++bool qemu_crucible_fault_interrupt_register_injector(
++    uint16_t family, QemuCrucibleInterruptInjectFn inject,
++    void *opaque);
++bool qemu_crucible_fault_interrupt_register_route_validator(
++    uint16_t family, QemuCrucibleInterruptRouteValidateFn validate,
++    void *opaque);
++bool qemu_crucible_fault_interrupt_route_valid(
++    const QemuCrucibleInterruptEvent *event);
++bool qemu_crucible_fault_interrupt_provenance_set(
++    const QemuCrucibleInterruptEvent *event, bool replace);
++bool qemu_crucible_fault_interrupt_provenance_can_set(
++    const QemuCrucibleInterruptEvent *event);
++bool qemu_crucible_fault_interrupt_provenance_get(
++    uint16_t family, uint32_t target_vcpu, uint32_t vector,
++    QemuCrucibleInterruptEvent *event);
++void qemu_crucible_fault_interrupt_provenance_clear(
++    uint16_t family, uint32_t target_vcpu, uint32_t vector);
++void qemu_crucible_fault_interrupt_provenance_clear_target(
++    uint16_t family, uint32_t target_vcpu);
++bool qemu_crucible_fault_interrupt_register_family(
++    uint16_t family, uint64_t model_phase_mask,
++    const char *controller_version, uint32_t vector_end,
++    uint32_t target_vcpu_count);
++
+ enum QemuCrucibleMemoryAccessClass {
+     QEMU_CRUCIBLE_MEMORY_FETCH = 0x01,
+     QEMU_CRUCIBLE_MEMORY_CPU_LOAD = 0x02,
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index d7668180a..d82a128f6 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1723,6 +1723,44 @@ size_t qemu_plugin_crucible_fault_instruction_manifest(
+     uint8_t *manifest, size_t capacity, uint8_t sha256[32],
+     uint16_t *architecture);
+ 
++/** One immutable realized interrupt-source capability row. */
++struct qemu_plugin_crucible_fault_interrupt_capability {
++    uint16_t family;
++    uint16_t trigger;
++    uint16_t polarity;
++    uint16_t delivery_drop;
++    uint32_t vector_start;
++    uint32_t vector_end;
++    uint32_t replacement_vector_start;
++    uint32_t replacement_vector_end;
++    uint16_t priority;
++    uint8_t vmstate;
++    uint8_t reserved;
++    uint64_t model_phase_mask;
++    const char *id;
++    const char *controller;
++    const char *source;
++    const char *controller_version;
++    const uint32_t *target_vcpus;
++    size_t target_vcpu_count;
++};
++
++/** Copy the immutable interrupt-source manifest for the realized machine. */
++QEMU_PLUGIN_API
++size_t qemu_plugin_crucible_fault_interrupt_manifest(
++    struct qemu_plugin_crucible_fault_interrupt_capability *out,
++    size_t capacity, uint16_t *architecture);
++
++/** Bind one public interrupt row and its component identities. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fault_interrupt_bind(
++    uint32_t row_index, const uint8_t id[32],
++    const uint8_t controller[32], const uint8_t source[32]);
++
++/** Seal the complete one-to-one interrupt identity map. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fault_interrupt_bindings_seal(void);
++
+ /** Bind the public architecture identity used by every register target. */
+ QEMU_PLUGIN_API
+ int qemu_plugin_crucible_fault_register_bind_architecture(
+diff --git a/plugins/crucible-fault-interrupt.c b/plugins/crucible-fault-interrupt.c
+new file mode 100644
+index 000000000..c376c9236
+--- /dev/null
++++ b/plugins/crucible-fault-interrupt.c
+@@ -0,0 +1,1852 @@
++/*
++ * Crucible architecture interrupt fault targets
++ *
++ * Copyright (c) 2026 ANDYL Technologies
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "hw/core/cpu.h"
++#include "qemu/crucible-fault.h"
++#include "qemu/error-report.h"
++#include "qemu/qemu-plugin.h"
++#include "qemu/timer.h"
++#include "qobject/qdict.h"
++#include "qobject/qlist.h"
++#include "qobject/qnum.h"
++#include "system/runstate.h"
++
++#define CRUCIBLE_INTERRUPT_SCOPE_X86_64 2
++#define CRUCIBLE_INTERRUPT_SCOPE_AARCH64 3
++#define CRUCIBLE_INTERRUPT_PHASE_RAISE 23
++#define CRUCIBLE_INTERRUPT_PHASE_ROUTE 24
++#define CRUCIBLE_INTERRUPT_PHASE_DELIVER 26
++#define CRUCIBLE_INTERRUPT_DEFERRED_CAPACITY 65536
++#define CRUCIBLE_INTERRUPT_PROVENANCE_CAPACITY 65536
++
++typedef struct qemu_plugin_crucible_fault_interrupt_capability
++    CrucibleInterruptCapability;
++
++typedef struct CrucibleInterruptBinding {
++    uint8_t id[32];
++    uint8_t controller[32];
++    uint8_t source[32];
++    bool bound;
++} CrucibleInterruptBinding;
++
++typedef struct CrucibleInterruptTemplate {
++    const char *id;
++    const char *controller;
++    const char *source;
++    uint16_t family;
++    uint16_t trigger;
++    uint16_t polarity;
++    uint16_t delivery_drop;
++    uint32_t vector_start;
++    uint32_t vector_end;
++    uint32_t replacement_vector_start;
++    uint32_t replacement_vector_end;
++    uint16_t priority;
++} CrucibleInterruptTemplate;
++
++enum {
++    CRUCIBLE_INTERRUPT_TRIGGER_EDGE = 1,
++    CRUCIBLE_INTERRUPT_TRIGGER_LEVEL = 2,
++    CRUCIBLE_INTERRUPT_POLARITY_HIGH = 1,
++    CRUCIBLE_INTERRUPT_POLARITY_LOW = 2,
++    CRUCIBLE_INTERRUPT_DROP_CONSUME_EDGE = 1,
++    CRUCIBLE_INTERRUPT_DROP_REPEND_LEVEL = 2,
++};
++
++static const CrucibleInterruptTemplate crucible_interrupt_x86_templates[] = {
++    { "x86-io-apic-edge-high", "io-apic", "io-apic-edge-high",
++      3, 1, 1, 1, 16, 255, 16, 255, 128 },
++    { "x86-io-apic-edge-low", "io-apic", "io-apic-edge-low",
++      3, 1, 2, 1, 16, 255, 16, 255, 128 },
++    { "x86-io-apic-level-high", "io-apic", "io-apic-level-high",
++      3, 2, 1, 2, 16, 255, 16, 255, 128 },
++    { "x86-io-apic-level-low", "io-apic", "io-apic-level-low",
++      3, 2, 2, 2, 16, 255, 16, 255, 128 },
++    { "x86-ipi", "local-apic", "ipi",
++      2, 1, 1, 1, 16, 255, 16, 255, 128 },
++    { "x86-local-apic-fixed-edge", "local-apic", "fixed-edge",
++      1, 1, 1, 1, 16, 255, 16, 255, 128 },
++    { "x86-local-apic-fixed-level", "local-apic", "fixed-level",
++      1, 2, 1, 2, 16, 255, 16, 255, 128 },
++    { "x86-msi", "local-apic", "msi",
++      5, 1, 1, 1, 16, 255, 16, 255, 128 },
++    { "x86-msi-x", "local-apic", "msi-x",
++      6, 1, 1, 1, 16, 255, 16, 255, 128 },
++    { "x86-nmi", "local-apic", "nmi",
++      7, 1, 1, 1, 2, 2, 2, 2, 0 },
++    { "x86-pic-edge", "i8259-pic", "pic-edge",
++      4, 1, 1, 1, 0, 255, 0, 255, 128 },
++    { "x86-pic-level", "i8259-pic", "pic-level",
++      4, 2, 1, 2, 0, 255, 0, 255, 128 },
++    { "x86-timer", "local-apic", "lapic-timer",
++      8, 1, 1, 1, 16, 255, 16, 255, 128 },
++};
++static const CrucibleInterruptTemplate crucible_interrupt_arm_templates[] = {
++    { "arm-gic-lpi", "arm-gic", "lpi",
++      12, 1, 1, 1, 8192, 16777215, 8192, 16777215, 128 },
++    { "arm-gic-ppi-edge", "arm-gic", "ppi-edge",
++      10, 1, 1, 1, 16, 31, 16, 31, 128 },
++    { "arm-gic-ppi-level", "arm-gic", "ppi-level",
++      10, 2, 1, 2, 16, 31, 16, 31, 128 },
++    { "arm-gic-sgi", "arm-gic", "sgi",
++      9, 1, 1, 1, 0, 15, 0, 15, 128 },
++    { "arm-gic-spi-edge", "arm-gic", "spi-edge",
++      11, 1, 1, 1, 32, 1019, 32, 1019, 128 },
++    { "arm-gic-spi-level", "arm-gic", "spi-level",
++      11, 2, 1, 2, 32, 1019, 32, 1019, 128 },
++    { "arm-timer-edge", "arm-gic", "architectural-timer-edge",
++      13, 1, 1, 1, 16, 31, 16, 31, 128 },
++    { "arm-timer-level", "arm-gic", "architectural-timer-level",
++      13, 2, 1, 2, 16, 31, 16, 31, 128 },
++};
++
++static GArray *crucible_interrupt_manifest;
++static GArray *crucible_interrupt_bindings;
++static uint32_t *crucible_interrupt_targets;
++static uint32_t crucible_interrupt_boot_target;
++static size_t crucible_interrupt_target_count;
++static uint16_t crucible_interrupt_scope;
++static const CrucibleInterruptTemplate *crucible_interrupt_templates;
++static size_t crucible_interrupt_template_count;
++static bool crucible_interrupt_bindings_sealed;
++static bool crucible_interrupt_handlers_registered;
++
++typedef struct CrucibleInterruptRealizedFamily {
++    uint64_t model_phase_mask;
++    char *controller_version;
++    uint32_t vector_end;
++    uint32_t target_vcpu_count;
++} CrucibleInterruptRealizedFamily;
++
++static CrucibleInterruptRealizedFamily crucible_interrupt_realized[14];
++
++bool qemu_crucible_fault_interrupt_register_family(
++    uint16_t family, uint64_t model_phase_mask,
++    const char *controller_version, uint32_t vector_end,
++    uint32_t target_vcpu_count)
++{
++    CrucibleInterruptRealizedFamily *realized;
++
++    if (family == 0 || family >= G_N_ELEMENTS(crucible_interrupt_realized) ||
++        model_phase_mask == 0 || !controller_version ||
++        target_vcpu_count == 0 ||
++        !g_utf8_validate(controller_version, -1, NULL) ||
++        !g_str_is_ascii(controller_version)) {
++        return false;
++    }
++    if (crucible_interrupt_manifest) {
++        return false;
++    }
++    realized = &crucible_interrupt_realized[family];
++    if (realized->controller_version) {
++        return strcmp(realized->controller_version, controller_version) == 0 &&
++               realized->model_phase_mask == model_phase_mask &&
++               realized->vector_end == vector_end &&
++               realized->target_vcpu_count == target_vcpu_count;
++    }
++    realized->controller_version = g_strdup(controller_version);
++    realized->model_phase_mask = model_phase_mask;
++    realized->vector_end = vector_end;
++    realized->target_vcpu_count = target_vcpu_count;
++    return true;
++}
++
++typedef struct CrucibleInterruptDeferred {
++    QEMUTimer *timer;
++    QemuCrucibleInterruptEvent event;
++    QemuCrucibleInterruptInjectFn inject;
++    void *opaque;
++    QemuCrucibleFaultRule *rule;
++    uint64_t delay_ns;
++    uint8_t before_hash[32];
++} CrucibleInterruptDeferred;
++
++typedef struct CrucibleInterruptImpulse {
++    QemuCrucibleFaultRule *rule;
++    uint64_t command_icount;
++    uint8_t before_hash[32];
++    QemuCrucibleFaultEventReservation *event_reservation;
++} CrucibleInterruptImpulse;
++
++typedef struct CrucibleInterruptStorm {
++    QEMUTimer *timer;
++    QemuCrucibleFaultRule *rule;
++    const CrucibleInterruptCapability *row;
++    uint32_t *target_vcpus;
++    size_t target_vcpu_count;
++    uint32_t vector;
++    uint64_t period_ns;
++    int64_t next_deadline_ns;
++    uint32_t burst;
++    uint32_t total;
++    uint32_t emitted;
++    uint16_t priority;
++    bool retain_pending;
++    bool seen;
++    bool firing;
++    bool completed;
++} CrucibleInterruptStorm;
++
++typedef struct CrucibleInterruptMatch {
++    QemuCrucibleInterruptEvent *event;
++    const QemuCrucibleFaultRule *rule;
++    const CrucibleInterruptCapability *row;
++    const CrucibleInterruptBinding *binding;
++    bool conflict;
++} CrucibleInterruptMatch;
++
++typedef struct CrucibleInterruptCommit {
++    QemuCrucibleFaultRule *rule;
++    QemuCrucibleInterruptEvent before;
++    QemuCrucibleInterruptEvent after;
++    uint32_t disposition;
++    uint64_t delay_ns;
++    uint32_t copies;
++    uint64_t gap_ns;
++    uint16_t outcome;
++    uint8_t before_hash[32];
++    CrucibleInterruptImpulse *impulse;
++} CrucibleInterruptCommit;
++
++static GPtrArray *crucible_interrupt_deferred;
++static GPtrArray *crucible_interrupt_impulses;
++static GPtrArray *crucible_interrupt_storms;
++static bool crucible_interrupt_event_terminal_latched;
++static __thread uint16_t crucible_interrupt_current_source;
++static __thread uint16_t crucible_interrupt_current_polarity;
++static __thread uint64_t crucible_interrupt_current_sequence;
++static __thread uint64_t crucible_interrupt_current_route_generation;
++static __thread CrucibleInterruptCommit *crucible_interrupt_pending_commit;
++static uint64_t crucible_interrupt_next_source_sequence;
++static uint64_t crucible_interrupt_next_route_generation;
++static uint32_t crucible_interrupt_deferred_reserved;
++typedef struct CrucibleInterruptInjector {
++    QemuCrucibleInterruptInjectFn inject;
++    QemuCrucibleInterruptRouteValidateFn validate;
++    void *opaque;
++} CrucibleInterruptInjector;
++
++static CrucibleInterruptInjector crucible_interrupt_injectors[14];
++
++typedef struct CrucibleInterruptProvenanceKey {
++    uint16_t family;
++    uint32_t target_vcpu;
++    uint32_t vector;
++} CrucibleInterruptProvenanceKey;
++
++static GHashTable *crucible_interrupt_provenance;
++
++static guint crucible_interrupt_provenance_hash(gconstpointer opaque)
++{
++    const CrucibleInterruptProvenanceKey *key = opaque;
++
++    return key->family ^ key->target_vcpu ^ key->vector;
++}
++
++static gboolean crucible_interrupt_provenance_equal(gconstpointer left,
++                                                     gconstpointer right)
++{
++    const CrucibleInterruptProvenanceKey *a = left;
++    const CrucibleInterruptProvenanceKey *b = right;
++
++    return a->family == b->family &&
++           a->target_vcpu == b->target_vcpu && a->vector == b->vector;
++}
++
++static void crucible_interrupt_provenance_ensure(void)
++{
++    if (!crucible_interrupt_provenance) {
++        crucible_interrupt_provenance = g_hash_table_new_full(
++            crucible_interrupt_provenance_hash,
++            crucible_interrupt_provenance_equal, g_free, g_free);
++    }
++}
++
++bool qemu_crucible_fault_interrupt_provenance_can_set(
++    const QemuCrucibleInterruptEvent *event)
++{
++    CrucibleInterruptProvenanceKey key = {
++        .family = event->family,
++        .target_vcpu = event->target_vcpu,
++        .vector = event->vector,
++    };
++
++    return !crucible_interrupt_provenance ||
++        g_hash_table_contains(crucible_interrupt_provenance, &key) ||
++        g_hash_table_size(crucible_interrupt_provenance) <
++            CRUCIBLE_INTERRUPT_PROVENANCE_CAPACITY;
++}
++
++bool qemu_crucible_fault_interrupt_provenance_set(
++    const QemuCrucibleInterruptEvent *event, bool replace)
++{
++    CrucibleInterruptProvenanceKey lookup = {
++        .family = event->family,
++        .target_vcpu = event->target_vcpu,
++        .vector = event->vector,
++    };
++    CrucibleInterruptProvenanceKey *key;
++    QemuCrucibleInterruptEvent *copy;
++
++    crucible_interrupt_provenance_ensure();
++    if (!replace && g_hash_table_contains(crucible_interrupt_provenance,
++                                          &lookup)) {
++        return true;
++    }
++    if (!qemu_crucible_fault_interrupt_provenance_can_set(event)) {
++        return false;
++    }
++    key = g_new(CrucibleInterruptProvenanceKey, 1);
++    *key = lookup;
++    copy = g_new(QemuCrucibleInterruptEvent, 1);
++    *copy = *event;
++    g_hash_table_replace(crucible_interrupt_provenance, key, copy);
++    return true;
++}
++
++bool qemu_crucible_fault_interrupt_provenance_get(
++    uint16_t family, uint32_t target_vcpu, uint32_t vector,
++    QemuCrucibleInterruptEvent *event)
++{
++    CrucibleInterruptProvenanceKey key = {
++        .family = family,
++        .target_vcpu = target_vcpu,
++        .vector = vector,
++    };
++    QemuCrucibleInterruptEvent *stored;
++
++    if (!crucible_interrupt_provenance) {
++        return false;
++    }
++    stored = g_hash_table_lookup(crucible_interrupt_provenance, &key);
++    if (!stored) {
++        return false;
++    }
++    *event = *stored;
++    return true;
++}
++
++void qemu_crucible_fault_interrupt_provenance_clear(
++    uint16_t family, uint32_t target_vcpu, uint32_t vector)
++{
++    CrucibleInterruptProvenanceKey key = {
++        .family = family,
++        .target_vcpu = target_vcpu,
++        .vector = vector,
++    };
++
++    if (crucible_interrupt_provenance) {
++        g_hash_table_remove(crucible_interrupt_provenance, &key);
++    }
++}
++
++void qemu_crucible_fault_interrupt_provenance_clear_target(
++    uint16_t family, uint32_t target_vcpu)
++{
++    GHashTableIter iterator;
++    gpointer opaque;
++
++    if (!crucible_interrupt_provenance) {
++        return;
++    }
++    g_hash_table_iter_init(&iterator, crucible_interrupt_provenance);
++    while (g_hash_table_iter_next(&iterator, &opaque, NULL)) {
++        const CrucibleInterruptProvenanceKey *key = opaque;
++
++        if (key->family == family && key->target_vcpu == target_vcpu) {
++            g_hash_table_iter_remove(&iterator);
++        }
++    }
++}
++
++static uint64_t crucible_interrupt_counter_next(uint64_t *counter,
++                                                const char *name)
++{
++    uint64_t current;
++
++    do {
++        current = qatomic_read(counter);
++        if (current == UINT64_MAX) {
++            error_report("Crucible interrupt %s exhausted", name);
++            abort();
++        }
++    } while (qatomic_cmpxchg(counter, current, current + 1) != current);
++    return current + 1;
++}
++
++static int crucible_interrupt_target_compare(const void *left,
++                                             const void *right)
++{
++    uint32_t a = *(const uint32_t *)left;
++    uint32_t b = *(const uint32_t *)right;
++
++    return (a > b) - (a < b);
++}
++
++bool qemu_crucible_fault_interrupt_register_injector(
++    uint16_t family, QemuCrucibleInterruptInjectFn inject,
++    void *opaque)
++{
++    CrucibleInterruptInjector *injector;
++
++    if (!inject || family == 0 ||
++        family >= G_N_ELEMENTS(crucible_interrupt_injectors)) {
++        return false;
++    }
++    injector = &crucible_interrupt_injectors[family];
++    if (injector->inject) {
++        return injector->inject == inject && injector->opaque == opaque;
++    }
++    injector->inject = inject;
++    injector->opaque = opaque;
++    return true;
++}
++
++bool qemu_crucible_fault_interrupt_register_route_validator(
++    uint16_t family, QemuCrucibleInterruptRouteValidateFn validate,
++    void *opaque)
++{
++    CrucibleInterruptInjector *injector;
++
++    if (!validate || family == 0 ||
++        family >= G_N_ELEMENTS(crucible_interrupt_injectors)) {
++        return false;
++    }
++    injector = &crucible_interrupt_injectors[family];
++    if (injector->validate) {
++        return injector->validate == validate && injector->opaque == opaque;
++    }
++    if (injector->opaque && injector->opaque != opaque) {
++        return false;
++    }
++    injector->validate = validate;
++    injector->opaque = opaque;
++    return true;
++}
++
++bool qemu_crucible_fault_interrupt_route_valid(
++    const QemuCrucibleInterruptEvent *event)
++{
++    CrucibleInterruptInjector *injector;
++
++    if (!event || event->family == 0 ||
++        event->family >= G_N_ELEMENTS(crucible_interrupt_injectors)) {
++        return false;
++    }
++    injector = &crucible_interrupt_injectors[event->family];
++    return !injector->validate ||
++        injector->validate(event, injector->opaque);
++}
++
++bool qemu_crucible_fault_interrupt_source_enter(uint16_t family)
++{
++    return qemu_crucible_fault_interrupt_source_enter_polarity(
++        family, QEMU_CRUCIBLE_INTERRUPT_POLARITY_HIGH);
++}
++
++bool qemu_crucible_fault_interrupt_source_enter_polarity(
++    uint16_t family, uint16_t polarity)
++{
++    if (crucible_interrupt_current_source != 0 ||
++        (polarity != QEMU_CRUCIBLE_INTERRUPT_POLARITY_HIGH &&
++         polarity != QEMU_CRUCIBLE_INTERRUPT_POLARITY_LOW)) {
++        return false;
++    }
++    crucible_interrupt_current_source = family;
++    crucible_interrupt_current_polarity = polarity;
++    crucible_interrupt_current_sequence =
++        qemu_crucible_fault_interrupt_source_next_sequence();
++    crucible_interrupt_current_route_generation =
++        crucible_interrupt_counter_next(
++            &crucible_interrupt_next_route_generation,
++            "routing generation");
++    return true;
++}
++
++void qemu_crucible_fault_interrupt_source_leave(bool owner)
++{
++    if (owner) {
++        g_assert(crucible_interrupt_current_source != 0);
++        crucible_interrupt_current_source = 0;
++        crucible_interrupt_current_polarity = 0;
++        crucible_interrupt_current_sequence = 0;
++        crucible_interrupt_current_route_generation = 0;
++    }
++}
++
++uint16_t qemu_crucible_fault_interrupt_source_current_polarity(
++    uint16_t fallback)
++{
++    return crucible_interrupt_current_polarity != 0 ?
++        crucible_interrupt_current_polarity : fallback;
++}
++
++uint64_t qemu_crucible_fault_interrupt_source_current_sequence(void)
++{
++    return crucible_interrupt_current_sequence != 0 ?
++        crucible_interrupt_current_sequence :
++        qemu_crucible_fault_interrupt_source_next_sequence();
++}
++
++uint64_t qemu_crucible_fault_interrupt_current_routing_generation(void)
++{
++    return crucible_interrupt_current_route_generation != 0 ?
++        crucible_interrupt_current_route_generation :
++        crucible_interrupt_counter_next(
++            &crucible_interrupt_next_route_generation,
++            "routing generation");
++}
++
++uint16_t qemu_crucible_fault_interrupt_source_current(uint16_t fallback)
++{
++    return crucible_interrupt_current_source != 0 ?
++        crucible_interrupt_current_source : fallback;
++}
++
++uint64_t qemu_crucible_fault_interrupt_source_next_sequence(void)
++{
++    return crucible_interrupt_counter_next(
++        &crucible_interrupt_next_source_sequence, "source sequence");
++}
++
++static bool crucible_interrupt_manifest_init(void)
++{
++    CPUState *cpu;
++    CPUClass *cc;
++    size_t count = 0;
++
++    if (crucible_interrupt_manifest) {
++        return true;
++    }
++    cpu = qemu_get_cpu(0);
++    if (!cpu) {
++        return false;
++    }
++    cc = CPU_GET_CLASS(cpu);
++    crucible_interrupt_scope = cc->crucible_register_scope;
++    if (crucible_interrupt_scope == CRUCIBLE_INTERRUPT_SCOPE_X86_64) {
++        crucible_interrupt_templates = crucible_interrupt_x86_templates;
++        crucible_interrupt_template_count =
++            G_N_ELEMENTS(crucible_interrupt_x86_templates);
++    } else if (crucible_interrupt_scope ==
++               CRUCIBLE_INTERRUPT_SCOPE_AARCH64) {
++        crucible_interrupt_templates = crucible_interrupt_arm_templates;
++        crucible_interrupt_template_count =
++            G_N_ELEMENTS(crucible_interrupt_arm_templates);
++    } else {
++        return false;
++    }
++    if (crucible_interrupt_template_count == 0) {
++        return false;
++    }
++    CPU_FOREACH(cpu) {
++        count++;
++    }
++    if (count == 0 || count > 4096) {
++        return false;
++    }
++    crucible_interrupt_targets = g_new(uint32_t, count);
++    crucible_interrupt_target_count = count;
++    count = 0;
++    CPU_FOREACH(cpu) {
++        crucible_interrupt_targets[count++] = cpu->cpu_index;
++    }
++    qsort(crucible_interrupt_targets, count,
++          sizeof(*crucible_interrupt_targets),
++          crucible_interrupt_target_compare);
++    crucible_interrupt_boot_target = crucible_interrupt_targets[0];
++    crucible_interrupt_manifest = g_array_sized_new(
++        false, true, sizeof(CrucibleInterruptCapability),
++        crucible_interrupt_template_count);
++    crucible_interrupt_bindings = g_array_sized_new(
++        false, true, sizeof(CrucibleInterruptBinding),
++        crucible_interrupt_template_count);
++    for (size_t i = 0; i < crucible_interrupt_template_count; i++) {
++        const CrucibleInterruptTemplate *template =
++            &crucible_interrupt_templates[i];
++        const CrucibleInterruptRealizedFamily *realized =
++            &crucible_interrupt_realized[template->family];
++        if (!realized->controller_version) {
++            continue;
++        }
++        CrucibleInterruptCapability row = {
++            .family = template->family,
++            .trigger = template->trigger,
++            .polarity = template->polarity,
++            .delivery_drop = template->delivery_drop,
++            .vector_start = template->vector_start,
++            .vector_end = MIN(template->vector_end,
++                              realized->vector_end),
++            .replacement_vector_start = template->replacement_vector_start,
++            .replacement_vector_end = MIN(
++                template->replacement_vector_end, realized->vector_end),
++            .priority = template->priority,
++            .vmstate = 1,
++            .model_phase_mask = realized->model_phase_mask,
++            .id = template->id,
++            .controller = template->controller,
++            .source = template->source,
++            .controller_version = realized->controller_version,
++            .target_vcpus = template->family ==
++                    QEMU_CRUCIBLE_INTERRUPT_X86_PIC ?
++                &crucible_interrupt_boot_target :
++                crucible_interrupt_targets,
++            .target_vcpu_count = template->family ==
++                    QEMU_CRUCIBLE_INTERRUPT_X86_PIC ?
++                1 : MIN(crucible_interrupt_target_count,
++                        realized->target_vcpu_count),
++        };
++        CrucibleInterruptBinding binding = { 0 };
++
++        if (row.vector_end < row.vector_start ||
++            row.target_vcpu_count == 0) {
++            continue;
++        }
++        g_array_append_val(crucible_interrupt_manifest, row);
++        g_array_append_val(crucible_interrupt_bindings, binding);
++    }
++    return crucible_interrupt_manifest->len != 0;
++}
++
++size_t qemu_plugin_crucible_fault_interrupt_manifest(
++    CrucibleInterruptCapability *out, size_t capacity,
++    uint16_t *architecture)
++{
++    if (!architecture || !crucible_interrupt_manifest_init()) {
++        return 0;
++    }
++    *architecture = crucible_interrupt_scope;
++    if (out && capacity >= crucible_interrupt_manifest->len) {
++        memcpy(out, crucible_interrupt_manifest->data,
++               crucible_interrupt_manifest->len * sizeof(*out));
++    }
++    return crucible_interrupt_manifest->len;
++}
++
++int qemu_plugin_crucible_fault_interrupt_bind(
++    uint32_t row_index, const uint8_t id[32],
++    const uint8_t controller[32], const uint8_t source[32])
++{
++    CrucibleInterruptBinding *binding;
++    uint8_t zero[32] = { 0 };
++
++    if (!id || !controller || !source || crucible_interrupt_bindings_sealed ||
++        !crucible_interrupt_manifest_init() ||
++        row_index >= crucible_interrupt_bindings->len ||
++        memcmp(id, zero, 32) == 0 || memcmp(controller, zero, 32) == 0 ||
++        memcmp(source, zero, 32) == 0) {
++        return -EINVAL;
++    }
++    binding = &g_array_index(crucible_interrupt_bindings,
++                             CrucibleInterruptBinding, row_index);
++    if (binding->bound) {
++        return -EEXIST;
++    }
++    for (guint i = 0; i < crucible_interrupt_bindings->len; i++) {
++        CrucibleInterruptBinding *other = &g_array_index(
++            crucible_interrupt_bindings, CrucibleInterruptBinding, i);
++
++        if (other->bound && memcmp(other->id, id, 32) == 0) {
++            return -EEXIST;
++        }
++    }
++    memcpy(binding->id, id, 32);
++    memcpy(binding->controller, controller, 32);
++    memcpy(binding->source, source, 32);
++    binding->bound = true;
++    return 0;
++}
++
++int qemu_plugin_crucible_fault_interrupt_bindings_seal(void)
++{
++    if (crucible_interrupt_bindings_sealed ||
++        !crucible_interrupt_bindings ||
++        crucible_interrupt_bindings->len != crucible_interrupt_manifest->len) {
++        return -EINVAL;
++    }
++    for (guint i = 0; i < crucible_interrupt_bindings->len; i++) {
++        if (!g_array_index(crucible_interrupt_bindings,
++                           CrucibleInterruptBinding, i).bound) {
++            return -EINVAL;
++        }
++    }
++    crucible_interrupt_bindings_sealed = true;
++    return 0;
++}
++
++static bool crucible_interrupt_target_allowed(
++    const CrucibleInterruptCapability *row, uint32_t vcpu)
++{
++    for (size_t i = 0; i < row->target_vcpu_count; i++) {
++        if (row->target_vcpus[i] == vcpu) {
++            return true;
++        }
++    }
++    return false;
++}
++
++static bool crucible_interrupt_rule_u32(const QemuCrucibleFaultRule *rule,
++                                        uint16_t tag, uint32_t *value);
++static bool crucible_interrupt_rule_u64(const QemuCrucibleFaultRule *rule,
++                                        uint16_t tag, uint64_t *value);
++
++static bool crucible_interrupt_same_coordinate(
++    const QemuCrucibleFaultRule *left, const QemuCrucibleFaultRule *right)
++{
++    const uint8_t *left_controller, *right_controller;
++    const uint8_t *left_source, *right_source;
++    uint32_t left_controller_len, right_controller_len;
++    uint32_t left_source_len, right_source_len;
++    uint32_t left_vcpu, right_vcpu, left_vector, right_vector;
++
++    return qemu_crucible_fault_rule_model_phase(left) ==
++               qemu_crucible_fault_rule_model_phase(right) &&
++           qemu_crucible_fault_rule_field(
++               left, CRUCIBLE_NODE_FAULT_FIELD_T1,
++               CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
++               &left_controller, &left_controller_len) &&
++           qemu_crucible_fault_rule_field(
++               right, CRUCIBLE_NODE_FAULT_FIELD_T1,
++               CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
++               &right_controller, &right_controller_len) &&
++           left_controller_len == 32 && right_controller_len == 32 &&
++           memcmp(left_controller, right_controller, 32) == 0 &&
++           qemu_crucible_fault_rule_field(
++               left, CRUCIBLE_NODE_FAULT_FIELD_T2,
++               CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
++               &left_source, &left_source_len) &&
++           qemu_crucible_fault_rule_field(
++               right, CRUCIBLE_NODE_FAULT_FIELD_T2,
++               CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
++               &right_source, &right_source_len) &&
++           left_source_len == 32 && right_source_len == 32 &&
++           memcmp(left_source, right_source, 32) == 0 &&
++           crucible_interrupt_rule_u32(
++               left, CRUCIBLE_NODE_FAULT_FIELD_T3, &left_vcpu) &&
++           crucible_interrupt_rule_u32(
++               right, CRUCIBLE_NODE_FAULT_FIELD_T3, &right_vcpu) &&
++           left_vcpu == right_vcpu &&
++           crucible_interrupt_rule_u32(
++               left, CRUCIBLE_NODE_FAULT_FIELD_T4, &left_vector) &&
++           crucible_interrupt_rule_u32(
++               right, CRUCIBLE_NODE_FAULT_FIELD_T4, &right_vector) &&
++           left_vector == right_vector;
++}
++
++typedef struct CrucibleInterruptConflict {
++    const QemuCrucibleFaultRule *candidate;
++    bool conflict;
++} CrucibleInterruptConflict;
++
++static void crucible_interrupt_conflict_visit(
++    const QemuCrucibleFaultRule *existing, void *opaque)
++{
++    CrucibleInterruptConflict *conflict = opaque;
++
++    if (memcmp(qemu_crucible_fault_rule_binding_hash(existing),
++               qemu_crucible_fault_rule_binding_hash(conflict->candidate),
++               32) != 0 &&
++        crucible_interrupt_same_coordinate(existing, conflict->candidate)) {
++        conflict->conflict = true;
++    }
++}
++
++static bool crucible_interrupt_storm_routing(
++    const QemuCrucibleFaultRule *rule,
++    const CrucibleInterruptCapability *row, uint32_t selected_vcpu,
++    uint32_t vector,
++    uint16_t *priority, bool *retain_pending)
++{
++    const QObject *object = qemu_crucible_fault_rule_json(
++        rule, CRUCIBLE_NODE_FAULT_FIELD_P6);
++    const QDict *routing = qobject_to(QDict, object);
++    const QList *targets;
++    const QListEntry *entry;
++    uint64_t raw_priority;
++    bool retain;
++    bool selected = false;
++
++    if (!routing) {
++        return false;
++    }
++    raw_priority = qnum_get_uint(qobject_to(
++        QNum, qdict_get(routing, "priority")));
++    if (raw_priority > UINT8_MAX) {
++        return false;
++    }
++    retain = qdict_get_bool(routing, "retain_pending");
++    targets = qobject_to(QList, qdict_get(routing, "target_vcpus"));
++    QLIST_FOREACH_ENTRY(targets, entry) {
++        uint64_t target = qnum_get_uint(
++            qobject_to(QNum, qlist_entry_obj(entry)));
++        QemuCrucibleInterruptEvent event;
++
++        if (target > UINT32_MAX ||
++            !crucible_interrupt_target_allowed(row, target)) {
++            return false;
++        }
++        event = (QemuCrucibleInterruptEvent) {
++            .family = row->family,
++            .trigger = row->trigger,
++            .polarity = row->polarity,
++            .model_phase = QEMU_CRUCIBLE_INTERRUPT_PHASE_ROUTE,
++            .target_vcpu = target,
++            .vector = vector,
++            .controller_source = UINT32_MAX,
++            .priority = raw_priority,
++            .retain_pending = retain,
++        };
++        if (crucible_interrupt_injectors[row->family].validate &&
++            !crucible_interrupt_injectors[row->family].validate(
++                &event, crucible_interrupt_injectors[row->family].opaque)) {
++            return false;
++        }
++        selected |= target == selected_vcpu;
++    }
++    if (!selected) {
++        return false;
++    }
++    switch (row->family) {
++    case QEMU_CRUCIBLE_INTERRUPT_X86_PIC:
++        if (raw_priority != (vector & 7)) {
++            return false;
++        }
++        break;
++    case QEMU_CRUCIBLE_INTERRUPT_X86_NMI:
++        if (raw_priority != 0) {
++            return false;
++        }
++        break;
++    case QEMU_CRUCIBLE_INTERRUPT_X86_LOCAL_APIC_FIXED:
++    case QEMU_CRUCIBLE_INTERRUPT_X86_IPI:
++    case QEMU_CRUCIBLE_INTERRUPT_X86_IO_APIC:
++    case QEMU_CRUCIBLE_INTERRUPT_X86_MSI:
++    case QEMU_CRUCIBLE_INTERRUPT_X86_MSIX:
++    case QEMU_CRUCIBLE_INTERRUPT_X86_TIMER:
++        if (raw_priority != (vector >> 4)) {
++            return false;
++        }
++        break;
++    default:
++        break;
++    }
++    *priority = raw_priority;
++    *retain_pending = retain;
++    return true;
++}
++
++static bool crucible_interrupt_storm_targets_copy(
++    const QemuCrucibleFaultRule *rule, uint32_t **targets_out,
++    size_t *count_out)
++{
++    const QDict *routing = qobject_to(QDict,
++        qemu_crucible_fault_rule_json(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_P6));
++    const QList *targets;
++    const QListEntry *entry;
++    uint32_t *copy;
++    size_t index = 0;
++
++    if (!routing) {
++        return false;
++    }
++    targets = qobject_to(QList, qdict_get(routing, "target_vcpus"));
++    copy = g_new(uint32_t, qlist_size(targets));
++    QLIST_FOREACH_ENTRY(targets, entry) {
++        copy[index++] = qnum_get_uint(
++            qobject_to(QNum, qlist_entry_obj(entry)));
++    }
++    *targets_out = copy;
++    *count_out = index;
++    return index != 0;
++}
++
++int qemu_crucible_fault_interrupt_validate(const QemuCrucibleFaultRule *rule)
++{
++    const uint8_t *controller, *source, *data;
++    uint32_t controller_len, source_len, length;
++    uint32_t target_vcpu, vector, replacement;
++    uint32_t disposition, copies;
++    uint64_t delay_ns, gap_ns;
++    uint16_t storm_priority;
++    bool storm_retain_pending;
++    uint32_t storm_burst, storm_total;
++    uint64_t storm_period, storm_cycles;
++    CrucibleInterruptConflict conflict = { .candidate = rule };
++    uint16_t model_phase;
++
++    if (!rule || !crucible_interrupt_bindings_sealed ||
++        !qemu_crucible_fault_rule_field(rule, CRUCIBLE_NODE_FAULT_FIELD_T1,
++                                        CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
++                                        &controller, &controller_len) ||
++        !qemu_crucible_fault_rule_field(rule, CRUCIBLE_NODE_FAULT_FIELD_T2,
++                                        CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
++                                        &source, &source_len) ||
++        !qemu_crucible_fault_rule_field(rule, CRUCIBLE_NODE_FAULT_FIELD_T3,
++                                        CRUCIBLE_NODE_FAULT_FIELD_TYPE_U32,
++                                        &data, &length) || length != 4) {
++        return -EINVAL;
++    }
++    target_vcpu = ldl_le_p(data);
++    if (!qemu_crucible_fault_rule_field(rule, CRUCIBLE_NODE_FAULT_FIELD_T4,
++                                        CRUCIBLE_NODE_FAULT_FIELD_TYPE_U32,
++                                        &data, &length) || length != 4) {
++        return -EINVAL;
++    }
++    vector = ldl_le_p(data);
++    model_phase = qemu_crucible_fault_rule_model_phase(rule);
++    for (guint i = 0; i < crucible_interrupt_manifest->len; i++) {
++        const CrucibleInterruptCapability *row = &g_array_index(
++            crucible_interrupt_manifest, CrucibleInterruptCapability, i);
++        const CrucibleInterruptBinding *binding = &g_array_index(
++            crucible_interrupt_bindings, CrucibleInterruptBinding, i);
++
++        if (controller_len != 32 || source_len != 32 ||
++            memcmp(binding->controller, controller, 32) != 0 ||
++            memcmp(binding->source, source, 32) != 0) {
++            continue;
++        }
++        if (vector < row->vector_start || vector > row->vector_end ||
++            !crucible_interrupt_target_allowed(row, target_vcpu) ||
++            model_phase == 0 || model_phase > 64) {
++            return -EINVAL;
++        }
++        if (qemu_crucible_fault_rule_command_kind(rule) ==
++            CRUCIBLE_FAULT_COMMAND_INTERRUPT_STORM) {
++            int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++
++            if (!crucible_interrupt_rule_u64(
++                    rule, CRUCIBLE_NODE_FAULT_FIELD_P3, &storm_period) ||
++                !crucible_interrupt_rule_u32(
++                    rule, CRUCIBLE_NODE_FAULT_FIELD_P4, &storm_burst) ||
++                !crucible_interrupt_rule_u32(
++                    rule, CRUCIBLE_NODE_FAULT_FIELD_P5, &storm_total) ||
++                storm_period == 0 || storm_burst == 0 || storm_total == 0 ||
++                storm_period > INT64_MAX || now < 0) {
++                return -EINVAL;
++            }
++            storm_cycles = (uint64_t)storm_total / storm_burst +
++                (storm_total % storm_burst != 0);
++            if (storm_cycles > (uint64_t)(INT64_MAX - now) / storm_period) {
++                return -ERANGE;
++            }
++            if (model_phase != QEMU_CRUCIBLE_INTERRUPT_PHASE_RAISE ||
++                !crucible_interrupt_injectors[row->family].inject ||
++                !crucible_interrupt_storm_routing(
++                    rule, row, target_vcpu, vector, &storm_priority,
++                    &storm_retain_pending)) {
++                return -EINVAL;
++            }
++        } else if (!(row->model_phase_mask &
++                     (1ULL << (model_phase - 1)))) {
++            return -EINVAL;
++        }
++        if (qemu_crucible_fault_rule_command_kind(rule) ==
++            CRUCIBLE_FAULT_COMMAND_INTERRUPT_DISPOSITION &&
++            (!crucible_interrupt_rule_u32(
++                 rule, CRUCIBLE_NODE_FAULT_FIELD_P1, &disposition) ||
++             !crucible_interrupt_rule_u64(
++                 rule, CRUCIBLE_NODE_FAULT_FIELD_P2, &delay_ns) ||
++             !crucible_interrupt_rule_u32(
++                 rule, CRUCIBLE_NODE_FAULT_FIELD_P3, &copies) ||
++             !crucible_interrupt_rule_u64(
++                 rule, CRUCIBLE_NODE_FAULT_FIELD_P4, &gap_ns) ||
++             !crucible_interrupt_rule_u32(
++                 rule, CRUCIBLE_NODE_FAULT_FIELD_P5, &replacement))) {
++            return -EINVAL;
++        }
++        if (qemu_crucible_fault_rule_command_kind(rule) ==
++            CRUCIBLE_FAULT_COMMAND_INTERRUPT_DISPOSITION) {
++            if ((disposition == 1 &&
++                 (delay_ns != 0 || copies != 0 || gap_ns != 0 ||
++                  replacement != 0)) ||
++                (disposition == 2 &&
++                 (delay_ns == 0 || delay_ns > INT64_MAX || copies != 0 ||
++                  gap_ns != 0 || replacement != 0)) ||
++                (disposition == 3 &&
++                 (delay_ns != 0 || copies == 0 || copies > 256 ||
++                  replacement != 0 ||
++                  (gap_ns != 0 && copies > INT64_MAX / gap_ns))) ||
++                (disposition == 4 &&
++                 (delay_ns != 0 || copies != 0 || gap_ns != 0 ||
++                  replacement < row->replacement_vector_start ||
++                  replacement > row->replacement_vector_end)) ||
++                disposition < 1 || disposition > 4) {
++                return -EINVAL;
++            }
++        }
++        if (qemu_crucible_fault_rule_command_kind(rule) ==
++            CRUCIBLE_FAULT_COMMAND_INTERRUPT_DISPOSITION) {
++            qemu_crucible_fault_rule_foreach(
++                CRUCIBLE_FAULT_COMMAND_INTERRUPT_DISPOSITION,
++                crucible_interrupt_conflict_visit, &conflict);
++            if (conflict.conflict) {
++                return -EEXIST;
++            }
++        }
++        return 0;
++    }
++    return -ENOENT;
++}
++
++static bool crucible_interrupt_rule_u32(const QemuCrucibleFaultRule *rule,
++                                        uint16_t tag, uint32_t *value)
++{
++    const uint8_t *data;
++    uint32_t length;
++
++    if (!qemu_crucible_fault_rule_field(
++            rule, tag, CRUCIBLE_NODE_FAULT_FIELD_TYPE_U32,
++            &data, &length) || length != 4) {
++        return false;
++    }
++    *value = ldl_le_p(data);
++    return true;
++}
++
++static bool crucible_interrupt_rule_u64(const QemuCrucibleFaultRule *rule,
++                                        uint16_t tag, uint64_t *value)
++{
++    const uint8_t *data;
++    uint32_t length;
++
++    if (!qemu_crucible_fault_rule_field(
++            rule, tag, CRUCIBLE_NODE_FAULT_FIELD_TYPE_U64,
++            &data, &length) || length != 8) {
++        return false;
++    }
++    *value = ldq_le_p(data);
++    return true;
++}
++
++static const CrucibleInterruptCapability *crucible_interrupt_event_row(
++    const QemuCrucibleInterruptEvent *event, guint *row_index)
++{
++    for (guint i = 0; i < crucible_interrupt_manifest->len; i++) {
++        const CrucibleInterruptCapability *row = &g_array_index(
++            crucible_interrupt_manifest, CrucibleInterruptCapability, i);
++
++        if (row->family == event->family && row->trigger == event->trigger &&
++            event->vector >= row->vector_start &&
++            event->vector <= row->vector_end &&
++            crucible_interrupt_target_allowed(row, event->target_vcpu) &&
++            event->model_phase != 0 && event->model_phase <= 64 &&
++            (row->model_phase_mask &
++             (1ULL << (event->model_phase - 1)))) {
++            if (row_index) {
++                *row_index = i;
++            }
++            return row;
++        }
++    }
++    return NULL;
++}
++
++static bool crucible_interrupt_rule_matches(
++    const QemuCrucibleFaultRule *rule,
++    const QemuCrucibleInterruptEvent *event,
++    const CrucibleInterruptCapability *row,
++    const CrucibleInterruptBinding *binding)
++{
++    const uint8_t *controller, *source;
++    uint32_t controller_len, source_len, vcpu, vector;
++
++    return qemu_crucible_fault_rule_command_kind(rule) ==
++               CRUCIBLE_FAULT_COMMAND_INTERRUPT_DISPOSITION &&
++           qemu_crucible_fault_rule_model_phase(rule) == event->model_phase &&
++           qemu_crucible_fault_rule_field(
++               rule, CRUCIBLE_NODE_FAULT_FIELD_T1,
++               CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
++               &controller, &controller_len) && controller_len == 32 &&
++           qemu_crucible_fault_rule_field(
++               rule, CRUCIBLE_NODE_FAULT_FIELD_T2,
++               CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
++               &source, &source_len) && source_len == 32 &&
++           memcmp(controller, binding->controller, 32) == 0 &&
++           memcmp(source, binding->source, 32) == 0 &&
++           crucible_interrupt_rule_u32(
++               rule, CRUCIBLE_NODE_FAULT_FIELD_T3, &vcpu) &&
++           vcpu == event->target_vcpu &&
++           crucible_interrupt_rule_u32(
++               rule, CRUCIBLE_NODE_FAULT_FIELD_T4, &vector) &&
++           vector == event->vector && row != NULL;
++}
++
++static void crucible_interrupt_match_visit(
++    const QemuCrucibleFaultRule *rule, void *opaque)
++{
++    CrucibleInterruptMatch *match = opaque;
++
++    if (crucible_interrupt_rule_matches(
++            rule, match->event, match->row, match->binding)) {
++        if (match->rule) {
++            match->conflict = true;
++            if (memcmp(qemu_crucible_fault_rule_binding_hash(rule),
++                       qemu_crucible_fault_rule_binding_hash(match->rule),
++                       32) < 0) {
++                match->rule = rule;
++            }
++            return;
++        }
++        match->rule = rule;
++    }
++}
++
++static void crucible_interrupt_record(
++    const QemuCrucibleFaultRule *rule,
++    const QemuCrucibleInterruptEvent *before,
++    const QemuCrucibleInterruptEvent *after, uint32_t disposition,
++    uint64_t delay_ns, uint32_t copies, uint64_t gap_ns,
++    uint16_t outcome, const uint8_t state_before[32]);
++static void crucible_interrupt_terminal_error(
++    const QemuCrucibleFaultRule *rule, uint32_t code);
++
++static void crucible_interrupt_deferred_cb(void *opaque)
++{
++    CrucibleInterruptDeferred *deferred = opaque;
++    CrucibleInterruptInjector *injector =
++        &crucible_interrupt_injectors[deferred->event.family];
++    QemuCrucibleFaultRule *terminal_rule = NULL;
++    bool stores_provenance = deferred->event.family !=
++        QEMU_CRUCIBLE_INTERRUPT_X86_NMI;
++    uint16_t outcome = CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED;
++
++    deferred->event.release_phase = deferred->event.model_phase;
++    if (stores_provenance &&
++        !qemu_crucible_fault_interrupt_provenance_can_set(
++            &deferred->event)) {
++        outcome = CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR;
++    } else if (injector->validate &&
++        !injector->validate(&deferred->event, injector->opaque)) {
++        outcome = CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR;
++    } else {
++        if (stores_provenance &&
++            !qemu_crucible_fault_interrupt_provenance_set(
++                &deferred->event, !deferred->event.retain_pending)) {
++            g_assert_not_reached();
++        }
++        deferred->inject(&deferred->event, deferred->opaque);
++    }
++    crucible_interrupt_record(
++        deferred->rule, &deferred->event, &deferred->event, 6,
++        deferred->delay_ns, 0, 0,
++        outcome, deferred->before_hash);
++    if (outcome == CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR) {
++        terminal_rule = qemu_crucible_fault_rule_copy(deferred->rule);
++    }
++    for (guint i = 0; crucible_interrupt_deferred &&
++                        i < crucible_interrupt_deferred->len; i++) {
++        if (g_ptr_array_index(crucible_interrupt_deferred, i) == deferred) {
++            g_ptr_array_remove_index(crucible_interrupt_deferred, i);
++            break;
++        }
++    }
++    timer_free(deferred->timer);
++    qemu_crucible_fault_rule_unref(deferred->rule);
++    g_free(deferred);
++    qatomic_dec(&crucible_interrupt_deferred_reserved);
++    if (terminal_rule) {
++        crucible_interrupt_terminal_error(terminal_rule, 3);
++        qemu_crucible_fault_rule_unref(terminal_rule);
++    }
++}
++
++static void crucible_interrupt_schedule(
++    const QemuCrucibleFaultRule *rule,
++    const QemuCrucibleInterruptEvent *event,
++    QemuCrucibleInterruptInjectFn inject, void *opaque, uint64_t delay_ns)
++{
++    CrucibleInterruptDeferred *deferred;
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++
++    g_assert(rule && inject && delay_ns <= INT64_MAX &&
++             now <= INT64_MAX - (int64_t)delay_ns);
++    deferred = g_new0(CrucibleInterruptDeferred, 1);
++    deferred->event = *event;
++    deferred->inject = inject;
++    deferred->opaque = opaque;
++    deferred->rule = qemu_crucible_fault_rule_copy(rule);
++    deferred->delay_ns = delay_ns;
++    if (qemu_crucible_fault_execution_fingerprint(
++            qemu_crucible_fault_observed_icount(),
++            deferred->before_hash) != 0) {
++        memset(deferred->before_hash, 0, sizeof(deferred->before_hash));
++    }
++    deferred->timer = timer_new_ns(
++        QEMU_CLOCK_VIRTUAL, crucible_interrupt_deferred_cb, deferred);
++    if (!crucible_interrupt_deferred) {
++        crucible_interrupt_deferred = g_ptr_array_new();
++    }
++    g_ptr_array_add(crucible_interrupt_deferred, deferred);
++    timer_mod_ns(deferred->timer, now + delay_ns);
++}
++
++static bool crucible_interrupt_queue_reserve(uint32_t slots,
++                                             uint64_t maximum_delay_ns)
++{
++    uint32_t used;
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++
++    if (slots > CRUCIBLE_INTERRUPT_DEFERRED_CAPACITY ||
++        maximum_delay_ns > INT64_MAX ||
++        now > INT64_MAX - (int64_t)maximum_delay_ns) {
++        return false;
++    }
++    do {
++        used = qatomic_read(&crucible_interrupt_deferred_reserved);
++        if (used > CRUCIBLE_INTERRUPT_DEFERRED_CAPACITY - slots) {
++            return false;
++        }
++    } while (qatomic_cmpxchg(&crucible_interrupt_deferred_reserved,
++                            used, used + slots) != used);
++    return true;
++}
++
++static void crucible_interrupt_sha256(const uint8_t *data, size_t length,
++                                      uint8_t digest[32])
++{
++    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    gsize digest_len = 32;
++
++    g_checksum_update(checksum, data, length);
++    g_checksum_get_digest(checksum, digest, &digest_len);
++    g_assert(digest_len == 32);
++}
++
++static void crucible_interrupt_record(
++    const QemuCrucibleFaultRule *rule,
++    const QemuCrucibleInterruptEvent *before,
++    const QemuCrucibleInterruptEvent *after, uint32_t disposition,
++    uint64_t delay_ns, uint32_t copies, uint64_t gap_ns,
++    uint16_t outcome, const uint8_t state_before[32])
++{
++    uint8_t evidence[160] = { 0 };
++    uint8_t before_hash[32], after_hash[32], opportunity_hash[32];
++    uint64_t icount = qemu_crucible_fault_observed_icount();
++
++    memcpy(evidence, "CRUCIRQ1", 8);
++    stw_le_p(evidence + 8, 1);
++    stw_le_p(evidence + 10, crucible_interrupt_scope);
++    stw_le_p(evidence + 12, before->family);
++    stw_le_p(evidence + 14, before->trigger);
++    stw_le_p(evidence + 16, before->polarity);
++    stw_le_p(evidence + 18, before->model_phase);
++    stl_le_p(evidence + 20, before->target_vcpu);
++    stl_le_p(evidence + 24, before->vector);
++    stl_le_p(evidence + 28, after->vector);
++    stl_le_p(evidence + 32, disposition);
++    stl_le_p(evidence + 36, copies);
++    stq_le_p(evidence + 40, delay_ns);
++    stq_le_p(evidence + 48, gap_ns);
++    stq_le_p(evidence + 56, before->source_sequence);
++    stq_le_p(evidence + 64, before->routing_generation);
++    stl_le_p(evidence + 72, before->duplicate_ordinal);
++    stl_le_p(evidence + 76, before->controller_source);
++    stq_le_p(evidence + 80, icount);
++    if (state_before) {
++        memcpy(before_hash, state_before, sizeof(before_hash));
++    } else if (qemu_crucible_fault_execution_fingerprint(
++                   icount, before_hash) != 0) {
++        memset(before_hash, 0, sizeof(before_hash));
++    }
++    memcpy(evidence + 96, before_hash, 32);
++    if (qemu_crucible_fault_execution_fingerprint(
++            icount, after_hash) != 0) {
++        memset(after_hash, 0, sizeof(after_hash));
++    }
++    memcpy(evidence + 128, after_hash, 32);
++    crucible_interrupt_sha256(evidence, sizeof(evidence), opportunity_hash);
++    qemu_crucible_fault_rule_event(
++        rule, outcome, icount,
++        opportunity_hash, before_hash, after_hash,
++        evidence, sizeof(evidence));
++}
++
++static void crucible_interrupt_terminal_error(
++    const QemuCrucibleFaultRule *rule, uint32_t code)
++{
++    uint8_t evidence[64] = { 0 };
++    uint8_t state[32], opportunity[32];
++    uint64_t icount = qemu_crucible_fault_observed_icount();
++
++    if (crucible_interrupt_event_terminal_latched) {
++        return;
++    }
++    memcpy(evidence, "CRUCIER1", 8);
++    stl_le_p(evidence + 8, code);
++    stq_le_p(evidence + 16, icount);
++    if (qemu_crucible_fault_execution_fingerprint(icount, state) != 0) {
++        memset(state, 0, sizeof(state));
++    }
++    crucible_interrupt_sha256(evidence, sizeof(evidence), opportunity);
++    qemu_crucible_fault_rule_event(
++        rule, CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR, icount,
++        opportunity, state, state, evidence, sizeof(evidence));
++    qemu_crucible_fault_interrupt_event_terminal();
++    qemu_crucible_fault_notify_events();
++    qemu_system_vmstop_request_prepare();
++    qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
++}
++
++static int crucible_interrupt_disposition_impulse(
++    const QemuCrucibleFaultRule *rule, uint64_t observed_icount,
++    uint8_t before_hash[32], uint8_t after_hash[32], GByteArray *evidence,
++    uint16_t *outcome,
++    QemuCrucibleFaultEventReservation **event_reservation)
++{
++    CrucibleInterruptImpulse *impulse;
++
++    if (!event_reservation || !*event_reservation ||
++        qemu_crucible_fault_interrupt_validate(rule) != 0) {
++        return -EINVAL;
++    }
++    for (guint i = 0; crucible_interrupt_impulses &&
++                        i < crucible_interrupt_impulses->len; i++) {
++        CrucibleInterruptImpulse *pending =
++            g_ptr_array_index(crucible_interrupt_impulses, i);
++
++        if (crucible_interrupt_same_coordinate(rule, pending->rule)) {
++            return -EEXIST;
++        }
++    }
++    impulse = g_new0(CrucibleInterruptImpulse, 1);
++    impulse->rule = qemu_crucible_fault_rule_copy(rule);
++    impulse->command_icount = observed_icount;
++    memcpy(impulse->before_hash, before_hash, 32);
++    impulse->event_reservation = *event_reservation;
++    *event_reservation = NULL;
++    if (!crucible_interrupt_impulses) {
++        crucible_interrupt_impulses = g_ptr_array_new();
++    }
++    g_ptr_array_add(crucible_interrupt_impulses, impulse);
++    memcpy(after_hash, before_hash, 32);
++    g_byte_array_set_size(evidence, 0);
++    *outcome = CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED;
++    return QEMU_CRUCIBLE_FAULT_IMPULSE_DEFERRED;
++}
++
++bool qemu_crucible_fault_interrupt_intercept(
++    QemuCrucibleInterruptEvent *event,
++    QemuCrucibleInterruptInjectFn inject, void *opaque)
++{
++    CrucibleInterruptMatch match = { .event = event };
++    QemuCrucibleInterruptEvent original;
++    CrucibleInterruptImpulse *impulse = NULL;
++    uint32_t disposition, copies, replacement;
++    uint64_t delay_ns, gap_ns;
++    guint row_index, impulse_index = 0;
++
++    if (!event) {
++        return true;
++    }
++    if (event->release_phase == event->model_phase) {
++        event->release_phase = 0;
++        event->disposition = 0;
++        return true;
++    }
++    if (!crucible_interrupt_bindings_sealed) {
++        return true;
++    }
++    match.row = crucible_interrupt_event_row(event, &row_index);
++    if (!match.row) {
++        return true;
++    }
++    match.binding = &g_array_index(
++        crucible_interrupt_bindings, CrucibleInterruptBinding, row_index);
++    qemu_crucible_fault_rule_foreach(
++        CRUCIBLE_FAULT_COMMAND_INTERRUPT_DISPOSITION,
++        crucible_interrupt_match_visit, &match);
++    if (match.conflict) {
++        original = *event;
++        crucible_interrupt_pending_commit = g_new0(
++            CrucibleInterruptCommit, 1);
++        crucible_interrupt_pending_commit->rule =
++            qemu_crucible_fault_rule_copy(match.rule);
++        crucible_interrupt_pending_commit->before = original;
++        crucible_interrupt_pending_commit->after = original;
++        crucible_interrupt_pending_commit->outcome =
++            CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR;
++        if (qemu_crucible_fault_execution_fingerprint(
++                qemu_crucible_fault_observed_icount(),
++                crucible_interrupt_pending_commit->before_hash) != 0) {
++            memset(crucible_interrupt_pending_commit->before_hash, 0,
++                   sizeof(crucible_interrupt_pending_commit->before_hash));
++        }
++        return false;
++    }
++    for (guint i = 0; crucible_interrupt_impulses &&
++                        i < crucible_interrupt_impulses->len; i++) {
++        CrucibleInterruptImpulse *candidate =
++            g_ptr_array_index(crucible_interrupt_impulses, i);
++        if (crucible_interrupt_rule_matches(
++                candidate->rule, event, match.row, match.binding)) {
++            if (match.rule) {
++                continue;
++            }
++            match.rule = candidate->rule;
++            impulse = candidate;
++            impulse_index = i;
++        }
++    }
++    if (!match.rule ||
++        !crucible_interrupt_rule_u32(
++            match.rule, CRUCIBLE_NODE_FAULT_FIELD_P1, &disposition) ||
++        !crucible_interrupt_rule_u64(
++            match.rule, CRUCIBLE_NODE_FAULT_FIELD_P2, &delay_ns) ||
++        !crucible_interrupt_rule_u32(
++            match.rule, CRUCIBLE_NODE_FAULT_FIELD_P3, &copies) ||
++        !crucible_interrupt_rule_u64(
++            match.rule, CRUCIBLE_NODE_FAULT_FIELD_P4, &gap_ns) ||
++        !crucible_interrupt_rule_u32(
++            match.rule, CRUCIBLE_NODE_FAULT_FIELD_P5, &replacement)) {
++        return true;
++    }
++    original = *event;
++    event->disposition = disposition;
++    g_assert(crucible_interrupt_pending_commit == NULL);
++    crucible_interrupt_pending_commit = g_new0(
++        CrucibleInterruptCommit, 1);
++    crucible_interrupt_pending_commit->rule =
++        qemu_crucible_fault_rule_copy(match.rule);
++    crucible_interrupt_pending_commit->before = original;
++    crucible_interrupt_pending_commit->after = *event;
++    crucible_interrupt_pending_commit->disposition = disposition;
++    crucible_interrupt_pending_commit->delay_ns = delay_ns;
++    crucible_interrupt_pending_commit->copies = copies;
++    crucible_interrupt_pending_commit->gap_ns = gap_ns;
++    crucible_interrupt_pending_commit->outcome =
++        CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED;
++    if (qemu_crucible_fault_execution_fingerprint(
++            qemu_crucible_fault_observed_icount(),
++            crucible_interrupt_pending_commit->before_hash) != 0) {
++        memset(crucible_interrupt_pending_commit->before_hash, 0,
++               sizeof(crucible_interrupt_pending_commit->before_hash));
++    }
++    if (impulse) {
++        qemu_crucible_fault_event_reservation_consume(
++            impulse->event_reservation);
++        g_ptr_array_remove_index(crucible_interrupt_impulses, impulse_index);
++        crucible_interrupt_pending_commit->impulse = impulse;
++    }
++    if ((disposition == 2 &&
++         !crucible_interrupt_queue_reserve(1, delay_ns)) ||
++        (disposition == 3 &&
++         !crucible_interrupt_queue_reserve(
++             copies, gap_ns * copies))) {
++        crucible_interrupt_pending_commit->outcome =
++            CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR;
++        return false;
++    }
++    if (disposition == 2) {
++        crucible_interrupt_schedule(
++            match.rule, event, inject, opaque, delay_ns);
++    }
++    if (disposition == 3) {
++        for (uint32_t i = 1; i <= copies; i++) {
++            QemuCrucibleInterruptEvent child = *event;
++            uint64_t child_delay;
++
++            child.duplicate_ordinal = i;
++            child_delay = gap_ns * i;
++            crucible_interrupt_schedule(
++                match.rule, &child, inject, opaque, child_delay);
++        }
++    } else if (disposition == 4) {
++        event->vector = replacement;
++    }
++    crucible_interrupt_pending_commit->after = *event;
++    return disposition != 1 && disposition != 2;
++}
++
++void qemu_crucible_fault_interrupt_commit_error(void)
++{
++    if (crucible_interrupt_pending_commit) {
++        crucible_interrupt_pending_commit->outcome =
++            CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR;
++    }
++}
++
++void qemu_crucible_fault_interrupt_committed(
++    const QemuCrucibleInterruptEvent *event)
++{
++    CrucibleInterruptCommit *commit = crucible_interrupt_pending_commit;
++
++    if (!commit) {
++        return;
++    }
++    crucible_interrupt_pending_commit = NULL;
++    if (!event) {
++        event = &commit->after;
++    }
++    crucible_interrupt_record(
++        commit->rule, &commit->before, event, commit->disposition,
++        commit->delay_ns, commit->copies, commit->gap_ns,
++        commit->outcome, commit->before_hash);
++    if (commit->impulse) {
++        CrucibleInterruptImpulse *impulse = commit->impulse;
++        uint8_t after_hash[32];
++        uint8_t applied[64] = { 0 };
++        uint64_t applied_icount = qemu_crucible_fault_observed_icount();
++
++        memcpy(applied, "CRUCIAPL", 8);
++        stw_le_p(applied + 8, event->family);
++        stw_le_p(applied + 10, event->trigger);
++        stw_le_p(applied + 12, event->model_phase);
++        stw_le_p(applied + 14, event->disposition);
++        stl_le_p(applied + 16, event->target_vcpu);
++        stl_le_p(applied + 20, event->vector);
++        stq_le_p(applied + 24, event->source_sequence);
++        stq_le_p(applied + 32, applied_icount);
++        crucible_interrupt_sha256(applied, sizeof(applied), after_hash);
++        if (commit->outcome == CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED) {
++            qemu_crucible_fault_complete_deferred(
++                impulse->rule, impulse->command_icount, applied_icount,
++                impulse->before_hash, after_hash);
++        } else {
++            qemu_crucible_fault_fail_deferred(
++                impulse->rule, applied_icount, impulse->before_hash);
++        }
++        qemu_crucible_fault_event_reservation_release(
++            impulse->event_reservation);
++        qemu_crucible_fault_rule_unref(impulse->rule);
++        g_free(impulse);
++    }
++    if (commit->outcome == CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR) {
++        crucible_interrupt_terminal_error(commit->rule, 2);
++    }
++    qemu_crucible_fault_rule_unref(commit->rule);
++    g_free(commit);
++}
++
++static void crucible_interrupt_storm_free(CrucibleInterruptStorm *storm)
++{
++    if (storm->timer) {
++        timer_del(storm->timer);
++        timer_free(storm->timer);
++    }
++    qemu_crucible_fault_rule_unref(storm->rule);
++    g_free(storm->target_vcpus);
++    g_free(storm);
++}
++
++static void crucible_interrupt_storm_cb(void *opaque)
++{
++    CrucibleInterruptStorm *storm = opaque;
++    CrucibleInterruptInjector *injector =
++        &crucible_interrupt_injectors[storm->row->family];
++    uint32_t count = MIN(storm->burst, storm->total - storm->emitted);
++
++    storm->firing = true;
++    if (!injector->inject || count == 0) {
++        crucible_interrupt_terminal_error(storm->rule, 10);
++        storm->firing = false;
++        for (guint i = 0; i < crucible_interrupt_storms->len; i++) {
++            if (g_ptr_array_index(crucible_interrupt_storms, i) == storm) {
++                g_ptr_array_remove_index(crucible_interrupt_storms, i);
++                break;
++            }
++        }
++        crucible_interrupt_storm_free(storm);
++        return;
++    }
++    for (uint32_t i = 0;
++         i < count && !crucible_interrupt_event_terminal_latched; i++) {
++        uint64_t source_sequence =
++            qemu_crucible_fault_interrupt_source_next_sequence();
++        uint64_t routing_generation =
++            qemu_crucible_fault_interrupt_current_routing_generation();
++
++        for (size_t target = 0;
++             target < storm->target_vcpu_count; target++) {
++            uint8_t before_hash[32];
++            uint16_t outcome = CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED;
++            QemuCrucibleInterruptEvent event = {
++                .family = storm->row->family,
++                .trigger = storm->row->trigger,
++                .polarity = storm->row->polarity,
++                .model_phase = QEMU_CRUCIBLE_INTERRUPT_PHASE_ROUTE,
++                .target_vcpu = storm->target_vcpus[target],
++                .vector = storm->vector,
++                .controller_source = storm->row->family ==
++                        QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SGI ?
++                    crucible_interrupt_boot_target : UINT32_MAX,
++                .priority = storm->priority,
++                .retain_pending = storm->retain_pending,
++                .source_sequence = source_sequence,
++                .routing_generation = routing_generation,
++                .duplicate_ordinal = storm->emitted + i,
++            };
++
++            if (qemu_crucible_fault_execution_fingerprint(
++                    qemu_crucible_fault_observed_icount(),
++                    before_hash) != 0) {
++                memset(before_hash, 0, sizeof(before_hash));
++            }
++
++            if (injector->validate &&
++                !injector->validate(&event, injector->opaque)) {
++                outcome = CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR;
++            } else if (qemu_crucible_fault_interrupt_intercept(
++                           &event, injector->inject, injector->opaque)) {
++                injector->inject(&event, injector->opaque);
++            }
++            qemu_crucible_fault_interrupt_committed(&event);
++            if (crucible_interrupt_event_terminal_latched) {
++                break;
++            }
++            crucible_interrupt_record(
++                storm->rule, &event, &event, 5, storm->period_ns,
++                storm->burst, 0, outcome, before_hash);
++            if (outcome == CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR) {
++                crucible_interrupt_terminal_error(storm->rule, 4);
++                break;
++            }
++        }
++    }
++    storm->firing = false;
++    storm->emitted += count;
++    if (crucible_interrupt_event_terminal_latched) {
++        for (guint i = 0; i < crucible_interrupt_storms->len; i++) {
++            if (g_ptr_array_index(crucible_interrupt_storms, i) == storm) {
++                g_ptr_array_remove_index(crucible_interrupt_storms, i);
++                break;
++            }
++        }
++        crucible_interrupt_storm_free(storm);
++        return;
++    }
++    if (storm->emitted < storm->total) {
++        storm->next_deadline_ns += storm->period_ns;
++        timer_mod_ns(storm->timer, storm->next_deadline_ns);
++    } else {
++        timer_free(storm->timer);
++        storm->timer = NULL;
++        g_clear_pointer(&storm->target_vcpus, g_free);
++        storm->target_vcpu_count = 0;
++        storm->completed = true;
++    }
++}
++
++static CrucibleInterruptStorm *crucible_interrupt_storm_find(
++    const QemuCrucibleFaultRule *rule)
++{
++    const uint8_t *binding = qemu_crucible_fault_rule_binding_hash(rule);
++
++    for (guint i = 0; crucible_interrupt_storms &&
++                        i < crucible_interrupt_storms->len; i++) {
++        CrucibleInterruptStorm *storm =
++            g_ptr_array_index(crucible_interrupt_storms, i);
++
++        if (memcmp(qemu_crucible_fault_rule_binding_hash(storm->rule),
++                   binding, 32) == 0 &&
++            qemu_crucible_fault_rule_generation(storm->rule) ==
++                qemu_crucible_fault_rule_generation(rule)) {
++            return storm;
++        }
++    }
++    return NULL;
++}
++
++static void crucible_interrupt_storm_visit(
++    const QemuCrucibleFaultRule *rule, void *opaque)
++{
++    CrucibleInterruptStorm *storm;
++    const uint8_t *controller, *source;
++    uint32_t controller_len, source_len;
++    uint32_t target_vcpu, vector, burst, total;
++    uint16_t priority;
++    bool retain_pending;
++    uint64_t period_ns;
++    guint row_index = 0;
++    int64_t now;
++
++    (void)opaque;
++    storm = crucible_interrupt_storm_find(rule);
++    if (storm) {
++        storm->seen = true;
++        return;
++    }
++    if (!qemu_crucible_fault_rule_field(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_T1,
++            CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
++            &controller, &controller_len) || controller_len != 32 ||
++        !qemu_crucible_fault_rule_field(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_T2,
++            CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
++            &source, &source_len) || source_len != 32 ||
++        !crucible_interrupt_rule_u32(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_T3, &target_vcpu) ||
++        !crucible_interrupt_rule_u32(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_T4, &vector) ||
++        !crucible_interrupt_rule_u64(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_P3, &period_ns) ||
++        !crucible_interrupt_rule_u32(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_P4, &burst) ||
++        !crucible_interrupt_rule_u32(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_P5, &total)) {
++        crucible_interrupt_terminal_error(rule, 5);
++        return;
++    }
++    for (; row_index < crucible_interrupt_bindings->len; row_index++) {
++        const CrucibleInterruptBinding *binding = &g_array_index(
++            crucible_interrupt_bindings, CrucibleInterruptBinding,
++            row_index);
++
++        if (memcmp(binding->controller, controller, 32) == 0 &&
++            memcmp(binding->source, source, 32) == 0) {
++            break;
++        }
++    }
++    if (row_index == crucible_interrupt_bindings->len) {
++        crucible_interrupt_terminal_error(rule, 6);
++        return;
++    }
++    if (!crucible_interrupt_injectors[
++            g_array_index(crucible_interrupt_manifest,
++                          CrucibleInterruptCapability, row_index).family]
++             .inject) {
++        crucible_interrupt_terminal_error(rule, 7);
++        return;
++    }
++    if (!crucible_interrupt_storm_routing(
++            rule,
++            &g_array_index(crucible_interrupt_manifest,
++                           CrucibleInterruptCapability, row_index),
++            target_vcpu, vector, &priority, &retain_pending)) {
++        crucible_interrupt_terminal_error(rule, 8);
++        return;
++    }
++    storm = g_new0(CrucibleInterruptStorm, 1);
++    storm->rule = qemu_crucible_fault_rule_copy(rule);
++    storm->row = &g_array_index(
++        crucible_interrupt_manifest, CrucibleInterruptCapability,
++        row_index);
++    if (!crucible_interrupt_storm_targets_copy(
++            rule, &storm->target_vcpus, &storm->target_vcpu_count)) {
++        qemu_crucible_fault_rule_unref(storm->rule);
++        g_free(storm);
++        crucible_interrupt_terminal_error(rule, 9);
++        return;
++    }
++    storm->vector = vector;
++    storm->period_ns = period_ns;
++    storm->burst = burst;
++    storm->total = total;
++    storm->priority = priority;
++    storm->retain_pending = retain_pending;
++    storm->seen = true;
++    storm->timer = timer_new_ns(
++        QEMU_CLOCK_VIRTUAL, crucible_interrupt_storm_cb, storm);
++    now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    storm->next_deadline_ns = now + period_ns;
++    if (!crucible_interrupt_storms) {
++        crucible_interrupt_storms = g_ptr_array_new();
++    }
++    g_ptr_array_add(crucible_interrupt_storms, storm);
++    timer_mod_ns(storm->timer, storm->next_deadline_ns);
++}
++
++void qemu_crucible_fault_interrupt_rules_changed(void)
++{
++    if (crucible_interrupt_event_terminal_latched) {
++        return;
++    }
++    for (guint i = 0; crucible_interrupt_storms &&
++                        i < crucible_interrupt_storms->len; i++) {
++        CrucibleInterruptStorm *storm =
++            g_ptr_array_index(crucible_interrupt_storms, i);
++        storm->seen = false;
++    }
++    qemu_crucible_fault_rule_foreach(
++        CRUCIBLE_FAULT_COMMAND_INTERRUPT_STORM,
++        crucible_interrupt_storm_visit, NULL);
++    for (guint i = 0; crucible_interrupt_storms &&
++                        i < crucible_interrupt_storms->len;) {
++        CrucibleInterruptStorm *storm =
++            g_ptr_array_index(crucible_interrupt_storms, i);
++        if (storm->seen) {
++            i++;
++            continue;
++        }
++        g_ptr_array_remove_index(crucible_interrupt_storms, i);
++        crucible_interrupt_storm_free(storm);
++    }
++}
++
++void qemu_crucible_fault_interrupt_event_terminal(void)
++{
++    crucible_interrupt_event_terminal_latched = true;
++    while (crucible_interrupt_impulses &&
++           crucible_interrupt_impulses->len != 0) {
++        CrucibleInterruptImpulse *impulse =
++            g_ptr_array_index(crucible_interrupt_impulses, 0);
++
++        g_ptr_array_remove_index(crucible_interrupt_impulses, 0);
++        qemu_crucible_fault_fail_deferred(
++            impulse->rule, impulse->command_icount,
++            impulse->before_hash);
++        qemu_crucible_fault_event_reservation_release(
++            impulse->event_reservation);
++        qemu_crucible_fault_rule_unref(impulse->rule);
++        g_free(impulse);
++    }
++    while (crucible_interrupt_deferred &&
++           crucible_interrupt_deferred->len != 0) {
++        CrucibleInterruptDeferred *deferred =
++            g_ptr_array_index(crucible_interrupt_deferred, 0);
++
++        g_ptr_array_remove_index(crucible_interrupt_deferred, 0);
++        timer_del(deferred->timer);
++        timer_free(deferred->timer);
++        qemu_crucible_fault_rule_unref(deferred->rule);
++        g_free(deferred);
++        qatomic_dec(&crucible_interrupt_deferred_reserved);
++    }
++    for (guint i = 0; crucible_interrupt_storms &&
++                        i < crucible_interrupt_storms->len;) {
++        CrucibleInterruptStorm *storm =
++            g_ptr_array_index(crucible_interrupt_storms, i);
++
++        if (storm->firing) {
++            i++;
++            continue;
++        }
++        g_ptr_array_remove_index(crucible_interrupt_storms, i);
++        crucible_interrupt_storm_free(storm);
++    }
++}
++
++bool qemu_crucible_fault_interrupt_ensure_registered(void)
++{
++    uint32_t boundary = 1U << (CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY - 1);
++    const char *control_name;
++    const char *storm_name;
++
++    if (crucible_interrupt_handlers_registered) {
++        return true;
++    }
++    if (!crucible_interrupt_manifest_init()) {
++        return false;
++    }
++    control_name = crucible_interrupt_scope == CRUCIBLE_INTERRUPT_SCOPE_X86_64 ?
++        "qemu.interrupt.control.x86_64.v1" :
++        "qemu.interrupt.control.aarch64.v1";
++    storm_name = crucible_interrupt_scope == CRUCIBLE_INTERRUPT_SCOPE_X86_64 ?
++        "qemu.interrupt.storm.x86_64.v1" :
++        "qemu.interrupt.storm.aarch64.v1";
++    qemu_crucible_fault_node_register(
++        CRUCIBLE_FAULT_COMMAND_INTERRUPT_DISPOSITION,
++        crucible_interrupt_scope, boundary, control_name,
++        crucible_interrupt_disposition_impulse);
++    qemu_crucible_fault_node_register(
++        CRUCIBLE_FAULT_COMMAND_INTERRUPT_STORM,
++        crucible_interrupt_scope, boundary, storm_name, NULL);
++    crucible_interrupt_handlers_registered = true;
++    return true;
++}
+diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
+index 76b092a32..9fbb68197 100644
+--- a/plugins/crucible-fault-node.c
++++ b/plugins/crucible-fault-node.c
+@@ -2198,6 +2198,7 @@ static bool node_operation_valid(uint16_t command_kind, uint16_t operation)
+         case CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM:
+         case CRUCIBLE_FAULT_COMMAND_CPU_INSTRUCTION_TRANSFORM:
+         case CRUCIBLE_FAULT_COMMAND_CPU_EXCEPTION:
++        case CRUCIBLE_FAULT_COMMAND_INTERRUPT_DISPOSITION:
+         case CRUCIBLE_FAULT_COMMAND_MEMORY_ECC_EVENT:
+         case CRUCIBLE_FAULT_COMMAND_CLOCK_TRANSFORM:
+         case CRUCIBLE_FAULT_COMMAND_ACCELERATOR_MEMORY_EVENT:
+@@ -3208,6 +3209,17 @@ static int node_prepare(
+             return status;
+         }
+     }
++    if (staging->rule.command_kind ==
++            CRUCIBLE_FAULT_COMMAND_INTERRUPT_DISPOSITION ||
++        staging->rule.command_kind == CRUCIBLE_FAULT_COMMAND_INTERRUPT_STORM) {
++        status = qemu_crucible_fault_interrupt_validate(&staging->rule);
++        if (status != 0) {
++            result->status = status == -ENOTSUP ?
++                CRUCIBLE_FAULT_STATUS_UNSUPPORTED_CAPABILITY :
++                CRUCIBLE_FAULT_STATUS_INVALID_TARGET;
++            return status;
++        }
++    }
+     node_sha256(payload, payload_len, staging->request_hash);
+     node_rules_digest_with(NULL, false, staging->before_hash);
+     if (command->command_flags & CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY) {
+@@ -3350,6 +3362,7 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
+     crucible_node_event_count++;
+     if (terminal) {
+         qemu_crucible_fault_instruction_event_terminal();
++        qemu_crucible_fault_interrupt_event_terminal();
+         qemu_crucible_fault_notify_events();
+         qemu_system_vmstop_request_prepare();
+         qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
+@@ -3380,6 +3393,7 @@ static void node_commit(
+         g_ptr_array_sort(crucible_node_rules, node_rule_compare);
+         node_memory_index_rebuild();
+         qemu_crucible_fault_instruction_rules_changed();
++        qemu_crucible_fault_interrupt_rules_changed();
+         node_memory_retention_deadline_recompute();
+     } else if (staging->rule.operation ==
+                CRUCIBLE_NODE_FAULT_OPERATION_REMOVE) {
+@@ -3388,6 +3402,7 @@ static void node_commit(
+         g_ptr_array_remove_index(crucible_node_rules, index);
+         node_memory_index_rebuild();
+         qemu_crucible_fault_instruction_rules_changed();
++        qemu_crucible_fault_interrupt_rules_changed();
+         node_memory_retention_deadline_recompute();
+     } else {
+         uint8_t opportunity_hash[32];
+@@ -3464,6 +3479,11 @@ void qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
+         handler->capability.required_feature_bits =
+             CRUCIBLE_FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION;
+         break;
++    case CRUCIBLE_FAULT_COMMAND_INTERRUPT_DISPOSITION:
++    case CRUCIBLE_FAULT_COMMAND_INTERRUPT_STORM:
++        handler->capability.required_feature_bits =
++            CRUCIBLE_FAULT_CAPABILITY_FEATURE_INTERRUPT;
++        break;
+     case CRUCIBLE_FAULT_COMMAND_CPU_INSTRUCTION_TRANSFORM:
+     case CRUCIBLE_FAULT_COMMAND_CPU_EXCEPTION:
+         handler->capability.required_feature_bits =
+diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
+index 8f34479d1..566e349a8 100644
+--- a/plugins/crucible-fault.c
++++ b/plugins/crucible-fault.c
+@@ -394,7 +394,8 @@ size_t qemu_plugin_crucible_fault_capabilities(
+     size_t i;
+ 
+     if (!qemu_crucible_fault_register_ensure_registered() ||
+-        !qemu_crucible_fault_instruction_ensure_registered()) {
++        !qemu_crucible_fault_instruction_ensure_registered() ||
++        !qemu_crucible_fault_interrupt_ensure_registered()) {
+         return 0;
+     }
+     qemu_crucible_fault_registry_seal();
+diff --git a/plugins/meson.build b/plugins/meson.build
+index 75bafa1d4..dd93f06d4 100644
+--- a/plugins/meson.build
++++ b/plugins/meson.build
+@@ -62,6 +62,7 @@ user_ss.add(files('user.c', 'api-user.c'))
+ system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c',
+                     'crucible-fault-memory.c', 'crucible-fault-node.c',
+                     'crucible-fault-register.c',
+-                    'crucible-fault-instruction.c'))
++                    'crucible-fault-instruction.c',
++                    'crucible-fault-interrupt.c'))
+ 
+ common_ss.add(files('loader.c', 'api.c', 'core.c'))
+diff --git a/target/arm/helper.c b/target/arm/helper.c
+index 72dba9ce5..6dd86e210 100644
+--- a/target/arm/helper.c
++++ b/target/arm/helper.c
+@@ -28,6 +28,7 @@
+ #include "system/tcg.h"
+ #include "qapi/error.h"
+ #include "qemu/guest-random.h"
++#include "qemu/crucible-fault.h"
+ #ifdef CONFIG_TCG
+ #include "semihosting/common-semi.h"
+ #endif
+@@ -2470,7 +2471,12 @@ static void gt_update_irq(ARMCPU *cpu, int timeridx)
+         irqstate = 0;
+     }
+ 
+-    qemu_set_irq(cpu->gt_timer_outputs[timeridx], irqstate);
++    {
++        bool source_owner = qemu_crucible_fault_interrupt_source_enter(
++            QEMU_CRUCIBLE_INTERRUPT_ARM_TIMER);
++        qemu_set_irq(cpu->gt_timer_outputs[timeridx], irqstate);
++        qemu_crucible_fault_interrupt_source_leave(source_owner);
++    }
+     trace_arm_gt_update_irq(timeridx, irqstate);
+ }
+ 

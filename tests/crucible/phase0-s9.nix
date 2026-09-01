@@ -240,7 +240,9 @@ in
           require_fixed "$PATCH_0001_NAME" 'TYPE_SIM_ACCEL'
           require_fixed "$PATCH_0001_NAME" 'ACCEL_OPS_NAME("sim")'
           require_fixed "$PATCH_0001_NAME" '-accel sim requires -icount shift=N'
-          require_fixed "$PATCH_0002_NAME" 'qemu_plugin_crucible_pause_vm'
+          if grep -F -q -- 'qemu_plugin_crucible_pause_vm' "$PATCH_0002_NAME"; then
+            fail "legacy unvalidated VM pause export remains in patch 0002"
+          fi
           require_fixed "$PATCH_0002_NAME" 'qemu_plugin_crucible_ram_hash'
           require_fixed "$PATCH_0002_NAME" 'qemu_plugin_crucible_get_vcpu_registers'
           require_fixed "$PATCH_0002_NAME" 'rr_switch_quantum'
@@ -267,14 +269,9 @@ in
           require_fixed "$PATCH_0008_NAME" '-accel sim requires -seed for deterministic guest random'
           require_fixed "$PATCH_0008_NAME" 'qemu_guest_getrandom'
           require_fixed "$PATCH_0009_NAME" 'qemu_plugin_net_inject'
-          require_fixed "$PATCH_0009_NAME" 'qemu_plugin_net_send'
-          require_fixed "$PATCH_0009_NAME" 'qemu_plugin_net_flush'
-          require_fixed "$PATCH_0009_NAME" 'qemu_plugin_net_can_receive'
           require_fixed "$PATCH_0009_NAME" 'qemu_receive_packet'
-          require_fixed "$PATCH_0009_NAME" 'qemu_net_queue_append_lossless'
-          require_fixed "$PATCH_0009_NAME" 'qemu_plugin_net_sent_cb'
-          require_fixed "$PATCH_0009_NAME" 'qemu_net_queue_flush'
-          require_fixed "$PATCH_0009_NAME" 'qemu_notify_event'
+          require_fixed "$PATCH_0009_NAME" 'if (delivered == (ssize_t)len)'
+          require_fixed "$PATCH_0009_NAME" 'if (delivered == 0)'
           require_fixed "$PATCH_0010_NAME" 'qemu_plugin_has_time_control'
           require_fixed "$PATCH_0010_NAME" 'qemu_plugin_register_time_advance_cb'
           require_fixed "$PATCH_0010_NAME" 'qemu_plugin_advance_time_ns'
