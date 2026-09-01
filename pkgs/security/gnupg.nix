@@ -250,7 +250,7 @@ in
 
           # scdaemon must report the built-in CCID driver (smartcard support).
           gpg-agent --version
-          scdaemon --version
+          ${self}/libexec/scdaemon --version
 
           echo "==> gnupg smoke: passed"
         '';

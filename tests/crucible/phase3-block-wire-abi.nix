@@ -5,11 +5,7 @@
   taskIds ? ["T-IO-3"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   blockIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs;
   ioWireFuzz = builtins.readFile ../../crates/crucible-qemu-plugin/src/io_wire_fuzz.rs;
@@ -50,7 +46,7 @@
     ++ failuresFor "crates/crucible-qemu-plugin/src/block_io.rs" blockIo [
       {
         label = "wire version";
-        needle = "const BLOCK_WIRE_VERSION: u8 = 1";
+        needle = "const BLOCK_WIRE_VERSION: u8 = 3";
       }
       {
         label = "request header length";
@@ -63,6 +59,10 @@
       {
         label = "operation wire values";
         needle = "fn wire_type(self) -> u8";
+      }
+      {
+        label = "closed discard operation";
+        needle = "Self::Discard => 4";
       }
       {
         label = "request decode";
@@ -183,6 +183,10 @@
       {
         label = "count exceeds regression";
         needle = "block-request-write-count-exceeds-payload";
+      }
+      {
+        label = "discard payload regression";
+        needle = "block-request-discard-trailing-payload";
       }
       {
         label = "response trailing regression";
@@ -321,7 +325,7 @@ in
             tasks=${taskList}
             component=crucible-block-wire-abi
             gate=gate:abi-conformance,gate:layer1-injection
-            block_wire_version=1
+            block_wire_version=3
             fixed_endianness=little
             reserved_bytes=zero-emit-reject-on-receive
             route=vm-slot-to-SLOT_BLK_IO-and-back

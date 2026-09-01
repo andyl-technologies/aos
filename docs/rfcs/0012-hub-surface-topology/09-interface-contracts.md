@@ -754,7 +754,7 @@ desired generations in the plan. Apply rejects pointer or grant changes, and a
 later endpoint/gateway revision does not silently retarget the default.
 
 Boundary create accepts exactly one typed identity variant. `public` has no
-identity options and is the deployment-provisioned, instance-owned,
+identity options and is the schema-defined, instance-owned,
 non-deletable `instance:public` singleton; create/remove reject that kind.
 Update also rejects it; probe/reconcile refresh only its fixed revision-1
 observation. Endpoint plans show and pin `instance:public@1` explicitly.
@@ -809,10 +809,10 @@ and digest and displays both in the plan. Updating a direct route to a different
 gateway generation derives the replacement policy the same way. Hub-route
 access flags are rejected whenever the final mode is direct.
 
-`storage-binding create` is organization-only. The deployment-provisioned
-binding is addressed as `instance:default`; supported endpoint/credential
-maintenance uses update/credential commands, while create/delete/replacement is
-rejected.
+`storage-binding create` accepts organization-owned external object stores and,
+for an instance operator, the runtime-supported instance binding. A Worker
+instance binding explicitly names the fixed `REGISTRY_BUCKET` runtime
+attachment. The singleton cannot be deleted or replaced after creation.
 
 Repeated `--serves` flags build a capability set. Access-provider-specific
 options use namespaced forms rather than a generic secret JSON argument. Secret
@@ -1459,9 +1459,9 @@ operation persists the exact controlling verb at creation; cancel and retry
 re-authorize that stored verb, so adding a secondary target cannot silently
 change who controls existing work.
 
-The deployment-provisioned public singleton is returned by list/get but create,
-identity update, transfer, and delete reject it. Its instance-default grant is
-eagerly projected to exact organization scope rows.
+The public singleton is returned by list/get but create, identity update,
+transfer, and delete reject it. Organization access requires the same exact
+reviewed grant used by other instance-owned resources.
 `ReviseNetworkPolicy` creates `staged` revision content and does not move the
 default pointer, activate, or invalidate any older revision. Probe/reconcile
 targets `<boundary>@<revision>`. Activate's required

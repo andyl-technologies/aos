@@ -1,0 +1,66 @@
+diff --git a/target/i386/tcg/system/excp_helper.c b/target/i386/tcg/system/excp_helper.c
+index f1b4fcbff..921a35905 100644
+--- a/target/i386/tcg/system/excp_helper.c
++++ b/target/i386/tcg/system/excp_helper.c
+@@ -66,6 +66,7 @@ typedef struct PTETranslate {
+     void *haddr;
+     hwaddr gaddr;
+     hwaddr entry_gpa;
++    uint32_t raw_low;
+ } PTETranslate;
+ 
+ static bool ptw_translate(PTETranslate *inout, hwaddr addr)
+@@ -92,7 +93,7 @@ static bool ptw_translate(PTETranslate *inout, hwaddr addr)
+     return true;
+ }
+ 
+-static uint32_t ptw_ldl(const PTETranslate *in, uint64_t ra, int level)
++static uint32_t ptw_ldl(PTETranslate *in, uint64_t ra, int level)
+ {
+     uint32_t value;
+ 
+@@ -101,6 +102,7 @@ static uint32_t ptw_ldl(const PTETranslate *in, uint64_t ra, int level)
+     } else {
+         value = cpu_ldl_mmuidx_ra(in->env, in->gaddr, in->ptw_idx, ra);
+     }
++    in->raw_low = (uint32_t)value;
+     if (in->faultable && likely(in->haddr) &&
+         qemu_crucible_fault_memory_page_table_walk_context_active(
+             env_cpu(in->env)) &&
+@@ -121,7 +123,7 @@ static uint32_t ptw_ldl(const PTETranslate *in, uint64_t ra, int level)
+     return value;
+ }
+ 
+-static uint64_t ptw_ldq(const PTETranslate *in, uint64_t ra, int level)
++static uint64_t ptw_ldq(PTETranslate *in, uint64_t ra, int level)
+ {
+     uint64_t value;
+ 
+@@ -130,6 +132,7 @@ static uint64_t ptw_ldq(const PTETranslate *in, uint64_t ra, int level)
+     } else {
+         value = cpu_ldq_mmuidx_ra(in->env, in->gaddr, in->ptw_idx, ra);
+     }
++    in->raw_low = (uint32_t)value;
+     if (in->faultable && likely(in->haddr) &&
+         qemu_crucible_fault_memory_page_table_walk_context_active(
+             env_cpu(in->env)) &&
+@@ -177,13 +180,15 @@ static bool ptw_setl_slow(const PTETranslate *in, uint32_t old, uint32_t new)
+ static inline bool ptw_setl(const PTETranslate *in, uint32_t old, uint32_t set)
+ {
+     if (set & ~old) {
+-        uint32_t new = old | set;
++        uint32_t raw = in->raw_low;
++        uint32_t new = raw | set;
++
+         if (likely(in->haddr)) {
+-            old = cpu_to_le32(old);
++            raw = cpu_to_le32(raw);
+             new = cpu_to_le32(new);
+-            return qatomic_cmpxchg((uint32_t *)in->haddr, old, new) == old;
++            return qatomic_cmpxchg((uint32_t *)in->haddr, raw, new) == raw;
+         }
+-        return ptw_setl_slow(in, old, new);
++        return ptw_setl_slow(in, raw, new);
+     }
+     return true;
+ }

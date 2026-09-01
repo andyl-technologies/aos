@@ -306,7 +306,7 @@ use sha2::Digest as _;
 use crate::backend::{Backend, CheckedStatement, Statement};
 use crate::dialect::Dialect;
 use crate::domain::Permission;
-use crate::value::Row;
+use crate::value::{Row, Value};
 
 // SqlxBackend is the native driver (sqlx does not build for wasm32); the
 // constructors that build one are native-only. The Worker constructs a
@@ -326,18 +326,161 @@ macro_rules! vals {
     };
 }
 
+// Durable Object SQLite crosses the Wasm/JavaScript boundary once per SQL
+// statement, even when all statements belong to one storage transaction. A
+// complete registry generation can contain thousands of catalog rows, so
+// issuing one INSERT per row exhausts a queue activation before the atomic
+// snapshot becomes visible. Cloudflare Durable Object SQLite accepts at most
+// 100 bound parameters per query; size chunks from their actual row width so
+// every statement honors that limit while collapsing the hot path.
+const SNAPSHOT_MAX_BOUND_PARAMETERS: usize = 100;
+
+fn extend_multirow_insert(
+    statements: &mut Vec<Statement>,
+    insert: &str,
+    rows: &[Vec<Value>],
+    suffix: &str,
+) -> Result<()> {
+    let Some(first) = rows.first() else {
+        return Ok(());
+    };
+    anyhow::ensure!(!first.is_empty(), "multi-row insert has no columns");
+    anyhow::ensure!(
+        rows.iter().all(|row| row.len() == first.len()),
+        "multi-row insert has inconsistent row widths"
+    );
+    anyhow::ensure!(
+        first.len() <= SNAPSHOT_MAX_BOUND_PARAMETERS,
+        "multi-row insert exceeds the SQL binding limit"
+    );
+    let rows_per_insert = SNAPSHOT_MAX_BOUND_PARAMETERS / first.len();
+
+    for chunk in rows.chunks(rows_per_insert) {
+        let mut parameter = 1;
+        let mut tuples = Vec::with_capacity(chunk.len());
+        let mut params = Vec::with_capacity(chunk.len() * first.len());
+        for row in chunk {
+            let placeholders = (0..row.len())
+                .map(|_| {
+                    let placeholder = format!("?{parameter}");
+                    parameter += 1;
+                    placeholder
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            tuples.push(format!("({placeholders})"));
+            params.extend(row.iter().cloned());
+        }
+        statements.push(Statement::new(
+            format!("{insert} VALUES {}{suffix}", tuples.join(", ")),
+            params,
+        ));
+    }
+    Ok(())
+}
+
+fn extend_release_artifact_inserts(
+    statements: &mut Vec<Statement>,
+    snapshot_id: &str,
+    rows: &[Vec<Value>],
+) -> Result<()> {
+    anyhow::ensure!(
+        rows.iter().all(|row| row.len() == 7),
+        "release artifact insert has an inconsistent row width"
+    );
+    let rows_per_insert = (SNAPSHOT_MAX_BOUND_PARAMETERS - 1) / 7;
+    for chunk in rows.chunks(rows_per_insert) {
+        let mut parameter = 2;
+        let mut tuples = Vec::with_capacity(chunk.len());
+        let mut params = vals![snapshot_id];
+        for row in chunk {
+            let placeholders = (0..row.len())
+                .map(|_| {
+                    let placeholder = format!("?{parameter}");
+                    parameter += 1;
+                    placeholder
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            tuples.push(format!("({placeholders})"));
+            params.extend(row.iter().cloned());
+        }
+        statements.push(Statement::new(
+            format!(
+                "WITH input(package_name, package_version, platform, artifact_kind,
+                            store_path, store_hash, metadata_digest) AS
+                   (VALUES {})
+                 INSERT INTO release_artifacts
+                   (snapshot_id, release_id, registry_id, package_name,
+                    package_version, platform, artifact_kind, store_path,
+                    store_hash, metadata_digest)
+                 SELECT ?1, ras.release_id, ras.registry_id, input.package_name,
+                        input.package_version, input.platform, input.artifact_kind,
+                        input.store_path, input.store_hash, input.metadata_digest
+                   FROM release_artifact_snapshots ras CROSS JOIN input
+                  WHERE ras.snapshot_id = ?1 AND ras.state = 'building'",
+                tuples.join(", ")
+            ),
+            params,
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod snapshot_insert_tests {
+    use super::{
+        extend_multirow_insert, extend_release_artifact_inserts, Statement, Value,
+        SNAPSHOT_MAX_BOUND_PARAMETERS,
+    };
+
+    #[test]
+    fn multirow_inserts_respect_durable_object_parameter_limit() {
+        let rows = vec![vec![Value::Int(1); 9]; 123];
+        let mut statements = Vec::<Statement>::new();
+
+        extend_multirow_insert(&mut statements, "INSERT INTO example", &rows, "").unwrap();
+
+        assert_eq!(statements.len(), 12);
+        assert!(statements
+            .iter()
+            .all(|statement| statement.params.len() <= SNAPSHOT_MAX_BOUND_PARAMETERS));
+    }
+
+    #[test]
+    fn release_artifact_inserts_include_shared_snapshot_parameter_in_limit() {
+        let rows = vec![vec![Value::Int(1); 7]; 100];
+        let mut statements = Vec::<Statement>::new();
+
+        extend_release_artifact_inserts(&mut statements, "snapshot", &rows).unwrap();
+
+        assert_eq!(statements.len(), 8);
+        assert!(statements
+            .iter()
+            .all(|statement| statement.params.len() <= SNAPSHOT_MAX_BOUND_PARAMETERS));
+    }
+}
+
+mod cache_write_admission;
+pub use cache_write_admission::*;
 mod delivery_identity;
 pub use delivery_identity::*;
 mod egress_nonce;
 mod gc_topology;
 pub use gc_topology::*;
 mod placement_policy;
+mod publication_admission;
 mod registry_delete;
+mod registry_index_build;
 mod signing_keys;
 mod topology;
+mod worker_jobs;
 pub use placement_policy::*;
+pub use publication_admission::*;
+pub use registry_index_build::*;
 pub use signing_keys::*;
 pub use topology::*;
+pub use worker_jobs::*;
 
 /// Grace period, in seconds, during which a rotated token's old secret
 /// keeps validating after its `revoked_at` stamp (RFC-0004 fixes the
@@ -385,6 +528,13 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("org_usage_backfill.sql"),
     include_str!("cache_multipart_creation.sql"),
     include_str!("publication_object_evidence.sql"),
+    include_str!("worker_jobs.sql"),
+    include_str!("registry_index_build.sql"),
+    include_str!("publication_manifest_session.sql"),
+    include_str!("gateway_revision_event_history.sql"),
+    include_str!("placement_policy_build_event_history.sql"),
+    include_str!("placement_policy_publication_history.sql"),
+    include_str!("explicit_topology.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -392,6 +542,18 @@ pub const MIGRATIONS: &[&str] = &[
 /// with a pre-cutover deployment whose independent migration history happened
 /// to have the same length.
 pub const SCHEMA_IDENTITY: &str = "aos-hub/topology-hard-cutover/2";
+
+/// Immediately preceding identity accepted only while applying a pending
+/// repository-owned migration to [`SCHEMA_IDENTITY`].
+pub const PREVIOUS_SCHEMA_IDENTITY: &str = "aos-hub/topology-hard-cutover/1";
+
+/// SQLite compatibility transformer from the immediately preceding topology
+/// identity to the current relational vocabulary.
+///
+/// This script is intentionally outside [`MIGRATIONS`]: fresh v2 databases
+/// already use the final names, while a v1 database must run the transformer
+/// before any pending v2 migration can reference those names.
+pub const TOPOLOGY_V1_TO_V2_SQLITE: &str = include_str!("topology_v1_to_v2.sql");
 
 /// Returns every migration's individual SQL statements, in order.
 ///
@@ -571,7 +733,7 @@ pub struct BindingReadDetail {
     pub name: String,
     /// Provider kind without its connection coordinates.
     pub kind: String,
-    /// Whether this is the deployment-provisioned singleton.
+    /// Whether this is the instance-owned singleton.
     pub is_instance_default: bool,
     /// Stable API identity.
     pub stable_id: String,
@@ -596,7 +758,7 @@ pub struct BindingReadSummary {
     pub name: String,
     /// Provider kind without its connection coordinates.
     pub kind: String,
-    /// Whether this is the deployment-provisioned singleton.
+    /// Whether this is the instance-owned singleton.
     pub is_instance_default: bool,
     /// Stable API identity.
     pub stable_id: String,
@@ -1983,6 +2145,8 @@ pub struct SurfacePlacementBlockers {
     pub object_presence: bool,
     /// Registry-publication progress exists for the placement.
     pub publication: bool,
+    /// Active registry-publication progress exists for the placement.
+    pub active_publication: bool,
     /// Object-deletion jobs refer to the placement.
     pub deletion_job: bool,
     /// A topology operation refers to the placement.
@@ -2004,6 +2168,7 @@ impl SurfacePlacementBlockers {
             || self.policy_member
             || self.object_presence
             || self.publication
+            || self.active_publication
             || self.deletion_job
             || self.topology_operation
     }
@@ -3321,11 +3486,45 @@ impl Database {
             .transpose()?
             .unwrap_or(0);
         let target = MIGRATIONS.len() as i64;
-        if current != 0 {
-            self.require_schema_identity().await?;
-        }
+        let legacy_identity = if current == 0 {
+            false
+        } else {
+            self.require_schema_identity_for_upgrade(true).await?
+        };
         if current > target {
             bail!("hub database schema {current} is newer than this build supports ({target})");
+        }
+        if legacy_identity {
+            anyhow::ensure!(
+                self.backend.dialect() == Dialect::Sqlite,
+                "topology schema identity v1 requires the offline transformer on non-SQLite databases"
+            );
+            let statements = crate::backend::split_statements(TOPOLOGY_V1_TO_V2_SQLITE)
+                .into_iter()
+                .map(|sql| Statement::new(sql, Vec::new()))
+                .collect::<Vec<_>>();
+            self.backend
+                .batch(&statements)
+                .await
+                .context("transforming topology schema identity v1 to v2 vocabulary")?;
+        }
+        if current == target && legacy_identity {
+            let migration = MIGRATIONS
+                .last()
+                .context("current schema has no identity-adoption migration")?;
+            for sql in crate::backend::split_statements(migration) {
+                let sql = if mysql {
+                    mysql_replay_safe_migration_sql(&sql)
+                } else {
+                    sql
+                };
+                self.backend
+                    .execute(&sql, &[])
+                    .await
+                    .context("applying schema identity-adoption migration")?;
+            }
+            self.require_schema_identity().await?;
+            return Ok(());
         }
         // Apply every pending migration *and* advance the version marker in one
         // portable transaction. Keeping the marker in the same batch matters
@@ -3434,6 +3633,14 @@ impl Database {
     /// Refuses a database that was not produced by the topology hard-cutover
     /// schema or its offline transformer.
     async fn require_schema_identity(&self) -> Result<()> {
+        self.require_schema_identity_for_upgrade(false)
+            .await
+            .map(|_| ())
+    }
+
+    /// Accepts the immediately preceding schema identity only when a pending
+    /// migration will atomically replace it with the current identity.
+    async fn require_schema_identity_for_upgrade(&self, allow_legacy: bool) -> Result<bool> {
         let row = self
             .backend
             .query_opt("SELECT identity FROM hub_schema_identity", &[])
@@ -3444,10 +3651,10 @@ impl Database {
         let identity: String = row
             .context("topology schema identity row is missing")?
             .get(0)?;
-        if identity != SCHEMA_IDENTITY {
+        if identity != SCHEMA_IDENTITY && !(allow_legacy && identity == PREVIOUS_SCHEMA_IDENTITY) {
             bail!("unsupported Hub schema identity '{identity}'; expected '{SCHEMA_IDENTITY}'");
         }
-        Ok(())
+        Ok(identity == PREVIOUS_SCHEMA_IDENTITY)
     }
 
     // -- system of record ---------------------------------------------------
@@ -3828,33 +4035,32 @@ impl Database {
             vals![registry_id, snapshot.commit].to_vec(),
         ));
 
+        let mut package_rows = Vec::new();
+        let mut version_rows = Vec::new();
+        let mut platform_rows = Vec::new();
+        let mut catalog_rows = Vec::new();
         for package in &snapshot.packages {
             next_package += 1;
             let package_id = next_package;
-            stmts.push(Statement::new(
-                "INSERT INTO packages
-                 (id, registry_id, name, description, homepage, license, maintainer, sysroot)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                vals![
-                    package_id,
-                    registry_id,
-                    package.package.name,
-                    package.package.description,
-                    package.package.homepage,
-                    package.package.license,
-                    package.package.maintainer,
-                    package.package.sysroot,
-                ]
-                .to_vec(),
-            ));
+            package_rows.push(vals![
+                package_id,
+                registry_id,
+                package.package.name,
+                package.package.description,
+                package.package.homepage,
+                package.package.license,
+                package.package.maintainer,
+                package.package.sysroot,
+            ]);
             for version in &package.versions {
                 next_version += 1;
                 let version_id = next_version;
-                stmts.push(Statement::new(
-                    "INSERT INTO package_versions (id, package_id, version, previous)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    vals![version_id, package_id, version.version, version.previous].to_vec(),
-                ));
+                version_rows.push(vals![
+                    version_id,
+                    package_id,
+                    version.version,
+                    version.previous
+                ]);
                 for (platform, entry) in &version.platforms {
                     let images = entry
                         .images
@@ -3869,24 +4075,17 @@ impl Database {
                             })
                         })
                         .collect::<Vec<_>>();
-                    stmts.push(Statement::new(
-                        "INSERT INTO version_platforms
-                         (version_id, platform, store_path, nar_hash, nar_size,
-                          closure_size, refs, images, source_drv)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                        vals![
-                            version_id,
-                            platform,
-                            entry.store_path,
-                            entry.nar_hash,
-                            entry.nar_size,
-                            entry.closure_size,
-                            serde_json::to_string(&entry.references)?,
-                            serde_json::Value::Array(images).to_string(),
-                            entry.source_drv,
-                        ]
-                        .to_vec(),
-                    ));
+                    platform_rows.push(vals![
+                        version_id,
+                        platform,
+                        entry.store_path,
+                        entry.nar_hash,
+                        entry.nar_size,
+                        entry.closure_size,
+                        serde_json::to_string(&entry.references)?,
+                        serde_json::Value::Array(images).to_string(),
+                        entry.source_drv,
+                    ]);
                     let mut catalog_artifacts = vec![("output", entry.store_path.as_str())];
                     if !entry.source_drv.is_empty() {
                         catalog_artifacts.push(("source_derivation", entry.source_drv.as_str()));
@@ -3913,29 +4112,50 @@ impl Database {
                                 "store_hash": store_hash,
                             }))?,
                         ));
-                        stmts.push(Statement::new(
-                            "INSERT INTO registry_catalog_artifacts
-                             (registry_id, source_revision, package_name,
-                              package_version, platform, artifact_kind,
-                              store_path, store_hash, metadata_digest)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                            vals![
-                                registry_id,
-                                snapshot.commit,
-                                package.package.name,
-                                version.version,
-                                platform,
-                                artifact_kind,
-                                store_path,
-                                store_hash,
-                                metadata_digest
-                            ]
-                            .to_vec(),
-                        ));
+                        catalog_rows.push(vals![
+                            registry_id,
+                            snapshot.commit,
+                            package.package.name,
+                            version.version,
+                            platform,
+                            artifact_kind,
+                            store_path,
+                            store_hash,
+                            metadata_digest
+                        ]);
                     }
                 }
             }
         }
+        extend_multirow_insert(
+            &mut stmts,
+            "INSERT INTO packages
+             (id, registry_id, name, description, homepage, license, maintainer, sysroot)",
+            &package_rows,
+            "",
+        )?;
+        extend_multirow_insert(
+            &mut stmts,
+            "INSERT INTO package_versions (id, package_id, version, previous)",
+            &version_rows,
+            "",
+        )?;
+        extend_multirow_insert(
+            &mut stmts,
+            "INSERT INTO version_platforms
+             (version_id, platform, store_path, nar_hash, nar_size,
+              closure_size, refs, images, source_drv)",
+            &platform_rows,
+            "",
+        )?;
+        extend_multirow_insert(
+            &mut stmts,
+            "INSERT INTO registry_catalog_artifacts
+             (registry_id, source_revision, package_name, package_version,
+              platform, artifact_kind, store_path, store_hash, metadata_digest)",
+            &catalog_rows,
+            "",
+        )?;
 
         for release in &snapshot.releases {
             if let Some(existing) = self
@@ -4241,31 +4461,21 @@ impl Database {
                 ]
                 .to_vec(),
             ));
+            let mut artifact_rows = Vec::with_capacity(release_snapshot.artifacts.len());
             for artifact in &release_snapshot.artifacts {
                 let metadata_digest =
                     hex::encode(sha2::Sha256::digest(serde_json::to_vec(artifact)?));
-                stmts.push(Statement::new(
-                    "INSERT INTO release_artifacts
-                     (snapshot_id, release_id, registry_id, package_name,
-                      package_version, platform, artifact_kind, store_path,
-                      store_hash, metadata_digest)
-                     SELECT ?1, ras.release_id, ras.registry_id,
-                            ?2, ?3, ?4, ?5, ?6, ?7, ?8
-                     FROM release_artifact_snapshots ras
-                     WHERE ras.snapshot_id = ?1 AND ras.state = 'building'",
-                    vals![
-                        snapshot_id,
-                        artifact.package_name,
-                        artifact.package_version,
-                        artifact.platform,
-                        artifact.artifact_kind,
-                        artifact.store_path,
-                        artifact.store_hash,
-                        metadata_digest,
-                    ]
-                    .to_vec(),
-                ));
+                artifact_rows.push(vals![
+                    artifact.package_name,
+                    artifact.package_version,
+                    artifact.platform,
+                    artifact.artifact_kind,
+                    artifact.store_path,
+                    artifact.store_hash,
+                    metadata_digest,
+                ]);
             }
+            extend_release_artifact_inserts(&mut stmts, &snapshot_id, &artifact_rows)?;
             stmts.push(Statement::new(
                 "UPDATE release_artifact_snapshots
                  SET actual_artifact_count = (SELECT COUNT(*)
@@ -6394,11 +6604,47 @@ impl Database {
         publication_id: &str,
         surface_object_id: i64,
     ) -> Result<Option<RegistryPublicationUploadObjectRecord>> {
-        Ok(self
-            .registry_publication_upload_objects(publication_id)
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        self.backend
+            .query_opt(
+                "SELECT po.publication_id, po.registry_id, po.surface_object_id,
+                        object.object_key, po.object_kind, po.expected_hash,
+                        po.expected_size,
+                        CASE WHEN EXISTS (
+                          SELECT 1 FROM registry_publication_placements required
+                          WHERE required.publication_id = po.publication_id
+                            AND required.required = 1)
+                        AND NOT EXISTS (
+                          SELECT 1 FROM registry_publication_placements required
+                          WHERE required.publication_id = po.publication_id
+                            AND required.required = 1
+                            AND NOT EXISTS (
+                              SELECT 1 FROM object_placements presence
+                              WHERE presence.surface_object_id = po.surface_object_id
+                                AND presence.placement_id = required.placement_id
+                                AND presence.state = 'present'
+                                AND presence.observed_hash = po.expected_hash
+                                AND presence.observed_size = po.expected_size))
+                        THEN 1 ELSE 0 END
+                 FROM registry_publication_objects po
+                 JOIN surface_objects object ON object.id = po.surface_object_id
+                 WHERE po.publication_id = ?1 AND po.surface_object_id = ?2",
+                &vals![publication_id, surface_object_id],
+            )
             .await?
-            .into_iter()
-            .find(|object| object.surface_object_id == surface_object_id))
+            .map(|row| {
+                Ok(RegistryPublicationUploadObjectRecord {
+                    publication_id: row.get(0)?,
+                    registry_id: row.get(1)?,
+                    surface_object_id: row.get(2)?,
+                    object_key: row.get(3)?,
+                    object_kind: row.get(4)?,
+                    expected_hash: row.get(5)?,
+                    expected_size: row.get(6)?,
+                    verified: row.get(7)?,
+                })
+            })
+            .transpose()
     }
 
     /// Returns one durable registry-publication multipart upload.
@@ -7309,6 +7555,10 @@ impl Database {
 
     /// Reports whether every required placement has exact evidence for a class.
     ///
+    /// An empty object class is complete. This lets a minimal loose-object Git
+    /// publication advance directly to its pointer phase while retaining the
+    /// same all-placements requirement for every class member that exists.
+    ///
     /// # Errors
     ///
     /// Returns an error for invalid class vocabulary or database failure.
@@ -7325,9 +7575,6 @@ impl Database {
             .query_opt(
                 "SELECT 1 FROM registry_publications pub
                  WHERE pub.publication_id = ?1
-                   AND EXISTS (SELECT 1 FROM registry_publication_objects po
-                     WHERE po.publication_id = pub.publication_id
-                       AND po.object_kind = ?2)
                    AND EXISTS (SELECT 1 FROM registry_publication_placements pp
                      WHERE pp.publication_id = pub.publication_id
                        AND pp.required = 1)
@@ -8972,6 +9219,34 @@ impl Database {
         rows.first().map(row_to_surface_write_authority).transpose()
     }
 
+    /// Lists pending write-authority generations for controller reconciliation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or when `limit` cannot be represented
+    /// by the database parameter type.
+    pub async fn pending_surface_write_authorities(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<SurfaceWriteAuthorityRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        self.backend
+            .query(
+                &format!(
+                    "SELECT {WRITE_AUTHORITY_COLUMNS} FROM surface_write_authorities
+                     WHERE reconciliation_state = 'pending'
+                     ORDER BY updated_at, id LIMIT ?1"
+                ),
+                &vals![i64::try_from(limit)?],
+            )
+            .await?
+            .iter()
+            .map(row_to_surface_write_authority)
+            .collect()
+    }
+
     /// Requests promotion or credential rotation with an authority CAS.
     ///
     /// The candidate may equal the current placement when only the immutable
@@ -9629,11 +9904,14 @@ impl Database {
         rows.iter().map(row_to_surface_placement).collect()
     }
 
-    /// Lists complete placements eligible to receive one registry publication.
+    /// Lists placements eligible to receive one registry publication or repair.
     ///
     /// Publication eligibility is placement-local: every returned placement has
-    /// a current, validated write capability for its own binding. It is not
-    /// inferred from the surface's single mutable write authority.
+    /// a current, validated write capability for its own binding. A degraded
+    /// placement remains eligible so an exact publication can restore missing
+    /// or corrupt objects; its incomplete observation still keeps reads and
+    /// mutable write authority disabled until a successful scan. Eligibility is
+    /// not inferred from the surface's single mutable write authority.
     ///
     /// # Errors
     ///
@@ -9648,8 +9926,9 @@ impl Database {
                 &format!(
                     "SELECT {PLACEMENT_COLUMNS} FROM surface_placement_effective p
                      WHERE p.registry_id = ?1 AND p.kind = 'complete'
-                       AND p.desired_state = 'active' AND p.state = 'ready'
-                       AND p.completeness = 'complete'
+                       AND p.desired_state = 'active'
+                       AND ((p.state = 'ready' AND p.completeness = 'complete')
+                         OR (p.state = 'degraded' AND p.completeness = 'partial'))
                        AND EXISTS (
                          SELECT 1 FROM surface_placement_write_capabilities capability
                          JOIN binding_write_revisions revision
@@ -9754,6 +10033,9 @@ impl Database {
                      SELECT 1 FROM placement_policy_shard_members WHERE placement_id = ?1),
                    EXISTS (SELECT 1 FROM object_placements WHERE placement_id = ?1),
                    EXISTS (SELECT 1 FROM registry_publication_placements WHERE placement_id = ?1),
+                   EXISTS (SELECT 1 FROM registry_publication_placements
+                     WHERE placement_id = ?1
+                       AND state IN ('preparing', 'writing_pointers')),
                    EXISTS (SELECT 1 FROM object_deletion_jobs WHERE placement_id = ?1),
                    EXISTS (SELECT 1 FROM topology_operations o
                      WHERE o.state IN ('pending', 'running') AND (
@@ -9772,8 +10054,9 @@ impl Database {
             policy_member: row.get(2)?,
             object_presence: row.get(3)?,
             publication: row.get(4)?,
-            deletion_job: row.get(5)?,
-            topology_operation: row.get(6)?,
+            active_publication: row.get(5)?,
+            deletion_job: row.get(6)?,
+            topology_operation: row.get(7)?,
         })
     }
 
@@ -10053,6 +10336,133 @@ impl Database {
             )
             .await?
             == 1)
+    }
+
+    /// Deletes a registry placement and its terminal placement-scoped history.
+    ///
+    /// Registry placements have no physical-eviction workflow. Once routing,
+    /// authority, and active work no longer select a drained placement, its
+    /// observational inventory and terminal publication rows are historical
+    /// metadata rather than deletion blockers. This transaction detaches only
+    /// that placement's rows before applying the same guarded metadata delete.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or when active work still refers
+    /// to the placement.
+    pub async fn delete_registry_surface_placement(
+        &self,
+        id: i64,
+        expected_version: i64,
+    ) -> Result<bool> {
+        let placement_target_id = self.surface_placement_operation_target_id(id).await?;
+        let guard = "id = ?1 AND resource_version = ?2 AND registry_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM surface_write_authorities a
+            WHERE a.desired_placement_id = ?1 OR a.observed_placement_id = ?1)
+          AND NOT EXISTS (SELECT 1 FROM registry_publication_placements progress
+            WHERE progress.placement_id = ?1
+              AND progress.state IN ('preparing', 'writing_pointers'))
+          AND NOT EXISTS (SELECT 1 FROM object_deletion_jobs job
+            WHERE job.placement_id = ?1)
+          AND NOT EXISTS (SELECT 1
+            FROM registry_publication_multipart_uploads upload
+            JOIN registry_publication_multipart_backends backend
+              ON backend.upload_id = upload.upload_id
+            WHERE backend.placement_id = ?1 AND upload.active_object_slot = 1)
+          AND NOT EXISTS (SELECT 1 FROM topology_operations o
+            WHERE o.state IN ('pending', 'running') AND (
+              (o.primary_target_kind = 'placement'
+                AND o.primary_target_stable_id = ?3)
+              OR EXISTS (SELECT 1 FROM operation_secondary_targets t
+                WHERE t.operation_id = o.operation_id
+                  AND t.target_kind = 'placement' AND t.stable_id = ?3)))";
+        let values = vals![id, expected_version, placement_target_id].to_vec();
+
+        if self
+            .backend
+            .query_opt(
+                &format!("SELECT 1 FROM surface_placements WHERE {guard}"),
+                &values,
+            )
+            .await?
+            .is_none()
+        {
+            return Ok(false);
+        }
+
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    format!(
+                        "DELETE FROM registry_publication_multipart_parts
+                         WHERE placement_id = ?1 AND EXISTS (
+                           SELECT 1 FROM surface_placements WHERE {guard})"
+                    ),
+                    values.clone(),
+                )
+                .unchecked(),
+                Statement::new(
+                    format!(
+                        "DELETE FROM registry_publication_multipart_backends
+                         WHERE placement_id = ?1 AND EXISTS (
+                           SELECT 1 FROM surface_placements WHERE {guard})"
+                    ),
+                    values.clone(),
+                )
+                .unchecked(),
+                Statement::new(
+                    format!(
+                        "DELETE FROM direct_route_evidence
+                         WHERE placement_id = ?1 AND EXISTS (
+                           SELECT 1 FROM surface_placements WHERE {guard})"
+                    ),
+                    values.clone(),
+                )
+                .unchecked(),
+                Statement::new(
+                    format!(
+                        "DELETE FROM placement_delivery_manifest_heads
+                         WHERE placement_id = ?1 AND EXISTS (
+                           SELECT 1 FROM surface_placements WHERE {guard})"
+                    ),
+                    values.clone(),
+                )
+                .unchecked(),
+                Statement::new(
+                    format!(
+                        "DELETE FROM placement_delivery_manifests
+                         WHERE placement_id = ?1 AND EXISTS (
+                           SELECT 1 FROM surface_placements WHERE {guard})"
+                    ),
+                    values.clone(),
+                )
+                .unchecked(),
+                Statement::new(
+                    format!(
+                        "DELETE FROM registry_publication_placements
+                         WHERE placement_id = ?1 AND EXISTS (
+                           SELECT 1 FROM surface_placements WHERE {guard})"
+                    ),
+                    values.clone(),
+                )
+                .unchecked(),
+                Statement::new(
+                    format!(
+                        "DELETE FROM object_placements
+                         WHERE placement_id = ?1 AND EXISTS (
+                           SELECT 1 FROM surface_placements WHERE {guard})"
+                    ),
+                    values.clone(),
+                )
+                .unchecked(),
+                Statement::new(
+                    format!("DELETE FROM surface_placements WHERE {guard}"),
+                    values,
+                )
+                .expecting(1),
+            ])
+            .await?;
+        Ok(true)
     }
 
     async fn surface_placement_operation_target_id(&self, id: i64) -> Result<String> {
@@ -11524,7 +11934,7 @@ impl Database {
             .collect()
     }
 
-    /// Lists placement scans eligible for a controller claim.
+    /// Lists physical placement operations eligible for a controller claim.
     ///
     /// # Errors
     ///
@@ -11541,7 +11951,8 @@ impl Database {
             .query(
                 &format!(
                     "SELECT {OPERATION_COLUMNS} FROM topology_operations operation
-                     WHERE operation.operation_kind = 'scan_placement'
+                     WHERE operation.operation_kind IN
+                       ('scan_placement', 'replicate_placement', 'repair_placement')
                        AND (operation.state = 'pending'
                          OR (operation.state = 'running' AND (
                            NOT EXISTS (SELECT 1 FROM placement_scan_claims claim
@@ -12156,7 +12567,7 @@ impl Database {
         self.topology_operation(operation_id).await
     }
 
-    /// Claims one pending or stale-running physical placement scan under CAS.
+    /// Claims one pending or stale-running physical placement operation under CAS.
     ///
     /// # Errors
     ///
@@ -12188,7 +12599,8 @@ impl Database {
                          started_at = CASE WHEN state = 'pending' THEN ?3 ELSE started_at END,
                          finished_at = NULL, error = NULL,
                          resource_version = resource_version + 1
-                     WHERE operation_id = ?1 AND operation_kind = 'scan_placement'
+                     WHERE operation_id = ?1 AND operation_kind IN
+                       ('scan_placement', 'replicate_placement', 'repair_placement')
                        AND resource_version = ?2
                        AND (state = 'pending' OR (state = 'running' AND (
                          NOT EXISTS (SELECT 1 FROM placement_scan_claims claim
@@ -12303,7 +12715,7 @@ impl Database {
             .await
     }
 
-    /// Terminalizes one live physical-placement scan under its exact claim.
+    /// Terminalizes one live physical-placement operation under its exact claim.
     ///
     /// Returns `false` without mutation when the claim expired or was replaced.
     ///
@@ -12345,7 +12757,9 @@ impl Database {
                      detail_json = ?7, error = ?8, finished_at = ?9,
                      resource_version = resource_version + 1
                  WHERE operation_id = ?1 AND resource_version = ?2
-                   AND operation_kind = 'scan_placement' AND state = 'running'
+                   AND operation_kind IN
+                     ('scan_placement', 'replicate_placement', 'repair_placement')
+                   AND state = 'running'
                    AND EXISTS (SELECT 1 FROM placement_scan_claims claim
                      WHERE claim.operation_id = topology_operations.operation_id
                        AND claim.operation_resource_version = ?2
@@ -12802,6 +13216,30 @@ impl Database {
             .transpose()
     }
 
+    /// Counts the packages currently projected for a registry.
+    ///
+    /// Registry overview pages display only this count. Keeping the count in
+    /// SQL avoids materializing every package, newest version, and platform
+    /// row merely to call `len()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn package_count(&self, registry_id: i64) -> Result<usize> {
+        let row = self
+            .backend
+            .query(
+                "SELECT COUNT(*) FROM packages WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .await?
+            .into_iter()
+            .next()
+            .context("package count query returned no row")?;
+        let count = row.get::<i64>(0)?;
+        usize::try_from(count).context("package count is outside usize")
+    }
+
     /// List every package in a registry with its newest indexed version.
     ///
     /// Used by the registry home, the indexer's package count, and the
@@ -12836,6 +13274,159 @@ impl Database {
         limit: usize,
     ) -> Result<(Vec<PackageRow>, bool)> {
         self.query_package_rows(registry_id, Some(limit)).await
+    }
+
+    /// Lists the package set authenticated by one verified release tag or commit.
+    ///
+    /// Package membership, version, and platforms come from the immutable
+    /// release-artifact snapshot. Descriptive metadata is joined from the
+    /// current package catalog because release snapshots deliberately retain
+    /// artifact identities rather than duplicate package prose.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_packages_at_release(
+        &self,
+        registry_id: i64,
+        release_or_commit: &str,
+    ) -> Result<Vec<PackageRow>> {
+        let rows = self
+            .backend
+            .query(
+                "WITH selected_versions AS (
+                   SELECT DISTINCT artifact.package_name, artifact.package_version
+                   FROM releases release
+                   JOIN release_artifact_snapshot_heads head
+                     ON head.release_id = release.id AND head.registry_id = release.registry_id
+                   JOIN release_artifact_snapshots snapshot
+                     ON snapshot.snapshot_id = head.complete_artifact_snapshot_id
+                    AND snapshot.state = 'complete'
+                    AND snapshot.source_commit = release.commit_oid
+                    AND snapshot.verified_tag_oid = release.tag_oid
+                   JOIN release_artifacts artifact ON artifact.snapshot_id = snapshot.snapshot_id
+                   WHERE release.registry_id = ?1
+                     AND (release.semver = ?2 OR release.commit_oid = ?2)
+                     AND artifact.artifact_kind = 'output'
+                 ), ranked_versions AS (
+                   SELECT selected.package_name, selected.package_version,
+                          ROW_NUMBER() OVER (
+                            PARTITION BY selected.package_name
+                            ORDER BY version.id DESC, selected.package_version DESC
+                          ) AS rank
+                   FROM selected_versions selected
+                   LEFT JOIN packages package
+                     ON package.registry_id = ?1 AND package.name = selected.package_name
+                   LEFT JOIN package_versions version
+                     ON version.package_id = package.id
+                    AND version.version = selected.package_version
+                 )
+                 SELECT artifact.package_name,
+                        COALESCE(package.description, ''),
+                        COALESCE(package.license, ''),
+                        artifact.package_version,
+                        artifact.platform,
+                        platform.closure_size
+                 FROM releases release
+                 JOIN release_artifact_snapshot_heads head
+                   ON head.release_id = release.id AND head.registry_id = release.registry_id
+                 JOIN release_artifact_snapshots snapshot
+                   ON snapshot.snapshot_id = head.complete_artifact_snapshot_id
+                  AND snapshot.state = 'complete'
+                  AND snapshot.source_commit = release.commit_oid
+                  AND snapshot.verified_tag_oid = release.tag_oid
+                 JOIN release_artifacts artifact ON artifact.snapshot_id = snapshot.snapshot_id
+                 JOIN ranked_versions selected
+                   ON selected.package_name = artifact.package_name
+                  AND selected.package_version = artifact.package_version
+                  AND selected.rank = 1
+                 LEFT JOIN packages package
+                   ON package.registry_id = ?1 AND package.name = artifact.package_name
+                 LEFT JOIN package_versions version
+                   ON version.package_id = package.id
+                  AND version.version = artifact.package_version
+                 LEFT JOIN version_platforms platform
+                   ON platform.version_id = version.id
+                  AND platform.platform = artifact.platform
+                 WHERE release.registry_id = ?1
+                   AND (release.semver = ?2 OR release.commit_oid = ?2)
+                   AND artifact.artifact_kind = 'output'
+                 ORDER BY artifact.package_name, artifact.platform",
+                &vals![registry_id, release_or_commit],
+            )
+            .await?;
+
+        let mut packages = Vec::<PackageRow>::new();
+        for row in &rows {
+            let name: String = row.get(0)?;
+            if packages.last().map(|package| package.name.as_str()) != Some(name.as_str()) {
+                packages.push(PackageRow {
+                    name,
+                    description: row.get(1)?,
+                    license: row.get(2)?,
+                    latest_version: row.get(3)?,
+                    closure_size: None,
+                    platforms: Vec::new(),
+                });
+            }
+            if let Some(package) = packages.last_mut() {
+                let platform: String = row.get(4)?;
+                if !package.platforms.contains(&platform) {
+                    package.platforms.push(platform);
+                }
+                if package.closure_size.is_none() {
+                    package.closure_size = row.get(5)?;
+                }
+            }
+        }
+        Ok(packages)
+    }
+
+    /// Counts distinct packages in every complete verified release snapshot.
+    ///
+    /// Releases without a complete artifact snapshot are retained with a zero
+    /// count so browse pages can distinguish "no packages" from an omitted
+    /// release row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or if a count is outside `usize`.
+    pub async fn list_release_package_counts(
+        &self,
+        registry_id: i64,
+    ) -> Result<Vec<(String, usize)>> {
+        let rows = self
+            .backend
+            .query(
+                "SELECT release.semver, COUNT(DISTINCT artifact.package_name)
+                   FROM releases release
+                   LEFT JOIN release_artifact_snapshot_heads head
+                     ON head.release_id = release.id AND head.registry_id = release.registry_id
+                   LEFT JOIN release_artifact_snapshots snapshot
+                     ON snapshot.snapshot_id = head.complete_artifact_snapshot_id
+                    AND snapshot.state = 'complete'
+                    AND snapshot.source_commit = release.commit_oid
+                    AND snapshot.verified_tag_oid = release.tag_oid
+                   LEFT JOIN release_artifacts artifact
+                     ON artifact.snapshot_id = snapshot.snapshot_id
+                    AND artifact.artifact_kind = 'output'
+                  WHERE release.registry_id = ?1
+                  GROUP BY release.id, release.semver
+                  ORDER BY release.semver",
+                &vals![registry_id],
+            )
+            .await?;
+
+        rows.iter()
+            .map(|row| {
+                let release = row.get::<String>(0)?;
+                let count = row.get::<i64>(1)?;
+                Ok((
+                    release,
+                    usize::try_from(count).context("release package count is outside usize")?,
+                ))
+            })
+            .collect()
     }
 
     /// Single-query package listing shared by [`Database::list_packages`] and
@@ -13101,6 +13692,104 @@ impl Database {
             });
         }
         Ok(images)
+    }
+
+    /// Lists the complete signed image catalogs retained by the current index.
+    ///
+    /// Unlike [`Self::list_system_images`], this method does not apply live
+    /// placement-readiness filtering. Index rebuilds use the immutable catalog
+    /// identity and re-attest its objects against the newly selected
+    /// publication before reusing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, inconsistent catalog identity, or
+    /// malformed signed image metadata.
+    pub async fn list_release_image_snapshots(
+        &self,
+        registry_id: i64,
+    ) -> Result<Vec<ReleaseImageSnapshot>> {
+        let rows = self
+            .backend
+            .query(
+                "SELECT image.release, image.source_commit,
+                        image.verified_tag_oid, image.catalog_digest,
+                        image.package_name, image.platform, image.format,
+                        image.delivery
+                   FROM registry_system_images image
+                   JOIN releases rel
+                     ON rel.registry_id = image.registry_id
+                    AND rel.semver = image.release
+                    AND rel.commit_oid = image.source_commit
+                    AND rel.tag_oid = image.verified_tag_oid
+                  WHERE image.registry_id = ?1
+                  ORDER BY image.release, image.package_name,
+                           image.platform, image.format",
+                &vals![registry_id],
+            )
+            .await?;
+
+        let mut catalogs = Vec::<ReleaseImageSnapshot>::new();
+        for row in &rows {
+            let release_tag: String = row.get(0)?;
+            let source_commit: String = row.get(1)?;
+            let verified_tag_oid: String = row.get(2)?;
+            let catalog_digest: String = row.get(3)?;
+            if catalog_digest.len() != 64
+                || !catalog_digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                bail!("indexed signed image catalog has invalid digest identity");
+            }
+
+            let starts_catalog = catalogs.last().is_none_or(|catalog| {
+                catalog.release_tag != release_tag
+                    || catalog.source_commit != source_commit
+                    || catalog.verified_tag_oid != verified_tag_oid
+                    || catalog.catalog_digest != catalog_digest
+            });
+            if starts_catalog {
+                if catalogs
+                    .last()
+                    .is_some_and(|catalog| catalog.release_tag == release_tag)
+                {
+                    bail!("indexed release has conflicting signed image catalog identities");
+                }
+                catalogs.push(ReleaseImageSnapshot {
+                    release_tag: release_tag.clone(),
+                    source_commit: source_commit.clone(),
+                    verified_tag_oid: verified_tag_oid.clone(),
+                    catalog_digest: catalog_digest.clone(),
+                    images: Vec::new(),
+                });
+            }
+
+            let package: String = row.get(4)?;
+            let platform: String = row.get(5)?;
+            let format: String = row.get(6)?;
+            let encoded: String = row.get(7)?;
+            let stored = decode_stored_system_image(&encoded)?;
+            stored
+                .delivery
+                .validate(&format, &release_tag, &platform)
+                .context("validating indexed signed image delivery metadata")?;
+            catalogs
+                .last_mut()
+                .context("signed image catalog grouping lost its parent row")?
+                .images
+                .push(IndexedSystemImage {
+                    package,
+                    release: release_tag,
+                    platform,
+                    format,
+                    store_path: stored.store_path,
+                    nar_hash: stored.nar_hash,
+                    nar_size: stored.nar_size,
+                    delivery: stored.delivery,
+                });
+        }
+        Ok(catalogs)
     }
 
     /// Resolves one signed image by its canonical immutable object key.
@@ -13875,47 +14564,41 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub async fn list_channels(&self, registry_id: i64) -> Result<Vec<ChannelSummary>> {
-        let channel_rows = self
+        let rows = self
             .backend
             .query(
-                "SELECT id, name, frontier FROM channels
-                 WHERE registry_id = ?1 AND active = 1 ORDER BY name",
+                "SELECT c.id, c.name, c.frontier, p.bucket, p.release
+                 FROM channels c
+                 LEFT JOIN channel_partitions p ON p.channel_id = c.id
+                 WHERE c.registry_id = ?1 AND c.active = 1
+                 ORDER BY c.name, p.bucket",
                 &vals![registry_id],
             )
             .await?;
-        let channels = channel_rows
-            .iter()
-            .map(|row| {
-                Ok((
-                    row.get::<i64>(0)?,
-                    row.get::<String>(1)?,
-                    row.get::<Option<String>>(2)?,
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?;
 
-        let mut out = Vec::with_capacity(channels.len());
-        for (channel_id, name, frontier) in channels {
-            let mut partitions = vec![None; 256];
-            let rows = self
-                .backend
-                .query(
-                    "SELECT bucket, release FROM channel_partitions WHERE channel_id = ?1",
-                    &vals![channel_id],
-                )
-                .await?;
-            for row in &rows {
-                let bucket: i64 = row.get(0)?;
-                let release: String = row.get(1)?;
-                if let Some(slot) = partitions.get_mut(bucket as usize) {
-                    *slot = Some(release);
+        let mut out: Vec<ChannelSummary> = Vec::new();
+        let mut current_id = None;
+        for row in rows {
+            let channel_id: i64 = row.get(0)?;
+            if current_id != Some(channel_id) {
+                out.push(ChannelSummary {
+                    name: row.get(1)?,
+                    frontier: row.get(2)?,
+                    partitions: vec![None; 256],
+                });
+                current_id = Some(channel_id);
+            }
+
+            let bucket: Option<i64> = row.get(3)?;
+            let release: Option<String> = row.get(4)?;
+            if let (Some(bucket), Some(release), Some(channel)) = (bucket, release, out.last_mut())
+            {
+                if let Ok(bucket) = usize::try_from(bucket) {
+                    if let Some(slot) = channel.partitions.get_mut(bucket) {
+                        *slot = Some(release);
+                    }
                 }
             }
-            out.push(ChannelSummary {
-                name,
-                frontier,
-                partitions,
-            });
         }
         Ok(out)
     }
@@ -14264,7 +14947,6 @@ impl Database {
         let org_id = self.max_id("orgs").await? + 1;
         let consumer_scope_key = format!("org:{}", uuid::Uuid::new_v4().simple());
         let now = unix_now();
-        let event_id = format!("grant-event:{}", uuid::Uuid::new_v4().simple());
         self.backend
             .checked_batch(&[
                 Statement::new(
@@ -14302,40 +14984,6 @@ impl Database {
                     vals![consumer_scope_key],
                 )
                 .unchecked(),
-                Statement::new(
-                    "INSERT INTO network_policy_consumer_scopes
-                     (boundary_id, consumer_scope_key, grant_generation, grant_kind,
-                      state, granted_by, granted_at, resource_version)
-                     VALUES ('instance:public', ?1, 1, 'instance_default',
-                       'active', 'system:org-create', ?2, 1)",
-                    vals![consumer_scope_key, now],
-                )
-                .expecting(1),
-                Statement::new(
-                    "INSERT INTO binding_consumer_scopes
-                     (binding_id, consumer_scope_key, grant_generation, grant_kind,
-                      state, granted_by, granted_at, resource_version)
-                     SELECT id, ?1, 1, 'instance_default', 'active',
-                            'system:org-create', ?2, 1
-                     FROM bindings WHERE is_instance_default = 1",
-                    vals![consumer_scope_key, now],
-                )
-                .unchecked(),
-                Statement::new(
-                    "INSERT INTO consumer_scope_grant_events
-                     (event_id, resource_kind, resource_stable_id, resource_generation_key,
-                      consumer_scope_key, grant_generation, transition, previous_state,
-                      resulting_state, actor_id, occurred_at, request_id)
-                     VALUES (?1, 'network_policy', 'instance:public', 0, ?2, 1,
-                       'granted', NULL, 'active', 'system:org-create', ?3, ?4)",
-                    vals![
-                        event_id,
-                        consumer_scope_key,
-                        now,
-                        format!("org-create:{slug}")
-                    ],
-                )
-                .expecting(1),
             ])
             .await?;
         Ok(org_id)
@@ -14353,7 +15001,6 @@ impl Database {
         let org_id = self.max_id("orgs").await? + 1;
         let consumer_scope_key = format!("org:{}", uuid::Uuid::new_v4().simple());
         let now = unix_now();
-        let event_id = format!("grant-event:{}", uuid::Uuid::new_v4().simple());
         self.backend
             .checked_batch(&[
                 Statement::new(
@@ -14392,35 +15039,6 @@ impl Database {
                     vals![consumer_scope_key],
                 )
                 .unchecked(),
-                Statement::new(
-                    "INSERT INTO network_policy_consumer_scopes
-                     (boundary_id, consumer_scope_key, grant_generation, grant_kind,
-                      state, granted_by, granted_at, resource_version)
-                     VALUES ('instance:public', ?1, 1, 'instance_default',
-                       'active', 'system:org-create', ?2, 1)",
-                    vals![consumer_scope_key, now],
-                )
-                .expecting(1),
-                Statement::new(
-                    "INSERT INTO binding_consumer_scopes
-                     (binding_id, consumer_scope_key, grant_generation, grant_kind,
-                      state, granted_by, granted_at, resource_version)
-                     SELECT id, ?1, 1, 'instance_default', 'active',
-                            'system:org-create', ?2, 1
-                     FROM bindings WHERE is_instance_default = 1",
-                    vals![consumer_scope_key, now],
-                )
-                .unchecked(),
-                Statement::new(
-                    "INSERT INTO consumer_scope_grant_events
-                     (event_id, resource_kind, resource_stable_id, resource_generation_key,
-                      consumer_scope_key, grant_generation, transition, previous_state,
-                      resulting_state, actor_id, occurred_at, request_id)
-                     VALUES (?1, 'network_policy', 'instance:public', 0, ?2, 1,
-                       'granted', NULL, 'active', 'system:org-create', ?3, ?4)",
-                    vals![event_id, consumer_scope_key, now, plan_id],
-                )
-                .expecting(1),
             ])
             .await?;
         Ok(org_id)
@@ -16690,7 +17308,7 @@ impl Database {
         let now = unix_now();
         let id = self.max_id("bindings").await? + 1;
         let default_key = is_instance_default.then_some("singleton");
-        let mut statements = vec![
+        let statements = [
             Statement::new(
                 "INSERT INTO bindings
                  (id, org_id, name, kind, is_instance_default, instance_default_key, created_at,
@@ -16731,20 +17349,6 @@ impl Database {
             )
             .expecting(1),
         ];
-        if is_instance_default {
-            statements.push(
-                Statement::new(
-                    "INSERT INTO binding_consumer_scopes
-                 (binding_id, consumer_scope_key, grant_generation, grant_kind,
-                  state, granted_by, granted_at, resource_version)
-                 SELECT ?1, stable_id, 1, 'instance_default', 'active',
-                        'system:binding-create', ?2, 1
-                 FROM orgs WHERE deleted_at IS NULL",
-                    vals![id, now],
-                )
-                .unchecked(),
-            );
-        }
         self.backend.checked_batch(&statements).await?;
         Ok(id)
     }
@@ -17448,7 +18052,10 @@ impl Database {
     /// object-store credentials. Their deployment attachment is nevertheless
     /// an immutable authorization input, so it receives the same validated
     /// credential and write-revision history used by external providers.
-    async fn ensure_deployment_owned_write_revision(&self, binding: &BindingRecord) -> Result<()> {
+    pub async fn ensure_deployment_owned_write_revision(
+        &self,
+        binding: &BindingRecord,
+    ) -> Result<()> {
         let version_ref = match binding.kind.as_str() {
             "local_fs" => "native://aos-hub/default-storage/v1",
             "deployment_r2" => "worker://aos-hub/default-storage/v1",
@@ -17681,6 +18288,37 @@ impl Database {
         rows.iter().map(row_to_binding).collect()
     }
 
+    /// Lists bindings owned by or explicitly granted to one consumer scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_bindings_available_to_scope(
+        &self,
+        consumer_scope_key: &str,
+    ) -> Result<Vec<BindingRecord>> {
+        let rows = self
+            .backend
+            .query(
+                "SELECT id, org_id, name, kind, is_instance_default, stable_id, owner_scope_key,
+                 local_root_path, object_bucket, object_prefix, endpoint_scheme,
+                 endpoint_host_kind, endpoint_host_bytes, endpoint_port,
+                 signing_region, access_mode, resource_version, created_at, updated_at
+                 FROM bindings binding
+                 WHERE binding.owner_scope_key = ?1
+                    OR EXISTS (
+                       SELECT 1 FROM binding_consumer_scopes grant_record
+                       WHERE grant_record.binding_id = binding.id
+                         AND grant_record.consumer_scope_key = ?1
+                         AND grant_record.state = 'active'
+                    )
+                 ORDER BY stable_id",
+                &vals![consumer_scope_key],
+            )
+            .await?;
+        rows.iter().map(row_to_binding).collect()
+    }
+
     /// Returns live topology references that prevent storage-binding deletion.
     ///
     /// # Errors
@@ -17694,7 +18332,7 @@ impl Database {
             ),
             (
                 "gateways",
-                "SELECT COUNT(*) FROM gateways WHERE binding_id = ?1",
+                "SELECT COUNT(*) FROM gateway_revisions WHERE binding_id = ?1",
             ),
             (
                 "topology defaults",
@@ -17730,17 +18368,70 @@ impl Database {
         id: i64,
         expected_resource_version: i64,
     ) -> Result<bool> {
-        Ok(self
+        let exists = self
             .backend
-            .execute(
-                "DELETE FROM bindings
-                 WHERE id = ?1 AND resource_version = ?2 AND is_instance_default = 0
-                   AND NOT EXISTS (SELECT 1 FROM surface_placements WHERE binding_id = ?1)
-                   AND NOT EXISTS (SELECT 1 FROM gateways WHERE binding_id = ?1)",
+            .query_opt(
+                "SELECT 1 FROM bindings
+                 WHERE id = ?1 AND resource_version = ?2 AND is_instance_default = 0",
                 &vals![id, expected_resource_version],
             )
             .await?
-            == 1)
+            .is_some();
+        if !exists {
+            return Ok(false);
+        }
+
+        // Credential heads and write-state rows use restrictive composite foreign keys so
+        // deleting the binding cannot rely on cascades alone. Keep the blocker CAS and the
+        // dependent-row teardown in one transaction to avoid partially deleting live state.
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE bindings SET resource_version = resource_version
+                     WHERE id = ?1 AND resource_version = ?2 AND is_instance_default = 0
+                       AND NOT EXISTS (SELECT 1 FROM surface_placements WHERE binding_id = ?1)
+                       AND NOT EXISTS (SELECT 1 FROM gateway_revisions WHERE binding_id = ?1)",
+                    vals![id, expected_resource_version],
+                )
+                .expecting(1),
+                Statement::new(
+                    "DELETE FROM binding_write_state WHERE binding_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM binding_write_revisions WHERE binding_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM binding_credential_heads WHERE binding_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM binding_credential_revisions WHERE binding_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM binding_scope_grant_pins WHERE binding_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM binding_consumer_scopes WHERE binding_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM bindings WHERE id = ?1 AND resource_version = ?2",
+                    vals![id, expected_resource_version],
+                )
+                .expecting(1),
+            ])
+            .await?;
+        Ok(true)
     }
 
     /// Look up an organization by id.
@@ -22154,7 +22845,7 @@ impl Database {
     /// # Errors
     ///
     /// Returns the same errors as the internal normalized apply primitive.
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(any(test, debug_assertions, feature = "do-e2e-test-support"))]
     #[allow(clippy::too_many_arguments)]
     pub async fn seed_registry_configuration_for_test(
         &self,
@@ -23704,6 +24395,38 @@ impl Database {
         Ok(claimed)
     }
 
+    /// Lists stable identities for due webhook deliveries without claiming them.
+    ///
+    /// This is the cron-dispatch boundary: it lets a short database-only pass
+    /// enqueue independent delivery jobs while each queue consumer performs
+    /// the network request under the ordinary durable delivery claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid limit or database failure.
+    pub async fn list_due_delivery_ids(&self, now: i64, limit: u32) -> Result<Vec<String>> {
+        anyhow::ensure!(
+            (1..=100).contains(&limit),
+            "delivery list limit must be 1..=100"
+        );
+        self.backend
+            .query(
+                "SELECT d.delivery_id
+                   FROM webhook_deliveries d
+                   JOIN webhooks w ON w.id = d.webhook_id
+                  WHERE d.status = 'pending' AND d.next_attempt_at <= ?1
+                    AND w.active = 1
+                    AND (d.claim_token IS NULL OR d.claim_expires_at <= ?1)
+                    AND length(d.payload) <= ?2
+                  ORDER BY d.id LIMIT ?3",
+                &vals![now, 1024 * 1024_i64, i64::from(limit)],
+            )
+            .await?
+            .into_iter()
+            .map(|row| row.get(0))
+            .collect()
+    }
+
     /// Claims one due delivery by its stable queue identity.
     ///
     /// # Errors
@@ -24703,12 +25426,64 @@ mod tests {
     use rusqlite::Connection;
     use uuid::Uuid;
 
+    /// Reverses the transformer's identifier DDL to construct a v1-shaped
+    /// database without retaining a second 160-KiB baseline fixture.
+    fn topology_v2_to_v1_identifier_sql() -> String {
+        crate::backend::split_statements(TOPOLOGY_V1_TO_V2_SQLITE)
+            .into_iter()
+            .take_while(|statement| !statement.contains("DROP INDEX"))
+            .filter_map(|statement| {
+                statement
+                    .find("ALTER TABLE ")
+                    .map(|offset| statement[offset..].to_string())
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|statement| {
+                let words = statement.split_whitespace().collect::<Vec<_>>();
+                if words.get(3) == Some(&"RENAME") && words.get(4) == Some(&"COLUMN") {
+                    format!(
+                        "ALTER TABLE {} RENAME COLUMN {} TO {}",
+                        words[2], words[7], words[5]
+                    )
+                } else {
+                    format!("ALTER TABLE {} RENAME TO {}", words[5], words[2])
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(";\n")
+    }
+
     #[test]
     fn generated_relational_ids_are_positive_and_worker_exact() {
         assert_eq!(portable_relational_id(Uuid::from_u128(0)), 1);
         let maximum_source = portable_relational_id(Uuid::from_u128(u128::MAX));
         assert!((1..=PORTABLE_RELATIONAL_ID_MAX).contains(&maximum_source));
         assert_eq!(maximum_source as f64 as i64, maximum_source);
+    }
+
+    #[test]
+    fn snapshot_rows_are_bounded_into_multirow_statements() {
+        let rows = (0..121)
+            .map(|index| vals![index, format!("row-{index}")])
+            .collect::<Vec<_>>();
+        let mut statements = Vec::new();
+
+        extend_multirow_insert(
+            &mut statements,
+            "INSERT INTO example (id, name)",
+            &rows,
+            " ON CONFLICT(id) DO NOTHING",
+        )
+        .unwrap();
+
+        assert_eq!(statements.len(), 3);
+        assert_eq!(statements[0].params.len(), 100);
+        assert_eq!(statements[1].params.len(), 100);
+        assert_eq!(statements[2].params.len(), 42);
+        assert!(statements[0].sql.contains("(?1, ?2), (?3, ?4)"));
+        assert!(statements[0].sql.ends_with("ON CONFLICT(id) DO NOTHING"));
     }
 
     #[test]
@@ -24775,11 +25550,19 @@ mod tests {
     async fn deployment_default_records_one_valid_write_revision() {
         let db = Database::open_in_memory().await.unwrap();
         let first = db
-            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
+            .ensure_instance_default_binding(
+                "deployment_r2",
+                None,
+                Some(crate::binding::DEPLOYMENT_R2_ATTACHMENT),
+            )
             .await
             .unwrap();
         let second = db
-            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
+            .ensure_instance_default_binding(
+                "deployment_r2",
+                None,
+                Some(crate::binding::DEPLOYMENT_R2_ATTACHMENT),
+            )
             .await
             .unwrap();
         assert_eq!(first.id, second.id);
@@ -24821,6 +25604,143 @@ mod tests {
             .ensure_instance_default_binding("deployment_r2", None, Some("different"))
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn instance_resources_require_explicit_organization_grants() {
+        let db = Database::open_in_memory().await.unwrap();
+        let binding = db
+            .ensure_instance_default_binding(
+                "deployment_r2",
+                None,
+                Some(crate::binding::DEPLOYMENT_R2_ATTACHMENT),
+            )
+            .await
+            .unwrap();
+        let org_id = db
+            .create_org("explicit-grants", "Explicit grants")
+            .await
+            .unwrap();
+        let scope = db.org_by_id(org_id).await.unwrap().unwrap().stable_id;
+
+        assert!(db
+            .load_consumer_scope_grant(
+                crate::db::GrantResource::NetworkPolicy {
+                    id: "instance:public"
+                },
+                &scope,
+            )
+            .await
+            .unwrap()
+            .is_none());
+        assert!(db
+            .list_bindings_available_to_scope(&scope)
+            .await
+            .unwrap()
+            .is_empty());
+        let registry_id = db
+            .create_managed_registry(org_id, "", "main", "public", &[], false)
+            .await
+            .unwrap();
+        let placement = NewSurfacePlacementSpec {
+            surface: SurfaceTarget::Registry(registry_id),
+            name: "primary".to_owned(),
+            binding_id: binding.id,
+            prefix: "explicit-grants/main".to_owned(),
+            kind: "complete".to_owned(),
+            desired_state: "active".to_owned(),
+            hash_range: None,
+            desired_read_enabled: true,
+            read_order: 0,
+            requires_conditional_writes: false,
+        };
+        assert!(db.create_surface_placement(&placement).await.is_err());
+
+        db.grant_consumer_scope(
+            crate::db::GrantResource::Binding {
+                id: binding.id,
+                stable_id: &binding.stable_id,
+            },
+            &scope,
+            "instance_default",
+            "legacy-test",
+            "request:legacy-binding-grant",
+        )
+        .await
+        .unwrap();
+        assert!(db.create_surface_placement(&placement).await.is_ok());
+
+        let adopted = db
+            .grant_consumer_scope(
+                crate::db::GrantResource::Binding {
+                    id: binding.id,
+                    stable_id: &binding.stable_id,
+                },
+                &scope,
+                "explicit",
+                "test",
+                "request:adopt-binding-grant",
+            )
+            .await
+            .unwrap();
+        assert_eq!(adopted.grant_generation, 1);
+        assert_eq!(adopted.grant_kind, "explicit");
+
+        let available = db.list_bindings_available_to_scope(&scope).await.unwrap();
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0].stable_id, binding.stable_id);
+        assert_eq!(
+            db.list_surface_placements(SurfaceTarget::Registry(registry_id))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        db.grant_consumer_scope(
+            crate::db::GrantResource::NetworkPolicy {
+                id: "instance:public",
+            },
+            &scope,
+            "instance_default",
+            "legacy-test",
+            "request:legacy-network-grant",
+        )
+        .await
+        .unwrap();
+        let adopted = db
+            .grant_consumer_scope(
+                crate::db::GrantResource::NetworkPolicy {
+                    id: "instance:public",
+                },
+                &scope,
+                "explicit",
+                "test",
+                "request:adopt-network-grant",
+            )
+            .await
+            .unwrap();
+        assert_eq!(adopted.grant_generation, 1);
+        assert_eq!(adopted.grant_kind, "explicit");
+    }
+
+    #[tokio::test]
+    async fn unused_topology_binding_can_be_checked_and_deleted() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db
+            .create_org("binding-owner", "Binding Owner")
+            .await
+            .unwrap();
+        let binding_id = create_test_binding(&db, org, "archive", "objects").await;
+        create_valid_write_credential(&db, binding_id, "native://archive/write/v1").await;
+
+        assert!(db
+            .binding_delete_blockers(binding_id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(db.delete_topology_binding(binding_id, 1).await.unwrap());
+        assert!(!db.delete_topology_binding(binding_id, 1).await.unwrap());
     }
 
     async fn create_test_binding(db: &Database, org_id: i64, name: &str, path: &str) -> i64 {
@@ -25246,6 +26166,62 @@ source_nar_hash = ""
     }
 
     #[test]
+    fn explicit_topology_migration_adopts_the_previous_schema_identity() {
+        let connection = Connection::open_in_memory().unwrap();
+        for migration in &MIGRATIONS[..MIGRATIONS.len() - 1] {
+            connection.execute_batch(migration).unwrap();
+        }
+        connection
+            .execute(
+                "UPDATE hub_schema_identity SET identity = ?1",
+                [PREVIOUS_SCHEMA_IDENTITY],
+            )
+            .unwrap();
+
+        connection
+            .execute_batch(MIGRATIONS.last().unwrap())
+            .unwrap();
+
+        let identity: String = connection
+            .query_row("SELECT identity FROM hub_schema_identity", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(identity, SCHEMA_IDENTITY);
+    }
+
+    #[tokio::test]
+    async fn migrate_repairs_the_known_schema_version_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("topology-v1.db");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch("CREATE TABLE schema_version(version INTEGER NOT NULL);")
+            .unwrap();
+        connection.execute_batch(MIGRATIONS[0]).unwrap();
+        connection
+            .execute_batch(&topology_v2_to_v1_identifier_sql())
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE hub_schema_identity SET identity = ?1",
+                [PREVIOUS_SCHEMA_IDENTITY],
+            )
+            .unwrap();
+        connection
+            .execute_batch(&format!(
+                "DELETE FROM schema_version;
+                 INSERT INTO schema_version(version) VALUES ({});",
+                MIGRATIONS.len()
+            ))
+            .unwrap();
+        drop(connection);
+
+        let db = Database::open(&path).await.unwrap();
+        db.require_schema_identity().await.unwrap();
+    }
+
+    #[test]
     fn publication_multipart_migration_upgrades_an_existing_database() {
         let multipart_index = MIGRATIONS
             .iter()
@@ -25290,6 +26266,128 @@ source_nar_hash = ""
         assert!(backend_columns
             .iter()
             .any(|column| column == "completion_etag"));
+    }
+
+    #[test]
+    fn placement_policy_build_event_migration_preserves_history_across_versions() {
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.contains("placement_policy_build_events_legacy"))
+            .unwrap();
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys = ON;
+                 CREATE TABLE placement_policy_revisions(
+                   id TEXT PRIMARY KEY,
+                   build_version INTEGER NOT NULL,
+                   state TEXT NOT NULL,
+                   UNIQUE(id, build_version, state)
+                 );
+                 CREATE TABLE placement_policy_build_events(
+                   event_id TEXT PRIMARY KEY,
+                   policy_revision_id TEXT NOT NULL,
+                   build_version INTEGER NOT NULL,
+                   revision_state TEXT NOT NULL,
+                   mutation_kind TEXT NOT NULL,
+                   created_at INTEGER NOT NULL,
+                   UNIQUE(policy_revision_id, build_version),
+                   FOREIGN KEY(policy_revision_id, build_version, revision_state)
+                   REFERENCES placement_policy_revisions(id, build_version, state)
+                 );
+                 INSERT INTO placement_policy_revisions
+                   (id, build_version, state) VALUES ('revision-1', 1, 'building');
+                 INSERT INTO placement_policy_build_events
+                   (event_id, policy_revision_id, build_version, revision_state,
+                    mutation_kind, created_at)
+                   VALUES ('event-1', 'revision-1', 1, 'building', 'add_group', 1);",
+            )
+            .unwrap();
+
+        connection.execute_batch(migration).unwrap();
+        connection
+            .execute(
+                "UPDATE placement_policy_revisions SET build_version = 2 WHERE id = 'revision-1'",
+                [],
+            )
+            .unwrap();
+
+        let retained: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM placement_policy_build_events
+                 WHERE event_id = 'event-1' AND build_version = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retained, 1);
+    }
+
+    #[test]
+    fn placement_policy_publication_migration_preserves_history_across_head_versions() {
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.contains("placement_policy_publications_legacy"))
+            .unwrap();
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys = ON;
+                 CREATE TABLE placement_policy_revisions(
+                   id TEXT PRIMARY KEY,
+                   policy_id TEXT NOT NULL,
+                   state TEXT NOT NULL,
+                   UNIQUE(id, policy_id, state)
+                 );
+                 CREATE TABLE placement_policy_heads(
+                   policy_id TEXT PRIMARY KEY,
+                   resource_version INTEGER NOT NULL,
+                   UNIQUE(policy_id, resource_version)
+                 );
+                 CREATE TABLE placement_policy_publications(
+                   publication_id TEXT PRIMARY KEY,
+                   policy_revision_id TEXT NOT NULL UNIQUE,
+                   policy_id TEXT NOT NULL,
+                   revision_state TEXT NOT NULL,
+                   policy_resource_version INTEGER NOT NULL,
+                   content_digest TEXT NOT NULL,
+                   published_by TEXT NOT NULL,
+                   published_at INTEGER NOT NULL,
+                   FOREIGN KEY(policy_revision_id, policy_id, revision_state)
+                   REFERENCES placement_policy_revisions(id, policy_id, state),
+                   FOREIGN KEY(policy_id, policy_resource_version)
+                   REFERENCES placement_policy_heads(policy_id, resource_version)
+                 );
+                 INSERT INTO placement_policy_revisions
+                   (id, policy_id, state) VALUES ('revision-1', 'policy-1', 'published');
+                 INSERT INTO placement_policy_heads
+                   (policy_id, resource_version) VALUES ('policy-1', 2);
+                 INSERT INTO placement_policy_publications
+                   (publication_id, policy_revision_id, policy_id, revision_state,
+                    policy_resource_version, content_digest, published_by, published_at)
+                   VALUES ('publication-1', 'revision-1', 'policy-1', 'published',
+                           2, 'digest-1', 'operator', 1);",
+            )
+            .unwrap();
+
+        connection.execute_batch(migration).unwrap();
+        connection
+            .execute(
+                "UPDATE placement_policy_heads SET resource_version = 3
+                 WHERE policy_id = 'policy-1'",
+                [],
+            )
+            .unwrap();
+
+        let retained: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM placement_policy_publications
+                 WHERE publication_id = 'publication-1' AND policy_resource_version = 2",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retained, 1);
     }
 
     #[test]
@@ -25607,7 +26705,10 @@ source_nar_hash = ""
             name: "demo".into(),
             description: None,
             readme: None,
-            caches: vec![("https://cache.example".into(), 40)],
+            caches: vec![
+                ("https://cache.example".into(), 40),
+                ("https://primary-cache.example".into(), 100),
+            ],
             roster: vec![("alice".into(), "demo:Ed25519:AA".into(), "active".into())],
             packages: vec![package],
             releases: vec![ReleaseRow {
@@ -25638,6 +26739,20 @@ source_nar_hash = ""
         let retention_releases = db.list_retention_release_snapshots(id).await.unwrap();
         assert_eq!(retention_releases.len(), 1);
         assert_eq!(retention_releases[0].artifacts[0].store_hash, "abc");
+        let release_packages = db.list_packages_at_release(id, "1.0.0").await.unwrap();
+        assert_eq!(release_packages.len(), 1);
+        assert_eq!(release_packages[0].name, "curl");
+        assert_eq!(release_packages[0].latest_version.as_deref(), Some("8.5.0"));
+        assert_eq!(release_packages[0].platforms, ["x86_64-linux"]);
+        assert_eq!(
+            db.list_release_package_counts(id).await.unwrap(),
+            [("1.0.0".to_string(), 1)]
+        );
+        let commit_packages = db
+            .list_packages_at_release(id, &"c".repeat(64))
+            .await
+            .unwrap();
+        assert_eq!(commit_packages.len(), 1);
         let release_id: i64 = db
             .backend
             .query_opt(
@@ -25764,15 +26879,13 @@ source_nar_hash = ""
         let channels = db.list_channels(id).await.unwrap();
         assert_eq!(channels[0].partitions.iter().flatten().count(), 256);
         assert_eq!(db.index_status(id).await.unwrap().unwrap().state, "fresh");
+        let cache_stack = db.registry_cache_stack_entries(id).await.unwrap();
+        assert_eq!(cache_stack[0].resolved_priority, 100);
         assert_eq!(
-            db.registry_cache_stack_entries(id)
-                .await
-                .unwrap()
-                .first()
-                .unwrap()
-                .resolved_priority,
-            40
+            cache_stack[0].committed_url,
+            "https://primary-cache.example"
         );
+        assert_eq!(cache_stack[1].resolved_priority, 40);
         assert!(db.list_releases(id).await.unwrap()[0].pack_present);
         assert_eq!(
             db.refs_digest(id).await.unwrap().as_deref(),
@@ -28987,6 +30100,17 @@ source_nar_hash = ""
         db.grant_membership("user", user, &original_project_scope, "viewer")
             .await
             .unwrap();
+        db.grant_consumer_scope(
+            crate::db::GrantResource::NetworkPolicy {
+                id: "instance:public",
+            },
+            &original_scope,
+            "explicit",
+            "test",
+            "request:purge-test-public-boundary",
+        )
+        .await
+        .unwrap();
         let (_, old_secret) = db
             .create_token(
                 crate::domain::Principal::user(user),
@@ -29109,7 +30233,7 @@ source_nar_hash = ""
             .unwrap()
             .get(0)
             .unwrap();
-        assert_eq!(recreated_grant, 1);
+        assert_eq!(recreated_grant, 0);
     }
 
     #[tokio::test]
@@ -29216,6 +30340,17 @@ source_nar_hash = ""
         let db = Database::open_in_memory().await.unwrap();
         let org_id = db.create_org("race", "Race").await.unwrap();
         let scope = db.org_by_id(org_id).await.unwrap().unwrap().stable_id;
+        db.grant_consumer_scope(
+            crate::db::GrantResource::NetworkPolicy {
+                id: "instance:public",
+            },
+            &scope,
+            "explicit",
+            "test",
+            "request:grant-before-revoke",
+        )
+        .await
+        .unwrap();
         db.revoke_consumer_scope(
             crate::db::GrantResource::NetworkPolicy {
                 id: "instance:public",
@@ -29412,6 +30547,99 @@ source_nar_hash = ""
         }
     }
 
+    #[tokio::test]
+    async fn degraded_registry_placement_remains_eligible_for_publication_repair() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org_id = db
+            .create_org("publication-repair", "Publication repair")
+            .await
+            .unwrap();
+        let binding_id =
+            create_test_binding(&db, org_id, "publication-repair", "/tmp/publication-repair").await;
+        let registry_id = db
+            .create_managed_registry(org_id, "", "registry", "public", &[], false)
+            .await
+            .unwrap();
+        let mut placement = topology_placement(
+            SurfaceTarget::Registry(registry_id),
+            "canonical",
+            "registry",
+            0,
+        );
+        placement.binding_id = binding_id;
+        let placement = db.create_surface_placement(&placement).await.unwrap();
+        let write_generation = create_valid_write_credential(
+            &db,
+            binding_id,
+            "secret://binding/publication-repair/v1",
+        )
+        .await;
+        let write_revision = db
+            .create_binding_write_revision(&NewBindingWriteRevision {
+                binding_id,
+                write_credential_generation: write_generation,
+                writes_supported: true,
+                conditional_writes_supported: false,
+                revision_fingerprint: "publication-repair-write-v1".into(),
+                capability_fingerprint: "publication-repair-writes".into(),
+            })
+            .await
+            .unwrap();
+        db.observe_binding_write_revision(binding_id, write_revision.revision, "valid", None, None)
+            .await
+            .unwrap();
+        db.bind_surface_placement_write_capability(placement.id, write_revision.revision)
+            .await
+            .unwrap();
+
+        let ready = db
+            .observe_surface_placement(placement.id, "ready", "complete", 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            db.registry_publication_write_placements(registry_id)
+                .await
+                .unwrap()
+                .iter()
+                .map(|placement| placement.id)
+                .collect::<Vec<_>>(),
+            vec![placement.id]
+        );
+
+        let degraded = db
+            .observe_surface_placement(
+                placement.id,
+                "degraded",
+                "partial",
+                ready.observation_version.unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            db.registry_publication_write_placements(registry_id)
+                .await
+                .unwrap()
+                .iter()
+                .map(|placement| placement.id)
+                .collect::<Vec<_>>(),
+            vec![placement.id]
+        );
+
+        db.observe_surface_placement(
+            placement.id,
+            "syncing",
+            "unknown",
+            degraded.observation_version.unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(db
+            .registry_publication_write_placements(registry_id)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
     #[allow(dead_code)]
     async fn set_test_placement_watermark(
         db: &Database,
@@ -29437,6 +30665,138 @@ source_nar_hash = ""
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn registry_placement_delete_detaches_only_terminal_placement_history() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org_id = db
+            .create_org("placement-delete", "Placement delete")
+            .await
+            .unwrap();
+        let binding_id =
+            create_test_binding(&db, org_id, "placement-delete", "/tmp/placement-delete").await;
+        let registry_id = db
+            .create_managed_registry(org_id, "", "registry", "public", &[], false)
+            .await
+            .unwrap();
+        let mut placement = topology_placement(
+            SurfaceTarget::Registry(registry_id),
+            "retiring",
+            "retiring",
+            0,
+        );
+        placement.binding_id = binding_id;
+        let placement = db.create_surface_placement(&placement).await.unwrap();
+        let publication_id = "placementdeletepublication000000000001";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication_id.into(),
+            registry_id,
+            generation: "placement-delete-generation".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: Some("c".repeat(64)),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        let object = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: "objects/terminal".into(),
+                content_hash: Some("d".repeat(64)),
+                size: Some(9),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        db.set_registry_publication_object(&SetRegistryPublicationObject {
+            publication_id: publication_id.into(),
+            surface_object_id: object.id,
+            object_kind: "immutable".into(),
+            expected_hash: "d".repeat(64),
+            expected_size: 9,
+        })
+        .await
+        .unwrap();
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: publication_id.into(),
+            placement_id: placement.id,
+            required: true,
+            state: "preparing".into(),
+            observed_at: 1,
+        })
+        .await
+        .unwrap();
+        db.record_registry_publication_object_presence(
+            publication_id,
+            object.id,
+            placement.id,
+            &"d".repeat(64),
+            9,
+            Some("terminal-etag"),
+            2,
+        )
+        .await
+        .unwrap();
+
+        assert!(!db
+            .delete_registry_surface_placement(placement.id, placement.resource_version)
+            .await
+            .unwrap());
+        assert!(db.surface_placement(placement.id).await.unwrap().is_some());
+        assert_eq!(
+            db.registry_publication_placement_records(publication_id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        db.fail_registry_publication(publication_id, 3)
+            .await
+            .unwrap();
+        db.backend
+            .batch(&[
+                Statement::new(
+                    "INSERT INTO placement_delivery_manifests
+                     (manifest_id, placement_id, registry_id, kind,
+                      registry_publication_id, content_digest, published_at)
+                     VALUES ('terminal-manifest', ?1, ?2,
+                       'registry_publication', ?3, ?4, 4)",
+                    vals![placement.id, registry_id, publication_id, "e".repeat(64)].to_vec(),
+                ),
+                Statement::new(
+                    "INSERT INTO placement_delivery_manifest_heads
+                     (placement_id, registry_id, manifest_id, updated_at)
+                     VALUES (?1, ?2, 'terminal-manifest', 4)",
+                    vals![placement.id, registry_id].to_vec(),
+                ),
+            ])
+            .await
+            .unwrap();
+
+        let blockers = db.surface_placement_blockers(placement.id).await.unwrap();
+        assert!(blockers.object_presence);
+        assert!(blockers.publication);
+        assert!(!blockers.active_publication);
+        assert!(db
+            .delete_registry_surface_placement(placement.id, placement.resource_version)
+            .await
+            .unwrap());
+        assert!(db.surface_placement(placement.id).await.unwrap().is_none());
+        assert!(db
+            .registry_publication(publication_id)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(db.surface_object(object.id).await.unwrap().is_some());
+        assert!(db
+            .registry_publication_placement_records(publication_id)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -29740,6 +31100,10 @@ source_nar_hash = ""
             .await
             .unwrap();
         assert_eq!(pending.reconciliation_state, "pending");
+        assert_eq!(
+            db.pending_surface_write_authorities(1).await.unwrap(),
+            vec![pending.clone()]
+        );
         assert!(
             !db.surface_placement(first.id)
                 .await
@@ -29760,7 +31124,12 @@ source_nar_hash = ""
             )
             .await
             .unwrap();
-        let pending = db
+        assert!(db
+            .pending_surface_write_authorities(1)
+            .await
+            .unwrap()
+            .is_empty());
+        let _pending = db
             .request_surface_write_promotion(
                 restored.id,
                 &restored.incarnation_id,
@@ -29776,13 +31145,16 @@ source_nar_hash = ""
             .retire_binding_write_revision(binding, revision.revision)
             .await
             .is_err());
+        assert_eq!(
+            crate::topology_probe::reconcile_colocated_write_authorities(&db, 1)
+                .await
+                .unwrap(),
+            1
+        );
         let rotated = db
-            .confirm_surface_write_authority(
-                authority.id,
-                pending.resource_version,
-                pending.desired_generation,
-            )
+            .surface_write_authority_by_id(authority.id)
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(
             rotated.observed_binding_write_revision,
@@ -30378,6 +31750,7 @@ source_nar_hash = ""
             })
             .await
             .unwrap();
+        let pointer_id = pointer.id;
         for (object, kind, hash, size) in [
             (immutable, "immutable", "d".repeat(64), 7),
             (pointer, "mutable_pointer", "e".repeat(64), 9),
@@ -30400,8 +31773,74 @@ source_nar_hash = ""
         assert_eq!(objects[0].object_kind, "immutable");
         assert_eq!(objects[1].object_kind, "mutable_pointer");
         assert!(objects.iter().all(|object| !object.verified));
+        let selected = db
+            .registry_publication_upload_object(publication_id, pointer_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected.surface_object_id, pointer_id);
+        assert_eq!(selected.object_kind, "mutable_pointer");
+        assert!(!selected.verified);
+        assert!(db
+            .registry_publication_upload_object(publication_id, i64::MAX)
+            .await
+            .unwrap()
+            .is_none());
         assert!(!db
             .registry_publication_class_is_complete(publication_id, "immutable")
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn empty_registry_publication_object_class_is_complete() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org_id = db
+            .create_org("minimal-publish", "Minimal publish")
+            .await
+            .unwrap();
+        let binding_id =
+            create_test_binding(&db, org_id, "minimal-publish", "/tmp/minimal-publish").await;
+        let registry_id = db
+            .create_managed_registry(org_id, "", "registry", "private", &[], false)
+            .await
+            .unwrap();
+        let mut placement = topology_placement(
+            SurfaceTarget::Registry(registry_id),
+            "primary",
+            "minimal-publish",
+            0,
+        );
+        placement.binding_id = binding_id;
+        let placement = db.create_surface_placement(&placement).await.unwrap();
+        let publication_id = "minimalpublication00000000000000001";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication_id.into(),
+            registry_id,
+            generation: "minimal-generation".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: Some("c".repeat(64)),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: publication_id.into(),
+            placement_id: placement.id,
+            required: true,
+            state: "preparing".into(),
+            observed_at: 1,
+        })
+        .await
+        .unwrap();
+
+        assert!(db
+            .registry_publication_class_is_complete(publication_id, "immutable")
+            .await
+            .unwrap());
+        assert!(db
+            .registry_publication_class_is_complete(publication_id, "mutable_pointer")
             .await
             .unwrap());
     }

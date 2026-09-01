@@ -801,14 +801,14 @@ form. Identity & signup owns signup policy, allowed domains, authentication
 methods, and session lifetime. Access tokens owns deployment-scoped Hub API
 credentials. Resource defaults owns new-surface crawl policy, upload limits,
 and anonymous cache discovery defaults. Branding remains its own page. Instance
-infrastructure pages use the same organization components and show which
-organization resources inherit each default, including boundary protection
-revisions, trusted-ingress verification, grants, and endpoint usage.
-The instance Storage
-bindings page represents the one deployment-provisioned default binding: it may
-support origin/credential maintenance, but it cannot create, delete, or swap
-the deployment binding. Instance Topology defaults selects optional domain and
-endpoint/gateway defaults; its binding is the deployment singleton.
+infrastructure pages use the same organization components and show every exact
+consumer grant, including boundary protection revisions, trusted-ingress
+verification, and endpoint usage. The instance Storage bindings page
+represents the explicitly configured singleton runtime binding. It supports
+origin and credential maintenance but cannot delete or swap the binding after
+creation. Instance Topology defaults selects optional binding, domain,
+endpoint, and gateway references from resources owned by or explicitly granted
+to that scope.
 
 ## Topological context and cross-links
 

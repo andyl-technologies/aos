@@ -442,7 +442,7 @@ in
               "real_qemu_source=checks.crucible.phase0.s1Fingerprint" \
               "run_model=run-twice-and-diff" \
               "scenario=stock-linux-diskless-initramfs-workload" \
-              "host_adversary=jitter-load" \
+              "host_adversary=bounded-scheduler-preemption" \
               "samples=36" \
               "horizon_icount=3600000000" \
               "mismatch_policy=first-mismatch-is-failure"

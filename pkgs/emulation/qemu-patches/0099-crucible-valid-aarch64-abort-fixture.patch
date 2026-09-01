@@ -1,0 +1,32 @@
+diff --git a/tests/tcg/plugins/crucible-memory-access.c b/tests/tcg/plugins/crucible-memory-access.c
+index fdbc15916..6c182eb40 100644
+--- a/tests/tcg/plugins/crucible-memory-access.c
++++ b/tests/tcg/plugins/crucible-memory-access.c
+@@ -19,6 +19,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
+ #define TEST_EVENT_ENVELOPE_HEADER_BYTES 192
+ #define TEST_MEMORY_PAGE_TABLE_WALK_CLASS 0x20
+ #define TEST_MEMORY_BOUNDARY_CLASS 0x40
++#define TEST_AARCH64_DATA_ABORT_SAME_EL_SYNDROME UINT32_C(0x96000000)
+ 
+ static struct qemu_plugin_crucible_fault_command test_command;
+ 
+@@ -374,7 +375,8 @@ static void test_build_scenario(const char *scenario)
+             "\"architecture\":\"aarch64\",\"before_instruction\":true,"
+             "\"fault_address\":%" PRIu64 ",\"maskable\":false,"
+             "\"record\":{\"kind\":\"architecture_default\"},"
+-            "\"syndrome\":0,\"vector\":4}}}", test_address);
++            "\"syndrome\":%" PRIu32 ",\"vector\":3}}}", test_address,
++            TEST_AARCH64_DATA_ABORT_SAME_EL_SYNDROME);
+         test_build_poison(policy);
+     } else if (strcmp(scenario, "failed-region") == 0) {
+         test_command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE;
+@@ -421,7 +423,8 @@ static void test_build_scenario(const char *scenario)
+             "\"architecture\":\"aarch64\",\"before_instruction\":true,"
+             "\"fault_address\":%" PRIu64 ",\"maskable\":false,"
+             "\"record\":{\"kind\":\"architecture_default\"},"
+-            "\"syndrome\":0,\"vector\":4}}}", test_address);
++            "\"syndrome\":%" PRIu32 ",\"vector\":3}}}", test_address,
++            TEST_AARCH64_DATA_ABORT_SAME_EL_SYNDROME);
+         test_build_poison_with_occurrence(
+             policy,
+             "{\"kind\":\"periodic\",\"parameters\":{"

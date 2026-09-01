@@ -5,157 +5,67 @@
   taskIds ? ["T-SCHED-17"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
-
-  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  resolveRngTest = builtins.readFile ../../crates/crucible/tests/scheduler_resolve_rng.rs;
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  executionRuntime = builtins.readFile ../../crates/crucible/src/model/fault_signal/execution_runtime.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
-
+  inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "crates/crucible/src/model/fault_signal/execution_runtime.rs" executionRuntime [
       {
-        label = "T-SCHED-17 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerResolveRng`";
+        label = "seeded signal evaluator ownership";
+        needle = "OwnedFaultExecutionRuntime";
       }
       {
-        label = "probabilistic resolve requirement";
-        needle = "Route every probabilistic RESOLVE choice";
+        label = "authoritative resolved-effect trace";
+        needle = "pub fn recorded_trace(";
       }
       {
-        label = "seeded decision RNG requirement";
-        needle = "seeded decision RNG";
-      }
-    ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
-      {
-        label = "probabilistic choice payload";
-        needle = "pub struct SchedulerResolveFaultChoice";
+        label = "locked replay installation";
+        needle = "pub fn install_replay(";
       }
       {
-        label = "resolve decision record";
-        needle = "pub struct SchedulerResolveDecisionRecord";
+        label = "complete replay consumption";
+        needle = "pub fn verify_replay_exhausted(";
       }
       {
-        label = "scheduled probabilistic payload";
-        needle = "ProbabilisticFault";
+        label = "all network replay modes test";
+        needle = "recorded_effects_execute_in_every_network_replay_mode";
       }
       {
-        label = "probabilistic resolve helper";
-        needle = "pub fn resolve_probabilistic_decisions";
+        label = "recomputed-cause mismatch test";
+        needle = "recomputed_replay_rejects_a_derivation_continuation_mismatch";
       }
       {
-        label = "canonical event order for choices";
-        needle = "for event in ordered_scheduled_events(resolved_events)";
-      }
-      {
-        label = "decision recorder seeded from configuration";
-        needle = "DecisionRecorder::new(configuration)";
-      }
-      {
-        label = "fault decision recording";
-        needle = "recorder.decide_fault";
-      }
-      {
-        label = "quantum emits probabilistic decisions";
-        needle = "resolve_probabilistic_decisions_from_seed(";
-      }
-      {
-        label = "raw draw cursor update";
-        needle = "Decision::RngDraw(draw)";
-      }
-      {
-        label = "recorded draw cursor stream";
-        needle = "advance_decision_rng_cursor_for(draw.stream.clone())";
-      }
-      {
-        label = "probabilistic payload material";
-        needle = "payload=probabilistic-fault";
-      }
-    ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
-      {
-        label = "resolve fault choice export";
-        needle = "SchedulerResolveFaultChoice";
-      }
-      {
-        label = "resolve decision record export";
-        needle = "SchedulerResolveDecisionRecord";
-      }
-      {
-        label = "probabilistic resolver export";
-        needle = "resolve_probabilistic_decisions";
-      }
-    ]
-    ++ failuresFor "crates/crucible/tests/scheduler_resolve_rng.rs" resolveRngTest [
-      {
-        label = "total-order probabilistic test";
-        needle = "probabilistic_resolve_records_rng_draw_and_fault_outcome_in_total_order";
-      }
-      {
-        label = "prior schedule hydration test";
-        needle = "probabilistic_resolve_hydrates_streams_from_prior_schedule_decisions";
-      }
-      {
-        label = "deterministic event ignore test";
-        needle = "resolve_probabilistic_decisions_ignores_deterministic_events";
-      }
-      {
-        label = "raw draw assertion";
-        needle = "Decision::RngDraw";
-      }
-      {
-        label = "fault outcome assertion";
-        needle = "Decision::FaultFires";
+        label = "failed replay transaction test";
+        needle = "failed_replay_installation_leaves_the_owned_continuation_unchanged";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
-        label = "phase3 exposes scheduler resolve RNG check";
+        label = "phase3 exposes signal resolution RNG check";
         needle = "schedulerResolveRng = import ./phase3-scheduler-resolve-rng.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_resolve_rng.rs" resolveRngTest [
+    ++ forbiddenFor "crates/crucible/src/model/fault_signal/execution_runtime.rs" executionRuntime [
       {
-        label = "ignored placeholder";
-        needle = "#[ignore";
+        label = "legacy scheduler fault outcome";
+        needle = "FaultFires";
       }
       {
-        label = "pending placeholder";
-        needle = "todo!";
-      }
-      {
-        label = "wall-clock dependency";
-        needle = "std::time";
-      }
-      {
-        label = "sleep dependency";
-        needle = "sleep(";
+        label = "wall-clock entropy";
+        needle = "thread_rng";
       }
     ];
 in
   if failures != []
-  then throw "crucible phase3 scheduler resolve-rng check failed:\n${builtins.concatStringsSep "\n" failures}"
+  then throw "crucible phase3 signal resolution RNG check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
     pkgs.mkDerivation {
-      pname = "crucible-phase3-scheduler-resolve-rng";
+      pname = "crucible-phase3-signal-resolution-rng";
       version = "0";
       src = crucibleSrc;
-
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.rust
-        pkgs.sed
-      ];
-
+      buildDeps = [pkgs.rust pkgs.sed];
       phases = [
         {
           name = "unpack";
@@ -169,65 +79,45 @@ in
           name = "configure";
           script = ''
             export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
+            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
+              > .cargo/config.toml
           '';
         }
         {
-          name = "run-scheduler-resolve-rng";
+          name = "run-signal-resolution-rng";
           script = ''
-            set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             cd crates
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-scheduler-resolve-rng-target" \
-              -p crucible \
-              --test scheduler_resolve_rng \
-              -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-scheduler-resolve-rng-target" \
-              -p crucible \
-              --test scheduler_resolve \
-              -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-scheduler-resolve-rng-target" \
-              -p crucible \
-              --features test-double \
-              --test gate_scheduler_liveness \
-              -- --test-threads=1
+            cargo test --frozen --offline \
+              --target-dir "$TMPDIR/crucible-signal-resolution-target" \
+              -p crucible --lib \
+              model::fault_signal::execution_runtime::tests::recorded_effects_execute_in_every_network_replay_mode \
+              -- --exact --test-threads=1
+            cargo test --frozen --offline \
+              --target-dir "$TMPDIR/crucible-signal-resolution-target" \
+              -p crucible --lib \
+              model::fault_signal::execution_runtime::tests::recomputed_replay_rejects_a_derivation_continuation_mismatch \
+              -- --exact --test-threads=1
+            cargo test --frozen --offline \
+              --target-dir "$TMPDIR/crucible-signal-resolution-target" \
+              -p crucible --lib \
+              model::fault_signal::execution_runtime::tests::failed_replay_installation_leaves_the_owned_continuation_unchanged \
+              -- --exact --test-threads=1
           '';
         }
         {
           name = "write-result";
           script = ''
-            set -eu
             mkdir -p "$out"
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
             tasks=${taskList}
-            component=crucible-scheduler
-            probabilistic_resolve=seeded-decision-rng
-            ordering=canonical-event-order
-            recorded_decisions=RngDraw+FaultFires
-            external_rng_dependency=false
+            component=crucible-fault-signal-runtime
+            seeded_resolution=canonical-choice-context
+            recorded_outcomes=ResolvedEffectTrace
+            locked_replay=recomputed-cause,outcome-only-network
+            legacy_scheduler_fault_outcomes=absent
             RESULT
           '';
         }

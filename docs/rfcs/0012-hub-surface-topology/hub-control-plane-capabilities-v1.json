@@ -250,12 +250,15 @@
       "cli_families": ["registry publish"],
       "web_workflows": ["registry-publication"],
       "web_method_exceptions": [
+        {"method": "BeginRegistryPublicationManifest", "reason": "The browser observes publication state; the CLI alone admits large local manifests through resumable bounded pages."},
+        {"method": "AppendRegistryPublicationManifest", "reason": "The browser observes publication state; the CLI alone admits large local manifests through resumable bounded pages."},
+        {"method": "SealRegistryPublicationManifest", "reason": "The browser observes publication state; the CLI alone seals a completely admitted local manifest."},
         {"method": "GetRegistryPublication", "reason": "ListRegistryPublications returns the complete publication state rendered by the browser workflow."},
         {"method": "BeginRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone streams local release artifacts into bounded multipart transactions."},
         {"method": "CompleteRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone completes multipart transactions for local release artifacts."},
         {"method": "AbortRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone cleans up failed multipart transactions for local release artifacts."}
       ],
-      "methods": ["BeginRegistryPublication", "BeginRegistryPublicationMultipartUpload", "CompleteRegistryPublicationMultipartUpload", "AbortRegistryPublicationMultipartUpload", "ListRegistryPublications", "GetRegistryPublication", "CommitRegistryPublication", "AbortRegistryPublication"]
+      "methods": ["BeginRegistryPublication", "BeginRegistryPublicationManifest", "AppendRegistryPublicationManifest", "SealRegistryPublicationManifest", "BeginRegistryPublicationMultipartUpload", "CompleteRegistryPublicationMultipartUpload", "AbortRegistryPublicationMultipartUpload", "ListRegistryPublications", "GetRegistryPublication", "CommitRegistryPublication", "AbortRegistryPublication"]
     },
     {
       "service": "GitService",
@@ -279,9 +282,10 @@
       "web_method_exceptions": [
         {"method": "GetCacheGcRun", "reason": "ListCacheGcRuns returns the complete run summaries rendered by the garbage-collection workflow."},
         {"method": "GetCacheGcDeletionJob", "reason": "ListCacheGcDeletionJobs returns the complete deletion-job state rendered by the safety workflow."},
-        {"method": "GetRetentionRoot", "reason": "ListRetentionRoots returns the complete retained-root model rendered by the retention workflow."}
+        {"method": "GetRetentionRoot", "reason": "ListRetentionRoots returns the complete retained-root model rendered by the retention workflow."},
+        {"method": "RegisterCacheNarinfos", "reason": "The cache push transfer protocol batches this settlement after direct NAR uploads; the browser does not upload Nix closures."}
       ],
-      "methods": ["ListBinaryCaches", "GetBinaryCache", "PlanCreateBinaryCache", "CreateBinaryCache", "PlanUpdateBinaryCache", "UpdateBinaryCache", "PlanDeleteBinaryCache", "DeleteBinaryCache", "GetCacheGcPolicy", "PlanSetCacheGcPolicy", "SetCacheGcPolicy", "PlanRunCacheGc", "RunCacheGc", "PlanAcknowledgeCacheGcFirstSweep", "AcknowledgeCacheGcFirstSweep", "GetCacheGcPlan", "GetCacheGcRun", "SearchCache", "GetCacheObject", "ListCacheGcRuns", "GetCacheGcDeletionJob", "ListCacheGcDeletionJobs", "PlanRetryCacheGcDeletionJob", "RetryCacheGcDeletionJob", "PlanAbandonCacheGcDeletionJob", "AbandonCacheGcDeletionJob", "ListRootReasons", "GetRetentionRoot", "ListRetentionRoots", "PlanCreateManualRetentionRoot", "CreateManualRetentionRoot", "PlanRenewRetentionLease", "RenewRetentionLease", "PlanRevokeRetentionLease", "RevokeRetentionLease", "PlanDeleteManualRetentionRoot", "DeleteManualRetentionRoot", "PlanRefreshAllRetention", "RefreshAllRetention", "PlanRunPlacementEviction", "RunPlacementEviction", "CacheClosure", "CreateCacheObjectUploads", "BeginCacheMultipartUpload", "CompleteCacheMultipartUpload", "AbortCacheMultipartUpload"]
+      "methods": ["ListBinaryCaches", "GetBinaryCache", "PlanCreateBinaryCache", "CreateBinaryCache", "PlanUpdateBinaryCache", "UpdateBinaryCache", "PlanDeleteBinaryCache", "DeleteBinaryCache", "GetCacheGcPolicy", "PlanSetCacheGcPolicy", "SetCacheGcPolicy", "PlanRunCacheGc", "RunCacheGc", "PlanAcknowledgeCacheGcFirstSweep", "AcknowledgeCacheGcFirstSweep", "GetCacheGcPlan", "GetCacheGcRun", "SearchCache", "GetCacheObject", "ListCacheGcRuns", "GetCacheGcDeletionJob", "ListCacheGcDeletionJobs", "PlanRetryCacheGcDeletionJob", "RetryCacheGcDeletionJob", "PlanAbandonCacheGcDeletionJob", "AbandonCacheGcDeletionJob", "ListRootReasons", "GetRetentionRoot", "ListRetentionRoots", "PlanCreateManualRetentionRoot", "CreateManualRetentionRoot", "PlanRenewRetentionLease", "RenewRetentionLease", "PlanRevokeRetentionLease", "RevokeRetentionLease", "PlanDeleteManualRetentionRoot", "DeleteManualRetentionRoot", "PlanRefreshAllRetention", "RefreshAllRetention", "PlanRunPlacementEviction", "RunPlacementEviction", "CacheClosure", "CreateCacheObjectUploads", "RegisterCacheNarinfos", "BeginCacheMultipartUpload", "CompleteCacheMultipartUpload", "AbortCacheMultipartUpload"]
     },
     {
       "service": "CacheIntegrationService",

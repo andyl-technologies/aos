@@ -146,7 +146,9 @@
   pureScriptUnit = pureGenerated."script-only.service";
   pureKeys = builtins.attrNames pureScriptUnit;
   inventoryPackage = {
-    outPath = "/nix/store/00000000000000000000000000000000-inventory-fixture";
+    # Keep the fixture hash asymmetric so the reversible placeholder encoding
+    # can prove that the original store-path basename was not serialized.
+    outPath = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-inventory-fixture";
     __toString = self: self.outPath;
     systemdUnitInventory.system = [
       "lib/systemd/system/demo.service"
@@ -308,7 +310,7 @@
         toString frozenInventoryPackage
         == toString inventoryPackage
         && !containsStr "/nix/store/" frozenInventoryJson
-        && !containsStr "00000000000000000000000000000000" frozenInventoryJson
+        && !containsStr "0123456789abcdfghijklmnpqrsvwxyz" frozenInventoryJson
         && containsStr "@nix-store@/" frozenInventoryJson;
       msg = "systemd-lib: frozen package paths must round-trip without serialized store references";
     }

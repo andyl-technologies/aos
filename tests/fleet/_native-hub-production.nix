@@ -162,23 +162,24 @@
         # separate TLS-edge suite fronts this loopback listener.
         listen = "0.0.0.0:8420";
         externalUrl = "http://hub:8420";
+        credentials = {
+          jwtSecret = "native-hub-jwt-secret";
+          routeReservationKeys = "native-hub-route-reservation-keys";
+          domainProbeSignerManifest = "native-hub-probe-signers";
+        };
       };
       # The server profile is default-deny. A production operator must admit
       # the native listener explicitly when it is bound beyond loopback.
       aos.firewall.allowedTCP = [8420];
-      systemd.services.aos-hub.serviceConfig = {
-        LoadCredential = [
-          "jwt-secret:${jwtSecret}/value"
-          "route-reservation-keys:${routeKeys}/value"
-          "probe-signers:${probeSigners}/value"
-        ];
-        Environment = [
-          "HUB_JWT_SECRET_FILE=/run/credentials/aos-hub.service/jwt-secret"
-          "HUB_ROUTE_RESERVATION_KEYS_FILE=/run/credentials/aos-hub.service/route-reservation-keys"
-          "HUB_DOMAIN_PROBE_SIGNER_MANIFEST_FILE=/run/credentials/aos-hub.service/probe-signers"
-          "HUB_DNS_JSON_ENDPOINT=https://dns.google/resolve"
-        ];
-      };
+      # Deterministic fixture bytes are copied into the platform credential
+      # namespace at boot. The hub module owns the LoadCredential bindings and
+      # file-environment contract exactly as it does in production.
+      environment.etc."tmpfiles.d/native-hub-credentials.conf".text = ''
+        d /run/credentials/@system 0700 root root -
+        C /run/credentials/@system/native-hub-jwt-secret 0600 root root - ${jwtSecret}/value
+        C /run/credentials/@system/native-hub-route-reservation-keys 0600 root root - ${routeKeys}/value
+        C /run/credentials/@system/native-hub-probe-signers 0600 root root - ${probeSigners}/value
+      '';
     }
   ];
 

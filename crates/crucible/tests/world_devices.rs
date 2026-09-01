@@ -7,15 +7,13 @@
 use std::collections::BTreeMap;
 
 use crucible::{
-    Action, BlockFault, ContentAddressedBlobRef, ContentHash, DagStore, DeviceSchedulingSubNode,
-    DeviceSubNodeBindingError, EngineError, Event, EventGraph, EventGraphError, EventId, Fault,
-    FaultDuration, FaultPlan, FaultPlanEntry, FaultTag, Icount, LinkDef, MembershipFault,
-    MemoryDagStore, NinePFault, NodeId, NodeTemplate, Plan, Properties, ReadyPoint,
-    ReproductionArtifact, RngStreamId, ScenarioDefForm, Schedule, SchedulingNodeKind, Seed,
-    VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldBlockLatency, WorldDeviceKind,
-    WorldIoCoreConfig, WorldIoInstantiationError, WorldIoInstantiationLayout, WorldIoLayoutError,
-    WorldIoLayoutPolicy, WorldIoNode, WorldIoNodeKind, WorldNinePLatency, WorldNode, WorldNodeDef,
-    instantiate_world_io_sub_nodes,
+    ContentAddressedBlobRef, ContentHash, DagStore, DeviceSchedulingSubNode,
+    DeviceSubNodeBindingError, EngineError, Icount, LinkDef, MemoryDagStore, NodeId, NodeTemplate,
+    Plan, Properties, ReadyPoint, ReproductionArtifact, RngStreamId, ScenarioDefForm, Schedule,
+    SchedulingNodeKind, Seed, VmArchitecture, WhiteBoxPolicy, World, WorldBlockLatency,
+    WorldDeviceKind, WorldIoCoreConfig, WorldIoInstantiationError, WorldIoInstantiationLayout,
+    WorldIoLayoutError, WorldIoLayoutPolicy, WorldIoNode, WorldIoNodeKind, WorldNinePLatency,
+    WorldNode, WorldNodeDef, instantiate_world_io_sub_nodes,
 };
 use crucible_device::{BaseImage, FsTree, FsTreeDecodeError, Node};
 
@@ -110,7 +108,7 @@ fn heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable() {
     );
 
     let binary = first.to_compact_binary();
-    assert!(binary.starts_with(b"crucible.world.v2\0"));
+    assert!(binary.starts_with(b"crucible.world.v4\0"));
     assert_eq!(
         World::from_compact_binary(&binary).expect("heterogeneous world binary should parse"),
         first
@@ -124,7 +122,7 @@ fn heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable() {
     )
     .expect("heterogeneous scenario should build");
     let form_binary = form.to_compact_binary();
-    assert!(form_binary.starts_with(b"crucible.scenario-def-form.v2\0"));
+    assert!(form_binary.starts_with(b"crucible.scenario-def-form.v5\0"));
     assert_eq!(
         ScenarioDefForm::from_compact_binary(&form_binary)
             .expect("heterogeneous scenario binary should parse"),
@@ -133,7 +131,7 @@ fn heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable() {
 
     let artifact = ReproductionArtifact::from_recorded_parts(form, Schedule::empty());
     let artifact_binary = artifact.to_compact_binary();
-    assert!(artifact_binary.starts_with(b"crucible.reproduction-artifact.v2\0"));
+    assert!(artifact_binary.starts_with(b"crucible.reproduction-artifact.v5\0"));
     assert_eq!(
         ReproductionArtifact::from_compact_binary(&artifact_binary)
             .expect("heterogeneous reproduction artifact should parse"),
@@ -141,15 +139,15 @@ fn heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable() {
     );
 
     let without_io = World::from_nodes(vec![ready_node("node-a"), ready_node("node-b")])
-        .expect("legacy world should build");
+        .expect("VM-only world should build");
     assert!(
         without_io
             .to_compact_binary()
-            .starts_with(b"crucible.world.v1\0")
+            .starts_with(b"crucible.world.v4\0")
     );
-    let legacy_toml = without_io.to_canonical_toml().expect("legacy TOML");
-    assert!(!legacy_toml.contains("kind = \"block\""));
-    assert!(!legacy_toml.contains("kind = \"nine_p\""));
+    let vm_only_toml = without_io.to_canonical_toml().expect("VM-only TOML");
+    assert!(!vm_only_toml.contains("kind = \"block\""));
+    assert!(!vm_only_toml.contains("kind = \"nine_p\""));
 
     let changed_latency = world_with_io_nodes(vec![WorldIoNode::block(
         node_id("disk-node"),
@@ -466,114 +464,7 @@ fn production_world_instantiation_rejects_malformed_ninep_artifact_bytes() {
 }
 
 #[test]
-fn fault_plan_and_event_graph_resolve_only_derived_device_targets() {
-    let world = world_with_io_nodes(vec![block_node(), ninep_node()]);
-    let disk = world
-        .io_node(&node_id("disk-node"))
-        .expect("disk node exists")
-        .device_id();
-    let share = world
-        .io_node(&node_id("share-node"))
-        .expect("share node exists")
-        .device_id();
-    let block_fault = Fault::Block(BlockFault::Latency {
-        device: disk.clone(),
-        extra: FaultDuration::from_nanos(3),
-        jitter: FaultDuration::from_nanos(1),
-    });
-    let ninep_fault = Fault::NineP(NinePFault::Latency {
-        device: share,
-        extra: FaultDuration::from_nanos(3),
-        jitter: FaultDuration::from_nanos(1),
-    });
-
-    let plan = FaultPlan::from_entries_for_world(
-        &world,
-        vec![
-            permanent_fault("block", block_fault.clone()),
-            permanent_fault("ninep", ninep_fault),
-        ],
-    )
-    .expect("derived device targets should validate");
-    assert_eq!(plan.entries().len(), 2);
-
-    let arbitrary_name = FaultPlan::from_entries_for_world(
-        &world,
-        vec![permanent_fault(
-            "phantom",
-            Fault::Block(BlockFault::Latency {
-                device: crucible::DeviceId::from_name("disk-node"),
-                extra: FaultDuration::from_nanos(1),
-                jitter: FaultDuration::ZERO,
-            }),
-        )],
-    );
-    assert!(matches!(
-        arbitrary_name,
-        Err(EngineError::PlanFaultUnknownDevice { .. })
-    ));
-
-    let wrong_family = FaultPlan::from_entries_for_world(
-        &world,
-        vec![permanent_fault(
-            "wrong-family",
-            Fault::NineP(NinePFault::Latency {
-                device: disk.clone(),
-                extra: FaultDuration::from_nanos(1),
-                jitter: FaultDuration::ZERO,
-            }),
-        )],
-    );
-    assert!(matches!(
-        wrong_family,
-        Err(EngineError::PlanFaultDeviceKindMismatch {
-            device,
-            expected: WorldDeviceKind::NineP,
-            actual: WorldDeviceKind::Block,
-        }) if device == disk
-    ));
-
-    let wrong_graph = EventGraph::new_for_world(
-        vec![Event::once(
-            EventId::from_name("inject-wrong-family"),
-            None,
-            Action::InjectFault {
-                tag: FaultTag::from_name("ninep"),
-                fault: MembershipFault::taxonomy(Fault::NineP(NinePFault::Latency {
-                    device: disk.clone(),
-                    extra: FaultDuration::from_nanos(1),
-                    jitter: FaultDuration::ZERO,
-                })),
-            },
-        )],
-        &world,
-    );
-    assert!(matches!(
-        wrong_graph,
-        Err(EventGraphError::DeviceKindMismatch {
-            device,
-            expected: WorldDeviceKind::NineP,
-            actual: WorldDeviceKind::Block,
-            ..
-        }) if device == disk
-    ));
-
-    EventGraph::new_for_world(
-        vec![Event::once(
-            EventId::from_name("inject-block"),
-            None,
-            Action::InjectFault {
-                tag: FaultTag::from_name("block"),
-                fault: MembershipFault::taxonomy(block_fault),
-            },
-        )],
-        &world,
-    )
-    .expect("derived event-graph device target should validate");
-}
-
-#[test]
-fn v1_v2_outer_envelopes_must_match_nested_world_node_kinds() {
+fn v5_outer_envelopes_reject_retired_versions() {
     let world = world_with_io_nodes(vec![block_node()]);
     let form = ScenarioDefForm::from_components(
         &world,
@@ -586,57 +477,57 @@ fn v1_v2_outer_envelopes_must_match_nested_world_node_kinds() {
 
     let world_v1_envelope = replace_magic(
         world.to_compact_binary(),
-        b"crucible.world.v2\0",
+        b"crucible.world.v4\0",
         b"crucible.world.v1\0",
     );
     assert!(World::from_compact_binary(&world_v1_envelope).is_err());
 
-    let scenario_v1_envelope = replace_magic(
+    let scenario_v4_envelope = replace_magic(
         form.to_compact_binary(),
-        b"crucible.scenario-def-form.v2\0",
+        b"crucible.scenario-def-form.v5\0",
+        b"crucible.scenario-def-form.v4\0",
+    );
+    assert!(ScenarioDefForm::from_compact_binary(&scenario_v4_envelope).is_err());
+
+    let artifact_v4_envelope = replace_magic(
+        artifact.to_compact_binary(),
+        b"crucible.reproduction-artifact.v5\0",
+        b"crucible.reproduction-artifact.v4\0",
+    );
+    assert!(ReproductionArtifact::from_compact_binary(&artifact_v4_envelope).is_err());
+
+    let vm_only_world =
+        World::from_nodes(vec![ready_node("node-a")]).expect("VM-only world should build");
+    let vm_only_form = ScenarioDefForm::from_components(
+        &vm_only_world,
+        &Plan::empty(),
+        &Properties::empty(),
+        Seed::from_u64(100),
+    )
+    .expect("VM-only scenario should build");
+    let vm_only_artifact =
+        ReproductionArtifact::from_recorded_parts(vm_only_form.clone(), Schedule::empty());
+
+    let world_v2_envelope = replace_magic(
+        vm_only_world.to_compact_binary(),
+        b"crucible.world.v4\0",
+        b"crucible.world.v2\0",
+    );
+    assert!(World::from_compact_binary(&world_v2_envelope).is_err());
+
+    let scenario_v1_envelope = replace_magic(
+        vm_only_form.to_compact_binary(),
+        b"crucible.scenario-def-form.v5\0",
         b"crucible.scenario-def-form.v1\0",
     );
     assert!(ScenarioDefForm::from_compact_binary(&scenario_v1_envelope).is_err());
 
     let artifact_v1_envelope = replace_magic(
-        artifact.to_compact_binary(),
-        b"crucible.reproduction-artifact.v2\0",
+        vm_only_artifact.to_compact_binary(),
+        b"crucible.reproduction-artifact.v5\0",
         b"crucible.reproduction-artifact.v1\0",
     );
     assert!(ReproductionArtifact::from_compact_binary(&artifact_v1_envelope).is_err());
-
-    let legacy_world =
-        World::from_nodes(vec![ready_node("node-a")]).expect("legacy VM-only world should build");
-    let legacy_form = ScenarioDefForm::from_components(
-        &legacy_world,
-        &Plan::empty(),
-        &Properties::empty(),
-        Seed::from_u64(100),
-    )
-    .expect("legacy scenario should build");
-    let legacy_artifact =
-        ReproductionArtifact::from_recorded_parts(legacy_form.clone(), Schedule::empty());
-
-    let world_v2_envelope = replace_magic(
-        legacy_world.to_compact_binary(),
-        b"crucible.world.v1\0",
-        b"crucible.world.v2\0",
-    );
-    assert!(World::from_compact_binary(&world_v2_envelope).is_err());
-
-    let scenario_v2_envelope = replace_magic(
-        legacy_form.to_compact_binary(),
-        b"crucible.scenario-def-form.v1\0",
-        b"crucible.scenario-def-form.v2\0",
-    );
-    assert!(ScenarioDefForm::from_compact_binary(&scenario_v2_envelope).is_err());
-
-    let artifact_v2_envelope = replace_magic(
-        legacy_artifact.to_compact_binary(),
-        b"crucible.reproduction-artifact.v1\0",
-        b"crucible.reproduction-artifact.v2\0",
-    );
-    assert!(ReproductionArtifact::from_compact_binary(&artifact_v2_envelope).is_err());
 }
 
 fn replace_magic(mut bytes: Vec<u8>, from: &[u8], to: &[u8]) -> Vec<u8> {
@@ -644,14 +535,6 @@ fn replace_magic(mut bytes: Vec<u8>, from: &[u8], to: &[u8]) -> Vec<u8> {
     assert!(bytes.starts_with(from));
     bytes[..from.len()].copy_from_slice(to);
     bytes
-}
-
-fn permanent_fault(name: &str, fault: Fault) -> FaultPlanEntry {
-    FaultPlanEntry::PermanentAt {
-        at: VirtualTime { ticks: 1 },
-        tag: FaultTag::from_name(name),
-        fault,
-    }
 }
 
 fn world_with_order(order: [&str; 2]) -> World {

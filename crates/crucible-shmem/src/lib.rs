@@ -59,7 +59,7 @@
 //! 38      1     device_io_active
 //! 39      1     padding
 //! 40      4     publish_gen
-//! 44      4     padding
+//! 44      4     control_boundary_ack
 //! 48      8     device_completion_deadline_icount
 //! 56      8     preemption_at_icount
 //! 64      8     preemption_deadline_icount
@@ -69,7 +69,11 @@
 //! 88      4     preemption_arg0
 //! 92      4     preemption_arg1
 //! 96      1     preemption_kind
-//! 97      31    reserved
+//! 97      7     padding
+//! 104     8     logical_time_raw_icount
+//! 112     8     logical_time_restore_target
+//! 120     4     logical_time_restore_request
+//! 124     4     logical_time_restore_ack
 //! ```
 //!
 //! SPSC ring header wire layout:
@@ -105,6 +109,38 @@
 //! 16      4608  decoded marker payload
 //! 4624    48    reserved (zero)
 //! ```
+//!
+//! Fault command/result transport slot wire layout:
+//!
+//! ```text
+//! offset  size       field
+//! 0       8          reservation_start logical cursor
+//! 8       8          payload_start logical cursor
+//! 16      8          reservation_end logical cursor
+//! 24      216/188    encoded command/result header
+//! 240/212 16/44      reserved (zero)
+//! ```
+//!
+//! Fault event transport slot wire layout:
+//!
+//! ```text
+//! offset  size  field
+//! 0       8     reservation_start logical cursor
+//! 8       8     payload_start logical cursor
+//! 16      8     reservation_end logical cursor
+//! 24      320   encoded event header
+//! 344     40    reserved (zero)
+//! ```
+//!
+//! Fault payload arena header wire layout:
+//!
+//! ```text
+//! offset  size  field
+//! 0       8     read_cursor
+//! 8       56    read-cacheline padding
+//! 64      8     write_cursor
+//! 72      56    write-cacheline padding
+//! ```
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]
@@ -119,9 +155,12 @@ use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 pub use abi_header::generated_c_header;
 #[cfg(unix)]
 pub use mapped_setup_region::{
-    DetachedPluginGuestIntrospectionRings, MappedCoverageRingMut, MappedDirectedRingMut,
-    MappedGuestIntrospectionConsumerRingMut, MappedGuestIntrospectionProducerRingMut,
-    MappedHostGuestIntrospectionRingsMut, MappedNodeRingPairMut,
+    DetachedPluginAcceleratorRings, DetachedPluginGuestIntrospectionRings,
+    MappedAcceleratorConsumerRingMut, MappedAcceleratorProducerRingMut, MappedCoverageRingMut,
+    MappedDirectedRingMut, MappedFaultCommandTransportMut, MappedFaultEventTransportMut,
+    MappedFaultResultTransportMut, MappedGuestIntrospectionConsumerRingMut,
+    MappedGuestIntrospectionProducerRingMut, MappedHostAcceleratorRingsMut,
+    MappedHostGuestIntrospectionRingsMut, MappedNodeRingPairMut, MappedPluginAcceleratorRingsMut,
     MappedPluginGuestIntrospectionRingsMut, MappedSetupRegion, MappedSetupRegionAccessError,
     MappedWhiteboxMarkerRingMut, SetupRegionMapError, mmap_setup_region,
 };
@@ -141,8 +180,20 @@ pub const DEFAULT_QUEUE_CAPACITY: u32 = 64;
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// Current shared-memory ABI version.
 ///
-/// Version 6 appends bounded bidirectional guest-introspection rings per VM.
-pub const ABI_VERSION: u32 = 6;
+/// Version 8 adds the per-node logical-time calibration restore transaction so
+/// a fresh plugin can reconstruct idle-jump time after QEMU loads VMState.
+/// Version 9 adds typed node-fault commands and an independent lossless stream
+/// for actual QEMU fault-rule occurrences.
+/// Version 10 appends bounded bidirectional guest-introspection rings per VM.
+/// Version 11 appends bounded accelerator request/completion rings per VM.
+/// Version 12 adds an explicit accelerator completion-capacity field and moves
+/// accelerator payload bytes to preserve a canonical bounded result envelope.
+/// Version 13 adds the canonical typed fault-command/result/event transports.
+/// Version 14 assigns the former node-slot padding at offset 44 to the plugin's
+/// drained-control-boundary publication acknowledgement.
+/// Version 15 assigns one frame-entry padding byte to the consumer-owned
+/// canonical backpressure-retention state.
+pub const ABI_VERSION: u32 = 17;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///
@@ -191,12 +242,36 @@ const _: () = assert!(MAX_FRAME_DATA <= u16::MAX as usize);
 
 #[path = "shmem/delivery_errors.rs"]
 mod delivery_errors;
+#[path = "shmem/fault_clock_evidence.rs"]
+mod fault_clock_evidence;
+#[path = "shmem/fault_command.rs"]
+mod fault_command;
+#[path = "shmem/fault_event.rs"]
+mod fault_event;
+#[path = "shmem/fault_instruction_evidence.rs"]
+mod fault_instruction_evidence;
+#[path = "shmem/fault_memory.rs"]
+mod fault_memory;
+#[path = "shmem/fault_memory_batch.rs"]
+mod fault_memory_batch;
+#[path = "shmem/fault_memory_evidence.rs"]
+mod fault_memory_evidence;
+#[path = "shmem/fault_node.rs"]
+mod fault_node;
+#[path = "shmem/fault_register_evidence.rs"]
+mod fault_register_evidence;
+#[path = "shmem/fault_target_manifest.rs"]
+mod fault_target_manifest;
+#[path = "shmem/fault_terminal_evidence.rs"]
+mod fault_terminal_evidence;
 #[path = "shmem/fingerprint_sample.rs"]
 mod fingerprint_sample;
 #[path = "shmem/frame_node.rs"]
 mod frame_node;
 #[path = "shmem/region.rs"]
 mod region;
+#[path = "shmem/ring_accelerator.rs"]
+mod ring_accelerator;
 #[path = "shmem/ring_coverage.rs"]
 mod ring_coverage;
 #[path = "shmem/ring_guest_introspection.rs"]
@@ -205,9 +280,21 @@ mod ring_guest_introspection;
 mod ring_whitebox_marker;
 
 pub use delivery_errors::*;
+pub use fault_clock_evidence::*;
+pub use fault_command::*;
+pub use fault_event::*;
+pub use fault_instruction_evidence::*;
+pub use fault_memory::*;
+pub use fault_memory_batch::*;
+pub use fault_memory_evidence::*;
+pub use fault_node::*;
+pub use fault_register_evidence::*;
+pub use fault_target_manifest::*;
+pub use fault_terminal_evidence::*;
 pub use fingerprint_sample::*;
 pub use frame_node::*;
 pub use region::*;
+pub use ring_accelerator::*;
 pub use ring_coverage::*;
 pub use ring_guest_introspection::*;
 pub use ring_whitebox_marker::*;

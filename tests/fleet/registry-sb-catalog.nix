@@ -12,7 +12,7 @@
 # UKI (server-secureboot's), no TPM and no firmware enforcement required —
 # the gate is pure apm policy over downloaded metadata:
 #
-#   1. PUBLISH — the registry publishes the signed server-secureboot
+#   1. PUBLISH — the registry publishes the signed server-measured-boot
 #      toplevel as a sysroot package, attaching its signed UKI as an image.
 #      `apr publish` derives the SB facts from the real binary (sbverify +
 #      in-Rust PKCS#7 for the signer cert, objcopy for `.sbat`,
@@ -28,13 +28,15 @@
 #      floor is raised one above the image's generation. `apm upgrade` must
 #      REFUSE on the floor, again without changing either axis.
 #   4. ACCEPT CATALOG — the floor is lowered to the image's generation. The
-#      Secure Boot catalog validation passes, after which the A/B image
-#      gate rejects this legacy UKI-only fixture because it has no authenticated
-#      raw OTA payload. Both generation axes remain unchanged.
+#      Secure Boot catalog validation passes and the consumer reaches the A/B
+#      staging boundary. This direct-kernel policy fixture has no mounted EFI
+#      System Partition, so staging fails closed before mutating a slot and both
+#      generation axes remain unchanged. The image-mode lifecycle test owns full
+#      staging, reboot, bless, fallback, and rollback coverage.
 #
 # Machines (lexicographic: registry=192.168.50.10, target=192.168.50.11):
 #   registry: aos-registry-server (gitd :9418) + static-cache package (:8000),
-#             with the signed server-secureboot toplevel + its UKI staged in
+#             with the signed measured-boot toplevel + its UKI staged in
 #             store (extraClosures) and the publish-time SB toolchain
 #             (sbsigntools/binutils/systemd) reachable by store path.
 #   target:   plain server (kernel boot); the closure + catalog travel over
@@ -46,11 +48,34 @@
   pkgs,
   systems,
 }: let
-  sbTop = systems.server-secureboot.config.system.build.toplevel;
-  sbUki = systems.server-secureboot.config.system.build.uki;
-  sbImage = systems.server-secureboot.config.system.build.image.raw;
-  sbImageDisk = systems.server-secureboot.config.system.build.imageArtifacts.raw.disk;
-  sbImageInfo = systems.server-secureboot.config.system.build.imageArtifacts.raw.info;
+  sbSystem = mkSystem [
+    ../../systems/server-measured-boot.nix
+    {
+      # The consumer boots the default 0.1.0 fixture. A distinct release is
+      # required for `apm upgrade --system` to evaluate the candidate policy
+      # instead of correctly reporting that the system is already current.
+      aos.system.version = "test-sb-catalog";
+    }
+  ];
+  sbTop = sbSystem.config.system.build.toplevel;
+  sbUki = sbSystem.config.system.build.uki;
+  sbImage = sbSystem.config.system.build.image.raw;
+  sbImageDisk = sbSystem.config.system.build.imageArtifacts.raw.disk;
+  sbImageInfo = sbSystem.config.system.build.imageArtifacts.raw.info;
+  publicationClosureInfo = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
+    rootPaths = [
+      sbTop
+      sbUki
+      sbImage
+      sbImageDisk
+      sbImageInfo
+      pkgs.secure-boot-test-keys
+      pkgs.sbsigntools
+      pkgs.binutils
+      pkgs.systemd
+    ];
+    pname = "registry-sb-publication-closure-info";
+  };
 
   # server-test bundles the guest agent and the CLI tools the producer needs
   # (it hand-seeds + pushes the registry with git) that image slimming dropped
@@ -67,23 +92,28 @@
 in {
   name = "registry-sb-catalog";
   # Two boots + registry/static-cache package activation + full-closure
-  # static cache + one ~270 MiB cross-VM NAR transfer (the first refused
-  # upgrade still downloads) + two further validation passes over the cached
-  # closure + three catalog re-syncs. Budgeted like install-from-image.
-  timeout = 2700;
+  # static cache + one full measured A/B image and closure transfer (the first
+  # refused upgrade still downloads) + two further validation passes over the
+  # cached closure + three catalog re-syncs. Budgeted like install-from-image.
+  timeout = 5400;
 
   machines = {
     registry = {
       system = serverWithRegistry;
       packages = ["aos-registry-server" "test-static-cache-server"];
-      # The producer owns the signed toplevel, disk image, and exact UKI
-      # associated by image-info.json; all must resolve in its store.
-      extraClosures = [sbTop sbUki sbImage pkgs.sbsigntools pkgs.binutils pkgs.systemd];
+      # Match a release workstation: host-built publication inputs enter over
+      # a read-only 9p store mount and are registered in-guest below.
+      hostStoreMount = true;
+      extraModules = [
+        {
+          aos.kernel.modules = ["9pnet_virtio" "9p"];
+        }
+      ];
       # `apr cache generate` writes a zstd static cache of the full
-      # server-secureboot closure PLUS the standalone signed UKI image
-      # (~300 MiB nar of its own) under /var/lib/sysreg-cache — larger than the plain
-      # server-2 fixture, so size /var generously.
-      varSizeMiB = 4096;
+      # measured-boot closure plus the authenticated A/B image payload under
+      # /var/lib/sysreg-cache, so size /var generously.
+      varSizeMiB = 8192;
+      memoryMiB = 8192;
     };
 
     target = {
@@ -93,7 +123,8 @@ in {
       # The download lands twice on /var: the NAR cache under
       # /var/lib/apm/cache and the imported store paths (the /nix overlay
       # upper lives on the var partition) — the full sysroot closure.
-      varSizeMiB = 4096;
+      varSizeMiB = 8192;
+      memoryMiB = 8192;
     };
   };
 
@@ -162,20 +193,52 @@ in {
       # are cataloged on the sysroot entry.
       registry.succeed(textwrap.dedent("""
           set -eu
-          export HOME=/tmp
+          export HOME=/var/lib/apr-operator
           export GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@test
           export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@test
           export NIX_REMOTE=""
           export NIX_CONF_DIR=/tmp/nix-conf
           export PATH="${pkgs.sbsigntools}/bin:${pkgs.binutils}/bin:${pkgs.systemd}/lib/systemd:$PATH"
-          mkdir -p "$NIX_CONF_DIR"
+          mkdir -p "$HOME" "$NIX_CONF_DIR"
           printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' \\
             > "$NIX_CONF_DIR/nix.conf"
 
+          mkdir -p /run/aos-host-store
+          ${pkgs.util-linux}/bin/mount -t 9p \
+            -o trans=virtio,version=9p2000.L,msize=1048576,ro \
+            aos-host-store /run/aos-host-store
+          CLOSURE_INFO='${publicationClosureInfo}'
+          test -r "/run/aos-host-store/$(basename "$CLOSURE_INFO")/registration"
+          while IFS= read -r store_path; do
+            if [ ! -e "$store_path" ]; then
+              source_path="/run/aos-host-store/$(basename "$store_path")"
+              if [ -L "$source_path" ]; then
+                ln -s "$(readlink "$source_path")" "$store_path"
+              elif [ -d "$source_path" ]; then
+                mkdir "$store_path"
+                ${pkgs.util-linux}/bin/mount --bind "$source_path" "$store_path"
+              elif [ -f "$source_path" ]; then
+                touch "$store_path"
+                ${pkgs.util-linux}/bin/mount --bind "$source_path" "$store_path"
+              else
+                printf 'unsupported store object: %s\n' "$source_path" >&2
+                exit 1
+              fi
+            fi
+          done < "/run/aos-host-store/$(basename "$CLOSURE_INFO")/store-paths"
+          ${pkgs.nix}/bin/nix-store --load-db \
+            < "/run/aos-host-store/$(basename "$CLOSURE_INFO")/registration"
           ${pkgs.nix}/bin/nix-store --check-validity '${sbTop}'
+          ${pkgs.nix}/bin/nix-store --check-validity '${sbImageDisk}'
+          ${pkgs.nix}/bin/nix-store --check-validity '${sbImageInfo}'
+          ${pkgs.util-linux}/bin/findmnt -rn -t 9p -o OPTIONS \
+            /run/aos-host-store | grep -qw ro
+          ! touch '${sbImageDisk}'/host-store-write-must-fail
 
           ${pkgs.aos}/bin/apr create sysreg
           REG_DIR=$HOME/.local/share/apm/registries/sysreg
+          mkdir -p "$REG_DIR/sb-certs"
+          cp ${pkgs.secure-boot-test-keys}/db.crt "$REG_DIR/sb-certs/db.pem"
           DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
           ORIGIN=/var/lib/aos-registry-server/registries/sysreg
           git init --bare --object-format=sha256 "$ORIGIN"
@@ -187,9 +250,9 @@ in {
           # Publish the signed toplevel with its raw disk image. Its canonical
           # image-info.json binds the exact UKI used to derive SB facts.
           # Capture --json: it carries the derived facts verbatim.
-          ${pkgs.aos}/bin/apr --json publish '${sbTop}' \\
+          if ! ${pkgs.aos}/bin/apr --json publish '${sbTop}' \\
             --name aos \\
-            --version 0.1.0 \\
+            --version test-sb-catalog \\
             --description 'secure-boot catalog fixture' \\
             --license MIT \\
             --maintainer test \\
@@ -200,7 +263,10 @@ in {
             --image-uki "$SB_UKI" \\
             --no-ca \\
             --registry sysreg \\
-            --no-commit > /tmp/publish.json
+            --no-commit > "$HOME/publish.json"; then
+            cat "$HOME/publish.json" >&2
+            exit 1
+          fi
           ${pkgs.aos}/bin/apr verify --registry sysreg
 
           ${pkgs.aos}/bin/apr cache generate \\
@@ -227,9 +293,25 @@ in {
       """), timeout=1200)
 
       branch = registry.succeed("cat /tmp/sysreg-branch").strip()
+      initial_catalog = json.loads(
+          registry.succeed(
+              "HOME=/var/lib/apr-operator ${pkgs.aos}/bin/apr "
+              "sb-certs list --registry sysreg --json"
+          )
+      )
+      assert initial_catalog["active"] == [
+          {
+              "cert_sha256": "0" * 64,
+              "id": "decoy",
+          }
+      ], initial_catalog
+      assert initial_catalog["revoked"] == [], initial_catalog
+      assert initial_catalog["sbat_floor"] == [], initial_catalog
 
       # The derived Secure Boot facts, straight from `apr publish --json`.
-      pub = json.loads(registry.succeed("cat /tmp/publish.json"))
+      pub = json.loads(
+          registry.succeed("cat /var/lib/apr-operator/publish.json")
+      )
       images = pub.get("images", [])
       assert len(images) == 1, f"expected one published image, got: {images!r}"
       img = images[0]
@@ -309,7 +391,7 @@ in {
       # once (above); each state only rewrites sb-certs.toml + retags.
       def push_catalog(tag, *sb_cert_cmds):
           script = "set -eu\n"
-          script += "export HOME=/tmp\n"
+          script += "export HOME=/var/lib/apr-operator\n"
           script += "export GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@test\n"
           script += "export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@test\n"
           # The origin was chown'd to aos-gitd (so gitd can serve it); root
@@ -343,10 +425,10 @@ in {
       out = target.fail(
           "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH "
           "${pkgs.aos}/bin/apm upgrade --system --yes 2>&1",
-          timeout=900,
+          timeout=1800,
       )
       print("=== refuse (unknown signer) ===\n" + out)
-      assert "active db-cert set" in out, (
+      assert "signer cert" in out and "is not active" in out, (
           f"upgrade was not refused for an untrusted signer:\n{out}"
       )
       assert_generation_axes_unchanged("unknown signer")
@@ -357,16 +439,38 @@ in {
       push_catalog(
           "v0.0.2",
           f"{APR} sb-certs add aos-db --cert-sha256 {signer} --registry sysreg --no-commit",
+          f"{APR} sb-certs retire decoy --reason replaced-by-production-cert "
+          "--registry sysreg --no-commit",
           f"{APR} sb-certs set-floor --component {sbat_component} "
           f"--generation {sbat_generation + 1} --registry sysreg --no-commit",
       )
+      rotated_catalog = json.loads(
+          registry.succeed(
+              f"HOME=/var/lib/apr-operator {APR} "
+              "sb-certs list --registry sysreg --json"
+          )
+      )
+      active_ids = {entry["id"] for entry in rotated_catalog["active"]}
+      assert active_ids == {"aos-db", "decoy"}, rotated_catalog
+      assert rotated_catalog["revoked"] == [
+          {
+              "id": "decoy",
+              "reason": "replaced-by-production-cert",
+          }
+      ], rotated_catalog
+      assert rotated_catalog["sbat_floor"] == [
+          {
+              "component": sbat_component,
+              "generation": sbat_generation + 1,
+          }
+      ], rotated_catalog
       out = target.fail(
           "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH "
           "${pkgs.aos}/bin/apm upgrade --system --yes 2>&1",
           timeout=600,
       )
       print("=== refuse (sbat floor) ===\n" + out)
-      assert "revocation floor" in out, (
+      assert "below floor" in out, (
           f"upgrade was not refused for a below-floor SBAT generation:\n{out}"
       )
       assert_generation_axes_unchanged("SBAT floor")
@@ -387,14 +491,15 @@ in {
           "${pkgs.aos}/bin/apm upgrade --system --yes 2>&1",
           timeout=600,
       )
-      print("=== accept catalog, reject legacy payload ===\n" + out)
+      print("=== accept catalog, reach unavailable ESP ===\n" + out)
       assert "Secure Boot catalog validation passed" in out, (
           f"a valid catalog did not report SB validation:\n{out}"
       )
-      assert "no authenticated raw OTA image" in out, (
-          f"a legacy UKI-only payload passed the A/B image gate:\n{out}"
+      assert "/boot is not a mounted EFI System Partition" in out, (
+          f"accepted image did not reach the direct-kernel fixture's "
+          f"unavailable ESP boundary:\n{out}"
       )
-      assert_generation_axes_unchanged("catalog accepted without raw OTA")
+      assert_generation_axes_unchanged("catalog accepted before slot commit")
       target.succeed("${pkgs.nix}/bin/nix-store --check-validity '${sbTop}'")
       failed = target.succeed("systemctl --failed --no-legend").strip()
       assert not failed, f"failed units after accepted upgrade: {failed!r}"

@@ -276,6 +276,16 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "gate_basic_block_coverage"
             ),
             (
+                "gate:checkpoint-materialization",
+                "crucible",
+                "gate_checkpoint_materialization"
+            ),
+            (
+                "gate:state-space-search",
+                "crucible",
+                "gate_state_space_search"
+            ),
+            (
                 "gate:fleet-equivalence",
                 "crucible",
                 "gate_fleet_equivalence"
@@ -284,6 +294,11 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "gate:campaign-continuity",
                 "crucible-cas",
                 "gate_campaign_continuity"
+            ),
+            (
+                "gate:signal-fault-system",
+                "crucible",
+                "gate_signal_fault_system"
             ),
             ("gate:perf-bench", "crucible-harness", "gate_perf_bench"),
         ])

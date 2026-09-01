@@ -176,6 +176,15 @@
     AOS_HUB_CONSOLE_JS = "${buildConsoleDist}/hub-console.js";
     AOS_HUB_CONSOLE_WASM = "${buildConsoleDist}/hub-console_bg.wasm";
     AOS_HUB_CONSOLE_CSS = "${buildConsoleDist}/hub-console.css";
+    # A Worker activation must compile and instantiate this module before even
+    # an edge-cache hit can run. Optimize the production wasm as one unit and
+    # omit symbol names; leaving Cargo's many-codegen-unit default produced a
+    # roughly 47 MiB module and observable 400-800 ms cold-cache hits.
+    CARGO_PROFILE_RELEASE_OPT_LEVEL = "s";
+    CARGO_PROFILE_RELEASE_LTO = "fat";
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1";
+    CARGO_PROFILE_RELEASE_PANIC = "abort";
+    CARGO_PROFILE_RELEASE_STRIP = "symbols";
   };
   cargoArtifacts = mkCargoArtifacts {
     pname = "aos-hub-worker-wasm-artifacts";
@@ -248,6 +257,11 @@ in
           export AOS_HUB_CONSOLE_JS="${buildConsoleDist}/hub-console.js"
           export AOS_HUB_CONSOLE_WASM="${buildConsoleDist}/hub-console_bg.wasm"
           export AOS_HUB_CONSOLE_CSS="${buildConsoleDist}/hub-console.css"
+          export CARGO_PROFILE_RELEASE_OPT_LEVEL="s"
+          export CARGO_PROFILE_RELEASE_LTO="fat"
+          export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="1"
+          export CARGO_PROFILE_RELEASE_PANIC="abort"
+          export CARGO_PROFILE_RELEASE_STRIP="symbols"
           # Step 1 — compile the worker cdylib to wasm32. rust-lld (shipped in
           # pkgs.rust's rustlib bin) is the wasm linker; no env override needed.
           #

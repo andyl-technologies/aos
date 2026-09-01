@@ -35,12 +35,17 @@
 //! Rust callback error to a rejected JavaScript promise, which is the platform
 //! rollback signal.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use worker::{SqlStorage, SqlStorageValue, Storage};
 
 use aos_hub_core::backend::{prepare, split_statements, Backend, CheckedStatement, Statement};
-use aos_hub_core::db::{MIGRATIONS, SCHEMA_IDENTITY};
+use aos_hub_core::db::{
+    MIGRATIONS, PREVIOUS_SCHEMA_IDENTITY, SCHEMA_IDENTITY, TOPOLOGY_V1_TO_V2_SQLITE,
+};
 use aos_hub_core::dialect::Dialect;
 use aos_hub_core::value::{Row, Value};
 
@@ -54,6 +59,119 @@ const JS_SAFE_INTEGER_MAX: i64 = 9_007_199_254_740_991;
 pub struct SqlDoBackend {
     storage: Storage,
     sql: SqlStorage,
+    metrics: SqlDoMetrics,
+}
+
+/// Cumulative SQL activity recorded by one activated Durable Object runtime.
+#[derive(Clone, Default)]
+pub struct SqlDoMetrics {
+    counters: Rc<SqlDoMetricCounters>,
+}
+
+#[derive(Default)]
+struct SqlDoMetricCounters {
+    statements: Cell<u64>,
+    queries: Cell<u64>,
+    mutations: Cell<u64>,
+    transactions: Cell<u64>,
+    affected_count_queries: Cell<u64>,
+    rows_read: Cell<u64>,
+    rows_written: Cell<u64>,
+}
+
+/// One point-in-time snapshot of [`SqlDoMetrics`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SqlDoMetricsSnapshot {
+    /// SQL statements sent to colocated SQLite.
+    pub statements: u64,
+    /// Query operations requested through the backend.
+    pub queries: u64,
+    /// Mutation operations requested through the backend.
+    pub mutations: u64,
+    /// Atomic batch transactions requested through the backend.
+    pub transactions: u64,
+    /// Auxiliary `changes()` queries needed for exact affected-row counts.
+    pub affected_count_queries: u64,
+    /// SQLite rows read, including auxiliary result rows.
+    pub rows_read: u64,
+    /// SQLite rows written, including index maintenance reported by the runtime.
+    pub rows_written: u64,
+}
+
+impl SqlDoMetrics {
+    /// Returns the cumulative counters recorded so far.
+    #[must_use]
+    pub fn snapshot(&self) -> SqlDoMetricsSnapshot {
+        SqlDoMetricsSnapshot {
+            statements: self.counters.statements.get(),
+            queries: self.counters.queries.get(),
+            mutations: self.counters.mutations.get(),
+            transactions: self.counters.transactions.get(),
+            affected_count_queries: self.counters.affected_count_queries.get(),
+            rows_read: self.counters.rows_read.get(),
+            rows_written: self.counters.rows_written.get(),
+        }
+    }
+
+    fn record_cursor(&self, cursor: &worker::SqlCursor) {
+        self.counters
+            .statements
+            .set(self.counters.statements.get().saturating_add(1));
+        self.counters.rows_read.set(
+            self.counters
+                .rows_read
+                .get()
+                .saturating_add(cursor.rows_read() as u64),
+        );
+        self.counters.rows_written.set(
+            self.counters
+                .rows_written
+                .get()
+                .saturating_add(cursor.rows_written() as u64),
+        );
+    }
+
+    fn record_query(&self) {
+        self.counters
+            .queries
+            .set(self.counters.queries.get().saturating_add(1));
+    }
+
+    fn record_mutation(&self) {
+        self.counters
+            .mutations
+            .set(self.counters.mutations.get().saturating_add(1));
+    }
+
+    fn record_transaction(&self) {
+        self.counters
+            .transactions
+            .set(self.counters.transactions.get().saturating_add(1));
+    }
+
+    fn record_affected_count_query(&self) {
+        self.counters
+            .affected_count_queries
+            .set(self.counters.affected_count_queries.get().saturating_add(1));
+    }
+}
+
+impl SqlDoMetricsSnapshot {
+    /// Returns the saturating difference from an earlier snapshot.
+    #[must_use]
+    pub fn since(self, earlier: SqlDoMetricsSnapshot) -> SqlDoMetricsSnapshot {
+        SqlDoMetricsSnapshot {
+            statements: self.statements.saturating_sub(earlier.statements),
+            queries: self.queries.saturating_sub(earlier.queries),
+            mutations: self.mutations.saturating_sub(earlier.mutations),
+            transactions: self.transactions.saturating_sub(earlier.transactions),
+            affected_count_queries: self
+                .affected_count_queries
+                .saturating_sub(earlier.affected_count_queries),
+            rows_read: self.rows_read.saturating_sub(earlier.rows_read),
+            rows_written: self.rows_written.saturating_sub(earlier.rows_written),
+        }
+    }
 }
 
 impl SqlDoBackend {
@@ -64,8 +182,18 @@ impl SqlDoBackend {
     /// [`SqlStorage`] facade alone cannot start a transaction.
     #[must_use]
     pub fn new(storage: Storage) -> SqlDoBackend {
+        Self::with_metrics(storage, SqlDoMetrics::default())
+    }
+
+    /// Wraps storage and records its SQL activity in `metrics`.
+    #[must_use]
+    pub fn with_metrics(storage: Storage, metrics: SqlDoMetrics) -> SqlDoBackend {
         let sql = storage.sql();
-        SqlDoBackend { storage, sql }
+        SqlDoBackend {
+            storage,
+            sql,
+            metrics,
+        }
     }
 
     /// Proves indexed row counts and rollback against the real DO transaction binding.
@@ -173,14 +301,40 @@ pub(crate) async fn ensure_migrated(backend: &SqlDoBackend) -> Result<()> {
         .and_then(|row| row.get::<i64>(0).ok())
         .unwrap_or(0)
         .max(0) as usize;
-    if applied != 0 {
-        require_schema_identity(backend).await?;
-    }
+    let previous_identity = if applied == 0 {
+        false
+    } else {
+        require_schema_identity(backend, true).await?
+    };
     if applied > MIGRATIONS.len() {
         anyhow::bail!(
             "HubDb schema {applied} is newer than this Worker supports ({})",
             MIGRATIONS.len()
         );
+    }
+    if previous_identity {
+        let statements = split_statements(TOPOLOGY_V1_TO_V2_SQLITE)
+            .into_iter()
+            .map(|sql| Statement::new(sql, Vec::new()))
+            .collect::<Vec<_>>();
+        backend.batch(&statements).await?;
+    }
+    if applied == MIGRATIONS.len() && previous_identity {
+        let migration = MIGRATIONS
+            .last()
+            .ok_or_else(|| anyhow!("HubDb has no identity-adoption migration"))?;
+        let mut statements = split_statements(migration)
+            .into_iter()
+            .map(|sql| Statement::new(sql, Vec::new()))
+            .collect::<Vec<_>>();
+        statements.push(Statement::new(
+            "INSERT INTO _do_migrations (id, applied) VALUES (0, ?1) \
+             ON CONFLICT(id) DO UPDATE SET applied = ?1",
+            vec![Value::Int(MIGRATIONS.len() as i64)],
+        ));
+        backend.batch(&statements).await?;
+        require_schema_identity(backend, false).await?;
+        return Ok(());
     }
     if applied == MIGRATIONS.len() {
         return Ok(());
@@ -201,11 +355,11 @@ pub(crate) async fn ensure_migrated(backend: &SqlDoBackend) -> Result<()> {
         // every statement back, leaving the migration safe to retry.
         backend.batch(&statements).await?;
     }
-    require_schema_identity(backend).await?;
+    require_schema_identity(backend, false).await?;
     Ok(())
 }
 
-async fn require_schema_identity(backend: &SqlDoBackend) -> Result<()> {
+async fn require_schema_identity(backend: &SqlDoBackend, allow_previous: bool) -> Result<bool> {
     let row = backend
         .query("SELECT identity FROM hub_schema_identity", &[])
         .await
@@ -219,10 +373,10 @@ async fn require_schema_identity(backend: &SqlDoBackend) -> Result<()> {
         .ok_or_else(|| anyhow!("topology schema identity row is missing"))?;
     let identity: String = row.get(0)?;
     anyhow::ensure!(
-        identity == SCHEMA_IDENTITY,
+        identity == SCHEMA_IDENTITY || (allow_previous && identity == PREVIOUS_SCHEMA_IDENTITY),
         "unsupported Hub schema identity '{identity}'; expected '{SCHEMA_IDENTITY}'"
     );
-    Ok(())
+    Ok(identity == PREVIOUS_SCHEMA_IDENTITY)
 }
 
 /// Converts a bound [`Value`] into the [`SqlStorageValue`] the DO engine binds.
@@ -286,7 +440,7 @@ impl SqlDoBackend {
     /// Translates + binds `sql`/`params` and runs them on the local engine,
     /// returning the cursor.
     fn run(&self, sql: &str, params: &[Value]) -> Result<worker::SqlCursor> {
-        run(&self.sql, sql, params)
+        run(&self.sql, sql, params, &self.metrics)
     }
 }
 
@@ -294,7 +448,12 @@ impl SqlDoBackend {
 ///
 /// The free function form lets a `'static` Durable Object transaction closure
 /// own the facade without borrowing the backend.
-fn run(sql_storage: &SqlStorage, sql: &str, params: &[Value]) -> Result<worker::SqlCursor> {
+fn run(
+    sql_storage: &SqlStorage,
+    sql: &str,
+    params: &[Value],
+    metrics: &SqlDoMetrics,
+) -> Result<worker::SqlCursor> {
     let (translated, ordered) = prepare(Dialect::Sqlite, sql, params)?;
     // DO SQLite binds `?` positionally, not sqlite's numbered `?N`, and
     // corrupts a bound `NULL` (stored as `"[object Object]"`) — both are
@@ -305,9 +464,11 @@ fn run(sql_storage: &SqlStorage, sql: &str, params: &[Value]) -> Result<worker::
         .iter()
         .map(to_sql)
         .collect::<Result<Vec<_>>>()?;
-    sql_storage
+    let cursor = sql_storage
         .exec(positional_sql.as_str(), bindings)
-        .map_err(|err| anyhow!("DO sql exec: {err}"))
+        .map_err(|err| anyhow!("DO sql exec: {err}"))?;
+    metrics.record_cursor(&cursor);
+    Ok(cursor)
 }
 
 /// Returns SQLite's direct affected-row count for the immediately preceding statement.
@@ -315,10 +476,12 @@ fn run(sql_storage: &SqlStorage, sql: &str, params: &[Value]) -> Result<worker::
 /// `SqlCursor::rows_written` is a billing counter and includes index writes;
 /// SQLite's `changes()` is the portable one-row CAS count required by
 /// [`Backend::execute`] and [`Backend::checked_batch`].
-fn changes(sql_storage: &SqlStorage) -> Result<u64> {
+fn changes(sql_storage: &SqlStorage, metrics: &SqlDoMetrics) -> Result<u64> {
     let cursor = sql_storage
         .exec("SELECT changes()", None)
         .map_err(|error| anyhow!("DO sql changes(): {error}"))?;
+    metrics.record_affected_count_query();
+    metrics.record_cursor(&cursor);
     let row = cursor
         .raw()
         .next()
@@ -341,11 +504,19 @@ impl Backend for SqlDoBackend {
     }
 
     async fn execute(&self, sql: &str, params: &[Value]) -> Result<u64> {
+        self.metrics.record_mutation();
         self.run(sql, params)?;
-        changes(&self.sql)
+        changes(&self.sql, &self.metrics)
+    }
+
+    async fn execute_discarding_count(&self, sql: &str, params: &[Value]) -> Result<()> {
+        self.metrics.record_mutation();
+        self.run(sql, params)?;
+        Ok(())
     }
 
     async fn execute_insert(&self, sql: &str, params: &[Value]) -> Result<i64> {
+        self.metrics.record_mutation();
         self.run(sql, params)?;
         // The local engine has no `last_row_id` on the cursor; read it back in
         // the same DO turn (single-threaded, so no interleaving write).
@@ -353,6 +524,7 @@ impl Backend for SqlDoBackend {
             .sql
             .exec("SELECT last_insert_rowid()", None)
             .map_err(|err| anyhow!("DO sql last_insert_rowid: {err}"))?;
+        self.metrics.record_cursor(&cursor);
         let row = cursor
             .raw()
             .next()
@@ -369,6 +541,7 @@ impl Backend for SqlDoBackend {
     }
 
     async fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Row>> {
+        self.metrics.record_query();
         let cursor = self.run(sql, params)?;
         let mut rows = Vec::new();
         for row in cursor.raw() {
@@ -382,21 +555,27 @@ impl Backend for SqlDoBackend {
 
     async fn execute_batch(&self, sql: &str) -> Result<()> {
         for statement in split_statements(sql) {
+            self.metrics.record_mutation();
             let (translated, _) = prepare(Dialect::Sqlite, &statement, &[])?;
-            self.sql
+            let cursor = self
+                .sql
                 .exec(translated.as_str(), None)
                 .map_err(|err| anyhow!("DO sql exec_batch: {err}"))?;
+            self.metrics.record_cursor(&cursor);
         }
         Ok(())
     }
 
     async fn batch(&self, stmts: &[Statement]) -> Result<()> {
+        self.metrics.record_transaction();
         let sql = self.sql.clone();
+        let metrics = self.metrics.clone();
         let statements = stmts.to_vec();
         self.storage
             .transaction(move |_transaction| async move {
                 for statement in &statements {
-                    run(&sql, &statement.sql, &statement.params)
+                    metrics.record_mutation();
+                    run(&sql, &statement.sql, &statement.params, &metrics)
                         .map_err(|error| worker::Error::RustError(error.to_string()))?;
                 }
                 Ok(())
@@ -406,15 +585,23 @@ impl Backend for SqlDoBackend {
     }
 
     async fn checked_batch(&self, stmts: &[CheckedStatement]) -> Result<()> {
+        self.metrics.record_transaction();
         let sql = self.sql.clone();
+        let metrics = self.metrics.clone();
         let statements = stmts.to_vec();
         self.storage
             .transaction(move |_transaction| async move {
                 for checked in &statements {
-                    run(&sql, &checked.statement.sql, &checked.statement.params)
-                        .map_err(|error| worker::Error::RustError(error.to_string()))?;
+                    metrics.record_mutation();
+                    run(
+                        &sql,
+                        &checked.statement.sql,
+                        &checked.statement.params,
+                        &metrics,
+                    )
+                    .map_err(|error| worker::Error::RustError(error.to_string()))?;
                     if let Some(expected) = checked.expected_rows {
-                        let actual = changes(&sql)
+                        let actual = changes(&sql, &metrics)
                             .map_err(|error| worker::Error::RustError(error.to_string()))?;
                         if actual != expected {
                             return Err(worker::Error::RustError(format!(

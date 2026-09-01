@@ -323,9 +323,10 @@ fn for_each_ref(dir: &Path, rest: &[&str]) -> Result<Output> {
         let Ok(name) = reference.name() else {
             continue;
         };
-        let under_pattern = patterns
-            .iter()
-            .any(|prefix| name == *prefix || name.starts_with(&format!("{prefix}/")));
+        let under_pattern = patterns.iter().any(|pattern| {
+            let prefix = pattern.trim_end_matches('/');
+            name == prefix || name.starts_with(&format!("{prefix}/"))
+        });
         if !under_pattern {
             continue;
         }
@@ -1434,6 +1435,37 @@ mod tests {
         assert!(out.success);
         let text = String::from_utf8(out.stdout).expect("utf8 output");
         assert_eq!(text, format!("{oid}\trefs/heads/stable\n"));
+    }
+
+    /// A trailing slash retains Git's prefix semantics. APR uses this exact
+    /// form when discovering `refs/hub/changes/*` after fetching Hub drafts.
+    #[test]
+    fn for_each_ref_accepts_trailing_slash_prefix() {
+        let (tmp, oid) = repo_with_remote();
+        let repo = Repository::open(tmp.path()).expect("open repository");
+        repo.reference(
+            "refs/hub/changes/change-001",
+            oid.parse().expect("OID"),
+            true,
+            "",
+        )
+        .expect("change ref");
+
+        let out = dispatch(
+            tmp.path(),
+            &[
+                "for-each-ref",
+                "--format=%(refname)%09%(objectname)",
+                "refs/hub/changes/",
+            ],
+        )
+        .expect("dispatch");
+
+        assert!(out.success);
+        assert_eq!(
+            String::from_utf8(out.stdout).expect("utf8 output"),
+            format!("refs/hub/changes/change-001\t{oid}\n")
+        );
     }
 
     /// `git log -1 --format=%B <rev>` returns the *named* revision's full

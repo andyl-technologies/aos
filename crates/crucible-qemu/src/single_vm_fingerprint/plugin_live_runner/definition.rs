@@ -66,13 +66,13 @@ pub const TARGET_ICOUNTS: [u64; 3] = [4_000_000, 8_000_000, 12_000_000];
 /// Exact boundary at which a real inbound frame becomes guest-visible.
 pub const FRAME_DELIVERY_ICOUNT: u64 = 4_000_001;
 /// Exact boundary at which a scheduler-commanded interrupt fault activates.
-pub const FAULT_ACTIVATION_ICOUNT: u64 = 8_000_001;
+pub const SIGNAL_EFFECT_BOUNDARY_ICOUNT: u64 = 8_000_001;
 /// Complete ascending periodic and event-driven sampling plan.
 pub const SAMPLE_ICOUNTS: [u64; 5] = [
     4_000_000,
     FRAME_DELIVERY_ICOUNT,
     8_000_000,
-    FAULT_ACTIVATION_ICOUNT,
+    SIGNAL_EFFECT_BOUNDARY_ICOUNT,
     12_000_000,
 ];
 

@@ -6,11 +6,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
@@ -19,7 +15,7 @@
 
   taskList = builtins.concatStringsSep "," taskIds;
 
-  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
+  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
@@ -42,10 +38,6 @@
       {
         label = "oneshot reply result";
         needle = "oneshot::Sender<Result<T, SessionError>>";
-      }
-      {
-        label = "fault command payload";
-        needle = "pub struct FaultSpec";
       }
       {
         label = "breakpoint command payload";
@@ -78,14 +70,6 @@
       {
         label = "query reply payload";
         needle = "pub enum QueryResult";
-      }
-      {
-        label = "inject command payload";
-        needle = "InjectFault {";
-      }
-      {
-        label = "heal command payload";
-        needle = "HealFault {";
       }
       {
         label = "set-breakpoint command";
@@ -158,6 +142,24 @@
       {
         label = "running local acknowledgement test";
         needle = "rfc_command_running_actor_acknowledges_local_boundary_replies_immediately";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-session/src/lib.rs" sessionLib [
+      {
+        label = "retired imperative fault injection command";
+        needle = "Inject" + "Fault";
+      }
+      {
+        label = "retired imperative fault healing command";
+        needle = "Heal" + "Fault";
+      }
+      {
+        label = "retired session fault payload";
+        needle = "FaultSpec";
+      }
+      {
+        label = "retired session fault tag";
+        needle = "Fault" + "Tag";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

@@ -60,6 +60,11 @@
     ../../systems/server-2.nix
     ../../systems/server-measured-boot.nix
     {
+      # The upgrade candidate deliberately carries the fleet control agent in
+      # its immutable root so the harness can reconnect after the UEFI reboot.
+      # Keep the larger contract local to this test image; production server
+      # variants retain their 512 MiB root budget.
+      aos.image.budgets.maxRootMiB = 640;
       aos.boot.kernelParams = ["net.ifnames=0"];
       environment.etc."systemd/network/10-fleet-eth0.network".text = ''
         [Match]
@@ -107,7 +112,12 @@
 
   targetSystem = mkSystem [
     ../../systems/server-verity.nix
-    {environment.systemPackages = [pkgs.git];}
+    {
+      # Git is fixture tooling for the registry workflow and intentionally
+      # expands this image beyond the production server contract.
+      environment.systemPackages = [pkgs.git];
+      aos.image.budgets.maxRootMiB = 640;
+    }
   ];
 
   # The server profile keeps the test fixtures and guest agent out of the

@@ -95,12 +95,12 @@ use crate::types::{
     ConfigOutputMeta, ConfinementClass, ExposeArtifactMeta, ExposeMeta, FEATURE_ATTESTATION_V1,
     FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1,
     FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
-    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PERMISSIONS_V1,
-    FEATURE_RECOVERY_UKIS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, FEATURE_UKI_SLOTS_V1,
-    ModuleAbiCompat, OwnedRoot, PACKAGE_META_FORMAT, PermissionsMeta, RecoveryBundleComponent,
-    RecoveryBundleComponentId, RecoveryBundleManifest, RecoveryUkiEntry, RegistryConfig,
-    RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig, RootContribution, SbatEntry,
-    SigningKeySource, SigningKeySpec, SysrootUkiEntry, UkiSlot, package_name_bucket,
+    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_OPTIONAL_CREDENTIALS_V1,
+    FEATURE_PERMISSIONS_V1, FEATURE_RECOVERY_UKIS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1,
+    FEATURE_UKI_SLOTS_V1, ModuleAbiCompat, OwnedRoot, PACKAGE_META_FORMAT, PermissionsMeta,
+    RecoveryBundleComponent, RecoveryBundleComponentId, RecoveryBundleManifest, RecoveryUkiEntry,
+    RegistryConfig, RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig, RootContribution,
+    SbatEntry, SigningKeySource, SigningKeySpec, SysrootUkiEntry, UkiSlot, package_name_bucket,
     rfc0001_metadata_requires_provenance, validate_attestation_meta, validate_branch_name,
     validate_channel_name, validate_config_module_meta, validate_config_output_meta,
     validate_expose_artifact_meta, validate_expose_meta_for_package, validate_git_ref_name,
@@ -165,6 +165,8 @@ struct PublishConfigModuleManifest {
     owns_roots: Vec<OwnedRoot>,
     #[serde(default)]
     contributes: Vec<RootContribution>,
+    #[serde(default)]
+    artifacts: crate::types::ConfigModuleArtifacts,
     #[serde(default)]
     provides_capabilities: Vec<String>,
     #[serde(default)]
@@ -1410,6 +1412,7 @@ fn refresh_registry_object_store(dir: &Path) -> Result<()> {
     }
     objectstore::write_alternates(dir, &releases)?;
     objectstore::ensure_loose_completeness(dir)?;
+    objectstore::write_index_bundles(dir)?;
     objectstore::refresh_server_info(dir)?;
     persist_image_publication_receipt(dir)?;
     Ok(())
@@ -1735,6 +1738,8 @@ pub async fn publish(
     let name = resolve_registry_name(config, registry)?;
     let dir = config.scope.registries_path().join(&name);
     ensure_writable_registry_clone(&name, &dir)?;
+    let require_signed_ukis =
+        read_registry_toml(&dir)?.is_some_and(|root| root.registry.require_signed_ukis);
     if let Some(name) = name_override {
         validate_package_name(name)?;
     }
@@ -1836,7 +1841,12 @@ pub async fn publish(
         )?);
     }
     let sb_catalog = sb_certs::load_sb_certs_toml(&dir)?;
-    apply_publish_sb_policy(&mut image_infos, sb_catalog.as_ref(), sb_db_cert.is_some())?;
+    apply_publish_sb_policy(
+        &mut image_infos,
+        sb_catalog.as_ref(),
+        sb_db_cert.is_some(),
+        require_signed_ukis,
+    )?;
     let expose_manifest = expose_manifest_path
         .map(|path| read_publish_expose_manifest(path, pkg_name))
         .transpose()?;
@@ -2224,8 +2234,34 @@ fn apply_publish_sb_policy(
     images: &mut [PublishedImage],
     catalog: Option<&SbCertsToml>,
     has_db_cert: bool,
+    require_signed_ukis: bool,
 ) -> Result<()> {
     for image in images {
+        if require_signed_ukis {
+            if image.sb.signer_cert_sha256.is_none()
+                || image
+                    .sb
+                    .ukis
+                    .iter()
+                    .any(|uki| uki.sb_signer_cert_sha256.is_none())
+            {
+                bail!(
+                    "registry [registry] require_signed_ukis = true refuses unsigned UKIs in '{}' image",
+                    image.format
+                );
+            }
+            if catalog.is_none() {
+                bail!(
+                    "registry [registry] require_signed_ukis = true requires a committed sb-certs.toml policy"
+                );
+            }
+            if !has_db_cert {
+                bail!(
+                    "registry [registry] require_signed_ukis = true requires the matching registry sb-certs/db.pem for publish-time verification"
+                );
+            }
+        }
+
         let signers = image
             .sb
             .signer_cert_sha256
@@ -2622,14 +2658,8 @@ fn read_publish_config_module(
         .iter()
         .map(|owned| (owned.root.as_str(), owned))
         .collect::<BTreeMap<_, _>>();
-    let mut derived_owned_roots = declares
-        .iter()
-        .filter_map(|path| path.split('.').next())
-        .filter(|root| *root != package_name)
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    derived_owned_roots.sort();
-    derived_owned_roots.dedup();
+    let derived_owned_roots =
+        derive_owned_root_names(&declares, package_name, &authored.owns_roots);
     let mut owns_roots = Vec::with_capacity(derived_owned_roots.len());
     for root in &derived_owned_roots {
         let authored_root = owned_by_name.remove(root.as_str()).with_context(|| {
@@ -2710,11 +2740,34 @@ fn read_publish_config_module(
         requires,
         owns_roots,
         contributes,
+        artifacts: authored.artifacts,
         provides_capabilities,
     };
     validate_config_output_meta(&module.config_output)?;
     validate_config_module_meta(package_name, &module)?;
     Ok(module)
+}
+
+fn derive_owned_root_names(
+    declares: &[String],
+    package_name: &str,
+    authored_roots: &[OwnedRoot],
+) -> Vec<String> {
+    let mut roots = declares
+        .iter()
+        .filter_map(|path| path.split('.').next())
+        .filter(|root| {
+            // Package-prefixed declarations are private by default, but an
+            // explicit ownsRoots entry promotes that same-name root into a
+            // versioned contributor interface. Publication must validate the
+            // claim just like any differently named shared root.
+            *root != package_name || authored_roots.iter().any(|owned| owned.root == *root)
+        })
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    roots.sort();
+    roots.dedup();
+    roots
 }
 
 fn reject_config_derivation_references(config_output: &str) -> Result<()> {
@@ -4617,7 +4670,9 @@ fn verify_embedded_uki(image: &PublishedImage) -> Result<()> {
     let source = format!("::/{}", image.delivery.uki.esp_path);
     let status = Command::new(mcopy)
         .env("MTOOLS_SKIP_CHECK", "1")
-        .args(["-o", "-i"])
+        // The pinned procfd is an existing Unix destination. `-n` prevents
+        // mcopy from reading the maintainer's terminal for overwrite consent.
+        .args(["-n", "-i"])
         .arg(image_spec)
         .arg(source)
         .arg(&extracted_path)
@@ -5281,7 +5336,7 @@ fn parse_sbat_csv(text: &str) -> Result<Vec<SbatEntry>> {
 ///
 /// Returns an error if the PE/COFF headers, section table, or selected raw-data
 /// range is malformed, or if the image contains duplicate selected sections.
-fn pe_section<'a>(pe: &'a [u8], section: &str) -> Result<Option<&'a [u8]>> {
+pub(crate) fn pe_section<'a>(pe: &'a [u8], section: &str) -> Result<Option<&'a [u8]>> {
     if section.is_empty() || section.len() > 8 || !section.is_ascii() {
         bail!("PE section name must contain one to eight ASCII bytes");
     }
@@ -5561,12 +5616,6 @@ fn derive_slot_uki_facts(
             .with_context(|| format!("deriving slot-specific facts for {}", path.display()))?;
         if verify_slot_cmdline {
             validate_uki_slot_cmdline(&path, slot)?;
-        }
-        if facts.signer_cert_sha256.is_some() && facts.expected_pcr11.is_none() {
-            bail!(
-                "signed A/B UKI {} has no calculable PCR-11 measurement",
-                path.display()
-            );
         }
         entries.push(SysrootUkiEntry {
             slot,
@@ -5902,8 +5951,10 @@ fn validate_uki_slot_cmdline(uki: &Path, slot: UkiSlot) -> Result<()> {
 
 /// Derives Secure Boot facts from the exact UKI named by `image-info.json`.
 ///
-/// Extracts the signer cert digest, SBAT table, and predicted PCR-11 without
-/// searching an artifact tree. Optionally enforces the publish-time
+/// Extracts the signer cert digest and SBAT table without searching an
+/// artifact tree. A predicted PCR-11 value is included only when the UKI
+/// carries a signed `.pcrsig` policy; Secure Boot signing alone does not make
+/// an image a measured-boot image. Optionally enforces the publish-time
 /// rule that an image's embedded signature must verify against `db_cert`
 /// before it can be cataloged.
 ///
@@ -5929,10 +5980,17 @@ fn derive_sb_facts(uki: &Path, db_cert: Option<&Path>) -> Result<SbFacts> {
         })?;
     }
 
+    let pe = fs::read(uki).with_context(|| format!("reading UKI {}", uki.display()))?;
+    let expected_pcr11 = if pe_section(&pe, ".pcrsig")?.is_some() {
+        extract_expected_pcr11(uki)?
+    } else {
+        None
+    };
+
     Ok(SbFacts {
         signer_cert_sha256: signer,
         sbat: extract_sbat_entries(uki)?,
-        expected_pcr11: extract_expected_pcr11(uki)?,
+        expected_pcr11,
         ukis: Vec::new(),
         recovery_ukis: Vec::new(),
         recovery_bundle: None,
@@ -6022,25 +6080,7 @@ fn config_publish_binding_digest(
     module: &ConfigModuleMeta,
     expose_manifest_digest: Option<&str>,
 ) -> Result<String> {
-    let base_lib = module
-        .evaluation_base_lib
-        .as_ref()
-        .context("published config module is missing its evaluation base-lib binding")?;
-    let metadata = serde_json::to_vec(module)
-        .context("serializing derived config-module metadata for provenance binding")?;
-    Ok(format!(
-        "sha256:{}",
-        sha256_hex(
-            format!(
-                "config={}\nbase-lib={}\nmetadata=sha256:{}\nexpose={}\n",
-                module.config_output.nar_hash,
-                base_lib.nar_hash,
-                sha256_hex(&metadata),
-                expose_manifest_digest.unwrap_or("")
-            )
-            .as_bytes()
-        )
-    ))
+    crate::package_attestation::config_module_binding_digest(module, expose_manifest_digest)
 }
 
 fn package_nar_root_digest(nar_hash: &str) -> String {
@@ -8078,7 +8118,14 @@ fn package_platform_table(
                 let root_verity = image.directory.path.join("root.verity");
                 let root_hash = image.directory.path.join("root.roothash");
                 let root_hash_sig = image.directory.path.join("root.roothash.p7s");
-                if matches!(image.format.as_str(), "ext4-verity" | "erofs-verity") {
+                // Recovery UKIs are only valid with the complete A/B verity
+                // payload, including when its distributable disk encoding is
+                // `raw`. Ordinary raw disk images may contain unrelated files
+                // with these names and must not acquire a verity contract.
+                let catalogs_verity =
+                    matches!(image.format.as_str(), "ext4-verity" | "erofs-verity")
+                        || !image.sb.recovery_ukis.is_empty();
+                if catalogs_verity {
                     let verity_count = [&root_image, &root_verity, &root_hash, &root_hash_sig]
                         .iter()
                         .filter(|path| path.is_file())
@@ -8101,7 +8148,10 @@ fn package_platform_table(
                         "root_verity".into(),
                         toml::Value::String("root.verity".into()),
                     );
-                    entry.insert("root_hash".into(), toml::Value::String(hash.to_string()));
+                    entry.insert(
+                        "root_hash".into(),
+                        toml::Value::String(format!("sha256:{hash}")),
+                    );
                     entry.insert(
                         "root_hash_sig".into(),
                         toml::Value::String("root.roothash.p7s".into()),
@@ -8173,6 +8223,11 @@ fn package_platform_table(
         }
         if !manifest.expose.config.is_empty() {
             required_features.push(toml::Value::String(FEATURE_CONFIG_V1.to_string()));
+        }
+        if manifest.expose.config.has_optional_credentials() {
+            required_features.push(toml::Value::String(
+                FEATURE_OPTIONAL_CREDENTIALS_V1.to_string(),
+            ));
         }
         if manifest.expose.config.has_unit_reconciliation() {
             required_features.push(toml::Value::String(FEATURE_RELOAD_V1.to_string()));
@@ -10816,6 +10871,51 @@ fn resolve_optional_signing_key(
     }
 }
 
+/// Resolves the signing key for a committed cache-pointer update.
+///
+/// A registry without a trust roster may retain the unsigned local-development
+/// behavior. Once active roster keys exist, however, publishing an unsigned
+/// head would make the registry unusable to verifying consumers. Explicit
+/// options win; otherwise a sole locally configured active key is selected.
+fn resolve_cache_pointer_signing_key(
+    config: &ApmConfig,
+    dir: &Path,
+    registry_name: &str,
+    key: Option<&str>,
+    key_id: Option<&str>,
+) -> Result<Option<ResolvedSigningKey>> {
+    if key.is_some() || key_id.is_some() {
+        return resolve_producer_signing_key(config, dir, registry_name, key, key_id).map(Some);
+    }
+
+    let roster = load_committed_roster(dir)?;
+    if roster.active.is_empty() {
+        return Ok(None);
+    }
+    let registry_config = registry_config_by_name(config, registry_name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "registry '{registry_name}' has an active trust roster but no producer configuration"
+        )
+    })?;
+    let candidates = roster
+        .active
+        .iter()
+        .filter(|entry| registry_config.signing_keys.contains_key(&entry.id))
+        .map(|entry| entry.id.as_str())
+        .collect::<Vec<_>>();
+    match candidates.as_slice() {
+        [key_id] => {
+            resolve_producer_signing_key(config, dir, registry_name, None, Some(key_id)).map(Some)
+        }
+        [] => bail!(
+            "registry '{registry_name}' has active trust keys but none has local private key material; pass --registry-key or configure one under [registry.signing_keys]"
+        ),
+        _ => bail!(
+            "registry '{registry_name}' has multiple locally configured active keys; select one with --registry-key-id"
+        ),
+    }
+}
+
 /// `apr store verify` - checks graph health: record parseability, coverage of
 /// every published closure member (reachable via dependency edges), and (with
 /// `deep`) agreement with the local Nix store's actual NAR hashes.
@@ -10928,6 +11028,8 @@ pub async fn run_cache(
         CacheCommand::Generate {
             output,
             key,
+            registry_key,
+            registry_key_id,
             cache_url,
             upload_urls,
             auth,
@@ -11018,7 +11120,18 @@ pub async fn run_cache(
                     cache_pointer_updated = true;
                     printer.info(&format!("Updated registry.toml [caches] -> {cache_url}"));
                     if !*no_commit {
-                        commit_registry(&dir, "registry: update static cache pointer", None)?;
+                        let signing_key = resolve_cache_pointer_signing_key(
+                            config,
+                            &dir,
+                            &registry_name,
+                            registry_key.as_deref(),
+                            registry_key_id.as_deref(),
+                        )?;
+                        commit_registry(
+                            &dir,
+                            "registry: update static cache pointer",
+                            signing_key.as_ref().map(ResolvedSigningKey::path),
+                        )?;
                         refresh_registry_object_store(&dir)
                             .context("refreshing dumb-HTTP object store after cache update")?;
                         committed = true;
@@ -11170,7 +11283,8 @@ pub async fn run_web(config: &ApmConfig, command: &WebCommand, printer: &Printer
 
 /// `apr origin` subcommands for the static dumb-HTTP git origin.
 ///
-/// `upload` refreshes the static object store indexes and uploads the
+/// `prepare-index-bundles` backfills the bounded index transport in an already
+/// materialized surface. `upload` refreshes the static object store indexes and uploads the
 /// registry's git origin files (objects, packs, refs, channel payloads)
 /// to each destination — the `--upload-url` flags, or the persisted
 /// `upload_urls` defaults when no flag is given — so consumers can sync
@@ -11180,7 +11294,7 @@ pub async fn run_web(config: &ApmConfig, command: &WebCommand, printer: &Printer
 ///
 /// # Errors
 ///
-/// Fails when `upload` has no destination (neither `--upload-url` flags
+/// Fails when a bundle surface is incomplete, when `upload` has no destination (neither `--upload-url` flags
 /// nor persisted defaults), when the object-store refresh or any upload
 /// fails, when `config` both sets and unsets the same field, or when
 /// `config` cannot read, parse, or rewrite the registry config file.
@@ -11190,6 +11304,21 @@ pub async fn run_origin(
     printer: &Printer,
 ) -> Result<()> {
     match command {
+        OriginCommand::PrepareIndexBundles { surface_dir } => {
+            objectstore::write_index_bundles_for_surface(surface_dir)?;
+            printer.success(&format!(
+                "Prepared 256 bounded index bundles in {}.",
+                surface_dir.display()
+            ));
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "origin_prepare_index_bundles",
+                    "surface_dir": surface_dir.to_string_lossy(),
+                    "bundles": 256,
+                }));
+            }
+            Ok(())
+        }
         OriginCommand::Upload {
             upload_urls,
             cache_dir,
@@ -15843,7 +15972,7 @@ mod tests {
         image.sb.signer_cert_sha256 = Some(signer.clone());
         image.delivery.uki.verification = ImageVerificationState::SignedUnverified;
 
-        apply_publish_sb_policy(std::slice::from_mut(&mut image), None, false).unwrap();
+        apply_publish_sb_policy(std::slice::from_mut(&mut image), None, false, false).unwrap();
         assert_eq!(
             image.delivery.uki.verification,
             ImageVerificationState::SignedUnverified
@@ -15857,10 +15986,16 @@ mod tests {
             ..SbCertsToml::default()
         };
         assert!(
-            apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&active), false)
-                .is_err()
+            apply_publish_sb_policy(
+                std::slice::from_mut(&mut image),
+                Some(&active),
+                false,
+                false
+            )
+            .is_err()
         );
-        apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&active), true).unwrap();
+        apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&active), true, false)
+            .unwrap();
         assert_eq!(
             image.delivery.uki.verification,
             ImageVerificationState::PolicyVerified
@@ -15875,8 +16010,48 @@ mod tests {
             ..SbCertsToml::default()
         };
         assert!(
-            apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&revoked), true)
+            apply_publish_sb_policy(
+                std::slice::from_mut(&mut image),
+                Some(&revoked),
+                true,
+                false
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn secure_boot_publish_policy_enforces_opt_in_signed_uki_gate() {
+        let temp = TempDir::new().unwrap();
+        let store =
+            write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
+        let mut image = inspect_test_image("raw", store, "2026.08", "x86_64-linux").unwrap();
+
+        let error = apply_publish_sb_policy(std::slice::from_mut(&mut image), None, false, true)
+            .unwrap_err();
+        assert!(error.to_string().contains("refuses unsigned UKIs"));
+
+        let signer = "e".repeat(64);
+        image.sb.signer_cert_sha256 = Some(signer.clone());
+        let active = SbCertsToml {
+            active: vec![SbCert {
+                id: "staging".into(),
+                cert_sha256: signer,
+            }],
+            ..SbCertsToml::default()
+        };
+        assert!(
+            apply_publish_sb_policy(std::slice::from_mut(&mut image), None, true, true).is_err()
+        );
+        assert!(
+            apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&active), false, true)
                 .is_err()
+        );
+        apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&active), true, true)
+            .unwrap();
+        assert_eq!(
+            image.delivery.uki.verification,
+            ImageVerificationState::PolicyVerified
         );
     }
 
@@ -15951,8 +16126,25 @@ mod tests {
                 contributable: vec!["allowedTCPPorts".to_string()],
             }],
             contributes: vec![],
+            artifacts: Default::default(),
             provides_capabilities: vec!["system.capabilities.dns-resolver".to_string()],
         }
+    }
+
+    #[test]
+    fn publication_validates_explicit_same_name_owned_root() {
+        let declarations = vec!["nginx.enable".to_string(), "nginx.virtualHosts".to_string()];
+        let owned = vec![OwnedRoot {
+            root: "nginx".to_string(),
+            interface_abi: 1,
+            contributable: vec!["virtualHosts".to_string()],
+        }];
+
+        assert_eq!(
+            derive_owned_root_names(&declarations, "nginx", &owned),
+            vec!["nginx".to_string()]
+        );
+        assert!(derive_owned_root_names(&declarations, "nginx", &[]).is_empty());
     }
 
     #[test]
@@ -17601,6 +17793,43 @@ mod tests {
             trusted_key: keypair.trust_key_line(registry),
             private_key,
         }
+    }
+
+    #[test]
+    fn cache_pointer_commit_selects_the_only_configured_active_key() {
+        let tmp = TempDir::new().unwrap();
+        let key = write_seeded_signing_key(tmp.path(), "maintenance", [31_u8; 32], "maintainer");
+        write_test_roster(tmp.path(), "maintainer", &key.trusted_key, &[]).unwrap();
+        let config = test_config_with_signing_key("maintenance", "maintainer", &key.private_key);
+
+        let resolved =
+            resolve_cache_pointer_signing_key(&config, tmp.path(), "maintenance", None, None)
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(resolved.path(), key.private_key.to_str().unwrap());
+    }
+
+    #[test]
+    fn cache_pointer_commit_fails_closed_without_active_private_material() {
+        let tmp = TempDir::new().unwrap();
+        let key = write_seeded_signing_key(tmp.path(), "maintenance", [32_u8; 32], "maintainer");
+        write_test_roster(tmp.path(), "maintainer", &key.trusted_key, &[]).unwrap();
+        let config = ApmConfig {
+            settings: ApmSettings::default(),
+            registries: vec![(test_registry_config("maintenance", None), None)],
+            scope: ProfileScope::User,
+        };
+
+        let error =
+            resolve_cache_pointer_signing_key(&config, tmp.path(), "maintenance", None, None)
+                .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("none has local private key material")
+        );
     }
 
     #[test]
@@ -20606,6 +20835,71 @@ references = []
         assert!(image.root_verity.is_none());
         assert!(image.root_hash.is_none());
         assert!(image.root_hash_sig.is_none());
+    }
+
+    #[test]
+    fn build_package_toml_catalogs_verity_for_raw_recovery_image() {
+        let image_fixture = TempDir::new().unwrap();
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-server-2026.04".into(),
+            nar_hash: "sha256:aabb".into(),
+            nar_size: 12345678,
+            references: vec!["ref1".into()],
+            closure_size: 52428800,
+        };
+        let img_info = write_direct_image_output(
+            image_fixture.path(),
+            "raw",
+            serde_json::json!(["bare-metal"]),
+        );
+        let image_root = Path::new(&img_info.path);
+        fs::write(image_root.join("root.img"), b"root").unwrap();
+        fs::write(image_root.join("root.verity"), b"verity").unwrap();
+        fs::write(image_root.join("root.roothash"), "a".repeat(64)).unwrap();
+        fs::write(image_root.join("root.roothash.p7s"), b"signature").unwrap();
+        rewrite_test_image_parent(&img_info, "2026.04", "x86_64-linux");
+        let mut image = inspect_test_image("raw", img_info, "2026.04", "x86_64-linux").unwrap();
+        image.sb.recovery_ukis.push(RecoveryUkiEntry {
+            copy: UkiSlot::A,
+            path: "recovery-a.efi".into(),
+            entry_path: "recovery-a.conf".into(),
+            byte_size: 1,
+            sha256: "b".repeat(64),
+            release: "2026.04".into(),
+            recovery_abi: 1,
+            sb_signer_cert_sha256: "c".repeat(64),
+            sbat: vec![SbatEntry {
+                component: "aos".into(),
+                generation: 1,
+            }],
+        });
+
+        let content = build_package_toml(
+            "",
+            "server",
+            "2026.04",
+            "x86_64-linux",
+            &info,
+            Some("AOS server"),
+            None,
+            Some("MIT"),
+            Some("aos-team"),
+            true,
+            None,
+            &[image],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(content.contains("root_image = \"root.img\""));
+        assert!(content.contains("root_verity = \"root.verity\""));
+        assert!(content.contains(&format!("root_hash = \"sha256:{}\"", "a".repeat(64))));
+        assert!(content.contains("root_hash_sig = \"root.roothash.p7s\""));
     }
 
     #[test]

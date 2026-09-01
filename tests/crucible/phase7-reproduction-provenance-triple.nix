@@ -231,7 +231,13 @@
     ]
     ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
       {
-        label = "CLI direct guest-host protocol dependency";
+        label = "CLI control-plane API dependency";
+        needle = "crucible-api = { path = \"../crucible-api\" }";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-cli/Cargo.toml" cliManifest [
+      {
+        label = "CLI bypass of the API protocol re-export";
         needle = "crucible-protocol = { path = \"../crucible-protocol\" }";
       }
     ]

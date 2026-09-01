@@ -1,0 +1,636 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index 8502efe20..56176924c 100644
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -232,6 +232,9 @@ static void rr_crucible_sim_sync_vcpu_halt_callbacks(void)
+         } else if (!qemu_plugin_time_advance_is_pending()) {
+             qemu_plugin_maybe_fire_vcpu_resume_cb(cpu);
+         }
++        if (qemu_plugin_crucible_vmstop_pending()) {
++            break;
++        }
+     }
+ }
+ 
+@@ -244,6 +247,22 @@ static void rr_crucible_sim_drain_vcpu_work(void)
+     }
+ }
+ 
++static void rr_crucible_sim_park_vmstop(void)
++{
++    while (qemu_plugin_crucible_vmstop_pending()) {
++        /*
++         * The main-loop stop handshake sets CPUState::stop for every vCPU and
++         * waits for this shared RR thread to acknowledge each one.  Servicing
++         * host work cannot dispatch guest code, and qemu_wait_io_event_common
++         * converts those stop requests into CPUState::stopped before we park.
++         */
++        rr_crucible_sim_drain_vcpu_work();
++        if (qemu_plugin_crucible_vmstop_pending()) {
++            qemu_cond_wait_bql(first_cpu->halt_cond);
++        }
++    }
++}
++
+ static unsigned int rr_crucible_sim_tcg_batch_limit(void)
+ {
+     if (!rr_crucible_sim_mode() || rr_cpu_count() > 1) {
+@@ -257,6 +276,7 @@ static bool rr_crucible_sim_tcg_batch_continue(CPUState *cpu,
+                                                int last_exit)
+ {
+     if (!rr_crucible_sim_mode() ||
++        qemu_plugin_crucible_vmstop_pending() ||
+         runs >= rr_crucible_sim_tcg_batch_limit()) {
+         return false;
+     }
+@@ -315,6 +335,10 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+             return true;
+         }
+ 
++        if (qemu_plugin_crucible_vmstop_pending()) {
++            return true;
++        }
++
+         if (rr_crucible_sim_mode() &&
+             (crucible_sim_shmem_dispatch_registered() ||
+              crucible_sim_observer_registered() ||
+@@ -328,16 +352,28 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+             if (crucible_sim_shmem_dispatch_registered()) {
+                 dispatch_due = current_icount >=
+                     crucible_sim_shmem_max_advance_icount();
++                if (qemu_plugin_crucible_vmstop_pending()) {
++                    return true;
++                }
+                 *cpu_budget = crucible_sim_shmem_clamp_cpu_budget(
+                     current_icount, *cpu_budget);
++                if (qemu_plugin_crucible_vmstop_pending()) {
++                    return true;
++                }
+                 *cpu_budget = crucible_sim_preemption_clamp_cpu_budget(
+                     current_icount, *cpu_budget);
+             }
+             if (crucible_sim_observer_registered()) {
+                 observer_due = current_icount >=
+                     crucible_sim_observer_max_advance_icount();
++                if (qemu_plugin_crucible_vmstop_pending()) {
++                    return true;
++                }
+                 *cpu_budget = crucible_sim_observer_clamp_cpu_budget(
+                     current_icount, *cpu_budget);
++                if (qemu_plugin_crucible_vmstop_pending()) {
++                    return true;
++                }
+             }
+             *cpu_budget = qemu_crucible_fault_clamp_budget(
+                 CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY, current_icount,
+@@ -349,10 +385,16 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+                     CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY, current_icount);
+                 if (observer_due) {
+                     crucible_sim_observer_notify_current_icount(current_icount);
++                    if (qemu_plugin_crucible_vmstop_pending()) {
++                        return true;
++                    }
+                 }
+                 if (crucible_sim_shmem_dispatch_registered() &&
+                     (dispatch_due || !observer_due)) {
+                     crucible_sim_shmem_publish_current_icount(current_icount);
++                    if (qemu_plugin_crucible_vmstop_pending()) {
++                        return true;
++                    }
+                 }
+                 if (crucible_sim_shmem_dispatch_registered() &&
+                     crucible_sim_preemption_apply_due(cpu_ptr)) {
+@@ -384,6 +426,10 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+         if (rr_crucible_sim_mode() &&
+             crucible_sim_shmem_dispatch_registered()) {
+             crucible_sim_shmem_publish_current_icount(qemu_plugin_icount_raw());
++            if (qemu_plugin_crucible_vmstop_pending()) {
++                bql_lock();
++                return true;
++            }
+         }
+         qemu_plugin_maybe_fire_tcg_exec_cb(cpu);
+         bql_lock();
+@@ -397,6 +443,10 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+             cpu, service_before, service_after,
+             r != EXCP_HALTED && cpu_can_run(cpu));
+ 
++        if (qemu_plugin_crucible_vmstop_pending()) {
++            return true;
++        }
++
+         if (rr_crucible_sim_mode() &&
+             (qemu_crucible_fault_next_icount(
+                  CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY) <=
+@@ -412,6 +462,9 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+             crucible_sim_observer_notify_current_icount(
+                 qemu_plugin_icount_raw());
+         }
++        if (qemu_plugin_crucible_vmstop_pending()) {
++            return true;
++        }
+ 
+         if (rr_crucible_sim_mode() &&
+             crucible_sim_shmem_dispatch_registered() &&
+@@ -501,6 +554,9 @@ static void rr_wait_io_event(void)
+      */
+     rr_crucible_sim_drain_vcpu_work();
+     rr_crucible_sim_sync_vcpu_halt_callbacks();
++    if (qemu_plugin_crucible_vmstop_pending()) {
++        return;
++    }
+ 
+     while (all_cpu_threads_idle() ||
+            (rr_crucible_sim_mode() &&
+@@ -519,6 +575,9 @@ static void rr_wait_io_event(void)
+              */
+             rr_crucible_sim_drain_vcpu_work();
+             rr_crucible_sim_sync_vcpu_halt_callbacks();
++            if (qemu_plugin_crucible_vmstop_pending()) {
++                return;
++            }
+             qemu_cond_wait_bql(first_cpu->halt_cond);
+             continue;
+         }
+@@ -534,6 +593,9 @@ static void rr_wait_io_event(void)
+             qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
+             rr_crucible_sim_drain_vcpu_work();
+             rr_crucible_sim_sync_vcpu_halt_callbacks();
++            if (qemu_plugin_crucible_vmstop_pending()) {
++                return;
++            }
+             if (!rr_crucible_sim_all_vcpus_halted()) {
+                 break;
+             }
+@@ -543,6 +605,9 @@ static void rr_wait_io_event(void)
+ 
+     rr_crucible_sim_drain_vcpu_work();
+     rr_crucible_sim_sync_vcpu_halt_callbacks();
++    if (qemu_plugin_crucible_vmstop_pending()) {
++        return;
++    }
+     rr_start_kick_timer();
+ 
+     /*
+@@ -661,6 +726,12 @@ static void *rr_cpu_thread_fn(void *arg)
+         replay_mutex_lock();
+         bql_lock();
+ 
++        if (qemu_plugin_crucible_vmstop_pending()) {
++            replay_mutex_unlock();
++            rr_crucible_sim_park_vmstop();
++            continue;
++        }
++
+         if (icount_enabled()) {
+             int cpu_count = rr_cpu_count();
+ 
+@@ -677,6 +748,11 @@ static void *rr_cpu_thread_fn(void *arg)
+ 
+         replay_mutex_unlock();
+ 
++        if (qemu_plugin_crucible_vmstop_pending()) {
++            rr_crucible_sim_park_vmstop();
++            continue;
++        }
++
+         if (!cpu) {
+             cpu = first_cpu;
+         }
+@@ -704,16 +780,28 @@ static void *rr_cpu_thread_fn(void *arg)
+                 if (crucible_sim_shmem_dispatch_registered()) {
+                     dispatch_due = current_icount >=
+                         crucible_sim_shmem_max_advance_icount();
++                    if (qemu_plugin_crucible_vmstop_pending()) {
++                        break;
++                    }
+                     cpu_budget = crucible_sim_shmem_clamp_cpu_budget(
+                         current_icount, cpu_budget);
++                    if (qemu_plugin_crucible_vmstop_pending()) {
++                        break;
++                    }
+                     cpu_budget = crucible_sim_preemption_clamp_cpu_budget(
+                         current_icount, cpu_budget);
+                 }
+                 if (crucible_sim_observer_registered()) {
+                     observer_due = current_icount >=
+                         crucible_sim_observer_max_advance_icount();
++                    if (qemu_plugin_crucible_vmstop_pending()) {
++                        break;
++                    }
+                     cpu_budget = crucible_sim_observer_clamp_cpu_budget(
+                         current_icount, cpu_budget);
++                    if (qemu_plugin_crucible_vmstop_pending()) {
++                        break;
++                    }
+                 }
+                 cpu_budget = qemu_crucible_fault_clamp_budget(
+                     CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY, current_icount,
+@@ -727,11 +815,17 @@ static void *rr_cpu_thread_fn(void *arg)
+                     if (observer_due) {
+                         crucible_sim_observer_notify_current_icount(
+                             current_icount);
++                        if (qemu_plugin_crucible_vmstop_pending()) {
++                            break;
++                        }
+                     }
+                     if (crucible_sim_shmem_dispatch_registered() &&
+                         (dispatch_due || !observer_due)) {
+                         crucible_sim_shmem_publish_current_icount(
+                             current_icount);
++                        if (qemu_plugin_crucible_vmstop_pending()) {
++                            break;
++                        }
+                     }
+                     if (crucible_sim_shmem_dispatch_registered() &&
+                         crucible_sim_preemption_apply_due(&cpu)) {
+@@ -769,6 +863,11 @@ static void *rr_cpu_thread_fn(void *arg)
+         /* Does not need a memory barrier because a spurious wakeup is okay.  */
+         qatomic_set(&rr_current_cpu, NULL);
+ 
++        if (qemu_plugin_crucible_vmstop_pending()) {
++            rr_crucible_sim_park_vmstop();
++            continue;
++        }
++
+         crucible_sim_det_ipi_drain_pending();
+ 
+         if (cpu && cpu->exit_request) {
+diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.c b/accel/tcg/tcg-accel-ops-sim-shmem.c
+index 702e9bf18..d4e5c8d67 100644
+--- a/accel/tcg/tcg-accel-ops-sim-shmem.c
++++ b/accel/tcg/tcg-accel-ops-sim-shmem.c
+@@ -4,6 +4,7 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qemu/qemu-plugin.h"
++#include "qemu/plugin.h"
+ #include "tcg-accel-ops-sim-shmem.h"
+ 
+ static uint64_t crucible_current_icount;
+@@ -50,7 +51,9 @@ void crucible_sim_shmem_publish_current_icount(uint64_t current_icount)
+ {
+     crucible_current_icount = current_icount;
+     if (crucible_publish_icount_cb) {
++        qemu_plugin_crucible_exact_boundary_enter();
+         crucible_publish_icount_cb(current_icount, crucible_sim_shmem_userdata);
++        qemu_plugin_crucible_exact_boundary_leave();
+     }
+ }
+ 
+@@ -58,7 +61,9 @@ void crucible_sim_observer_notify_current_icount(uint64_t current_icount)
+ {
+     crucible_current_icount = current_icount;
+     if (crucible_observe_icount_cb) {
++        qemu_plugin_crucible_exact_boundary_enter();
+         crucible_observe_icount_cb(current_icount, crucible_sim_observer_userdata);
++        qemu_plugin_crucible_exact_boundary_leave();
+     }
+ }
+ 
+@@ -70,7 +75,12 @@ uint64_t crucible_sim_shmem_current_icount(void)
+ uint64_t crucible_sim_shmem_max_advance_icount(void)
+ {
+     if (crucible_max_advance_icount_cb) {
+-        return crucible_max_advance_icount_cb(crucible_sim_shmem_userdata);
++        uint64_t result;
++
++        qemu_plugin_crucible_exact_boundary_enter();
++        result = crucible_max_advance_icount_cb(crucible_sim_shmem_userdata);
++        qemu_plugin_crucible_exact_boundary_leave();
++        return result;
+     }
+ 
+     return UINT64_MAX;
+@@ -79,8 +89,13 @@ uint64_t crucible_sim_shmem_max_advance_icount(void)
+ uint64_t crucible_sim_observer_max_advance_icount(void)
+ {
+     if (crucible_observer_max_advance_icount_cb) {
+-        return crucible_observer_max_advance_icount_cb(
++        uint64_t result;
++
++        qemu_plugin_crucible_exact_boundary_enter();
++        result = crucible_observer_max_advance_icount_cb(
+             crucible_sim_observer_userdata);
++        qemu_plugin_crucible_exact_boundary_leave();
++        return result;
+     }
+ 
+     return UINT64_MAX;
+diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+index 02dfd45e3..819a46860 100644
+--- a/include/qemu/plugin.h
++++ b/include/qemu/plugin.h
+@@ -190,6 +190,14 @@ extern void *qemu_plugin_vcpu_idle_resume_userdata;
+ void qemu_plugin_fire_vcpu_idle_cb(CPUState *cpu);
+ void qemu_plugin_fire_vcpu_resume_cb(CPUState *cpu);
+ 
++void qemu_plugin_crucible_exact_boundary_enter(void);
++void qemu_plugin_crucible_exact_boundary_leave(void);
++bool qemu_plugin_crucible_vmstop_pending(void);
++bool qemu_plugin_crucible_vmstop_admission_pending(void);
++void qemu_plugin_crucible_vmstop_request_stopped(int flush_status);
++int qemu_plugin_crucible_vmstop_flush_status(void);
++void qemu_plugin_crucible_vmstop_request_complete(void);
++
+ extern qemu_plugin_crucible_ipi_delivery_cb_t
+     qemu_plugin_crucible_ipi_delivery_cb;
+ extern void *qemu_plugin_crucible_ipi_delivery_userdata;
+@@ -341,6 +349,35 @@ static inline void qemu_plugin_maybe_fire_vcpu_idle_cb(CPUState *cpu)
+ static inline void qemu_plugin_maybe_fire_vcpu_resume_cb(CPUState *cpu)
+ { }
+ 
++static inline void qemu_plugin_crucible_exact_boundary_enter(void)
++{ }
++
++static inline void qemu_plugin_crucible_exact_boundary_leave(void)
++{ }
++
++static inline bool qemu_plugin_crucible_vmstop_pending(void)
++{
++    return false;
++}
++
++static inline bool qemu_plugin_crucible_vmstop_admission_pending(void)
++{
++    return false;
++}
++
++static inline void qemu_plugin_crucible_vmstop_request_stopped(int flush_status)
++{
++    (void)flush_status;
++}
++
++static inline int qemu_plugin_crucible_vmstop_flush_status(void)
++{
++    return 0;
++}
++
++static inline void qemu_plugin_crucible_vmstop_request_complete(void)
++{ }
++
+ static inline void qemu_plugin_crucible_maybe_fire_ipi_delivery_cb(
+     uint64_t event_id, uint64_t delivery_icount, unsigned int src_vcpu,
+     unsigned int dst_vcpu, unsigned int delivery_mode, unsigned int vector)
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 8cf4a4450..88bc19986 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1042,6 +1042,23 @@ int qemu_plugin_icount_at_tb_entry(uint64_t tb_insns,
+ QEMU_PLUGIN_API
+ void qemu_plugin_force_vcpu_exit(void);
+ 
++/**
++ * qemu_plugin_request_vmstop() - stop the VM from an exact plugin boundary
++ *
++ * Admits QEMU's native RUN_STATE_PAUSED transition from an RR-owned
++ * post-tcg_cpu_exec, sim-dispatch, sim-observer, vCPU idle/resume, or budget
++ * callback.  The RR-global fence prevents every vCPU from dispatching until
++ * the main loop consumes the stop.  Instruction, memory, syscall, and other
++ * callbacks outside those exact boundaries are rejected.
++ *
++ * Returns: 0 when admitted, -EPERM outside an exact single-threaded sim RR
++ * boundary, or -EALREADY while a prior request awaits stop/resume completion.
++ * The caller must use QMP stop/query-status as the asynchronous completion
++ * channel; stop also reports a retained block flush failure from the request.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_request_vmstop(void);
++
+ /**
+  * qemu_plugin_crucible_single_threaded_rr() - report the live sim execution mode
+  *
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 1ca44fbd7..094f118ac 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -14,6 +14,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/plugin.h"
+ #include "qemu/sockets.h"
+ #include "monitor-internal.h"
+ #include "monitor/qdev.h"
+@@ -49,6 +50,8 @@ void qmp_quit(Error **errp)
+ 
+ void qmp_stop(Error **errp)
+ {
++    int status;
++
+     /* if there is a dump in background, we should wait until the dump
+      * finished */
+     if (qemu_system_dump_in_progress()) {
+@@ -59,7 +62,14 @@ void qmp_stop(Error **errp)
+     if (runstate_check(RUN_STATE_INMIGRATE)) {
+         autostart = 0;
+     } else {
+-        vm_stop(RUN_STATE_PAUSED);
++        status = vm_stop(RUN_STATE_PAUSED);
++        if (status == 0) {
++            status = qemu_plugin_crucible_vmstop_flush_status();
++        }
++        if (status < 0) {
++            error_setg_errno(errp, -status,
++                             "Could not flush devices while stopping the VM");
++        }
+     }
+ }
+ 
+@@ -68,6 +78,18 @@ void qmp_cont(Error **errp)
+     BlockBackend *blk;
+     BlockJob *job;
+     Error *local_err = NULL;
++    int flush_status;
++
++    if (qemu_plugin_crucible_vmstop_admission_pending()) {
++        error_setg(errp, "VM stop admission has not reached paused state");
++        return;
++    }
++    flush_status = qemu_plugin_crucible_vmstop_flush_status();
++    if (flush_status < 0) {
++        error_setg_errno(errp, -flush_status,
++                         "VM stop failed to flush devices");
++        return;
++    }
+ 
+     /* if there is a dump in background, we should wait until the dump
+      * finished */
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+index b1dcce5ec..7702bd5c6 100644
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -335,6 +335,103 @@ void qemu_plugin_force_vcpu_exit(void)
+     }
+ }
+ 
++static __thread unsigned int qemu_plugin_crucible_exact_boundary_depth;
++static int qemu_plugin_crucible_vmstop_state;
++static int qemu_plugin_crucible_vmstop_flush_result;
++
++enum {
++    QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE,
++    QEMU_PLUGIN_CRUCIBLE_VMSTOP_ADMITTED,
++    QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED,
++};
++
++int qemu_plugin_request_vmstop(void)
++{
++    int status;
++
++    if (!current_cpu ||
++        qemu_plugin_crucible_exact_boundary_depth == 0 ||
++        icount_enabled() != ICOUNT_PRECISE ||
++        !qemu_plugin_crucible_single_threaded_rr()) {
++        return -EPERM;
++    }
++
++    qatomic_set(&qemu_plugin_crucible_vmstop_flush_result, 0);
++    if (qatomic_cmpxchg(&qemu_plugin_crucible_vmstop_state,
++                       QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE,
++                       QEMU_PLUGIN_CRUCIBLE_VMSTOP_ADMITTED) !=
++        QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE) {
++        return -EALREADY;
++    }
++
++    /*
++     * vCPU-thread vm_stop() admits an asynchronous main-loop transition and
++     * therefore returns zero after queueing it.  QMP query-status is the
++     * completion channel; this return value reports admission only.
++     */
++    status = vm_stop(RUN_STATE_PAUSED);
++
++    if (status != 0) {
++        qatomic_set(&qemu_plugin_crucible_vmstop_state,
++                    QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE);
++    }
++    return status;
++}
++
++void qemu_plugin_crucible_exact_boundary_enter(void)
++{
++    g_assert(qemu_plugin_crucible_exact_boundary_depth < UINT_MAX);
++    qemu_plugin_crucible_exact_boundary_depth++;
++}
++
++void qemu_plugin_crucible_exact_boundary_leave(void)
++{
++    g_assert(qemu_plugin_crucible_exact_boundary_depth > 0);
++    qemu_plugin_crucible_exact_boundary_depth--;
++}
++
++bool qemu_plugin_crucible_vmstop_pending(void)
++{
++    return qatomic_read(&qemu_plugin_crucible_vmstop_state) !=
++           QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE;
++}
++
++bool qemu_plugin_crucible_vmstop_admission_pending(void)
++{
++    return qatomic_read(&qemu_plugin_crucible_vmstop_state) ==
++           QEMU_PLUGIN_CRUCIBLE_VMSTOP_ADMITTED;
++}
++
++void qemu_plugin_crucible_vmstop_request_stopped(int flush_status)
++{
++    if (qatomic_read(&qemu_plugin_crucible_vmstop_state) ==
++        QEMU_PLUGIN_CRUCIBLE_VMSTOP_ADMITTED) {
++        qatomic_set(&qemu_plugin_crucible_vmstop_flush_result, flush_status);
++        qatomic_cmpxchg(&qemu_plugin_crucible_vmstop_state,
++                        QEMU_PLUGIN_CRUCIBLE_VMSTOP_ADMITTED,
++                        QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED);
++    }
++}
++
++int qemu_plugin_crucible_vmstop_flush_status(void)
++{
++    if (qatomic_read(&qemu_plugin_crucible_vmstop_state) !=
++        QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED) {
++        return 0;
++    }
++    return qatomic_read(&qemu_plugin_crucible_vmstop_flush_result);
++}
++
++void qemu_plugin_crucible_vmstop_request_complete(void)
++{
++    if (qatomic_cmpxchg(&qemu_plugin_crucible_vmstop_state,
++                       QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED,
++                       QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE) ==
++        QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED) {
++        qatomic_set(&qemu_plugin_crucible_vmstop_flush_result, 0);
++    }
++}
++
+ int qemu_plugin_crucible_single_threaded_rr(void)
+ {
+     return strcmp(current_accel_name(), "sim") == 0 &&
+@@ -458,8 +555,10 @@ void qemu_plugin_fire_tcg_exec_cb(CPUState *cpu)
+     qemu_plugin_tcg_exec_cb_t cb = qemu_plugin_tcg_exec_cb;
+ 
+     if (cb && cpu) {
++        qemu_plugin_crucible_exact_boundary_enter();
+         cb(cpu->cpu_index, qemu_plugin_icount_raw(),
+            qemu_plugin_tcg_exec_userdata);
++        qemu_plugin_crucible_exact_boundary_leave();
+     }
+ }
+ 
+@@ -477,8 +576,10 @@ void qemu_plugin_fire_vcpu_idle_cb(CPUState *cpu)
+     qemu_plugin_vcpu_idle_resume_cb_t cb = qemu_plugin_vcpu_idle_resume_idle_cb;
+ 
+     if (cb && cpu) {
++        qemu_plugin_crucible_exact_boundary_enter();
+         cb(cpu->cpu_index, qemu_plugin_icount_raw(),
+            qemu_plugin_vcpu_idle_resume_userdata);
++        qemu_plugin_crucible_exact_boundary_leave();
+     }
+ }
+ 
+@@ -487,8 +588,10 @@ void qemu_plugin_fire_vcpu_resume_cb(CPUState *cpu)
+     qemu_plugin_vcpu_idle_resume_cb_t cb = qemu_plugin_vcpu_idle_resume_resume_cb;
+ 
+     if (cb && cpu) {
++        qemu_plugin_crucible_exact_boundary_enter();
+         cb(cpu->cpu_index, qemu_plugin_icount_raw(),
+            qemu_plugin_vcpu_idle_resume_userdata);
++        qemu_plugin_crucible_exact_boundary_leave();
+     }
+ }
+ 
+diff --git a/system/cpus.c b/system/cpus.c
+index bdaa7bba2..b6a796ec6 100644
+--- a/system/cpus.c
++++ b/system/cpus.c
+@@ -308,6 +308,9 @@ static int do_vm_stop(RunState state, bool send_stop)
+     bdrv_drain_all();
+     ret = bdrv_flush_all();
+     trace_vm_stop_flush_all(ret);
++    if (state == RUN_STATE_PAUSED) {
++        qemu_plugin_crucible_vmstop_request_stopped(ret);
++    }
+ 
+     return ret;
+ }
+@@ -749,6 +752,10 @@ int vm_prepare_start(bool step_pending)
+     RunState state = vm_was_suspended ? RUN_STATE_SUSPENDED : RUN_STATE_RUNNING;
+     RunState requested;
+ 
++    if (qemu_plugin_crucible_vmstop_admission_pending()) {
++        return -1;
++    }
++
+     qemu_vmstop_requested(&requested);
+     if (qemu_crucible_terminal_vmstate_exported()) {
+         error_report(
+@@ -785,9 +792,11 @@ int vm_prepare_start(bool step_pending)
+     runstate_set(state);
+     vm_state_notify(1, state);
+     vm_was_suspended = false;
++    qemu_plugin_crucible_vmstop_request_complete();
+     return ret;
+ }
+ 
++/* An unsuccessful prepare leaves the Crucible RR dispatch fence closed. */
+ void vm_start(void)
+ {
+     if (!vm_prepare_start(false)) {

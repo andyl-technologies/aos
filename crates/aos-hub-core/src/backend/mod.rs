@@ -162,6 +162,22 @@ pub trait Backend: BackendBounds {
     /// Returns an error if translation or execution fails.
     async fn execute(&self, sql: &str, params: &[Value]) -> Result<u64>;
 
+    /// Runs a non-`SELECT` statement without requiring its affected-row count.
+    ///
+    /// The default delegates to [`Backend::execute`]. Backends for which
+    /// obtaining an exact row count requires another database statement may
+    /// override this method to avoid that work. Callers must use
+    /// [`Backend::execute`] or [`Backend::checked_batch`] whenever correctness
+    /// depends on the number of affected rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if translation or execution fails.
+    async fn execute_discarding_count(&self, sql: &str, params: &[Value]) -> Result<()> {
+        self.execute(sql, params).await?;
+        Ok(())
+    }
+
     /// Runs an `INSERT` and returns the new row's auto-increment id.
     ///
     /// The target table must have an `id` integer primary key (every hub

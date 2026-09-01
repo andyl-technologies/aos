@@ -242,7 +242,7 @@ pub fn build_registry_lookup(config: &ApmConfig) -> HashMap<String, (String, Str
 
     let mut lookup = HashMap::new();
     for reg in registries.registries() {
-        for meta in reg.packages.values() {
+        for meta in reg.package_versions() {
             let hash = store_path_hash(&meta.store_path).to_string();
             lookup.insert(
                 hash,
@@ -271,7 +271,7 @@ pub fn build_registry_lookup(config: &ApmConfig) -> HashMap<String, (String, Str
 
     // Second pass: ensure package's own hashes win over reference fallbacks.
     for reg in registries.registries() {
-        for meta in reg.packages.values() {
+        for meta in reg.package_versions() {
             let hash = store_path_hash(&meta.store_path).to_string();
             lookup.insert(
                 hash,
@@ -302,14 +302,17 @@ pub fn get_sysroot_references(config: &ApmConfig) -> Option<(Vec<String>, String
         crate::registry::RegistrySet::load(&cache_dir, &reg_configs, &native_platform()).ok()?;
 
     for reg in registries.registries() {
-        if let Some(meta) = reg.packages.get(&current.package_name) {
-            if meta.sysroot {
-                return Some((
-                    meta.references.clone(),
-                    current.package_name.clone(),
-                    current.version.clone(),
-                ));
-            }
+        if let Some(meta) = reg.package_versions().find(|meta| {
+            meta.sysroot
+                && meta.name == current.package_name
+                && meta.version == current.version
+                && meta.store_path == current.toplevel
+        }) {
+            return Some((
+                meta.references.clone(),
+                current.package_name.clone(),
+                current.version.clone(),
+            ));
         }
     }
 

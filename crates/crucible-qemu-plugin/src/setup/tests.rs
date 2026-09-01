@@ -18,7 +18,8 @@ use crucible_protocol::{
 use crucible_shmem::{
     ABI_VERSION, DEFAULT_QUEUE_CAPACITY, FRAME_ENTRY_SIZE, NODE_SLOT_SIZE,
     REGION_HEADER_ABI_VERSION_OFFSET, REGION_HEADER_ENTRY_STRIDE_OFFSET,
-    REGION_HEADER_ICOUNT_SHIFT_OFFSET, REGION_HEADER_MAGIC_OFFSET, REGION_HEADER_NODE_COUNT_OFFSET,
+    REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET, REGION_HEADER_ICOUNT_SHIFT_OFFSET,
+    REGION_HEADER_MAGIC_OFFSET, REGION_HEADER_NODE_COUNT_OFFSET,
     REGION_HEADER_QUEUE_CAPACITY_OFFSET, REGION_HEADER_REGION_SIZE_OFFSET,
     REGION_HEADER_RING_COUNT_OFFSET, REGION_HEADER_RING_DATA_OFF_OFFSET,
     REGION_HEADER_RING_HDR_OFF_OFFSET, REGION_HEADER_SIZE, REGION_MAGIC, RESERVED_SLOTS,
@@ -384,6 +385,11 @@ fn valid_region_file(layout: RegionLayout) -> File {
         REGION_HEADER_ICOUNT_SHIFT_OFFSET,
         layout.icount_shift,
     );
+    write_u32(
+        &mut bytes,
+        REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET,
+        layout.fault_payload_arena_bytes,
+    );
     assert_eq!(
         layout.ring_hdr_off,
         REGION_HEADER_SIZE as u64 + u64::from(layout.node_count) * NODE_SLOT_SIZE as u64
@@ -396,7 +402,7 @@ fn valid_region_file(layout: RegionLayout) -> File {
 }
 
 fn plugin_handshake(slot_index: u32, node_count: u32) -> PluginControlHandshake {
-    let args = PluginArgs::parse(&format!("simfd=3,slot={slot_index}"))
+    let args = PluginArgs::parse(&format!("simfd=3,slot={slot_index},fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576"))
         .unwrap_or_else(|error| panic!("test plugin args should parse: {error}"));
     let negotiated = NegotiatedHandshake {
         proto_version: CONTROL_PROTOCOL_VERSION,
@@ -422,7 +428,7 @@ fn callback_capabilities() -> PluginCallbackCapabilities {
             panic!("callback prerequisite {step:?} should record: {error}");
         }
     }
-    let args = PluginArgs::parse("simfd=3,slot=0")
+    let args = PluginArgs::parse("simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576")
         .unwrap_or_else(|error| panic!("test plugin args should parse: {error}"));
     sequence
         .register_callbacks_for_test(
@@ -438,7 +444,7 @@ fn owned_callbacks(
     slot: u32,
     completion: PluginSetupCompletion,
 ) -> RequiredOwnedCallbacksRegistered {
-    let args = PluginArgs::parse(&format!("simfd=3,slot={slot}"))
+    let args = PluginArgs::parse(&format!("simfd=3,slot={slot},fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576"))
         .unwrap_or_else(|error| panic!("test plugin args should parse: {error}"));
     RequiredOwnedCallbacksRegistered::for_test(&args, completion)
 }

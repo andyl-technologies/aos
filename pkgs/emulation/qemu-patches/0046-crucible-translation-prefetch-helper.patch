@@ -1,4 +1,17 @@
+diff --git a/MAINTAINERS b/MAINTAINERS
+index 5d6bc7439..c02c8afa8 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -156,6 +156,7 @@ F: system/watchpoint.c
+ F: page-vary-target.c
+ F: page-vary-common.c
+ F: accel/tcg/
++F: accel/tcg/crucible-translation-prefetch.c
+ F: accel/stubs/tcg-stub.c
+ F: util/cacheinfo.c
+ F: util/cacheflush.c
 diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
+index ef3d967e3..5eeef83e6 100644
 --- a/accel/tcg/cpu-exec.c
 +++ b/accel/tcg/cpu-exec.c
 @@ -983,9 +983,14 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
@@ -21,6 +34,7 @@ diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
                   * We add the TB in the virtual pc hash table
 diff --git a/accel/tcg/crucible-translation-prefetch.c b/accel/tcg/crucible-translation-prefetch.c
 new file mode 100644
+index 000000000..cef62a21f
 --- /dev/null
 +++ b/accel/tcg/crucible-translation-prefetch.c
 @@ -0,0 +1,153 @@
@@ -178,6 +192,7 @@ new file mode 100644
 +    return request.result;
 +}
 diff --git a/accel/tcg/internal-common.h b/accel/tcg/internal-common.h
+index 9b6ab3a8c..c243eda43 100644
 --- a/accel/tcg/internal-common.h
 +++ b/accel/tcg/internal-common.h
 @@ -48,6 +48,10 @@ static inline bool cpu_plugin_mem_cbs_enabled(const CPUState *cpu)
@@ -192,6 +207,7 @@ diff --git a/accel/tcg/internal-common.h b/accel/tcg/internal-common.h
  void tb_htable_init(void);
  void tb_reset_jump(TranslationBlock *tb, int n);
 diff --git a/accel/tcg/meson.build b/accel/tcg/meson.build
+index 24e6a53ca..a1ac64b91 100644
 --- a/accel/tcg/meson.build
 +++ b/accel/tcg/meson.build
 @@ -32,5 +32,6 @@ system_ss.add(when: ['CONFIG_TCG'], if_true: files(
@@ -202,6 +218,7 @@ diff --git a/accel/tcg/meson.build b/accel/tcg/meson.build
    'watchpoint.c',
  ))
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index 3f0e8ba6e..dfdaeb493 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -40,6 +40,7 @@
@@ -221,6 +238,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
      bql_lock();
      qemu_thread_get_self(cpu->thread);
 diff --git a/accel/tcg/tcg-all.c b/accel/tcg/tcg-all.c
+index 3d5cfafac..92864e77b 100644
 --- a/accel/tcg/tcg-all.c
 +++ b/accel/tcg/tcg-all.c
 @@ -49,6 +49,8 @@ struct TCGState {
@@ -356,6 +374,7 @@ diff --git a/accel/tcg/tcg-all.c b/accel/tcg/tcg-all.c
      .instance_size = sizeof(TCGState),
  };
 diff --git a/include/system/tcg.h b/include/system/tcg.h
+index 73229648c..1e8efe7fa 100644
 --- a/include/system/tcg.h
 +++ b/include/system/tcg.h
 @@ -13,6 +13,14 @@
@@ -374,6 +393,7 @@ diff --git a/include/system/tcg.h b/include/system/tcg.h
  #define tcg_enabled() 0
  #endif
 diff --git a/tcg/region.c b/tcg/region.c
+index 478ec051c..401a98d13 100644
 --- a/tcg/region.c
 +++ b/tcg/region.c
 @@ -32,6 +32,7 @@

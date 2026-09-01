@@ -1,0 +1,55 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index c223f89d0..f2382760f 100644
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -634,6 +634,14 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+             bql_lock();
+             owner = icount_crucible_rr_current_vcpu();
+             cursor = icount_crucible_rr_cursor_position();
++            if (cpu->crucible_test_critical_pause_armed) {
++                cpu->crucible_test_critical_pause_armed = false;
++                if (owner == cpu->cpu_index) {
++                    error_report(
++                        "CRUCIBLE_TEST_CRITICAL_EARLY_PAUSE_YIELD_REACHED");
++                    abort();
++                }
++            }
+             if (owner == cpu->cpu_index) {
+                 icount_crucible_rr_yield_cpu(cpu);
+             } else if (cursor != 0) {
+diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
+index f200149a7..3d70b17d9 100644
+--- a/include/hw/core/cpu.h
++++ b/include/hw/core/cpu.h
+@@ -481,6 +481,8 @@ struct qemu_work_item;
+  *   generation succeeds or is discarded.
+  * @crucible_guest_pause_yield: Transient x86 PAUSE marker consumed immediately
+  *   after TCG returns to the serialized RR loop.
++ * @crucible_test_critical_pause_armed: Test-only marker identifying the
++ *   release-site PAUSE in Crucible's SMP gate.
+  * @cpu_ases: Pointer to array of CPUAddressSpaces (which define the
+  *            AddressSpaces this CPU has)
+  * @num_ases: number of CPUAddressSpaces in @cpu_ases
+@@ -561,6 +563,7 @@ struct CPUState {
+     uint64_t crucible_register_before_icount;
+     bool crucible_register_instruction_active;
+     bool crucible_guest_pause_yield;
++    bool crucible_test_critical_pause_armed;
+     uint64_t random_seed;
+     sigjmp_buf jmp_env;
+ 
+diff --git a/target/i386/tcg/system/misc_helper.c b/target/i386/tcg/system/misc_helper.c
+index d2734345e..edd0f386d 100644
+--- a/target/i386/tcg/system/misc_helper.c
++++ b/target/i386/tcg/system/misc_helper.c
+@@ -34,6 +34,10 @@ void helper_outb(CPUX86State *env, uint32_t port, uint32_t data)
+     MemTxResult result;
+     uint8_t value = data;
+ 
++    if (port == 0x80 && value == 0xa7) {
++        env_cpu(env)->crucible_test_critical_pause_armed = true;
++    }
++
+     address_space_stb(&address_space_io, port, data,
+                       cpu_get_mem_attrs(env), &result);
+     qemu_crucible_fault_instruction_port_io(

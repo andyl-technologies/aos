@@ -43,6 +43,7 @@ in {
     k3sModprobe
     pkgs.kmod # modprobe/lsmod
     pkgs.coreutils
+    pkgs.jq
   ];
   # Note: `pkgs.nftables` is intentionally NOT here. It's the
   # host-firewall tool (consumed by `nftables.service` from
@@ -69,10 +70,17 @@ in {
     "net.bridge.bridge-nf-call-ip6tables" = "1";
   };
 
+  enabledCheck = role:
+    pkgs.writeShellScriptBin "k3s-${role}-enabled" ''
+      set -eu
+
+      [ "''${K3S_ENABLED:-false}" = true ]
+    '';
+
   preflightService = role: required: let
     checks =
       lib.concatMapStringsSep "\n" (varName: ''
-        : "''${${varName}:?[k3s-preflight] ${role}: ${varName} must be set in /etc/rancher/k3s/k3s.env}"
+        : "''${${varName}:?[k3s-preflight] ${role}: ${varName} must be set in /etc/aos/packages/${role}/k3s.env}"
       '')
       required;
   in {
@@ -86,20 +94,10 @@ in {
     wantedBy = ["multi-user.target"];
     before = ["k3s.service"];
 
-    unitConfig = {
-      # No env file → unit goes to "skipped (Condition not met)"
-      # instead of running the script. `is-active` then reports
-      # "inactive", and k3s.service's `Requisite=` refuses to
-      # start. Net effect: a stock image with no operator-supplied
-      # k3s.env stays in `inactive (dead)` cleanly — no script
-      # invocation, no scary journal stack trace, no restart loop.
-      ConditionPathExists = "/etc/rancher/k3s/k3s.env";
-    };
-
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
-      EnvironmentFile = "/etc/rancher/k3s/k3s.env";
+      EnvironmentFile = "-/etc/aos/packages/${role}/k3s.env";
       StandardOutput = "journal+console";
       StandardError = "journal+console";
     };
@@ -107,9 +105,46 @@ in {
     script = ''
       set -eu
 
+      if [ "''${K3S_ENABLED:-false}" != true ]; then
+        echo "[k3s-preflight] ${role}: disabled, skipping checks"
+        exit 0
+      fi
+
       ${checks}
 
       echo "[k3s-preflight] ${role}: required env present, k3s may start"
     '';
   };
+
+  launcher = role: command:
+    pkgs.writeShellScriptBin "k3s-${role}-start" ''
+      set -eu
+
+      : "''${CREDENTIALS_DIRECTORY:?[k3s] ${role}: token credential was not loaded}"
+      token_file="$CREDENTIALS_DIRECTORY/token"
+      if [ ! -r "$token_file" ]; then
+        echo "[k3s] ${role}: token credential is not readable" >&2
+        exit 1
+      fi
+
+      export K3S_TOKEN_FILE="$token_file"
+
+      case ${lib.escapeShellArg command} in
+      server*)
+        addons=/etc/aos/packages/${role}/addons.json
+        destination=/var/lib/rancher/k3s/server/manifests/aos-runtime-addons.yaml
+        temporary="$destination.tmp"
+        ${pkgs.coreutils}/bin/mkdir -p "''${destination%/*}"
+        ${pkgs.jq}/bin/jq -er '
+          select(.schema == "aos.kubernetes-resources/v1")
+          | .resources
+          | map("# AOS resource: \(.name)\n\(.content)\n---\n")
+          | join("")
+        ' "$addons" > "$temporary"
+        ${pkgs.coreutils}/bin/mv -f "$temporary" "$destination"
+        ;;
+      esac
+
+      exec ${pkgs.k3s}/bin/k3s ${command} "$@"
+    '';
 }

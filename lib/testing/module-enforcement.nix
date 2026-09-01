@@ -18,7 +18,7 @@
   pkgs,
   lib,
 }: let
-  aos = import ../../. {};
+  aos = import ../../. {system = pkgs.stdenv.buildPlatform.system;};
 
   # --- Assertion enforcement ------------------------------------------
   #
@@ -65,7 +65,8 @@
   healthyBuildSucceeds = healthyTryBuild.success;
   imageBudgetCheckWired = healthySystem.config.system.build.checks ? image-budget;
   defaultRootPartitionHasHeadroom =
-    healthySystem.config.aos.image.rootPartitionMiB == 1024
+    healthySystem.config.aos.image.rootPartitionMiB
+    == 1024
     && healthySystem.config.aos.image.budgets.maxRootMiB == 512;
 
   overriddenRootPartitionSystem = aos.mkSystem {
@@ -75,7 +76,8 @@
     ];
   };
   rootPartitionOverridePropagates =
-    overriddenRootPartitionSystem.config.aos.image.rootPartitionMiB == 1536
+    overriddenRootPartitionSystem.config.aos.image.rootPartitionMiB
+    == 1536
     && overriddenRootPartitionSystem.config.aos.boot.storage.zfs.rootSlotSizeMiB == 1536;
 
   undersizedRootPartitionSystem = aos.mkSystem {
@@ -771,6 +773,196 @@
     .artifacts
     .priority
     == "package";
+  runtimeDirectGetsOperatorPriority =
+    (lib.evalModules {
+      modules = [
+        ({lib, ...}: {
+          options.artifacts = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = {};
+          };
+        })
+      ];
+      packageModules = [(packageRecord {config.artifacts.priority = "package";})];
+      runtimeModules = [{config.artifacts.priority = "runtime";}];
+      inherit lib;
+    })
+    .config
+    .artifacts
+    .priority
+    == "runtime";
+  runtimeNestedMatchesOperator = let
+    operatorValue =
+      (lib.evalModules {
+        modules = [nestedDecl];
+        operatorModules = [{config.tree.main.nested.left = "nested operator";}];
+        inherit lib;
+      })
+      .config
+      .tree
+      .main
+      .nested
+      .left;
+    runtimeValue =
+      (lib.evalModules {
+        modules = [nestedDecl];
+        runtimeModules = [{config.tree.main.nested.left = "nested operator";}];
+        inherit lib;
+      })
+      .config
+      .tree
+      .main
+      .nested
+      .left;
+  in
+    runtimeValue == operatorValue && runtimeValue == "nested operator";
+  runtimeOwnershipMatchesMergePriority =
+    (lib.evalModules {
+      modules = [
+        ({lib, ...}: {
+          options.artifacts = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = {};
+          };
+          options.observed = lib.mkOption {type = lib.types.str;};
+        })
+        ({provenance, ...}: {config.observed = provenance.ownerOfAttr ["artifacts"] "priority";})
+      ];
+      packageModules = [(packageRecord {config.artifacts.priority = lib.mkOverride 80 "package";})];
+      runtimeModules = [{config.artifacts.priority = "runtime";}];
+      inherit lib;
+    })
+    .config
+    .observed
+    == "@host";
+  runtimeImportKeepsNormalPriority =
+    (lib.evalModules {
+      modules = [
+        ({lib, ...}: {
+          options.artifacts = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = {};
+          };
+        })
+      ];
+      packageModules = [(packageRecord {config.artifacts.priority = lib.mkOverride 80 "package";})];
+      runtimeModules = [{imports = [{config.artifacts.priority = "runtime import";}];}];
+      inherit lib;
+    })
+    .config
+    .artifacts
+    .priority
+    == "package";
+  runtimeNestedImportKeepsNormalPriority =
+    (lib.evalModules {
+      modules = [nestedDecl];
+      packageModules = [(packageRecord {config.tree.main.nested.left = lib.mkOverride 80 "package";})];
+      runtimeModules = [{imports = [{config.tree.main.nested.left = "runtime import";}];}];
+      inherit lib;
+    })
+    .config
+    .tree
+    .main
+    .nested
+    .left
+    == "package";
+  runtimeProvisioningRejected =
+    !(builtins.tryEval ((lib.evalModules {
+        modules = [
+          ({lib, ...}: {
+            options.aos.provisioning.test = lib.mkOption {type = lib.types.str;};
+          })
+        ];
+        runtimeModules = [{config.aos.provisioning.test = "forbidden";}];
+        inherit lib;
+      })
+      .config
+      .aos
+      .provisioning
+      .test))
+    .success;
+  runtimeUnknownOptionRejected =
+    !(builtins.tryEval ((lib.evalModules {
+        modules = [
+          ({lib, ...}: {
+            options.known = lib.mkOption {type = lib.types.bool;};
+          })
+        ];
+        runtimeModules = [
+          {
+            config = {
+              known = true;
+              unknown.value = true;
+            };
+          }
+        ];
+        inherit lib;
+      })
+      .config
+      .known))
+    .success;
+  runtimeImportedUnknownOptionRejected =
+    !(builtins.tryEval ((lib.evalModules {
+        modules = [
+          ({lib, ...}: {
+            options.known = lib.mkOption {type = lib.types.bool;};
+          })
+        ];
+        runtimeModules = [
+          {
+            imports = [
+              {
+                config = {
+                  known = true;
+                  unknown.value = true;
+                };
+              }
+            ];
+          }
+        ];
+        inherit lib;
+      })
+      .config
+      .known))
+    .success;
+  runtimeUnknownOptionDeferredForSelection =
+    (lib.evalModules {
+      modules = [../../modules/base/host-selection.nix];
+      runtimeModules = [
+        {
+          config = {
+            aos.apm.desiredPackages = ["nginx"];
+            environment.etc."runtime-selection/deferred.conf".mode = "0644";
+          };
+        }
+      ];
+      enforceRuntimeDeclarations = false;
+      inherit lib;
+    })
+    .config
+    .aos
+    .apm
+    .desiredPackages
+    == ["nginx"];
+  hostUnknownOptionRemainsLazy =
+    (lib.evalModules {
+      modules = [
+        ({lib, ...}: {
+          options.known = lib.mkOption {type = lib.types.bool;};
+        })
+      ];
+      operatorModules = [
+        {
+          config = {
+            known = true;
+            unknown.value = true;
+          };
+        }
+      ];
+      inherit lib;
+    })
+    .config
+    .known;
 
   # --- types.uniqEnum (owned shared scalar) ---------------------------
   uniqEnumAgrees =
@@ -1094,6 +1286,10 @@
       {
         ok = hostImportedOwner && hostImportedNestedValue && hostImportKeepsNormalPriority;
         message = "host import ownership and priority";
+      }
+      {
+        ok = runtimeDirectGetsOperatorPriority && runtimeNestedMatchesOperator && runtimeOwnershipMatchesMergePriority && runtimeImportKeepsNormalPriority && runtimeNestedImportKeepsNormalPriority && runtimeProvisioningRejected && runtimeUnknownOptionRejected && runtimeImportedUnknownOptionRejected && runtimeUnknownOptionDeferredForSelection && hostUnknownOptionRemainsLazy;
+        message = "runtime module priority, declared surface, and provisioning confinement";
       }
       {
         ok = uniqEnumAgrees && uniqEnumRejectsConflict && uniqEnumRejectsBadValue;

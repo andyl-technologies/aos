@@ -1,0 +1,25 @@
+diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
+index cfefb9a6f..3a64a8888 100644
+--- a/plugins/crucible-fault-node.c
++++ b/plugins/crucible-fault-node.c
+@@ -3588,10 +3588,6 @@ static int node_prepare(
+             return -ENOSPC;
+         }
+     }
+-    if (command->command_flags & CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY) {
+-        /* Preparation authenticates frozen current state without mutation. */
+-        memcpy(staging->after_hash, staging->before_hash, 32);
+-    }
+     memcpy(result->before_hash, staging->before_hash, 32);
+     memcpy(result->after_hash, staging->after_hash, 32);
+     node_encode_evidence(staging, result_payload);
+@@ -3879,7 +3875,8 @@ static void node_commit(
+             staging->event_reservation);
+         staging->event_reservation = NULL;
+         g_byte_array_set_size(result_payload, 0);
+-        node_encode_evidence(staging, result_payload);
++        g_byte_array_append(result_payload, staging->impulse_evidence->data,
++                            staging->impulse_evidence->len);
+         node_sha256(result_payload->data, result_payload->len,
+                     result->evidence_hash);
+         memcpy(result->before_hash, staging->before_hash, 32);

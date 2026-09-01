@@ -71,14 +71,46 @@ in
       {
         name = "install";
         script = ''
-          mkdir -p $out/bin $out/lib/bpf
+          mkdir -p $out/bin $out/lib/bpf $out/share
           install -m 755 _bin/cilium-agent _bin/cilium-dbg $out/bin/
 
           # Install compiled BPF programs
           cp -r bpf/out/* $out/lib/bpf/ 2>/dev/null || true
+          printf '%s\n' '${builtins.toJSON {inherit version;}}' > $out/share/cilium-package.json
         '';
       }
     ];
+
+    configModule = {
+      src = ./_cilium-config;
+      moduleAbiCompat = {
+        min = 1;
+        max = 2;
+      };
+      declares = [
+        "cilium.enable"
+        "cilium.kubeProxyReplacement"
+        "cilium.operatorReplicas"
+        "k3s.integrations.cni.cilium"
+        "k3s.integrations.resources.cilium"
+      ];
+      ownsRoots = [
+        {
+          root = "cilium";
+          interfaceAbi = 1;
+        }
+      ];
+      contributes = [
+        {
+          root = "k3s";
+          interfaceAbi = 2;
+          paths = [
+            "integrations.cni.cilium"
+            "integrations.resources.cilium"
+          ];
+        }
+      ];
+    };
 
     checks = {
       testing,
@@ -88,7 +120,7 @@ in
       version = testing.mkToolCheck {
         pname = "tool-cilium";
         tool = self;
-        command = "cilium-dbg version --client";
+        command = "cilium-dbg version";
       };
     };
 

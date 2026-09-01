@@ -4,6 +4,7 @@
 }: let
   snapshotIcount = 100000000;
   segmentIcount = 50000000;
+  rrSwitchQuantum = 4096;
   pluginSource = builtins.readFile ./phase0-s3-segment-plugin.c;
   ownedStateSource = builtins.readFile ./phase0-s3-owned-state.c;
   s2WorkloadSource = builtins.readFile ./phase0-s2-workload.c;
@@ -305,6 +306,7 @@ in
       pkgs.diffutils
       pkgs.gawk
       pkgs.glib
+      pkgs.glib.dev
       pkgs.grep
       pkgs.jq
       pkgs.pkg-config
@@ -319,6 +321,7 @@ in
     QEMU_IMG = "${pkgs.qemu-crucible}/bin/qemu-img";
     SNAPSHOT_ICOUNT = builtins.toString snapshotIcount;
     SEGMENT_ICOUNT = builtins.toString segmentIcount;
+    RR_SWITCH_QUANTUM = builtins.toString rrSwitchQuantum;
 
     phases = [
       {
@@ -601,7 +604,7 @@ in
               -monitor none \
               -machine q35 \
               -accel sim,thread=single \
-              -icount shift=0,sleep=off,align=off \
+              -icount shift=0,sleep=off,align=off,rr_switch_quantum="$RR_SWITCH_QUANTUM" \
               -cpu qemu64 \
               -m 1024 \
               -smp 1 \
@@ -716,7 +719,9 @@ in
           assert_segment_sample() {
             label="$1"
             logical_base="$2"
-            jq --argjson segment "$SEGMENT_ICOUNT" --argjson logical "$((logical_base + SEGMENT_ICOUNT))" -e '
+            jq --argjson segment "$SEGMENT_ICOUNT" \
+              --argjson logical "$((logical_base + SEGMENT_ICOUNT))" \
+              --argjson rr_switch_quantum "$RR_SWITCH_QUANTUM" -e '
               .pause_sample == true
               and .segment_started == true
               and .stop_requested == true
@@ -727,6 +732,9 @@ in
               and .register_read_failures == 0
               and .marker_errors == 0
               and .ram_bytes > 0
+              and .rr_current_vcpu == 0
+              and .rr_switch_quantum == $rr_switch_quantum
+              and .rr_cursor_position < .rr_switch_quantum
               and (.register_counts | type == "array")
               and (.register_counts | length) == 1
               and .register_counts[0] > 0
@@ -740,6 +748,7 @@ in
             save_args="$3"
             expected_medium="$4"
             expected_suffix="$5"
+            expected_hlt_events="$6"
 
             tag="s3-$case_name"
             case "$expected_suffix" in
@@ -762,11 +771,14 @@ in
               "$TMPDIR/pause-save-$case_name.json" >/dev/null \
               || fail "$case_name save sample missing time-control/marker evidence"
             if [ "$expected_medium" != none ]; then
-              jq --arg medium "$expected_medium" -e '
+              jq --arg medium "$expected_medium" \
+                --argjson expected_hlt_events "$expected_hlt_events" -e '
                 .operation_active == true
                 and .active_medium == $medium
+                and .pause_medium == $medium
                 and .pause_io_events >= 1
-                and .pause_hlt_events >= 1
+                and .pause_hlt_events == $expected_hlt_events
+                and .operation_hlt_events == $expected_hlt_events
                 and .io_events >= 1
               ' "$TMPDIR/pause-save-$case_name.json" >/dev/null \
                 || fail "$case_name did not pause inside expected I/O operation"
@@ -853,9 +865,9 @@ in
           cp phase0-s3-owned-state.c "$out/owned-state.c"
 
           : > "$TMPDIR/case-results.txt"
-          run_case boot_window diskless_boot_window "pause_at=$SNAPSHOT_ICOUNT" none match
-          run_case cpu_timer_window cpu_timer_window "pause_at=$((SNAPSHOT_ICOUNT + SEGMENT_ICOUNT))" none match
-          run_case mid_io_burst block_pending_io "pause_on_io_idle=on,pause_medium=block" block diverge
+          run_case boot_window diskless_boot_window "pause_at=$SNAPSHOT_ICOUNT" none match 0
+          run_case cpu_timer_window cpu_timer_window "pause_at=$((SNAPSHOT_ICOUNT + SEGMENT_ICOUNT))" none match 0
+          run_case mid_io_burst block_pending_io "pause_on_io=on,pause_medium=block" block diverge 0
 
           suffix_state_hash=$(awk '$1 == "boot_window" { print $4 }' "$TMPDIR/case-results.txt")
           suffix_stream_hash=$(awk '$1 == "boot_window" { print $5 }' "$TMPDIR/case-results.txt")
@@ -915,6 +927,7 @@ in
             echo mid_io_guest_block_direct="$mid_io_guest_block_direct"
             echo suffix_segment_icount="$SEGMENT_ICOUNT"
             echo suffix_logical_horizon="$((boot_window_icount + SEGMENT_ICOUNT))"
+            echo rr_switch_quantum="$RR_SWITCH_QUANTUM"
             echo all_suffix_fingerprints_match=false
             echo boot_window_suffix_fingerprint_match="$boot_window_suffix_match"
             echo cpu_timer_suffix_fingerprint_match="$cpu_timer_suffix_match"
@@ -950,12 +963,13 @@ in
             echo risk8_status=mitigated_by_fallback_not_retired_for_fat_snapshot
             echo risk9_status=retired_thin_replay_default
             echo s3_fallback_adopted=true
+            echo policy_scope=historical_phase0_spike_not_runtime_policy
           } > "$out/result"
         '';
       }
     ];
 
     meta = {
-      description = "Crucible Phase 0 S3 savevm/loadvm completeness and fallback spike";
+      description = "Historical Crucible Phase 0 S3 savevm/loadvm completeness spike";
     };
   }

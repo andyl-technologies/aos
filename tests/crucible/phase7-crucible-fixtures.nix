@@ -49,7 +49,9 @@
       "x86_64-linux" = "ttyS0";
       "aarch64-linux" = "ttyAMA0";
     }
-    .${pkgs.stdenv.hostPlatform.system}
+    .${
+      pkgs.stdenv.hostPlatform.system
+    }
     or (throw "crucible phase7 fixture check does not support ${pkgs.stdenv.hostPlatform.system}");
   fixtureThirdPartyPath =
     if fixturesProbe ? passthru && fixturesProbe.passthru ? crucibleFixtureThirdPartyGuestPath
@@ -280,7 +282,7 @@
       }
       {
         label = "phase7 e2e determinism consumes fixture proof";
-        needle = "dependencies = [perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
+        needle = "dependencies = [phase1.gates.licenseBoundary.rawGate perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
       }
     ];
 in

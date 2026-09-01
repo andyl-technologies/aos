@@ -2,6 +2,78 @@
 
 use super::*;
 
+impl SingleScheduler {
+    /// Resolves and validates every directed World route for one backend frame.
+    ///
+    /// A route already selected by an in-loop interceptor is accepted only when
+    /// it remains a member of the scheduler-derived route set. This keeps route
+    /// expansion deterministic while preventing an interceptor from bypassing
+    /// World connectivity or Ethernet destination resolution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the frame is shorter than an Ethernet
+    /// header, no route exists, or a route lock is not valid for the frame.
+    pub fn resolve_backend_network_routes(
+        &self,
+        output: &BackendNetworkOutput,
+    ) -> Result<Vec<BackendNetworkRoute>, SchedulerError> {
+        let destination_mac: [u8; 6] = output
+            .payload
+            .get(..6)
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "QEMU node `{}` emitted frame {} shorter than an Ethernet header",
+                    output.source.name, output.sequence
+                ),
+            })?
+            .try_into()
+            .map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("Ethernet destination width changed during routing"),
+            })?;
+        let flood = destination_mac == [0xff; 6] || destination_mac[0] & 1 == 1;
+        let forced_destination = output.fault_continuation.forced_route_destination();
+        let candidates = self
+            .world_network_links
+            .iter()
+            .filter(|(_key, runtime)| {
+                runtime.source() == &output.source
+                    && forced_destination.map_or_else(
+                        || {
+                            flood
+                                || crate::deterministic_node_mac(runtime.target())
+                                    == destination_mac
+                        },
+                        |forced| runtime.target() == forced,
+                    )
+            })
+            .map(|((link, direction), runtime)| BackendNetworkRoute {
+                link: link.clone(),
+                direction: *direction,
+                destination: runtime.target().clone(),
+            })
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "QEMU frame {} from {} through router {} has no World route for destination MAC {:02x?}",
+                    output.sequence, output.source.name, output.destination.name, destination_mac
+                ),
+            });
+        }
+        match &output.route {
+            Some(route) if candidates.contains(route) => Ok(vec![route.clone()]),
+            Some(route) => Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "QEMU frame {} from {} carries invalid World route `{}` {:?}",
+                    output.sequence, output.source.name, route.link.name, route.direction
+                ),
+            }),
+            None => Ok(candidates),
+        }
+    }
+}
+
 impl QuantumLoop for SingleScheduler {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         self.drive_authoritative_quantum(request)
@@ -193,6 +265,8 @@ impl QuantumLoop for SingleScheduler {
                 &left.source,
                 left.sequence,
                 &left.destination,
+                &left.route,
+                &left.fault_continuation,
                 &left.payload,
             )
                 .cmp(&(
@@ -200,6 +274,8 @@ impl QuantumLoop for SingleScheduler {
                     &right.source,
                     right.sequence,
                     &right.destination,
+                    &right.route,
+                    &right.fault_continuation,
                     &right.payload,
                 ))
         });
@@ -221,41 +297,7 @@ impl QuantumLoop for SingleScheduler {
                     ),
                 });
             }
-            let destination_mac: [u8; 6] = output
-                .payload
-                .get(..6)
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "QEMU node `{}` emitted frame {} shorter than an Ethernet header",
-                        output.source.name, output.sequence
-                    ),
-                })?
-                .try_into()
-                .map_err(|_| SchedulerError::BoundaryViolation {
-                    message: String::from("Ethernet destination width changed during routing"),
-                })?;
-            let flood = destination_mac == [0xff; 6] || destination_mac[0] & 1 == 1;
-            let routes = self
-                .world_network_links
-                .iter()
-                .filter(|(_key, runtime)| {
-                    runtime.source() == &output.source
-                        && (flood
-                            || crate::deterministic_node_mac(runtime.target()) == destination_mac)
-                })
-                .map(|((link, direction), _runtime)| (link.clone(), *direction))
-                .collect::<Vec<_>>();
-            if routes.is_empty() {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "QEMU frame {} from {} through router {} has no World route for destination MAC {:02x?}",
-                        output.sequence,
-                        output.source.name,
-                        output.destination.name,
-                        destination_mac
-                    ),
-                });
-            }
+            let routes = self.resolve_backend_network_routes(&output)?;
             let frame_id =
                 u32::try_from(output.sequence).map_err(|_| SchedulerError::BoundaryViolation {
                     message: format!(
@@ -263,59 +305,34 @@ impl QuantumLoop for SingleScheduler {
                         output.source.name, output.sequence
                     ),
                 })?;
-            for (link, direction) in routes {
-                let emit_time =
-                    self.vm_delivery_time_for_icount(&output.source, output.emit_icount)?;
+            for route in routes {
+                let emit_time = self
+                    .vm_delivery_time_for_icount(&output.source, output.emit_icount)?
+                    .max(SimInstant {
+                        nanos: output.fault_continuation.cursor().release_nanos(),
+                    });
                 let logical_emit_icount = self.network_icount_for_time_ceil(emit_time)?;
                 let frame = crucible_device::Frame::new(
                     logical_emit_icount,
                     frame_id,
                     output.payload.clone(),
-                );
+                )
+                .with_resolved_effects(output.fault_continuation.resolved_frame_effects().clone());
                 let seed = self.decision_seed;
                 let (record, branch_choices) = self.resolve_live_world_network_frame(
-                    &link,
-                    direction,
+                    &route.link,
+                    route.direction,
                     seed,
                     &frame,
                     crucible_device::PastDeliveryPolicy::FailLoud,
                 )?;
-                let projected = record
-                    .decisions
-                    .into_iter()
-                    .map(|decision| match decision {
-                        Decision::FaultFires(mut fault) => {
-                            // The frame retains its exact guest TX icount for
-                            // link delivery arithmetic. The probabilistic link
-                            // choice becomes causal when the shared frontier
-                            // admits the buffered TX batch.
-                            fault.at = admission_boundary;
-                            Decision::FaultFires(fault)
-                        }
-                        other => other,
-                    })
-                    .collect::<Vec<_>>();
+                let projected = record.decisions;
                 if !branch_choices.is_empty() {
                     let branch_configuration = self.step_quantum(&recorded);
-                    let projected_choices = branch_choices
-                        .into_iter()
-                        .map(|choice| {
-                            choice
-                                .into_iter()
-                                .map(|decision| match decision {
-                                    Decision::FaultFires(mut fault) => {
-                                        fault.at = admission_boundary;
-                                        Decision::FaultFires(fault)
-                                    }
-                                    other => other,
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                        .collect::<Vec<_>>();
                     self.search_frontiers.push(SearchRuntimeFrontier {
                         configuration: branch_configuration,
                         at: admission_boundary,
-                        choices: SearchFrontierChoices::from_decision_sequences(projected_choices),
+                        choices: SearchFrontierChoices::from_decision_sequences(branch_choices),
                     });
                 }
                 recorded.extend(projected);

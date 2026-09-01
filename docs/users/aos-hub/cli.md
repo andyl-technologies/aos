@@ -269,7 +269,8 @@ Use `aos hub route explain` with
 policy, publication, and placement before enabling a route. Route advertisement
 selection is explicit and independent for the `web`, `git`, and `nix_cache`
 audiences, and includes the typed surface so one route identity cannot be
-selected for the wrong registry or cache:
+selected for the wrong registry or cache. Deployment settings never synthesize
+routes or advertisements:
 
 ```sh
 aos hub route canonical registry:acme/packages route:packages-public \

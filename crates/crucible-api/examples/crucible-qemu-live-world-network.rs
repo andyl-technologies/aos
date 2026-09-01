@@ -6,12 +6,8 @@
 //!
 //! 1. Two guests exchange frames over a deterministic, lossy virtual link.
 //! 2. The search API exposes a branch where a particular frame is lost.
-//! 3. A direct control operation crashes a guest and healing the fault restarts
-//!    it from its ready point.
-//! 4. An event graph demonstrates that `StayDown` suppresses automatic restart
-//!    until an explicit `StartNode` action runs.
-//! 5. A snapshot supplies the checkpoint used by a `FromLastCheckpoint`
-//!    restart, and a selected network branch is replayed in a fresh lifecycle.
+//! 3. A durable exact checkpoint resumes to the same next live-QEMU quantum.
+//! 4. The selected network branch is replayed in a fresh lifecycle.
 //!
 //! The executable expects paths to QEMU, the Crucible QEMU plugin, a kernel, a
 //! raw root image, and an initrd, in that order. The repository's Nix checks
@@ -22,14 +18,49 @@ use std::error::Error;
 use std::time::Duration;
 
 use crucible::{
-    Action, Condition, ControlOperation, ControlOperationKind, Event, EventGraph, EventId, Fault,
-    FaultTag, Icount, LinkDef, LinkLossProbability, MembershipFault, NodeFault, NodeId,
-    NodeTemplate, Plan, Properties, QuantumLoop, QuantumRequest, ReadyPoint, RestartPolicy,
-    ScenarioDefForm, Seed, SimDuration, WhiteBoxPolicy, World, WorldNode,
+    Checkpoint, CheckpointKind, Icount, LinkDef, LinkLossProbability, NodeId, NodeTemplate, Plan,
+    Properties, QuantumLoop, QuantumRequest, ReadyPoint, ScenarioDefForm, Seed, SimDuration,
+    VirtualTime, WhiteBoxPolicy, World, WorldNode,
 };
 use crucible_api::{
     ProductionRootImageFormat, ProductionVmLifecycleConfig, build_production_vm_lifecycle_loop,
+    build_production_vm_lifecycle_loop_from_checkpoint,
 };
+
+const ETHERNET_PAYLOAD_OFFSET: usize = 14;
+const GUEST_ACK_PAYLOAD: &[u8] = b"crucible-network-ack-v1";
+const CHECKPOINT_PAYLOAD: &[u8] = b"crucible-network-checkpoint-v1";
+
+fn ethernet_frame_has_payload(frame: &[u8], payload: &[u8]) -> bool {
+    frame.get(ETHERNET_PAYLOAD_OFFSET..ETHERNET_PAYLOAD_OFFSET + payload.len()) == Some(payload)
+}
+
+fn outcome_difference(left: &crucible::QuantumOutcome, right: &crucible::QuantumOutcome) -> String {
+    format!(
+        "configuration={} frontier={} advanced_node={} resolved_events={} decisions={} event_log_entries={} event_log_segment_bytes={} event_log_segment_text={} event_log_segment_hash={} event_log_offset={} scheduler_quiescence={} left_frontier={:?} right_frontier={:?} left_advanced_node={:?} right_advanced_node={:?} left_resolved_events={:?} right_resolved_events={:?} left_decisions={:?} right_decisions={:?} left_scheduler_quiescence={:?} right_scheduler_quiescence={:?}",
+        left.configuration == right.configuration,
+        left.frontier == right.frontier,
+        left.advanced_node == right.advanced_node,
+        left.resolved_events == right.resolved_events,
+        left.decisions == right.decisions,
+        left.event_log_entries == right.event_log_entries,
+        left.event_log_segment_bytes == right.event_log_segment_bytes,
+        left.event_log_segment_text == right.event_log_segment_text,
+        left.event_log_segment_hash == right.event_log_segment_hash,
+        left.event_log_offset == right.event_log_offset,
+        left.scheduler_quiescence == right.scheduler_quiescence,
+        left.frontier,
+        right.frontier,
+        left.advanced_node,
+        right.advanced_node,
+        left.resolved_events,
+        right.resolved_events,
+        left.decisions,
+        right.decisions,
+        left.scheduler_quiescence,
+        right.scheduler_quiescence,
+    )
+}
 
 /// Creates a minimal VM description whose artifacts come from backend config.
 ///
@@ -57,7 +88,7 @@ fn node(name: &str) -> WorldNode {
     }
 }
 
-/// Runs the network, restart-policy, checkpoint, and replay certifications.
+/// Runs the network and replay certifications.
 ///
 /// # Errors
 ///
@@ -66,9 +97,10 @@ fn node(name: &str) -> WorldNode {
 /// process transition, checkpoint, or replay is not observed.
 fn main() -> Result<(), Box<dyn Error>> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
-    let [qemu, plugin, kernel, root_image, initrd] = args.as_slice() else {
+    let [qemu, plugin, kernel, root_image, initrd, run_state_root] = args.as_slice() else {
         return Err(
-            "usage: crucible-qemu-live-world-network QEMU PLUGIN KERNEL ROOT INITRD".into(),
+            "usage: crucible-qemu-live-world-network QEMU PLUGIN KERNEL ROOT INITRD RUN_STATE_ROOT"
+                .into(),
         );
     };
     // ---------------------------------------------------------------------
@@ -106,18 +138,24 @@ fn main() -> Result<(), Box<dyn Error>> {
     let scenario = source.scenario_def();
     // The quantum budget controls how many authoritative scheduler quanta the
     // lifecycle admits; the run ceiling separately bounds retired instructions.
-    let config = ProductionVmLifecycleConfig::new(qemu, plugin, kernel, root_image)
+    let config = ProductionVmLifecycleConfig::new(qemu, plugin, kernel, root_image, run_state_root)
         .with_root_image_format(ProductionRootImageFormat::Raw)
         .with_initrd(initrd)
-        .with_kernel_cmdline_prefix("console=ttyS0 quiet net.ifnames=0 init=/init")
-        .with_run_ceiling_icount(12_000_000_000)
+        .with_kernel_cmdline_prefix("console=ttyS0 quiet net.ifnames=0 ipv6.disable=1 init=/init")
+        .with_run_ceiling_icount(64_000_000_000)
         .with_quantum_budget(4_000_000_000)
-        .with_completion_timeout(Duration::from_secs(180));
+        // The canonical cursor preserves every partial 4B-instruction turn.
+        // Host load can therefore make the real-time execution exceed the old
+        // three-minute allowance without changing any guest coordinate.
+        .with_completion_timeout(Duration::from_secs(360));
     let mut lifecycle = build_production_vm_lifecycle_loop(&scenario, &source, &config)?;
     let mut configuration = crucible::Configuration::genesis(scenario.clone());
     let mut network_decisions = 0_usize;
     let mut delivered_frames = 0_usize;
+    let mut guest_acknowledgements = 0_usize;
     let mut selected_branch = None;
+    let mut checkpoint_frontier = VirtualTime::default();
+    let link_rng_domain = crucible::RngStreamId::for_link(String::new()).domain;
     // Twelve quanta are enough for the purpose-built guests to emit traffic and
     // for delayed frames to reach the opposite guest. The loop also waits until
     // search exposes a counterfactual `loss-fire` choice for later replay.
@@ -126,12 +164,20 @@ fn main() -> Result<(), Box<dyn Error>> {
             configuration,
             control: Vec::new(),
         })?;
+        checkpoint_frontier = outcome.frontier;
         configuration = outcome.configuration;
         network_decisions = network_decisions.saturating_add(
             outcome
-                .decisions
+                .event_log_entries
                 .iter()
-                .filter(|decision| matches!(decision, crucible::Decision::FaultFires(_)))
+                .filter(|entry| {
+                    matches!(
+                        entry.payload(),
+                        crucible::SchedulerEventLogPayload::Decision(
+                            crucible::Decision::RngDraw(draw)
+                        ) if draw.stream.domain == link_rng_domain
+                    )
+                })
                 .count(),
         );
         // Backend-input events are frames that have completed the simulated
@@ -148,9 +194,29 @@ fn main() -> Result<(), Box<dyn Error>> {
                 })
                 .count(),
         );
+        // Only the guest fixture emits this payload, and it does so after QEMU
+        // has accepted a routed peer frame through its production NIC. This is
+        // the end-to-end receipt proof; a scheduler BackendInput alone does not
+        // prove that the plugin injected anything into the guest.
+        guest_acknowledgements = guest_acknowledgements.saturating_add(
+            outcome
+                .resolved_events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        &event.payload,
+                        crucible::ScheduledEventPayload::BackendInput(input)
+                            if ethernet_frame_has_payload(&input.payload, GUEST_ACK_PAYLOAD)
+                    )
+                })
+                .count(),
+        );
         // Search frontiers describe alternate decisions reachable from the
         // current execution. Selecting the exact choice object, rather than
-        // reconstructing it by name, preserves all replay metadata.
+        // reconstructing it by name, preserves all replay metadata. The guest
+        // fixture gives its stable node-derived MAC classes a bounded icount
+        // stagger, so the first two independent boot probes enter the shared
+        // link stream in the same order across fresh process launches.
         selected_branch = lifecycle
             .search_frontiers()?
             .into_iter()
@@ -162,209 +228,131 @@ fn main() -> Result<(), Box<dyn Error>> {
                         if override_decision.choice.name == "loss-fire"
                 )
             });
-        if network_decisions > 0 && delivered_frames > 0 && selected_branch.is_some() {
+        if network_decisions > 0
+            && delivered_frames > 0
+            && guest_acknowledgements > 0
+            && selected_branch.is_some()
+        {
             println!("completed_quantum={quantum}");
             break;
         }
     }
     let selected_branch = selected_branch.ok_or_else(|| {
         format!(
-            "no live loss branch after 12 quanta: network_decisions={network_decisions} delivered_frames={delivered_frames}"
+            "no live loss branch after 12 quanta: network_decisions={network_decisions} delivered_frames={delivered_frames} guest_acknowledgements={guest_acknowledgements}"
         )
     })?;
-    if network_decisions == 0 || delivered_frames == 0 {
+    if network_decisions == 0 || delivered_frames == 0 || guest_acknowledgements == 0 {
         return Err(format!(
-            "no complete guest-output route after 12 quanta: network_decisions={network_decisions} delivered_frames={delivered_frames}"
+            "no guest-observed production route after 12 quanta: network_decisions={network_decisions} delivered_frames={delivered_frames} guest_acknowledgements={guest_acknowledgements}"
         )
         .into());
+    }
+    // Capture a production closure, then advance until the guest's checkpoint
+    // marker arrives and causes a fresh link decision. Round-robin scheduling
+    // can put an unrelated VM first, so proving only one equal next outcome
+    // would permit an inert false green. Comparing the complete bounded sequence
+    // covers scheduler state, routed events, decisions, evidence entries,
+    // segment bytes, offsets, and quiescence at every intermediate turn.
+    let checkpoint_configuration = configuration.clone();
+    let execution_closure = lifecycle
+        .capture_checkpoint(&checkpoint_configuration)?
+        .ok_or("production lifecycle did not return an exact execution closure")?;
+    let mut uninterrupted_configuration = checkpoint_configuration.clone();
+    let mut uninterrupted_outcomes = Vec::new();
+    let mut continued_checkpoint_frames = 0_usize;
+    let mut continued_network_decisions = 0_usize;
+    for _ in 0..16_u64 {
+        let outcome = lifecycle.drive_quantum(QuantumRequest {
+            configuration: uninterrupted_configuration,
+            control: Vec::new(),
+        })?;
+        uninterrupted_configuration = outcome.configuration.clone();
+        continued_checkpoint_frames = continued_checkpoint_frames.saturating_add(
+            outcome
+                .resolved_events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        &event.payload,
+                        crucible::ScheduledEventPayload::BackendInput(input)
+                            if ethernet_frame_has_payload(&input.payload, CHECKPOINT_PAYLOAD)
+                    )
+                })
+                .count(),
+        );
+        continued_network_decisions = continued_network_decisions.saturating_add(
+            outcome
+                .decisions
+                .iter()
+                .filter(|decision| {
+                    matches!(
+                        decision,
+                        crucible::Decision::RngDraw(draw)
+                            if draw.stream.domain == link_rng_domain
+                    )
+                })
+                .count(),
+        );
+        uninterrupted_outcomes.push(outcome);
+        if continued_checkpoint_frames > 0 && continued_network_decisions > 0 {
+            break;
+        }
     }
     lifecycle.shutdown()?;
-
-    // ---------------------------------------------------------------------
-    // Stage 2: crash a process and restart it from the ready point.
-    // ---------------------------------------------------------------------
-    let checkpoint_node = NodeId {
-        name: String::from("checkpoint-node"),
-    };
-    let checkpoint_world =
-        World::from_nodes_and_links(vec![node(&checkpoint_node.name)], Vec::new())?;
-    let checkpoint_source = ScenarioDefForm::from_components(
-        &checkpoint_world,
-        &Plan::empty(),
-        &Properties::empty(),
-        Seed::from_u64(0xc0ffee),
-    )?;
-    let checkpoint_scenario = checkpoint_source.scenario_def();
-    let mut ready_lifecycle =
-        build_production_vm_lifecycle_loop(&checkpoint_scenario, &checkpoint_source, &config)?;
-    let ready_crash_tag = FaultTag::from_name("live-qemu-process-crash");
-    // Control-operation sequence numbers impose a stable order on commands
-    // submitted from outside the scenario's event graph.
-    let ready_crash = ready_lifecycle.drive_quantum(QuantumRequest {
-        configuration: crucible::Configuration::genesis(checkpoint_scenario.clone()),
-        control: vec![ControlOperation {
-            sequence: 1,
-            kind: ControlOperationKind::InjectFault {
-                tag: ready_crash_tag.clone(),
-                fault: Fault::Node(NodeFault::Crash {
-                    node: checkpoint_node.clone(),
-                    restart: RestartPolicy::FromReadyPoint,
-                }),
-            },
-        }],
-    })?;
-    if ready_lifecycle.live_node_count() != 0 || ready_lifecycle.reconciled_crash_count() != 1 {
-        return Err("intended crash did not stop the single QEMU process".into());
-    }
-    // Healing removes the active crash fault. `FromReadyPoint` then tells the
-    // reconciler to launch a replacement QEMU process from the node's declared
-    // ready point instead of leaving the node down.
-    let _ready_restart = ready_lifecycle.drive_quantum(QuantumRequest {
-        configuration: ready_crash.configuration,
-        control: vec![ControlOperation {
-            sequence: 2,
-            kind: ControlOperationKind::HealFault {
-                tag: ready_crash_tag,
-            },
-        }],
-    })?;
-    if ready_lifecycle.live_node_count() != 1 || ready_lifecycle.reconciled_restart_count() != 1 {
-        return Err("ready-point restart did not relaunch the single QEMU process".into());
-    }
-    ready_lifecycle.shutdown()?;
-
-    // ---------------------------------------------------------------------
-    // Stage 3: prove that StayDown requires an explicit StartNode action.
-    // ---------------------------------------------------------------------
-    let stay_down_tag = FaultTag::from_name("live-qemu-stay-down");
-    let stay_down_heal_event = EventId::from_name("heal-stay-down-node");
-    let stay_down_plan = Plan::from_event_graph_for_world(
-        &checkpoint_world,
-        EventGraph::new_for_world(
-            vec![
-                Event::once(
-                    EventId::from_name("crash-stay-down-node"),
-                    None,
-                    Action::InjectFault {
-                        tag: stay_down_tag.clone(),
-                        fault: MembershipFault::Crash {
-                            node: checkpoint_node.clone(),
-                            restart: RestartPolicy::StayDown,
-                        },
-                    },
-                ),
-                // Healing clears the membership fault but, because the policy
-                // is `StayDown`, does not itself relaunch the process.
-                Event::once(
-                    stay_down_heal_event.clone(),
-                    Some(Condition::fault_active(stay_down_tag.clone())),
-                    Action::HealFault {
-                        tag: stay_down_tag.clone(),
-                    },
-                ),
-                // The final event waits until healing has happened and the tag
-                // is inactive, then makes the desired running state explicit.
-                Event::once(
-                    EventId::from_name("start-stay-down-node"),
-                    Some(Condition::all_of(vec![
-                        Condition::after(SimDuration { nanos: 0 }, stay_down_heal_event),
-                        Condition::not(Condition::fault_active(stay_down_tag)),
-                    ])),
-                    Action::StartNode {
-                        node: checkpoint_node.clone(),
-                    },
-                ),
-            ],
-            &checkpoint_world,
-        )?,
-    )?;
-    let stay_down_source = ScenarioDefForm::from_components(
-        &checkpoint_world,
-        &stay_down_plan,
-        &Properties::empty(),
-        Seed::from_u64(0x5a7d0),
-    )?;
-    let stay_down_scenario = stay_down_source.scenario_def();
-    let mut stay_down_lifecycle =
-        build_production_vm_lifecycle_loop(&stay_down_scenario, &stay_down_source, &config)?;
-    let _stay_down_outcome = stay_down_lifecycle.drive_quantum(QuantumRequest {
-        configuration: crucible::Configuration::genesis(stay_down_scenario),
-        control: Vec::new(),
-    })?;
-    if stay_down_lifecycle.live_node_count() != 1
-        || stay_down_lifecycle.reconciled_restart_count() != 2
-        || stay_down_lifecycle.reconciled_crash_count() != 1
-    {
+    if continued_checkpoint_frames == 0 || continued_network_decisions == 0 {
         return Err(format!(
-            "event-graph StartNode did not relaunch the StayDown QEMU process: live={} crashes={} restarts={}",
-            stay_down_lifecycle.live_node_count(),
-            stay_down_lifecycle.reconciled_crash_count(),
-            stay_down_lifecycle.reconciled_restart_count()
+            "checkpoint continuation remained inert for {} quanta: checkpoint_frames={continued_checkpoint_frames} network_decisions={continued_network_decisions}",
+            uninterrupted_outcomes.len()
         )
         .into());
     }
-    stay_down_lifecycle.shutdown()?;
+
+    let mut checkpoint = Checkpoint::new(
+        checkpoint_configuration.id(),
+        checkpoint_configuration.id(),
+        CheckpointKind::Fat,
+    );
+    checkpoint.scenario_ref = scenario.id();
+    checkpoint.virtual_time = checkpoint_frontier;
+    checkpoint.execution_closure = Some(execution_closure);
+    let mut restored = build_production_vm_lifecycle_loop_from_checkpoint(
+        &scenario,
+        &source,
+        &config,
+        &checkpoint,
+    )?;
+    let mut restored_configuration = checkpoint_configuration;
+    let mut restored_outcomes = Vec::with_capacity(uninterrupted_outcomes.len());
+    for _ in 0..uninterrupted_outcomes.len() {
+        let outcome = restored.drive_quantum(QuantumRequest {
+            configuration: restored_configuration,
+            control: Vec::new(),
+        })?;
+        restored_configuration = outcome.configuration.clone();
+        restored_outcomes.push(outcome);
+    }
+    restored.shutdown()?;
+    if restored_outcomes != uninterrupted_outcomes {
+        let divergence = uninterrupted_outcomes
+            .iter()
+            .zip(&restored_outcomes)
+            .position(|(left, right)| left != right)
+            .unwrap_or_else(|| uninterrupted_outcomes.len().min(restored_outcomes.len()));
+        return Err(format!(
+            "durable exact restore diverged in the live-QEMU continuation at outcome {divergence}: uninterrupted_count={} restored_count={} difference={}",
+            uninterrupted_outcomes.len(),
+            restored_outcomes.len(),
+            outcome_difference(
+                &uninterrupted_outcomes[divergence],
+                &restored_outcomes[divergence],
+            ),
+        )
+        .into());
+    }
 
     // ---------------------------------------------------------------------
-    // Stage 4: snapshot, crash, and restart from the last checkpoint.
-    // ---------------------------------------------------------------------
-    let mut checkpoint_lifecycle =
-        build_production_vm_lifecycle_loop(&checkpoint_scenario, &checkpoint_source, &config)?;
-    let checkpoint_advance = checkpoint_lifecycle.drive_quantum(QuantumRequest {
-        configuration: crucible::Configuration::genesis(checkpoint_scenario),
-        control: Vec::new(),
-    })?;
-    let checkpoint = checkpoint_lifecycle.drive_quantum(QuantumRequest {
-        configuration: checkpoint_advance.configuration,
-        control: vec![ControlOperation {
-            sequence: 1,
-            kind: ControlOperationKind::Snapshot,
-        }],
-    })?;
-    // `Snapshot` records the replay material needed by
-    // `FromLastCheckpoint`; advancing once beforehand gives it a meaningful
-    // non-genesis state to capture.
-    let checkpoint_crash_tag = FaultTag::from_name("live-qemu-checkpoint-crash");
-    let checkpoint_crash = checkpoint_lifecycle.drive_quantum(QuantumRequest {
-        configuration: checkpoint.configuration,
-        control: vec![ControlOperation {
-            sequence: 2,
-            kind: ControlOperationKind::InjectFault {
-                tag: checkpoint_crash_tag.clone(),
-                fault: Fault::Node(NodeFault::Crash {
-                    node: checkpoint_node,
-                    restart: RestartPolicy::FromLastCheckpoint,
-                }),
-            },
-        }],
-    })?;
-    if checkpoint_lifecycle.live_node_count() != 0
-        || checkpoint_lifecycle.reconciled_crash_count() != 1
-    {
-        return Err("checkpoint crash did not stop the single QEMU process".into());
-    }
-    let checkpoint_restart = checkpoint_lifecycle.drive_quantum(QuantumRequest {
-        configuration: checkpoint_crash.configuration,
-        control: vec![ControlOperation {
-            sequence: 3,
-            kind: ControlOperationKind::HealFault {
-                tag: checkpoint_crash_tag,
-            },
-        }],
-    })?;
-    // Retaining the returned configuration makes explicit that restart also
-    // advances Crucible's immutable model state, even though this certification
-    // only needs to inspect the reconciled live-process counters below.
-    let _checkpoint_restart_configuration = checkpoint_restart.configuration;
-    if checkpoint_lifecycle.live_node_count() != 1
-        || checkpoint_lifecycle.reconciled_restart_count() != 1
-    {
-        return Err("checkpoint thin replay did not install the replacement QEMU process".into());
-    }
-    checkpoint_lifecycle.shutdown()?;
-
-    // ---------------------------------------------------------------------
-    // Stage 5: replay the exact lossy-network branch found in Stage 1.
+    // Stage 2: replay the exact lossy-network branch found in Stage 1.
     // ---------------------------------------------------------------------
     let override_decision = match selected_branch.decisions().first() {
         Some(crucible::Decision::Override(override_decision)) => override_decision.clone(),
@@ -377,40 +365,67 @@ fn main() -> Result<(), Box<dyn Error>> {
         .clone()
         .with_branch_network_choices(vec![override_decision]);
     let mut branch = build_production_vm_lifecycle_loop(&scenario, &source, &branch_config)?;
+    if branch.pending_search_branch_choices() != 1 {
+        return Err(format!(
+            "fresh live QEMU branch installed {} choices instead of one",
+            branch.pending_search_branch_choices()
+        )
+        .into());
+    }
     let mut branch_configuration = crucible::Configuration::genesis(scenario);
     let mut branch_matched = false;
+    let mut branch_network_settled = false;
+    let mut observed_branch_decisions = Vec::new();
     // A branch can contain more than one decision. Window comparison verifies
-    // the complete ordered sequence occurs contiguously in one quantum outcome.
+    // the complete ordered sequence occurs contiguously, including when an
+    // outcome boundary divides the accumulated decision stream.
     for _ in 0..12_u64 {
         let outcome = branch.drive_quantum(QuantumRequest {
             configuration: branch_configuration,
             control: Vec::new(),
         })?;
         branch_configuration = outcome.configuration;
-        if outcome
-            .decisions
+        observed_branch_decisions.extend(outcome.decisions.iter().cloned());
+        branch_matched = observed_branch_decisions
             .windows(expected_decisions.len())
-            .any(|window| window == expected_decisions)
-        {
-            branch_matched = true;
+            .any(|window| window == expected_decisions);
+        branch_network_settled = branch.pending_network_output_count() == 0;
+        if branch_matched && branch_network_settled {
             break;
         }
     }
-    branch.shutdown()?;
     if !branch_matched {
-        return Err("live QEMU replay did not consume the selected network branch".into());
+        let observed_prefix = observed_branch_decisions.iter().take(8).collect::<Vec<_>>();
+        return Err(format!(
+            "live QEMU replay did not consume the selected network branch: expected {expected_decisions:?}, observed {} decisions with prefix {observed_prefix:?}, {} choices remain pending",
+            observed_branch_decisions.len(),
+            branch.pending_search_branch_choices(),
+        )
+        .into());
     }
+    if !branch_network_settled {
+        return Err(format!(
+            "live QEMU replay retained {} uncommitted network outputs after 12 quanta",
+            branch.pending_network_output_count()
+        )
+        .into());
+    }
+    branch.shutdown()?;
     println!("PASS");
     println!("gate=gate:live-world-network");
     println!("backend=production-qemu-lifecycle");
     println!("topology=two-vm-hostless-world-link");
     println!("network_decisions={network_decisions}");
     println!("delivered_frames={delivered_frames}");
+    println!("guest_acknowledgements={guest_acknowledgements}");
     println!("search_branch=loss-fire");
     println!("branch_decisions_match=true");
-    println!("process_crash_stopped=true");
-    println!("ready_point_process_relaunched=true");
-    println!("stay_down_start_node_process_relaunched=true");
-    println!("last_checkpoint_thin_replay_relaunched=true");
+    println!("exact_restore_next_quantum_match=true");
+    println!(
+        "checkpoint_continuation_quanta={}",
+        uninterrupted_outcomes.len()
+    );
+    println!("checkpoint_packet_continuation={continued_checkpoint_frames}");
+    println!("checkpoint_fault_decision_continuation={continued_network_decisions}");
     Ok(())
 }

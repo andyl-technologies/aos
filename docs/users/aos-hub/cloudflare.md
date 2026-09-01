@@ -61,7 +61,8 @@ printed seal key through `HUB_SEAL_KEY`, and supply the root password again with
 
 | Resource | Purpose |
 | --- | --- |
-| `HubDb` Durable Object | SQLite system of record and serialized application requests |
+| `HubDb` Durable Object | Transactional SQLite system of record and short internal SQL operations |
+| Control/tenant/registry/cache Durable Objects | Resource-affine request execution; no copied relational state |
 | R2 bucket | Registry and binary-cache surfaces |
 | KV namespace | Read-through cache for sessions, revocations, and hot point state |
 | Queue | Deferred post-write propagation and delivery jobs |
@@ -77,10 +78,25 @@ verifies the signed object graph and can exceed Cloudflare's conservative
 per-invocation ceilings, not reservations; monitor invocation CPU and
 subrequest use as the published surface grows.
 
+The generated configuration sets `HUB_REQUEST_SHARDING = "on"`. During an
+incident or staged update, operators may set it to `read` to route only
+read-only operations through the execution shards, or `off` to send every
+request directly to `HubDb`. The execution shards retain no relational rows, so
+these transitions require neither data migration nor dual-write reconciliation.
+The `x-aos-hub-shard` response header identifies the selected partition, and
+`Server-Timing` reports execution-shard and aggregate internal-SQL latency.
+
 The default R2 bucket is `<name>-surfaces`, the default KV title is
 `<name>-sessions`, and the default Queue is `<name>-jobs`. Override them with
 `--bucket`, `--kv-title`, and `--queue` when names must fit an existing account
 convention.
+
+Attaching a custom domain to the R2 bucket does not implicitly configure Hub
+delivery. Record that infrastructure through the Hub API: create the domain,
+endpoint, gateway, and route resources, then select the route independently for
+the `git`, `web`, and `nix_cache` audiences. The same topology is visible and
+mutable through the CLI, API, and Web console; deploy flags never create hidden
+delivery state.
 
 Rate-limit namespace IDs are account-wide. The installer reserves three
 consecutive IDs above `--rate-limit-namespace-base`; its default base of `1000`

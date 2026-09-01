@@ -17,12 +17,12 @@ values:
 | Concern | Staging | Production |
 | --- | --- | --- |
 | Public origin | `https://aos.staging.andyl.org` | `https://aos.andyl.org` |
-| Direct R2 CDN | `https://cdn.aos.staging.andyl.com` | Not configured |
+| Direct R2 CDN | `https://cdn.aos.staging.andyl.org` | Not configured |
 | Worker | `aos-hub-staging` | `aos-hub` |
 | R2 bucket | `aos-hub-staging-surfaces` | `aos-hub-surfaces` |
 | KV namespace title | `aos-hub-staging-sessions` | `aos-hub-sessions` |
 | Deferred-jobs Queue | `aos-hub-staging-jobs` | `aos-hub-jobs` |
-| Durable Object state | Owned by the staging Worker | Owned by the production Worker |
+| Durable Object state | `hub-v2` on the staging Worker | `hub` on the production Worker |
 | Rate-limit namespace IDs | `2001` through `2003` | `1001` through `1003` |
 
 Cloudflare rate-limit namespace IDs are account-wide counter identities, not
@@ -121,35 +121,30 @@ Confirm that the shell contains the staging runtime values, then deploy:
   --domain aos.staging.andyl.org \
   --external-url https://aos.staging.andyl.org \
   --deployment-id "$deployment_id" \
+  --database-instance hub-v2 \
   --rate-limit-namespace-base 2000 \
-  --disable-delivery-attestation \
+  --email-from noreply+aos@send.andyl.org \
   --route-reservation-keys-file "$keyring"
 ```
 
 Use `worker install` instead of `worker deploy` only when the staging Worker has
 never existed. `worker deploy` deliberately requires an existing Worker so an
 OAuth, account, or provider failure cannot be mistaken for initial provisioning.
+The `hub-v2` database name is the staging schema-v2 cutover completed in August
+2026. Keep it on every subsequent staging deployment; the legacy `hub` object is
+retained only as rollback data and is not compatible with this Worker schema.
 
 ### Configure the direct staging CDN
 
-The direct CDN is not a hidden Worker deployment option. Connect
-`cdn.aos.staging.andyl.com` to the `aos-hub-staging-surfaces` bucket from the
-Cloudflare R2 custom-domain UI or its provider API. Then model every AOS-visible
-part through the Hub API and Web UI:
-
-1. In **Settings -> Domains**, add `cdn.aos.staging.andyl.com`.
-2. In **Settings -> Endpoints**, create an HTTPS external-ingress
-   endpoint for that domain.
-3. In **Settings -> Gateways**, connect the endpoint to the default
-   Worker R2 binding. Use `/` for the client base path and origin prefix.
-4. For each registry or cache that should use the CDN, create a direct-gateway
-   route from its **Settings -> Delivery** page and explicitly select it for the
-   appropriate canonical audiences.
-
-The provider attachment and the Hub topology are intentionally separate and
-both inspectable. Requests to this hostname bypass the Hub Worker and therefore
-cannot enforce Hub authentication; direct routes must expose only content that
-is safe for public object access.
+Connect
+`cdn.aos.staging.andyl.org` to the `aos-hub-staging-surfaces` bucket from the
+Cloudflare R2 custom-domain UI or its provider API. Then use the Hub CLI or API
+to create an explicit domain, endpoint, gateway, and route for that attachment;
+grant each instance-owned resource to the consuming organization and advertise
+the route for `git`, `web`, and `nix_cache`. A deployment must not synthesize
+topology or grants from Worker bindings, custom domains, or environment
+variables. Operators must be able to inventory the complete effective
+configuration through the same CLI, API, and Web console used to change it.
 
 The first install provisions the R2 bucket, KV namespace, Durable Object
 migration, custom domain, and Worker secrets. After the first successful install,
@@ -219,7 +214,7 @@ would remove it from the generated Worker configuration.
   --external-url https://aos.andyl.org \
   --deployment-id "$deployment_id" \
   --rate-limit-namespace-base 1000 \
-  --disable-delivery-attestation \
+  --email-from noreply+aos@send.andyl.org \
   --route-reservation-keys-file "$keyring"
 ```
 

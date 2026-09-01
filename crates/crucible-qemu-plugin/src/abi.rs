@@ -75,7 +75,7 @@ pub const QEMU_PLUGIN_INSTALL_OK: c_int = 0;
 /// QEMU install return value meaning plugin registration failed.
 pub const QEMU_PLUGIN_INSTALL_ERROR: c_int = -1;
 /// QEMU plugin API version exported by AOS QEMU 10.0.0.
-pub const QEMU_PLUGIN_API_VERSION: c_int = 4;
+pub const QEMU_PLUGIN_API_VERSION: c_int = 5;
 /// The exported symbol QEMU resolves when loading this `cdylib`.
 pub const QEMU_PLUGIN_INSTALL_SYMBOL: &str = "qemu_plugin_install";
 /// The exported symbol QEMU checks before calling the install hook.
@@ -86,21 +86,33 @@ pub const QEMU_PLUGIN_REGISTER_ENTRYPOINT_SYMBOL: &str = QEMU_PLUGIN_INSTALL_SYM
 pub const QEMU_PLUGIN_ICOUNT_RAW_SYMBOL: &str = "qemu_plugin_icount_raw";
 /// QEMU plugin API symbol used to request current-vCPU exit.
 pub const QEMU_PLUGIN_FORCE_VCPU_EXIT_SYMBOL: &str = "qemu_plugin_force_vcpu_exit";
+/// QEMU plugin API symbol used to enter the native paused runstate.
+pub const QEMU_PLUGIN_REQUEST_VMSTOP_SYMBOL: &str = "qemu_plugin_request_vmstop";
 /// QEMU plugin API symbol used to register the setup wake fd with QEMU.
 pub const QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL: &str = "qemu_plugin_register_wake_fd";
 /// QEMU plugin API symbol used to request a clean or fail-loud process shutdown.
 pub const QEMU_PLUGIN_REQUEST_SHUTDOWN_SYMBOL: &str = "qemu_plugin_request_shutdown";
+/// QEMU plugin API symbol that binds the immutable process generation.
+pub const QEMU_PLUGIN_SET_PROCESS_GENERATION_SYMBOL: &str =
+    "qemu_plugin_crucible_lifecycle_set_process_generation";
 /// QEMU plugin API symbol used to register shmem block submit/poll callbacks.
 pub const QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL: &str = "qemu_plugin_register_blk_cb";
+/// QEMU plugin API symbol used to register asynchronous block transport events.
+pub const QEMU_PLUGIN_REGISTER_BLK_EVENT_CB_SYMBOL: &str = "qemu_plugin_register_blk_event_cb";
 /// QEMU plugin API symbol used to register the blocked-device wait callback.
 pub const QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL: &str = "qemu_plugin_register_blk_wait_cb";
 /// QEMU plugin API symbol used to register shmem 9p burst/submit/poll callbacks.
 pub const QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL: &str = "qemu_plugin_register_9p_cb";
+/// QEMU accelerator callback registration export.
+pub const QEMU_PLUGIN_REGISTER_ACCELERATOR_CB_SYMBOL: &str = "qemu_plugin_register_accelerator_cb";
 /// QEMU plugin API symbol used to register the standard vCPU-init callback.
 pub const QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL: &str = "qemu_plugin_register_vcpu_init_cb";
 /// QEMU plugin API symbol used to register Crucible all-idle/resume callbacks.
 pub const QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL: &str =
     "qemu_plugin_register_vcpu_idle_resume_cb";
+/// QEMU plugin API symbol used to register exact drained-control boundaries.
+pub const QEMU_PLUGIN_REGISTER_CONTROL_BOUNDARY_CB_SYMBOL: &str =
+    "qemu_plugin_register_control_boundary_cb";
 /// QEMU plugin API symbol used to connect the sim loop to shared-memory time state.
 pub const QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL: &str =
     "qemu_plugin_register_sim_shmem_dispatch_cb";
@@ -115,8 +127,11 @@ const QEMU_PLUGIN_READ_VCPU_REGS_SYMBOL_C: &[u8] = b"qemu_plugin_read_vcpu_regs\
 const QEMU_PLUGIN_RR_CURSOR_SYMBOL_C: &[u8] = b"qemu_plugin_rr_cursor\0";
 const QEMU_PLUGIN_ICOUNT_RAW_SYMBOL_C: &[u8] = b"qemu_plugin_icount_raw\0";
 const QEMU_PLUGIN_FORCE_VCPU_EXIT_SYMBOL_C: &[u8] = b"qemu_plugin_force_vcpu_exit\0";
+const QEMU_PLUGIN_REQUEST_VMSTOP_SYMBOL_C: &[u8] = b"qemu_plugin_request_vmstop\0";
 const QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL_C: &[u8] = b"qemu_plugin_register_wake_fd\0";
 const QEMU_PLUGIN_REQUEST_SHUTDOWN_SYMBOL_C: &[u8] = b"qemu_plugin_request_shutdown\0";
+const QEMU_PLUGIN_SET_PROCESS_GENERATION_SYMBOL_C: &[u8] =
+    b"qemu_plugin_crucible_lifecycle_set_process_generation\0";
 const QEMU_PLUGIN_REGISTER_TCG_EXEC_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_tcg_exec_cb\0";
 const QEMU_PLUGIN_REGISTER_VCPU_TB_TRANS_CB_SYMBOL_C: &[u8] =
     b"qemu_plugin_register_vcpu_tb_trans_cb\0";
@@ -132,11 +147,16 @@ const QEMU_PLUGIN_TB_N_INSNS_SYMBOL_C: &[u8] = b"qemu_plugin_tb_n_insns\0";
 const QEMU_PLUGIN_TB_GET_INSN_SYMBOL_C: &[u8] = b"qemu_plugin_tb_get_insn\0";
 const QEMU_PLUGIN_INSN_SIZE_SYMBOL_C: &[u8] = b"qemu_plugin_insn_size\0";
 const QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_blk_cb\0";
+const QEMU_PLUGIN_REGISTER_BLK_EVENT_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_blk_event_cb\0";
 const QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_blk_wait_cb\0";
 const QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_9p_cb\0";
+const QEMU_PLUGIN_REGISTER_ACCELERATOR_CB_SYMBOL_C: &[u8] =
+    b"qemu_plugin_register_accelerator_cb\0";
 const QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_vcpu_init_cb\0";
 const QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL_C: &[u8] =
     b"qemu_plugin_register_vcpu_idle_resume_cb\0";
+const QEMU_PLUGIN_REGISTER_CONTROL_BOUNDARY_CB_SYMBOL_C: &[u8] =
+    b"qemu_plugin_register_control_boundary_cb\0";
 const QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL_C: &[u8] =
     b"qemu_plugin_register_sim_shmem_dispatch_cb\0";
 const QEMU_PLUGIN_REQUEST_TIME_CONTROL_SYMBOL_C: &[u8] = b"qemu_plugin_request_time_control\0";
@@ -313,23 +333,45 @@ pub type InertDeviceCallback = extern "C" fn(QemuPluginId, *mut c_void);
 pub type QemuIcountRawFn = extern "C" fn() -> u64;
 /// QEMU current-vCPU exit request exported by `crucible-plugin-vcpu-exit`.
 pub type QemuForceVcpuExitFn = extern "C" fn();
+/// QEMU native VM-stop request exported by the checkpoint-handoff patch.
+pub type QemuRequestVmstopFn = extern "C" fn() -> c_int;
 /// QEMU wake-fd registration exported by `crucible-plugin-wake-fd`.
 pub type QemuRegisterWakeFdFn = extern "C" fn(c_int) -> c_int;
 /// QEMU shutdown request function; nonzero selects the fail-loud host-error path.
 pub type QemuRequestShutdownFn = extern "C" fn(c_int);
+/// QEMU immutable process-generation provisioning function.
+pub type QemuSetProcessGenerationFn = extern "C" fn(u64) -> c_int;
 /// TCG-exec callback body passed to QEMU's registration export.
 pub type QemuTcgExecCbFn = extern "C" fn(c_uint, u64, *mut c_void);
 /// QEMU TCG-exec callback registration exported by `crucible-plugin-tcg-exec-cb`.
 pub type QemuRegisterTcgExecCbFn = extern "C" fn(Option<QemuTcgExecCbFn>, *mut c_void);
 /// Block submit callback body passed to QEMU's shmem block driver.
-pub type QemuBlkSubmitCbFn = extern "C" fn(u32, u32, u64, *const u8, usize, *mut c_void) -> c_int;
+pub type QemuBlkSubmitCbFn =
+    extern "C" fn(u64, u32, u32, u64, *const u8, usize, *mut c_void) -> c_int;
 /// Block completion poll callback body passed to QEMU's shmem block driver.
-pub type QemuBlkPollCbFn = extern "C" fn(u32, *mut u8, usize, *mut c_void) -> i64;
+pub type QemuBlkPollCbFn = extern "C" fn(u64, u32, *mut u8, usize, *mut c_void) -> i64;
+/// Asynchronous block transport-event poll callback body.
+pub type QemuBlkEventPollCbFn = extern "C" fn(*mut u8, usize, *mut c_void) -> i64;
+/// Commit callback for an event accepted by QEMU after exact validation.
+pub type QemuBlkEventCommitCbFn = extern "C" fn(*mut c_void) -> c_int;
+/// VMState size-query/save callback for the permissive transport continuation.
+pub type QemuBlkTransportSaveCbFn = extern "C" fn(*mut u8, usize, *mut c_void) -> i64;
+/// VMState restore callback paired with QEMU's allocator state.
+pub type QemuBlkTransportRestoreCbFn =
+    extern "C" fn(*const u8, usize, u64, u32, *mut c_void) -> c_int;
 /// Block device-wait callback body passed to QEMU's shmem block driver.
 pub type QemuBlkWaitCbFn = extern "C" fn(u32, *mut c_void);
 /// QEMU shmem block callback registration exported by `crucible-blk-shmem`.
 pub type QemuRegisterBlkCbFn =
     extern "C" fn(Option<QemuBlkSubmitCbFn>, Option<QemuBlkPollCbFn>, *mut c_void);
+/// QEMU asynchronous block event registration export.
+pub type QemuRegisterBlkEventCbFn = extern "C" fn(
+    Option<QemuBlkEventPollCbFn>,
+    Option<QemuBlkEventCommitCbFn>,
+    Option<QemuBlkTransportSaveCbFn>,
+    Option<QemuBlkTransportRestoreCbFn>,
+    *mut c_void,
+);
 /// QEMU shmem block wait registration exported by the device-completion patch.
 pub type QemuRegisterBlkWaitCbFn = extern "C" fn(Option<QemuBlkWaitCbFn>, *mut c_void);
 /// 9p burst callback body passed to QEMU's virtio-9p device.
@@ -346,6 +388,46 @@ pub type QemuRegisterNinePCbFn = extern "C" fn(
     Option<QemuNinePBurstCbFn>,
     *mut c_void,
 );
+/// Accelerator submit callback body passed to QEMU's deterministic device.
+pub type QemuAcceleratorSubmitCbFn = extern "C" fn(
+    u64,
+    *const u8,
+    u16,
+    u16,
+    u16,
+    u64,
+    *const u8,
+    usize,
+    usize,
+    *mut c_void,
+) -> c_int;
+/// Accelerator completion callback body passed to QEMU's deterministic device.
+pub type QemuAcceleratorPollCbFn = extern "C" fn(u64, *mut u16, *mut u8, usize, *mut c_void) -> i64;
+/// Accelerator wait notification passed to QEMU's deterministic device.
+pub type QemuAcceleratorWaitCbFn = extern "C" fn(u64, *mut c_void);
+/// Accelerator pending-request restore callback.
+pub type QemuAcceleratorRestoreCbFn =
+    extern "C" fn(u64, *const u8, u16, u16, u16, u64, usize, *mut c_void) -> c_int;
+/// Accelerator restore-transaction begin callback.
+pub type QemuAcceleratorRestoreBeginCbFn = extern "C" fn(u32, *mut c_void) -> c_int;
+/// Accelerator restore-transaction commit callback.
+pub type QemuAcceleratorRestoreCommitCbFn = extern "C" fn(*mut c_void) -> c_int;
+/// Accelerator restore-transaction abort callback.
+pub type QemuAcceleratorRestoreAbortCbFn = extern "C" fn(*mut c_void);
+/// Accelerator pending-request cancellation callback.
+pub type QemuAcceleratorCancelCbFn = extern "C" fn(u64, *mut c_void) -> c_int;
+/// QEMU deterministic accelerator callback registration export.
+pub type QemuRegisterAcceleratorCbFn = extern "C" fn(
+    Option<QemuAcceleratorSubmitCbFn>,
+    Option<QemuAcceleratorPollCbFn>,
+    Option<QemuAcceleratorWaitCbFn>,
+    Option<QemuAcceleratorRestoreBeginCbFn>,
+    Option<QemuAcceleratorRestoreCbFn>,
+    Option<QemuAcceleratorRestoreCommitCbFn>,
+    Option<QemuAcceleratorRestoreAbortCbFn>,
+    Option<QemuAcceleratorCancelCbFn>,
+    *mut c_void,
+);
 /// Standard QEMU vCPU lifecycle callback body.
 pub type QemuVcpuSimpleCbFn = extern "C" fn(QemuPluginId, c_uint);
 /// Standard QEMU vCPU-init callback registration function.
@@ -355,6 +437,9 @@ pub type QemuVcpuIdleResumeCbFn = extern "C" fn(c_uint, u64, *mut c_void);
 /// QEMU registration function for Crucible all-idle and resume callbacks.
 pub type QemuRegisterVcpuIdleResumeCbFn =
     extern "C" fn(Option<QemuVcpuIdleResumeCbFn>, Option<QemuVcpuIdleResumeCbFn>, *mut c_void);
+/// QEMU registration function for exact drained-control boundaries.
+pub type QemuRegisterControlBoundaryCbFn =
+    extern "C" fn(Option<QemuVcpuIdleResumeCbFn>, *mut c_void);
 /// Sim-loop callback that publishes the raw aggregate instruction count.
 pub type QemuSimShmemPublishIcountCbFn = extern "C" fn(u64, *mut c_void);
 /// Sim-loop callback that reads the scheduler-published instruction ceiling.
@@ -742,11 +827,25 @@ pub enum QemuPluginAbiError {
         /// Underlying vCPU introspection error.
         source: VcpuIntrospectionError,
     },
+    /// The required closed QEMU fault registry is unavailable or malformed.
+    #[error("QEMU plugin fault-command capability failed: {source}")]
+    FaultCommandCapability {
+        /// Underlying fault bridge capability error.
+        source: crate::FaultCommandBridgeError,
+    },
     /// A required T-PATCH-11 runtime API export is unavailable.
     #[error("QEMU plugin runtime API capability {symbol} is unavailable")]
     RuntimeApiCapability {
         /// Missing QEMU symbol.
         symbol: &'static str,
+    },
+    /// QEMU rejected the launch-provisioned process generation.
+    #[error("QEMU rejected process generation {generation} with status {status}")]
+    ProcessGenerationProvision {
+        /// Generation supplied by the launch profile.
+        generation: u64,
+        /// Negative errno status returned by QEMU.
+        status: c_int,
     },
 }
 
@@ -1409,6 +1508,60 @@ pub const fn resolve_qemu_force_vcpu_exit_symbol() -> Option<QemuForceVcpuExitFn
     None
 }
 
+/// Resolves QEMU's native VM-stop request export from the loaded process.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_request_vmstop_symbol() -> Option<QemuRequestVmstopFn> {
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name. The QEMU
+    // patch defines the symbol with the exact `extern "C" fn() -> c_int` ABI.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_REQUEST_VMSTOP_SYMBOL_C.as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the non-null symbol has the declaration documented above.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuRequestVmstopFn>(symbol) })
+    }
+}
+
+/// Resolves QEMU's native VM-stop request export from the loaded process.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_request_vmstop_symbol() -> Option<QemuRequestVmstopFn> {
+    None
+}
+
+/// Resolves QEMU's immutable process-generation provisioning export.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_set_process_generation_symbol() -> Option<QemuSetProcessGenerationFn> {
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name. The QEMU
+    // patch exports the exact `extern "C" fn(u64) -> c_int` ABI.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_SET_PROCESS_GENERATION_SYMBOL_C.as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the non-null symbol has the declaration documented above.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuSetProcessGenerationFn>(symbol) })
+    }
+}
+
+/// Resolves QEMU's immutable process-generation provisioning export.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_set_process_generation_symbol() -> Option<QemuSetProcessGenerationFn> {
+    None
+}
+
 /// Resolves QEMU's wake-fd registration export from the loaded process.
 #[cfg(unix)]
 #[must_use]
@@ -1628,6 +1781,35 @@ pub const fn resolve_qemu_register_blk_cb_symbol() -> Option<QemuRegisterBlkCbFn
     None
 }
 
+/// Resolves QEMU's asynchronous block transport-event registration export.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_register_blk_event_cb_symbol() -> Option<QemuRegisterBlkEventCbFn> {
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name. Patch 0062
+    // exports this exact function-pointer ABI and live install fails closed if
+    // the symbol is absent.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_REGISTER_BLK_EVENT_CB_SYMBOL_C.as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the non-null symbol has the exact patched-QEMU declaration
+        // represented by `QemuRegisterBlkEventCbFn`.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuRegisterBlkEventCbFn>(symbol) })
+    }
+}
+
+/// Reports that asynchronous block event registration is unavailable off Unix.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_register_blk_event_cb_symbol() -> Option<QemuRegisterBlkEventCbFn> {
+    None
+}
+
 /// Resolves QEMU's shmem block device-wait registration export.
 #[cfg(unix)]
 #[must_use]
@@ -1654,6 +1836,33 @@ pub fn resolve_qemu_register_blk_wait_cb_symbol() -> Option<QemuRegisterBlkWaitC
 #[cfg(not(unix))]
 #[must_use]
 pub const fn resolve_qemu_register_blk_wait_cb_symbol() -> Option<QemuRegisterBlkWaitCbFn> {
+    None
+}
+
+/// Resolves QEMU's deterministic accelerator registration export.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_register_accelerator_cb_symbol() -> Option<QemuRegisterAcceleratorCbFn> {
+    // SAFETY: the static name is NUL terminated; patch 0069 exports the exact
+    // C declaration represented by `QemuRegisterAcceleratorCbFn`.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_REGISTER_ACCELERATOR_CB_SYMBOL_C.as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the resolved non-null symbol has the exact patched-QEMU ABI.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuRegisterAcceleratorCbFn>(symbol) })
+    }
+}
+
+/// Reports that accelerator registration is unavailable off Unix.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_register_accelerator_cb_symbol() -> Option<QemuRegisterAcceleratorCbFn> {
     None
 }
 
@@ -1744,6 +1953,37 @@ pub fn resolve_qemu_register_vcpu_idle_resume_cb_symbol() -> Option<QemuRegister
 #[must_use]
 pub const fn resolve_qemu_register_vcpu_idle_resume_cb_symbol()
 -> Option<QemuRegisterVcpuIdleResumeCbFn> {
+    None
+}
+
+/// Resolves QEMU's exact drained-control-boundary callback registration export.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_register_control_boundary_cb_symbol() -> Option<QemuRegisterControlBoundaryCbFn>
+{
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name. The
+    // Crucible patch declares this symbol with the exact callback ABI above.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_REGISTER_CONTROL_BOUNDARY_CB_SYMBOL_C
+                .as_ptr()
+                .cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the exact patched API name establishes the function type.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuRegisterControlBoundaryCbFn>(symbol) })
+    }
+}
+
+/// Resolves no control-boundary registration export outside Unix QEMU environments.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_register_control_boundary_cb_symbol()
+-> Option<QemuRegisterControlBoundaryCbFn> {
     None
 }
 
@@ -1942,18 +2182,24 @@ fn install_owned_boundary(
     let read_rr_cursor = resolve_qemu_rr_cursor_symbol();
     let icount_raw = resolve_qemu_icount_raw_symbol();
     let force_vcpu_exit = resolve_qemu_force_vcpu_exit_symbol();
+    let request_vmstop = resolve_qemu_request_vmstop_symbol();
     let register_wake_fd = resolve_qemu_register_wake_fd_symbol();
     let request_shutdown = resolve_qemu_request_shutdown_symbol();
+    let set_process_generation = resolve_qemu_set_process_generation_symbol();
     let register_tcg_exec_cb = resolve_qemu_register_tcg_exec_cb_symbol();
     let register_vcpu_init = resolve_qemu_register_vcpu_init_cb_symbol();
     let register_vcpu_idle_resume = resolve_qemu_register_vcpu_idle_resume_cb_symbol();
+    let register_control_boundary = resolve_qemu_register_control_boundary_cb_symbol();
     let register_sim_shmem_dispatch = resolve_qemu_register_sim_shmem_dispatch_cb_symbol();
     let register_net_tx = crate::resolve_qemu_register_net_tx_cb_symbol();
-    let net_send = crate::resolve_qemu_net_send_symbol();
-    let net_flush = crate::resolve_qemu_net_flush_symbol();
+    let net_inject = crate::resolve_qemu_net_inject_symbol();
     let register_block = resolve_qemu_register_blk_cb_symbol();
+    let register_block_event = resolve_qemu_register_blk_event_cb_symbol();
     let register_block_wait = resolve_qemu_register_blk_wait_cb_symbol();
     let register_ninep = resolve_qemu_register_9p_cb_symbol();
+    let register_accelerator = resolve_qemu_register_accelerator_cb_symbol();
+    let fault_commands = crate::fault_command::QemuFaultCommandApis::resolve()
+        .map_err(|source| QemuPluginAbiError::FaultCommandCapability { source })?;
     let state = install_required_runtime_api_scaffold(
         boundary.execution_model,
         clock_deadline_ns,
@@ -1973,6 +2219,19 @@ fn install_owned_boundary(
         })?;
     let request_shutdown =
         require_runtime_api(request_shutdown, QEMU_PLUGIN_REQUEST_SHUTDOWN_SYMBOL)?;
+    let request_vmstop = require_runtime_api(request_vmstop, QEMU_PLUGIN_REQUEST_VMSTOP_SYMBOL)?;
+    let set_process_generation = require_runtime_api(
+        set_process_generation,
+        QEMU_PLUGIN_SET_PROCESS_GENERATION_SYMBOL,
+    )?;
+    let generation_status = set_process_generation(boundary.args.process_generation());
+    if generation_status != 0 {
+        return Err(QemuPluginAbiError::ProcessGenerationProvision {
+            generation: boundary.args.process_generation(),
+            status: generation_status,
+        }
+        .into());
+    }
     let basic_block_coverage = if boundary.args.coverage().is_on() {
         Some(resolve_qemu_basic_block_coverage_apis()?)
     } else {
@@ -1981,6 +2240,7 @@ fn install_owned_boundary(
     let capabilities = crate::runtime::LiveInstallCapabilities {
         icount_raw: runtime_apis.icount_raw(),
         force_vcpu_exit: runtime_apis.force_vcpu_exit(),
+        request_vmstop,
         inject_preemption,
         request_time_control: resolve_qemu_request_time_control_symbol(),
         clock_deadline_ns,
@@ -1991,13 +2251,16 @@ fn install_owned_boundary(
         basic_block_coverage,
         register_vcpu_init,
         register_vcpu_idle_resume,
+        register_control_boundary,
         register_sim_shmem_dispatch,
         register_net_tx,
-        net_send,
-        net_flush,
+        net_inject,
         register_block,
+        register_block_event,
         register_block_wait,
         register_ninep,
+        register_accelerator,
+        fault_commands,
     };
     let callback_registrar = crate::runtime::FailClosedOwnedCallbackRegistrar::production(
         plugin_id,

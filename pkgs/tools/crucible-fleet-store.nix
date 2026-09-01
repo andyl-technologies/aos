@@ -5,6 +5,7 @@
   fetchCargoDeps,
   stdenv,
   buildPackages,
+  grep,
   crucible-controller,
 }: let
   version = "0.1.0";
@@ -21,11 +22,7 @@ in
     pname = "crucible-fleet-store";
     inherit version src;
 
-    cargoDeps = fetchCargoDeps {
-      inherit src;
-      sourceRoot = "source/crates";
-      hash = cargoDepsHash;
-    };
+    cargoDeps = crucible-controller.passthru.cargoDeps;
     inherit cargoArtifacts;
     cargoArtifactContract = cargoArtifacts.passthru.cargoArtifactContract;
     cargoEnv = cargoArtifacts.passthru.cargoArtifactContract.cargoEnv;
@@ -109,7 +106,7 @@ in
       cat > "$out/nix-support/crucible-fleet-store-build-info" <<'INFO'
       package=crucible-fleet-store
       build_system=mkCargoPackage
-      cargo_deps=fetchCargoDeps
+      cargo_deps=fetchCargoVendor
       cargo_deps_source_root=source/crates
       cargo_deps_hash=${cargoDepsHash}
       cargo_package=crucible-cas

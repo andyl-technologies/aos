@@ -69,9 +69,6 @@ step-event
 step-assertion
 step-timer
 step-duration
-inject
-inject-fault
-heal                  alias: heal-fault
 save                  alias: create-savepoint
 fork
 query
@@ -90,13 +87,9 @@ the response. An interactive terminal therefore does not require a separate EOF
 after `stop`.
 
 The current parser accepts only the keyword; it does not parse payloads for a
-duration, fault, query selector, savepoint label, or fork override. Use the
+duration, query selector, savepoint label, or fork override. Use the
 top-level `save`, `resume`, and `fork` commands for parameterized workflows and
-put deterministic fault injection and healing in the scenario plan. Because an
-interactive fault cannot safely invent a target or tag, argumentless
-`inject-fault` and `heal-fault` return an agent-readable
-`status=rejected reason=unsupported detail=payload-required` acknowledgement.
-The session remains live and continues reading later commands.
+put deterministic fault behavior in the scenario's signal graph and bindings.
 
 An interactive live-QEMU `fork` is intentionally transient: its final report
 retains checkpoint and oracle evidence but marks its reproduction artifact
@@ -212,7 +205,8 @@ configuration and event history:
 
 `reverse-continue` accepts `quiescent`, `at:<virtual-time-ticks>`, or
 `hex:<compact-predicate>`. The compact form is the canonical binary encoding of
-the RFC-0010 17a predicate and supports the complete condition vocabulary.
+the [scenario predicate](reference.md#properties-and-predicates) and supports
+that complete condition vocabulary.
 `goto` on a remote session accepts `vtime:<ticks>` (or a bare tick count) and
 `icount:<node>:<retired>` coordinates.
 

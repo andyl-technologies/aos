@@ -122,6 +122,56 @@ Same-ABI rollback can reactivate retained configuration directly. Cross-ABI
 rollback re-evaluates retained `host.nix`, facts, and authenticated package
 modules against the running image instead of replaying an incompatible `/etc`.
 
+## Supplement `host.nix` at runtime
+
+Runtime modules layer local operator intent over the authenticated platform
+`host.nix`; they never overwrite or copy it. AOS discovers safe `.nix` files
+recursively beneath `/var/lib/aos/config/modules.d`, snapshots the complete
+tree into the Nix store, and passes every public entrypoint directly to the
+same module evaluator. Names beginning with `_` are private helper files and
+directories: public modules may import them, but AOS does not evaluate them as
+entrypoints.
+
+For a package installed through `apm`, put only its configuration in a module:
+
+```nix
+{
+  nginx = {
+    enable = true;
+    virtualHosts.health = {
+      listen = [8080];
+      locations."/"."return" = {
+        code = 200;
+        body = "healthy\n";
+      };
+    };
+  };
+}
+```
+
+Then stage, review, and activate the complete set:
+
+```sh
+apm config add ./nginx.nix
+apm config diff
+apm config apply
+apm config status
+```
+
+Alternatively, add `aos.apm.desiredPackages = ["nginx"];` to the module so
+package selection and configuration occur in the same transaction. Use
+`replace` and `remove` to edit desired state, and `discard` to restore the
+worktree from the active immutable snapshot. A failed evaluation or activation
+leaves the current generation live; the edited worktree remains dirty for
+inspection. Reboot, rollback, ordinary `apm switch`, and cross-ABI
+re-evaluation use the generation-pinned snapshot, never unsaved worktree bytes.
+
+Runtime modules have full stage-2 local-root operator authority but cannot
+change `aos.provisioning.*`: storage provisioning remains exclusively sourced
+from authenticated boot-time `host.nix`. The initial runtime-set trust mode is
+`local-root`; signed-set ingestion is rejected until AOS can retain and verify
+a signature receipt over the complete set descriptor.
+
 Preview a candidate without fetching its runtime closure or touching the live
 generation:
 

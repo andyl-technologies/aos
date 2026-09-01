@@ -1,0 +1,17 @@
+diff --git a/hw/9pfs/virtio-9p-device.c b/hw/9pfs/virtio-9p-device.c
+index d58bf5d4b..923c8ddfd 100644
+--- a/hw/9pfs/virtio-9p-device.c
++++ b/hw/9pfs/virtio-9p-device.c
+@@ -504,10 +504,8 @@ static void virtio_9p_device_realize(DeviceState *dev, Error **errp)
+     v->config_size = sizeof(struct virtio_9p_config) + strlen(s->fsconf.tag);
+     virtio_init(vdev, VIRTIO_ID_9P, v->config_size);
+     v->vq = virtio_add_queue(vdev, MAX_REQ, handle_9p_output);
+-    if (crucible_9p_callbacks_ready()) {
+-        qemu_plugin_wake_notifier_add(&v->crucible_9p_wake_notifier);
+-        v->crucible_9p_wake_registered = true;
+-    }
++    qemu_plugin_wake_notifier_add(&v->crucible_9p_wake_notifier);
++    v->crucible_9p_wake_registered = true;
+ }
+ 
+ static void virtio_9p_device_unrealize(DeviceState *dev)

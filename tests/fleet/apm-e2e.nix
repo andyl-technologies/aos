@@ -69,16 +69,9 @@
       name = "test-reg";
       description = "Fleet test registry";
     };
-    caches = [
-      {
-        # Cache base URL. apm now reads the per-path URL from the
-        # narinfo's `URL:` field (crates/aos-package/src/download.rs)
-        # and joins it onto this base, so we point at the view root
-        # `/default` and let the narinfo carry the `nar/...` segment.
-        url = "http://server:15000/default";
-        priority = 100;
-      }
-    ];
+    # The committed cache topology uses the unified stack schema. A single
+    # endpoint is the minimal production form of the `[caches]` table.
+    caches.endpoint = "http://server:15000/default";
   };
 
   # Package TOML skeleton with the `__NAR_HASH__` marker; the runtime

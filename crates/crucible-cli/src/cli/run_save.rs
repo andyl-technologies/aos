@@ -27,6 +27,7 @@ pub(super) struct RunWorkflowReport {
     pub(super) streamed_event_frames: Vec<Vec<u8>>,
     pub(super) coverage_feedback: crucible::EventLogCoverageFeedback,
     pub(super) execution_fingerprints: Vec<crucible::FingerprintSample>,
+    pub(super) resolved_effect_trace: Option<Vec<u8>>,
     pub(super) acknowledged_commands: Vec<SessionCommandKind>,
     pub(super) watch_statuses: Vec<String>,
 }
@@ -368,7 +369,7 @@ pub(super) fn run_local_qemu_resume_workflow(
         resume_plan,
         report,
     )?;
-    append_qemu_control_plane_execution_proof(&mut outcome, backend, "resume-thin-replay");
+    append_qemu_control_plane_execution_proof(&mut outcome, backend, "resume-exact-checkpoint");
     Ok(outcome)
 }
 
@@ -917,6 +918,7 @@ where
             streamed_event_frames,
             coverage_feedback: coverage_feedback_from_streamed_events(coverage_events)?,
             execution_fingerprints,
+            resolved_effect_trace: None,
             acknowledged_commands,
             watch_statuses,
         },
@@ -1054,11 +1056,7 @@ where
         let Some(command) = parse_interactive_session_command_line(&line)? else {
             continue;
         };
-        if interactive_stream_command(command)?.is_none() {
-            write_interactive_payload_required(writer, command)?;
-            writer.flush()?;
-            continue;
-        }
+        cli_stream_command(command)?;
         if command == SessionCommandKind::Stop {
             let boundary = current_remote_resume_summary(client, session).await?;
             if watch_streams_live_status {

@@ -197,9 +197,9 @@ revision, and cross-scope use requires exact materialized grants. Unknown,
 stale, mismatched, or degraded observation fails closed for credential-bearing
 HTTP, local access classification, and private redirect eligibility. A CLI or
 Web form cannot assert protection as an endpoint-local flag.
-The public realm is the deployment-provisioned, instance-owned,
-non-revisable `instance:public@1` singleton with eagerly materialized exact
-organization grants; public endpoint creation still references it explicitly.
+The public realm is the instance-owned, non-revisable
+`instance:public@1` singleton. Organization access is applied through an exact
+reviewed grant; public endpoint creation still references it explicitly.
 
 ### D26: the API is the only management authority
 

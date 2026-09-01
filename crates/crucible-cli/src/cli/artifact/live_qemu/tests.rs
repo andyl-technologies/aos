@@ -23,7 +23,6 @@ fn fork_contract() -> LiveQemuReplayContract {
             frontier_ticks: 11,
             seed: 99,
         },
-        fault_choice_indices: vec![4],
         network_choice_indices: vec![5],
         startup_controls: vec![
             LiveQemuReplayControl {
@@ -58,7 +57,6 @@ fn producer_contract(producer: &str) -> LiveQemuReplayContract {
     match producer {
         "search" => {
             contract.branch = LiveQemuReplayBranch::None;
-            contract.fault_choice_indices = vec![1, 4];
             contract.network_choice_indices = vec![2, 5];
             contract.startup_controls.clear();
         }
@@ -66,7 +64,6 @@ fn producer_contract(producer: &str) -> LiveQemuReplayContract {
         _ => {
             contract.branch = LiveQemuReplayBranch::None;
             contract.fingerprint_scope = LiveQemuFingerprintScope::FullExecution;
-            contract.fault_choice_indices = vec![1, 4];
             contract.network_choice_indices = vec![2, 5];
             contract.startup_controls[0].command = String::from("start");
         }
@@ -167,7 +164,7 @@ fn live_qemu_replay_contract_rejects_unsupported_producer() {
 #[test]
 fn live_qemu_replay_contract_rejects_duplicate_choice_indices() {
     let mut contract = fork_contract();
-    contract.fault_choice_indices = vec![4, 4];
+    contract.network_choice_indices = vec![4, 4];
     let error = rejected_contract(&contract, "duplicate choice indices must fail closed");
     assert!(error.to_string().contains("unique and increasing"));
 }
@@ -175,7 +172,7 @@ fn live_qemu_replay_contract_rejects_duplicate_choice_indices() {
 #[test]
 fn live_qemu_replay_contract_rejects_pre_branch_choices() {
     let mut contract = fork_contract();
-    contract.fault_choice_indices = vec![2, 4];
+    contract.network_choice_indices = vec![2, 4];
     let error = rejected_contract(
         &contract,
         "pre-branch choices must remain owned by the retained base",

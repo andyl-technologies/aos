@@ -1110,6 +1110,7 @@ mod subverb_tests {
             ciphertext: None,
             units: vec!["web.service".into()],
             encrypted: true,
+            optional: false,
         }];
         let handles = json!({
             "join-token": {"system-credential": "bootstrap-token"}

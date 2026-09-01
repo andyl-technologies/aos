@@ -691,17 +691,13 @@ fn invalid_data(message: impl Into<String>) -> io::Error {
 }
 
 fn valid_fuzz_family_toml() -> &'static str {
-    r#"schema = "crucible.scenario-family.v1"
+    r#"schema = "crucible.scenario-family.v2"
 topology_shapes = ["ring"]
 
 [seed_space]
 kind = "generated"
 meta_seed = "0x55"
 count = 2
-
-[fault_density]
-min_millionths = 0
-max_millionths = 1
 
 [topology_size]
 min = 1
@@ -1053,12 +1049,10 @@ fn replay_to_savepoint_decision_fixtures(
             let payload = format!("{decision:?}");
             let kind = match decision {
                 crucible::Decision::DeliveryOrder(_) => "delivery-order",
-                crucible::Decision::FaultFires(_) => "fault-fires",
                 crucible::Decision::RngDraw(_) => "rng-draw",
                 crucible::Decision::Override(_) => "override",
                 crucible::Decision::Preemption(_) => "preemption",
                 crucible::Decision::AppRandom(_) => "app-random",
-                crucible::Decision::ControlFault(_) => "control-fault",
             };
             ReplayToSavepointDecisionFixture {
                 sequence: index as u64,
@@ -1088,62 +1082,6 @@ fn replay_to_savepoint_schedule_digest(decisions: &[ReplayToSavepointDecisionFix
         );
     }
     content_address_bytes(material.as_bytes())
-}
-
-fn savepoint_handle_text(
-    form: &crucible::ScenarioDefForm,
-    schedule: &crucible::Schedule,
-    checkpoint: &crucible::Checkpoint,
-) -> Result<String, Box<dyn Error>> {
-    let scenario = form.scenario_def();
-    let scenario_payload = form.to_compact_binary();
-    let schedule_payload = schedule.to_compact_binary();
-    let mut text = String::new();
-    artifact_line(&mut text, &["schema", "crucible.savepoint-handle.v2"]);
-    artifact_line(&mut text, &["label", "process-replay-to"]);
-    artifact_line(
-        &mut text,
-        &[
-            "checkpoint",
-            &crucible::ContentAddressedBlobRef::from_hash(checkpoint.id).to_uri(),
-        ],
-    );
-    artifact_line(
-        &mut text,
-        &["scenario", &scenario.id().to_hex(), "process-replay-to.scn"],
-    );
-    artifact_line(
-        &mut text,
-        &[
-            "scenario-payload",
-            &content_address_bytes(&scenario_payload),
-            &hex_bytes(&scenario_payload),
-        ],
-    );
-    artifact_line(
-        &mut text,
-        &[
-            "schedule-payload",
-            &content_address_bytes(&schedule_payload),
-            &hex_bytes(&schedule_payload),
-        ],
-    );
-    artifact_line(
-        &mut text,
-        &["frontier", &checkpoint.virtual_time.ticks.to_string()],
-    );
-    artifact_line(&mut text, &["at", "quiescence"]);
-    artifact_line(&mut text, &["terminal-condition", "quiescence"]);
-    artifact_line(&mut text, &["materialization", "create-savepoint", "reply"]);
-    artifact_line(&mut text, &["oracle", "fat==thin-passed"]);
-    artifact_line(
-        &mut text,
-        &[
-            "canonical-log",
-            &content_address_bytes(b"process-replay-to-canonical-log"),
-        ],
-    );
-    Ok(text)
 }
 
 fn scenario_identity_bytes(scenario: &crucible::ScenarioDef) -> Vec<u8> {

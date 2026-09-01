@@ -53,6 +53,8 @@
 
 use crate::clock::Instant;
 
+use std::collections::BTreeMap;
+
 use axum::http::{header, HeaderMap};
 
 use aos_proto_types as pb;
@@ -284,6 +286,13 @@ async fn load_visible(
         return None;
     }
     let status = svc.db.index_status(registry.id).await.ok().flatten();
+    if auth_header(headers).is_none() && session::session_secret_from_headers(headers).is_none() {
+        if let Some(kv) = &svc.kv {
+            if matches!(crate::directory::read(kv.as_ref()).await, Ok(None)) {
+                let _ = crate::directory::rebuild(&svc.db, kv.as_ref()).await;
+            }
+        }
+    }
     Some((registry, status))
 }
 
@@ -433,7 +442,16 @@ pub async fn home(svc: &RpcService, headers: &HeaderMap, query: &BrowseQuery) ->
     // registries the caller may see; a cold projection falls through too.
     if session.email.is_none() {
         if let Some(kv) = &svc.kv {
-            if let Ok(Some(entries)) = crate::directory::read(kv.as_ref()).await {
+            let entries = match crate::directory::read(kv.as_ref()).await {
+                Ok(Some(entries)) => Some(entries),
+                // Bootstrap and data replacement can leave the eventually
+                // consistent projection absent. Repair it on the first
+                // anonymous request instead of making every request take the
+                // relational fallback until the next maintenance tick.
+                Ok(None) => crate::directory::rebuild(&svc.db, kv.as_ref()).await.ok(),
+                Err(_) => None,
+            };
+            if let Some(entries) = entries {
                 let rows: Vec<(RegistryRecord, Option<IndexStatus>)> = entries
                     .iter()
                     .map(crate::directory::DirectoryEntry::to_row)
@@ -516,7 +534,7 @@ pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) ->
         futures_util::future::join(
             futures_util::future::join5(
                 svc.db.list_channels(registry.id),
-                svc.db.list_packages(registry.id),
+                svc.db.package_count(registry.id),
                 svc.db.registry_cache_stack_entries(registry.id),
                 // RFC-0004 ch.14 Phase C: trust roster read-through KV cache.
                 svc.list_roster_cached(registry.id),
@@ -529,28 +547,21 @@ pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) ->
         )
         .await;
     let channels = channels.unwrap_or_default();
-    let packages = packages.unwrap_or_default();
-    let caches: Vec<(String, u32)> = caches
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|entry| {
-            u32::try_from(entry.resolved_priority)
-                .ok()
-                .map(|priority| (entry.committed_url, priority))
-        })
-        .collect();
+    let package_count = packages.unwrap_or_default();
+    let caches = resolved_cache_urls(caches.unwrap_or_default());
     let roster = roster.unwrap_or_default();
     let validations = validations.unwrap_or_default();
     let external = svc.registry_consumer_url(&registry).await.ok();
+    let setup = pages::RegistrySetup::new(&registry, status.as_ref(), external.as_deref(), &caches);
     Rendered::Html(pages::registry_home(
         &registry,
         status.as_ref(),
         &channels,
-        &packages,
+        package_count,
         &caches,
         &roster,
         &validations,
-        external.as_deref(),
+        &setup,
         can_manage,
         started,
         &session,
@@ -601,12 +612,7 @@ pub async fn images(
         session_indicator(svc, headers),
     )
     .await;
-    let download_base = svc
-        .db
-        .ready_registry_canonical_url(registry.id)
-        .await
-        .ok()
-        .flatten();
+    let download_base = svc.registry_consumer_url(&registry).await.ok();
     Rendered::Html(pages::images_page(
         &registry,
         status.as_ref(),
@@ -614,6 +620,7 @@ pub async fn images(
         &channels.unwrap_or_default(),
         download_base.as_deref(),
         &pages::ImageBrowse {
+            page_number: query.page_number(),
             query: query.q.as_deref(),
             release: query.release.as_deref(),
             channel: query.channel.as_deref(),
@@ -638,11 +645,30 @@ async fn package_index_html(
     use crate::db::PackageRow;
     use crate::filter::{version_key, Filter};
 
-    let (all, truncated) = svc
-        .db
-        .list_packages_capped(registry.id, MAX_BROWSE_PACKAGES)
-        .await
-        .unwrap_or_else(|_| (Vec::new(), false));
+    let snapshot = query
+        .release
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let releases = svc.db.list_releases(registry.id).await.unwrap_or_default();
+    let snapshots = releases
+        .iter()
+        .map(|release| (release.semver.clone(), release.commit_oid.clone()))
+        .collect::<Vec<_>>();
+    let (all, truncated) = if let Some(snapshot) = snapshot {
+        (
+            svc.db
+                .list_packages_at_release(registry.id, snapshot)
+                .await
+                .unwrap_or_default(),
+            false,
+        )
+    } else {
+        svc.db
+            .list_packages_capped(registry.id, MAX_BROWSE_PACKAGES)
+            .await
+            .unwrap_or_else(|_| (Vec::new(), false))
+    };
     let total_all = all.len();
     let filter_text = query.filter();
 
@@ -698,6 +724,9 @@ async fn package_index_html(
         .saturating_add(pages::PACKAGES_PER_PAGE)
         .min(total_matches);
     let browse = pages::PackageBrowse {
+        snapshot,
+        head_commit: status.and_then(|status| status.last_indexed_commit.as_deref()),
+        snapshots: &snapshots,
         filter: filter_text,
         filter_error: filter_error.as_deref(),
         sort,
@@ -721,12 +750,18 @@ async fn package_index_html(
 }
 
 /// One package's detail page (HTML), with its resolved forward/reverse closure.
-pub async fn package(svc: &RpcService, headers: &HeaderMap, slug: &str, name: &str) -> Rendered {
+pub async fn package(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    slug: &str,
+    name: &str,
+    query: &BrowseQuery,
+) -> Rendered {
     let started = Instant::now();
     let Some((registry, status)) = load_visible(svc, headers, slug).await else {
         return Rendered::NotFound;
     };
-    let Some(detail) = svc
+    let Some(mut detail) = svc
         .db
         .package_detail(registry.id, name)
         .await
@@ -735,17 +770,69 @@ pub async fn package(svc: &RpcService, headers: &HeaderMap, slug: &str, name: &s
     else {
         return Rendered::NotFound;
     };
-    let closure = resolve_package_closure(svc, registry.id, name, &detail).await;
-    let session = session_indicator(svc, headers).await;
+    let snapshot = query
+        .release
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(snapshot) = snapshot {
+        let snapshot_packages = svc
+            .db
+            .list_packages_at_release(registry.id, snapshot)
+            .await
+            .unwrap_or_default();
+        let Some(snapshot_package) = snapshot_packages
+            .iter()
+            .find(|package| package.name == name)
+        else {
+            return Rendered::NotFound;
+        };
+        detail.versions.retain(|version| {
+            snapshot_package.latest_version.as_deref() == Some(version.version.as_str())
+        });
+        for version in &mut detail.versions {
+            version
+                .platforms
+                .retain(|platform| snapshot_package.platforms.contains(&platform.platform));
+        }
+    }
+    let (closure, session, caches, external) = futures_util::future::join4(
+        resolve_package_closure(svc, registry.id, name, &detail),
+        session_indicator(svc, headers),
+        svc.db.registry_cache_stack_entries(registry.id),
+        svc.registry_consumer_url(&registry),
+    )
+    .await;
+    let caches = resolved_cache_urls(caches.unwrap_or_default());
+    let setup = pages::RegistrySetup::new(
+        &registry,
+        status.as_ref(),
+        external.ok().as_deref(),
+        &caches,
+    );
     Rendered::Html(pages::package_page(
         &registry,
         status.as_ref(),
         &detail,
         &closure,
-        &svc.external_url,
+        &setup,
+        snapshot,
         started,
         &session,
     ))
+}
+
+fn resolved_cache_urls(
+    entries: Vec<crate::db::RegistryCacheStackEntryRecord>,
+) -> Vec<(String, u32)> {
+    entries
+        .into_iter()
+        .filter_map(|entry| {
+            u32::try_from(entry.resolved_priority)
+                .ok()
+                .map(|priority| (entry.committed_url, priority))
+        })
+        .collect()
 }
 
 /// Resolve a package's forward and reverse closure for the detail page.
@@ -849,12 +936,30 @@ pub async fn releases(
     let Some((registry, status)) = load_visible(svc, headers, slug).await else {
         return Rendered::NotFound;
     };
-    let releases = svc.db.list_releases(registry.id).await.unwrap_or_default();
+    let (releases, images, package_counts) = futures_util::future::join3(
+        svc.db.list_releases(registry.id),
+        svc.db.list_system_images(registry.id),
+        svc.db.list_release_package_counts(registry.id),
+    )
+    .await;
+    let releases = releases.unwrap_or_default();
+    let package_counts = package_counts.unwrap_or_default();
+    let image_counts = images
+        .unwrap_or_default()
+        .into_iter()
+        .fold(BTreeMap::<String, usize>::new(), |mut counts, image| {
+            *counts.entry(image.release).or_default() += 1;
+            counts
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
     let session = session_indicator(svc, headers).await;
     Rendered::Html(pages::releases_page(
         &registry,
         status.as_ref(),
         &releases,
+        &package_counts,
+        &image_counts,
         query.page_number(),
         started,
         &session,

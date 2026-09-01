@@ -6,7 +6,7 @@
 //! servicing observed: how many 9p requests were serviced, the device completion
 //! horizon for the first request, and the guest slot's published device-I/O
 //! state. The guest must complete that request and reach the scheduler ceiling.
-//! The run repeats under host load with a delayed due response, and the two
+//! The run repeats under bounded scheduler preemption with a delayed due response, and the two
 //! runs' icount-domain observations must match.
 //!
 //! Positional arguments: `QEMU PLUGIN KERNEL FIRMWARE RUN_DIRECTORY INITRD`. The
@@ -17,7 +17,7 @@
 //! ```text
 //! CRUCIBLE_9P_IO_BUSY_CEILING    icount the single advance drives toward
 //! CRUCIBLE_9P_IO_TIMEOUT_SECS    per-advance host wait bound (seconds)
-//! CRUCIBLE_9P_IO_SECOND_RUN_LOAD "0" disables second-run host load
+//! CRUCIBLE_9P_IO_SECOND_RUN_SCHEDULER_PREEMPTION "0" disables second-run bounded scheduler preemption
 //! ```
 
 #[cfg(target_os = "linux")]
@@ -66,7 +66,10 @@ fn run() -> Result<(), String> {
             "CRUCIBLE_9P_IO_TIMEOUT_SECS",
             120,
         )?))
-        .with_second_run_host_load(env_flag("CRUCIBLE_9P_IO_SECOND_RUN_LOAD", true)?);
+        .with_second_run_scheduler_preemption(env_flag(
+            "CRUCIBLE_9P_IO_SECOND_RUN_SCHEDULER_PREEMPTION",
+            true,
+        )?);
     let config = match env_opt_u64("CRUCIBLE_9P_IO_BUSY_CEILING")? {
         Some(ceiling) => config.with_busy_ceiling_icount(ceiling),
         None => config,
@@ -136,10 +139,21 @@ fn run() -> Result<(), String> {
     }
     println!("orderly_child_exit={}", report.orderly_child_exit);
     println!(
-        "deterministic_under_host_load={}",
-        report.deterministic_under_host_load
+        "deterministic_under_scheduler_preemption={}",
+        report.deterministic_under_scheduler_preemption
     );
-    println!("host_load_applied={}", report.host_load_applied);
+    println!(
+        "scheduler_preemption_applied={}",
+        report.scheduler_preemption_applied
+    );
+    println!(
+        "host_adversary={}",
+        if report.scheduler_preemption_applied {
+            "bounded-scheduler-preemption"
+        } else {
+            "none"
+        }
+    );
     println!(
         "delayed_response_applied={}",
         report.delayed_response_applied

@@ -1,613 +1,115 @@
-# tests/vm/apm/kernel.nix — Kernel upgrade mode VM tests
+# tests/vm/apm/kernel.nix - Immutable system transition option contracts.
 #
-# Verifies the four kernel upgrade strategies: advisory (default), kexec,
-# reboot, and live. Also tests the drain mechanism and the case where the
-# kernel is unchanged between generations.
-#
-# Each test creates mock toplevels with different kernel symlinks to simulate
-# kernel version changes. Since kexec and reboot are destructive operations,
-# the tests verify that the correct commands would be invoked (via mock
-# binaries that record their invocations) rather than actually rebooting.
+# The production system lifecycle stages a complete authenticated A/B image;
+# it cannot replace only the running kernel or userspace. This test executes
+# every public and retained compatibility transition flag and proves invalid
+# combinations fail before registry or profile state is consulted. Successful
+# staging and reboot behavior is owned by the image-backed fleet lifecycle.
 {
   testing,
   apm,
   pkgs,
-}: let
-  testDeps = [
-    apm
-    pkgs.coreutils
-    pkgs.jq
-    pkgs.grep
-    pkgs.git
-    pkgs.nix
-  ];
-
-  # --------------------------------------------------------------------------
-  # Mock kernel store paths — simulate different kernel versions
-  # --------------------------------------------------------------------------
-  mkMockKernel = {version}:
-    pkgs.mkDerivation {
-      pname = "mock-linux";
-      inherit version;
-      src = null;
-      buildDeps = [pkgs.coreutils];
-      phases = [
-        {
-          name = "build";
-          script = ''
-            mkdir -p $out/boot
-            echo "mock-kernel-${version}" > $out/boot/bzImage
-          '';
-        }
-      ];
-    };
-
-  kernelV1 = mkMockKernel {version = "6.12.1";};
-  kernelV2 = mkMockKernel {version = "6.13.0";};
-
-  # --------------------------------------------------------------------------
-  # Mock toplevels with kernel symlinks
-  # --------------------------------------------------------------------------
-  mkKernelToplevel = {
-    pname,
-    version,
-    kernel,
-    drainScript ? null,
-  }:
-    pkgs.mkDerivation {
-      pname = "mock-toplevel-${pname}";
-      inherit version;
-      src = null;
-      buildDeps = [pkgs.coreutils];
-      phases = [
-        {
-          name = "build";
-          script = ''
-            mkdir -p $out/etc/systemd/system
-            mkdir -p $out/boot
-
-            # Kernel symlink
-            ln -sfn ${kernel} $out/kernel
-
-            # Activation script
-            cp ${builtins.toFile "activate" ''
-              #!/bin/sh
-              mkdir -p /tmp
-              echo "activated-${version}" > /tmp/activated-current
-            ''} $out/activate
-            chmod +x $out/activate
-
-            # Boot loader entry directory (for update_boot_loader)
-            mkdir -p $out/boot/loader/entries
-
-            ${
-              if drainScript != null
-              then ''
-                cp ${builtins.toFile "drain" drainScript} $out/drain
-                chmod +x $out/drain
-              ''
-              else ""
-            }
-          '';
-        }
-      ];
-    };
-
-  # Toplevel with kernel v1
-  toplevelKV1 = mkKernelToplevel {
-    pname = "server";
-    version = "2026.03";
-    kernel = kernelV1;
-  };
-
-  # Toplevel with kernel v2 (different kernel)
-  toplevelKV2 = mkKernelToplevel {
-    pname = "server";
-    version = "2026.04";
-    kernel = kernelV2;
-  };
-
-  # Toplevel with same kernel as v1 (userspace-only change)
-  toplevelKV1b = mkKernelToplevel {
-    pname = "server";
-    version = "2026.03.1";
-    kernel = kernelV1;
-  };
-
-  # Toplevel with drain script + different kernel
-  toplevelKV2Drain = mkKernelToplevel {
-    pname = "server";
-    version = "2026.04";
-    kernel = kernelV2;
-    drainScript = ''
-      #!/bin/sh
-      echo "drain-executed" > /tmp/drain-executed
-    '';
-  };
-
-  # Helper
-  hashOf = path:
-    builtins.substring 0 32 (builtins.baseNameOf (builtins.toString path));
-
-  # --------------------------------------------------------------------------
-  # Mock registries for kernel tests
-  # --------------------------------------------------------------------------
-  mkKernelRegistry = {packages}:
-    pkgs.mkDerivation {
-      pname = "mock-registry-kernel";
-      version = "0";
-      src = null;
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.git
-      ];
-      phases = [
-        {
-          name = "build";
-          script = ''
-            mkdir -p $out/packages
-            ${builtins.concatStringsSep "\n" (
-              builtins.map (
-                pkg: let
-                  letter = builtins.substring 0 1 pkg.name;
-                in ''
-                                    mkdir -p $out/packages/${letter}
-                                    cat > $out/packages/${letter}/${pkg.name}.toml << 'PKGEOF'
-                  [package]
-                  name = "${pkg.name}"
-                  description = "mock ${pkg.name}"
-                  license = "MIT"
-                  maintainer = "test"
-                  ${
-                    if pkg.sysroot or false
-                    then "sysroot = true"
-                    else ""
-                  }
-
-                  [[versions]]
-                  version = "${pkg.version}"
-
-                  [versions.platforms.x86_64-linux]
-                  store_path = "${pkg.storePath}"
-                  nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-                  nar_size = 1024
-                  closure_size = 2048
-                  source_drv = ""
-                  source_nar_hash = ""
-                  references = [${builtins.concatStringsSep ", " (builtins.map (r: "\"${r}\"") (pkg.references or []))}]
-                  PKGEOF
-                ''
-              )
-              packages
-            )}
-
-            cd $out
-            git init
-            git add .
-            git -c user.name=test -c user.email=test@test commit -m "init" --allow-empty
-          '';
-        }
-      ];
-    };
-
-  registryKV2 = mkKernelRegistry {
-    packages = [
-      {
-        name = "server";
-        version = "2026.04";
-        storePath = builtins.toString toplevelKV2;
-        sysroot = true;
-        references = [];
-      }
+}: {
+  system-transition-options = testing.mkVMTest {
+    name = "apm-system-transition-options";
+    rootfsDeps = [
+      apm
+      pkgs.coreutils
+      pkgs.grep
     ];
-  };
 
-  registryKV1b = mkKernelRegistry {
-    packages = [
-      {
-        name = "server";
-        version = "2026.03.1";
-        storePath = builtins.toString toplevelKV1b;
-        sysroot = true;
-        references = [];
-      }
-    ];
-  };
-
-  registryKV2Drain = mkKernelRegistry {
-    packages = [
-      {
-        name = "server";
-        version = "2026.04";
-        storePath = builtins.toString toplevelKV2Drain;
-        sysroot = true;
-        references = [];
-      }
-    ];
-  };
-
-  # Preamble
-  mkKernelPreamble = {
-    registryPath,
-    stateJson,
-  }: ''
-        export HOME=/tmp/home
-        mkdir -p $HOME/.config/apm/registries.d
-        mkdir -p $HOME/.local/share/apm/registries
-        mkdir -p $HOME/.local/share/apm/remote
-        mkdir -p $HOME/.cache/apm
-        mkdir -p /var/lib/profiles/system
-        mkdir -p /var/lib/apm/remote
-        mkdir -p /var/lib/apm/registries
-        mkdir -p /etc/apm/registries.d
-
-        cp -r ${registryPath} /var/lib/apm/registries/test
-        chmod -R u+w /var/lib/apm/registries/test
-
-        cat > /etc/apm/registries.d/test.toml << 'CFGEOF'
-    [registry]
-    name = "test"
-    url = "file:///var/lib/apm/registries/test"
-    priority = 500
-    enabled = true
-
-    [registry.signing]
-    required = false
-    CFGEOF
-
-        ln -sfn /var/lib/apm/registries/test /var/lib/apm/remote/test
-        ln -sfn /var/lib/apm/registries/test $HOME/.local/share/apm/remote/test
-
-        echo '${stateJson}' > /var/lib/profiles/system/state.json
-
-        # Create mock kexec and systemctl commands that log their invocations
-        # instead of actually rebooting
-        mkdir -p /tmp/mock-bin
-        printf '%s\n' '#!/bin/sh' 'echo "MOCK-KEXEC: $@" >> /tmp/kexec-invocations.log' 'echo "kexec: $@"' 'exit 0' > /tmp/mock-bin/kexec
-        chmod +x /tmp/mock-bin/kexec
-
-        printf '%s\n' '#!/bin/sh' 'echo "MOCK-SYSTEMCTL: $@" >> /tmp/systemctl-invocations.log' 'echo "systemctl: $@"' 'exit 0' > /tmp/mock-bin/systemctl
-        chmod +x /tmp/mock-bin/systemctl
-
-        printf '%s\n' '#!/bin/sh' 'echo "MOCK-SYNC" >> /tmp/sync-invocations.log' 'exit 0' > /tmp/mock-bin/sync
-        chmod +x /tmp/mock-bin/sync
-
-        # Prepend mock binaries to PATH
-        export PATH="/tmp/mock-bin:$PATH"
-
-        # Create boot loader entry directory
-        mkdir -p /boot/loader/entries
-  '';
-
-  # State with v1 installed (kernel v1)
-  stateKV1 = builtins.toJSON {
-    current = 1;
-    next = 2;
-    generations = [
-      {
-        number = 1;
-        toplevel = builtins.toString toplevelKV1;
-        version = "2026.03";
-        package_name = "server";
-        registry = "test";
-        created_at = "2026-03-01T00:00:00Z";
-        kernel_path = builtins.toString kernelV1;
-      }
-    ];
-  };
-
-  # State with v1 installed (kernel v1) — for drain test with v2 drain
-  stateKV1ForDrain = builtins.toJSON {
-    current = 1;
-    next = 2;
-    generations = [
-      {
-        number = 1;
-        toplevel = builtins.toString toplevelKV1;
-        version = "2026.03";
-        package_name = "server";
-        registry = "test";
-        created_at = "2026-03-01T00:00:00Z";
-        kernel_path = builtins.toString kernelV1;
-      }
-    ];
-  };
-in {
-  # --------------------------------------------------------------------------
-  # Test 1: kernel-advisory
-  # --------------------------------------------------------------------------
-  # Default mode: advise reboot when kernel changed, don't actually reboot
-  kernel-advisory = testing.mkVMTest {
-    name = "apm-kernel-advisory";
-    rootfsDeps = testDeps ++ [registryKV2 toplevelKV1 toplevelKV2];
-    memory = 1024;
     testScript = ''
-      ${mkKernelPreamble {
-        registryPath = registryKV2;
-        stateJson = stateKV1;
-      }}
+      set -eu
 
-      mkdir -p /var/lib/profiles/system/gen-1
-      ln -sfn ${toplevelKV1} /var/lib/profiles/system/gen-1/toplevel
-      ln -sfn gen-1 /var/lib/profiles/system/current
-
-      echo "==> Test: kernel-advisory mode prints reboot advisory"
-
-      # Default mode (no --kexec, --reboot, or --live flags)
-      OUTPUT=$(${apm}/bin/apm install server --system --yes 2>&1) || true
-      echo "Output: $OUTPUT"
-
-      # Verify the boot loader entry was updated (if kernel changed)
-      if [ -f /boot/loader/entries/aos.conf ]; then
-        echo "==> Boot loader entry updated:"
-        cat /boot/loader/entries/aos.conf
-      fi
-
-      # Verify advisory message about reboot
-      if echo "$OUTPUT" | grep -qi "reboot"; then
-        echo "==> Advisory message about reboot found"
-      else
-        echo "INFO: reboot advisory may not appear if apm determined no kernel change"
-      fi
-
-      # Verify system did NOT reboot (mock systemctl should not have reboot)
-      if [ -f /tmp/systemctl-invocations.log ]; then
-        if grep -q "reboot" /tmp/systemctl-invocations.log; then
-          echo "FAIL: advisory mode should not invoke systemctl reboot"
+      must_fail_with() {
+        expected=$1
+        shift
+        output=/tmp/transition-output
+        if "$@" >"$output" 2>&1; then
+          echo "FAIL: command unexpectedly succeeded: $*" >&2
+          cat "$output" >&2
           exit 1
         fi
-      fi
+        if ! grep -Fq -- "$expected" "$output"; then
+          echo "FAIL: command did not report expected contract: $*" >&2
+          echo "expected: $expected" >&2
+          cat "$output" >&2
+          exit 1
+        fi
+      }
 
-      # Verify kexec was NOT invoked
-      if [ -f /tmp/kexec-invocations.log ]; then
-        echo "FAIL: advisory mode should not invoke kexec"
-        cat /tmp/kexec-invocations.log
+      # The supported image transition controls remain discoverable.
+      ${apm}/bin/apm install --help > /tmp/install-help
+      grep -Fq -- "--reboot" /tmp/install-help
+      grep -Fq -- "--drain" /tmp/install-help
+
+      # Retained legacy spellings are accepted only to produce a precise
+      # migration error; they are not advertised as production features.
+      if grep -Fq -- "--kexec" /tmp/install-help; then
+        echo "FAIL: --kexec must not be advertised" >&2
+        exit 1
+      fi
+      if grep -Fq -- "--live" /tmp/install-help; then
+        echo "FAIL: --live must not be advertised" >&2
         exit 1
       fi
 
-      echo "==> kernel-advisory PASSED"
-    '';
-  };
+      must_fail_with \
+        "--kexec is not supported for immutable A/B image transitions" \
+        ${apm}/bin/apm install server --system --kexec
+      must_fail_with \
+        "--live is not supported for immutable A/B image transitions" \
+        ${apm}/bin/apm install server --system --live
+      must_fail_with \
+        "--drain requires --reboot" \
+        ${apm}/bin/apm install server --system --drain
+      must_fail_with \
+        "system transition flags require --system" \
+        ${apm}/bin/apm install server --reboot
+      must_fail_with \
+        "system transition flags cannot be used with --image download mode" \
+        ${apm}/bin/apm install server --image raw --reboot
 
-  # --------------------------------------------------------------------------
-  # Test 2: kernel-kexec
-  # --------------------------------------------------------------------------
-  # --kexec flag: kexec -l + kexec -e when kernel changed
-  kernel-kexec = testing.mkVMTest {
-    name = "apm-kernel-kexec";
-    rootfsDeps = testDeps ++ [registryKV2 toplevelKV1 toplevelKV2];
-    memory = 1024;
-    testScript = ''
-      ${mkKernelPreamble {
-        registryPath = registryKV2;
-        stateJson = stateKV1;
-      }}
+      must_fail_with \
+        "--kexec is not supported for immutable A/B image transitions" \
+        ${apm}/bin/apm upgrade --system --kexec
+      must_fail_with \
+        "--live is not supported for immutable A/B image transitions" \
+        ${apm}/bin/apm upgrade --system --live
+      must_fail_with \
+        "--drain requires --reboot" \
+        ${apm}/bin/apm upgrade --system --drain
+      must_fail_with \
+        "system transition flags require --system" \
+        ${apm}/bin/apm upgrade --reboot
 
-      mkdir -p /var/lib/profiles/system/gen-1
-      ln -sfn ${toplevelKV1} /var/lib/profiles/system/gen-1/toplevel
-      ln -sfn gen-1 /var/lib/profiles/system/current
+      # Configuration rollback never changes the booted image. Transition
+      # controls belong only to the explicit image rollback axis.
+      must_fail_with \
+        "system transition flags apply only to rollback --system --image" \
+        ${apm}/bin/apm rollback --system --reboot
+      must_fail_with \
+        "system transition flags require --system --image" \
+        ${apm}/bin/apm rollback --reboot
+      must_fail_with \
+        "--kexec is not supported for immutable A/B image transitions" \
+        ${apm}/bin/apm rollback --system --image --kexec
+      must_fail_with \
+        "--live is not supported for immutable A/B image transitions" \
+        ${apm}/bin/apm rollback --system --image --live
+      must_fail_with \
+        "--drain requires --reboot" \
+        ${apm}/bin/apm rollback --system --image --drain
+      must_fail_with \
+        "system transition flags cannot be used with rollback --list" \
+        ${apm}/bin/apm rollback --system --image --list --reboot
 
-      echo "==> Test: --kexec invokes kexec to load new kernel"
+      # Clap itself owns mutual exclusion between transition strategies.
+      must_fail_with \
+        "cannot be used with" \
+        ${apm}/bin/apm install server --system --kexec --reboot
 
-      OUTPUT=$(${apm}/bin/apm install server --system --yes --kexec 2>&1) || true
-      echo "Output: $OUTPUT"
-
-      # Verify kexec -l was invoked
-      if [ -f /tmp/kexec-invocations.log ]; then
-        echo "Kexec invocations:"
-        cat /tmp/kexec-invocations.log
-
-        if grep -q "\-l" /tmp/kexec-invocations.log; then
-          echo "==> kexec -l was invoked (kernel load)"
-        else
-          echo "INFO: kexec -l not found — kernel may not have been detected as changed"
-        fi
-      else
-        echo "INFO: no kexec invocations recorded — store paths may already match"
-      fi
-
-      echo "==> kernel-kexec PASSED"
-    '';
-  };
-
-  # --------------------------------------------------------------------------
-  # Test 3: kernel-reboot
-  # --------------------------------------------------------------------------
-  # --reboot flag: queue a reboot after activation.
-  #
-  # Reboot is now queued via `Manager.Reboot` over the system bus, NOT by
-  # shelling out to the `systemctl` binary. Two layers verify the actual call:
-  # the `aos-systemd` unit test `reboot_calls_manager_reboot` (FakeSystemd
-  # records it) and the live apm-systemd-client fleet test. This headless
-  # microVM cannot exercise the reboot itself — it runs no system D-Bus, and a
-  # real reboot would be destructive — and apm here does not even reach the
-  # reboot dispatch (this harness does not register the mock toplevel in the
-  # Nix DB, so `apm install` stops at the download step; the kernel-mode
-  # dispatch was never reachable in these microVM tests, before or after the
-  # D-Bus migration). What this test still meaningfully guards is the
-  # migration's invariant: the reboot path must NEVER shell out to the
-  # `systemctl` binary mock that sits on PATH for the kexec/drain tests.
-  kernel-reboot = testing.mkVMTest {
-    name = "apm-kernel-reboot";
-    rootfsDeps = testDeps ++ [registryKV2 toplevelKV1 toplevelKV2];
-    memory = 1024;
-    testScript = ''
-      ${mkKernelPreamble {
-        registryPath = registryKV2;
-        stateJson = stateKV1;
-      }}
-
-      mkdir -p /var/lib/profiles/system/gen-1
-      ln -sfn ${toplevelKV1} /var/lib/profiles/system/gen-1/toplevel
-      ln -sfn gen-1 /var/lib/profiles/system/current
-
-      echo "==> Test: --reboot never shells out to the systemctl binary"
-
-      OUTPUT=$(${apm}/bin/apm install server --system --yes --reboot 2>&1) || true
-      echo "Output: $OUTPUT"
-
-      # Regression guard: reboot goes through D-Bus (Manager.Reboot), never the
-      # systemctl binary. Pre-migration this mock would have logged "reboot".
-      if [ -f /tmp/systemctl-invocations.log ] && grep -q "reboot" /tmp/systemctl-invocations.log; then
-        echo "FAIL: reboot must not invoke the systemctl binary (it is now D-Bus)"
-        cat /tmp/systemctl-invocations.log
-        exit 1
-      fi
-      echo "==> systemctl binary not used for reboot (reboot is D-Bus; see reboot_calls_manager_reboot)"
-
-      echo "==> kernel-reboot PASSED"
-    '';
-  };
-
-  # --------------------------------------------------------------------------
-  # Test 4: kernel-live
-  # --------------------------------------------------------------------------
-  # --live flag: update bootloader but don't reboot, stage for next boot
-  kernel-live = testing.mkVMTest {
-    name = "apm-kernel-live";
-    rootfsDeps = testDeps ++ [registryKV2 toplevelKV1 toplevelKV2];
-    memory = 1024;
-    testScript = ''
-      ${mkKernelPreamble {
-        registryPath = registryKV2;
-        stateJson = stateKV1;
-      }}
-
-      mkdir -p /var/lib/profiles/system/gen-1
-      ln -sfn ${toplevelKV1} /var/lib/profiles/system/gen-1/toplevel
-      ln -sfn gen-1 /var/lib/profiles/system/current
-
-      echo "==> Test: --live stages kernel for next reboot without rebooting"
-
-      OUTPUT=$(${apm}/bin/apm install server --system --yes --live 2>&1) || true
-      echo "Output: $OUTPUT"
-
-      # Verify "staged for next reboot" or similar message
-      if echo "$OUTPUT" | grep -qi "staged\|next reboot"; then
-        echo "==> Live mode message found"
-      else
-        echo "INFO: staged/next-reboot message may not appear if kernel unchanged"
-      fi
-
-      # Verify NO reboot happened
-      if [ -f /tmp/systemctl-invocations.log ]; then
-        if grep -q "reboot" /tmp/systemctl-invocations.log; then
-          echo "FAIL: --live mode should NOT invoke systemctl reboot"
-          exit 1
-        fi
-      fi
-
-      # Verify NO kexec happened
-      if [ -f /tmp/kexec-invocations.log ]; then
-        echo "FAIL: --live mode should NOT invoke kexec"
-        exit 1
-      fi
-
-      echo "==> kernel-live PASSED"
-    '';
-  };
-
-  # --------------------------------------------------------------------------
-  # Test 5: kernel-unchanged
-  # --------------------------------------------------------------------------
-  # When kernel is the same, no kernel handling should trigger
-  kernel-unchanged = testing.mkVMTest {
-    name = "apm-kernel-unchanged";
-    rootfsDeps = testDeps ++ [registryKV1b toplevelKV1 toplevelKV1b];
-    memory = 1024;
-    testScript = ''
-      ${mkKernelPreamble {
-        registryPath = registryKV1b;
-        stateJson = stateKV1;
-      }}
-
-      mkdir -p /var/lib/profiles/system/gen-1
-      ln -sfn ${toplevelKV1} /var/lib/profiles/system/gen-1/toplevel
-      ln -sfn gen-1 /var/lib/profiles/system/current
-
-      echo "==> Test: same kernel = no kernel upgrade handling"
-
-      # Use --kexec flag, but since the kernel is the same, it should be a no-op
-      OUTPUT=$(${apm}/bin/apm install server --system --yes --kexec 2>&1) || true
-      echo "Output: $OUTPUT"
-
-      # Verify "kernel unchanged" or similar message, or no kernel action
-      if echo "$OUTPUT" | grep -qi "unchanged\|not needed\|already"; then
-        echo "==> Kernel unchanged message found"
-      else
-        echo "INFO: no explicit unchanged message (may just skip silently)"
-      fi
-
-      # Verify no kexec was invoked (kernel didn't change)
-      if [ -f /tmp/kexec-invocations.log ]; then
-        if grep -q "\-l" /tmp/kexec-invocations.log; then
-          echo "FAIL: kexec -l should NOT be invoked when kernel is unchanged"
-          cat /tmp/kexec-invocations.log
-          exit 1
-        fi
-      fi
-
-      # Verify no reboot was invoked
-      if [ -f /tmp/systemctl-invocations.log ]; then
-        if grep -q "reboot" /tmp/systemctl-invocations.log; then
-          echo "FAIL: reboot should NOT be invoked when kernel is unchanged"
-          exit 1
-        fi
-      fi
-
-      echo "==> kernel-unchanged PASSED"
-    '';
-  };
-
-  # --------------------------------------------------------------------------
-  # Test 6: kernel-drain
-  # --------------------------------------------------------------------------
-  # --drain flag executes the toplevel's drain script before kernel switch
-  kernel-drain = testing.mkVMTest {
-    name = "apm-kernel-drain";
-    rootfsDeps = testDeps ++ [registryKV2Drain toplevelKV1 toplevelKV2Drain];
-    memory = 1024;
-    testScript = ''
-      ${mkKernelPreamble {
-        registryPath = registryKV2Drain;
-        stateJson = stateKV1ForDrain;
-      }}
-
-      mkdir -p /var/lib/profiles/system/gen-1
-      ln -sfn ${toplevelKV1} /var/lib/profiles/system/gen-1/toplevel
-      ln -sfn gen-1 /var/lib/profiles/system/current
-
-      echo "==> Test: --drain executes the drain script before kernel switch"
-
-      # Verify the drain script exists in the new toplevel
-      if [ -x ${toplevelKV2Drain}/drain ]; then
-        echo "==> Drain script found in v2 toplevel"
-      else
-        echo "FAIL: drain script not found in ${builtins.toString toplevelKV2Drain}/drain"
-        exit 1
-      fi
-
-      OUTPUT=$(${apm}/bin/apm install server --system --yes --kexec --drain 2>&1) || true
-      echo "Output: $OUTPUT"
-
-      # Verify the drain script was executed (marker file created)
-      if [ -f /tmp/drain-executed ]; then
-        MARKER=$(cat /tmp/drain-executed)
-        echo "==> Drain marker found: $MARKER"
-        if [ "$MARKER" = "drain-executed" ]; then
-          echo "==> Drain script executed successfully"
-        fi
-      else
-        echo "INFO: drain marker not found — drain may not have been invoked"
-        echo "      (depends on whether apm detected kernel change)"
-      fi
-
-      # Verify drain-related output
-      if echo "$OUTPUT" | grep -qi "drain"; then
-        echo "==> Drain-related output found"
-      fi
-
-      echo "==> kernel-drain PASSED"
+      echo "system transition option contracts passed"
     '';
   };
 }

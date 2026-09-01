@@ -606,6 +606,10 @@
     # behaviour is byte-identical to before this primitive. CS5 wires the
     # resolver to populate this from the verified host.nix path.
     operatorModules ? [],
+    # Additional generation-pinned stage-2 operator fragments. They have the
+    # same priority as the platform host but distinct engine provenance so
+    # provisioning writes can be rejected and input identity remains auditable.
+    runtimeModules ? [],
     # Config modules fetched from authenticated package outputs. Each record is
     # `{ name; module; configRoot; outputs; authorization; }`; every field is
     # resolver supplied from authenticated package metadata. `module` must be
@@ -620,7 +624,15 @@
     # config at its full absolute option path. Re-checking a nested relative
     # path would lose that prefix and reject valid writes.
     enforcePackageAuthorization ? true,
+    # Stage-1 package selection deliberately evaluates against only the
+    # desired-package declaration, before selected package modules contribute
+    # their option schemas. The resolver disables this check only for that
+    # seed evaluation; full stage-2 evaluation remains fail-closed.
+    enforceRuntimeDeclarations ? true,
   }: let
+    serviceTypes = import ./service-types.nix {
+      inherit types mkOption;
+    };
     moduleLib =
       if lib == {}
       then
@@ -630,6 +642,7 @@
         // strings
         // {
           inherit types;
+          inherit serviceTypes;
           inherit
             mkOption
             mkIf
@@ -786,6 +799,8 @@
                 then provenance
                 else if provenance == "@host" || provenance == "@host-import"
                 then "@host-import"
+                else if provenance == "@runtime" || provenance == "@runtime-import"
+                then "@runtime-import"
                 else "@base"
               )
               (
@@ -818,7 +833,9 @@
 
       validAuthorization = auth:
         builtins.isAttrs auth
-        && builtins.attrNames auth == ["contributes" "owns"]
+        && (builtins.attrNames auth
+          == ["contributes" "owns"]
+          || builtins.attrNames auth == ["artifacts" "contributes" "owns"])
         && builtins.isList auth.owns
         && builtins.all (root: builtins.isString root && builtins.match "[a-zA-Z0-9][a-zA-Z0-9_-]*" root != null) auth.owns
         && builtins.isAttrs auth.contributes
@@ -829,7 +846,14 @@
             && path != ""
             && builtins.match "[a-zA-Z0-9][a-zA-Z0-9_.-]*" path != null)
           paths)
-        (builtins.attrValues auth.contributes);
+        (builtins.attrValues auth.contributes)
+        && builtins.isAttrs (auth.artifacts or {})
+        && (builtins.attrNames (auth.artifacts or {})
+          == []
+          || builtins.attrNames auth.artifacts == ["etc" "groups" "units" "users"])
+        && builtins.all
+        (values: builtins.isList values && builtins.all builtins.isString values)
+        (builtins.attrValues (auth.artifacts or {}));
 
       validPackageOutputs = outputs:
         builtins.isAttrs outputs
@@ -871,6 +895,18 @@
           record
           // {
             inherit configRoot;
+            authorization =
+              record.authorization
+              // {
+                artifacts =
+                  record.authorization.artifacts
+                  or {
+                    etc = [];
+                    groups = [];
+                    units = [];
+                    users = [];
+                  };
+              };
             outputs = record.outputs or null;
           })
       packageModules;
@@ -889,7 +925,8 @@
       evaluatedModules =
         collectModules "@base" null null null false ([internalModule] ++ modules)
         ++ evaluatedPackageModules
-        ++ collectModules "@host" null null null false operatorModules;
+        ++ collectModules "@host" null null null false operatorModules
+        ++ collectModules "@runtime" null null null false runtimeModules;
 
       # Enumerate the concrete leaf paths actually authored by each package
       # module. The authenticated metadata is only an authorization claim; it
@@ -949,8 +986,21 @@
           != []
           && builtins.elemAt relative (builtins.length relative - 1) == "enable";
         pathStr = builtins.concatStringsSep "." path;
+        artifacts = module._authorization.artifacts;
+        exactArtifact =
+          if builtins.length path >= 3 && lists.take 2 path == ["environment" "etc"]
+          then builtins.elem (builtins.elemAt path 2) artifacts.etc
+          else if builtins.length path >= 3 && lists.take 2 path == ["systemd" "services"]
+          then builtins.elem "${builtins.elemAt path 2}.service" artifacts.units
+          else if builtins.length path >= 4 && lists.take 3 path == ["aos" "users" "users"]
+          then builtins.elem (builtins.elemAt path 3) artifacts.users
+          else if builtins.length path >= 4 && lists.take 3 path == ["aos" "users" "groups"]
+          then builtins.elem (builtins.elemAt path 3) artifacts.groups
+          else false;
       in
         if builtins.elem root packageEngineContributionRoots
+        then true
+        else if exactArtifact
         then true
         else if builtins.elem root owns
         then true
@@ -971,6 +1021,48 @@
             else
               builtins.foldl'
               (inner: path: builtins.seq inner (authorizePackagePath module path))
+              checked
+              (configLeafPaths [] module.config))
+          true
+          evaluatedModules;
+
+      runtimeProvisioningCheck =
+        builtins.foldl'
+        (checked: module:
+          if !builtins.elem (module._provenance or "") ["@runtime" "@runtime-import"]
+          then checked
+          else
+            builtins.foldl'
+            (inner: path:
+              if lists.take 2 path == ["aos" "provisioning"]
+              then throw "evalModules: runtime module writes forbidden initrd-only path '${builtins.concatStringsSep "." path}'"
+              else inner)
+            checked
+            (configLeafPaths [] module.config))
+        true
+        evaluatedModules;
+
+      runtimeDeclarationCheck = let
+        hasDeclaredPrefix = path:
+          builtins.any
+          (length:
+            optionMap
+            ? ${builtins.concatStringsSep "." (lists.take length path)})
+          (builtins.genList (index: index + 1) (builtins.length path));
+      in
+        if !enforceRuntimeDeclarations
+        then true
+        else
+          builtins.foldl'
+          (checked: module:
+            if !builtins.elem (module._provenance or "") ["@runtime" "@runtime-import"]
+            then checked
+            else
+              builtins.foldl'
+              (inner: path:
+                if hasDeclaredPrefix path
+                then inner
+                else throw "evalModules: ${module._provenance} module '${module._file}' writes undeclared option '${builtins.concatStringsSep "." path}'")
               checked
               (configLeafPaths [] module.config))
           true
@@ -1000,7 +1092,7 @@
       ownerForProvenance = provenance:
         if provenance == null || provenance == "@base"
         then "@base"
-        else if provenance == "@host" || provenance == "@host-import"
+        else if provenance == "@host" || provenance == "@host-import" || provenance == "@runtime" || provenance == "@runtime-import"
         then "@host"
         else if strings.hasPrefix "package:" provenance
         then strings.removePrefix "package:" provenance
@@ -1127,7 +1219,7 @@
       defBasePriority = d:
         if isOverride d.value
         then d.value._priority
-        else if (d.provenance or "@base") == "@host"
+        else if builtins.elem (d.provenance or "@base") ["@host" "@runtime"]
         then 75
         else 100;
 
@@ -1307,7 +1399,7 @@
                     d
                     // {
                       _priority =
-                        if (d.provenance or null) == "@host"
+                        if builtins.elem (d.provenance or null) ["@host" "@runtime"]
                         then 75
                         else 100;
                     }
@@ -1443,7 +1535,7 @@
       freeformType = finalConfig._module.freeformType or null;
       isStrict = finalConfig._module.strict or false;
 
-      configWithFreeform = builtins.seq packageDeclarationCheck (builtins.seq packageAuthorizationCheck (
+      configWithFreeform = builtins.seq runtimeProvisioningCheck (builtins.seq runtimeDeclarationCheck (builtins.seq packageDeclarationCheck (builtins.seq packageAuthorizationCheck (
         if freeformType == null && !isStrict
         then finalConfig
         else let
@@ -1553,7 +1645,7 @@
 
               Because `_module.strict = true` on this evaluation, undeclared options are not allowed. Declare the option, or set `_module.freeformType` to a type that accepts these values.
             ''
-      ));
+      ))));
     in {
       config = configWithFreeform;
       # Exposed as the nested options tree (matching nixpkgs'
@@ -1577,7 +1669,7 @@
       in
         evalModules ({
             modules = modules ++ extraModules;
-            inherit pkgs lib extraArgs specialArgs operatorModules packageModules enforcePackageAuthorization;
+            inherit pkgs lib extraArgs specialArgs operatorModules packageModules enforcePackageAuthorization enforceRuntimeDeclarations;
           }
           // builtins.removeAttrs args ["modules"]);
 

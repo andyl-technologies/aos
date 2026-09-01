@@ -7,11 +7,7 @@
   qemuPackage ? null,
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   patchName = "0006-crucible-clock-deadline.patch";
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
@@ -45,7 +41,7 @@
     failuresFor "pkgs/emulation/qemu.nix" qemuNix [
       {
         label = "clock deadline patch wiring";
-        needle = "patch -p1 < \${./qemu-patches/0006-crucible-clock-deadline.patch}";
+        needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
       }
     ]
     ++ failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
@@ -357,9 +353,6 @@ in
 
             QEMU_PLUGIN_API
             uint64_t qemu_plugin_crucible_ram_hash(uint64_t *bytes_out);
-
-            QEMU_PLUGIN_API
-            void qemu_plugin_crucible_pause_vm(void);
 
             /**
              * qemu_plugin_scoreboard_new() - alloc a new scoreboard

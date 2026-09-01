@@ -1,16 +1,21 @@
 ##! PostgreSQL — Object-relational database server
 {
+  lib,
   mkDerivation,
+  writeShellScriptBin,
   fetchurl,
   gnumake,
+  bash,
+  coreutils,
   pkg-config,
   bison,
   flex,
-  coreutils,
   tar,
   perl,
   python3,
   llvm,
+  glibc,
+  linux-headers,
   curl,
   docbook-xml,
   docbook-xsl,
@@ -40,6 +45,137 @@
 }: let
   version = "18.4";
   isDarwin = stdenv.hostPlatform.isDarwin;
+  control = writeShellScriptBin "postgresql-control" ''
+    set -euo pipefail
+
+    service_env=/etc/aos/packages/postgresql/service.env
+    data_directory=/var/lib/aos-pkg-postgresql/data
+    staging_directory=/var/lib/aos-pkg-postgresql/.data-initializing
+    server_config=/etc/postgresql/postgresql.conf
+    credential_directory="''${CREDENTIALS_DIRECTORY:-/run/credentials/postgresql.service}"
+
+    load_environment() {
+      # The env artifact is authenticated and rendered by AOS. Do not accept
+      # process-environment overrides for lifecycle policy.
+      unset \
+        POSTGRESQL_ENABLED POSTGRESQL_STANDBY POSTGRESQL_SUPERUSER \
+        POSTGRESQL_PRIMARY_HOST POSTGRESQL_PRIMARY_PORT \
+        POSTGRESQL_REPLICATION_USER POSTGRESQL_REPLICATION_SLOT
+      source "$service_env"
+    }
+
+    running() {
+      /bin/pg_ctl status -D "$data_directory" >/dev/null 2>&1
+    }
+
+    case "''${1:-}" in
+      enabled)
+        load_environment
+        [[ "$POSTGRESQL_ENABLED" == true ]]
+        ;;
+      prepare)
+        load_environment
+
+        if [[ -L "$data_directory" ]]; then
+          echo "PostgreSQL data directory must not be a symbolic link" >&2
+          exit 78
+        fi
+
+        if [[ ! -s "$data_directory/PG_VERSION" ]]; then
+          if [[ -e "$data_directory" || -L "$data_directory" ]]; then
+            if [[ -d "$data_directory" && ! -L "$data_directory" ]] \
+              && [[ -z "$(${coreutils}/bin/ls -A "$data_directory")" ]]; then
+              ${coreutils}/bin/rmdir "$data_directory"
+            else
+              echo "PostgreSQL data directory exists without PG_VERSION; refusing to overwrite it" >&2
+              exit 78
+            fi
+          fi
+
+          # This exact service-owned sibling contains no accepted database
+          # state. A prior interrupted attempt can be retried safely, while
+          # the final data directory is never recursively removed.
+          ${coreutils}/bin/rm -rf "$staging_directory"
+          ${coreutils}/bin/mkdir -m 0700 "$staging_directory"
+
+          if [[ "$POSTGRESQL_STANDBY" == true ]]; then
+            passfile="$credential_directory/replication-passfile"
+            if [[ ! -r "$passfile" ]]; then
+              echo "PostgreSQL standby initialization requires replication-passfile" >&2
+              exit 78
+            fi
+            slot_args=()
+            if [[ -n "''${POSTGRESQL_REPLICATION_SLOT:-}" ]]; then
+              slot_args+=(--slot="$POSTGRESQL_REPLICATION_SLOT")
+            fi
+            PGPASSFILE="$passfile" /bin/pg_basebackup \
+              --pgdata="$staging_directory" \
+              --host="$POSTGRESQL_PRIMARY_HOST" \
+              --port="$POSTGRESQL_PRIMARY_PORT" \
+              --username="$POSTGRESQL_REPLICATION_USER" \
+              --wal-method=stream \
+              --checkpoint=fast \
+              --no-password \
+              "''${slot_args[@]}"
+          else
+            password_file="$credential_directory/bootstrap-superuser-password"
+            if [[ ! -r "$password_file" ]]; then
+              echo "PostgreSQL initialization requires bootstrap-superuser-password" >&2
+              exit 78
+            fi
+            /bin/initdb \
+              --pgdata="$staging_directory" \
+              --username="$POSTGRESQL_SUPERUSER" \
+              --pwfile="$password_file" \
+              --auth-local=peer \
+              --auth-host=scram-sha-256 \
+              --encoding=UTF8 \
+              --locale=C
+          fi
+
+          if [[ ! -s "$staging_directory/PG_VERSION" ]]; then
+            echo "PostgreSQL initialization completed without PG_VERSION" >&2
+            exit 78
+          fi
+          ${coreutils}/bin/mv "$staging_directory" "$data_directory"
+        fi
+
+        if [[ "$POSTGRESQL_STANDBY" == true ]]; then
+          ${coreutils}/bin/touch "$data_directory/standby.signal"
+        else
+          ${coreutils}/bin/rm -f "$data_directory/standby.signal"
+        fi
+
+        # -C processes the complete postgresql.conf and rejects malformed or
+        # unknown parameters without starting a second postmaster.
+        /bin/postgres -D "$data_directory" -C port -c config_file="$server_config" >/dev/null
+        ;;
+      reload)
+        load_environment
+        if [[ "$POSTGRESQL_ENABLED" == true ]]; then
+          /bin/postgres -D "$data_directory" -C port -c config_file="$server_config" >/dev/null
+          /bin/pg_ctl reload -D "$data_directory"
+        elif running; then
+          /bin/pg_ctl stop -D "$data_directory" -m fast -w
+        fi
+        ;;
+      stop)
+        if running; then
+          /bin/pg_ctl stop -D "$data_directory" -m fast -w
+        fi
+        ;;
+      *)
+        echo "usage: postgresql-control {enabled|prepare|reload|stop}" >&2
+        exit 64
+        ;;
+    esac
+  '';
+  clangForBitcode = writeShellScriptBin "clang" ''
+    exec ${llvm}/bin/clang \
+      -isystem ${glibc.dev}/include \
+      -isystem ${linux-headers}/include \
+      "$@"
+  '';
 in
   mkDerivation {
     pname = "postgresql";
@@ -66,6 +202,7 @@ in
         perl
         python3
         llvm
+        clangForBitcode
         tcl
         docbook-xml
         docbook-xsl
@@ -101,30 +238,32 @@ in
         zlib
         zstd
       ]
-      else [
-        curl
-        icu
-        krb5
-        libselinux
-        liburing
-        libxml2
-        libxslt
-        linux-pam
-        llvm
-        lz4
-        numactl
-        openldap
-        openssl
-        perl
-        python3
-        readline
-        systemd
-        tcl
-        tzdata
-        util-linux
-        zlib
-        zstd
-      ];
+      else
+        [
+          curl
+          icu
+          krb5
+          libselinux
+          liburing
+          libxml2
+          libxslt
+          linux-pam
+          llvm
+          lz4
+          numactl
+          openldap
+          openssl
+          perl
+          python3
+          readline
+          systemd
+          tcl
+          tzdata
+          util-linux
+          zlib
+          zstd
+        ]
+        ++ [bash coreutils control];
     propagatedDeps = [];
 
     phases = [
@@ -333,70 +472,257 @@ in
       {
         name = "install";
         script =
-          if isDarwin
-          then ''
-            export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
-            ${buildPackages.gnumake}/bin/make install-world
-            test -f "$out/share/doc/html/index.html"
-            test -f "$out/share/man/man1/postgres.1"
-            test -n "$(find "$out/share/locale" -name '*.mo' -print -quit)"
+          (
+            if isDarwin
+            then ''
+              export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
+              ${buildPackages.gnumake}/bin/make install-world
+              test -f "$out/share/doc/html/index.html"
+              test -f "$out/share/man/man1/postgres.1"
+              test -n "$(find "$out/share/locale" -name '*.mo' -print -quit)"
 
-            # Installed PGXS can compile extensions with LLVM on Darwin, but
-            # must not retain the Linux-hosted compiler SDK used by this cross
-            # build. Publish the clean target SDK beside PostgreSQL and point
-            # only installed metadata at that self-contained copy.
-            mkdir -p "$out/share/darwin-sdk/share"
-            cp -R \
-              ${darwin-sdk}/SDKSettings.json \
-              ${darwin-sdk}/System \
-              ${darwin-sdk}/usr \
-              "$out/share/darwin-sdk/"
-            cp -R ${darwin-sdk}/share/licenses "$out/share/darwin-sdk/share/"
+              # Installed PGXS can compile extensions with LLVM on Darwin, but
+              # must not retain the Linux-hosted compiler SDK used by this cross
+              # build. Publish the clean target SDK beside PostgreSQL and point
+              # only installed metadata at that self-contained copy.
+              mkdir -p "$out/share/darwin-sdk/share"
+              cp -R \
+                ${darwin-sdk}/SDKSettings.json \
+                ${darwin-sdk}/System \
+                ${darwin-sdk}/usr \
+                "$out/share/darwin-sdk/"
+              cp -R ${darwin-sdk}/share/licenses "$out/share/darwin-sdk/share/"
 
-            # PGXS is target-side tooling. Retarget interpreter and LLVM
-            # paths recorded while Linux-native generators built the tree.
-            find "$out/lib/pgxs" -type f -exec sed -i \
-              -e 's|${buildPackages.perl}|${perl}|g' \
-              -e 's|${buildPackages.python3}|${python3}|g' \
-              -e 's|${buildPackages.llvm}|${llvm}|g' \
-              -e "s|$PWD/.aos-native-tools/llvm-config|${llvm}/bin/llvm-config|g" \
-              -e "s|$PWD/.aos-native-tools/python3|${python3}/bin/python3|g" \
-              -e "s|${stdenv.sdk}|$out/share/darwin-sdk|g" \
-              -e "s|$CC|${llvm}/bin/clang|g" \
-              -e "s|^CXX = .*|CXX = ${llvm}/bin/clang++|" \
-              -e "s|^AR = .*|AR = ${llvm}/bin/llvm-ar|" \
-              -e "s|^BISON = .*|BISON = ${bison}/bin/bison|" \
-              -e "s|^FLEX = .*|FLEX = ${flex}/bin/flex|" \
-              -e "s|^MSGFMT  = .*|MSGFMT  = ${gettext}/bin/msgfmt|" \
-              -e "s|^MSGMERGE = .*|MSGMERGE = ${gettext}/bin/msgmerge|" \
-              -e "s|^PKG_CONFIG[[:space:]]*= .*|PKG_CONFIG = ${pkg-config}/bin/pkg-config|" \
-              -e "s|^TAR[[:space:]]*= .*|TAR = ${tar}/bin/tar|" \
-              -e "s|^TCLSH[[:space:]]*= .*|TCLSH = ${tcl}/bin/tclsh9.0|" \
-              -e "s|^XGETTEXT = .*|XGETTEXT = ${gettext}/bin/xgettext|" \
-              -e "s|^install_bin = .*|install_bin = ${coreutils}/bin/install -c|" \
-              -e "s|^MKDIR_P = .*|MKDIR_P = ${coreutils}/bin/mkdir -p|" \
-              -e "s|^STRIP[[:space:]]*= .*|STRIP = ${llvm}/bin/llvm-strip|" \
-              -e "s|^STRIP_STATIC_LIB = .*|STRIP_STATIC_LIB = ${llvm}/bin/llvm-strip -S|" \
-              -e "s|^STRIP_SHARED_LIB = .*|STRIP_SHARED_LIB = ${llvm}/bin/llvm-strip -S|" \
-              -e "s|^XMLLINT[[:space:]]*= .*|XMLLINT = ${libxml2}/bin/xmllint|" \
-              -e "s|^XSLTPROC[[:space:]]*= .*|XSLTPROC = ${libxslt}/bin/xsltproc|" \
-              -e "s|^abs_top_builddir = .*|abs_top_builddir = $out/lib/pgxs/src|" \
-              -e "s|^abs_top_srcdir = .*|abs_top_srcdir = $out/lib/pgxs/src|" \
-              {} +
-          ''
-          else ''
-            export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
-            make install-world
-            test -f "$out/share/doc/html/index.html"
-            test -f "$out/share/man/man1/postgres.1"
-            test -n "$(find "$out/share/locale" -name '*.mo' -print -quit)"
-            sed -i \
-              -e "s|^abs_top_builddir = .*|abs_top_builddir = $out/lib/pgxs/src|" \
-              -e "s|^abs_top_srcdir = .*|abs_top_srcdir = $out/lib/pgxs/src|" \
-              "$out/lib/pgxs/src/Makefile.global"
+              # PGXS is target-side tooling. Retarget interpreter and LLVM
+              # paths recorded while Linux-native generators built the tree.
+              find "$out/lib/pgxs" -type f -exec sed -i \
+                -e 's|${buildPackages.perl}|${perl}|g' \
+                -e 's|${buildPackages.python3}|${python3}|g' \
+                -e 's|${buildPackages.llvm}|${llvm}|g' \
+                -e "s|$PWD/.aos-native-tools/llvm-config|${llvm}/bin/llvm-config|g" \
+                -e "s|$PWD/.aos-native-tools/python3|${python3}/bin/python3|g" \
+                -e "s|${stdenv.sdk}|$out/share/darwin-sdk|g" \
+                -e "s|$CC|${llvm}/bin/clang|g" \
+                -e "s|^CXX = .*|CXX = ${llvm}/bin/clang++|" \
+                -e "s|^AR = .*|AR = ${llvm}/bin/llvm-ar|" \
+                -e "s|^BISON = .*|BISON = ${bison}/bin/bison|" \
+                -e "s|^FLEX = .*|FLEX = ${flex}/bin/flex|" \
+                -e "s|^MSGFMT  = .*|MSGFMT  = ${gettext}/bin/msgfmt|" \
+                -e "s|^MSGMERGE = .*|MSGMERGE = ${gettext}/bin/msgmerge|" \
+                -e "s|^PKG_CONFIG[[:space:]]*= .*|PKG_CONFIG = ${pkg-config}/bin/pkg-config|" \
+                -e "s|^TAR[[:space:]]*= .*|TAR = ${tar}/bin/tar|" \
+                -e "s|^TCLSH[[:space:]]*= .*|TCLSH = ${tcl}/bin/tclsh9.0|" \
+                -e "s|^XGETTEXT = .*|XGETTEXT = ${gettext}/bin/xgettext|" \
+                -e "s|^install_bin = .*|install_bin = ${coreutils}/bin/install -c|" \
+                -e "s|^MKDIR_P = .*|MKDIR_P = ${coreutils}/bin/mkdir -p|" \
+                -e "s|^STRIP[[:space:]]*= .*|STRIP = ${llvm}/bin/llvm-strip|" \
+                -e "s|^STRIP_STATIC_LIB = .*|STRIP_STATIC_LIB = ${llvm}/bin/llvm-strip -S|" \
+                -e "s|^STRIP_SHARED_LIB = .*|STRIP_SHARED_LIB = ${llvm}/bin/llvm-strip -S|" \
+                -e "s|^XMLLINT[[:space:]]*= .*|XMLLINT = ${libxml2}/bin/xmllint|" \
+                -e "s|^XSLTPROC[[:space:]]*= .*|XSLTPROC = ${libxslt}/bin/xsltproc|" \
+                -e "s|^abs_top_builddir = .*|abs_top_builddir = $out/lib/pgxs/src|" \
+                -e "s|^abs_top_srcdir = .*|abs_top_srcdir = $out/lib/pgxs/src|" \
+                {} +
+            ''
+            else ''
+              export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
+              make install-world
+              test -f "$out/share/doc/html/index.html"
+              test -f "$out/share/man/man1/postgres.1"
+              test -n "$(find "$out/share/locale" -name '*.mo' -print -quit)"
+              sed -i \
+                -e "s|^abs_top_builddir = .*|abs_top_builddir = $out/lib/pgxs/src|" \
+                -e "s|^abs_top_srcdir = .*|abs_top_srcdir = $out/lib/pgxs/src|" \
+                "$out/lib/pgxs/src/Makefile.global"
+            ''
+          )
+          + ''
+            ln -s ${control}/bin/postgresql-control "$out/bin/postgresql-control"
           '';
       }
     ];
+
+    expose = {
+      units."postgresql-init.service" = {
+        description = "Initialize PostgreSQL database state";
+        after = ["network-online.target"];
+        wants = ["network-online.target"];
+        before = ["postgresql.service"];
+        restartIfChanged = true;
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          DynamicUser = true;
+          StateDirectory = "aos-pkg-postgresql";
+          StateDirectoryMode = "0700";
+          # The package-wide Landlock policy includes the server socket path;
+          # create it for the init unit as well so policy setup is fail-closed
+          # rather than depending on the later server unit to create it.
+          RuntimeDirectory = "postgresql";
+          RuntimeDirectoryMode = "0755";
+          UMask = "0077";
+          EnvironmentFile = "/etc/aos/packages/postgresql/service.env";
+          ExecCondition = "/bin/postgresql-control enabled";
+          ExecStart = "/bin/postgresql-control prepare";
+        };
+      };
+
+      units."postgresql.service" = {
+        description = "PostgreSQL database server";
+        after = ["network-online.target" "postgresql-init.service"];
+        wants = ["network-online.target"];
+        requires = ["postgresql-init.service"];
+        restartIfChanged = true;
+        stopOnRemoval = true;
+        serviceConfig = {
+          Type = "notify";
+          DynamicUser = true;
+          RuntimeDirectory = "postgresql";
+          # The socket itself is authenticated by pg_hba.conf; traverse access
+          # lets non-service users reach the default local Unix socket.
+          RuntimeDirectoryMode = "0755";
+          StateDirectory = "aos-pkg-postgresql";
+          StateDirectoryMode = "0700";
+          UMask = "0077";
+          EnvironmentFile = "/etc/aos/packages/postgresql/service.env";
+          ExecCondition = "/bin/postgresql-control enabled";
+          ExecStart = "/bin/postgres -D /var/lib/aos-pkg-postgresql/data -c config_file=/etc/postgresql/postgresql.conf";
+          ExecReload = "/bin/postgresql-control reload";
+          ExecStop = "/bin/postgresql-control stop";
+          KillSignal = "SIGINT";
+          TimeoutStopSec = "90s";
+          Restart = "on-failure";
+          RestartSec = "2s";
+          LimitNOFILE = "1048576";
+        };
+      };
+
+      config = {
+        artifacts = [
+          {
+            name = "service";
+            path = "/etc/aos/packages/postgresql/service.env";
+            format = "env";
+            required = [
+              "POSTGRESQL_CONFIG_GENERATION"
+              "POSTGRESQL_ENABLED"
+              "POSTGRESQL_STANDBY"
+              "POSTGRESQL_SUPERUSER"
+            ];
+            optional = [
+              "POSTGRESQL_PRIMARY_HOST"
+              "POSTGRESQL_PRIMARY_PORT"
+              "POSTGRESQL_REPLICATION_SLOT"
+              "POSTGRESQL_REPLICATION_USER"
+            ];
+            units = ["postgresql-init.service" "postgresql.service"];
+            # PostgreSQL accepts reload for only a subset of settings. Treat
+            # an arbitrary typed generation change conservatively as restart.
+            reload = "restart";
+          }
+        ];
+        credentials =
+          builtins.map (credential: {
+            inherit (credential) name units;
+            source = "/run/credstore/postgresql/${credential.name}";
+            encrypted = false;
+            optional = true;
+          }) [
+            {
+              name = "bootstrap-superuser-password";
+              units = ["postgresql-init.service"];
+            }
+            {
+              name = "replication-passfile";
+              units = ["postgresql-init.service" "postgresql.service"];
+            }
+            {
+              name = "tls-ca";
+              units = ["postgresql.service"];
+            }
+            {
+              name = "tls-certificate";
+              units = ["postgresql.service"];
+            }
+            {
+              name = "tls-private-key";
+              units = ["postgresql.service"];
+            }
+          ];
+      };
+
+      permissions = {
+        network = "host";
+        capabilities = [];
+        devices = [];
+        host-paths = [
+          {
+            path = "/etc/postgresql/postgresql.conf";
+            mode = "read-only";
+          }
+          {
+            path = "/etc/postgresql/pg_hba.conf";
+            mode = "read-only";
+          }
+        ];
+        syscalls = "system-service";
+        security-label = "aos-pkg-postgresql";
+      };
+    };
+
+    configModule = {
+      src = ./_postgresql-config;
+      moduleAbiCompat = {
+        min = 1;
+        max = 2;
+      };
+      declares = [
+        "postgresql.authentication.rules"
+        "postgresql.bootstrap.password"
+        "postgresql.bootstrap.superuser"
+        "postgresql.clusterName"
+        "postgresql.enable"
+        "postgresql.listen.addresses"
+        "postgresql.listen.port"
+        "postgresql.renderedConfig"
+        "postgresql.replication.applicationName"
+        "postgresql.replication.hotStandby"
+        "postgresql.replication.maxReplicationSlots"
+        "postgresql.replication.maxWalSenders"
+        "postgresql.replication.passfile"
+        "postgresql.replication.primary"
+        "postgresql.replication.slot"
+        "postgresql.replication.user"
+        "postgresql.replication.walLevel"
+        "postgresql.resources.maintenanceWorkMem"
+        "postgresql.resources.maxConnections"
+        "postgresql.resources.sharedBuffers"
+        "postgresql.resources.workMem"
+        "postgresql.settings"
+        "postgresql.tls.ca"
+        "postgresql.tls.certificate"
+        "postgresql.tls.enable"
+        "postgresql.tls.minimumProtocol"
+        "postgresql.tls.privateKey"
+        "postgresql.topology"
+      ];
+      ownsRoots = [
+        {
+          root = "postgresql";
+          interfaceAbi = 1;
+          contributable = [];
+        }
+      ];
+      artifacts = {
+        etc = [
+          "postgresql/pg_hba.conf"
+          "postgresql/postgresql.conf"
+        ];
+        units = [];
+        users = [];
+        groups = [];
+      };
+    };
 
     meta = {
       description = "PostgreSQL object-relational database server";
@@ -407,6 +733,7 @@ in
     checks = {
       testing,
       self,
+      pkgs,
       ...
     }: {
       version = testing.mkToolCheck {
@@ -434,6 +761,20 @@ in
           test -f ${self}/share/man/man1/postgres.1
           test -n "$(find ${self}/share/locale -name '*.mo' -print -quit)"
         '';
+      };
+
+      runtime-contract = import ./_postgresql-tests/lifecycle.nix {
+        inherit testing self;
+        inherit (pkgs) coreutils grep sed;
+      };
+
+      module-contract = import ./_postgresql-tests/module.nix {
+        inherit lib pkgs;
+        module = ./_postgresql-config/module.nix;
+      };
+
+      expose-contract = import ./_postgresql-tests/expose.nix {
+        inherit pkgs self;
       };
     };
   }

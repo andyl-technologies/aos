@@ -1993,6 +1993,7 @@ mod tests {
                 contributable: Vec::new(),
             }],
             contributes: Vec::new(),
+            artifacts: Default::default(),
             provides_capabilities: Vec::new(),
         });
     }

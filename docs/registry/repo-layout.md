@@ -56,6 +56,7 @@ The git-repo-**root** `registry.toml` is the existing `RegistryRootConfig`
 [registry]
 name        = "aos-core"
 description = "AOS core packages"
+require_signed_ukis = true
 
 # Ordered cache endpoints, authenticated by the signed tag. Managed
 # endpoints correspond to explicit Hub routes; external endpoints do
@@ -72,6 +73,11 @@ members = [
   fall-through and `mirror` declares equivalent replicas; nodes may nest.
   Consumers flatten the stack depth-first when they need a simple URL list. See
   [`nix-cache-compatibility.md`](nix-cache-compatibility.md).
+- `require_signed_ukis` is an authenticated, opt-in release gate. When `true`,
+  every directly delivered system image must contain signed UKIs verified
+  against the active certificates in committed `sb-certs.toml`. Publishing,
+  Hub indexing, and installation all fail closed on unsigned or merely
+  unverified UKIs. It defaults to `false`; package-only releases are unaffected.
 - **No signing key here.** The in-repo `RegistryRootConfig.signing` field was
   removed; a key inside a file authenticated *by* that key is circular for
   bootstrap. Key trust lives in the `keys.toml` roster (§3), anchored

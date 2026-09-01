@@ -14,7 +14,7 @@ use super::{
     ProductionNodeBackend, ProductionNodeBackends, ProductionPluginSwitch,
     ProductionRootImageFormat,
 };
-use crucible::ExecutionFingerprint;
+use crucible::{ExecutionFingerprint, model::FaultResourceLimits};
 use thiserror::Error;
 
 /// Configuration for a production plugin-installation probe.
@@ -209,6 +209,10 @@ impl ProductionLiveNodeStepGateConfig {
         self
     }
 
+    pub(crate) const fn with_fingerprint(self, _fingerprint: ProductionPluginSwitch) -> Self {
+        self
+    }
+
     pub(crate) const fn with_queue_capacity(self, _capacity: u32) -> Self {
         self
     }
@@ -221,7 +225,26 @@ impl ProductionLiveNodeStepGateConfig {
         self
     }
 
-    pub(crate) const fn with_second_run_host_load(self, _enabled: bool) -> Self {
+    pub(crate) const fn with_second_run_scheduler_preemption(self, _enabled: bool) -> Self {
+        self
+    }
+
+    pub(crate) const fn with_process_generation(self, _generation: u64) -> Self {
+        self
+    }
+
+    pub(crate) const fn with_fault_resource_limits(self, _limits: FaultResourceLimits) -> Self {
+        self
+    }
+
+    pub(crate) fn with_fault_capabilities(
+        self,
+        _capabilities: crucible::model::WorldNodeFaultCapabilities,
+    ) -> Self {
+        self
+    }
+
+    pub(crate) const fn with_accelerator(self) -> Self {
         self
     }
 
@@ -230,6 +253,18 @@ impl ProductionLiveNodeStepGateConfig {
     }
 
     pub(crate) fn with_shmem_network_mac(self, _mac: impl Into<String>) -> Self {
+        self
+    }
+
+    pub(crate) const fn with_network_tx_next_sequence(self, _next_sequence: u32) -> Self {
+        self
+    }
+
+    pub(crate) fn with_shmem_block<T, U>(self, _base: T, _durability: U) -> Self {
+        self
+    }
+
+    pub(crate) fn with_shmem_ninep<T, U>(self, _tree: T, _latency: U) -> Self {
         self
     }
 
@@ -260,6 +295,28 @@ pub(crate) fn launch_production_live_node(
     _node: &str,
     _router: &str,
     _crash_detector: &str,
+) -> Result<ProductionLiveNode, ProductionLiveNodeLaunchError> {
+    Err(ProductionLiveNodeLaunchError)
+}
+
+pub(crate) fn launch_production_live_node_exact_snapshot(
+    _config: &ProductionLiveNodeStepGateConfig,
+    _run_directory: impl AsRef<Path>,
+    _node: &str,
+    _router: &str,
+    _crash_detector: &str,
+    _snapshot: &crucible_qemu::QemuVmSnapshot,
+) -> Result<ProductionLiveNode, ProductionLiveNodeLaunchError> {
+    Err(ProductionLiveNodeLaunchError)
+}
+
+pub(crate) fn launch_production_live_node_exact_snapshot_paused(
+    _config: &ProductionLiveNodeStepGateConfig,
+    _run_directory: impl AsRef<Path>,
+    _node: &str,
+    _router: &str,
+    _crash_detector: &str,
+    _snapshot: &crucible_qemu::QemuVmSnapshot,
 ) -> Result<ProductionLiveNode, ProductionLiveNodeLaunchError> {
     Err(ProductionLiveNodeLaunchError)
 }

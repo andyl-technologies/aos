@@ -37,7 +37,7 @@ pub const REQUIRED_QEMU_FINGERPRINT_COMPONENTS: [QemuFingerprintStateComponent; 
 pub const REQUIRED_QEMU_FINGERPRINT_EVENT_BOUNDARIES: [SingleVmFingerprintEventBoundary; 3] = [
     SingleVmFingerprintEventBoundary::HorizonAdvance,
     SingleVmFingerprintEventBoundary::FrameDelivery,
-    SingleVmFingerprintEventBoundary::FaultActivation,
+    SingleVmFingerprintEventBoundary::SignalEffectBoundary,
 ];
 
 /// Host-controlled entropy eliminations that must each have a negative micro-test.
@@ -1008,7 +1008,7 @@ fn event_boundary_order(boundary: SingleVmFingerprintEventBoundary) -> u8 {
     match boundary {
         SingleVmFingerprintEventBoundary::HorizonAdvance => 0,
         SingleVmFingerprintEventBoundary::FrameDelivery => 1,
-        SingleVmFingerprintEventBoundary::FaultActivation => 2,
+        SingleVmFingerprintEventBoundary::SignalEffectBoundary => 2,
     }
 }
 
@@ -1016,7 +1016,7 @@ fn event_boundary_token(boundary: SingleVmFingerprintEventBoundary) -> &'static 
     match boundary {
         SingleVmFingerprintEventBoundary::HorizonAdvance => "horizon-advance",
         SingleVmFingerprintEventBoundary::FrameDelivery => "frame-delivery",
-        SingleVmFingerprintEventBoundary::FaultActivation => "fault-activation",
+        SingleVmFingerprintEventBoundary::SignalEffectBoundary => "signal-effect-boundary",
     }
 }
 
@@ -1132,7 +1132,7 @@ mod tests {
                 QemuFingerprintStateComponent::ArchitecturalRegisters,
             ],
             [
-                SingleVmFingerprintEventBoundary::FaultActivation,
+                SingleVmFingerprintEventBoundary::SignalEffectBoundary,
                 SingleVmFingerprintEventBoundary::HorizonAdvance,
                 SingleVmFingerprintEventBoundary::FrameDelivery,
             ],
@@ -1511,10 +1511,11 @@ mod tests {
     }
 
     fn sim_on_observation(profile: &DeterministicLaunchProfile) -> QemuControlPlaneObservation {
-        let command = profile.qemu_launch_command(
+        let command = profile.qemu_launch_command_for_live_gate(
             default_vm_config(),
             default_qemu_binary(),
             plugin_config(QemuLaunchPluginSwitch::On),
+            crate::LivePluginGuestArchitecture::X86_64,
         );
         let command = match command {
             Ok(command) => command,
@@ -1531,6 +1532,7 @@ mod tests {
             "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
             0,
         )
+        .with_fault_target_node("vm-a")
         .with_whitebox(whitebox);
         if whitebox == QemuLaunchPluginSwitch::Off {
             return config;
