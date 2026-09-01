@@ -7500,6 +7500,29 @@ fn append_package_provenance_transparency_log(
             jsonl_sha256: format!("sha256:{}", sha256_hex(&provenance_file)),
         },
     };
+
+    if path.is_file() {
+        let content =
+            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        let (_, _, entries) =
+            parse_package_provenance_transparency_log(&content, &path.display().to_string())?;
+        if let Some(existing) = entries
+            .iter()
+            .find(|entry| entry.body.provenance == body.provenance)
+        {
+            let mut expected = body.clone();
+            expected.sequence = existing.body.sequence;
+            expected.previous_entry_hash = existing.body.previous_entry_hash.clone();
+            if existing.body == expected {
+                return Ok(path);
+            }
+            bail!(
+                "package transparency provenance '{}' is already bound to different publication metadata",
+                body.provenance
+            );
+        }
+    }
+
     let entry_hash = package_provenance_transparency_entry_hash(&body)?;
     let entry = PackageProvenanceTransparencyLogEntry { body, entry_hash };
     let parent = path
@@ -20486,7 +20509,7 @@ source_nar_hash = ""
     }
 
     #[test]
-    fn append_package_provenance_transparency_log_records_hash_chain() {
+    fn append_package_provenance_transparency_log_is_idempotent() {
         let tmp = TempDir::new().unwrap();
         let (info, source, artifact) = sample_transparency_provenance();
         let provenance_path = write_sample_provenance_artifact(tmp.path(), &artifact);
@@ -20524,7 +20547,7 @@ source_nar_hash = ""
             .map(|line| serde_json::from_str::<PackageProvenanceTransparencyLogEntry>(line))
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].body.sequence, 0);
         assert_eq!(entries[0].body.previous_entry_hash, None);
         assert_eq!(entries[0].body.package, "webapp");
@@ -20547,14 +20570,9 @@ source_nar_hash = ""
             entries[0].entry_hash,
             package_provenance_transparency_entry_hash(&entries[0].body).unwrap()
         );
-        assert_eq!(entries[1].body.sequence, 1);
-        assert_eq!(
-            entries[1].body.previous_entry_hash.as_deref(),
-            Some(entries[0].entry_hash.as_str())
-        );
         assert_eq!(
             read_package_provenance_transparency_log_state(&log_path).unwrap(),
-            (2, Some(entries[1].entry_hash.clone()))
+            (1, Some(entries[0].entry_hash.clone()))
         );
     }
 
@@ -20615,15 +20633,21 @@ source_nar_hash = ""
             &provenance_path,
         )
         .unwrap();
+        let (_, _, mut second_artifact) = sample_transparency_provenance();
+        second_artifact.path = second_artifact
+            .path
+            .replace(".intoto.jsonl", "-second.intoto.jsonl");
+        second_artifact.attestation.provenance = Some(second_artifact.path.clone());
+        let second_provenance_path = write_sample_provenance_artifact(tmp.path(), &second_artifact);
         append_package_provenance_transparency_log(
             tmp.path(),
-            "webapp",
+            "worker",
             "1.0.0",
             "x86_64-linux",
             &info,
             Some(&source),
-            &artifact,
-            &provenance_path,
+            &second_artifact,
+            &second_provenance_path,
         )
         .unwrap();
         let content = fs::read_to_string(&log_path).unwrap();
