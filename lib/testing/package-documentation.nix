@@ -138,6 +138,12 @@
           ${builtins.toJSON name}
     '';
   in ''
+    NIX_PATH= \
+    NIX_PROFILES= \
+    NIX_STATE_DIR="$TMPDIR/nix-state" \
+    NIX_LOG_DIR="$TMPDIR/nix-log" \
+    NIX_CONF_DIR="$TMPDIR/nix-conf" \
+    NIX_USER_PROFILE_DIR="$TMPDIR/nix-profiles" \
     ${pkgs.nix}/bin/nix-instantiate \
       --store dummy:// \
       --eval \
@@ -202,9 +208,11 @@ in
       version = "0";
       src = null;
       buildDeps =
-        [pkgs.grep pkgs.jq pkgs.nix baseLib]
+        [pkgs.jq pkgs.nix baseLib]
         ++ configurablePackages
         ++ map (package: package.config) configurablePackages;
+      outputChecks = {};
+      exportReferencesGraph.servicePackages = configurablePackages;
       phases = [
         {
           name = "check";
@@ -213,17 +221,11 @@ in
             # authenticated -I bindings below. An empty NIX_PATH also keeps
             # Nix from probing the daemon's global profile hierarchy inside
             # the sandbox.
-            export NIX_PATH=
-            export NIX_PROFILES=
-            export NIX_STATE_DIR="$TMPDIR/nix-state"
-            export NIX_LOG_DIR="$TMPDIR/nix-log"
-            export NIX_CONF_DIR="$TMPDIR/nix-conf"
-            export NIX_USER_PROFILE_DIR="$TMPDIR/nix-profiles"
             mkdir -p \
-              "$NIX_STATE_DIR" \
-              "$NIX_LOG_DIR" \
-              "$NIX_CONF_DIR" \
-              "$NIX_USER_PROFILE_DIR"
+              "$TMPDIR/nix-state" \
+              "$TMPDIR/nix-log" \
+              "$TMPDIR/nix-conf" \
+              "$TMPDIR/nix-profiles"
 
             ${lib.concatMapStringsSep "\n" (package: ''
                 jq -e --arg description ${lib.escapeShellArg package.meta.description} '
@@ -235,8 +237,14 @@ in
 
             ${lib.concatMapStringsSep "\n" (package:
               lib.concatMapStringsSep "\n" (dependency: ''
-                ${pkgs.nix}/bin/nix-store -q --references ${package} \
-                  | ${pkgs.grep}/bin/grep -Fx ${lib.escapeShellArg (builtins.toString dependency)} >/dev/null
+                jq -e \
+                  --arg package ${lib.escapeShellArg (builtins.toString package)} \
+                  --arg dependency ${lib.escapeShellArg (builtins.toString dependency)} \
+                  '.servicePackages
+                    | map(select(.path == $package))
+                    | length == 1
+                      and (.[0].references | index($dependency) != null)' \
+                  "$NIX_ATTRS_JSON_FILE" >/dev/null
               '') (builtins.attrValues (package.configModuleDependencies or {})))
             configurablePackages}
 
