@@ -1968,13 +1968,17 @@ pub async fn publish(
                 expose_manifest_digest.as_deref(),
             )
         })
+        .transpose()?
+        .map(|attestation| {
+            bind_documentation_provenance(attestation, pkg_name, &platform, &documentation.metadata)
+        })
         .transpose()?;
     let documentation_attestation = if config_module.is_none() && expose_manifest.is_none() {
-        Some(publish_documentation_attestation_meta(
+        Some(bind_documentation_provenance(
+            publish_documentation_attestation_meta(pkg_name, pkg_version, &platform, &info)?,
             pkg_name,
-            pkg_version,
             &platform,
-            &info,
+            &documentation.metadata,
         )?)
     } else {
         None
@@ -2523,6 +2527,44 @@ fn build_package_toml_with_documentation(
             .as_table_mut()
             .context("new package platform metadata is not a TOML table")?;
         record_attestation_platform_fields(table, attestation)?;
+    }
+    if let Some(documentation) = documentation {
+        let table = platform_table
+            .as_table_mut()
+            .context("new package platform metadata is not a TOML table")?;
+        let measurement = table
+            .get("measurement")
+            .and_then(toml::Value::as_str)
+            .context("documented package platform is missing its measurement")?;
+        let attestation = bind_documentation_provenance(
+            AttestationMeta {
+                root_digest: table
+                    .get("root_digest")
+                    .and_then(toml::Value::as_str)
+                    .map(str::to_string),
+                root_hash: table
+                    .get("root_hash")
+                    .and_then(toml::Value::as_str)
+                    .map(str::to_string),
+                root_hash_sig: table
+                    .get("root_hash_sig")
+                    .and_then(toml::Value::as_str)
+                    .map(str::to_string),
+                provenance: None,
+                measurement: Some(measurement.to_string()),
+            },
+            name,
+            platform,
+            documentation,
+        )?;
+        table.insert(
+            "provenance".into(),
+            toml::Value::String(
+                attestation
+                    .provenance
+                    .context("documented attestation is missing provenance")?,
+            ),
+        );
     }
 
     if existing.is_empty() {
@@ -7021,6 +7063,12 @@ fn publish_provenance_artifact_inner(
     else {
         return Ok(None);
     };
+    let attestation = match documentation {
+        Some(documentation) => {
+            bind_documentation_provenance(attestation, name, platform, documentation)?
+        }
+        None => attestation,
+    };
     let provenance = attestation.provenance.as_deref().map(str::to_string);
     let Some(provenance) = provenance else {
         return Ok(None);
@@ -8967,6 +9015,33 @@ fn publish_provenance_ref(name: &str, platform: &str, measurement: &str) -> Resu
         "provenance/{}/{name}/{platform}/{measurement_hex}.intoto.jsonl",
         package_name_bucket(name)
     ))
+}
+
+fn bind_documentation_provenance(
+    mut attestation: AttestationMeta,
+    name: &str,
+    platform: &str,
+    documentation: &DocumentationArtifactMeta,
+) -> Result<AttestationMeta> {
+    let measurement = attestation
+        .measurement
+        .as_deref()
+        .context("documented attestation is missing its measurement")?;
+    let measurement_hex = sha256_hex_payload(measurement).with_context(|| {
+        format!("package measurement must be a sha256 digest with 64 hex characters: {measurement}")
+    })?;
+    let documentation_hex =
+        sha256_hex_payload(&documentation_nar_identity(&documentation.nar_hash)?)
+            .context("documentation NAR identity is not a canonical sha256 digest")?;
+
+    validate_package_name(name)?;
+    validate_platform_name(platform)?;
+    attestation.provenance = Some(format!(
+        "provenance/{}/{name}/{platform}/{measurement_hex}-{documentation_hex}.intoto.jsonl",
+        package_name_bucket(name)
+    ));
+    validate_attestation_meta(&attestation)?;
+    Ok(attestation)
 }
 
 fn package_platform_table(
@@ -17579,7 +17654,20 @@ mod tests {
                 .iter()
                 .any(|feature| feature == FEATURE_PACKAGE_DOCUMENTATION_V1)
         );
-        assert_eq!(parsed.attestation.provenance, attestation.provenance);
+        let documented_attestation = bind_documentation_provenance(
+            attestation,
+            "firewall",
+            "x86_64-linux",
+            parsed
+                .documentation
+                .as_ref()
+                .expect("parsed documentation metadata"),
+        )
+        .expect("bind documentation provenance");
+        assert_eq!(
+            parsed.attestation.provenance,
+            documented_attestation.provenance
+        );
     }
 
     fn test_release_options(tmp: &TempDir) -> ReleaseTreeOptions {
@@ -20435,6 +20523,76 @@ source_nar_hash = ""
         assert_ne!(x86, arm);
         assert!(x86.contains("/x86_64-linux/"));
         assert!(arm.contains("/aarch64-linux/"));
+    }
+
+    #[test]
+    fn documented_provenance_paths_change_with_the_documentation_nar() {
+        let measurement = crate::package_attestation::package_measurement_digest(
+            "webapp",
+            "1.0.0",
+            "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        );
+        let attestation = AttestationMeta {
+            root_digest: Some(
+                "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    .to_string(),
+            ),
+            measurement: Some(measurement),
+            ..AttestationMeta::default()
+        };
+        let documentation = |nar_hash: &str| DocumentationArtifactMeta {
+            format: aos_doc_model::DOCUMENT_FORMAT.to_string(),
+            store_path: "/nix/store/0000000000000000000000000000000e-webapp-docs.json".to_string(),
+            nar_hash: nar_hash.to_string(),
+            nar_size: 512,
+            document_sha256:
+                "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                    .to_string(),
+            document_size: 384,
+            semantic_schema_sha256:
+                "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                    .to_string(),
+            system_module_nar_hash: None,
+            references: vec![],
+        };
+
+        let first = bind_documentation_provenance(
+            attestation.clone(),
+            "webapp",
+            "x86_64-linux",
+            &documentation(
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+        )
+        .unwrap();
+        let second = bind_documentation_provenance(
+            attestation,
+            "webapp",
+            "x86_64-linux",
+            &documentation(
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+        )
+        .unwrap();
+
+        assert_ne!(first.provenance, second.provenance);
+        assert!(
+            first
+                .provenance
+                .as_deref()
+                .is_some_and(|path| path.ends_with(
+                    "-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.intoto.jsonl"
+                ))
+        );
+        assert!(
+            second
+                .provenance
+                .as_deref()
+                .is_some_and(|path| path.ends_with(
+                    "-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.intoto.jsonl"
+                ))
+        );
     }
 
     #[test]
