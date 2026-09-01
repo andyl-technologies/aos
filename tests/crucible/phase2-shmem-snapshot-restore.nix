@@ -5,11 +5,7 @@
   taskIds ? ["T-SHM-7"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   snapshotTest = import ./_rust-module-source.nix {
@@ -35,7 +31,7 @@
       }
       {
         label = "snapshot padding canonicalization";
-        needle = "canonical._pad = [0; 6];";
+        needle = "canonical._pad = [0; 1];";
       }
       {
         label = "unused payload canonicalization";
@@ -52,6 +48,10 @@
       {
         label = "canonical delivery icount field";
         needle = "bytes.extend_from_slice(&canonical.delivery_icount.to_le_bytes());";
+      }
+      {
+        label = "canonical delivery state field";
+        needle = "bytes.push(delivery_state as u8);";
       }
       {
         label = "canonical valid payload only";
@@ -97,11 +97,15 @@
       }
       {
         label = "corrupt snapshot frame rejection test";
-        needle = "canonical_bytes_reject_corrupt_snapshot_frame_length";
+        needle = "canonical_decoder_rejects_corrupt_snapshot_frame_length";
       }
       {
         label = "unused payload negative control";
         needle = "frame_with_unused_tail";
+      }
+      {
+        label = "compact snapshot amplification control";
+        needle = "canonical_decoder_keeps_minimal_frames_compact";
       }
     ]
     ++ forbiddenFor "crates/crucible-shmem/tests/snapshot_restore.rs" snapshotTest [

@@ -7,11 +7,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
@@ -21,7 +17,10 @@
   simBackend = import ./_crucible-local-and-test-backends-source.nix;
   sessionValidation = builtins.readFile ../../crates/crucible-session/src/validation.rs;
   qemuRealization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
-  qemuBackendExecutor = builtins.readFile ../../crates/crucible-qemu/src/realization/backend_executor.rs;
+  qemuBackendExecutor = builtins.concatStringsSep "\n" (map builtins.readFile [
+    ../../crates/crucible-qemu/src/realization/backend_executor.rs
+    ../../crates/crucible-qemu/src/realization/backend_executor_test.rs
+  ]);
   qemuNodeExecutor = builtins.readFile ../../crates/crucible-qemu/src/realization/node_executor.rs;
   qemuNodeExecutorTests = builtins.readFile ../../crates/crucible-qemu/src/realization/node_executor/tests.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -177,7 +176,7 @@
       }
       {
         label = "resume local-QEMU thin-replay proof";
-        needle = "resume-thin-replay";
+        needle = "resume-exact-checkpoint";
       }
       {
         label = "resume terminal configuration report";
@@ -390,8 +389,8 @@
         needle = "SimBackend::from_restorable_checkpoints";
       }
       {
-        label = "resume API-owned QEMU replay oracle status";
-        needle = "QemuReplayOracleValidation::NotRun";
+        label = "resume API-owned exact snapshot policy";
+        needle = "QemuExactSnapshotPolicy,";
       }
       {
         label = "resume API-owned QEMU model executor marker";
@@ -412,8 +411,8 @@
         needle = "QemuVmRealizationKind::AncestorReplay";
       }
       {
-        label = "resume QEMU savevm policy";
-        needle = "QemuSavevmCompletenessPolicy::default";
+        label = "resume QEMU exact snapshot policy";
+        needle = "QemuExactSnapshotPolicy,";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/realization/backend_executor.rs" qemuBackendExecutor [

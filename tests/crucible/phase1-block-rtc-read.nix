@@ -32,8 +32,8 @@
 
   qemuNixRequirements = [
     {
-      label = "block RTC read patch wiring";
-      needle = "patch -p1 < \${./qemu-patches/0007-crucible-block-rtc-read.patch}";
+      label = "manifest-driven patch wiring";
+      needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
     }
   ];
 

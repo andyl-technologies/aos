@@ -15,8 +15,9 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 
 use crucible_device::{
-    AffineLatency, BaseImage, BlockDevice, BlockLatency, BlockRequest, BlockResponse, BlockStatus,
-    DeviceError, FsTree, IoCore, IoSubNode, NinepDevice, NinepLatency, Node, Request, Response,
+    AdditionalCompletion, AffineLatency, BaseImage, BlockDevice, BlockLatency, BlockRequest,
+    BlockResponse, BlockStatus, ComputedResponse, DeviceError, FsTree, IoCore, IoCoreSnapshot,
+    IoCoreSnapshotCodecError, IoSubNode, NinepDevice, NinepLatency, Node, Request, Response,
     ResponseStatus,
 };
 use crucible_shmem::{
@@ -54,22 +55,73 @@ impl EchoDevice {
 
 impl IoSubNode for EchoDevice {
     type Latency = AffineLatency;
+    type ComputeCheckpoint = u64;
 
     fn latency_model(&self) -> &Self::Latency {
         &self.latency
     }
 
-    fn compute(&mut self, request: &Request) -> Result<Response, DeviceError> {
+    fn compute_checkpoint(&self) -> Self::ComputeCheckpoint {
+        self.host_compute_ticks
+    }
+
+    fn restore_compute_checkpoint(&mut self, checkpoint: Self::ComputeCheckpoint) {
+        self.host_compute_ticks = checkpoint;
+    }
+
+    fn compute(&mut self, request: &Request) -> Result<ComputedResponse, DeviceError> {
         // Simulate variable host wall-clock spent in COMPUTE. This MUST NOT
         // affect the delivery icount or the payload.
         self.host_compute_ticks += 1 + u64::from(request.request_id);
         let mut payload = request.payload.clone();
         payload.reverse();
-        Ok(Response::new(
+        Ok(ComputedResponse::primary(Response::new(
             request.request_id,
             ResponseStatus::Ok,
             payload,
-        ))
+        )))
+    }
+}
+
+struct PerturbedCompletionDevice {
+    latency: AffineLatency,
+    retain_primary: bool,
+    additional_latency_nanos: u64,
+    duplicate_gap_nanos: u64,
+    compute_calls: u64,
+}
+
+impl IoSubNode for PerturbedCompletionDevice {
+    type Latency = AffineLatency;
+    type ComputeCheckpoint = u64;
+
+    fn latency_model(&self) -> &Self::Latency {
+        &self.latency
+    }
+
+    fn compute_checkpoint(&self) -> Self::ComputeCheckpoint {
+        self.compute_calls
+    }
+
+    fn restore_compute_checkpoint(&mut self, checkpoint: Self::ComputeCheckpoint) {
+        self.compute_calls = checkpoint;
+    }
+
+    fn compute(&mut self, request: &Request) -> Result<ComputedResponse, DeviceError> {
+        self.compute_calls += 1;
+        let response = Response::new(
+            request.request_id,
+            ResponseStatus::Ok,
+            request.payload.clone(),
+        );
+        Ok(ComputedResponse {
+            primary: (!self.retain_primary).then(|| response.clone()),
+            additional_latency_nanos: self.additional_latency_nanos,
+            additional: vec![AdditionalCompletion {
+                gap_nanos: self.duplicate_gap_nanos,
+                response,
+            }],
+        })
     }
 }
 
@@ -174,6 +226,80 @@ fn compute_then_deliver_pins_delivery_to_virtual_time() {
     let req = Request::new(5, 1, vec![0u8; 11]); // t=5, L=11
     // completion_ns = 5*256 + 1000 + 44 = 1280+1044 = 2324 ; ceil(2324/256)=10
     assert_eq!(ok(core.compute_delivery_icount(&req, &latency)), 10);
+}
+
+#[test]
+fn computed_dynamic_delay_and_duplicates_enter_exact_delivery_order() {
+    let mut core = ok(IoCore::new(SHIFT, NODE, 4, 4));
+    let mut device = PerturbedCompletionDevice {
+        latency: AffineLatency::new(256, 0),
+        retain_primary: false,
+        additional_latency_nanos: 257,
+        duplicate_gap_nanos: 256,
+        compute_calls: 0,
+    };
+    ok(core.enqueue_request(Request::new(0, 9, b"payload".to_vec())));
+    ok(core.process_inbox(&mut device));
+
+    let snapshot = core.snapshot();
+    assert_eq!(snapshot.inflight.len(), 2);
+    assert_eq!(snapshot.inflight[0].delivery_icount(), 3);
+    assert_eq!(snapshot.inflight[1].delivery_icount(), 4);
+    assert_eq!(snapshot.inflight[0].response, snapshot.inflight[1].response);
+}
+
+#[test]
+fn dynamic_delay_is_added_before_the_single_ceil_conversion() {
+    let mut core = ok(IoCore::new(SHIFT, NODE, 4, 4));
+    let mut device = PerturbedCompletionDevice {
+        latency: AffineLatency::new(1, 0),
+        retain_primary: false,
+        additional_latency_nanos: 255,
+        duplicate_gap_nanos: 256,
+        compute_calls: 0,
+    };
+    ok(core.enqueue_request(Request::new(0, 10, b"payload".to_vec())));
+    ok(core.process_inbox(&mut device));
+
+    let snapshot = core.snapshot();
+    assert_eq!(snapshot.inflight[0].delivery_icount(), 1);
+}
+
+#[test]
+fn late_duplicate_overflow_rolls_back_device_and_inflight_state() {
+    let mut core = ok(IoCore::new(SHIFT, NODE, 4, 4));
+    let mut device = PerturbedCompletionDevice {
+        latency: AffineLatency::new(1, 0),
+        retain_primary: false,
+        additional_latency_nanos: 0,
+        duplicate_gap_nanos: u64::MAX,
+        compute_calls: 0,
+    };
+    ok(core.enqueue_request(Request::new(0, 11, b"payload".to_vec())));
+    assert!(matches!(
+        core.process_inbox(&mut device),
+        Err(DeviceError::CompletionOverflow { .. })
+    ));
+    assert_eq!(device.compute_calls, 0);
+    assert!(core.snapshot().inflight.is_empty());
+}
+
+#[test]
+fn additional_completion_without_primary_fails_closed() {
+    let mut core = ok(IoCore::new(SHIFT, NODE, 4, 4));
+    let mut device = PerturbedCompletionDevice {
+        latency: AffineLatency::new(256, 0),
+        retain_primary: true,
+        additional_latency_nanos: 257,
+        duplicate_gap_nanos: 256,
+        compute_calls: 0,
+    };
+    ok(core.enqueue_request(Request::new(0, 9, b"payload".to_vec())));
+    assert_eq!(
+        core.process_inbox(&mut device),
+        Err(DeviceError::InvalidComputedResponse)
+    );
+    assert!(core.snapshot().inflight.is_empty());
 }
 
 #[test]
@@ -282,6 +408,15 @@ fn snapshot_restore_round_trips_mid_flight() {
     ok(core.advance_to(head));
 
     let snapshot = core.snapshot();
+    let snapshot_bytes = ok(snapshot.canonical_bytes());
+    let snapshot = ok(IoCoreSnapshot::from_canonical_bytes(&snapshot_bytes));
+    assert_eq!(ok(snapshot.canonical_bytes()), snapshot_bytes);
+    let mut trailing = snapshot_bytes;
+    trailing.push(0);
+    assert_eq!(
+        IoCoreSnapshot::from_canonical_bytes(&trailing),
+        Err(IoCoreSnapshotCodecError::Noncanonical)
+    );
     let mut restored = ok(IoCore::restore(&snapshot));
     assert_eq!(restored.snapshot(), snapshot);
 

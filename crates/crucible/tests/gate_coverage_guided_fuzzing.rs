@@ -9,9 +9,8 @@ use std::error::Error;
 
 use crucible::{
     CoverageGuidedFuzzConfig, Decision, EngineError, EventLogCoverageFeedback,
-    EventLogCoverageFeedbackConsumer, FamilySpace, FaultDensity, FaultDensityRange, Icount,
-    MarkerId, NodeTemplate, ObservableEvent, ScenarioFamily, Seed, SeedSpace, TopologyShape,
-    TopologySizeRange, reduce,
+    EventLogCoverageFeedbackConsumer, FamilySpace, Icount, MarkerId, NodeTemplate, ObservableEvent,
+    ScenarioFamily, Seed, SeedSpace, TopologyShape, TopologySizeRange, reduce,
 };
 
 #[test]
@@ -60,12 +59,7 @@ fn gate_coverage_guided_fuzzing_is_seeded_and_reproducible() -> Result<(), Box<d
             .iter()
             .all(|iteration| !iteration.new_coverage)
     );
-    assert_eq!(unique_sample_indexes(&first), BTreeSet::from([0, 1]));
-    assert_eq!(
-        unique_fault_plan_entry_counts(&first),
-        BTreeSet::from([0, 2])
-    );
-
+    assert_eq!(unique_sample_indexes(&first), BTreeSet::from([0]));
     Ok(())
 }
 
@@ -120,10 +114,8 @@ fn gate_coverage_guided_fuzzing_prefers_first_seen_coverage() -> Result<(), Box<
 }
 
 fn fuzz_family() -> Result<ScenarioFamily, EngineError> {
-    let density_one = FaultDensity::from_millionths(1)?;
     let space = FamilySpace::new(
         SeedSpace::explicit(vec![Seed::from_u64(0x11)])?,
-        FaultDensityRange::new(FaultDensity::ZERO, density_one)?,
         TopologySizeRange::new(2, 2)?,
         vec![TopologyShape::Ring],
     )?;
@@ -158,13 +150,6 @@ fn unique_sample_indexes(run: &crucible::CoverageGuidedFuzzRun) -> BTreeSet<u64>
     run.iterations
         .iter()
         .map(|iteration| iteration.sample_index)
-        .collect()
-}
-
-fn unique_fault_plan_entry_counts(run: &crucible::CoverageGuidedFuzzRun) -> BTreeSet<usize> {
-    run.iterations
-        .iter()
-        .map(|iteration| iteration.scenario.form().plan().entries().len())
         .collect()
 }
 

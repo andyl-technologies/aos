@@ -687,14 +687,14 @@ instruction-primary.
   shmem region, coordinate the idle/advance handoff with a futex, and forbid any
   node self-extending past the published ceiling. — satisfies [TIME-27],
   [TIME-28], [TIME-29], [TIME-30]; spec §9.9.
-  Completed by `checks.crucible.phase2.qemuLivePluginQuantum` with
-  `prove_idle_jump` on: the plugin converts the introspected deadline horizon to a
-  ceiling icount, publishes ceiling/reached-icount in the shmem region, and hands
+  Completed by `checks.crucible.phase2.qemuLivePluginQuantum`: the plugin
+  converts the introspected deadline horizon to a ceiling icount, publishes
+  ceiling/reached-icount in the shmem region, and hands
   the idle vCPU off through the wake futex; the idle guest advances through the
   exact deadline by a 40M-icount O(1) jump, wakes, and re-idles below the
   published ceiling, never self-extending past it, because the max-advance
   budget is computed as `ceiling - logical_offset`. The terminal icount is
-  byte-identical on the second, host-loaded run.
+  byte-identical on the second, bounded-scheduler-preemption run.
 - [x] **T-TIME-8** Verify determinism of time in isolation under Contract A: a
   single node fed a recorded icount-stamped input list produces a bit-identical
   `(icount, virtual_time)` trajectory and matching time-derived fingerprint
@@ -712,7 +712,7 @@ instruction-primary.
   - **Live corroboration (`checks.crucible.phase2.qemuLivePluginFingerprint`):** a single
     live node (the Rust control plugin as sole time authority) is driven to a
     fixed ascending icount cadence and the whole scenario runs twice, the second
-    under deliberate host CPU load. Both runs produce a byte-identical
+    under bounded scheduler preemption. Both runs produce a byte-identical
     fingerprint stream whose per-vCPU retired-instruction counts and per-boundary
     aggregate icount are the time-derived fields — a bit-identical
     `(icount, virtual_time)` trajectory, since virtual time is the icount

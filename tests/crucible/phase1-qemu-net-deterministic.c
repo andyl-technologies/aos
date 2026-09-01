@@ -119,7 +119,6 @@ struct Observation {
 static struct QueuedFrame queued_frames[MAX_QUEUED_FRAMES];
 static size_t queued_frame_count;
 static unsigned int direct_receive_calls;
-static unsigned int queued_append_calls;
 static unsigned int flush_calls;
 static unsigned int queue_sent_callback_calls;
 static unsigned int notify_event_calls;
@@ -128,6 +127,7 @@ static uint64_t current_icount;
 static uint64_t last_guest_observed_icount;
 static uint8_t last_payload[MAX_FRAME_LEN];
 static size_t last_payload_len;
+static bool guest_has_rx_buffer;
 
 static void
 reset_fixture(void)
@@ -172,7 +172,6 @@ reset_fixture(void)
 
   queued_frame_count = 0;
   direct_receive_calls = 0;
-  queued_append_calls = 0;
   flush_calls = 0;
   queue_sent_callback_calls = 0;
   notify_event_calls = 0;
@@ -180,6 +179,7 @@ reset_fixture(void)
   current_icount = 0;
   last_guest_observed_icount = 0;
   last_payload_len = 0;
+  guest_has_rx_buffer = true;
   memset(last_payload, 0, sizeof(last_payload));
 }
 
@@ -202,33 +202,18 @@ deliver_to_guest(const uint8_t *buf, int size)
 ssize_t
 qemu_receive_packet(NetClientState *nc, const uint8_t *buf, int size)
 {
+  ssize_t delivered;
+
   direct_receive_calls++;
   if (!qemu_can_receive_packet(nc)) {
     return 0;
   }
-  return deliver_to_guest(buf, size);
-}
-
-bool
-qemu_net_queue_append_lossless(NetQueue *queue, NetClientState *sender,
-                               unsigned flags, const uint8_t *buf,
-                               size_t size, NetPacketSent *sent_cb)
-{
-  queued_append_calls++;
-  if (queue != &nic_incoming_queue || sender != &backend_client ||
-      flags != QEMU_NET_PACKET_FLAG_NONE || sent_cb == NULL) {
-    return false;
+  delivered = guest_has_rx_buffer ? deliver_to_guest(buf, size) : 0;
+  if (delivered == 0) {
+    /* Match qemu_deliver_packet_iov(), including its persistent latch. */
+    nc->receive_disabled = 1;
   }
-
-  if (queued_frame_count >= MAX_QUEUED_FRAMES || size > MAX_FRAME_LEN) {
-    return false;
-  }
-  memcpy(queued_frames[queued_frame_count].data, buf, (size_t)size);
-  queued_frames[queued_frame_count].len = (size_t)size;
-  queued_frames[queued_frame_count].sender = sender;
-  queued_frames[queued_frame_count].sent_cb = sent_cb;
-  queued_frame_count++;
-  return true;
+  return delivered;
 }
 
 bool
@@ -265,28 +250,15 @@ run_skewed_producer(uint64_t producer_host_tick, struct Observation *observation
   const uint64_t delivery_icount = 4096;
 
   reset_fixture();
-  current_icount = 100;
-  if (qemu_plugin_net_send(frame, sizeof(frame)) != 0 ||
-      delivered_frame_count != 0 || queued_frame_count != 1 ||
-      queued_append_calls != 1 || flush_calls != 0) {
-    fprintf(stderr,
-            "lossless queue before delivery mismatch: delivered=%u queued=%zu appends=%u flushes=%u\n",
-            delivered_frame_count, queued_frame_count, queued_append_calls,
-            flush_calls);
-    return 1;
-  }
-
   (void)producer_host_tick;
   current_icount = delivery_icount;
-  if (qemu_plugin_net_flush() != 0 || queued_frame_count != 0 ||
+  if (qemu_plugin_net_inject(frame, sizeof(frame)) != 0 ||
       delivered_frame_count != 1 || last_guest_observed_icount != delivery_icount ||
-      flush_calls != 1 || queue_sent_callback_calls != 1 ||
-      notify_event_calls != 1) {
+      queued_frame_count != 0) {
     fprintf(stderr,
-            "flush delivery mismatch: queued=%zu delivered=%u observed=%llu flushes=%u callbacks=%u notify=%u\n",
+            "direct delivery mismatch: queued=%zu delivered=%u observed=%llu\n",
             queued_frame_count, delivered_frame_count,
-            (unsigned long long)last_guest_observed_icount, flush_calls,
-            queue_sent_callback_calls, notify_event_calls);
+            (unsigned long long)last_guest_observed_icount);
     return 1;
   }
 
@@ -333,91 +305,47 @@ main(void)
 
   reset_fixture();
   current_icount = 77;
-  if (qemu_plugin_net_can_receive() != 1 ||
-      qemu_plugin_net_inject(frame, sizeof(frame)) != 0 ||
+  if (qemu_plugin_net_inject(frame, sizeof(frame)) != 0 ||
       delivered_frame_count != 1 || direct_receive_calls != 1 ||
       last_guest_observed_icount != 77 ||
       memcmp(last_payload, frame, sizeof(frame)) != 0) {
     fprintf(stderr,
-            "direct injection mismatch: can_receive=%d delivered=%u direct=%u observed=%llu\n",
-            qemu_plugin_net_can_receive(), delivered_frame_count,
+            "direct injection mismatch: delivered=%u direct=%u observed=%llu\n",
+            delivered_frame_count,
             direct_receive_calls,
             (unsigned long long)last_guest_observed_icount);
     return 1;
   }
 
   reset_fixture();
-  current_icount = 200;
-  if (qemu_plugin_net_can_receive() != 1 ||
-      qemu_plugin_net_send(frame, sizeof(frame)) != 0 ||
-      queued_frame_count != 1 || delivered_frame_count != 0 ||
-      queued_append_calls != 1 || queue_sent_callback_calls != 0 ||
-      direct_receive_calls != 0) {
-    fprintf(stderr,
-            "ready NIC send should queue without delivery: can_receive=%d queued=%zu delivered=%u appends=%u callbacks=%u direct=%u\n",
-            qemu_plugin_net_can_receive(), queued_frame_count,
-            delivered_frame_count, queued_append_calls,
-            queue_sent_callback_calls, direct_receive_calls);
-    return 1;
-  }
-  current_icount = 201;
-  if (qemu_plugin_net_flush() != 0 || queued_frame_count != 0 ||
-      delivered_frame_count != 1 || last_guest_observed_icount != 201 ||
-      queue_sent_callback_calls != 1 || notify_event_calls != 1) {
-    fprintf(stderr,
-            "ready NIC queued frame did not flush at chosen icount: queued=%zu delivered=%u observed=%llu callbacks=%u notify=%u\n",
-            queued_frame_count, delivered_frame_count,
-            (unsigned long long)last_guest_observed_icount,
-            queue_sent_callback_calls, notify_event_calls);
-    return 1;
-  }
-
-  reset_fixture();
-  nic_queue.can_receive = false;
+  guest_has_rx_buffer = false;
   current_icount = 88;
-  if (qemu_plugin_net_can_receive() != 0 ||
-      qemu_plugin_net_inject(frame, sizeof(frame)) == 0 ||
+  if (qemu_plugin_net_inject(frame, sizeof(frame)) != 1 ||
       delivered_frame_count != 0 || queued_frame_count != 0 ||
-      direct_receive_calls != 1) {
+      direct_receive_calls != 1 || !nic_queue.receive_disabled) {
     fprintf(stderr,
-            "direct injection should fail closed when not ready: delivered=%u queued=%zu direct=%u\n",
-            delivered_frame_count, queued_frame_count, direct_receive_calls);
+            "direct injection should retain caller ownership and expose QEMU's latch when not ready: delivered=%u queued=%zu direct=%u disabled=%u\n",
+            delivered_frame_count, queued_frame_count, direct_receive_calls,
+            nic_queue.receive_disabled);
     return 1;
   }
-
-  reset_fixture();
-  nic_queue.can_receive = false;
-  current_icount = 300;
-  if (qemu_plugin_net_send(frame, sizeof(frame)) != 0 ||
-      queued_frame_count != 1 || qemu_plugin_net_flush() == 0 ||
-      queued_frame_count != 1 || delivered_frame_count != 0 ||
-      queue_sent_callback_calls != 0) {
+  guest_has_rx_buffer = true;
+  current_icount = 89;
+  if (qemu_plugin_net_inject(frame, sizeof(frame)) != 0 || queued_frame_count != 0 ||
+      delivered_frame_count != 1 || last_guest_observed_icount != 89 ||
+      nic_queue.receive_disabled) {
     fprintf(stderr,
-            "not-ready flush should fail loudly and keep queued frame: queued=%zu delivered=%u callbacks=%u\n",
-            queued_frame_count, delivered_frame_count,
-            queue_sent_callback_calls);
-    return 1;
-  }
-  nic_queue.can_receive = true;
-  current_icount = 301;
-  if (qemu_plugin_net_flush() != 0 || queued_frame_count != 0 ||
-      delivered_frame_count != 1 || last_guest_observed_icount != 301 ||
-      queue_sent_callback_calls != 1) {
-    fprintf(stderr,
-            "not-ready queued frame did not flush after receiver recovered: queued=%zu delivered=%u observed=%llu callbacks=%u\n",
+            "caller-retained frame did not clear the stale QEMU latch after receiver recovered: queued=%zu delivered=%u observed=%llu disabled=%u\n",
             queued_frame_count, delivered_frame_count,
             (unsigned long long)last_guest_observed_icount,
-            queue_sent_callback_calls);
+            nic_queue.receive_disabled);
     return 1;
   }
 
   reset_fixture();
   net_clients.first = &control_client;
   control_client.next = NULL;
-  if (qemu_plugin_net_inject(frame, sizeof(frame)) == 0 ||
-      qemu_plugin_net_send(frame, sizeof(frame)) == 0 ||
-      qemu_plugin_net_flush() == 0 ||
-      qemu_plugin_net_can_receive() != -1) {
+  if (qemu_plugin_net_inject(frame, sizeof(frame)) >= 0) {
     fputs("missing NIC did not fail loudly\n", stderr);
     return 1;
   }
@@ -440,49 +368,27 @@ main(void)
 
   reset_fixture();
   nic_queue.link_down = 1;
-  if (qemu_plugin_net_can_receive() != 0 ||
-      qemu_plugin_net_inject(frame, sizeof(frame)) == 0 ||
-      qemu_plugin_net_send(frame, sizeof(frame)) == 0 ||
-      qemu_plugin_net_flush() == 0 ||
+  if (qemu_plugin_net_inject(frame, sizeof(frame)) >= 0 ||
       delivered_frame_count != 0 || queued_frame_count != 0) {
     fputs("link-down NIC did not fail loudly\n", stderr);
     return 1;
   }
 
   reset_fixture();
-  if (qemu_plugin_net_send(frame, sizeof(frame)) != 0 || queued_frame_count != 1) {
-    fputs("pre-link-down queue setup failed\n", stderr);
-    return 1;
-  }
-  nic_queue.link_down = 1;
-  if (qemu_plugin_net_flush() == 0 || delivered_frame_count != 0 ||
-      queued_frame_count != 1) {
-    fputs("link-down NIC flush did not fail loudly with queued frame preserved\n", stderr);
-    return 1;
-  }
-
-  reset_fixture();
-  backend_client.link_down = 1;
-  if (qemu_plugin_net_send(frame, sizeof(frame)) == 0 ||
-      qemu_plugin_net_flush() == 0 ||
-      delivered_frame_count != 0 || queued_frame_count != 0) {
-    fputs("link-down backend did not fail loudly\n", stderr);
+  if (qemu_plugin_net_inject(NULL, sizeof(frame)) >= 0 ||
+      qemu_plugin_net_inject(frame, 0) >= 0) {
+    fputs("invalid payload did not fail loudly\n", stderr);
     return 1;
   }
 
   puts("PASS");
   puts("patched_qemu_plugin_net_fixture=true");
   puts("net_inject_symbol=qemu_plugin_net_inject");
-  puts("net_send_symbol=qemu_plugin_net_send");
-  puts("net_flush_symbol=qemu_plugin_net_flush");
-  puts("net_can_receive_symbol=qemu_plugin_net_can_receive");
   puts("direct_inject_delivers_when_ready=true");
-  puts("direct_inject_fails_closed_when_not_ready=true");
-  puts("lossless_send_queues_until_flush=true");
-  puts("send_deferred_when_nic_ready=true");
-  puts("flush_makes_frame_visible_at_delivery_icount=true");
-  puts("flush_fails_loudly_when_not_ready=true");
-  puts("queue_sent_callback_required=true");
+  puts("direct_inject_retains_caller_ownership_when_not_ready=true");
+  puts("canonical_retry_delivers_after_receiver_recovers=true");
+  puts("canonical_retry_clears_qemu_receive_disabled_latch=true");
+  puts("qemu_private_rx_queue_used=false");
   puts("skewed_producer_observed_icount_identical=true");
   puts("guest_observed_icount=4096");
   puts("delivery_icount=4096");

@@ -87,6 +87,9 @@ static bool extended_fingerprint;
 static bool capture_memory_events;
 static bool definition_only;
 static bool definition_emitted;
+static bool definition_pause_requested;
+static bool definition_callback_completed;
+static int definition_pause_status = -1;
 static bool post_boundary_samples;
 static bool trace_rr_switch_events = true;
 static bool det_ipi_probe;
@@ -98,6 +101,7 @@ static bool terminal_pause_requested;
 static bool terminal_callback_completed;
 static bool terminal_state_emitted;
 static bool terminal_final_emitted;
+static bool final_sample_emitted;
 static bool terminal_state_complete;
 static int terminal_pause_status = -1;
 static uint64_t terminal_observed_icount;
@@ -152,6 +156,19 @@ on_sim_observer_max_advance_icount(void *userdata)
     return stop_at;
   }
   return next_sample;
+}
+
+static int
+request_exact_vmstop(void)
+{
+  const int status = qemu_plugin_request_vmstop();
+
+  if (status != 0) {
+    qemu_plugin_outs(
+        "crucible-qemu-trace-plugin: exact VM stop request failed\n");
+    qemu_plugin_request_shutdown(1);
+  }
+  return status;
 }
 
 static uint64_t
@@ -826,6 +843,9 @@ record_definition(void)
       "{\"kind\":\"definition\""
       ",\"schema\":\"" TRACE_FINGERPRINT_SCHEMA "\""
       ",\"definition_only\":true"
+      ",\"definition_pause_requested\":%s"
+      ",\"definition_callback_completed\":%s"
+      ",\"definition_pause_status\":%d"
       ",\"retired\":%" PRIu64
       ",\"observed_icount\":%" PRIu64
       ",\"observed_non_running\":%s"
@@ -845,6 +865,9 @@ record_definition(void)
       ",\"process_argv_digest\":\"%s\""
       ",\"process_argv_status\":%d"
       ",\"register_counts\":[",
+      definition_pause_requested ? "true" : "false",
+      definition_callback_completed ? "true" : "false",
+      definition_pause_status,
       retired,
       observed_icount,
       observed_non_running ? "true" : "false",
@@ -1669,17 +1692,21 @@ record_rr_switch_event(void)
 static void
 maybe_command_det_ipi_probe(
     uint64_t delivery_icount,
+    unsigned int src_vcpu,
     unsigned int dst_vcpu,
     unsigned int delivery_mode)
 {
-  const unsigned int target_vcpu = dst_vcpu == 0 ? 1 : 0;
-
   if (!det_ipi_probe || det_ipi_probe_commanded || tracked_vcpus < 2 ||
-      delivery_mode != 6 || dst_vcpu >= tracked_vcpus ||
-      target_vcpu >= tracked_vcpus) {
+      delivery_mode != 6 || src_vcpu >= tracked_vcpus ||
+      dst_vcpu >= tracked_vcpus) {
     return;
   }
 
+  /* Route the commanded FIXED probe back to the authenticated sender of the
+   * inter-vCPU SIPI. The drain callback can run with the SIPI destination as
+   * current_cpu, so deriving this target from the sender's neighbor can turn
+   * the probe into an accidental self-interrupt. */
+  const unsigned int target_vcpu = src_vcpu;
   if (qemu_plugin_inject_preemption(
           delivery_icount,
           delivery_icount,
@@ -1705,7 +1732,11 @@ on_det_ipi_delivery(
   (void)userdata;
 
   det_ipi_events++;
-  if (trace_file == NULL || !extended_fingerprint) {
+  /* The explicitly enabled IPI probe is also a negative-control observation
+   * surface under ordinary TCG, where extended sim fingerprint capture is not
+   * available. Keep ordinary non-extended traces unchanged, but never hide a
+   * deterministic delivery from an opted-in probe. */
+  if (trace_file == NULL || (!extended_fingerprint && !det_ipi_probe)) {
     return;
   }
 
@@ -1731,7 +1762,8 @@ on_det_ipi_delivery(
       vector);
   fflush(trace_file);
 
-  maybe_command_det_ipi_probe(delivery_icount, dst_vcpu, delivery_mode);
+  maybe_command_det_ipi_probe(
+      delivery_icount, src_vcpu, dst_vcpu, delivery_mode);
 }
 
 static void
@@ -1829,8 +1861,13 @@ on_insn(unsigned int vcpu_index, void *userdata)
   record_rr_switch_event();
 
   if (post_boundary_samples && required_pc_seen) {
-    const struct register_digest_summary register_digests =
-        compute_register_digests();
+    /*
+     * Ordinary instruction callbacks do not own QEMU's exact serialized
+     * register-read boundary. Fold the instruction and memory/device event
+     * stream here; the sim observer callback below adds the all-vCPU register,
+     * RAM, RR-cursor, and device-state sample at the exact host boundary.
+     */
+    const struct register_digest_summary register_digests = {0};
     const bool rr_cursor_valid = rr_current_vcpu != UINT64_MAX;
     fold_trajectory_state(
         retired,
@@ -1860,10 +1897,31 @@ on_insn(unsigned int vcpu_index, void *userdata)
       record_sample(vcpu_index, false);
     }
     qemu_plugin_outs("crucible-qemu-trace-plugin: stop_at reached\n");
-    if (!extended_fingerprint) {
-      qemu_plugin_crucible_pause_vm();
-    }
   }
+}
+
+static void
+on_final_sample_paused(int status, void *userdata)
+{
+  (void)userdata;
+
+  if (final_sample_emitted) {
+    return;
+  }
+  if (status != 0) {
+    qemu_plugin_outs(
+        "crucible-qemu-trace-plugin: final sample pause failed\n");
+    qemu_plugin_request_shutdown(1);
+    return;
+  }
+
+  /*
+   * Canonical register export is admitted only after every vCPU is stopped
+   * under QEMU's serialized boundary. Process-exit callbacks do not own that
+   * boundary and therefore cannot serve as final architectural evidence.
+   */
+  record_sample(UINT_MAX, true);
+  final_sample_emitted = true;
 }
 
 static void
@@ -1888,8 +1946,10 @@ on_sim_observe_icount(uint64_t current_icount, void *userdata)
       qemu_plugin_outs(
           "crucible-qemu-trace-plugin: terminal horizon boundary was not exact\n");
       terminal_pause_status = -ERANGE;
-      qemu_plugin_crucible_pause_vm();
-      on_terminal_paused(terminal_pause_status, NULL);
+      const int vmstop_status = request_exact_vmstop();
+
+      on_terminal_paused(
+          vmstop_status == 0 ? terminal_pause_status : vmstop_status, NULL);
       return;
     }
 
@@ -1900,8 +1960,9 @@ on_sim_observe_icount(uint64_t current_icount, void *userdata)
       qemu_plugin_outs(
           "crucible-qemu-trace-plugin: terminal pause request failed\n");
       terminal_pause_status = status;
-      qemu_plugin_crucible_pause_vm();
-      on_terminal_paused(status, NULL);
+      const int vmstop_status = request_exact_vmstop();
+
+      on_terminal_paused(vmstop_status == 0 ? status : vmstop_status, NULL);
     }
     return;
   }
@@ -1909,6 +1970,21 @@ on_sim_observe_icount(uint64_t current_icount, void *userdata)
   const bool periodic_due = current_icount >= next_sample;
   if (!periodic_due && !horizon_due) {
     return;
+  }
+
+  uint64_t boundary_rr_current_vcpu;
+  uint64_t boundary_rr_cursor_position;
+  uint64_t boundary_rr_switch_quantum;
+  const bool boundary_rr_cursor_valid = read_rr_cursor_snapshot(
+      &boundary_rr_current_vcpu,
+      &boundary_rr_cursor_position,
+      &boundary_rr_switch_quantum);
+
+  if (boundary_rr_cursor_valid) {
+    last_valid_rr_current_vcpu = boundary_rr_current_vcpu;
+    last_valid_rr_cursor_position = boundary_rr_cursor_position;
+    last_valid_rr_switch_quantum = boundary_rr_switch_quantum;
+    last_valid_rr_cursor_available = true;
   }
 
   if (post_boundary_samples) {
@@ -1939,18 +2015,17 @@ on_sim_observe_icount(uint64_t current_icount, void *userdata)
 
   const bool rr_cursor_required =
       tracked_vcpus > 1 || qemu_plugin_crucible_rr_switch_quantum() != 0;
-  if (!last_valid_rr_cursor_available && rr_cursor_required) {
+  if (!boundary_rr_cursor_valid && rr_cursor_required) {
     qemu_plugin_outs(
         "crucible-qemu-trace-plugin: missing exact-boundary RR cursor\n");
     stop_requested = true;
     horizon_emitted = true;
     next_sample = UINT64_MAX;
-    qemu_plugin_crucible_pause_vm();
+    (void)request_exact_vmstop();
     return;
   }
   if (horizon_due) {
     stop_requested = true;
-    qemu_plugin_crucible_pause_vm();
   }
   record_sample(
       last_valid_rr_cursor_available
@@ -1959,6 +2034,17 @@ on_sim_observe_icount(uint64_t current_icount, void *userdata)
       false);
   if (horizon_due) {
     horizon_emitted = true;
+    next_sample = UINT64_MAX;
+    terminal_pause_requested = true;
+    const int status = qemu_plugin_crucible_request_terminal_pause(
+        on_final_sample_paused, NULL);
+
+    if (status != 0) {
+      qemu_plugin_outs(
+          "crucible-qemu-trace-plugin: final sample pause request failed\n");
+      qemu_plugin_request_shutdown(1);
+    }
+    return;
   }
   if (periodic_due) {
     if (UINT64_MAX - next_sample < cadence) {
@@ -2001,12 +2087,47 @@ on_tb_translate(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 }
 
 static void
+on_definition_paused(int status, void *userdata)
+{
+  (void)userdata;
+
+  definition_callback_completed = true;
+  definition_pause_status = status;
+  if (status != 0) {
+    qemu_plugin_outs(
+        "crucible-qemu-trace-plugin: genesis pause callback failed\n");
+    qemu_plugin_request_shutdown(1);
+    return;
+  }
+
+  record_definition();
+  if (!definition_emitted) {
+    qemu_plugin_outs(
+        "crucible-qemu-trace-plugin: genesis definition was incomplete\n");
+    qemu_plugin_request_shutdown(1);
+  }
+}
+
+static void
 on_vcpu_init(qemu_plugin_id_t id, unsigned int vcpu_index)
 {
   (void)id;
 
   if (extended_fingerprint) {
     (void)init_register_set(vcpu_index);
+  }
+  if (definition_only && !definition_pause_requested &&
+      all_register_sets_initialized()) {
+    definition_pause_requested = true;
+    const int status = qemu_plugin_crucible_request_terminal_pause(
+        on_definition_paused, NULL);
+
+    if (status != 0) {
+      definition_pause_status = status;
+      qemu_plugin_outs(
+          "crucible-qemu-trace-plugin: genesis pause request failed\n");
+      qemu_plugin_request_shutdown(1);
+    }
   }
 }
 
@@ -2025,14 +2146,16 @@ on_plugin_exit(qemu_plugin_id_t id, void *userdata)
       terminal_observed_icount = qemu_plugin_crucible_icount();
       record_terminal_final();
     }
-  } else if (!definition_only) {
-    record_sample(UINT_MAX, true);
-  } else {
-    record_definition();
+  } else if (definition_only) {
     if (!definition_emitted) {
       qemu_plugin_outs(
           "crucible-qemu-trace-plugin: definition record was not emitted\n");
     }
+  } else if (stop_at == 0) {
+    record_sample(UINT_MAX, true);
+  } else if (!final_sample_emitted) {
+    qemu_plugin_outs(
+        "crucible-qemu-trace-plugin: missing stopped-boundary final sample\n");
   }
   fclose(trace_file);
   trace_file = NULL;
@@ -2191,10 +2314,8 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
   if (!definition_only) {
     qemu_plugin_register_vcpu_tb_trans_cb(id, on_tb_translate);
     qemu_plugin_crucible_register_ipi_delivery_cb(on_det_ipi_delivery, NULL);
-    if (extended_fingerprint) {
-      qemu_plugin_register_sim_shmem_observer_cb(
-          on_sim_observe_icount, on_sim_observer_max_advance_icount, NULL);
-    }
+    qemu_plugin_register_sim_shmem_observer_cb(
+        on_sim_observe_icount, on_sim_observer_max_advance_icount, NULL);
     if (det_ipi_probe) {
       qemu_plugin_register_sim_shmem_dispatch_cb(
           on_sim_publish_icount, on_sim_max_advance_icount, NULL);

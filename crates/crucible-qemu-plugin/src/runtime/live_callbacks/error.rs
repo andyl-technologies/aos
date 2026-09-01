@@ -12,6 +12,15 @@ pub enum LiveVcpuTimeCallbackError {
         /// Missing QEMU symbol.
         symbol: &'static str,
     },
+    /// The live fault-command bridge failed setup or dispatch.
+    #[error("live QEMU fault command bridge failed: {source}")]
+    FaultCommands {
+        /// Typed bridge failure.
+        source: crate::FaultCommandBridgeError,
+    },
+    /// Required live fault-command callback state was not installed.
+    #[error("live QEMU fault command callback state is unavailable")]
+    FaultCommandStateUnavailable,
     /// The live preemption command or QEMU injection was rejected.
     #[error("live preemption injection failed: {source}")]
     Preemption {
@@ -35,6 +44,16 @@ pub enum LiveVcpuTimeCallbackError {
         logical_icount: u64,
         /// Logical offset added to QEMU's raw retired count.
         logical_icount_offset: u64,
+    },
+    /// A process attempted more than one launch-continuation restore.
+    #[error(
+        "logical restore continuation generation {requested_generation} follows already-applied generation {applied_generation}"
+    )]
+    LogicalRestoreContinuationReused {
+        /// Previously applied shared-memory restore generation.
+        applied_generation: u32,
+        /// Newly requested shared-memory restore generation.
+        requested_generation: u32,
     },
     /// The live white-box adapter failed preflight, registration, or dispatch.
     #[error("live white-box callback failed: {message}")]
@@ -82,8 +101,10 @@ pub enum LiveVcpuTimeCallbackError {
     #[error("fingerprint sampling requested but QEMU is missing the fingerprint helper exports")]
     FingerprintCapabilityUnavailable,
     /// Capturing a boundary fingerprint sample failed.
-    #[error("boundary fingerprint sampling failed: {source}")]
+    #[error("{boundary} fingerprint sampling failed: {source}")]
     FingerprintSample {
+        /// Callback boundary that requested the sample.
+        boundary: &'static str,
         /// Underlying plugin fingerprint sampler error.
         source: FingerprintSamplerError,
     },
@@ -93,9 +114,6 @@ pub enum LiveVcpuTimeCallbackError {
         /// Host thread-spawn diagnostic.
         message: String,
     },
-    /// The bounded fingerprint digest queue still contains the prior boundary.
-    #[error("fingerprint digest worker queue is full at a new sample boundary")]
-    FingerprintWorkerQueueFull,
     /// The fingerprint digest worker is no longer accepting captures.
     #[error("fingerprint digest worker is unavailable")]
     FingerprintWorkerUnavailable,
@@ -145,10 +163,10 @@ pub enum LiveVcpuTimeCallbackError {
         /// Underlying inbound-ring error.
         source: InboundFrameError,
     },
-    /// QEMU's lossless RX queue rejected the validated batch.
+    /// QEMU's direct RX injection rejected the validated batch.
     #[error("live network RX injection failed: {source}")]
     NetworkRx {
-        /// Underlying lossless RX error.
+        /// Underlying canonical RX delivery error.
         source: NetworkRxError,
     },
     /// A live block or 9p adapter failed registration or dispatch.
@@ -222,9 +240,18 @@ pub enum LiveVcpuTimeCallbackError {
     /// QEMU reported vCPU resume before the queued idle jump completed.
     #[error("vCPU resumed while an idle time advance was still pending")]
     ResumeWhileIdleAdvancePending,
-    /// The pending idle-advance slot was re-entered from another callback.
-    #[error("live time callback was re-entered while pending state was borrowed")]
-    CallbackReentered,
+    /// The idle-advance completion callback was entered recursively.
+    #[error("live idle-advance completion callback was re-entered")]
+    IdleAdvanceCompletionReentered,
+    /// The pending idle-advance slot was borrowed by another callback.
+    #[error("live pending idle-advance state was already borrowed")]
+    PendingIdleAdvanceBorrowed,
+    /// The per-vCPU halt tracker was borrowed by another callback.
+    #[error("live per-vCPU halt state was already borrowed")]
+    HaltStateBorrowed,
+    /// The fault-command bridge was borrowed without an owned nested pump.
+    #[error("live fault-command bridge was already borrowed")]
+    FaultCommandStateBorrowed,
     /// A prior panic poisoned the pending idle-advance slot.
     #[error("live time callback pending state is poisoned")]
     CallbackStatePoisoned,
@@ -353,6 +380,20 @@ pub enum LiveVcpuTimeCallbackError {
     PublishIdle {
         /// Underlying node-slot contract error.
         source: NodeSlotError,
+    },
+    /// Publishing exact coordinated-pause quiescence failed.
+    #[error("publishing live callback pause-quiesced state failed: {source}")]
+    PublishPause {
+        /// Underlying node-slot contract error.
+        source: NodeSlotError,
+    },
+    /// QEMU rejected the native stopped-runstate handoff.
+    #[error("QEMU rejected checkpoint VM-stop from {boundary} with status {status}")]
+    CheckpointVmStopRejected {
+        /// Plugin callback boundary that requested the native handoff.
+        boundary: &'static str,
+        /// Status returned by the GPL-side QEMU capability.
+        status: i32,
     },
 }
 

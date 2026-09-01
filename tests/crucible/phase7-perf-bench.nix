@@ -41,11 +41,7 @@
   segmentReplay ? null,
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   # The perf substrate is split across a `perf/` module directory (each file is
   # kept under the engineering-hygiene soft line limit); concatenate the facade
@@ -62,9 +58,9 @@
   ];
   perfGate = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible-harness/tests/gate_perf_bench.rs)
-    (builtins.readFile ../../crates/crucible-harness/tests/gate_perf_bench/hot_path_io.rs)
     (builtins.readFile ../../crates/crucible-harness/tests/gate_perf_bench/syscall_accounting.rs)
   ];
+  perfHotPathIo = builtins.readFile ../../crates/crucible-harness/tests/gate_perf_bench/hot_path_io.rs;
   gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
   gateCatalog = builtins.readFile ../../crates/crucible-harness/tests/gate_catalog.rs;
   libRs = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
@@ -320,6 +316,16 @@
         needle = "gate_perf_bench_rejects_unknown_proving_gate";
       }
     ]
+    ++ failuresFor "crates/crucible-harness/tests/gate_perf_bench/hot_path_io.rs" perfHotPathIo [
+      {
+        label = "no advance/delivery socket or control IPC";
+        needle = "advance_and_delivery_owners_have_no_socket_or_control_io";
+      }
+      {
+        label = "hot-path IPC negative control";
+        needle = "hot_path_io_scanner_rejects_socket_qmp_and_plugin_control_fixture";
+      }
+    ]
     ++ forbiddenFor "crates/crucible-harness/tests/gate_perf_bench.rs" perfGate [
       {
         label = "ignored placeholder";
@@ -365,7 +371,7 @@
       }
       {
         label = "phase7 e2e determinism depends on perf-bench";
-        needle = "dependencies = [perfBench.rawGate";
+        needle = "dependencies = [phase1.gates.licenseBoundary.rawGate perfBench.rawGate";
       }
     ]
     ++ failuresFor "default.nix" rootChecks [

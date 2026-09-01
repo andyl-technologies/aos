@@ -218,16 +218,14 @@ pub struct MaterializedState {
     /// The authoritative scheduler state (08), without which a resume could
     /// not reproduce cross-node ordering: per-node horizons, the pending
     /// shared-memory frame queues with their delivery icounts, the timer
-    /// registry, the set of active faults, and the active tag-to-fault binding
-    /// used by tag-based heal. This is the state that 05 [EXEC-13] insists
+    /// registry, and the complete signal/binding execution checkpoint. This is
+    /// the state that 05 [EXEC-13] insists
     /// lives *inside* the configuration, not in ephemeral process memory.
     pub scheduler: SchedulerState {
         horizons: BTreeMap<NodeId, VirtualTime>,
         pending_frames: BTreeMap<NodeId, Vec<PendingFrame>>, // delivery icount + payload ref (13)
         timers: TimerRegistry,                               // armed timers, fire icounts (08, 09)
-        active_faults: BTreeMap<FaultTag, FaultState>,       // in-effect faults + heal points (17)
-        active_fault_tags: BTreeMap<FaultTag, MembershipFault>, // heal tags + current binding (17)
-        active_fault_table: ActiveFaultTable,                // directed edge/node/device lookup table (17)
+        fault_runtime: FaultRuntimeCheckpoint, // evaluator, binding, adapter, replay, and effect state (17)
     },
 
     /// The harness decision-RNG state: the position of every seeded per-entity
@@ -345,9 +343,10 @@ correctness decision; eviction (turning a fat checkpoint thin) is always safe
           paths, interactive targets). materialize = cache decision (perf),
           NOT a correctness decision. evict (fat→thin) is always safe.
 
-  hedge:  if savevm is incomplete for a device, leave affected nodes thin.
-          replay-from-ancestor never depends on savevm completeness — only on
-          Contract A/B (04) + the schedule delta. degrade to slow, never wrong.
+  rule:   an exact-snapshot request is atomic and fails closed if any VMState,
+          host-device, scheduler, or artifact component is incomplete.
+          Explicit replay remains a separate realization operation, never an
+          automatic fallback from failed exact capture or restore.
 ```
 
 - **[TEMP-11]** Every checkpoint MUST be storable in **thin** form — `(parent,
@@ -361,8 +360,9 @@ correctness decision; eviction (turning a fat checkpoint thin) is always safe
 - **[TEMP-12]** A **fat** checkpoint MUST carry a `MaterializedState` (§3) and
   MUST be validatable against its thin derivation by the replay oracle (§6): a
   fat checkpoint that does not hash-equal its replay-from-ancestor
-  reconstruction MUST be rejected as a cache miss and the thin derivation used
-  instead. Materialization MUST be a performance decision, never a correctness
+  reconstruction MUST be rejected as an exact-restore failure. The caller MAY
+  separately request explicit replay, but restore MUST NOT silently change
+  realization mechanisms. Materialization MUST be a performance decision, never a correctness
   decision (05 [EXEC-17]). *Gate:* `gate:replay-oracle`. *Spec:* §4, §6.
 
 - **[TEMP-13]** Crucible MUST be able to keep a checkpoint thin when its
@@ -483,8 +483,8 @@ producing a wrong resume.
 - **[TEMP-18]** For every fat checkpoint, `hash(loadvm(state))` MUST equal
   `hash(replay-from-nearest-fat-ancestor)` (INV-2; 05 [EXEC-23]). This equality
   MUST be enforced as the CI gate `gate:replay-oracle`, not left to convention.
-  A fat checkpoint that fails it MUST be treated as a corrupt cache entry:
-  rejected, its `state` dropped to thin, and the thin derivation used. *Gate:*
+  A fat checkpoint that fails it MUST reject exact realization without mutating
+  the checkpoint or automatically invoking the thin derivation. *Gate:*
   `gate:replay-oracle`. *Spec:* §6; cross-ref 05 §8, 24.
 
 - **[TEMP-19]** A replay-oracle failure MUST localize to the first differing
@@ -798,17 +798,16 @@ command.
     the repeated-fork/shared-replay/interactive-target budget, and
     `evict_fat_checkpoint_to_thin` drops the fat cache without changing the
     checkpoint id or replayed runtime state.
-- [x] **T-TEMP-5** Implement the savevm-completeness hedge: keep affected
-  checkpoints thin when a device's snapshot is unreliable, proving
-  replay-from-ancestor stays bit-correct independent of snapshot completeness.
-  — satisfies [TEMP-13], [TEMP-20]; spec §4, §6; cross-ref 30.
-  - Completed by `crucible::SavevmCompletenessHedge` and
-    `checks.crucible.phase1.gates.replayOracle`: `cache_snapshot_with_savevm_hedge`
-    refuses fat cache insertion for materialized states touching unreliable
-    device overlays, `materialize_checkpoint_with_savevm_hedge` and
-    `materialize_hot_checkpoint_with_savevm_hedge` keep such nodes thin, and
-    `thin_replay_until_full_s3` evicts an already-hot fat checkpoint back to
-    the thin ancestor-replay path while preserving the realized runtime hash.
+- [x] **T-TEMP-5** Require exact materialized checkpoints and reject incomplete
+  device snapshots; thin checkpoints remain an explicit cache policy, not a
+  runtime fallback. — satisfies [TEMP-13], [TEMP-20]; spec §4, §6; cross-ref 30.
+  - Completed by `crucible::MaterializationPolicy`,
+    `crucible_qemu::QemuVmSnapshot`, and
+    `checks.crucible.phase2.qemuExactSnapshotRestore`: a fat checkpoint contains
+    one identity-bound pair of QEMU VMState and Apache-side host-I/O continuation,
+    capture deletes partial QEMU artifacts on failure, restore validates the pair
+    before launch, and the replay oracle must admit the restored runtime. No API
+    admits an unreliable or partially captured fat checkpoint.
 - [x] **T-TEMP-6** Implement CoW sharing across the DAG: a fork stores only
   dirty VM pages, dirty overlay pages, its schedule delta, and its appended log
   segment; unchanged pieces resolve by reference; all deltas BLAKE3-keyed and
@@ -831,12 +830,13 @@ command.
   - Completed by `TemporalGraph::replay_oracle_admit_cached_snapshot`,
     `TemporalGraph::validate_cached_snapshots_with_replay_oracle`, and
     `checks.crucible.phase1.gates.replayOracle`: cached fat snapshots are
-    admitted through thin replay before materialization paths or direct
-    exact-cache realization trust them, and cached ancestors are admitted before
+    checked against an independent replay oracle before materialization paths or direct
+    exact-cache realization trust them, and cached ancestors are checked before
     descendant targets so a corrupt replay source cannot validate a matching
     corrupt descendant; a corrupt cached `MaterializedState` is evicted back to
-    the thin checkpoint and surfaces `ReplayOracleMismatch` while the
-    ancestor-replay derivation remains realizable; the gate also keeps the
+    an exact restore and surfaces `ReplayOracleMismatch`; explicit
+    ancestor replay remains independently realizable but is not selected as a
+    fallback. The gate also keeps the
     harness first-mismatch /
     divergence-bisection path and QEMU snapshot-completeness probes wired into
     the replay-oracle result artifact.
@@ -920,7 +920,7 @@ command.
     replay-oracle-checked fat checkpoint and persists the same graph closure to
     the DAG store; resume records the thin closure before realizing through
     `instantiate`; fork realizes the base and records the branch as a thin graph
-    checkpoint; replay validates the stored fat checkpoint against thin replay;
+    checkpoint; an explicit replay operation validates the stored fat checkpoint;
     and search expands a reduced frontier, materializing only explored children
     through the configured checkpoint policy. No separate checkpoint-store state
     representation is introduced.

@@ -1,4 +1,5 @@
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index 3f8f598c4..5c70e042c 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -40,6 +40,7 @@
@@ -35,6 +36,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
              rr_crucible_sim_reset_exit_request(cpu);
          }
 diff --git a/hw/intc/apic.c b/hw/intc/apic.c
+index d18c1dbf2..4c16ae980 100644
 --- a/hw/intc/apic.c
 +++ b/hw/intc/apic.c
 @@ -26,7 +26,11 @@
@@ -292,6 +294,7 @@ diff --git a/hw/intc/apic.c b/hw/intc/apic.c
  
  static bool apic_check_pic(APICCommonState *s)
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+index 963d31b59..9a0b94fd5 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
 @@ -187,6 +187,16 @@ extern void *qemu_plugin_vcpu_idle_resume_userdata;
@@ -342,6 +345,7 @@ diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
  void qemu_plugin_add_dyn_cb_arr(GArray *arr)
  { }
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 7bdab83a1..185890b47 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -173,6 +173,24 @@ typedef void (*qemu_plugin_tcg_exec_cb_t)(unsigned int vcpu_index,
@@ -369,7 +373,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
  /**
   * typedef qemu_plugin_sim_shmem_publish_icount_cb_t - publish sim icount
   * @current_icount: the raw bias-excluded icount reached by the sim vCPU loop
-@@ -1439,6 +1457,21 @@ uint64_t qemu_plugin_crucible_rr_cursor_position(void);
+@@ -1408,6 +1426,21 @@ uint64_t qemu_plugin_crucible_rr_cursor_position(void);
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_crucible_rr_switch_quantum(void);
  
@@ -393,6 +397,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
   * @bytes_out: optional output for the total RAM bytes included in the hash
 diff --git a/include/system/crucible-sim-ipi.h b/include/system/crucible-sim-ipi.h
 new file mode 100644
+index 000000000..3f9d9e7ac
 --- /dev/null
 +++ b/include/system/crucible-sim-ipi.h
 @@ -0,0 +1,6 @@
@@ -403,6 +408,7 @@ new file mode 100644
 +
 +#endif /* SYSTEM_CRUCIBLE_SIM_IPI_H */
 diff --git a/plugins/api-system.c b/plugins/api-system.c
+index 5a6abc070..c3d45be89 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -121,6 +121,8 @@ void *qemu_plugin_tcg_exec_userdata;

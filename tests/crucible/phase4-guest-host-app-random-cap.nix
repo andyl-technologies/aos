@@ -5,11 +5,7 @@
   taskIds ? ["T-GHC-17"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
   engineDecision = builtins.readFile ../../crates/crucible/src/decision.rs;

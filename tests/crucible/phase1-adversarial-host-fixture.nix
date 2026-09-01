@@ -5,11 +5,7 @@
   taskIds ? ["T-DET-25"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   harnessAdversarial = builtins.readFile ../../crates/crucible-harness/src/adversarial.rs;
   harnessFixtureTest = builtins.readFile ../../crates/crucible-harness/tests/adversarial_host_fixture.rs;
@@ -238,7 +234,7 @@ in
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             fixture=canonical-host-adversary-matrix
-            dimensions=seeded-scheduling,seeded-affinity,jitter-load,core-counts,producer-consumer-skew
+            dimensions=seeded-scheduling,seeded-affinity,bounded-seeded-work-yield,core-counts,producer-consumer-skew
             rust_tests=crucible-harness::adversarial_host_fixture,crucible::gate_single_vm_fingerprint::adversarial-host-profiles
             RESULT
           '';

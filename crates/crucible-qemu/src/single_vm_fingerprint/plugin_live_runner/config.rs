@@ -17,7 +17,7 @@ pub struct PluginFingerprintRunnerConfig {
     pub(super) run_directory: PathBuf,
     pub(super) kernel_cmdline: Option<String>,
     pub(super) completion_timeout: Duration,
-    pub(super) second_run_host_load: bool,
+    pub(super) second_run_scheduler_preemption: bool,
     pub(super) second_run_divergence_control: bool,
     pub(super) synchronous_oracle: bool,
     pub(super) qemu_build_digest: String,
@@ -58,7 +58,7 @@ impl PluginFingerprintRunnerConfig {
             run_directory: run_directory.into(),
             kernel_cmdline: None,
             completion_timeout: Duration::from_secs(240),
-            second_run_host_load: true,
+            second_run_scheduler_preemption: true,
             second_run_divergence_control: false,
             synchronous_oracle: false,
             qemu_build_digest,
@@ -119,10 +119,13 @@ impl PluginFingerprintRunnerConfig {
         self
     }
 
-    /// Returns this configuration with host CPU load on the second run toggled.
+    /// Returns this configuration with bounded scheduler preemption on the second run toggled.
     #[must_use]
-    pub const fn with_second_run_host_load(mut self, second_run_host_load: bool) -> Self {
-        self.second_run_host_load = second_run_host_load;
+    pub const fn with_second_run_scheduler_preemption(
+        mut self,
+        second_run_scheduler_preemption: bool,
+    ) -> Self {
+        self.second_run_scheduler_preemption = second_run_scheduler_preemption;
         self
     }
 

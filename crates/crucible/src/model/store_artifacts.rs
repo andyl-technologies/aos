@@ -116,12 +116,7 @@ pub(super) fn reproduction_artifact_canonical_bytes(
     scenario: &ScenarioDefForm,
     schedule: &Schedule,
 ) -> Vec<u8> {
-    let magic = if scenario.world.io_nodes().next().is_some() {
-        REPRODUCTION_ARTIFACT_BINARY_MAGIC_V2
-    } else {
-        REPRODUCTION_ARTIFACT_BINARY_MAGIC_V1
-    };
-    let mut writer = ScenarioBinaryWriter::new(magic);
+    let mut writer = ScenarioBinaryWriter::new(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V5);
     writer.write_binary_blob(&scenario.to_compact_binary());
     writer.write_binary_blob(&schedule.to_compact_binary());
     writer.finish()
@@ -333,13 +328,6 @@ pub(super) fn push_decision_lines(index: usize, decision: &Decision, lines: &mut
                 lines.push(format!("{prefix}.event.sequence={}", event.sequence));
             }
         }
-        Decision::FaultFires(fault) => {
-            lines.push(format!("{prefix}.kind=fault-fires"));
-            lines.push(format!("{prefix}.at_ticks={}", fault.at.ticks));
-            lines.push(format!("{prefix}.fault_len={}", fault.fault.name.len()));
-            lines.push(format!("{prefix}.fault={}", fault.fault.name));
-            lines.push(format!("{prefix}.fired={}", fault.fired));
-        }
         Decision::RngDraw(draw) => {
             lines.push(format!("{prefix}.kind=rng-draw"));
             push_rng_stream_lines(&prefix, &draw.stream, lines);
@@ -384,24 +372,6 @@ pub(super) fn push_decision_lines(index: usize, decision: &Decision, lines: &mut
             lines.push(format!("{prefix}.request_id={}", random.request_id));
             lines.push(format!("{prefix}.width={}", random.width));
             lines.push(format!("{prefix}.value={}", random.value));
-        }
-        Decision::ControlFault(control) => {
-            lines.push(format!("{prefix}.kind=control-fault"));
-            lines.push(format!("{prefix}.at_ticks={}", control.at.ticks));
-            lines.push(format!("{prefix}.sequence={}", control.sequence));
-            match &control.action {
-                ControlFaultAction::Inject { tag, fault } => {
-                    lines.push(format!("{prefix}.action=inject-fault"));
-                    lines.push(format!("{prefix}.tag_len={}", tag.name.len()));
-                    lines.push(format!("{prefix}.tag={}", tag.name));
-                    lines.push(fault.canonical_material());
-                }
-                ControlFaultAction::Heal { tag } => {
-                    lines.push(format!("{prefix}.action=heal-fault"));
-                    lines.push(format!("{prefix}.tag_len={}", tag.name.len()));
-                    lines.push(format!("{prefix}.tag={}", tag.name));
-                }
-            }
         }
     }
 }

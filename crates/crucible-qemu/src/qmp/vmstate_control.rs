@@ -6,8 +6,8 @@ use std::os::unix::net::UnixStream;
 use crucible::Checkpoint;
 
 use super::{
-    QmpClient, QmpCommandComplete, QmpError, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpSnapshotTag,
-    QmpTimeoutStream,
+    QmpClient, QmpCommandComplete, QmpError, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind,
+    QmpSnapshotTag, QmpTimeoutStream,
 };
 use crate::{
     QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
@@ -84,6 +84,75 @@ where
         self.client
     }
 
+    /// Stops guest execution for an exact checkpoint transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QEMU cannot enter and confirm the
+    /// paused run state.
+    pub fn stop_for_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
+        let state = self.client.query_status()?;
+        if !state.running && state.status == crate::QmpRunStateKind::Paused {
+            return Ok(());
+        }
+        self.client
+            .stop()
+            .map(|_complete| ())
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Resumes guest execution after an exact checkpoint transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QEMU does not acknowledge the
+    /// running-state transition. The first scheduler-authorized node step is
+    /// the execution proof because an idle restored simulator can park before
+    /// servicing a follow-up QMP status query.
+    pub fn resume_after_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
+        self.client
+            .cont_acknowledged()
+            .map(|_complete| ())
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Confirms that stopped-state post-restore calibration preserved the pause.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QEMU cannot report its state or is
+    /// not in the exact paused state required after calibration.
+    pub(crate) fn confirm_restore_boundary_pause(&mut self) -> Result<(), QemuNodeChannelError> {
+        let state = self.client.query_status()?;
+        if !state.running && state.status == QmpRunStateKind::Paused {
+            return Ok(());
+        }
+        Err(QmpError::UnexpectedRunState {
+            command: super::QmpCommandKind::QueryStatus,
+            status: state.status,
+            running: state.running,
+        }
+        .into())
+    }
+
+    /// Acknowledges one authenticated terminal lifecycle transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QEMU does not acknowledge the
+    /// terminal completion command before beginning process shutdown.
+    pub fn complete_terminal_lifecycle_exit(
+        &mut self,
+        action: crucible::ContentHash,
+        evidence: crucible::ContentHash,
+        process_generation: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.client
+            .complete_terminal_lifecycle_exit(action, evidence, process_generation)
+            .map(|_complete| ())
+            .map_err(QemuNodeChannelError::from)
+    }
+
     /// Sends the fixed activation token to the dormant debug guest bootstrap.
     /// The channel retains the socket so QEMU cannot discard queued bytes while
     /// the scheduler still has the guest paused.
@@ -92,10 +161,9 @@ where
     ///
     /// Returns [`QemuNodeChannelError`] when endpoint preparation fails or the
     /// activation stream cannot deliver the fixed token.
-    pub fn activate_debug_guest(&mut self) -> Result<QmpCommandComplete, QemuNodeChannelError> {
-        let complete = self
-            .client
-            .prepare_debug_guest()
+    pub fn activate_debug_guest(&mut self) -> Result<(), QemuNodeChannelError> {
+        self.client
+            .confirm_predeclared_debug_guest_endpoint()
             .map_err(QemuNodeChannelError::from)?;
         let activation = self.debug_guest_activation_stream.as_mut().ok_or_else(|| {
             QemuNodeChannelError::new(
@@ -108,7 +176,7 @@ where
             .map_err(|error| {
                 QemuNodeChannelError::new("write debug guest activation token", error.to_string())
             })?;
-        Ok(complete)
+        Ok(())
     }
 
     /// Saves the QEMU VMState under a tag derived from `checkpoint`.
@@ -130,7 +198,7 @@ where
 
     /// Restores the QEMU VMState tagged by `checkpoint`.
     ///
-    /// The authorization token must be issued by the savevm policy for either
+    /// The authorization token must be issued by the exact snapshot policy for either
     /// replay-oracle probing or admitted runtime realization.
     ///
     /// # Errors
@@ -142,9 +210,37 @@ where
         checkpoint: &Checkpoint,
         authorization: QemuLoadvmCommandAuthorization,
     ) -> Result<QmpCommandComplete, QemuNodeChannelError> {
+        if authorization.purpose() != crate::QemuLoadvmCommandPurpose::ReplayOracleProbe {
+            return Err(QemuNodeChannelError::new(
+                "qmp",
+                "public VMState restore only admits replay-oracle probes",
+            ));
+        }
+        self.restore_checkpoint_vmstate_authorized(checkpoint)
+    }
+
+    pub(crate) fn restore_checkpoint_vmstate_authorized(
+        &mut self,
+        checkpoint: &Checkpoint,
+    ) -> Result<QmpCommandComplete, QemuNodeChannelError> {
         let tag = QmpSnapshotTag::from_checkpoint(checkpoint);
         self.client
-            .loadvm(&tag, authorization)
+            .loadvm_authorized(&tag)
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Deletes the QEMU VMState artifact tagged by `checkpoint`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP cannot complete deletion.
+    pub fn delete_checkpoint_vmstate(
+        &mut self,
+        checkpoint: &Checkpoint,
+    ) -> Result<QmpCommandComplete, QemuNodeChannelError> {
+        let tag = QmpSnapshotTag::from_checkpoint(checkpoint);
+        self.client
+            .delete_snapshot(&tag)
             .map_err(QemuNodeChannelError::from)
     }
 

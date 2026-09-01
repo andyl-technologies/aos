@@ -95,8 +95,6 @@ pub(super) fn search_schedule_decision_event_time(
 ) -> VirtualTime {
     match decision {
         Decision::DeliveryOrder(order) => order.at,
-        Decision::FaultFires(fault) => fault.at,
-        Decision::ControlFault(control) => control.at,
         Decision::Preemption(preemption) => VirtualTime {
             ticks: preemption.at.retired,
         },
@@ -235,6 +233,10 @@ pub(super) fn scheduler_event_log_entry_material(
             lines.push(String::from("payload=trigger_action_applied"));
             lines.push(trigger_action_application_material(application));
         }
+        SchedulerEventLogPayload::FaultObservation(observation) => {
+            lines.push(String::from("payload=fault_observation"));
+            lines.push(fault_observation_material(observation));
+        }
         SchedulerEventLogPayload::Diagnostic(diagnostic) => {
             lines.push(String::from("payload=diagnostic"));
             lines.push(diagnostic_payload_material(diagnostic));
@@ -282,6 +284,9 @@ pub(super) fn event_payload_from_scheduler_payload(
         }
         SchedulerEventLogPayload::TriggerActionApplied(application) => {
             trigger_action_application_event_payload(application)
+        }
+        SchedulerEventLogPayload::FaultObservation(observation) => {
+            fault_observation_event_payload(observation)
         }
         SchedulerEventLogPayload::Diagnostic(diagnostic) => diagnostic.event_payload(),
     }
@@ -332,32 +337,6 @@ pub(super) fn resolved_happening_event_payload(event: &ScheduledEvent) -> EventP
             );
             EventPayload::new("io_completion", attributes)
         }
-        ScheduledEventPayload::FaultActivation(fault) => {
-            attributes.insert(
-                String::from("fault"),
-                EventAttributeValue::Fault(fault.clone()),
-            );
-            EventPayload::new("fault_activation", attributes)
-        }
-        ScheduledEventPayload::ProbabilisticFault(choice) => {
-            attributes.insert(
-                String::from("fault"),
-                EventAttributeValue::Fault(choice.fault.clone()),
-            );
-            attributes.insert(
-                String::from("stream_domain"),
-                EventAttributeValue::String(choice.stream.domain.clone()),
-            );
-            attributes.insert(
-                String::from("stream_name"),
-                EventAttributeValue::String(choice.stream.name.clone()),
-            );
-            attributes.insert(
-                String::from("rate_basis_points"),
-                EventAttributeValue::U64(u64::from(choice.rate.basis_points())),
-            );
-            EventPayload::new("probabilistic_fault", attributes)
-        }
         ScheduledEventPayload::Control(operation) => {
             attributes.insert(
                 String::from("command_id"),
@@ -387,21 +366,6 @@ pub(super) fn decision_event_payload(decision: &Decision) -> EventPayload {
                 EventAttributeValue::U64(order.order.len() as u64),
             );
             EventPayload::new("delivery_order", attributes)
-        }
-        Decision::FaultFires(fault) => {
-            attributes.insert(
-                String::from("at"),
-                EventAttributeValue::VirtualTime(fault.at),
-            );
-            attributes.insert(
-                String::from("fault"),
-                EventAttributeValue::Fault(fault.fault.clone()),
-            );
-            attributes.insert(
-                String::from("fired"),
-                EventAttributeValue::Bool(fault.fired),
-            );
-            EventPayload::new("fault_fires", attributes)
         }
         Decision::RngDraw(draw) => {
             attributes.insert(
@@ -467,21 +431,6 @@ pub(super) fn decision_event_payload(decision: &Decision) -> EventPayload {
                 EventAttributeValue::U64(random.value),
             );
             EventPayload::new("app_random", attributes)
-        }
-        Decision::ControlFault(control) => {
-            attributes.insert(
-                String::from("at"),
-                EventAttributeValue::VirtualTime(control.at),
-            );
-            attributes.insert(
-                String::from("command_id"),
-                EventAttributeValue::U64(control.sequence),
-            );
-            attributes.insert(
-                String::from("action"),
-                EventAttributeValue::String(control_fault_action_label(&control.action).to_owned()),
-            );
-            EventPayload::new("control_fault", attributes)
         }
     }
 }
@@ -840,6 +789,7 @@ pub(super) fn scheduler_event_log_payload_icount(
         SchedulerEventLogPayload::EvaluationBoundary(_)
         | SchedulerEventLogPayload::TriggerFired(_)
         | SchedulerEventLogPayload::TriggerActionApplied(_)
+        | SchedulerEventLogPayload::FaultObservation(_)
         | SchedulerEventLogPayload::Diagnostic(_) => boundary_icount(at),
     }
 }
@@ -854,9 +804,7 @@ pub(super) fn scheduled_event_payload_icount(
             node: Some(completion.target.clone()),
             icount: completion.delivery_icount,
         },
-        ScheduledEventPayload::FaultActivation(_)
-        | ScheduledEventPayload::ProbabilisticFault(_)
-        | ScheduledEventPayload::Control(_) => boundary_icount(at),
+        ScheduledEventPayload::Control(_) => boundary_icount(at),
     }
 }
 
@@ -867,11 +815,9 @@ pub(super) fn decision_icount(at: VirtualTime, decision: &Decision) -> EventLogI
             icount: preemption.at,
         },
         Decision::AppRandom(random) => node_boundary_icount(at, &random.node),
-        Decision::DeliveryOrder(_)
-        | Decision::FaultFires(_)
-        | Decision::RngDraw(_)
-        | Decision::Override(_)
-        | Decision::ControlFault(_) => boundary_icount(at),
+        Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Override(_) => {
+            boundary_icount(at)
+        }
     }
 }
 
@@ -952,6 +898,7 @@ pub(super) fn scheduler_event_log_payload_source(
         SchedulerEventLogPayload::TriggerActionApplied(application) => EventSource::Scenario {
             event: application.event.clone(),
         },
+        SchedulerEventLogPayload::FaultObservation(_) => EventSource::Engine,
         SchedulerEventLogPayload::Diagnostic(_) => EventSource::Engine,
     }
 }
@@ -973,12 +920,6 @@ pub(super) fn scheduled_event_payload_source(payload: &ScheduledEventPayload) ->
         ScheduledEventPayload::IoCompletion(completion) => EventSource::Node {
             node: completion.target.clone(),
         },
-        ScheduledEventPayload::FaultActivation(fault) => EventSource::Scenario {
-            event: EventId::from_name(fault.name.clone()),
-        },
-        ScheduledEventPayload::ProbabilisticFault(choice) => EventSource::Scenario {
-            event: EventId::from_name(choice.fault.name.clone()),
-        },
         ScheduledEventPayload::Control(operation) => EventSource::Command {
             command_id: operation.sequence,
         },
@@ -993,13 +934,9 @@ pub(super) fn decision_source(decision: &Decision) -> EventSource {
         Decision::AppRandom(random) => EventSource::Guest {
             node: random.node.clone(),
         },
-        Decision::ControlFault(control) => EventSource::Command {
-            command_id: control.sequence,
-        },
-        Decision::DeliveryOrder(_)
-        | Decision::FaultFires(_)
-        | Decision::RngDraw(_)
-        | Decision::Override(_) => EventSource::Engine,
+        Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Override(_) => {
+            EventSource::Engine
+        }
     }
 }
 
@@ -1035,6 +972,9 @@ pub(super) fn scheduler_event_log_payload_level(payload: &SchedulerEventLogPaylo
         SchedulerEventLogPayload::TriggerActionApplied(application) => {
             trigger_action_application_level(application)
         }
+        SchedulerEventLogPayload::FaultObservation(observation) => {
+            fault_observation_level(observation.kind)
+        }
         SchedulerEventLogPayload::Diagnostic(diagnostic) => diagnostic.level,
     }
 }
@@ -1062,9 +1002,7 @@ pub(super) fn trigger_action_application_level(
     match &application.action {
         Action::Log { level, .. } => event_level_from_trigger_log(*level),
         Action::Fail { .. } => EventLevel::Error,
-        Action::InjectFault { .. }
-        | Action::HealFault { .. }
-        | Action::ArmTimer { .. }
+        Action::ArmTimer { .. }
         | Action::CancelTimer { .. }
         | Action::StartNode { .. }
         | Action::StopNode { .. }
@@ -1182,11 +1120,6 @@ pub(super) fn event_attribute_value_material(prefix: &str, value: &EventAttribut
             value.name.len(),
             value.name
         ),
-        EventAttributeValue::Fault(value) => format!(
-            "{prefix}.type=fault\n{prefix}.name_len={}\n{prefix}.name={}",
-            value.name.len(),
-            value.name
-        ),
         EventAttributeValue::VirtualTime(value) => {
             format!("{prefix}.type=virtual-time\n{prefix}.ticks={}", value.ticks)
         }
@@ -1217,6 +1150,78 @@ pub(super) fn diagnostic_payload_material(diagnostic: &EventDiagnosticPayload) -
     lines.join("\n")
 }
 
+pub(super) fn fault_observation_material(observation: &FaultObservation) -> String {
+    observation.canonical_material()
+}
+
+pub(super) fn fault_observation_event_payload(observation: &FaultObservation) -> EventPayload {
+    let mut attributes = BTreeMap::new();
+    attributes.insert(
+        String::from("semantic_version"),
+        EventAttributeValue::U64(u64::from(observation.semantic_version)),
+    );
+    attributes.insert(
+        String::from("coordinate"),
+        EventAttributeValue::VirtualTime(VirtualTime {
+            ticks: observation.coordinate.virtual_nanos,
+        }),
+    );
+    if let Some(retired) = observation.coordinate.retired_instructions {
+        attributes.insert(
+            String::from("retired_instructions"),
+            EventAttributeValue::U64(retired),
+        );
+    }
+    if let Some(binding) = &observation.binding {
+        attributes.insert(
+            String::from("binding"),
+            EventAttributeValue::String(binding.as_str().to_owned()),
+        );
+    }
+    if let Some(target) = &observation.target {
+        attributes.insert(
+            String::from("target_kind"),
+            EventAttributeValue::String(target.kind().as_str().to_owned()),
+        );
+        attributes.insert(
+            String::from("target"),
+            EventAttributeValue::String(target.canonical_material()),
+        );
+    }
+    if let Some(opportunity) = observation.opportunity {
+        attributes.insert(
+            String::from("opportunity"),
+            EventAttributeValue::String(opportunity.to_hex()),
+        );
+    }
+    attributes.insert(
+        String::from("evidence"),
+        EventAttributeValue::String(observation.evidence.to_hex()),
+    );
+    EventPayload::new(observation.kind.as_str(), attributes)
+}
+
+pub(super) const fn fault_observation_level(kind: FaultObservationKind) -> EventLevel {
+    match kind {
+        FaultObservationKind::SignalSample | FaultObservationKind::FaultOpportunity => {
+            EventLevel::Trace
+        }
+        FaultObservationKind::EffectChoice | FaultObservationKind::EffectCombined => {
+            EventLevel::Debug
+        }
+        FaultObservationKind::EffectRejected => EventLevel::Error,
+        FaultObservationKind::SignalTransition
+        | FaultObservationKind::SignalStateTransition
+        | FaultObservationKind::BindingActivation
+        | FaultObservationKind::BindingDeactivation
+        | FaultObservationKind::EffectCommitted
+        | FaultObservationKind::EffectApplied
+        | FaultObservationKind::NetworkProfile
+        | FaultObservationKind::AssociationTransition
+        | FaultObservationKind::TraceAlignment => EventLevel::Info,
+    }
+}
+
 pub(super) fn evaluation_boundary_kind_label(
     kind: SchedulerEvaluationBoundaryKind,
 ) -> &'static str {
@@ -1233,17 +1238,8 @@ pub(super) fn preemption_kind_label(kind: &PreemptionKind) -> &'static str {
     }
 }
 
-pub(super) fn control_fault_action_label(action: &ControlFaultAction) -> &'static str {
-    match action {
-        ControlFaultAction::Inject { .. } => "inject",
-        ControlFaultAction::Heal { .. } => "heal",
-    }
-}
-
 pub(super) fn trigger_action_kind_label(action: &Action) -> &'static str {
     match action {
-        Action::InjectFault { .. } => "inject-fault",
-        Action::HealFault { .. } => "heal-fault",
         Action::ArmTimer { .. } => "arm-timer",
         Action::CancelTimer { .. } => "cancel-timer",
         Action::StartNode { .. } => "start-node",
@@ -1303,18 +1299,6 @@ pub(super) fn trigger_firing_material(firing: &EventFiring) -> String {
 pub(super) fn trigger_action_material(prefix: &str, action: &Action) -> String {
     let mut lines = Vec::new();
     match action {
-        Action::InjectFault { tag, fault } => {
-            lines.push(format!("{prefix}.kind=inject-fault"));
-            lines.push(trigger_fault_tag_material(&format!("{prefix}.tag"), tag));
-            lines.push(trigger_membership_fault_material(
-                &format!("{prefix}.fault"),
-                fault,
-            ));
-        }
-        Action::HealFault { tag } => {
-            lines.push(format!("{prefix}.kind=heal-fault"));
-            lines.push(trigger_fault_tag_material(&format!("{prefix}.tag"), tag));
-        }
         Action::ArmTimer { name, after } => {
             lines.push(format!("{prefix}.kind=arm-timer"));
             lines.push(trigger_timer_material(&format!("{prefix}.timer"), name));
@@ -1377,56 +1361,6 @@ pub(super) fn trigger_action_material(prefix: &str, action: &Action) -> String {
     lines.join("\n")
 }
 
-pub(super) fn trigger_membership_fault_material(prefix: &str, fault: &MembershipFault) -> String {
-    let mut lines = Vec::new();
-    match fault {
-        MembershipFault::Crash { node, restart } => {
-            lines.push(format!("{prefix}.kind=crash"));
-            lines.push(trigger_node_material(&format!("{prefix}.node"), node));
-            lines.push(format!(
-                "{prefix}.restart={}",
-                trigger_restart_policy_label(*restart)
-            ));
-        }
-        MembershipFault::Partition {
-            endpoint_a,
-            endpoint_b,
-            direction,
-        } => {
-            lines.push(format!("{prefix}.kind=partition"));
-            lines.push(trigger_node_material(
-                &format!("{prefix}.endpoint_a"),
-                endpoint_a,
-            ));
-            lines.push(trigger_node_material(
-                &format!("{prefix}.endpoint_b"),
-                endpoint_b,
-            ));
-            lines.push(format!(
-                "{prefix}.direction={}",
-                trigger_partition_direction_label(*direction)
-            ));
-        }
-        MembershipFault::Isolate { node } => {
-            lines.push(format!("{prefix}.kind=isolate"));
-            lines.push(trigger_node_material(&format!("{prefix}.node"), node));
-        }
-        MembershipFault::NotYetJoined { node } => {
-            lines.push(format!("{prefix}.kind=not-yet-joined"));
-            lines.push(trigger_node_material(&format!("{prefix}.node"), node));
-        }
-        MembershipFault::Taxonomy { fault } => {
-            lines.push(format!("{prefix}.kind=taxonomy"));
-            lines.push(fault.canonical_material());
-        }
-    }
-    lines.join("\n")
-}
-
-pub(super) fn trigger_fault_tag_material(prefix: &str, tag: &crate::FaultTag) -> String {
-    format!("{prefix}.len={}\n{prefix}={}", tag.name.len(), tag.name)
-}
-
 pub(super) fn trigger_node_material(prefix: &str, node: &NodeId) -> String {
     format!("{prefix}.len={}\n{prefix}={}", node.name.len(), node.name)
 }
@@ -1445,22 +1379,6 @@ pub(super) fn trigger_optional_label_material(prefix: &str, label: &Option<Strin
     }
 }
 
-pub(super) fn trigger_restart_policy_label(policy: RestartPolicy) -> &'static str {
-    match policy {
-        RestartPolicy::FromReadyPoint => "from-ready-point",
-        RestartPolicy::FromLastCheckpoint => "from-last-checkpoint",
-        RestartPolicy::StayDown => "stay-down",
-    }
-}
-
-pub(super) fn trigger_partition_direction_label(direction: PartitionDirection) -> &'static str {
-    match direction {
-        PartitionDirection::Bidirectional => "bidirectional",
-        PartitionDirection::EndpointAToEndpointB => "endpoint-a-to-endpoint-b",
-        PartitionDirection::EndpointBToEndpointA => "endpoint-b-to-endpoint-a",
-    }
-}
-
 pub(super) fn trigger_log_level_label(level: LogLevel) -> &'static str {
     match level {
         LogLevel::Debug => "debug",
@@ -1470,56 +1388,8 @@ pub(super) fn trigger_log_level_label(level: LogLevel) -> &'static str {
     }
 }
 
-pub(super) fn network_direction_is_partitioned(
-    direction: NetworkLinkDirection,
-    partition: &CombinedPartitionFault,
-) -> bool {
-    match direction {
-        NetworkLinkDirection::EndpointAToEndpointB => partition.endpoint_a_to_endpoint_b,
-        NetworkLinkDirection::EndpointBToEndpointA => partition.endpoint_b_to_endpoint_a,
-    }
-}
-
-pub(super) fn scheduler_link_ids_for_nodes(left: &NodeId, right: &NodeId) -> [LinkId; 2] {
-    let (endpoint_a, endpoint_b) = if left <= right {
-        (left, right)
-    } else {
-        (right, left)
-    };
-    [
-        LinkId::from_name(format!(
-            "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
-            endpoint_a.name.len(),
-            endpoint_a.name,
-            endpoint_b.name.len(),
-            endpoint_b.name
-        )),
-        LinkId::from_name(format!("{}--{}", endpoint_a.name, endpoint_b.name)),
-    ]
-}
-
-pub(super) fn combined_network_faults_for_link(
-    network: &BTreeMap<LinkId, CombinedNetworkFaults>,
-    link_id: &LinkId,
-    endpoint_a: &NodeId,
-    endpoint_b: &NodeId,
-) -> CombinedNetworkFaults {
-    std::iter::once(link_id.clone())
-        .chain(scheduler_link_ids_for_nodes(endpoint_a, endpoint_b))
-        .find_map(|candidate| network.get(&candidate).cloned())
-        .unwrap_or_default()
-}
-
-pub(super) fn combined_network_faults_for_world_link(
-    network: &BTreeMap<LinkId, CombinedNetworkFaults>,
-    canonical_id: &LinkId,
-    legacy_id: Option<&LinkId>,
-) -> CombinedNetworkFaults {
-    network
-        .get(canonical_id)
-        .or_else(|| legacy_id.and_then(|legacy| network.get(legacy)))
-        .cloned()
-        .unwrap_or_default()
+pub(super) fn scheduler_link_id_for_nodes(left: &NodeId, right: &NodeId) -> LinkId {
+    LinkId::for_endpoints(left, right)
 }
 
 pub(super) fn instantiate_world_network_links(
@@ -1530,18 +1400,9 @@ pub(super) fn instantiate_world_network_links(
     SchedulerWorldInstantiationError,
 > {
     let mut links = BTreeMap::new();
-    let mut legacy_counts = BTreeMap::new();
-    for definition in world.links() {
-        let legacy =
-            scheduler_link_ids_for_nodes(definition.endpoints().0, definition.endpoints().1)[1]
-                .clone();
-        let count = legacy_counts.entry(legacy).or_insert(0_usize);
-        *count = count.saturating_add(1);
-    }
     for (index, definition) in world.links().iter().enumerate() {
-        let [canonical_id, legacy_id] =
-            scheduler_link_ids_for_nodes(definition.endpoints().0, definition.endpoints().1);
-        let legacy_id = (legacy_counts.get(&legacy_id) == Some(&1)).then_some(legacy_id);
+        let canonical_id =
+            scheduler_link_id_for_nodes(definition.endpoints().0, definition.endpoints().1);
         for (direction_index, direction) in [
             NetworkLinkDirection::EndpointAToEndpointB,
             NetworkLinkDirection::EndpointBToEndpointA,
@@ -1579,12 +1440,10 @@ pub(super) fn instantiate_world_network_links(
                 (canonical_id.clone(), direction),
                 WorldNetworkLinkRuntime {
                     canonical_id: canonical_id.clone(),
-                    legacy_id: legacy_id.clone(),
                     endpoint_a: definition.endpoints().0.clone(),
                     endpoint_b: definition.endpoints().1.clone(),
                     direction,
                     scheduler_node: definition.scheduler_node_id(),
-                    base_faults,
                     rng_stream: RngStreamId::for_link(canonical_id.name.clone()),
                     fault_id: crate::DeviceId::from_name(format!(
                         "{}\nnetwork_direction={direction:?}",
@@ -1611,108 +1470,6 @@ pub(super) fn world_link_base_faults(link: &LinkDef) -> crucible_device::LinkFau
     faults
 }
 
-pub(super) fn merge_world_network_faults(
-    base: &crucible_device::LinkFaults,
-    active: &CombinedNetworkFaults,
-    direction: NetworkLinkDirection,
-) -> crucible_device::LinkFaults {
-    let mut faults = link_faults_from_combined_network(active, direction);
-    faults.jitter_window_ns = faults
-        .jitter_window_ns
-        .saturating_add(base.jitter_window_ns);
-    if base.loss != crucible_device::Probability::NEVER {
-        if faults.loss == crucible_device::Probability::NEVER {
-            faults.loss = base.loss;
-        } else {
-            faults.additional_loss.push(base.loss);
-        }
-    }
-    faults
-        .bandwidth_bits_per_sec
-        .extend(base.bandwidth_bits_per_sec.iter().copied());
-    faults
-}
-
-pub(super) fn network_topology_faults(
-    network: &BTreeMap<LinkId, CombinedNetworkFaults>,
-) -> BTreeMap<LinkId, (Option<CombinedPartitionFault>, u64)> {
-    network
-        .iter()
-        .filter_map(|(link, faults)| {
-            let latency = faults.latency.nanos();
-            (faults.partition.is_some() || latency != 0)
-                .then(|| (link.clone(), (faults.partition, latency)))
-        })
-        .collect()
-}
-
-pub(super) fn network_topology_faults_were_relaxed(
-    previous: &BTreeMap<LinkId, (Option<CombinedPartitionFault>, u64)>,
-    next: &BTreeMap<LinkId, (Option<CombinedPartitionFault>, u64)>,
-) -> bool {
-    previous.iter().any(|(link, (partition, latency))| {
-        let (next_partition, next_latency) = next.get(link).copied().unwrap_or((None, 0));
-        let partition_relaxed = partition.is_some_and(|partition| {
-            partition.endpoint_a_to_endpoint_b
-                && !next_partition.is_some_and(|next| next.endpoint_a_to_endpoint_b)
-                || partition.endpoint_b_to_endpoint_a
-                    && !next_partition.is_some_and(|next| next.endpoint_b_to_endpoint_a)
-        });
-        partition_relaxed || *latency > next_latency
-    })
-}
-
-pub(super) fn world_edge_with_network_faults(
-    edge: &WorldLookaheadEdge,
-    network: &BTreeMap<LinkId, CombinedNetworkFaults>,
-    legacy_counts: &BTreeMap<LinkId, usize>,
-) -> Option<SchedulerLookaheadEdge> {
-    let [canonical, legacy] = scheduler_link_ids_for_nodes(&edge.from, &edge.to);
-    let faults = network.get(&canonical).or_else(|| {
-        (legacy_counts.get(&legacy) == Some(&1))
-            .then(|| network.get(&legacy))
-            .flatten()
-    });
-    if faults
-        .and_then(|faults| faults.partition.as_ref())
-        .is_some_and(|partition| {
-            if edge.from <= edge.to {
-                partition.endpoint_a_to_endpoint_b
-            } else {
-                partition.endpoint_b_to_endpoint_a
-            }
-        })
-    {
-        return None;
-    }
-    let added_latency = faults.map_or(0, |faults| faults.latency.nanos());
-    Some(SchedulerLookaheadEdge::new(
-        SchedulerNodeId {
-            node: edge.from.clone(),
-            kind: SchedulingNodeKind::Vm,
-        },
-        SchedulerNodeId {
-            node: edge.to.clone(),
-            kind: SchedulingNodeKind::Vm,
-        },
-        SimDuration {
-            nanos: edge.minimum_latency.nanos.saturating_add(added_latency),
-        },
-    ))
-}
-
-pub(super) fn legacy_link_id_counts_from_world_edges(
-    edges: &[WorldLookaheadEdge],
-) -> BTreeMap<LinkId, usize> {
-    let mut counts = BTreeMap::new();
-    for edge in edges.iter().filter(|edge| edge.from < edge.to) {
-        let legacy = scheduler_link_ids_for_nodes(&edge.from, &edge.to)[1].clone();
-        let count = counts.entry(legacy).or_insert(0_usize);
-        *count = count.saturating_add(1);
-    }
-    counts
-}
-
 pub(super) fn apply_trigger_action(
     state: &mut TriggerActionState,
     static_topology: Option<&WorldStaticTopology>,
@@ -1734,9 +1491,7 @@ pub(super) fn apply_trigger_action(
             }
             Ok(())
         }
-        Action::InjectFault { .. }
-        | Action::HealFault { .. }
-        | Action::ArmTimer { .. }
+        Action::ArmTimer { .. }
         | Action::CancelTimer { .. }
         | Action::StartNode { .. }
         | Action::StopNode { .. }
@@ -1771,12 +1526,6 @@ pub(super) fn apply_trigger_effect(
     application: &TriggerActionApplication,
 ) -> Result<(), SchedulerError> {
     match &application.action {
-        Action::InjectFault { tag, fault } => {
-            activate_fault_tag(state, tag, fault);
-        }
-        Action::HealFault { tag } => {
-            heal_fault_tag(state, tag);
-        }
         Action::ArmTimer { name, after } => {
             let ticks = application
                 .at
@@ -1882,73 +1631,6 @@ pub(super) fn apply_trigger_verdict_effect(
         }
         _ => {}
     }
-}
-
-pub(super) fn activate_fault_tag(
-    state: &mut TriggerActionState,
-    tag: &FaultTag,
-    fault: &MembershipFault,
-) {
-    state.active_taxonomy_faults.remove(tag);
-    if let Some(fault) = fault.as_taxonomy_fault() {
-        state
-            .active_taxonomy_faults
-            .insert(tag.clone(), fault.clone());
-    }
-    state.active_faults.insert(tag.clone(), fault.clone());
-}
-
-pub(super) fn heal_fault_tag(state: &mut TriggerActionState, tag: &FaultTag) {
-    state.active_taxonomy_faults.remove(tag);
-    state.active_faults.remove(tag);
-}
-
-pub(super) fn control_fault_action_for_operation(
-    operation: &ControlOperation,
-) -> Option<ControlFaultAction> {
-    match &operation.kind {
-        ControlOperationKind::InjectFault { tag, fault } => Some(ControlFaultAction::Inject {
-            tag: tag.clone(),
-            fault: fault.clone(),
-        }),
-        ControlOperationKind::HealFault { tag } => {
-            Some(ControlFaultAction::Heal { tag: tag.clone() })
-        }
-        ControlOperationKind::Pause
-        | ControlOperationKind::Resume
-        | ControlOperationKind::Step
-        | ControlOperationKind::Snapshot
-        | ControlOperationKind::Fork
-        | ControlOperationKind::Inject
-        | ControlOperationKind::Query => None,
-    }
-}
-
-pub(super) fn apply_control_fault_action(
-    state: &mut TriggerActionState,
-    action: &ControlFaultAction,
-) {
-    match action {
-        ControlFaultAction::Inject { tag, fault } => {
-            activate_fault_tag(state, tag, &MembershipFault::taxonomy(fault.clone()));
-        }
-        ControlFaultAction::Heal { tag } => heal_fault_tag(state, tag),
-    }
-}
-
-pub(super) fn trigger_action_state_from_control_fault_decisions(
-    decisions: &[Decision],
-) -> (TriggerActionState, Option<u64>) {
-    let mut state = TriggerActionState::default();
-    let mut sequence = None;
-    for decision in decisions {
-        let Decision::ControlFault(control) = decision else {
-            continue;
-        };
-        apply_control_fault_action(&mut state, &control.action);
-        sequence = Some(control.sequence);
-    }
-    (state, sequence)
 }
 
 pub(super) fn validate_trigger_node_schedule_target(
@@ -2364,8 +2046,6 @@ pub(super) fn scheduler_decision_event_log_time(
 ) -> Result<VirtualTime, SchedulerError> {
     match decision {
         Decision::DeliveryOrder(order) => Ok(order.at),
-        Decision::FaultFires(fault) => Ok(fault.at),
-        Decision::ControlFault(control) => Ok(control.at),
         Decision::Preemption(preemption) => {
             if let Some((_, virtual_time)) = preemption_times
                 .iter()
@@ -2405,13 +2085,6 @@ pub(super) fn scheduler_decision_material(decision: &Decision) -> String {
                 ));
                 lines.push(format!("event_sequence={}", event.sequence));
             }
-        }
-        Decision::FaultFires(fault) => {
-            lines.push(String::from("decision=fault-fires"));
-            lines.push(format!("decision_at={}", fault.at.ticks));
-            lines.push(format!("fault_name_len={}", fault.fault.name.len()));
-            lines.push(format!("fault_name={}", fault.fault.name));
-            lines.push(format!("fired={}", fault.fired));
         }
         Decision::RngDraw(draw) => {
             lines.push(String::from("decision=rng-draw"));
@@ -2460,28 +2133,6 @@ pub(super) fn scheduler_decision_material(decision: &Decision) -> String {
             lines.push(format!("request_id={}", random.request_id));
             lines.push(format!("width={}", random.width));
             lines.push(format!("value={}", random.value));
-        }
-        Decision::ControlFault(control) => {
-            lines.push(String::from("decision=control-fault"));
-            lines.push(format!("decision_at={}", control.at.ticks));
-            lines.push(format!("control_sequence={}", control.sequence));
-            lines.push(control_fault_action_material("control", &control.action));
-        }
-    }
-    lines.join("\n")
-}
-
-pub(super) fn control_fault_action_material(prefix: &str, action: &ControlFaultAction) -> String {
-    let mut lines = Vec::new();
-    match action {
-        ControlFaultAction::Inject { tag, fault } => {
-            lines.push(format!("{prefix}.kind=inject-fault"));
-            lines.push(trigger_fault_tag_material(&format!("{prefix}.tag"), tag));
-            lines.push(fault.canonical_material());
-        }
-        ControlFaultAction::Heal { tag } => {
-            lines.push(format!("{prefix}.kind=heal-fault"));
-            lines.push(trigger_fault_tag_material(&format!("{prefix}.tag"), tag));
         }
     }
     lines.join("\n")

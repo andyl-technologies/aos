@@ -6,8 +6,8 @@
 //! callbacks (`crucible_9p_callbacks_ready()`), every 9p PDU the guest submits is
 //! forwarded over the `SLOT_9P_IO` shared-memory rings to the host servicer
 //! instead of being handled by QEMU's fsdev backend. There is therefore no
-//! bespoke crucible fsdev driver (unlike the block device's
-//! `-drive driver=crucible-shmem`); the `-fsdev` backend is a launch formality
+//! bespoke crucible fsdev driver (unlike the block device's typed
+//! `-blockdev driver=crucible-shmem` backend); the `-fsdev` backend is a launch formality
 //! the plugin bypasses.
 //!
 //! The default backend is [`synth`](CrucibleShmem9pFsdevBackend::Synth), a

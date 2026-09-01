@@ -1,0 +1,250 @@
+//! Aggregate resource admission for the production network fault runtime.
+//!
+//! Queue ownership spans ordinary interface queues, shared media, and custody
+//! storage. These helpers measure that single aggregate before mutation and
+//! preserve authored LIMIT-2 coordinates through the scheduler boundary.
+
+use super::*;
+
+pub(super) fn stage_pending_network_output(
+    pending: &mut Vec<crucible::BackendNetworkOutput>,
+    output: crucible::BackendNetworkOutput,
+    limits: FaultResourceLimits,
+) -> Result<(), SchedulerError> {
+    if output.fault_continuation.protocol_expansion_path().len()
+        > crucible::model::HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "network protocol-expansion depth exceeds hard bound {}",
+                crucible::model::HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH
+            ),
+        });
+    }
+    reserve_network_resource("network_frame_bytes", 0, output.payload.len(), limits)?;
+    reserve_network_resource("network_pending_frames", pending.len(), 1, limits)?;
+    pending.push(output);
+    Ok(())
+}
+
+pub(super) fn validate_pending_network_outputs(
+    pending: &[crucible::BackendNetworkOutput],
+    limits: FaultResourceLimits,
+) -> Result<(), SchedulerError> {
+    reserve_network_resource("network_pending_frames", 0, pending.len(), limits)?;
+    if pending.iter().any(|output| {
+        output.fault_continuation.protocol_expansion_path().len()
+            > crucible::model::HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH
+    }) {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "restored network protocol-expansion depth exceeds hard bound {}",
+                crucible::model::HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH
+            ),
+        });
+    }
+    if pending.iter().any(|output| {
+        let cursor = output.fault_continuation.cursor();
+        cursor.queue_priority().is_some_and(|priority| priority > 3)
+            || cursor.queue_priority().is_some()
+                && cursor.repeated_phase_effect()
+                    != Some(crucible::model::EffectKind::NetworkCustodyQueue)
+    }) {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from(
+                "restored network queue priority is invalid or has no custody owner",
+            ),
+        });
+    }
+    for output in pending {
+        reserve_network_resource("network_frame_bytes", 0, output.payload.len(), limits)?;
+        reserve_network_resource(
+            "network_loop_hops",
+            0,
+            output.fault_continuation.forwarding_mutation_path().len(),
+            limits,
+        )?;
+    }
+    Ok(())
+}
+
+pub(super) fn reserve_network_resource(
+    field: &'static str,
+    current: usize,
+    requested: usize,
+    limits: FaultResourceLimits,
+) -> Result<(), SchedulerError> {
+    let current = u64::try_from(current).map_err(|_| {
+        map_network_resource_limit(
+            FaultResourceLimitError::Representation {
+                field,
+                value: u64::MAX,
+            },
+            limits,
+        )
+    })?;
+    let requested = u64::try_from(requested).map_err(|_| {
+        map_network_resource_limit(
+            FaultResourceLimitError::Representation {
+                field,
+                value: u64::MAX,
+            },
+            limits,
+        )
+    })?;
+    limits
+        .reserve(field, current, requested)
+        .map_err(|error| map_network_resource_limit(error, limits))
+}
+
+pub(super) fn reserve_network_resource_u64(
+    field: &'static str,
+    current: u64,
+    requested: u64,
+    limits: FaultResourceLimits,
+) -> Result<(), SchedulerError> {
+    limits
+        .reserve(field, current, requested)
+        .map_err(|error| map_network_resource_limit(error, limits))
+}
+
+pub(super) fn map_network_resource_limit(
+    error: FaultResourceLimitError,
+    limits: FaultResourceLimits,
+) -> SchedulerError {
+    super::super::quantum_loop::map_journal_limit(error, limits)
+}
+
+pub(super) fn network_queue_resource_usage(
+    state: &NetworkEffectRuntimeState,
+    limits: FaultResourceLimits,
+) -> Result<(u64, u64), SchedulerError> {
+    let mut frames = 0_u64;
+    let mut bytes = 0_u64;
+    let mut add = |count: usize, payload_bytes: u64| -> Result<(), SchedulerError> {
+        frames = frames
+            .checked_add(u64::try_from(count).map_err(|_| {
+                map_network_resource_limit(
+                    FaultResourceLimitError::Representation {
+                        field: "network_queue_frames",
+                        value: u64::MAX,
+                    },
+                    limits,
+                )
+            })?)
+            .ok_or_else(|| {
+                map_network_resource_limit(
+                    FaultResourceLimitError::Representation {
+                        field: "network_queue_frames",
+                        value: u64::MAX,
+                    },
+                    limits,
+                )
+            })?;
+        bytes = bytes.checked_add(payload_bytes).ok_or_else(|| {
+            map_network_resource_limit(
+                FaultResourceLimitError::Representation {
+                    field: "network_queue_bytes",
+                    value: u64::MAX,
+                },
+                limits,
+            )
+        })?;
+        Ok(())
+    };
+
+    for queue in state.queues.values() {
+        let queue_bytes = queue
+            .reservations
+            .iter()
+            .try_fold(0_u64, |total, reservation| {
+                total.checked_add(reservation.bytes)
+            })
+            .ok_or_else(|| queue_byte_representation_error(limits))?;
+        add(queue.reservations.len(), queue_bytes)?;
+    }
+    for medium in state.shared_media.values() {
+        let medium_bytes = medium
+            .reservations
+            .iter()
+            .try_fold(0_u64, |total, reservation| {
+                total.checked_add(reservation.bytes)
+            })
+            .ok_or_else(|| queue_byte_representation_error(limits))?;
+        add(medium.reservations.len(), medium_bytes)?;
+    }
+    for queue in state.custody_queues.values() {
+        let custody_bytes = queue
+            .reservations
+            .iter()
+            .map(|reservation| reservation.bytes)
+            .chain(
+                queue
+                    .overflow_timeouts
+                    .iter()
+                    .map(|timeout| timeout.bundle.length_bytes),
+            )
+            .try_fold(0_u64, |total, payload| total.checked_add(payload))
+            .ok_or_else(|| queue_byte_representation_error(limits))?;
+        add(
+            queue
+                .reservations
+                .len()
+                .checked_add(queue.overflow_timeouts.len())
+                .ok_or_else(|| {
+                    map_network_resource_limit(
+                        FaultResourceLimitError::Representation {
+                            field: "network_queue_frames",
+                            value: u64::MAX,
+                        },
+                        limits,
+                    )
+                })?,
+            custody_bytes,
+        )?;
+    }
+    Ok((frames, bytes))
+}
+
+pub(super) fn admit_network_connection_entry(
+    state: &NetworkEffectRuntimeState,
+    owner: &NetworkEffectStateKey,
+    flow: &ContentHash,
+    table_bound: u32,
+    limits: FaultResourceLimits,
+) -> Result<(), SchedulerError> {
+    let current = state
+        .connection_tables
+        .values()
+        .try_fold(0_usize, |total, table| total.checked_add(table.len()))
+        .ok_or_else(|| {
+            map_network_resource_limit(
+                FaultResourceLimitError::Representation {
+                    field: "network_connection_entries",
+                    value: u64::MAX,
+                },
+                limits,
+            )
+        })?;
+    reserve_network_resource("network_connection_entries", current, 0, limits)?;
+
+    let table = state.connection_tables.get(owner);
+    let is_new = table.is_none_or(|entries| !entries.contains_key(flow));
+    let below_table_bound = table.is_none_or(|entries| {
+        u32::try_from(entries.len()).is_ok_and(|length| length < table_bound)
+    });
+    if is_new && below_table_bound {
+        reserve_network_resource("network_connection_entries", current, 1, limits)?;
+    }
+    Ok(())
+}
+
+fn queue_byte_representation_error(limits: FaultResourceLimits) -> SchedulerError {
+    map_network_resource_limit(
+        FaultResourceLimitError::Representation {
+            field: "network_queue_bytes",
+            value: u64::MAX,
+        },
+        limits,
+    )
+}

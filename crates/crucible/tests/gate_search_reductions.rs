@@ -9,10 +9,10 @@ use std::error::Error;
 
 use crucible::{
     Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, DecisionRngState,
-    EngineError, EventLogOffset, FaultDecision, FaultId, FrontierReductionPolicy,
-    FrontierReductionReason, GenesisCheckpoint, Icount, IrqVector, MaterializationPolicy,
-    MaterializationTrigger, MaterializedState, NodeBlobRef, NodeId, PartialOrderReductionPolicy,
-    PreemptionDecision, PreemptionKind, Schedule, SchedulerState, SearchBudget,
+    EngineError, EventLogOffset, FrontierReductionPolicy, FrontierReductionReason,
+    GenesisCheckpoint, Icount, IrqVector, MaterializationPolicy, MaterializationTrigger,
+    MaterializedState, NodeBlobRef, NodeId, PartialOrderReductionPolicy, PreemptionDecision,
+    PreemptionKind, RngDecision, RngStreamId, Schedule, SchedulerState, SearchBudget,
     SearchFrontierChoices, SearchStrategy, SymmetryClassId, SymmetryReductionClasses,
     TemporalGraph, VcpuId, VirtualTime, VmSnapshotRef, World, bake, step,
 };
@@ -139,8 +139,8 @@ fn gate_search_reductions_symmetry_uses_graph_level_representative() -> Result<(
 #[test]
 fn gate_search_reductions_reduced_strategy_schedules_covered_representative()
 -> Result<(), Box<dyn Error>> {
-    let covered_decision = fault_decision("symmetry-covered", true);
-    let representative_decision = fault_decision("symmetry-representative", false);
+    let covered_decision = rng_decision("symmetry-covered", 1);
+    let representative_decision = rng_decision("symmetry-representative", 0);
     let world = World::from_content_hash(ContentHash::from_canonical_material(
         "crucible.test.search-reductions.world",
         "strategy-schedules-covered-representative",
@@ -241,13 +241,10 @@ fn preemption_decision(node: &str, retired: u64) -> Decision {
     })
 }
 
-fn fault_decision(name: &str, fired: bool) -> Decision {
-    Decision::FaultFires(FaultDecision {
-        at: VirtualTime { ticks: 17 },
-        fault: FaultId {
-            name: String::from(name),
-        },
-        fired,
+fn rng_decision(name: &str, value: u64) -> Decision {
+    Decision::RngDraw(RngDecision {
+        stream: RngStreamId::from_name(name),
+        value,
     })
 }
 

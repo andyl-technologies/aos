@@ -13,6 +13,8 @@
   fixturesNix = builtins.readFile ../../pkgs/tools/crucible-fixtures.nix;
   guestNix = builtins.readFile ../../pkgs/tools/crucible-guest.nix;
   fleetStoreNix = builtins.readFile ../../pkgs/tools/crucible-fleet-store.nix;
+  cargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
+  expectedCargoDepsHash = "sha256-RvgGglI1TqzOmlqgt3qG+GBHEGd3ZHT9M4CueO0Q/W4=";
   patchSeries = import ../../pkgs/emulation/qemu-patches/_series.nix;
   packageFiles = [
     {
@@ -196,43 +198,44 @@
     failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginNix [
       {
         label = "vendored cargo dependencies";
-        needle = "cargoDeps = fetchCargoDeps";
+        needle = "cargoDeps = fetchCargoVendor";
       }
       {
-        label = "central cargo dependency hash";
+        label = "shared cargo dependency hash";
         needle = "hash = import ../tools/crucible/_cargo-deps-hash.nix;";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible/crucible.nix" crucibleNix [
       {
         label = "vendored cargo dependencies";
-        needle = "cargoDeps = fetchCargoDeps";
+        needle = "cargoDeps = fetchCargoVendor";
       }
       {
-        label = "central cargo dependency hash";
+        label = "shared cargo dependency hash";
         needle = "cargoDepsHash = import ./_cargo-deps-hash.nix;";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible-guest.nix" guestNix [
       {
         label = "vendored cargo dependencies";
-        needle = "cargoDeps = fetchCargoDeps";
+        needle = "cargoDeps = fetchCargoVendor";
       }
       {
-        label = "central cargo dependency hash";
+        label = "shared cargo dependency hash";
         needle = "hash = import ./crucible/_cargo-deps-hash.nix;";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible-fleet-store.nix" fleetStoreNix [
       {
-        label = "vendored cargo dependencies";
-        needle = "cargoDeps = fetchCargoDeps";
+        label = "shared vendored cargo dependencies";
+        needle = "cargoDeps = crucible-controller.passthru.cargoDeps;";
       }
       {
-        label = "central cargo dependency hash";
+        label = "shared cargo dependency hash";
         needle = "cargoDepsHash = import ./crucible/_cargo-deps-hash.nix;";
       }
-    ];
+    ]
+    ++ lib.optional (cargoDepsHash != expectedCargoDepsHash) "pkgs/tools/crucible/_cargo-deps-hash.nix: expected `${expectedCargoDepsHash}`, got `${cargoDepsHash}`";
 
   inventoryDocFailures = failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
     {
@@ -326,7 +329,7 @@ in
             patched_qemu_sim_capability=qemu-crucible
             reference_qemu_patches_applied=false
             reference_qemu_sim_capability=none
-            cargo_deps=fetchCargoDeps
+            cargo_deps=fetchCargoVendor
             package_structure_checked=true
             dependency_classification_checked=true
             nixpkgs_dependency=false

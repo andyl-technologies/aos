@@ -143,6 +143,26 @@ pub enum LivePluginInstallGateError {
         /// Exact platform exit-status diagnostic.
         status: String,
     },
+    /// The digest worker did not publish the exact-boundary fingerprint in time.
+    #[error(
+        "install plugin did not publish the icount {icount} execution fingerprint within {timeout:?}: {last_error}"
+    )]
+    FingerprintTimeout {
+        /// Exact boundary whose fingerprint was requested.
+        icount: u64,
+        /// Host-side diagnostic timeout.
+        timeout: Duration,
+        /// Last retryable shared-memory diagnostic.
+        last_error: String,
+    },
+    /// QEMU exited before the digest worker published the boundary fingerprint.
+    #[error("install QEMU exited before publishing the icount {icount} fingerprint: {status}")]
+    ChildExitBeforeFingerprint {
+        /// Exact boundary whose fingerprint was requested.
+        icount: u64,
+        /// Exact platform exit-status diagnostic.
+        status: String,
+    },
     /// A run crossed rather than stopped at the requested exact boundary.
     #[error("install loaded QEMU completed at icount {actual}, expected {expected}")]
     InexactBoundary {

@@ -1,0 +1,131 @@
+diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
+index d2c7d9d04..8cd248a98 100644
+--- a/plugins/crucible-fault-node.c
++++ b/plugins/crucible-fault-node.c
+@@ -3483,6 +3483,10 @@ static int node_prepare(
+             return -ENOSPC;
+         }
+     }
++    if (command->command_flags & CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY) {
++        /* Preparation authenticates frozen current state without mutation. */
++        memcpy(staging->after_hash, staging->before_hash, 32);
++    }
+     memcpy(result->before_hash, staging->before_hash, 32);
+     memcpy(result->after_hash, staging->after_hash, 32);
+     node_encode_evidence(staging, result_payload);
+@@ -3737,8 +3741,7 @@ static void node_commit(
+             staging->event_reservation);
+         staging->event_reservation = NULL;
+         g_byte_array_set_size(result_payload, 0);
+-        g_byte_array_append(result_payload, staging->impulse_evidence->data,
+-                            staging->impulse_evidence->len);
++        node_encode_evidence(staging, result_payload);
+         node_sha256(result_payload->data, result_payload->len,
+                     result->evidence_hash);
+         memcpy(result->before_hash, staging->before_hash, 32);
+diff --git a/tests/tcg/plugins/crucible-register.c b/tests/tcg/plugins/crucible-register.c
+index ba75ccccb..a50423054 100644
+--- a/tests/tcg/plugins/crucible-register.c
++++ b/tests/tcg/plugins/crucible-register.c
+@@ -55,6 +55,7 @@ static struct qemu_plugin_crucible_fault_command test_command;
+ static bool test_commit_submitted;
+ static bool test_initial_command_submitted;
+ static bool test_rule_installed;
++static bool test_result_validated;
+ static bool test_validated;
+ static bool test_finished;
+ static uint8_t *test_initial_registers;
+@@ -446,6 +447,64 @@ static bool test_validate_register_evidence(const uint8_t *evidence,
+     return before_bit != after_bit;
+ }
+ 
++static void test_validate_node_result_evidence(
++    const uint8_t *evidence, size_t evidence_len,
++    const struct qemu_plugin_crucible_fault_result *result)
++{
++    uint16_t expected_operation = test_mode == TEST_MODE_PERSISTENT ?
++        CRUCIBLE_NODE_FAULT_OPERATION_UPSERT :
++        CRUCIBLE_NODE_FAULT_OPERATION_APPLY;
++    uint8_t digest[32];
++
++    if (evidence_len != CRUCIBLE_NODE_FAULT_EVIDENCE_V1_BYTES ||
++        memcmp(evidence + CRUCIBLE_NODE_FAULT_EVIDENCE_MAGIC_OFFSET,
++               "CRUCNEV1", 8) != 0 ||
++        test_get_u16(evidence +
++                     CRUCIBLE_NODE_FAULT_EVIDENCE_VERSION_OFFSET) != 1 ||
++        test_get_u16(evidence +
++                     CRUCIBLE_NODE_FAULT_EVIDENCE_COMMAND_KIND_OFFSET) !=
++            CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM ||
++        test_get_u16(evidence +
++                     CRUCIBLE_NODE_FAULT_EVIDENCE_OPERATION_OFFSET) !=
++            expected_operation ||
++        test_get_u16(evidence +
++                     CRUCIBLE_NODE_FAULT_EVIDENCE_TARGET_KIND_OFFSET) !=
++            CRUCIBLE_NODE_FAULT_TARGET_REGISTER ||
++        test_get_u16(evidence +
++                     CRUCIBLE_NODE_FAULT_EVIDENCE_MODEL_PHASE_OFFSET) !=
++            test_model_phase ||
++        test_get_u16(evidence +
++                     CRUCIBLE_NODE_FAULT_EVIDENCE_RESERVED_OFFSET) != 0 ||
++        test_get_u64(evidence +
++                     CRUCIBLE_NODE_FAULT_EVIDENCE_GENERATION_OFFSET) != 1 ||
++        test_get_u64(evidence +
++                     CRUCIBLE_NODE_FAULT_EVIDENCE_PRIOR_GENERATION_OFFSET) !=
++            0 ||
++        memcmp(evidence + CRUCIBLE_NODE_FAULT_EVIDENCE_ACTION_HASH_OFFSET,
++               test_action_hash, 32) != 0 ||
++        memcmp(evidence + CRUCIBLE_NODE_FAULT_EVIDENCE_TARGET_HASH_OFFSET,
++               test_target_hash, 32) != 0 ||
++        memcmp(evidence + CRUCIBLE_NODE_FAULT_EVIDENCE_SCHEMA_HASH_OFFSET,
++               test_payload + CRUCIBLE_NODE_FAULT_PAYLOAD_SCHEMA_HASH_OFFSET,
++               32) != 0 ||
++        memcmp(evidence + CRUCIBLE_NODE_FAULT_EVIDENCE_BEFORE_SHA256_OFFSET,
++               result->before_hash, 32) != 0 ||
++        memcmp(evidence + CRUCIBLE_NODE_FAULT_EVIDENCE_AFTER_SHA256_OFFSET,
++               result->after_hash, 32) != 0) {
++        test_fail("typed node result evidence is not canonical");
++    }
++    test_sha256(test_payload, test_payload_len, digest);
++    if (memcmp(evidence +
++               CRUCIBLE_NODE_FAULT_EVIDENCE_REQUEST_SHA256_OFFSET,
++               digest, 32) != 0) {
++        test_fail("typed node result does not bind the request payload");
++    }
++    test_sha256(evidence, evidence_len, digest);
++    if (memcmp(digest, result->evidence_hash, 32) != 0) {
++        test_fail("typed node result evidence hash does not match framing");
++    }
++}
++
+ static void test_submit_commit(
+     const struct qemu_plugin_crucible_fault_result *prepared)
+ {
+@@ -544,8 +603,8 @@ static void test_poll_events(void)
+                 evidence, evidence_len, test_mode == TEST_MODE_IMPULSE,
+                 event.observed_icount, event.before_hash, event.after_hash,
+                 event.opportunity_hash);
+-            if (test_mode == TEST_MODE_PERSISTENT && test_rule_installed &&
+-                changed) {
++            if (test_result_validated && changed &&
++                (test_mode == TEST_MODE_IMPULSE || test_rule_installed)) {
+                 test_validated = true;
+             }
+         }
+@@ -720,13 +779,10 @@ static void test_completion(void *opaque)
+                 result.applied_icount != result.observed_icount) {
+                 test_fail("register commit was not applied");
+             }
+-            if (test_mode == TEST_MODE_IMPULSE) {
+-                test_validate_register_evidence(
+-                    evidence, evidence_len, true, result.observed_icount,
+-                    result.before_hash, result.after_hash,
+-                    result.evidence_hash);
+-                test_validated = true;
+-            } else {
++            test_validate_node_result_evidence(
++                evidence, evidence_len, &result);
++            test_result_validated = true;
++            if (test_mode == TEST_MODE_PERSISTENT) {
+                 test_rule_installed = true;
+             }
+         } else {

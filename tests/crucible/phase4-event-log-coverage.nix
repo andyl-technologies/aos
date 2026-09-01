@@ -5,11 +5,7 @@
   taskIds ? ["T-OBS-9"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
@@ -17,7 +13,10 @@
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   coverageTest = builtins.readFile ../../crates/crucible/tests/event_log_coverage.rs;
   determinismTest = builtins.readFile ../../crates/crucible/tests/event_log_determinism.rs;
-  replayOracleTest = builtins.readFile ../../crates/crucible/tests/event_graph_replay_oracle.rs;
+  replayOracleTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/event_graph_replay_oracle.rs;
+  };
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 

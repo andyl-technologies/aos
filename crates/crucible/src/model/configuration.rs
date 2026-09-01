@@ -59,16 +59,8 @@ impl ScenarioDefForm {
     ) -> Result<Self, EngineError> {
         validate_world_serialized_identity(world)?;
         let properties = resolve_properties_dsl_for_context(world, plan, properties)?;
-        match plan.event_graph() {
-            Some(_) => {
-                properties.validate_for_world(world)?;
-                plan.validate_for_world_with_properties(world, &properties)?;
-            }
-            None => {
-                plan.validate_for_world(world)?;
-                properties.validate_for_world(world)?;
-            }
-        }
+        properties.validate_for_world(world)?;
+        plan.validate_for_world_with_properties(world, &properties)?;
         Ok(Self {
             world: world.clone(),
             plan: plan.clone(),
@@ -126,6 +118,22 @@ impl ScenarioDefForm {
         self.scenario_def().id()
     }
 
+    /// Rebuilds this scenario around a replacement validated plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when `plan` does not layer over the retained
+    /// world and properties.
+    pub fn with_plan(&self, plan: Plan) -> Result<Self, EngineError> {
+        Self::from_components_with_app_random_draw_cap(
+            &self.world,
+            &plan,
+            &self.properties,
+            self.seed,
+            self.app_random_draw_cap,
+        )
+    }
+
     /// Serializes this form as deterministic TOML.
     ///
     /// # Errors
@@ -133,7 +141,7 @@ impl ScenarioDefForm {
     /// Returns [`EngineError::ScenarioSerialization`] if the TOML renderer rejects
     /// the internal DTO shape.
     pub fn to_canonical_toml(&self) -> Result<String, EngineError> {
-        toml::to_string(&scenario_form_to_toml(self)).map_err(|source| {
+        toml::to_string(&scenario_form_to_toml(self)?).map_err(|source| {
             scenario_serialization_error(format!("serialize scenario TOML: {source}"))
         })
     }
@@ -143,14 +151,12 @@ impl ScenarioDefForm {
     /// # Errors
     ///
     /// Returns [`EngineError::ScenarioSerialization`] for malformed TOML or id
-    /// mismatches, [`EngineError::PlanNegativeTime`],
-    /// [`EngineError::PlanFaultUnknownDirection`], or
-    /// [`EngineError::PlanFaultUnsupportedParam`] for localized serialized plan
-    /// validation failures, or the same validation errors as the component
-    /// constructors when the parsed world, plan, or properties are invalid.
+    /// mismatches, or the same validation errors as the component constructors
+    /// when the parsed world, plan, or properties are invalid.
     pub fn from_canonical_toml(input: &str) -> Result<Self, EngineError> {
+        validate_scenario_toml_size(input)?;
         validate_no_host_path_image_refs_in_toml(input)?;
-        validate_plan_entries_in_toml(input)?;
+        require_current_fault_schema(input)?;
         let toml = toml::from_str::<ScenarioDefToml>(input).map_err(|source| {
             scenario_serialization_error(format!("parse scenario TOML: {source}"))
         })?;
@@ -160,14 +166,8 @@ impl ScenarioDefForm {
     /// Serializes this form as the compact canonical binary representation.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        let includes_io_nodes = self.world.io_nodes().next().is_some();
-        let magic = if includes_io_nodes {
-            SCENARIO_FORM_BINARY_MAGIC_V2
-        } else {
-            SCENARIO_FORM_BINARY_MAGIC_V1
-        };
-        let mut writer = ScenarioBinaryWriter::new(magic);
-        write_scenario_form_binary(self, &mut writer, includes_io_nodes);
+        let mut writer = ScenarioBinaryWriter::new(SCENARIO_FORM_BINARY_MAGIC_V5);
+        write_scenario_form_binary(self, &mut writer);
         writer.finish()
     }
 
@@ -179,12 +179,8 @@ impl ScenarioDefForm {
     /// id mismatches, or the same validation errors as the component constructors
     /// when the parsed world, plan, or properties are invalid.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let (mut reader, includes_io_nodes) = scenario_binary_reader_for_versions(
-            bytes,
-            SCENARIO_FORM_BINARY_MAGIC_V1,
-            SCENARIO_FORM_BINARY_MAGIC_V2,
-        )?;
-        let form = read_scenario_form_binary(&mut reader, includes_io_nodes)?;
+        let mut reader = ScenarioBinaryReader::new(bytes, SCENARIO_FORM_BINARY_MAGIC_V5)?;
+        let form = read_scenario_form_binary(&mut reader)?;
         reader.finish()?;
         Ok(form)
     }
@@ -249,12 +245,10 @@ impl Configuration {
 }
 
 /// One resolved nondeterministic choice at a scheduling point.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Decision {
     /// A deterministic or recorded ordering of events at one virtual time.
     DeliveryOrder(DeliveryOrderDecision),
-    /// The recorded outcome of a probabilistic fault.
-    FaultFires(FaultDecision),
     /// A raw draw from a named deterministic decision stream.
     RngDraw(RngDecision),
     /// A search or fuzzing override at a scheduling point.
@@ -263,8 +257,6 @@ pub enum Decision {
     Preemption(PreemptionDecision),
     /// A served application-requested random value.
     AppRandom(AppRandomDecision),
-    /// A boundary-applied imperative fault-control action.
-    ControlFault(ControlFaultDecision),
 }
 
 impl Decision {
@@ -356,8 +348,6 @@ impl Schedule {
         self.decisions.iter().fold(None, |recorded, decision| {
             let at = match decision {
                 Decision::DeliveryOrder(decision) => Some(decision.at),
-                Decision::FaultFires(decision) => Some(decision.at),
-                Decision::ControlFault(decision) => Some(decision.at),
                 Decision::RngDraw(_)
                 | Decision::Override(_)
                 | Decision::Preemption(_)

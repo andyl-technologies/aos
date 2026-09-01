@@ -272,9 +272,6 @@ pub(in crate::model) fn push_failure_dependency_keys_for_attribute(
         EventAttributeValue::Event(event) => {
             keys.insert(format!("event:{}:{}", event.name.len(), event.name));
         }
-        EventAttributeValue::Fault(fault) => {
-            keys.insert(format!("fault:{}:{}", fault.name.len(), fault.name));
-        }
         EventAttributeValue::Bool(_)
         | EventAttributeValue::U64(_)
         | EventAttributeValue::U128(_)
@@ -364,9 +361,6 @@ pub(in crate::model) fn failure_event_attribute_material(
         )),
         EventAttributeValue::Event(event) => {
             Some(format!("event:{}:{}", event.name.len(), event.name))
-        }
-        EventAttributeValue::Fault(fault) => {
-            Some(format!("fault:{}:{}", fault.name.len(), fault.name))
         }
         EventAttributeValue::VirtualTime(_) | EventAttributeValue::Icount(_) => None,
         EventAttributeValue::Level(level) => {

@@ -15,12 +15,14 @@ workspace = true
 
 [dependencies]
 blake3 = { workspace = true }
+ciborium = { workspace = true }
 crucible-sim = { path = "../crucible-sim" }
 crucible-device = { path = "../crucible-device" }
 crucible-shmem = { path = "../crucible-shmem", optional = true }
 crucible-protocol = { path = "../crucible-protocol" }
 regex = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
@@ -67,3 +69,7 @@ required-features = ["test-double"]
 name = "gate_fleet_equivalence"
 path = "tests/gate_fleet_equivalence.rs"
 required-features = ["test-double"]
+
+[[test]]
+name = "gate_signal_fault_system"
+path = "tests/gate_signal_fault_system.rs"

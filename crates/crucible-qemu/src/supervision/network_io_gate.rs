@@ -3,12 +3,12 @@
 //! A diskless Linux guest originates a raw Ethernet probe through virtio-net.
 //! The patched QEMU TX callback forwards the exact bytes to the loaded plugin,
 //! the host router schedules one reply at a fixed icount offset, and the plugin
-//! injects it through QEMU's lossless RX queue. The guest proves receipt by
-//! emitting an acknowledgement frame. A hostile-host rerun adds CPU load; the
-//! router latency plus protocol frame bytes, order, and sequence must remain
-//! identical. Raw probe and acknowledgement stamps remain visible separately
-//! because whole-guest trajectory belongs to the independent loaded-QEMU
-//! determinism gates.
+//! injects it directly while retaining canonical ownership on backpressure. The guest proves receipt by
+//! emitting an acknowledgement frame. A hostile-host rerun applies six bounded
+//! scheduler preemptions directly to QEMU; the router latency plus protocol
+//! frame bytes, order, and sequence must remain identical. Raw probe and
+//! acknowledgement stamps remain visible separately because whole-guest
+//! trajectory belongs to the independent loaded-QEMU determinism gates.
 
 use std::fs;
 use std::path::PathBuf;
@@ -17,23 +17,26 @@ use std::time::Duration;
 
 pub use self::error::QemuLiveNetworkIoGateError;
 use self::support::{
-    GateSendAuthorizer, HostLoad, acknowledgement_offset_icount, bounded_drive_polls, certify_run,
+    GateSendAuthorizer, acknowledgement_offset_icount, bounded_drive_polls, certify_run,
     connect_qmp_priming_main_loop, deterministic_projection, node_id, path_text, probe_emit_icount,
     reap_child, vm_launch_config,
 };
 use super::network_io_servicer::{
-    LIVE_NETWORK_ACK_PAYLOAD, LIVE_NETWORK_PROBE_PAYLOAD, LIVE_NETWORK_REPLY_LATENCY_ICOUNT,
-    LiveNetworkIoSnapshot, QemuLiveNetworkIoServicer, QemuLiveNetworkIoServicerError,
+    LIVE_NETWORK_ACK_PAYLOAD, LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD, LIVE_NETWORK_PROBE_PAYLOAD,
+    LIVE_NETWORK_REPLY_LATENCY_ICOUNT, LiveNetworkIoSnapshot, QemuLiveNetworkIoServicer,
+    QemuLiveNetworkIoServicerError, is_live_network_ack, is_live_network_backpressure_ack,
 };
 use crate::{
     LaunchProfileCandidate, QemuHostPluginSetup, QemuLaunchCommandBuilder, QemuLaunchPluginConfig,
-    QemuMappedQuantumShmemHotPath, QemuNodeChild, QemuPluginIpcControlChannel,
-    QemuQmpChannelConfig, QemuQuantumShmemConfig, QemuShmemHotPathChannel,
-    complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
+    QemuLaunchPluginSwitch, QemuLiveNodeStepGateConfig, QemuMappedQuantumShmemHotPath,
+    QemuNodeChild, QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuQmpChannelConfig,
+    QemuQuantumShmemConfig, QemuShmemHotPathChannel, complete_qemu_host_plugin_setup,
+    run_qemu_live_retained_network_snapshot_gate, spawn_qemu_child_with_fds_in_directory,
 };
-use crucible::Icount;
+use crucible::{BackendInput, Icount};
 use crucible_shmem::{
-    RegionAllocation, RegionConfig, SLOT_NET_ROUTER, STATUS_IDLE, mmap_setup_region,
+    FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT, FrameDeliveryKey, FrameDeliveryState, RegionAllocation,
+    RegionConfig, SLOT_NET_ROUTER, STATUS_IDLE, mmap_setup_region,
 };
 
 mod error;
@@ -46,8 +49,8 @@ const GATE_SLOT: u32 = 0;
 const GATE_QUEUE_CAPACITY: u32 = 64;
 const GATE_QMP_SOCKET_FILE_NAME: &str = "crucible-live-network-io-qmp.sock";
 const GATE_MEMORY_MIB: u32 = 128;
-const HOST_LOAD_WORKERS: usize = 4;
 const DRIVE_POLL_INTERVAL: Duration = Duration::from_millis(1);
+const BACKPRESSURE_PROBE_CEILING_ICOUNT: u64 = 1;
 const PRIME_CEILING_ICOUNT: u64 = 1_000_000;
 const PROBE_DISCOVERY_CEILING_ICOUNT: u64 = 3_350_000_000;
 const QMP_PRIMER_WAKE_INTERVAL: Duration = Duration::from_millis(10);
@@ -65,7 +68,7 @@ pub struct QemuLiveNetworkIoGateConfig {
     kernel_cmdline: Option<String>,
     busy_ceiling_icount: u64,
     completion_timeout: Duration,
-    second_run_host_load: bool,
+    second_run_scheduler_preemption: bool,
 }
 
 impl QemuLiveNetworkIoGateConfig {
@@ -89,7 +92,7 @@ impl QemuLiveNetworkIoGateConfig {
             kernel_cmdline: None,
             busy_ceiling_icount: DEFAULT_BUSY_CEILING_ICOUNT,
             completion_timeout: Duration::from_secs(60),
-            second_run_host_load: true,
+            second_run_scheduler_preemption: true,
         }
     }
 
@@ -114,10 +117,10 @@ impl QemuLiveNetworkIoGateConfig {
         self
     }
 
-    /// Enables or disables host CPU load on the hostile-host rerun.
+    /// Enables or disables bounded QEMU scheduler preemption on the hostile rerun.
     #[must_use]
-    pub const fn with_second_run_host_load(mut self, enabled: bool) -> Self {
-        self.second_run_host_load = enabled;
+    pub const fn with_second_run_scheduler_preemption(mut self, enabled: bool) -> Self {
+        self.second_run_scheduler_preemption = enabled;
         self
     }
 }
@@ -129,8 +132,26 @@ pub struct QemuLiveNetworkIoReport {
     pub reference: LiveNetworkIoSnapshot,
     /// Whether the loaded guest completed the reply/ack exchange.
     pub acknowledgement_seen: bool,
-    /// Whether the hostile-host run reproduced the reference observations.
-    pub deterministic_under_host_load: bool,
+    /// Whether real QEMU reported boot-time NIC backpressure in both runs.
+    pub boot_backpressure_retained: bool,
+    /// Whether both retained boot-time frames later left canonical shared memory.
+    pub canonical_backpressure_retry_delivered: bool,
+    /// Exact first retry coordinate observed in both live runs.
+    pub backpressure_retry_icount: Option<u64>,
+    /// Whether guest userspace acknowledged the exact retained frame in both runs.
+    pub backpressure_guest_acknowledgement_seen: bool,
+    /// Whether a retained frame survived source death and a fresh QEMU restore.
+    pub retained_frame_fresh_process_restored: bool,
+    /// Whether the retained restore crossed the durable canonical envelope.
+    pub retained_frame_durable_envelope_restored: bool,
+    /// Exact first retry coordinate observed after fresh-process restore.
+    pub retained_frame_first_retry_icount: u64,
+    /// Exact guest TX coordinate of the unique restored-frame acknowledgement.
+    pub retained_frame_guest_ack_emit_icount: u64,
+    /// Guest TX sequence of the unique restored-frame acknowledgement.
+    pub retained_frame_guest_ack_sequence: u64,
+    /// Whether the scheduler-preempted run reproduced the reference observations.
+    pub deterministic_under_scheduler_preemption: bool,
     /// Absolute probe stamp from the hostile-host run.
     pub hostile_probe_emit_icount: Option<u64>,
     /// Whether the diagnostic absolute probe origins matched.
@@ -142,8 +163,16 @@ pub struct QemuLiveNetworkIoReport {
     pub hostile_acknowledgement_offset_icount: Option<u64>,
     /// Whether the diagnostic guest acknowledgement offsets matched.
     pub acknowledgement_offset_equal: bool,
-    /// Whether CPU load was active during the second run.
-    pub host_load_applied: bool,
+    /// Whether bounded scheduler preemption targeted QEMU during the second run.
+    pub host_scheduler_preemption_applied: bool,
+    /// Whether the controller was released only after a network quantum was pending.
+    pub host_scheduler_preemption_pending_quantum: bool,
+    /// Number of guest TX frames transferred from quantum-completion ownership.
+    pub completion_owned_frames: usize,
+    /// Number of bounded stop/continue perturbations applied to QEMU.
+    pub host_scheduler_preemption_count: u32,
+    /// Total configured stopped time across the bounded perturbations.
+    pub host_scheduler_preemption_requested_milliseconds: u64,
     /// Whether a diagnostic wall delay was applied before reply publication.
     ///
     /// The certifying path leaves this false: network RX is not device-frozen,
@@ -158,11 +187,21 @@ pub struct QemuLiveNetworkIoReport {
 struct NetworkIoRunOutcome {
     snapshot: LiveNetworkIoSnapshot,
     acknowledgement_icount: Option<u64>,
+    boot_backpressure_retained: bool,
+    canonical_backpressure_retry_delivered: bool,
+    backpressure_acknowledgement_icount: Option<u64>,
+    backpressure_delivery_attempts: u32,
+    backpressure_last_attempt_icount: u64,
+    backpressure_retry_icount: Option<u64>,
     delayed_reply_applied: bool,
     orderly_child_exit: bool,
+    scheduler_preemption:
+        Option<crate::supervision::bounded_scheduler_preemption::BoundedSchedulerPreemptionReport>,
+    scheduler_preemption_pending_quantum: bool,
+    completion_owned_frames: usize,
 }
 
-/// Runs the reference and hostile-host loaded-QEMU network certifications.
+/// Runs reference and scheduler-preempted loaded-QEMU network certifications.
 ///
 /// # Errors
 ///
@@ -171,9 +210,26 @@ struct NetworkIoRunOutcome {
 pub fn run_qemu_live_network_io_gate(
     config: &QemuLiveNetworkIoGateConfig,
 ) -> Result<QemuLiveNetworkIoReport, QemuLiveNetworkIoGateError> {
+    // These diagnostics are deliberately wall-clock-only gate progress. They
+    // never enter canonical observations or deterministic comparison state.
+    tracing::debug!(
+        phase = "reference",
+        status = "starting",
+        "crucible live network I/O"
+    );
     let reference = run_once(config, RunRole::Reference)?;
     certify_run("reference", &reference, false)?;
+    tracing::debug!(
+        phase = "reference",
+        status = "certified",
+        "crucible live network I/O"
+    );
 
+    tracing::debug!(
+        phase = "hostile",
+        status = "starting",
+        "crucible live network I/O"
+    );
     let hostile = run_once(config, RunRole::Hostile)?;
     certify_run("hostile-host", &hostile, false)?;
     if deterministic_projection(&reference) != deterministic_projection(&hostile) {
@@ -182,21 +238,85 @@ pub fn run_qemu_live_network_io_gate(
             hostile: format!("{:?}", deterministic_projection(&hostile)),
         });
     }
+    tracing::debug!(
+        phase = "hostile",
+        status = "certified",
+        "crucible live network I/O"
+    );
 
     let reference_probe_emit_icount = probe_emit_icount(&reference);
     let hostile_probe_emit_icount = probe_emit_icount(&hostile);
     let reference_acknowledgement_offset_icount = acknowledgement_offset_icount(&reference);
     let hostile_acknowledgement_offset_icount = acknowledgement_offset_icount(&hostile);
+    let mut retained_config = QemuLiveNodeStepGateConfig::new(
+        &config.qemu_executable,
+        &config.plugin,
+        &config.kernel,
+        &config.firmware,
+        config.run_directory.join("retained-network-exact"),
+    )
+    .with_initrd(&config.initrd)
+    .with_vm_shape(GATE_MEMORY_MIB, 1, 0)
+    .with_shmem_network_mac(crate::DEFAULT_CRUCIBLE_SHMEM_NETWORK_MAC)
+    .with_fingerprint(QemuLaunchPluginSwitch::On)
+    .with_completion_timeout(config.completion_timeout)
+    .with_second_run_scheduler_preemption(false);
+    if let Some(cmdline) = &config.kernel_cmdline {
+        retained_config = retained_config.with_kernel_cmdline(cmdline.clone());
+    }
+    tracing::debug!(
+        phase = "retained-restore",
+        status = "starting",
+        "crucible live network I/O"
+    );
+    let retained_report = run_qemu_live_retained_network_snapshot_gate(
+        &retained_config,
+        &QemuLiveNetworkIoServicer::boot_backpressure_probe(),
+        LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD,
+        config.busy_ceiling_icount,
+    )
+    .map_err(|source| QemuLiveNetworkIoGateError::RetainedExactSnapshot { source })?;
+    tracing::debug!(
+        phase = "retained-restore",
+        status = "certified",
+        "crucible live network I/O"
+    );
     Ok(QemuLiveNetworkIoReport {
         reference: reference.snapshot,
         acknowledgement_seen: reference.acknowledgement_icount.is_some(),
-        deterministic_under_host_load: true,
+        boot_backpressure_retained: reference.boot_backpressure_retained
+            && hostile.boot_backpressure_retained,
+        canonical_backpressure_retry_delivered: reference.canonical_backpressure_retry_delivered
+            && hostile.canonical_backpressure_retry_delivered,
+        backpressure_retry_icount: reference.backpressure_retry_icount,
+        backpressure_guest_acknowledgement_seen: reference
+            .backpressure_acknowledgement_icount
+            .is_some()
+            && hostile.backpressure_acknowledgement_icount.is_some(),
+        retained_frame_fresh_process_restored: retained_report.source_process_force_crashed
+            && retained_report.guest_acknowledgement_seen
+            && retained_report.retained_frame_consumed,
+        retained_frame_durable_envelope_restored: retained_report.durable_envelope_round_trip,
+        retained_frame_first_retry_icount: retained_report.first_retry_icount,
+        retained_frame_guest_ack_emit_icount: retained_report.guest_ack_emit_icount,
+        retained_frame_guest_ack_sequence: retained_report.guest_ack_sequence,
+        deterministic_under_scheduler_preemption: true,
         hostile_probe_emit_icount,
         absolute_probe_origin_equal: reference_probe_emit_icount == hostile_probe_emit_icount,
         hostile_acknowledgement_offset_icount,
         acknowledgement_offset_equal: reference_acknowledgement_offset_icount
             == hostile_acknowledgement_offset_icount,
-        host_load_applied: config.second_run_host_load,
+        host_scheduler_preemption_applied: hostile.scheduler_preemption.is_some(),
+        host_scheduler_preemption_pending_quantum: hostile.scheduler_preemption_pending_quantum,
+        completion_owned_frames: reference
+            .completion_owned_frames
+            .min(hostile.completion_owned_frames),
+        host_scheduler_preemption_count: hostile
+            .scheduler_preemption
+            .map_or(0, |report| report.perturbations),
+        host_scheduler_preemption_requested_milliseconds: hostile
+            .scheduler_preemption
+            .map_or(0, |report| report.requested_stopped_milliseconds),
         delayed_reply_applied: hostile.delayed_reply_applied,
         orderly_child_exit: reference.orderly_child_exit && hostile.orderly_child_exit,
     })
@@ -224,323 +344,8 @@ impl RunRole {
     }
 }
 
-fn run_once(
-    config: &QemuLiveNetworkIoGateConfig,
-    role: RunRole,
-) -> Result<NetworkIoRunOutcome, QemuLiveNetworkIoGateError> {
-    let run_directory = config.run_directory.join(role.directory());
-    fs::create_dir_all(&run_directory).map_err(|source| {
-        QemuLiveNetworkIoGateError::PrepareRunDirectory {
-            path: run_directory.clone(),
-            source,
-        }
-    })?;
-    let mut candidate = LaunchProfileCandidate::default().with_memory_mib(GATE_MEMORY_MIB);
-    if let Some(cmdline) = &config.kernel_cmdline {
-        candidate = candidate.with_kernel_cmdline(cmdline.clone());
-    }
-    let profile = candidate
-        .try_into_deterministic()
-        .map_err(|source| QemuLiveNetworkIoGateError::LaunchProfile { source })?;
-    profile
-        .guest_entropy_seed_file()
-        .write_to_dir(&run_directory)
-        .map_err(|source| QemuLiveNetworkIoGateError::GuestEntropySeed {
-            path: run_directory.clone(),
-            source,
-        })?;
-
-    let qmp_config = QemuQmpChannelConfig::new(GATE_QMP_SOCKET_FILE_NAME)
-        .map_err(|source| QemuLiveNetworkIoGateError::LaunchCommand { source })?;
-    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT);
-    let command = QemuLaunchCommandBuilder::new(
-        profile,
-        vm_launch_config(config),
-        path_text(&config.qemu_executable),
-        plugin,
-    )
-    .with_qmp(qmp_config.clone())
-    .build()
-    .map_err(|source| QemuLiveNetworkIoGateError::LaunchCommand { source })?;
-
-    let region_config = RegionConfig::new(1, GATE_QUEUE_CAPACITY, 0);
-    let allocation = RegionAllocation::new(region_config)
-        .map_err(|source| QemuLiveNetworkIoGateError::RegionLayout { source })?;
-    let spawned = spawn_qemu_child_with_fds_in_directory(
-        &command,
-        &run_directory,
-        allocation.layout().region_size,
-    )
-    .map_err(|source| QemuLiveNetworkIoGateError::Spawn { source })?;
-    let (mut child, resources) = spawned.into_parts();
-    let mut setup =
-        complete_qemu_host_plugin_setup(resources.into_setup_resources(), region_config, GATE_SLOT)
-            .map_err(|source| QemuLiveNetworkIoGateError::HostSetup { source })?;
-    if !setup.setup_ack().can_schedule() {
-        return Err(QemuLiveNetworkIoGateError::SetupAckNotReady);
-    }
-
-    let mut servicer = QemuLiveNetworkIoServicer::from_shmem_fd(
-        setup.shmem_as_fd(),
-        setup.region().region_len,
-        GATE_SLOT,
-    )
-    .map_err(|source| QemuLiveNetworkIoGateError::NetworkServicer { source })?;
-    let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
-        .map_err(|source| QemuLiveNetworkIoGateError::DriveRegionMap { source })?;
-    let shmem_config = QemuQuantumShmemConfig::new(node_id(GATE_NODE), GATE_SLOT)
-        .with_router(node_id(GATE_ROUTER), SLOT_NET_ROUTER as u32);
-    let mut hot_path = QemuMappedQuantumShmemHotPath::new(shmem_config, region, GateSendAuthorizer)
-        .map_err(|source| QemuLiveNetworkIoGateError::DriveHotPath { source })?;
-
-    prime_guest_off_boot_barrier(
-        &mut hot_path,
-        &servicer,
-        &mut child,
-        config.completion_timeout,
-    )?;
-    let qmp = connect_qmp_priming_main_loop(&setup, &qmp_config.socket_path(&run_directory))
-        .map_err(|source| QemuLiveNetworkIoGateError::QmpConnect { source })?;
-    let mut qmp = qmp.into_inner();
-    let status = qmp
-        .query_status()
-        .map_err(|source| QemuLiveNetworkIoGateError::QmpConnect { source })?;
-    if !status.running {
-        return Err(QemuLiveNetworkIoGateError::QmpNotRunning {
-            status: format!("{:?}", status.status),
-        });
-    }
-
-    // Apply hostile load to the network workload itself, after both runs have
-    // completed identical launch, plugin setup, and boot-barrier priming.
-    // Otherwise host scheduling noise during control-plane setup can move the
-    // workload's origin even though every modeled network interval is exact.
-    let host_load =
-        HostLoad::start_if(matches!(role, RunRole::Hostile) && config.second_run_host_load);
-    let (acknowledgement_icount, delayed_reply_applied) = drive_exchange(
-        &mut hot_path,
-        &mut servicer,
-        &setup,
-        &mut child,
-        config.busy_ceiling_icount,
-        config.completion_timeout,
-        role.delay(),
-    )?;
-    let snapshot = servicer.snapshot();
-
-    let _ = QemuPluginIpcControlChannel::send_quit(&mut setup);
-    let orderly_child_exit = reap_child(&mut child, config.completion_timeout);
-    drop(hot_path);
-    drop(setup);
-    drop(child);
-    drop(host_load);
-
-    Ok(NetworkIoRunOutcome {
-        snapshot,
-        acknowledgement_icount,
-        delayed_reply_applied,
-        orderly_child_exit,
-    })
-}
-
-fn prime_guest_off_boot_barrier(
-    hot_path: &mut QemuMappedQuantumShmemHotPath,
-    servicer: &QemuLiveNetworkIoServicer,
-    child: &mut QemuNodeChild,
-    timeout: Duration,
-) -> Result<(), QemuLiveNetworkIoGateError> {
-    let pending = QemuShmemHotPathChannel::start_quantum(
-        hot_path,
-        crucible::ExecutionHorizon {
-            icount: Icount {
-                retired: PRIME_CEILING_ICOUNT,
-            },
-        },
-    )
-    .map_err(|source| QemuLiveNetworkIoGateError::drive("start priming quantum", source))?;
-    let mut reached = false;
-    for _ in 0..bounded_drive_polls(timeout) {
-        let snapshot = servicer
-            .vm_node_snapshot()
-            .map_err(|source| QemuLiveNetworkIoGateError::NetworkServicer { source })?;
-        if snapshot.current_icount >= PRIME_CEILING_ICOUNT {
-            reached = true;
-            break;
-        }
-        if child
-            .try_wait_natural_exit()
-            .map_err(|source| QemuLiveNetworkIoGateError::ChildWait { source })?
-            .is_some()
-        {
-            break;
-        }
-        thread::park_timeout(DRIVE_POLL_INTERVAL);
-    }
-    let _ = QemuShmemHotPathChannel::finish_quantum(hot_path, pending);
-    if reached {
-        Ok(())
-    } else {
-        Err(QemuLiveNetworkIoGateError::PrimeDidNotReach)
-    }
-}
-
-fn drive_exchange(
-    hot_path: &mut QemuMappedQuantumShmemHotPath,
-    servicer: &mut QemuLiveNetworkIoServicer,
-    setup: &QemuHostPluginSetup,
-    child: &mut QemuNodeChild,
-    ceiling: u64,
-    timeout: Duration,
-    reply_wall_delay: Duration,
-) -> Result<(Option<u64>, bool), QemuLiveNetworkIoGateError> {
-    let discovery_pending = QemuShmemHotPathChannel::start_quantum(
-        hot_path,
-        crucible::ExecutionHorizon {
-            icount: Icount {
-                retired: PROBE_DISCOVERY_CEILING_ICOUNT,
-            },
-        },
-    )
-    .map_err(|source| QemuLiveNetworkIoGateError::drive("start probe-discovery quantum", source))?;
-    let mut acknowledgement_icount = None;
-    let mut delay_applied = false;
-    let mut discovery_complete = false;
-    for _ in 0..bounded_drive_polls(timeout) {
-        let _ = setup.signal_plugin_wake();
-        let should_delay = !delay_applied && !reply_wall_delay.is_zero();
-        let mut delayed_this_call = false;
-        let step = servicer
-            .service_with_before_reply(|| {
-                if should_delay {
-                    thread::park_timeout(reply_wall_delay);
-                    delayed_this_call = true;
-                }
-            })
-            .map_err(|source| QemuLiveNetworkIoGateError::NetworkServicer { source })?;
-        if step.reply_enqueued && delayed_this_call {
-            delay_applied = true;
-        }
-        let service_snapshot = servicer.snapshot();
-        let node_snapshot = servicer
-            .vm_node_snapshot()
-            .map_err(|source| QemuLiveNetworkIoGateError::NetworkServicer { source })?;
-        if service_snapshot.reply_delivery_icount.is_some()
-            && node_snapshot.status == STATUS_IDLE
-            && node_snapshot.idle_wake_icount > PROBE_DISCOVERY_CEILING_ICOUNT
-        {
-            discovery_complete = true;
-            break;
-        }
-        if let Some(status) = child
-            .try_wait_natural_exit()
-            .map_err(|source| QemuLiveNetworkIoGateError::ChildWait { source })?
-        {
-            return Err(QemuLiveNetworkIoGateError::ChildExited {
-                status: status.to_string(),
-            });
-        }
-        thread::park_timeout(DRIVE_POLL_INTERVAL);
-    }
-    if !discovery_complete {
-        let node_evidence = servicer.vm_node_snapshot().map_or_else(
-            |error| format!("node_snapshot_error={error}"),
-            |node| format!("{node:?}"),
-        );
-        return Err(QemuLiveNetworkIoGateError::ProbeDiscoveryDidNotPark {
-            evidence: format!("network={:?}; node={node_evidence}", servicer.snapshot()),
-        });
-    }
-    QemuShmemHotPathChannel::finish_quantum(hot_path, discovery_pending).map_err(|source| {
-        QemuLiveNetworkIoGateError::drive("finish probe-discovery quantum", source)
-    })?;
-    let reply_delivery_icount = servicer.snapshot().reply_delivery_icount.ok_or_else(|| {
-        QemuLiveNetworkIoGateError::ProbeDiscoveryDidNotPark {
-            evidence: String::from("discovery completed without a reply stamp"),
-        }
-    })?;
-    if reply_delivery_icount <= PROBE_DISCOVERY_CEILING_ICOUNT {
-        return Err(QemuLiveNetworkIoGateError::ReplyOutsideDiscoveryWindow {
-            discovery_ceiling_icount: PROBE_DISCOVERY_CEILING_ICOUNT,
-            reply_delivery_icount,
-        });
-    }
-
-    servicer
-        .authorize_guest_ceiling(reply_delivery_icount)
-        .map_err(|source| QemuLiveNetworkIoGateError::NetworkServicer { source })?;
-    let mut reply_reached = false;
-    for _ in 0..bounded_drive_polls(timeout) {
-        let node_snapshot = servicer
-            .vm_node_snapshot()
-            .map_err(|source| QemuLiveNetworkIoGateError::NetworkServicer { source })?;
-        if node_snapshot.current_icount >= reply_delivery_icount {
-            reply_reached = true;
-            break;
-        }
-        if let Some(status) = child
-            .try_wait_natural_exit()
-            .map_err(|source| QemuLiveNetworkIoGateError::ChildWait { source })?
-        {
-            return Err(QemuLiveNetworkIoGateError::ChildExited {
-                status: status.to_string(),
-            });
-        }
-        thread::park_timeout(DRIVE_POLL_INTERVAL);
-    }
-    if !reply_reached {
-        return Err(QemuLiveNetworkIoGateError::ReplyDeliveryDidNotReach {
-            reply_delivery_icount,
-            evidence: format!("{:?}", servicer.vm_node_snapshot()),
-        });
-    }
-    servicer
-        .authorize_guest_ceiling(ceiling)
-        .map_err(|source| QemuLiveNetworkIoGateError::NetworkServicer { source })?;
-    setup
-        .signal_plugin_wake()
-        .map_err(|source| QemuLiveNetworkIoGateError::drive("wake post-reply guest", source))?;
-
-    for _ in 0..bounded_drive_polls(timeout) {
-        let _ = setup.signal_plugin_wake();
-        let step = servicer
-            .service()
-            .map_err(|source| QemuLiveNetworkIoGateError::NetworkServicer { source })?;
-        let service_snapshot = servicer.snapshot();
-        if step.acknowledgement_seen || service_snapshot.acknowledgement_seen {
-            acknowledgement_icount = service_snapshot
-                .tx_frames
-                .iter()
-                .rev()
-                .find(|frame| {
-                    frame
-                        .payload
-                        .windows(LIVE_NETWORK_ACK_PAYLOAD.len())
-                        .any(|window| window == LIVE_NETWORK_ACK_PAYLOAD)
-                })
-                .map(|frame| frame.emit_icount);
-            break;
-        }
-        if let Some(status) = child
-            .try_wait_natural_exit()
-            .map_err(|source| QemuLiveNetworkIoGateError::ChildWait { source })?
-        {
-            return Err(QemuLiveNetworkIoGateError::ChildExited {
-                status: status.to_string(),
-            });
-        }
-        thread::park_timeout(DRIVE_POLL_INTERVAL);
-    }
-    if acknowledgement_icount.is_none() {
-        return Err(QemuLiveNetworkIoGateError::AcknowledgementDidNotArrive {
-            evidence: format!(
-                "network={:?}; node={:?}",
-                servicer.snapshot(),
-                servicer.vm_node_snapshot()
-            ),
-        });
-    }
-    Ok((acknowledgement_icount, delay_applied))
-}
-
+#[path = "network_io_gate/drive.rs"]
+mod drive;
+use drive::run_once;
 #[cfg(test)]
 mod tests;

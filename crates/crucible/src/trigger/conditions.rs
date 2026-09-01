@@ -267,7 +267,7 @@ impl ObservableEvent {
 }
 
 /// Typed observable event payloads used by condition leaves.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ObservableEventPayload {
     /// A network frame was delivered at RESOLVE.
     NetworkDelivered {
@@ -432,7 +432,9 @@ impl ObservableEventPayload {
 }
 
 /// Assertion flavor carried by a white-box doorbell assertion marker.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum GuestAssertionKind {
     /// Invariant marker; any false observation violates the assertion.
     Always,
@@ -445,7 +447,9 @@ pub enum GuestAssertionKind {
 }
 
 /// One structured key/value detail carried by a guest assertion marker.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct GuestAssertionDetail {
     /// Stable detail key.
     pub key: String,
@@ -469,7 +473,7 @@ impl GuestAssertionDetail {
 /// The payload is observational: it is stored in the event log and can drive
 /// assertion finalization, but it does not feed scheduler decisions or node
 /// fingerprints.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct GuestAssertionMarker {
     /// Stable assertion id in the marker/assertion namespace.
     pub id: AssertionId,
@@ -666,11 +670,6 @@ pub trait ConditionEvaluator: condition_evaluator_sealed::Sealed {
         None
     }
 
-    /// Returns fault activation and heal facts visible at the evaluation point.
-    fn fault_facts(&self) -> &[ObservedFaultFact] {
-        &[]
-    }
-
     /// Returns the authoritative white-box opt-in policy for a node.
     fn white_box_policy_for_node(&self, node: &NodeId) -> Option<WhiteBoxPolicy> {
         let _ = node;
@@ -838,7 +837,6 @@ pub struct ConditionEventLogPrefix {
     pub(super) event_firings: BTreeMap<EventId, VirtualTime>,
     pub(super) timer_fires: BTreeMap<TimerId, VirtualTime>,
     pub(super) ordering_facts: Vec<ObservedOrderingFact>,
-    pub(super) fault_facts: Vec<ObservedFaultFact>,
 }
 
 impl ConditionEventLogPrefix {
@@ -856,7 +854,6 @@ impl ConditionEventLogPrefix {
             event_firings: BTreeMap::new(),
             timer_fires: BTreeMap::new(),
             ordering_facts: Vec::new(),
-            fault_facts: Vec::new(),
         }
     }
 
@@ -973,7 +970,6 @@ impl ConditionEventLogPrefix {
         let mut event_firings = BTreeMap::new();
         let mut timer_fires = BTreeMap::new();
         let mut ordering_facts = Vec::new();
-        let mut fault_facts = Vec::new();
         let mut previous_black_box_observation: Option<&SchedulerEventLogEntry> = None;
         for (offset, entry) in entries.iter().enumerate() {
             let offset = u64::try_from(offset).map_err(|_| {
@@ -1024,7 +1020,6 @@ impl ConditionEventLogPrefix {
                 &mut observable_events,
                 &mut black_box_observation_kinds,
                 &mut ordering_facts,
-                &mut fault_facts,
             )?;
             push_condition_runtime_facts(entry, &mut event_firings, &mut timer_fires);
         }
@@ -1053,7 +1048,6 @@ impl ConditionEventLogPrefix {
             event_firings,
             timer_fires,
             ordering_facts,
-            fault_facts,
         })
     }
 
@@ -1145,12 +1139,6 @@ impl ConditionEventLogPrefix {
         &self.ordering_facts
     }
 
-    /// Returns fault activation, outcome, and heal facts visible at [`Self::point`].
-    #[must_use]
-    pub fn fault_facts(&self) -> &[ObservedFaultFact] {
-        &self.fault_facts
-    }
-
     /// Returns a read-only observed-state view materialized from this checked prefix.
     #[must_use]
     pub fn observed_state(&self) -> ObservedState<'_> {
@@ -1159,7 +1147,6 @@ impl ConditionEventLogPrefix {
             event_log_offset: self.event_log_offset,
             observable_events: &self.observable_events,
             ordering_facts: &self.ordering_facts,
-            fault_facts: &self.fault_facts,
         }
     }
 }
@@ -1167,7 +1154,7 @@ impl ConditionEventLogPrefix {
 /// Read-only observable run state at one deterministic evaluation point.
 ///
 /// The view is derived only from a checked scheduler event-log prefix. It
-/// exposes black-box observable events plus explicit ordering and fault facts;
+/// exposes black-box observable events plus explicit ordering facts;
 /// raw scheduler entries, RNG draws, app-random draws, host-worker state, and
 /// wall-clock data are not part of this API.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1176,7 +1163,6 @@ pub struct ObservedState<'log> {
     pub(super) event_log_offset: EventLogOffset,
     pub(super) observable_events: &'log [ObservableEvent],
     pub(super) ordering_facts: &'log [ObservedOrderingFact],
-    pub(super) fault_facts: &'log [ObservedFaultFact],
 }
 
 impl<'log> ObservedState<'log> {
@@ -1209,12 +1195,6 @@ impl<'log> ObservedState<'log> {
     pub fn ordering_facts(self) -> &'log [ObservedOrderingFact] {
         self.ordering_facts
     }
-
-    /// Returns fault activation, outcome, and heal facts in deterministic log order.
-    #[must_use]
-    pub fn fault_facts(self) -> &'log [ObservedFaultFact] {
-        self.fault_facts
-    }
 }
 
 /// Cross-node ordering information exposed to property predicates.
@@ -1239,92 +1219,6 @@ pub enum ObservedOrderingFact {
         at: VirtualTime,
         /// Ordered legacy event keys recorded by the delivery decision.
         order: Vec<EventKey>,
-    },
-}
-
-/// Fault information exposed to property predicates.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum ObservedFaultFact {
-    /// A scheduled fault activation entered the event log.
-    ScheduledActivation {
-        /// Dense event-log sequence where the fact was recorded.
-        sequence: u64,
-        /// Virtual time of the event-log entry.
-        at: VirtualTime,
-        /// Fault whose activation was resolved.
-        fault: FaultId,
-    },
-    /// A scheduled probabilistic fault choice entered the event log.
-    ScheduledProbabilisticChoice {
-        /// Dense event-log sequence where the fact was recorded.
-        sequence: u64,
-        /// Virtual time of the event-log entry.
-        at: VirtualTime,
-        /// Fault whose probabilistic choice was resolved.
-        fault: FaultId,
-    },
-    /// A probabilistic fault outcome was decided.
-    ProbabilisticOutcome {
-        /// Dense event-log sequence where the fact was recorded.
-        sequence: u64,
-        /// Virtual time of the event-log entry.
-        at: VirtualTime,
-        /// Fault whose outcome was decided.
-        fault: FaultId,
-        /// Whether the probabilistic fault fired.
-        fired: bool,
-    },
-    /// A control-plane full-taxonomy fault was injected.
-    ControlInjected {
-        /// Dense event-log sequence where the fact was recorded.
-        sequence: u64,
-        /// Virtual time of the event-log entry.
-        at: VirtualTime,
-        /// Monotone control operation sequence.
-        control_sequence: u64,
-        /// Stable fault tag.
-        tag: FaultTag,
-        /// Fault taxonomy value activated under `tag`.
-        fault: Fault,
-    },
-    /// A control-plane full-taxonomy fault was healed.
-    ControlHealed {
-        /// Dense event-log sequence where the fact was recorded.
-        sequence: u64,
-        /// Virtual time of the event-log entry.
-        at: VirtualTime,
-        /// Monotone control operation sequence.
-        control_sequence: u64,
-        /// Stable fault tag.
-        tag: FaultTag,
-    },
-    /// A trigger-owned membership fault was injected.
-    TriggerInjected {
-        /// Dense event-log sequence where the fact was recorded.
-        sequence: u64,
-        /// Virtual time of the event-log entry.
-        at: VirtualTime,
-        /// Monotone trigger action sequence.
-        trigger_sequence: u64,
-        /// Trigger event that produced the action.
-        event: EventId,
-        /// Stable fault tag.
-        tag: FaultTag,
-        /// Membership fault activated under `tag`.
-        fault: MembershipFault,
-    },
-    /// A trigger-owned membership fault was healed.
-    TriggerHealed {
-        /// Dense event-log sequence where the fact was recorded.
-        sequence: u64,
-        /// Virtual time of the event-log entry.
-        at: VirtualTime,
-        /// Monotone trigger action sequence.
-        trigger_sequence: u64,
-        /// Trigger event that produced the action.
-        event: EventId,
-        /// Stable fault tag.
-        tag: FaultTag,
     },
 }
 
@@ -1443,23 +1337,15 @@ impl HostAssertionOracle for BlackBoxHostOracle {
 pub struct SearchScheduleNamedPredicateKey {
     name: String,
     nodes: Vec<NodeId>,
-    active_fault_tags: Vec<FaultTag>,
 }
 
 impl SearchScheduleNamedPredicateKey {
     /// Builds a canonical named-predicate key.
     #[must_use]
-    pub fn new(
-        name: impl Into<String>,
-        nodes: Vec<NodeId>,
-        mut active_fault_tags: Vec<FaultTag>,
-    ) -> Self {
-        active_fault_tags.sort();
-        active_fault_tags.dedup();
+    pub fn new(name: impl Into<String>, nodes: Vec<NodeId>) -> Self {
         Self {
             name: name.into(),
             nodes,
-            active_fault_tags,
         }
     }
 
@@ -1473,12 +1359,6 @@ impl SearchScheduleNamedPredicateKey {
     #[must_use]
     pub fn nodes(&self) -> &[NodeId] {
         &self.nodes
-    }
-
-    /// Returns schedule-derived fault tags active at the evaluated prefix.
-    #[must_use]
-    pub fn active_fault_tags(&self) -> &[FaultTag] {
-        &self.active_fault_tags
     }
 }
 
@@ -1545,14 +1425,10 @@ impl<'truths> SearchScheduleNamedPredicateHostOracle<'truths> {
 impl host_assertion_oracle_sealed::Sealed for SearchScheduleNamedPredicateHostOracle<'_> {}
 
 impl HostAssertionOracle for SearchScheduleNamedPredicateHostOracle<'_> {
-    fn leaf_is_true(&mut self, observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
+    fn leaf_is_true(&mut self, _observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
         match leaf {
             ConditionLeaf::Named { name, nodes } => {
-                let key = SearchScheduleNamedPredicateKey::new(
-                    name.to_owned(),
-                    nodes.to_vec(),
-                    active_search_fault_tags(observed.fault_facts()),
-                );
+                let key = SearchScheduleNamedPredicateKey::new(name.to_owned(), nodes.to_vec());
                 match self.truths.truth_for(&key) {
                     Some(value) => value,
                     None => {
@@ -1564,26 +1440,6 @@ impl HostAssertionOracle for SearchScheduleNamedPredicateHostOracle<'_> {
             ConditionLeaf::GuestMarker { .. } => false,
         }
     }
-}
-
-pub(super) fn active_search_fault_tags(facts: &[ObservedFaultFact]) -> Vec<FaultTag> {
-    let mut active = BTreeSet::new();
-    for fact in facts {
-        match fact {
-            ObservedFaultFact::ControlInjected { tag, .. }
-            | ObservedFaultFact::TriggerInjected { tag, .. } => {
-                active.insert(tag.clone());
-            }
-            ObservedFaultFact::ControlHealed { tag, .. }
-            | ObservedFaultFact::TriggerHealed { tag, .. } => {
-                active.remove(tag);
-            }
-            ObservedFaultFact::ScheduledActivation { .. }
-            | ObservedFaultFact::ScheduledProbabilisticChoice { .. }
-            | ObservedFaultFact::ProbabilisticOutcome { .. } => {}
-        }
-    }
-    active.into_iter().collect()
 }
 
 impl<O> host_assertion_oracle_sealed::Sealed for LintedHostAssertionOracle<O> where

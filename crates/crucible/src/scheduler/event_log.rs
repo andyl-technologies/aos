@@ -5,7 +5,10 @@ use crate::{DebugCoordinate, RuntimeState};
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 mod backend_loop;
 mod observation_append;
-pub use backend_loop::BackendQuantumLoop;
+pub use backend_loop::{
+    BackendNetworkOutputInterceptor, BackendNetworkSettlement, BackendQuantumLoop,
+    NoopBackendNetworkOutputInterceptor,
+};
 
 /// Terminal verdict emitted by a scenario trigger at a quantum boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14,6 +17,21 @@ pub enum QuantumTerminalVerdict {
     Passed,
     /// The trigger graph produced one or more deterministic violations.
     Failed(Vec<String>),
+}
+
+/// Engine-owned terminal cause retained in an exact production checkpoint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CheckpointTerminalCause {
+    /// The scenario reached its passing condition.
+    Passed,
+    /// The scenario produced deterministic property violations.
+    Failed(Vec<String>),
+    /// The configured execution budget was exhausted.
+    BudgetExhausted,
+    /// A live backend failed while driving a scheduler boundary.
+    BackendCrash(String),
+    /// The operator explicitly stopped the session.
+    OperatorStop,
 }
 
 /// Advances the system by one scheduler quantum.
@@ -261,6 +279,24 @@ pub trait QuantumLoop {
         Ok(Vec::new())
     }
 
+    /// Captures concrete backend state for a graph checkpoint at this boundary.
+    ///
+    /// Pure model loops have no out-of-graph state and use the no-op default.
+    /// Production backends override this hook to atomically retain every
+    /// execution component needed to restore `configuration`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when concrete checkpoint capture fails or the
+    /// backend is not at the supplied configuration boundary.
+    fn capture_checkpoint(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<Option<ContentHash>, SchedulerError> {
+        let _ = configuration;
+        Ok(None)
+    }
+
     /// Appends non-canonical debugger metadata to the scheduler-owned log.
     ///
     /// The session and scheduler must advance from the same dense offset before
@@ -498,6 +534,18 @@ pub trait QuantumLoop {
         0
     }
 
+    /// Returns the exact resolved-effect trace retained by a live fault runtime.
+    ///
+    /// Loops without a signal-driven fault runtime return `None`. Production
+    /// loops return an unconsumed trace suitable for a reproduction artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the runtime cannot encode a valid trace.
+    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+        Ok(None)
+    }
+
     /// Takes a terminal verdict emitted while driving the previous quantum.
     ///
     /// Live scenario loops override this when trigger evaluation can complete
@@ -505,6 +553,33 @@ pub trait QuantumLoop {
     /// consumed exactly once by the session engine.
     fn take_terminal_verdict(&mut self) -> Option<QuantumTerminalVerdict> {
         None
+    }
+
+    /// Observes a terminal verdict while preserving checkpoint ownership.
+    ///
+    /// The default consumes the verdict for loops whose checkpoint state does
+    /// not own terminal-trigger continuation. Production loops override this
+    /// hook to retain the verdict until the terminal checkpoint is captured.
+    fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
+        self.take_terminal_verdict()
+    }
+
+    /// Retains the engine-owned terminal cause before concrete checkpoint capture.
+    ///
+    /// Pure loops do not own out-of-graph terminal state. Production loops
+    /// override this hook so timeout, crash, and operator-stop savepoints carry
+    /// the same terminal evidence as pass/fail savepoints.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the cause conflicts with already
+    /// retained terminal state.
+    fn prepare_terminal_checkpoint(
+        &mut self,
+        cause: CheckpointTerminalCause,
+    ) -> Result<(), SchedulerError> {
+        let _ = cause;
+        Ok(())
     }
 
     /// Shuts down scheduler/backend resources and returns final log entries.
@@ -614,7 +689,7 @@ pub struct SchedulerConcurrentRunCandidate {
 }
 
 /// Per-node retired-instruction stamp attached to an event-log time.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EventLogIcountStamp {
     /// Node whose retired-instruction counter was sampled, when node-local.
     pub node: Option<NodeId>,
@@ -623,7 +698,7 @@ pub struct EventLogIcountStamp {
 }
 
 /// Virtual-time coordinate enriched with a deterministic icount stamp.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EventLogTime {
     /// Scheduler virtual time at which the entry occurred.
     pub virtual_time: VirtualTime,
@@ -658,7 +733,7 @@ impl EventLogTime {
 }
 
 /// Closed origin set for unified event-log entries.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum EventSource {
     /// A scenario-defined temporal event or fault.
     Scenario {
@@ -685,7 +760,7 @@ pub enum EventSource {
 }
 
 /// Display verbosity for an event-log entry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum EventLevel {
     /// Highest-frequency internal state.
     Trace,
@@ -700,7 +775,7 @@ pub enum EventLevel {
 }
 
 /// Typed value carried by an open-set event payload attribute.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum EventAttributeValue {
     /// Boolean attribute.
     Bool(bool),
@@ -716,8 +791,6 @@ pub enum EventAttributeValue {
     Node(NodeId),
     /// Event-graph identifier attribute.
     Event(EventId),
-    /// Fault identifier attribute.
-    Fault(FaultId),
     /// Virtual-time attribute.
     VirtualTime(VirtualTime),
     /// Retired-instruction count attribute.
@@ -727,7 +800,7 @@ pub enum EventAttributeValue {
 }
 
 /// Open-set event payload read by observability projections.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EventPayload {
     pub(super) kind: String,
     pub(super) attributes: BTreeMap<String, EventAttributeValue>,
@@ -837,15 +910,6 @@ impl EventPayload {
         }
     }
 
-    /// Returns a fault-id attribute by name.
-    #[must_use]
-    pub fn fault(&self, name: &str) -> Option<&FaultId> {
-        match self.attribute(name) {
-            Some(EventAttributeValue::Fault(value)) => Some(value),
-            _ => None,
-        }
-    }
-
     /// Returns a virtual-time attribute by name.
     #[must_use]
     pub fn virtual_time(&self, name: &str) -> Option<VirtualTime> {
@@ -875,7 +939,7 @@ impl EventPayload {
 }
 
 /// One scheduler-emitted entry in the unified event log.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerEventLogEntry {
     /// Dense per-run sequence number assigned by the scheduler append path.
     pub(super) sequence: u64,
@@ -902,7 +966,7 @@ pub type LogEntry = SchedulerEventLogEntry;
 /// Compatibility name for the causal-vs-observational event class.
 pub type EventClass = SchedulerEventLogClass;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(super) struct SchedulerEventLogEntryProvenance;
 
 impl SchedulerEventLogEntry {
@@ -1311,6 +1375,7 @@ impl fmt::Debug for EventLogSegmentStore {
 #[derive(Clone, Debug)]
 pub struct EventLog {
     pub(super) segment_store: EventLogSegmentStore,
+    pub(super) segment_dependencies: Vec<ContentHash>,
     pub(super) prefix: ContentHash,
     pub(super) offset: EventLogOffset,
     pub(super) bytes: u64,
@@ -1368,6 +1433,7 @@ impl EventLog {
         let prefix = scheduler_event_log_prefix_for_resume(offset);
         Self {
             segment_store,
+            segment_dependencies: Vec::new(),
             prefix,
             offset,
             bytes: offset.bytes,
@@ -1498,6 +1564,7 @@ impl EventLog {
         .with_event_log_offset(current_offset);
 
         self.prefix = prefix;
+        self.segment_dependencies.push(segment_hash);
         self.offset = current_offset;
         self.bytes = bytes;
         self.events = events;

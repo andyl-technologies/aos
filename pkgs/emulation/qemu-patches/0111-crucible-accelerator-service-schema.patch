@@ -1,0 +1,24 @@
+diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
+index 654b273db..aa6f166f4 100644
+--- a/plugins/crucible-fault-node.c
++++ b/plugins/crucible-fault-node.c
+@@ -2046,6 +2046,10 @@ static const NodeSchemaField schema_accel_memory[] = {
+     SF(P1, U64), SF(P2, U64), SF(P3, BOOL), SF(P4, U32), SF(P5, BOOL),
+     SF(P6, U64), SF(P7, BOOL), SF(P8, BYTES),
+ };
++static const NodeSchemaField schema_accel_service[] = {
++    SF(P1, RATIO), SF(P2, BOOL), SF(P3, U64), SF(P4, BOOL), SF(P5, U64),
++    SF(P6, BYTES),
++};
+ 
+ static bool node_schema_select(const NodeSchemaField **fields, size_t *count,
+                                const NodeSchemaField *selected,
+@@ -2081,7 +2085,7 @@ static bool node_schema_for(uint16_t command_kind,
+     SCHEMA(ACCELERATOR_LIFECYCLE, schema_accel_lifecycle);
+     SCHEMA(ACCELERATOR_RESULT_TRANSFORM, schema_accel_result);
+     SCHEMA(ACCELERATOR_MEMORY_EVENT, schema_accel_memory);
+-    SCHEMA(ACCELERATOR_SERVICE, schema_service);
++    SCHEMA(ACCELERATOR_SERVICE, schema_accel_service);
+     default:
+         return false;
+     }

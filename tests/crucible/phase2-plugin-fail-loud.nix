@@ -9,11 +9,7 @@
   liveNinePIo ? import ./phase2-qemu-live-9p-io.nix {inherit pkgs lib;},
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   pluginAbi = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs)
@@ -25,17 +21,23 @@
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
-  pluginInbound = builtins.readFile ../../crates/crucible-qemu-plugin/src/inbound.rs;
-  pluginIdleLoop = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs)
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests.rs)
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs)
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/support.rs)
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/wake_cases.rs)
-  ];
+  pluginInbound = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/inbound.rs;
+  };
+  pluginIdleLoop = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+  };
   pluginNetworkTx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs;
-  pluginNetworkRx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs;
-  pluginBlockIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs;
+  pluginNetworkRx = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs)
+  ];
+  pluginBlockIo = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io_tests.rs)
+  ];
   pluginNinePIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/ninep_io.rs;
   pluginWhitebox = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs)
@@ -367,7 +369,7 @@
       }
       {
         label = "idle queue failure no commit test";
-        needle = "idle_loop_rx_queue_failure_does_not_commit_inbound_ring_reads";
+        needle = "idle_loop_rx_delivery_failure_does_not_commit_inbound_ring_reads";
       }
       {
         label = "idle passed delivery tests";
@@ -380,28 +382,28 @@
         needle = "NetworkRxError::CapabilityUnavailable";
       }
       {
-        label = "network RX late delivery";
-        needle = "DeliveryAlreadyPassed";
+        label = "network RX permanent delivery failure";
+        needle = "NetworkRxError::Delivery";
       }
       {
-        label = "network RX queue failure";
-        needle = "NetworkRxError::Queue";
+        label = "network RX canonical backpressure retention";
+        needle = "NetworkRxDeliveryOutcome::Retained";
       }
       {
-        label = "network RX flush failure";
-        needle = "NetworkRxError::Flush";
+        label = "network RX direct-injection capability test";
+        needle = "network_rx_requires_qemu_direct_injection_symbol";
       }
       {
-        label = "network RX capability test";
-        needle = "network_rx_requires_qemu_net_send_and_flush_symbols";
+        label = "network RX permanent failure test";
+        needle = "network_rx_delivery_failure_is_loud";
       }
       {
-        label = "network RX queue failure test";
-        needle = "network_rx_queue_failure_is_loud_without_flush";
+        label = "network RX backpressure retention test";
+        needle = "network_rx_qemu_direct_injection_retains_backpressured_frame";
       }
       {
-        label = "network RX flush failure test";
-        needle = "network_rx_flush_failure_is_loud_after_queueing";
+        label = "network RX direct-injection symbol";
+        needle = "qemu_plugin_net_inject";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/network_tx.rs" pluginNetworkTx [
@@ -565,13 +567,14 @@ in
               queued_idle_advance_requires_qemu_enqueue_symbol \
               queued_idle_advance_rejects_targets_outside_qemu_signed_range \
               inbound_frame_drain_rejects_late_head_without_consuming \
+              inbound_frame_drain_since_rejects_before_floor_without_consuming \
               inbound_frame_select_rejects_late_candidate_frame \
               idle_loop_rejects_late_inbound_ring_before_direct_advance \
-              idle_loop_rx_queue_failure_does_not_commit_inbound_ring_reads \
-              network_rx_requires_qemu_net_send_and_flush_symbols \
-              network_rx_rejects_late_frame_before_queue_or_flush \
-              network_rx_queue_failure_is_loud_without_flush \
-              network_rx_flush_failure_is_loud_after_queueing \
+              idle_loop_rx_delivery_failure_does_not_commit_inbound_ring_reads \
+              network_rx_requires_qemu_direct_injection_symbol \
+              network_rx_rejects_unproven_late_frame \
+              network_rx_delivery_failure_is_loud \
+              network_rx_qemu_direct_injection_retains_backpressured_frame \
               network_tx_rejects_full_ring_loudly_without_dropping_or_sequence_advance \
               block_submit_full_ring_releases_freeze_token_loudly \
               block_poll_guest_completion_failure_still_releases_freeze_token \
@@ -581,6 +584,19 @@ in
               whitebox_guest_input_rejects_late_delivery \
               coverage_registration_on_mode_requires_basic_block_callback_capability
             do
+              listed_tests="$TMPDIR/plugin-tests-$filter"
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$target_dir" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-plugin \
+                "$filter" \
+                -- --list > "$listed_tests"
+              if ! grep -Eq "(^|::)$filter: test$" "$listed_tests"; then
+                echo "requested plugin regression did not resolve to a test: $filter" >&2
+                exit 1
+              fi
               cargo test \
                 --frozen \
                 --offline \

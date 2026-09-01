@@ -66,9 +66,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         print!("{}", nginx_curl_scenario()?.to_canonical_toml()?);
         return Ok(());
     }
-    let [qemu, plugin, kernel, root_image, scenario_path] = args.as_slice() else {
+    let [
+        qemu,
+        plugin,
+        kernel,
+        root_image,
+        run_state_root,
+        scenario_path,
+    ] = args.as_slice()
+    else {
         return Err("usage: crucible-nginx-curl-http-200 --emit-scenario | \
-             QEMU PLUGIN KERNEL ROOT SCENARIO"
+             QEMU PLUGIN KERNEL ROOT RUN_STATE_ROOT SCENARIO"
             .into());
     };
 
@@ -85,7 +93,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // scenario remains content-addressed and portable. The synthetic blob
     // references below therefore identify roles; this configuration resolves
     // those roles to the files used by the production backend.
-    let config = ProductionVmLifecycleConfig::new(qemu, plugin, kernel, root_image)
+    let config = ProductionVmLifecycleConfig::new(qemu, plugin, kernel, root_image, run_state_root)
         .with_root_image_format(ProductionRootImageFormat::Raw)
         .with_kernel_cmdline_prefix("console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init")
         .with_run_ceiling_icount(40_000_000_000)

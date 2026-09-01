@@ -16,7 +16,7 @@
     pname = "crucible-drop-one-exec-boundary-plugin";
     version = "0";
     src = null;
-    buildDeps = [pkgs.glib pkgs.pkg-config qemuPackage];
+    buildDeps = [pkgs.glib pkgs.glib.dev pkgs.pkg-config qemuPackage];
     PLUGIN_SOURCE = "${execBoundaryPluginSource}";
     phases = [
       {
@@ -43,7 +43,7 @@
     pname = "crucible-drop-one-warp-boundary-plugin";
     version = "0";
     src = null;
-    buildDeps = [pkgs.glib pkgs.pkg-config qemuPackage];
+    buildDeps = [pkgs.glib pkgs.glib.dev pkgs.pkg-config qemuPackage];
     PLUGIN_SOURCE = "${warpBoundaryPluginSource}";
     phases = [
       {
@@ -470,7 +470,11 @@
     memoryMib = 128;
     vcpuCount = 2;
     requireGuestPass = false;
-    runTimeoutSeconds = 600;
+    # The drop-one fanout deliberately runs many independent QEMU probes under
+    # the same Nix build. Keep a finite wall-clock bound while allowing the
+    # canonical 500M-instruction migration probe to make progress under that
+    # aggregate CPU contention.
+    runTimeoutSeconds = 1200;
     execBoundaryPluginPackage = execBoundaryPlugin;
     realtimeDeadlineProbe = index == 3;
     rrSwitchQuantum = traceQuantum;

@@ -1016,8 +1016,8 @@ branch on the verdict without parsing output:
 
 ## Cross-file assumptions this file relies on
 
-- The session command set `start/continue/pause/step/stop/inject_fault/
-  heal_fault/set+remove breakpoint/create_savepoint/fork/query` (20 §4) is the
+- The session command set `start/continue/pause/step/stop/set+remove
+  breakpoint/create_savepoint/fork/query` (20 §4) is the
   CLI's only control vocabulary; the CLI adds no command outside it ([CLI-1]).
 - The reproduction artifact is the self-contained `(seed, ScenarioDef, Schedule)`
   bundle (06 §7.1, 24 §12); this file owns the `replay` flow and the
@@ -1440,7 +1440,7 @@ branch on the verdict without parsing output:
   today. It also parses `fuzz <FAMILY>` / `fuzz --family
   <path|hash>` with `--runs`, `--coverage basic-block`, and `--corpus`, maps the
   campaign seed into
-  `CoverageGuidedFuzzConfig`, loads file-backed `crucible.scenario-family.v1`
+  `CoverageGuidedFuzzConfig`, loads file-backed `crucible.scenario-family.v2`
   families, executes local `--backend double fuzz` through
   `ScenarioFamily::fuzz_coverage_guided` or
   `ScenarioFamily::fuzz_coverage_guided_corpus`, persists retained corpus

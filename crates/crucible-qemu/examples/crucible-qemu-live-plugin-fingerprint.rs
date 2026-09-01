@@ -4,14 +4,14 @@
 //! `fingerprint=on`, drives the shared-memory quantum hot path to a fixed
 //! ascending cadence of aggregate-icount targets, reads the black-box
 //! fingerprint sample the plugin publishes at each boundary, and runs the whole
-//! scenario twice (the second run under host CPU load) through
+//! scenario twice (the second run under bounded scheduler preemption) through
 //! `run_single_vm_fingerprint_gate`. It then exercises the instruction-exact
 //! probe backend at one interior icount and asserts the two fixed runs are
 //! byte-identical there. Prints machine-checkable evidence the phase2 gate
 //! asserts.
 //!
 //! ```text
-//! CRUCIBLE_FP_SECOND_RUN_LOAD  "0" disables second-run host load (default on)
+//! CRUCIBLE_FP_SECOND_RUN_SCHEDULER_PREEMPTION  "0" disables second-run bounded scheduler preemption (default on)
 //! CRUCIBLE_FP_TIMEOUT_SECS     per-quantum host wait bound (default 240)
 //! CRUCIBLE_FP_PROBE_ICOUNT     interior probe icount (default 6000000)
 //! CRUCIBLE_FP_DIVERGENCE_DUMP  "1" enables the live mismatch/dump negative control
@@ -80,7 +80,8 @@ mod linux {
             return Err(usage(&program));
         }
 
-        let second_run_host_load = env_flag("CRUCIBLE_FP_SECOND_RUN_LOAD", true)?;
+        let second_run_scheduler_preemption =
+            env_flag("CRUCIBLE_FP_SECOND_RUN_SCHEDULER_PREEMPTION", true)?;
         let timeout_secs = env_u64("CRUCIBLE_FP_TIMEOUT_SECS", 240)?;
         let probe_icount = env_u64("CRUCIBLE_FP_PROBE_ICOUNT", 6_000_000)?;
         let vcpu_count = env_u16("CRUCIBLE_FP_SMP_VCPUS", DEFAULT_VCPU_COUNT)?;
@@ -97,7 +98,7 @@ mod linux {
             PluginFingerprintRunnerConfig::new(&qemu, &plugin, &kernel, &firmware, &run_directory)
                 .map_err(|error| error.to_string())?
                 .with_completion_timeout(Duration::from_secs(timeout_secs))
-                .with_second_run_host_load(second_run_host_load)
+                .with_second_run_scheduler_preemption(second_run_scheduler_preemption)
                 .with_second_run_divergence_control(divergence_dump)
                 .with_synchronous_oracle(synchronous_oracle)
                 .with_smp_vcpus(vcpu_count)
@@ -179,7 +180,15 @@ mod linux {
             hex(&report.matching_final_fingerprint)
         );
         println!("deterministic_run_twice=true");
-        println!("second_run_host_load={second_run_host_load}");
+        println!("second_run_scheduler_preemption={second_run_scheduler_preemption}");
+        println!(
+            "host_adversary={}",
+            if second_run_scheduler_preemption {
+                "bounded-scheduler-preemption"
+            } else {
+                "none"
+            }
+        );
         println!("synchronous_oracle_enabled={synchronous_oracle}");
         println!("synchronous_oracle_matches_all_samples={synchronous_oracle}");
         println!(

@@ -75,19 +75,18 @@ pub use lifecycle::{
     GetReproductionRequest, GetReproductionResponse, GuestIntrospectionDispatch,
     InProcessLifecycleClient, LIFECYCLE_SESSION_MAILBOX_CAPACITY,
     LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS, LifecycleApiError, LifecycleControlPlane,
-    LifecycleLoopFactory, ListScenariosResponse, ListSessionsResponse, QuiescentLifecycleLoop,
-    ReproductionCommandPayload, ReproductionCommandRecord, ReproductionCommandResult,
-    ResumeSessionRequest, ResumeSessionResponse, ScenarioCatalogEntry, ScenarioCatalogSource,
-    ScenarioSummary, SessionId, SessionRef, SessionSummary,
+    LifecycleLoopFactory, LifecycleResourceLimit, ListScenariosResponse, ListSessionsResponse,
+    QuiescentLifecycleLoop, ReproductionCommandPayload, ReproductionCommandRecord,
+    ReproductionCommandResult, ResumeSessionRequest, ResumeSessionResponse, ScenarioCatalogEntry,
+    ScenarioCatalogSource, ScenarioSummary, SessionId, SessionRef, SessionSummary,
 };
 pub use open_set::{
     OPEN_SET_BREAKPOINT_KIND_PREFIX, OPEN_SET_CAPABILITY_CATEGORIES, OPEN_SET_COMMAND_KIND_PREFIX,
-    OPEN_SET_EVENT_KIND_PREFIX, OPEN_SET_FAULT_KIND_PREFIX, OpenSetAttributeValue,
-    OpenSetCapabilities, OpenSetEventEnvelope, OpenSetEventSource, OpenSetEventTime,
-    OpenSetKindSchema, OpenSetPayload, OpenSetPayloadCategory, OpenSetPayloadError,
-    ReceivedOpenSetEventPayload, current_open_set_capabilities, open_set_breakpoint_kind,
-    open_set_command_kind, open_set_event_envelope_from_entry, open_set_fault_kind,
-    open_set_payload_for_breakpoint, open_set_payload_for_fault,
+    OPEN_SET_EVENT_KIND_PREFIX, OpenSetAttributeValue, OpenSetCapabilities, OpenSetEventEnvelope,
+    OpenSetEventSource, OpenSetEventTime, OpenSetKindSchema, OpenSetPayload,
+    OpenSetPayloadCategory, OpenSetPayloadError, ReceivedOpenSetEventPayload,
+    current_open_set_capabilities, open_set_breakpoint_kind, open_set_command_kind,
+    open_set_event_envelope_from_entry, open_set_payload_for_breakpoint,
     open_set_payload_from_event_payload, receive_open_set_event_payload,
     session_command_for_open_set_command_kind, validate_open_set_send_payload,
 };
@@ -100,7 +99,10 @@ pub use rpc_abi::{
     negotiate_rpc_protocol, rpc_status_code_from_wire_name, rpc_status_code_wire_name,
 };
 pub use vm_lifecycle::{
-    ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, build_production_vm_lifecycle_loop,
+    ProductionBlockFaultEvidence, ProductionFaultEvidenceSnapshot, ProductionNetworkOutageEvidence,
+    ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence, ProductionVmLifecycleConfig,
+    ProductionVmLifecycleLoop, build_production_vm_lifecycle_loop,
+    build_production_vm_lifecycle_loop_from_checkpoint, collect_signal_artifact_objects,
     production_vm_search_frontier,
 };
 // Re-exported so control-plane clients (e.g. the CLI) record the *shared*

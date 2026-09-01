@@ -722,7 +722,7 @@ mod tests {
                 rr_switch_quantum: 8,
             })
         );
-        assert_eq!(read_log(), Vec::new());
+        assert_eq!(read_log(), Vec::<u32>::new());
 
         let rejected_cursor =
             PluginVcpuIntrospector::require(Some(read_test_registers), Some(reject_cursor))
@@ -731,7 +731,7 @@ mod tests {
             rejected_cursor.read_nvcpu_fingerprint_inputs(2),
             Err(VcpuIntrospectionError::CursorReadRejected { status: -7 })
         );
-        assert_eq!(read_log(), Vec::new());
+        assert_eq!(read_log(), Vec::<u32>::new());
 
         let empty_registers =
             PluginVcpuIntrospector::require(Some(read_empty_registers), Some(read_test_cursor))

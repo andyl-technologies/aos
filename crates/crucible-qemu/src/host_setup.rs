@@ -16,12 +16,24 @@ use crucible_protocol::{
     SetupDescriptorFds,
 };
 use crucible_shmem::{
-    ABI_VERSION, RegionAllocation, RegionConfig, RegionLayoutError, RegionSerializationError,
-    RegionSetupValidationError, ValidatedSetupRegion, validate_setup_region_header,
+    ABI_VERSION, DequeuedFaultResult, FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR,
+    FAULT_COMMAND_SEMANTIC_VERSION, FaultAbiError, FaultAcceleratorCapabilityManifestV1,
+    FaultBoundaryPhase, FaultCapabilityRowV1, FaultClockCapabilityManifestV1, FaultCommandHeaderV1,
+    FaultCommandKind, FaultHardwareErrorCapabilityManifestV1, FaultInterruptCapabilityManifestV1,
+    FaultRegisterCapabilityManifestV1, FaultResultStatus, FaultSystemCapabilityManifestV1,
+    FaultTargetManifestKind, FaultTargetManifestQueryV1, FaultTransportError,
+    MappedSetupRegionAccessError, RegionAllocation, RegionConfig, RegionLayoutError,
+    RegionSerializationError, RegionSetupValidationError, SetupRegionMapError,
+    ValidatedSetupRegion, decode_fault_capability_manifest, dequeue_fault_result,
+    enqueue_fault_command, fault_capability_manifest_digest, mmap_setup_region,
+    validate_setup_region_header,
 };
 use thiserror::Error;
 
-use crate::{QemuNodeChannelError, QemuPluginIpcControlChannel, QemuSpawnSetupResources};
+use crate::{
+    QemuFaultCapabilityRequirement, QemuNodeChannelError, QemuPluginIpcControlChannel,
+    QemuSpawnSetupResources, fault_capability::QemuExactFaultManifests,
+};
 
 /// Completed host-side setup state for one QEMU plugin node.
 #[derive(Debug)]
@@ -32,6 +44,16 @@ pub struct QemuHostPluginSetup {
     negotiated: NegotiatedHandshake,
     setup_ack: SchedulableNodeSetup,
     region: ValidatedSetupRegion,
+    next_fault_command_sequence: u64,
+    fault_capabilities: Vec<FaultCapabilityRowV1>,
+    fault_capability_digest: [u8; 32],
+    register_manifest: Option<FaultRegisterCapabilityManifestV1>,
+    interrupt_manifest: Option<FaultInterruptCapabilityManifestV1>,
+    hardware_error_manifest: Option<FaultHardwareErrorCapabilityManifestV1>,
+    clock_manifest: Option<FaultClockCapabilityManifestV1>,
+    accelerator_manifest: Option<FaultAcceleratorCapabilityManifestV1>,
+    system_manifest: FaultSystemCapabilityManifestV1,
+    ready_markers: std::collections::BTreeSet<crucible::model::FaultObjectId>,
 }
 
 impl QemuHostPluginSetup {
@@ -57,6 +79,84 @@ impl QemuHostPluginSetup {
     #[must_use]
     pub const fn region(&self) -> ValidatedSetupRegion {
         self.region
+    }
+
+    /// Returns the first command sequence not consumed by setup admission.
+    #[must_use]
+    pub const fn next_fault_command_sequence(&self) -> u64 {
+        self.next_fault_command_sequence
+    }
+
+    /// Returns the immutable QEMU fault capabilities admitted before guest start.
+    #[must_use]
+    pub fn fault_capabilities(&self) -> &[FaultCapabilityRowV1] {
+        &self.fault_capabilities
+    }
+
+    /// Returns the admitted exact capability-manifest digest.
+    #[must_use]
+    pub const fn fault_capability_digest(&self) -> [u8; 32] {
+        self.fault_capability_digest
+    }
+
+    /// Returns the immutable register targets admitted before guest start.
+    #[must_use]
+    pub const fn register_manifest(&self) -> Option<&FaultRegisterCapabilityManifestV1> {
+        self.register_manifest.as_ref()
+    }
+
+    /// Returns the immutable interrupt targets admitted before guest start.
+    #[must_use]
+    pub const fn interrupt_manifest(&self) -> Option<&FaultInterruptCapabilityManifestV1> {
+        self.interrupt_manifest.as_ref()
+    }
+
+    /// Returns the immutable hardware-error targets admitted before guest start.
+    #[must_use]
+    pub const fn hardware_error_manifest(&self) -> Option<&FaultHardwareErrorCapabilityManifestV1> {
+        self.hardware_error_manifest.as_ref()
+    }
+
+    /// Returns the immutable guest-clock sources admitted before guest start.
+    #[must_use]
+    pub const fn clock_manifest(&self) -> Option<&FaultClockCapabilityManifestV1> {
+        self.clock_manifest.as_ref()
+    }
+
+    /// Returns the immutable accelerator targets admitted before guest start.
+    #[must_use]
+    pub const fn accelerator_manifest(&self) -> Option<&FaultAcceleratorCapabilityManifestV1> {
+        self.accelerator_manifest.as_ref()
+    }
+
+    /// Returns the live-admitted QEMU build, patch, shared-memory, and VMState identity.
+    #[must_use]
+    pub const fn system_manifest(&self) -> &FaultSystemCapabilityManifestV1 {
+        &self.system_manifest
+    }
+
+    /// Clones the complete public target manifests admitted during setup.
+    ///
+    /// Discovery gates use this snapshot to demand exact admission from a
+    /// separately launched process. A missing mandatory manifest is treated as
+    /// an incomplete setup rather than silently weakening the comparison.
+    pub(crate) fn exact_fault_manifests(&self) -> Option<QemuExactFaultManifests> {
+        Some(QemuExactFaultManifests {
+            system: self.system_manifest,
+            register: self.register_manifest.clone()?,
+            interrupt: self.interrupt_manifest.clone()?,
+            hardware_error: self.hardware_error_manifest.clone()?,
+            clock: self.clock_manifest.clone()?,
+            accelerator: self.accelerator_manifest.clone(),
+        })
+    }
+
+    /// Returns the launch-bound guest markers eligible to complete ready policies.
+    #[must_use]
+    pub const fn ready_markers(
+        &self,
+    ) -> &std::collections::BTreeSet<crucible::model::FaultObjectId> {
+        &self.ready_markers
     }
 
     /// Returns the retained host shared-memory descriptor.
@@ -203,6 +303,7 @@ pub fn complete_qemu_host_plugin_setup(
     resources: QemuSpawnSetupResources,
     config: RegionConfig,
     slot_index: u32,
+    required_capabilities: &QemuFaultCapabilityRequirement,
 ) -> Result<QemuHostPluginSetup, QemuHostPluginSetupError> {
     let allocation = RegionAllocation::new(config)
         .map_err(|source| QemuHostPluginSetupError::RegionLayout { source })?;
@@ -217,11 +318,75 @@ pub fn complete_qemu_host_plugin_setup(
     let bytes = allocation
         .setup_region_bytes()
         .map_err(|source| QemuHostPluginSetupError::RegionSerialization { source })?;
-    write_shmem_setup_region(resources.shmem_fd(), &bytes)?;
+    let (control_socket, shmem_fd, wake_fd, region_len, fault_node_hash) = resources.into_parts();
+    if required_capabilities
+        .target_manifest()
+        .is_some_and(|required| required.node_hash() != fault_node_hash)
+    {
+        return Err(QemuHostPluginSetupError::AdmissionTargetIdentityMismatch);
+    }
+    write_shmem_setup_region(shmem_fd.as_raw_fd(), &bytes)?;
     let region = validate_setup_region_header(allocation.header().snapshot(), layout.region_size)
         .map_err(|source| QemuHostPluginSetupError::RegionValidation { source })?;
 
-    let (control_socket, shmem_fd, wake_fd, region_len) = resources.into_parts();
+    let mut admission_region = mmap_setup_region(shmem_fd.as_fd(), region_len)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionMap { source })?;
+    enqueue_capability_query(&mut admission_region, slot_index, fault_node_hash)?;
+    if required_capabilities.target_manifest().is_some() {
+        enqueue_target_manifest_query(
+            &mut admission_region,
+            slot_index,
+            fault_node_hash,
+            FaultTargetManifestKind::Register,
+            2,
+        )?;
+    }
+    if required_capabilities.target_manifest().is_some() {
+        enqueue_target_manifest_query(
+            &mut admission_region,
+            slot_index,
+            fault_node_hash,
+            FaultTargetManifestKind::Interrupt,
+            3,
+        )?;
+    }
+    if required_capabilities.target_manifest().is_some() {
+        enqueue_target_manifest_query(
+            &mut admission_region,
+            slot_index,
+            fault_node_hash,
+            FaultTargetManifestKind::Clock,
+            4,
+        )?;
+        enqueue_target_manifest_query(
+            &mut admission_region,
+            slot_index,
+            fault_node_hash,
+            FaultTargetManifestKind::HardwareError,
+            5,
+        )?;
+    }
+    enqueue_target_manifest_query(
+        &mut admission_region,
+        slot_index,
+        fault_node_hash,
+        FaultTargetManifestKind::System,
+        6,
+    )?;
+    if required_capabilities
+        .target_manifest()
+        .and_then(crate::QemuTargetManifestRequirement::exact_accelerator_manifest)
+        .is_some()
+    {
+        enqueue_target_manifest_query(
+            &mut admission_region,
+            slot_index,
+            fault_node_hash,
+            FaultTargetManifestKind::Accelerator,
+            7,
+        )?;
+    }
+
     let mut control = ControlLifecycleStream::connected_unix_stream(control_socket)
         .map_err(|source| QemuHostPluginSetupError::Control { source })?;
     let negotiated = control
@@ -244,6 +409,79 @@ pub fn complete_qemu_host_plugin_setup(
     let setup_ack = control
         .host_accept_setup_ack()
         .map_err(|source| QemuHostPluginSetupError::Control { source })?;
+    let fault_capabilities = accept_capability_result(&mut admission_region, slot_index)?;
+    let register_manifest = required_capabilities
+        .target_manifest()
+        .map(|required| accept_register_manifest(&mut admission_region, slot_index, required))
+        .transpose()?;
+    let interrupt_manifest = required_capabilities
+        .target_manifest()
+        .map(|required| accept_interrupt_manifest(&mut admission_region, slot_index, required))
+        .transpose()?;
+    let clock_manifest = required_capabilities
+        .target_manifest()
+        .map(|_required| {
+            accept_clock_manifest(
+                &mut admission_region,
+                slot_index,
+                required_capabilities
+                    .target_manifest()
+                    .ok_or(QemuHostPluginSetupError::AdmissionTargetIdentity)?,
+            )
+        })
+        .transpose()?;
+    let hardware_error_manifest = required_capabilities
+        .target_manifest()
+        .map(|required| accept_hardware_error_manifest(&mut admission_region, slot_index, required))
+        .transpose()?;
+    let system_manifest = accept_system_manifest(&mut admission_region, slot_index)?;
+    if required_capabilities
+        .exact_system_manifest()
+        .is_some_and(|required| required != &system_manifest)
+    {
+        return Err(QemuHostPluginSetupError::AdmissionSystemManifestMismatch);
+    }
+    let accelerator_manifest = required_capabilities
+        .target_manifest()
+        .and_then(crate::QemuTargetManifestRequirement::exact_accelerator_manifest)
+        .map(|required| accept_accelerator_manifest(&mut admission_region, slot_index, required))
+        .transpose()?;
+    let next_fault_command_sequence = if accelerator_manifest.is_some() { 8 } else { 7 };
+    let expected_capabilities = required_capabilities
+        .rows_for_manifests(
+            register_manifest.as_ref(),
+            interrupt_manifest.as_ref(),
+            hardware_error_manifest.as_ref(),
+            clock_manifest.as_ref(),
+            accelerator_manifest.as_ref(),
+        )
+        .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
+    if fault_capabilities != expected_capabilities {
+        let observed_digest = fault_capability_manifest_digest(&fault_capabilities)
+            .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
+        let required_digest = fault_capability_manifest_digest(&expected_capabilities)
+            .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
+        let first_mismatch_index = expected_capabilities
+            .iter()
+            .zip(&fault_capabilities)
+            .position(|(required, observed)| required != observed)
+            .unwrap_or_else(|| expected_capabilities.len().min(fault_capabilities.len()));
+        return Err(QemuHostPluginSetupError::AdmissionCapabilityMismatch {
+            required_digest,
+            observed_digest,
+            first_mismatch_index,
+            required_row: expected_capabilities
+                .get(first_mismatch_index)
+                .cloned()
+                .map(Box::new),
+            observed_row: fault_capabilities
+                .get(first_mismatch_index)
+                .cloned()
+                .map(Box::new),
+        });
+    }
+    let admitted_capability_digest = fault_capability_manifest_digest(&fault_capabilities)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
     control
         .enter_run_via_shared_memory()
         .map_err(|source| QemuHostPluginSetupError::Control { source })?;
@@ -255,7 +493,528 @@ pub fn complete_qemu_host_plugin_setup(
         negotiated,
         setup_ack,
         region,
+        next_fault_command_sequence,
+        fault_capabilities,
+        fault_capability_digest: admitted_capability_digest,
+        register_manifest,
+        interrupt_manifest,
+        hardware_error_manifest,
+        clock_manifest,
+        accelerator_manifest,
+        system_manifest,
+        ready_markers: required_capabilities.ready_markers().clone(),
     })
+}
+
+fn enqueue_target_manifest_query(
+    region: &mut crucible_shmem::MappedSetupRegion,
+    slot_index: u32,
+    target_node_hash: [u8; 32],
+    kind: FaultTargetManifestKind,
+    command_sequence: u64,
+) -> Result<(), QemuHostPluginSetupError> {
+    let payload = FaultTargetManifestQueryV1 { kind }.encode();
+    let transport = region
+        .fault_command_transport_mut(slot_index)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionAccess { source })?;
+    let mut binding_hasher = blake3::Hasher::new();
+    binding_hasher.update(b"crucible.qemu-fault-target-manifest-admission.v1\0");
+    binding_hasher.update(&target_node_hash);
+    binding_hasher.update(&payload);
+    enqueue_fault_command(
+        transport.ring,
+        transport.slots,
+        transport.arena_header,
+        transport.arena,
+        transport.arena_region_offset,
+        FaultCommandHeaderV1 {
+            abi_major: FAULT_COMMAND_ABI_MAJOR,
+            abi_minor: FAULT_COMMAND_ABI_MINOR,
+            command_kind: FaultCommandKind::QueryTargetManifest,
+            command_flags: 0,
+            phase: FaultBoundaryPhase::NodeBoundary,
+            semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+            command_sequence,
+            target_node_hash,
+            target_icount: 0,
+            authorization_ceiling_icount: 0,
+            binding_hash: *binding_hasher.finalize().as_bytes(),
+            opportunity_hash: [0; 32],
+            expected_precondition_hash: [0; 32],
+            payload_hash: [0; 32],
+            payload_offset: 0,
+            payload_length: 0,
+        },
+        &payload,
+    )
+    .map_err(|source| QemuHostPluginSetupError::AdmissionTransport { source })
+}
+
+fn enqueue_capability_query(
+    region: &mut crucible_shmem::MappedSetupRegion,
+    slot_index: u32,
+    target_node_hash: [u8; 32],
+) -> Result<(), QemuHostPluginSetupError> {
+    if target_node_hash == [0; 32] {
+        return Err(QemuHostPluginSetupError::AdmissionTargetIdentity);
+    }
+    let transport = region
+        .fault_command_transport_mut(slot_index)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionAccess { source })?;
+    let mut binding_hasher = blake3::Hasher::new();
+    binding_hasher.update(b"crucible.qemu-fault-capability-admission.v1\0");
+    binding_hasher.update(&target_node_hash);
+    let header = FaultCommandHeaderV1 {
+        abi_major: FAULT_COMMAND_ABI_MAJOR,
+        abi_minor: FAULT_COMMAND_ABI_MINOR,
+        command_kind: FaultCommandKind::QueryCapabilities,
+        command_flags: 0,
+        phase: FaultBoundaryPhase::NodeBoundary,
+        semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+        command_sequence: 1,
+        target_node_hash,
+        target_icount: 0,
+        authorization_ceiling_icount: 0,
+        binding_hash: *binding_hasher.finalize().as_bytes(),
+        opportunity_hash: [0; 32],
+        expected_precondition_hash: [0; 32],
+        payload_hash: [0; 32],
+        payload_offset: 0,
+        payload_length: 0,
+    };
+    enqueue_fault_command(
+        transport.ring,
+        transport.slots,
+        transport.arena_header,
+        transport.arena,
+        transport.arena_region_offset,
+        header,
+        &[],
+    )
+    .map_err(|source| QemuHostPluginSetupError::AdmissionTransport { source })
+}
+
+fn accept_capability_result(
+    region: &mut crucible_shmem::MappedSetupRegion,
+    slot_index: u32,
+) -> Result<Vec<FaultCapabilityRowV1>, QemuHostPluginSetupError> {
+    let transport = region
+        .fault_result_transport_mut(slot_index)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionAccess { source })?;
+    let result = dequeue_fault_result(
+        transport.ring,
+        transport.slots,
+        transport.arena_header,
+        transport.arena,
+        transport.arena_region_offset,
+    )
+    .map_err(|source| QemuHostPluginSetupError::AdmissionTransport { source })?
+    .ok_or(QemuHostPluginSetupError::AdmissionResultMissing)?;
+    let (header, payload) = match result {
+        DequeuedFaultResult::Valid { header, payload } => (header, payload),
+        DequeuedFaultResult::Invalid {
+            command_sequence,
+            error,
+        } => {
+            return Err(QemuHostPluginSetupError::AdmissionResultInvalid {
+                command_sequence,
+                source: error,
+            });
+        }
+    };
+    if header.command_sequence != 1
+        || header.command_kind != FaultCommandKind::QueryCapabilities as u16
+        || header.status != FaultResultStatus::Applied
+        || header.phase != FaultBoundaryPhase::NodeBoundary
+        || header.capability_version != 1
+        || header.observed_icount != 0
+        || header.applied_icount != 0
+        || header.evidence_hash != *blake3::hash(&payload).as_bytes()
+    {
+        return Err(QemuHostPluginSetupError::AdmissionResultRejected {
+            command_sequence: header.command_sequence,
+            command_kind: header.command_kind,
+            status: header.status,
+            phase: header.phase,
+            capability_version: header.capability_version,
+            observed_icount: header.observed_icount,
+            applied_icount: header.applied_icount,
+            evidence_hash: header.evidence_hash,
+        });
+    }
+    decode_fault_capability_manifest(&payload)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })
+}
+
+fn accept_register_manifest(
+    region: &mut crucible_shmem::MappedSetupRegion,
+    slot_index: u32,
+    required: &crate::QemuTargetManifestRequirement,
+) -> Result<FaultRegisterCapabilityManifestV1, QemuHostPluginSetupError> {
+    let transport = region
+        .fault_result_transport_mut(slot_index)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionAccess { source })?;
+    let result = dequeue_fault_result(
+        transport.ring,
+        transport.slots,
+        transport.arena_header,
+        transport.arena,
+        transport.arena_region_offset,
+    )
+    .map_err(|source| QemuHostPluginSetupError::AdmissionTransport { source })?
+    .ok_or(QemuHostPluginSetupError::AdmissionResultMissing)?;
+    let (header, payload) = match result {
+        DequeuedFaultResult::Valid { header, payload } => (header, payload),
+        DequeuedFaultResult::Invalid {
+            command_sequence,
+            error,
+        } => {
+            return Err(QemuHostPluginSetupError::AdmissionResultInvalid {
+                command_sequence,
+                source: error,
+            });
+        }
+    };
+    if header.command_sequence != 2
+        || header.command_kind != FaultCommandKind::QueryTargetManifest as u16
+        || header.status != FaultResultStatus::Applied
+        || header.phase != FaultBoundaryPhase::NodeBoundary
+        || header.capability_version != 1
+        || header.observed_icount != 0
+        || header.applied_icount != 0
+        || header.evidence_hash != *blake3::hash(&payload).as_bytes()
+    {
+        return Err(QemuHostPluginSetupError::AdmissionResultRejected {
+            command_sequence: header.command_sequence,
+            command_kind: header.command_kind,
+            status: header.status,
+            phase: header.phase,
+            capability_version: header.capability_version,
+            observed_icount: header.observed_icount,
+            applied_icount: header.applied_icount,
+            evidence_hash: header.evidence_hash,
+        });
+    }
+    let manifest = FaultRegisterCapabilityManifestV1::decode(&payload)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
+    if manifest.architecture != required.architecture()
+        || manifest.cpu_model != required.realized_cpu_type()
+    {
+        return Err(QemuHostPluginSetupError::AdmissionTargetManifestMismatch {
+            required_architecture: required.architecture(),
+            observed_architecture: manifest.architecture,
+            required_cpu_model: required.realized_cpu_type(),
+            observed_cpu_model: manifest.cpu_model.clone(),
+        });
+    }
+    Ok(manifest)
+}
+
+fn accept_interrupt_manifest(
+    region: &mut crucible_shmem::MappedSetupRegion,
+    slot_index: u32,
+    required: &crate::QemuTargetManifestRequirement,
+) -> Result<FaultInterruptCapabilityManifestV1, QemuHostPluginSetupError> {
+    let transport = region
+        .fault_result_transport_mut(slot_index)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionAccess { source })?;
+    let result = dequeue_fault_result(
+        transport.ring,
+        transport.slots,
+        transport.arena_header,
+        transport.arena,
+        transport.arena_region_offset,
+    )
+    .map_err(|source| QemuHostPluginSetupError::AdmissionTransport { source })?
+    .ok_or(QemuHostPluginSetupError::AdmissionResultMissing)?;
+    let (header, payload) = match result {
+        DequeuedFaultResult::Valid { header, payload } => (header, payload),
+        DequeuedFaultResult::Invalid {
+            command_sequence,
+            error,
+        } => {
+            return Err(QemuHostPluginSetupError::AdmissionResultInvalid {
+                command_sequence,
+                source: error,
+            });
+        }
+    };
+    if header.command_sequence != 3
+        || header.command_kind != FaultCommandKind::QueryTargetManifest as u16
+        || header.status != FaultResultStatus::Applied
+        || header.phase != FaultBoundaryPhase::NodeBoundary
+        || header.capability_version != 1
+        || header.observed_icount != 0
+        || header.applied_icount != 0
+        || header.evidence_hash != *blake3::hash(&payload).as_bytes()
+    {
+        return Err(QemuHostPluginSetupError::AdmissionResultRejected {
+            command_sequence: header.command_sequence,
+            command_kind: header.command_kind,
+            status: header.status,
+            phase: header.phase,
+            capability_version: header.capability_version,
+            observed_icount: header.observed_icount,
+            applied_icount: header.applied_icount,
+            evidence_hash: header.evidence_hash,
+        });
+    }
+    let manifest = FaultInterruptCapabilityManifestV1::decode(&payload)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
+    if manifest.architecture != required.architecture()
+        || required
+            .exact_interrupt_manifest()
+            .is_some_and(|expected| expected != &manifest)
+    {
+        return Err(QemuHostPluginSetupError::AdmissionTargetManifestMismatch {
+            required_architecture: required.architecture(),
+            observed_architecture: manifest.architecture,
+            required_cpu_model: required.realized_cpu_type(),
+            observed_cpu_model: required.realized_cpu_type(),
+        });
+    }
+    Ok(manifest)
+}
+
+fn accept_clock_manifest(
+    region: &mut crucible_shmem::MappedSetupRegion,
+    slot_index: u32,
+    required: &crate::QemuTargetManifestRequirement,
+) -> Result<FaultClockCapabilityManifestV1, QemuHostPluginSetupError> {
+    let transport = region
+        .fault_result_transport_mut(slot_index)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionAccess { source })?;
+    let result = dequeue_fault_result(
+        transport.ring,
+        transport.slots,
+        transport.arena_header,
+        transport.arena,
+        transport.arena_region_offset,
+    )
+    .map_err(|source| QemuHostPluginSetupError::AdmissionTransport { source })?
+    .ok_or(QemuHostPluginSetupError::AdmissionResultMissing)?;
+    let (header, payload) = match result {
+        DequeuedFaultResult::Valid { header, payload } => (header, payload),
+        DequeuedFaultResult::Invalid {
+            command_sequence,
+            error,
+        } => {
+            return Err(QemuHostPluginSetupError::AdmissionResultInvalid {
+                command_sequence,
+                source: error,
+            });
+        }
+    };
+    if header.command_sequence != 4
+        || header.command_kind != FaultCommandKind::QueryTargetManifest as u16
+        || header.status != FaultResultStatus::Applied
+        || header.phase != FaultBoundaryPhase::NodeBoundary
+        || header.capability_version != 1
+        || header.observed_icount != 0
+        || header.applied_icount != 0
+        || header.evidence_hash != *blake3::hash(&payload).as_bytes()
+    {
+        return Err(QemuHostPluginSetupError::AdmissionResultRejected {
+            command_sequence: header.command_sequence,
+            command_kind: header.command_kind,
+            status: header.status,
+            phase: header.phase,
+            capability_version: header.capability_version,
+            observed_icount: header.observed_icount,
+            applied_icount: header.applied_icount,
+            evidence_hash: header.evidence_hash,
+        });
+    }
+    let manifest = FaultClockCapabilityManifestV1::decode(&payload)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
+    if manifest.architecture != required.architecture()
+        || required
+            .exact_clock_manifest()
+            .is_some_and(|expected| expected != &manifest)
+    {
+        return Err(QemuHostPluginSetupError::AdmissionTargetManifestMismatch {
+            required_architecture: required.architecture(),
+            observed_architecture: manifest.architecture,
+            required_cpu_model: required.realized_cpu_type(),
+            observed_cpu_model: required.realized_cpu_type(),
+        });
+    }
+    Ok(manifest)
+}
+
+fn accept_hardware_error_manifest(
+    region: &mut crucible_shmem::MappedSetupRegion,
+    slot_index: u32,
+    required: &crate::QemuTargetManifestRequirement,
+) -> Result<FaultHardwareErrorCapabilityManifestV1, QemuHostPluginSetupError> {
+    let transport = region
+        .fault_result_transport_mut(slot_index)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionAccess { source })?;
+    let result = dequeue_fault_result(
+        transport.ring,
+        transport.slots,
+        transport.arena_header,
+        transport.arena,
+        transport.arena_region_offset,
+    )
+    .map_err(|source| QemuHostPluginSetupError::AdmissionTransport { source })?
+    .ok_or(QemuHostPluginSetupError::AdmissionResultMissing)?;
+    let (header, payload) = match result {
+        DequeuedFaultResult::Valid { header, payload } => (header, payload),
+        DequeuedFaultResult::Invalid {
+            command_sequence,
+            error,
+        } => {
+            return Err(QemuHostPluginSetupError::AdmissionResultInvalid {
+                command_sequence,
+                source: error,
+            });
+        }
+    };
+    if header.command_sequence != 5
+        || header.command_kind != FaultCommandKind::QueryTargetManifest as u16
+        || header.status != FaultResultStatus::Applied
+        || header.phase != FaultBoundaryPhase::NodeBoundary
+        || header.capability_version != 1
+        || header.observed_icount != 0
+        || header.applied_icount != 0
+        || header.evidence_hash != *blake3::hash(&payload).as_bytes()
+    {
+        return Err(QemuHostPluginSetupError::AdmissionResultRejected {
+            command_sequence: header.command_sequence,
+            command_kind: header.command_kind,
+            status: header.status,
+            phase: header.phase,
+            capability_version: header.capability_version,
+            observed_icount: header.observed_icount,
+            applied_icount: header.applied_icount,
+            evidence_hash: header.evidence_hash,
+        });
+    }
+    let manifest = FaultHardwareErrorCapabilityManifestV1::decode(&payload)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
+    if manifest.architecture != required.architecture()
+        || required
+            .exact_hardware_error_manifest()
+            .is_some_and(|expected| expected != &manifest)
+    {
+        return Err(QemuHostPluginSetupError::AdmissionTargetManifestMismatch {
+            required_architecture: required.architecture(),
+            observed_architecture: manifest.architecture,
+            required_cpu_model: required.realized_cpu_type(),
+            observed_cpu_model: required.realized_cpu_type(),
+        });
+    }
+    Ok(manifest)
+}
+
+fn accept_accelerator_manifest(
+    region: &mut crucible_shmem::MappedSetupRegion,
+    slot_index: u32,
+    required: &FaultAcceleratorCapabilityManifestV1,
+) -> Result<FaultAcceleratorCapabilityManifestV1, QemuHostPluginSetupError> {
+    let transport = region
+        .fault_result_transport_mut(slot_index)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionAccess { source })?;
+    let result = dequeue_fault_result(
+        transport.ring,
+        transport.slots,
+        transport.arena_header,
+        transport.arena,
+        transport.arena_region_offset,
+    )
+    .map_err(|source| QemuHostPluginSetupError::AdmissionTransport { source })?
+    .ok_or(QemuHostPluginSetupError::AdmissionResultMissing)?;
+    let (header, payload) = match result {
+        DequeuedFaultResult::Valid { header, payload } => (header, payload),
+        DequeuedFaultResult::Invalid {
+            command_sequence,
+            error,
+        } => {
+            return Err(QemuHostPluginSetupError::AdmissionResultInvalid {
+                command_sequence,
+                source: error,
+            });
+        }
+    };
+    if header.command_sequence != 7
+        || header.command_kind != FaultCommandKind::QueryTargetManifest as u16
+        || header.status != FaultResultStatus::Applied
+        || header.phase != FaultBoundaryPhase::NodeBoundary
+        || header.capability_version != 1
+        || header.observed_icount != 0
+        || header.applied_icount != 0
+        || header.evidence_hash != *blake3::hash(&payload).as_bytes()
+    {
+        return Err(QemuHostPluginSetupError::AdmissionResultRejected {
+            command_sequence: header.command_sequence,
+            command_kind: header.command_kind,
+            status: header.status,
+            phase: header.phase,
+            capability_version: header.capability_version,
+            observed_icount: header.observed_icount,
+            applied_icount: header.applied_icount,
+            evidence_hash: header.evidence_hash,
+        });
+    }
+    let manifest = FaultAcceleratorCapabilityManifestV1::decode(&payload)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
+    if &manifest != required {
+        return Err(QemuHostPluginSetupError::AdmissionAcceleratorManifestMismatch);
+    }
+    Ok(manifest)
+}
+
+fn accept_system_manifest(
+    region: &mut crucible_shmem::MappedSetupRegion,
+    slot_index: u32,
+) -> Result<FaultSystemCapabilityManifestV1, QemuHostPluginSetupError> {
+    let transport = region
+        .fault_result_transport_mut(slot_index)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionAccess { source })?;
+    let result = dequeue_fault_result(
+        transport.ring,
+        transport.slots,
+        transport.arena_header,
+        transport.arena,
+        transport.arena_region_offset,
+    )
+    .map_err(|source| QemuHostPluginSetupError::AdmissionTransport { source })?
+    .ok_or(QemuHostPluginSetupError::AdmissionResultMissing)?;
+    let (header, payload) = match result {
+        DequeuedFaultResult::Valid { header, payload } => (header, payload),
+        DequeuedFaultResult::Invalid {
+            command_sequence,
+            error,
+        } => {
+            return Err(QemuHostPluginSetupError::AdmissionResultInvalid {
+                command_sequence,
+                source: error,
+            });
+        }
+    };
+    if header.command_sequence != 6
+        || header.command_kind != FaultCommandKind::QueryTargetManifest as u16
+        || header.status != FaultResultStatus::Applied
+        || header.phase != FaultBoundaryPhase::NodeBoundary
+        || header.capability_version != 1
+        || header.observed_icount != 0
+        || header.applied_icount != 0
+        || header.evidence_hash != *blake3::hash(&payload).as_bytes()
+    {
+        return Err(QemuHostPluginSetupError::AdmissionResultRejected {
+            command_sequence: header.command_sequence,
+            command_kind: header.command_kind,
+            status: header.status,
+            phase: header.phase,
+            capability_version: header.capability_version,
+            observed_icount: header.observed_icount,
+            applied_icount: header.applied_icount,
+            evidence_hash: header.evidence_hash,
+        });
+    }
+    FaultSystemCapabilityManifestV1::decode(&payload)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })
 }
 
 fn write_shmem_setup_region(fd: RawFd, bytes: &[u8]) -> Result<(), QemuHostPluginSetupError> {
@@ -354,6 +1113,105 @@ pub enum QemuHostPluginSetupError {
         /// Underlying region validation error.
         source: RegionSetupValidationError,
     },
+    /// The host could not map the setup region for pre-start capability admission.
+    #[error("fault capability admission mapping failed: {source}")]
+    AdmissionMap {
+        /// Shared-memory mapping failure.
+        source: SetupRegionMapError,
+    },
+    /// Spawn resources were not bound to a canonical nonzero node identity.
+    #[error("fault capability admission target identity is the reserved all-zero hash")]
+    AdmissionTargetIdentity,
+    /// Spawn resources did not match the launch-bound World node identity.
+    #[error("fault capability admission target identity differs from the launch manifest")]
+    AdmissionTargetIdentityMismatch,
+    /// The mapped region could not expose this VM's dedicated fault transport.
+    #[error("fault capability admission transport access failed: {source}")]
+    AdmissionAccess {
+        /// Typed mapping failure.
+        source: MappedSetupRegionAccessError,
+    },
+    /// The mandatory capability command/result transport failed.
+    #[error("fault capability admission transport failed: {source}")]
+    AdmissionTransport {
+        /// Lossless ring or arena failure.
+        source: FaultTransportError,
+    },
+    /// The plugin acknowledged setup without publishing the mandatory result.
+    #[error("fault capability admission result is missing after setup acknowledgement")]
+    AdmissionResultMissing,
+    /// The plugin published an ABI-invalid capability result.
+    #[error("fault capability result sequence {command_sequence} is invalid: {source}")]
+    AdmissionResultInvalid {
+        /// Result sequence recovered from the invalid envelope.
+        command_sequence: u64,
+        /// Exact ABI validation failure.
+        source: FaultAbiError,
+    },
+    /// QEMU rejected or miscorrelated the mandatory capability query.
+    #[error(
+        "fault capability result mismatch: sequence={command_sequence} kind={command_kind} status={status:?} phase={phase:?} capability_version={capability_version} observed_icount={observed_icount} applied_icount={applied_icount} evidence_hash={evidence_hash:02x?}"
+    )]
+    AdmissionResultRejected {
+        /// Returned sequence.
+        command_sequence: u64,
+        /// Returned raw command kind.
+        command_kind: u16,
+        /// Returned status.
+        status: FaultResultStatus,
+        /// Returned boundary phase.
+        phase: FaultBoundaryPhase,
+        /// Returned capability ABI version.
+        capability_version: u32,
+        /// Returned setup-time observation coordinate.
+        observed_icount: u64,
+        /// Returned setup-time application coordinate.
+        applied_icount: u64,
+        /// Returned evidence digest.
+        evidence_hash: [u8; 32],
+    },
+    /// The returned immutable capability manifest was malformed.
+    #[error("fault capability manifest is invalid: {source}")]
+    AdmissionManifest {
+        /// Exact manifest codec failure.
+        source: FaultAbiError,
+    },
+    /// QEMU advertised a valid manifest other than the launch-bound exact set.
+    #[error(
+        "fault capability manifest mismatch at row {first_mismatch_index}: required_digest={required_digest:02x?} observed_digest={observed_digest:02x?} required_row={required_row:?} observed_row={observed_row:?}"
+    )]
+    AdmissionCapabilityMismatch {
+        /// Digest of the launch-bound exact manifest.
+        required_digest: [u8; 32],
+        /// Digest of the manifest returned by live QEMU.
+        observed_digest: [u8; 32],
+        /// First row index at which the exact manifests differ.
+        first_mismatch_index: usize,
+        /// Launch-bound row at the first mismatch, or `None` when QEMU has an extra row.
+        required_row: Option<Box<FaultCapabilityRowV1>>,
+        /// QEMU row at the first mismatch, or `None` when QEMU omitted a row.
+        observed_row: Option<Box<FaultCapabilityRowV1>>,
+    },
+    /// QEMU's immutable build, patch, ABI, or VMState identity changed across replay.
+    #[error("fault system manifest differs from the launch-bound exact identity")]
+    AdmissionSystemManifestMismatch,
+    /// QEMU's target manifest described a different launch identity.
+    #[error(
+        "fault target manifest mismatch: required architecture={required_architecture:?} cpu_model={required_cpu_model}; observed architecture={observed_architecture:?} cpu_model={observed_cpu_model}"
+    )]
+    AdmissionTargetManifestMismatch {
+        /// Launch-bound architecture.
+        required_architecture: crucible_shmem::FaultCapabilityScope,
+        /// Architecture returned by live QEMU.
+        observed_architecture: crucible_shmem::FaultCapabilityScope,
+        /// Launch-bound CPU model.
+        required_cpu_model: String,
+        /// CPU model returned by live QEMU.
+        observed_cpu_model: String,
+    },
+    /// QEMU's accelerator manifest differed from the exact World declaration.
+    #[error("accelerator target manifest differs from the launch-bound World manifest")]
+    AdmissionAcceleratorManifestMismatch,
     /// The control-protocol lifecycle failed.
     #[error("setup control lifecycle failed")]
     Control {
@@ -363,7 +1221,7 @@ pub enum QemuHostPluginSetupError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     use std::error::Error;
@@ -381,8 +1239,8 @@ mod tests {
     const EVENTFD_WAKE_PROBE: u64 = 7;
 
     #[test]
-    fn qemu_host_rejects_a_v1_plugin_against_the_v5_region() {
-        assert_eq!(ABI_VERSION, 6);
+    fn qemu_host_rejects_a_v1_plugin_against_the_v15_region() {
+        assert_eq!(ABI_VERSION, 17);
         let config = HostHandshakeConfig {
             proto_version: CONTROL_PROTOCOL_VERSION,
             abi_version: ABI_VERSION,
@@ -412,8 +1270,12 @@ mod tests {
         let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
         let plugin_peer = thread::spawn(move || plugin_peer_complete_setup(plugin_socket));
 
-        let mut setup =
-            complete_qemu_host_plugin_setup(resources.into_setup_resources(), config, 0)?;
+        let mut setup = complete_qemu_host_plugin_setup(
+            resources.into_setup_resources(),
+            config,
+            0,
+            &QemuFaultCapabilityRequirement::abi_boundary_v1(),
+        )?;
 
         assert_eq!(
             setup.control_state(),
@@ -463,9 +1325,14 @@ mod tests {
         let (resources, _plugin_socket) =
             create_test_spawn_resource_pair(layout.region_size + 4096)?;
 
-        let error = complete_qemu_host_plugin_setup(resources.into_setup_resources(), config, 0)
-            .err()
-            .ok_or("setup should reject mismatched spawn region length")?;
+        let error = complete_qemu_host_plugin_setup(
+            resources.into_setup_resources(),
+            config,
+            0,
+            &QemuFaultCapabilityRequirement::abi_boundary_v1(),
+        )
+        .err()
+        .ok_or("setup should reject mismatched spawn region length")?;
 
         assert!(matches!(
             error,
@@ -479,8 +1346,73 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn qemu_host_plugin_setup_rejects_spawn_node_identity_mismatch_before_protocol()
+    -> Result<(), Box<dyn Error>> {
+        let config = RegionConfig::new(1, 4, 0);
+        let layout = RegionLayout::for_config(config)?;
+        let (resources, _plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+        let required = QemuFaultCapabilityRequirement::live_gate_v1(
+            crate::LivePluginGuestArchitecture::X86_64,
+            "qemu64",
+            "different-node",
+            false,
+        );
+
+        let error =
+            complete_qemu_host_plugin_setup(resources.into_setup_resources(), config, 0, &required)
+                .err()
+                .ok_or("setup should reject a mismatched launch node")?;
+
+        assert!(matches!(
+            error,
+            QemuHostPluginSetupError::AdmissionTargetIdentityMismatch
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn qemu_host_plugin_setup_rejects_a_valid_but_inexact_capability_manifest()
+    -> Result<(), Box<dyn Error>> {
+        let config = RegionConfig::new(1, 4, 0);
+        let layout = RegionLayout::for_config(config)?;
+        let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+        let required = QemuFaultCapabilityRequirement::abi_boundary_v1();
+        let mut observed = required.rows().to_vec();
+        let _omitted_boundary = observed
+            .pop()
+            .ok_or("baseline manifest must not be empty")?;
+        let plugin_peer =
+            thread::spawn(move || plugin_peer_complete_setup_with_rows(plugin_socket, &observed));
+
+        let error =
+            complete_qemu_host_plugin_setup(resources.into_setup_resources(), config, 0, &required)
+                .err()
+                .ok_or("setup should reject an inexact manifest")?;
+        assert!(matches!(
+            error,
+            QemuHostPluginSetupError::AdmissionCapabilityMismatch {
+                required_digest,
+                observed_digest,
+                ..
+            } if required_digest == required.digest() && observed_digest != required_digest
+        ));
+        let _peer_result = plugin_peer
+            .join()
+            .map_err(|_panic| "plugin setup peer panicked")?;
+        Ok(())
+    }
+
     fn plugin_peer_complete_setup(
         plugin_socket: UnixStream,
+    ) -> Result<ValidatedSetupRegion, String> {
+        let requirement = QemuFaultCapabilityRequirement::abi_boundary_v1();
+        plugin_peer_complete_setup_with_rows(plugin_socket, requirement.rows())
+    }
+
+    fn plugin_peer_complete_setup_with_rows(
+        plugin_socket: UnixStream,
+        rows: &[FaultCapabilityRowV1],
     ) -> Result<ValidatedSetupRegion, String> {
         let mut plugin = ControlLifecycleStream::connected_unix_stream(plugin_socket)
             .map_err(|error| error.to_string())?;
@@ -500,7 +1432,7 @@ mod tests {
         let setup = plugin
             .plugin_recv_setup_with_descriptors()
             .map_err(|error| error.to_string())?;
-        let mapped = mmap_setup_region(setup.descriptors.shmem_fd.as_fd(), setup.region_len)
+        let mut mapped = mmap_setup_region(setup.descriptors.shmem_fd.as_fd(), setup.region_len)
             .map_err(|error| error.to_string())?;
         let validated = mapped
             .validate_header()
@@ -508,6 +1440,9 @@ mod tests {
         assert_fd_open(setup.descriptors.wake_fd.as_raw_fd()).map_err(|error| error.to_string())?;
         write_eventfd_counter(setup.descriptors.wake_fd.as_raw_fd(), EVENTFD_WAKE_PROBE)
             .map_err(|error| error.to_string())?;
+
+        publish_capability_result(&mut mapped, rows).map_err(|error| error.to_string())?;
+        publish_system_manifest_result(&mut mapped).map_err(|error| error.to_string())?;
 
         plugin
             .plugin_send_ready_setup_ack()
@@ -520,6 +1455,140 @@ mod tests {
             .map_err(|error| error.to_string())?;
 
         Ok(validated)
+    }
+
+    pub(crate) fn publish_test_admission_results(
+        mapped: &mut crucible_shmem::MappedSetupRegion,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let rows = QemuFaultCapabilityRequirement::abi_boundary_v1();
+        publish_capability_result(mapped, rows.rows())?;
+        publish_system_manifest_result(mapped)
+    }
+
+    fn publish_capability_result(
+        mapped: &mut crucible_shmem::MappedSetupRegion,
+        rows: &[FaultCapabilityRowV1],
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let command_transport = mapped.fault_command_transport_mut(0)?;
+        let command = crucible_shmem::dequeue_fault_command(
+            command_transport.ring,
+            command_transport.slots,
+            command_transport.arena_header,
+            command_transport.arena,
+            command_transport.arena_region_offset,
+        )?
+        .ok_or("capability query was not published before descriptor handoff")?;
+        let header = match command {
+            crucible_shmem::DequeuedFaultCommand::Valid { header, payload } => {
+                if !payload.is_empty() {
+                    return Err("capability query payload must be empty".into());
+                }
+                header
+            }
+            crucible_shmem::DequeuedFaultCommand::Rejected { error, .. } => {
+                return Err(format!("capability query was invalid: {error}").into());
+            }
+        };
+        if header.command_kind != FaultCommandKind::QueryCapabilities
+            || header.command_sequence != 1
+        {
+            return Err("unexpected setup-time fault command".into());
+        }
+        let payload = crucible_shmem::encode_fault_capability_manifest(rows)?;
+        let result_transport = mapped.fault_result_transport_mut(0)?;
+        crucible_shmem::enqueue_fault_result(
+            result_transport.ring,
+            result_transport.slots,
+            result_transport.arena_header,
+            result_transport.arena,
+            result_transport.arena_region_offset,
+            crucible_shmem::FaultResultHeaderV1 {
+                abi_major: FAULT_COMMAND_ABI_MAJOR,
+                abi_minor: FAULT_COMMAND_ABI_MINOR,
+                command_kind: FaultCommandKind::QueryCapabilities as u16,
+                status: FaultResultStatus::Applied,
+                semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+                command_sequence: 1,
+                observed_icount: 0,
+                applied_icount: 0,
+                capability_version: 1,
+                phase: FaultBoundaryPhase::NodeBoundary,
+                before_hash: [0; 32],
+                after_hash: [0; 32],
+                evidence_hash: *blake3::hash(&payload).as_bytes(),
+                result_payload_hash: [0; 32],
+                result_offset: 0,
+                result_length: 0,
+            },
+            &payload,
+        )?;
+        Ok(())
+    }
+
+    fn publish_system_manifest_result(
+        mapped: &mut crucible_shmem::MappedSetupRegion,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let command_transport = mapped.fault_command_transport_mut(0)?;
+        let command = crucible_shmem::dequeue_fault_command(
+            command_transport.ring,
+            command_transport.slots,
+            command_transport.arena_header,
+            command_transport.arena,
+            command_transport.arena_region_offset,
+        )?
+        .ok_or("system-manifest query was not published before descriptor handoff")?;
+        let (header, query_payload) = match command {
+            crucible_shmem::DequeuedFaultCommand::Valid { header, payload } => (header, payload),
+            crucible_shmem::DequeuedFaultCommand::Rejected { error, .. } => {
+                return Err(format!("system-manifest query was invalid: {error}").into());
+            }
+        };
+        let query = FaultTargetManifestQueryV1::decode(&query_payload)?;
+        if header.command_kind != FaultCommandKind::QueryTargetManifest
+            || header.command_sequence != 6
+            || query.kind != FaultTargetManifestKind::System
+        {
+            return Err("unexpected setup-time system-manifest command".into());
+        }
+
+        let payload = FaultSystemCapabilityManifestV1 {
+            semantic_version: 1,
+            vmstate_format_version: 1,
+            vmstate_section_count: 9,
+            vmstate_sections_sha256: [1; 32],
+            emulator_build_id: [2; 32],
+            emulator_patch_series_hash: [3; 32],
+            shmem_header_hash: [4; 32],
+        }
+        .encode()?;
+        let result_transport = mapped.fault_result_transport_mut(0)?;
+        crucible_shmem::enqueue_fault_result(
+            result_transport.ring,
+            result_transport.slots,
+            result_transport.arena_header,
+            result_transport.arena,
+            result_transport.arena_region_offset,
+            crucible_shmem::FaultResultHeaderV1 {
+                abi_major: FAULT_COMMAND_ABI_MAJOR,
+                abi_minor: FAULT_COMMAND_ABI_MINOR,
+                command_kind: FaultCommandKind::QueryTargetManifest as u16,
+                status: FaultResultStatus::Applied,
+                semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+                command_sequence: 6,
+                observed_icount: 0,
+                applied_icount: 0,
+                capability_version: 1,
+                phase: FaultBoundaryPhase::NodeBoundary,
+                before_hash: [0; 32],
+                after_hash: [0; 32],
+                evidence_hash: *blake3::hash(&payload).as_bytes(),
+                result_payload_hash: [0; 32],
+                result_offset: 0,
+                result_length: 0,
+            },
+            &payload,
+        )?;
+        Ok(())
     }
 
     fn assert_fd_open(fd: RawFd) -> Result<(), io::Error> {

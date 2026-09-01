@@ -433,35 +433,6 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
         .unwrap_or_else(|error| panic!("RPC resumed destroy session should decode: {error}"));
     assert!(resumed_destroyed.stopped);
 
-    let injected_fault = rpc
-        .send_command(SendRequest::new(
-            inline_created.session,
-            198,
-            SessionCommandKind::InjectFault
-                .representative_command()
-                .expect("InjectFault has a representative payload"),
-        ))
-        .await
-        .unwrap_or_else(|error| panic!("RPC InjectFault should decode: {error}"));
-    assert_eq!(injected_fault.result.status, CommandResultStatus::Accepted);
-    let healed_fault = rpc
-        .send_command(SendRequest::new(
-            inline_created.session,
-            199,
-            SessionCommandKind::HealFault
-                .representative_command()
-                .expect("HealFault has a representative payload"),
-        ))
-        .await
-        .unwrap_or_else(|error| panic!("RPC HealFault should decode: {error}"));
-    assert_eq!(healed_fault.result.status, CommandResultStatus::Accepted);
-    let fault_reproduction = rpc
-        .get_reproduction(GetReproductionRequest::new(inline_created.session))
-        .await
-        .unwrap_or_else(|error| panic!("RPC fault reproduction should decode: {error}"));
-    assert_eq!(fault_reproduction.commands.len(), 2);
-    assert_fault_reproduction_records(&fault_reproduction.commands);
-
     let stale_epoch = inline_created.session.epoch.saturating_add(1);
     let stale_watch_error = match rpc
         .watch_attach(AttachRequest::new(inline_created.session).with_expected_epoch(stale_epoch))
@@ -1405,7 +1376,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     assert_rpc_snapshot(
         "hello-request",
         &hello,
-        "crucible.rpc/hello-request\nversion=5.0.0+crucible-rpc-abi-v5\nclient=contract-client\n",
+        "crucible.rpc/hello-request\nversion=5.1.0+crucible-rpc-abi-v5\nclient=contract-client\n",
     );
     assert_rpc_snapshot(
         "list-scenarios-request",
@@ -1566,7 +1537,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     assert_rpc_snapshot(
         "hello-response",
         &hello_response,
-        "crucible.rpc/hello-response\nversion=5.0.0+crucible-rpc-abi-v5\nserver=contract-server\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.fault.*,crucible.event.*\n",
+        "crucible.rpc/hello-response\nversion=5.1.0+crucible-rpc-abi-v5\nserver=contract-server\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.event.*\n",
     );
     assert_rpc_snapshot(
         "list-scenarios-response",
@@ -1664,7 +1635,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
             }),
         }),
         &format!(
-            "crucible.rpc/attached-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nevent-log-len=9\nstate=paused\nversion=5.0.0+crucible-rpc-abi-v5\ncommands=\nsnapshot=9|2|1|1|8\nreproduction=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
+            "crucible.rpc/attached-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nevent-log-len=9\nstate=paused\nversion=5.1.0+crucible-rpc-abi-v5\ncommands=\nsnapshot=9|2|1|1|8\nreproduction=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
         ),
     );
     assert_rpc_snapshot(

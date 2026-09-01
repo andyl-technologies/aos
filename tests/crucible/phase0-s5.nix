@@ -4,6 +4,7 @@
 }: let
   workloadSource = builtins.readFile ./phase0-s5-workload.c;
   pluginSource = builtins.readFile ./phase0-s5-virtual-memory-plugin.c;
+  rrSwitchQuantum = 4096;
 
   workload = pkgs.mkDerivation {
     pname = "crucible-phase0-s5-workload";
@@ -171,6 +172,7 @@ in
       pkgs.diffutils
       pkgs.gawk
       pkgs.glib
+      pkgs.glib.dev
       pkgs.grep
       pkgs.jq
       pkgs.pkg-config
@@ -181,6 +183,7 @@ in
     INITRAMFS = "${initramfs}/initrd.img";
     KERNEL = builtins.toString pkgs.linux;
     QEMU = "${pkgs.qemu-crucible}/bin/qemu-system-x86_64";
+    RR_SWITCH_QUANTUM = builtins.toString rrSwitchQuantum;
 
     phases = [
       {
@@ -299,7 +302,7 @@ in
               -monitor none \
               -machine q35 \
               -accel sim,thread=single \
-              -icount shift=0,sleep=off,align=off \
+              -icount shift=0,sleep=off,align=off,rr_switch_quantum="$RR_SWITCH_QUANTUM" \
               -cpu qemu64 \
               -m 256 \
               -smp 1 \
@@ -483,6 +486,7 @@ in
             echo page_spanning_hash="$span_hash"
             echo paged_mmap_hash="$paged_hash"
             echo marker_icounts="$marker_icounts"
+            echo rr_switch_quantum="$RR_SWITCH_QUANTUM"
             echo marker_icounts_reproducible=true
             echo read_bytes_match_expected=true
             echo read_hashes_reproducible=true

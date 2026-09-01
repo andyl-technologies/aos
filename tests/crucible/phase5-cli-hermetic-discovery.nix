@@ -6,11 +6,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
@@ -189,8 +185,8 @@
     ]
     ++ failuresFor "crates/crucible-cli/Cargo.toml" cliCargo [
       {
-        label = "CLI depends on guest-host protocol ABI source";
-        needle = "crucible-protocol = { path = \"../crucible-protocol\" }";
+        label = "CLI depends on the API-owned guest-host protocol surface";
+        needle = "crucible-api = { path = \"../crucible-api\" }";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible/crucible.nix" cruciblePkg [
@@ -212,7 +208,7 @@
       }
       {
         label = "separate suite runtime closure";
-        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures]";
+        needle = "runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux]";
       }
     ]
     ++ failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginPkg [
@@ -338,8 +334,8 @@ in
             printf 'qemu_crucible_patches_applied=true\n'
             printf 'qemu_sim_capability=qemu-crucible\n'
             printf 'qemu_patch_series_hash=sha256-test-qemu-patch-series\n'
-            printf 'qemu_shmem_abi_version=6\n'
-            printf 'qemu_shmem_abi=crucible-shmem-abi-v6\n'
+            printf 'qemu_shmem_abi_version=17\n'
+            printf 'qemu_shmem_abi=crucible-shmem-abi-v17\n'
             printf 'qemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\n'
             printf 'qemu_shmem_header_hash=sha256-test-shmem-header\n'
             printf 'qemu_build_id=gate-aos-qemu-build\n'
@@ -348,10 +344,10 @@ in
             printf 'package=crucible-qemu-plugin\n'
             printf 'qemu_package=qemu-crucible\n'
             printf 'qemu_build_id=gate-aos-qemu-build\n'
-            printf 'shmem_abi_version=6\n'
-            printf 'shmem_abi=crucible-shmem-abi-v6\n'
+            printf 'shmem_abi_version=17\n'
+            printf 'shmem_abi=crucible-shmem-abi-v17\n'
             printf 'shmem_generated_header_hash=sha256-test-shmem-header\n'
-            printf 'plugin_abi=crucible-shmem-abi-v6\n'
+            printf 'plugin_abi=crucible-shmem-abi-v17\n'
           } > "$plugin_fixture/nix-support/crucible-qemu-plugin-build-info"
           export CRUCIBLE_AOS_QEMU="$qemu_fixture/bin/qemu-system-x86_64"
           export CRUCIBLE_AOS_PLUGIN="$plugin_fixture/lib/libcrucible_qemu_plugin.so"

@@ -1,0 +1,16 @@
+diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
+index 216b4e5f9..654b273db 100644
+--- a/plugins/crucible-fault-node.c
++++ b/plugins/crucible-fault-node.c
+@@ -4478,9 +4478,9 @@ static bool node_memory_rule_admissible(QemuCrucibleFaultRule *rule)
+                 (((classes & QEMU_CRUCIBLE_MEMORY_FETCH) != 0 &&
+                   (classes & ~QEMU_CRUCIBLE_MEMORY_FETCH) != 0) ||
+                  ((classes & QEMU_CRUCIBLE_MEMORY_FETCH) != 0 &&
+-                  exception.vector != 3) ||
++                  exception.vector != 2) ||
+                  ((classes & QEMU_CRUCIBLE_MEMORY_FETCH) == 0 &&
+-                  exception.vector != 4))) {
++                  exception.vector != 3))) {
+                 return false;
+             }
+         }

@@ -5,11 +5,7 @@
   taskIds ? ["T-HARN-25"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   reproduction = builtins.readFile ../../crates/crucible-harness/src/reproduction.rs;
   reproductionTest = builtins.readFile ../../crates/crucible-harness/tests/reproduction_artifact.rs;

@@ -20,8 +20,8 @@ use crate::{
     WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HINT_BYTES,
     WHITEBOX_DOORBELL_X86_64_ABI, WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES,
     WhiteboxDoorbellCapabilities, WhiteboxDoorbellRegistrationPlan, WhiteboxDoorbellSetupResources,
-    WhiteboxDoorbellSetupValidation, WhiteboxDoorbellTrapEvent, WhiteboxMarkerSinkError,
-    handle_whitebox_doorbell_callback,
+    WhiteboxDoorbellSetupValidation, WhiteboxDoorbellTrapEvent, WhiteboxMarkerPayload,
+    WhiteboxMarkerSinkError, handle_whitebox_doorbell_callback,
 };
 
 mod api;
@@ -30,6 +30,8 @@ mod error;
 mod guest_introspection;
 mod location;
 mod marker;
+#[cfg(test)]
+mod test_restore;
 pub(crate) use api::LiveWhiteboxApis;
 use api::{QemuPluginRegDescriptor, QemuPluginRegister};
 use app_random::LiveAppRandomState;
@@ -38,12 +40,26 @@ use error::write_stderr;
 use location::{LiveWhiteboxInstructionLocation, LiveWhiteboxTbEntry};
 use marker::LiveMarkerSink;
 pub(crate) use marker::LiveWhiteboxMarkerShmemProducer;
+#[cfg(test)]
+pub(super) use test_restore::install_app_random_restore_state_for_test;
 
 const QEMU_PLUGIN_CB_R_REGS: c_int = 1;
 const QEMU_PLUGIN_CB_NO_REGS: c_int = 0;
 const MAX_LIVE_WHITEBOX_VCPUS: usize = 64;
 
 static LIVE_WHITEBOX_STATE: AtomicPtr<LiveWhiteboxState> = AtomicPtr::new(std::ptr::null_mut());
+static LIVE_APP_RANDOM_STATE: AtomicPtr<LiveAppRandomState> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Restores the launch-authenticated app-random continuation before restore ACK.
+pub(super) fn restore_app_random_continuation() -> Result<(), LiveWhiteboxError> {
+    let Some(mut app_random) = NonNull::new(LIVE_APP_RANDOM_STATE.load(Ordering::Acquire)) else {
+        return Ok(());
+    };
+    // SAFETY: publication retains the state for QEMU's process lifetime. The
+    // deterministic single-threaded RR model serializes this logical-restore
+    // callback with white-box execution callbacks.
+    unsafe { app_random.as_mut() }.restore_continuation()
+}
 
 #[derive(Clone, Copy, Default)]
 struct LiveWhiteboxRegisters {
@@ -217,6 +233,9 @@ impl LiveWhiteboxState {
                 Ordering::Acquire,
             )
             .map_err(|_existing| LiveWhiteboxError::StateAlreadyPublished)?;
+        if let Some(app_random) = self.app_random.as_mut() {
+            LIVE_APP_RANDOM_STATE.store(std::ptr::from_mut(app_random), Ordering::Release);
+        }
         (self.apis.register_tb_trans_cb)(
             plugin_id,
             Some(crucible_qemu_plugin_live_whitebox_tb_trans_cb),
@@ -327,16 +346,31 @@ impl LiveWhiteboxState {
         } else if app_random::is_request(&payload) {
             self.handle_app_random(&mut reader, event, current_icount, vcpu_index)
         } else {
-            handle_whitebox_doorbell_callback(
+            let marker = handle_whitebox_doorbell_callback(
                 &self.doorbell,
                 &mut reader,
                 &mut self.marker_sink,
                 event,
             )
-            .map(|_marker| ())
             .map_err(|source| LiveWhiteboxError::Callback {
                 message: source.to_string(),
-            })
+            })?;
+            if let WhiteboxMarkerPayload::Event(event) = marker.decoded_payload() {
+                let status = (self.apis.fault_ready_marker)(
+                    event.name.as_ptr().cast(),
+                    event.name.len(),
+                    marker.marker_icount(),
+                );
+                if status < 0 {
+                    return Err(LiveWhiteboxError::Callback {
+                        message: format!(
+                            "QEMU rejected ready-marker observation `{}` with status {status}",
+                            event.name
+                        ),
+                    });
+                }
+            }
+            Ok(())
         }
     }
 

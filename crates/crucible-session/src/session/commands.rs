@@ -82,23 +82,6 @@ impl<T> Hash for CommandReply<T> {
     fn hash<H: Hasher>(&self, _state: &mut H) {}
 }
 
-/// Fault injection request payload for the RFC §4 command set.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct FaultSpec {
-    /// Stable handle used for later healing.
-    pub tag: FaultTag,
-    /// Full fault taxonomy value to activate.
-    pub fault: Fault,
-}
-
-impl FaultSpec {
-    /// Creates a typed fault-control payload.
-    #[must_use]
-    pub fn new(tag: FaultTag, fault: Fault) -> Self {
-        Self { tag, fault }
-    }
-}
-
 /// Breakpoint fire policy.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum BreakpointPolicy {
@@ -278,6 +261,8 @@ pub enum QueryKind {
     EventLogLength,
     /// Return scheduler-derived choices available at the current boundary.
     SearchFrontier,
+    /// Return the exact production resolved-effect trace, when present.
+    ResolvedEffectTrace,
     /// Return one deterministic execution-fingerprint sample for a node.
     ExecutionFingerprint {
         /// Node whose backend fingerprint should be sampled.
@@ -305,6 +290,8 @@ pub enum QueryResult {
         /// Explorer-forced choices that have not reached their RESOLVE point.
         pending_branch_choices: usize,
     },
+    /// Exact production resolved-effect trace, or none for an inert plan.
+    ResolvedEffectTrace(Option<Vec<u8>>),
     /// Deterministic execution-fingerprint sample for one node.
     ExecutionFingerprint(FingerprintSample),
     /// Attached node and stable operator-facing GDB endpoint, or none before attach.
@@ -346,24 +333,6 @@ pub enum SessionCommand {
     Step {
         /// The requested bounded step mode.
         mode: StepMode,
-    },
-    /// Capture a boundary snapshot.
-    Snapshot,
-    /// Inject a deterministic control-plane fault at the next boundary.
-    Inject,
-    /// Inject or replace a full-taxonomy fault at the next boundary.
-    InjectFault {
-        /// Fault activation payload.
-        spec: FaultSpec,
-        /// Completion route returning the stable fault tag.
-        reply: CommandReply<FaultTag>,
-    },
-    /// Heal a full-taxonomy fault at the next boundary.
-    HealFault {
-        /// Stable handle naming the active fault.
-        tag: FaultTag,
-        /// Completion route for the heal acknowledgement.
-        reply: CommandReply<()>,
     },
     /// Add a predicate-based breakpoint.
     SetBreakpoint {
@@ -492,24 +461,6 @@ impl SessionCommand {
         }
     }
 
-    /// Builds a discard-reply typed fault-injection command.
-    #[must_use]
-    pub fn inject_fault(tag: FaultTag, fault: Fault) -> Self {
-        Self::InjectFault {
-            spec: FaultSpec::new(tag, fault),
-            reply: CommandReply::discard(),
-        }
-    }
-
-    /// Builds a discard-reply typed fault-heal command.
-    #[must_use]
-    pub fn heal_fault(tag: FaultTag) -> Self {
-        Self::HealFault {
-            tag,
-            reply: CommandReply::discard(),
-        }
-    }
-
     /// Builds a bounded [`SessionCommand::Step`] for the given step mode.
     ///
     /// Call sites that advance a session by a bounded step use this constructor
@@ -535,7 +486,6 @@ impl SessionCommand {
         match self {
             Self::Acknowledge { command, .. } => command.is_read_only(),
             Self::Query { .. }
-            | Self::Snapshot
             | Self::AttachGdb { .. }
             | Self::DebugGoto { .. }
             | Self::DebugReverseStep { .. }
@@ -544,9 +494,6 @@ impl SessionCommand {
             | Self::Continue
             | Self::Pause
             | Self::Step { .. }
-            | Self::Inject
-            | Self::InjectFault { .. }
-            | Self::HealFault { .. }
             | Self::SetBreakpoint { .. }
             | Self::RemoveBreakpoint { .. }
             | Self::CreateSavepoint { .. }
@@ -561,14 +508,11 @@ impl SessionCommand {
     pub(super) const fn is_terminal_accepted(&self) -> bool {
         match self {
             Self::Acknowledge { command, .. } => command.is_terminal_accepted(),
-            Self::Snapshot | Self::Fork { .. } | Self::Query { .. } => true,
+            Self::Fork { .. } | Self::Query { .. } => true,
             Self::Start
             | Self::Continue
             | Self::Pause
             | Self::Step { .. }
-            | Self::Inject
-            | Self::InjectFault { .. }
-            | Self::HealFault { .. }
             | Self::SetBreakpoint { .. }
             | Self::RemoveBreakpoint { .. }
             | Self::CreateSavepoint { .. }
@@ -587,11 +531,7 @@ impl SessionCommand {
         match self {
             Self::Acknowledge { command, .. } => command.is_control_acknowledged(),
             Self::Pause
-            | Self::Snapshot
             | Self::Fork { .. }
-            | Self::Inject
-            | Self::InjectFault { .. }
-            | Self::HealFault { .. }
             | Self::SetBreakpoint { .. }
             | Self::RemoveBreakpoint { .. }
             | Self::CreateSavepoint { .. }
@@ -611,14 +551,11 @@ impl SessionCommand {
     pub(super) const fn requires_running_quantum_ack(&self) -> bool {
         match self {
             Self::Acknowledge { command, .. } => command.requires_running_quantum_ack(),
-            Self::Snapshot | Self::Query { .. } => true,
+            Self::Query { .. } => true,
             Self::Start
             | Self::Continue
             | Self::Pause
             | Self::Step { .. }
-            | Self::Inject
-            | Self::InjectFault { .. }
-            | Self::HealFault { .. }
             | Self::SetBreakpoint { .. }
             | Self::RemoveBreakpoint { .. }
             | Self::CreateSavepoint { .. }
@@ -639,15 +576,11 @@ impl SessionCommand {
             Self::Acknowledge { command, .. } => command.requires_non_canonical_debug_branch(),
             Self::Continue
             | Self::Step { .. }
-            | Self::Inject
-            | Self::InjectFault { .. }
-            | Self::HealFault { .. }
             | Self::SetBreakpoint { .. }
             | Self::RemoveBreakpoint { .. }
             | Self::GuestIntrospection { .. } => true,
             Self::Start
             | Self::Pause
-            | Self::Snapshot
             | Self::CreateSavepoint { .. }
             | Self::Fork { .. }
             | Self::Stop
@@ -663,8 +596,6 @@ impl SessionCommand {
 
     pub(super) fn complete_error(&self, error: SessionError) {
         match self {
-            Self::InjectFault { reply, .. } => reply.complete(Err(error)),
-            Self::HealFault { reply, .. } => reply.complete(Err(error)),
             Self::SetBreakpoint { reply, .. } => reply.complete(Err(error)),
             Self::RemoveBreakpoint { reply, .. } => reply.complete(Err(error)),
             Self::CreateSavepoint { reply, .. } => reply.complete(Err(error)),
@@ -686,7 +617,6 @@ impl SessionCommand {
             | Self::Step { .. }
             | Self::Stop
             | Self::ExhaustBudget => {}
-            Self::Snapshot | Self::Inject => {}
         }
     }
 }
@@ -714,12 +644,6 @@ pub enum SessionCommandKind {
     Stop,
     /// Transition to a terminal timeout after budget exhaustion.
     ExhaustBudget,
-    /// Inject legacy deterministic control.
-    Inject,
-    /// Inject a typed fault.
-    InjectFault,
-    /// Heal a typed fault.
-    HealFault,
     /// Add a predicate breakpoint.
     SetBreakpoint,
     /// Remove a predicate breakpoint.
@@ -730,8 +654,6 @@ pub enum SessionCommandKind {
     Fork,
     /// Query the session.
     Query,
-    /// Capture a boundary snapshot through the current implementation shim.
-    Snapshot,
     /// Attach an out-of-band debugger gdbstub.
     AttachGdb,
     /// Move an attached debugger to a coordinate.
@@ -749,10 +671,8 @@ pub enum SessionCommandKind {
 impl SessionCommandKind {
     /// The lifecycle command-kind set.
     ///
-    /// This covers the RFC §4 command surface plus the current implementation's
-    /// legacy `Inject` and boundary `Snapshot` shims. T-SESS-4 replaces those
-    /// shims with the reply-carrying command payloads.
-    pub const ALL: [Self; 25] = [
+    /// This covers the complete RFC section 4 command surface.
+    pub const ALL: [Self; 21] = [
         Self::Start,
         Self::Continue,
         Self::Pause,
@@ -763,15 +683,11 @@ impl SessionCommandKind {
         Self::StepDuration,
         Self::Stop,
         Self::ExhaustBudget,
-        Self::Inject,
-        Self::InjectFault,
-        Self::HealFault,
         Self::SetBreakpoint,
         Self::RemoveBreakpoint,
         Self::CreateSavepoint,
         Self::Fork,
         Self::Query,
-        Self::Snapshot,
         Self::AttachGdb,
         Self::DebugGoto,
         Self::DebugReverseStep,
@@ -792,15 +708,11 @@ impl SessionCommandKind {
             Self::StepDuration => "step-duration",
             Self::Stop => "stop",
             Self::ExhaustBudget => "exhaust-budget",
-            Self::Inject => "inject",
-            Self::InjectFault => "inject-fault",
-            Self::HealFault => "heal-fault",
             Self::SetBreakpoint => "set-breakpoint",
             Self::RemoveBreakpoint => "remove-breakpoint",
             Self::CreateSavepoint => "create-savepoint",
             Self::Fork => "fork",
             Self::Query => "query",
-            Self::Snapshot => "snapshot",
             Self::AttachGdb => "attach-gdb",
             Self::DebugGoto => "debug-goto",
             Self::DebugReverseStep => "debug-reverse-step",
@@ -839,20 +751,6 @@ impl SessionCommandKind {
             },
             Self::Stop => SessionCommand::Stop,
             Self::ExhaustBudget => SessionCommand::ExhaustBudget,
-            Self::Inject => SessionCommand::Inject,
-            Self::InjectFault => SessionCommand::InjectFault {
-                spec: FaultSpec::new(
-                    FaultTag::from_name("lifecycle-model"),
-                    Fault::Node(crucible::NodeFault::Crash {
-                        node: crucible::NodeId {
-                            name: String::from("node-a"),
-                        },
-                        restart: crucible::RestartPolicy::StayDown,
-                    }),
-                ),
-                reply: CommandReply::discard(),
-            },
-            Self::HealFault => SessionCommand::heal_fault(FaultTag::from_name("lifecycle-model")),
             Self::SetBreakpoint => SessionCommand::SetBreakpoint {
                 spec: BreakpointSpec::suspend_once(Condition::Quiescent),
                 reply: CommandReply::discard(),
@@ -867,7 +765,6 @@ impl SessionCommandKind {
             },
             Self::Fork => SessionCommand::fork_current(),
             Self::Query => SessionCommand::query_snapshot(),
-            Self::Snapshot => SessionCommand::Snapshot,
             Self::AttachGdb
             | Self::DebugGoto
             | Self::DebugReverseStep
@@ -903,10 +800,9 @@ pub const fn lifecycle_transition(
 
     match (state, command) {
         (State::Loaded, Command::Start) => Accepted { to: State::Paused },
-        (
-            State::Loaded,
-            Command::SetBreakpoint | Command::RemoveBreakpoint | Command::Query | Command::Snapshot,
-        ) => Accepted { to: State::Loaded },
+        (State::Loaded, Command::SetBreakpoint | Command::RemoveBreakpoint | Command::Query) => {
+            Accepted { to: State::Loaded }
+        }
         (State::Loaded, Command::Stop | Command::ExhaustBudget) => Accepted { to: State::Stopped },
         (
             State::Loaded,
@@ -917,9 +813,6 @@ pub const fn lifecycle_transition(
             | Command::StepAssertion
             | Command::StepTimer
             | Command::StepDuration
-            | Command::Inject
-            | Command::InjectFault
-            | Command::HealFault
             | Command::CreateSavepoint
             | Command::Fork
             | Command::AttachGdb
@@ -951,11 +844,7 @@ pub const fn lifecycle_transition(
         (
             State::Paused,
             Command::Pause
-            | Command::Snapshot
             | Command::Fork
-            | Command::Inject
-            | Command::InjectFault
-            | Command::HealFault
             | Command::SetBreakpoint
             | Command::RemoveBreakpoint
             | Command::CreateSavepoint
@@ -979,11 +868,7 @@ pub const fn lifecycle_transition(
         ) => Accepted { to: State::Paused },
         (
             State::Running,
-            Command::Snapshot
-            | Command::Inject
-            | Command::InjectFault
-            | Command::HealFault
-            | Command::SetBreakpoint
+            Command::SetBreakpoint
             | Command::RemoveBreakpoint
             | Command::CreateSavepoint
             | Command::Query,
@@ -994,9 +879,7 @@ pub const fn lifecycle_transition(
         (State::Paused, Command::Stop | Command::ExhaustBudget) => Accepted { to: State::Stopped },
         (State::Paused, Command::Start) => Rejected,
 
-        (State::Stopped, Command::Snapshot | Command::Fork | Command::Query) => {
-            Accepted { to: State::Stopped }
-        }
+        (State::Stopped, Command::Fork | Command::Query) => Accepted { to: State::Stopped },
         (
             State::Stopped,
             Command::Start
@@ -1007,9 +890,6 @@ pub const fn lifecycle_transition(
             | Command::StepAssertion
             | Command::StepTimer
             | Command::StepDuration
-            | Command::Inject
-            | Command::InjectFault
-            | Command::HealFault
             | Command::SetBreakpoint
             | Command::RemoveBreakpoint
             | Command::CreateSavepoint

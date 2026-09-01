@@ -30,6 +30,9 @@ pub enum LiveWhiteboxError {
     /// A guest requested app-random without a seeded launch configuration.
     #[error("live app-random doorbell request arrived without seeded configuration")]
     AppRandomNotConfigured,
+    /// A second logical restore attempted to reuse the consumed continuation.
+    #[error("live app-random restore continuation was already applied")]
+    AppRandomRestoreAlreadyApplied,
     /// The mapped setup region could not expose this VM's marker queue.
     #[error("mapped live white-box marker queue is unavailable")]
     MappedMarkerQueue {

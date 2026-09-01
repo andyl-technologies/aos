@@ -20,33 +20,30 @@ use crate::model::{
     AssertionDef, AssertionId, AssertionPhase, Checkpoint, CheckpointKind, ChoiceTag, CodePoint,
     Configuration, ContentAddressedBlobRef, ContentHash, CoverageGuidedFuzzConfig,
     CoverageGuidedFuzzIteration, CoverageGuidedFuzzRun, Decision, EngineError, EventId,
-    FamilySpace, FaultDensity, FaultDensityRange, FaultTag, FindingDiscoveryPath,
-    FindingReproductionArtifact, GenesisCheckpoint, GuestWorkloadBinary, GuestWorkloadParameterKey,
-    GuestWorkloadScalarParameter, Icount, IoEventKind, LinkLossProbability, MarkerId,
-    MembershipFault, MemoryDagStore, NodeCounter, NodeId, NodeLifecycle, NodeTemplate,
-    OverrideDecision, Plan, Predicate, Properties, Property, ReadyPoint, RegexProgram,
-    ReproductionArtifact, RestartPolicy, ScenarioDefForm, ScenarioFamily, Schedule,
-    SchedulerNodeId, SchedulingNodeKind, SchedulingPoint, Seed, Shift, SimDuration, SimInstant,
-    TemporalGraph, TemporalGraphFork, TemporalGraphRuntime, TemporalGraphSave,
-    TemporalGraphStoreError, TimerId, TopologyShape, TopologySizeRange,
-    UnifiedGraphOperationEvidence, UnifiedGraphOperationReport, VirtualTime, VmArchitecture,
-    WhiteBoxPolicy, World, WorldNode, bake, try_step,
+    FamilySpace, FindingDiscoveryPath, FindingReproductionArtifact, GenesisCheckpoint,
+    GuestWorkloadBinary, GuestWorkloadParameterKey, GuestWorkloadScalarParameter, Icount,
+    IoEventKind, LinkLossProbability, MarkerId, MemoryDagStore, NodeCounter, NodeId, NodeLifecycle,
+    NodeTemplate, OverrideDecision, Plan, Predicate, Properties, Property, ReadyPoint,
+    RegexProgram, ReproductionArtifact, ScenarioDefForm, ScenarioFamily, Schedule, SchedulerNodeId,
+    SchedulingNodeKind, SchedulingPoint, Seed, Shift, SimDuration, SimInstant, TemporalGraph,
+    TemporalGraphFork, TemporalGraphRuntime, TemporalGraphSave, TemporalGraphStoreError, TimerId,
+    TopologyShape, TopologySizeRange, UnifiedGraphOperationEvidence, UnifiedGraphOperationReport,
+    VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode, bake, try_step,
 };
 use crate::scheduler::{
     EventLog, EventLogCoverageFeedback, EventLogCoverageFeedbackConsumer, ExactLocalEvent,
     NetworkLookahead, SchedulerError, SchedulerEvaluationBoundaryKind, SchedulerLivenessScenario,
-    SchedulerLookaheadEdge, SchedulerNodeActivity, SchedulerNodeCrashApplication,
-    SchedulerNodeRestartApplication, SchedulerScenarioNode, SchedulerTopologyChangeApplication,
-    SingleScheduler, TriggerActionApplication,
+    SchedulerLookaheadEdge, SchedulerNodeActivity, SchedulerScenarioNode,
+    SchedulerTopologyChangeApplication, SingleScheduler, TriggerActionApplication,
 };
 use crate::trigger::{
     Action, AssertionViolationArtifactReplay, AssertionViolationReplayError,
     AssertionViolationReplayReport, BlackBoxHostOracle, ConditionEvaluationPass, ConditionLeaf,
     ConditionLeafOracle, EventFirings, EventGraph, EventGraphState, GuestAssertionDetail,
     GuestAssertionKind, GuestAssertionMarker, HostAssertionEvaluator, HostAssertionOutcome,
-    HostAssertionOutcomeKind, HostAssertionReport, ObservableEvent, ObservableEventPayload,
-    OfflineAssertionCheckError, RecordedAssertionLog, check_assertion_violation_reproduction,
-    guest_assertion_marker_from_whitebox_body,
+    HostAssertionOutcomeKind, HostAssertionReport, LogLevel, ObservableEvent,
+    ObservableEventPayload, OfflineAssertionCheckError, RecordedAssertionLog,
+    check_assertion_violation_reproduction, guest_assertion_marker_from_whitebox_body,
 };
 
 /// Version label for the built-in worked-example corpus.
@@ -135,10 +132,6 @@ pub struct ExampleScenarioRunReport {
     pub replayed_fingerprint_stream: Vec<u8>,
     /// Event graph firings observed at the passing boundary.
     pub firings: EventFirings,
-    /// Scheduler node-crash applications produced by the run proof.
-    pub scheduler_crash_applications: Vec<SchedulerNodeCrashApplication>,
-    /// Scheduler node-restart applications produced by the run proof.
-    pub scheduler_restart_applications: Vec<SchedulerNodeRestartApplication>,
     /// Scheduler topology-change applications produced by the run proof.
     pub scheduler_topology_change_applications: Vec<SchedulerTopologyChangeApplication>,
 }
@@ -548,10 +541,6 @@ pub fn crash_restart_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusE
 pub fn fault_campaign_family() -> Result<ScenarioFamily, ExampleCorpusError> {
     let space = FamilySpace::new(
         crate::model::SeedSpace::generated(Seed::from_u64(0x33_a4), 8)?,
-        FaultDensityRange::new(
-            FaultDensity::from_millionths(250_000)?,
-            FaultDensity::from_millionths(250_002)?,
-        )?,
         TopologySizeRange::new(3, 5)?,
         vec![TopologyShape::Ring, TopologyShape::Mesh],
     )?;
@@ -730,8 +719,6 @@ pub fn run_example_scenario(
         || replayed.fingerprint_stream != primary.fingerprint_stream
         || replayed.assertion_report != primary.assertion_report
         || replayed.firings != primary.firings
-        || replayed.scheduler_crash_applications != primary.scheduler_crash_applications
-        || replayed.scheduler_restart_applications != primary.scheduler_restart_applications
         || replayed.scheduler_topology_change_applications
             != primary.scheduler_topology_change_applications
     {
@@ -750,8 +737,6 @@ pub fn run_example_scenario(
         replayed_canonical_event_log: replayed.canonical_event_log,
         replayed_fingerprint_stream: replayed.fingerprint_stream,
         firings: primary.firings,
-        scheduler_crash_applications: primary.scheduler_crash_applications,
-        scheduler_restart_applications: primary.scheduler_restart_applications,
         scheduler_topology_change_applications: primary.scheduler_topology_change_applications,
     })
 }
@@ -930,13 +915,7 @@ fn crash_restart_plan(world: &World, properties: &Properties) -> Result<Plan, En
             Predicate::node_state(node("db-1"), NodeLifecycle::Started),
             Predicate::once(Predicate::io_pattern(node("db-1"), IoEventKind::BlockWrite)),
         ]))
-        .action(Action::inject_fault(
-            crash_fault_tag(),
-            MembershipFault::Crash {
-                node: node("db-1"),
-                restart: RestartPolicy::FromReadyPoint,
-            },
-        ))
+        .action(Action::stop_node(node("db-1")))
         .event("restart")
         .when(Predicate::after(
             SimDuration {
@@ -944,14 +923,10 @@ fn crash_restart_plan(world: &World, properties: &Properties) -> Result<Plan, En
             },
             EventId::from_name("crash-after-commit"),
         ))
-        .action(Action::group(vec![
-            Action::heal_fault(crash_fault_tag()),
-            Action::start_node(node("db-1")),
-        ]))
+        .action(Action::start_node(node("db-1")))
         .event("pass-on-reconverge")
         .when(Predicate::all_of(vec![
             Predicate::once(Predicate::node_state(node("db-1"), NodeLifecycle::Started)),
-            Predicate::not(Predicate::fault_active(crash_fault_tag())),
             Predicate::once(Predicate::assertion_state(
                 AssertionId::from_name("committed-write-survived"),
                 AssertionPhase::Satisfied,
@@ -987,13 +962,6 @@ fn partition_recovery_properties(world: &World) -> Result<Properties, EngineErro
     Properties::from_assertions_for_world(
         world,
         vec![
-            AssertionDef {
-                id: AssertionId::from_name("split-active"),
-                message: String::from("partition fault must become active"),
-                property: Property::Sometimes {
-                    predicate: Predicate::fault_active(partition_fault_tag()),
-                },
-            },
             AssertionDef::guest_unreachable(
                 AssertionId::from_name("no-split-brain"),
                 "the store must not publish split-brain evidence",
@@ -1006,10 +974,7 @@ fn partition_recovery_properties(world: &World) -> Result<Properties, EngineErro
                 id: AssertionId::from_name("converges-after-heal"),
                 message: String::from("replicas must reconcile after the healed partition"),
                 property: Property::Eventually {
-                    trigger: Predicate::assertion_state(
-                        AssertionId::from_name("split-active"),
-                        AssertionPhase::Satisfied,
-                    ),
+                    trigger: Predicate::node_state(node("db-0"), NodeLifecycle::Started),
                     property: Predicate::assertion_state(
                         AssertionId::from_name("replicas-reconciled"),
                         AssertionPhase::Satisfied,
@@ -1045,28 +1010,20 @@ fn partition_recovery_plan(world: &World, properties: &Properties) -> Result<Pla
                 CodePoint::guest_address(0x4010),
             )),
         ]))
-        .action(Action::group(vec![
-            Action::inject_fault(
-                partition_fault_tag(),
-                MembershipFault::Isolate { node: node("db-0") },
-            ),
-            Action::arm_timer(
-                heal_timer.clone(),
-                SimDuration {
-                    nanos: PARTITION_HEAL_DELAY_TICKS,
-                },
-            ),
-        ]))
+        .action(Action::arm_timer(
+            heal_timer.clone(),
+            SimDuration {
+                nanos: PARTITION_HEAL_DELAY_TICKS,
+            },
+        ))
         .event("heal")
         .when(Predicate::timer(heal_timer))
-        .action(Action::heal_fault(partition_fault_tag()))
+        .action(Action::log(
+            LogLevel::Info,
+            "partition recovery interval ended",
+        ))
         .event("pass-on-converge")
         .when(Predicate::all_of(vec![
-            Predicate::once(Predicate::assertion_state(
-                AssertionId::from_name("split-active"),
-                AssertionPhase::Satisfied,
-            )),
-            Predicate::not(Predicate::fault_active(partition_fault_tag())),
             Predicate::once(Predicate::assertion_state(
                 AssertionId::from_name("replicas-reconciled"),
                 AssertionPhase::Satisfied,
@@ -1434,11 +1391,10 @@ fn fault_campaign_finding_fingerprint(
     ContentHash::from_canonical_material(
         "crucible.example-corpus.fault-campaign.finding.v1",
         &format!(
-            "property=no-split-brain\nsequence={}\nsample_index={}\nseed={}\nfault_density={}\ntopology_size={}\ntopology_shape={:?}\nconfiguration={}\nviolation_count={}\n{}",
+            "property=no-split-brain\nsequence={}\nsample_index={}\nseed={}\ntopology_size={}\ntopology_shape={:?}\nconfiguration={}\nviolation_count={}\n{}",
             iteration.sequence,
             iteration.sample_index,
             params.seed.to_hex(),
-            params.fault_density.millionths(),
             params.topology_size,
             params.topology_shape,
             iteration.configuration_id().to_hex(),
@@ -1509,14 +1465,6 @@ fn guest_assertion_observation(
     )
 }
 
-fn partition_fault_tag() -> FaultTag {
-    FaultTag::from_name("split")
-}
-
-fn crash_fault_tag() -> FaultTag {
-    FaultTag::from_name("kill")
-}
-
 fn partition_heal_timer() -> TimerId {
     TimerId {
         name: String::from("heal-after"),
@@ -1529,8 +1477,6 @@ struct ExampleScenarioRunCore {
     fingerprint_stream: Vec<u8>,
     assertion_report: HostAssertionReport,
     firings: EventFirings,
-    scheduler_crash_applications: Vec<SchedulerNodeCrashApplication>,
-    scheduler_restart_applications: Vec<SchedulerNodeRestartApplication>,
     scheduler_topology_change_applications: Vec<SchedulerTopologyChangeApplication>,
 }
 
@@ -1545,12 +1491,7 @@ fn run_example_scenario_material(
     scenario: &ScenarioDefForm,
     steps: &[ExampleReplayStep],
 ) -> Result<ExampleScenarioRunCore, ExampleCorpusError> {
-    let graph = scenario
-        .plan()
-        .event_graph()
-        .ok_or_else(|| ExampleCorpusError::DidNotPass {
-            scenario: scenario_name.to_owned(),
-        })?;
+    let graph = scenario.plan().event_graph();
     let scheduler_nodes = example_scheduler_nodes(scenario.world());
     let scheduler_edges = example_scheduler_edges(scenario.world());
     let mut scheduler = SingleScheduler::new(
@@ -1623,8 +1564,6 @@ fn run_example_scenario_material(
         fingerprint_stream,
         assertion_report,
         firings,
-        scheduler_crash_applications: scheduler.node_crash_applications().to_vec(),
-        scheduler_restart_applications: scheduler.node_restart_applications().to_vec(),
         scheduler_topology_change_applications: scheduler.topology_change_applications().to_vec(),
     })
 }
@@ -1686,10 +1625,7 @@ fn append_trigger_lifecycle_events(
 
 fn trigger_lifecycle_event(application: &TriggerActionApplication) -> Option<ObservableEvent> {
     match &application.action {
-        Action::InjectFault {
-            fault: MembershipFault::Crash { node, .. },
-            ..
-        } => Some(ObservableEvent::node_state(
+        Action::StopNode { node } => Some(ObservableEvent::node_state(
             application.at,
             node.clone(),
             NodeLifecycle::Crashed,
@@ -1700,11 +1636,8 @@ fn trigger_lifecycle_event(application: &TriggerActionApplication) -> Option<Obs
             NodeLifecycle::Started,
         )),
         Action::Group(_)
-        | Action::InjectFault { .. }
-        | Action::HealFault { .. }
         | Action::ArmTimer { .. }
         | Action::CancelTimer { .. }
-        | Action::StopNode { .. }
         | Action::CreateSavepoint { .. }
         | Action::Fork { .. }
         | Action::Pass
@@ -2237,9 +2170,7 @@ fn action_passes(action: &Action) -> bool {
     match action {
         Action::Pass => true,
         Action::Group(actions) => actions.iter().any(action_passes),
-        Action::InjectFault { .. }
-        | Action::HealFault { .. }
-        | Action::ArmTimer { .. }
+        Action::ArmTimer { .. }
         | Action::CancelTimer { .. }
         | Action::StartNode { .. }
         | Action::StopNode { .. }

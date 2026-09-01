@@ -12,6 +12,9 @@ use crucible_qemu::{
     validate_pre_spawn_qemu_launch_args,
 };
 
+#[path = "support/mod.rs"]
+mod support;
+
 #[test]
 fn qmp_channel_adds_stable_unix_socket_to_launch_command() {
     let qmp = QemuQmpChannelConfig::new("crucible-qmp.sock")
@@ -21,6 +24,7 @@ fn qmp_channel_adds_stable_unix_socket_to_launch_command() {
         default_vm_config(),
         default_qemu_binary(),
         default_plugin_config(),
+        support::x86_fault_requirement("vm-a", "qemu64-x86_64-cpu"),
     )
     .with_qmp(qmp.clone())
     .build()
@@ -62,6 +66,7 @@ fn console_capture_uses_only_the_run_directory_output_socket() {
         default_vm_config(),
         default_qemu_binary(),
         default_plugin_config(),
+        support::x86_fault_requirement("vm-a", "qemu64-x86_64-cpu"),
     )
     .with_qmp(
         QemuQmpChannelConfig::new("crucible-qmp.sock")
@@ -108,6 +113,7 @@ fn qmp_and_gdbstub_remain_distinct_out_of_band_launch_channels() {
         default_vm_config(),
         default_qemu_binary(),
         default_plugin_config(),
+        support::x86_fault_requirement("vm-a", "qemu64-x86_64-cpu"),
     )
     .with_qmp(qmp.clone())
     .with_gdbstub(gdbstub.clone())
@@ -278,6 +284,7 @@ fn default_plugin_config() -> QemuLaunchPluginConfig {
         "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
         0,
     )
+    .with_fault_target_node("vm-a")
 }
 
 fn default_qemu_binary() -> &'static str {
