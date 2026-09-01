@@ -36,28 +36,26 @@ in {
     };
   };
 
-  config = {
-    k3s.integrations.cni.cilium = mkIf cfg.enable {
-      disableFlannel = true;
-      disableNetworkPolicy = true;
-      disableKubeProxy = cfg.kubeProxyReplacement;
-    };
-    k3s.integrations.resources.cilium = mkIf cfg.enable {
-      priority = 100;
-      content = ''
-        apiVersion: helm.cattle.io/v1
-        kind: HelmChart
-        metadata:
-          name: cilium
-          namespace: kube-system
-        spec:
-          chart: cilium
-          repo: https://helm.cilium.io/
-          targetNamespace: kube-system
-          version: ${package.version}
-          valuesContent: |-
-        ${lib.concatMapStringsSep "\n" (line: "      ${line}") (lib.splitString "\n" values)}
-      '';
-    };
+  config.k3s.integrations.cni.cilium = mkIf cfg.enable {
+    disableFlannel = true;
+    disableNetworkPolicy = true;
+    disableKubeProxy = cfg.kubeProxyReplacement;
+  };
+  config.k3s.integrations.resources.cilium = mkIf cfg.enable {
+    priority = 100;
+    content = ''
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
+      metadata:
+        name: cilium
+        namespace: kube-system
+      spec:
+        chart: cilium
+        repo: https://helm.cilium.io/
+        targetNamespace: kube-system
+        version: ${package.version}
+        valuesContent: |-
+      ${lib.concatMapStringsSep "\n" (line: "      ${line}") (lib.splitString "\n" values)}
+    '';
   };
 }
