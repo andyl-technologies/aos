@@ -3615,8 +3615,14 @@ fn scan_config_module_interface(
     owned_roots: &[String],
     authored_contributions: &[RootContribution],
 ) -> Result<(Vec<RootContribution>, Vec<String>, Vec<String>)> {
-    let access = Regex::new(r"(?:config|options)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+)")?;
-    let assignment = Regex::new(r"config\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+)\s*=")?;
+    // The leading boundary is security-relevant: an owned path such as
+    // `cloudcore.config.runtime` must not be reinterpreted from its suffix as
+    // a foreign write to `runtime`.
+    let access = Regex::new(
+        r"(?m)(?:^|[^A-Za-z0-9_.-])(?:config|options)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+)",
+    )?;
+    let assignment =
+        Regex::new(r"(?m)(?:^|[^A-Za-z0-9_.-])config\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+)\s*=")?;
     let mut requires = Vec::new();
     let mut writes = Vec::new();
     let mut pending = vec![root.to_path_buf()];
@@ -17247,6 +17253,24 @@ mod tests {
 
         assert!(contributes.is_empty());
         assert!(capabilities.is_empty());
+    }
+
+    #[test]
+    fn config_interface_scan_does_not_reinterpret_owned_config_suffixes() {
+        let tmp = TempDir::new().expect("temporary config module");
+        fs::write(
+            tmp.path().join("module.nix"),
+            "{ config, ... }: {\n  config = {\n    cloudcore.config.runtime.CLOUDCORE_ENABLED = true;\n    cloudcore.config.listener.PORT = config.cloudcore.https.port;\n  };\n}\n",
+        )
+        .expect("write module");
+
+        let (contributes, capabilities, requires) =
+            scan_config_module_interface(tmp.path(), "cloudcore", &["cloudcore".to_string()], &[])
+                .expect("scan module");
+
+        assert!(contributes.is_empty());
+        assert!(capabilities.is_empty());
+        assert!(requires.is_empty());
     }
 
     #[test]
