@@ -807,6 +807,20 @@ in rec {
         scrubMap
       )
     );
+    padPlaceholder = path: placeholder: let
+      padding = builtins.stringLength path - builtins.stringLength placeholder;
+    in
+      if padding < 0
+      then throw "bazelPhases: scrub placeholder '${placeholder}' is longer than '${path}'"
+      else placeholder + builtins.concatStringsSep "" (builtins.genList (_: "_") padding);
+    binaryRestoreSedArgs = builtins.concatStringsSep " " (
+      builtins.attrValues (
+        builtins.mapAttrs (
+          path: placeholder: "-e 's|${padPlaceholder path placeholder}|${path}|g'"
+        )
+        scrubMap
+      )
+    );
   in [
     unpackPhase
     {
@@ -846,10 +860,14 @@ in rec {
         ${
           if scrubMap != {}
           then ''
-            # Restore store paths from placeholders
-            find "$bazelOut/external" -type f | while read f; do
-              sed -i ${restoreSedArgs} "$f" 2>/dev/null || true
-            done
+            # Restore compact text placeholders and equal-length binary
+            # placeholders through the same file classification used by fetch.
+            find "$bazelOut/external" -type f -print0 \
+              | xargs -0 -r grep -IlZ . \
+              | xargs -0 -r sed -i ${restoreSedArgs}
+            find "$bazelOut/external" -type f -print0 \
+              | xargs -0 -r grep -ILZ . \
+              | xargs -0 -r sed -i ${binaryRestoreSedArgs}
           ''
           else ""
         }
