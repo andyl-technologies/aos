@@ -89,6 +89,18 @@
     }
     else null;
 
+  documentedExample = value:
+    if
+      builtins.isAttrs value
+      && (value._type or null) == "literalExpression"
+      && builtins.isString (value.text or null)
+      && !builtins.hasContext value.text
+    then {
+      kind = "text";
+      inherit (value) text;
+    }
+    else documentedLiteral value;
+
   mkOption = {
     type ? types.anything,
     default ? _noDefault,
@@ -1762,7 +1774,7 @@
           example =
             if option.example == null
             then null
-            else documentedLiteral option.example;
+            else documentedExample option.example;
           visibility =
             if option.internal or false
             then "internal"
