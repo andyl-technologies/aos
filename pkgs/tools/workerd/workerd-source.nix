@@ -48,6 +48,7 @@
   python3,
   openjdk,
   gcc,
+  glibc,
   binutils,
   llvm,
   rust,
@@ -152,7 +153,7 @@
     perl
     gnumake
     pkg-config
-    # workerd fetches V8, dawn, and their deps via `git_repository` (googlesource
+    # workerd fetches V8, dawn, and their deps via `git_repository` (generated
     # tarballs are non-deterministic, so the WORKSPACE clones over git). The FOD
     # fetch needs a real git on PATH; the build phase prepends a fake git for the
     # workspace-status command, which shadows this one there.
@@ -194,6 +195,35 @@
     with open(path) as f:
         src = f.read()
 
+    # These repositories publish the same commit graphs through their official
+    # GitHub mirrors. Use those mirrors so the source-only build does not add
+    # redundant network origins. The Chromium-fork zlib and ICU repositories
+    # intentionally stay on their canonical origin because no official GitHub
+    # mirror carries those fork commits.
+    git_mirrors = {
+        'remote = "https://dawn.googlesource.com/dawn.git",':
+            'remote = "https://github.com/google/dawn.git",',
+        'remote = "https://chromium.googlesource.com/chromium/src/third_party/abseil-cpp.git",':
+            'remote = "https://github.com/abseil/abseil-cpp.git",',
+        'remote = "https://chromium.googlesource.com/external/github.com/Maratyszcza/FP16.git",':
+            'remote = "https://github.com/Maratyszcza/FP16.git",',
+    }
+    for origin, mirror in git_mirrors.items():
+        if origin in src:
+            src = src.replace(origin, mirror, 1)
+        else:
+            assert mirror in src, "git_repository remote not found in WORKSPACE: " + origin
+
+    # SQLite serves byte-identical release archives from both of its official
+    # hostnames. Prefer the already-supported www origin so the hermetic fetch
+    # does not require a second policy entry for the same upstream.
+    sqlite_origin = 'url = "https://sqlite.org/2023/sqlite-src-3440000.zip",'
+    sqlite_mirror = 'url = "https://www.sqlite.org/2023/sqlite-src-3440000.zip",'
+    if sqlite_origin in src:
+        src = src.replace(sqlite_origin, sqlite_mirror, 1)
+    else:
+        assert sqlite_mirror in src, "sqlite3 archive URL not found in WORKSPACE"
+
     # Idempotent: postPatchScript runs in both the fetch FOD and the build
     # phase (and possibly twice in the build phase), so bail out cleanly if the
     # WORKSPACE has already been rewritten. Injecting twice would produce a
@@ -202,6 +232,8 @@
     # workerd's WORKSPACE already uses `patch_cmds` for other http_archives.
     marker = "result = struct(return_code = 0 if rctx"
     if marker in src:
+        with open(path, "w") as f:
+            f.write(src)
         print("AOS-DEBUG: WORKSPACE already patched; skipping")
         sys.exit(0)
 
@@ -285,6 +317,7 @@
     "${scrub rust}" = "__AOS_RUST__";
     "${scrub llvm}" = "__AOS_LLVM__";
     "${scrub gcc}" = "__AOS_GCC__";
+    "${scrub glibc}" = "__AOS_GLIBC__";
   };
 
   # Build a clang/clang++ wrapper directory. AOS clang needs the GCC install dir
@@ -464,15 +497,42 @@ in
     bazelFlags = [
       "--noenable_bzlmod"
     ];
+    # The generic fetch helper can prime Bazel's built-in module repository by
+    # syncing an empty workspace. Workerd uses WORKSPACE with Bzlmod disabled,
+    # so that sync only downloads unrelated cross-platform JDK and Android R8
+    # repositories before the target graph is fetched.
+    populateBCR = false;
     inherit scrubMap;
 
     # --- Fetch-specific ---
-    depsHash = "sha256-ocxi9B0Fv1mdEGVeq6AXDuWjxdq7wKel2tDFztkeg7g=";
-    fetchPostPatch = "";
+    depsHash = "sha256-GcXWNE6KoPQ+LzOuI+PnQqkRmivDgVM3pZJfuhmgTYo=";
+    # Python repository rules compile optional extensions outside Bazel's C++
+    # toolchain and invoke the compiler by basename. Put the same declared
+    # wrappers used by Bazel first on PATH so libc headers and link flags cannot
+    # depend on an ambient compiler installation.
+    fetchPostPatch = ''
+      export PATH="$SRCDIR/aos-toolchain:$PATH"
+      export CC="$SRCDIR/aos-toolchain/clang"
+      export CXX="$SRCDIR/aos-toolchain/clang++"
+    '';
+    # MarkupSafe otherwise retries a failed optional C extension as a pure
+    # Python wheel, making its Bazel repository depend on whether compilation
+    # happens to succeed. The declared compiler wrapper must build the extension
+    # or fail the fetch instead of changing the fixed-output payload.
     fetchEnv = {
-      CARGO_BAZEL_REPIN = "true";
+      CIBUILDWHEEL = "1";
     };
     postFetch = ''
+      # Bazel recreates host autoconfiguration repositories for the executor
+      # that performs the real build. Persisting the fetch executor's platform
+      # and toolchain discovery makes the fixed-output closure host-dependent.
+      rm -rf "$bazelOut/external/host_platform"
+      rm -rf "$bazelOut/external/internal_platforms_do_not_use"
+      rm -rf "$bazelOut/external/local_config_"*
+      rm -f "$bazelOut/external/@host_platform.marker"
+      rm -f "$bazelOut/external/@internal_platforms_do_not_use.marker"
+      rm -f "$bazelOut/external/@local_config_"*.marker
+
       # Drop prebuilt JDK/Android toolchains Bazel recreates locally.
       rm -rf "$bazelOut/external/remotejdk"* "$bazelOut/external/local_jdk"
       rm -rf "$bazelOut/external/android_tools" "$bazelOut/external/android_gmaven_r8"

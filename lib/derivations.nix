@@ -836,20 +836,34 @@
       )
     );
 
+    # A named output from builtins.derivation is a fresh derivation attrset;
+    # package-level metadata attached to `drv` is not present on `drv.dev`,
+    # `drv.tools`, and other outputs. Preserve the dependency and execution
+    # contract on every output so downstream consumers inherit propagated
+    # dependencies regardless of which output they select.
+    outputMetadata = {
+      inherit meta version propagatedDeps;
+      pname = effectivePname;
+      constraints = {
+        build = meta.build or null;
+        execute = meta.execute or null;
+        target = meta.target or null;
+      };
+    };
+    annotatedOutputs = builtins.listToAttrs (
+      builtins.map (output: {
+        name = output;
+        value = drv.${output} // outputMetadata;
+      })
+      outputs
+    );
+
     # Attach metadata and override mechanism
     result =
       drv
+      // annotatedOutputs
+      // outputMetadata
       // {
-        inherit meta version propagatedDeps;
-        pname = effectivePname;
-
-        # Expose constraints for downstream chaining verification
-        constraints = {
-          build = meta.build or null;
-          execute = meta.execute or null;
-          target = meta.target or null;
-        };
-
         # Override mechanism
         override = overrideArgs:
           if builtins.isFunction overrideArgs
@@ -1587,6 +1601,49 @@
         scrubMap
       )
     );
+    padPlaceholder = path: placeholder: let
+      padding = builtins.stringLength path - builtins.stringLength placeholder;
+    in
+      if padding < 0
+      then throw "fetchBazelDeps: scrub placeholder '${placeholder}' is longer than '${path}'"
+      else placeholder + builtins.concatStringsSep "" (builtins.genList (_: "_") padding);
+    binaryScrubSedArgs = builtins.concatStringsSep " " (
+      builtins.attrValues (
+        builtins.mapAttrs (
+          path: placeholder: "-e 's|${path}|${padPlaceholder path placeholder}|g'"
+        )
+        scrubMap
+      )
+    );
+    scrubFiles = name: sedArgs:
+      builtins.toFile name ''
+        set -eu
+
+        scratch="$(mktemp "$TMPDIR/${name}.XXXXXX")"
+        active_file=
+        active_mode=
+        cleanup() {
+          if [ -n "$active_file" ] && [ -e "$active_file" ]; then
+            chmod "$active_mode" "$active_file" 2>/dev/null || true
+          fi
+          rm -f "$scratch"
+        }
+        trap cleanup EXIT
+        trap 'exit 1' HUP INT TERM
+
+        for file do
+          active_file="$file"
+          active_mode="$(stat -c '%a' "$file")"
+          sed ${sedArgs} "$file" > "$scratch"
+          chmod u+w "$file"
+          cat "$scratch" > "$file"
+          chmod "$active_mode" "$file"
+          active_file=
+          active_mode=
+        done
+      '';
+    scrubTextFiles = scrubFiles "scrub-bazel-text" scrubSedArgs;
+    scrubBinaryFiles = scrubFiles "scrub-bazel-binary" binaryScrubSedArgs;
     removeReposCmds = builtins.concatStringsSep "\n" (
       builtins.map (
         repo: "rm -rf \"$bazelOut/external/${repo}\" \"$bazelOut/external/@${repo}.marker\""
@@ -1709,9 +1766,17 @@
             if scrubMap != {}
             then ''
               # --- Store path scrubbing ---
-              find "$bazelOut/external" -type f | while read f; do
-                sed -i ${scrubSedArgs} "$f" 2>/dev/null || true
-              done
+              # Variable-length substitutions corrupt offsets in binary formats
+              # such as ELF. Use compact placeholders for text and padded,
+              # equal-length placeholders for binary files. Rewrite through a
+              # scratch file so read-only repository caches keep their modes and
+              # do not require writable directories for sed's rename operation.
+              find "$bazelOut/external" -type f -print0 \
+                | xargs -0 -r grep -IlZ . \
+                | xargs -0 -r sh ${scrubTextFiles}
+              find "$bazelOut/external" -type f -print0 \
+                | xargs -0 -r grep -ILZ . \
+                | xargs -0 -r sh ${scrubBinaryFiles}
             ''
             else ""
           }
