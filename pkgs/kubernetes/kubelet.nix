@@ -184,6 +184,7 @@ in
         sections = {
           deployment = lib.aosDoc.section "Standalone node agent" [
             (lib.aosDoc.paragraph "Use this package when kubelet is managed independently. K3s roles embed and configure their own node agent and do not enable this service.")
+            (lib.aosDoc.paragraph "When node registration is disabled, the generated kubelet configuration also disables API-server webhook authentication and selects local AlwaysAllow authorization so static-pod-only operation does not require an API client.")
           ];
           credentials = lib.aosDoc.section "Control-plane identity" [
             (lib.aosDoc.paragraph "The optional kubeconfig is an opaque credential reference delivered only to kubelet. Static-pod-only deployments may leave it unset and disable node registration.")

@@ -92,8 +92,6 @@ in
         "cilium.enable"
         "cilium.kubeProxyReplacement"
         "cilium.operatorReplicas"
-        "k3s.integrations.cni.cilium"
-        "k3s.integrations.resources.cilium"
       ];
       ownsRoots = [
         {

@@ -104,6 +104,8 @@ in {
           ))
           assert config["maxPods"] == max_pods, config
           assert config["registerNode"] is False, config
+          assert config["authentication"]["webhook"]["enabled"] is False, config
+          assert config["authorization"]["mode"] == "AlwaysAllow", config
           assert config["containerRuntimeEndpoint"] == (
               "unix:///run/containerd/containerd.sock"
           ), config

@@ -208,9 +208,19 @@ in
         max = 2;
       };
       declares = [
-        "aos-registry-server.cache"
+        "aos-registry-server.cache.anonymousRead"
+        "aos-registry-server.cache.bootstrapSocket"
+        "aos-registry-server.cache.bootstrapSocketGroup"
+        "aos-registry-server.cache.enable"
+        "aos-registry-server.cache.listenAddress"
+        "aos-registry-server.cache.maxConcurrentBuilds"
+        "aos-registry-server.cache.port"
         "aos-registry-server.enable"
-        "aos-registry-server.git"
+        "aos-registry-server.git.basePath"
+        "aos-registry-server.git.enable"
+        "aos-registry-server.git.exportAll"
+        "aos-registry-server.git.listenAddress"
+        "aos-registry-server.git.port"
       ];
       ownsRoots = [
         {
