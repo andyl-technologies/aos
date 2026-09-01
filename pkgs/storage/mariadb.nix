@@ -390,7 +390,7 @@ in
         groups = ["mariadb"];
       };
       documentation = {
-        summary = "Typed MariaDB listener, SQL policy, TLS, bootstrap credentials, and durable state.";
+        summary = "MariaDB community relational database server";
         sections = {
           lifecycle = lib.aosDoc.section "Initialization and lifecycle" [
             (lib.aosDoc.paragraph "Initial system tables are created before the daemon starts. Database state remains in /var/lib/aos-pkg-mariadb across package and configuration generations.")

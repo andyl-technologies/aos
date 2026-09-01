@@ -154,7 +154,7 @@ in
         groups = [];
       };
       documentation = {
-        summary = "Typed KubeEdge EdgeCore cloud connection, runtime, node, and TLS configuration.";
+        summary = "EdgeCore — KubeEdge edge-side agent";
         sections = {
           deployment = lib.aosDoc.section "Edge deployment" [
             (lib.aosDoc.paragraph "EdgeCore runs on an edge node and connects to CloudCore using a stable node identity and explicit runtime endpoint. Review pod limits, cgroup driver, and sandbox image as one node contract.")

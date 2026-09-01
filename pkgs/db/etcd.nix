@@ -170,7 +170,7 @@ in
         groups = [];
       };
       documentation = {
-        summary = "Typed etcd membership, endpoints, storage policy, TLS, and durable service lifecycle.";
+        summary = "etcd — distributed reliable key-value store";
         sections = {
           topology = lib.aosDoc.section "Cluster topology" [
             (lib.aosDoc.paragraph "The local member must appear in cluster.members and its peer URLs must exactly match peer.advertiseUrls. Use etcdctl membership operations before changing the declared topology of a live cluster.")

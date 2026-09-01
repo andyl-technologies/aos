@@ -125,7 +125,7 @@ in
         groups = [];
       };
       documentation = {
-        summary = "Typed KubeEdge CloudCore listeners, Kubernetes access, capacity, and TLS credentials.";
+        summary = "CloudCore — KubeEdge cloud-side component";
         sections = {
           deployment = lib.aosDoc.section "Cloud deployment" [
             (lib.aosDoc.paragraph "CloudCore connects KubeEdge nodes to an existing Kubernetes control plane. Configure stable advertised addresses and explicitly enable only the HTTPS and WebSocket listeners the fleet needs.")

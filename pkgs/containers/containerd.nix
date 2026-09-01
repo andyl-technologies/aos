@@ -202,7 +202,7 @@ in
         }
       ];
       documentation = {
-        summary = "Standalone privileged containerd runtime configuration and lifecycle.";
+        summary = "containerd — industry-standard container runtime";
         sections = {
           enablement = lib.aosDoc.section "Standalone runtime" [
             (lib.aosDoc.paragraph "Installing containerd is inert. Enable this package only for a standalone host runtime; k3s consumes containerd binaries as subordinate payloads and does not enable this service.")

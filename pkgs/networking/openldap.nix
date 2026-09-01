@@ -138,7 +138,7 @@ in
         groups = ["openldap"];
       };
       documentation = {
-        summary = "Typed OpenLDAP suffix, listener, database, root credential, and TLS configuration.";
+        summary = "OpenLDAP client libraries, tools, and directory server";
         sections = {
           directory = lib.aosDoc.section "Directory state" [
             (lib.aosDoc.paragraph "The suffix and root DN define a durable package-owned database. Changing identity fields does not migrate existing directory data automatically.")

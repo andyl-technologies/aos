@@ -137,7 +137,7 @@ in
         groups = [];
       };
       documentation = {
-        summary = "Typed conntrackd cache, polling, logging, and state-synchronization configuration.";
+        summary = "conntrack-tools — connection tracking userspace tools for netfilter";
         sections = {
           modes = lib.aosDoc.section "Operation modes" [
             (lib.aosDoc.paragraph "Choose a local statistics/cache mode or declare a complete synchronization channel. Buffer, hash, polling, and connection logging controls are validated before reload.")
