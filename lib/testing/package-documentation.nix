@@ -194,7 +194,7 @@ in
       version = "0";
       src = null;
       buildDeps =
-        [pkgs.jq pkgs.nix baseLib]
+        [pkgs.grep pkgs.jq pkgs.nix baseLib]
         ++ configurablePackages
         ++ map (package: package.config) configurablePackages;
       phases = [
@@ -208,6 +208,13 @@ in
                 ' ${package.config}/config-meta.json >/dev/null
               '')
               configurablePackages}
+
+            ${lib.concatMapStringsSep "\n" (package:
+              lib.concatMapStringsSep "\n" (dependency: ''
+                ${pkgs.nix}/bin/nix-store -q --references ${package} \
+                  | ${pkgs.grep}/bin/grep -Fx ${lib.escapeShellArg (builtins.toString dependency)} >/dev/null
+              '') (builtins.attrValues (package.configModuleDependencies or {})))
+            configurablePackages}
 
             ${lib.concatMapStringsSep "\n" auditPackageOptions packageServiceNames}
 
