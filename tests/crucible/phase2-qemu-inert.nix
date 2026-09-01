@@ -439,6 +439,28 @@ in
             jq -e -s '[.[] | select(has("return"))] | length >= 2' "$response" >/dev/null
           }
 
+          qmp_cmd_expect_error() {
+            socket="$1"
+            request="$2"
+            response="$3"
+            response_err="$response.err"
+
+            {
+              printf '{"execute":"qmp_capabilities"}\r\n'
+              printf '%s\r\n' "$request"
+            } | socat -T 2 - "UNIX-CONNECT:$socket" > "$response" 2> "$response_err" || true
+
+            if [ ! -s "$response" ]; then
+              cat "$response_err" >&2
+              return 1
+            fi
+
+            jq -e -s '
+              ([.[] | select(has("return"))] | length) >= 1 and
+              ([.[] | select(has("error"))] | length) == 1
+            ' "$response" >/dev/null
+          }
+
           wait_for_socket() {
             socket="$1"
             waited=0
@@ -838,6 +860,51 @@ in
                 || fail "$label missing QMP command $command"
             done
 
+            if [ "$label" = patched ]; then
+              grep -F -x -q 'crucible-complete-terminal-lifecycle' \
+                "$TMPDIR/qmp-command-names-$label.txt" \
+                || fail "patched QEMU omitted the terminal lifecycle control command"
+              terminal_digest=$(printf '0%.0s' $(seq 1 64))
+              terminal_request=$(printf \
+                '{"execute":"crucible-complete-terminal-lifecycle","arguments":{"action-sha256":"%s","evidence-sha256":"%s","process-generation":1}}' \
+                "$terminal_digest" "$terminal_digest")
+              qmp_cmd "$socket" '{"execute":"query-status"}' \
+                "$TMPDIR/qmp-terminal-lifecycle-sim-off-status-before.json" \
+                || fail "patched query-status before terminal lifecycle probe failed"
+              jq -e -s '
+                [.[] | select(has("return"))][-1].return.status
+                  | IN("prelaunch", "paused")
+              ' "$TMPDIR/qmp-terminal-lifecycle-sim-off-status-before.json" >/dev/null \
+                || fail "terminal lifecycle sim-off probe did not begin from a stopped VM"
+              jq -S -s '[.[] | select(has("return"))][-1].return.status' \
+                "$TMPDIR/qmp-terminal-lifecycle-sim-off-status-before.json" \
+                > "$TMPDIR/qmp-terminal-lifecycle-sim-off-status-before.normalized.json"
+              qmp_cmd_expect_error "$socket" "$terminal_request" \
+                "$TMPDIR/qmp-terminal-lifecycle-sim-off.json" \
+                || fail "patched terminal lifecycle sim-off probe failed"
+              jq -e -s '
+                [.[] | select(has("error"))][-1].error.desc
+                  | startswith("Crucible terminal lifecycle completion rejected")
+              ' \
+                "$TMPDIR/qmp-terminal-lifecycle-sim-off.json" >/dev/null \
+                || fail "terminal lifecycle control command returned an unexpected sim-off error"
+              qmp_cmd "$socket" '{"execute":"query-status"}' \
+                "$TMPDIR/qmp-terminal-lifecycle-sim-off-status-after.json" \
+                || fail "patched query-status after terminal lifecycle probe failed"
+              jq -S -s '[.[] | select(has("return"))][-1].return.status' \
+                "$TMPDIR/qmp-terminal-lifecycle-sim-off-status-after.json" \
+                > "$TMPDIR/qmp-terminal-lifecycle-sim-off-status-after.normalized.json"
+              cmp -s \
+                "$TMPDIR/qmp-terminal-lifecycle-sim-off-status-before.normalized.json" \
+                "$TMPDIR/qmp-terminal-lifecycle-sim-off-status-after.normalized.json" \
+                || fail "terminal lifecycle sim-off probe changed VM run state"
+            else
+              if grep -F -x -q 'crucible-complete-terminal-lifecycle' \
+                  "$TMPDIR/qmp-command-names-$label.txt"; then
+                fail "reference QEMU exposed the Crucible terminal lifecycle command"
+              fi
+            fi
+
             qmp_cmd "$socket" '{"execute":"query-machines"}' "$TMPDIR/qmp-machines-$label.json" \
               || fail "$label query-machines failed"
             jq -S -s '[.[] | select(has("return"))][-1].return | map({name, alias, is_default}) | sort_by(.name)' \
@@ -853,7 +920,10 @@ in
             jq -S -s '[.[] | select(has("return"))][-1].return | length' \
               "$TMPDIR/qmp-block-$label.json" > "$TMPDIR/qmp-block-$label.normalized.json"
 
-            cat "$TMPDIR/qmp-command-names-$label.txt" > "$TMPDIR/qmp-surface-$label.normalized.txt"
+            grep -F -x -v 'crucible-complete-terminal-lifecycle' \
+              "$TMPDIR/qmp-command-names-$label.txt" \
+              > "$TMPDIR/qmp-upstream-command-names-$label.txt"
+            cat "$TMPDIR/qmp-upstream-command-names-$label.txt" > "$TMPDIR/qmp-surface-$label.normalized.txt"
             cat "$TMPDIR/qmp-machines-$label.normalized.json" >> "$TMPDIR/qmp-surface-$label.normalized.txt"
             cat "$TMPDIR/qmp-migrate-capabilities-$label.normalized.json" >> "$TMPDIR/qmp-surface-$label.normalized.txt"
             cat "$TMPDIR/qmp-block-$label.normalized.json" >> "$TMPDIR/qmp-surface-$label.normalized.txt"
@@ -936,6 +1006,19 @@ in
 
           probe_qmp_surface reference "$REFERENCE_QEMU" "$REFERENCE_QEMU_IMG"
           probe_qmp_surface patched "$PATCHED_QEMU" "$PATCHED_QEMU_IMG"
+          comm -23 "$TMPDIR/qmp-command-names-reference.txt" \
+            "$TMPDIR/qmp-command-names-patched.txt" \
+            > "$TMPDIR/qmp-reference-only-commands.txt"
+          comm -13 "$TMPDIR/qmp-command-names-reference.txt" \
+            "$TMPDIR/qmp-command-names-patched.txt" \
+            > "$TMPDIR/qmp-patched-only-commands.txt"
+          test ! -s "$TMPDIR/qmp-reference-only-commands.txt" \
+            || fail "patched QEMU omitted reference QMP commands"
+          test "$(wc -l < "$TMPDIR/qmp-patched-only-commands.txt" | tr -d ' ')" -eq 1 \
+            || fail "patched QEMU exposed an unexpected QMP command-set delta"
+          grep -F -x -q 'crucible-complete-terminal-lifecycle' \
+            "$TMPDIR/qmp-patched-only-commands.txt" \
+            || fail "patched QMP command-set delta was not the terminal lifecycle command"
           compare_files qmp-surface "$TMPDIR/qmp-surface-reference.normalized.txt" "$TMPDIR/qmp-surface-patched.normalized.txt"
 
           probe_migration_stream reference "$REFERENCE_QEMU" "$REFERENCE_QEMU_IMG"
@@ -1018,8 +1101,10 @@ in
           rng_completion_delivery_only_added_code_is_sim_guarded=true
           rng_completion_delivery_path_sim_off_identical_to_reference=true
           rng_completion_timing_residual=closed-by-structural-sim-off-inertness
-          qmp_command_set_identical=true
-          qmp_introspection_surface_identical=true
+          qmp_upstream_command_set_identical=true
+          qmp_introspection_surface_identical_after_control_extension=true
+          qmp_crucible_control_extension=crucible-complete-terminal-lifecycle
+          qmp_crucible_control_extension_sim_off_rejected_without_run_state_change=true
           migration_stream_identical=true
           snapshot_restore_surface_identical=true
           upstream_equivalent_corpus=boot,device-io,virtio-rng-execution-output,qmp,migration,snapshot

@@ -256,8 +256,11 @@ window.
   5. block on the canonical `wake_signal` futex until the scheduler raises the
      ceiling to or past the wake icount (§12.3.3) — *not* a busy spin; the
      required registered eventfd separately nudges QEMU's main loop;
-  6. once released, advance virtual time to the authorized wake icount
-     (firing due timers and draining bottom-halves as a side effect, §12.3.5);
+  6. once released, enqueue an advance to the authorized wake icount (firing
+     due timers and draining bottom-halves as a side effect, §12.3.5); if QEMU
+     reports `-EBUSY` because the preceding advance still owns its barrier, the
+     plugin MUST re-arm the all-halted edge and recompute after QEMU's
+     completion kick rather than accepting the pre-input idle publication;
   7. inject every inbound frame whose `delivery_icount <= current_icount` in the
      deterministic total order (§12.4.2);
   8. republish `current_icount`/`current_ns`, set status running, and return.
@@ -441,14 +444,19 @@ vCPU-switch interleaving an explorable, replayable property of the schedule.
   in ring-arrival order. *Gate:* `gate:layer1-injection`. *Spec:* §12.4.2; routes
   [INV-3], [DET-14].
 
-- **[PLUG-20]** If the plugin ever observes an inbound frame whose
-  `delivery_icount` the guest's `current_icount` has *already passed* (a frame
-  that should have been visible earlier), this is a Contract-B violation
-  ([DET-12], [SHM-35]): the plugin MUST fail loudly and localize the violation
-  (report the frame's `(delivery_icount, src_node, seq)` and the guest's current
-  icount) rather than delivering the frame late. The conservative lookahead and
-  the ceiling handshake make this state unreachable in a correct run; observing it
-  is a defect, never a tolerated condition. *Gate:* `gate:layer1-injection`,
+- **[PLUG-20]** If the plugin observes an inbound frame whose `delivery_icount`
+  the guest's `current_icount` has already passed, it MUST fail loudly unless
+  that frame is the canonical ring head and its ABI-versioned consumer state
+  proves a prior real-QEMU backpressure result. A retained head authorizes its
+  same-ring FIFO successors while it blocks them; no other late frame or
+  retained marker is valid. Because guest progress is what can release device
+  backpressure, a retained head and its blocked FIFO MUST NOT constrain the
+  next guest wake to the head's already-attempted delivery icount. The plugin
+  MUST report the frame's
+  `(delivery_icount, src_node, seq)` and current icount on rejection. It MUST
+  set retained state only after QEMU returns backpressure, preserve that state
+  through checkpoint/restore, and dequeue the frame only after complete guest
+  acceptance. *Gate:* `gate:layer1-injection`,
   `gate:divergence-bisect`. *Spec:* §12.4.2; routes [DET-12], [INV-10].
 
 ### 12.4.3 Holding HZ ticks across in-flight device I/O
@@ -547,9 +555,15 @@ applies the link model.
 
 - **[PLUG-26]** The plugin MUST inject inbound frames into the guest's NIC via the
   RX-injection capability of the patch series
-  ([`11-qemu-patches.md`](11-qemu-patches.md)), using a lossless queueing path so
+  ([`11-qemu-patches.md`](11-qemu-patches.md)), using a canonical retry path so
   a frame is never silently dropped when the guest's RX queue is momentarily not
-  ready (the frame is queued in QEMU and flushed when the device can accept it).
+  ready. QEMU reports backpressure without taking ownership; the plugin leaves
+  the frame in the bounded shared-memory ring until complete guest acceptance.
+  QEMU-private packet queues MUST NOT own a retained frame because they are not
+  part of the canonical exact-checkpoint transport state. Each later plugin
+  retry invokes a fresh guest-device probe; QEMU MUST NOT let the
+  `receive_disabled` hint associated with its unused private queue suppress that
+  canonical retry.
   Injection MUST occur from the idle callback context (where QEMU's big lock is
   held) and MUST be gated by the delivery-icount rule of [PLUG-18]. *Gate:*
   `gate:layer1-injection`, `gate:single-vm-fingerprint`. *Spec:* §12.5.2; routes
@@ -572,10 +586,11 @@ fn inject_due_frames(state: &PluginState, now: Icount) -> Result<(), Divergence>
         if frame.delivery_icount < now_floor_of_passed(state) {
             return Err(Divergence::passed_delivery(frame));         // [PLUG-20] fail loud
         }
-        state.region.consume(frame.handle);
-        net_inject_queued(&frame.data[..frame.len as usize])?;      // [PLUG-26] lossless
+        if net_inject_direct(&frame.data[..frame.len as usize])? == RETAINED {
+            break;                                                  // [PLUG-26] canonical retry
+        }
+        state.region.consume(frame.handle);                         // accepted prefix only
     }
-    net_flush()?; // deliver everything the guest RX queue can now accept
     Ok(())
 }
 ```
@@ -962,7 +977,7 @@ component that makes that purity true *inside* the QEMU process.
   observation plugin so the Rust plugin is the sole `sim_shmem` time authority:
   across the boot quanta the guest advances by exactly its guest-instruction icount
   up to each host-published scheduler ceiling and stops there, and the whole boot
-  fingerprint is byte-identical on a second run taken under host CPU load — only
+  fingerprint is byte-identical on a second run taken under bounded scheduler preemption — only
   possible if virtual time is owned by the plugin and never sampled from a host
   clock. When the guest idles, the plugin advances virtual time by the authorized
   idle jump to the exact next timer deadline and the guest wakes and runs on: the
@@ -1007,13 +1022,13 @@ component that makes that purity true *inside* the QEMU process.
   validate the exact target before clock/ring/RX commit so the wake-point
   architectural state is bit-identical regardless of host timing. — satisfies
   [PLUG-16]; spec §12.3.5.
-  Completed by `checks.crucible.phase2.qemuLivePluginQuantum` with
-  `prove_idle_jump` on: the diskless multiboot guest arms a periodic PIT timer,
+  Completed by `checks.crucible.phase2.qemuLivePluginQuantum`: the diskless
+  multiboot guest arms a periodic PIT timer,
   parks in HLT, and the plugin advances virtual time by an authorized 40M-icount
   O(1) jump through the exact `QEMU_CLOCK_VIRTUAL` timer deadline. The guest
   wakes, runs, and re-idles below the published scheduler ceiling without
   self-extending past it. The terminal architectural state is byte-identical on
-  a second run taken under host CPU load, proving the queued advance commits the
+  a second run taken under bounded scheduler preemption, proving the queued advance commits the
   same wake-point state regardless of host timing. The advance rides QEMU patch
   0010's `icount_advance_virtual_time_to_ns`
   primitive (replacing the qtest-only helper that spun under icount) with the
@@ -1027,7 +1042,7 @@ component that makes that purity true *inside* the QEMU process.
   emits a probe through virtio-net, the router reply enters the reserved inbound
   ring at exactly +100,000,000 icount, and the plugin injects it before the
   guest emits its acknowledgement. The exact router latency, frame bytes,
-  ordering, and sequences are identical under host CPU load; the gate records
+  ordering, and sequences are identical under bounded scheduler preemption; the gate records
   raw probe and guest-ACK offsets separately as whole-guest diagnostics.
 - [x] **T-PLUG-9** Implement virtual-time freeze across in-flight device I/O via
   `device_io_active`/pending-counter, paired one-to-one with submit/completion and
@@ -1038,7 +1053,7 @@ component that makes that purity true *inside* the QEMU process.
   completion horizon, then require the device hold to clear and the real guest
   to progress. The block path pairs each request token with one completion; the
   9p path holds the counter across the whole request burst and clears it only at
-  burst-done. Both repeat under host CPU load with identical modeled traffic.
+  burst-done. Both repeat under bounded scheduler preemption with identical modeled traffic.
 - [x] **T-PLUG-10** Implement the network TX interception callback: enqueue guest
   frames into the outbound router ring with an emit-icount stamp, re-entrancy-safe,
   rejecting oversize frames and full rings loudly. — satisfies [PLUG-23],
@@ -1047,12 +1062,13 @@ component that makes that purity true *inside* the QEMU process.
   loaded QEMU callback forward the guest's exact Ethernet probe to
   `SLOT_NET_ROUTER` with its emission icount and sequence. The packaged plugin's
   unit gate covers re-entry, oversize, and full-ring fail-loud behavior.
-- [x] **T-PLUG-11** Implement RX injection via the lossless queueing path from
+- [x] **T-PLUG-11** Implement RX injection via the canonical retry path from
   the idle context, after the idle jump, gated by the delivery-icount rule. —
   satisfies [PLUG-26], [PLUG-27]; spec §12.5.2.
   Completed by `checks.crucible.phase2.qemuLiveNetworkIo`: the router's
-  delivery-stamped reply traverses the inbound ring and QEMU's lossless send
-  and flush path, and the real guest proves receipt by emitting the exact ACK.
+  delivery-stamped reply remains in the inbound ring across backpressure, then
+  transfers through QEMU's direct injection path only after complete guest
+  acceptance; the real guest proves receipt by emitting the exact ACK.
 - [x] **T-PLUG-12** Implement the block submit/poll callbacks against the
   reserved block slots, freezing time on submit and validating the response's
   delivery icount before delivery. — satisfies [PLUG-28], [PLUG-30], [PLUG-31];
@@ -1062,7 +1078,7 @@ component that makes that purity true *inside* the QEMU process.
   `SLOT_BLK_IO`; the host servicer publishes the exact future completion
   horizon, the production plugin advances to it, validates and delivers the
   response, releases the device hold, and lets the guest progress. A second run
-  combines host CPU load with a 100 ms delayed response publication while
+  combines bounded QEMU scheduler preemption with a 100 ms delayed response publication while
   preserving the same request/completion observations. The drop-one gate proves
   patch 0017 is load-bearing: without its zero-byte completion fix, request-token
   ordering fails before the guest can progress.
@@ -1074,7 +1090,7 @@ component that makes that purity true *inside* the QEMU process.
   attribution. A real Linux guest forwards `Tversion` through `SLOT_9P_IO`,
   receives the modeled response at an 821-icount latency, releases the
   burst-wide device hold, and closes the scheduler ceiling either by retiring
-  to it or by publishing an idle wake strictly beyond it. The host-load leg
+  to it or by publishing an idle wake strictly beyond it. The scheduler-preemption leg
   delays response publication by 100 ms while preserving the modeled latency.
 - [x] **T-PLUG-14** Implement the optional white-box doorbell trap: trap the
   reserved instruction/port, read guest memory via the plugin API, stamp the
@@ -1223,11 +1239,36 @@ component that makes that purity true *inside* the QEMU process.
   RR cursor deterministically over two runs at `-smp 4`. The dedicated SMP
   quantum gate boots a hermetic multiboot guest with the same production plugin
   at `-smp 4`. The guest starts APIC IDs 1-3 with directed INIT-SIPI-SIPI,
-  parks all four vCPUs in HLT, and arms a periodic PIT deadline on the BSP.
+  then runs a lock-handoff AP/BSP rendezvous whose exact `AAABPPPR` console
+  record requires a waiting AP to acquire the BSP-released lock between the
+  BSP's `PAUSE` and its immediately following reacquire instruction. A failed
+  early handoff emits `F` and parks forever. A test-only QEMU traps precisely
+  the still-partial early-yield branch while retaining ordinary full-quantum
+  and HLT behavior, and the same live workload must reach that trap; eventual
+  rotation at the ordinary RR quantum cannot false-green the proof. The
+  remaining APs acquire
+  in turn before the guest parks all four vCPUs in HLT and arms a periodic PIT
+  deadline on the BSP.
   Patched QEMU reports each halted vCPU; the fourth transition fires the all-idle
   hot loop, whose minimum live timer deadline is the BSP's PIT deadline because
   the parked APs have none. The gate performs the authorized idle jump, observes
-  the BSP wake and re-halt, and repeats under host CPU load with an identical
+  the BSP wake and re-halt, then uses the production host-I/O runtime to request,
+  wake, and await the exact all-halted fingerprint control boundary. Production
+  `QemuNode::execution_fingerprint` owns the same bounded refresh whenever its
+  first sample is absent or stale; it does not poll for a callback that an
+  all-halted executor will never publish. Because fault-result polling uses the
+  same control wake, the callback pumps every same-coordinate fault command
+  before clearing and synchronously recapturing the requested fingerprint. It
+  withholds the release acknowledgement while the lossless occurrence-event
+  ring is backpressured; the host drains that ring into scheduler-owned staging
+  under the same finite supervision deadline and wakes the callback again.
+  Consequently the acknowledgement orders both the result and every queued
+  occurrence event as well as a post-mutation hash, never a stale pre-mutation
+  sample with the same icount. The live hardware gate proves this
+  with a one-byte conventional-RAM mutation whose writable-RAM component makes
+  the pre/post hashes differ without guest progress; its separate clock fault
+  remains authenticated by the typed clock evidence.
+  The scenario repeats under bounded scheduler preemption with an identical
   idle observation, execution fingerprint, and host-observable schedule.
 - [x] **T-PLUG-25** Implement application of `Decision::Preemption`: force the
   vCPU switch / deliver the interrupt at the commanded node-icount via the
@@ -1242,7 +1283,7 @@ component that makes that purity true *inside* the QEMU process.
   `qemu_plugin_inject_preemption` at its exact commanded node-icount and
   acknowledges the mailbox sequence only after patched QEMU accepts it. The
   live `-smp 2` gate reaches exact ceilings after both a forced vCPU switch and
-  a commanded interrupt, repeats byte-identically under host CPU load, and
+  a commanded interrupt, repeats byte-identically under bounded scheduler preemption, and
   cross-checks the host-observable schedule against `SimDouble`. Patch and
   plugin negative controls reject commands outside the authorized window
   `[deadline, ceiling]` rather than clamp, defer, or apply it at a different
@@ -1259,7 +1300,7 @@ component that makes that purity true *inside* the QEMU process.
   `PluginFingerprintSampling::sample` feeds them into the N-vCPU fingerprint
   sample. The reads are side-effect-free with respect to `S`/`T`: the whole
   fingerprint stream (per-vCPU register digests + RR cursor + guest-RAM +
-  device-state) is byte-identical across two runs (the second under host load) and
+  device-state) is byte-identical across two runs (the second under bounded scheduler preemption) and
   under a restart probe, so sampling perturbs neither guest state nor the
   execution trace. The N-vCPU fingerprint mints under the new
   `crucible.qemu.rust-plugin-fingerprint.v2` domain.

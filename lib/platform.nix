@@ -1,9 +1,8 @@
 # lib/platform.nix — Structured platform description with constraint model
 #
-# Converts a Nix system string (e.g. "x86_64-linux") into a rich record
-# with GNU triple, architecture flags, dynamic linker path, etc.
-#
-# Supports: x86_64-linux, aarch64-linux, i686-linux
+# Converts a Nix system string (for example, "x86_64-linux" or
+# "aarch64-darwin") into a record containing the canonical toolchain triple,
+# object format, architecture spellings, and execution constraints.
 #
 # Three-platform model:
 #   buildPlatform  — where the builder runs (Nix scheduling)
@@ -18,46 +17,93 @@
 #   Verification functions (satisfies, canRun, canBuildOn) check compatibility
 #   at evaluation time.
 let
-  # ── CPU table (single source of truth) ──────────────────────────────
-  # Adding a new architecture = one row. ISA compat is explicit data, not code.
+  # CPU properties deliberately exclude OS-specific triples and ABI details.
+  # Adding a CPU requires one row here and an explicit decision in each kernel's
+  # supportedCpus list below.
   cpus = {
     x86_64 = {
       bits = 64;
       family = "x86";
       linuxArch = "x86_64";
-      gnuConfig = "x86_64-unknown-linux-gnu";
-      dynamicLinker = "ld-linux-x86-64.so.2";
-      canExecute = ["i686"]; # ISA supersets this CPU can natively run
+      darwinArch = "x86_64";
+      goArch = "amd64";
+      cmakeProcessor = "x86_64";
+      mesonCpuFamily = "x86_64";
+      mesonCpu = "x86_64";
+      canExecute = ["i686"];
     };
     i686 = {
       bits = 32;
       family = "x86";
       linuxArch = "x86";
-      gnuConfig = "i686-unknown-linux-gnu";
-      dynamicLinker = "ld-linux.so.2";
+      goArch = "386";
+      cmakeProcessor = "x86";
+      mesonCpuFamily = "x86";
+      mesonCpu = "i686";
       canExecute = [];
     };
     aarch64 = {
       bits = 64;
       family = "arm";
       linuxArch = "arm64";
-      gnuConfig = "aarch64-unknown-linux-gnu";
-      dynamicLinker = "ld-linux-aarch64.so.1";
-      canExecute = []; # armv7l would go here when supported
+      darwinArch = "arm64";
+      goArch = "arm64";
+      cmakeProcessor = "arm64";
+      mesonCpuFamily = "aarch64";
+      mesonCpu = "aarch64";
+      canExecute = [];
     };
     riscv64 = {
       bits = 64;
       family = "riscv";
       linuxArch = "riscv";
-      gnuConfig = "riscv64-unknown-linux-gnu";
-      dynamicLinker = "ld-linux-riscv64-lp64d.so.1";
+      goArch = "riscv64";
+      cmakeProcessor = "riscv64";
+      mesonCpuFamily = "riscv64";
+      mesonCpu = "riscv64";
       canExecute = [];
     };
   };
 
-  knownCpuNames = builtins.attrNames cpus;
+  # Kernel/ABI properties own target triples and executable compatibility.
+  # Darwin intentionally has no cross-CPU `canExecute` entries: Rosetta is an
+  # optional proprietary service, not an invariant of a Darwin build machine.
+  kernels = {
+    linux = {
+      abi = "gnu";
+      vendor = "unknown";
+      objectFormat = "elf";
+      sharedLibraryExtension = "so";
+      staticLibraryExtension = "a";
+      executableExtension = "";
+      supportedCpus = ["x86_64" "i686" "aarch64" "riscv64"];
+      config = cpuName: "${cpuName}-unknown-linux-gnu";
+      dynamicLinker = cpuName: {
+        x86_64 = "ld-linux-x86-64.so.2";
+        i686 = "ld-linux.so.2";
+        aarch64 = "ld-linux-aarch64.so.1";
+        riscv64 = "ld-linux-riscv64-lp64d.so.1";
+      }.${cpuName};
+      executableCpus = cpu: cpu.canExecute;
+    };
+    darwin = {
+      abi = "darwin";
+      vendor = "apple";
+      objectFormat = "macho";
+      sharedLibraryExtension = "dylib";
+      staticLibraryExtension = "a";
+      executableExtension = "";
+      supportedCpus = ["x86_64" "aarch64"];
+      config = cpuName: "${cpuName}-apple-darwin";
+      dynamicLinker = _: "dyld";
+      executableCpus = _: [];
+    };
+  };
 
-  # ── mkPlatform ──────────────────────────────────────────────────────
+  knownCpuNames = builtins.attrNames cpus;
+  knownKernelNames = builtins.attrNames kernels;
+
+  # Construct a platform identity from a canonical Nix system string.
   mkPlatform = system: let
     parts = builtins.match "([a-z0-9_]+)-([a-z]+)" system;
     cpuName =
@@ -69,58 +115,80 @@ let
       then builtins.elemAt parts 1
       else throw "platform: cannot parse system '${system}'";
   in
-    if kernelName != "linux"
-    then throw "platform: unsupported kernel '${kernelName}' (only linux)"
+    if !(kernels ? ${kernelName})
+    then throw "platform: unsupported kernel '${kernelName}' (known: ${builtins.concatStringsSep ", " knownKernelNames})"
     else if !(cpus ? ${cpuName})
     then throw "platform: unsupported CPU '${cpuName}' (known: ${builtins.concatStringsSep ", " knownCpuNames})"
     else let
       cpu = cpus.${cpuName};
-    in {
-      inherit system;
-      config = cpu.gnuConfig;
-      linuxArch = cpu.linuxArch;
-      dynamicLinker = cpu.dynamicLinker;
+      kernel = kernels.${kernelName};
+    in
+      if !(builtins.elem cpuName kernel.supportedCpus)
+      then throw "platform: unsupported CPU/kernel pair '${system}'"
+      else {
+        inherit system;
+        config = kernel.config cpuName;
+        linuxArch = cpu.linuxArch or null;
+        darwinArch = cpu.darwinArch or null;
+        go = {
+          os = kernelName;
+          arch = cpu.goArch;
+        };
+        inherit
+          (cpu)
+          cmakeProcessor
+          mesonCpuFamily
+          mesonCpu
+          ;
+        dynamicLinker = kernel.dynamicLinker cpuName;
+        inherit
+          (kernel)
+          objectFormat
+          sharedLibraryExtension
+          staticLibraryExtension
+          executableExtension
+          ;
 
-      # Constraint identity — what this platform IS
-      constraints = {
-        cpu = cpuName;
-        os = kernelName;
-        abi = "gnu";
+        # Constraint identity — what this platform is.
+        constraints = {
+          cpu = cpuName;
+          os = kernelName;
+          inherit (kernel) abi;
+        };
+
+        # ISA execution compatibility is scoped to the kernel. Each entry is a
+        # constraint set for binaries this platform can execute without an
+        # optional translation or emulation service.
+        canExecute = builtins.map (compatibleCpu: {
+          cpu = compatibleCpu;
+          os = kernelName;
+        }) (kernel.executableCpus cpu);
+
+        # Backward-compatible platform predicates.
+        isx86_64 = cpuName == "x86_64";
+        isAarch64 = cpuName == "aarch64";
+        isRiscv64 = cpuName == "riscv64";
+        isi686 = cpuName == "i686";
+        is32bit = cpu.bits == 32;
+        is64bit = cpu.bits == 64;
+        isLinux = kernelName == "linux";
+        isDarwin = kernelName == "darwin";
+
+        # Backward-compatible parsed record.
+        parsed = {
+          cpu = {
+            name = cpuName;
+            inherit (cpu) bits;
+          };
+          inherit (kernel) vendor;
+          kernel = {
+            name = kernelName;
+          };
+          abi = {
+            name = kernel.abi;
+          };
+        };
       };
-
-      # ISA execution compatibility — derived from CPU table
-      # Each entry = a constraint set for platforms whose binaries we can natively run
-      canExecute = builtins.map (c: {
-        cpu = c;
-        os = kernelName;
-      }) (cpu.canExecute);
-
-      # Backward-compat booleans
-      isx86_64 = cpuName == "x86_64";
-      isAarch64 = cpuName == "aarch64";
-      isRiscv64 = cpuName == "riscv64";
-      isi686 = cpuName == "i686";
-      is32bit = cpu.bits == 32;
-      is64bit = cpu.bits == 64;
-      isLinux = true;
-
-      # Backward-compat parsed record
-      parsed = {
-        cpu = {
-          name = cpuName;
-          inherit (cpu) bits;
-        };
-        vendor = "unknown";
-        kernel = {
-          name = kernelName;
-        };
-        abi = {
-          name = "gnu";
-        };
-      };
-    };
-
-  # ── Constraint functions ────────────────────────────────────────────
 
   # Does `platform` satisfy a constraint set?
   # Keys are AND, list values within a key are OR, omitted keys are unconstrained.
@@ -146,7 +214,6 @@ let
           key: let
             req = targetConstraints.${key};
           in
-            # If compat entry doesn't specify this key, treat as "any value OK"
             !(compat ? ${key})
             || (
               if builtins.isList req
@@ -162,16 +229,14 @@ let
   in
     canRun platform buildConstraint;
 
-  # Backward-compat: can `system` build packages from a meta.platforms list?
-  # Accounts for ISA compatibility (x86_64 accepts i686-linux packages).
+  # Backward-compatible compatibility for a meta.platforms system list.
   platformIsCompatible = system: platforms: let
     build = mkPlatform system;
   in
     builtins.any (p: p == system || canRun build (mkPlatform p).constraints) platforms;
 
-  # Priority-ordered list of constraint sets a platform can natively execute.
-  # Self first (highest priority), then ISA-compatible architectures.
-  # e.g. x86_64 → [ {cpu="x86_64";os="linux";abi="gnu"} {cpu="i686";os="linux"} ]
+  # Priority-ordered list of constraint sets a platform can execute natively.
+  # Self is first (highest priority), followed by ISA-compatible architectures.
   executionTargets = platform:
     [platform.constraints] ++ (platform.canExecute or []);
 
@@ -202,7 +267,7 @@ let
     else builtins.head match;
 
   # Construct a full platform record from a constraint set.
-  # Inverse of platform.constraints — goes from { cpu, os } back to mkPlatform.
+  # Inverse of platform.constraints — goes from { cpu, os } to mkPlatform.
   mkPlatformFromConstraints = constraints:
     mkPlatform "${constraints.cpu}-${constraints.os}";
 
@@ -232,6 +297,7 @@ in {
   inherit
     mkPlatform
     cpus
+    kernels
     satisfies
     canRun
     canBuildOn

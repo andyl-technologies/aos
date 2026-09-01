@@ -43,7 +43,7 @@ IO 16  QEMU 16  API 14  DBG 14  OBS 14  SESS 14  STD 14  PROTO 11  TEMP 11
 DCE 10  PAT 9  TIME 9  TRI 8  WL 6  ARCH 5  EX 5  BOUND 4  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:319543a1c050f25d`
+Checklist sync digest: `rfc0010-checklist-v1:d31bc7d0b19210a7`
 
 ### Adversarial completion audit (2026-07-09)
 
@@ -76,9 +76,13 @@ implemented and an adversarial review confirms the gate exercises that behavior.
   Phase 4  Engine           spatial+temporal graph, faults,           gate:replay-oracle (full), gate:e2e-determinism (mock)
                             assertions, event log, guest-host channel
   Phase 5  Control plane    session actor, API, CLI, daemon          gate:control-responsive
-  Phase 6  Exploration      fork, save/resume, search, fuzz, coverage gate:replay-oracle (under search)
+  Phase 6  Exploration      fork, save/resume, search, fuzz, coverage gate:replay-oracle (under search),
+                                                                            gate:checkpoint-materialization,
+                                                                            gate:state-space-search,
+                                                                            gate:basic-block-coverage
   Phase 7  Package+perf+e2e AOS packaging, performance, acceptance   gate:perf-bench, gate:e2e-determinism (acceptance),
-                                                                            gate:fleet-equivalence, gate:campaign-continuity
+                                                                            gate:fleet-equivalence, gate:campaign-continuity,
+                                                                            gate:signal-fault-system
 ```
 
 Cross-cutting throughout: `T-STD-*` (engineering standards / harness-lint) apply
@@ -200,7 +204,9 @@ guest↔host channel (black-box default + optional white-box).
 - Spatial graph (ScenarioDef): `T-SPAT-1 … T-SPAT-21` ([`06`](06-spatial-graph.md)).
 - Temporal graph (CoW, thin/fat, GC, search-reduction): remaining `T-TEMP-*` beyond Phase 1.
 - Conditions, triggers, and the event graph (the shared observable-condition predicate vocabulary + trigger graph + validator): `T-TRIG-1 … T-TRIG-20` ([`17a`](17a-conditions-and-triggers.md)).
-- Faults (as trigger actions; the time-scheduled Plan lowers to `At`-triggered events): `T-FAULT-1 … T-FAULT-16` ([`17`](17-fault-injection.md)).
+- Signal-driven faults (canonical signal programs, typed bindings, production
+  network/storage/node adapters, checkpointing, and replay): `T-FAULT-1 … T-FAULT-16`
+  ([`17`](17-fault-injection.md)).
 - Assertions / properties (incl. offline checker and assertion-proximity `T-ASRT-18`): `T-ASRT-1 … T-ASRT-18` ([`18`](18-assertions-properties.md)).
 - Unified event log (incl. the proximity projection `T-OBS-14`): `T-OBS-1 … T-OBS-14` ([`19`](19-observability-event-log.md)).
 - Guest↔host channel + optional agent (incl. the app-controlled randomness
@@ -654,7 +660,7 @@ long-held locks.
   provider wiring through configuration-bound `SearchRetainedLogAssertionEvidence`,
   and retained evidence source digest/payload provenance in `search-run` output
   and reproduction artifacts;
-  file-backed `crucible.scenario-family.v1` fuzz family loading,
+  file-backed `crucible.scenario-family.v2` fuzz family loading,
   local-double `ScenarioFamily::fuzz_coverage_guided` and
   `ScenarioFamily::fuzz_coverage_guided_corpus` execution, durable
   `LocalDagStore` corpus persistence, stored family-hash loading as strict
@@ -744,8 +750,9 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   `T-DBG-5` is green through `checks.crucible.phase6.debugScopedTimeTravel`,
   which proves per-node exact-icount travel leaves other nodes untouched,
   whole-world travel lands at a prefix/fork-minus-divergence coordinate, and
-  `--checkpoint-stride` remains a performance-only cache cadence, including safe
-  fat eviction, defaulting to thin/replay until S3 is green;
+  `--checkpoint-stride` remains a performance-only cache cadence under an
+  explicit thin-only or budgeted exact-materialization policy, including safe
+  fat eviction;
   `T-DBG-6` is green through `checks.crucible.phase6.debugNonCanonicalBranch`,
   which proves mutating/operator-controlled debugging records a visibly
   non-canonical branch from the instantiated attach runtime, preserves the
@@ -836,7 +843,10 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   uniform triage exit-code surface ([`34`](34-failure-triage.md)).
 
 **Exit gates.** `gate:replay-oracle` continues to hold under active search
-(forks and restores validated continuously), reproduction artifacts replay
+(forks and restores validated continuously), `gate:checkpoint-materialization`
+proves exact fat checkpoints contain their complete content-addressed closure,
+`gate:state-space-search` proves authenticated frontier expansion and
+configuration-identity deduplication, reproduction artifacts replay
 bit-identically, and `gate:basic-block-coverage` proves the opt-in coverage path
 through a loaded-QEMU callback run without affecting fingerprints.
 
@@ -876,7 +886,10 @@ fault-injected scenario runs bit-identically across adversarial host conditions
 and reproduces from its self-contained artifact), `gate:fleet-equivalence` (a
 distributed campaign across workers reproduces a finding bit-identically off any
 worker), `gate:campaign-continuity` (a continuous campaign resumes from its
-persisted frontier without losing or re-deriving coverage). When this is green and the
+persisted frontier without losing or re-deriving coverage), and
+`gate:signal-fault-system` (the closed production network, storage/9p, and node
+fault system passes its per-kind, live-boundary, checkpoint, replay, search,
+documentation, and retired-path proofs). When this is green and the
 coverage check below is empty, Crucible is at the target state of this RFC
 ([`01-goals-nongoals-invariants.md`](01-goals-nongoals-invariants.md) §Acceptance).
 
@@ -938,4 +951,5 @@ maintained two ways:
   wrappers in `tests/crucible/default.nix`: the checks derive the canonical gate
   inventory from §24, require every phase exit target to exist in the Nix check
   tree and master plan, enforce lower-layer/earlier-phase dependencies, and keep
-  the terminal phase-7 e2e occurrence in the acceptance set.
+  the terminal phase-7 signal-fault-system occurrence in the acceptance set,
+  after every other production acceptance dependency.

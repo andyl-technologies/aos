@@ -2,400 +2,13 @@
 
 use super::*;
 
-/// One entry in the declarative membership-fault plan.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum PlanEntry {
-    /// Activate a membership fault at an exact virtual time.
-    Activate {
-        /// Virtual time when the fault activates.
-        at: VirtualTime,
-        /// Stable tag used by a later heal.
-        tag: FaultTag,
-        /// Membership fault to layer over the static world.
-        fault: MembershipFault,
-    },
-    /// Heal, restart, or rejoin a previously activated fault tag at an exact virtual time.
-    Heal {
-        /// Virtual time when the fault heals.
-        at: VirtualTime,
-        /// Stable tag naming the fault to heal.
-        tag: FaultTag,
-    },
-}
-
-/// One entry in the full-taxonomy declarative [`FaultPlan`] body.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum FaultPlanEntry {
-    /// Activate a fault at `at` and automatically heal it after `duration`.
-    At {
-        /// Virtual time when the fault activates.
-        at: VirtualTime,
-        /// Finite virtual-time duration before the automatic heal event.
-        duration: FaultDuration,
-        /// Stable tag shared by the injected fault and automatic heal.
-        tag: FaultTag,
-        /// Full taxonomy fault to activate.
-        fault: Fault,
-    },
-    /// Activate a fault at `at` until an explicit [`Self::Heal`] entry fires.
-    PermanentAt {
-        /// Virtual time when the fault activates.
-        at: VirtualTime,
-        /// Stable tag used by a later explicit heal.
-        tag: FaultTag,
-        /// Full taxonomy fault to activate.
-        fault: Fault,
-    },
-    /// Heal a previously injected tag at an exact virtual time.
-    Heal {
-        /// Virtual time when the fault heals.
-        at: VirtualTime,
-        /// Stable tag naming the fault to heal.
-        tag: FaultTag,
-    },
-}
-
-/// A declarative full-taxonomy fault plan layered over a static [`World`].
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct FaultPlan {
-    pub(super) entries: Vec<FaultPlanEntry>,
-}
-
-impl FaultPlan {
-    /// Builds an empty full-taxonomy fault plan.
-    #[must_use]
-    pub fn empty() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
-    }
-
-    /// Builds a fault plan in canonical entry order without world validation.
-    #[must_use]
-    pub fn from_entries(entries: Vec<FaultPlanEntry>) -> Self {
-        Self {
-            entries: canonical_fault_plan_entries(&entries),
-        }
-    }
-
-    /// Builds a fault plan after validating every entry against `world`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::PlanFaultUnknownNode`],
-    /// [`EngineError::PlanFaultUnknownLinkId`],
-    /// [`EngineError::PlanFaultUnknownDevice`],
-    /// [`EngineError::PlanFaultDeviceKindMismatch`],
-    /// [`EngineError::PlanHealUnknownTag`],
-    /// [`EngineError::PlanHealBeforeActivate`], or
-    /// [`EngineError::PlanFaultDurationOverflow`] when an entry cannot be
-    /// reduced to exact virtual-time fault actions for the supplied world.
-    pub fn from_entries_for_world(
-        world: &World,
-        entries: Vec<FaultPlanEntry>,
-    ) -> Result<Self, EngineError> {
-        validate_fault_plan_entries_for_world(world, &entries)?;
-        Ok(Self::from_entries(entries))
-    }
-
-    /// Returns fault-plan entries in canonical order.
-    #[must_use]
-    pub fn entries(&self) -> &[FaultPlanEntry] {
-        &self.entries
-    }
-}
-
-/// Configuration for deterministic random [`FaultPlan`] generation.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct RandomFaultConfig {
-    /// Number of fault-generation slots to draw before deterministic pruning.
-    pub fault_slots: u32,
-    /// Total virtual-time span that generated finite faults must fit inside.
-    pub duration: FaultDuration,
-    /// Integer relative weights used for weighted fault-kind selection.
-    pub weights: FaultWeights,
-    /// Inclusive severity bounds used when drawing kind-specific parameters.
-    pub bounds: SeverityBounds,
-    /// Integer caps enforced by deterministic generation-order pruning.
-    pub caps: FaultCaps,
-    /// Root seed for the generator's single deterministic RNG stream.
-    pub seed: Seed,
-}
-
-impl RandomFaultConfig {
-    /// Generates a validated, canonically ordered fault plan for `world`.
-    ///
-    /// The same configuration and world always produce a byte-identical
-    /// [`FaultPlan`]. Generated entries are finite [`FaultPlanEntry::At`] faults
-    /// and are validated through [`FaultPlan::from_entries_for_world`] before
-    /// returning, so unsupported targets cannot escape this API.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::RandomFaultConfigInvalid`] when the configuration
-    /// has no legal target/kind space or its bounds are inconsistent, or any
-    /// [`FaultPlan`] validation error if the generated entries do not layer over
-    /// `world`.
-    pub fn generate_for_world(&self, world: &World) -> Result<FaultPlan, EngineError> {
-        validate_random_fault_config(self)?;
-        if self.fault_slots == 0 || self.caps.max_concurrent_faults == 0 {
-            return Ok(FaultPlan::empty());
-        }
-
-        let nodes = random_fault_nodes(world);
-        let links = random_fault_links(world);
-        let block_devices = random_fault_devices(world, WorldDeviceKind::Block);
-        let ninep_devices = random_fault_devices(world, WorldDeviceKind::NineP);
-        let kinds = eligible_random_fault_kinds(
-            &self.weights,
-            !nodes.is_empty(),
-            !links.is_empty(),
-            !block_devices.is_empty(),
-            !ninep_devices.is_empty(),
-        );
-        if kinds.is_empty() {
-            return Err(EngineError::RandomFaultConfigInvalid {
-                reason: "no weighted random fault kind has a valid target in the world",
-            });
-        }
-
-        let mut stream = self.seed.decision_rng().fork_in_domain(
-            RANDOM_FAULT_CONFIG_RNG_DOMAIN,
-            &random_fault_config_material(self, world),
-        );
-        let mut generated = Vec::with_capacity(self.fault_slots as usize);
-        for slot in 0..self.fault_slots {
-            let start = draw_random_fault_start(&mut stream, self)?;
-            let active_duration = draw_random_fault_duration(&mut stream, self, start)?;
-            let kind = draw_random_fault_kind(&mut stream, &kinds)?;
-            let fault = draw_random_fault(
-                &mut stream,
-                self,
-                kind,
-                &nodes,
-                &links,
-                &block_devices,
-                &ninep_devices,
-            )?;
-            generated.push(RandomFaultCandidate {
-                order: slot,
-                start,
-                end: start.saturating_add(active_duration.nanos()),
-                kind,
-                entry: FaultPlanEntry::At {
-                    at: VirtualTime { ticks: start },
-                    duration: active_duration,
-                    tag: FaultTag::from_name(format!("random-fault-{slot:016}")),
-                    fault,
-                },
-            });
-        }
-
-        let entries = prune_random_fault_candidates(generated, self.caps)
-            .into_iter()
-            .map(|candidate| candidate.entry)
-            .collect();
-        FaultPlan::from_entries_for_world(world, entries)
-    }
-}
-
-/// Integer relative weights for each generated fault kind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct FaultWeights {
-    /// Weight for network partition faults.
-    pub partition: u32,
-    /// Weight for network message-loss faults.
-    pub message_loss: u32,
-    /// Weight for network reorder-window faults.
-    pub reorder: u32,
-    /// Weight for network duplicate-delivery faults.
-    pub duplicate: u32,
-    /// Weight for network corruption faults.
-    pub corruption: u32,
-    /// Weight for network bandwidth-limit faults.
-    pub bandwidth_limit: u32,
-    /// Weight for network latency-bump faults.
-    pub latency_bump: u32,
-    /// Weight for node crash faults.
-    pub crash: u32,
-    /// Weight for node slowdown faults.
-    pub slow: u32,
-    /// Weight for node clock-skew faults.
-    pub clock_skew: u32,
-    /// Weight for block-device latency faults.
-    pub block_latency: u32,
-    /// Weight for block-device failure faults.
-    pub block_failure: u32,
-    /// Weight for block-device completion-reorder faults.
-    pub block_reorder: u32,
-    /// Weight for 9p-device latency faults.
-    pub ninep_latency: u32,
-    /// Weight for 9p-device failure faults.
-    pub ninep_failure: u32,
-}
-
-impl Default for FaultWeights {
-    fn default() -> Self {
-        Self {
-            partition: 1,
-            message_loss: 1,
-            reorder: 1,
-            duplicate: 1,
-            corruption: 1,
-            bandwidth_limit: 1,
-            latency_bump: 1,
-            crash: 1,
-            slow: 1,
-            clock_skew: 1,
-            block_latency: 0,
-            block_failure: 0,
-            block_reorder: 0,
-            ninep_latency: 0,
-            ninep_failure: 0,
-        }
-    }
-}
-
-/// Inclusive severity bounds for generated fault parameters.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct SeverityBounds {
-    /// Minimum finite active duration for generated faults.
-    pub min_duration: FaultDuration,
-    /// Maximum finite active duration for generated faults.
-    pub max_duration: FaultDuration,
-    /// Minimum basis-point rate for probabilistic generated faults.
-    pub min_rate: FaultRateBasisPoints,
-    /// Maximum basis-point rate for probabilistic generated faults.
-    pub max_rate: FaultRateBasisPoints,
-    /// Minimum latency-like duration for generated latency faults.
-    pub min_latency: FaultDuration,
-    /// Maximum latency-like duration for generated latency faults.
-    pub max_latency: FaultDuration,
-    /// Minimum reorder window for generated reorder faults.
-    pub min_reorder_window: FaultDuration,
-    /// Maximum reorder window for generated reorder faults.
-    pub max_reorder_window: FaultDuration,
-    /// Minimum duplicate gap for generated duplicate faults.
-    pub min_duplicate_gap: FaultDuration,
-    /// Maximum duplicate gap for generated duplicate faults.
-    pub max_duplicate_gap: FaultDuration,
-    /// Minimum generated bandwidth limit.
-    pub min_bandwidth: FaultBandwidthBitsPerSecond,
-    /// Maximum generated bandwidth limit.
-    pub max_bandwidth: FaultBandwidthBitsPerSecond,
-    /// Minimum generated slowdown factor.
-    pub min_slowdown: FaultSlowdownFactorBasisPoints,
-    /// Maximum generated slowdown factor.
-    pub max_slowdown: FaultSlowdownFactorBasisPoints,
-    /// Minimum generated guest-visible clock skew.
-    pub min_clock_skew: SimOffset,
-    /// Maximum generated guest-visible clock skew.
-    pub max_clock_skew: SimOffset,
-    /// Minimum generated bit-flip count.
-    pub min_corruption_bits: u32,
-    /// Maximum generated bit-flip count.
-    pub max_corruption_bits: u32,
-    /// Minimum generated truncation byte count.
-    pub min_truncation_bytes: u64,
-    /// Maximum generated truncation byte count.
-    pub max_truncation_bytes: u64,
-}
-
-impl Default for SeverityBounds {
-    fn default() -> Self {
-        Self {
-            min_duration: FaultDuration::from_nanos(1),
-            max_duration: FaultDuration::from_nanos(100),
-            min_rate: FaultRateBasisPoints { basis_points: 1 },
-            max_rate: FaultRateBasisPoints {
-                basis_points: MAX_FAULT_RATE_BASIS_POINTS as u16,
-            },
-            min_latency: FaultDuration::from_nanos(1),
-            max_latency: FaultDuration::from_nanos(100),
-            min_reorder_window: FaultDuration::from_nanos(1),
-            max_reorder_window: FaultDuration::from_nanos(100),
-            min_duplicate_gap: FaultDuration::from_nanos(1),
-            max_duplicate_gap: FaultDuration::from_nanos(100),
-            min_bandwidth: FaultBandwidthBitsPerSecond { bits_per_second: 1 },
-            max_bandwidth: FaultBandwidthBitsPerSecond {
-                bits_per_second: 1_000_000,
-            },
-            min_slowdown: FaultSlowdownFactorBasisPoints::ONE,
-            max_slowdown: FaultSlowdownFactorBasisPoints {
-                basis_points: 20_000,
-            },
-            min_clock_skew: SimOffset { nanos: -100 },
-            max_clock_skew: SimOffset { nanos: 100 },
-            min_corruption_bits: 1,
-            max_corruption_bits: 16,
-            min_truncation_bytes: 1,
-            max_truncation_bytes: 4096,
-        }
-    }
-}
-
-/// Integer caps applied to generated fault campaigns.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct FaultCaps {
-    /// Maximum simultaneously active generated faults retained after pruning.
-    pub max_concurrent_faults: u32,
-    /// Maximum retained network partition faults.
-    pub max_partitions: u32,
-    /// Maximum retained node crash faults.
-    pub max_crashes: u32,
-}
-
-impl Default for FaultCaps {
-    fn default() -> Self {
-        Self {
-            max_concurrent_faults: u32::MAX,
-            max_partitions: u32::MAX,
-            max_crashes: u32::MAX,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct RandomFaultCandidate {
-    pub(super) order: u32,
-    pub(super) start: u64,
-    pub(super) end: u64,
-    pub(super) kind: RandomFaultKind,
-    pub(super) entry: FaultPlanEntry,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum RandomFaultKind {
-    Partition,
-    MessageLoss,
-    Reorder,
-    Duplicate,
-    Corruption,
-    BandwidthLimit,
-    LatencyBump,
-    Crash,
-    Slow,
-    ClockSkew,
-    BlockLatency,
-    BlockFailure,
-    BlockReorder,
-    NinePLatency,
-    NinePFailure,
-}
-
-/// A declarative fault plan layered over a static [`World`].
+/// A declarative event and signal-driven fault plan layered over a [`World`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Plan {
     /// The independently content-addressed plan identity.
     pub(super) id: ContentHash,
-    pub(super) kind: PlanKind,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) enum PlanKind {
-    ScheduledEntries { entries: Vec<PlanEntry> },
-    FaultPlan { plan: FaultPlan },
-    EventGraph { graph: EventGraph },
+    pub(super) graph: EventGraph,
+    pub(super) fault_signals: FaultSignalPlan,
 }
 
 impl Default for Plan {
@@ -408,79 +21,41 @@ impl Plan {
     /// Builds an empty plan.
     #[must_use]
     pub fn empty() -> Self {
-        let entries = Vec::new();
-        Self::from_canonical_entries(entries)
+        Self::from_canonical_event_graph(EventGraph::from_unchecked_events_for_model(Vec::new()))
     }
 
-    /// Builds a plan after validating every entry against `world`.
+    /// Returns the plan's non-fault event graph.
+    #[must_use]
+    pub const fn event_graph(&self) -> &EventGraph {
+        &self.graph
+    }
+
+    /// Returns the scenario's signal-driven fault programs and bindings.
+    #[must_use]
+    pub const fn fault_signals(&self) -> &FaultSignalPlan {
+        &self.fault_signals
+    }
+
+    /// Replaces the signal-driven fault layer and recomputes plan identity.
+    #[must_use]
+    pub fn with_fault_signals(self, fault_signals: FaultSignalPlan) -> Self {
+        Self::from_canonical_parts(self.graph, fault_signals)
+    }
+
+    /// Replaces the fault layer and validates the reconstructed plan for `world`.
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::PlanFaultUnknownNode`] when a membership fault
-    /// names a node that is not declared by `world`,
-    /// [`EngineError::PlanFaultUnknownLink`] when a partition names no declared
-    /// link, [`EngineError::PlanHealUnknownTag`] when a heal names no activated
-    /// fault tag in the plan, [`EngineError::PlanHealBeforeActivate`] when a
-    /// heal is not after its activation, or
-    /// [`EngineError::PlanNotYetJoinedAfterStart`] when an initial join hold is
-    /// scheduled after `t = 0`.
-    pub fn from_entries_for_world(
+    /// Returns [`EngineError`] when the materialized fault targets or the
+    /// existing event graph are incompatible with `world`.
+    pub fn with_fault_signals_for_world(
+        self,
         world: &World,
-        entries: Vec<PlanEntry>,
+        fault_signals: FaultSignalPlan,
     ) -> Result<Self, EngineError> {
-        validate_plan_entries_for_world(world, &entries)?;
-        Ok(Self::from_canonical_entries(canonical_plan_entries(
-            &entries,
-        )))
-    }
-
-    /// Returns plan entries in their canonical order.
-    ///
-    /// Event-graph plans return an empty slice; use [`Self::event_graph`] to
-    /// inspect graph-native plans.
-    #[must_use]
-    pub fn entries(&self) -> &[PlanEntry] {
-        match &self.kind {
-            PlanKind::ScheduledEntries { entries } => entries,
-            PlanKind::FaultPlan { .. } => &[],
-            PlanKind::EventGraph { .. } => &[],
-        }
-    }
-
-    /// Returns the full-taxonomy fault plan carried by this plan, when present.
-    #[must_use]
-    pub fn fault_plan(&self) -> Option<&FaultPlan> {
-        match &self.kind {
-            PlanKind::FaultPlan { plan } => Some(plan),
-            PlanKind::ScheduledEntries { .. } | PlanKind::EventGraph { .. } => None,
-        }
-    }
-
-    /// Returns the graph carried by this plan when it is graph-native.
-    #[must_use]
-    pub fn event_graph(&self) -> Option<&EventGraph> {
-        match &self.kind {
-            PlanKind::ScheduledEntries { .. } => None,
-            PlanKind::FaultPlan { .. } => None,
-            PlanKind::EventGraph { graph } => Some(graph),
-        }
-    }
-
-    /// Builds a full-taxonomy fault-plan body after validating it against `world`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::PlanFaultUnknownNode`],
-    /// [`EngineError::PlanFaultUnknownLinkId`],
-    /// [`EngineError::PlanFaultUnknownDevice`],
-    /// [`EngineError::PlanFaultDeviceKindMismatch`],
-    /// [`EngineError::PlanHealUnknownTag`],
-    /// [`EngineError::PlanHealBeforeActivate`], or
-    /// [`EngineError::PlanFaultDurationOverflow`] when the fault plan cannot be
-    /// layered over `world`.
-    pub fn from_fault_plan_for_world(world: &World, plan: FaultPlan) -> Result<Self, EngineError> {
-        let plan = FaultPlan::from_entries_for_world(world, plan.entries)?;
-        Ok(Self::from_canonical_fault_plan(plan))
+        let plan = Self::from_canonical_parts(self.graph, fault_signals);
+        plan.validate_for_world(world)?;
+        Ok(plan)
     }
 
     /// Builds a graph-native plan after validating it against `world`.
@@ -528,7 +103,7 @@ impl Plan {
     /// Returns [`EngineError::ScenarioSerialization`] if the TOML renderer rejects
     /// the internal DTO shape.
     pub fn to_canonical_toml(&self) -> Result<String, EngineError> {
-        toml::to_string(&plan_to_toml(self)).map_err(|source| {
+        toml::to_string(&plan_to_toml(self)?).map_err(|source| {
             scenario_serialization_error(format!("serialize plan TOML: {source}"))
         })
     }
@@ -538,13 +113,11 @@ impl Plan {
     /// # Errors
     ///
     /// Returns [`EngineError::ScenarioSerialization`] for malformed TOML or an id
-    /// mismatch, [`EngineError::PlanNegativeTime`],
-    /// [`EngineError::PlanFaultUnknownDirection`], or
-    /// [`EngineError::PlanFaultUnsupportedParam`] for localized serialized plan
-    /// validation failures, or a plan validation error when the parsed entries do
-    /// not layer over `world`.
+    /// mismatch, or a plan validation error when the parsed graph and signal
+    /// bindings do not layer over `world`.
     pub fn from_canonical_toml_for_world(world: &World, input: &str) -> Result<Self, EngineError> {
-        validate_plan_entries_in_toml(input)?;
+        validate_scenario_toml_size(input)?;
+        require_current_fault_schema(input)?;
         let toml = toml::from_str::<PlanToml>(input)
             .map_err(|source| scenario_serialization_error(format!("parse plan TOML: {source}")))?;
         plan_from_toml(world, toml)
@@ -562,7 +135,8 @@ impl Plan {
         assertions: impl IntoIterator<Item = AssertionId>,
         input: &str,
     ) -> Result<Self, EngineError> {
-        validate_plan_entries_in_toml(input)?;
+        validate_scenario_toml_size(input)?;
+        require_current_fault_schema(input)?;
         let toml = toml::from_str::<PlanToml>(input)
             .map_err(|source| scenario_serialization_error(format!("parse plan TOML: {source}")))?;
         plan_from_toml_with_assertions(world, assertions, toml)
@@ -618,16 +192,8 @@ impl Plan {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::PlanFaultUnknownNode`],
-    /// [`EngineError::PlanFaultUnknownLink`],
-    /// [`EngineError::PlanFaultUnknownLinkId`],
-    /// [`EngineError::PlanFaultUnknownDevice`],
-    /// [`EngineError::PlanFaultDeviceKindMismatch`],
-    /// [`EngineError::PlanHealUnknownTag`],
-    /// [`EngineError::PlanHealBeforeActivate`],
-    /// [`EngineError::PlanFaultDurationOverflow`], or
-    /// [`EngineError::PlanNotYetJoinedAfterStart`] when an entry cannot be
-    /// layered over the static world topology.
+    /// Returns [`EngineError`] when an event, predicate, signal binding, or
+    /// resolved target is incompatible with the admitted World.
     pub fn validate_for_world(&self, world: &World) -> Result<(), EngineError> {
         self.validate_for_world_with_assertions(world, [])
     }
@@ -651,47 +217,36 @@ impl Plan {
         world: &World,
         assertions: impl IntoIterator<Item = AssertionId>,
     ) -> Result<(), EngineError> {
-        match &self.kind {
-            PlanKind::ScheduledEntries { entries } => {
-                validate_plan_entries_for_world(world, entries)
-            }
-            PlanKind::FaultPlan { plan } => {
-                validate_fault_plan_entries_for_world(world, plan.entries())
-            }
-            PlanKind::EventGraph { graph } => {
-                validate_event_graph_plan(world, assertions, graph.clone())
-                    .map(|_| ())
-                    .map_err(event_graph_plan_error)
-            }
-        }
-    }
-
-    fn from_canonical_entries(entries: Vec<PlanEntry>) -> Self {
-        let kind = PlanKind::ScheduledEntries { entries };
-        Self::from_canonical_kind(kind)
-    }
-
-    fn from_canonical_fault_plan(plan: FaultPlan) -> Self {
-        Self::from_canonical_kind(PlanKind::FaultPlan { plan })
+        self.fault_signals
+            .validate_for_world(world)
+            .map_err(|error| {
+                scenario_serialization_error(format!(
+                    "fault signal plan validation failed: {error}"
+                ))
+            })?;
+        validate_event_graph_plan(world, assertions, self.graph.clone())
+            .map(|_| ())
+            .map_err(event_graph_plan_error)
     }
 
     fn from_canonical_event_graph(graph: EventGraph) -> Self {
-        Self::from_canonical_kind(PlanKind::EventGraph { graph })
+        Self::from_canonical_parts(graph, FaultSignalPlan::empty())
     }
 
-    fn from_canonical_kind(kind: PlanKind) -> Self {
+    fn from_canonical_parts(graph: EventGraph, fault_signals: FaultSignalPlan) -> Self {
+        let material = plan_parts_material(&graph, &fault_signals);
         Self {
-            id: ContentHash::from_canonical_material(
-                "crucible.model.plan.v1",
-                &plan_kind_material(&kind),
-            ),
-            kind,
+            id: ContentHash::from_canonical_material("crucible.model.plan.v5", &material),
+            graph,
+            fault_signals,
         }
     }
 }
 
 /// A stable assertion identifier inside a [`Properties`] bundle.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct AssertionId {
     /// The canonical assertion name.
     pub name: String,
@@ -706,7 +261,9 @@ impl AssertionId {
 }
 
 /// A stable white-box marker identifier.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct MarkerId {
     /// The canonical marker name.
     pub name: String,
@@ -721,7 +278,9 @@ impl MarkerId {
 }
 
 /// Stable identity of an event inside an event graph.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct EventId {
     /// Canonical event name, unique within the graph.
     pub name: String,
@@ -736,7 +295,9 @@ impl EventId {
 }
 
 /// Stable identity of an observable network link.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct LinkId {
     /// Canonical link name.
     pub name: String,
@@ -747,6 +308,27 @@ impl LinkId {
     #[must_use]
     pub fn from_name(name: impl Into<String>) -> Self {
         Self { name: name.into() }
+    }
+
+    /// Derives the canonical scheduler identity for an unordered endpoint pair.
+    ///
+    /// Endpoint ordering does not affect the result. Callers should use this
+    /// constructor when addressing a World link instead of constructing an
+    /// endpoint-concatenated name.
+    #[must_use]
+    pub fn for_endpoints(left: &NodeId, right: &NodeId) -> Self {
+        let (endpoint_a, endpoint_b) = if left <= right {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        Self::from_name(format!(
+            "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
+            endpoint_a.name.len(),
+            endpoint_a.name,
+            endpoint_b.name.len(),
+            endpoint_b.name
+        ))
     }
 }
 
@@ -944,7 +526,9 @@ pub enum MemoryCmp {
 }
 
 /// Observable I/O operation class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum IoEventKind {
     /// Match any deterministic I/O completion.
     Any,
@@ -961,7 +545,9 @@ pub enum IoEventKind {
 }
 
 /// Lifecycle state entered by a scenario node.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum NodeLifecycle {
     /// The node started or became runnable.
     Started,
@@ -974,7 +560,9 @@ pub enum NodeLifecycle {
 }
 
 /// Terminal assertion state visible to trigger steering.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum AssertionPhase {
     /// The assertion became satisfied.
     Satisfied,
@@ -1182,11 +770,6 @@ pub enum Predicate {
     },
     /// True when scheduler-owned quiescence evidence has no blockers.
     Quiescent,
-    /// True when a declared fault tag is active at the evaluation point.
-    FaultActive {
-        /// Stable fault tag whose active state is matched.
-        tag: FaultTag,
-    },
     /// A named host-side predicate resolved by the harness and event log.
     Named {
         /// Stable predicate name.
@@ -1336,12 +919,6 @@ impl Predicate {
     #[must_use]
     pub const fn quiescent() -> Self {
         Self::Quiescent
-    }
-
-    /// Builds an active-fault-tag predicate.
-    #[must_use]
-    pub fn fault_active(tag: FaultTag) -> Self {
-        Self::FaultActive { tag }
     }
 
     /// Builds a guest-marker predicate.
@@ -1560,10 +1137,10 @@ impl Properties {
     /// Builds a properties bundle after resolving DSL predicates against `world`
     /// and `plan`.
     ///
-    /// Named DSL predicates such as `no_crashed_nodes`, `node_alive:<node>`, and
-    /// `no_active_faults` are expanded to concrete predicates before validation
-    /// and hashing. Unrecognized `Named` predicates remain available for linted
-    /// host-side assertion oracles.
+    /// Named DSL predicates such as `no_crashed_nodes` and `node_alive:<node>`
+    /// are expanded to concrete predicates before validation and hashing.
+    /// Unrecognized `Named` predicates remain available for linted host-side
+    /// assertion oracles.
     ///
     /// # Errors
     ///

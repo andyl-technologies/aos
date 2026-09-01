@@ -189,6 +189,7 @@
         (platformMod)
         mkPlatform
         cpus
+        kernels
         satisfies
         canRun
         canBuildOn

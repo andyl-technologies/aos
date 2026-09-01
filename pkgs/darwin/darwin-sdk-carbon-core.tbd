@@ -1,0 +1,15 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ x86_64-macos, arm64-macos ]
+install-name: '/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/CarbonCore.framework/Versions/A/CarbonCore'
+current-version: 1333.0.0
+compatibility-version: 1.0.0
+parent-umbrella:
+  - targets: [ x86_64-macos, arm64-macos ]
+    umbrella: CoreServices
+exports:
+  - targets: [ x86_64-macos, arm64-macos ]
+    symbols:
+      - _FSFindFolder
+      - _FSRefMakePath
+...

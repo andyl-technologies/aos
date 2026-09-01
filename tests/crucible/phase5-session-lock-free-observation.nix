@@ -6,11 +6,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   sessionGateTest = builtins.readFile ../../crates/crucible-session/tests/gate_control_responsive.rs;
@@ -70,7 +66,7 @@
       }
       {
         label = "actor-owned snapshot publisher";
-        needle = "fn publish(&self, snapshot: &EngineSnapshot";
+        needle = "pub(super) fn publish(\n        &self,\n        snapshot: &EngineSnapshot,";
       }
       {
         label = "direct actor live status read";

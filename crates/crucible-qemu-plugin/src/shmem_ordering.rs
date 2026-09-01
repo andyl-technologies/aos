@@ -95,6 +95,71 @@ impl PluginShmemOrdering {
         slot.publish_idle(reached_icount, idle_wake_icount, shift_bits)
     }
 
+    /// Publishes that the plugin is quiesced at an exact coordinated-pause boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError`] when virtual-time conversion fails under
+    /// `shift_bits`.
+    pub fn publish_pause_quiesced(
+        slot: &NodeSlot,
+        reached_icount: u64,
+        raw_icount: u64,
+        shift_bits: u8,
+    ) -> Result<(), NodeSlotError> {
+        slot.publish_pause_quiesced(reached_icount, raw_icount, shift_bits)
+    }
+
+    /// Returns whether the host requested a QEMU main-loop control boundary.
+    #[must_use]
+    pub fn control_boundary_is_requested(slot: &NodeSlot) -> bool {
+        slot.control_boundary_is_requested()
+    }
+
+    /// Release-acknowledges a drained host-control request after publication.
+    pub fn acknowledge_control_boundary(slot: &NodeSlot) -> u32 {
+        slot.acknowledge_control_boundary()
+    }
+
+    /// Publishes the exact boundary, classifying a scheduler ceiling as idle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError`] when virtual-time conversion fails under
+    /// `shift_bits`.
+    pub fn publish_control_boundary(
+        slot: &NodeSlot,
+        reached_icount: u64,
+        raw_icount: u64,
+        shift_bits: u8,
+    ) -> Result<(), NodeSlotError> {
+        slot.publish_control_boundary(reached_icount, raw_icount, shift_bits)
+    }
+
+    /// Returns a pending host request to reconstruct plugin logical time.
+    #[must_use]
+    pub fn pending_logical_time_restore(
+        slot: &NodeSlot,
+    ) -> Option<crucible_shmem::LogicalTimeRestoreRequest> {
+        slot.pending_logical_time_restore()
+    }
+
+    /// Acknowledges logical-time reconstruction at the exact restored boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError`] when the request changed, the target differs,
+    /// or virtual-time conversion fails.
+    pub fn acknowledge_logical_time_restore(
+        slot: &NodeSlot,
+        request: crucible_shmem::LogicalTimeRestoreRequest,
+        reached_icount: u64,
+        raw_icount: u64,
+        shift_bits: u8,
+    ) -> Result<(), NodeSlotError> {
+        slot.acknowledge_logical_time_restore(request, reached_icount, raw_icount, shift_bits)
+    }
+
     /// Recomputes the race-free futex wait decision with acquire loads.
     #[must_use]
     pub fn prepare_futex_wait(slot: &NodeSlot) -> FutexWait {

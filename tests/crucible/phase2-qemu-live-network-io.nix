@@ -5,15 +5,16 @@
   taskIds ? ["T-PLUG-8" "T-PLUG-10" "T-PLUG-11"],
   openTaskIds ? [],
   busyCeiling ? "4000000000",
-  networkTimeoutSecs ? "120",
-  secondRunLoad ? "1",
+  # Exact restore resumes beyond 7.3 billion guest instructions. Keep enough
+  # host-liveness margin for concurrent hermetic QEMU gates and the ordered
+  # post-quantum control acknowledgement; this bound never participates in
+  # guest scheduling or trace state, and successful runs return immediately.
+  networkTimeoutSecs ? "1500",
+  secondRunSchedulerPreemption ? "1",
+  dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   networkInitramfs = import ./phase2-qemu-live-network-io-guest.nix {inherit pkgs;};
 in
   pkgs.mkDerivation {
@@ -21,15 +22,17 @@ in
     version = "0";
     src = crucibleSrc;
 
-    buildDeps = [
-      pkgs.coreutils
-      pkgs.crucible-fixtures
-      pkgs.crucible-qemu-plugin
-      pkgs.grep
-      pkgs.qemu-crucible
-      pkgs.rust
-      pkgs.sed
-    ];
+    buildDeps =
+      [
+        pkgs.coreutils
+        pkgs.crucible-fixtures
+        pkgs.crucible-qemu-plugin
+        pkgs.grep
+        pkgs.qemu-crucible
+        pkgs.rust
+        pkgs.sed
+      ]
+      ++ dependencies;
 
     # The standard AOS kernel carries CONFIG_PACKET=y and CONFIG_VIRTIO_NET=y;
     # the gate uses that shipped fixture instead of a gate-only kernel variant.
@@ -38,7 +41,7 @@ in
     GUEST_FIRMWARE = "${pkgs.qemu-crucible}/share/qemu/bios-256k.bin";
     CRUCIBLE_NETWORK_IO_BUSY_CEILING = busyCeiling;
     CRUCIBLE_NETWORK_IO_TIMEOUT_SECS = networkTimeoutSecs;
-    CRUCIBLE_NETWORK_IO_SECOND_RUN_LOAD = secondRunLoad;
+    CRUCIBLE_NETWORK_IO_SECOND_RUN_SCHEDULER_PREEMPTION = secondRunSchedulerPreemption;
     TASK_IDS = builtins.concatStringsSep "," taskIds;
     OPEN_TASK_IDS = builtins.concatStringsSep "," openTaskIds;
     ATTR_PATH = attrPath;
@@ -86,10 +89,67 @@ in
             ${networkInitramfs}/evidence.env
           grep -Fxq 'guest_interface=virtio-net-eth0' \
             ${networkInitramfs}/evidence.env
+          grep -Fxq 'guest_receive_filter=eth0-non-outgoing' \
+            ${networkInitramfs}/evidence.env
+          grep -Fxq 'guest_reply_ack_binding=exact-router-source-and-guest-destination' \
+            ${networkInitramfs}/evidence.env
+          grep -Fxq 'guest_self_probe_acknowledgement=forbidden' \
+            ${networkInitramfs}/evidence.env
+          grep -Fxq 'multi_guest_tx_order=deterministic-node-mac-stagger' \
+            ${networkInitramfs}/evidence.env
+
+          scheduler_test_list="$TMPDIR/bounded-scheduler-preemption.tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-network-io-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --lib \
+            -- \
+            --list > "$scheduler_test_list"
+          for test_name in \
+            asynchronous_preemption_completes_while_target_runs \
+            controller_waits_for_pending_work_release \
+            disabled_adversary_spawns_no_controller \
+            dropping_controller_resumes_and_joins_stopped_target \
+            exited_target_fails_after_pending_work_release \
+            first_stop_rejects_an_already_completed_quantum \
+            signal_failure_is_reported_and_joined \
+            stop_observation_honors_timeout_without_a_state_change \
+            watchdog_expiry_directly_resumes_stopped_target; do
+            grep -Fxq \
+              "supervision::bounded_scheduler_preemption::tests::$test_name: test" \
+              "$scheduler_test_list"
+          done
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-network-io-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --lib \
+            supervision::bounded_scheduler_preemption::tests:: \
+            -- \
+            --test-threads=1
+          grep -Fxq \
+            'supervision::network_io_gate::tests::certification_rejects_ack_before_router_delivery_or_with_wrong_mac: test' \
+            "$scheduler_test_list"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-network-io-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --lib \
+            supervision::network_io_gate::tests::certification_rejects_ack_before_router_delivery_or_with_wrong_mac \
+            -- \
+            --exact
 
           cargo build \
             --frozen \
             --offline \
+            --release \
             --target-dir "$TMPDIR/live-network-io-target" \
             --manifest-path crates/Cargo.toml \
             -p crucible-qemu \
@@ -97,6 +157,7 @@ in
           cargo build \
             --frozen \
             --offline \
+            --release \
             --target-dir "$TMPDIR/live-network-io-target" \
             --manifest-path crates/Cargo.toml \
             -p crucible-api \
@@ -105,8 +166,16 @@ in
           run_dir="$TMPDIR/live-network-io-run"
           mkdir -p "$run_dir"
           report="$TMPDIR/live-network-io.result"
-          timeout -k 15 590 \
-            "$TMPDIR/live-network-io-target/debug/examples/crucible-qemu-live-network-io" \
+          # Four real-QEMU lifetimes cover reference, bounded preemption,
+          # retained capture, and fresh-process restore. The restore traverses
+          # every canonical 4M-icount retry through the bounded production
+          # node-set reissue path, without a control snapshot per attempt. The
+          # optimized host runner avoids making the 1,024-attempt retry
+          # ceiling itself a debug-build tax. The fixed outer limit covers the
+          # four 1,500-second live-operation envelopes and remains independent of
+          # canonical scheduling.
+          timeout -k 15 6090 \
+            "$TMPDIR/live-network-io-target/release/examples/crucible-qemu-live-network-io" \
             ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
             ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
             "$vmlinuz" \
@@ -127,25 +196,46 @@ in
           grep -Fxq 'reply_latency_icount=100000000' "$report"
           grep -Eq '^ack_emit_icount=[1-9][0-9]*$' "$report"
           grep -Fxq 'acknowledgement_seen=true' "$report"
-          grep -Fxq 'deterministic_under_host_load=true' "$report"
+          grep -Fxq \
+            'guest_ack_causality=exact-router-source-destination-and-post-delivery' \
+            "$report"
+          grep -Fxq 'boot_backpressure_retained=true' "$report"
+          grep -Fxq 'canonical_backpressure_retry_delivered=true' "$report"
+          grep -Fxq 'backpressure_retry_icount=4000001' "$report"
+          grep -Fxq 'backpressure_guest_acknowledgement_seen=true' "$report"
+          grep -Fxq 'retained_frame_fresh_process_restored=true' "$report"
+          grep -Fxq 'retained_frame_durable_envelope_restored=true' "$report"
+          grep -Fxq 'retained_frame_first_retry_icount=3000000001' "$report"
+          retained_ack_icount="$(grep '^retained_frame_guest_ack_emit_icount=' "$report")"
+          retained_ack_icount="''${retained_ack_icount#*=}"
+          test "$retained_ack_icount" -ge 3000000001
+          grep -Eq '^retained_frame_guest_ack_sequence=[0-9]+$' "$report"
+          grep -Fxq 'deterministic_under_scheduler_preemption=true' "$report"
           grep -Eq '^hostile_probe_emit_icount=[1-9][0-9]*$' "$report"
           grep -Eq '^absolute_probe_origin_equal=(true|false)$' "$report"
           grep -Eq '^hostile_acknowledgement_offset_icount=[1-9][0-9]*$' "$report"
           grep -Eq '^acknowledgement_offset_equal=(true|false)$' "$report"
           grep -Fxq 'determinism_scope=router-delivery-and-frame-order' "$report"
-          grep -Fxq 'host_load_applied=true' "$report"
+          grep -Fxq 'host_adversary=bounded-scheduler-preemption' "$report"
+          grep -Fxq 'host_scheduler_preemption_count=6' "$report"
+          grep -Fxq 'host_scheduler_preemption_pending_quantum=true' "$report"
+          grep -Eq '^completion_owned_frames=[1-9][0-9]*$' "$report"
+          grep -Fxq 'host_scheduler_preemption_requested_milliseconds=90' "$report"
           grep -Fxq 'delayed_reply_applied=false' "$report"
           grep -Fxq 'orderly_child_exit=true' "$report"
 
           world_report="$TMPDIR/live-world-network.result"
+          world_run_dir="$TMPDIR/live-world-network-run"
+          mkdir -p "$world_run_dir"
           root_image=${pkgs.crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4
-          timeout -k 15 590 \
-            "$TMPDIR/live-network-io-target/debug/examples/crucible-qemu-live-world-network" \
+          timeout -k 15 1190 \
+            "$TMPDIR/live-network-io-target/release/examples/crucible-qemu-live-world-network" \
             ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
             ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
             "$vmlinuz" \
             "$root_image" \
             "$GUEST_INITRD" \
+            "$world_run_dir" \
             > "$world_report"
 
           cat "$world_report"
@@ -155,12 +245,13 @@ in
           grep -Fxq 'topology=two-vm-hostless-world-link' "$world_report"
           grep -Eq '^network_decisions=[1-9][0-9]*$' "$world_report"
           grep -Eq '^delivered_frames=[1-9][0-9]*$' "$world_report"
+          grep -Eq '^guest_acknowledgements=[1-9][0-9]*$' "$world_report"
           grep -Fxq 'search_branch=loss-fire' "$world_report"
           grep -Fxq 'branch_decisions_match=true' "$world_report"
-          grep -Fxq 'process_crash_stopped=true' "$world_report"
-          grep -Fxq 'ready_point_process_relaunched=true' "$world_report"
-          grep -Fxq 'stay_down_start_node_process_relaunched=true' "$world_report"
-          grep -Fxq 'last_checkpoint_thin_replay_relaunched=true' "$world_report"
+          grep -Fxq 'exact_restore_next_quantum_match=true' "$world_report"
+          grep -Eq '^checkpoint_continuation_quanta=([1-9]|1[0-6])$' "$world_report"
+          grep -Eq '^checkpoint_packet_continuation=[1-9][0-9]*$' "$world_report"
+          grep -Eq '^checkpoint_fault_decision_continuation=[1-9][0-9]*$' "$world_report"
 
           mkdir -p "$out"
           cp "$report" "$out/result"
@@ -170,7 +261,7 @@ in
             printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
             printf 'scope=certifying-live-guest-network-plugin-ring-exchange\n'
-            printf 'proven=guest-originated-tx,hostless-router-ring,exact-router-latency,lossless-qemu-rx,guest-ack,frame-order-host-load-invariance,production-two-vm-world-route,production-live-search-branch,production-process-crash,production-ready-point-process-relaunch,production-stay-down-start-node-process-relaunch,production-last-checkpoint-thin-replay\n'
+            printf 'proven=guest-originated-tx,hostless-router-ring,exact-router-latency,completion-owned-frame-transfer,real-qemu-nic-backpressure,canonical-backpressure-retry,retained-frame-guest-ack,fresh-process-retained-frame-restore,bounded-network-rx-attempts,lossless-qemu-rx,router-source-bound-guest-ack,post-reply-ack-coordinate,frame-order-scheduler-preemption-invariance,pending-quantum-preemption-overlap,production-two-vm-world-route,production-live-search-branch,durable-exact-restore-next-quantum,post-checkpoint-packet-and-fault-continuation\n'
             printf 'kernel_packet_socket=built-in\n'
             printf 'kernel_virtio_net=built-in\n'
           } >> "$out/result"

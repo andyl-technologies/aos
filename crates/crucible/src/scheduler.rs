@@ -15,15 +15,9 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
-use crate::device::{
-    NetworkFaultApplication, NetworkLinkDirection, apply_combined_network_faults_to_scheduler,
-    block_faults_from_combined_block, heal_combined_network_faults_to_scheduler,
-    link_faults_from_combined_network, ninep_faults_from_combined_ninep,
-};
-use crate::model::{DagStore, MemoryDagStore, Schedule};
-use crate::node_fault::{
-    NodeTimingFaults, NodeTimingProjection, node_timing_faults_from_combined_node,
-};
+use crate::device::NetworkLinkDirection;
+use crate::model::{DagStore, FaultObservation, FaultObservationKind, MemoryDagStore, Schedule};
+use crate::node_time::{NodeTimeMapping, NodeTimeProjection};
 use crate::trigger::{
     Action, ConditionEvaluationPass, ConditionEventLogPrefix, ConditionLeafOracle, EventFiring,
     EventFirings, EventGraph, EventGraphState, HostAssertionReport, LogLevel, ObservableEvent,
@@ -31,19 +25,17 @@ use crate::trigger::{
 };
 use crate::{
     AssertionId, AssertionPhase, AssertionQuantifierKind, BackendError, BackendInput,
-    BackendNetworkOutput, ChoiceTag, CombinedFaults, CombinedNetworkFaults, CombinedNodeFaults,
-    CombinedPartitionFault, Configuration, ContentHash, ControlFaultAction, ControlFaultDecision,
+    BackendNetworkOutput, BackendNetworkRoute, ChoiceTag, Configuration, ContentHash,
     DebugRuntimeRepositionReport, DebugRuntimeRepositionRequest, Decision, DecisionRecorder,
     DecisionRngState, DeliveryOrderDecision, EventId, EventKey, EventLogOffset, EventSequenceState,
-    Fault, FaultDecision, FaultId, FaultRateBasisPoints, FaultTag, FingerprintSample,
-    GdbAttachInfo, GdbListen, Icount, LinkDef, LinkId, MIN_LINK_LATENCY, MarkerId, MembershipFault,
-    NetworkLinkPendingFrame, NodeCounter, NodeId, NodeLifecycle, OverrideDecision,
-    PartitionDirection, PendingFrame, PreemptionDecision, PreemptionKind, RestartPolicy,
-    RngDecision, RngStreamId, RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulerState,
-    SchedulingNodeKind, SchedulingPoint, SearchFrontierChoices, SearchRuntimeFrontier, Seed, Shift,
-    SimDuration, SimInstant, SimulationBackend, TimeConversionError, TimerId, VcpuId, VirtualTime,
-    World, WorldIoInstantiationError, WorldIoLayoutPolicy, WorldLookaheadEdge, WorldStaticTopology,
-    instantiate_world_io_sub_nodes, step,
+    FingerprintSample, GdbAttachInfo, GdbListen, Icount, LinkDef, LinkId, MIN_LINK_LATENCY,
+    MarkerId, NetworkLinkPendingFrame, NodeCounter, NodeId, NodeLifecycle, OverrideDecision,
+    PendingFrame, PreemptionDecision, PreemptionKind, RngStreamId, RngStreamPosition, ScenarioDef,
+    SchedulerNodeId, SchedulerState, SchedulingNodeKind, SchedulingPoint, SearchFrontierChoices,
+    SearchRuntimeFrontier, Seed, Shift, SimDuration, SimInstant, SimulationBackend,
+    TimeConversionError, TimerId, VcpuId, VirtualTime, World, WorldIoInstantiationError,
+    WorldIoLayoutPolicy, WorldLookaheadEdge, WorldStaticTopology, instantiate_world_io_sub_nodes,
+    step,
 };
 
 const EVENT_LOG_SEGMENT_BINARY_MAGIC: &[u8; 16] = b"CRUCIBLE-ELOGSEG";
@@ -54,22 +46,13 @@ const EVENT_LOG_LEVEL_TRACE: u8 = 0;
 const EVENT_LOG_LEVEL_DEBUG: u8 = 1;
 
 /// Returns whether an override belongs to the production live-network choice domain.
-///
-/// Fork overrides are executable instructions, not free-form artifact labels. The
-/// production scheduler accepts only exact World-network frame coordinates and
-/// the closed choice vocabulary emitted by its search frontier.
 #[must_use]
 pub fn is_supported_live_world_network_override(decision: &OverrideDecision) -> bool {
     decision.point.key.starts_with("live-world-network/")
         && liveness::is_live_network_branch_choice_name(&decision.choice.name)
 }
 
-/// Returns whether a live-network override names a link declared by `world`.
-///
-/// The point must use the exact scheduler-emitted link identity, direction,
-/// frame id, and RNG cursor shape. This check proves the static coordinate
-/// domain; the lifecycle separately requires the exact dynamic point to be
-/// reached and consumed.
+/// Returns whether a live-network override names an exact link declared by `world`.
 #[must_use]
 pub fn live_world_network_override_matches_world(
     world: &World,
@@ -79,16 +62,12 @@ pub fn live_world_network_override_matches_world(
         return false;
     };
     let mut components = coordinate.rsplitn(4, '/');
-    let Some(rng_position) = components.next() else {
-        return false;
-    };
-    let Some(frame_id) = components.next() else {
-        return false;
-    };
-    let Some(direction) = components.next() else {
-        return false;
-    };
-    let Some(link) = components.next() else {
+    let (Some(rng_position), Some(frame_id), Some(direction), Some(link)) = (
+        components.next(),
+        components.next(),
+        components.next(),
+        components.next(),
+    ) else {
         return false;
     };
     if rng_position.parse::<u64>().is_err()
@@ -97,26 +76,18 @@ pub fn live_world_network_override_matches_world(
     {
         return false;
     }
-
     world.links().iter().any(|definition| {
-        scheduler_link_ids_for_nodes(definition.endpoints().0, definition.endpoints().1)[0].name
-            == link
+        scheduler_link_id_for_nodes(definition.endpoints().0, definition.endpoints().1).name == link
     })
 }
 
 /// Returns the exact live-network override prefixes declared by `world`.
-///
-/// Callers append the scheduler-emitted frame id and RNG cursor to one of these
-/// prefixes. The returned order follows canonical World link order and then
-/// direction order.
 #[must_use]
 pub fn live_world_network_override_point_prefixes(world: &World) -> Vec<String> {
     let mut prefixes = Vec::with_capacity(world.links().len().saturating_mul(2));
     for definition in world.links() {
-        let link = scheduler_link_ids_for_nodes(definition.endpoints().0, definition.endpoints().1)
-            [0]
-        .name
-        .clone();
+        let link =
+            scheduler_link_id_for_nodes(definition.endpoints().0, definition.endpoints().1).name;
         for direction in ["a-to-b", "b-to-a"] {
             prefixes.push(format!("live-world-network/{link}/{direction}/"));
         }
@@ -132,6 +103,7 @@ const EVENT_LOG_CLASS_OBSERVATIONAL: u8 = 1;
 
 mod backend_lifecycle;
 mod branch_exploration;
+mod checkpoint;
 mod control_state;
 mod event_codec;
 mod event_log;
@@ -142,6 +114,7 @@ mod single_scheduler_drive;
 mod single_scheduler_state;
 mod topology;
 
+pub use checkpoint::*;
 pub use control_state::*;
 pub(crate) use event_codec::*;
 pub(crate) use event_codec::{

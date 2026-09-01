@@ -1,13 +1,403 @@
 //! Backend input and guest-originated network-output values.
 
 use super::*;
+use crate::LinkId;
+use crate::model::{EffectKind, ResolvedFaultTarget};
+
+mod network_checkpoint;
+
+pub use network_checkpoint::BackendNetworkOutputCodecError;
+
+/// One scheduler-validated directed route for a guest-originated frame.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BackendNetworkRoute {
+    /// Canonical World link identity.
+    pub link: LinkId,
+    /// Direction through the canonical link.
+    pub direction: crate::device::NetworkLinkDirection,
+    /// Destination VM endpoint selected on the directed route.
+    pub destination: NodeId,
+}
+
+/// One availability contribution captured before a queued frame's transition.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BackendNetworkPreservedAvailability {
+    /// Binding whose later availability state must not affect this frame.
+    pub binding: FaultObjectId,
+    /// Concrete route target whose captured behavior is preserved.
+    pub target: ResolvedFaultTarget,
+    /// Adapter phase at which the prior contribution was captured.
+    pub phase: FaultPhase,
+    /// Exact binding transition version whose behavior was captured.
+    pub transition_sequence: u64,
+}
+
+/// Resumable signal-adapter position for one routed network frame.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BackendNetworkFaultCursor {
+    /// Canonically ordered target/phase pairs already resolved for this frame.
+    completed_phases: Vec<BackendNetworkCompletedFaultPhase>,
+    /// Earliest virtual coordinate at which evaluation may resume.
+    not_before_nanos: u64,
+    /// Latest release from an adapter phase that has already resumed.
+    completed_release_nanos: u64,
+    /// Queue opportunity that owns the current reservation, when deferred.
+    queue_opportunity: Option<ContentHash>,
+    /// Sole effect kind allowed to repeat an intentionally incomplete phase.
+    repeated_phase_effect: Option<EffectKind>,
+    /// Queue service rank used to order equal-coordinate resumptions.
+    queue_priority: Option<u8>,
+    /// Path version locked for preserve semantics across deferred phases.
+    route_path_version: Option<FaultObjectId>,
+}
+
+/// One exact route target/phase pair already resolved for a frame.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BackendNetworkCompletedFaultPhase {
+    /// Concrete route target that owned the opportunity.
+    pub target: ResolvedFaultTarget,
+    /// Exact adapter phase already applied at that target.
+    pub phase: FaultPhase,
+}
+
+/// Failure to record a bounded network fault continuation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum BackendNetworkFaultCursorError {
+    /// The frame crossed more target/phase pairs than the hard continuation bound.
+    #[error("network fault completed-phase count exceeds 65,536")]
+    CompletedPhaseLimit,
+    /// A queue attempted to reschedule a frame owned by another reservation.
+    #[error("network fault queue reservation does not own the continuation")]
+    QueueReservationMismatch,
+}
+
+impl BackendNetworkFaultCursor {
+    /// Returns completed route target/phase pairs in canonical order.
+    #[must_use]
+    pub fn completed_phases(&self) -> &[BackendNetworkCompletedFaultPhase] {
+        &self.completed_phases
+    }
+
+    /// Returns whether this exact target/phase opportunity has already resolved.
+    #[must_use]
+    pub fn is_complete(&self, target: &ResolvedFaultTarget, phase: FaultPhase) -> bool {
+        self.completed_phases
+            .binary_search(&BackendNetworkCompletedFaultPhase {
+                target: target.clone(),
+                phase,
+            })
+            .is_ok()
+    }
+
+    /// Returns the earliest virtual coordinate at which the frame may resume.
+    #[must_use]
+    pub const fn not_before_nanos(&self) -> u64 {
+        self.not_before_nanos
+    }
+
+    /// Returns the latest committed adapter release coordinate.
+    #[must_use]
+    pub const fn release_nanos(&self) -> u64 {
+        if self.not_before_nanos > self.completed_release_nanos {
+            self.not_before_nanos
+        } else {
+            self.completed_release_nanos
+        }
+    }
+
+    /// Returns the active queue-reservation opportunity, when present.
+    #[must_use]
+    pub const fn queue_opportunity(&self) -> Option<ContentHash> {
+        self.queue_opportunity
+    }
+
+    /// Returns the effect that exclusively owns a repeated phase, when any.
+    #[must_use]
+    pub const fn repeated_phase_effect(&self) -> Option<EffectKind> {
+        self.repeated_phase_effect
+    }
+
+    /// Returns the queue service rank for an equal-coordinate resume.
+    #[must_use]
+    pub const fn queue_priority(&self) -> Option<u8> {
+        self.queue_priority
+    }
+
+    /// Returns the route path version locked for this frame, when one exists.
+    #[must_use]
+    pub const fn route_path_version(&self) -> Option<&FaultObjectId> {
+        self.route_path_version.as_ref()
+    }
+
+    /// Locks the route path selected at first admission.
+    pub fn lock_route_path(&mut self, path_version: FaultObjectId) {
+        self.route_path_version = Some(path_version);
+    }
+
+    /// Clears the path lock so the next declared phase re-resolves routing.
+    pub fn reevaluate_route_path(&mut self) {
+        self.route_path_version = None;
+    }
+
+    /// Records one exact route target/phase pair as resolved.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendNetworkFaultCursorError::CompletedPhaseLimit`] when a
+    /// frame would exceed the hard route-complexity bound.
+    pub fn complete(
+        &mut self,
+        target: ResolvedFaultTarget,
+        phase: FaultPhase,
+    ) -> Result<(), BackendNetworkFaultCursorError> {
+        let completed = BackendNetworkCompletedFaultPhase { target, phase };
+        match self.completed_phases.binary_search(&completed) {
+            Ok(_index) => return Ok(()),
+            Err(index) => {
+                if self.completed_phases.len() == 65_536 {
+                    return Err(BackendNetworkFaultCursorError::CompletedPhaseLimit);
+                }
+                self.completed_phases.insert(index, completed);
+            }
+        }
+        self.completed_release_nanos = if self.not_before_nanos > self.completed_release_nanos {
+            self.not_before_nanos
+        } else {
+            self.completed_release_nanos
+        };
+        self.not_before_nanos = 0;
+        self.queue_opportunity = None;
+        self.repeated_phase_effect = None;
+        self.queue_priority = None;
+        Ok(())
+    }
+
+    /// Defers the already-resolved phase until an exact future coordinate.
+    pub fn defer_until(&mut self, not_before_nanos: u64, opportunity: ContentHash) {
+        self.not_before_nanos = not_before_nanos;
+        self.queue_opportunity = Some(opportunity);
+        self.repeated_phase_effect = None;
+        self.queue_priority = None;
+    }
+
+    /// Defers a phase while allowing only its owning effect to run on resume.
+    pub fn defer_repeated_effect_until(
+        &mut self,
+        not_before_nanos: u64,
+        opportunity: ContentHash,
+        effect: EffectKind,
+        queue_priority: Option<u8>,
+    ) {
+        self.not_before_nanos = not_before_nanos;
+        self.queue_opportunity = Some(opportunity);
+        self.repeated_phase_effect = Some(effect);
+        self.queue_priority = queue_priority;
+    }
+
+    /// Replaces the current queue reservation's release coordinate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendNetworkFaultCursorError::QueueReservationMismatch`]
+    /// when another opportunity owns the active reservation.
+    pub fn reschedule_queue_until(
+        &mut self,
+        opportunity: ContentHash,
+        not_before_nanos: u64,
+    ) -> Result<(), BackendNetworkFaultCursorError> {
+        if self.queue_opportunity != Some(opportunity) {
+            return Err(BackendNetworkFaultCursorError::QueueReservationMismatch);
+        }
+        self.not_before_nanos = not_before_nanos;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[path = "io/tests.rs"]
+mod tests;
+
+/// Fault-policy continuation retained with one scheduler-queued frame.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BackendNetworkFaultContinuation {
+    /// Canonical contributions whose pre-transition profile is preserved.
+    preserved_availability: Vec<BackendNetworkPreservedAvailability>,
+    /// Exact signal-adapter outcomes resolved before link scheduling.
+    resolved_frame_effects: crucible_device::ResolvedNetworkFrameEffects,
+    /// Nested protocol-expansion ordinals from the guest frame to this child.
+    protocol_expansion_path: Vec<u16>,
+    /// Number of scheduler-generated responses in this frame's ancestry.
+    generated_response_depth: u8,
+    /// Opportunity that generated this frame, absent for guest frames.
+    generated_response_cause: Option<ContentHash>,
+    /// Ordered opportunities that changed this frame's World route.
+    forwarding_mutation_path: Vec<ContentHash>,
+    /// Policy-authorized recipient used without rewriting Ethernet bytes.
+    forced_route_destination: Option<NodeId>,
+    /// Resumable ordered route/phase position.
+    cursor: BackendNetworkFaultCursor,
+}
+
+impl BackendNetworkFaultContinuation {
+    /// Preserves one exact pre-transition contribution identity.
+    pub fn preserve_availability(
+        &mut self,
+        binding: FaultObjectId,
+        target: ResolvedFaultTarget,
+        phase: FaultPhase,
+        transition_sequence: u64,
+    ) {
+        let preserved = BackendNetworkPreservedAvailability {
+            binding,
+            target,
+            phase,
+            transition_sequence,
+        };
+        match self.preserved_availability.binary_search(&preserved) {
+            Ok(_index) => {}
+            Err(index) => self.preserved_availability.insert(index, preserved),
+        }
+    }
+
+    /// Returns whether a later contribution must be ignored for this frame.
+    #[must_use]
+    pub fn preserves_availability(
+        &self,
+        binding: &FaultObjectId,
+        target: &ResolvedFaultTarget,
+        phase: FaultPhase,
+        transition_sequence: u64,
+    ) -> bool {
+        self.preserved_availability
+            .binary_search(&BackendNetworkPreservedAvailability {
+                binding: binding.clone(),
+                target: target.clone(),
+                phase,
+                transition_sequence,
+            })
+            .is_ok()
+    }
+
+    /// Returns captured contributions in canonical identity order.
+    #[must_use]
+    pub fn preserved_availability(&self) -> &[BackendNetworkPreservedAvailability] {
+        &self.preserved_availability
+    }
+
+    /// Replaces the exact signal-adapter outcomes for this frame.
+    pub fn set_resolved_frame_effects(
+        &mut self,
+        effects: crucible_device::ResolvedNetworkFrameEffects,
+    ) {
+        self.resolved_frame_effects = effects;
+    }
+
+    /// Returns the exact signal-adapter outcomes for this frame.
+    #[must_use]
+    pub const fn resolved_frame_effects(&self) -> &crucible_device::ResolvedNetworkFrameEffects {
+        &self.resolved_frame_effects
+    }
+
+    /// Appends one protocol-expansion ordinal to this child frame's identity.
+    pub fn append_protocol_expansion_ordinal(&mut self, ordinal: u16) {
+        self.protocol_expansion_path.push(ordinal);
+    }
+
+    /// Returns the nested protocol-expansion path in parent-to-child order.
+    #[must_use]
+    pub fn protocol_expansion_path(&self) -> &[u16] {
+        &self.protocol_expansion_path
+    }
+
+    /// Records one scheduler-generated response and its exact cause.
+    ///
+    /// Returns `false` without mutation when the hard response-depth bound has
+    /// already been reached.
+    pub fn begin_generated_response(&mut self, cause: ContentHash) -> bool {
+        if self.generated_response_depth >= crate::model::HARD_NETWORK_RESPONSE_DEPTH {
+            return false;
+        }
+        self.generated_response_depth += 1;
+        self.generated_response_cause = Some(cause);
+        true
+    }
+
+    /// Creates a fresh route continuation for a generated child response.
+    ///
+    /// The child retains only bounded response ancestry. Route cursor state,
+    /// resolved frame effects, availability preservation, and protocol
+    /// expansion belong to the rejected forward frame and are reset.
+    #[must_use]
+    pub fn generated_response(&self, cause: ContentHash) -> Option<Self> {
+        let depth = self.generated_response_depth.checked_add(1)?;
+        if depth > crate::model::HARD_NETWORK_RESPONSE_DEPTH {
+            return None;
+        }
+        Some(Self {
+            generated_response_depth: depth,
+            generated_response_cause: Some(cause),
+            ..Self::default()
+        })
+    }
+
+    /// Returns the number of generated responses in this frame's ancestry.
+    #[must_use]
+    pub const fn generated_response_depth(&self) -> u8 {
+        self.generated_response_depth
+    }
+
+    /// Returns the opportunity that generated this frame, when applicable.
+    #[must_use]
+    pub const fn generated_response_cause(&self) -> Option<ContentHash> {
+        self.generated_response_cause
+    }
+
+    /// Creates a rerouted child while preserving already-resolved frame state.
+    #[must_use]
+    pub fn forwarding_mutation(&self, cause: ContentHash, destination: NodeId) -> Option<Self> {
+        if self.forwarding_mutation_path.len()
+            >= usize::from(crate::model::HARD_NETWORK_FORWARDING_MUTATION_DEPTH)
+        {
+            return None;
+        }
+        let mut child = self.clone();
+        child.forwarding_mutation_path.push(cause);
+        child.forced_route_destination = Some(destination);
+        child.cursor.reevaluate_route_path();
+        Some(child)
+    }
+
+    /// Returns the ordered forwarding-mutation ancestry.
+    #[must_use]
+    pub fn forwarding_mutation_path(&self) -> &[ContentHash] {
+        &self.forwarding_mutation_path
+    }
+
+    /// Returns the policy-authorized route recipient, when present.
+    #[must_use]
+    pub const fn forced_route_destination(&self) -> Option<&NodeId> {
+        self.forced_route_destination.as_ref()
+    }
+
+    /// Returns the resumable ordered route/phase position.
+    #[must_use]
+    pub const fn cursor(&self) -> &BackendNetworkFaultCursor {
+        &self.cursor
+    }
+
+    /// Returns mutable access to the adapter-owned route/phase position.
+    #[must_use]
+    pub const fn cursor_mut(&mut self) -> &mut BackendNetworkFaultCursor {
+        &mut self.cursor
+    }
+}
 
 /// Deterministic input delivered to a backend.
 ///
 /// This payload represents backend delivery for model-controlled inputs, not a
 /// host-side workload generator. Application workload traffic must originate
 /// from guest execution and cross modeled devices as ordinary guest/device I/O.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BackendInput {
     /// The target node.
     pub node: NodeId,
@@ -31,6 +421,15 @@ pub struct BackendNetworkOutput {
     pub sequence: u64,
     /// The opaque guest Ethernet frame bytes.
     pub payload: Vec<u8>,
+    /// Scheduler-validated route selected by a pre-routing interceptor.
+    ///
+    /// Live backends always publish `None`. The authoritative scheduler or an
+    /// in-loop interceptor may expand one multicast frame into route-locked
+    /// copies before modeled link mutation. A supplied route is revalidated
+    /// against the World and frame destination before use.
+    pub route: Option<BackendNetworkRoute>,
+    /// Policy continuation for frames retained across availability transitions.
+    pub fault_continuation: BackendNetworkFaultContinuation,
 }
 
 /// Derives the stable locally administered unicast MAC for a World VM.

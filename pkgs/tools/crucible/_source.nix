@@ -37,6 +37,8 @@ in
         || pathString == "${repoRootString}/pkgs/kernel/linux.nix"
         || pathString == "${repoRootString}/pkgs/tools"
         || lib.hasPrefix "${repoRootString}/pkgs/tools/crucible" pathString
+        || pathString == "${repoRootString}/stdenv"
+        || pathString == "${repoRootString}/stdenv/phases.nix"
         || pathString == "${repoRootString}/modules"
         || pathString == "${repoRootString}/modules/base"
         || pathString == "${repoRootString}/modules/base/build.nix"

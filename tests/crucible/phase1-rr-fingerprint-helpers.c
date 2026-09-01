@@ -11,7 +11,6 @@
 #define CONFIG_SOFTMMU 1
 #define QEMU_TIMER_ATTR_ALL (-1)
 #define QEMU_CLOCK_VIRTUAL_RT 1
-#define RUN_STATE_PAUSED 2
 #define UINT64_MAX_SENTINEL UINT64_MAX
 #define MIN(left, right) ((left) < (right) ? (left) : (right))
 #define GPOINTER_TO_INT(pointer) ((int)(uintptr_t)(pointer))
@@ -83,7 +82,14 @@ typedef struct GChecksum {
 struct qemu_plugin_register;
 struct qemu_plugin_scoreboard {
   size_t element_size;
+  GArray *data;
 };
+
+typedef struct {
+  struct qemu_plugin_scoreboard *score;
+} qemu_plugin_u64;
+
+uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, size_t index);
 
 typedef struct RAMBlock {
   const char *idstr;
@@ -155,8 +161,6 @@ static unsigned int rr_stop_kick_timer_calls;
 static unsigned int rr_warp_timer_calls;
 static unsigned int rr_deadline_calls;
 static unsigned int rr_wait_calls;
-static unsigned int vm_stop_calls;
-static int vm_stop_run_state = -1;
 static unsigned int gdb_register_list_calls;
 static unsigned int create_register_handles_calls;
 static unsigned int gdb_read_register_calls;
@@ -493,6 +497,13 @@ plugin_scoreboard_new(size_t element_size)
   return &scoreboard;
 }
 
+uint64_t
+qemu_plugin_u64_get(qemu_plugin_u64 entry, size_t index)
+{
+  (void)entry;
+  return index;
+}
+
 static void
 qemu_ram_foreach_block(int (*callback)(RAMBlock *block, void *opaque),
                        void *opaque)
@@ -522,14 +533,6 @@ memory_region_is_ram_device(void *mr)
 {
   (void)mr;
   return false;
-}
-
-static int
-vm_stop(int run_state)
-{
-  vm_stop_calls++;
-  vm_stop_run_state = run_state;
-  return 0;
 }
 
 static void
@@ -1154,11 +1157,6 @@ test_plugin_fingerprint_exports(void)
     return 1;
   }
 
-  qemu_plugin_crucible_pause_vm();
-  if (vm_stop_calls != 1 || vm_stop_run_state != RUN_STATE_PAUSED) {
-    fputs("pause export did not request a paused VM stop\n", stderr);
-    return 1;
-  }
   return 0;
 }
 
@@ -1237,7 +1235,6 @@ main(void)
   puts("device_state_schema_digest_and_count=true");
   puts("device_state_schema_field_and_subsection_mutations=true");
   puts("observed_icount_and_runstate=true");
-  puts("pause_vm_requests_run_state_paused=true");
   puts("migration_host_timer_zeroed_under_icount=true");
   puts("migration_host_timer_preserved_without_icount=true");
   puts("stock_negative_control_rr_budget_unpinned=true");

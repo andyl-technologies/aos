@@ -34,25 +34,13 @@
     failuresFor "pkgs/emulation/qemu.nix" qemuNix [
       {
         label = "network deterministic patch wiring";
-        needle = "patch -p1 < \${./qemu-patches/0009-crucible-net-deterministic.patch}";
+        needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
       }
     ]
     ++ failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
       {
         label = "direct net inject export";
         needle = "qemu_plugin_net_inject";
-      }
-      {
-        label = "lossless net send export";
-        needle = "qemu_plugin_net_send";
-      }
-      {
-        label = "net flush export";
-        needle = "qemu_plugin_net_flush";
-      }
-      {
-        label = "net can-receive export";
-        needle = "qemu_plugin_net_can_receive";
       }
       {
         label = "default NIC queue selection";
@@ -63,36 +51,16 @@
         needle = "qemu_receive_packet(nc, data, (int)len)";
       }
       {
-        label = "lossless queue append export";
-        needle = "qemu_net_queue_append_lossless";
+        label = "canonical retry clears QEMU private backpressure latch";
+        needle = "nc->receive_disabled = 0;";
       }
       {
-        label = "lossless send uses NIC peer as inbound sender";
-        needle = "sender = nc->peer";
-      }
-      {
-        label = "lossless send uses explicit incoming queue append";
-        needle = "qemu_net_queue_append_lossless(nc->incoming_queue, sender";
-      }
-      {
-        label = "lossless queue callback prevents silent drops";
-        needle = "qemu_plugin_net_sent_cb";
-      }
-      {
-        label = "flush observes QEMU queued packet drain result";
-        needle = "qemu_net_queue_flush(nc->incoming_queue)";
-      }
-      {
-        label = "flush notifies event loop after drain";
-        needle = "qemu_notify_event()";
-      }
-      {
-        label = "NIC readiness diagnostic";
-        needle = "qemu_can_receive_packet(nc)";
+        label = "transient backpressure status";
+        needle = "if (delivered == 0)";
       }
       {
         label = "link-down fail loud guard";
-        needle = "nc->link_down || sender->link_down";
+        needle = "nc == NULL || nc->link_down";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-qemu-net-deterministic.c" microtestSource [
@@ -105,14 +73,6 @@
         needle = "qemu_plugin_net_inject(frame, sizeof(frame))";
       }
       {
-        label = "lossless send exercised";
-        needle = "qemu_plugin_net_send(frame, sizeof(frame))";
-      }
-      {
-        label = "flush exercised";
-        needle = "qemu_plugin_net_flush()";
-      }
-      {
         label = "skewed producer model";
         needle = "run_skewed_producer";
       }
@@ -121,20 +81,20 @@
         needle = "skewed_producer_observed_icount_identical=true";
       }
       {
-        label = "lossless queue assertion";
-        needle = "lossless_send_queues_until_flush=true";
+        label = "canonical backpressure assertion";
+        needle = "direct_inject_retains_caller_ownership_when_not_ready=true";
       }
       {
-        label = "ready NIC deferred send assertion";
-        needle = "send_deferred_when_nic_ready=true";
+        label = "canonical retry assertion";
+        needle = "canonical_retry_delivers_after_receiver_recovers=true";
       }
       {
-        label = "not-ready flush fail-loud assertion";
-        needle = "flush_fails_loudly_when_not_ready=true";
+        label = "QEMU receive-disabled latch regression";
+        needle = "canonical_retry_clears_qemu_receive_disabled_latch=true";
       }
       {
-        label = "queue callback assertion";
-        needle = "queue_sent_callback_required=true";
+        label = "no private RX queue assertion";
+        needle = "qemu_private_rx_queue_used=false";
       }
       {
         label = "drop-prone stock negative control";
@@ -373,15 +333,10 @@ in
             grep -q '^PASS$' "$out/result"
             grep -q '^patched_qemu_plugin_net_fixture=true$' "$out/result"
             grep -q '^net_inject_symbol=qemu_plugin_net_inject$' "$out/result"
-            grep -q '^net_send_symbol=qemu_plugin_net_send$' "$out/result"
-            grep -q '^net_flush_symbol=qemu_plugin_net_flush$' "$out/result"
-            grep -q '^net_can_receive_symbol=qemu_plugin_net_can_receive$' "$out/result"
-            grep -q '^direct_inject_fails_closed_when_not_ready=true$' "$out/result"
-            grep -q '^lossless_send_queues_until_flush=true$' "$out/result"
-            grep -q '^send_deferred_when_nic_ready=true$' "$out/result"
-            grep -q '^flush_makes_frame_visible_at_delivery_icount=true$' "$out/result"
-            grep -q '^flush_fails_loudly_when_not_ready=true$' "$out/result"
-            grep -q '^queue_sent_callback_required=true$' "$out/result"
+            grep -q '^direct_inject_retains_caller_ownership_when_not_ready=true$' "$out/result"
+            grep -q '^canonical_retry_delivers_after_receiver_recovers=true$' "$out/result"
+            grep -q '^canonical_retry_clears_qemu_receive_disabled_latch=true$' "$out/result"
+            grep -q '^qemu_private_rx_queue_used=false$' "$out/result"
             grep -q '^skewed_producer_observed_icount_identical=true$' "$out/result"
             grep -q '^arrival_order_visible=false$' "$out/result"
             grep -q '^stock_negative_control_exercised=true$' "$out/result"
@@ -390,8 +345,6 @@ in
 
             cp "$patchSourcePath" "$out/${patchName}"
             cp include/qemu/qemu-plugin.h "$out/qemu-plugin.h.patched"
-            cp include/net/queue.h "$out/queue.h.patched"
-            cp net/queue.c "$out/queue.c.patched"
             cp plugins/api-system.c "$out/api-system.c.patched"
             cat >> "$out/result" <<'RESULT'
             check=checks.crucible.phase1.qemuNetDeterministic
@@ -402,18 +355,16 @@ in
             patched_fixture_exercised=true
             stock_negative_control=true
             ${qemuPackageResultLines}
-            qemu_net_rx_api=qemu_plugin_net_inject,qemu_plugin_net_send,qemu_plugin_net_flush,qemu_plugin_net_can_receive
+            qemu_net_rx_api=qemu_plugin_net_inject
             qemu_net_rx_delivery_icount_deterministic=true
-            qemu_net_rx_lossless_queue=true
-            qemu_net_rx_flush_at_delivery_icount=true
-            qemu_net_rx_send_deferred_when_ready=true
-            qemu_net_rx_flush_fails_loudly_when_not_ready=true
-            qemu_net_rx_queue_callback_required=true
+            qemu_net_rx_canonical_retry=true
+            qemu_net_rx_retry_clears_private_backpressure_latch=true
+            qemu_net_rx_private_queue=false
             skewed_producer_observed_icount_identical=true
             guest_observed_icount=4096
             delivery_icount=4096
             arrival_order_visible=false
-            direct_inject_fails_closed_when_not_ready=true
+            direct_inject_retains_caller_ownership_when_not_ready=true
             missing_nic_fails_loudly=true
             link_down_fails_loudly=true
             stock_negative_control_exercised=true

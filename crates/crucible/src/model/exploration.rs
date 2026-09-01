@@ -1370,10 +1370,10 @@ impl SearchFailureOracle {
     ///
     /// This opt-in path admits named assertion predicates only through a
     /// data-only [`SearchScheduleNamedPredicateTruths`] table keyed by the named
-    /// leaf and schedule-derived active fault tags. The retained log is still
+    /// leaf and schedule-derived active signal bindings. The retained log is still
     /// reconstructed from search schedules, so this constructor lowers only
     /// prefix-safe safety/unreachability outcomes whose predicates are composed
-    /// from fault-active schedule facts, declared named truths, and boolean
+    /// from binding-active schedule facts, declared named truths, and boolean
     /// combinators.
     ///
     /// # Errors

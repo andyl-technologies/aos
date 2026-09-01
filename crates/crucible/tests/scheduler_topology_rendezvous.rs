@@ -66,7 +66,7 @@ fn timed_topology_change_applies_after_activation_before_next_pick() {
     .with_topology_change(
         SchedulerTopologyChange::new(
             2,
-            SchedulerTopologyChangeTrigger::FaultActivation,
+            SchedulerTopologyChangeTrigger::EdgeRemoval,
             vec![edge(&producer, &consumer, 3)],
         )
         .with_activation_time(activation_time),
@@ -87,7 +87,7 @@ fn timed_topology_change_applies_after_activation_before_next_pick() {
     assert_eq!(application.activation_time, Some(activation_time));
     assert_eq!(
         application.trigger,
-        SchedulerTopologyChangeTrigger::FaultActivation
+        SchedulerTopologyChangeTrigger::EdgeRemoval
     );
     assert_eq!(application.updates[0].node, consumer);
     assert_eq!(
@@ -117,7 +117,7 @@ fn timed_topology_change_continues_after_old_horizon_before_activation() {
     .with_topology_change(
         SchedulerTopologyChange::new(
             4,
-            SchedulerTopologyChangeTrigger::FaultActivation,
+            SchedulerTopologyChangeTrigger::EdgeRemoval,
             vec![edge(&producer, &consumer, 3)],
         )
         .with_activation_time(activation_time),
@@ -272,7 +272,7 @@ fn timed_topology_change_waits_until_all_nodes_reach_activation() {
     assert_eq!(application.activation_time, Some(activation_time));
     assert_eq!(
         application.trigger,
-        SchedulerTopologyChangeTrigger::FaultActivation
+        SchedulerTopologyChangeTrigger::EdgeRemoval
     );
     assert_eq!(
         application.updates[0].previous_lookahead,

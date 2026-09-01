@@ -6,7 +6,7 @@
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoDeps,
+  fetchCargoVendor,
   rust,
   openssl,
   pkg-config,
@@ -23,9 +23,23 @@
   qemu-crucible-source,
   gdb,
   openssh,
+  buildPackages,
   controllerOnly ? false,
 }: let
   version = "0.1.0";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  buildRustDev =
+    if isDarwinCross
+    then buildPackages.rust.dev
+    else rust.dev;
+  buildPkgConfig =
+    if isDarwinCross
+    then buildPackages.pkg-config
+    else pkg-config;
+  buildProtobuf =
+    if isDarwinCross
+    then buildPackages.protobuf
+    else protobuf;
   nativeQemuSystemBinary =
     {
       "x86_64-linux" = "qemu-system-x86_64";
@@ -43,8 +57,9 @@
   cargoDepsHash = import ./_cargo-deps-hash.nix;
   liveDebuggerMatrixScript = ../../../examples/codex-skills/crucible-debugger/scripts/live-matrix.sh;
   src = import ./_source.nix {inherit lib;};
-  cargoDeps = fetchCargoDeps {
+  cargoDeps = fetchCargoVendor {
     inherit src;
+    name = "crucible-vendor-${version}";
     sourceRoot = "source/crates";
     hash = cargoDepsHash;
   };
@@ -61,10 +76,24 @@
   docPackageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") docPackages);
   doctestPackages = builtins.filter (package: package != "crucible-cli") controllerPackages;
   doctestPackageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") doctestPackages);
+  forbiddenControllerRuntimePackages =
+    if stdenv.isCross
+    then [
+      buildPackages.qemu-crucible
+      buildPackages.crucible-qemu-plugin
+      buildPackages.linux-crucible
+      buildPackages.crucible-fixtures
+    ]
+    else [
+      qemu-crucible
+      crucible-qemu-plugin
+      linux-crucible
+      crucible-fixtures
+    ];
   forbiddenControllerRuntimePaths =
     map
     (package: builtins.unsafeDiscardStringContext (toString package))
-    [debugGateway qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures];
+    ([debugGateway] ++ forbiddenControllerRuntimePackages);
   shmemLib = builtins.readFile ../../../crates/crucible-shmem/src/lib.rs;
   protocolLib = builtins.readFile ../../../crates/crucible-protocol/src/lib.rs;
   doorbellAbi = builtins.readFile ../../../crates/crucible-protocol/src/doorbell_abi.rs;
@@ -94,11 +123,11 @@
     OPENSSL_INCLUDE_DIR = "${openssl}/include";
     OPENSSL_NO_VENDOR = "1";
     OPENSSL_STATIC = "0";
-    PROTOC = "${protobuf}/bin/protoc";
+    PROTOC = "${buildProtobuf}/bin/protoc";
   };
   controllerArtifactContract = {
     family = "crucible-apache-host-release-and-test";
-    nativeInputs = map toString [rust.dev pkg-config openssl protobuf];
+    nativeInputs = map toString [buildRustDev buildPkgConfig openssl buildProtobuf];
     licenseScope = "Apache-2.0";
   };
   controllerArtifacts = mkCargoArtifacts {
@@ -117,7 +146,9 @@
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES ${workspaceCargoFlags} --features crucible-cli/test-double"
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${workspaceCargoFlags} --features crucible-cli/test-double"
     ];
-    buildDeps = [rust.dev pkg-config openssl protobuf];
+    buildDeps =
+      [buildRustDev buildPkgConfig openssl buildProtobuf]
+      ++ lib.optionals isDarwinCross [buildPackages.crucible-controller];
     runtimeDeps = [openssl];
   };
   debugGatewayArtifactContract = {
@@ -151,15 +182,20 @@
     cargoEnv = controllerCargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
+    # Nextest lists hundreds of controller test binaries concurrently. The
+    # sandbox's default 1,024-descriptor soft limit is below that bounded
+    # inventory, so raise only the soft descriptor ceiling. This does not
+    # change Cargo, Nextest, Nix, or Ninja parallelism.
+    cargoNextestOpenFilesLimit = 4096;
     passthru = {
       cargoArtifacts = controllerArtifacts;
       cargoDeps = cargoDeps;
     };
 
-    cargoFlags = workspaceCargoFlags;
-    cargoTestFlags = "${workspaceCargoFlags} --features crucible-cli/test-double";
+    cargoFlags = packageFlags;
+    cargoTestFlags = "${packageFlags} --features crucible-cli/test-double";
     doCheck = true;
-    buildDeps = [rust.dev pkg-config openssl protobuf];
+    buildDeps = [buildRustDev buildPkgConfig openssl buildProtobuf];
     runtimeDeps = [openssl];
     # The controller is the Apache side of a process boundary. Fail the build
     # if any QEMU-side implementation, guest kernel, or fixture enters either
@@ -176,21 +212,39 @@
     # tests/crucible/ so harness lints can read RFC-0010 and AOS check wiring,
     # while Cargo's virtual workspace remains rooted at crates/.
     postBuild = ''
-      cargo test \
-        --frozen \
-        --offline \
-        -j$NIX_BUILD_CORES \
-        -p crucible-harness \
-        --test gate_license_boundary
-      cargo clippy \
-        --all-targets \
-        --features crucible-cli/test-double \
-        --frozen \
-        --offline \
-        -j$NIX_BUILD_CORES \
-        ${workspaceCargoFlags} \
-        -- \
-        -D warnings
+      ${
+        if isDarwinCross
+        then ''
+          # The native controller dependency runs the executable policy and
+          # Clippy gates. Compile every Darwin test target with the cross
+          # compiler, but defer executing Mach-O tests until qualification.
+          echo "Crucible runtime, license, and doctest execution was validated by ${buildPackages.crucible-controller}"
+          cargo check \
+            --all-targets \
+            --features crucible-cli/test-double \
+            --frozen \
+            --offline \
+            -j$NIX_BUILD_CORES \
+            ${workspaceCargoFlags}
+        ''
+        else ''
+          cargo test \
+            --frozen \
+            --offline \
+            -j$NIX_BUILD_CORES \
+            -p crucible-harness \
+            --test gate_license_boundary
+          cargo clippy \
+            --all-targets \
+            --features crucible-cli/test-double \
+            --frozen \
+            --offline \
+            -j$NIX_BUILD_CORES \
+            ${packageFlags} \
+            -- \
+            -D warnings
+        ''
+      }
       export RUSTDOCFLAGS="-D warnings -D missing_docs"
       cargo doc \
         --no-deps \
@@ -207,13 +261,21 @@
         --target-dir target/crucible-doc-cli \
         -p crucible-cli \
         --bin crucible
-      cargo test \
-        --doc \
-        --frozen \
-        --offline \
-        -j$NIX_BUILD_CORES \
-        --target-dir target/crucible-doctest-libs \
-        ${doctestPackageFlags}
+      ${
+        if isDarwinCross
+        then ''
+          echo "skipping Darwin doctest execution while cross-compiling"
+        ''
+        else ''
+          cargo test \
+            --doc \
+            --frozen \
+            --offline \
+            -j$NIX_BUILD_CORES \
+            --target-dir target/crucible-doctest-libs \
+            ${doctestPackageFlags}
+        ''
+      }
     '';
 
     # The check phase enables the test-only backend and writes a feature-enabled
@@ -237,16 +299,28 @@
 
     postInstall = ''
       test -x "$out/bin/crucible"
-      cp target/release/examples/crucible-debugger-live-fixture \
+      cp ${
+        if isDarwinCross
+        then ''"target/$CARGO_BUILD_TARGET/release/examples/crucible-debugger-live-fixture"''
+        else "target/release/examples/crucible-debugger-live-fixture"
+      } \
         "$out/bin/crucible-debugger-live-fixture"
-      if "$out/bin/crucible" --help | grep -q 'auto|qemu|double'; then
-        echo "installed Crucible CLI unexpectedly contains the test-only backend" >&2
-        exit 1
-      fi
-      if "$out/bin/crucible" selftest --help | grep -q -- '--with-qemu'; then
-        echo "installed Crucible CLI unexpectedly exposes --with-qemu" >&2
-        exit 1
-      fi
+      ${
+        if isDarwinCross
+        then ''
+          echo "deferring installed Crucible CLI execution until Darwin qualification"
+        ''
+        else ''
+          if "$out/bin/crucible" --help | grep -q 'auto|qemu|double'; then
+            echo "installed Crucible CLI unexpectedly contains the test-only backend" >&2
+            exit 1
+          fi
+          if "$out/bin/crucible" selftest --help | grep -q -- '--with-qemu'; then
+            echo "installed Crucible CLI unexpectedly exposes --with-qemu" >&2
+            exit 1
+          fi
+        ''
+      }
 
       mkdir -p "$out/share/licenses/crucible-controller"
       cp ${../../../LICENSES/Apache-2.0.txt} "$out/share/licenses/crucible-controller/Apache-2.0.txt"
@@ -257,10 +331,11 @@
       component=controller
       component_license=Apache-2.0
       build_system=mkCargoPackage
-      cargo_deps=fetchCargoDeps
+      cargo_deps=fetchCargoVendor
       cargo_workspace=crates
       cargo_workspace_flags=${workspaceCargoFlags}
       cargo_member_flags=${packageFlags}
+      cargo_nextest_open_files_limit=4096
       cargo_doc=warning-free
       cargo_doctest=hermetic
       gate_license_boundary=crucible-harness/gate_license_boundary
@@ -429,7 +504,7 @@
           cat > "$out/nix-support/crucible-build-info" <<'INFO'
           package=crucible
           component=suite
-          component_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause
+          component_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause,BSD-3-Clause
           boundary_crates=crucible-protocol,crucible-shmem
           boundary_crates_license=MIT
           controller_package=crucible-controller
@@ -438,7 +513,7 @@
           qemu_package=qemu-crucible
           qemu_path=${nativeQemuPath}
           qemu_license=GPL-2.0-only
-          qemu_component_licenses=GPL-2.0-only,GPL-2.0-or-later,MIT
+          qemu_component_licenses=GPL-2.0-only,GPL-2.0-or-later,MIT,BSD-2-Clause,BSD-3-Clause
           qemu_combined_work_license=GPL-2.0-only
           qemu_created_source_license=GPL-2.0-or-later
           qemu_generated_boundary_header_license_option=MIT
@@ -495,7 +570,7 @@
     meta = {
       description = "Crucible controller with the GPL QEMU backend";
       homepage = "https://github.com/andyl/andyl-os";
-      license = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later" "BSD-2-Clause"];
+      license = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later" "BSD-2-Clause" "BSD-3-Clause"];
       mainProgram = "crucible";
     };
   };

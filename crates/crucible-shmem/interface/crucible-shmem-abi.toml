@@ -7,7 +7,7 @@
 name = "crucible-shmem"
 kind = "process-shared-memory"
 license = "MIT OR Apache-2.0"
-abi_version = 6
+abi_version = 17
 magic_ascii = "CRUCSHM1"
 target = "x86_64-unknown-linux-gnu"
 byte_order = "little"
@@ -30,6 +30,7 @@ plugin_eventfd_additional_writes = [
   "unchanged-icount-retry",
   "host-io-service",
 ]
+plugin_eventfd_drain_ack = "node-slot-control-boundary-ack"
 future_waiter_armed_wake_optimization = "documented-not-implemented"
 guest_introspection_rings_per_vm = 2
 guest_introspection_request_direction = "host-to-plugin"
@@ -37,6 +38,12 @@ guest_introspection_response_direction = "plugin-to-host"
 guest_introspection_queue_capacity = 64
 guest_introspection_record_protocol = "CRGI-v1"
 guest_introspection_full_queue = "bounded-backpressure-no-overwrite"
+accelerator_rings_per_vm = 2
+accelerator_request_direction = "plugin-to-host"
+accelerator_completion_direction = "host-to-plugin"
+accelerator_queue_capacity = 64
+accelerator_record_protocol = "CRAC-v1"
+accelerator_full_queue = "bounded-backpressure-no-overwrite"
 
 [representation]
 allowed = [
@@ -53,6 +60,59 @@ forbidden = [
   "rust-native-enum-layout",
   "compiler-dependent-bitfield",
 ]
+
+[fault_command_protocol]
+abi_major = 1
+abi_minor = 1
+semantic_version = 1
+command_header_bytes = 216
+result_header_bytes = 188
+capability_row_bytes = 60
+command_slot_bytes = 256
+result_slot_bytes = 256
+payload_arena_header_bytes = 128
+default_payload_bytes = 2106448
+hard_payload_bytes = 33563728
+default_payload_arena_bytes = 2106448
+hard_payload_arena_bytes = 33563728
+default_ring_capacity = 4096
+hard_ring_capacity = 65536
+encoding = "explicit-little-endian-byte-arrays"
+payload_authentication = "blake3"
+unknown_tags = "reject"
+nonzero_reserved_fields = "reject"
+payload_arena = "bounded-spsc-monotonic-cursors-contiguous-reservations"
+malformed_command_consumption = "release-sound-transport-reservation-and-reject"
+
+[node_fault_protocol]
+semantic_version = 1
+payload_header_bytes = 128
+field_header_bytes = 8
+evidence_bytes = 228
+encoding = "closed-command-schema-canonical-typed-fields"
+policy_encoding = "CRUCJSN1-prefixed-canonical-json-with-closed-command-specific-schema"
+policy_validation = "boundary-codec-validates-canonical-json;gpl-handler-validates-exact-command-shape-before-prepare"
+opaque_execution_policy_ids = "forbidden"
+operations = ["upsert", "remove", "apply"]
+target_kinds = ["node", "vcpu", "register", "memory", "interrupt", "clock", "accelerator"]
+preparation = "validation-only-before-equals-after"
+commit_evidence = "typed-request-and-state-digests"
+unknown_fields = "reject"
+
+[fault_event_protocol]
+semantic_version = 1
+event_header_bytes = 320
+event_slot_bytes = 384
+payload_arena_header_bytes = 128
+default_ring_capacity = 4096
+hard_ring_capacity = 65536
+encoding = "explicit-little-endian-byte-arrays"
+payload_authentication = "blake3+sha256"
+ordering = "strictly-increasing-per-node-event-sequence"
+producer = "qemu-plugin"
+consumer = "apache-host"
+command_results_are_events = false
+overflow = "fail-run-without-dropping-event"
 
 [conformance]
 c_header = "../include/crucible_shmem_abi.h"

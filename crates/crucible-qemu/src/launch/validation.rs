@@ -74,22 +74,6 @@ pub enum LaunchProfileError {
         /// The node declared more than once.
         node_id: String,
     },
-    /// A node had more than one clock-skew declaration in scenario content.
-    #[error("node `{node_id}` has duplicate clock skew declarations")]
-    DuplicateNodeClockSkew {
-        /// The node declared more than once.
-        node_id: String,
-    },
-    /// A node clock-skew declaration used an invalid drift rate.
-    #[error("node `{node_id}` clock drift rate {numerator}/{denominator} is invalid")]
-    InvalidNodeClockDriftRate {
-        /// The node whose clock skew was invalid.
-        node_id: String,
-        /// The invalid drift-rate numerator.
-        numerator: u64,
-        /// The invalid drift-rate denominator.
-        denominator: u64,
-    },
     /// The fixed RAM size was zero.
     #[error("memory size must be a fixed non-zero number of MiB")]
     MemorySizeZero,

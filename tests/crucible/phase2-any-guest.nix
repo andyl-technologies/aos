@@ -6,11 +6,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   anyGuestTest = builtins.readFile ../../crates/crucible-qemu/tests/gate_any_guest.rs;
   gateCatalog = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
@@ -44,7 +40,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
         label = "any-guest real-QEMU evidence";
-        needle = "diskless cadence fingerprint streams match exactly";
+        needle = "fingerprint streams match exactly";
       }
       {
         label = "any-guest initial fixture matrix scope";
@@ -384,7 +380,9 @@ in
       PLUGIN = "${pkgs.crucible-qemu-trace-plugin}/lib/qemu/plugins/crucible-qemu-trace-plugin.so";
       QEMU = "${pkgs.qemu-crucible}/bin/qemu-system-x86_64";
       QEMU_IMG = "${pkgs.qemu-crucible}/bin/qemu-img";
-      CADENCE = "100000000";
+      DISKLESS_CADENCE = "100000000";
+      COW_CADENCE = "1000000000";
+      RR_SWITCH_QUANTUM = "4096";
 
       phases = [
         {
@@ -465,12 +463,16 @@ in
             wait_for_guest_ready() {
               serial="$1"
               waited=0
-              while [ "$waited" -lt 1200 ]; do
+              while [ "$waited" -lt 3360 ]; do
                 if [ -f "$serial" ] && grep -q 'AOS_ANY_GUEST_READY' "$serial"; then
                   return 0
                 fi
                 if [ -f "$serial" ] && grep -q 'AOS_ANY_GUEST_FAIL' "$serial"; then
                   cat "$serial" >&2
+                  return 1
+                fi
+                if ! kill -0 "$qemu_pid" 2>/dev/null; then
+                  [ ! -f "$serial" ] || cat "$serial" >&2
                   return 1
                 fi
                 sleep 0.25
@@ -483,12 +485,16 @@ in
             wait_for_guest_done() {
               serial="$1"
               waited=0
-              while [ "$waited" -lt 1200 ]; do
+              while [ "$waited" -lt 3360 ]; do
                 if [ -f "$serial" ] && grep -q 'AOS_ANY_GUEST_DONE' "$serial"; then
                   return 0
                 fi
                 if [ -f "$serial" ] && grep -q 'AOS_ANY_GUEST_FAIL' "$serial"; then
                   cat "$serial" >&2
+                  return 1
+                fi
+                if ! kill -0 "$qemu_pid" 2>/dev/null; then
+                  [ ! -f "$serial" ] || cat "$serial" >&2
                   return 1
                 fi
                 sleep 0.25
@@ -546,6 +552,22 @@ in
               trace="$TMPDIR/trace-$case_name.jsonl"
               rm -f "$qmp_socket" "$serial" "$trace"
 
+              case "$disk_mode" in
+                diskless)
+                  case_cadence="$DISKLESS_CADENCE"
+                  ;;
+                cow)
+                  # The PCI/virtio discovery path retires roughly 4.35B
+                  # instructions. Four full extended-state samples retain
+                  # device/RAM/register coverage without spending most of the
+                  # bounded run re-hashing the same 256 MiB RAM image.
+                  case_cadence="$COW_CADENCE"
+                  ;;
+                *)
+                  fail "unknown disk mode: $disk_mode"
+                  ;;
+              esac
+
               # Stock guest cmdline (D-31): no entropy-suppression flags. Determinism
               # is sealed host-side (fixed -cpu without RDRAND/RDSEED, seeded fw_cfg
               # entropy, -icount), so KASLR/ASLR stay enabled and remain reproducible.
@@ -558,7 +580,7 @@ in
                 -monitor none \
                 -machine q35 \
                 -accel sim,thread=single \
-                -icount shift=0,sleep=off,align=off \
+                -icount shift=0,sleep=off,align=off,rr_switch_quantum="$RR_SWITCH_QUANTUM" \
                 -cpu qemu64,-rdrand,-rdseed \
                 -m 256 \
                 -smp 1 \
@@ -571,7 +593,7 @@ in
                 -chardev file,id=serial0,path="$serial" \
                 -serial chardev:serial0 \
                 -qmp "unix:$qmp_socket,server=on,wait=off" \
-                -plugin "$PLUGIN",out="$trace",cadence="$CADENCE",extended=on,mem_events=off,vcpus=1 \
+                -plugin "$PLUGIN",out="$trace",cadence="$case_cadence",extended=on,mem_events=off,vcpus=1 \
                 -no-reboot
 
               case "$disk_mode" in
@@ -595,7 +617,7 @@ in
                     -monitor none \
                     -machine q35 \
                     -accel sim,thread=single \
-                    -icount shift=0,sleep=off,align=off \
+                    -icount shift=0,sleep=off,align=off,rr_switch_quantum="$RR_SWITCH_QUANTUM" \
                     -cpu qemu64,-rdrand,-rdseed \
                     -m 256 \
                     -smp 1 \
@@ -610,7 +632,7 @@ in
                     -chardev file,id=serial0,path="$serial" \
                     -serial chardev:serial0 \
                     -qmp "unix:$qmp_socket,server=on,wait=off" \
-                    -plugin "$PLUGIN",out="$trace",cadence="$CADENCE",extended=on,mem_events=off,vcpus=1 \
+                    -plugin "$PLUGIN",out="$trace",cadence="$case_cadence",extended=on,mem_events=off,vcpus=1 \
                     -no-reboot
                   ;;
                 *)
@@ -632,13 +654,20 @@ in
               qmp_quit "$qmp_socket"
               wait_for_qemu_exit "$label"
 
-              jq -e -s '
-                length >= 1
-                and all(.[]; (
+              jq --argjson rr_switch_quantum "$RR_SWITCH_QUANTUM" -e -s '
+                [ .[] | select(.final != true) ] as $samples
+                | [ .[] | select(.final == true) ] as $finals
+                | ($samples | length) >= 1
+                and ($finals | length) == 1
+                and all($samples[]; (
                   .tracked_vcpus == 1
                   and .stop_at == 0
                   and .sample_register_failures == 0
                   and .register_read_failures == 0
+                  and .rr_current_vcpu == 0
+                  and .rr_switch_quantum == $rr_switch_quantum
+                  and .rr_cursor_valid == true
+                  and .rr_cursor_position < .rr_switch_quantum
                   and .ram_bytes > 0
                   and .memory_events_enabled == false
                   and .device_event_capture == false
@@ -649,13 +678,25 @@ in
                   and (.register_counts | length) == 1
                   and .register_counts[0] > 0
                 ))
-                and any(.[]; .final != true)
-                and any(.[]; .final == true)
+                and all($finals[]; (
+                  .tracked_vcpus == 1
+                  and .stop_at == 0
+                  and .sample_register_failures == 1
+                  and .register_read_failures == 1
+                  and (.register_digests | length) == 1
+                  and .register_digests[0] == "0000000000000000000000000000000000000000000000000000000000000000"
+                  and (.register_file_bytes | length) == 1
+                  and .register_file_bytes[0] == 0
+                ))
               ' "$trace" >/dev/null || fail "$label trace failed any-guest structural assertions"
 
               jq -c 'select(.final != true)' "$trace" > "$TMPDIR/trace-$label-cadence.jsonl"
               samples=$(wc -l < "$TMPDIR/trace-$label-cadence.jsonl")
-              cadence_hash=$(jq -r 'select(.final != true) | .extended_hash' "$trace" | tail -1)
+              cadence_hash=$(jq -r \
+                'select(.final != true) | .diagnostic_extended_fnv // empty' \
+                "$trace" | tail -1)
+              printf '%s\n' "$cadence_hash" | grep -Eq '^[0-9a-f]{16}$' \
+                || fail "$label trace did not publish a final extended fingerprint"
               printf '%s %s %s %s\n' "$case_name" "$run_name" "$samples" "$cadence_hash" >> "$TMPDIR/case-results.txt"
 
               cp "$serial" "$out/serial-$label.log"
@@ -678,6 +719,7 @@ in
 
             run_guest cow_block a cow
             run_guest cow_block b cow
+            compare_case cow_block
             grep -q 'AOS_ANY_GUEST_BLOCK_WRITTEN' "$out/serial-cow_block-a.log"
             grep -q 'AOS_ANY_GUEST_BLOCK_WRITTEN' "$out/serial-cow_block-b.log"
 
@@ -709,8 +751,8 @@ in
               echo run_model=boot-cadence-run-twice-and-diff-through-host-qmp-quit-after-serial-marker
               echo black_box_fingerprint_scope=diskless-generic-guest
               echo diskless_black_box_fingerprints_match=true
-              echo cow_block_fingerprints_compared=false
-              echo cow_block_trace_scope=structural-plus-guest-visible-overlay-write
+              echo cow_block_fingerprints_compared=true
+              echo cow_block_trace_scope=extended-cadence-fingerprint-plus-guest-visible-overlay-write
               echo diskless_fingerprint="$diskless_final"
               echo cow_block_reference_fingerprint="$cow_final"
               echo base_image_mutation=false
@@ -729,6 +771,10 @@ in
               echo whitebox_live_doorbell_events=0
               echo whitebox_contract_source=checks.crucible.phase2.qemuPluginWhiteboxDoorbell
               echo trace_plugin=host-side-black-box-fingerprint
+              echo diskless_trace_cadence="$DISKLESS_CADENCE"
+              echo cow_block_trace_cadence="$COW_CADENCE"
+              echo rr_switch_quantum="$RR_SWITCH_QUANTUM"
+              echo exit_sample_register_policy=explicitly-rejected-outside-stopped-boundary
               echo qemu_package_version=${pkgs.qemu-crucible.version}
             } > "$out/result"
           '';

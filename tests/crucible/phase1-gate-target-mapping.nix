@@ -237,6 +237,20 @@
       placeholder = false;
     }
     {
+      gate = "gate:checkpoint-materialization";
+      package = "crucible";
+      testTarget = "gate_checkpoint_materialization";
+      requiredFeatures = [];
+      placeholder = false;
+    }
+    {
+      gate = "gate:state-space-search";
+      package = "crucible";
+      testTarget = "gate_state_space_search";
+      requiredFeatures = [];
+      placeholder = false;
+    }
+    {
       gate = "gate:fleet-equivalence";
       package = "crucible";
       testTarget = "gate_fleet_equivalence";
@@ -251,6 +265,13 @@
       placeholder = false;
     }
     {
+      gate = "gate:signal-fault-system";
+      package = "crucible";
+      testTarget = "gate_signal_fault_system";
+      requiredFeatures = [];
+      placeholder = false;
+    }
+    {
       gate = "gate:perf-bench";
       package = "crucible-harness";
       testTarget = "gate_perf_bench";
@@ -261,6 +282,7 @@
 
   canonicalGates = [
     "gate:harness-lint"
+    "gate:license-boundary"
     "gate:layer0-determinism"
     "gate:single-vm-fingerprint"
     "gate:layer1-injection"
@@ -275,9 +297,13 @@
     "gate:patch-microtests"
     "gate:adversarial-determinism"
     "gate:e2e-determinism"
+    "gate:basic-block-coverage"
+    "gate:checkpoint-materialization"
+    "gate:state-space-search"
     "gate:perf-bench"
     "gate:fleet-equivalence"
     "gate:campaign-continuity"
+    "gate:signal-fault-system"
   ];
 
   crucibleTestDoubleGates = [

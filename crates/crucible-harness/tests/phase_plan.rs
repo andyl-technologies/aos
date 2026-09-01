@@ -103,18 +103,19 @@ fn green_before_advance_requires_every_prior_phase_gate() -> Result<(), Box<dyn 
     let terminal = terminal_acceptance_gate().ok_or("terminal acceptance gate is missing")?;
     assert_eq!(
         terminal.attr_path,
-        "checks.crucible.phase7.gates.e2eDeterminism"
+        "checks.crucible.phase7.gates.signalFaultSystem"
     );
 
     Ok(())
 }
 
 #[test]
-fn terminal_e2e_occurrence_remains_in_phase7_acceptance_set() -> Result<(), Box<dyn Error>> {
+fn terminal_signal_fault_occurrence_remains_in_phase7_acceptance_set() -> Result<(), Box<dyn Error>>
+{
     let terminal = terminal_acceptance_gate().ok_or("terminal acceptance gate is missing")?;
     assert_eq!(terminal.phase, PhasePlanPhase::Phase7);
     assert_eq!(terminal.kind, PhaseGateKind::CatalogGate);
-    assert_eq!(terminal.gate_name, "gate:e2e-determinism");
+    assert_eq!(terminal.gate_name, "gate:signal-fault-system");
 
     let e2e_phases: Vec<PhasePlanPhase> = phase_gate_order()
         .iter()
@@ -487,7 +488,7 @@ fn phase_plan_invariants_reject_synthetic_drift() -> Result<(), Box<dyn Error>> 
     }
     assert!(has_failure_kind(
         &missing_terminal,
-        PhasePlanInvariantFailureKind::MissingTerminalE2eDeterminism,
+        PhasePlanInvariantFailureKind::MissingTerminalSignalFaultSystem,
     ));
 
     let mut invalid_terminal = *terminal_acceptance_gate().ok_or("terminal gate is missing")?;

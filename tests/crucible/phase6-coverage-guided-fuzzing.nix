@@ -6,11 +6,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
@@ -219,8 +215,8 @@
         needle = "matches!(iteration.mutation, Decision::Override(_))";
       }
       {
-        label = "fault plan variation assertion";
-        needle = "unique_fault_plan_entry_counts";
+        label = "typed mutation variation assertion";
+        needle = "unique_sample_indexes(&first)";
       }
       {
         label = "corpus parent assertion";

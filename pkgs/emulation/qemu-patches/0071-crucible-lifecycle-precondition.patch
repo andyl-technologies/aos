@@ -1,0 +1,131 @@
+diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
+index ef4ece29e..225e893f4 100644
+--- a/include/qemu/crucible-fault.h
++++ b/include/qemu/crucible-fault.h
+@@ -479,6 +479,9 @@ void qemu_crucible_fault_vcpu_service_account(
+ void qemu_crucible_fault_vcpu_service_event_terminal(void);
+ int qemu_crucible_fault_lifecycle_validate(
+     const QemuCrucibleFaultRule *rule);
++int qemu_crucible_fault_lifecycle_precondition(
++    const QemuCrucibleFaultRule *rule,
++    uint8_t digest[32]);
+ size_t qemu_crucible_fault_lifecycle_event_budget(
+     const QemuCrucibleFaultRule *rule);
+ void qemu_crucible_fault_lifecycle_rules_changed(
+diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
+index 7f4c1adf4..1ea15d518 100644
+--- a/plugins/crucible-fault-lifecycle.c
++++ b/plugins/crucible-fault-lifecycle.c
+@@ -486,6 +486,58 @@ static void crucible_lifecycle_sha256(const uint8_t *data, size_t length,
+     g_assert(digest_length == 32);
+ }
+ 
++static int crucible_lifecycle_device_sha256(uint8_t digest[32],
++                                            uint64_t *bytes)
++{
++    QIOChannelBuffer *buffer;
++    QEMUFile *file;
++    GChecksum *checksum = NULL;
++    gsize digest_length = 32;
++    int status;
++    int close_status;
++
++    memset(digest, 0, 32);
++    *bytes = 0;
++    buffer = qio_channel_buffer_new(4096);
++    file = qemu_file_new_output(QIO_CHANNEL(buffer));
++    status = qemu_save_device_state_domains(
++        file, QEMU_CRUCIBLE_LIFECYCLE_STATE_VOLATILE |
++              QEMU_CRUCIBLE_LIFECYCLE_STATE_DEVICE);
++    if (status == 0) {
++        status = qemu_fflush(file);
++    }
++    if (status == 0) {
++        status = qemu_file_get_error(file);
++    }
++    checksum = status == 0 ? g_checksum_new(G_CHECKSUM_SHA256) : NULL;
++    if (status == 0 && !checksum) {
++        status = -ENOMEM;
++    }
++    if (status == 0) {
++        g_checksum_update(
++            checksum,
++            (const uint8_t *)"crucible.qemu.lifecycle-device-vmstate.v1",
++            strlen("crucible.qemu.lifecycle-device-vmstate.v1"));
++        g_checksum_update(checksum, buffer->data, buffer->usage);
++        g_checksum_get_digest(checksum, digest, &digest_length);
++        if (digest_length != 32) {
++            memset(digest, 0, 32);
++            status = -EIO;
++        } else {
++            *bytes = buffer->usage;
++        }
++    }
++    g_clear_pointer(&checksum, g_checksum_free);
++    close_status = qemu_fclose(file);
++    object_unref(OBJECT(buffer));
++    if (status == 0 && close_status != 0) {
++        memset(digest, 0, 32);
++        *bytes = 0;
++        status = close_status;
++    }
++    return status;
++}
++
+ static bool crucible_lifecycle_snapshot(uint8_t digest[32],
+                                         uint64_t *ram_bytes,
+                                         uint64_t *device_bytes)
+@@ -495,7 +547,7 @@ static bool crucible_lifecycle_snapshot(uint8_t digest[32],
+     uint64_t ram_hash;
+ 
+     ram_hash = qemu_plugin_crucible_ram_hash(ram_bytes);
+-    if (qemu_plugin_crucible_device_state_sha256(
++    if (crucible_lifecycle_device_sha256(
+             device_digest, device_bytes) != 0) {
+         return false;
+     }
+@@ -508,6 +560,23 @@ static bool crucible_lifecycle_snapshot(uint8_t digest[32],
+     return true;
+ }
+ 
++int qemu_crucible_fault_lifecycle_precondition(
++    const QemuCrucibleFaultRule *rule,
++    uint8_t digest[32])
++{
++    uint64_t ram_bytes;
++    uint64_t device_bytes;
++
++    if (qemu_crucible_fault_rule_command_kind(rule) !=
++            CRUCIBLE_FAULT_COMMAND_NODE_LIFECYCLE ||
++        qemu_crucible_fault_rule_operation(rule) !=
++            CRUCIBLE_NODE_FAULT_OPERATION_APPLY) {
++        return -EINVAL;
++    }
++    return crucible_lifecycle_snapshot(
++        digest, &ram_bytes, &device_bytes) ? 0 : -EIO;
++}
++
+ static int crucible_lifecycle_capture_state(uint32_t domains,
+                                             uint8_t **state,
+                                             size_t *state_len)
+diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
+index f3eacac66..d2c7d9d04 100644
+--- a/plugins/crucible-fault-node.c
++++ b/plugins/crucible-fault-node.c
+@@ -3389,6 +3389,16 @@ static int node_prepare(
+     }
+     node_sha256(payload, payload_len, staging->request_hash);
+     node_rules_digest_with(NULL, false, staging->before_hash);
++    if (staging->rule.command_kind ==
++            CRUCIBLE_FAULT_COMMAND_NODE_LIFECYCLE &&
++        staging->rule.operation == CRUCIBLE_NODE_FAULT_OPERATION_APPLY) {
++        status = qemu_crucible_fault_lifecycle_precondition(
++            &staging->rule, staging->before_hash);
++        if (status != 0) {
++            result->status = CRUCIBLE_FAULT_STATUS_INTERNAL_ERROR;
++            return status;
++        }
++    }
+     if (command->command_flags & CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY) {
+         if (node_hash_nonzero(command->expected_precondition_hash)) {
+             result->status = CRUCIBLE_FAULT_STATUS_MALFORMED_COMMAND;

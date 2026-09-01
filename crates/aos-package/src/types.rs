@@ -75,7 +75,7 @@ pub const FEATURE_ATTESTATION_V1: &str = "attestation-v1";
 /// its config-module metadata (`ConfigOutputMeta` + `ConfigModuleMeta`).
 pub const FEATURE_CONFIG_MODULE_V1: &str = "config-module-v1";
 
-/// Registry feature flag for canonical RFC-0015 package documentation.
+/// Registry feature flag for canonical RFC-0016 package documentation.
 pub const FEATURE_PACKAGE_DOCUMENTATION_V1: &str = "package-documentation-v1";
 
 /// Registry feature flag for slot-specific A/B UKI measurement metadata.
@@ -256,7 +256,7 @@ pub use aos_registry_surface::manifest::{package_name_bucket, validate_package_n
 /// Validate a platform/system name before using it as a package TOML key.
 ///
 /// Platform names become keys under `[versions.platforms]`, for example
-/// `x86_64-linux` or `aarch64-linux`. Keep the accepted syntax to common Nix
+/// `x86_64-linux` or `aarch64-darwin`. Keep the accepted syntax to common Nix
 /// system names so command-line input cannot inject TOML structure or create
 /// ambiguous metadata.
 ///
@@ -3741,7 +3741,14 @@ mod tests {
 
     #[test]
     fn platform_name_validation_accepts_nix_system_names() {
-        for name in ["x86_64-linux", "aarch64-linux", "i686-linux", "wasm32-wasi"] {
+        for name in [
+            "x86_64-linux",
+            "aarch64-linux",
+            "x86_64-darwin",
+            "aarch64-darwin",
+            "i686-linux",
+            "wasm32-wasi",
+        ] {
             validate_platform_name(name).unwrap();
         }
     }

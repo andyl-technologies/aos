@@ -715,8 +715,7 @@ pub enum EventPayload {
     EventActivated { event: ScenarioEventId, summary: Str },
     TriggerFired { event: ScenarioEventId, condition: Str, action: Str }, // 17a §17a.3.3
 
-    FaultActivated { tag: FaultTag, kind: FaultKind, targets: SmallVec<[NodeId; 2]>, description: Str },
-    FaultHealed { tag: FaultTag },
+    FaultObservation { observation: FaultObservation }, // signal, binding, opportunity, choice, or effect
     NodeStarted { node: NodeId, ready_point: u64 /* icount */ },
     NodeCrashed { node: NodeId, reason: Str },
     NodeCompleted { node: NodeId, outcome: NodeOutcome },

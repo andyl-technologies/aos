@@ -1,0 +1,53 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ x86_64-macos, arm64-macos ]
+install-name: '/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit'
+current-version: 2600.0.0
+compatibility-version: 45.0.0
+reexported-libraries:
+  - targets: [ x86_64-macos, arm64-macos ]
+    libraries: [ '/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation' ]
+  - targets: [ x86_64-macos, arm64-macos ]
+    libraries: [ '/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices' ]
+exports:
+  - targets: [ x86_64-macos, arm64-macos ]
+    symbols:
+      - _NSAboutPanelOptionApplicationIcon
+      - _NSAboutPanelOptionApplicationVersion
+      - _NSApp
+      - _NSBeep
+      - _NSFontAttributeName
+      - _NSForegroundColorAttributeName
+      - _NSPasteboardTypeString
+      - _NSScreenNumber
+      - _NSUnderlineStyleAttributeName
+      - '_OBJC_CLASS_$_NSAlert'
+      - '_OBJC_CLASS_$_NSApplication'
+      - '_OBJC_CLASS_$_NSColor'
+      - '_OBJC_CLASS_$_NSCursor'
+      - '_OBJC_CLASS_$_NSEvent'
+      - '_OBJC_CLASS_$_NSFont'
+      - '_OBJC_CLASS_$_NSFontManager'
+      - '_OBJC_CLASS_$_NSGraphicsContext'
+      - '_OBJC_CLASS_$_NSImage'
+      - '_OBJC_CLASS_$_NSMenu'
+      - '_OBJC_CLASS_$_NSMenuItem'
+      - '_OBJC_CLASS_$_NSOpenPanel'
+      - '_OBJC_CLASS_$_NSPasteboard'
+      - '_OBJC_CLASS_$_NSResponder'
+      - '_OBJC_CLASS_$_NSScreen'
+      - '_OBJC_CLASS_$_NSTextField'
+      - '_OBJC_CLASS_$_NSTrackingArea'
+      - '_OBJC_CLASS_$_NSUserNotification'
+      - '_OBJC_CLASS_$_NSUserNotificationCenter'
+      - '_OBJC_CLASS_$_NSView'
+      - '_OBJC_CLASS_$_NSWindow'
+      - '_OBJC_CLASS_$_NSWorkspace'
+      - '_OBJC_METACLASS_$_NSApplication'
+      - '_OBJC_METACLASS_$_NSResponder'
+      - '_OBJC_METACLASS_$_NSView'
+      - '_OBJC_PROTOCOL_$_NSApplicationDelegate'
+      - '_OBJC_PROTOCOL_$_NSPasteboardTypeOwner'
+      - '_OBJC_PROTOCOL_$_NSUserNotificationCenterDelegate'
+      - '_OBJC_PROTOCOL_$_NSWindowDelegate'
+...

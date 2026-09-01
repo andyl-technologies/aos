@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  stdenv,
   gnumake,
 }: let
   version = "0.18.0";
@@ -31,7 +32,11 @@ in
       {
         name = "configure";
         script = ''
-          ./configure --prefix=$out
+          ${
+            if stdenv.isCross
+            then "$CONFIG_SHELL ./configure $configureFlags"
+            else "./configure"
+          } --prefix=$out
         '';
       }
       {

@@ -47,6 +47,7 @@ in
           # gnutls. gnutls_certificate_set_x509_system_trust() (chrony NTS,
           # etc.) reads this file at runtime.
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --with-default-trust-store-file=/etc/ssl/certs/ca-certificates.crt \
             --disable-static \

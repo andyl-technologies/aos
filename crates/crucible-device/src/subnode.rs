@@ -46,12 +46,16 @@ use crate::backpressure::{BackpressureState, BoundedQueue, PushError};
 use crate::clock::VirtualClock;
 use crate::error::DeviceError;
 use crate::inflight::{InflightQueue, PendingResponse};
-use crate::request::{LatencyModel, Request, Response};
+use crate::request::{ComputedResponse, LatencyModel, Request, Response};
 
 mod frame;
 mod io_core_private;
+mod snapshot;
 
 use frame::{frame_from_pending_response, request_from_frame};
+pub use snapshot::{
+    IoCoreSnapshotCodecError, ShmemDeliveryResult, ShmemDequeueResult, ShmemInboxProcess,
+};
 
 /// A concrete I/O sub-node: the COMPUTE half of the uniform lifecycle.
 ///
@@ -65,8 +69,17 @@ pub trait IoSubNode {
     /// The latency model this device applies to derive completion times.
     type Latency: LatencyModel;
 
+    /// Device-owned state needed to roll back a failed COMPUTE transaction.
+    type ComputeCheckpoint;
+
     /// Returns the device's latency model.
     fn latency_model(&self) -> &Self::Latency;
+
+    /// Captures device-owned state before COMPUTE mutates it.
+    fn compute_checkpoint(&self) -> Self::ComputeCheckpoint;
+
+    /// Restores device-owned state when response scheduling cannot be committed.
+    fn restore_compute_checkpoint(&mut self, checkpoint: Self::ComputeCheckpoint);
 
     /// COMPUTEs the response status and payload for `request`.
     ///
@@ -81,7 +94,19 @@ pub trait IoSubNode {
     /// example a malformed request the device rejects before producing wire
     /// bytes). Devices that answer errors *in band* (an error-status response)
     /// return `Ok` with [`crate::request::ResponseStatus::Error`] instead.
-    fn compute(&mut self, request: &Request) -> Result<Response, DeviceError>;
+    fn compute(&mut self, request: &Request) -> Result<ComputedResponse, DeviceError>;
+}
+
+/// Failure from shared-memory delivery with an exact publication count.
+///
+/// A nonzero `published` count is a guest-visible commit boundary: callers must
+/// not roll back device or evaluator state after observing it.
+#[derive(Debug)]
+pub struct ShmemDeliveryFailure {
+    /// Number of response frames release-published before the failure.
+    pub published: usize,
+    /// Underlying deterministic device or shared-memory failure.
+    pub source: DeviceError,
 }
 
 /// The deterministic lifecycle engine shared by every I/O sub-node.
@@ -139,40 +164,6 @@ pub struct IoCoreSnapshot {
     pub outbox: Vec<PendingResponse>,
 }
 
-/// Result of draining a shared-memory request ring into an [`IoCore`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ShmemInboxProcess {
-    /// Number of request frames consumed and COMPUTEd.
-    pub processed: usize,
-    /// First payload byte from each consumed request, or `None` for an empty payload.
-    ///
-    /// Device-specific servicers use this wire tag for live operation coverage
-    /// diagnostics without decoding or peeking at the SPSC ring separately.
-    pub request_kinds: Vec<Option<u8>>,
-    /// Icount carried by the first request frame consumed in this pass.
-    pub first_request_icount: Option<u64>,
-    /// Wake actions issued to the request producer as ring slots were freed.
-    pub producer_wakes: Vec<WakeAction>,
-}
-
-/// Result of publishing due responses into a shared-memory response ring.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ShmemDeliveryResult {
-    /// Number of due responses published to the shared-memory ring.
-    pub delivered: usize,
-    /// Wake issued to the response consumer after at least one frame was published.
-    pub consumer_wake: Option<WakeAction>,
-}
-
-/// Result of consuming one frame from a shared-memory ring and waking its producer.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ShmemDequeueResult {
-    /// The frame dequeued from the ring, if one was present.
-    pub frame: Option<FrameEntry>,
-    /// Wake issued to the producer after a live slot was freed.
-    pub producer_wake: Option<WakeAction>,
-}
-
 impl IoCore {
     /// Creates an I/O core with the given clock shift, node id, and ring sizes.
     ///
@@ -221,6 +212,30 @@ impl IoCore {
         self.inflight.len()
     }
 
+    /// Returns the next computed response without crossing its delivery boundary.
+    #[must_use]
+    pub(crate) fn next_pending_response(&self) -> Option<&PendingResponse> {
+        self.inflight.entries().first()
+    }
+
+    /// Copies the in-flight queue for a device-owned transactional rewrite.
+    pub(crate) fn take_inflight_from_snapshot(&self) -> Vec<PendingResponse> {
+        self.inflight.entries().to_vec()
+    }
+
+    /// Verifies that `count` device-generated responses can receive sequence IDs.
+    pub(crate) fn check_response_sequence_capacity(&self, count: usize) -> Result<(), DeviceError> {
+        let count = u32::try_from(count).map_err(|_| DeviceError::ResponseSequenceOverflow {
+            sequence: self.next_seq,
+        })?;
+        self.next_seq
+            .checked_add(count)
+            .ok_or(DeviceError::ResponseSequenceOverflow {
+                sequence: self.next_seq,
+            })?;
+        Ok(())
+    }
+
     /// Discards every computed response that has not yet been delivered.
     ///
     /// Returns the discarded responses in deterministic delivery order. Crash
@@ -228,6 +243,121 @@ impl IoCore {
     /// the device clock or making any response visible.
     pub fn discard_inflight(&mut self) -> Vec<PendingResponse> {
         self.inflight.drain_all()
+    }
+
+    /// Removes every computed response for a device-owned transactional rewrite.
+    pub(crate) fn take_inflight(&mut self) -> Vec<PendingResponse> {
+        self.inflight.drain_all()
+    }
+
+    /// Reinstalls responses after a device-owned transactional rewrite.
+    pub(crate) fn replace_inflight(
+        &mut self,
+        responses: impl IntoIterator<Item = PendingResponse>,
+    ) {
+        for response in responses {
+            self.inflight.insert(response);
+        }
+    }
+
+    /// Advances the clock and publishes at most one due response locally.
+    ///
+    /// The returned copy identifies the exact response that crossed the
+    /// delivery boundary. `None` means either no response is due or the bounded
+    /// outbox is full; in both cases every unpublished response remains in
+    /// flight unchanged.
+    pub(crate) fn deliver_one(
+        &mut self,
+        limit: u64,
+    ) -> Result<Option<PendingResponse>, DeviceError> {
+        self.clock.advance_to(limit)?;
+        let mut due = self.inflight.drain_due(limit).into_iter();
+        let Some(pending) = due.next() else {
+            return Ok(None);
+        };
+        let observed = pending.clone();
+        if let Err(rejected) = self.outbox.push(pending) {
+            self.inflight.insert(rejected.into_item());
+            self.replace_inflight(due);
+            return Ok(None);
+        }
+        self.replace_inflight(due);
+        Ok(Some(observed))
+    }
+
+    /// Advances the clock and publishes at most one due response to shmem.
+    ///
+    /// The returned response crossed the ring boundary before it is reported.
+    /// A full ring returns `None` without consuming or mutating the response.
+    pub(crate) fn deliver_one_shmem(
+        &mut self,
+        limit: u64,
+        outbox: &RingHeader,
+        outbox_entries: &mut [FrameEntry],
+        _consumer_slot: &NodeSlot,
+    ) -> Result<Option<PendingResponse>, DeviceError> {
+        self.clock.advance_to(limit)?;
+        let mut due = self.inflight.drain_due(limit).into_iter();
+        let Some(pending) = due.next() else {
+            return Ok(None);
+        };
+        let frame = match frame_from_pending_response(&pending) {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.inflight.insert(pending);
+                self.replace_inflight(due);
+                return Err(error);
+            }
+        };
+        match outbox.enqueue(outbox_entries, &frame) {
+            Ok(()) => {
+                self.replace_inflight(due);
+                Ok(Some(pending))
+            }
+            Err(SpscRingError::QueueFull { .. }) => {
+                self.inflight.insert(pending);
+                self.replace_inflight(due);
+                Ok(None)
+            }
+            Err(error) => {
+                self.inflight.insert(pending);
+                self.replace_inflight(due);
+                Err(DeviceError::from(error))
+            }
+        }
+    }
+
+    /// Schedules an externally released response at the current exact icount.
+    ///
+    /// Recovery and timeout events use this entry point to release a completion
+    /// that a device retained during COMPUTE. Scheduling at the current clock
+    /// coordinate preserves the event's authoritative virtual-time ordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError::ResponseSequenceOverflow`] if the canonical
+    /// completion-order sequence is exhausted.
+    pub fn schedule_response_now(&mut self, response: Response) -> Result<(), DeviceError> {
+        let delivery_icount = self.clock.current_icount();
+        self.insert_computed_response(delivery_icount, response)
+    }
+
+    /// Schedules a fully computed response from an exact virtual-time boundary.
+    ///
+    /// Device-owned service queues use this after real work completes. The
+    /// computed response's dynamic latency and duplicate gaps are applied from
+    /// `base_completion_nanos`, then converted with the core's fixed clock.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] for invalid response shape, time/sequence
+    /// overflow, or a completion that would be inserted in the past.
+    pub(crate) fn schedule_computed_response_at_nanos(
+        &mut self,
+        base_completion_nanos: u64,
+        computed: ComputedResponse,
+    ) -> Result<(), DeviceError> {
+        self.insert_computed_at_nanos(base_completion_nanos, computed)
     }
 
     /// Enqueues a request into the inbound ring (the ARRIVE step).
@@ -264,14 +394,15 @@ impl IoCore {
     /// [`DeviceError::DeliveryInPast`] when a computed `delivery_icount` lands
     /// strictly before the sub-node's current icount (the fail-loud guard of
     /// RFC §15.1.1, [IO-31]), and any [`DeviceError`] the device's `compute`
-    /// raises. On error the remaining inbox entries are preserved for a later
-    /// retry; the offending request is consumed.
+    /// raises. On error the offending request and every later inbox entry remain
+    /// queued for an exact retry.
     pub fn process_inbox<D>(&mut self, device: &mut D) -> Result<(), DeviceError>
     where
         D: IoSubNode,
     {
-        while let Some(request) = self.inbox.pop() {
+        while let Some(request) = self.inbox.front().cloned() {
             self.compute_request(device, request)?;
+            let _committed = self.inbox.pop();
         }
         Ok(())
     }
@@ -345,13 +476,19 @@ impl IoCore {
         let mut request_kinds = Vec::new();
         let mut first_request_icount = None;
         let mut producer_wakes = Vec::new();
-        let processed = if let Some(frame) = inbox.dequeue(inbox_entries)? {
+        let processed = if let Some(frame) = inbox.peek(inbox_entries)? {
             first_request_icount.get_or_insert(frame.delivery_icount);
-            let wake = producer_slot.wake_for_device_io_release()?;
-            producer_wakes.push(wake);
             let request = request_from_frame(&frame)?;
             request_kinds.push(request.payload.first().copied());
             self.compute_request(device, request)?;
+            let committed = inbox
+                .dequeue(inbox_entries)?
+                .ok_or(DeviceError::InvalidComputedResponse)?;
+            if committed != frame {
+                return Err(DeviceError::InvalidComputedResponse);
+            }
+            let wake = producer_slot.wake_for_device_io_release()?;
+            producer_wakes.push(wake);
             1
         } else {
             0
@@ -468,14 +605,19 @@ impl IoCore {
     /// icount, [`DeviceError`] for oversized response frames or corrupt ring
     /// state, and [`DeviceError::ShmemWake`] when the consumer wake fails after a
     /// successful publication.
-    pub fn advance_to_shmem(
+    pub fn advance_to_shmem_with_commit_status(
         &mut self,
         limit: u64,
         outbox: &RingHeader,
         outbox_entries: &mut [FrameEntry],
         consumer_slot: &NodeSlot,
-    ) -> Result<ShmemDeliveryResult, DeviceError> {
-        self.clock.advance_to(limit)?;
+    ) -> Result<ShmemDeliveryResult, ShmemDeliveryFailure> {
+        self.clock
+            .advance_to(limit)
+            .map_err(|source| ShmemDeliveryFailure {
+                published: 0,
+                source,
+            })?;
         let due = self.inflight.drain_due(limit);
         let mut delivered = 0;
         let mut remaining = due.into_iter();
@@ -484,7 +626,10 @@ impl IoCore {
                 Ok(frame) => frame,
                 Err(error) => {
                     self.requeue_pending(pending, remaining);
-                    return Err(error);
+                    return Err(ShmemDeliveryFailure {
+                        published: delivered,
+                        source: error,
+                    });
                 }
             };
             match outbox.enqueue(outbox_entries, &frame) {
@@ -495,7 +640,10 @@ impl IoCore {
                 }
                 Err(error) => {
                     self.requeue_pending(pending, remaining);
-                    return Err(DeviceError::from(error));
+                    return Err(ShmemDeliveryFailure {
+                        published: delivered,
+                        source: DeviceError::from(error),
+                    });
                 }
             }
         }
@@ -503,12 +651,35 @@ impl IoCore {
         let consumer_wake = if delivered == 0 {
             None
         } else {
-            Some(consumer_slot.wake_for_frame_delivery()?)
+            Some(consumer_slot.wake_for_frame_delivery().map_err(|source| {
+                ShmemDeliveryFailure {
+                    published: delivered,
+                    source: DeviceError::from(source),
+                }
+            })?)
         };
         Ok(ShmemDeliveryResult {
             delivered,
             consumer_wake,
         })
+    }
+
+    /// Advances the clock and publishes due responses to a real shmem ring.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying delivery error. Callers that own a transactional
+    /// boundary should use [`Self::advance_to_shmem_with_commit_status`] so they
+    /// can distinguish failures before and after publication.
+    pub fn advance_to_shmem(
+        &mut self,
+        limit: u64,
+        outbox: &RingHeader,
+        outbox_entries: &mut [FrameEntry],
+        consumer_slot: &NodeSlot,
+    ) -> Result<ShmemDeliveryResult, DeviceError> {
+        self.advance_to_shmem_with_commit_status(limit, outbox, outbox_entries, consumer_slot)
+            .map_err(|failure| failure.source)
     }
 
     /// Pops the next delivered response from the outbound ring, if any.

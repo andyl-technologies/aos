@@ -1,0 +1,19 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ x86_64-macos, arm64-macos ]
+install-name: '/System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork'
+current-version: 1494.0.7
+exports:
+  - targets: [ x86_64-macos, arm64-macos ]
+    symbols:
+      - _CFNetworkCopyProxiesForURL
+      - _CFNetworkCopySystemProxySettings
+      - _CFNetworkExecuteProxyAutoConfigurationURL
+      - _kCFProxyAutoConfigurationURLKey
+      - _kCFProxyHostNameKey
+      - _kCFProxyPortNumberKey
+      - _kCFProxyTypeAutoConfigurationURL
+      - _kCFProxyTypeKey
+      - _kCFProxyTypeNone
+      - _kCFProxyTypeSOCKS
+...

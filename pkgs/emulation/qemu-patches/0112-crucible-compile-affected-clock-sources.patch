@@ -1,0 +1,89 @@
+diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
+index d0176df22..d5695fedf 100644
+--- a/include/qemu/crucible-fault.h
++++ b/include/qemu/crucible-fault.h
+@@ -440,6 +440,7 @@ int qemu_crucible_fault_clock_validate(const QemuCrucibleFaultRule *rule);
+ size_t qemu_crucible_fault_clock_event_budget(
+     const QemuCrucibleFaultRule *rule);
+ void qemu_crucible_fault_clock_rules_changed(
++    const QemuCrucibleFaultRule *changed_rule,
+     QemuCrucibleFaultEventReservation **event_reservation);
+ int qemu_crucible_fault_clock_impulse(
+     const QemuCrucibleFaultRule *rule, uint64_t observed_icount,
+diff --git a/plugins/crucible-fault-clock.c b/plugins/crucible-fault-clock.c
+index e05638d1f..ea55d8fd0 100644
+--- a/plugins/crucible-fault-clock.c
++++ b/plugins/crucible-fault-clock.c
+@@ -1910,7 +1910,27 @@ fail:
+     return false;
+ }
+ 
++static bool crucible_clock_rule_affects_source(
++    const QemuCrucibleFaultRule *rule, CrucibleClockSource *source)
++{
++    uint16_t command_kind;
++
++    if (!rule) {
++        return false;
++    }
++    command_kind = qemu_crucible_fault_rule_command_kind(rule);
++    if (command_kind == CRUCIBLE_FAULT_COMMAND_CLOCK_TRANSFORM) {
++        return crucible_clock_rule_selects(rule, source);
++    }
++    if (command_kind == CRUCIBLE_FAULT_COMMAND_CLOCK_SOURCE_STATE) {
++        return crucible_clock_hash_set_contains(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_P1, source->binding.id);
++    }
++    return false;
++}
++
+ void qemu_crucible_fault_clock_rules_changed(
++    const QemuCrucibleFaultRule *changed_rule,
+     QemuCrucibleFaultEventReservation **event_reservation)
+ {
+     int64_t scheduler_ns;
+@@ -1926,17 +1946,18 @@ void qemu_crucible_fault_clock_rules_changed(
+         abort();
+     }
+     for (guint i = 0; i < crucible_clock_sources->len; i++) {
+-        if (!crucible_clock_source_compile(&g_array_index(
+-                crucible_clock_sources, CrucibleClockSource, i),
+-                scheduler_ns,
++        CrucibleClockSource *source = &g_array_index(
++            crucible_clock_sources, CrucibleClockSource, i);
++
++        if (!crucible_clock_rule_affects_source(changed_rule, source)) {
++            continue;
++        }
++        if (!crucible_clock_source_compile(source, scheduler_ns,
+                 event_reservation ? *event_reservation : NULL)) {
+             error_report("Crucible clock rule compilation failed after "
+                          "prepared commit");
+             abort();
+         }
+-        CrucibleClockSource *source = &g_array_index(
+-            crucible_clock_sources, CrucibleClockSource, i);
+-
+         crucible_clock_rearm_source(source);
+         crucible_clock_wander_timer_rearm(source);
+     }
+diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
+index aa6f166f4..95e8f6345 100644
+--- a/plugins/crucible-fault-node.c
++++ b/plugins/crucible-fault-node.c
+@@ -3796,6 +3796,7 @@ static void node_commit(
+         qemu_crucible_fault_lifecycle_rules_changed(
+             &staging->rule, &staging->event_reservation);
+         qemu_crucible_fault_clock_rules_changed(
++            &staging->rule,
+             &staging->event_reservation);
+         qemu_crucible_fault_accelerator_rules_changed(
+             &staging->rule, &staging->event_reservation);
+@@ -3818,6 +3819,7 @@ static void node_commit(
+         qemu_crucible_fault_lifecycle_rules_changed(
+             &staging->rule, &staging->event_reservation);
+         qemu_crucible_fault_clock_rules_changed(
++            &staging->rule,
+             &staging->event_reservation);
+         qemu_crucible_fault_accelerator_rules_changed(
+             &staging->rule, &staging->event_reservation);

@@ -5,6 +5,7 @@
   gnumake,
   cmake,
   ninja,
+  stdenv,
 }: let
   version = "1.2.0";
 in
@@ -39,10 +40,16 @@ in
         name = "configure";
         script = ''
           cmake -S . -B build -G Ninja \
+            $cmakeFlags \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=$out \
             -DCMAKE_INSTALL_LIBDIR=lib \
             -DBUILD_SHARED_LIBS=ON \
+            ${
+            if stdenv.hostPlatform.isDarwin
+            then "-DBROTLI_EMSCRIPTEN=OFF"
+            else ""
+          } \
             -DBROTLI_DISABLE_TESTS=ON
         '';
       }

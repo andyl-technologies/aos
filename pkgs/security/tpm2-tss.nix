@@ -44,12 +44,13 @@ in
           # invoke them.
           mkdir -p $TMPDIR/fakebin
           for t in groupadd useradd addgroup adduser; do
-            printf '#!/bin/sh\nexit 0\n' > $TMPDIR/fakebin/$t
+            printf '#!%s\nexit 0\n' "$CONFIG_SHELL" > $TMPDIR/fakebin/$t
             chmod +x $TMPDIR/fakebin/$t
           done
           export PATH=$TMPDIR/fakebin:$PATH
 
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --localstatedir=$out/var \
             --disable-static \

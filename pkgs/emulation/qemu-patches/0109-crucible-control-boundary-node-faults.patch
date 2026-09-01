@@ -1,0 +1,107 @@
+diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
+index 501478891..d0176df22 100644
+--- a/include/qemu/crucible-fault.h
++++ b/include/qemu/crucible-fault.h
+@@ -134,7 +134,8 @@ void qemu_crucible_fault_fail_deferred(
+     const uint8_t before_hash[32]);
+ void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
+                                            uint64_t observed_icount);
+-bool qemu_crucible_fault_has_pending_at_or_before(uint64_t icount);
++bool qemu_crucible_fault_has_pending_at_or_before(uint16_t phase,
++                                                  uint64_t icount);
+ uint64_t qemu_crucible_fault_next_icount(uint16_t phase);
+ uint64_t qemu_crucible_fault_next_boundary_deadline(uint16_t phase);
+ int64_t qemu_crucible_fault_clamp_budget(uint16_t phase,
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+index 81299fdf6..03a9a4506 100644
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -721,11 +721,18 @@ void qemu_plugin_fire_control_boundary_cb(CPUState *cpu)
+     qemu_plugin_vcpu_idle_resume_cb_t cb = qemu_plugin_control_boundary_cb;
+ 
+     if (cb && cpu) {
++        uint64_t observed_icount = qemu_plugin_icount_raw();
++
+         g_assert(qemu_plugin_crucible_control_boundary_depth < UINT_MAX);
+         qemu_plugin_crucible_control_boundary_depth++;
+         qemu_plugin_crucible_exact_boundary_enter();
+-        cb(cpu->cpu_index, qemu_plugin_icount_raw(),
++        cb(cpu->cpu_index, observed_icount,
+            qemu_plugin_control_boundary_userdata);
++        if (qemu_crucible_fault_has_pending_at_or_before(
++                CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY, observed_icount)) {
++            qemu_crucible_fault_dispatch_boundary(
++                CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY, observed_icount);
++        }
+         qemu_plugin_crucible_exact_boundary_leave();
+         qemu_plugin_crucible_control_boundary_depth--;
+     }
+diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
+index 1ea15d518..e8b82984c 100644
+--- a/plugins/crucible-fault-lifecycle.c
++++ b/plugins/crucible-fault-lifecycle.c
+@@ -149,6 +149,17 @@ bool qemu_crucible_fault_lifecycle_process_bound(void)
+ static void crucible_lifecycle_sha256(const uint8_t *data, size_t length,
+                                       uint8_t digest[32]);
+ 
++static void crucible_lifecycle_terminal_evidence_digest(
++    const uint8_t *evidence, size_t evidence_len, uint8_t digest[32])
++{
++    uint8_t canonical[CRUCIBLE_LIFECYCLE_EVIDENCE_BYTES];
++
++    g_assert(evidence_len == sizeof(canonical));
++    memcpy(canonical, evidence, sizeof(canonical));
++    memset(canonical + 24, 0, 8);
++    crucible_lifecycle_sha256(canonical, sizeof(canonical), digest);
++}
++
+ static bool crucible_lifecycle_mode(void)
+ {
+     return strcmp(current_accel_name(), "sim") == 0 &&
+@@ -210,7 +221,7 @@ static void crucible_lifecycle_stage_terminal(
+     crucible_lifecycle_terminal_exit_requested = false;
+     memcpy(crucible_lifecycle_terminal_action_sha256,
+            qemu_crucible_fault_rule_action_hash(rule), 32);
+-    crucible_lifecycle_sha256(
++    crucible_lifecycle_terminal_evidence_digest(
+         evidence, evidence_len,
+         crucible_lifecycle_terminal_evidence_sha256);
+     if (qemu_plugin_crucible_vmstop_admit_internal() != 0) {
+diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
+index 353e1b359..58db41c19 100644
+--- a/plugins/crucible-fault.c
++++ b/plugins/crucible-fault.c
+@@ -833,14 +833,16 @@ void qemu_crucible_fault_notify_events(void)
+     }
+ }
+ 
+-bool qemu_crucible_fault_has_pending_at_or_before(uint64_t icount)
++bool qemu_crucible_fault_has_pending_at_or_before(uint16_t phase,
++                                                  uint64_t icount)
+ {
+     CruciblePendingFault *pending;
+     bool found = false;
+ 
+     g_mutex_lock(&crucible_fault_lock);
+     QTAILQ_FOREACH(pending, &crucible_pending_faults, link) {
+-        if (pending->command.target_icount <= icount) {
++        if (pending->command.phase == phase &&
++            pending->command.target_icount <= icount) {
+             found = true;
+             break;
+         }
+diff --git a/qapi/misc.json b/qapi/misc.json
+index 3c51a075c..16c7ebec3 100644
+--- a/qapi/misc.json
++++ b/qapi/misc.json
+@@ -186,7 +186,9 @@
+ #
+ # @action-sha256: Lowercase hexadecimal SHA-256 of the resolved fault action.
+ #
+-# @evidence-sha256: Lowercase hexadecimal SHA-256 of the CRUCLIF evidence.
++# @evidence-sha256: Lowercase hexadecimal SHA-256 of the CRUCLIF evidence
++#     after zeroing its raw retired-instruction coordinate.  The plugin maps
++#     that coordinate into scheduler-logical space before publication.
+ #
+ # @process-generation: Nonzero host-supervised process generation.
+ #

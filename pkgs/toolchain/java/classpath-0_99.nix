@@ -2,6 +2,9 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
+  buildPackages,
   gnumake,
   ecj-bootstrap,
   fastjar,
@@ -11,6 +14,20 @@
   zip,
 }: let
   version = "0.99";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  configurePlatformFlags = lib.optionalString isDarwinCross " \\\n            --build=${stdenv.buildPlatform.config} \\\n            --host=${stdenv.hostPlatform.config}";
+  ecjForBuild =
+    if stdenv.isCross
+    then buildPackages.ecj-bootstrap
+    else ecj-bootstrap;
+  fastjarForBuild =
+    if stdenv.isCross
+    then buildPackages.fastjar
+    else fastjar;
+  jamvmForBuild =
+    if stdenv.isCross
+    then buildPackages.jamvm-1_5
+    else jamvm-1_5;
 in
   mkDerivation {
     pname = "classpath-0_99";
@@ -23,15 +40,17 @@ in
       hash = "sha256-+Skpf4rpthOhoWfiMVZoYYkyYGUdkTrZtsEZM4lf7Mg=";
     };
 
-    buildDeps = [
-      gnumake
-      ecj-bootstrap
-      fastjar
-      jamvm-1_5
-      classpath-0_93
-      pkg-config
-      zip
-    ];
+    buildDeps =
+      [
+        gnumake
+        ecjForBuild
+        fastjarForBuild
+        jamvmForBuild
+        classpath-0_93
+        pkg-config
+        zip
+      ]
+      ++ lib.optionals isDarwinCross [buildPackages.automake];
     runtimeDeps = [];
 
     phases = [
@@ -55,6 +74,22 @@ in
           # Remove any stray 'sun' file in lib/ that blocks sun/ directory creation
           test -f lib/sun && rm lib/sun || true
 
+          ${lib.optionalString isDarwinCross ''
+            # This release predates AArch64. Refresh only the canonical target
+            # table; its generated configure logic is otherwise cross-aware.
+            cp ${buildPackages.automake}/share/automake-*/config.sub config.sub
+
+            # GNU Classpath's fdlibm predates AArch64 but uses the standard
+            # little-endian IEEE-754 word layout on that architecture.
+            sed -i '/#ifdef __alpha__/i #ifdef __aarch64__\n#define __IEEE_LITTLE_ENDIAN\n#endif\n' \
+              native/fdlibm/ieeefp.h
+
+            # IUCLC is a Linux terminal extension. On Darwin the remaining
+            # standard input flags still implement the intended echo guard.
+            sed -i '/#define TERMIOS_ECHO_IFLAGS/i #ifndef IUCLC\n#define IUCLC 0\n#endif\n' \
+              native/jni/java-io/java_io_VMConsole.c
+          ''}
+
           # Fix: --disable-tools leaves GCJ_JAVAC automake conditional undefined
           # Insert default values just before the check that errors out
           sed -i 's/if test -z "''${GCJ_JAVAC_TRUE}" && test -z "''${GCJ_JAVAC_FALSE}"/GCJ_JAVAC_TRUE="''${GCJ_JAVAC_TRUE:-#}"; GCJ_JAVAC_FALSE="''${GCJ_JAVAC_FALSE:-}"; if test -z "''${GCJ_JAVAC_TRUE}" \&\& test -z "''${GCJ_JAVAC_FALSE}"/' configure
@@ -66,8 +101,8 @@ in
           # ECJ needs a working JVM to run — set up the environment
           # Do NOT set BOOTCLASSPATH env var — JamVM uses it to override its
           # boot classpath, and without classes.zip it fails to initialize.
-          export JAVA="${jamvm-1_5}/bin/jamvm"
-          export JAVAC="${ecj-bootstrap}/bin/ecj"
+          export JAVA="${jamvmForBuild}/bin/jamvm"
+          export JAVAC="${ecjForBuild}/bin/ecj"
 
           CFLAGS="-O2 -Wno-error" \
           ./configure \
@@ -80,9 +115,9 @@ in
             --disable-plugin \
             --disable-examples \
             --disable-tools \
-            --with-ecj-jar=${ecj-bootstrap}/lib/ecj.jar \
-            --with-jar=${fastjar}/bin/fastjar \
-            --with-vm=${jamvm-1_5}/bin/jamvm
+            --with-ecj-jar=${ecjForBuild}/lib/ecj.jar \
+            --with-jar=${fastjarForBuild}/bin/fastjar \
+            --with-vm=${jamvmForBuild}/bin/jamvm${configurePlatformFlags}
         '';
       }
       {

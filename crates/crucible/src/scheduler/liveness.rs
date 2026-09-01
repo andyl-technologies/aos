@@ -8,44 +8,6 @@ pub(super) use network_branch::{
     LiveNetworkBranchChoice, is_live_network_branch_choice_name, live_network_branch_choices,
     live_network_branch_draws,
 };
-/// Applies combined node timing faults to a scheduler VM node.
-///
-/// This is the scheduler-facing bridge used by trigger/fault application code:
-/// slow faults stretch the VM's counter-to-virtual-time map from the current
-/// counter, and clock skew changes only the guest-visible time projection.
-///
-/// # Errors
-///
-/// Returns [`SchedulerError`] when the node is absent, is not a VM scheduler
-/// node, or its current timing projection cannot be computed.
-pub fn apply_combined_node_timing_faults_to_scheduler(
-    scheduler: &mut SingleScheduler,
-    node: &NodeId,
-    faults: &CombinedNodeFaults,
-) -> Result<NodeTimingFaults, SchedulerError> {
-    scheduler.apply_combined_node_timing_faults(node, faults)
-}
-
-/// Applies the crash component of combined node faults to a scheduler VM node.
-///
-/// Returns `Ok(None)` when the combined fault set contains no active crash.
-///
-/// # Errors
-///
-/// Returns [`SchedulerError`] when the crash target cannot be applied by
-/// [`SingleScheduler::apply_node_crash`].
-pub fn apply_combined_node_crash_to_scheduler(
-    scheduler: &mut SingleScheduler,
-    sequence: u64,
-    node: &NodeId,
-    faults: &CombinedNodeFaults,
-) -> Result<Option<SchedulerNodeCrashApplication>, SchedulerError> {
-    faults
-        .crash_restart
-        .map(|restart| scheduler.apply_node_crash(sequence, node, restart))
-        .transpose()
-}
-
 impl SchedulerSendAuthorizer for SingleScheduler {
     fn authorize_cross_node_send(
         &self,
@@ -173,48 +135,22 @@ pub fn check_scheduler_liveness(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct RuntimeSchedulerNode {
     pub(super) id: SchedulerNodeId,
-    /// Counter of the baked ready-point runtime admitted at construction.
-    pub(super) ready_counter: NodeCounter,
     pub(super) counter: NodeCounter,
-    pub(super) timing_faults: NodeTimingFaults,
+    pub(super) time_mapping: NodeTimeMapping,
     pub(super) last_checkpoint: Option<SchedulerNodeCheckpoint>,
-    pub(super) crash: Option<RuntimeNodeCrashState>,
-    pub(super) stopped_crash: Option<RuntimeNodeStoppedState>,
     pub(super) activity: SchedulerNodeActivity,
     pub(super) network_lookahead: NetworkLookahead,
     pub(super) exact_local_event: ExactLocalEvent,
     pub(super) vcpu_idle_states: Vec<SchedulerVcpuIdleState>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct RuntimeNodeCrashState {
-    pub(super) activation_sequence: u64,
-    pub(super) restart: RestartPolicy,
-    pub(super) previous_activity: SchedulerNodeActivity,
-    pub(super) counter_at_crash: NodeCounter,
-    pub(super) timing_faults_at_crash: NodeTimingFaults,
-    pub(super) removed_edges: Vec<SchedulerLookaheadEdge>,
-    pub(super) checkpoint: Option<SchedulerNodeCheckpoint>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct RuntimeNodeStoppedState {
-    pub(super) activation_sequence: u64,
-    pub(super) previous_activity: SchedulerNodeActivity,
-    pub(super) timing_faults_at_stop: NodeTimingFaults,
-    pub(super) removed_edges: Vec<SchedulerLookaheadEdge>,
-}
-
 impl From<SchedulerScenarioNode> for RuntimeSchedulerNode {
     fn from(node: SchedulerScenarioNode) -> Self {
         Self {
             id: node.id,
-            ready_counter: NodeCounter { ticks: 0 },
             counter: node.counter,
-            timing_faults: NodeTimingFaults::default(),
+            time_mapping: NodeTimeMapping::default(),
             last_checkpoint: None,
-            crash: None,
-            stopped_crash: None,
             activity: node.activity,
             network_lookahead: node.network_lookahead,
             exact_local_event: node.exact_local_event,
@@ -384,7 +320,7 @@ pub(super) fn concurrent_completion_order_key(
     Ok(VirtualTime { ticks: key.nanos })
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct NodeAdvance {
     pub(super) node: SchedulerNodeId,
     pub(super) before: NodeCounter,
@@ -443,22 +379,12 @@ pub(super) fn frontier_for(
     shift: Shift,
 ) -> Result<VirtualTime, SchedulerError> {
     let mut frontier = None;
-    let mut crashed_frontier = None;
-
     for node in nodes {
         let virtual_time = if node.id.kind == SchedulingNodeKind::Vm {
-            node.timing_faults
-                .faulted_virtual_time(node.counter, shift)?
+            node.time_mapping.logical_time(node.counter, shift)?
         } else {
             node.counter.to_virtual(shift)?
         };
-        if node.crash.is_some() || node.stopped_crash.is_some() {
-            crashed_frontier = Some(match crashed_frontier {
-                Some(current) => min_instant(current, virtual_time),
-                None => virtual_time,
-            });
-            continue;
-        }
         frontier = Some(match frontier {
             Some(current) => min_instant(current, virtual_time),
             None => virtual_time,
@@ -466,56 +392,12 @@ pub(super) fn frontier_for(
     }
 
     Ok(VirtualTime {
-        ticks: frontier
-            .or(crashed_frontier)
-            .unwrap_or(SimInstant::EPOCH)
-            .nanos,
+        ticks: frontier.unwrap_or(SimInstant::EPOCH).nanos,
     })
 }
 
 pub(super) fn min_instant(left: SimInstant, right: SimInstant) -> SimInstant {
     if left <= right { left } else { right }
-}
-
-pub(super) fn upsert_edge_by_endpoint(
-    edges: &mut Vec<SchedulerLookaheadEdge>,
-    edge: SchedulerLookaheadEdge,
-) {
-    let endpoint = edge.endpoint();
-    if let Some(index) = edges
-        .iter()
-        .position(|candidate| candidate.endpoint() == endpoint)
-    {
-        edges[index] = edge;
-    } else {
-        edges.push(edge);
-    }
-    edges.sort();
-    edges.dedup();
-}
-
-pub(super) fn canonical_edges_by_endpoint<I>(edges: I) -> Vec<SchedulerLookaheadEdge>
-where
-    I: IntoIterator<Item = SchedulerLookaheadEdge>,
-{
-    let mut canonical = Vec::new();
-    for edge in edges {
-        upsert_edge_by_endpoint(&mut canonical, edge);
-    }
-    canonical
-}
-
-pub(super) fn replace_existing_edges_by_endpoint(
-    edges: &mut Vec<SchedulerLookaheadEdge>,
-    updates: &BTreeMap<SchedulerLookaheadEdgeEndpoint, SchedulerLookaheadEdge>,
-) {
-    for edge in edges.iter_mut() {
-        if let Some(updated) = updates.get(&edge.endpoint()) {
-            *edge = updated.clone();
-        }
-    }
-    edges.sort();
-    edges.dedup();
 }
 
 /// An error produced by the scheduler boundary.
@@ -532,6 +414,19 @@ pub enum SchedulerError {
     BoundaryViolation {
         /// Deterministic diagnostic text.
         message: String,
+    },
+    /// A scheduler-owned representation could not reserve its admitted storage.
+    ResourceLimit {
+        /// Closed resource field whose reservation failed.
+        field: &'static str,
+        /// Existing admitted usage in field units.
+        current: u64,
+        /// Additional requested usage in field units.
+        requested: u64,
+        /// Scenario-authored ceiling in field units.
+        configured: u64,
+        /// Compiled ceiling in field units.
+        hard: u64,
     },
     /// Virtual-time conversion failed while computing a scheduler horizon.
     TimeConversion(TimeConversionError),
@@ -558,6 +453,16 @@ impl fmt::Display for SchedulerError {
             }
             Self::Backend(error) => write!(f, "backend failed under scheduler control: {error}"),
             Self::BoundaryViolation { message } => f.write_str(message),
+            Self::ResourceLimit {
+                field,
+                current,
+                requested,
+                configured,
+                hard,
+            } => write!(
+                f,
+                "scheduler resource `{field}` cannot reserve {requested} units at current {current}; configured {configured}, hard {hard}"
+            ),
             Self::TimeConversion(error) => {
                 write!(f, "scheduler virtual-time conversion failed: {error}")
             }
@@ -574,7 +479,22 @@ impl Error for SchedulerError {}
 
 impl From<BackendError> for SchedulerError {
     fn from(error: BackendError) -> Self {
-        Self::Backend(error)
+        match error {
+            BackendError::ResourceLimit {
+                field,
+                current,
+                requested,
+                configured,
+                hard,
+            } => Self::ResourceLimit {
+                field,
+                current,
+                requested,
+                configured,
+                hard,
+            },
+            error => Self::Backend(error),
+        }
     }
 }
 

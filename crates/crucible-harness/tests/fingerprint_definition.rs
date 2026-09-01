@@ -13,7 +13,7 @@ use crucible_harness::fingerprint::{
 };
 
 const CANONICAL_DEFINITION_DIGEST_HEX: &str =
-    "2f91ef0f0ce8df7b111a6cb0f737557821e6312719bda867445398cea2f46373";
+    "f0c200ed884dfda042d11325f3bec7913a3a2bc47c7dfc00feefcd137991edec";
 
 #[test]
 fn fingerprint_definition_digest_is_stable_and_content_addressed() {

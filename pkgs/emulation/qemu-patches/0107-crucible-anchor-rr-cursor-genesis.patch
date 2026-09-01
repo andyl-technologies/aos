@@ -1,0 +1,178 @@
+diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+index d8554b767..bb7e73138 100644
+--- a/accel/tcg/icount-common.c
++++ b/accel/tcg/icount-common.c
+@@ -119,6 +119,27 @@ void icount_crucible_rr_snapshot_resume_prepare(void)
+     }
+ }
+ 
++void icount_crucible_rr_initialize_genesis(CPUState *cpu)
++{
++    if (!cpu || icount_crucible_rr_switch_quantum() == 0 ||
++        timers_state.crucible_rr_cursor_valid) {
++        return;
++    }
++
++    /*
++     * Establish the fresh-boot cursor before the RR thread computes its first
++     * budget.  Lazy initialization after host-driven startup work lets that
++     * work choose the cursor's virtual origin, so identical guests can expose
++     * different intra-turn positions at the same aggregate icount.  A loaded
++     * VMState already has a valid serialized cursor and is never overwritten.
++     */
++    g_assert(icount_get_raw() == 0);
++    timers_state.crucible_rr_current_vcpu = cpu->cpu_index;
++    timers_state.crucible_rr_cursor_position = 0;
++    timers_state.crucible_rr_cursor_valid = true;
++    timers_state.crucible_rr_selection_pending = false;
++}
++
+ uint64_t icount_crucible_rr_cursor_position_observed(CPUState *cpu)
+ {
+     uint64_t quantum = icount_crucible_rr_switch_quantum();
+@@ -181,11 +202,18 @@ CPUState *icount_crucible_rr_select_cpu(CPUState *suggested)
+     if (!suggested || icount_crucible_rr_switch_quantum() == 0) {
+         return suggested;
+     }
+-    if (timers_state.crucible_rr_selection_pending) {
++    if (timers_state.crucible_rr_cursor_valid) {
+         selected = qemu_get_cpu(timers_state.crucible_rr_current_vcpu);
+         g_assert(selected);
+-        /* A zero-instruction boundary must not consume the selection. */
+-        if ((!cpu_can_run(selected) ||
++        /*
++         * The serialized owner remains authoritative across partial RR turns.
++         * The loop-local iterator can restart after host control service; it
++         * must not reset a live cursor merely because it suggests another
++         * CPU. A guest halt is a canonical partial-turn handoff.
++         */
++        if ((timers_state.crucible_rr_selection_pending ||
++             selected != suggested) &&
++            (!cpu_can_run(selected) ||
+              (selected->halted && !cpu_has_work(selected))) &&
+             (runnable = icount_crucible_rr_next_runnable(selected))) {
+             timers_state.crucible_rr_current_vcpu = runnable->cpu_index;
+@@ -193,14 +221,16 @@ CPUState *icount_crucible_rr_select_cpu(CPUState *suggested)
+             timers_state.crucible_rr_selection_pending = false;
+             return runnable;
+         }
+-        return selected;
+-    }
+-    if (!timers_state.crucible_rr_cursor_valid ||
+-        timers_state.crucible_rr_current_vcpu != suggested->cpu_index) {
+-        timers_state.crucible_rr_current_vcpu = suggested->cpu_index;
+-        timers_state.crucible_rr_cursor_position = 0;
+-        timers_state.crucible_rr_cursor_valid = true;
++        if (timers_state.crucible_rr_selection_pending ||
++            selected != suggested) {
++            return selected;
++        }
++        return suggested;
+     }
++
++    timers_state.crucible_rr_current_vcpu = suggested->cpu_index;
++    timers_state.crucible_rr_cursor_position = 0;
++    timers_state.crucible_rr_cursor_valid = true;
+     return suggested;
+ }
+ 
+@@ -213,11 +243,15 @@ static void icount_crucible_rr_account(CPUState *cpu, uint64_t executed)
+     if (!cpu || quantum == 0 || executed == 0) {
+         return;
+     }
+-    if (!timers_state.crucible_rr_cursor_valid ||
+-        timers_state.crucible_rr_current_vcpu != cpu->cpu_index) {
++    if (!timers_state.crucible_rr_cursor_valid) {
+         timers_state.crucible_rr_current_vcpu = cpu->cpu_index;
+         timers_state.crucible_rr_cursor_position = 0;
+         timers_state.crucible_rr_cursor_valid = true;
++    } else if (timers_state.crucible_rr_current_vcpu != cpu->cpu_index) {
++        error_report("crucible RR accounting owner mismatch: owner=%" PRIu64
++                     " executed-vcpu=%d",
++                     timers_state.crucible_rr_current_vcpu, cpu->cpu_index);
++        abort();
+     }
+     timers_state.crucible_rr_selection_pending = false;
+     remaining = quantum - timers_state.crucible_rr_cursor_position;
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index 49290729d..90840e631 100644
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -936,6 +936,7 @@ static void *rr_cpu_thread_fn(void *arg)
+     rr_start_kick_timer();
+ 
+     cpu = first_cpu;
++    icount_crucible_rr_initialize_genesis(cpu);
+ 
+     /* process any pending work */
+     rr_crucible_sim_normalize_first_exit(cpu);
+@@ -943,6 +944,7 @@ static void *rr_cpu_thread_fn(void *arg)
+     while (1) {
+         /* Only used for icount_enabled() */
+         int64_t cpu_budget = 0;
++        bool partial_rr_turn = false;
+ 
+         bql_unlock();
+         replay_mutex_lock();
+@@ -1106,7 +1108,23 @@ static void *rr_cpu_thread_fn(void *arg)
+ 
+             qatomic_set(&rr_current_cpu, NULL);
+             crucible_sim_det_ipi_drain_pending();
+-            cpu = CPU_NEXT(cpu);
++            CPUState *executed_cpu = cpu;
++            CPUState *suggested_cpu = CPU_NEXT(executed_cpu);
++            bool wrapped = suggested_cpu == NULL;
++
++            if (wrapped) {
++                suggested_cpu = first_cpu;
++            }
++            cpu = icount_crucible_rr_select_cpu(suggested_cpu);
++            if (cpu == executed_cpu &&
++                icount_crucible_rr_cursor_position() != 0) {
++                partial_rr_turn = true;
++                break;
++            }
++            if (wrapped) {
++                cpu = NULL;
++                break;
++            }
+         } /* while (cpu && !cpu->exit_request).. */
+ 
+         /* Does not need a memory barrier because a spurious wakeup is okay.  */
+@@ -1132,6 +1150,10 @@ static void *rr_cpu_thread_fn(void *arg)
+          */
+         rr_crucible_sim_advance_stalled_deadline();
+ 
++        if (partial_rr_turn) {
++            continue;
++        }
++
+         /*
+          * Re-enter the run loop when a boundary callback queued later work
+          * for a runnable guest.  Reaching an exact icount boundary may leave
+diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
+index 3ab3fb95a..f8761d2d4 100644
+--- a/include/system/cpu-timers.h
++++ b/include/system/cpu-timers.h
+@@ -82,6 +82,7 @@ uint64_t icount_crucible_rr_switch_quantum(void);
+ uint64_t icount_crucible_rr_current_vcpu(void);
+ uint64_t icount_crucible_rr_cursor_position(void);
+ void icount_crucible_rr_snapshot_resume_prepare(void);
++void icount_crucible_rr_initialize_genesis(CPUState *cpu);
+ uint64_t icount_crucible_rr_cursor_position_observed(CPUState *cpu);
+ CPUState *icount_crucible_rr_select_cpu(CPUState *suggested);
+ 
+diff --git a/plugins/api.c b/plugins/api.c
+index 29c7905a6..9f13b2bc4 100644
+--- a/plugins/api.c
++++ b/plugins/api.c
+@@ -736,7 +736,8 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
+ 
+     if (!out || (!cpu && !exact_boundary) ||
+         (current_vcpu == UINT64_MAX && !genesis_cursor) ||
+-        (cpu && cpu->cpu_index != current_vcpu && !exact_boundary) ||
++        (cpu && cpu->cpu_index != current_vcpu && !exact_boundary &&
++         !terminal_cursor) ||
+         num_vcpus <= 0 ||
+         (current_vcpu != UINT64_MAX &&
+          current_vcpu >= (uint64_t)num_vcpus) || rr_switch_quantum == 0 ||

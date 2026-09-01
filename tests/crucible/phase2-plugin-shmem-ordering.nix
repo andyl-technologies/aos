@@ -5,11 +5,7 @@
   taskIds ? ["T-PLUG-20"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   pluginLib = import ./_rust-module-source.nix {
     inherit lib;
@@ -31,10 +27,10 @@
     inherit lib;
     entry = ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
   };
-  pluginInbound = import ./_rust-module-source.nix {
-    inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/inbound.rs;
-  };
+  pluginInbound = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/inbound.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/inbound/commit.rs)
+  ];
   pluginNetworkTx = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-qemu-plugin/src/network_tx.rs;
@@ -106,8 +102,11 @@
       content = productionRust pluginDeviceIo;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/idle_loop.rs";
-      content = productionRust (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs);
+      label = "crates/crucible-qemu-plugin/src/idle_loop production module";
+      content = builtins.concatStringsSep "\n" [
+        (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs)
+        (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/planning.rs)
+      ];
     }
     {
       label = "crates/crucible-qemu-plugin/src/inbound.rs";
@@ -179,8 +178,11 @@
       content = productionRust pluginBootBarrier;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/idle_loop.rs";
-      content = productionRust (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs);
+      label = "crates/crucible-qemu-plugin/src/idle_loop production module";
+      content = builtins.concatStringsSep "\n" [
+        (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs)
+        (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/planning.rs)
+      ];
     }
     {
       label = "crates/crucible-qemu-plugin/src/inbound.rs";

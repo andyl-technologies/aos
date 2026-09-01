@@ -1,6 +1,28 @@
 //! Serialized identity checks, parsing, and canonical material helpers.
 
 use super::*;
+
+pub(super) fn require_current_fault_schema(input: &str) -> Result<(), EngineError> {
+    let value = toml::from_str::<toml::Value>(input).map_err(|source| {
+        scenario_serialization_error(format!(
+            "parse TOML before fault-schema migration check: {source}"
+        ))
+    })?;
+    let root = value.as_table().ok_or_else(|| {
+        scenario_serialization_error("scenario or plan TOML root must be a table")
+    })?;
+    let plan = root
+        .get("plan")
+        .and_then(toml::Value::as_table)
+        .unwrap_or(root);
+    if plan.get("fault_model").and_then(toml::Value::as_str) != Some("signal_bindings_v2") {
+        return Err(scenario_serialization_error(
+            "unsupported pre-signal fault schema; regenerate the plan with `fault_model = \"signal_bindings_v2\"`, `[[signal]]`, and `[[fault_binding]]` (or their `[plan]`-qualified scenario forms)",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn validate_world_serialized_identity(world: &World) -> Result<(), EngineError> {
     validate_serialized_id("world", world.id(), serialized_world_identity(world))
 }
@@ -26,119 +48,6 @@ pub(super) fn validate_no_host_path_image_refs_in_toml(value: &str) -> Result<()
         scenario_serialization_error(format!("parse TOML before image-ref validation: {source}"))
     })?;
     validate_toml_image_refs_value(&value)
-}
-
-pub(super) fn validate_plan_entries_in_toml(value: &str) -> Result<(), EngineError> {
-    let value = toml::from_str::<toml::Value>(value).map_err(|source| {
-        scenario_serialization_error(format!("parse TOML before plan validation: {source}"))
-    })?;
-    let Some(plan) = toml_plan_table(&value) else {
-        return Ok(());
-    };
-    for key in ["entry", "fault_entry"] {
-        let Some(entries) = plan.get(key) else {
-            continue;
-        };
-        let Some(entries) = entries.as_array() else {
-            return Err(scenario_serialization_error(format!(
-                "serialized plan {key} list must be an array"
-            )));
-        };
-
-        for (index, entry) in entries.iter().enumerate() {
-            validate_plan_entry_toml_value(index, entry)?;
-        }
-    }
-
-    Ok(())
-}
-
-pub(super) fn toml_plan_table(value: &toml::Value) -> Option<&toml::map::Map<String, toml::Value>> {
-    let table = value.as_table()?;
-    match table.get("plan") {
-        Some(plan) => plan.as_table(),
-        None => Some(table),
-    }
-}
-
-pub(super) fn validate_plan_entry_toml_value(
-    index: usize,
-    entry: &toml::Value,
-) -> Result<(), EngineError> {
-    let Some(entry) = entry.as_table() else {
-        return Err(scenario_serialization_error(
-            "serialized plan entry must be a table",
-        ));
-    };
-    if let Some(at_ticks) = entry
-        .get("at_ticks")
-        .and_then(toml::Value::as_integer)
-        .filter(|at_ticks| *at_ticks < 0)
-    {
-        return Err(EngineError::PlanNegativeTime {
-            entry: index,
-            at_ticks,
-        });
-    }
-    if entry.get("kind").and_then(toml::Value::as_str) != Some("activate") {
-        return Ok(());
-    }
-    let Some(fault) = entry.get("fault") else {
-        return Ok(());
-    };
-    validate_membership_fault_toml_value(index, fault)
-}
-
-pub(super) fn validate_membership_fault_toml_value(
-    index: usize,
-    fault: &toml::Value,
-) -> Result<(), EngineError> {
-    let Some(fault) = fault.as_table() else {
-        return Err(scenario_serialization_error(
-            "serialized membership fault must be a table",
-        ));
-    };
-    let Some(kind) = fault.get("kind").and_then(toml::Value::as_str) else {
-        return Ok(());
-    };
-    let allowed = match kind {
-        "crash" => &["kind", "node", "restart"][..],
-        "partition" => &["kind", "endpoint_a", "endpoint_b", "direction"][..],
-        "isolate" | "not_yet_joined" => &["kind", "node"][..],
-        _ => return Ok(()),
-    };
-    for field in fault.keys() {
-        if !allowed.contains(&field.as_str()) {
-            return Err(EngineError::PlanFaultUnsupportedParam {
-                entry: index,
-                field: field.clone(),
-            });
-        }
-    }
-    if kind == "partition" {
-        validate_partition_direction_toml_value(index, fault)?;
-    }
-    Ok(())
-}
-
-pub(super) fn validate_partition_direction_toml_value(
-    index: usize,
-    fault: &toml::map::Map<String, toml::Value>,
-) -> Result<(), EngineError> {
-    let Some(direction) = fault.get("direction").and_then(toml::Value::as_str) else {
-        return Ok(());
-    };
-    if matches!(
-        direction,
-        "bidirectional" | "endpoint_a_to_endpoint_b" | "endpoint_b_to_endpoint_a"
-    ) {
-        Ok(())
-    } else {
-        Err(EngineError::PlanFaultUnknownDirection {
-            entry: index,
-            direction: direction.to_owned(),
-        })
-    }
 }
 
 pub(super) fn validate_toml_image_refs_value(value: &toml::Value) -> Result<(), EngineError> {
@@ -554,11 +463,6 @@ pub(super) fn workload_pattern_node(name: &str, cmdline: String) -> WorldNode {
     }
 }
 
-pub(super) fn workload_pattern_link_id(link: &LinkDef) -> LinkId {
-    let (left, right) = link.endpoints();
-    LinkId::from_name(format!("{}--{}", left.name, right.name))
-}
-
 pub(super) fn push_cmdline_token(cmdline: &mut String, token: &str) {
     if !cmdline.is_empty() {
         cmdline.push(' ');
@@ -784,22 +688,6 @@ pub(super) fn add_family_link_pair(pairs: &mut BTreeSet<(u32, u32)>, left: u32, 
     pairs.insert(pair);
 }
 
-pub(super) fn family_fault_candidates(world: &World) -> Vec<FamilyFaultCandidate> {
-    let mut candidates =
-        Vec::with_capacity(world.links().len().saturating_add(world.vm_nodes().len()));
-    for link in world.links() {
-        let (endpoint_a, endpoint_b) = link.endpoints();
-        candidates.push(FamilyFaultCandidate::Partition {
-            endpoint_a: endpoint_a.clone(),
-            endpoint_b: endpoint_b.clone(),
-        });
-    }
-    for node in world.vm_nodes() {
-        candidates.push(FamilyFaultCandidate::Crash(node.id.clone()));
-    }
-    candidates
-}
-
 pub(super) fn baked_node_blobs(world: &World) -> BTreeMap<NodeId, NodeBlobRef> {
     let world_identity = canonical_world_identity(world);
     canonical_world_nodes(&world.nodes)
@@ -836,21 +724,25 @@ pub(super) fn baked_node_icounts(world: &World) -> BTreeMap<NodeId, Icount> {
 pub(super) fn canonical_world_identity(world: &World) -> ContentHash {
     let nodes = canonical_world_node_defs(&world.topology_nodes);
     let links = canonical_world_links(&world.links);
-    if nodes.is_empty() && links.is_empty() {
+    if nodes.is_empty() && links.is_empty() && world.fault_topology.is_empty() {
         return world.id;
     }
-
-    ContentHash::from_canonical_material(
-        world_identity_domain(&nodes),
-        &world_material(&nodes, &links),
-    )
+    world_content_hash(world, &nodes, &links)
 }
 
 pub(super) fn serialized_world_identity(world: &World) -> ContentHash {
     let nodes = canonical_world_node_defs(&world.topology_nodes);
+    world_content_hash(world, &nodes, &canonical_world_links(&world.links))
+}
+
+fn world_content_hash(world: &World, nodes: &[WorldNodeDef], links: &[LinkDef]) -> ContentHash {
+    let base = world_material(nodes, links);
     ContentHash::from_canonical_material(
-        world_identity_domain(&nodes),
-        &world_material(&nodes, &canonical_world_links(&world.links)),
+        "crucible.model.world.v4",
+        &format!(
+            "{base}\nfault-topology={}",
+            world.fault_topology_id.to_hex()
+        ),
     )
 }
 
@@ -902,14 +794,6 @@ pub(super) fn world_material(nodes: &[WorldNodeDef], links: &[LinkDef]) -> Strin
             world_node_defs_material(nodes),
             world_links_material(links),
         )
-    }
-}
-
-pub(super) fn world_identity_domain(nodes: &[WorldNodeDef]) -> &'static str {
-    if nodes.iter().any(|node| matches!(node, WorldNodeDef::Io(_))) {
-        "crucible.model.world.v2"
-    } else {
-        "crucible.model.world.v1"
     }
 }
 
@@ -1014,28 +898,15 @@ pub(super) fn world_link_material(link: &LinkDef) -> String {
 }
 
 pub(super) fn plan_material(plan: &Plan) -> String {
-    plan_kind_material(&plan.kind)
+    plan_parts_material(&plan.graph, &plan.fault_signals)
 }
 
-pub(super) fn plan_kind_material(kind: &PlanKind) -> String {
-    match kind {
-        PlanKind::ScheduledEntries { entries } => scheduled_plan_material(entries),
-        PlanKind::FaultPlan { plan } => fault_plan_material(plan.entries()),
-        PlanKind::EventGraph { graph } => event_graph_plan_material(graph),
-    }
-}
-
-pub(super) fn scheduled_plan_material(entries: &[PlanEntry]) -> String {
-    let mut lines = Vec::with_capacity(entries.len().saturating_mul(12) + 1);
-    lines.push(format!("entries={}", entries.len()));
-    for entry in entries {
-        lines.push(plan_entry_material(entry));
-    }
-    lines.join("\n")
-}
-
-pub(super) fn fault_plan_material(entries: &[FaultPlanEntry]) -> String {
-    event_graph_plan_material_from_events(&fault_plan_material_events(entries))
+pub(super) fn plan_parts_material(graph: &EventGraph, fault_signals: &FaultSignalPlan) -> String {
+    format!(
+        "{}\nfault-signal-plan={}",
+        event_graph_plan_material(graph),
+        fault_signals.id().to_hex()
+    )
 }
 
 pub(super) fn event_graph_plan_material(graph: &EventGraph) -> String {
@@ -1052,107 +923,6 @@ pub(super) fn event_graph_plan_material_from_events(events: &[Event]) -> String 
     lines.join("\n")
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct FaultPlanMaterialAction {
-    pub(super) at: VirtualTime,
-    pub(super) kind: &'static str,
-    pub(super) kind_order: u8,
-    pub(super) tag: FaultTag,
-    pub(super) material: String,
-    pub(super) action: Action,
-}
-
-pub(super) fn fault_plan_material_events(entries: &[FaultPlanEntry]) -> Vec<Event> {
-    fault_plan_material_actions(entries)
-        .iter()
-        .enumerate()
-        .map(|(index, action)| {
-            Event::once(
-                fault_plan_material_event_id(index, action.kind, &action.tag),
-                Some(Predicate::At { at: action.at }),
-                action.action.clone(),
-            )
-        })
-        .collect()
-}
-
-pub(super) fn fault_plan_material_actions(
-    entries: &[FaultPlanEntry],
-) -> Vec<FaultPlanMaterialAction> {
-    let mut actions = Vec::new();
-    for entry in entries {
-        match entry {
-            FaultPlanEntry::At {
-                at,
-                duration,
-                tag,
-                fault,
-            } => {
-                actions.push(fault_plan_material_inject_action(*at, tag, fault));
-                if let Some(heal_at) = at.ticks.checked_add(duration.nanos()) {
-                    actions.push(fault_plan_material_heal_action(
-                        VirtualTime { ticks: heal_at },
-                        tag,
-                    ));
-                }
-            }
-            FaultPlanEntry::PermanentAt { at, tag, fault } => {
-                actions.push(fault_plan_material_inject_action(*at, tag, fault));
-            }
-            FaultPlanEntry::Heal { at, tag } => {
-                actions.push(fault_plan_material_heal_action(*at, tag));
-            }
-        }
-    }
-    actions.sort_by(|left, right| {
-        left.at
-            .cmp(&right.at)
-            .then_with(|| left.kind_order.cmp(&right.kind_order))
-            .then_with(|| left.material.cmp(&right.material))
-    });
-    actions
-}
-
-pub(super) fn fault_plan_material_inject_action(
-    at: VirtualTime,
-    tag: &FaultTag,
-    fault: &Fault,
-) -> FaultPlanMaterialAction {
-    FaultPlanMaterialAction {
-        at,
-        kind: "inject",
-        kind_order: 0,
-        tag: tag.clone(),
-        material: format!(
-            "inject\n{}\n{}",
-            fault_tag_material(tag),
-            fault.canonical_material()
-        ),
-        action: Action::InjectFault {
-            tag: tag.clone(),
-            fault: MembershipFault::taxonomy(fault.clone()),
-        },
-    }
-}
-
-pub(super) fn fault_plan_material_heal_action(
-    at: VirtualTime,
-    tag: &FaultTag,
-) -> FaultPlanMaterialAction {
-    FaultPlanMaterialAction {
-        at,
-        kind: "heal",
-        kind_order: 1,
-        tag: tag.clone(),
-        material: format!("heal\n{}", fault_tag_material(tag)),
-        action: Action::HealFault { tag: tag.clone() },
-    }
-}
-
-pub(super) fn fault_plan_material_event_id(index: usize, kind: &str, tag: &FaultTag) -> EventId {
-    EventId::from_name(format!("plan:{index:016}:{kind}:{}", tag.name))
-}
-
 pub(super) fn event_material(event: &Event) -> String {
     let trigger = match &event.trigger {
         Some(trigger) => format!("trigger=some\n{}", predicate_material(trigger)),
@@ -1167,72 +937,8 @@ pub(super) fn event_material(event: &Event) -> String {
     )
 }
 
-pub(super) fn fault_plan_entry_material(entry: &FaultPlanEntry) -> String {
-    match entry {
-        FaultPlanEntry::At {
-            at,
-            duration,
-            tag,
-            fault,
-        } => {
-            format!(
-                "fault_plan_entry=at\nplan_at_ticks={}\nduration_nanos={}\n{}\n{}",
-                at.ticks,
-                duration.nanos(),
-                fault_tag_material(tag),
-                fault.canonical_material()
-            )
-        }
-        FaultPlanEntry::PermanentAt { at, tag, fault } => {
-            format!(
-                "fault_plan_entry=permanent-at\nplan_at_ticks={}\n{}\n{}",
-                at.ticks,
-                fault_tag_material(tag),
-                fault.canonical_material()
-            )
-        }
-        FaultPlanEntry::Heal { at, tag } => {
-            format!(
-                "fault_plan_entry=heal\nplan_at_ticks={}\n{}",
-                at.ticks,
-                fault_tag_material(tag)
-            )
-        }
-    }
-}
-
-pub(super) fn plan_entry_material(entry: &PlanEntry) -> String {
-    match entry {
-        PlanEntry::Activate { at, tag, fault } => {
-            format!(
-                "plan_entry=activate\nplan_at_ticks={}\n{}\n{}",
-                at.ticks,
-                fault_tag_material(tag),
-                membership_fault_material(fault)
-            )
-        }
-        PlanEntry::Heal { at, tag } => {
-            format!(
-                "plan_entry=heal\nplan_at_ticks={}\n{}",
-                at.ticks,
-                fault_tag_material(tag)
-            )
-        }
-    }
-}
-
 pub(super) fn action_material(action: &Action) -> String {
     match action {
-        Action::InjectFault { tag, fault } => {
-            format!(
-                "action=inject-fault\n{}\n{}",
-                fault_tag_material(tag),
-                membership_fault_material(fault)
-            )
-        }
-        Action::HealFault { tag } => {
-            format!("action=heal-fault\n{}", fault_tag_material(tag))
-        }
         Action::ArmTimer { name, after } => {
             format!(
                 "action=arm-timer\n{}\nafter_nanos={}",
@@ -1283,43 +989,6 @@ pub(super) fn action_material(action: &Action) -> String {
             lines.join("\n")
         }
     }
-}
-
-pub(super) fn membership_fault_material(fault: &MembershipFault) -> String {
-    match fault {
-        MembershipFault::Crash { node, restart } => {
-            format!(
-                "fault=crash\n{}\nrestart={}",
-                node_ref_material("node", node),
-                restart_policy_label(*restart)
-            )
-        }
-        MembershipFault::Partition {
-            endpoint_a,
-            endpoint_b,
-            direction,
-        } => {
-            format!(
-                "fault=partition\n{}\n{}\ndirection={}",
-                node_ref_material("endpoint_a", endpoint_a),
-                node_ref_material("endpoint_b", endpoint_b),
-                partition_direction_label(*direction)
-            )
-        }
-        MembershipFault::Isolate { node } => {
-            format!("fault=isolate\n{}", node_ref_material("node", node))
-        }
-        MembershipFault::NotYetJoined { node } => {
-            format!("fault=not-yet-joined\n{}", node_ref_material("node", node))
-        }
-        MembershipFault::Taxonomy { fault } => {
-            format!("fault=taxonomy\n{}", fault.canonical_material())
-        }
-    }
-}
-
-pub(super) fn fault_tag_material(tag: &FaultTag) -> String {
-    format!("tag_len={}\ntag={}", tag.name.len(), tag.name)
 }
 
 pub(super) fn properties_material(assertions: &[AssertionDef]) -> String {
@@ -1475,9 +1144,6 @@ pub(super) fn predicate_material(predicate: &Predicate) -> String {
             )
         }
         Predicate::Quiescent => String::from("predicate=quiescent"),
-        Predicate::FaultActive { tag } => {
-            format!("predicate=fault-active\n{}", fault_tag_material(tag))
-        }
         Predicate::Named { name, nodes } => {
             format!(
                 "predicate=named\npredicate_name_len={}\npredicate_name={}\n{}",
@@ -1684,23 +1350,36 @@ pub(super) fn node_ref_material(prefix: &str, node: &NodeId) -> String {
     format!("{prefix}_len={}\n{prefix}={}", node.name.len(), node.name)
 }
 
-pub(super) fn restart_policy_label(policy: RestartPolicy) -> &'static str {
-    match policy {
-        RestartPolicy::FromReadyPoint => "from-ready-point",
-        RestartPolicy::FromLastCheckpoint => "from-last-checkpoint",
-        RestartPolicy::StayDown => "stay-down",
-    }
-}
-
-pub(super) fn partition_direction_label(direction: PartitionDirection) -> &'static str {
-    match direction {
-        PartitionDirection::Bidirectional => "bidirectional",
-        PartitionDirection::EndpointAToEndpointB => "endpoint-a-to-endpoint-b",
-        PartitionDirection::EndpointBToEndpointA => "endpoint-b-to-endpoint-a",
-    }
-}
-
 #[path = "material/policy_labels.rs"]
 mod policy_labels;
 
 pub(super) use policy_labels::*;
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    #[test]
+    fn pre_signal_forms_return_one_actionable_migration_error() {
+        for input in [
+            "id = 'x'",
+            "id = 'x'\nfault_model = 'signal_bindings_v1'",
+            "id = 'x'\n[plan]\nid = 'p'",
+        ] {
+            let error = match require_current_fault_schema(input) {
+                Ok(()) => panic!("a pre-signal form must be rejected before typed lowering"),
+                Err(error) => error,
+            };
+            assert_eq!(
+                error.to_string(),
+                "scenario serialized form is invalid: unsupported pre-signal fault schema; regenerate the plan with `fault_model = \"signal_bindings_v2\"`, `[[signal]]`, and `[[fault_binding]]` (or their `[plan]`-qualified scenario forms)"
+            );
+        }
+    }
+
+    #[test]
+    fn signal_driven_plan_fields_pass_the_migration_check() {
+        let input = "fault_model = 'signal_bindings_v2'\nsignal = []\nfault_binding = []";
+        assert_eq!(require_current_fault_schema(input), Ok(()));
+    }
+}

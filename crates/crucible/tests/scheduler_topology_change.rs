@@ -250,7 +250,7 @@ fn netlink_latency_update_does_not_restore_pending_partition_edge() {
     assert_eq!(scheduler.topology_change_applications().len(), 2);
     assert_eq!(
         scheduler.topology_change_applications()[0].trigger,
-        SchedulerTopologyChangeTrigger::FaultActivation
+        SchedulerTopologyChangeTrigger::EdgeRemoval
     );
     assert_eq!(
         scheduler.topology_change_applications()[1].trigger,
@@ -330,7 +330,7 @@ fn netlink_latency_after_partition_is_recoverable_by_heal_with_current_latency()
     let heal_application = &scheduler.topology_change_applications()[2];
     assert_eq!(
         heal_application.trigger,
-        SchedulerTopologyChangeTrigger::Heal
+        SchedulerTopologyChangeTrigger::EdgeRestore
     );
     let consumer_heal_update = heal_application
         .updates
@@ -485,7 +485,7 @@ fn pending_topology_change_freezes_cross_node_sends_until_boundary() {
     .with_effective_topology_edges(vec![edge(&producer, &consumer, 20)])
     .with_topology_change(SchedulerTopologyChange::new(
         7,
-        SchedulerTopologyChangeTrigger::FaultActivation,
+        SchedulerTopologyChangeTrigger::EdgeRemoval,
         vec![edge(&producer, &consumer, 5)],
     ));
     let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
@@ -554,7 +554,7 @@ fn topology_only_boundary_progress_does_not_deadlock_liveness() {
     .with_effective_topology_edges(vec![edge(&producer, &done, 20)])
     .with_topology_change(SchedulerTopologyChange::new(
         11,
-        SchedulerTopologyChangeTrigger::Heal,
+        SchedulerTopologyChangeTrigger::EdgeRestore,
         vec![edge(&producer, &done, 9)],
     ));
 

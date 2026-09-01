@@ -208,8 +208,9 @@ process-local pointer or host-layout fact crosses the ABI.
 
 The region header carries the identity and shape of the region: a magic number,
 the ABI version, the configured node count and queue capacity, the computed
-frame sub-region offsets, and the global pause flag. ABI v6 mappers derive the
-coverage, fingerprint-sample, white-box marker, and guest-introspection tail
+frame sub-region offsets, the global control flags, and the per-direction fault
+payload-arena size. ABI v15 mappers derive the coverage, fingerprint-sample,
+white-box marker, device-I/O, guest-introspection, and fault transport tail
 sections from that validated frame extent, the VM count, and fixed ABI
 constants. The header is the first thing a mapper reads and the thing
 the handshake ([`14-protocol.md`](14-protocol.md)) validates before any node
@@ -221,7 +222,7 @@ touches a slot.
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 
 /// Current ABI version. Bumped on any layout or semantics change (§13.6).
-pub const ABI_VERSION: u32 = 6;
+pub const ABI_VERSION: u32 = 17;
 
 /// Compile-time maximum number of node slots in the region.
 /// An ABI detail (§13.5); the engine's topology model MUST NOT depend on it.
@@ -266,10 +267,13 @@ pub struct RegionHeader {
     /// Global teardown flag: set when the run is ending so parked nodes wake and
     /// observe DONE rather than spinning.
     pub shutdown_requested: AtomicU8, // @ 61
-    // @ 62..256 reserved, zero-initialized, for forward-compatible additions
+    pub(crate) _control_padding: [u8; 2], // @ 62
+    /// Bytes in each direction's bounded fault payload arena.
+    pub fault_payload_arena_bytes: AtomicU32, // @ 64
+    // @ 68..256 reserved, zero-initialized, for forward-compatible additions
     // that do not change existing offsets. New fields take reserved space and
     // bump ABI_VERSION (§13.6).
-    pub(crate) _reserved: [u8; 194],
+    pub(crate) _reserved: [u8; 188],
 }
 
 const _: () = assert!(core::mem::size_of::<RegionHeader>() == 256);
@@ -280,8 +284,9 @@ const _: () = assert!(core::mem::align_of::<RegionHeader>() == 128);
   magic number, the ABI version, the configured node count, the per-ring queue
   capacity, the ring count, the byte offsets and stride locating the ring headers
   and frame-entry storage, the region size, the fixed icount shift, and the global
-  pause and shutdown flags. A mapper MUST be able to locate every sub-region from
-  the header alone, with no out-of-band parameters. *Gate:* `gate:abi-conformance`.
+  pause and shutdown flags, plus the per-direction fault payload-arena size. A
+  mapper MUST be able to locate every sub-region from the header alone, with no
+  out-of-band parameters. *Gate:* `gate:abi-conformance`.
   *Spec:* §13.3.1, §13.4.
 
 - **[SHM-8]** The region header MUST carry the **fixed icount shift** ([SHM-7]),
@@ -360,7 +365,9 @@ pub struct NodeSlot {
     /// reader/snapshotter detect a torn or in-progress publish without locking
     /// (the seqlock protocol, §13.3.4). Even == stable, odd == write in progress.
     pub publish_gen: AtomicU32, // @ 40
-    pub(crate) _pad1: [u8; 4], // @ 44
+    /// Wrapping acknowledgement count incremented only after QEMU drains the
+    /// registered host-control wake fd and invokes the exact control callback.
+    pub control_boundary_ack: AtomicU32, // @ 44
     /// Host-published exact completion icount, or zero when none is pending.
     pub device_completion_deadline_icount: AtomicU64, // @ 48
     /// Exact icount at which the plugin must apply the pending preemption.
@@ -379,8 +386,16 @@ pub struct NodeSlot {
     pub preemption_arg1: AtomicU32, // @ 92
     /// Command kind: none, vCPU switch, or interrupt injection.
     pub preemption_kind: AtomicU8, // @ 96
-    // @ 97..128 reserved, zero-initialized (forward-compatible additions only).
-    pub(crate) _reserved: [u8; 31],
+    pub(crate) _pad2: [u8; 7], // @ 97
+    /// Raw QEMU icount paired atomically with `current_icount`. Their checked
+    /// difference is the plugin's logical-time offset after idle jumps.
+    pub logical_time_raw_icount: AtomicU64, // @ 104
+    /// Logical scheduler boundary requested after a VMState load.
+    pub logical_time_restore_target: AtomicU64, // @ 112
+    /// Host-published nonzero restore transaction generation.
+    pub logical_time_restore_request: AtomicU32, // @ 120
+    /// Plugin-published generation after recalibration and quiescence.
+    pub logical_time_restore_ack: AtomicU32, // @ 124
 }
 
 const _: () = assert!(core::mem::size_of::<NodeSlot>() == 128);
@@ -423,6 +438,24 @@ const _: () = assert!(core::mem::align_of::<NodeSlot>() == 128);
   ([DET-29]) is routed over QMP / plugin introspection (12), NOT over this shmem
   region. *Gate:* `gate:abi-conformance`, `gate:layer1-injection`. *Spec:*
   §13.3.2, forward-ref [`12-qemu-plugin.md`](12-qemu-plugin.md), 09.
+
+- **[SHM-49]** Every quiesced VM publication MUST place the logical
+  `current_icount` and QEMU's raw icount in the same seqlock transaction. An
+  exact checkpoint MUST retain that pair. After VMState load, while QEMU is
+  still inaccessible to the scheduler, the host MUST publish a fresh nonzero
+  restore generation and logical target, resume QEMU only to reach a plugin
+  callback, and wait for an acknowledgement carrying the same generation,
+  logical target, and restored raw icount. The plugin MUST reconstruct the
+  checked logical offset as `target - raw`, publish an idle boundary, and stop
+  QEMU. The host MUST independently confirm the native QEMU stop before it
+  clears the shared pause and performs the final resume. Generation mismatch,
+  raw time ahead of logical time, timeout, or any post-load restore failure MUST
+  terminate and reap the new QEMU process; a partially restored node MUST never
+  be exposed. *Gate:* `gate:abi-conformance`,
+  `checks.crucible.phase2.qemuExactSnapshotRestore`,
+  `checks.crucible.phase2.qemuNodeFactory`. *Spec:*
+  §13.3.2, [`10-qemu-integration.md`](10-qemu-integration.md),
+  [`36-time-travel-debugging.md`](36-time-travel-debugging.md).
 
 ### 13.3.3 SPSC ring header and frame entry
 
@@ -472,14 +505,23 @@ pub struct FrameEntry {
     pub seq: u32, // @ 12
     /// Length of valid bytes in `data` (0..=MAX_FRAME_DATA).
     pub len: u16, // @ 16
-    // @ 18..24 padding to 8-byte-align the payload start.
-    pub(crate) _pad: [u8; 6], // @ 18
+    /// Consumer-owned delivery state: 0 pending, 1 retained after a real
+    /// QEMU backpressure result. Any other value is invalid.
+    delivery_state: AtomicU8, // @ 18
+    // @ 19 one byte padding to align the attempt counter.
+    pub(crate) _pad: [u8; 1], // @ 19
+    /// Consumer-owned count of concrete QEMU RX attempts. The consumer fails
+    /// loudly before attempt 1,025 instead of retrying indefinitely.
+    delivery_attempts: AtomicU32, // @ 20
+    /// Coordinate of the most recent concrete retained attempt. A retry is
+    /// admitted only after this coordinate plus the fixed retry interval.
+    last_delivery_attempt_icount: AtomicU64, // @ 24
     /// Frame payload; only `data[..len]` is valid.
-    pub data: [u8; MAX_FRAME_DATA], // @ 24
+    pub data: [u8; MAX_FRAME_DATA], // @ 32
 }
 
-const _: () = assert!(core::mem::size_of::<FrameEntry>() == 24 + MAX_FRAME_DATA);
-const _: () = assert!(core::mem::offset_of!(FrameEntry, data) == 24);
+const _: () = assert!(core::mem::size_of::<FrameEntry>() == 32 + MAX_FRAME_DATA);
+const _: () = assert!(core::mem::offset_of!(FrameEntry, data) == 32);
 ```
 
 - **[SHM-12]** Each directed `(src, dst)` node pair that can exchange frames MUST
@@ -492,8 +534,14 @@ const _: () = assert!(core::mem::offset_of!(FrameEntry, data) == 24);
 
 - **[SHM-13]** A `FrameEntry` MUST carry, in this field order: the
   `delivery_icount` (the virtual time at which the frame becomes visible to the
-  consumer), the `src_node` id, the per-pair `seq`, the valid `len`, and a
-  fixed-size `data` payload of `MAX_FRAME_DATA` bytes. `MAX_FRAME_DATA` MUST be at
+  consumer), the `src_node` id, the per-pair `seq`, the valid `len`, the
+  consumer-owned `delivery_state`, the consumer-owned `delivery_attempts`, and a
+  fixed-size `data` payload of `MAX_FRAME_DATA` bytes. `delivery_state` MUST be
+  pending and `delivery_attempts` zero at publication. The state may become
+  retained only after the consumer receives real guest backpressure. The attempt
+  counter MUST be preserved by exact checkpoint/restore and MUST fail loudly at
+  the compiled 1,024-attempt ceiling.
+  `MAX_FRAME_DATA` MUST be at
   least a standard Ethernet frame (1518 bytes) plus headroom, and large enough to
   hold the largest I/O sub-node wire payload (a 4 KiB block response with its
   header) without truncation. A frame whose `len` exceeds `MAX_FRAME_DATA` MUST be
@@ -743,7 +791,7 @@ NodeSlot      (size 128, align 128)
   @ 38  device_io_active   u8
   @ 39  _pad0              u8
   @ 40  publish_gen        u32
-  @ 44  _pad1[4]
+  @ 44  control_boundary_ack u32
   @ 48  device_completion_deadline_icount u64
   @ 56  preemption_at_icount              u64
   @ 64  preemption_deadline_icount        u64
@@ -766,7 +814,9 @@ FrameEntry    (size 24 + MAX_FRAME_DATA, align 8)
   @  8  src_node           u32
   @ 12  seq                u32
   @ 16  len                u16
-  @ 18  _pad[6]
+  @ 18  delivery_state     atomic u8
+  @ 19  _pad[1]
+  @ 20  delivery_attempts  atomic u32
   @ 24  data[MAX_FRAME_DATA]
 
 CoverageEntry (size 64, align 64)
@@ -952,8 +1002,16 @@ pub fn enqueue(&self, entries: &mut [FrameEntry], e: &FrameEntry) -> Result<(), 
   serialization of its live entries (in `read_idx..write_idx` order), so that two
   equal ring states content-address identically ([INV-6]); `restore` MUST be its
   exact inverse, re-establishing the same live sequence with `read_idx`/`write_idx`
-  normalized. The padding bytes inside each entry MUST be excluded from (or
-  canonicalized in) the serialization so they cannot perturb the content hash.
+  normalized. The ABI-defined consumer delivery state MUST be serialized;
+  padding bytes inside each entry MUST be excluded from (or canonicalized in)
+  the serialization so they cannot perturb the content hash. The process-private
+  decoded snapshot MUST remain compact: it stores only each frame's canonical
+  metadata and valid payload bytes, never the fixed-capacity unused
+  `FrameEntry::data` tail. The decoder MUST admit the declared frame count and
+  minimum encoded body before reserving, use fallible reservation, and reject a
+  malformed or over-capacity stream with a typed error. Thus a valid compact
+  checkpoint cannot amplify into one full 4,640-byte shared-memory slot per
+  zero-payload frame before restore.
   *Gate:* `gate:content-address`, `gate:replay-oracle`. *Spec:* §13.6.
 
 - **[SHM-23]** The SPSC implementation MUST be covered by property-based and
@@ -1075,12 +1133,68 @@ word no longer equals `v`.
   on `pause_requested`, a node MUST quiesce at its current TB boundary and park so
   the scheduler can take a coordinated snapshot; on `shutdown_requested`, a parked
   node MUST wake, set `status = STATUS_DONE`, and exit. Setting either flag MUST be
-  accompanied by a wake of every parked node. *Gate:* `gate:layer1-injection`.
+  accompanied by a wake of every parked node. The host MUST distinguish the
+  acknowledgement from an older idle publish by requiring `publish_gen` to
+  change after it release-stores the pause request; observing a pre-existing
+  `STATUS_IDLE` alone is not an acknowledgement. Clearing the flag MUST be
+  followed by both a non-private futex wake and the QEMU doorbell wake. *Gate:*
+  `gate:layer1-injection`.
   *Spec:* §13.7, forward-ref [`20-session-control-plane.md`](20-session-control-plane.md).
+
+The plugin eventfd has a separate exact acknowledgement from the slot-state
+seqlock. `control_boundary_ack` starts at odd token `1`. The host atomically
+changes an odd acknowledgement to its even successor to request a boundary;
+repeating a request while that even token is outstanding is idempotent. It then
+wakes the node futex and writes the eventfd. An idle callback that observes the
+even token returns to QEMU's main loop without authorizing guest time, and the
+paired vCPU-resume callback preserves halt tracking, idle status, and any future
+wake deadline while the request remains outstanding.
+
+QEMU drains the eventfd, runs device bottom halves through the patch's
+coalesced two-pass barrier, and invokes the registered control-boundary callback.
+The plugin republishes the callback's exact logical/raw coordinate through the
+`publish_gen` seqlock before release-storing the request's odd successor. At a
+clamped scheduler ceiling this publication is exact idle: it retains an
+existing future idle deadline, or uses the current coordinate when fencing a
+previously running node. The re-armed all-halted callback may then tighten a
+retained future deadline to QEMU's newly recomputed minimum exact local event;
+the host admits that later publication only when it remains strictly after the
+current coordinate and does not extend the retained deadline. When the control
+publication retained no future deadline, a subsequent all-halted publication
+may install any fresh exact future deadline. The host accepts both the transient
+current-coordinate publication and that later publication so observation timing
+cannot strand the clamp acknowledgement. In every case `max_advance_icount`
+remains clamped at the current coordinate, so the descriptive deadline does not
+authorize guest execution before the next scheduler quantum. Below the ceiling
+the control publication preserves the prior vCPU classification. Device
+activity remains an independent field.
+
+The host accepts the immediate odd successor or a later odd token in wrapping
+serial-number order. A completed-quantum clamp additionally requires the exact
+clamped current coordinate and ceiling, a canonical idle deadline, and no
+active device I/O. The acknowledged publication is normally idle. A delayed
+vCPU-resume edge may transiently republish `STATUS_RUNNING` afterward; the host
+also accepts that state only when the exact clamp still prevents dispatch and
+the retained future idle deadline proves that the resume edge did not replace
+the acknowledged boundary. A running state with a current-coordinate deadline
+remains non-canonical. These checks prevent a pre-wake idle snapshot, a
+post-device transient, or an overlapping handshake from escaping as a
+completed scheduler boundary.
+
+Boundary discovery and completed-quantum revocation acknowledgement use two
+separate bounded host-liveness intervals. A heavily contended TCG process may
+reach the exact guest boundary near the end of the discovery interval; the
+mandatory eventfd drain and odd-token acknowledgement therefore receive a
+fresh bounded interval instead of inheriting only the discovery interval's
+residual host time. These intervals never enter canonical state and do not
+alter the clamped guest coordinate or deadline.
 
 ## 13.8 Versioning and conformance
 
-The region carries an ABI version in its header. The handshake
+The region carries an ABI version in its header. ABI v15 assigns byte 18 of
+`FrameEntry` to consumer-owned delivery state while preserving the payload
+offset and total entry size; v14 peers are rejected rather than inferred or
+supported through a compatibility path. The handshake
 ([`14-protocol.md`](14-protocol.md)) validates it before any node trusts a byte of
 the region. ABI v2 is intentionally incompatible with v1 because v2 adds the
 coverage tail: a v2 host rejects a v1 plugin/region, and a v2 plugin rejects a
@@ -1153,6 +1267,20 @@ by when the producer's store landed in shared memory.
   (the `gate:layer1-injection` two-VM run-twice-and-diff). *Gate:*
   `gate:layer1-injection`, `gate:divergence-bisect`. *Spec:* §13.9, §4.4.
 
+- **[SHM-52]** The sole consumer MAY transition only the live ring head from
+  pending to retained after real guest-device backpressure. A retained head is
+  canonical proof that the head and its blocked same-ring FIFO successors may
+  remain due after the current icount; a retained non-head or unknown state MUST
+  fail closed. Each backpressured QEMU delivery attempt MUST increment the
+  canonical per-frame attempt count and the last concrete attempt coordinate.
+  A retained retry is admitted no sooner than
+  `last_delivery_attempt_icount + 4,000,000` guest instructions, and attempt
+  1,025 MUST fail with a typed terminal error. Snapshot/restore MUST preserve
+  retained-head identity, attempt count, and the last-attempt coordinate, and
+  successful guest acceptance MUST dequeue it normally. *Gate:*
+  `gate:abi-conformance`. *Live check:*
+  `checks.crucible.phase2.qemuLiveNetworkIo`. *Spec:* §13.3.3, §13.9.
+
 ## Implementation checklist
 
 > The checklist task text below is authoritative for this topic; phase ordering lives in
@@ -1204,8 +1332,11 @@ by when the producer's store landed in shared memory.
   reserved executor slots, and assert no `MAX_NODES` reference escapes this layer.
   — satisfies [SHM-16], [SHM-17], [SHM-18]; spec §13.5.
 - [x] **T-SHM-13** Implement deliverability (`delivery_icount <= current_icount`)
-  and the `(delivery_icount, src_node, seq)` total order on the consumer side. —
-  satisfies [SHM-33], [SHM-34], [SHM-35]; spec §13.9.
+  and the `(delivery_icount, src_node, seq)` total order on the consumer side.
+  Represent real guest backpressure as a consumer-owned retained-head state with
+  canonical attempt count and last-attempt coordinate, enforce the bounded retry
+  deadline, and preserve that provenance across snapshot/restore. — satisfies
+  [SHM-33], [SHM-34], [SHM-35], [SHM-52]; spec §13.3.3, §13.9.
 - [x] **T-SHM-14** Wire `gate:abi-conformance`: generated-header diff +
   bilateral static asserts + golden-vector round-trip. — satisfies [SHM-30],
   [SHM-31], [SHM-32]; spec §13.8.

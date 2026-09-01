@@ -3,8 +3,8 @@
 use super::super::*;
 
 use super::support::*;
-use crate::NetworkRxQueueError;
-use crucible_shmem::{KIND_VM, RingHeader, STATUS_IDLE, STATUS_RUNNING};
+use crate::NetworkRxDeliveryError;
+use crucible_shmem::{FrameDeliveryState, KIND_VM, RingHeader, STATUS_IDLE, STATUS_RUNNING};
 
 #[test]
 fn idle_loop_with_inbound_rings_does_not_consume_before_qemu_completion() {
@@ -14,8 +14,8 @@ fn idle_loop_with_inbound_rings_does_not_consume_before_qemu_completion() {
     let ring_b = RingHeader::new();
     let mut entries_a = empty_entries();
     let mut entries_b = empty_entries();
-    enqueue(&ring_a, &mut entries_a, frame(20, 9, 4, b"third"));
     enqueue(&ring_a, &mut entries_a, frame(20, 1, 7, b"first"));
+    enqueue(&ring_a, &mut entries_a, frame(20, 9, 4, b"third"));
     enqueue(&ring_b, &mut entries_b, frame(20, 4, 1, b"second"));
     enqueue(&ring_b, &mut entries_b, frame(25, 4, 2, b"future"));
     publish_ceiling(&slot, ceiling(0, 10));
@@ -98,8 +98,8 @@ fn idle_loop_rx_injection_waits_for_qemu_completion() {
     let ring_b = RingHeader::new();
     let mut entries_a = empty_entries();
     let mut entries_b = empty_entries();
-    enqueue(&ring_a, &mut entries_a, frame(20, 9, 4, b"third"));
     enqueue(&ring_a, &mut entries_a, frame(20, 1, 7, b"first"));
+    enqueue(&ring_a, &mut entries_a, frame(20, 9, 4, b"third"));
     enqueue(&ring_b, &mut entries_b, frame(20, 4, 1, b"second"));
     publish_ceiling(&slot, ceiling(0, 10));
 
@@ -142,7 +142,6 @@ fn idle_loop_rx_injection_waits_for_qemu_completion() {
     assert!(rx_queue.direct_advance_ns_at_queue.is_empty());
     assert!(rx_queue.slot_status_at_queue.is_empty());
     assert!(rx_queue.queued_payloads.is_empty());
-    assert_eq!(rx_queue.flush_count, 0);
     assert_eq!(ring_a.read_index(), 0);
     assert_eq!(ring_b.read_index(), 0);
     assert_eq!(clock.current_icount(), 10);
@@ -172,7 +171,6 @@ fn idle_loop_rx_injection_waits_for_qemu_completion() {
         rx_queue.queued_payloads,
         vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()]
     );
-    assert_eq!(rx_queue.flush_count, 1);
     assert_eq!(ring_a.read_index(), 2);
     assert_eq!(ring_b.read_index(), 1);
     assert_eq!(clock.current_icount(), 20);
@@ -181,7 +179,7 @@ fn idle_loop_rx_injection_waits_for_qemu_completion() {
 }
 
 #[test]
-fn idle_loop_rx_queue_failure_does_not_commit_inbound_ring_reads() {
+fn idle_loop_rx_delivery_failure_does_not_commit_inbound_ring_reads() {
     let slot = NodeSlot::new(KIND_VM);
     let clock = owned_clock(10, 1);
     let ring = RingHeader::new();
@@ -204,7 +202,7 @@ fn idle_loop_rx_queue_failure_does_not_commit_inbound_ring_reads() {
     set_last_direct_advance_ns(-1);
     let network_rx = PluginNetworkRx::new();
     let mut rx_queue = RecordingNetworkRxQueue::for_slot(&slot);
-    rx_queue.queue_error_at = Some(0);
+    rx_queue.delivery_error_at = Some(0);
 
     let pending = expect_pending(
         PluginIdleHotLoop::complete_after_scheduler_wake_from_inbound_rings_with_rx_injection(
@@ -222,7 +220,6 @@ fn idle_loop_rx_queue_failure_does_not_commit_inbound_ring_reads() {
     assert_eq!(clock.current_icount(), 10);
     assert_eq!(ring.read_index(), 0);
     assert!(rx_queue.queued_payloads.is_empty());
-    assert_eq!(rx_queue.flush_count, 0);
     assert_eq!(slot.snapshot().status, STATUS_IDLE);
 
     assert_eq!(
@@ -237,15 +234,82 @@ fn idle_loop_rx_queue_failure_does_not_commit_inbound_ring_reads() {
             &mut rx_queue,
         ),
         Err(IdleHotLoopError::NetworkRxInjection {
-            source: NetworkRxError::Queue {
+            source: NetworkRxError::Delivery {
                 frame: frame(20, 1, 0, b"queued").delivery_key(),
-                source: NetworkRxQueueError::queue("test queue failure"),
+                source: NetworkRxDeliveryError::delivery("test delivery failure"),
             },
         })
     );
     assert_eq!(clock.current_icount(), 20);
     assert_eq!(ring.read_index(), 0);
     assert_eq!(slot.snapshot().status, STATUS_IDLE);
+}
+
+#[test]
+fn idle_loop_rx_backpressure_marks_canonical_head_retained() {
+    let slot = NodeSlot::new(KIND_VM);
+    let clock = owned_clock(10, 1);
+    let ring = RingHeader::new();
+    let mut entries = empty_entries();
+    let retained = frame(20, 1, 0, b"retained");
+    enqueue(&ring, &mut entries, retained.clone());
+    publish_ceiling(&slot, ceiling(0, 10));
+    let request = PluginIdleHotLoop::begin_idle_with_inbound_rings(
+        &slot,
+        &clock,
+        &deadline_reader(deadline_80),
+        [InboundFrameRing::new(0, &ring, &entries)],
+        None,
+    )
+    .unwrap_or_else(|error| panic!("idle begin should select inbound head: {error}"));
+
+    publish_ceiling(&slot, ceiling(10, 20));
+    let mut clock = clock;
+    let network_rx = PluginNetworkRx::new();
+    let mut rx_queue = RecordingNetworkRxQueue::for_slot(&slot);
+    rx_queue.retained_at = Some(0);
+    let pending = expect_pending(
+        PluginIdleHotLoop::complete_after_scheduler_wake_from_inbound_rings_with_rx_injection(
+            &slot,
+            &mut clock,
+            &queued_idle_advance(),
+            request,
+            [InboundFrameRing::new(0, &ring, &entries)],
+            &network_rx,
+            &mut rx_queue,
+        ),
+    );
+
+    let result =
+        PluginIdleHotLoop::complete_after_time_advance_from_inbound_rings_with_rx_injection(
+            &slot,
+            &mut clock,
+            request,
+            pending,
+            successful_completion(pending),
+            [InboundFrameRing::new(0, &ring, &entries)],
+            &network_rx,
+            &mut rx_queue,
+        )
+        .unwrap_or_else(|error| panic!("backpressure should retain the ring head: {error}"));
+
+    assert_eq!(ring.read_index(), 0);
+    assert_eq!(
+        entries[0].delivery_state(),
+        Ok(FrameDeliveryState::Retained)
+    );
+    assert_eq!(entries[0].delivery_attempts(), 1);
+    assert_eq!(entries[0].last_delivery_attempt_icount(), 20);
+    let injection = result
+        .network_rx_injection()
+        .unwrap_or_else(|| panic!("backpressure should report an RX result"));
+    assert_eq!(injection.delivered_frame_keys(), &[]);
+    assert_eq!(
+        injection.retained_frame_key(),
+        Some(retained.delivery_key())
+    );
+    assert!(rx_queue.queued_payloads.is_empty());
+    assert_eq!(slot.snapshot().status, STATUS_RUNNING);
 }
 
 #[test]
@@ -268,6 +332,7 @@ fn idle_loop_rejects_late_inbound_ring_before_direct_advance() {
             cause: IdleWakeCause::InboundFrame,
         },
         futex_wait: FutexWait::Runnable,
+        icount_shift: clock.icount_shift(),
     };
     let before = slot.snapshot();
     set_blocked_direct_advance_ns(-1);
@@ -312,6 +377,7 @@ fn idle_loop_rejects_late_materialized_frame_before_direct_advance() {
             cause: IdleWakeCause::InboundFrame,
         },
         futex_wait: FutexWait::Runnable,
+        icount_shift: clock.icount_shift(),
     };
     let before = slot.snapshot();
     set_blocked_direct_advance_ns(-1);
@@ -447,6 +513,7 @@ fn idle_loop_direct_advance_range_failure_leaves_clock_and_slot_unchanged() {
             cause: IdleWakeCause::TimerDeadline,
         },
         futex_wait: FutexWait::Runnable,
+        icount_shift: clock.icount_shift(),
     };
 
     assert_eq!(

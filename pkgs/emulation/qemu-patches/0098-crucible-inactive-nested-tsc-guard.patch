@@ -1,0 +1,43 @@
+diff --git a/target/i386/tcg/system/svm_helper.c b/target/i386/tcg/system/svm_helper.c
+index ead30002a..6fc2c0b3d 100644
+--- a/target/i386/tcg/system/svm_helper.c
++++ b/target/i386/tcg/system/svm_helper.c
+@@ -305,7 +305,8 @@ void helper_vmrun(CPUX86State *env, int aflag, int next_eip_addend)
+     /* enable intercepts */
+     env->hflags |= HF_GUEST_MASK;
+ 
+-    {
++    if (qemu_crucible_fault_clock_source_active(
++            QEMU_CRUCIBLE_CLOCK_X86_TSC, cs->cpu_index)) {
+         uint64_t old_tsc = cpu_get_tsc(env) + env->tsc_offset;
+         uint64_t new_offset = x86_ldq_phys(
+             cs, env->vm_vmcb + offsetof(struct vmcb, control.tsc_offset));
+@@ -317,6 +318,9 @@ void helper_vmrun(CPUX86State *env, int aflag, int next_eip_addend)
+             error_report("Crucible x86 TSC nested-entry rebase failed");
+             abort();
+         }
++    } else {
++        env->tsc_offset = x86_ldq_phys(
++            cs, env->vm_vmcb + offsetof(struct vmcb, control.tsc_offset));
+     }
+ 
+     new_cr0 = x86_ldq_phys(cs, env->vm_vmcb + offsetof(struct vmcb, save.cr0));
+@@ -841,7 +845,8 @@ void do_vmexit(CPUX86State *env)
+     env->int_ctl = 0;
+ 
+     /* Clears the TSC_OFFSET inside the processor. */
+-    {
++    if (qemu_crucible_fault_clock_source_active(
++            QEMU_CRUCIBLE_CLOCK_X86_TSC, cs->cpu_index)) {
+         uint64_t old_tsc = cpu_get_tsc(env) + env->tsc_offset;
+ 
+         env->tsc_offset = 0;
+@@ -851,6 +856,8 @@ void do_vmexit(CPUX86State *env)
+             error_report("Crucible x86 TSC nested-exit rebase failed");
+             abort();
+         }
++    } else {
++        env->tsc_offset = 0;
+     }
+ 
+     env->gdt.base  = x86_ldq_phys(cs, env->vm_hsave + offsetof(struct vmcb,

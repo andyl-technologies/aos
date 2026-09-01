@@ -33,7 +33,7 @@
   qemuNixRequirements = [
     {
       label = "no-warp patch wiring";
-      needle = "patch -p1 < \${./qemu-patches/0004-crucible-no-warp-with-plugin.patch}";
+      needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
     }
   ];
 

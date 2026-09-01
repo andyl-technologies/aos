@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  stdenv,
 }: let
   version = "2.7.4";
 in
@@ -23,37 +24,55 @@ in
     runtimeDeps = [];
     propagatedDeps = [];
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd expat-${version}
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          ./configure \
-            --prefix=$out \
-            --disable-static \
-            --enable-shared \
-            --without-docbook
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          make -j$NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          make install
-        '';
-      }
-    ];
+    phases =
+      [
+        {
+          name = "unpack";
+          script = ''
+            tar xf $src
+            cd expat-${version}
+          '';
+        }
+      ]
+      ++ (
+        if stdenv.isCross && stdenv.hostPlatform.isDarwin
+        then [
+          {
+            name = "darwin-build-paths";
+            script = ''
+              export CFLAGS="$CFLAGS \
+                -ffile-prefix-map=$PWD=. \
+                -fdebug-prefix-map=$PWD=."
+            '';
+          }
+        ]
+        else []
+      )
+      ++ [
+        {
+          name = "configure";
+          script = ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --disable-static \
+              --enable-shared \
+              --without-docbook
+          '';
+        }
+        {
+          name = "build";
+          script = ''
+            make -j$NIX_BUILD_CORES
+          '';
+        }
+        {
+          name = "install";
+          script = ''
+            make install
+          '';
+        }
+      ];
 
     checks = {
       testing,

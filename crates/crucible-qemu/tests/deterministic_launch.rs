@@ -6,17 +6,14 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use crucible::{
-    ClockDriftRate, ContentHash, NodeClockSkew, NodeId, ScenarioDef, SchedulerNodeId,
-    SchedulingNodeKind, SimOffset,
-};
+use crucible::{ContentHash, NodeId, ScenarioDef, SchedulerNodeId, SchedulingNodeKind};
 use crucible_qemu::{
     DeterministicLaunchProfile, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode,
     IcountShiftSetting, InputPolicy, LaunchProfileCandidate, LaunchProfileError, MachineResetMode,
-    NodeClockSkewDeclaration, NodeIcountShift, QemuLaunchArtifact, QemuLaunchCommand,
-    QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchPluginConfig,
-    QemuLaunchPluginSwitch, QemuPreSpawnLaunchValidationError, QemuVmLaunchConfig,
-    validate_pre_spawn_qemu_launch_args, validate_x86_whitebox_hmp_mtree,
+    NodeIcountShift, QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder,
+    QemuLaunchCommandError, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
+    QemuPreSpawnLaunchValidationError, QemuVmLaunchConfig, validate_pre_spawn_qemu_launch_args,
+    validate_x86_whitebox_hmp_mtree,
 };
 
 #[path = "deterministic_launch/fingerprint_options.rs"]
@@ -25,6 +22,9 @@ mod fingerprint_options;
 mod launch_artifacts;
 
 use fingerprint_options::validated_whitebox_setup;
+
+#[path = "support/mod.rs"]
+mod support;
 
 fn default_profile() -> DeterministicLaunchProfile {
     match DeterministicLaunchProfile::conservative_default() {
@@ -38,6 +38,15 @@ fn default_plugin_config() -> QemuLaunchPluginConfig {
         "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
         0,
     )
+    .with_fault_target_node("vm-a")
+}
+
+fn default_fault_node() -> crucible::model::WorldNodeFaultCapabilities {
+    support::x86_fault_node("vm-a", "qemu64-x86_64-cpu")
+}
+
+fn default_fault_requirement() -> crucible_qemu::QemuFaultCapabilityRequirement {
+    support::x86_fault_requirement("vm-a", "qemu64-x86_64-cpu")
 }
 
 fn default_vm_config() -> QemuVmLaunchConfig {
@@ -54,6 +63,16 @@ fn default_vm_config() -> QemuVmLaunchConfig {
     )
 }
 
+fn firmware_boot_vm_config() -> QemuVmLaunchConfig {
+    QemuVmLaunchConfig::new_firmware_boot(
+        "vm-firmware",
+        artifact(
+            "firmware",
+            "/nix/store/77777777777777777777777777777777-crucible-firmware/bios.bin",
+        ),
+    )
+}
+
 fn default_qemu_binary() -> &'static str {
     "/nix/store/11111111111111111111111111111111-aos-qemu/bin/qemu-system-x86_64"
 }
@@ -62,12 +81,17 @@ fn artifact(domain: &str, path: &str) -> QemuLaunchArtifact {
     QemuLaunchArtifact::new(ContentHash::from_canonical_material(domain, path), path)
 }
 
+fn lowercase_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn default_launch_command() -> QemuLaunchCommand {
     default_profile()
         .qemu_launch_command(
             default_vm_config(),
             default_qemu_binary(),
             default_plugin_config(),
+            &default_fault_node(),
         )
         .unwrap_or_else(|error| panic!("default QEMU launch command failed: {error}"))
 }
@@ -86,23 +110,6 @@ fn scenario_material_for_nodes(
     profile
         .scenario_hash_material_for_nodes(node_shifts)
         .unwrap_or_else(|error| panic!("node shift material should be valid: {error}"))
-}
-
-fn scenario_material_for_node_timing(
-    profile: &DeterministicLaunchProfile,
-    node_shifts: &[NodeIcountShift],
-    node_clock_skews: &[NodeClockSkewDeclaration],
-) -> String {
-    profile
-        .scenario_hash_material_for_node_timing(node_shifts, node_clock_skews)
-        .unwrap_or_else(|error| panic!("node timing material should be valid: {error}"))
-}
-
-fn drift_rate(numerator: u64, denominator: u64) -> ClockDriftRate {
-    match ClockDriftRate::new(numerator, denominator) {
-        Ok(rate) => rate,
-        Err(error) => panic!("test drift rate should be valid: {error}"),
-    }
 }
 
 #[test]
@@ -1014,119 +1021,6 @@ fn launch_profile_rejects_per_node_icount_shift_mismatch() {
 }
 
 #[test]
-fn launch_profile_records_per_node_clock_skew_material() {
-    let profile = default_profile();
-    let node_shifts = [
-        NodeIcountShift::new("vm-a", 0),
-        NodeIcountShift::new("vm-b", 0),
-    ];
-    let no_skew = scenario_material_for_node_timing(&profile, &node_shifts, &[]);
-    let explicit_perfect = scenario_material_for_node_timing(
-        &profile,
-        &node_shifts,
-        &[NodeClockSkewDeclaration::new(
-            "vm-a",
-            NodeClockSkew {
-                offset: SimOffset { nanos: 0 },
-                drift_rate: drift_rate(2, 2),
-            },
-        )],
-    );
-    let with_skew = scenario_material_for_node_timing(
-        &profile,
-        &node_shifts,
-        &[
-            NodeClockSkewDeclaration::new(
-                "vm-b",
-                NodeClockSkew {
-                    offset: SimOffset { nanos: -25 },
-                    drift_rate: drift_rate(999, 1000),
-                },
-            ),
-            NodeClockSkewDeclaration::new(
-                "vm-a",
-                NodeClockSkew {
-                    offset: SimOffset { nanos: 50 },
-                    drift_rate: drift_rate(1001, 1000),
-                },
-            ),
-        ],
-    );
-
-    assert_eq!(no_skew, explicit_perfect);
-    for expected in [
-        "node_clock_skew_offset_ns[vm-a]=50",
-        "node_clock_drift_rate[vm-a]=1001/1000",
-        "node_clock_drift_rounding[vm-a]=floor",
-        "node_clock_skew_applies_to[vm-a]=guest-visible-only",
-        "node_clock_skew_scheduling_axis[vm-a]=unskewed-icount-derived",
-        "node_clock_skew_offset_ns[vm-b]=-25",
-        "node_clock_drift_rate[vm-b]=999/1000",
-    ] {
-        assert!(with_skew.contains(expected), "missing {expected}");
-    }
-    let vm_a_line = with_skew
-        .lines()
-        .position(|line| line == "node_clock_skew_offset_ns[vm-a]=50")
-        .unwrap_or_else(|| panic!("missing vm-a clock skew line in {with_skew}"));
-    let vm_b_line = with_skew
-        .lines()
-        .position(|line| line == "node_clock_skew_offset_ns[vm-b]=-25")
-        .unwrap_or_else(|| panic!("missing vm-b clock skew line in {with_skew}"));
-    assert!(
-        vm_a_line < vm_b_line,
-        "node clock skew material must be sorted by node id"
-    );
-    assert_ne!(
-        ScenarioDef::from_canonical_material("crucible.scenario.v1.qemu-launch", &no_skew).id(),
-        ScenarioDef::from_canonical_material("crucible.scenario.v1.qemu-launch", &with_skew).id(),
-    );
-}
-
-#[test]
-fn launch_profile_rejects_invalid_node_clock_skew_material() {
-    let profile = default_profile();
-    let invalid = NodeClockSkew {
-        offset: SimOffset { nanos: 1 },
-        drift_rate: ClockDriftRate {
-            numerator: 1,
-            denominator: 0,
-        },
-    };
-
-    assert_eq!(
-        profile.scenario_hash_material_for_node_timing(
-            &[],
-            &[NodeClockSkewDeclaration::new("vm-a", invalid)]
-        ),
-        Err(LaunchProfileError::InvalidNodeClockDriftRate {
-            node_id: String::from("vm-a"),
-            numerator: 1,
-            denominator: 0,
-        })
-    );
-    assert_eq!(
-        profile.scenario_hash_material_for_node_timing(
-            &[],
-            &[
-                NodeClockSkewDeclaration::new("vm-a", NodeClockSkew::PERFECT),
-                NodeClockSkewDeclaration::new("vm-a", NodeClockSkew::PERFECT),
-            ],
-        ),
-        Err(LaunchProfileError::DuplicateNodeClockSkew {
-            node_id: String::from("vm-a"),
-        })
-    );
-    assert_eq!(
-        profile.scenario_hash_material_for_node_timing(
-            &[],
-            &[NodeClockSkewDeclaration::new("", NodeClockSkew::PERFECT)]
-        ),
-        Err(LaunchProfileError::InvalidFixedText { field: "node_id" })
-    );
-}
-
-#[test]
 fn launch_hash_material_records_every_determinism_field() {
     let material = default_profile().scenario_hash_material();
 
@@ -1204,9 +1098,6 @@ fn launch_hash_material_records_every_determinism_field() {
         .scenario_hash_material();
     let memory = deterministic(LaunchProfileCandidate::default().with_memory_mib(1024))
         .scenario_hash_material();
-    let epoch =
-        deterministic(LaunchProfileCandidate::default().with_rtc_epoch_utc("2026-01-02T00:00:00"))
-            .scenario_hash_material();
     let cmdline = deterministic(
         LaunchProfileCandidate::default()
             .with_kernel_cmdline("console=ttyS0 reboot=k panic=1 quiet net.ifnames=0"),
@@ -1222,7 +1113,6 @@ fn launch_hash_material_records_every_determinism_field() {
     assert_ne!(material, smp_vcpus);
     assert_ne!(material, machine);
     assert_ne!(material, memory);
-    assert_ne!(material, epoch);
     assert_ne!(material, cmdline);
     assert_ne!(material, scenario_seed);
     assert_ne!(material, run_seed);
@@ -1232,6 +1122,10 @@ fn launch_hash_material_records_every_determinism_field() {
 fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
     let command = default_launch_command();
     let args = command.args();
+    let fault_hash = lowercase_hex(&default_plugin_config().fault_node_hash());
+    let plugin_argument = format!(
+        "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so,simfd=3,slot=0,fault_node_hash={fault_hash},process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,shmemfd=4,wakefd=5,whitebox=off,coverage=off"
+    );
 
     assert_eq!(command.executable(), default_qemu_binary());
     assert!(args.windows(2).any(|window| {
@@ -1255,13 +1149,10 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
                 "virtio-blk-pci,drive=crucible-root0,id=crucible-root-device0",
             ]
     }));
-    assert!(args.windows(2).any(|window| {
-        window
-            == [
-                "-plugin",
-                "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so,simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off",
-            ]
-    }));
+    assert!(
+        args.windows(2)
+            .any(|window| window[0] == "-plugin" && window[1] == plugin_argument)
+    );
     assert!(
         validate_pre_spawn_qemu_launch_args(args).is_ok(),
         "full launch command must remain accepted by the pre-spawn determinism validator"
@@ -1275,10 +1166,12 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
         "argv[0]=-nodefaults",
         "argv[14]=-accel",
         "argv[15]=sim,thread=single",
-        "argv[34]=-kernel",
-        "argv[35]=/nix/store/33333333333333333333333333333333-crucible-kernel/bzImage",
-        "argv[40]=-plugin",
-        "argv[41]=/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so,simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off",
+        "argv[34]=-blockdev",
+        "argv[35]=driver=qcow2,node-name=vmstate,file.driver=file,file.filename=crucible-vmstate.qcow2",
+        "argv[36]=-kernel",
+        "argv[37]=/nix/store/33333333333333333333333333333333-crucible-kernel/bzImage",
+        "argv[42]=-plugin",
+        &format!("argv[43]={plugin_argument}"),
     ] {
         assert!(material.contains(expected), "missing {expected}");
     }
@@ -1292,21 +1185,29 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
             "/nix/store/66666666666666666666666666666666-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
             2,
         )
+        .with_fault_target_node("vm-a")
         .with_whitebox(QemuLaunchPluginSwitch::On)
         .with_whitebox_setup(validated_whitebox_setup())
         .with_coverage(QemuLaunchPluginSwitch::On);
-    assert_eq!(
-        plugin_config.plugin_args_raw(),
-        "simfd=3,slot=2,shmemfd=4,wakefd=5,whitebox=on,coverage=on,whitebox_setup=x86-port-00e7-unclaimed-v1"
+    let fault_hash = lowercase_hex(&plugin_config.fault_node_hash());
+    let expected_plugin_args = format!(
+        "simfd=3,slot=2,fault_node_hash={fault_hash},process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,shmemfd=4,wakefd=5,whitebox=on,coverage=on,whitebox_setup=x86-port-00e7-unclaimed-v1"
     );
+    assert_eq!(plugin_config.plugin_args_raw(), expected_plugin_args);
     let command = default_profile()
-        .qemu_launch_command(vm_config, default_qemu_binary(), plugin_config)
+        .qemu_launch_command(
+            vm_config,
+            default_qemu_binary(),
+            plugin_config,
+            &default_fault_node(),
+        )
         .unwrap_or_else(|error| panic!("complete plugin launch command should build: {error}"));
     assert!(command.args().windows(2).any(|window| {
-        window == [
-            "-plugin",
-            "/nix/store/66666666666666666666666666666666-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so,simfd=3,slot=2,shmemfd=4,wakefd=5,whitebox=on,coverage=on,whitebox_setup=x86-port-00e7-unclaimed-v1",
-        ]
+        window[0] == "-plugin"
+            && window[1]
+                == format!(
+                    "/nix/store/66666666666666666666666666666666-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so,{expected_plugin_args}"
+                )
     }));
     assert!(command.args().windows(2).any(|window| {
         window
@@ -1331,6 +1232,51 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
 }
 
 #[test]
+fn firmware_boot_omits_direct_kernel_and_has_explicit_identity() {
+    let command = default_profile()
+        .qemu_launch_command(
+            firmware_boot_vm_config(),
+            default_qemu_binary(),
+            default_plugin_config().with_fault_target_node("vm-firmware"),
+            &support::x86_fault_node("vm-firmware", "qemu64-x86_64-cpu"),
+        )
+        .unwrap_or_else(|error| panic!("firmware boot launch should build: {error}"));
+
+    assert!(!command.args().iter().any(|argument| argument == "-kernel"));
+    assert!(!command.args().iter().any(|argument| argument == "-append"));
+    assert!(command.args().windows(2).any(|window| {
+        window
+            == [
+                "-bios",
+                "/nix/store/77777777777777777777777777777777-crucible-firmware/bios.bin",
+            ]
+    }));
+    assert!(
+        command
+            .vm_launch_hash_material()
+            .contains("kernel=firmware-boot")
+    );
+}
+
+#[test]
+fn firmware_boot_rejects_initrd_without_direct_kernel() {
+    let vm = firmware_boot_vm_config().with_initrd(artifact(
+        "initrd",
+        "/nix/store/55555555555555555555555555555555-crucible-initrd/initrd",
+    ));
+    let error = default_profile()
+        .qemu_launch_command(
+            vm,
+            default_qemu_binary(),
+            default_plugin_config().with_fault_target_node("vm-firmware"),
+            &support::x86_fault_node("vm-firmware", "qemu64-x86_64-cpu"),
+        )
+        .unwrap_err();
+
+    assert_eq!(error, QemuLaunchCommandError::InitrdWithoutKernel);
+}
+
+#[test]
 fn launch_command_hash_material_feeds_scenario_identity() {
     let profile = default_profile();
     let command = profile
@@ -1338,6 +1284,7 @@ fn launch_command_hash_material_feeds_scenario_identity() {
             default_vm_config(),
             default_qemu_binary(),
             default_plugin_config(),
+            &default_fault_node(),
         )
         .unwrap_or_else(|error| panic!("default launch command should build: {error}"));
     let repeated = profile
@@ -1345,6 +1292,7 @@ fn launch_command_hash_material_feeds_scenario_identity() {
             default_vm_config(),
             default_qemu_binary(),
             default_plugin_config(),
+            &default_fault_node(),
         )
         .unwrap_or_else(|error| panic!("repeated launch command should build: {error}"));
     let changed_slot = profile
@@ -1354,7 +1302,9 @@ fn launch_command_hash_material_feeds_scenario_identity() {
             QemuLaunchPluginConfig::new(
                 "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
                 1,
-            ),
+            )
+            .with_fault_target_node("vm-a"),
+            &default_fault_node(),
         )
         .unwrap_or_else(|error| panic!("changed-slot launch command should build: {error}"));
     let changed_kernel = profile
@@ -1372,6 +1322,7 @@ fn launch_command_hash_material_feeds_scenario_identity() {
             ),
             default_qemu_binary(),
             default_plugin_config(),
+            &default_fault_node(),
         )
         .unwrap_or_else(|error| panic!("changed-kernel launch command should build: {error}"));
     let changed_qemu = profile
@@ -1379,6 +1330,7 @@ fn launch_command_hash_material_feeds_scenario_identity() {
             default_vm_config(),
             "/nix/store/88888888888888888888888888888888-aos-qemu/bin/qemu-system-x86_64",
             default_plugin_config(),
+            &default_fault_node(),
         )
         .unwrap_or_else(|error| panic!("changed-qemu launch command should build: {error}"));
     let changed_path = profile
@@ -1388,7 +1340,9 @@ fn launch_command_hash_material_feeds_scenario_identity() {
             QemuLaunchPluginConfig::new(
                 "/nix/store/99999999999999999999999999999999-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
                 0,
-            ),
+            )
+            .with_fault_target_node("vm-a"),
+            &default_fault_node(),
         )
         .unwrap_or_else(|error| panic!("changed-path launch command should build: {error}"));
 
@@ -1431,6 +1385,42 @@ fn launch_command_hash_material_feeds_scenario_identity() {
 }
 
 #[test]
+fn launch_rejects_world_node_cpu_and_architecture_identity_mismatches() {
+    let profile = default_profile();
+    let wrong_node = support::x86_fault_node("vm-b", "qemu64-x86_64-cpu");
+    assert_eq!(
+        profile.qemu_launch_command(
+            default_vm_config(),
+            default_qemu_binary(),
+            default_plugin_config(),
+            &wrong_node,
+        ),
+        Err(QemuLaunchCommandError::FaultCapabilityNodeMismatch)
+    );
+
+    let wrong_cpu = support::x86_fault_node("vm-a", "other-x86_64-cpu");
+    assert_eq!(
+        profile.qemu_launch_command(
+            default_vm_config(),
+            default_qemu_binary(),
+            default_plugin_config(),
+            &wrong_cpu,
+        ),
+        Err(QemuLaunchCommandError::FaultCapabilityCpuModelMismatch)
+    );
+
+    assert_eq!(
+        profile.qemu_launch_command(
+            default_vm_config(),
+            "/nix/store/11111111111111111111111111111111-aos-qemu/bin/qemu-system-aarch64",
+            default_plugin_config(),
+            &default_fault_node(),
+        ),
+        Err(QemuLaunchCommandError::FaultCapabilityArchitectureMismatch)
+    );
+}
+
+#[test]
 fn launch_command_builder_rejects_invalid_tool_or_plugin_paths() {
     let profile = default_profile();
 
@@ -1440,6 +1430,7 @@ fn launch_command_builder_rejects_invalid_tool_or_plugin_paths() {
             default_vm_config(),
             "",
             default_plugin_config(),
+            default_fault_requirement(),
         )
         .build(),
         Err(QemuLaunchCommandError::InvalidLaunchText {
@@ -1450,7 +1441,8 @@ fn launch_command_builder_rejects_invalid_tool_or_plugin_paths() {
         profile.qemu_launch_command(
             default_vm_config(),
             "qemu-system-x86_64",
-            default_plugin_config()
+            default_plugin_config(),
+            &default_fault_node(),
         ),
         Err(QemuLaunchCommandError::InvalidStorePath {
             field: "qemu_executable",
@@ -1462,6 +1454,7 @@ fn launch_command_builder_rejects_invalid_tool_or_plugin_paths() {
             default_vm_config(),
             default_qemu_binary(),
             QemuLaunchPluginConfig::new("/nix/store/bad,plugin/lib/libcrucible_qemu_plugin.so", 0,),
+            &default_fault_node(),
         ),
         Err(QemuLaunchCommandError::PluginPathContainsComma)
     );
@@ -1469,7 +1462,8 @@ fn launch_command_builder_rejects_invalid_tool_or_plugin_paths() {
         profile.qemu_launch_command(
             default_vm_config(),
             default_qemu_binary(),
-            QemuLaunchPluginConfig::new("plugin.so", 0),
+            QemuLaunchPluginConfig::new("plugin.so", 0).with_fault_target_node("vm-a"),
+            &default_fault_node(),
         ),
         Err(QemuLaunchCommandError::InvalidStorePath {
             field: "plugin_path",
@@ -1488,6 +1482,7 @@ fn launch_command_builder_rejects_invalid_tool_or_plugin_paths() {
             ),
             default_qemu_binary(),
             default_plugin_config(),
+            &default_fault_node(),
         ),
         Err(QemuLaunchCommandError::InvalidStorePath {
             field: "kernel_path",
@@ -1506,6 +1501,7 @@ fn launch_command_builder_rejects_invalid_tool_or_plugin_paths() {
             ),
             default_qemu_binary(),
             default_plugin_config(),
+            &default_fault_node(),
         ),
         Err(QemuLaunchCommandError::InvalidStorePath {
             field: "kernel_path",
@@ -1517,6 +1513,7 @@ fn launch_command_builder_rejects_invalid_tool_or_plugin_paths() {
             default_vm_config().with_root_overlay_file_name("../root.qcow2"),
             default_qemu_binary(),
             default_plugin_config(),
+            &default_fault_node(),
         ),
         Err(QemuLaunchCommandError::InvalidOverlayFileName {
             file_name: String::from("../root.qcow2"),

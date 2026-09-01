@@ -1,0 +1,66 @@
+diff --git a/tests/tcg/plugins/crucible-memory-access.c b/tests/tcg/plugins/crucible-memory-access.c
+index 1f8f380f3..fdbc15916 100644
+--- a/tests/tcg/plugins/crucible-memory-access.c
++++ b/tests/tcg/plugins/crucible-memory-access.c
+@@ -312,14 +312,15 @@ static void test_build_poison(const char *policy)
+ }
+ 
+ static void test_build_region(uint32_t kind, uint64_t address,
+-                              uint64_t length, const char *policy)
++                              uint64_t length, const char *policy,
++                              bool virtual_address)
+ {
+     test_payload_begin(CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE, 9);
+     test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_P1, address);
+     test_field_u64(CRUCIBLE_NODE_FAULT_FIELD_P2, length);
+     test_field_u32(CRUCIBLE_NODE_FAULT_FIELD_P3, kind);
+     test_field_policy(CRUCIBLE_NODE_FAULT_FIELD_P4, policy);
+-    test_payload_target(address, length, true);
++    test_payload_target(address, length, virtual_address);
+ }
+ 
+ static void test_build_service(bool virtual_address)
+@@ -379,17 +380,20 @@ static void test_build_scenario(const char *scenario)
+         test_command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE;
+         test_kind = 1;
+         test_build_region(1, test_address, 1,
+-            "{\"kind\":\"failed\",\"parameters\":{\"policy\":{\"kind\":\"access_error\"}}}");
++            "{\"kind\":\"failed\",\"parameters\":{\"policy\":{\"kind\":\"access_error\"}}}",
++            true);
+     } else if (strcmp(scenario, "retention") == 0) {
+         test_command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE;
+         test_kind = 2;
+         test_build_region(2, test_address, 1,
+-            "{\"kind\":\"retention\",\"parameters\":{\"decay_mask\":\"ff\",\"interval_nanos\":1}}");
++            "{\"kind\":\"retention\",\"parameters\":{\"decay_mask\":\"ff\",\"interval_nanos\":1}}",
++            true);
+     } else if (strcmp(scenario, "rowhammer") == 0) {
+         test_command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE;
+         test_kind = 3;
+         test_build_region(3, test_address, 0x3000,
+-            "{\"kind\":\"rowhammer\",\"parameters\":{\"flip_mask\":\"ff\",\"row_bytes\":64,\"threshold\":1,\"victim_distance\":1}}");
++            "{\"kind\":\"rowhammer\",\"parameters\":{\"flip_mask\":\"ff\",\"row_bytes\":64,\"threshold\":1,\"victim_distance\":1}}",
++            true);
+     } else if (strcmp(scenario, "service") == 0) {
+         test_command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE;
+         test_build_service(true);
+@@ -440,7 +444,8 @@ static void test_build_scenario(const char *scenario)
+         test_command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE;
+         test_kind = 1;
+         test_build_region(1, test_address, test_length,
+-            "{\"kind\":\"failed\",\"parameters\":{\"policy\":{\"kind\":\"access_error\"}}}");
++            "{\"kind\":\"failed\",\"parameters\":{\"policy\":{\"kind\":\"access_error\"}}}",
++            false);
+     } else if (strcmp(scenario, "page-table-walk-service") == 0) {
+         test_command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE;
+         test_build_service(false);
+@@ -473,7 +478,8 @@ static void test_build_scenario(const char *scenario)
+     } else if (strcmp(scenario, "invalid-geometry") == 0) {
+         test_command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE;
+         test_build_region(3, test_address, 1,
+-            "{\"kind\":\"rowhammer\",\"parameters\":{\"flip_mask\":\"ff\",\"row_bytes\":64,\"threshold\":1,\"victim_distance\":0}}");
++            "{\"kind\":\"rowhammer\",\"parameters\":{\"flip_mask\":\"ff\",\"row_bytes\":64,\"threshold\":1,\"victim_distance\":0}}",
++            true);
+         test_expected_rejection = CRUCIBLE_FAULT_STATUS_MALFORMED_COMMAND;
+     } else if (strcmp(scenario, "invalid-walk-virtual") == 0) {
+         uint8_t mask[8] = { 1 };

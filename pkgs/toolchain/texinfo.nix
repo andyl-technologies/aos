@@ -4,8 +4,38 @@
   fetchurl,
   gnumake,
   perl,
+  stdenv,
 }: let
   version = "7.2";
+  darwinNativeCompilerSetup =
+    if stdenv.isCross && stdenv.hostPlatform.isDarwin
+    then ''
+      # Texinfo's tools/gnulib subtree builds helper programs for the Linux
+      # build machine. Keep that native compiler isolated from the target SDK
+      # and arm64-only PAC hardening inherited from the surrounding Darwin
+      # cross environment.
+      native_cc="$BUILD_CC"
+      mkdir -p .aos-build-tools
+      cat > .aos-build-tools/cc-for-build <<EOF
+      #!$CONFIG_SHELL
+      native_hardening=
+      for token in \$AOS_HARDENING_ENABLE; do
+        case "\$token" in
+          pacret) ;;
+          *) native_hardening="\$native_hardening \$token" ;;
+        esac
+      done
+      export AOS_HARDENING_ENABLE="\$native_hardening"
+      unset AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+      unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH
+      unset MACOSX_DEPLOYMENT_TARGET NIX_CFLAGS_COMPILE NIX_LDFLAGS SDKROOT
+      exec "$native_cc" "\$@"
+      EOF
+      chmod +x .aos-build-tools/cc-for-build
+      export CC_FOR_BUILD="$PWD/.aos-build-tools/cc-for-build"
+      export BUILD_CC="$CC_FOR_BUILD"
+    ''
+    else "";
 in
   mkDerivation {
     pname = "texinfo";
@@ -33,13 +63,14 @@ in
         script = ''
           tar xf $src
           cd texinfo-${version}
-          # Fix Perl shebangs — /usr/bin/perl doesn't exist in the sandbox.
-          # Preserve mtimes so make doesn't trigger automake regeneration.
+          # Build helpers use native Perl; the installed scripts are retargeted
+          # to the Darwin Perl after make has finished executing them.
+          nativePerl=$(command -v perl)
           for f in maintain/*.pl tp/maintain/*.pl; do
             if [ -f "$f" ]; then
               ref_time=$(stat -c %Y "$f")
-              sed -i "1s|#!.*/usr/bin/perl|#!${perl}/bin/perl|" "$f"
-              sed -i "1s|#!.*/usr/bin/env perl|#!${perl}/bin/perl|" "$f"
+              sed -i "1s|#!.*/usr/bin/perl|#!$nativePerl|" "$f"
+              sed -i "1s|#!.*/usr/bin/env perl|#!$nativePerl|" "$f"
               touch -d "@$ref_time" "$f"
             fi
           done
@@ -47,8 +78,9 @@ in
       }
       {
         name = "configure";
-        script = ''
+        script = darwinNativeCompilerSetup + ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --disable-nls
         '';
@@ -65,6 +97,9 @@ in
         name = "install";
         script = ''
           make install
+          nativePerlRoot=$(dirname "$(dirname "$(command -v perl)")")
+          grep -IrlZ -F "$nativePerlRoot" "$out" 2>/dev/null \
+            | xargs -0 -r sed -i "s|$nativePerlRoot|${perl}|g"
         '';
       }
     ];

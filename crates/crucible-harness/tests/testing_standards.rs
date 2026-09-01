@@ -51,6 +51,9 @@ enum TestShape {
     FleetEquivalence,
     CampaignContinuity,
     BasicBlockCoverage,
+    CheckpointMaterialization,
+    StateSpaceSearch,
+    SignalFaultSystem,
     PerfBenchRegression,
 }
 
@@ -209,6 +212,20 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
         backend: TestBackend::Mixed,
     },
     GateTestingStandard {
+        gate: "gate:checkpoint-materialization",
+        owner_packages: &["crucible"],
+        layers: &[Layer::L3],
+        shape: TestShape::CheckpointMaterialization,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:state-space-search",
+        owner_packages: &["crucible"],
+        layers: &[Layer::L3],
+        shape: TestShape::StateSpaceSearch,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
         gate: "gate:fleet-equivalence",
         owner_packages: &["crucible"],
         layers: &[Layer::L3],
@@ -221,6 +238,13 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
         layers: &[Layer::L3],
         shape: TestShape::CampaignContinuity,
         backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:signal-fault-system",
+        owner_packages: &["crucible"],
+        layers: &[Layer::L3],
+        shape: TestShape::SignalFaultSystem,
+        backend: TestBackend::Mixed,
     },
     // The perf-bench regression gate runs the harness cost-model substrate with
     // no QEMU; it is cross-cutting (Phase >= L2, after the determinism gates) and
@@ -290,6 +314,9 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
             "gate:e2e-determinism",
             "gate:fleet-equivalence",
             "gate:basic-block-coverage",
+            "gate:checkpoint-materialization",
+            "gate:state-space-search",
+            "gate:signal-fault-system",
         ],
     },
     CrateTestingOwnership {

@@ -3,6 +3,9 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  bash,
+  perl,
+  stdenv,
 }: let
   version = "5.3.0";
 in
@@ -18,7 +21,10 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [];
+    runtimeDeps =
+      if stdenv.hostPlatform.isDarwin
+      then [bash perl]
+      else [];
     propagatedDeps = [];
 
     phases = [
@@ -31,12 +37,29 @@ in
       }
       {
         name = "configure";
-        script = ''
-          ./configure \
-            --prefix=$out \
-            --enable-shared \
-            --enable-static
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            # jemalloc's C++ allocator API hard-codes GNU libstdc++ for its
+            # link probe and shared library. Darwin's ABI uses libc++, and
+            # its C++ driver supplies the target runtime search path.
+            sed -i 's|-lstdc++|-lc++|g' configure
+            sed -i \
+              's|^\t$(CC) $(DSO_LDFLAGS)|\t$(CXX) $(DSO_LDFLAGS)|' \
+              Makefile.in
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --enable-shared \
+              --enable-static
+          ''
+          else ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --enable-shared \
+              --enable-static
+          '';
       }
       {
         name = "build";
@@ -46,9 +69,18 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            make install
+            for script in "$out/bin/jemalloc-config" "$out/bin/jemalloc.sh"; do
+              sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$script"
+            done
+            sed -i "1s|^#!.*|#!${perl}/bin/perl|" "$out/bin/jeprof"
+          ''
+          else ''
+            make install
+          '';
       }
     ];
 

@@ -151,13 +151,13 @@ pub enum E2eDecision {
         /// Stable message sequence number.
         sequence: u64,
     },
-    /// A fault outcome at a deterministic virtual tick.
+    /// A effect outcome at a deterministic virtual tick.
     Fault {
-        /// Virtual tick at which the fault outcome is resolved.
+        /// Virtual tick at which the effect outcome is resolved.
         at_tick: u64,
         /// Fault name.
         fault: String,
-        /// Whether the probabilistic fault fired.
+        /// Whether the probabilistic effect fired.
         fired: bool,
     },
     /// A deterministic application-random draw served to a node.
@@ -335,7 +335,7 @@ pub enum E2eGateError {
         property: String,
     },
     /// The schedule contains no fired fault decision.
-    MissingFiredFaultDecision {
+    MissingFiredEffectOutcomeDecision {
         /// Scenario name.
         scenario: String,
     },
@@ -446,7 +446,7 @@ impl fmt::Display for E2eGateError {
                 formatter,
                 "e2e always property `{property}` has an unsatisfied observation"
             ),
-            Self::MissingFiredFaultDecision { scenario } => write!(
+            Self::MissingFiredEffectOutcomeDecision { scenario } => write!(
                 formatter,
                 "e2e scenario `{scenario}` schedule has no fired fault decision"
             ),
@@ -541,7 +541,7 @@ pub fn canonical_mock_build_identity() -> E2eBuildIdentity {
         ),
         shmem_abi_version: CANONICAL_SHMEM_ABI_VERSION.to_string(),
         guest_host_protocol_version: String::from("1"),
-        rpc_abi_version: String::from("5.0.0"),
+        rpc_abi_version: String::from("5.1.0"),
         rpc_abi_build: String::from("crucible-rpc-abi-v5"),
         plugin_abi: String::from("simdouble-mock-plugin-abi"),
     }
@@ -908,7 +908,7 @@ impl E2eReproductionArtifact {
             .iter()
             .any(|decision| matches!(decision, E2eDecision::Fault { fired: true, .. }))
         {
-            return Err(E2eGateError::MissingFiredFaultDecision {
+            return Err(E2eGateError::MissingFiredEffectOutcomeDecision {
                 scenario: self.scenario.name.clone(),
             });
         }

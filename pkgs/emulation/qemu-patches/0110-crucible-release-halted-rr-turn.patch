@@ -1,0 +1,332 @@
+diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+index 219cadef1..f08eb93d9 100644
+--- a/accel/tcg/icount-common.c
++++ b/accel/tcg/icount-common.c
+@@ -284,6 +284,37 @@ static void icount_crucible_rr_account(CPUState *cpu, uint64_t executed)
+     timers_state.crucible_rr_selection_pending = true;
+ }
+ 
++void icount_crucible_rr_yield_cpu(CPUState *cpu)
++{
++    CPUState *next;
++
++    if (!cpu || icount_crucible_rr_switch_quantum() == 0) {
++        return;
++    }
++    if (!timers_state.crucible_rr_cursor_valid ||
++        timers_state.crucible_rr_current_vcpu != cpu->cpu_index) {
++        error_report("crucible RR yield owner mismatch: owner=%" PRIu64
++                     " yielded-vcpu=%d",
++                     timers_state.crucible_rr_current_vcpu, cpu->cpu_index);
++        abort();
++    }
++
++    /*
++     * A guest PAUSE is an explicit deterministic scheduler yield.  Commit the
++     * early handoff as canonical cursor state rather than retaining a partial
++     * turn: retaining it lets a lock owner reacquire before a waiting vCPU can
++     * run and can starve firmware or guest spin locks forever.
++     */
++    next = CPU_NEXT(cpu);
++    if (!next) {
++        next = first_cpu;
++    }
++    g_assert(next);
++    timers_state.crucible_rr_current_vcpu = next->cpu_index;
++    timers_state.crucible_rr_cursor_position = 0;
++    timers_state.crucible_rr_selection_pending = true;
++}
++
+ /*
+  * Update the global shared timer_state.qemu_icount to take into
+  * account executed instructions. This is done by the TCG vCPU
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index 90840e631..c223f89d0 100644
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -471,6 +471,7 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+     CPUState *cpu = *cpu_ptr;
+ 
+     while (true) {
++        bool guest_pause_yield;
+         int r;
+         uint64_t service_before;
+         uint64_t service_after;
+@@ -606,9 +607,48 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+             icount_prepare_for_run(cpu, *cpu_budget);
+         }
+         r = tcg_cpu_exec(cpu);
++        guest_pause_yield = cpu->crucible_guest_pause_yield;
++        cpu->crucible_guest_pause_yield = false;
++        if (guest_pause_yield && r != EXCP_INTERRUPT) {
++            error_report("crucible guest PAUSE returned "
++                         "unexpected exception %d", r);
++            abort();
++        }
+         if (icount_enabled()) {
+             icount_process_data(cpu);
+         }
++        if (rr_crucible_sim_mode() &&
++            !rr_crucible_sim_single_vcpu() &&
++            guest_pause_yield) {
++            uint64_t owner;
++            uint64_t cursor;
++
++            /*
++             * Commit the helper-authenticated PAUSE transition before any
++             * plugin callback, fault dispatch, vmstop, or preemption path can
++             * return from this batch. Host work arriving at the same boundary
++             * is serviced only after the guest-authored canonical handoff is
++             * durable. A PAUSE that exactly exhausts the ordinary quantum has
++             * already selected the next owner and must not hand off twice.
++             */
++            bql_lock();
++            owner = icount_crucible_rr_current_vcpu();
++            cursor = icount_crucible_rr_cursor_position();
++            if (owner == cpu->cpu_index) {
++                icount_crucible_rr_yield_cpu(cpu);
++            } else if (cursor != 0) {
++                error_report("crucible guest PAUSE owner mismatch: "
++                             "owner=%" PRIu64 " yielded-vcpu=%d cursor=%" PRIu64,
++                             owner, cpu->cpu_index, cursor);
++                abort();
++            }
++            qemu_plugin_crucible_guest_pause_handoff_complete();
++            bql_unlock();
++        } else if (qemu_plugin_crucible_guest_pause_handoff_pending()) {
++            error_report("Crucible guest PAUSE handoff fence lacked a "
++                         "multi-vCPU sim marker");
++            abort();
++        }
+         if (rr_crucible_sim_mode() &&
+             crucible_sim_shmem_dispatch_registered()) {
+             crucible_sim_shmem_publish_current_icount(qemu_plugin_icount_raw());
+@@ -1116,10 +1156,23 @@ static void *rr_cpu_thread_fn(void *arg)
+                 suggested_cpu = first_cpu;
+             }
+             cpu = icount_crucible_rr_select_cpu(suggested_cpu);
+-            if (cpu == executed_cpu &&
+-                icount_crucible_rr_cursor_position() != 0) {
+-                partial_rr_turn = true;
+-                break;
++            if (cpu == executed_cpu) {
++                /*
++                 * A HLT can end a vCPU's runnable slice before its serialized
++                 * RR turn is exhausted.  If no other vCPU is runnable, leave
++                 * the execution loop so the all-halted callback can publish
++                 * the canonical idle boundary.  Re-entering solely to retain
++                 * the partial cursor would repeatedly execute the halted CPU
++                 * without retiring another instruction.
++                 */
++                if (rr_crucible_sim_vcpu_is_halted(cpu)) {
++                    cpu = NULL;
++                    break;
++                }
++                if (icount_crucible_rr_cursor_position() != 0) {
++                    partial_rr_turn = true;
++                    break;
++                }
+             }
+             if (wrapped) {
+                 cpu = NULL;
+diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
+index fea949d6e..f200149a7 100644
+--- a/include/hw/core/cpu.h
++++ b/include/hw/core/cpu.h
+@@ -479,6 +479,8 @@ struct qemu_work_item;
+  *   translation for application before the generated TB executes.
+  * @crucible_fetch_transaction: Opaque fetch transaction staged until TB
+  *   generation succeeds or is discarded.
++ * @crucible_guest_pause_yield: Transient x86 PAUSE marker consumed immediately
++ *   after TCG returns to the serialized RR loop.
+  * @cpu_ases: Pointer to array of CPUAddressSpaces (which define the
+  *            AddressSpaces this CPU has)
+  * @num_ases: number of CPUAddressSpaces in @cpu_ases
+@@ -558,6 +560,7 @@ struct CPUState {
+     uint64_t crucible_page_table_walk_instruction_pc;
+     uint64_t crucible_register_before_icount;
+     bool crucible_register_instruction_active;
++    bool crucible_guest_pause_yield;
+     uint64_t random_seed;
+     sigjmp_buf jmp_env;
+ 
+diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+index cc17de758..fa0f80f22 100644
+--- a/include/qemu/plugin.h
++++ b/include/qemu/plugin.h
+@@ -193,6 +193,10 @@ extern qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_control_boundary_cb;
+ extern void *qemu_plugin_control_boundary_userdata;
+ void qemu_plugin_fire_control_boundary_cb(CPUState *cpu);
+ 
++void qemu_plugin_crucible_guest_pause_handoff_begin(void);
++bool qemu_plugin_crucible_guest_pause_handoff_pending(void);
++void qemu_plugin_crucible_guest_pause_handoff_complete(void);
++
+ void qemu_plugin_crucible_exact_boundary_enter(void);
+ void qemu_plugin_crucible_exact_boundary_leave(void);
+ bool qemu_plugin_crucible_exact_boundary_active(void);
+diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
+index 84ff4dc3c..9a95b3a52 100644
+--- a/include/system/cpu-timers.h
++++ b/include/system/cpu-timers.h
+@@ -86,6 +86,7 @@ void icount_crucible_rr_snapshot_resume_prepare(void);
+ void icount_crucible_rr_initialize_genesis(CPUState *cpu);
+ uint64_t icount_crucible_rr_cursor_position_observed(CPUState *cpu);
+ CPUState *icount_crucible_rr_select_cpu(CPUState *suggested);
++void icount_crucible_rr_yield_cpu(CPUState *cpu);
+ 
+ /* if the CPUs are idle, start accounting real time to virtual clock. */
+ void icount_start_warp_timer(void);
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+index 03a9a4506..d410ed751 100644
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -139,6 +139,43 @@ static void qemu_plugin_schedule_control_boundary(void);
+ #define QEMU_PLUGIN_TIME_ADVANCE_ARMED 2
+ 
+ static int qemu_plugin_control_boundary_scheduled;
++/*
++ * 0: no handoff; 1: the RR writer owes the handoff; 2: the control BH owns
++ * the deferral; 3: the BH relinquished its scheduling token.
++ */
++static int qemu_plugin_crucible_guest_pause_handoff;
++
++void qemu_plugin_crucible_guest_pause_handoff_begin(void)
++{
++    if (qatomic_cmpxchg(&qemu_plugin_crucible_guest_pause_handoff, 0, 1) != 0) {
++        error_report("Crucible guest PAUSE handoff already pending");
++        abort();
++    }
++}
++
++bool qemu_plugin_crucible_guest_pause_handoff_pending(void)
++{
++    return qatomic_load_acquire(
++        &qemu_plugin_crucible_guest_pause_handoff) != 0;
++}
++
++void qemu_plugin_crucible_guest_pause_handoff_complete(void)
++{
++    int state;
++
++    state = qatomic_cmpxchg(&qemu_plugin_crucible_guest_pause_handoff, 1, 0);
++    if (state == 1) {
++        return;
++    }
++    if (state == 3 &&
++        qatomic_cmpxchg(&qemu_plugin_crucible_guest_pause_handoff, 3, 0) == 3) {
++        qemu_plugin_schedule_control_boundary();
++        return;
++    }
++
++    error_report("Crucible guest PAUSE handoff completion had state %d", state);
++    abort();
++}
+ 
+ bool qemu_plugin_has_time_control(void)
+ {
+@@ -264,6 +301,30 @@ static void qemu_plugin_control_boundary_complete_bh(void *opaque)
+ {
+     (void)opaque;
+ 
++    /*
++     * The x86 PAUSE helper publishes this fence before leaving translated
++     * execution. The serialized RR writer clears it only after committing the
++     * early owner/cursor handoff under the BQL. Relinquish this BH's token so
++     * it cannot acknowledge or snapshot the preceding partial owner while the
++     * RR thread is waiting to acquire the BQL; handoff completion schedules a
++     * fresh two-pass boundary.
++     */
++    if (qatomic_cmpxchg(&qemu_plugin_crucible_guest_pause_handoff, 1, 2) == 1) {
++        qatomic_store_release(&qemu_plugin_control_boundary_scheduled, 0);
++        qatomic_store_release(&qemu_plugin_crucible_guest_pause_handoff, 3);
++        return;
++    }
++    if (qemu_plugin_crucible_guest_pause_handoff_pending()) {
++        /*
++         * Another control request can acquire the scheduling token after the
++         * first colliding BH relinquishes it but before the RR writer acquires
++         * the BQL. Leave the deferred state intact and relinquish that token as
++         * well; handoff completion schedules the one post-commit boundary.
++         */
++        qatomic_store_release(&qemu_plugin_control_boundary_scheduled, 0);
++        return;
++    }
++
+     /*
+      * A control wake can arrive while an idle-time advance is between its
+      * QEMU clock mutation and plugin commit.  Keep yielding through the same
+diff --git a/plugins/api.c b/plugins/api.c
+index 9f13b2bc4..61022499c 100644
+--- a/plugins/api.c
++++ b/plugins/api.c
+@@ -510,6 +510,8 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
+ static bool qemu_plugin_crucible_vcpu_register_read_allowed(void)
+ {
+     uint64_t owner = qemu_plugin_crucible_rr_current_vcpu();
++    uint64_t serialized_owner = icount_crucible_rr_current_vcpu();
++    uint64_t cursor_position = icount_crucible_rr_cursor_position();
+     bool allowed;
+ 
+     /*
+@@ -517,23 +519,32 @@ static bool qemu_plugin_crucible_vcpu_register_read_allowed(void)
+      * owner. Any exact callback that holds the BQL has quiesced every vCPU
+      * register file, including the one-shot post-snapshot reselection boundary
+      * where the serialized owner is intentionally invalid and `current_cpu`
+-     * retains the preceding vCPU.
++     * retains the preceding vCPU. An exact completed-turn handoff is similarly
++     * quiescent: the committed cursor is zero at the next serialized owner while
++     * `current_cpu` still names the vCPU whose turn just finished. Single-threaded
++     * RR excludes concurrent execution during that synchronous callback.
+      * Terminal state capture separately stops the VM and holds the BQL. Refuse
+      * every concurrent, stale, or unowned context.
+      */
+     allowed = (qemu_plugin_crucible_single_threaded_rr() &&
+                qemu_plugin_crucible_exact_boundary_active() &&
+                ((current_cpu && owner != UINT64_MAX &&
+-                 current_cpu->cpu_index == owner) || bql_locked())) ||
++                 current_cpu->cpu_index == owner) ||
++                (current_cpu && owner == UINT64_MAX &&
++                 serialized_owner != UINT64_MAX &&
++                 current_cpu->cpu_index != serialized_owner &&
++                 cursor_position == 0) || bql_locked())) ||
+         (bql_locked() && !runstate_is_running());
+     if (!allowed) {
+         error_report("Crucible register capture rejected: "
+                      "single_rr=%d exact=%d bql=%d "
+-                     "running=%d current_cpu=%d rr_owner=%" PRIu64,
++                     "running=%d current_cpu=%d rr_owner=%" PRIu64
++                     " serialized_owner=%" PRIu64 " cursor=%" PRIu64,
+                      qemu_plugin_crucible_single_threaded_rr(),
+                      qemu_plugin_crucible_exact_boundary_active(),
+                      bql_locked(), runstate_is_running(),
+-                     current_cpu ? current_cpu->cpu_index : -1, owner);
++                     current_cpu ? current_cpu->cpu_index : -1, owner,
++                     serialized_owner, cursor_position);
+     }
+     return allowed;
+ }
+diff --git a/target/i386/tcg/misc_helper.c b/target/i386/tcg/misc_helper.c
+index 970cd9a6b..b83e8ca49 100644
+--- a/target/i386/tcg/misc_helper.c
++++ b/target/i386/tcg/misc_helper.c
+@@ -21,6 +21,7 @@
+ #include "qemu/crucible-fault.h"
+ #include "qemu/error-report.h"
+ #include "qemu/log.h"
++#include "qemu/plugin.h"
+ #include "cpu.h"
+ #include "exec/helper-proto.h"
+ #include "exec/cputlb.h"
+@@ -115,6 +116,11 @@ G_NORETURN void helper_pause(CPUX86State *env)
+     helper_rechecking_single_step(env);
+ 
+     /* Just let another CPU run.  */
++    cs->crucible_guest_pause_yield = true;
++    if (qemu_plugin_crucible_single_threaded_rr() &&
++        qemu_plugin_num_vcpus() > 1) {
++        qemu_plugin_crucible_guest_pause_handoff_begin();
++    }
+     cs->exception_index = EXCP_INTERRUPT;
+     cpu_loop_exit(cs);
+ }

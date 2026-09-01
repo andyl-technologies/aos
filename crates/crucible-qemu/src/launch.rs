@@ -7,6 +7,7 @@
 
 mod canonical;
 mod control_channels;
+mod crucible_accelerator;
 mod crucible_shmem_9p;
 mod crucible_shmem_block;
 mod crucible_shmem_network;
@@ -21,20 +22,17 @@ mod whitebox_setup;
 use std::collections::BTreeMap;
 use std::fmt;
 
-use canonical::{
-    canonical_node_clock_skew_lines, canonical_node_icount_shift_lines, validate_icount_shift,
-};
+use canonical::{canonical_node_icount_shift_lines, validate_icount_shift};
 pub use control_channels::{QemuGdbstubChannelConfig, QemuQmpChannelConfig};
-use crucible::{
-    ContentHash, NodeClockSkew, SchedulerError, SchedulerNodeId, SchedulerRunSubdivisionPolicy,
-    Seed,
-};
+use crucible::{ContentHash, SchedulerError, SchedulerNodeId, SchedulerRunSubdivisionPolicy, Seed};
+pub use crucible_accelerator::{CrucibleAcceleratorDevice, DEFAULT_CRUCIBLE_ACCELERATOR_DEVICE_ID};
 pub use crucible_shmem_9p::{
     CrucibleShmem9pDevice, CrucibleShmem9pFsdevBackend, DEFAULT_CRUCIBLE_SHMEM_9P_DEVICE_ID,
     DEFAULT_CRUCIBLE_SHMEM_9P_FSDEV_ID, DEFAULT_CRUCIBLE_SHMEM_9P_MOUNT_TAG,
 };
 pub use crucible_shmem_block::{
-    CrucibleShmemBlockDevice, DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID, DEFAULT_CRUCIBLE_SHMEM_DRIVE_ID,
+    CrucibleShmemBlockDevice, DEFAULT_CRUCIBLE_SHMEM_BLOCK_NODE_NAME,
+    DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID,
 };
 pub use crucible_shmem_network::{
     CrucibleShmemNetworkDevice, DEFAULT_CRUCIBLE_SHMEM_NETDEV_ID,
@@ -98,26 +96,18 @@ const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 reboot=k panic=1 quiet";
 const DEFAULT_SCENARIO_SEED: u64 = 0x0010_c001;
 const DEFAULT_RUN_SEED: u64 = 0x0010_c001;
 const DEFAULT_RR_SWITCH_QUANTUM: u64 = 4096;
-const PLUGIN_ARG_SIMFD: &str = "simfd";
-const PLUGIN_ARG_SLOT: &str = "slot";
-const PLUGIN_ARG_SHMEMFD: &str = "shmemfd";
-const PLUGIN_ARG_WAKEFD: &str = "wakefd";
-const PLUGIN_ARG_WHITEBOX: &str = "whitebox";
-const PLUGIN_ARG_WHITEBOX_SETUP: &str = "whitebox_setup";
-const PLUGIN_ARG_APP_RANDOM_SEED: &str = "app_random_seed";
-const PLUGIN_ARG_APP_RANDOM_CAP: &str = "app_random_cap";
-const PLUGIN_ARG_APP_RANDOM_NODE: &str = "app_random_node";
-const PLUGIN_ARG_APP_RANDOM_BRANCH_SEED: &str = "app_random_branch_seed";
-const PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER: &str = "app_random_branch_after";
-const PLUGIN_ARG_APP_RANDOM_DRAW_OFFSET: &str = "app_random_draw_offset";
-const PLUGIN_ARG_APP_RANDOM_POSITIONS: &str = "app_random_positions";
 const WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1: &str = "x86-port-00e7-unclaimed-v1";
 const WHITEBOX_SETUP_AARCH64_HINT_INERT_V1: &str = "aarch64-hint-4c-inert-v1";
-const PLUGIN_ARG_COVERAGE: &str = "coverage";
-const PLUGIN_ARG_FINGERPRINT: &str = "fingerprint";
-const PLUGIN_ARG_FINGERPRINT_ORACLE: &str = "fingerprint_oracle";
-const PLUGIN_ARG_STATE_DUMP_TARGET: &str = "state_dump_target";
-const PLUGIN_ARG_STATE_DUMP_PATH: &str = "state_dump_path";
+const FAULT_TARGET_NODE_DOMAIN: &[u8] = b"crucible.qemu.fault-target-node.v1\0";
+
+/// Derives the process-bound fault target identity from a canonical node name.
+#[must_use]
+pub fn qemu_fault_target_hash(node_name: &str) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(FAULT_TARGET_NODE_DOMAIN);
+    hasher.update(node_name.as_bytes());
+    *hasher.finalize().as_bytes()
+}
 const FIXED_PLUGIN_SIM_FD: i32 = 3;
 const FIXED_PLUGIN_SHMEM_FD: i32 = 4;
 const FIXED_PLUGIN_WAKE_FD: i32 = 5;
@@ -129,6 +119,9 @@ pub const QEMU_PLUGIN_SHMEM_FD: i32 = FIXED_PLUGIN_SHMEM_FD;
 pub const QEMU_PLUGIN_WAKE_FD: i32 = FIXED_PLUGIN_WAKE_FD;
 /// Default per-run copy-on-write overlay file consumed by QEMU launch commands.
 pub const DEFAULT_ROOT_OVERLAY_FILE_NAME: &str = "crucible-root-overlay.qcow2";
+/// Default per-run qcow2 container for exact VMState snapshots.
+pub const DEFAULT_VMSTATE_FILE_NAME: &str = "crucible-vmstate.qcow2";
+const VMSTATE_DRIVE_ID: &str = "vmstate";
 const ROOT_DRIVE_ID: &str = "crucible-root0";
 const ROOT_DEVICE_ID: &str = "crucible-root-device0";
 const MAX_ICOUNT_SHIFT: u8 = 62;
@@ -151,8 +144,6 @@ pub struct LaunchProfileCandidate {
     pub icount_shift: IcountShiftSetting,
     /// The fixed single-threaded round-robin switch quantum in node icount.
     pub rr_switch_quantum: u64,
-    /// The UTC RTC epoch supplied to QEMU.
-    pub rtc_epoch_utc: String,
     /// The QEMU RTC clock mode.
     pub rtc_clock: String,
     /// The guest kernel command line.
@@ -183,7 +174,6 @@ impl Default for LaunchProfileCandidate {
             smp_vcpus: 1,
             icount_shift: IcountShiftSetting::Fixed(0),
             rr_switch_quantum: DEFAULT_RR_SWITCH_QUANTUM,
-            rtc_epoch_utc: DEFAULT_RTC_EPOCH_UTC.to_owned(),
             rtc_clock: "vm".to_owned(),
             kernel_cmdline: DEFAULT_KERNEL_CMDLINE.to_owned(),
             scenario_seed: DEFAULT_SCENARIO_SEED,
@@ -244,13 +234,6 @@ impl LaunchProfileCandidate {
     #[must_use]
     pub fn with_rr_switch_quantum(mut self, rr_switch_quantum: u64) -> Self {
         self.rr_switch_quantum = rr_switch_quantum;
-        self
-    }
-
-    /// Returns a candidate with a different RTC epoch.
-    #[must_use]
-    pub fn with_rtc_epoch_utc(mut self, rtc_epoch_utc: impl Into<String>) -> Self {
-        self.rtc_epoch_utc = rtc_epoch_utc.into();
         self
     }
 
@@ -349,7 +332,6 @@ impl LaunchProfileCandidate {
             });
         }
 
-        validate_fixed_text("rtc_epoch_utc", &self.rtc_epoch_utc)?;
         validate_fixed_text("kernel_cmdline", &self.kernel_cmdline)?;
         if self.rtc_clock != "vm" {
             return Err(LaunchProfileError::RtcClockNotVm {
@@ -405,7 +387,6 @@ impl LaunchProfileCandidate {
             smp_vcpus: self.smp_vcpus,
             icount_shift,
             rr_switch_quantum: self.rr_switch_quantum,
-            rtc_epoch_utc: self.rtc_epoch_utc,
             kernel_cmdline: self.kernel_cmdline,
             scenario_seed: self.scenario_seed,
             run_seed: self.run_seed,
@@ -437,35 +418,18 @@ impl NodeIcountShift {
     }
 }
 
-/// A node-local guest-visible clock-skew declaration from scenario launch content.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NodeClockSkewDeclaration {
-    /// The stable scenario node identifier.
-    pub node_id: String,
-    /// The node's guest-visible clock-skew transform.
-    pub skew: NodeClockSkew,
-}
-
-impl NodeClockSkewDeclaration {
-    /// Builds a node-local guest-visible clock-skew declaration.
-    #[must_use]
-    pub fn new(node_id: impl Into<String>, skew: NodeClockSkew) -> Self {
-        Self {
-            node_id: node_id.into(),
-            skew,
-        }
-    }
-}
-
 /// A validated QEMU launch command prepared for process spawning.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuLaunchCommand {
     executable: String,
     args: Vec<String>,
+    vmstate_size_mib: u64,
     vm_hash_material: String,
     gdbstub: Option<QemuGdbstubChannelConfig>,
     qmp: Option<QemuQmpChannelConfig>,
     plugin_coverage: QemuLaunchPluginSwitch,
+    plugin_fault_node_hash: [u8; 32],
+    fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
 }
 
 impl QemuLaunchCommand {
@@ -479,6 +443,12 @@ impl QemuLaunchCommand {
     #[must_use]
     pub fn args(&self) -> &[String] {
         &self.args
+    }
+
+    /// Returns the virtual size required for the exact-VMState qcow2 container.
+    #[must_use]
+    pub(crate) const fn vmstate_size_mib(&self) -> u64 {
+        self.vmstate_size_mib
     }
 
     /// Returns the world-derived VM launch material paired with this command.
@@ -503,6 +473,18 @@ impl QemuLaunchCommand {
     #[must_use]
     pub const fn plugin_coverage(&self) -> QemuLaunchPluginSwitch {
         self.plugin_coverage
+    }
+
+    /// Returns the node identity hash authenticated by the fault bridge.
+    #[must_use]
+    pub const fn plugin_fault_node_hash(&self) -> [u8; 32] {
+        self.plugin_fault_node_hash
+    }
+
+    /// Returns the exact fault manifest bound to this launch identity.
+    #[must_use]
+    pub const fn fault_capability_requirement(&self) -> &crate::QemuFaultCapabilityRequirement {
+        &self.fault_capability_requirement
     }
 
     /// Appends one content-addressed observation-only QEMU plugin.
@@ -540,6 +522,14 @@ impl QemuLaunchCommand {
         lines.push("crucible.qemu-launch-command.v1".to_owned());
         lines.push("command_line_in_hash=executable-and-argv".to_owned());
         lines.push(format!("executable={}", self.executable));
+        lines.push(format!(
+            "fault_capability_manifest_v1={}",
+            lower_hex(self.fault_capability_requirement.digest())
+        ));
+        lines.push(format!(
+            "ready_marker_manifest_v1={}",
+            lower_hex(self.fault_capability_requirement.ready_marker_digest())
+        ));
         for (index, argument) in self.args.iter().enumerate() {
             lines.push(format!("argv[{index}]={argument}"));
         }
@@ -558,6 +548,8 @@ pub struct QemuLaunchCommandBuilder {
     qmp: Option<QemuQmpChannelConfig>,
     translation_prefetch: Option<QemuTranslationPrefetchExperiment>,
     console_capture: bool,
+    fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
+    allow_live_gate_manifest_discovery: bool,
     debug_guest_activation_endpoint: bool,
 }
 
@@ -568,25 +560,66 @@ struct QemuTranslationPrefetchExperiment {
 }
 
 impl QemuLaunchCommandBuilder {
-    /// Builds a command builder for the supplied profile, VM, tools, and plugin config.
+    /// Builds a command builder for an exact World-bound fault manifest.
     #[must_use]
     pub fn new(
         profile: DeterministicLaunchProfile,
         vm: QemuVmLaunchConfig,
         executable: impl Into<String>,
         plugin: QemuLaunchPluginConfig,
+        fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
     ) -> Self {
+        let executable = executable.into();
         Self {
             profile,
             vm,
-            executable: executable.into(),
+            executable,
             plugin,
             gdbstub: None,
             qmp: None,
             translation_prefetch: None,
             console_capture: false,
+            fault_capability_requirement,
+            allow_live_gate_manifest_discovery: false,
             debug_guest_activation_endpoint: false,
         }
+    }
+
+    /// Builds an internal loaded-backend gate command that discovers the live manifest.
+    #[must_use]
+    pub(crate) fn new_for_live_gate(
+        profile: DeterministicLaunchProfile,
+        vm: QemuVmLaunchConfig,
+        executable: impl Into<String>,
+        plugin: QemuLaunchPluginConfig,
+        architecture: LivePluginGuestArchitecture,
+    ) -> Self {
+        let node_name = vm.node_id.as_str();
+        let requirement = crate::QemuFaultCapabilityRequirement::live_gate_v1(
+            architecture,
+            profile.cpu_model.clone(),
+            node_name,
+            vm.crucible_accelerator.is_some(),
+        );
+        let mut builder = Self::new(profile, vm, executable, plugin, requirement);
+        builder.allow_live_gate_manifest_discovery = true;
+        builder
+    }
+
+    /// Builds an internal gate command bound to previously observed exact manifests.
+    pub(crate) fn new_for_exact_live_gate(
+        profile: DeterministicLaunchProfile,
+        vm: QemuVmLaunchConfig,
+        executable: impl Into<String>,
+        plugin: QemuLaunchPluginConfig,
+        requirement: crate::QemuFaultCapabilityRequirement,
+    ) -> Result<Self, QemuLaunchCommandError> {
+        if !requirement.is_exact_live_gate_bound() {
+            return Err(QemuLaunchCommandError::InvalidFaultCapabilityRequirement);
+        }
+        let mut builder = Self::new(profile, vm, executable, plugin, requirement);
+        builder.allow_live_gate_manifest_discovery = true;
+        Ok(builder)
     }
 
     /// Returns a builder that enables the debug-session gdbstub channel.
@@ -653,6 +686,59 @@ impl QemuLaunchCommandBuilder {
         validate_store_path("qemu_executable", &self.executable)?;
         self.vm.validate()?;
         self.plugin.validate()?;
+        let fault_capability_requirement = self.fault_capability_requirement;
+        let required_target = fault_capability_requirement
+            .target_manifest()
+            .ok_or(QemuLaunchCommandError::InvalidFaultCapabilityRequirement)?;
+        if !self.allow_live_gate_manifest_discovery
+            && (!fault_capability_requirement.is_world_bound()
+                || required_target.exact_register_manifest().is_none())
+        {
+            return Err(QemuLaunchCommandError::UnboundFaultCapabilityRequirement);
+        }
+        if required_target.node_hash() != crate::qemu_fault_target_hash(&self.vm.node_id)
+            || required_target.node_hash() != self.plugin.fault_node_hash()
+        {
+            return Err(QemuLaunchCommandError::FaultCapabilityNodeMismatch);
+        }
+        if self.vm.crucible_accelerator.is_some()
+            != required_target.exact_accelerator_manifest().is_some()
+        {
+            return Err(QemuLaunchCommandError::AcceleratorCapabilityMismatch);
+        }
+        let executable_architecture = if self.executable.ends_with("qemu-system-x86_64") {
+            crucible_shmem::FaultCapabilityScope::X86_64
+        } else if self.executable.ends_with("qemu-system-aarch64") {
+            crucible_shmem::FaultCapabilityScope::Aarch64
+        } else {
+            return Err(
+                QemuLaunchCommandError::UnsupportedFaultCapabilityArchitecture {
+                    executable: self.executable.clone(),
+                },
+            );
+        };
+        if required_target.architecture() != executable_architecture {
+            return Err(QemuLaunchCommandError::FaultCapabilityArchitectureMismatch);
+        }
+        let configured_cpu = self
+            .profile
+            .cpu_model
+            .split(',')
+            .next()
+            .unwrap_or(&self.profile.cpu_model);
+        let expected_suffix = match required_target.architecture() {
+            crucible_shmem::FaultCapabilityScope::X86_64 => "-x86_64-cpu",
+            crucible_shmem::FaultCapabilityScope::Aarch64 => "-arm-cpu",
+            _ => return Err(QemuLaunchCommandError::InvalidFaultCapabilityRequirement),
+        };
+        let realized_cpu = if configured_cpu.ends_with(expected_suffix) {
+            configured_cpu.to_owned()
+        } else {
+            format!("{configured_cpu}{expected_suffix}")
+        };
+        if required_target.realized_cpu_type() != realized_cpu {
+            return Err(QemuLaunchCommandError::FaultCapabilityCpuModelMismatch);
+        }
         if let Some(gdbstub) = &self.gdbstub {
             gdbstub.validate()?;
         }
@@ -665,11 +751,15 @@ impl QemuLaunchCommandBuilder {
             return Err(QemuLaunchCommandError::InvalidTranslationPrefetchReportPath);
         }
 
+        let vmstate_size_mib = u64::from(self.profile.memory_mib) + 512;
         let mut vm_hash_material = self.vm.launch_hash_material();
         if self.debug_guest_activation_endpoint {
             vm_hash_material.push_str("\ndebug_guest_activation_endpoint=fixed-inert-v1");
         }
         let mut args = self.profile.canonical_qemu_args();
+        if self.vm.kernel().is_none() {
+            remove_option_with_value(&mut args, "-append")?;
+        }
         if self.console_capture {
             replace_option_value(
                 &mut args,
@@ -725,12 +815,22 @@ impl QemuLaunchCommandBuilder {
         Ok(QemuLaunchCommand {
             executable: self.executable,
             args,
+            vmstate_size_mib,
             vm_hash_material,
             gdbstub: self.gdbstub,
             qmp: self.qmp,
             plugin_coverage: self.plugin.coverage(),
+            plugin_fault_node_hash: self.plugin.fault_node_hash(),
+            fault_capability_requirement,
         })
     }
+}
+
+fn lower_hex(bytes: [u8; 32]) -> String {
+    bytes
+        .into_iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn replace_option_value(
@@ -745,6 +845,20 @@ fn replace_option_value(
         return Err(QemuLaunchCommandError::InvalidLaunchText { field: option });
     };
     *value = replacement.to_owned();
+    Ok(())
+}
+
+fn remove_option_with_value(
+    args: &mut Vec<String>,
+    option: &'static str,
+) -> Result<(), QemuLaunchCommandError> {
+    let Some(index) = args.iter().position(|argument| argument == option) else {
+        return Err(QemuLaunchCommandError::InvalidLaunchText { field: option });
+    };
+    if index.saturating_add(1) >= args.len() {
+        return Err(QemuLaunchCommandError::InvalidLaunchText { field: option });
+    }
+    args.drain(index..=index + 1);
     Ok(())
 }
 
@@ -805,7 +919,7 @@ impl QemuRootImageFormat {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuVmLaunchConfig {
     node_id: String,
-    kernel: QemuLaunchArtifact,
+    kernel: Option<QemuLaunchArtifact>,
     root_image: Option<QemuLaunchArtifact>,
     firmware: Option<QemuLaunchArtifact>,
     initrd: Option<QemuLaunchArtifact>,
@@ -814,6 +928,7 @@ pub struct QemuVmLaunchConfig {
     crucible_shmem_block: Option<CrucibleShmemBlockDevice>,
     crucible_shmem_9p: Option<CrucibleShmem9pDevice>,
     crucible_shmem_network: Option<CrucibleShmemNetworkDevice>,
+    crucible_accelerator: Option<CrucibleAcceleratorDevice>,
 }
 
 impl QemuVmLaunchConfig {
@@ -826,7 +941,7 @@ impl QemuVmLaunchConfig {
     ) -> Self {
         Self {
             node_id: node_id.into(),
-            kernel,
+            kernel: Some(kernel),
             root_image: Some(root_image),
             firmware: None,
             initrd: None,
@@ -835,6 +950,7 @@ impl QemuVmLaunchConfig {
             crucible_shmem_block: None,
             crucible_shmem_9p: None,
             crucible_shmem_network: None,
+            crucible_accelerator: None,
         }
     }
 
@@ -851,7 +967,7 @@ impl QemuVmLaunchConfig {
     ) -> Self {
         Self {
             node_id: node_id.into(),
-            kernel,
+            kernel: Some(kernel),
             root_image: None,
             firmware: Some(firmware),
             initrd: None,
@@ -860,6 +976,29 @@ impl QemuVmLaunchConfig {
             crucible_shmem_block: None,
             crucible_shmem_9p: None,
             crucible_shmem_network: None,
+            crucible_accelerator: None,
+        }
+    }
+
+    /// Builds a firmware-only VM launch config with no direct kernel payload.
+    ///
+    /// Firmware selects and boots attached devices using their ordinary QEMU
+    /// front-ends. This is useful for boot-path validation where `-kernel` would
+    /// bypass firmware disk discovery.
+    #[must_use]
+    pub fn new_firmware_boot(node_id: impl Into<String>, firmware: QemuLaunchArtifact) -> Self {
+        Self {
+            node_id: node_id.into(),
+            kernel: None,
+            root_image: None,
+            firmware: Some(firmware),
+            initrd: None,
+            root_image_format: QemuRootImageFormat::Qcow2,
+            root_overlay_file_name: DEFAULT_ROOT_OVERLAY_FILE_NAME.to_owned(),
+            crucible_shmem_block: None,
+            crucible_shmem_9p: None,
+            crucible_shmem_network: None,
+            crucible_accelerator: None,
         }
     }
 
@@ -893,9 +1032,10 @@ impl QemuVmLaunchConfig {
 
     /// Returns a config that attaches a crucible-shmem virtio-blk device.
     ///
-    /// The device is opened through the legacy `-drive driver=crucible-shmem`
-    /// interface and backed by the host I/O sub-node over the `SLOT_BLK_IO`
-    /// shared-memory rings. A config without one emits byte-identical argv.
+    /// The device is opened through the typed `-blockdev
+    /// driver=crucible-shmem` interface and backed by the host I/O sub-node over
+    /// the `SLOT_BLK_IO` shared-memory rings. A config without one emits
+    /// byte-identical argv.
     #[must_use]
     pub fn with_crucible_shmem_block(mut self, device: CrucibleShmemBlockDevice) -> Self {
         self.crucible_shmem_block = Some(device);
@@ -941,16 +1081,29 @@ impl QemuVmLaunchConfig {
         self.crucible_shmem_network.as_ref()
     }
 
+    /// Returns a config with a deterministic accelerator co-simulation device.
+    #[must_use]
+    pub fn with_crucible_accelerator(mut self, device: CrucibleAcceleratorDevice) -> Self {
+        self.crucible_accelerator = Some(device);
+        self
+    }
+
+    /// Returns the attached deterministic accelerator, if present.
+    #[must_use]
+    pub const fn crucible_accelerator(&self) -> Option<&CrucibleAcceleratorDevice> {
+        self.crucible_accelerator.as_ref()
+    }
+
     /// Returns the static scenario node identifier.
     #[must_use]
     pub fn node_id(&self) -> &str {
         &self.node_id
     }
 
-    /// Returns the content-addressed kernel artifact.
+    /// Returns the directly loaded kernel artifact, if one is configured.
     #[must_use]
-    pub const fn kernel(&self) -> &QemuLaunchArtifact {
-        &self.kernel
+    pub const fn kernel(&self) -> Option<&QemuLaunchArtifact> {
+        self.kernel.as_ref()
     }
 
     /// Returns the content-addressed root-image artifact, if the launch has a disk.
@@ -977,9 +1130,17 @@ impl QemuVmLaunchConfig {
         let mut lines = vec![
             "crucible.qemu-vm-launch.v1".to_owned(),
             format!("node_id={}", self.node_id),
-            format!("kernel_hash={}", content_hash_hex(self.kernel.content_hash)),
-            format!("kernel_path={}", self.kernel.path),
         ];
+        match &self.kernel {
+            Some(kernel) => {
+                lines.push(format!(
+                    "kernel_hash={}",
+                    content_hash_hex(kernel.content_hash)
+                ));
+                lines.push(format!("kernel_path={}", kernel.path));
+            }
+            None => lines.push("kernel=firmware-boot".to_owned()),
+        }
         if let Some(firmware) = &self.firmware {
             lines.push(format!(
                 "firmware_hash={}",
@@ -1026,15 +1187,26 @@ impl QemuVmLaunchConfig {
         if let Some(device) = &self.crucible_shmem_network {
             device.append_hash_material(&mut lines);
         }
+        if let Some(device) = &self.crucible_accelerator {
+            device.append_hash_material(&mut lines);
+        }
         lines.join("\n")
     }
 
     fn qemu_args(&self) -> Vec<String> {
         let mut args = Vec::new();
+        args.extend([
+            "-blockdev".to_owned(),
+            format!(
+                "driver=qcow2,node-name={VMSTATE_DRIVE_ID},file.driver=file,file.filename={DEFAULT_VMSTATE_FILE_NAME}"
+            ),
+        ]);
         if let Some(firmware) = &self.firmware {
             args.extend(["-bios".to_owned(), firmware.path.clone()]);
         }
-        args.extend(["-kernel".to_owned(), self.kernel.path.clone()]);
+        if let Some(kernel) = &self.kernel {
+            args.extend(["-kernel".to_owned(), kernel.path.clone()]);
+        }
         if let Some(root_image) = &self.root_image {
             args.extend([
                 "-drive".to_owned(),
@@ -1060,12 +1232,17 @@ impl QemuVmLaunchConfig {
         if let Some(device) = &self.crucible_shmem_network {
             device.append_qemu_args(&mut args);
         }
+        if let Some(device) = &self.crucible_accelerator {
+            device.append_qemu_args(&mut args);
+        }
         args
     }
 
     fn validate(&self) -> Result<(), QemuLaunchCommandError> {
         validate_launch_text("node_id", &self.node_id)?;
-        self.kernel.validate("kernel_path")?;
+        if let Some(kernel) = &self.kernel {
+            kernel.validate("kernel_path")?;
+        }
         if let Some(firmware) = &self.firmware {
             firmware.validate("firmware_path")?;
         }
@@ -1074,6 +1251,9 @@ impl QemuVmLaunchConfig {
             validate_overlay_file_name(&self.root_overlay_file_name)?;
         }
         if let Some(initrd) = &self.initrd {
+            if self.kernel.is_none() {
+                return Err(QemuLaunchCommandError::InitrdWithoutKernel);
+            }
             initrd.validate("initrd_path")?;
         }
         if let Some(device) = &self.crucible_shmem_block {
@@ -1083,6 +1263,9 @@ impl QemuVmLaunchConfig {
             device.validate()?;
         }
         if let Some(device) = &self.crucible_shmem_network {
+            device.validate()?;
+        }
+        if let Some(device) = &self.crucible_accelerator {
             device.validate()?;
         }
         Ok(())
@@ -1098,7 +1281,6 @@ pub struct DeterministicLaunchProfile {
     smp_vcpus: u16,
     icount_shift: u8,
     rr_switch_quantum: u64,
-    rtc_epoch_utc: String,
     kernel_cmdline: String,
     scenario_seed: u64,
     run_seed: u64,
@@ -1117,6 +1299,12 @@ impl DeterministicLaunchProfile {
     /// away from the deterministic Contract-A requirements.
     pub fn conservative_default() -> Result<Self, LaunchProfileError> {
         LaunchProfileCandidate::default().try_into_deterministic()
+    }
+
+    /// Returns the canonical CPU-model identity pinned by this profile.
+    #[must_use]
+    pub(crate) fn cpu_model(&self) -> &str {
+        &self.cpu_model
     }
 
     /// Returns the QEMU arguments that pin the deterministic launch surface.
@@ -1165,7 +1353,7 @@ impl DeterministicLaunchProfile {
                 self.icount_shift, self.rr_switch_quantum
             ),
             "-rtc".to_owned(),
-            format!("base={},clock=vm", self.rtc_epoch_utc),
+            format!("base={DEFAULT_RTC_EPOCH_UTC},clock=vm"),
             "-seed".to_owned(),
             self.run_seed.to_string(),
             "-fw_cfg".to_owned(),
@@ -1186,15 +1374,40 @@ impl DeterministicLaunchProfile {
     ///
     /// # Errors
     ///
-    /// Returns [`QemuLaunchCommandError`] when command construction or final
-    /// pre-spawn validation fails.
+    /// Returns [`QemuLaunchCommandError`] when the World manifest is invalid,
+    /// any node, architecture, or CPU identity differs, command construction
+    /// fails, or final pre-spawn validation rejects the command.
     pub fn qemu_launch_command(
         &self,
         vm: QemuVmLaunchConfig,
         executable: impl Into<String>,
         plugin: QemuLaunchPluginConfig,
+        node: &crucible::model::WorldNodeFaultCapabilities,
     ) -> Result<QemuLaunchCommand, QemuLaunchCommandError> {
-        QemuLaunchCommandBuilder::new(self.clone(), vm, executable, plugin).build()
+        let requirement = crate::QemuFaultCapabilityRequirement::current_v1_for_node(node)
+            .map_err(|_source| QemuLaunchCommandError::InvalidFaultCapabilityRequirement)?;
+        QemuLaunchCommandBuilder::new(self.clone(), vm, executable, plugin, requirement).build()
+    }
+
+    /// Builds a loaded-backend gate command with live manifest discovery.
+    ///
+    /// This crate-private path exists only for gates whose purpose is to query
+    /// the real QEMU backend. Production launches use [`Self::qemu_launch_command`].
+    pub(crate) fn qemu_launch_command_for_live_gate(
+        &self,
+        vm: QemuVmLaunchConfig,
+        executable: impl Into<String>,
+        plugin: QemuLaunchPluginConfig,
+        architecture: LivePluginGuestArchitecture,
+    ) -> Result<QemuLaunchCommand, QemuLaunchCommandError> {
+        QemuLaunchCommandBuilder::new_for_live_gate(
+            self.clone(),
+            vm,
+            executable,
+            plugin,
+            architecture,
+        )
+        .build()
     }
 
     /// Returns canonical material that must be included in the scenario hash.
@@ -1219,7 +1432,7 @@ impl DeterministicLaunchProfile {
             "virtual_time_ns=icount<<shift".to_owned(),
             "per_vcpu_cpu_model=uniform".to_owned(),
             "per_vcpu_tsc_source=node-icount".to_owned(),
-            format!("rtc_epoch_utc={}", self.rtc_epoch_utc),
+            format!("rtc_epoch_utc={DEFAULT_RTC_EPOCH_UTC}"),
             "rtc_clock=vm".to_owned(),
             "guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time".to_owned(),
             "guest_time_epoch=fixed-rtc-epoch".to_owned(),
@@ -1288,34 +1501,6 @@ impl DeterministicLaunchProfile {
         let node_shift_lines = canonical_node_icount_shift_lines(self.icount_shift, node_shifts)?;
         let mut material = self.scenario_hash_material();
         for line in node_shift_lines {
-            material.push('\n');
-            material.push_str(&line);
-        }
-        Ok(material)
-    }
-
-    /// Returns canonical scenario hash material after validating node timing declarations.
-    ///
-    /// Node declarations are sorted by node identifier before they enter the
-    /// material so callers do not have to preserve a host-dependent iteration
-    /// order. Perfect clock-skew declarations are omitted, making explicit
-    /// perfect clocks byte-identical to no skew declarations.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LaunchProfileError`] when a node identifier is not stable text,
-    /// a node timing declaration is duplicated, a node shift is unsupported or
-    /// mismatches the profile, or a node clock-skew declaration uses an invalid
-    /// drift rate.
-    pub fn scenario_hash_material_for_node_timing(
-        &self,
-        node_shifts: &[NodeIcountShift],
-        node_clock_skews: &[NodeClockSkewDeclaration],
-    ) -> Result<String, LaunchProfileError> {
-        let node_shift_lines = canonical_node_icount_shift_lines(self.icount_shift, node_shifts)?;
-        let node_skew_lines = canonical_node_clock_skew_lines(node_clock_skews)?;
-        let mut material = self.scenario_hash_material();
-        for line in node_shift_lines.into_iter().chain(node_skew_lines) {
             material.push('\n');
             material.push_str(&line);
         }

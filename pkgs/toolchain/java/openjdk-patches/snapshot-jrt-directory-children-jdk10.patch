@@ -1,0 +1,17 @@
+--- a/src/java.base/share/classes/jdk/internal/jrtfs/JrtFileSystem.java
++++ b/src/java.base/share/classes/jdk/internal/jrtfs/JrtFileSystem.java
+@@ -230,12 +230,12 @@ class JrtFileSystem extends FileSystem {
+             throw new NotDirectoryException(path.getName());
+         }
+         if (filter == null) {
+-            return node.getChildren()
++            return new ArrayList<>(node.getChildren())
+                        .stream()
+                        .map(child -> (Path)(path.resolve(new JrtPath(this, child.getNameString()).getFileName())))
+                        .iterator();
+         }
+-        return node.getChildren()
++        return new ArrayList<>(node.getChildren())
+                    .stream()
+                    .map(child -> (Path)(path.resolve(new JrtPath(this, child.getNameString()).getFileName())))
+                    .filter(p ->  { try { return filter.accept(p);

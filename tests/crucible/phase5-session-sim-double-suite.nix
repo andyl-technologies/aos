@@ -7,11 +7,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
@@ -177,10 +173,6 @@
         needle = "SimulationBackend::fingerprint";
       }
       {
-        label = "session loop exercises backend input control";
-        needle = "BackendEffect::DeliverInput";
-      }
-      {
         label = "session gate uses in-process quantum loop";
         needle = "SimDoubleQuantumLoop::new";
       }
@@ -198,11 +190,7 @@
       }
       {
         label = "session gate covers snapshot";
-        needle = "SessionCommand::Snapshot";
-      }
-      {
-        label = "session gate covers inject";
-        needle = "SessionCommand::Inject";
+        needle = "SessionCommand::query_snapshot()";
       }
       {
         label = "session gate covers query";
@@ -215,6 +203,12 @@
       {
         label = "session gate covers stop";
         needle = "SessionCommand::Stop";
+      }
+    ]
+    ++ failuresFor "crates/crucible-session/src" sessionLib [
+      {
+        label = "session loop retains typed backend input control";
+        needle = "ScheduledEventPayload::BackendInput(BackendInput {";
       }
     ]
     ++ forbiddenFor "crates/crucible-session/tests/gate_control_responsive.rs" sessionGateTest qemuBackendForbidden

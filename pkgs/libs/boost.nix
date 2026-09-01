@@ -6,10 +6,26 @@
   bash,
   which,
   bzip2,
+  xz,
   zlib,
+  buildPackages,
+  stdenv,
 }: let
   version = "1.87.0";
   underscoreVersion = "1_87_0";
+  selectedLibraryFlags = "--with-system --with-filesystem --with-regex --with-container --with-context --with-coroutine --with-thread --with-chrono --with-date_time --with-program_options --with-iostreams --with-serialization --with-log --with-atomic --with-random";
+  darwinTargetFlags =
+    if stdenv.hostPlatform.isDarwin
+    then "target-os=darwin binary-format=mach-o architecture=${
+      if stdenv.hostPlatform.isAarch64
+      then "arm"
+      else "x86"
+    } address-model=64 abi=${
+      if stdenv.hostPlatform.isAarch64
+      then "aapcs"
+      else "sysv"
+    }"
+    else "";
 in
   mkDerivation {
     pname = "boost";
@@ -20,7 +36,7 @@ in
     # Boost is overwhelmingly headers, so a consumer that only links it at
     # runtime (nix) keeps the header tree out of its runtime closure by using
     # `boost` for libs and `boost.dev` for build-time includes.
-    outputs = ["out" "dev"];
+    outputs = ["out" "dev" "tools"];
 
     src = fetchurl {
       urls = [
@@ -34,10 +50,16 @@ in
       bash
       which
     ];
-    runtimeDeps = [
-      bzip2
-      zlib
-    ];
+    runtimeDeps =
+      [
+        bzip2
+        zlib
+      ]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [xz]
+        else []
+      );
     propagatedDeps = [];
 
     phases = [
@@ -51,25 +73,41 @@ in
       {
         name = "configure";
         script = ''
-          # Patch shebangs: /usr/bin/env doesn't exist in the Nix sandbox
+          # Build helpers must use the native shell.  A cross build cannot
+          # execute the Bash that belongs in the Darwin target package set.
           find . -type f \( -name "*.sh" -o -name "bootstrap*" \) -print0 | \
-            xargs -0 sed -i "1s|^#!/usr/bin/env sh|#!/bin/sh|"
+            xargs -0 sed -i "1s|^#!/usr/bin/env sh|#!$CONFIG_SHELL|"
           find . -type f \( -name "*.sh" -o -name "bootstrap*" \) -print0 | \
-            xargs -0 sed -i "1s|^#!/usr/bin/env bash|#!${bash}/bin/bash|"
+            xargs -0 sed -i "1s|^#!/usr/bin/env bash|#!$CONFIG_SHELL|"
           find . -type f \( -name "*.sh" -o -name "bootstrap*" \) -print0 | \
-            xargs -0 sed -i "1s|^#!/bin/bash|#!${bash}/bin/bash|"
+            xargs -0 sed -i "1s|^#!/bin/bash|#!$CONFIG_SHELL|"
 
-          ${bash}/bin/bash ./bootstrap.sh \
-            --prefix=$out \
-            --with-libraries=system,filesystem,regex,container,context,coroutine,thread,chrono,date_time,program_options,iostreams,serialization,log,atomic,random \
-            --with-toolset=gcc
+          ${
+            if stdenv.isCross
+            then ''
+              cp ${buildPackages.boost.tools}/bin/b2 ./b2
+              cat > user-config.jam <<EOF
+              using clang : : ${stdenv.cc}/bin/clang++ ;
+              EOF
+            ''
+            else ''
+              "$CONFIG_SHELL" ./bootstrap.sh \
+                --prefix=$out \
+                --with-libraries=system,filesystem,regex,container,context,coroutine,thread,chrono,date_time,program_options,iostreams,serialization,log,atomic,random \
+                --with-toolset=gcc
+            ''
+          }
         '';
       }
       {
         name = "build";
         script = ''
           ./b2 -j$NIX_BUILD_CORES \
-            toolset=gcc \
+            ${
+            if stdenv.hostPlatform.isDarwin
+            then "--user-config=$PWD/user-config.jam toolset=clang ${selectedLibraryFlags} ${darwinTargetFlags}"
+            else "toolset=gcc"
+          } \
             variant=release \
             link=shared \
             runtime-link=shared \
@@ -78,7 +116,12 @@ in
             -sZLIB_INCLUDE=${zlib}/include \
             -sZLIB_LIBRARY_PATH=${zlib}/lib \
             -sBZIP2_INCLUDE=${bzip2}/include \
-            -sBZIP2_LIBRARY_PATH=${bzip2}/lib
+            -sBZIP2_LIBRARY_PATH=${bzip2}/lib \
+            ${
+            if stdenv.hostPlatform.isDarwin
+            then "-sLZMA_INCLUDE=${xz}/include -sLZMA_LIBRARY_PATH=${xz}/lib"
+            else ""
+          }
         '';
       }
       {
@@ -92,7 +135,11 @@ in
             --prefix=$dev \
             --includedir=$dev/include \
             --libdir=$out/lib \
-            toolset=gcc \
+            ${
+            if stdenv.hostPlatform.isDarwin
+            then "--user-config=$PWD/user-config.jam toolset=clang ${selectedLibraryFlags} ${darwinTargetFlags}"
+            else "toolset=gcc"
+          } \
             variant=release \
             link=shared \
             runtime-link=shared \
@@ -101,6 +148,11 @@ in
           if [ -d "$out/lib/cmake" ]; then
             mkdir -p "$dev/lib"
             mv "$out/lib/cmake" "$dev/lib/cmake"
+          fi
+
+          mkdir -p "$tools/bin"
+          if [ -z "''${AOS_CROSS_COMPILING:-}" ]; then
+            cp ./b2 "$tools/bin/b2"
           fi
         '';
       }

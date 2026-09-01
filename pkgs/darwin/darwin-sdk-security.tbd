@@ -1,0 +1,98 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ x86_64-macos, arm64-macos ]
+install-name: '/System/Library/Frameworks/Security.framework/Versions/A/Security'
+current-version: 61123.0.0
+compatibility-version: 1.0.0
+exports:
+  - targets: [ x86_64-macos, arm64-macos ]
+    symbols:
+      - _SSLClose
+      - _SSLCopyALPNProtocols
+      - _SSLCopyPeerTrust
+      - _SSLCreateContext
+      - _SSLGetBufferedReadSize
+      - _SSLGetNegotiatedCipher
+      - _SSLGetNegotiatedProtocolVersion
+      - _SSLGetNumberSupportedCiphers
+      - _SSLGetSupportedCiphers
+      - _SSLHandshake
+      - _SSLRead
+      - _SSLSetALPNProtocols
+      - _SSLSetCertificate
+      - _SSLSetConnection
+      - _SSLSetEnabledCiphers
+      - _SSLSetIOFuncs
+      - _SSLSetPeerID
+      - _SSLSetPeerDomainName
+      - _SSLSetProtocolVersionMax
+      - _SSLSetProtocolVersionMin
+      - _SSLSetSessionOption
+      - _SSLWrite
+      - _SessionGetInfo
+      - _SecCertificateCopyCommonName
+      - _SecCertificateCopyData
+      - _SecCertificateCopyLongDescription
+      - _SecCertificateCopySubjectSummary
+      - _SecCertificateCreateWithData
+      - _SecCertificateGetData
+      - _SecCertificateGetTypeID
+      - _SecCopyErrorMessageString
+      - _SecItemCopyMatching
+      - _SecItemImport
+      - _SecIdentityCopyCertificate
+      - _SecIdentityCopyPrivateKey
+      - _SecIdentityCreateWithCertificate
+      - _SecIdentitySearchCopyNext
+      - _SecIdentitySearchCreate
+      - _SecKeyCopyExternalRepresentation
+      - _SecKeychainItemExport
+      - _SecKeychainItemImport
+      - _SecKeychainAddGenericPassword
+      - _SecKeychainCopyDefault
+      - _SecKeychainFindGenericPassword
+      - _SecKeychainOpen
+      - _SecKeychainItemDelete
+      - _SecKeychainItemFreeContent
+      - _SecKeychainItemCopyContent
+      - _SecKeychainItemModifyContent
+      - _SecKeychainItemModifyAttributesAndData
+      - _SecKeychainSearchCopyNext
+      - _SecKeychainSearchCreateFromAttributes
+      - _SecTaskCopySigningIdentifier
+      - _SecTaskCopyValueForEntitlement
+      - _SecTaskCopyValuesForEntitlements
+      - _SecTaskCreateFromSelf
+      - _SecTaskCreateWithAuditToken
+      - _SecTaskGetTypeID
+      - _SecPolicyCopyProperties
+      - _SecPolicyCreateSSL
+      - _SecPolicySearchCopyNext
+      - _SecPolicySearchCreate
+      - _SecTrustCopyAnchorCertificates
+      - _SecTrustCreateWithCertificates
+      - _SecTrustEvaluate
+      - _SecTrustEvaluateWithError
+      - _SecTrustGetCertificateAtIndex
+      - _SecTrustGetCertificateCount
+      - _SecTrustGetResult
+      - _SecTrustCopyPublicKey
+      - _SecTrustSetAnchorCertificates
+      - _SecTrustSetAnchorCertificatesOnly
+      - _SecTrustSettingsCopyCertificates
+      - _SecTrustSettingsCopyTrustSettings
+      - _kSecClass
+      - _kSecAttrLabel
+      - _kSecClassCertificate
+      - _kSecClassIdentity
+      - _kSecImportItemIdentity
+      - _kSecMatchLimit
+      - _kSecMatchLimitAll
+      - _kSecMatchSearchList
+      - _kSecMatchPolicy
+      - _kSecPolicyAppleSSL
+      - _kSecPolicyOid
+      - _kSecReturnRef
+      - _CSSMOID_APPLE_X509_BASIC
+      - _cssmPerror
+...

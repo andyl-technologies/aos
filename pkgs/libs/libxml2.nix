@@ -4,6 +4,8 @@
   fetchurl,
   gnumake,
   zlib,
+  bash,
+  stdenv,
 }: let
   version = "2.12.9";
 in
@@ -19,44 +21,74 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [zlib];
+    runtimeDeps =
+      [zlib]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [bash]
+        else []
+      );
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd libxml2-${version}
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          ./configure \
-            --prefix=$out \
-            --disable-static \
-            --enable-shared \
-            --with-zlib=${zlib} \
-            --without-python \
-            --without-icu \
-            --without-lzma \
-            --without-readline \
-            --without-history
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          make -j$NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          make install
-        '';
-      }
-    ];
+    phases =
+      [
+        {
+          name = "unpack";
+          script = ''
+            tar xf $src
+            cd libxml2-${version}
+          '';
+        }
+      ]
+      ++ (
+        if stdenv.isCross && stdenv.hostPlatform.isDarwin
+        then [
+          {
+            name = "darwin-build-paths";
+            script = ''
+              export CFLAGS="$CFLAGS \
+                -ffile-prefix-map=$PWD=. \
+                -fdebug-prefix-map=$PWD=."
+            '';
+          }
+        ]
+        else []
+      )
+      ++ [
+        {
+          name = "configure";
+          script = ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --disable-static \
+              --enable-shared \
+              --with-zlib=${zlib} \
+              --without-python \
+              --without-icu \
+              --without-lzma \
+              --without-readline \
+              --without-history
+          '';
+        }
+        {
+          name = "build";
+          script = ''
+            make -j$NIX_BUILD_CORES
+          '';
+        }
+        {
+          name = "install";
+          script =
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              make install
+              sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/xml2-config"
+            ''
+            else ''
+              make install
+            '';
+        }
+      ];
 
     meta = {
       description = "libxml2 — XML C parser and toolkit";

@@ -6,11 +6,7 @@
   openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   deterministicLaunch = import ./phase1-deterministic-launch.nix {inherit pkgs lib;};
   noWarpWithPlugin = import ./phase1-no-warp-with-plugin.nix {inherit pkgs lib;};

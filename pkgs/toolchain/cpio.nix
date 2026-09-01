@@ -34,6 +34,7 @@ in
         name = "build";
         script = ''
           $CONFIG_SHELL ./configure \
+            $configureFlags \
             --prefix=$out \
             --disable-nls
           make -j$NIX_BUILD_CORES

@@ -5,11 +5,7 @@
   taskIds ? ["T-WL-4"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   workloadDoc = builtins.readFile ../../docs/rfcs/0010-crucible/33-examples-and-workloads.md;
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
@@ -110,12 +106,8 @@
         needle = "Action::start_node(burst_node)";
       }
       {
-        label = "StartNode burst holds node inactive";
-        needle = "MembershipFault::NotYetJoined";
-      }
-      {
-        label = "fault-plan campaign primitive";
-        needle = "Plan::from_fault_plan_for_world(&world, FaultPlan::from_entries(entries))";
+        label = "signal-driven campaign primitive";
+        needle = "Plan::empty().with_fault_signals_for_world(&world, fault_signals)";
       }
       {
         label = "load-pattern validator";
@@ -190,7 +182,7 @@
       }
       {
         label = "correlated failure fixture test";
-        needle = "correlated_failure_fixture_is_fault_plan_campaign";
+        needle = "correlated_failure_fixture_uses_one_signal_for_both_nodes";
       }
       {
         label = "scenario identity fixture test";
@@ -325,7 +317,7 @@ in
             spike_modes=virtual_time_rate,start_node_burst
             load_pattern_delivery=black-box-cmdline
             load_generation_subsystem=false
-            correlated_failure_plan=FaultPlan
+            correlated_failure_plan=FaultSignalPlan
             RESULT
           '';
         }

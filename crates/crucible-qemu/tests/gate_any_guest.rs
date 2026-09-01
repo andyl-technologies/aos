@@ -19,6 +19,9 @@ use crucible_qemu::{
     run_single_vm_fingerprint_gate, validate_x86_whitebox_hmp_mtree,
 };
 
+#[path = "support/mod.rs"]
+mod support;
+
 #[test]
 fn gate_any_guest_launch_profile_requires_host_side_guest_operation() {
     let profile = LaunchProfileCandidate::default()
@@ -74,13 +77,25 @@ fn gate_any_guest_whitebox_switch_is_host_plugin_configuration_without_agent_con
     let report = run_single_vm_fingerprint_gate(&mut runner, &scenario).unwrap_or_else(|error| {
         panic!("host-plugin off/on no-agent stream contract should hold: {error}")
     });
+    let fault_hash = whitebox_plugin_config(
+        "/nix/store/plugin/lib/libcrucible_qemu_plugin.so",
+        QemuLaunchPluginSwitch::Off,
+    )
+    .fault_node_hash()
+    .iter()
+    .map(|byte| format!("{byte:02x}"))
+    .collect::<String>();
 
     assert_eq!(report.sample_count, 3);
     assert_eq!(
         runner.plugin_args,
         vec![
-            "simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off",
-            "simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=on,coverage=off,whitebox_setup=x86-port-00e7-unclaimed-v1",
+            format!(
+                "simfd=3,slot=0,fault_node_hash={fault_hash},process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,shmemfd=4,wakefd=5,whitebox=off,coverage=off"
+            ),
+            format!(
+                "simfd=3,slot=0,fault_node_hash={fault_hash},process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,shmemfd=4,wakefd=5,whitebox=on,coverage=off,whitebox_setup=x86-port-00e7-unclaimed-v1"
+            ),
         ]
     );
     compare_single_vm_fingerprint_streams(
@@ -180,13 +195,16 @@ fn launch_command(whitebox: QemuLaunchPluginSwitch) -> QemuLaunchCommand {
         vm,
         "/nix/store/qemu/bin/qemu-system-x86_64",
         plugin,
+        support::x86_fault_requirement("any-guest-node", "qemu64-x86_64-cpu"),
     )
     .build()
     .unwrap_or_else(|error| panic!("launch command should build: {error}"))
 }
 
 fn whitebox_plugin_config(path: &str, whitebox: QemuLaunchPluginSwitch) -> QemuLaunchPluginConfig {
-    let config = QemuLaunchPluginConfig::new(path, 0).with_whitebox(whitebox);
+    let config = QemuLaunchPluginConfig::new(path, 0)
+        .with_fault_target_node("any-guest-node")
+        .with_whitebox(whitebox);
     if whitebox == QemuLaunchPluginSwitch::Off {
         return config;
     }

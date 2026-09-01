@@ -70,6 +70,7 @@ pub async fn run_push(
     file: Option<&str>,
     attr: Option<&str>,
     expr: Option<&str>,
+    target: Option<&str>,
     jobs: usize,
     max_bandwidth: Option<&str>,
     batch_threshold: &str,
@@ -83,7 +84,7 @@ pub async fn run_push(
 
     // 1. Resolve installables to store paths.
     printer.info("Resolving installables...");
-    let store_paths = resolve_installables(&nix, installables, file, attr, expr)?;
+    let store_paths = resolve_installables(&nix, installables, file, attr, expr, target)?;
 
     // 2. Enumerate closure — one `nix-store -qR` over all installables rather
     //    than one subprocess per path.

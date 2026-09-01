@@ -24,10 +24,6 @@ impl ScenarioBinaryWriter {
         self.bytes.extend_from_slice(&value.to_le_bytes());
     }
 
-    pub(super) fn write_i64(&mut self, value: i64) {
-        self.bytes.extend_from_slice(&value.to_le_bytes());
-    }
-
     pub(super) fn write_count(&mut self, count: usize) {
         self.write_u64(count as u64);
     }
@@ -121,13 +117,6 @@ impl<'a> ScenarioBinaryReader<'a> {
         Ok(u64::from_le_bytes(fixed))
     }
 
-    pub(super) fn read_i64(&mut self) -> Result<i64, EngineError> {
-        let bytes = self.read_exact(8)?;
-        let mut fixed = [0; 8];
-        fixed.copy_from_slice(bytes);
-        Ok(i64::from_le_bytes(fixed))
-    }
-
     pub(super) fn read_count(&mut self) -> Result<usize, EngineError> {
         usize::try_from(self.read_u64()?)
             .map_err(|_| scenario_serialization_error("binary count does not fit usize"))
@@ -163,8 +152,16 @@ impl<'a> ScenarioBinaryReader<'a> {
         &mut self,
         label: &'static str,
     ) -> Result<&'a [u8], EngineError> {
+        self.read_binary_blob_bounded(label, MAX_SCENARIO_BINARY_BLOB_BYTES)
+    }
+
+    pub(super) fn read_binary_blob_bounded(
+        &mut self,
+        label: &'static str,
+        maximum_bytes: usize,
+    ) -> Result<&'a [u8], EngineError> {
         let len = self.read_count()?;
-        if len > MAX_SCENARIO_BINARY_BLOB_BYTES {
+        if len > maximum_bytes {
             return Err(scenario_serialization_error(format!(
                 "{label} exceeds serialized blob limit"
             )));
@@ -199,27 +196,12 @@ impl<'a> ScenarioBinaryReader<'a> {
     }
 }
 
-pub(super) fn scenario_binary_reader_for_versions<'a>(
-    bytes: &'a [u8],
-    v1_magic: &[u8],
-    v2_magic: &[u8],
-) -> Result<(ScenarioBinaryReader<'a>, bool), EngineError> {
-    if bytes.starts_with(v2_magic) {
-        return Ok((ScenarioBinaryReader::new(bytes, v2_magic)?, true));
-    }
-    if bytes.starts_with(v1_magic) {
-        return Ok((ScenarioBinaryReader::new(bytes, v1_magic)?, false));
-    }
-    Err(scenario_serialization_error("binary magic mismatch"))
-}
-
 pub(super) fn write_scenario_form_binary(
     form: &ScenarioDefForm,
     writer: &mut ScenarioBinaryWriter,
-    includes_devices: bool,
 ) {
     writer.write_hash(form.id());
-    write_world_binary(&form.world, writer, includes_devices);
+    write_world_binary(&form.world, writer);
     write_plan_binary(&form.plan, writer);
     write_properties_binary(&form.properties, writer);
     writer.write_seed(form.seed);
@@ -228,10 +210,9 @@ pub(super) fn write_scenario_form_binary(
 
 pub(super) fn read_scenario_form_binary(
     reader: &mut ScenarioBinaryReader<'_>,
-    includes_devices: bool,
 ) -> Result<ScenarioDefForm, EngineError> {
     let expected = reader.read_hash()?;
-    let world = read_world_binary(reader, includes_devices)?;
+    let world = read_world_binary(reader)?;
     let plan = read_plan_binary_for_scenario(&world, reader)?;
     let properties = read_properties_binary(&world, reader)?;
     let seed = reader.read_seed()?;
@@ -282,6 +263,7 @@ pub(super) fn write_checkpoint_binary(checkpoint: &Checkpoint, writer: &mut Scen
     writer.write_hash(checkpoint.coverage_fingerprint);
     writer.write_hash(checkpoint.assertion_proximity_fingerprint);
     write_checkpoint_metadata_binary(&checkpoint.metadata, writer);
+    write_optional_hash_binary(checkpoint.execution_closure, writer);
     write_node_blobs_binary(&checkpoint.node_blobs, writer);
 }
 
@@ -302,6 +284,7 @@ pub(super) fn read_checkpoint_binary(
     let coverage_fingerprint = reader.read_hash()?;
     let assertion_proximity_fingerprint = reader.read_hash()?;
     let metadata = read_checkpoint_metadata_binary(reader)?;
+    let execution_closure = read_optional_hash_binary(reader)?;
     let node_blobs = read_node_blobs_binary(reader)?;
     Ok(Checkpoint {
         id,
@@ -315,6 +298,7 @@ pub(super) fn read_checkpoint_binary(
         coverage_fingerprint,
         assertion_proximity_fingerprint,
         metadata,
+        execution_closure,
         node_blobs,
         kind,
     })
@@ -743,17 +727,6 @@ pub(super) fn write_scheduler_state_binary(
         writer.write_u64(timer.fire_at.ticks);
         writer.write_u64(timer.fire_icount.retired);
     }
-    writer.write_count(state.active_faults.len());
-    for (fault, state) in &state.active_faults {
-        writer.write_string(&fault.name);
-        writer.write_u64(state.active_since.ticks);
-        write_optional_virtual_time_binary(state.heal_at, writer);
-    }
-    writer.write_count(state.active_fault_tags.len());
-    for (tag, fault) in &state.active_fault_tags {
-        writer.write_string(&tag.name);
-        write_membership_fault_binary(fault, writer);
-    }
     writer.write_count(state.pending_device_decisions.len());
     for decision in &state.pending_device_decisions {
         write_decision_binary(decision, writer);
@@ -881,34 +854,6 @@ pub(super) fn read_scheduler_state_binary(
         );
     }
 
-    let active_fault_count = reader.read_collection_count("scheduler-state.active-fault")?;
-    let mut active_faults = BTreeMap::new();
-    for _ in 0..active_fault_count {
-        active_faults.insert(
-            FaultId {
-                name: reader.read_string()?,
-            },
-            FaultState {
-                active_since: VirtualTime {
-                    ticks: reader.read_u64()?,
-                },
-                heal_at: read_optional_virtual_time_binary(reader)?,
-            },
-        );
-    }
-
-    let active_fault_tag_count =
-        reader.read_collection_count("scheduler-state.active-fault-tag")?;
-    let mut active_fault_tags = BTreeMap::new();
-    for _ in 0..active_fault_tag_count {
-        active_fault_tags.insert(
-            FaultTag {
-                name: reader.read_string()?,
-            },
-            read_membership_fault_binary(reader)?,
-        );
-    }
-    let active_fault_table = ActiveFaultTable::from_active_faults(&active_fault_tags);
     let pending_device_decision_count =
         reader.read_collection_count("scheduler-state.pending-device-decision")?;
     let mut pending_device_decisions = Vec::with_capacity(pending_device_decision_count);
@@ -926,9 +871,6 @@ pub(super) fn read_scheduler_state_binary(
         effective_topology_edges,
         pending_topology_changes,
         timers,
-        active_faults,
-        active_fault_tags,
-        active_fault_table,
         pending_device_decisions,
         search_frontier,
     })
@@ -963,8 +905,8 @@ pub(super) fn write_scheduler_topology_change_binary(
 
     writer.write_u64(change.sequence);
     writer.write_u8(match change.trigger {
-        SchedulerTopologyChangeTrigger::FaultActivation => 0,
-        SchedulerTopologyChangeTrigger::Heal => 1,
+        SchedulerTopologyChangeTrigger::EdgeRemoval => 0,
+        SchedulerTopologyChangeTrigger::EdgeRestore => 1,
         SchedulerTopologyChangeTrigger::LatencyChange => 2,
     });
     match change.activation_time {
@@ -1017,8 +959,8 @@ pub(super) fn read_scheduler_topology_change_binary(
 
     let sequence = reader.read_u64()?;
     let trigger = match reader.read_u8()? {
-        0 => SchedulerTopologyChangeTrigger::FaultActivation,
-        1 => SchedulerTopologyChangeTrigger::Heal,
+        0 => SchedulerTopologyChangeTrigger::EdgeRemoval,
+        1 => SchedulerTopologyChangeTrigger::EdgeRestore,
         2 => SchedulerTopologyChangeTrigger::LatencyChange,
         _ => {
             return Err(scenario_serialization_error(
@@ -1078,33 +1020,6 @@ pub(super) fn read_scheduler_topology_change_binary(
         activation_time,
         effect,
     })
-}
-
-pub(super) fn write_optional_virtual_time_binary(
-    value: Option<VirtualTime>,
-    writer: &mut ScenarioBinaryWriter,
-) {
-    match value {
-        Some(value) => {
-            writer.write_u8(1);
-            writer.write_u64(value.ticks);
-        }
-        None => writer.write_u8(0),
-    }
-}
-
-pub(super) fn read_optional_virtual_time_binary(
-    reader: &mut ScenarioBinaryReader<'_>,
-) -> Result<Option<VirtualTime>, EngineError> {
-    match reader.read_u8()? {
-        0 => Ok(None),
-        1 => Ok(Some(VirtualTime {
-            ticks: reader.read_u64()?,
-        })),
-        _ => Err(scenario_serialization_error(
-            "invalid optional virtual-time tag",
-        )),
-    }
 }
 
 pub(super) fn write_search_frontier_choices_binary(
@@ -1181,41 +1096,29 @@ pub(super) fn write_decision_binary(decision: &Decision, writer: &mut ScenarioBi
                 writer.write_u64(event.sequence);
             }
         }
-        Decision::FaultFires(fault) => {
-            writer.write_u8(1);
-            writer.write_u64(fault.at.ticks);
-            writer.write_string(&fault.fault.name);
-            write_binary_bool(writer, fault.fired);
-        }
         Decision::RngDraw(draw) => {
-            writer.write_u8(2);
+            writer.write_u8(1);
             write_rng_stream_binary(&draw.stream, writer);
             writer.write_u64(draw.value);
         }
         Decision::Override(override_decision) => {
-            writer.write_u8(3);
+            writer.write_u8(2);
             writer.write_string(&override_decision.point.key);
             writer.write_string(&override_decision.choice.name);
         }
         Decision::Preemption(preemption) => {
-            writer.write_u8(4);
+            writer.write_u8(3);
             writer.write_string(&preemption.node.name);
             writer.write_u64(preemption.at.retired);
             write_preemption_kind_binary(&preemption.kind, writer);
         }
         Decision::AppRandom(random) => {
-            writer.write_u8(5);
+            writer.write_u8(4);
             writer.write_string(&random.node.name);
             write_rng_stream_binary(&random.stream, writer);
             writer.write_u64(random.request_id);
             writer.write_u8(random.width);
             writer.write_u64(random.value);
-        }
-        Decision::ControlFault(control) => {
-            writer.write_u8(6);
-            writer.write_u64(control.at.ticks);
-            writer.write_u64(control.sequence);
-            write_control_fault_action_binary(&control.action, writer);
         }
     }
 }
@@ -1242,20 +1145,11 @@ pub(super) fn read_decision_binary(
             }
             Ok(Decision::DeliveryOrder(DeliveryOrderDecision { at, order }))
         }
-        1 => Ok(Decision::FaultFires(FaultDecision {
-            at: VirtualTime {
-                ticks: reader.read_u64()?,
-            },
-            fault: FaultId {
-                name: reader.read_string()?,
-            },
-            fired: read_binary_bool(reader, "fault decision fired")?,
-        })),
-        2 => Ok(Decision::RngDraw(RngDecision {
+        1 => Ok(Decision::RngDraw(RngDecision {
             stream: read_rng_stream_binary(reader)?,
             value: reader.read_u64()?,
         })),
-        3 => Ok(Decision::Override(OverrideDecision {
+        2 => Ok(Decision::Override(OverrideDecision {
             point: SchedulingPoint {
                 key: reader.read_string()?,
             },
@@ -1263,7 +1157,7 @@ pub(super) fn read_decision_binary(
                 name: reader.read_string()?,
             },
         })),
-        4 => Ok(Decision::Preemption(PreemptionDecision {
+        3 => Ok(Decision::Preemption(PreemptionDecision {
             node: NodeId {
                 name: reader.read_string()?,
             },
@@ -1272,7 +1166,7 @@ pub(super) fn read_decision_binary(
             },
             kind: read_preemption_kind_binary(reader)?,
         })),
-        5 => Ok(Decision::AppRandom(AppRandomDecision {
+        4 => Ok(Decision::AppRandom(AppRandomDecision {
             node: NodeId {
                 name: reader.read_string()?,
             },
@@ -1281,52 +1175,7 @@ pub(super) fn read_decision_binary(
             width: reader.read_u8()?,
             value: reader.read_u64()?,
         })),
-        6 => Ok(Decision::ControlFault(ControlFaultDecision {
-            at: VirtualTime {
-                ticks: reader.read_u64()?,
-            },
-            sequence: reader.read_u64()?,
-            action: read_control_fault_action_binary(reader)?,
-        })),
         _ => Err(scenario_serialization_error("invalid decision tag")),
-    }
-}
-
-pub(super) fn write_control_fault_action_binary(
-    action: &ControlFaultAction,
-    writer: &mut ScenarioBinaryWriter,
-) {
-    match action {
-        ControlFaultAction::Inject { tag, fault } => {
-            writer.write_u8(0);
-            writer.write_string(&tag.name);
-            write_fault_binary(fault, writer);
-        }
-        ControlFaultAction::Heal { tag } => {
-            writer.write_u8(1);
-            writer.write_string(&tag.name);
-        }
-    }
-}
-
-pub(super) fn read_control_fault_action_binary(
-    reader: &mut ScenarioBinaryReader<'_>,
-) -> Result<ControlFaultAction, EngineError> {
-    match reader.read_u8()? {
-        0 => Ok(ControlFaultAction::Inject {
-            tag: FaultTag {
-                name: reader.read_string()?,
-            },
-            fault: read_fault_binary(reader)?,
-        }),
-        1 => Ok(ControlFaultAction::Heal {
-            tag: FaultTag {
-                name: reader.read_string()?,
-            },
-        }),
-        _ => Err(scenario_serialization_error(
-            "invalid control-fault action tag",
-        )),
     }
 }
 
@@ -1434,69 +1283,37 @@ pub(super) fn read_preemption_kind_binary(
     }
 }
 
-pub(super) fn write_binary_bool(writer: &mut ScenarioBinaryWriter, value: bool) {
-    writer.write_u8(u8::from(value));
-}
-
-pub(super) fn read_binary_bool(
-    reader: &mut ScenarioBinaryReader<'_>,
-    label: &'static str,
-) -> Result<bool, EngineError> {
-    match reader.read_u8()? {
-        0 => Ok(false),
-        1 => Ok(true),
-        _ => Err(scenario_serialization_error(format!(
-            "invalid binary bool for {label}"
-        ))),
-    }
-}
-
-pub(super) fn write_world_binary(
-    world: &World,
-    writer: &mut ScenarioBinaryWriter,
-    includes_io_nodes: bool,
-) {
+pub(super) fn write_world_binary(world: &World, writer: &mut ScenarioBinaryWriter) {
     writer.write_hash(world.id());
-    if includes_io_nodes {
-        writer.write_count(world.topology_nodes().len());
-        for node in world.topology_nodes() {
-            match node {
-                WorldNodeDef::Vm(node) => {
-                    writer.write_u8(0);
-                    write_world_node_binary(node, writer);
-                }
-                WorldNodeDef::Io(node) => write_world_io_node_binary(node, writer),
+    writer.write_count(world.topology_nodes().len());
+    for node in world.topology_nodes() {
+        match node {
+            WorldNodeDef::Vm(node) => {
+                writer.write_u8(0);
+                write_world_node_binary(node, writer);
             }
-        }
-    } else {
-        writer.write_count(world.vm_nodes().len());
-        for node in world.vm_nodes() {
-            write_world_node_binary(node, writer);
+            WorldNodeDef::Io(node) => write_world_io_node_binary(node, writer),
         }
     }
     writer.write_count(world.links().len());
     for link in world.links() {
         write_link_binary(link, writer);
     }
+    writer.write_binary_blob(&world.fault_topology_wire);
 }
 
 pub(super) fn read_world_binary(
     reader: &mut ScenarioBinaryReader<'_>,
-    includes_io_nodes: bool,
 ) -> Result<World, EngineError> {
     let id = reader.read_hash()?;
     let node_count = reader.read_collection_count("world.node")?;
     let mut nodes = Vec::with_capacity(node_count);
     for _ in 0..node_count {
-        nodes.push(if includes_io_nodes {
-            match reader.read_u8()? {
-                0 => WorldNodeDef::Vm(read_world_node_binary(reader)?),
-                1 => WorldNodeDef::Io(read_world_block_node_binary(reader)?),
-                2 => WorldNodeDef::Io(read_world_ninep_node_binary(reader)?),
-                _ => return Err(scenario_serialization_error("invalid world node kind tag")),
-            }
-        } else {
-            WorldNodeDef::Vm(read_world_node_binary(reader)?)
+        nodes.push(match reader.read_u8()? {
+            0 => WorldNodeDef::Vm(read_world_node_binary(reader)?),
+            1 => WorldNodeDef::Io(read_world_block_node_binary(reader)?),
+            2 => WorldNodeDef::Io(read_world_ninep_node_binary(reader)?),
+            _ => return Err(scenario_serialization_error("invalid world node kind tag")),
         });
     }
     let link_count = reader.read_collection_count("world.link")?;
@@ -1504,13 +1321,18 @@ pub(super) fn read_world_binary(
     for _ in 0..link_count {
         links.push(read_link_binary(reader)?);
     }
-    if includes_io_nodes && nodes.iter().all(|node| matches!(node, WorldNodeDef::Vm(_))) {
-        return Err(scenario_serialization_error(
-            "world v2 encoding contains no I/O node",
-        ));
-    }
-    let world = World::from_recorded_node_defs_and_links(id, nodes, links)?;
-    validate_world_serialized_identity(&world)?;
+    let topology_bytes = reader.read_binary_blob("world fault topology")?;
+    let topology = if topology_bytes.is_empty() {
+        WorldFaultTopology::default()
+    } else {
+        serde_json::from_slice(topology_bytes).map_err(|source| {
+            scenario_serialization_error(format!("decode world fault topology: {source}"))
+        })?
+    };
+    let world = World::from_recorded_node_defs_and_links(id, nodes, links)?
+        .with_fault_topology(topology)
+        .map_err(|error| scenario_serialization_error(error.to_string()))?;
+    validate_serialized_id("world", id, serialized_world_identity(&world))?;
     Ok(world)
 }
 
@@ -1750,28 +1572,11 @@ pub(super) fn read_link_binary(
 
 pub(super) fn write_plan_binary(plan: &Plan, writer: &mut ScenarioBinaryWriter) {
     writer.write_hash(plan.content_hash());
-    match &plan.kind {
-        PlanKind::ScheduledEntries { entries } => {
-            writer.write_count(entries.len());
-            for entry in entries {
-                write_plan_entry_binary(entry, writer);
-            }
-        }
-        PlanKind::FaultPlan { plan } => {
-            writer.write_u64(FAULT_PLAN_BINARY_SENTINEL);
-            writer.write_count(plan.entries().len());
-            for entry in plan.entries() {
-                write_fault_plan_entry_binary(entry, writer);
-            }
-        }
-        PlanKind::EventGraph { graph } => {
-            writer.write_u64(EVENT_GRAPH_PLAN_BINARY_SENTINEL);
-            writer.write_count(graph.events().len());
-            for event in graph.events() {
-                write_event_binary(event, writer);
-            }
-        }
+    writer.write_count(plan.graph.events().len());
+    for event in plan.graph.events() {
+        write_event_binary(event, writer);
     }
+    writer.write_binary_blob(plan.fault_signals().wire_bytes());
 }
 
 pub(super) fn read_plan_binary(
@@ -1799,31 +1604,21 @@ pub(super) fn read_plan_binary_inner(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<Plan, EngineError> {
     let id = reader.read_hash()?;
-    let count_or_sentinel = reader.read_u64()?;
-    let plan = if count_or_sentinel == EVENT_GRAPH_PLAN_BINARY_SENTINEL {
-        let count = reader.read_collection_count("plan.event")?;
-        let mut events = Vec::with_capacity(count);
-        for _ in 0..count {
-            events.push(read_event_binary(reader)?);
-        }
-        let assertions = assertions.unwrap_or_else(|| event_graph_assertion_references(&events));
-        let graph = EventGraph::from_unchecked_events_for_model(events);
-        Plan::from_event_graph_with_assertions_for_world(world, assertions, graph)?
-    } else if count_or_sentinel == FAULT_PLAN_BINARY_SENTINEL {
-        let count = reader.read_collection_count("plan.fault_entry")?;
-        let mut entries = Vec::with_capacity(count);
-        for _ in 0..count {
-            entries.push(read_fault_plan_entry_binary(reader)?);
-        }
-        Plan::from_fault_plan_for_world(world, FaultPlan::from_entries(entries))?
-    } else {
-        let count = collection_count_from_raw("plan.entry", count_or_sentinel)?;
-        let mut entries = Vec::with_capacity(count);
-        for _ in 0..count {
-            entries.push(read_plan_entry_binary(reader)?);
-        }
-        Plan::from_entries_for_world(world, entries)?
-    };
+    let count = reader.read_collection_count("plan.event")?;
+    let mut events = Vec::with_capacity(count);
+    for _ in 0..count {
+        events.push(read_event_binary(reader)?);
+    }
+    let assertions = assertions.unwrap_or_else(|| event_graph_assertion_references(&events));
+    let graph = EventGraph::from_unchecked_events_for_model(events);
+    let plan = Plan::from_event_graph_with_assertions_for_world(world, assertions, graph)?;
+    let fault_signals =
+        FaultSignalPlan::from_wire_bytes(reader.read_binary_blob("plan.fault_signals")?)
+            .map_err(|error| scenario_serialization_error(error.to_string()))?;
+    fault_signals
+        .validate_for_world(world)
+        .map_err(|error| scenario_serialization_error(error.to_string()))?;
+    let plan = plan.with_fault_signals(fault_signals);
     validate_serialized_id("plan", id, plan.content_hash())?;
     Ok(plan)
 }

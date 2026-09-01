@@ -1,4 +1,5 @@
 diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
+index 3db26a7aa..b8d9057d8 100644
 --- a/block/crucible-shmem.c
 +++ b/block/crucible-shmem.c
 @@ -39,6 +39,8 @@ typedef struct BDRVCrucibleShmemState {
@@ -41,6 +42,7 @@ diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
      }
  }
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index c62471c50..b37dfd519 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -240,6 +240,18 @@ typedef int64_t (*qemu_plugin_blk_poll_cb_t)(uint32_t request_id,
@@ -83,6 +85,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
   * qemu_plugin_register_9p_cb() - register shmem 9p callbacks
   * @burst_start_cb: burst-start callback, or NULL to disable shmem forwarding
 diff --git a/plugins/api-system.c b/plugins/api-system.c
+index b577dc8ac..6744c564c 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -216,6 +216,16 @@ static void qemu_plugin_time_advance_complete_bh(void *opaque)

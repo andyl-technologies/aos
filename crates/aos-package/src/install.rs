@@ -44,6 +44,7 @@ use super::exposed_units::{
     rebuild_generation_expose_image_roots, rebuild_generation_expose_roots,
     reconcile_system_profile, validate_generation_exposed_units,
 };
+use super::platform::native_platform;
 use super::policy::admit_package_roots;
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
@@ -648,14 +649,6 @@ async fn run_inner(
 // Helper functions
 // ---------------------------------------------------------------------------
 
-/// Get the current platform string.
-///
-/// For now, hardcodes `x86_64-linux` (AOS target). Could detect from
-/// `std::env::consts` in the future.
-fn platform() -> String {
-    "x86_64-linux".to_string()
-}
-
 /// Build the machine-readable result object emitted in JSON output mode:
 /// action/status, the requested roots, the deduplicated closure, and
 /// download/import counters.
@@ -747,7 +740,7 @@ fn install_package_json(registry: &str, meta: &PackageMeta, explicit: bool) -> s
 /// Load registries from the config's cache directory.
 pub(crate) fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
-    RegistrySet::load(&config.cache_path(), &reg_configs, &platform())
+    RegistrySet::load(&config.cache_path(), &reg_configs, &native_platform())
 }
 
 /// Collect rendered expose artifacts needed for explicitly requested roots.
@@ -1947,8 +1940,8 @@ mod tests {
 
     #[test]
     fn platform_returns_valid() {
-        let p = platform();
-        assert_eq!(p, "x86_64-linux");
+        let p = native_platform();
+        crate::types::validate_platform_name(&p).unwrap();
     }
 
     fn sample_package(name: &str, version: &str, store_path: &str) -> PackageMeta {
