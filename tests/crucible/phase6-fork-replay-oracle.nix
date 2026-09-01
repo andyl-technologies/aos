@@ -268,10 +268,10 @@ in
         {
           name = "write-result";
           script = ''
-                        set -eu
-                        mkdir -p "$out"
-                        cat > "$out/result" <<RESULT
-                        PASS
+            set -eu
+            mkdir -p "$out"
+            cat > "$out/result" <<RESULT
+            PASS
             check=${attrPath}
             tasks=${taskList}
             gate=gate:replay-oracle
