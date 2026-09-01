@@ -42,6 +42,16 @@
       && (value.value ? config || value.value ? expose))
     (builtins.attrNames pkgs)
   ));
+  unmanagedUnitPackages =
+    builtins.filter
+    (name: let
+      value = builtins.tryEval pkgs.${name};
+    in
+      value.success
+      && builtins.isAttrs value.value
+      && value.value ? systemdUnitInventory
+      && !(value.value ? expose))
+    (builtins.attrNames pkgs);
   catalogedManagedNames = lib.sort builtins.lessThan (packageServiceNames ++ serviceCatalog.fixtures);
   unmanagedPackages = builtins.filter (name: !builtins.elem name catalogedManagedNames) managedPackageNames;
   staleCatalogPackages = builtins.filter (name: !builtins.elem name managedPackageNames) catalogedManagedNames;
@@ -60,6 +70,70 @@
       pkgs.${name}
       or (throw "service documentation catalog references missing package '${name}'"))
     packageServiceNames;
+  baseLib = system.config.aos.config.evalAtBoot.baseLib;
+  auditPackageOptions = name: let
+    package = pkgs.${name};
+    dependencyOutputs = lib.concatStringsSep " " (lib.mapAttrsToList
+      (dependencyName: _: "${builtins.toJSON dependencyName} = builtins.toString <aos-documentation-audit-dependency-${dependencyName}>;")
+      (package.configModuleDependencies or {}));
+    dependencySearchPaths = lib.concatStringsSep " " (lib.mapAttrsToList
+      (dependencyName: output: "-I aos-documentation-audit-dependency-${dependencyName}=${output}")
+      (package.configModuleDependencies or {}));
+    expression = ''
+      let
+        base = import <aos-documentation-audit-base-lib>;
+        configRoot = <aos-documentation-audit-config>;
+        metadata = builtins.fromJSON (builtins.readFile <aos-documentation-audit-config/config-meta.json>);
+        authorization = {
+          owns = builtins.map (owned: owned.root) metadata.owns_roots;
+          contributes = builtins.listToAttrs (builtins.map
+            (contribution: {
+              name = contribution.root;
+              value = contribution.paths;
+            })
+            metadata.contributes);
+        };
+        evaluated = base.lib.evalModules {
+          modules = [];
+          packageModules = [{
+            name = ${builtins.toJSON name};
+            inherit authorization configRoot;
+            module = <aos-documentation-audit-config/module.nix>;
+            outputs = {
+              self = builtins.toString <aos-documentation-audit-runtime>;
+              dependencies = { ${dependencyOutputs} };
+            };
+          }];
+          inherit (base) lib;
+        };
+        publicOptions = builtins.filter
+          (option: option.visibility != "internal")
+          (base.lib.optionSurface evaluated);
+        undocumented = builtins.map
+          (option: option.pathStr)
+          (builtins.filter (option: option.description == "") publicOptions);
+      in
+        if publicOptions == [] then
+          throw "package '${name}' has no public configuration options"
+        else if undocumented != [] then
+          throw "package '${name}' has undocumented public configuration options: ''${builtins.concatStringsSep ", " undocumented}"
+        else
+          ${builtins.toJSON name}
+    '';
+  in ''
+    ${pkgs.nix}/bin/nix-instantiate \
+      --store dummy:// \
+      --eval \
+      --strict \
+      --json \
+      --option restrict-eval true \
+      --option allow-import-from-derivation false \
+      -I aos-documentation-audit-base-lib=${baseLib} \
+      -I aos-documentation-audit-config=${package.config} \
+      -I aos-documentation-audit-runtime=${package} \
+      ${dependencySearchPaths} \
+      --expr ${lib.escapeShellArg expression} >/dev/null
+  '';
   optionSurface = lib.optionSurface system;
   prefixMatches = prefix: option:
     option.pathStr == prefix || lib.hasPrefix "${prefix}." option.pathStr;
@@ -99,6 +173,8 @@ in
   then throw "unsupported service documentation catalog schema"
   else if unmanagedPackages != [] || staleCatalogPackages != []
   then throw "managed package service inventory drift (unmanaged: ${builtins.concatStringsSep ", " unmanagedPackages}; stale: ${builtins.concatStringsSep ", " staleCatalogPackages})"
+  else if unmanagedUnitPackages != []
+  then throw "packages shipping systemd units must expose a typed service contract: ${builtins.concatStringsSep ", " unmanagedUnitPackages}"
   else if invalidNonServices != []
   then throw "on-demand package dispositions are missing, stale, or unexpectedly managed: ${builtins.concatStringsSep ", " invalidNonServices}"
   else if undocumentedSystemServices != []
@@ -108,7 +184,10 @@ in
       pname = "package-documentation-policy-check";
       version = "0";
       src = null;
-      buildDeps = [pkgs.jq] ++ map (package: package.config) configurablePackages;
+      buildDeps =
+        [pkgs.jq pkgs.nix baseLib]
+        ++ configurablePackages
+        ++ map (package: package.config) configurablePackages;
       phases = [
         {
           name = "check";
@@ -121,6 +200,8 @@ in
                 and (.documentation.sections | type == "object" and length > 0)
               ' "$metadata" >/dev/null
             done
+
+            ${lib.concatMapStringsSep "\n" auditPackageOptions packageServiceNames}
 
             mkdir -p "$out"
             printf 'PASS\n' > "$out/result"

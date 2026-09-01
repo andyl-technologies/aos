@@ -75,6 +75,19 @@ in
             path = "/etc/aos/packages/kubelet/config.json";
             format = "json";
             required = ["apiVersion" "kind" "address" "containerRuntimeEndpoint"];
+            optional = [
+              "authentication"
+              "authorization"
+              "cgroupDriver"
+              "clusterDNS"
+              "clusterDomain"
+              "failSwapOn"
+              "maxPods"
+              "port"
+              "readOnlyPort"
+              "registerNode"
+              "staticPodPath"
+            ];
             units = ["kubelet.service"];
             reload = "restart";
           }
@@ -232,7 +245,7 @@ in
         command = "kubelet --version";
       };
       config-module-contract = pkgs.runCommand "kubelet-config-module-contract" {} ''
-              config=${builtins.toFile "kubelet.json" evaluated.config.environment.etc."aos/packages/kubelet/config.json".text}
+              config=${builtins.toFile "kubelet.json" (builtins.toJSON evaluated.config.kubelet.config.config)}
         ${pkgs.jq}/bin/jq -e '
           .apiVersion == "kubelet.config.k8s.io/v1beta1"
           and .maxPods == 80
