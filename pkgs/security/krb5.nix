@@ -194,7 +194,7 @@ in
         groups = ["krb5-kdc"];
       };
       documentation = {
-        summary = "Typed Kerberos realm, KDC, administration, policy, and master-key configuration.";
+        summary = "MIT Kerberos and GSSAPI implementation";
         sections = {
           realm = lib.aosDoc.section "Realm lifecycle" [
             (lib.aosDoc.paragraph "Choose the realm and KDC endpoints before initialization. The package retains the principal database and applies ticket lifetime and ACL policy declaratively.")

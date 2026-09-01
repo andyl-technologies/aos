@@ -127,7 +127,7 @@ in
         groups = [];
       };
       documentation = {
-        summary = "Typed rsync daemon listener, export modules, authorization, and secret-file configuration.";
+        summary = "rsync — fast incremental file transfer";
         sections = {
           exports = lib.aosDoc.section "Export modules" [
             (lib.aosDoc.paragraph "Each named module declares an explicit package state export path and read/write policy. Module names, paths, and client restrictions are validated before activation.")

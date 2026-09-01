@@ -312,7 +312,7 @@ in
         }
       ];
       documentation = {
-        summary = "Typed Envoy listeners, routes, clusters, xDS, telemetry, and credential contracts.";
+        summary = "Envoy proxy — high-performance L7 proxy and communication bus";
         sections = {
           quickstart = lib.aosDoc.section "Quick start" [
             (lib.aosDoc.paragraph "Install Envoy, enable envoy.enable, and declare listeners and clusters. Every rendered bootstrap is checked with Envoy validation before the service starts.")

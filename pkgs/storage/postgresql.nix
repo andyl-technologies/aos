@@ -477,7 +477,7 @@ in
         groups = [];
       };
       documentation = {
-        summary = "Typed PostgreSQL cluster, authentication, replication, resource, and TLS configuration.";
+        summary = "PostgreSQL object-relational database server";
         sections = {
           lifecycle = lib.aosDoc.section "Initialization and lifecycle" [
             (lib.aosDoc.paragraph "The database cluster is initialized once in durable package state. Desired changes conservatively restart the server because not every PostgreSQL parameter is safely reloadable.")

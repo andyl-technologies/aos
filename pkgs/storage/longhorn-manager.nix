@@ -86,7 +86,7 @@ in
         inherit longhorn-engine longhorn-instance-manager;
       };
       documentation = {
-        summary = "Authenticated Longhorn CSI and Kubernetes resource contribution for k3s.";
+        summary = "Longhorn Manager — distributed block storage orchestrator";
         sections.integration = lib.aosDoc.section "k3s integration" [
           (lib.aosDoc.paragraph "Longhorn contributes only its signed CSI settings, node label, and ordered resource bundle. Engine and instance-manager payloads are retained dependencies, not separate host daemons.")
         ];

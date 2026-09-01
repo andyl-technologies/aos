@@ -230,7 +230,7 @@ in
         }
       ];
       documentation = {
-        summary = "Typed native AOS Git registry and binary-cache service configuration.";
+        summary = "AOS exposed registry and binary cache server package";
         sections = {
           services = lib.aosDoc.section "Registry services" [
             (lib.aosDoc.paragraph "Git smart transport and binary-cache HTTP listeners can be enabled independently. State roots, views, bootstrap sockets, and anonymous-read policy remain explicit typed values.")

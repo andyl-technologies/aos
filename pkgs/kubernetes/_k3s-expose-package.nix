@@ -248,7 +248,7 @@ in
           }
         ];
         documentation = {
-          summary = "Role-aware k3s node configuration, token delivery, networking, and authenticated add-on composition.";
+          summary = "AOS exposed ${description} package";
           sections = {
             roles = lib.aosDoc.section "Roles and bootstrap" [
               (lib.aosDoc.paragraph "Select exactly one of k3s-worker, k3s-control-plane, or k3s-combined. Workers require serverUrl; every enabled role receives its cluster token through an opaque systemd credential.")

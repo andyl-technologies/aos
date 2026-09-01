@@ -261,7 +261,7 @@ in
         groups = [];
       };
       documentation = {
-        summary = "Typed virtual hosts, upstreams, TLS credentials, validation, and reload behavior.";
+        summary = "nginx — high-performance HTTP and reverse proxy server";
         sections = {
           quickstart = lib.aosDoc.section "Quick start" [
             (lib.aosDoc.paragraph "Install nginx, set nginx.enable, and declare at least one virtual host. AOS validates each candidate with nginx -t before activation and reloads a running master in place.")

@@ -201,14 +201,13 @@ in
         {
           name = "check";
           script = ''
-            for metadata in \
-              ${lib.concatMapStringsSep " " (package: "${package.config}/config-meta.json") configurablePackages}
-            do
-              jq -e '
-                (.documentation.summary | type == "string" and length > 0)
-                and (.documentation.sections | type == "object" and length > 0)
-              ' "$metadata" >/dev/null
-            done
+            ${lib.concatMapStringsSep "\n" (package: ''
+                jq -e --arg description ${lib.escapeShellArg package.meta.description} '
+                  (.documentation.summary == $description)
+                  and (.documentation.sections | type == "object" and length > 0)
+                ' ${package.config}/config-meta.json >/dev/null
+              '')
+              configurablePackages}
 
             ${lib.concatMapStringsSep "\n" auditPackageOptions packageServiceNames}
 

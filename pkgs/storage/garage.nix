@@ -215,7 +215,7 @@ in
         groups = ["garage"];
       };
       documentation = {
-        summary = "Typed Garage S3, RPC, Web, administration, credential, and persistence configuration.";
+        summary = "Garage — S3-compatible distributed object storage service";
         sections = {
           lifecycle = lib.aosDoc.section "State and lifecycle" [
             (lib.aosDoc.paragraph "Garage retains metadata and object data in package state and performs compatible migrations during startup. Configuration changes restart the daemon rather than pretending TOML is reloadable.")

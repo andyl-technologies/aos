@@ -180,7 +180,7 @@ in
         groups = [];
       };
       documentation = {
-        summary = "Standalone Kubernetes kubelet node-agent configuration and lifecycle.";
+        summary = "kubelet — Kubernetes node agent that manages pods";
         sections = {
           deployment = lib.aosDoc.section "Standalone node agent" [
             (lib.aosDoc.paragraph "Use this package when kubelet is managed independently. K3s roles embed and configure their own node agent and do not enable this service.")
