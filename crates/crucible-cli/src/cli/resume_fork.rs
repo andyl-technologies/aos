@@ -689,6 +689,7 @@ pub(super) async fn run_resumed_savepoint_actor_with_driver_async(
             streamed_event_frames: Vec::new(),
             coverage_feedback: crucible::EventLogCoverageFeedback::from_event_log(&[]),
             execution_fingerprints: Vec::new(),
+            resolved_effect_trace: None,
             acknowledged_commands,
             watch_statuses,
         },
@@ -912,6 +913,7 @@ pub(super) async fn run_forked_savepoint_actor_with_driver_async(
             streamed_event_frames: Vec::new(),
             coverage_feedback: crucible::EventLogCoverageFeedback::from_event_log(&[]),
             execution_fingerprints: Vec::new(),
+            resolved_effect_trace: None,
             acknowledged_commands,
             watch_statuses,
         },
@@ -1005,11 +1007,7 @@ where
         let Some(command) = parse_interactive_session_command_line(&line)? else {
             continue;
         };
-        if interactive_stream_command(command)?.is_none() {
-            write_interactive_payload_required(writer, command)?;
-            writer.flush()?;
-            continue;
-        }
+        cli_stream_command(command)?;
         let boundary =
             acknowledge_resumed_actor_command_kind(sender, live, command, acknowledged_commands)
                 .await?;
@@ -1753,12 +1751,10 @@ pub(super) fn fork_artifact_canonical_log(
 pub(super) fn fork_artifact_decision_kind(decision: &crucible::Decision) -> &'static str {
     match decision {
         crucible::Decision::DeliveryOrder(_) => "delivery_order",
-        crucible::Decision::FaultFires(_) => "fault_fires",
         crucible::Decision::RngDraw(_) => "rng_draw",
         crucible::Decision::Override(_) => "override",
         crucible::Decision::Preemption(_) => "preemption",
         crucible::Decision::AppRandom(_) => "app_random",
-        crucible::Decision::ControlFault(_) => "control_fault",
     }
 }
 

@@ -4,8 +4,11 @@
   fetchurl,
   gnumake,
   linux-pam,
+  openpam,
   openssl,
   zlib,
+  bash,
+  stdenv,
 }: let
   version = "10.3p1";
 in
@@ -21,11 +24,21 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [
-      linux-pam
-      openssl
-      zlib
-    ];
+    runtimeDeps =
+      [
+        (
+          if stdenv.hostPlatform.isDarwin
+          then openpam
+          else linux-pam
+        )
+        openssl
+        zlib
+      ]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [bash]
+        else []
+      );
     propagatedDeps = [];
 
     phases = [
@@ -46,6 +59,7 @@ in
         # pre-staged files and short-circuits.
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --sysconfdir=/etc/ssh \
             --with-ssl-dir=${openssl} \
@@ -73,18 +87,40 @@ in
         # keys as already-present). Pair with `--sysconfdir=/etc/ssh`
         # above so the produced ssh tools write to the runtime config
         # dir, not the (read-only) store path.
-        script = ''
-          sed -i 's/-m 4711/-m 0755/g' Makefile
-          # DESTDIR redirects all install paths under $out, so the
-          # `install-sysconf` hook creates $out/etc/ssh/ (writable Nix
-          # build dir) rather than /etc/ssh/ (which only exists on the
-          # running system). Runtime binaries still look at /etc/ssh/
-          # because that's what was compiled in via --sysconfdir above.
-          make install-nokeys DESTDIR=$out
-          # Flatten $out/$out/... back to $out (DESTDIR concatenates).
-          cp -a $out$out/. $out/
-          rm -rf $out/nix
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            sed -i 's/-m 4711/-m 0755/g' Makefile
+            # DESTDIR redirects all install paths under $out, so the
+            # `install-sysconf` hook creates $out/etc/ssh/ (writable Nix
+            # build dir) rather than /etc/ssh/ (which only exists on the
+            # running system). Runtime binaries still look at /etc/ssh/
+            # because that's what was compiled in via --sysconfdir above.
+            make install-nokeys DESTDIR=$out
+            # Flatten $out/$out/... back to $out (DESTDIR concatenates).
+            cp -a $out$out/. $out/
+            rm -rf $out/nix
+
+            # Portable OpenSSH keeps ssh-copy-id in contrib and does not add
+            # it to install-nokeys. Install the client helper explicitly so
+            # the Darwin package has the complete command-line tool set.
+            mkdir -p "$out/share/man/man1"
+            install -m 0755 contrib/ssh-copy-id "$out/bin/ssh-copy-id"
+            install -m 0644 contrib/ssh-copy-id.1 "$out/share/man/man1/ssh-copy-id.1"
+            sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/ssh-copy-id"
+          ''
+          else ''
+            sed -i 's/-m 4711/-m 0755/g' Makefile
+            # DESTDIR redirects all install paths under $out, so the
+            # `install-sysconf` hook creates $out/etc/ssh/ (writable Nix
+            # build dir) rather than /etc/ssh/ (which only exists on the
+            # running system). Runtime binaries still look at /etc/ssh/
+            # because that's what was compiled in via --sysconfdir above.
+            make install-nokeys DESTDIR=$out
+            # Flatten $out/$out/... back to $out (DESTDIR concatenates).
+            cp -a $out$out/. $out/
+            rm -rf $out/nix
+          '';
       }
     ];
 

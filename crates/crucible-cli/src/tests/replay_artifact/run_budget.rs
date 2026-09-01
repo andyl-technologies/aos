@@ -8,22 +8,51 @@ pub(super) fn cli_run_workflow_executes_local_double_session_and_timeout_budget(
     #[derive(Default)]
     struct NonQuiescentLifecycleLoop {
         quanta: u64,
+        event_log: crucible::EventLog,
     }
 
     impl EngineLoop for NonQuiescentLifecycleLoop {
         fn drive_quantum(&mut self, request: QReq) -> Result<QOut, QErr> {
             self.quanta = self.quanta.saturating_add(1);
+            let append = if self.quanta == 1 {
+                self.event_log.append_observations_at_boundary(
+                    [
+                        crucible::ObservableEvent::console_output(
+                            VirtualTime { ticks: 1 },
+                            crucible::NodeId {
+                                name: String::from("budget-node"),
+                            },
+                            b"before-coverage".to_vec(),
+                        ),
+                        crucible::ObservableEvent::coverage_block(
+                            crucible::Icount { retired: 1 },
+                            crucible::NodeId {
+                                name: String::from("budget-node"),
+                            },
+                            0x4010,
+                            4,
+                        ),
+                    ],
+                    VirtualTime { ticks: 1 },
+                    crucible::SchedulerEvaluationBoundaryKind::Quantum,
+                )?
+            } else {
+                self.event_log.append_evaluation_boundary(
+                    VirtualTime { ticks: self.quanta },
+                    crucible::SchedulerEvaluationBoundaryKind::Quantum,
+                )?
+            };
             Ok(QOut {
                 configuration: request.configuration,
                 frontier: VirtualTime { ticks: self.quanta },
                 advanced_node: None,
                 resolved_events: Vec::new(),
                 decisions: Vec::new(),
-                event_log_entries: Vec::new(),
-                event_log_segment_bytes: Vec::new(),
-                event_log_segment_text: String::new(),
-                event_log_segment_hash: None,
-                event_log_offset: Default::default(),
+                event_log_entries: append.entries,
+                event_log_segment_bytes: append.segment_bytes,
+                event_log_segment_text: append.segment_text,
+                event_log_segment_hash: append.segment_hash,
+                event_log_offset: append.offset,
                 scheduler_quiescence: None,
             })
         }
@@ -147,6 +176,7 @@ pub(super) fn cli_run_workflow_executes_local_double_session_and_timeout_budget(
     ))?;
     assert_eq!(timeout_report.final_quanta, 1);
     assert!(timeout_report.budget_timed_out);
+    assert_eq!(timeout_report.coverage_feedback.projection().len(), 1);
     let timeout_outcome = finish_run_workflow_outcome(
         &timeout_thin_plan,
         &timeout_backend_plan,

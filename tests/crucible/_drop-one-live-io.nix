@@ -139,7 +139,7 @@ in
               GUEST_KERNEL_APPEND='console=ttyS0 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0 nohz=off' \
               CRUCIBLE_BLOCK_IO_BUSY_CEILING=10000000000 \
               CRUCIBLE_BLOCK_IO_TIMEOUT_SECS=20 \
-              CRUCIBLE_BLOCK_IO_SECOND_RUN_LOAD=0 \
+              CRUCIBLE_BLOCK_IO_SECOND_RUN_SCHEDULER_PREEMPTION=0 \
                 timeout -k 15 300 \
                   "$RUNNER" \
                   "$VARIANT_QEMU" \
@@ -152,7 +152,7 @@ in
             else
               CRUCIBLE_9P_IO_BUSY_CEILING=4000000000 \
               CRUCIBLE_9P_IO_TIMEOUT_SECS=20 \
-              CRUCIBLE_9P_IO_SECOND_RUN_LOAD=0 \
+              CRUCIBLE_9P_IO_SECOND_RUN_SCHEDULER_PREEMPTION=0 \
                 timeout -k 15 300 \
                   "$RUNNER" \
                   "$VARIANT_QEMU" \

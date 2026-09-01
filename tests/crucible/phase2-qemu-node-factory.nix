@@ -5,11 +5,7 @@
   taskIds ? ["T-QEMU-3" "T-QEMU-6" "T-QEMU-7" "T-QEMU-12"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   qemuLib = import ./_rust-module-source.nix {
     inherit lib;
@@ -31,9 +27,9 @@
     inherit lib;
     entry = ../../crates/crucible-qemu/src/realization/node_executor/tests.rs;
   };
-  savevmPolicy = import ./_rust-module-source.nix {
+  exactSnapshotPolicy = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu/src/savevm_policy.rs;
+    entry = ../../crates/crucible-qemu/src/exact_snapshot_policy.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -88,8 +84,8 @@
         needle = "QemuBakedGenesisRestoreAdmission";
       }
       {
-        label = "shutdown-only QMP adapter export";
-        needle = "QemuQmpShutdownOnlyControlChannel";
+        label = "exact-snapshot QMP adapter export";
+        needle = "QemuQmpExactSnapshotControlChannel";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/node_factory.rs" nodeFactory [
@@ -98,16 +94,16 @@
         needle = "Linux factory for already-spawned QEMU nodes";
       }
       {
-        label = "shutdown-only QMP adapter";
-        needle = "pub struct QemuQmpShutdownOnlyControlChannel";
+        label = "exact-snapshot QMP adapter";
+        needle = "pub struct QemuQmpExactSnapshotControlChannel";
       }
       {
-        label = "generic save checkpoint rejection";
-        needle = "generic QEMU node checkpointing requires explicit VMState policy authorization";
+        label = "exact VMState save delegation";
+        needle = "save_checkpoint_vmstate(checkpoint)";
       }
       {
-        label = "generic restore checkpoint rejection";
-        needle = "generic QEMU node restore requires explicit VMState policy authorization";
+        label = "failed-capture cleanup delegation";
+        needle = "delete_checkpoint_vmstate(checkpoint)";
       }
       {
         label = "QMP quit delegation";
@@ -258,16 +254,16 @@
     ]
     ++ failuresFor "crates/crucible-qemu/src/node_factory/tests.rs" nodeFactoryTests [
       {
-        label = "shutdown-only rejection test";
-        needle = "qmp_shutdown_only_rejects_generic_snapshot_restore_but_quits";
+        label = "exact snapshot control test";
+        needle = "qmp_node_control_saves_deletes_and_quits";
       }
       {
         label = "completed setup assembly test";
-        needle = "factory_assembles_node_from_completed_setup_with_shutdown_only_qmp";
+        needle = "factory_assembles_node_with_exact_snapshot_qmp_control";
       }
       {
         label = "warm restore assembly test";
-        needle = "factory_restores_vmstate_before_reducing_qmp_to_shutdown_only";
+        needle = "factory_restores_vmstate_before_exposing_exact_snapshot_control";
       }
       {
         label = "probe-only restore admission test";
@@ -374,7 +370,7 @@
         needle = "qemu_node_realization_executor_replays_without_generic_snapshot_or_restore";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/savevm_policy.rs" savevmPolicy [
+    ++ failuresFor "crates/crucible-qemu/src/exact_snapshot_policy.rs" exactSnapshotPolicy [
       {
         label = "private admission field block";
         needle = "pub struct QemuLoadvmRealizationAdmission {\n    /// Shared runtime fingerprint proven by fat/thin replay-oracle equality.\n    runtime_hash: ContentHash,\n}";
@@ -396,7 +392,7 @@
         needle = "QemuLoadvmCommandPurpose::BakedGenesisRealization";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu/src/savevm_policy.rs" savevmPolicy [
+    ++ forbiddenFor "crates/crucible-qemu/src/exact_snapshot_policy.rs" exactSnapshotPolicy [
       {
         label = "public admission field";
         needle = "pub runtime_hash: ContentHash";
@@ -499,9 +495,9 @@ in
             rust_test_extra=crucible-qemu::realization::node_executor
             completed_setup_factory=maps-setup-region-and-binds-shmem-hotpath
             warm_restore_factory=prepares-setup-before-authorized-loadvm
-            real_node_executor=warm-restored-qemu-node-replay-without-generic-qmp-snapshot
-            qmp_after_assembly=shutdown-only
-            generic_snapshot_restore=fail-closed
+            real_node_executor=warm-restored-qemu-node-replay-with-paired-exact-snapshot
+            qmp_after_assembly=exact-snapshot-save-delete-and-shutdown
+            generic_snapshot_restore=absent
             admission_boundary=opaque-replay-oracle-proof-or-baked-genesis
             RESULT
           '';

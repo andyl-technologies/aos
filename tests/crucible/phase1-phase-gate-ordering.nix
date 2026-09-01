@@ -5,11 +5,7 @@
   taskIds ? ["T-HARN-26"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   phasePlanRust = builtins.readFile ../../crates/crucible-harness/src/phase_plan.rs;
   phasePlanTest = builtins.readFile ../../crates/crucible-harness/tests/phase_plan.rs;
@@ -45,8 +41,8 @@
         needle = "pub const SIM_DOUBLE_AVAILABLE_PHASE: PhasePlanPhase = PhasePlanPhase::Phase1";
       }
       {
-        label = "terminal Phase 7 e2e target";
-        needle = "checks.crucible.phase7.gates.e2eDeterminism";
+        label = "terminal Phase 7 signal-fault target";
+        needle = "checks.crucible.phase7.gates.signalFaultSystem";
       }
     ]
     ++ failuresFor "crates/crucible-harness/tests/phase_plan.rs" phasePlanTest [
@@ -59,8 +55,8 @@
         needle = "green_before_advance_requires_every_prior_phase_gate";
       }
       {
-        label = "terminal e2e test";
-        needle = "terminal_e2e_occurrence_remains_in_phase7_acceptance_set";
+        label = "terminal signal-fault test";
+        needle = "terminal_signal_fault_occurrence_remains_in_phase7_acceptance_set";
       }
       {
         label = "SimDouble ordering test";
@@ -81,8 +77,8 @@
         needle = "green-before-advance";
       }
       {
-        label = "terminal Phase 7 e2e requirement";
-        needle = "`gate:e2e-determinism` terminal";
+        label = "terminal Phase 7 signal-fault requirement";
+        needle = "`gate:signal-fault-system` terminal";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -208,7 +204,7 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             rust_test=crucible-harness::phase_plan
             phase_gate_ordering=green-before-advance
-            terminal_gate=gate:e2e-determinism
+            terminal_gate=gate:signal-fault-system
             sim_double_available=phase1
             RESULT
           '';

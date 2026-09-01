@@ -102,7 +102,7 @@ pub struct VersionEntry {
     #[serde(default)]
     pub previous: Option<String>,
     /// Per-platform artifacts, keyed by platform triple
-    /// (e.g. `x86_64-linux`).
+    /// (e.g. `x86_64-linux` or `aarch64-darwin`).
     #[serde(default)]
     pub platforms: HashMap<String, PlatformEntry>,
 }
@@ -174,7 +174,7 @@ pub struct PlatformEntry {
     /// Configuration-only module output and its declared interface.
     #[serde(default)]
     pub config_module: Option<ConfigModuleMeta>,
-    /// Canonical RFC-0015 package documentation store object.
+    /// Canonical RFC-0016 package documentation store object.
     #[serde(default)]
     pub documentation: Option<DocumentationArtifactMeta>,
 }

@@ -11,7 +11,10 @@
   qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginNetworkTx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs;
-  pluginNetworkRx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs;
+  pluginNetworkRx = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs)
+  ];
   defaultChecks = builtins.readFile ./default.nix;
   qemuNetDeterministic = import ./phase1-qemu-net-deterministic.nix {
     inherit pkgs lib qemuPackage;
@@ -34,7 +37,7 @@
     failuresFor "pkgs/emulation/qemu.nix" qemuNix [
       {
         label = "QEMU net TX callback patch wiring";
-        needle = "patch -p1 < \${./qemu-patches/0020-crucible-net-tx-callback.patch}";
+        needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
       }
     ]
     ++ failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
@@ -111,12 +114,8 @@
         needle = "resolve_qemu_register_net_tx_cb_symbol";
       }
       {
-        label = "network RX send resolver exported";
-        needle = "resolve_qemu_net_send_symbol";
-      }
-      {
-        label = "network RX flush resolver exported";
-        needle = "resolve_qemu_net_flush_symbol";
+        label = "network RX direct-injection resolver exported";
+        needle = "resolve_qemu_net_inject_symbol";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/network_tx.rs" pluginNetworkTx [
@@ -135,12 +134,8 @@
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/network_rx.rs" pluginNetworkRx [
       {
-        label = "network RX send resolver";
-        needle = "pub fn resolve_qemu_net_send_symbol";
-      }
-      {
-        label = "network RX flush resolver";
-        needle = "pub fn resolve_qemu_net_flush_symbol";
+        label = "network RX direct-injection resolver";
+        needle = "pub fn resolve_qemu_net_inject_symbol";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
@@ -149,8 +144,8 @@
         needle = "crucible-net-tx-callback";
       }
       {
-        label = "network flush API catalog";
-        needle = "crucible-net-flush-api";
+        label = "network direct-injection API catalog";
+        needle = "crucible-net-direct-inject-api";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -199,12 +194,6 @@ in
 
             QEMU_PLUGIN_API
             int qemu_plugin_net_inject(const uint8_t *data, size_t len);
-            QEMU_PLUGIN_API
-            int qemu_plugin_net_send(const uint8_t *data, size_t len);
-            QEMU_PLUGIN_API
-            int qemu_plugin_net_flush(void);
-            QEMU_PLUGIN_API
-            int qemu_plugin_net_can_receive(void);
 
             typedef void
             (*qemu_plugin_vcpu_syscall_cb_t)(qemu_plugin_id_t id, unsigned int vcpu_index,
@@ -560,11 +549,11 @@ in
             grep -q '^stock_negative_control_net_tx_symbol_absent=true$' "$out/qemu-net-tx-callback-microtest"
 
             rx_result="${qemuNetDeterministic}/result"
-            grep -q '^qemu_net_rx_lossless_queue=true$' "$rx_result"
-            grep -q '^qemu_net_rx_flush_at_delivery_icount=true$' "$rx_result"
-            grep -q '^qemu_net_rx_flush_fails_loudly_when_not_ready=true$' "$rx_result"
+            grep -q '^qemu_net_rx_api=qemu_plugin_net_inject$' "$rx_result"
+            grep -q '^qemu_net_rx_canonical_retry=true$' "$rx_result"
+            grep -q '^qemu_net_rx_private_queue=false$' "$rx_result"
             grep -q '^skewed_producer_observed_icount_identical=true$' "$rx_result"
-            cp "$rx_result" "$out/qemu-net-rx-lossless.result"
+            cp "$rx_result" "$out/qemu-net-rx-canonical.result"
             cp stock-net-tx-negative.err "$out/stock-negative-control.err"
             cp include/qemu/qemu-plugin.h "$out/qemu-plugin.h.patched"
             cp net/net.c "$out/net.c.patched"
@@ -586,9 +575,9 @@ in
             qemu_net_tx_oversized_iov_fails_loudly=true
             qemu_net_tx_callback_failure_fails_loudly=true
             qemu_net_tx_link_down_keeps_upstream_drop=true
-            qemu_net_rx_lossless_queue=true
-            qemu_net_rx_flush_at_delivery_icount=true
-            qemu_net_rx_flush_fails_loudly_when_not_ready=true
+            qemu_net_rx_api=qemu_plugin_net_inject
+            qemu_net_rx_canonical_retry=true
+            qemu_net_rx_private_queue=false
             qemu_net_rx_skewed_producer_observed_icount_identical=true
             apply_clean_patch_fuzz=0
             RESULT

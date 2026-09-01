@@ -5,17 +5,16 @@
   taskIds ? ["T-OBS-1"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   eventLogTest = builtins.readFile ../../crates/crucible/tests/event_log_unified.rs;
   emitStepTest = builtins.readFile ../../crates/crucible/tests/scheduler_emit_step.rs;
-  triggerFiringTest = builtins.readFile ../../crates/crucible/tests/trigger_firing_causal_log.rs;
+  triggerFiringTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/event_graph_replay_oracle.rs;
+  };
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -133,10 +132,10 @@
         needle = "step_advances_schedule_and_event_log_prefix_across_quanta";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/trigger_firing_causal_log.rs" triggerFiringTest [
+    ++ failuresFor "crates/crucible/tests/event_graph_replay_oracle.rs" triggerFiringTest [
       {
         label = "trigger consumers use event-log prefix";
-        needle = "trigger_firing_is_causal_event_log_entry_not_schedule_decision";
+        needle = "event_graph_replay_oracle_rederives_identical_firings_actions_and_verdict";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -245,7 +244,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-event-log-unified-target" \
               -p crucible \
-              --test trigger_firing_causal_log \
+              --test event_graph_replay_oracle \
               -- --test-threads=1
           '';
         }

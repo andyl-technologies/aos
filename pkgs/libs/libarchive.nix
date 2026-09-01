@@ -10,6 +10,8 @@
   bzip2,
   lz4,
   expat,
+  xz,
+  stdenv,
 }: let
   version = "3.8.5";
 in
@@ -29,14 +31,23 @@ in
       gnumake
       pkg-config
     ];
-    runtimeDeps = [
-      openssl
-      zlib
-      zstd
-      bzip2
-      lz4
-      expat
-    ];
+    runtimeDeps =
+      [
+        openssl
+        zlib
+        zstd
+        bzip2
+        lz4
+        expat
+      ]
+      ++ (
+        # The native xz unpacker is visible while configure probes liblzma,
+        # but its ELF library cannot satisfy a Mach-O link. Make the matching
+        # target library explicit so libarchive retains LZMA/XZ support.
+        if stdenv.isCross && stdenv.hostPlatform.isDarwin
+        then [xz]
+        else []
+      );
     propagatedDeps = [];
 
     # libarchive still uses legacy trailing-array layouts internally. GCC's
@@ -57,6 +68,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --enable-shared \
             --disable-static \

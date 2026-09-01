@@ -108,7 +108,7 @@ fn shifted_black_box_readiness_reports_one_coherent_icount_boundary() {
     .expect("network idle ready point should validate with an incident link");
     let network_observations = vec![ObservableEvent::network_delivered(
         time(5),
-        Some(LinkId::from_name("client--server")),
+        Some(LinkId::for_endpoints(&node("client"), &node("server"))),
         b"syn".to_vec(),
     )];
 
@@ -225,7 +225,7 @@ fn network_idle_readiness_resolves_first_quiescent_link_window() {
         vec![LinkDef::new(node("client"), node("server")).expect("link endpoints differ")],
     )
     .expect("network idle ready point should validate");
-    let link = LinkId::from_name("client--server");
+    let link = LinkId::for_endpoints(&node("client"), &node("server"));
     let observations = vec![
         ObservableEvent::network_delivered(time(5), Some(link.clone()), b"syn".to_vec()),
         ObservableEvent::network_delivered(time(11), Some(link), b"ack".to_vec()),
@@ -262,7 +262,7 @@ fn network_idle_readiness_treats_same_tick_activity_as_not_idle() {
         vec![LinkDef::new(node("client"), node("server")).expect("link endpoints differ")],
     )
     .expect("network idle ready point should validate");
-    let link = LinkId::from_name("client--server");
+    let link = LinkId::for_endpoints(&node("client"), &node("server"));
     let observations = vec![
         ObservableEvent::network_delivered(time(5), Some(link.clone()), b"syn".to_vec()),
         ObservableEvent::network_delivered(time(15), Some(link), b"ack".to_vec()),

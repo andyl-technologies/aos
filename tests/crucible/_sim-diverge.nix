@@ -32,6 +32,7 @@
   # lacking it reads host time and diverges run-to-run.
   rtcClock ? "vm",
   attrPath ? "drop-one-sim-diverge",
+  dependencies ? [],
 }: let
   workload = import ./_sim-workload.nix {inherit pkgs lib;};
   usesCanonicalTrace = builtins.elem index [3 17 19 37 38 40];
@@ -48,7 +49,7 @@ in
     pname = "crucible-sim-diverge-${toString index}";
     version = "0";
     src = null;
-    buildDeps = [pkgs.coreutils pkgs.gawk pkgs.grep qemuPackage];
+    buildDeps = [pkgs.coreutils pkgs.gawk pkgs.grep qemuPackage] ++ dependencies;
     BUILD_DRV = "${buildDrv}";
     FULL_BASELINE = "${fullBaseline}";
     FULL_QEMU = "${qemuPackage}/bin/qemu-system-x86_64";
@@ -122,21 +123,35 @@ in
           fi
 
           # Patch 0008 is a fail-closed policy, not a deterministic-output
-          # transform: without it, an unseeded sim guest consumes host entropy
-          # and boots; with it, QEMU rejects the same launch before guest
-          # execution. Exercise both full and full-minus-0008 binaries directly.
+          # transform. Exercise the ordinary guest-random API through an SD
+          # card probe, deliberately excluding the later sim-specific
+          # virtio-rng path: full must reject the unseeded request, while
+          # full-minus-0008 must cross the same request into guest userspace.
           if [ "$DROP_INDEX" -eq 8 ]; then
-            full_unseeded=$(sim_fingerprint "$FULL_QEMU" "$FIRMWARE" "$RTC_CLOCK" none)
-            variant_unseeded=$(sim_fingerprint "$variant" "$FIRMWARE" "$RTC_CLOCK" none)
-            test -z "$full_unseeded" || {
-              echo "FAIL: fully patched sim unexpectedly accepted an unseeded guest-random launch" >&2
+            sim_unseeded_guest_random_policy_probe \
+              "$FULL_QEMU" "$FIRMWARE" "$out/full-unseeded"
+            sim_unseeded_guest_random_policy_probe \
+              "$variant" "$FIRMWARE" "$out/variant-unseeded"
+            grep -Fq -- '-accel sim requires -seed for deterministic guest random' \
+              "$out/full-unseeded.qemu-stderr" || {
+                echo "FAIL: fully patched sim did not reject ordinary unseeded guest random" >&2
+                exit 1
+              }
+            if grep -q '^SIMBOOT:USERSPACE$' "$out/full-unseeded.normalized"; then
+              echo "FAIL: fully patched sim reached userspace after unseeded guest random" >&2
+              exit 1
+            fi
+            grep -q '^SIMBOOT:USERSPACE$' "$out/variant-unseeded.normalized" || {
+              cat "$out/variant-unseeded.qemu-stderr" >&2
+              echo "FAIL: full-minus-0008 did not cross unseeded guest random into userspace" >&2
               exit 1
             }
-            test -n "$variant_unseeded" || {
-              echo "FAIL: full-minus-0008 did not boot the unseeded negative-control workload" >&2
+            if grep -Fq -- '-accel sim requires -seed for deterministic guest random' \
+              "$out/variant-unseeded.qemu-stderr"; then
+              echo "FAIL: full-minus-0008 retained the dropped guest-random policy" >&2
               exit 1
-            }
-            printf 'run=1 fp=%s seed_mode=none\n' "$variant_unseeded" \
+            fi
+            printf 'run=1 outcome=guest-userspace seed_mode=none\n' \
               > "$out/variant-fingerprints"
             cat > "$out/result" <<RESULT
           PASS
@@ -144,13 +159,13 @@ in
           gate=gate:patch-microtests
           drop_index=$DROP_INDEX
           sim_discriminator_classification=differs
-          semantic_form=full-rejects-unseeded-variant-boots
-          full_unseeded_rejected=true
-          variant_unseeded_booted=true
+          semantic_form=full-rejects-unseeded-variant-reaches-userspace
+          full_unseeded_ordinary_guest_random_rejected=true
+          variant_unseeded_guest_userspace_reached=true
           variant_runs=1
           variant_diverges=false
           runs_to_diverge=0
-          variant_first_fingerprint=$variant_unseeded
+          variant_first_fingerprint=not-applicable-policy-probe
           full_baseline_fingerprint=$full_fp
           variant_max_runs=$MAX_RUNS
           RESULT
@@ -167,6 +182,13 @@ in
             printf 'run=%s fp=%s\n' "$run" "$fp" >> "$out/variant-fingerprints"
             if [ "$run" -eq 1 ]; then
               first="$fp"
+              # An empty fingerprint means this variant did not complete the
+              # bounded guest workload. Repeating the same failed boot cannot
+              # establish runtime nondeterminism, so classify it as an
+              # undiscriminated composition after the first finite attempt.
+              if [ -z "$first" ]; then
+                break
+              fi
             elif [ "$fp" != "$first" ]; then
               diverged=true
               runs_to_diverge="$run"

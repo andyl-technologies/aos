@@ -3,23 +3,6 @@
 use super::*;
 
 #[test]
-fn bounded_random_fault_draw_forces_rejection_of_the_biased_prefix() {
-    // 2^64 mod 10 is 6, so [0, 6) is the biased short prefix. Supplying 5
-    // then 16 proves the sampler consumes and rejects the first draw before
-    // accepting 16 and reducing it to residue 6.
-    let mut draws = [5_u64, 16].into_iter();
-    let mut consumed = 0_u64;
-    let sampled = draw_bounded_u64_from(10, || {
-        consumed = consumed.saturating_add(1);
-        draws.next().unwrap_or(u64::MAX)
-    })
-    .unwrap_or_else(|error| panic!("bounded sample should succeed: {error}"));
-
-    assert_eq!(sampled, 6);
-    assert_eq!(consumed, 2, "the biased prefix draw must be rejected");
-}
-
-#[test]
 fn failure_findings_ledger_orders_signed_findings_and_rejects_conflicts() -> Result<(), EngineError>
 {
     let artifact_a = ContentHash::from_bytes(b"signed-finding-artifact-a");

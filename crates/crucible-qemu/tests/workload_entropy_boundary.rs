@@ -15,6 +15,9 @@ use crucible_qemu::{
     validate_qemu_determinism_boundary, validate_x86_whitebox_hmp_mtree,
 };
 
+#[path = "support/mod.rs"]
+mod support;
+
 #[test]
 fn workload_guest_rng_transcript_is_seeded_by_scenario_entropy_boundary() {
     let first = workload_profile(0xfeed_0010, GuestWorkloadBinary::ClientLoop);
@@ -172,7 +175,12 @@ fn assert_host_entropy_rejected(args: &[String], reason: &'static str) {
 
 fn sim_on_observation(profile: &DeterministicLaunchProfile) -> QemuControlPlaneObservation {
     let command = profile
-        .qemu_launch_command(default_vm_config(), default_qemu_binary(), plugin_config())
+        .qemu_launch_command(
+            default_vm_config(),
+            default_qemu_binary(),
+            plugin_config(),
+            &support::x86_fault_node("workload-client", "qemu64-x86_64-cpu"),
+        )
         .expect("sim-on workload launch command should validate");
     QemuControlPlaneObservation {
         simulation_mode: QemuSimulationMode::On,
@@ -186,6 +194,7 @@ fn plugin_config() -> QemuLaunchPluginConfig {
         "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
         0,
     )
+    .with_fault_target_node("workload-client")
     .with_whitebox(QemuLaunchPluginSwitch::On)
     .with_whitebox_setup(
         validate_x86_whitebox_hmp_mtree(

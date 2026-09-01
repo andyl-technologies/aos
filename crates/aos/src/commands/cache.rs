@@ -10,6 +10,7 @@ use anyhow::Result;
 
 use aos_cache::backend::{self, AuthOptions};
 use aos_core::output::Printer;
+use aos_package::types::validate_platform_name;
 
 use crate::cli::{CacheAuthArgs, CacheCmd};
 
@@ -28,6 +29,7 @@ pub async fn run(printer: &Printer, cmd: &CacheCmd) -> Result<()> {
             file,
             attr,
             expr,
+            target,
             jobs,
             max_bandwidth,
             batch_threshold,
@@ -37,6 +39,7 @@ pub async fn run(printer: &Printer, cmd: &CacheCmd) -> Result<()> {
             auth,
             ..
         } => {
+            validate_target(target.as_deref())?;
             let auth_opts = auth_from_args(auth);
             let backend = backend::from_url(to, &auth_opts).await?;
             aos_cache::run_push(
@@ -46,6 +49,7 @@ pub async fn run(printer: &Printer, cmd: &CacheCmd) -> Result<()> {
                 file.as_deref(),
                 attr.as_deref(),
                 expr.as_deref(),
+                target.as_deref(),
                 *jobs,
                 max_bandwidth.as_deref(),
                 batch_threshold,
@@ -61,12 +65,14 @@ pub async fn run(printer: &Printer, cmd: &CacheCmd) -> Result<()> {
             file,
             attr,
             expr,
+            target,
             jobs,
             max_bandwidth,
             dry_run,
             auth,
             ..
         } => {
+            validate_target(target.as_deref())?;
             let auth_opts = auth_from_args(auth);
             let backend = backend::from_url(from, &auth_opts).await?;
             aos_cache::run_pull(
@@ -76,6 +82,7 @@ pub async fn run(printer: &Printer, cmd: &CacheCmd) -> Result<()> {
                 file.as_deref(),
                 attr.as_deref(),
                 expr.as_deref(),
+                target.as_deref(),
                 *jobs,
                 max_bandwidth.as_deref(),
                 *dry_run,
@@ -88,11 +95,13 @@ pub async fn run(printer: &Printer, cmd: &CacheCmd) -> Result<()> {
             file,
             attr,
             expr,
+            target,
             jobs,
             dry_run,
             auth,
             ..
         } => {
+            validate_target(target.as_deref())?;
             let auth_opts = auth_from_args(auth);
             let backend = backend::from_url(to, &auth_opts).await?;
             aos_cache::run_prefetch(
@@ -102,6 +111,7 @@ pub async fn run(printer: &Printer, cmd: &CacheCmd) -> Result<()> {
                 file.as_deref(),
                 attr.as_deref(),
                 expr.as_deref(),
+                target.as_deref(),
                 *jobs,
                 *dry_run,
             )
@@ -113,9 +123,11 @@ pub async fn run(printer: &Printer, cmd: &CacheCmd) -> Result<()> {
             file,
             attr,
             expr,
+            target,
             auth,
             ..
         } => {
+            validate_target(target.as_deref())?;
             let auth_opts = auth_from_args(auth);
             let backend = backend::from_url(from, &auth_opts).await?;
             aos_cache::run_list(
@@ -125,10 +137,19 @@ pub async fn run(printer: &Printer, cmd: &CacheCmd) -> Result<()> {
                 file.as_deref(),
                 attr.as_deref(),
                 expr.as_deref(),
+                target.as_deref(),
             )
             .await
         }
     }
+}
+
+/// Validates an optional Nix target selected for cache evaluation.
+fn validate_target(target: Option<&str>) -> Result<()> {
+    if let Some(target) = target {
+        validate_platform_name(target)?;
+    }
+    Ok(())
 }
 
 /// Convert CLI auth args to [`AuthOptions`].

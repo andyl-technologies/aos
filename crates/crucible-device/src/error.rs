@@ -63,6 +63,110 @@ pub enum DeviceError {
         latency_ns: u64,
     },
 
+    /// A device returned additional completions without a primary completion.
+    #[error("computed response contains duplicates but no primary completion")]
+    InvalidComputedResponse,
+
+    /// The canonical completion-order sequence exhausted its wire width.
+    #[error("response ordering sequence exhausted at {sequence}")]
+    ResponseSequenceOverflow {
+        /// Last representable sequence value that could not be advanced.
+        sequence: u32,
+    },
+
+    /// A resolved block directive is malformed or disagrees with its request.
+    #[error("invalid resolved block fault directive: {reason}")]
+    InvalidBlockFaultDirective {
+        /// Stable validation failure.
+        reason: &'static str,
+    },
+
+    /// Signal-driven execution required a directive for this exact request.
+    #[error("missing resolved block fault directive for request {request_id}")]
+    MissingBlockFaultDirective {
+        /// Guest request identity.
+        request_id: u32,
+    },
+
+    /// A resolved 9p directive is malformed or disagrees with its request.
+    #[error("invalid resolved 9p fault directive: {reason}")]
+    InvalidNinepFaultDirective {
+        /// Stable validation failure.
+        reason: &'static str,
+    },
+
+    /// Signal-driven execution required a directive for this exact 9p request.
+    #[error("missing resolved 9p fault directive for tag {tag}")]
+    MissingNinepFaultDirective {
+        /// Protocol request tag.
+        tag: u16,
+    },
+
+    /// A bounded 9p continuation table reached its hard limit.
+    #[error("9p fault state `{field}` reached hard limit {hard}")]
+    NinepFaultStateLimit {
+        /// Bounded table name.
+        field: &'static str,
+        /// Compiled hard limit.
+        hard: usize,
+    },
+
+    /// The scheduler attempted to pass an unresolved staged storage boundary.
+    #[error(
+        "cannot advance storage to {requested_nanos}ns past unresolved fault opportunity at {ready_nanos}ns"
+    )]
+    UnresolvedBlockFaultOpportunity {
+        /// Exact coordinate whose decision is still absent.
+        ready_nanos: u64,
+        /// Rejected requested advance coordinate.
+        requested_nanos: u64,
+    },
+
+    /// Two unresolved directives attempted to own one request identity.
+    #[error("duplicate resolved block fault directive for request {request_id}")]
+    DuplicateBlockFaultDirective {
+        /// Guest request identity.
+        request_id: u32,
+    },
+
+    /// A duplicate completion reached a device without a bound live transport.
+    #[error(
+        "block request {request_id} requires duplicate-completion transport handling before COMPUTE"
+    )]
+    BlockDuplicateTransportUnavailable {
+        /// Guest request whose resolved directive requires transport handling.
+        request_id: u32,
+    },
+
+    /// Checkpointed block fault state reached a compiled hard ceiling.
+    #[error("block fault state `{field}` reached hard limit {hard}")]
+    BlockFaultStateLimit {
+        /// Bounded state collection.
+        field: &'static str,
+        /// Compiled hard ceiling.
+        hard: usize,
+    },
+
+    /// The exact volatile cache cannot admit another selected write.
+    #[error(
+        "block volatile cache has {available_bytes} bytes available, request needs {requested_bytes}"
+    )]
+    BlockCacheFull {
+        /// Bytes requested by the write fragment.
+        requested_bytes: u64,
+        /// Remaining configured capacity.
+        available_bytes: u64,
+    },
+
+    /// An integrated storage-service queue reached its configured request depth.
+    #[error("block storage-service queue for contributor {contributor:?} is full at depth {depth}")]
+    BlockServiceQueueFull {
+        /// Contributor whose independently constrained queue is full.
+        contributor: [u8; 32],
+        /// Exact configured active-plus-pending request limit.
+        depth: u32,
+    },
+
     /// The scheduler asked the clock to move backward.
     ///
     /// The virtual clock is monotonic and advanced only by the scheduler; a

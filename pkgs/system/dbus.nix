@@ -9,6 +9,7 @@
   libselinux,
   audit,
   systemd,
+  stdenv,
 }: let
   version = "1.14.10";
 in
@@ -27,15 +28,20 @@ in
       gnumake
       pkg-config
     ];
-    runtimeDeps = [
-      expat
-      libselinux
-      audit
-      # libsystemd for sd_notify + unit file installation. Systemd
-      # no longer depends on dbus at the pkg level (sd-bus replaces
-      # libdbus), so this direction is cycle-free.
-      systemd
-    ];
+    runtimeDeps =
+      [expat]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then []
+        else [
+          libselinux
+          audit
+          # libsystemd for sd_notify + unit file installation. Systemd
+          # no longer depends on dbus at the pkg level (sd-bus replaces
+          # libdbus), so this direction is cycle-free.
+          systemd
+        ]
+      );
     propagatedDeps = [];
 
     # Pure stage-2 inventory for consumers that opt into
@@ -72,17 +78,30 @@ in
         # not a read-only store path.
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --sysconfdir=/etc \
             --localstatedir=/var \
             --disable-tests \
             --disable-doxygen-docs \
             --disable-xml-docs \
-            --enable-systemd \
+            --${
+            if stdenv.hostPlatform.isDarwin
+            then "disable"
+            else "enable"
+          }-systemd \
             --enable-user-session \
             --disable-apparmor \
-            --enable-selinux \
-            --enable-libaudit \
+            --${
+            if stdenv.hostPlatform.isDarwin
+            then "disable"
+            else "enable"
+          }-selinux \
+            --${
+            if stdenv.hostPlatform.isDarwin
+            then "disable"
+            else "enable"
+          }-libaudit \
             --without-x
         '';
       }

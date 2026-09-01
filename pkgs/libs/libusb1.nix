@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  stdenv,
 }: let
   version = "1.0.29";
 in
@@ -21,39 +22,57 @@ in
     runtimeDeps = [];
     propagatedDeps = [];
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd libusb-${version}
-        '';
-      }
-      {
-        # --disable-udev: we don't link libudev, so hotplug notifications are
-        # unavailable, but device enumeration via sysfs still works — which is
-        # all GnuPG's scdaemon internal CCID driver needs to find a card reader.
-        name = "configure";
-        script = ''
-          ./configure \
-            --prefix=$out \
-            --disable-static \
-            --disable-udev
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          make -j$NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          make install
-        '';
-      }
-    ];
+    phases =
+      [
+        {
+          name = "unpack";
+          script = ''
+            tar xf $src
+            cd libusb-${version}
+          '';
+        }
+      ]
+      ++ (
+        if stdenv.isCross && stdenv.hostPlatform.isDarwin
+        then [
+          {
+            name = "darwin-build-paths";
+            script = ''
+              export CFLAGS="$CFLAGS \
+                -ffile-prefix-map=$PWD=. \
+                -fdebug-prefix-map=$PWD=."
+            '';
+          }
+        ]
+        else []
+      )
+      ++ [
+        {
+          # --disable-udev: we don't link libudev, so hotplug notifications are
+          # unavailable, but device enumeration via sysfs still works — which is
+          # all GnuPG's scdaemon internal CCID driver needs to find a card reader.
+          name = "configure";
+          script = ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --disable-static \
+              --disable-udev
+          '';
+        }
+        {
+          name = "build";
+          script = ''
+            make -j$NIX_BUILD_CORES
+          '';
+        }
+        {
+          name = "install";
+          script = ''
+            make install
+          '';
+        }
+      ];
 
     meta = {
       description = "Userspace library for accessing USB devices";

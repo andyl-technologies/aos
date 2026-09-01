@@ -99,12 +99,15 @@ mod tests {
 
     #[test]
     fn instruction_location_round_trips_without_callback_allocation() {
-        let location = LiveWhiteboxInstructionLocation::new(9, 4)
-            .expect("test instruction location should fit callback userdata");
+        let location = LiveWhiteboxInstructionLocation::new(9, 4).unwrap_or_else(|error| {
+            panic!("test instruction location should fit callback userdata: {error}")
+        });
 
         assert_eq!(
             LiveWhiteboxInstructionLocation::from_userdata(location.into_userdata())
-                .expect("encoded instruction location should decode"),
+                .unwrap_or_else(|error| {
+                    panic!("encoded instruction location should decode: {error}")
+                }),
             location
         );
         assert_eq!(
@@ -113,7 +116,7 @@ mod tests {
                     tb_insns: 9,
                     icount: 100,
                 })
-                .expect("entry coordinate should resolve"),
+                .unwrap_or_else(|error| panic!("entry coordinate should resolve: {error}")),
             104
         );
     }
@@ -124,8 +127,9 @@ mod tests {
             LiveWhiteboxInstructionLocation::from_userdata(std::ptr::null_mut()),
             Err(LiveWhiteboxError::InstructionLocationOverflow { .. })
         ));
-        let location = LiveWhiteboxInstructionLocation::new(9, 4)
-            .expect("test instruction location should fit callback userdata");
+        let location = LiveWhiteboxInstructionLocation::new(9, 4).unwrap_or_else(|error| {
+            panic!("test instruction location should fit callback userdata: {error}")
+        });
         assert!(matches!(
             location.current_icount(LiveWhiteboxTbEntry {
                 tb_insns: 8,

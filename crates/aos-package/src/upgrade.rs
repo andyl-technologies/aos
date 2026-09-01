@@ -27,6 +27,7 @@ use super::exposed_units::{
     rebuild_generation_expose_image_roots, rebuild_generation_expose_roots,
     reconcile_system_profile, validate_generation_exposed_units,
 };
+use super::platform::native_platform;
 use super::policy::admit_package_roots;
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
@@ -720,15 +721,10 @@ fn upgrade_candidate_json(candidate: &UpgradeCandidate) -> serde_json::Value {
     })
 }
 
-/// Get the current platform string.
-fn platform() -> String {
-    "x86_64-linux".to_string()
-}
-
 /// Load registries from the config's cache directory.
 fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
-    RegistrySet::load(&config.cache_path(), &reg_configs, &platform())
+    RegistrySet::load(&config.cache_path(), &reg_configs, &native_platform())
 }
 
 /// Prompt for confirmation. Returns `Err(UserCancelled)` on "n".

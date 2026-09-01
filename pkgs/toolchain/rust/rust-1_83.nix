@@ -11,6 +11,8 @@
   which,
   openssl,
   zlib,
+  stdenv,
+  buildPackages,
   rust-1_82,
   llvm-19,
 }: let
@@ -27,6 +29,8 @@
       which
       openssl
       zlib
+      stdenv
+      buildPackages
       ;
   };
 in

@@ -53,7 +53,7 @@ use crucible::{
     SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Seed, Shift, SimInstant,
     SingleScheduler, VirtualTime,
 };
-use crucible_device::{BaseImage, BlockDevice, BlockLatency, BlockRequest, IoCore, IoFaults};
+use crucible_device::{BaseImage, BlockDevice, BlockLatency, BlockRequest, IoCore};
 
 /// The determinism-relevant fingerprint of one full run.
 ///
@@ -263,9 +263,7 @@ fn observed_at_exact_icount(event: &ScheduledEvent) -> Option<ObservedInjection>
     let kind = match &event.payload {
         ScheduledEventPayload::IoCompletion(_) => InjectionKind::IoCompletion,
         ScheduledEventPayload::BackendInput(_) => InjectionKind::Frame,
-        ScheduledEventPayload::FaultActivation(_)
-        | ScheduledEventPayload::ProbabilisticFault(_)
-        | ScheduledEventPayload::Control(_) => {
+        ScheduledEventPayload::Control(_) => {
             return None;
         }
     };
@@ -452,6 +450,4 @@ fn drive_until_error(scheduler: &mut SingleScheduler) -> SchedulerError {
 fn gate_layer1_injection_disk_completion_icount_matches_the_device_model() {
     // read_base_ns (1000) + per_byte_ns (1) * count (8) = 1008 at shift 0.
     assert_eq!(expected_disk_completion_icount(0, 8), 1008);
-    // Fault-free table is the identity, so the modeled icount is the delivery icount.
-    assert_eq!(IoFaults::none().added_latency_ns, 0);
 }

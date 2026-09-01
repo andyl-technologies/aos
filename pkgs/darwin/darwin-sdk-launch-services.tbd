@@ -1,0 +1,16 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ x86_64-macos, arm64-macos ]
+install-name: '/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/LaunchServices'
+current-version: 1141.1
+parent-umbrella:
+  - targets: [ x86_64-macos, arm64-macos ]
+    umbrella: CoreServices
+exports:
+  - targets: [ x86_64-macos, arm64-macos ]
+    symbols:
+      - _UTTypeCopyPreferredTagWithClass
+      - _UTTypeCreatePreferredIdentifierForTag
+      - _kUTTagClassFilenameExtension
+      - _kUTTagClassMIMEType
+...

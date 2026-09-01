@@ -31,6 +31,13 @@ impl QemuAsyncNodeStepTarget for QemuNodeAsyncStepTarget<'_> {
         self.channels.shmem_hot_path.start_quantum(horizon)
     }
 
+    fn advance_completion_fence(
+        &self,
+        pending: &Self::PendingQuantum,
+    ) -> Option<QemuAdvanceCompletionFence> {
+        pending.completion_fence()
+    }
+
     fn finish_quantum(
         &mut self,
         pending: &mut Self::PendingQuantum,

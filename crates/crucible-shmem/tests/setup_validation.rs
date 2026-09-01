@@ -9,7 +9,8 @@ use crucible_shmem::{
     GuestIntrospectionRingDirection, KIND_9P, KIND_BLK, KIND_NET, KIND_VM, MAX_NODES,
     NODE_SLOT_KIND_OFFSET, NODE_SLOT_SIZE, NODE_SLOT_STATUS_OFFSET,
     REGION_HEADER_ABI_VERSION_OFFSET, REGION_HEADER_ENTRY_STRIDE_OFFSET,
-    REGION_HEADER_ICOUNT_SHIFT_OFFSET, REGION_HEADER_MAGIC_OFFSET, REGION_HEADER_NODE_COUNT_OFFSET,
+    REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET, REGION_HEADER_ICOUNT_SHIFT_OFFSET,
+    REGION_HEADER_MAGIC_OFFSET, REGION_HEADER_NODE_COUNT_OFFSET,
     REGION_HEADER_QUEUE_CAPACITY_OFFSET, REGION_HEADER_REGION_SIZE_OFFSET,
     REGION_HEADER_RING_COUNT_OFFSET, REGION_HEADER_RING_DATA_OFF_OFFSET,
     REGION_HEADER_RING_HDR_OFF_OFFSET, REGION_HEADER_SIZE, REGION_MAGIC,
@@ -21,7 +22,11 @@ use crucible_shmem::{
 
 #[cfg(unix)]
 use crucible_shmem::{
-    MappedSetupRegion, MappedSetupRegionAccessError, SetupRegionMapError, mmap_setup_region,
+    DequeuedFaultCommand, DequeuedFaultResult, FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR,
+    FAULT_COMMAND_FLAG_NONE, FAULT_COMMAND_SEMANTIC_VERSION, FaultBoundaryPhase,
+    FaultCommandHeaderV1, FaultCommandKind, FaultResultHeaderV1, FaultResultStatus,
+    MappedSetupRegion, MappedSetupRegionAccessError, SetupRegionMapError, dequeue_fault_command,
+    dequeue_fault_result, enqueue_fault_command, enqueue_fault_result, mmap_setup_region,
 };
 #[cfg(unix)]
 use std::io::Write;
@@ -385,6 +390,118 @@ fn mmap_setup_region_round_trips_whitebox_marker_ring_entries() {
 
 #[test]
 #[cfg(unix)]
+fn mmap_setup_region_round_trips_fault_command_transport() {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+        Ok(allocation) => allocation,
+        Err(error) => panic!("valid region allocation should build: {error}"),
+    };
+    let mut mapped = mapped_region_from_allocation(&allocation);
+    let view = match mapped.fault_command_transport_mut(0) {
+        Ok(view) => view,
+        Err(error) => panic!("mapped fault command transport should bind: {error}"),
+    };
+    let payload = b"memory mutation";
+    let hash = |bytes: &[u8]| *blake3::hash(bytes).as_bytes();
+    let command = FaultCommandHeaderV1 {
+        abi_major: FAULT_COMMAND_ABI_MAJOR,
+        abi_minor: FAULT_COMMAND_ABI_MINOR,
+        command_kind: FaultCommandKind::MemoryMutation,
+        command_flags: FAULT_COMMAND_FLAG_NONE,
+        phase: FaultBoundaryPhase::NodeBoundary,
+        semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+        command_sequence: 1,
+        target_node_hash: hash(b"node-0"),
+        target_icount: 10,
+        authorization_ceiling_icount: 10,
+        binding_hash: hash(b"binding"),
+        opportunity_hash: [0; 32],
+        expected_precondition_hash: hash(b"before"),
+        payload_hash: hash(&[]),
+        payload_offset: 0,
+        payload_length: 0,
+    };
+    if let Err(error) = enqueue_fault_command(
+        view.ring,
+        view.slots,
+        view.arena_header,
+        view.arena,
+        view.arena_region_offset,
+        command,
+        payload,
+    ) {
+        panic!("mapped fault command transport should enqueue: {error}");
+    }
+    let dequeued = match dequeue_fault_command(
+        view.ring,
+        view.slots,
+        view.arena_header,
+        view.arena,
+        view.arena_region_offset,
+    ) {
+        Ok(Some(command)) => command,
+        Ok(None) => panic!("mapped fault command transport should contain one command"),
+        Err(error) => panic!("mapped fault command transport should dequeue: {error}"),
+    };
+    assert!(matches!(
+        dequeued,
+        DequeuedFaultCommand::Valid { header, payload: actual }
+            if header.command_sequence == 1 && actual == payload
+    ));
+
+    let result_view = match mapped.fault_result_transport_mut(0) {
+        Ok(view) => view,
+        Err(error) => panic!("mapped fault result transport should bind: {error}"),
+    };
+    let before = hash(b"before");
+    let result = FaultResultHeaderV1 {
+        abi_major: FAULT_COMMAND_ABI_MAJOR,
+        abi_minor: FAULT_COMMAND_ABI_MINOR,
+        command_kind: FaultCommandKind::MemoryMutation as u16,
+        status: FaultResultStatus::Applied,
+        semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+        command_sequence: 1,
+        observed_icount: 10,
+        applied_icount: 10,
+        capability_version: 1,
+        phase: FaultBoundaryPhase::NodeBoundary,
+        before_hash: before,
+        after_hash: hash(b"after"),
+        evidence_hash: hash(b"evidence"),
+        result_payload_hash: hash(&[]),
+        result_offset: 0,
+        result_length: 0,
+    };
+    if let Err(error) = enqueue_fault_result(
+        result_view.ring,
+        result_view.slots,
+        result_view.arena_header,
+        result_view.arena,
+        result_view.arena_region_offset,
+        result,
+        b"applied",
+    ) {
+        panic!("mapped fault result transport should enqueue: {error}");
+    }
+    let dequeued = match dequeue_fault_result(
+        result_view.ring,
+        result_view.slots,
+        result_view.arena_header,
+        result_view.arena,
+        result_view.arena_region_offset,
+    ) {
+        Ok(Some(result)) => result,
+        Ok(None) => panic!("mapped fault result transport should contain one result"),
+        Err(error) => panic!("mapped fault result transport should dequeue: {error}"),
+    };
+    assert!(matches!(
+        dequeued,
+        DequeuedFaultResult::Valid { header, payload: actual }
+            if header.command_sequence == 1 && actual == b"applied"
+    ));
+}
+
+#[test]
+#[cfg(unix)]
 fn mmap_setup_region_keeps_guest_introspection_directions_distinct() {
     const CLOSE_RECORD: &[u8] =
         b"CRGI\x01\x00\x07\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
@@ -432,99 +549,7 @@ fn mmap_setup_region_keeps_guest_introspection_directions_distinct() {
     assert_eq!(plugin_rings.requests.dequeue(), Ok(Some(request)));
 }
 
-fn valid_snapshot() -> (RegionLayout, RegionHeaderSnapshot) {
-    let layout = match RegionLayout::for_config(RegionConfig::new(2, DEFAULT_QUEUE_CAPACITY, 3)) {
-        Ok(layout) => layout,
-        Err(error) => panic!("valid setup region layout should build: {error}"),
-    };
-    let header = RegionHeader::new(layout);
-    (layout, header.snapshot())
-}
+#[path = "setup_validation/support.rs"]
+mod support;
 
-fn header_snapshot_from_bytes(bytes: &[u8]) -> RegionHeaderSnapshot {
-    RegionHeaderSnapshot {
-        magic: read_u64(bytes, REGION_HEADER_MAGIC_OFFSET),
-        abi_version: read_u32(bytes, REGION_HEADER_ABI_VERSION_OFFSET),
-        node_count: read_u32(bytes, REGION_HEADER_NODE_COUNT_OFFSET),
-        queue_capacity: read_u32(bytes, REGION_HEADER_QUEUE_CAPACITY_OFFSET),
-        ring_count: read_u32(bytes, REGION_HEADER_RING_COUNT_OFFSET),
-        ring_hdr_off: read_u64(bytes, REGION_HEADER_RING_HDR_OFF_OFFSET),
-        ring_data_off: read_u64(bytes, REGION_HEADER_RING_DATA_OFF_OFFSET),
-        entry_stride: read_u64(bytes, REGION_HEADER_ENTRY_STRIDE_OFFSET),
-        region_size: read_u64(bytes, REGION_HEADER_REGION_SIZE_OFFSET),
-        icount_shift: read_u32(bytes, REGION_HEADER_ICOUNT_SHIFT_OFFSET),
-        pause_requested: 0,
-        shutdown_requested: 0,
-    }
-}
-
-fn read_u8(bytes: &[u8], offset: usize) -> u8 {
-    bytes[offset]
-}
-
-fn read_u16(bytes: &[u8], offset: usize) -> u16 {
-    let mut out = [0; 2];
-    out.copy_from_slice(&bytes[offset..offset + 2]);
-    u16::from_le_bytes(out)
-}
-
-fn read_u32(bytes: &[u8], offset: usize) -> u32 {
-    let mut out = [0; 4];
-    out.copy_from_slice(&bytes[offset..offset + 4]);
-    u32::from_le_bytes(out)
-}
-
-fn read_u64(bytes: &[u8], offset: usize) -> u64 {
-    let mut out = [0; 8];
-    out.copy_from_slice(&bytes[offset..offset + 8]);
-    u64::from_le_bytes(out)
-}
-
-#[cfg(unix)]
-fn temp_region_file() -> std::fs::File {
-    let mut path = std::env::temp_dir();
-    path.push(format!(
-        "crucible-shmem-setup-validation-{}-{}",
-        std::process::id(),
-        unique_temp_suffix()
-    ));
-
-    let file = match std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(&path)
-    {
-        Ok(file) => file,
-        Err(error) => panic!("failed to create temporary setup region: {error}"),
-    };
-    if let Err(error) = std::fs::remove_file(&path) {
-        panic!("failed to unlink temporary setup region: {error}");
-    }
-    file
-}
-
-#[cfg(unix)]
-fn unique_temp_suffix() -> u64 {
-    NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
-}
-
-#[cfg(unix)]
-fn mapped_region_from_allocation(allocation: &RegionAllocation) -> MappedSetupRegion {
-    let layout = allocation.layout();
-    let bytes = match allocation.setup_region_bytes() {
-        Ok(bytes) => bytes,
-        Err(error) => panic!("setup-region bytes should serialize: {error}"),
-    };
-    let mut temp = temp_region_file();
-    if let Err(error) = temp.set_len(layout.region_size) {
-        panic!("failed to size temporary setup region: {error}");
-    }
-    if let Err(error) = temp.write_all(&bytes) {
-        panic!("failed to write temporary setup region: {error}");
-    }
-    match mmap_setup_region(temp.as_fd(), layout.region_size) {
-        Ok(mapped) => mapped,
-        Err(error) => panic!("setup region mmap should succeed: {error}"),
-    }
-}
+use support::*;

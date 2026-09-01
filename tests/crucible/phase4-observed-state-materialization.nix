@@ -5,11 +5,7 @@
   taskIds ? ["T-ASRT-4"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
@@ -256,14 +252,6 @@
         needle = "Decision::DeliveryOrder(order)";
       }
       {
-        label = "probabilistic fault outcome fold";
-        needle = "Decision::FaultFires(fault)";
-      }
-      {
-        label = "control fault fold";
-        needle = "Decision::ControlFault(control)";
-      }
-      {
         label = "trigger fault fold";
         needle = "SchedulerEventLogPayload::TriggerActionApplied(application)";
       }
@@ -312,10 +300,6 @@
       {
         label = "checked prefix materialization test";
         needle = "observed_state_materializes_only_checked_event_log_prefix";
-      }
-      {
-        label = "fault fact materialization test";
-        needle = "observed_state_materializes_fault_activation_and_heal_facts";
       }
       {
         label = "invalid prefix rejection test";

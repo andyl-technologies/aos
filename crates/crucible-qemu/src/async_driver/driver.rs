@@ -21,6 +21,40 @@ where
     T: QemuAsyncNodeStepTarget,
     R: QemuHostIoRuntime + ?Sized,
 {
+    run_bounded_qemu_node_step_with_start_hook(
+        target,
+        runtime,
+        policy,
+        crash_detector,
+        horizon,
+        |_target, _pending| Ok(()),
+    )
+}
+
+/// Runs one scheduler quantum and invokes a gate hook after publication.
+///
+/// The hook exists for bounded scheduler-preemption gates: they must not
+/// release their signal controller until `start_quantum` has published a real
+/// QEMU horizon. Production callers use [`run_bounded_qemu_node_step`].
+///
+/// # Errors
+///
+/// Returns [`QemuAsyncDriverError`] under the same conditions as
+/// [`run_bounded_qemu_node_step`], including a typed channel error when the
+/// post-publication hook rejects the pending quantum.
+pub(crate) fn run_bounded_qemu_node_step_with_start_hook<T, R, F>(
+    target: &mut T,
+    runtime: &mut R,
+    policy: QemuAsyncDriverPolicy,
+    crash_detector: &QemuCrashDetector,
+    horizon: ExecutionHorizon,
+    after_start: F,
+) -> Result<QemuAsyncNodeStepReport, QemuAsyncDriverError>
+where
+    T: QemuAsyncNodeStepTarget,
+    R: QemuHostIoRuntime + ?Sized,
+    F: FnOnce(&mut T, &mut T::PendingQuantum) -> Result<(), QemuNodeChannelError>,
+{
     policy.validate()?;
 
     let mut async_operations = Vec::new();
@@ -32,6 +66,10 @@ where
     let mut pending = target
         .start_quantum(horizon)
         .map_err(QemuAsyncDriverError::Channel)?;
+    after_start(target, &mut pending).map_err(QemuAsyncDriverError::Channel)?;
+    runtime
+        .arm_advance_completion_fence(target.advance_completion_fence(&pending))
+        .map_err(QemuAsyncDriverError::Runtime)?;
     let wait_timeout = policy.timeout_for(QemuAsyncWait::AdvanceCompletion);
     let mut first_wait = true;
     let completion = loop {
@@ -69,7 +107,10 @@ where
             .shutdown_after_crash()
             .map_err(QemuAsyncDriverError::Target)?;
         return Ok(QemuAsyncNodeStepReport {
+            ceiling: None,
             outcome: QemuAsyncNodeStepOutcome::Crashed { status, shutdown },
+            final_state: None,
+            inbound_frames_consumed: 0,
             emitted_frames: Vec::new(),
             yielded_before_quantum: true,
             yielded_after_quantum: false,
@@ -85,9 +126,12 @@ where
     async_operations.push(QemuAsyncDriverOperation::YieldToControlPlane);
 
     Ok(QemuAsyncNodeStepReport {
+        ceiling: Some(completion.ceiling),
         outcome: QemuAsyncNodeStepOutcome::Completed {
             advance: completion.outcome,
         },
+        final_state: Some(completion.final_state),
+        inbound_frames_consumed: completion.inbound_frames_consumed,
         emitted_frames: completion.emitted_frames,
         yielded_before_quantum: true,
         yielded_after_quantum: true,

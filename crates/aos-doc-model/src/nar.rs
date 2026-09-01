@@ -1,6 +1,6 @@
 //! Strict bounded decoder for canonical documentation NARs.
 //!
-//! RFC-0015 documentation objects are deliberately smaller than the general
+//! RFC-0016 documentation objects are deliberately smaller than the general
 //! Nix archive language: one non-executable regular file at the archive root,
 //! no directory entries, links, devices, or trailing data. Keeping this parser
 //! beside the closed documentation model gives native Hub, the Worker, browser

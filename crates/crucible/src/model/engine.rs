@@ -139,42 +139,6 @@ pub enum EngineError {
         /// The maximum legal probability in millionths.
         maximum: u32,
     },
-    /// A fixed-point family fault density is outside `[0.0, 1.0]`.
-    FaultDensityOutOfRange {
-        /// The invalid density in millionths.
-        millionths: u32,
-        /// The maximum legal density in millionths.
-        maximum: u32,
-    },
-    /// A fixed-point fault rate is outside `[0.0, 1.0]`.
-    FaultRateBasisPointsOutOfRange {
-        /// The invalid rate in basis points.
-        basis_points: u32,
-        /// The maximum legal rate in basis points.
-        maximum: u32,
-    },
-    /// A fault slowdown factor is below the identity `1.0` factor.
-    FaultSlowdownFactorBelowOne {
-        /// The invalid slowdown factor in basis points.
-        basis_points: u32,
-        /// The minimum legal slowdown factor in basis points.
-        minimum: u32,
-    },
-    /// A fault bandwidth cap was configured as zero bits per second.
-    FaultBandwidthMustBeNonZero {
-        /// The invalid bandwidth cap in bits per virtual second.
-        bits_per_second: u64,
-    },
-    /// A 9p errno was configured as a non-positive integer.
-    NinePErrnoMustBePositive {
-        /// The invalid errno code.
-        code: i32,
-    },
-    /// A random fault generator configuration has no deterministic legal campaign.
-    RandomFaultConfigInvalid {
-        /// Stable reason for the configuration rejection.
-        reason: &'static str,
-    },
     /// An agent-signal ready point was configured without white-box opt-in.
     WhiteBoxReadyPointWithoutOptIn {
         /// The node whose ready-point configuration is invalid.
@@ -349,88 +313,6 @@ pub enum EngineError {
     WorldNodeWorkloadTimeSourceWithoutTimeVaryingPattern {
         /// The invalid node.
         node: NodeId,
-    },
-    /// A plan membership fault references an undeclared node.
-    PlanFaultUnknownNode {
-        /// The undeclared node.
-        node: NodeId,
-    },
-    /// A plan partition references no declared world link.
-    PlanFaultUnknownLink {
-        /// One endpoint requested by the plan fault.
-        endpoint_a: NodeId,
-        /// The other endpoint requested by the plan fault.
-        endpoint_b: NodeId,
-    },
-    /// A plan network fault references no declared world link id.
-    PlanFaultUnknownLinkId {
-        /// The undeclared link id.
-        link: LinkId,
-    },
-    /// A plan block or 9p fault references no declared device.
-    PlanFaultUnknownDevice {
-        /// The undeclared device id.
-        device: DeviceId,
-    },
-    /// A block or 9p fault names a device declared for the other I/O family.
-    PlanFaultDeviceKindMismatch {
-        /// The device whose family is incompatible with the fault.
-        device: DeviceId,
-        /// Device family required by the fault variant.
-        expected: WorldDeviceKind,
-        /// Device family declared by the world.
-        actual: WorldDeviceKind,
-    },
-    /// A plan heal references no activated fault tag.
-    PlanHealUnknownTag {
-        /// The unknown heal tag.
-        tag: FaultTag,
-    },
-    /// A plan heal is not after the tag activation it heals.
-    PlanHealBeforeActivate {
-        /// The invalid heal tag.
-        tag: FaultTag,
-        /// Virtual time when the tag activates.
-        activate_at: VirtualTime,
-        /// Virtual time when the tag was healed.
-        heal_at: VirtualTime,
-    },
-    /// A finite fault-plan entry's automatic heal time overflowed virtual time.
-    PlanFaultDurationOverflow {
-        /// The tag whose automatic heal overflowed.
-        tag: FaultTag,
-        /// Virtual time when the fault activates.
-        at: VirtualTime,
-        /// Finite duration that could not be added to `at`.
-        duration: FaultDuration,
-    },
-    /// A not-yet-joined membership hold was scheduled after the run starts.
-    PlanNotYetJoinedAfterStart {
-        /// The node that would be held inactive too late.
-        node: NodeId,
-        /// Virtual time when the hold was scheduled.
-        at: VirtualTime,
-    },
-    /// A serialized plan entry carries a negative virtual time.
-    PlanNegativeTime {
-        /// Zero-based index of the serialized plan entry.
-        entry: usize,
-        /// The invalid signed tick value.
-        at_ticks: i64,
-    },
-    /// A serialized plan partition uses an unknown direction.
-    PlanFaultUnknownDirection {
-        /// Zero-based index of the serialized plan entry.
-        entry: usize,
-        /// The invalid direction spelling.
-        direction: String,
-    },
-    /// A serialized membership fault carries a parameter the model does not support.
-    PlanFaultUnsupportedParam {
-        /// Zero-based index of the serialized plan entry.
-        entry: usize,
-        /// The unsupported fault parameter name.
-        field: String,
     },
     /// A properties bundle contains duplicate assertion identifiers.
     PropertyDuplicateAssertionId {
@@ -750,24 +632,6 @@ impl fmt::Display for EngineError {
             Self::LinkLossProbabilityOutOfRange { .. } => {
                 f.write_str("world link loss probability is outside the legal range")
             }
-            Self::FaultDensityOutOfRange { .. } => {
-                f.write_str("scenario family fault density is outside the legal range")
-            }
-            Self::FaultRateBasisPointsOutOfRange { .. } => {
-                f.write_str("fault rate basis points are outside the legal range")
-            }
-            Self::FaultSlowdownFactorBelowOne { .. } => {
-                f.write_str("fault slowdown factor must be at least 1.0")
-            }
-            Self::FaultBandwidthMustBeNonZero { .. } => {
-                f.write_str("fault bandwidth cap must be nonzero")
-            }
-            Self::NinePErrnoMustBePositive { .. } => {
-                f.write_str("9p errno must be a positive integer")
-            }
-            Self::RandomFaultConfigInvalid { reason } => {
-                write!(f, "random fault configuration is invalid: {reason}")
-            }
             Self::WhiteBoxReadyPointWithoutOptIn { .. } => {
                 f.write_str("agent-signal ready point requires white-box opt-in")
             }
@@ -894,47 +758,6 @@ impl fmt::Display for EngineError {
                 f.write_str(
                     "world node selects a workload time source without a time-varying pattern",
                 )
-            }
-            Self::PlanFaultUnknownNode { .. } => {
-                f.write_str("plan membership fault references an undeclared node")
-            }
-            Self::PlanFaultUnknownLink { .. } => {
-                f.write_str("plan partition references no declared world link")
-            }
-            Self::PlanFaultUnknownLinkId { .. } => {
-                f.write_str("plan network fault references no declared world link id")
-            }
-            Self::PlanFaultUnknownDevice { .. } => {
-                f.write_str("plan device fault references no declared device")
-            }
-            Self::PlanFaultDeviceKindMismatch {
-                expected, actual, ..
-            } => write!(
-                f,
-                "plan device fault requires a {} device but the world declares {}",
-                expected.material(),
-                actual.material()
-            ),
-            Self::PlanHealUnknownTag { .. } => {
-                f.write_str("plan heal references no activated fault tag")
-            }
-            Self::PlanHealBeforeActivate { .. } => {
-                f.write_str("plan heal is not after its fault activation")
-            }
-            Self::PlanFaultDurationOverflow { .. } => {
-                f.write_str("plan fault duration overflows virtual time")
-            }
-            Self::PlanNotYetJoinedAfterStart { .. } => {
-                f.write_str("not-yet-joined fault must be active at run start")
-            }
-            Self::PlanNegativeTime { .. } => {
-                f.write_str("plan entry virtual time must be non-negative")
-            }
-            Self::PlanFaultUnknownDirection { .. } => {
-                f.write_str("plan partition direction is unknown")
-            }
-            Self::PlanFaultUnsupportedParam { field, .. } => {
-                write!(f, "plan membership fault parameter {field} is unsupported")
             }
             Self::PropertyDuplicateAssertionId { .. } => {
                 f.write_str("properties bundle contains a duplicate assertion id")
@@ -1575,11 +1398,7 @@ pub(super) fn decision_touched_nodes(decision: &Decision) -> Option<BTreeSet<Nod
     match decision {
         Decision::Preemption(preemption) => Some(BTreeSet::from([preemption.node.clone()])),
         Decision::AppRandom(random) => Some(BTreeSet::from([random.node.clone()])),
-        Decision::DeliveryOrder(_)
-        | Decision::FaultFires(_)
-        | Decision::RngDraw(_)
-        | Decision::Override(_)
-        | Decision::ControlFault(_) => None,
+        Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Override(_) => None,
     }
 }
 
@@ -2150,36 +1969,6 @@ pub(super) fn push_symmetry_scheduler_lines(
     lines.push(format!("scheduler.timers={}", timer_lines.len()));
     lines.extend(timer_lines);
 
-    let mut fault_lines = Vec::new();
-    for (fault, state) in &scheduler.active_faults {
-        fault_lines.push(format!(
-            "scheduler.fault.name_len={}\nscheduler.fault.name={}\nscheduler.fault.active_since={}\nscheduler.fault.heal_at={}",
-            fault.name.len(),
-            fault.name,
-            state.active_since.ticks,
-            state
-                .heal_at
-                .map(|time| time.ticks.to_string())
-                .unwrap_or_else(|| String::from("none"))
-        ));
-    }
-    fault_lines.sort();
-    lines.push(format!("scheduler.active_faults={}", fault_lines.len()));
-    lines.extend(fault_lines);
-
-    let mut tag_lines = Vec::new();
-    for (tag, fault) in &scheduler.active_fault_tags {
-        tag_lines.push(format!(
-            "scheduler.fault_tag.name_len={}\nscheduler.fault_tag.name={}\nscheduler.fault_tag.fault={}",
-            tag.name.len(),
-            tag.name,
-            membership_fault_material(fault)
-        ));
-    }
-    tag_lines.sort();
-    lines.push(format!("scheduler.active_fault_tags={}", tag_lines.len()));
-    lines.extend(tag_lines);
-
     let mut search_frontier_lines = Vec::new();
     for (index, choice) in scheduler.search_frontier.choices().iter().enumerate() {
         let mut entry = Vec::new();
@@ -2229,8 +2018,8 @@ pub(super) fn push_symmetry_topology_change_lines(
         "scheduler.pending_topology.sequence={}\nscheduler.pending_topology.trigger={}\nscheduler.pending_topology.activation_ns={}",
         change.sequence,
         match change.trigger {
-            SchedulerTopologyChangeTrigger::FaultActivation => "fault-activation",
-            SchedulerTopologyChangeTrigger::Heal => "heal",
+            SchedulerTopologyChangeTrigger::EdgeRemoval => "edge-removal",
+            SchedulerTopologyChangeTrigger::EdgeRestore => "edge-restore",
             SchedulerTopologyChangeTrigger::LatencyChange => "latency-change",
         },
         change

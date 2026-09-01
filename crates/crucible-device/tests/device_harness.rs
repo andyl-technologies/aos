@@ -25,7 +25,7 @@ use std::fmt::Debug;
 
 use crucible_device::block::codec::BlockRequest;
 use crucible_device::harness::adapters::LinkRequest;
-use crucible_device::netlink::fault::{LinkFaults, Probability};
+use crucible_device::netlink::fault::{LinkCorruptionStrategy, LinkFaults, Probability};
 use crucible_device::netlink::link::{Frame, FrameDraws, NetLink, PastDeliveryPolicy};
 use crucible_device::ninep::codec;
 use crucible_device::{
@@ -135,11 +135,11 @@ fn block_divergence_localizes_first_differing_payload_byte() {
         .unwrap_or_else(|| panic!("expected the perturbed run to diverge"));
     // The read delivers first (lower latency), so it is record index 0. A block
     // record's payload is the full encoded `BlockResponse` wire frame, whose
-    // 12-byte header (status, version, reserved, request_id, count) is identical
-    // for both reads; the first data byte at wire offset 12 is where the read
+    // 20-byte header (status, version, reserved, epoch, request_id, count) is
+    // identical for both reads; the first data byte at wire offset 20 is where the read
     // content differs (0xAB written page vs 0x00 base page).
     assert_eq!(divergence.record_index, 0, "the read delivers first");
-    const RESPONSE_HEADER_LEN: usize = 12;
+    const RESPONSE_HEADER_LEN: usize = 20;
     match divergence.field {
         DivergedField::PayloadByte {
             offset,
@@ -438,7 +438,7 @@ fn link_harness() -> NetLinkHarness {
     faults.duplicate = Probability::new(1, 2);
     faults.duplicate_gap_ns = 512;
     faults.corrupt = Probability::new(1, 2);
-    faults.corrupt_bit_flips = 1;
+    faults.corruption_strategies = vec![LinkCorruptionStrategy::BitFlip { max_bits: 1 }];
     let link = ok(NetLink::new(
         LINK_SHIFT,
         src,
@@ -464,7 +464,7 @@ fn link_script() -> Script<LinkRequest> {
                     additional_loss: Vec::new(),
                     duplicate: 0,
                     corrupt: 0,
-                    corrupt_bits: vec![3],
+                    corruption_selectors: vec![3],
                 },
             ),
         )
@@ -479,7 +479,7 @@ fn link_script() -> Script<LinkRequest> {
                     additional_loss: Vec::new(),
                     duplicate: 1,
                     corrupt: 1,
-                    corrupt_bits: vec![17],
+                    corruption_selectors: vec![17],
                 },
             ),
         )
@@ -494,7 +494,7 @@ fn link_script() -> Script<LinkRequest> {
                     additional_loss: Vec::new(),
                     duplicate: 1,
                     corrupt: 0,
-                    corrupt_bits: vec![0],
+                    corruption_selectors: vec![0],
                 },
             ),
         )
@@ -538,7 +538,7 @@ fn link_divergence_localizes_first_differing_payload() {
                     duplicate: 0,
                     corrupt: 0,
                     // Perturb only the corrupt bit position (3 -> 4).
-                    corrupt_bits: vec![4],
+                    corruption_selectors: vec![4],
                 },
             ),
         )
@@ -553,7 +553,7 @@ fn link_divergence_localizes_first_differing_payload() {
                     additional_loss: Vec::new(),
                     duplicate: 1,
                     corrupt: 1,
-                    corrupt_bits: vec![17],
+                    corruption_selectors: vec![17],
                 },
             ),
         )
@@ -568,7 +568,7 @@ fn link_divergence_localizes_first_differing_payload() {
                     additional_loss: Vec::new(),
                     duplicate: 1,
                     corrupt: 0,
-                    corrupt_bits: vec![0],
+                    corruption_selectors: vec![0],
                 },
             ),
         )

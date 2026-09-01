@@ -40,6 +40,15 @@ pkgs.mkDerivation {
         #include <sys/mount.h>
         #include <sys/stat.h>
         #include <time.h>
+        #include <unistd.h>
+
+        static void report_mount_success(void) {
+          static const char marker[] = "CRUCIBLE_9P_MOUNT_OK\n";
+          /* Linux connects PID 1's standard streams to the selected console
+           * before executing an initramfs /init. Writing the inherited stdout
+           * avoids requiring a device manager or /dev node in this tiny image. */
+          (void)write(STDOUT_FILENO, marker, sizeof(marker) - 1);
+        }
 
         int main(void) {
           mkdir("/mnt", 0755);
@@ -51,8 +60,13 @@ pkgs.mkDerivation {
            * servicer, whose response is due at a future icount the halted guest
            * cannot reach. Post-0039 the completion is delivered and it returns.
            */
-          mount("crucible", "/mnt", "9p", 0,
-                "trans=virtio,version=9p2000.L,msize=8192");
+          if (mount("crucible", "/mnt", "9p", 0,
+                    "trans=virtio,version=9p2000.L,msize=8192") == 0) {
+            /* The TCG control leg treats this guest-emitted console record as
+             * proof that the real virtio-9p request/response exchange completed.
+             * It is deliberately emitted only after mount(2) succeeds. */
+            report_mount_success();
+          }
 
           /* If the mount ever returns, park on a near virtual-timer deadline so
            * the guest is a well-defined idle rather than a busy spin. */
@@ -86,6 +100,7 @@ pkgs.mkDerivation {
         guest_init=pid1-mount-9p-then-idle
         guest_kernel=linux-crucible-9p-builtin
         guest_9p_mount=mount-t-9p-crucible-trans-virtio-2000L
+        guest_success_marker=CRUCIBLE_9P_MOUNT_OK-after-successful-mount
         guest_pre_0039=blocks-in-first-9p-op-device-horizon-stall
         EVIDENCE
       '';

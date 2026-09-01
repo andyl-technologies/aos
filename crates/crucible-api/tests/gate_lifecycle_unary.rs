@@ -5,9 +5,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration, Decision, DeliveryOrderDecision, GdbAttachInfo,
-    GdbListen, Icount, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef,
-    ScenarioDefForm, Schedule, SchedulerError, Seed, VirtualTime,
+    Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, DeliveryOrderDecision,
+    GdbAttachInfo, GdbListen, Icount, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest,
+    ScenarioDef, ScenarioDefForm, Schedule, SchedulerError, Seed, VirtualTime,
 };
 use crucible_api::{
     ControlClient, CreateSessionRequest, CreateSessionSource, DebugAuthorizationPolicy,
@@ -579,15 +579,16 @@ async fn resume_session_rejects_mismatched_checkpoint_closure_without_side_effec
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn direct_resume_rejects_runtime_only_genesis_checkpoint_material() {
+async fn direct_resume_accepts_authenticated_runtime_genesis_checkpoint_material() {
     let mut control_plane = lifecycle_control_plane();
     let scenario = crucible::happy_path_scenario()
         .unwrap_or_else(|error| panic!("happy path scenario should build: {error}"))
         .scenario;
     let configuration = Configuration::genesis(scenario.scenario_def());
-    let checkpoint = checkpoint_for_configuration(&configuration, VirtualTime { ticks: 1 });
+    let checkpoint = checkpoint_for_configuration(&configuration, VirtualTime { ticks: 1 })
+        .with_execution_closure(ContentHash::from_bytes(b"runtime-genesis-closure"));
 
-    let error = control_plane
+    let report = control_plane
         .resume_session(ResumeSessionRequest::new(
             scenario,
             Schedule::empty(),
@@ -595,11 +596,10 @@ async fn direct_resume_rejects_runtime_only_genesis_checkpoint_material() {
             Seed::from_u64(42),
         ))
         .await
-        .expect_err("direct resume must retain the true baked genesis root");
+        .expect("an authenticated runtime closure may share the genesis configuration");
 
-    assert!(matches!(error, LifecycleApiError::ResumeCheckpoint { .. }));
-    assert!(error.to_string().contains("baked genesis checkpoint"));
-    assert_eq!(control_plane.session_count(), 0);
+    assert_eq!(report.configuration, configuration.id());
+    assert_eq!(control_plane.session_count(), 1);
 }
 
 #[tokio::test(flavor = "current_thread")]

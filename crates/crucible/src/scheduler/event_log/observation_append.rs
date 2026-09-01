@@ -3,6 +3,30 @@
 use super::*;
 
 impl EventLog {
+    /// Appends typed signal-driven fault evidence in evaluation order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when assigning dense event-log sequences or
+    /// appending the canonical segment would overflow scheduler offsets.
+    pub fn append_fault_observations(
+        &mut self,
+        observations: impl IntoIterator<Item = crate::model::FaultObservation>,
+    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        let mut entries = Vec::new();
+        for observation in observations {
+            let sequence = self.next_sequence(entries.len())?;
+            entries.push(scheduler_event_log_entry(
+                sequence,
+                VirtualTime {
+                    ticks: observation.coordinate.virtual_nanos,
+                },
+                SchedulerEventLogPayload::FaultObservation(observation),
+            ));
+        }
+        self.append_entries(entries)
+    }
+
     /// Appends black-box observable condition facts to this event log.
     ///
     /// # Errors

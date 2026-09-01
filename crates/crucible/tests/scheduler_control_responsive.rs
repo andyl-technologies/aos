@@ -160,7 +160,7 @@ fn actor_drains_submitted_control_before_deferred_drive_messages() {
         })
         .expect("second drive message should enqueue");
     handle
-        .queue_control(control(5, ControlOperationKind::Inject))
+        .queue_control(control(5, ControlOperationKind::Query))
         .expect("control message should enqueue behind drives");
 
     actor
@@ -172,7 +172,7 @@ fn actor_drains_submitted_control_before_deferred_drive_messages() {
         .expect("first drive should succeed");
     assert_eq!(
         control_kinds(&first_outcome.resolved_events),
-        vec![ControlOperationKind::Inject]
+        vec![ControlOperationKind::Query]
     );
 
     actor
@@ -187,7 +187,7 @@ fn actor_drains_submitted_control_before_deferred_drive_messages() {
     let after = actor_snapshot(&handle, &mut actor);
     assert_eq!(
         applied_controls(&after),
-        vec![control(5, ControlOperationKind::Inject)]
+        vec![control(5, ControlOperationKind::Query)]
     );
     assert_eq!(after.control_applications[0].application_delta_quanta, 0);
 }

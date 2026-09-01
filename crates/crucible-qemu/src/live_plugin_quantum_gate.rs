@@ -8,13 +8,11 @@
 //!    guest is busy and requires every stop at the host-published ceiling.
 //! 2. **Idle observation.** The parked guest must report `IDLE` and an exact
 //!    `next_deadline` beyond the ceiling (T-PLUG-5/6, T-TIME-6).
-//! 3. **Idle-jump advancement.** When enabled with
-//!    [`LivePluginQuantumGateConfig::with_prove_idle_jump`], a wide quantum must
-//!    advance in O(1) deadline jumps (T-PLUG-7, T-TIME-5/7). It remains descoped
-//!    by default until QEMU commits the queued time advance for a parked guest.
+//! 3. **Idle-jump advancement.** A wide quantum must advance in O(1) deadline
+//!    jumps (T-PLUG-7, T-TIME-5/7).
 //!
-//! The whole scenario runs twice — the second run under deliberate host CPU
-//! load — and requires byte-identical fingerprints and idle observations,
+//! The whole scenario runs twice - the second run under bounded scheduler
+//! preemption - and requires byte-identical fingerprints and idle observations,
 //! proving icount-derived, host-time-independent execution (T-PLUG-4, T-TIME-5).
 
 mod errors;
@@ -23,9 +21,6 @@ mod scheduler;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
 use std::time::Duration;
 
 use crucible::{
@@ -42,11 +37,14 @@ use crucible_shmem::{
     ABI_VERSION, RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region,
 };
 
+use crate::console_observation::{QemuConsoleObservationReader, QemuConsoleObservationSpool};
+use crate::supervision::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
 use crate::{
-    LaunchProfileCandidate, QemuLaunchArtifact, QemuLaunchPluginConfig,
-    QemuMappedQuantumShmemHotPath, QemuNodeChannelError, QemuPluginIpcControlChannel,
-    QemuQuantumShmemConfig, QemuShmemHotPathChannel, QemuVmLaunchConfig,
-    complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
+    LaunchProfileCandidate, QEMU_CONSOLE_SOCKET_FILE_NAME, QemuLaunchArtifact,
+    QemuLaunchCommandBuilder, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
+    QemuLiveHostIoRuntime, QemuMappedQuantumShmemHotPath, QemuNodeChannelError,
+    QemuPluginIpcControlChannel, QemuQuantumShmemConfig, QemuShmemHotPathChannel,
+    QemuVmLaunchConfig, complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
 };
 
 pub use errors::LivePluginQuantumGateError;
@@ -64,9 +62,6 @@ const GATE_SLOT: u32 = 0;
 const GATE_QUEUE_CAPACITY: u32 = 4;
 /// Conservative guest memory size for the quantum run.
 const GATE_MEMORY_MIB: u32 = 64;
-/// Number of background threads used to stress host scheduling on the load run.
-const HOST_LOAD_WORKERS: usize = 4;
-
 /// Tuning parameters for the multi-quantum scheduler that drives one scenario.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LivePluginQuantumSchedule {
@@ -115,11 +110,11 @@ pub struct LivePluginQuantumGateConfig {
     kernel_cmdline: Option<String>,
     schedule: LivePluginQuantumSchedule,
     completion_timeout: Duration,
-    second_run_host_load: bool,
-    prove_idle_jump: bool,
+    second_run_scheduler_preemption: bool,
     smp_vcpus: u16,
     memory_mib: u32,
     rr_switch_quantum: u64,
+    require_guest_smp_pause_rendezvous: bool,
 }
 
 impl LivePluginQuantumGateConfig {
@@ -143,11 +138,11 @@ impl LivePluginQuantumGateConfig {
             kernel_cmdline: None,
             schedule: LivePluginQuantumSchedule::new(),
             completion_timeout: Duration::from_secs(240),
-            second_run_host_load: true,
-            prove_idle_jump: false,
+            second_run_scheduler_preemption: true,
             smp_vcpus: 1,
             memory_mib: GATE_MEMORY_MIB,
             rr_switch_quantum: 4096,
+            require_guest_smp_pause_rendezvous: false,
         }
     }
 
@@ -190,23 +185,13 @@ impl LivePluginQuantumGateConfig {
         self
     }
 
-    /// Returns this configuration with host CPU load on the second run toggled.
+    /// Returns this configuration with bounded scheduler preemption on the second run toggled.
     #[must_use]
-    pub const fn with_second_run_host_load(mut self, second_run_host_load: bool) -> Self {
-        self.second_run_host_load = second_run_host_load;
-        self
-    }
-
-    /// Returns this configuration with idle-jump advancement proof toggled.
-    ///
-    /// While the QEMU-side queued-time-advance completion defect is open, this
-    /// stays `false`: the gate proves ceiling ownership, idle park, and deadline
-    /// introspection (T-PLUG-4/5/6) but stops at the idle observation without
-    /// requiring the plugin to advance the parked guest (T-PLUG-7). Set `true`
-    /// once the completion defect is fixed to also assert the idle-jump.
-    #[must_use]
-    pub const fn with_prove_idle_jump(mut self, prove_idle_jump: bool) -> Self {
-        self.prove_idle_jump = prove_idle_jump;
+    pub const fn with_second_run_scheduler_preemption(
+        mut self,
+        second_run_scheduler_preemption: bool,
+    ) -> Self {
+        self.second_run_scheduler_preemption = second_run_scheduler_preemption;
         self
     }
 
@@ -218,6 +203,18 @@ impl LivePluginQuantumGateConfig {
     #[must_use]
     pub const fn with_smp_vcpus(mut self, smp_vcpus: u16) -> Self {
         self.smp_vcpus = smp_vcpus;
+        self
+    }
+
+    /// Requires exact guest output from the PAUSE-dependent SMP rendezvous.
+    ///
+    /// The purpose-built guest emits one online marker per AP, a BSP release
+    /// marker, one post-release marker per AP, and a final BSP marker. Reaching
+    /// that sequence requires PAUSE to hand the zero-instruction RR turn to the
+    /// next vCPU; INIT/SIPI publication alone is insufficient.
+    #[must_use]
+    pub const fn with_guest_smp_pause_rendezvous(mut self, required: bool) -> Self {
+        self.require_guest_smp_pause_rendezvous = required;
         self
     }
 
@@ -267,12 +264,6 @@ impl LivePluginQuantumGateConfig {
     #[must_use]
     pub(crate) const fn completion_timeout(&self) -> Duration {
         self.completion_timeout
-    }
-
-    /// Returns whether the scenario asserts idle-jump advancement (T-PLUG-7).
-    #[must_use]
-    pub(crate) const fn prove_idle_jump(&self) -> bool {
-        self.prove_idle_jump
     }
 }
 
@@ -325,6 +316,7 @@ struct ScenarioOutcome {
     rates: LivePluginAdvancementRates,
     fingerprint: ExecutionFingerprint,
     host_observable_schedule: Vec<SimDoubleHostScheduleEvent>,
+    guest_smp_pause_rendezvous_observed: bool,
 }
 
 /// Successful evidence from the production loaded-QEMU plugin quantum gate.
@@ -340,10 +332,10 @@ pub struct LivePluginQuantumReport {
     pub rates: LivePluginAdvancementRates,
     /// Execution fingerprint the plugin published at the terminal boundary.
     pub execution_fingerprint: ExecutionFingerprint,
-    /// The second run, under host CPU load, matched the first byte for byte.
-    pub deterministic_under_host_load: bool,
-    /// Host CPU load was actually applied during the second run.
-    pub host_load_applied: bool,
+    /// The second run, under bounded scheduler preemption, matched the first byte for byte.
+    pub deterministic_under_scheduler_preemption: bool,
+    /// Bounded scheduler preemption was actually applied during the second run.
+    pub scheduler_preemption_applied: bool,
     /// The live production-plugin schedule replayed byte-for-byte through
     /// [`SimDouble`].
     pub sim_double_schedule_matches: bool,
@@ -354,14 +346,16 @@ pub struct LivePluginQuantumReport {
     pub idle_jump_proven: bool,
     /// No plugin other than the Rust control plugin owned time control.
     pub time_authority_is_rust_plugin: bool,
+    /// The live guest completed the AP/BSP PAUSE handoff rendezvous in both runs.
+    pub guest_smp_pause_rendezvous_observed: bool,
 }
 
 /// Runs the Rust control plugin through the full idle/time-authority lifecycle.
 ///
 /// The scenario boots the standalone guest, observes its idle park with a
 /// computed timer deadline, idle-jumps toward a far ceiling in O(1), and tears
-/// the plugin down cleanly. It then repeats under host CPU load and requires the
-/// two runs to be byte-identical.
+/// the plugin down cleanly. It then repeats under bounded scheduler preemption
+/// and requires the two runs to be byte-identical.
 ///
 /// # Errors
 ///
@@ -377,8 +371,8 @@ pub fn run_live_plugin_quantum_gate(
     }
 
     let reference = run_one_scenario(config, RunRole::Reference)?;
-    let (second, host_load_applied) = if config.second_run_host_load {
-        (run_one_scenario(config, RunRole::HostLoad)?, true)
+    let (second, scheduler_preemption_applied) = if config.second_run_scheduler_preemption {
+        (run_one_scenario(config, RunRole::Hostile)?, true)
     } else {
         (run_one_scenario(config, RunRole::Repeat)?, false)
     };
@@ -386,16 +380,13 @@ pub fn run_live_plugin_quantum_gate(
     assert_runs_match(&reference, &second)?;
     assert_sim_double_schedule_matches(&reference.host_observable_schedule)?;
 
-    // Idle-jump advancement (T-PLUG-7) is proven only when it was actually
-    // driven and the idle advancement rate exceeds the busy boot rate by the
-    // required factor. When descoped, the idle-jump quantum is not run, so this
-    // is unconditionally false and the emitted evidence records the open defect.
-    let idle_jump_proven = config.prove_idle_jump
-        && reference.rates.idle_icount_per_second()
-            >= reference
-                .rates
-                .boot_icount_per_second()
-                .saturating_mul(u128::from(config.schedule.min_idle_speedup_ratio));
+    // Idle-jump advancement (T-PLUG-7) is part of every run. The evidence is
+    // true only when its rate exceeds the busy boot rate by the required factor.
+    let idle_jump_proven = reference.rates.idle_icount_per_second()
+        >= reference
+            .rates
+            .boot_icount_per_second()
+            .saturating_mul(u128::from(config.schedule.min_idle_speedup_ratio));
 
     Ok(LivePluginQuantumReport {
         smp_vcpus: config.smp_vcpus,
@@ -403,20 +394,21 @@ pub fn run_live_plugin_quantum_gate(
         idle: reference.idle,
         rates: reference.rates,
         execution_fingerprint: reference.fingerprint,
-        deterministic_under_host_load: true,
-        host_load_applied,
+        deterministic_under_scheduler_preemption: true,
+        scheduler_preemption_applied,
         sim_double_schedule_matches: true,
         host_observable_schedule_len: reference.host_observable_schedule.len(),
         idle_jump_proven,
         time_authority_is_rust_plugin: true,
+        guest_smp_pause_rendezvous_observed: reference.guest_smp_pause_rendezvous_observed,
     })
 }
 
-/// Which scenario run this is, controlling the run subdirectory and host load.
+/// Which scenario run this is, controlling the run subdirectory and scheduler preemption.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RunRole {
     Reference,
-    HostLoad,
+    Hostile,
     Repeat,
 }
 
@@ -424,13 +416,13 @@ impl RunRole {
     const fn subdir(self) -> &'static str {
         match self {
             Self::Reference => "run-reference",
-            Self::HostLoad => "run-host-load",
+            Self::Hostile => "run-scheduler-preemption",
             Self::Repeat => "run-repeat",
         }
     }
 
-    const fn applies_host_load(self) -> bool {
-        matches!(self, Self::HostLoad)
+    const fn applies_scheduler_preemption(self) -> bool {
+        matches!(self, Self::Hostile)
     }
 }
 
@@ -445,8 +437,6 @@ fn run_one_scenario(
             source,
         }
     })?;
-
-    let host_load = HostLoad::start_if(role.applies_host_load());
 
     let mut candidate = LaunchProfileCandidate::default()
         .with_memory_mib(config.memory_mib)
@@ -468,13 +458,21 @@ fn run_one_scenario(
 
     // A single production control plugin, no observation plugin: the Rust plugin
     // is the sole sim_shmem dispatch authority for virtual-time advancement.
-    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT);
-    let command = profile
-        .qemu_launch_command(
-            vm_launch_config(config),
-            path_text(&config.qemu_executable),
-            plugin,
-        )
+    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
+        .with_fault_target_node(GATE_NODE)
+        .with_fingerprint(QemuLaunchPluginSwitch::On);
+    let mut command_builder = QemuLaunchCommandBuilder::new_for_live_gate(
+        profile,
+        vm_launch_config(config),
+        path_text(&config.qemu_executable),
+        plugin,
+        crate::LivePluginGuestArchitecture::X86_64,
+    );
+    if config.require_guest_smp_pause_rendezvous {
+        command_builder = command_builder.with_console_capture();
+    }
+    let command = command_builder
+        .build()
         .map_err(|source| LivePluginQuantumGateError::LaunchCommand { source })?;
 
     let region_config = RegionConfig::new(1, GATE_QUEUE_CAPACITY, 0);
@@ -488,12 +486,31 @@ fn run_one_scenario(
     .map_err(|source| LivePluginQuantumGateError::Spawn { source })?;
     let (mut child, resources) = spawned.into_parts();
 
-    let mut setup =
-        complete_qemu_host_plugin_setup(resources.into_setup_resources(), region_config, GATE_SLOT)
-            .map_err(|source| LivePluginQuantumGateError::HostSetup { source })?;
+    let mut setup = complete_qemu_host_plugin_setup(
+        resources.into_setup_resources(),
+        region_config,
+        GATE_SLOT,
+        command.fault_capability_requirement(),
+    )
+    .map_err(|source| LivePluginQuantumGateError::HostSetup { source })?;
     if !setup.setup_ack().can_schedule() {
         return Err(LivePluginQuantumGateError::SetupAckNotReady);
     }
+
+    // QEMU realizes the output-only UART socket before SetupAck, and the boot
+    // barrier remains closed until the first host quantum. Connecting here
+    // therefore cannot miss an AP marker or feed any host input to the guest.
+    let guest_evidence_spool = config
+        .require_guest_smp_pause_rendezvous
+        .then(QemuConsoleObservationSpool::new);
+    let mut guest_evidence_reader = guest_evidence_spool
+        .as_ref()
+        .map(|spool| {
+            crate::unix_socket_path::connect(&run_directory.join(QEMU_CONSOLE_SOCKET_FILE_NAME))
+                .and_then(|stream| QemuConsoleObservationReader::new(stream, spool.clone()))
+        })
+        .transpose()
+        .map_err(|source| LivePluginQuantumGateError::GuestEvidenceIo { source })?;
 
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
         .map_err(|source| LivePluginQuantumGateError::RegionMap { source })?;
@@ -502,16 +519,104 @@ fn run_one_scenario(
     let mut hot_path =
         QemuMappedQuantumShmemHotPath::new(hot_path_config, region, GateSendAuthorizer)
             .map_err(|source| LivePluginQuantumGateError::MappedHotPath { source })?;
+    let mut fingerprint_runtime = QemuLiveHostIoRuntime::from_shmem_fd(
+        setup.shmem_as_fd(),
+        setup.wake_as_fd(),
+        setup.region().region_len,
+        GATE_SLOT,
+    )
+    .map_err(|source| {
+        channel_error(
+            "construct production fingerprint runtime",
+            QemuNodeChannelError::new("map production host runtime", source.to_string()),
+        )
+    })?;
 
-    let (idle, rates, host_observable_schedule) =
-        scheduler::drive_scenario(&mut hot_path, &mut child, &setup, config)?;
+    // Start only after setup, adjacent to the guest schedule being perturbed.
+    let mut host_adversary =
+        HostAdversary::start_if(role.applies_scheduler_preemption(), child.process_id())
+            .map_err(|source| LivePluginQuantumGateError::SchedulerPreemption { source })?;
+    let drive = scheduler::drive_scenario;
+    let drive_result = drive(
+        &mut hot_path,
+        &mut child,
+        &setup,
+        config,
+        &mut host_adversary,
+    );
+    let (idle, rates, host_observable_schedule) = match drive_result {
+        Ok(completed) => completed,
+        Err(source) if guest_evidence_spool.is_some() => {
+            if let Some(reader) = guest_evidence_reader.as_mut() {
+                reader
+                    .drain_available()
+                    .map_err(|source| LivePluginQuantumGateError::Channel {
+                        operation: "drain SMP rendezvous evidence after QEMU failure",
+                        source: QemuNodeChannelError::new(
+                            "drain failed guest console",
+                            source.to_string(),
+                        ),
+                    })?;
+            }
+            let Some(spool) = guest_evidence_spool.as_ref() else {
+                return Err(source);
+            };
+            let observed = spool
+                .take()
+                .map_err(|source| LivePluginQuantumGateError::Channel {
+                    operation: "take SMP rendezvous evidence after QEMU failure",
+                    source: QemuNodeChannelError::new(
+                        "take failed guest console",
+                        source.to_string(),
+                    ),
+                })?;
+            return Err(LivePluginQuantumGateError::GuestEvidenceBeforeFailure {
+                observed,
+                source: Box::new(source),
+            });
+        }
+        Err(source) => return Err(source),
+    };
+    scheduler::publish_terminal_fingerprint(
+        &mut fingerprint_runtime,
+        &hot_path,
+        &mut child,
+        rates.terminal_icount,
+        config,
+    )?;
     let fingerprint = QemuShmemHotPathChannel::execution_fingerprint(&mut hot_path)
         .map_err(|source| channel_error("read execution fingerprint", source))?;
-
+    if let Some(reader) = guest_evidence_reader.as_mut() {
+        reader
+            .drain_available()
+            .map_err(|source| LivePluginQuantumGateError::Channel {
+                operation: "drain SMP rendezvous evidence",
+                source: QemuNodeChannelError::new("drain guest console", source.to_string()),
+            })?;
+    }
+    let guest_smp_pause_rendezvous_observed = if let Some(spool) = guest_evidence_spool {
+        let observed = spool
+            .take()
+            .map_err(|source| LivePluginQuantumGateError::Channel {
+                operation: "take SMP rendezvous evidence",
+                source: QemuNodeChannelError::new("take guest console", source.to_string()),
+            })?;
+        let expected = expected_smp_pause_rendezvous(config.smp_vcpus);
+        if observed != expected {
+            return Err(LivePluginQuantumGateError::GuestSmpRendezvousMismatch {
+                expected,
+                observed,
+            });
+        }
+        true
+    } else {
+        false
+    };
+    HostAdversary::finish_if_present(&mut host_adversary)
+        .map_err(|source| LivePluginQuantumGateError::SchedulerPreemption { source })?;
     setup
         .assert_run_control_silent()
         .map_err(|source| channel_error("prove run control silence", source))?;
-
     QemuPluginIpcControlChannel::send_quit(&mut setup)
         .map_err(|source| channel_error("send plugin Quit", source))?;
     scheduler::wait_for_plugin_teardown(&hot_path, config)?;
@@ -523,17 +628,16 @@ fn run_one_scenario(
     }
     drop(setup);
     drop(child);
-    drop(host_load);
-
     Ok(ScenarioOutcome {
         idle,
         rates,
         fingerprint,
         host_observable_schedule,
+        guest_smp_pause_rendezvous_observed,
     })
 }
 
-/// Requires the load run to reproduce the reference run byte for byte.
+/// Requires the scheduler-preempted run to reproduce the reference byte for byte.
 fn assert_runs_match(
     reference: &ScenarioOutcome,
     second: &ScenarioOutcome,
@@ -571,7 +675,22 @@ fn assert_runs_match(
             ),
         });
     }
+    if reference.guest_smp_pause_rendezvous_observed != second.guest_smp_pause_rendezvous_observed {
+        return Err(LivePluginQuantumGateError::SecondRunDiverged {
+            reason: String::from("guest SMP PAUSE rendezvous evidence differed between runs"),
+        });
+    }
     Ok(())
+}
+
+fn expected_smp_pause_rendezvous(vcpus: u16) -> Vec<u8> {
+    let application_processors = usize::from(vcpus.saturating_sub(1));
+    let mut expected = Vec::with_capacity(application_processors.saturating_mul(2) + 2);
+    expected.extend(std::iter::repeat_n(b'A', application_processors));
+    expected.push(b'B');
+    expected.extend(std::iter::repeat_n(b'P', application_processors));
+    expected.push(b'R');
+    expected
 }
 
 /// Replays a production-plugin host schedule through the in-process double.
@@ -690,50 +809,6 @@ fn complete_sim_double_setup(double: &mut SimDouble) -> Result<(), LivePluginQua
 fn sim_double_error(source: SimDoubleError) -> LivePluginQuantumGateError {
     LivePluginQuantumGateError::SimDoubleScheduleMismatch {
         reason: source.to_string(),
-    }
-}
-
-/// A background host-CPU load generator that stresses scheduling around a run.
-///
-/// The busy threads consume CPU without touching the guest, the plugin, or the
-/// shared-memory region, so a deterministic, icount-owning plugin must produce
-/// an identical fingerprint whether or not the load is present.
-struct HostLoad {
-    stop: Arc<AtomicBool>,
-    workers: Vec<thread::JoinHandle<()>>,
-}
-
-impl HostLoad {
-    fn start_if(enabled: bool) -> Option<Self> {
-        if !enabled {
-            return None;
-        }
-        let stop = Arc::new(AtomicBool::new(false));
-        let mut workers = Vec::with_capacity(HOST_LOAD_WORKERS);
-        for _ in 0..HOST_LOAD_WORKERS {
-            let stop = Arc::clone(&stop);
-            workers.push(thread::spawn(move || {
-                let mut accumulator: u64 = 0;
-                while !stop.load(Ordering::Relaxed) {
-                    for value in 0..4096_u64 {
-                        accumulator = accumulator
-                            .wrapping_mul(6_364_136_223_846_793_005)
-                            .wrapping_add(value);
-                    }
-                    std::hint::black_box(accumulator);
-                }
-            }));
-        }
-        Some(Self { stop, workers })
-    }
-}
-
-impl Drop for HostLoad {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        for worker in self.workers.drain(..) {
-            let _ = worker.join();
-        }
     }
 }
 

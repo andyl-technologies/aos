@@ -42,7 +42,7 @@
     ++ failuresFor "pkgs/emulation/qemu.nix" qemuNix [
       {
         label = "QEMU patch wiring for ${patchName}";
-        needle = "patch -p1 < \${./qemu-patches/${patchName}}";
+        needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
       }
     ]
     ++ failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [

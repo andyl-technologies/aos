@@ -25,7 +25,7 @@ fn canonical_trace_definition_pins_complete_preflight_observation_semantics() {
     assert!(material.contains("trigger[0]=periodic-aggregate-icount"));
     assert!(material.contains("trigger[1]=horizon-advance"));
     assert!(material.contains("trigger[2]=frame-delivery"));
-    assert!(material.contains("trigger[3]=fault-activation"));
+    assert!(material.contains("trigger[3]=signal-effect-boundary"));
     assert!(material.contains("component[3]=qemu-non-ram-vmstate-sha256"));
     assert!(material.contains("rr_switch_quantum=4096"));
     assert!(material.contains("guest_ram_bytes=67108864"));
@@ -393,13 +393,15 @@ fn real_qemu_trace_import_rejects_qmp_topology_or_incomplete_observation() {
 
     let mut values = trace_values(2);
     values[0]["rr_cursor_position"] = Value::from(3000);
-    let error = importer(2)
+    let stream = importer(2)
         .import(Cursor::new(json_lines(&values)))
-        .expect_err("RR position cannot exceed current-vCPU retired count");
-    assert!(
-        error
-            .to_string()
-            .contains("exceeds the current vCPU retired count")
+        .expect("authoritative icount cursor is independent of plugin callback counts");
+    assert_eq!(
+        stream.samples[0]
+            .nvcpu_fingerprint
+            .rr_cursor()
+            .position_in_quantum(),
+        3000
     );
 
     let mut values = trace_values(2);

@@ -26,7 +26,9 @@ in
       {
         name = "unpack";
         script = ''
-          tail -n +1022 "$src" | zstd -d | tar xf -
+          tail -n +1022 "$src" | zstd -d | tar -x -f - -- \
+            firmware/gsp_ga10x.bin \
+            firmware/gsp_tu10x.bin
         '';
       }
       {

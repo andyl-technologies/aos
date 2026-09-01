@@ -222,7 +222,7 @@
   qemuNixRequirements = [
     {
       label = "sim accel patch wiring";
-      needle = "patch -p1 < \${./qemu-patches/0001-crucible-sim-accel.patch}";
+      needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
     }
   ];
 
@@ -290,6 +290,7 @@ in
           pkgs.diffutils
           pkgs.gawk
           pkgs.glib
+          pkgs.glib.dev
           pkgs.grep
           pkgs.jq
           pkgs.patch

@@ -2103,6 +2103,7 @@ name = "crucible"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "ciborium",
  "crucible-device",
  "crucible-harness",
  "crucible-protocol",
@@ -2110,6 +2111,7 @@ dependencies = [
  "crucible-sim",
  "regex",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "toml 0.8.23",
  "tracing",
@@ -2120,17 +2122,23 @@ name = "crucible-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "blake3",
  "bytes",
+ "ciborium",
  "crucible",
+ "crucible-device",
  "crucible-protocol",
  "crucible-qemu",
  "crucible-session",
+ "crucible-shmem",
  "futures-util",
  "hyper-util",
  "reqwest",
  "rustls 0.23.40",
  "rustls-pemfile",
  "rustls-pki-types",
+ "serde",
+ "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
@@ -2202,8 +2210,10 @@ name = "crucible-device"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "ciborium",
  "crucible-shmem",
  "crucible-sim",
+ "serde",
  "thiserror 2.0.18",
 ]
 
@@ -2236,25 +2246,34 @@ dependencies = [
 name = "crucible-qemu"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "ciborium",
  "crucible",
  "crucible-device",
  "crucible-protocol",
  "crucible-shmem",
  "libc",
  "rustix 1.1.4",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
 name = "crucible-qemu-plugin"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "crucible",
  "crucible-protocol",
  "crucible-shmem",
+ "hex",
  "libc",
+ "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
 ]
 
@@ -2272,8 +2291,11 @@ dependencies = [
 name = "crucible-shmem"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "crucible-protocol",
  "libc",
+ "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
 ]
 

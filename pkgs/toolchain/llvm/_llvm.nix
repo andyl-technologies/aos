@@ -9,6 +9,8 @@
   python3,
   zlib,
   bootstrapTools,
+  stdenv,
+  buildPackages,
 }: {
   version,
   srcHash,
@@ -33,10 +35,23 @@
   ],
   # Version-specific workarounds
   needsArc4randomFix ? true,
+  needsClOptStringFix ? false,
   extraCmakeFlags ? [],
 }: let
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  versionMatch = builtins.match "([0-9]+)\\..*" version;
+  versionMajor = builtins.elemAt versionMatch 0;
+  nativeLlvm = buildPackages."llvm-${versionMajor}";
+  enabledRuntimes =
+    if isDarwinCross
+    then []
+    else runtimes;
+  zlibLibrary =
+    if isDarwinCross
+    then "${zlib}/lib/libz.dylib"
+    else "${zlib}/lib/libz.so";
   projectsStr = builtins.concatStringsSep ";" projects;
-  runtimesStr = builtins.concatStringsSep ";" runtimes;
+  runtimesStr = builtins.concatStringsSep ";" enabledRuntimes;
   targetsStr = builtins.concatStringsSep ";" targets;
   extraFlagsStr = builtins.concatStringsSep " " extraCmakeFlags;
 in
@@ -57,7 +72,13 @@ in
       ninja
       python3
     ];
-    runtimeDeps = [zlib];
+    runtimeDeps =
+      [zlib]
+      ++ (
+        if isDarwinCross
+        then [stdenv.darwinRuntimes]
+        else []
+      );
 
     # Builds LLVM, clang, lld, compiler-rt, libunwind, libcxxabi and libcxx
     # together. Keep Fortify at level 2 and avoid x86 shadow stack for the
@@ -77,89 +98,154 @@ in
       }
       {
         name = "configure";
-        script = ''
-          ${
-            if needsArc4randomFix
+        script =
+          (
+            if isDarwinCross
             then ''
-              # Fix arc4random not being visible in C++ — include stdlib.h directly
-              sed -i '/#include.*Process\.inc/i #include <stdlib.h>' llvm/lib/Support/Process.cpp 2>/dev/null || true
-              if grep -q 'arc4random' llvm/lib/Support/Unix/Process.inc; then
-                sed -i '1i #include <stdlib.h>' llvm/lib/Support/Unix/Process.inc
-              fi
+              # LLVM always creates a nested NATIVE tool build when CMake is
+              # cross-compiling.  Give it explicit Linux compiler launchers;
+              # otherwise target hardening, SDK, and search-path variables
+              # leak into the build-machine compiler probes.
+              mkdir -p native-tools
+              cat > native-tools/cc <<'AOS_NATIVE_CC'
+              #!${buildPackages.bash}/bin/bash
+              unset AOS_HARDENING_ENABLE NIX_LDFLAGS
+              unset CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
+              unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH CPATH LIBRARY_PATH
+              unset SDKROOT MACOSX_DEPLOYMENT_TARGET
+              exec ${buildPackages.cc}/bin/cc "$@"
+              AOS_NATIVE_CC
+              cat > native-tools/c++ <<'AOS_NATIVE_CXX'
+              #!${buildPackages.bash}/bin/bash
+              unset AOS_HARDENING_ENABLE NIX_LDFLAGS
+              unset CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
+              unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH CPATH LIBRARY_PATH
+              unset SDKROOT MACOSX_DEPLOYMENT_TARGET
+              exec ${buildPackages.cc}/bin/c++ "$@"
+              AOS_NATIVE_CXX
+              chmod +x native-tools/cc native-tools/c++
             ''
             else ""
-          }
-          ${
-            if runtimes != []
+          )
+          + (
+            if isDarwinCross && needsClOptStringFix
             then ''
-              # Create clang config file so the just-built clang finds AOS
-              # GCC toolchain and libraries when building runtimes.
-              # Read real GCC/glibc paths from ccWrapper's nix-support files.
-              # Headers live in glibc.dev (multi-output split); shared libs
-              # and crt*.o stay in glibc.out.
-              BT="${bootstrapTools}"
-              REAL_CC=$(cat "$BT/nix-support/orig-cc")
-              REAL_LIBC=$(cat "$BT/nix-support/orig-libc")
-              REAL_LIBC_DEV=$(cat "$BT/nix-support/orig-libc-dev")
-              GCC_DIR=$(echo "$REAL_CC"/lib/gcc/x86_64-unknown-linux-gnu/*)
-              mkdir -p build/clang-cfg
-              DL=$(echo "$REAL_LIBC"/lib/ld-linux-x86-64.so.*)
-              {
-                echo "--gcc-install-dir=$GCC_DIR"
-                # Use -idirafter so glibc headers come AFTER GCC C++ headers
-                # (needed for #include_next <stdlib.h> in cstdlib to work)
-                echo "-idirafter"
-                echo "$REAL_LIBC_DEV/include"
-                echo "-B$REAL_LIBC/lib"
-                echo "-B$GCC_DIR"
-                echo "-L$REAL_LIBC/lib"
-                echo "-L$REAL_CC/lib"
-                echo "-L$REAL_CC/lib64"
-                echo "-Wl,-dynamic-linker=$DL"
-                echo "-Wl,-rpath,$REAL_LIBC/lib"
-                echo "-Wl,-rpath,$REAL_CC/lib"
-              } > build/clang-cfg/x86_64-unknown-linux-gnu.cfg
+              # LLVM 17's cl::opt<std::string> does not implicitly convert
+              # through nested initializer lists with current libc++.
+              sed -i \
+                's/{{ClIgnorelist}}/{{std::string(ClIgnorelist)}}/' \
+                llvm/tools/sancov/sancov.cpp
             ''
             else ""
-          }
-          cmake -S llvm -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=$out \
-            -DLLVM_ENABLE_PROJECTS="${projectsStr}" \
+          )
+          + ''
             ${
-            if runtimes != []
-            then ''-DLLVM_ENABLE_RUNTIMES="${runtimesStr}"''
-            else ""
-          } \
-            -DLLVM_TARGETS_TO_BUILD="${targetsStr}" \
-            -DLLVM_LINK_LLVM_DYLIB=ON \
-            -DLLVM_INSTALL_UTILS=ON \
-            -DLLVM_ENABLE_ZLIB=FORCE_ON \
-            -DZLIB_INCLUDE_DIR=${zlib}/include \
-            -DZLIB_LIBRARY=${zlib}/lib/libz.so \
-            -DLLVM_ENABLE_TERMINFO=OFF \
-            -DLLVM_ENABLE_LIBXML2=OFF \
-            -DLLVM_ENABLE_LIBEDIT=OFF \
-            -DLLVM_INCLUDE_BENCHMARKS=OFF \
-            -DLLVM_INCLUDE_EXAMPLES=OFF \
-            -DLLVM_INCLUDE_TESTS=OFF \
-            -DLLVM_INCLUDE_DOCS=OFF \
-            -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON \
+              if needsArc4randomFix
+              then ''
+                # Fix arc4random not being visible in C++ — include stdlib.h directly
+                sed -i '/#include.*Process\.inc/i #include <stdlib.h>' llvm/lib/Support/Process.cpp 2>/dev/null || true
+                if grep -q 'arc4random' llvm/lib/Support/Unix/Process.inc; then
+                  sed -i '1i #include <stdlib.h>' llvm/lib/Support/Unix/Process.inc
+                fi
+              ''
+              else ""
+            }
             ${
-            if runtimes != []
-            then ''
-              -DDEFAULT_SYSROOT=/ \
-              -DCLANG_CONFIG_FILE_SYSTEM_DIR=$PWD/build/clang-cfg \
-            ''
-            else ""
-          } \
-            ${
-            if needsArc4randomFix
-            then "-DHAVE_DECL_ARC4RANDOM=0"
-            else ""
-          } \
-            ${extraFlagsStr}
-        '';
+              if enabledRuntimes != []
+              then ''
+                # Create clang config file so the just-built clang finds AOS
+                # GCC toolchain and libraries when building runtimes.
+                # Read real GCC/glibc paths from ccWrapper's nix-support files.
+                # Headers live in glibc.dev (multi-output split); shared libs
+                # and crt*.o stay in glibc.out.
+                BT="${bootstrapTools}"
+                REAL_CC=$(cat "$BT/nix-support/orig-cc")
+                REAL_LIBC=$(cat "$BT/nix-support/orig-libc")
+                REAL_LIBC_DEV=$(cat "$BT/nix-support/orig-libc-dev")
+                GCC_DIR=$(echo "$REAL_CC"/lib/gcc/x86_64-unknown-linux-gnu/*)
+                mkdir -p build/clang-cfg
+                DL=$(echo "$REAL_LIBC"/lib/ld-linux-x86-64.so.*)
+                {
+                  echo "--gcc-install-dir=$GCC_DIR"
+                  # Use -idirafter so glibc headers come AFTER GCC C++ headers
+                  # (needed for #include_next <stdlib.h> in cstdlib to work)
+                  echo "-idirafter"
+                  echo "$REAL_LIBC_DEV/include"
+                  echo "-B$REAL_LIBC/lib"
+                  echo "-B$GCC_DIR"
+                  echo "-L$REAL_LIBC/lib"
+                  echo "-L$REAL_CC/lib"
+                  echo "-L$REAL_CC/lib64"
+                  echo "-Wl,-dynamic-linker=$DL"
+                  echo "-Wl,-rpath,$REAL_LIBC/lib"
+                  echo "-Wl,-rpath,$REAL_CC/lib"
+                } > build/clang-cfg/x86_64-unknown-linux-gnu.cfg
+              ''
+              else ""
+            }
+            cmake -S llvm -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX=$out \
+              -DLLVM_ENABLE_PROJECTS="${projectsStr}" \
+              ${
+              if enabledRuntimes != []
+              then ''-DLLVM_ENABLE_RUNTIMES="${runtimesStr}"''
+              else ""
+            } \
+              -DLLVM_TARGETS_TO_BUILD="${targetsStr}" \
+              ${
+              if isDarwinCross
+              then ''
+                -DLLVM_DEFAULT_TARGET_TRIPLE=${stdenv.hostPlatform.config} \
+                -DLLVM_HOST_TRIPLE=${stdenv.hostPlatform.config} \
+                -DLLVM_NATIVE_TOOL_DIR=${nativeLlvm}/bin \
+                -DLLVM_TABLEGEN=${nativeLlvm}/bin/llvm-tblgen \
+                -DCLANG_TABLEGEN=${nativeLlvm}/bin/clang-tblgen \
+                -DLLVM_CONFIG_PATH=${nativeLlvm}/bin/llvm-config \
+                -DCLANG=${nativeLlvm}/bin/clang \
+                -DLLVM_AS=${nativeLlvm}/bin/llvm-as \
+                -DLLVM_LINK=${nativeLlvm}/bin/llvm-link \
+                -DLLVM_NM=${nativeLlvm}/bin/llvm-nm \
+                -DLLVM_READOBJ=${nativeLlvm}/bin/llvm-readobj \
+                -DOPT=${nativeLlvm}/bin/opt \
+                -DCROSS_TOOLCHAIN_FLAGS_NATIVE="-DCMAKE_C_COMPILER=$PWD/native-tools/cc;-DCMAKE_CXX_COMPILER=$PWD/native-tools/c++;-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" \
+                -DLLVM_USE_HOST_TOOLS=ON \
+              ''
+              else ""
+            } \
+              -DLLVM_LINK_LLVM_DYLIB=ON \
+              -DLLVM_INSTALL_UTILS=ON \
+              -DLLVM_ENABLE_ZLIB=FORCE_ON \
+              -DZLIB_INCLUDE_DIR=${zlib}/include \
+              -DZLIB_LIBRARY=${zlibLibrary} \
+              -DLLVM_ENABLE_TERMINFO=OFF \
+              -DLLVM_ENABLE_LIBXML2=OFF \
+              -DLLVM_ENABLE_LIBEDIT=OFF \
+              -DLLVM_INCLUDE_BENCHMARKS=OFF \
+              -DLLVM_INCLUDE_EXAMPLES=OFF \
+              -DLLVM_INCLUDE_TESTS=OFF \
+              -DLLVM_INCLUDE_DOCS=OFF \
+              -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON \
+              ${
+              if enabledRuntimes != []
+              then ''
+                -DDEFAULT_SYSROOT=/ \
+                -DCLANG_CONFIG_FILE_SYSTEM_DIR=$PWD/build/clang-cfg \
+              ''
+              else ""
+            } \
+              ${
+              if needsArc4randomFix
+              then "-DHAVE_DECL_ARC4RANDOM=0"
+              else ""
+            } \
+              ${extraFlagsStr} \
+              $cmakeFlags${
+              if isDarwinCross
+              then " \\\n            -DCMAKE_TRY_COMPILE_TARGET_TYPE=EXECUTABLE"
+              else ""
+            }
+          '';
       }
       {
         name = "build";
@@ -171,6 +257,36 @@ in
         name = "install";
         script = ''
           ninja -C build install
+
+          ${
+            if isDarwinCross
+            then ''
+              # compiler-rt, libc++, libc++abi and libunwind were bootstrapped
+              # before this target LLVM so no Darwin executable has to run
+              # while cross-compiling.  Install that exact runtime surface as
+              # part of the complete Darwin LLVM toolchain.
+              cp -a ${stdenv.darwinRuntimes}/include/. "$out/include/"
+              cp -a ${stdenv.darwinRuntimes}/lib/. "$out/lib/"
+
+              # Installed llvm-config discovers its real prefix relative to
+              # argv[0], but retains the configured source and object roots as
+              # binary fallback strings. Normalize only the sandbox prefix
+              # with an equal-length replacement so Mach-O offsets stay valid
+              # and the target toolchain does not expose an ephemeral build
+              # directory.
+              stable_source=$(printf '%s\n' "$PWD" | sed 's|^/build|/.aos_|')
+              sed -i "s|$PWD|$stable_source|g" "$out/bin/llvm-config"
+
+              # LLVM and the copied runtime install some directories without
+              # owner write permission. The following scrub phase creates an
+              # adjacent temporary file for each Mach-O before atomically
+              # replacing it, so make this build output writable while it is
+              # still owned by the sandbox builder. Nix canonicalizes store
+              # permissions after the derivation completes.
+              chmod -R u+w "$out"
+            ''
+            else ""
+          }
 
           # LLVM 22 moved PassPlugin.h from llvm/Passes/ to llvm/Plugins/.
           # Create backward-compat symlink for consumers expecting the old path

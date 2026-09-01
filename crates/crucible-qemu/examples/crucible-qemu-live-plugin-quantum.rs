@@ -2,7 +2,7 @@
 //!
 //! Boots the patched QEMU binary once with the real Rust control plugin loaded,
 //! drives a multi-quantum scheduler through the guest's boot, idle park, and
-//! idle-jump advancement, and repeats the whole scenario under host CPU load.
+//! idle-jump advancement, and repeats the whole scenario under bounded scheduler preemption.
 //! Prints machine-checkable evidence the phase2 gate asserts: the idle
 //! observation with a computed timer deadline, the boot-versus-idle advancement
 //! rates that prove O(1) idle-jump, cross-run determinism, and
@@ -18,7 +18,7 @@
 //! CRUCIBLE_QUANTUM_IDLE_HORIZON_MARGIN idle-jump span past onset (icount)
 //! CRUCIBLE_QUANTUM_MIN_IDLE_SPEEDUP    required idle:boot rate ratio
 //! CRUCIBLE_QUANTUM_TIMEOUT_SECS        per-quantum host wait bound (seconds)
-//! CRUCIBLE_QUANTUM_SECOND_RUN_LOAD     "0" disables second-run host load
+//! CRUCIBLE_QUANTUM_SECOND_RUN_SCHEDULER_PREEMPTION     "0" disables second-run bounded scheduler preemption
 //! CRUCIBLE_QUANTUM_SMP_VCPUS           fixed guest vCPU count
 //! CRUCIBLE_QUANTUM_MEMORY_MIB          fixed guest-memory size
 //! ```
@@ -73,10 +73,16 @@ fn run() -> Result<(), String> {
                 "CRUCIBLE_QUANTUM_TIMEOUT_SECS",
                 240,
             )?))
-            .with_second_run_host_load(env_flag("CRUCIBLE_QUANTUM_SECOND_RUN_LOAD", true)?)
-            .with_prove_idle_jump(env_flag("CRUCIBLE_QUANTUM_PROVE_IDLE_JUMP", false)?)
+            .with_second_run_scheduler_preemption(env_flag(
+                "CRUCIBLE_QUANTUM_SECOND_RUN_SCHEDULER_PREEMPTION",
+                true,
+            )?)
             .with_smp_vcpus(env_u16("CRUCIBLE_QUANTUM_SMP_VCPUS", 1)?)
-            .with_memory_mib(env_u32("CRUCIBLE_QUANTUM_MEMORY_MIB", 64)?);
+            .with_memory_mib(env_u32("CRUCIBLE_QUANTUM_MEMORY_MIB", 64)?)
+            .with_guest_smp_pause_rendezvous(env_flag(
+                "CRUCIBLE_QUANTUM_REQUIRE_SMP_PAUSE_RENDEZVOUS",
+                false,
+            )?);
     if let Some(initrd) = initrd {
         config = config.with_initrd(initrd);
     }
@@ -118,17 +124,22 @@ fn run() -> Result<(), String> {
     println!("idle_icount_per_second={}", rates.idle_icount_per_second());
     println!("terminal_icount={}", rates.terminal_icount);
     println!("idle_jump_proven={}", report.idle_jump_proven);
-    if !report.idle_jump_proven {
-        // Descoped while the QEMU-side queued-time-advance completion defect is
-        // open. The plugin correctly reads the deadline, releases, enqueues, and
-        // arms the idle advance, but QEMU never commits it (patches 0010/0021/0025).
-        println!("idle_jump_defect=T-PLUG-7-live-idle-jump-advance-completion");
-    }
     println!(
-        "deterministic_under_host_load={}",
-        report.deterministic_under_host_load
+        "deterministic_under_scheduler_preemption={}",
+        report.deterministic_under_scheduler_preemption
     );
-    println!("host_load_applied={}", report.host_load_applied);
+    println!(
+        "scheduler_preemption_applied={}",
+        report.scheduler_preemption_applied
+    );
+    println!(
+        "host_adversary={}",
+        if report.scheduler_preemption_applied {
+            "bounded-scheduler-preemption"
+        } else {
+            "none"
+        }
+    );
     println!(
         "sim_double_schedule_matches={}",
         report.sim_double_schedule_matches
@@ -144,6 +155,10 @@ fn run() -> Result<(), String> {
     println!(
         "time_authority_is_rust_plugin={}",
         report.time_authority_is_rust_plugin
+    );
+    println!(
+        "guest_smp_pause_rendezvous_observed={}",
+        report.guest_smp_pause_rendezvous_observed
     );
     Ok(())
 }

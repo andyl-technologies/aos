@@ -7,11 +7,12 @@
 //! `PR_SET_PDEATHSIG=SIGKILL` in the child.
 
 use std::ffi::CString;
+use std::fs::{self, File};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 use thiserror::Error;
@@ -30,6 +31,7 @@ pub struct QemuSpawnHostResources {
     shmem_fd: OwnedFd,
     wake_fd: OwnedFd,
     region_len: u64,
+    fault_node_hash: [u8; 32],
 }
 
 impl QemuSpawnHostResources {
@@ -65,6 +67,7 @@ impl QemuSpawnHostResources {
             shmem_fd: self.shmem_fd,
             wake_fd: self.wake_fd,
             region_len: self.region_len,
+            fault_node_hash: self.fault_node_hash,
         }
     }
 }
@@ -76,6 +79,7 @@ pub struct QemuSpawnSetupResources {
     shmem_fd: OwnedFd,
     wake_fd: OwnedFd,
     region_len: u64,
+    fault_node_hash: [u8; 32],
 }
 
 impl QemuSpawnSetupResources {
@@ -103,14 +107,21 @@ impl QemuSpawnSetupResources {
         self.region_len
     }
 
+    /// Returns the node identity hash encoded in the spawned plugin argument.
+    #[must_use]
+    pub const fn fault_node_hash(&self) -> [u8; 32] {
+        self.fault_node_hash
+    }
+
     /// Consumes the setup resources into their owned parts.
     #[must_use]
-    pub fn into_parts(self) -> (UnixStream, OwnedFd, OwnedFd, u64) {
+    pub fn into_parts(self) -> (UnixStream, OwnedFd, OwnedFd, u64, [u8; 32]) {
         (
             self.control_socket,
             self.shmem_fd,
             self.wake_fd,
             self.region_len,
+            self.fault_node_hash,
         )
     }
 }
@@ -150,58 +161,45 @@ pub enum QemuSpawnError {
         /// Underlying OS error.
         source: io::Error,
     },
-}
-
-/// Spawns a validated QEMU launch command with fixed child descriptors.
-///
-/// The child receives the plugin control socket at fd 3, the shared-memory memfd
-/// at fd 4, and the wake eventfd at fd 5. The host retains its own descriptor
-/// copies in the returned [`QemuSpawnHostResources`].
-///
-/// # Errors
-///
-/// Returns [`QemuSpawnError`] when descriptor creation, descriptor duplication,
-/// parent-death signal setup, or process spawning fails.
-pub fn spawn_qemu_child_with_fds(
-    command: &QemuLaunchCommand,
-    region_len: u64,
-) -> Result<QemuSpawnedChild, QemuSpawnError> {
-    spawn_qemu_child_with_fds_in_optional_directory(command, None, region_len)
+    /// The exact-VMState qcow2 container could not be created.
+    #[error("qemu-img could not create exact-VMState container {path}: {status}: {stderr}")]
+    VmStateImageTool {
+        /// Intended qcow2 container path.
+        path: PathBuf,
+        /// Process exit status rendered without host-specific structure.
+        status: String,
+        /// Trimmed qemu-img diagnostic output.
+        stderr: String,
+    },
 }
 
 /// Spawns a validated QEMU launch command in `run_directory`.
 ///
-/// Relative launch artifacts, including the QMP socket filename and root overlay
-/// image, are resolved by QEMU under this working directory without embedding
-/// volatile host paths in the launch hash material.
+/// The spawn path first creates the exact-VMState qcow2 container with the
+/// `qemu-img` adjacent to the selected QEMU executable. Relative launch
+/// artifacts, including that container, the QMP socket filename, and root
+/// overlay image, are then resolved by QEMU under this working directory
+/// without embedding volatile host paths in the launch hash material.
 ///
 /// # Errors
 ///
-/// Returns [`QemuSpawnError`] when descriptor creation, descriptor duplication,
-/// parent-death signal setup, changing the child working directory, or process
-/// spawning fails.
+/// Returns [`QemuSpawnError`] when run-directory or VMState-container
+/// preparation, descriptor creation, descriptor duplication, parent-death
+/// signal setup, changing the child working directory, or process spawning
+/// fails.
 pub fn spawn_qemu_child_with_fds_in_directory(
     command: &QemuLaunchCommand,
     run_directory: impl AsRef<Path>,
     region_len: u64,
 ) -> Result<QemuSpawnedChild, QemuSpawnError> {
-    spawn_qemu_child_with_fds_in_optional_directory(
-        command,
-        Some(run_directory.as_ref()),
-        region_len,
-    )
-}
-
-fn spawn_qemu_child_with_fds_in_optional_directory(
-    command: &QemuLaunchCommand,
-    run_directory: Option<&Path>,
-    region_len: u64,
-) -> Result<QemuSpawnedChild, QemuSpawnError> {
-    let (resources, child_resources) = create_spawn_resources(region_len)?;
+    let run_directory = run_directory.as_ref();
+    prepare_vmstate_container(command, run_directory)?;
+    let (mut resources, child_resources) = create_spawn_resources(region_len)?;
+    resources.fault_node_hash = command.plugin_fault_node_hash();
     let child = spawn_process_with_resources(
         command.executable(),
         command.args(),
-        run_directory,
+        Some(run_directory),
         child_resources,
         &[],
         "spawn QEMU child",
@@ -210,6 +208,109 @@ fn spawn_qemu_child_with_fds_in_optional_directory(
         child: QemuNodeChild::new(child),
         resources,
     })
+}
+
+/// Prepares the exact-VMState qcow2 required by a launch or stopped probe.
+///
+/// # Errors
+///
+/// Returns [`QemuSpawnError`] when the run directory, existing artifact,
+/// adjacent `qemu-img`, durable staging write, or atomic publication fails.
+pub(crate) fn prepare_vmstate_container(
+    command: &QemuLaunchCommand,
+    run_directory: &Path,
+) -> Result<(), QemuSpawnError> {
+    fs::create_dir_all(run_directory).map_err(|source| QemuSpawnError::Io {
+        operation: "create QEMU run directory",
+        source,
+    })?;
+    let path = run_directory.join(crate::DEFAULT_VMSTATE_FILE_NAME);
+    match fs::metadata(&path) {
+        Ok(metadata) if metadata.is_file() => return Ok(()),
+        Ok(_) => {
+            return Err(QemuSpawnError::Io {
+                operation: "validate exact-VMState container path",
+                source: io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "exact-VMState container path is not a regular file",
+                ),
+            });
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(QemuSpawnError::Io {
+                operation: "inspect exact-VMState container",
+                source,
+            });
+        }
+    }
+
+    let staging = tempfile::Builder::new()
+        .prefix(".crucible-vmstate-")
+        .suffix(".qcow2")
+        .tempfile_in(run_directory)
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "stage exact-VMState container",
+            source,
+        })?;
+    let image_tool = Path::new(command.executable()).with_file_name("qemu-img");
+    let output = Command::new(&image_tool)
+        .arg("create")
+        .arg("-q")
+        .arg("-f")
+        .arg("qcow2")
+        .arg(staging.path())
+        .arg(format!("{}M", command.vmstate_size_mib()))
+        .output()
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "execute qemu-img for exact-VMState container",
+            source,
+        })?;
+    if !output.status.success() {
+        return Err(QemuSpawnError::VmStateImageTool {
+            path,
+            status: output.status.to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+
+    staging
+        .as_file()
+        .sync_all()
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "flush exact-VMState container",
+            source,
+        })?;
+    match staging.persist_noclobber(&path) {
+        Ok(_) => {}
+        Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => {
+            let metadata = fs::metadata(&path).map_err(|source| QemuSpawnError::Io {
+                operation: "inspect concurrently created exact-VMState container",
+                source,
+            })?;
+            if !metadata.is_file() {
+                return Err(QemuSpawnError::Io {
+                    operation: "validate concurrently created exact-VMState container",
+                    source: io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "exact-VMState container path is not a regular file",
+                    ),
+                });
+            }
+        }
+        Err(error) => {
+            return Err(QemuSpawnError::Io {
+                operation: "publish exact-VMState container",
+                source: error.error,
+            });
+        }
+    }
+    File::open(run_directory)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "flush QEMU run directory",
+            source,
+        })
 }
 
 #[derive(Debug)]
@@ -240,6 +341,7 @@ fn create_spawn_resources(
             shmem_fd: host_shmem,
             wake_fd: host_wake,
             region_len,
+            fault_node_hash: [0; 32],
         },
         QemuSpawnChildResources {
             control_socket: child_control,
@@ -259,7 +361,8 @@ fn create_spawn_resources(
 pub(crate) fn create_test_spawn_resource_pair(
     region_len: u64,
 ) -> Result<(QemuSpawnHostResources, UnixStream), QemuSpawnError> {
-    let (host_resources, child_resources) = create_spawn_resources(region_len)?;
+    let (mut host_resources, child_resources) = create_spawn_resources(region_len)?;
+    host_resources.fault_node_hash = crate::qemu_fault_target_hash("standalone-vm-slot-0");
     Ok((
         host_resources,
         UnixStream::from(child_resources.control_socket),
@@ -459,412 +562,5 @@ fn last_io_error(operation: &'static str) -> QemuSpawnError {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::env;
-    use std::error::Error;
-    use std::io::Write;
-    use std::mem::MaybeUninit;
-    use std::os::fd::AsRawFd;
-    use std::path::PathBuf;
-    use std::process::{Command, Stdio};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{Duration, Instant};
-
-    use super::*;
-
-    const PROBE_ENV: &str = "CRUCIBLE_QEMU_SPAWN_CHILD_PROBE";
-    const SOURCE_FDS_ENV: &str = "CRUCIBLE_QEMU_SPAWN_SOURCE_FDS";
-    const CWD_PROBE_ENV: &str = "CRUCIBLE_QEMU_SPAWN_CWD_PROBE";
-    const PDEATH_PARENT_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_PARENT_PROBE";
-    const PDEATH_CHILD_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_CHILD_PROBE";
-    const PDEATH_CHILD_PID_PREFIX: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_CHILD_PID=";
-    const ENV_CLEAR_PARENT_PROBE: &str = "CRUCIBLE_QEMU_SPAWN_ENV_CLEAR_PARENT_PROBE";
-    const ENV_CLEAR_CHILD_PROBE: &str = "CRUCIBLE_QEMU_SPAWN_ENV_CLEAR_CHILD_PROBE";
-    const INHERITED_ENV_SENTINEL: &str = "CRUCIBLE_QEMU_SPAWN_INHERITED_SENTINEL";
-    const EXPLICIT_ENV_SENTINEL: &str = "CRUCIBLE_QEMU_SPAWN_EXPLICIT_SENTINEL";
-    static TEMP_DIR_SUFFIX: AtomicU64 = AtomicU64::new(0);
-
-    #[test]
-    fn qemu_spawn_resources_create_socket_memfd_eventfd_and_host_copies()
-    -> Result<(), Box<dyn Error>> {
-        let (resources, child_resources) = create_spawn_resources(4096)?;
-
-        assert_eq!(resources.region_len(), 4096);
-        assert_fd_open(resources.control_socket_fd())?;
-        assert_fd_open(resources.shmem_fd())?;
-        assert_fd_open(resources.wake_fd())?;
-        assert_fd_open(child_resources.control_socket.as_raw_fd())?;
-        assert_fd_open(child_resources.shmem_fd.as_raw_fd())?;
-        assert_fd_open(child_resources.wake_fd.as_raw_fd())?;
-        assert_eq!(fd_size(resources.shmem_fd())?, 4096);
-        assert_ne!(
-            fd_seals(resources.shmem_fd())? & libc::F_SEAL_SHRINK,
-            0,
-            "spawned shared-memory memfd must be sealed against shrink"
-        );
-        assert_ne!(
-            resources.control_socket_fd(),
-            child_resources.control_socket.as_raw_fd()
-        );
-        assert_ne!(resources.shmem_fd(), child_resources.shmem_fd.as_raw_fd());
-        assert_ne!(resources.wake_fd(), child_resources.wake_fd.as_raw_fd());
-
-        Ok(())
-    }
-
-    #[test]
-    fn qemu_spawn_rejects_empty_region() {
-        assert!(matches!(
-            create_spawn_resources(0),
-            Err(QemuSpawnError::RegionLengthZero)
-        ));
-    }
-
-    #[test]
-    fn qemu_spawn_maps_fixed_child_fds_after_pre_exec() -> Result<(), Box<dyn Error>> {
-        if env::var_os(PROBE_ENV).is_some() {
-            child_probe_fixed_fds()?;
-            return Ok(());
-        }
-
-        let (_host, child_resources) = create_spawn_resources(4096)?;
-        let source_fds = format!(
-            "{},{},{}",
-            child_resources.control_socket.as_raw_fd(),
-            child_resources.shmem_fd.as_raw_fd(),
-            child_resources.wake_fd.as_raw_fd()
-        );
-        let current_exe = env::current_exe()?;
-        let current_exe = current_exe.to_string_lossy().into_owned();
-        let args = vec![
-            String::from("--exact"),
-            String::from("spawn::tests::qemu_spawn_maps_fixed_child_fds_after_pre_exec"),
-        ];
-        let mut child = spawn_process_with_resources(
-            &current_exe,
-            &args,
-            None,
-            child_resources,
-            &[(PROBE_ENV, "1"), (SOURCE_FDS_ENV, &source_fds)],
-            "spawn child fd probe",
-        )?;
-
-        let status = child.wait()?;
-
-        assert!(status.success());
-        Ok(())
-    }
-
-    #[test]
-    fn qemu_spawn_run_directory_sets_child_cwd() -> Result<(), Box<dyn Error>> {
-        if let Some(expected) = env::var_os(CWD_PROBE_ENV) {
-            child_probe_cwd(Path::new(&expected))?;
-            return Ok(());
-        }
-
-        let (_host, child_resources) = create_spawn_resources(4096)?;
-        let source_fds = format!(
-            "{},{},{}",
-            child_resources.control_socket.as_raw_fd(),
-            child_resources.shmem_fd.as_raw_fd(),
-            child_resources.wake_fd.as_raw_fd()
-        );
-        let run_directory = unique_temp_run_directory("qemu-spawn-cwd")?;
-        let expected_directory = run_directory.canonicalize()?;
-        let current_exe = env::current_exe()?;
-        let current_exe = current_exe.to_string_lossy().into_owned();
-        let args = vec![
-            String::from("--exact"),
-            String::from("spawn::tests::qemu_spawn_run_directory_sets_child_cwd"),
-        ];
-        let mut child = spawn_process_with_resources(
-            &current_exe,
-            &args,
-            Some(&run_directory),
-            child_resources,
-            &[
-                (
-                    CWD_PROBE_ENV,
-                    expected_directory.as_os_str().to_string_lossy().as_ref(),
-                ),
-                (SOURCE_FDS_ENV, &source_fds),
-            ],
-            "spawn child cwd probe",
-        )?;
-
-        let status = child.wait()?;
-
-        assert!(status.success());
-        std::fs::remove_dir_all(run_directory)?;
-        Ok(())
-    }
-
-    #[test]
-    fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
-    -> Result<(), Box<dyn Error>> {
-        if env::var_os(ENV_CLEAR_CHILD_PROBE).is_some() {
-            assert!(env::var_os(INHERITED_ENV_SENTINEL).is_none());
-            assert!(env::var_os(ENV_CLEAR_PARENT_PROBE).is_none());
-            assert_eq!(env::var(EXPLICIT_ENV_SENTINEL)?, "explicit-child-value");
-            child_probe_fixed_fds()?;
-            return Ok(());
-        }
-        if env::var_os(ENV_CLEAR_PARENT_PROBE).is_some() {
-            assert_eq!(env::var(INHERITED_ENV_SENTINEL)?, "parent-only-value");
-            let (_host, child_resources) = create_spawn_resources(4096)?;
-            let source_fds = format!(
-                "{},{},{}",
-                child_resources.control_socket.as_raw_fd(),
-                child_resources.shmem_fd.as_raw_fd(),
-                child_resources.wake_fd.as_raw_fd()
-            );
-            let current_exe = env::current_exe()?;
-            let current_exe = current_exe.to_string_lossy().into_owned();
-            let args = vec![
-                String::from("--exact"),
-                String::from(
-                    "spawn::tests::qemu_spawn_clears_inherited_environment_and_preserves_explicit_values",
-                ),
-            ];
-            let mut child = spawn_process_with_resources(
-                &current_exe,
-                &args,
-                None,
-                child_resources,
-                &[
-                    (ENV_CLEAR_CHILD_PROBE, "1"),
-                    (EXPLICIT_ENV_SENTINEL, "explicit-child-value"),
-                    (SOURCE_FDS_ENV, &source_fds),
-                ],
-                "spawn child clean-environment probe",
-            )?;
-
-            assert!(child.wait()?.success());
-            return Ok(());
-        }
-
-        let current_exe = env::current_exe()?;
-        let mut parent = Command::new(current_exe)
-            .args([
-                "--exact",
-                "spawn::tests::qemu_spawn_clears_inherited_environment_and_preserves_explicit_values",
-            ])
-            .env(ENV_CLEAR_PARENT_PROBE, "1")
-            .env(INHERITED_ENV_SENTINEL, "parent-only-value")
-            .spawn()?;
-
-        assert!(parent.wait()?.success());
-        Ok(())
-    }
-
-    #[test]
-    fn qemu_spawn_kills_child_when_parent_exits() -> Result<(), Box<dyn Error>> {
-        if env::var_os(PDEATH_CHILD_ENV).is_some() {
-            std::thread::sleep(Duration::from_secs(60));
-            return Ok(());
-        }
-        if env::var_os(PDEATH_PARENT_ENV).is_some() {
-            parent_probe_spawn_pdeath_child()?;
-            return Ok(());
-        }
-
-        let current_exe = env::current_exe()?;
-        let output = Command::new(current_exe)
-            .args([
-                "--exact",
-                "spawn::tests::qemu_spawn_kills_child_when_parent_exits",
-                "--nocapture",
-            ])
-            .env(PDEATH_PARENT_ENV, "1")
-            .stdout(Stdio::piped())
-            .spawn()?
-            .wait_with_output()?;
-
-        assert!(output.status.success());
-        let pid = parse_pdeath_child_pid(&output.stdout)?;
-        assert_process_eventually_gone(pid, Duration::from_secs(2))?;
-        Ok(())
-    }
-
-    #[test]
-    fn qemu_node_child_drop_kills_and_reaps_unreaped_child() -> Result<(), Box<dyn Error>> {
-        if env::var_os("CRUCIBLE_QEMU_SPAWN_SLEEP_PROBE").is_some() {
-            std::thread::sleep(std::time::Duration::from_secs(60));
-            return Ok(());
-        }
-
-        let current_exe = env::current_exe()?;
-        let child = Command::new(current_exe)
-            .args([
-                "--exact",
-                "spawn::tests::qemu_node_child_drop_kills_and_reaps_unreaped_child",
-            ])
-            .env("CRUCIBLE_QEMU_SPAWN_SLEEP_PROBE", "1")
-            .spawn()?;
-        let pid = child.id();
-        drop(QemuNodeChild::new(child));
-
-        assert_process_is_gone(pid)?;
-        Ok(())
-    }
-
-    fn parent_probe_spawn_pdeath_child() -> Result<(), Box<dyn Error>> {
-        let (_host, child_resources) = create_spawn_resources(4096)?;
-        let current_exe = env::current_exe()?;
-        let current_exe = current_exe.to_string_lossy().into_owned();
-        let args = vec![
-            String::from("--exact"),
-            String::from("spawn::tests::qemu_spawn_kills_child_when_parent_exits"),
-        ];
-        let child = spawn_process_with_resources(
-            &current_exe,
-            &args,
-            None,
-            child_resources,
-            &[(PDEATH_CHILD_ENV, "1")],
-            "spawn parent-death probe child",
-        )?;
-
-        println!("{PDEATH_CHILD_PID_PREFIX}{}", child.id());
-        let mut stdout = std::io::stdout();
-        stdout.flush()?;
-        Ok(())
-    }
-
-    fn child_probe_fixed_fds() -> Result<(), Box<dyn Error>> {
-        assert_fd_open(QEMU_PLUGIN_CONTROL_FD)?;
-        assert_fd_open(QEMU_PLUGIN_SHMEM_FD)?;
-        assert_fd_open(QEMU_PLUGIN_WAKE_FD)?;
-        assert_eq!(fd_size(QEMU_PLUGIN_SHMEM_FD)?, 4096);
-        for fd in source_fds_from_env()? {
-            assert_fd_closed(fd)?;
-        }
-        Ok(())
-    }
-
-    fn child_probe_cwd(expected: &Path) -> Result<(), Box<dyn Error>> {
-        let actual = std::env::current_dir()?.canonicalize()?;
-        assert_eq!(actual, expected);
-        child_probe_fixed_fds()
-    }
-
-    fn unique_temp_run_directory(prefix: &str) -> Result<PathBuf, Box<dyn Error>> {
-        let path = std::env::temp_dir().join(format!(
-            "{prefix}-{}-{}",
-            std::process::id(),
-            unique_temp_suffix()
-        ));
-        std::fs::create_dir(&path)?;
-        Ok(path)
-    }
-
-    fn unique_temp_suffix() -> u64 {
-        TEMP_DIR_SUFFIX.fetch_add(1, Ordering::Relaxed)
-    }
-
-    fn assert_fd_open(fd: RawFd) -> Result<(), Box<dyn Error>> {
-        let result = unsafe {
-            // SAFETY: `fcntl` validates the descriptor number.
-            libc::fcntl(fd, libc::F_GETFD)
-        };
-        if result < 0 {
-            return Err(Box::new(io::Error::last_os_error()));
-        }
-        Ok(())
-    }
-
-    fn assert_fd_closed(fd: RawFd) -> Result<(), Box<dyn Error>> {
-        let result = unsafe {
-            // SAFETY: `fcntl` validates the descriptor number.
-            libc::fcntl(fd, libc::F_GETFD)
-        };
-        if result >= 0 {
-            return Err(format!("source fd {fd} survived exec").into());
-        }
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::EBADF) {
-            Ok(())
-        } else {
-            Err(Box::new(error))
-        }
-    }
-
-    fn parse_pdeath_child_pid(stdout: &[u8]) -> Result<u32, Box<dyn Error>> {
-        let text = String::from_utf8(stdout.to_vec())?;
-        for line in text.lines() {
-            if let Some(pid) = line.strip_prefix(PDEATH_CHILD_PID_PREFIX) {
-                return Ok(pid.parse()?);
-            }
-        }
-        Err(format!("parent-death child pid marker missing in output: {text}").into())
-    }
-
-    // crucible-lint: allow clippy-disallowed-method -- test polling observes OS process cleanup only.
-    #[allow(clippy::disallowed_methods)]
-    fn assert_process_eventually_gone(pid: u32, timeout: Duration) -> Result<(), Box<dyn Error>> {
-        // Test-only host wait: this polls for OS process cleanup and never
-        // feeds Crucible scenario state, scheduling, or fingerprint material.
-        let deadline = Instant::now() + timeout;
-        loop {
-            match assert_process_is_gone(pid) {
-                Ok(()) => return Ok(()),
-                Err(error) if Instant::now() < deadline => {
-                    drop(error);
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
-    fn fd_size(fd: RawFd) -> Result<i64, Box<dyn Error>> {
-        let mut stat = MaybeUninit::<libc::stat>::uninit();
-        let result = unsafe {
-            // SAFETY: `stat` points to writable storage for `fstat`.
-            libc::fstat(fd, stat.as_mut_ptr())
-        };
-        if result != 0 {
-            return Err(Box::new(io::Error::last_os_error()));
-        }
-        let stat = unsafe {
-            // SAFETY: successful `fstat` initialized `stat`.
-            stat.assume_init()
-        };
-        Ok(stat.st_size)
-    }
-
-    fn fd_seals(fd: RawFd) -> Result<i32, Box<dyn Error>> {
-        let seals = unsafe {
-            // SAFETY: `fcntl(F_GET_SEALS)` reads metadata from the live test fd.
-            libc::fcntl(fd, libc::F_GET_SEALS)
-        };
-        if seals < 0 {
-            return Err(Box::new(io::Error::last_os_error()));
-        }
-        Ok(seals)
-    }
-
-    fn assert_process_is_gone(pid: u32) -> Result<(), Box<dyn Error>> {
-        let pid = libc::pid_t::try_from(pid)?;
-        let result = unsafe {
-            // SAFETY: `kill(pid, 0)` only probes process existence.
-            libc::kill(pid, 0)
-        };
-        if result == 0 {
-            return Err("child process still exists after QemuNodeChild drop".into());
-        }
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::ESRCH) {
-            Ok(())
-        } else {
-            Err(Box::new(error))
-        }
-    }
-
-    fn source_fds_from_env() -> Result<Vec<RawFd>, Box<dyn Error>> {
-        let raw = env::var(SOURCE_FDS_ENV)?;
-        raw.split(',')
-            .map(|part| part.parse::<RawFd>().map_err(Into::into))
-            .collect()
-    }
-}
+#[path = "spawn_test.rs"]
+mod tests;

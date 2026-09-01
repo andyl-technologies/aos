@@ -10,6 +10,7 @@ fn raw_root_image_format_is_pinned_in_identity_and_backing_driver() {
             default_vm_config().with_root_image_format(QemuRootImageFormat::Raw),
             default_qemu_binary(),
             default_plugin_config(),
+            &default_fault_node(),
         )
         .unwrap_or_else(|error| panic!("raw root-image launch should build: {error}"));
 

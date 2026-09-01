@@ -30,6 +30,8 @@
   mkDerivation,
   fetchurl,
   bootstrapTools,
+  buildPackages,
+  stdenv,
   gnumake,
   python3,
   nasm,
@@ -37,6 +39,18 @@
   util-linux,
 }: let
   version = "edk2-stable202602";
+  buildPython =
+    if stdenv.isCross
+    then buildPackages.python3
+    else python3;
+  buildNasm =
+    if stdenv.isCross
+    then buildPackages.nasm
+    else nasm;
+  buildAcpica =
+    if stdenv.isCross
+    then buildPackages.acpica
+    else acpica;
   src = fetchurl {
     urls = [
       "https://github.com/tianocore/edk2/archive/b7a715f7c03c45c6b4575bf88596bfd79658b8ce.tar.gz"
@@ -187,18 +201,40 @@ in
       }
       {
         name = "basetools";
-        script = ''
-          # header.makefile probes for python via /usr/bin/env unless
-          # PYTHON_COMMAND is set; /usr/bin/env doesn't exist in the
-          # sandbox.
-          export PYTHON_COMMAND=${python3}/bin/python3
-          # GCC 14 -Werror trips on EDK2's pre-C99 `Strings[1]`
-          # flexible-array idiom and friends; upstream builds with older
-          # toolchains. EXTRA_OPTFLAGS lands after the makefiles' own
-          # -W flags, so these suppressions win.
-          make -C BaseTools/Source/C -j$NIX_BUILD_CORES \
-            EXTRA_OPTFLAGS="-Wno-array-bounds -Wno-stringop-overflow -Wno-maybe-uninitialized -Wno-dangling-pointer"
-        '';
+        script =
+          if stdenv.isCross
+          then ''
+            # BaseTools execute on the Linux build host. Keep their compiler
+            # and Python isolated from the Darwin SDK and target wrapper;
+            # only the later firmware phase emits freestanding guest code.
+            (
+              unset AOS_HARDENING_ENABLE AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+              unset CPLUS_INCLUDE_PATH MACOSX_DEPLOYMENT_TARGET
+              unset NIX_CFLAGS_COMPILE NIX_LDFLAGS SDKROOT
+              export CC="$BUILD_CC"
+              export CXX="$BUILD_CXX"
+              export PYTHON_COMMAND=${buildPython}/bin/python3
+
+              # GCC 14 -Werror trips on EDK2's pre-C99 `Strings[1]`
+              # flexible-array idiom and friends; upstream builds with older
+              # toolchains. EXTRA_OPTFLAGS lands after the makefiles' own
+              # -W flags, so these suppressions win.
+              make -C BaseTools/Source/C -j$NIX_BUILD_CORES \
+                EXTRA_OPTFLAGS="-Wno-array-bounds -Wno-stringop-overflow -Wno-maybe-uninitialized -Wno-dangling-pointer"
+            )
+          ''
+          else ''
+            # header.makefile probes for python via /usr/bin/env unless
+            # PYTHON_COMMAND is set; /usr/bin/env doesn't exist in the
+            # sandbox.
+            export PYTHON_COMMAND=${python3}/bin/python3
+            # GCC 14 -Werror trips on EDK2's pre-C99 `Strings[1]`
+            # flexible-array idiom and friends; upstream builds with older
+            # toolchains. EXTRA_OPTFLAGS lands after the makefiles' own
+            # -W flags, so these suppressions win.
+            make -C BaseTools/Source/C -j$NIX_BUILD_CORES \
+              EXTRA_OPTFLAGS="-Wno-array-bounds -Wno-stringop-overflow -Wno-maybe-uninitialized -Wno-dangling-pointer"
+          '';
       }
       {
         name = "build";
@@ -206,7 +242,7 @@ in
           export WORKSPACE=$PWD
           export EDK_TOOLS_PATH=$PWD/BaseTools
           export CONF_PATH=$PWD/Conf
-          export PYTHON_COMMAND=${python3}/bin/python3
+          export PYTHON_COMMAND=${buildPython}/bin/python3
           export PYTHONPATH=$PWD/BaseTools/Source/Python
 
           mkdir -p Conf
@@ -228,13 +264,17 @@ in
           # python BinWrappers and the C bin dir on PATH. The wrappers'
           # `/usr/bin/env bash` shebangs don't resolve in the sandbox.
           sed -i "1s|^#!.*|#!$(command -v bash)|" BaseTools/BinWrappers/PosixLike/*
-          export python_exe=${python3}/bin/python3
+          export python_exe=${buildPython}/bin/python3
           export PATH="$PWD/BaseTools/BinWrappers/PosixLike:$PWD/BaseTools/Source/C/bin:$PATH"
 
           # Synthesized firmware toolchain dir: raw bootstrap gcc (no
           # ccWrapper flag injection) plus binutils from the bootstrap
           # PATH. tools_def resolves every tool as <prefix><name>.
-          ORIG_CC=$(cat ${bootstrapTools}/nix-support/orig-cc)
+          ${
+            if stdenv.isCross
+            then "ORIG_CC=${buildPackages.gccUnwrapped}"
+            else "ORIG_CC=$(cat ${bootstrapTools}/nix-support/orig-cc)"
+          }
           mkdir -p "$PWD/fw-toolchain"
           for t in "$ORIG_CC"/bin/*; do
             ln -sf "$t" "$PWD/fw-toolchain/$(basename "$t")"
@@ -247,8 +287,8 @@ in
           done
           export GCC_BIN="$PWD/fw-toolchain/"
           export GCC5_BIN="$PWD/fw-toolchain/"
-          export NASM_PREFIX="${nasm}/bin/"
-          export IASL_PREFIX="${acpica}/bin/"
+          export NASM_PREFIX="${buildNasm}/bin/"
+          export IASL_PREFIX="${buildAcpica}/bin/"
 
           # The wrapper env vars target the hosted ccWrapper; the
           # freestanding firmware build must not inherit them.

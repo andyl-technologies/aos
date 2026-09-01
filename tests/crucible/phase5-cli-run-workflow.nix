@@ -7,11 +7,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
@@ -22,10 +18,27 @@
     entry = ../../crates/crucible-cli/src/main.rs;
     fragmentDirs = [../../crates/crucible-cli/src/cli];
   };
+  cliRunProduction = builtins.concatStringsSep "\n" [
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-cli/src/cli/control.rs;
+    })
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-cli/src/cli/run_save.rs;
+    })
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-cli/src/cli/verify_serve.rs;
+    })
+  ];
   sessionCore = import ./_crucible-session-source.nix {inherit lib;};
   apiLifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
   apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
-  apiServer = builtins.readFile ../../crates/crucible-api/src/server.rs;
+  apiServer = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/src/server.rs;
+  };
   apiStreaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -535,10 +548,6 @@
         needle = builtins.concatStringsSep "_" ["drive" "quantum("];
       }
       {
-        label = "CLI owns raw stdin parser loop";
-        needle = builtins.concatStringsSep "::" ["std" "io" "stdin"];
-      }
-      {
         label = "host PATH QEMU discovery";
         needle = "std::env::var(\"PATH\")";
       }
@@ -561,6 +570,12 @@
       {
         label = "static event-log streaming proof flag";
         needle = "streams_canonical_event_log: true";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-cli/src/run-workflow" cliRunProduction [
+      {
+        label = "CLI run workflow owns raw stdin parser loop";
+        needle = builtins.concatStringsSep "::" ["std" "io" "stdin"];
       }
     ];
 

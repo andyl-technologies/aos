@@ -186,6 +186,7 @@ pub(super) fn scheduler_decisions(recorded_log: &RecordedAssertionLog) -> Vec<De
             | SchedulerEventLogPayload::EvaluationBoundary(_)
             | SchedulerEventLogPayload::TriggerFired(_)
             | SchedulerEventLogPayload::TriggerActionApplied(_)
+            | SchedulerEventLogPayload::FaultObservation(_)
             | SchedulerEventLogPayload::Diagnostic(_) => None,
         })
         .collect()
@@ -589,10 +590,6 @@ pub(super) fn condition_observed_evidence(
             prefix.point(),
             format!("quiescence predicate returned {actual}"),
         )),
-        Condition::FaultActive { tag } => Some(evaluation_point_evidence(
-            prefix.point(),
-            format!("fault-active predicate tag={} returned {actual}", tag.name),
-        )),
         Condition::NetworkMatch { .. }
         | Condition::ConsoleMatch { .. }
         | Condition::CoveragePoint { .. }
@@ -695,10 +692,6 @@ pub(super) fn false_observed_condition_summary(condition: &Condition, at: Virtua
         Condition::GuestMarker { marker } => format!(
             "no guest marker marker={} at virtual_time={}",
             marker.name, at.ticks
-        ),
-        Condition::FaultActive { tag } => format!(
-            "fault tag {} was not active at virtual_time={}",
-            tag.name, at.ticks
         ),
         Condition::At { .. }
         | Condition::After { .. }
@@ -892,6 +885,10 @@ pub(super) fn external_scheduler_event_log_payload_material(
             lines.push(String::from("payload=trigger-action-applied"));
             lines.push(external_trigger_action_application_material(application));
         }
+        SchedulerEventLogPayload::FaultObservation(observation) => {
+            lines.push(String::from("payload=fault-observation"));
+            lines.push(observation.canonical_material());
+        }
         SchedulerEventLogPayload::Diagnostic(diagnostic) => {
             lines.push(String::from("payload=diagnostic"));
             lines.push(external_string_material(
@@ -953,13 +950,6 @@ pub(super) fn external_event_attribute_value_material(
             lines.push(format!("{prefix}.type=event"));
             lines.push(external_event_id_material(
                 &format!("{prefix}.event"),
-                value,
-            ));
-        }
-        EventAttributeValue::Fault(value) => {
-            lines.push(format!("{prefix}.type=fault"));
-            lines.push(external_fault_id_material(
-                &format!("{prefix}.fault"),
                 value,
             ));
         }
@@ -1038,25 +1028,6 @@ pub(super) fn external_scheduled_event_payload_material(payload: &ScheduledEvent
                 external_hex_bytes(&completion.payload)
             ));
         }
-        ScheduledEventPayload::FaultActivation(fault) => {
-            lines.push(String::from("event.payload=fault-activation"));
-            lines.push(external_fault_id_material("event.payload.fault", fault));
-        }
-        ScheduledEventPayload::ProbabilisticFault(choice) => {
-            lines.push(String::from("event.payload=probabilistic-fault"));
-            lines.push(external_fault_id_material(
-                "event.payload.fault",
-                &choice.fault,
-            ));
-            lines.push(external_rng_stream_material(
-                "event.payload.stream",
-                &choice.stream,
-            ));
-            lines.push(format!(
-                "event.payload.rate_basis_points={}",
-                choice.rate.basis_points()
-            ));
-        }
         ScheduledEventPayload::Control(operation) => {
             lines.push(String::from("event.payload=control"));
             lines.push(format!(
@@ -1087,12 +1058,6 @@ pub(super) fn external_decision_material(decision: &Decision) -> String {
                     event,
                 ));
             }
-        }
-        D::FaultFires(fault) => {
-            lines.push(String::from("decision=fault-fires"));
-            lines.push(format!("decision.at_ticks={}", fault.at.ticks));
-            lines.push(external_fault_id_material("decision.fault", &fault.fault));
-            lines.push(format!("decision.fired={}", fault.fired));
         }
         D::RngDraw(draw) => {
             lines.push(String::from("decision=rng-draw"));
@@ -1132,15 +1097,6 @@ pub(super) fn external_decision_material(decision: &Decision) -> String {
             lines.push(format!("decision.request_id={}", random.request_id));
             lines.push(format!("decision.width={}", random.width));
             lines.push(format!("decision.value={}", random.value));
-        }
-        D::ControlFault(control) => {
-            lines.push(String::from("decision=control-fault"));
-            lines.push(format!("decision.at_ticks={}", control.at.ticks));
-            lines.push(format!("decision.control.sequence={}", control.sequence));
-            lines.push(external_control_fault_action_material(
-                "decision.control.action",
-                &control.action,
-            ));
         }
     }
     lines.join("\n")
@@ -1380,18 +1336,6 @@ pub(super) fn external_trigger_action_application_material(
 pub(super) fn external_action_material(prefix: &str, action: &Action) -> String {
     let mut lines = Vec::new();
     match action {
-        Action::InjectFault { tag, fault } => {
-            lines.push(format!("{prefix}=inject-fault"));
-            lines.push(external_fault_tag_material(&format!("{prefix}.tag"), tag));
-            lines.push(external_membership_fault_material(
-                &format!("{prefix}.fault"),
-                fault,
-            ));
-        }
-        Action::HealFault { tag } => {
-            lines.push(format!("{prefix}=heal-fault"));
-            lines.push(external_fault_tag_material(&format!("{prefix}.tag"), tag));
-        }
         Action::ArmTimer { name, after } => {
             lines.push(format!("{prefix}=arm-timer"));
             lines.push(external_timer_id_material(&format!("{prefix}.timer"), name));
@@ -1458,77 +1402,6 @@ pub(super) fn external_action_material(prefix: &str, action: &Action) -> String 
     lines.join("\n")
 }
 
-pub(super) fn external_membership_fault_material(prefix: &str, fault: &MembershipFault) -> String {
-    let mut lines = Vec::new();
-    match fault {
-        MembershipFault::Crash { node, restart } => {
-            lines.push(format!("{prefix}=crash"));
-            lines.push(external_node_id_material(&format!("{prefix}.node"), node));
-            lines.push(format!(
-                "{prefix}.restart={}",
-                external_restart_policy_label(*restart)
-            ));
-        }
-        MembershipFault::Partition {
-            endpoint_a,
-            endpoint_b,
-            direction,
-        } => {
-            lines.push(format!("{prefix}=partition"));
-            lines.push(external_node_id_material(
-                &format!("{prefix}.endpoint_a"),
-                endpoint_a,
-            ));
-            lines.push(external_node_id_material(
-                &format!("{prefix}.endpoint_b"),
-                endpoint_b,
-            ));
-            lines.push(format!(
-                "{prefix}.direction={}",
-                external_partition_direction_label(*direction)
-            ));
-        }
-        MembershipFault::Isolate { node } => {
-            lines.push(format!("{prefix}=isolate"));
-            lines.push(external_node_id_material(&format!("{prefix}.node"), node));
-        }
-        MembershipFault::NotYetJoined { node } => {
-            lines.push(format!("{prefix}=not-yet-joined"));
-            lines.push(external_node_id_material(&format!("{prefix}.node"), node));
-        }
-        MembershipFault::Taxonomy { fault } => {
-            lines.push(format!("{prefix}=taxonomy"));
-            lines.push(external_string_material(
-                &format!("{prefix}.taxonomy_material"),
-                &fault.canonical_material(),
-            ));
-        }
-    }
-    lines.join("\n")
-}
-
-pub(super) fn external_control_fault_action_material(
-    prefix: &str,
-    action: &ControlFaultAction,
-) -> String {
-    let mut lines = Vec::new();
-    match action {
-        ControlFaultAction::Inject { tag, fault } => {
-            lines.push(format!("{prefix}=inject-fault"));
-            lines.push(external_fault_tag_material(&format!("{prefix}.tag"), tag));
-            lines.push(external_string_material(
-                &format!("{prefix}.fault_material"),
-                &fault.canonical_material(),
-            ));
-        }
-        ControlFaultAction::Heal { tag } => {
-            lines.push(format!("{prefix}=heal-fault"));
-            lines.push(external_fault_tag_material(&format!("{prefix}.tag"), tag));
-        }
-    }
-    lines.join("\n")
-}
-
 pub(super) fn external_control_operation_kind_material(
     prefix: &str,
     kind: &ControlOperationKind,
@@ -1540,20 +1413,7 @@ pub(super) fn external_control_operation_kind_material(
         ControlOperationKind::Step => lines.push(format!("{prefix}=step")),
         ControlOperationKind::Snapshot => lines.push(format!("{prefix}=snapshot")),
         ControlOperationKind::Fork => lines.push(format!("{prefix}=fork")),
-        ControlOperationKind::Inject => lines.push(format!("{prefix}=inject")),
         ControlOperationKind::Query => lines.push(format!("{prefix}=query")),
-        ControlOperationKind::InjectFault { tag, fault } => {
-            lines.push(format!("{prefix}=inject-fault"));
-            lines.push(external_fault_tag_material(&format!("{prefix}.tag"), tag));
-            lines.push(external_string_material(
-                &format!("{prefix}.fault_material"),
-                &fault.canonical_material(),
-            ));
-        }
-        ControlOperationKind::HealFault { tag } => {
-            lines.push(format!("{prefix}=heal-fault"));
-            lines.push(external_fault_tag_material(&format!("{prefix}.tag"), tag));
-        }
     }
     lines.join("\n")
 }
@@ -1595,14 +1455,6 @@ pub(super) fn external_assertion_id_material(prefix: &str, id: &AssertionId) -> 
 
 pub(super) fn external_marker_id_material(prefix: &str, id: &MarkerId) -> String {
     external_string_material(prefix, &id.name)
-}
-
-pub(super) fn external_fault_id_material(prefix: &str, id: &FaultId) -> String {
-    external_string_material(prefix, &id.name)
-}
-
-pub(super) fn external_fault_tag_material(prefix: &str, tag: &FaultTag) -> String {
-    external_string_material(prefix, &tag.name)
 }
 
 pub(super) fn external_timer_id_material(prefix: &str, id: &TimerId) -> String {
@@ -1705,8 +1557,6 @@ pub(super) fn external_scheduled_event_resolve_class_label(
     match class {
         ScheduledEventResolveClass::FrameDelivery => "frame-delivery",
         ScheduledEventResolveClass::IoCompletion => "io-completion",
-        ScheduledEventResolveClass::FaultActivation => "fault-activation",
-        ScheduledEventResolveClass::ProbabilisticFault => "probabilistic-fault",
         ScheduledEventResolveClass::Control => "control",
     }
 }
@@ -1768,22 +1618,6 @@ pub(super) fn external_guest_assertion_kind_label(kind: GuestAssertionKind) -> &
         GuestAssertionKind::Sometimes => "sometimes",
         GuestAssertionKind::Reachable => "reachable",
         GuestAssertionKind::Unreachable => "unreachable",
-    }
-}
-
-pub(super) fn external_restart_policy_label(policy: RestartPolicy) -> &'static str {
-    match policy {
-        RestartPolicy::FromReadyPoint => "from-ready-point",
-        RestartPolicy::FromLastCheckpoint => "from-last-checkpoint",
-        RestartPolicy::StayDown => "stay-down",
-    }
-}
-
-pub(super) fn external_partition_direction_label(direction: PartitionDirection) -> &'static str {
-    match direction {
-        PartitionDirection::Bidirectional => "bidirectional",
-        PartitionDirection::EndpointAToEndpointB => "endpoint-a-to-endpoint-b",
-        PartitionDirection::EndpointBToEndpointA => "endpoint-b-to-endpoint-a",
     }
 }
 

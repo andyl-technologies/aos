@@ -11,8 +11,9 @@ use crucible_shmem::{
 };
 
 use crate::{
-    CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, CoverageCapabilities, NetworkRxQueueError,
-    PluginArgs, PluginRegistrationSequence, PluginTimeControlOwnership,
+    CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, CanonicalNetworkRx, CoverageCapabilities,
+    NetworkRxDeliveryError, NetworkRxDeliveryOutcome, PluginArgs, PluginRegistrationSequence,
+    PluginTimeControlOwnership,
 };
 
 thread_local! {
@@ -116,7 +117,7 @@ pub(super) fn ownership() -> PluginTimeControlOwnership {
 
 pub(super) fn registration_ready() -> crate::PluginRegistrationReady {
     let mut sequence = PluginRegistrationSequence::new();
-    let args = PluginArgs::parse("simfd=3,slot=0")
+    let args = PluginArgs::parse("simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576")
         .unwrap_or_else(|error| panic!("test args should parse: {error}"));
     let mut setup_ack = None;
     for step in CANONICAL_TIME_CONTROL_REGISTRATION_ORDER {
@@ -181,8 +182,8 @@ pub(super) struct RecordingNetworkRxQueue<'a> {
     pub(super) queued_payloads: Vec<Vec<u8>>,
     pub(super) direct_advance_ns_at_queue: Vec<i64>,
     pub(super) slot_status_at_queue: Vec<u8>,
-    pub(super) flush_count: usize,
-    pub(super) queue_error_at: Option<usize>,
+    pub(super) delivery_error_at: Option<usize>,
+    pub(super) retained_at: Option<usize>,
 }
 
 impl<'a> RecordingNetworkRxQueue<'a> {
@@ -192,27 +193,28 @@ impl<'a> RecordingNetworkRxQueue<'a> {
             queued_payloads: Vec::new(),
             direct_advance_ns_at_queue: Vec::new(),
             slot_status_at_queue: Vec::new(),
-            flush_count: 0,
-            queue_error_at: None,
+            delivery_error_at: None,
+            retained_at: None,
         }
     }
 }
 
-impl LosslessNetworkRxQueue for RecordingNetworkRxQueue<'_> {
-    fn queue_lossless_rx(&mut self, payload: &[u8]) -> Result<(), NetworkRxQueueError> {
-        if self.queue_error_at == Some(self.queued_payloads.len()) {
-            return Err(NetworkRxQueueError::queue("test queue failure"));
+impl CanonicalNetworkRx for RecordingNetworkRxQueue<'_> {
+    fn try_deliver_rx(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<NetworkRxDeliveryOutcome, NetworkRxDeliveryError> {
+        if self.delivery_error_at == Some(self.queued_payloads.len()) {
+            return Err(NetworkRxDeliveryError::delivery("test delivery failure"));
         }
         self.direct_advance_ns_at_queue
             .push(last_direct_advance_ns());
         self.slot_status_at_queue.push(self.slot.snapshot().status);
+        if self.retained_at == Some(self.queued_payloads.len()) {
+            return Ok(NetworkRxDeliveryOutcome::Retained);
+        }
         self.queued_payloads.push(payload.to_vec());
-        Ok(())
-    }
-
-    fn flush_lossless_rx(&mut self) -> Result<(), NetworkRxQueueError> {
-        self.flush_count += 1;
-        Ok(())
+        Ok(NetworkRxDeliveryOutcome::Delivered)
     }
 }
 

@@ -1,0 +1,231 @@
+diff --git a/plugins/crucible-fault-clock.c b/plugins/crucible-fault-clock.c
+index ea55d8fd0..89e3c5c3d 100644
+--- a/plugins/crucible-fault-clock.c
++++ b/plugins/crucible-fault-clock.c
+@@ -84,6 +84,8 @@ typedef struct CrucibleClockSource {
+     uint64_t impulse_drift_numerator;
+     uint64_t impulse_drift_denominator;
+     int64_t impulse_additive_nanos;
++    uint8_t impulse_monotonicity;
++    uint8_t impulse_overdue_policy;
+     uint64_t frozen_value_ns;
+     uint8_t freeze_release;
+     uint8_t monotonicity;
+@@ -553,8 +555,10 @@ int qemu_crucible_fault_clock_source_register(
+     source.drift_denominator = 1;
+     source.impulse_drift_numerator = 1;
+     source.impulse_drift_denominator = 1;
+-    source.monotonicity = descriptor->monotonicity;
+-    source.overdue_policy = 1;
++    source.impulse_monotonicity = descriptor->monotonicity;
++    source.impulse_overdue_policy = 1;
++    source.monotonicity = source.impulse_monotonicity;
++    source.overdue_policy = source.impulse_overdue_policy;
+     source.source_state = CRUCIBLE_CLOCK_HEALTHY;
+     source.previous_source_state = CRUCIBLE_CLOCK_HEALTHY;
+     source.rules = g_array_new(false, true, sizeof(CrucibleClockRuleState));
+@@ -952,7 +956,12 @@ static bool crucible_clock_source_value_internal(
+         return false;
+     }
+     if (source->source_state == CRUCIBLE_CLOCK_FAILED_READ_ERROR) {
+-        *read_error = true;
++        if (include_opportunity) {
++            *read_error = true;
++        } else {
++            *value_out = source->has_last_value ? source->last_value_ns :
++                                                  source->anchor_value_ns;
++        }
+         return true;
+     }
+     if (source->source_state == CRUCIBLE_CLOCK_FAILED_STOP) {
+@@ -1724,8 +1733,8 @@ static bool crucible_clock_source_compile(CrucibleClockSource *source,
+     source->frozen = false;
+     source->frozen_value_ns = 0;
+     source->freeze_release = 0;
+-    source->monotonicity = source->capability.monotonicity;
+-    source->overdue_policy = 1;
++    source->monotonicity = source->impulse_monotonicity;
++    source->overdue_policy = source->impulse_overdue_policy;
+     source->source_state = CRUCIBLE_CLOCK_HEALTHY;
+     source->synchronizing = false;
+     memset(source->fallback_id, 0, sizeof(source->fallback_id));
+@@ -3335,7 +3344,7 @@ static void crucible_clock_source_digest(
+     const CrucibleClockSource *source, uint8_t digest[32])
+ {
+     uint8_t state[336] = { 0 };
+-    uint8_t impulse_state[24] = { 0 };
++    uint8_t impulse_state[32] = { 0 };
+     g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
+     gsize digest_len = 32;
+ 
+@@ -3382,6 +3391,8 @@ static void crucible_clock_source_digest(
+     stq_le_p(impulse_state, source->impulse_drift_numerator);
+     stq_le_p(impulse_state + 8, source->impulse_drift_denominator);
+     stq_le_p(impulse_state + 16, source->impulse_additive_nanos);
++    stl_le_p(impulse_state + 24, source->impulse_monotonicity);
++    stl_le_p(impulse_state + 28, source->impulse_overdue_policy);
+     g_checksum_update(checksum, impulse_state, sizeof(impulse_state));
+     for (guint i = 0; source->rules && i < source->rules->len; i++) {
+         const CrucibleClockRuleState *rule_state = &g_array_index(
+@@ -3553,7 +3564,7 @@ int qemu_crucible_fault_clock_impulse(
+ {
+     const uint8_t *target;
+     CrucibleClockSource *source;
+-    uint32_t kind;
++    uint32_t kind, monotonicity, overdue_policy;
+     int64_t signed_value;
+     uint64_t numerator, denominator, unsigned_value;
+     uint64_t scheduler_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+@@ -3580,6 +3591,10 @@ int qemu_crucible_fault_clock_impulse(
+                               &numerator, &denominator) ||
+         !crucible_clock_u64(rule, CRUCIBLE_NODE_FAULT_FIELD_P5,
+                             &unsigned_value) ||
++        !crucible_clock_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_P7,
++                            &monotonicity) ||
++        !crucible_clock_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_P8,
++                            &overdue_policy) ||
+         kind > 3 ||
+         !crucible_clock_source_value(
+             source, raw_ns, scheduler_ns, source->read_sequence,
+@@ -3634,6 +3649,14 @@ int qemu_crucible_fault_clock_impulse(
+         source->impulse_drift_numerator = next_impulse_numerator;
+         source->impulse_drift_denominator = next_impulse_denominator;
+     }
++    source->impulse_monotonicity = MAX(
++        source->impulse_monotonicity, monotonicity);
++    source->impulse_overdue_policy = MAX(
++        source->impulse_overdue_policy, overdue_policy);
++    source->monotonicity = MAX(
++        source->monotonicity, source->impulse_monotonicity);
++    source->overdue_policy = MAX(
++        source->overdue_policy, source->impulse_overdue_policy);
+     source->transform_generation++;
+     crucible_clock_rearm_source(source);
+     crucible_clock_source_digest(source, after_hash);
+@@ -3750,6 +3773,10 @@ static void crucible_clock_vmstate_put_source(
+         payload, source->impulse_drift_denominator);
+     qemu_crucible_fault_vmstate_put_u64(
+         payload, (uint64_t)source->impulse_additive_nanos);
++    qemu_crucible_fault_vmstate_put_u32(
++        payload, source->impulse_monotonicity);
++    qemu_crucible_fault_vmstate_put_u32(
++        payload, source->impulse_overdue_policy);
+     qemu_crucible_fault_vmstate_put_u64(payload, source->frozen_value_ns);
+     qemu_crucible_fault_vmstate_put_u64(
+         payload, (uint64_t)source->synchronization_remaining_ns);
+@@ -3800,6 +3827,7 @@ static bool crucible_clock_vmstate_get_source(
+     QemuCrucibleFaultVmstateReader *reader, CrucibleClockSource *source)
+ {
+     uint64_t additive, impulse_additive, synchronization;
++    uint32_t impulse_monotonicity, impulse_overdue;
+     uint32_t freeze_release, monotonicity, overdue, source_state;
+     uint32_t timer_role, timer_index, timer_action;
+     uint8_t has_last, frozen, synchronizing, terminal, previous_source_state;
+@@ -3825,6 +3853,10 @@ static bool crucible_clock_vmstate_get_source(
+             reader, &source->impulse_drift_denominator) ||
+         !qemu_crucible_fault_vmstate_get_u64(
+             reader, &impulse_additive) ||
++        !qemu_crucible_fault_vmstate_get_u32(
++            reader, &impulse_monotonicity) ||
++        !qemu_crucible_fault_vmstate_get_u32(
++            reader, &impulse_overdue) ||
+         !qemu_crucible_fault_vmstate_get_u64(
+             reader, &source->frozen_value_ns) ||
+         !qemu_crucible_fault_vmstate_get_u64(reader, &synchronization) ||
+@@ -3873,6 +3905,8 @@ static bool crucible_clock_vmstate_get_source(
+         source->drift_numerator == 0 || source->drift_denominator == 0 ||
+         source->impulse_drift_numerator == 0 ||
+         source->impulse_drift_denominator == 0 ||
++        impulse_monotonicity < 1 || impulse_monotonicity > 3 ||
++        impulse_overdue < 1 || impulse_overdue > 3 ||
+         freeze_release > 2 || monotonicity < 1 || monotonicity > 3 ||
+         overdue < 1 || overdue > 3 ||
+         source_state < CRUCIBLE_CLOCK_HEALTHY ||
+@@ -3933,6 +3967,8 @@ static bool crucible_clock_vmstate_get_source(
+     }
+     source->additive_nanos = (int64_t)additive;
+     source->impulse_additive_nanos = (int64_t)impulse_additive;
++    source->impulse_monotonicity = impulse_monotonicity;
++    source->impulse_overdue_policy = impulse_overdue;
+     source->synchronization_remaining_ns = (int64_t)synchronization;
+     source->freeze_release = freeze_release;
+     source->monotonicity = monotonicity;
+@@ -3955,7 +3991,8 @@ static bool crucible_clock_vmstate_runtime_valid(
+     uint64_t numerator = source->impulse_drift_numerator;
+     uint64_t denominator = source->impulse_drift_denominator;
+     int64_t additive = source->impulse_additive_nanos;
+-    uint8_t monotonicity = source->capability.monotonicity, overdue = 1;
++    uint8_t monotonicity = source->impulse_monotonicity;
++    uint8_t overdue = source->impulse_overdue_policy;
+     bool frozen = false;
+     uint64_t frozen_value = 0;
+     uint8_t freeze_release = 0;
+@@ -4137,7 +4174,7 @@ static int crucible_clock_vmstate_save(GByteArray *payload)
+         crucible_clock_sources->len > CRUCIBLE_CLOCK_MAX_SOURCES) {
+         return -EINVAL;
+     }
+-    qemu_crucible_fault_vmstate_put_bytes(payload, "CRUCCVS3", 8);
++    qemu_crucible_fault_vmstate_put_bytes(payload, "CRUCCVS4", 8);
+     qemu_crucible_fault_vmstate_put_u32(
+         payload, crucible_clock_sources->len);
+     qemu_crucible_fault_vmstate_put_u8(payload, crucible_clock_terminal);
+@@ -4203,7 +4240,7 @@ static int crucible_clock_vmstate_prepare(const uint8_t *payload,
+ 
+     if (!crucible_clock_sources || !crucible_clock_bindings_sealed ||
+         !qemu_crucible_fault_vmstate_get_bytes(&reader, magic, 8) ||
+-        memcmp(magic, "CRUCCVS3", 8) != 0 ||
++        memcmp(magic, "CRUCCVS4", 8) != 0 ||
+         !qemu_crucible_fault_vmstate_get_u32(&reader, &count) ||
+         !qemu_crucible_fault_vmstate_get_u8(&reader, &terminal) ||
+         !qemu_crucible_fault_vmstate_get_u8(&reader, &reserved8) ||
+@@ -4344,6 +4381,8 @@ static void crucible_clock_vmstate_commit(void *opaque)
+         RESTORE(impulse_drift_numerator);
+         RESTORE(impulse_drift_denominator);
+         RESTORE(impulse_additive_nanos);
++        RESTORE(impulse_monotonicity);
++        RESTORE(impulse_overdue_policy);
+         RESTORE(frozen_value_ns);
+         RESTORE(freeze_release);
+         RESTORE(monotonicity);
+@@ -4435,7 +4474,7 @@ void qemu_crucible_fault_clock_vmstate_load_end(bool successful)
+ static const QemuCrucibleFaultVmstateSection
+ crucible_clock_vmstate_section = {
+     .name = "clock",
+-    .version = 3,
++    .version = 4,
+     .save = crucible_clock_vmstate_save,
+     .prepare = crucible_clock_vmstate_prepare,
+     .commit = crucible_clock_vmstate_commit,
+diff --git a/target/i386/cpu.c b/target/i386/cpu.c
+index 0d83f87af..e921062e5 100644
+--- a/target/i386/cpu.c
++++ b/target/i386/cpu.c
+@@ -8390,7 +8390,8 @@ static void x86_cpu_realizefn(DeviceState *dev, Error **errp)
+             .timer_relationship = 0,
+             .monotonicity = QEMU_CRUCIBLE_CLOCK_CLAMP_MONOTONIC,
+             .width_bits = 64,
+-            .flags = QEMU_CRUCIBLE_CLOCK_SOURCE_WRAPS,
++            .flags = QEMU_CRUCIBLE_CLOCK_SOURCE_WRAPS |
++                     QEMU_CRUCIBLE_CLOCK_SOURCE_READ_ERROR,
+             .frequency_numerator = NANOSECONDS_PER_SECOND,
+             .frequency_denominator = 1,
+             .model_phase_mask =
+diff --git a/target/i386/tcg/misc_helper.c b/target/i386/tcg/misc_helper.c
+index b83e8ca49..68d9e06db 100644
+--- a/target/i386/tcg/misc_helper.c
++++ b/target/i386/tcg/misc_helper.c
+@@ -84,10 +84,13 @@ void helper_rdtsc(CPUX86State *env)
+                 QEMU_CRUCIBLE_CLOCK_X86_TSC,
+                 CPU(env_archcpu(env))->cpu_index, val,
+                 qemu_crucible_fault_observed_icount(),
+-                &transformed, &read_error) || read_error) {
++                &transformed, &read_error)) {
+             error_report("Crucible x86 TSC transform failed");
+             abort();
+         }
++        if (read_error) {
++            raise_exception_ra(env, EXCP0D_GPF, GETPC());
++        }
+         val = transformed;
+     }
+     env->regs[R_EAX] = (uint32_t)(val);

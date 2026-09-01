@@ -5,6 +5,15 @@ use super::*;
 /// Typed errors returned by the minimal QMP client.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QmpError {
+    /// A launch omitted the fixed inert guest-introspection endpoint.
+    #[error("QEMU launch did not predeclare the fixed guest-introspection endpoint")]
+    DebugGuestEndpointNotPredeclared,
+    /// A public low-level load attempted production runtime realization.
+    #[error("public QMP loadvm only admits replay-oracle probes, got {purpose:?}")]
+    UnauthorizedLoadvmPurpose {
+        /// Rejected authorization purpose.
+        purpose: crate::QemuLoadvmCommandPurpose,
+    },
     /// A QMP stream operation had no timeout budget.
     #[error("{operation} has zero QMP timeout")]
     UnboundedTimeout {
@@ -72,6 +81,16 @@ pub enum QmpError {
         command: QmpCommandKind,
         /// Unexpected return payload.
         response: String,
+    },
+    /// QEMU acknowledged a run-state transition but reported another state.
+    #[error("QMP command {command:?} produced run state {status:?} (running={running})")]
+    UnexpectedRunState {
+        /// Transition command that was acknowledged.
+        command: QmpCommandKind,
+        /// Typed state observed afterward.
+        status: QmpRunStateKind,
+        /// QEMU's paired running boolean.
+        running: bool,
     },
     /// A QMP snapshot job reported an error.
     #[error("QMP job {job_id} for {command:?} failed: {detail}")]

@@ -8,10 +8,9 @@ use std::collections::BTreeMap;
 
 use crucible::{
     AssertionId, ConditionEvaluationError, ContentHash, EventAttributeValue,
-    EventDiagnosticPayload, EventId, EventLevel, ExternalFormalTraceExporter, FaultId,
-    GuestAssertionDetail, GuestAssertionKind, GuestAssertionMarker, Icount, NodeId,
-    ObservableEvent, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
-    SchedulerEventLogPayload, VirtualTime,
+    EventDiagnosticPayload, EventId, EventLevel, ExternalFormalTraceExporter, GuestAssertionDetail,
+    GuestAssertionKind, GuestAssertionMarker, Icount, NodeId, ObservableEvent,
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload, VirtualTime,
 };
 
 fn time(ticks: u64) -> VirtualTime {
@@ -137,12 +136,6 @@ fn formal_trace_export_includes_typed_diagnostic_details() {
         EventAttributeValue::Event(EventId::from_name("event\nid")),
     );
     details.insert(
-        String::from("fault"),
-        EventAttributeValue::Fault(FaultId {
-            name: String::from("fault\nid"),
-        }),
-    );
-    details.insert(
         String::from("time"),
         EventAttributeValue::VirtualTime(time(9)),
     );
@@ -171,7 +164,7 @@ fn formal_trace_export_includes_typed_diagnostic_details() {
     assert!(text.contains("payload=diagnostic"));
     assert!(text.contains("diagnostic.name.bytes=646961670a6e616d65"));
     assert!(text.contains("diagnostic.level=warn"));
-    assert!(text.contains("diagnostic.details=10"));
+    assert!(text.contains("diagnostic.details=9"));
     for required in [
         ".value.type=bool",
         ".value.bool=true",
@@ -185,8 +178,6 @@ fn formal_trace_export_includes_typed_diagnostic_details() {
         ".value.node.bytes=6e6f64650a7a65726f",
         ".value.type=event",
         ".value.event.bytes=6576656e740a6964",
-        ".value.type=fault",
-        ".value.fault.bytes=6661756c740a6964",
         ".value.type=virtual-time",
         ".value.ticks=9",
         ".value.type=icount",
@@ -204,7 +195,6 @@ fn formal_trace_export_includes_typed_diagnostic_details() {
     assert!(!text.contains("value\nentry_end"));
     assert!(!text.contains("node\nzero"));
     assert!(!text.contains("event\nid"));
-    assert!(!text.contains("fault\nid"));
 }
 
 #[test]
@@ -367,7 +357,7 @@ fn formal_trace_export_does_not_add_runtime_formal_evaluator() {
             "src/model/workload.rs",
             include_str!("../src/model/workload.rs"),
         ),
-        ("src/node_fault.rs", include_str!("../src/node_fault.rs")),
+        ("src/node_time.rs", include_str!("../src/node_time.rs")),
         ("src/scheduler.rs", include_str!("../src/scheduler.rs")),
         (
             "src/scheduler/control_state.rs",

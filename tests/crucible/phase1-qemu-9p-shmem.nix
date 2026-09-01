@@ -32,28 +32,43 @@
     "0018-crucible-dev-cb-api.patch"
     "0019-crucible-9p-shmem.patch"
   ];
-  patchContextNames = [
-    "0001-crucible-sim-accel.patch"
-    "0002-crucible-rr-fingerprint-helpers.patch"
-    "0003-crucible-icount-no-realtime.patch"
-    "0004-crucible-no-warp-with-plugin.patch"
-    "0005-crucible-det-glib-prng.patch"
-    "0006-crucible-clock-deadline.patch"
-    "0007-crucible-block-rtc-read.patch"
-    "0008-crucible-det-getrandom.patch"
-    "0009-crucible-net-deterministic.patch"
-    "0010-crucible-plugin-time-advance.patch"
-    "0011-crucible-plugin-icount-raw.patch"
-    "0012-crucible-plugin-vcpu-exit.patch"
-    "0013-crucible-plugin-wake-fd.patch"
-    "0014-crucible-plugin-tcg-exec-cb.patch"
-    "0015-crucible-blk-shmem.patch"
-    "0016-crucible-blk-shmem-io-fixes.patch"
-    "0017-crucible-blk-write-sentinel.patch"
-    "0018-crucible-dev-cb-api.patch"
-    "0019-crucible-9p-shmem.patch"
-  ];
-  taskIds = ["T-PATCH-13"];
+  patchContextNames =
+    [
+      "0001-crucible-sim-accel.patch"
+      "0002-crucible-rr-fingerprint-helpers.patch"
+      "0003-crucible-icount-no-realtime.patch"
+      "0004-crucible-no-warp-with-plugin.patch"
+      "0005-crucible-det-glib-prng.patch"
+      "0006-crucible-clock-deadline.patch"
+      "0007-crucible-block-rtc-read.patch"
+      "0008-crucible-det-getrandom.patch"
+      "0009-crucible-net-deterministic.patch"
+      "0010-crucible-plugin-time-advance.patch"
+      "0011-crucible-plugin-icount-raw.patch"
+      "0012-crucible-plugin-vcpu-exit.patch"
+      "0013-crucible-plugin-wake-fd.patch"
+      "0014-crucible-plugin-tcg-exec-cb.patch"
+      "0015-crucible-blk-shmem.patch"
+      "0016-crucible-blk-shmem-io-fixes.patch"
+      "0017-crucible-blk-write-sentinel.patch"
+      "0018-crucible-dev-cb-api.patch"
+      "0019-crucible-9p-shmem.patch"
+    ]
+    ++ lib.optionals (patchName == "0076-crucible-9p-completion-wake-registration.patch") [
+      "0076-crucible-9p-completion-wake-registration.patch"
+    ];
+  taskIds =
+    if patchName == "0076-crucible-9p-completion-wake-registration.patch"
+    then ["T-PATCH-20"]
+    else ["T-PATCH-13"];
+  notifierCompileFlag =
+    if patchName == "0076-crucible-9p-completion-wake-registration.patch"
+    then "-DEXPECT_UNCONDITIONAL_9P_WAKE_REGISTRATION"
+    else "";
+  notifierResultLine =
+    if patchName == "0076-crucible-9p-completion-wake-registration.patch"
+    then "late_plugin_9p_wake_notifier_registered=true"
+    else "sim_off_9p_has_no_wake_notifier=true";
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -81,7 +96,8 @@
         needle = "#define QEMU_PLUGIN_9P_POLL_PENDING (-2)";
       }
     ]
-    else [
+    else if patchName == "0019-crucible-9p-shmem.patch"
+    then [
       {
         label = "virtio 9p forwarder";
         needle = "virtio_9p_forward_crucible";
@@ -154,13 +170,23 @@
         label = "completion clears pending ownership before PDU release";
         needle = "v->crucible_9p_pending_pdu = NULL;";
       }
+    ]
+    else [
+      {
+        label = "unconditional device-lifetime notifier registration";
+        needle = "qemu_plugin_wake_notifier_add(&v->crucible_9p_wake_notifier);";
+      }
+      {
+        label = "registered notifier ownership state";
+        needle = "v->crucible_9p_wake_registered = true;";
+      }
     ];
 
   failures =
     failuresFor "pkgs/emulation/qemu.nix" qemuNix (
       map (name: {
         label = "QEMU patch wiring for ${name}";
-        needle = "patch -p1 < \${./qemu-patches/${name}}";
+        needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
       })
       tPatch13PatchNames
     )
@@ -797,6 +823,7 @@ in
             cc -std=c11 -O2 -Wall -Wextra -Werror \
               -Wno-unused-parameter -Wno-unused-function \
               -DCONFIG_PLUGIN \
+              ${notifierCompileFlag} \
               -I fixture-src \
               -I fixture/include \
               -I include \
@@ -810,7 +837,7 @@ in
             grep -q '^virtio_9p_forwarding_path_exercised=true$' "$out/qemu-9p-shmem-microtest"
             grep -q '^plugin_9p_callback_registration_exercised=true$' "$out/qemu-9p-shmem-microtest"
             grep -q '^upstream_9p_fallback_without_callbacks=true$' "$out/qemu-9p-shmem-microtest"
-            grep -q '^sim_off_9p_has_no_wake_notifier=true$' "$out/qemu-9p-shmem-microtest"
+            grep -Fxq '${notifierResultLine}' "$out/qemu-9p-shmem-microtest"
             grep -q '^partial_9p_registration_falls_back=true$' "$out/qemu-9p-shmem-microtest"
             grep -q '^raw_9p_request_round_trip=true$' "$out/qemu-9p-shmem-microtest"
             grep -q '^raw_9p_response_delivered=true$' "$out/qemu-9p-shmem-microtest"
@@ -851,7 +878,7 @@ in
             virtio_9p_fixture_includes_patched_source=true
             plugin_9p_callback_registration_exercised=true
             upstream_9p_fallback_without_callbacks=true
-            sim_off_9p_has_no_wake_notifier=true
+            ${notifierResultLine}
             partial_9p_registration_falls_back=true
             raw_9p_request_round_trip=true
             raw_9p_response_delivered=true

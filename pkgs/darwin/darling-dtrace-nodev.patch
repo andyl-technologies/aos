@@ -1,0 +1,366 @@
+--- a/cmd/usdtheadergen/usdtheadergen.c
++++ b/cmd/usdtheadergen/usdtheadergen.c
+@@ -33,7 +33,7 @@
+ 
+ 
+ static const char OPTSTR[] =
+-	"Cn:o:s:";
++	"Chn:o:s:";
+ 
+ static const char *g_ofile = NULL;
+ static FILE *g_ofp = NULL;
+@@ -98,6 +98,8 @@
+ 
+ 	while ((c = getopt(argc, argv, OPTSTR)) != -1) {
+ 		switch (c) {
++		case 'h':
++			break;
+ 		case 'C':
+ 			g_cflags |= DTRACE_C_CPP;
+ 			break;
+--- a/compat/opensolaris/darwin_shim.h
++++ b/compat/opensolaris/darwin_shim.h
+@@ -24,6 +24,7 @@
+ #define _DARWIN_SHIM_H
+ 
+ #include <stdint.h>
++#include <stdio.h>
+ #include <sys/types.h>
+ #include <sys/time.h> /* In lieu of Solaris <sys/synch.h> */
+ 
+@@ -39,6 +40,9 @@
+ typedef int64_t		off64_t;
+ 
+ typedef int64_t hrtime_t;
++typedef uint64_t user_addr_t;
++char *fgetln(FILE *, size_t *);
++#define OSSwapBigToHostInt32(value) __builtin_bswap32(value)
+ hrtime_t gethrtime(void);
+ 
+ typedef int processorid_t;
+--- a/compat/opensolaris/rtld_db.h
++++ b/compat/opensolaris/rtld_db.h
+@@ -33,7 +33,9 @@
+ #include <sys/types.h>
+ #include <sys/link.h>
+ 
++#if !defined(__linux__) || !defined(__cplusplus)
+ typedef uint64_t Lmid_t;
++#endif
+ 
+ typedef unsigned long	psaddr_t;
+ 
+--- a/lib/libdtrace/apple/dt_provider_apple.c
++++ b/lib/libdtrace/apple/dt_provider_apple.c
+@@ -7,7 +7,7 @@
+ 
+ #if DTRACE_TARGET_APPLE_EMBEDDED
+ #include <sys/sysctl.h>
+-#elif DTRACE_TARGET_APPLE_MAC
++#elif DTRACE_TARGET_APPLE_MAC && !defined(__linux__)
+ #include <sys/csr.h>
+ #endif
+ 
+@@ -35,7 +35,7 @@
+ 	 * actually exist).
+ 	 */
+ 
+-#if DTRACE_TARGET_APPLE_MAC
++#if DTRACE_TARGET_APPLE_MAC && !defined(__linux__)
+ 	if (csr_check(CSR_ALLOW_UNRESTRICTED_DTRACE) != 0) {
+ 		return EDT_PROBERESTRICTED;
+ 	}
+--- a/lib/libdtrace/common/dt_impl.h
++++ b/lib/libdtrace/common/dt_impl.h
+@@ -45,7 +45,7 @@
+ 
+ #include <sys/param.h>
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) && !defined(__linux__)
+ #define OS_LOG_SUPPORTED 1
+ #include <os/log.h>
+ #endif /* defined(__APPLE__) */
+@@ -740,8 +740,12 @@ extern int yyintdecimal;	/* int token is decimal (1) or octal/hex (0) */
+ #ifdef DARLING
+ extern char *yytext;
+ #else
++#if defined(__linux__)
++extern char *yytext;		/* lex input buffer */
++#else
+ extern char yytext[];		/* lex input buffer */
+ #endif
++#endif
+ extern int yylineno;		/* lex line number */
+ extern int yydebug;		/* lex debugging */
+ extern dt_node_t *yypragma;	/* lex token list for control lines */
+--- a/lib/libdtrace/common/dt_module.c
++++ b/lib/libdtrace/common/dt_module.c
+@@ -43,7 +43,9 @@
+ #include <errno.h>
+ #include <dirent.h>
+ #include <ctype.h>
++#if !defined(__linux__)
+ #include <sys/sysctl.h>
++#endif
+ 
+ #include <dtrace.h>
+ 
+--- a/lib/libdtrace/common/dt_open.c
++++ b/lib/libdtrace/common/dt_open.c
+@@ -1031,7 +1031,8 @@ alloc:
+ 	dtp->dt_apple_ids = dt_strtab_create(100);
+ 
+ 	if (dtp->dt_mods == NULL || dtp->dt_provs == NULL ||
+-	    dtp->dt_procs == NULL || dtp->dt_proc_env == NULL ||
++	    (!(flags & DTRACE_O_NODEV) &&
++	    (dtp->dt_procs == NULL || dtp->dt_proc_env == NULL)) ||
+ 	    dtp->dt_ld_path == NULL || dtp->dt_cpp_path == NULL ||
+ 	    dtp->dt_cpp_argv == NULL)
+ 		return (set_open_errno(dtp, errp, EDT_NOMEM));
+@@ -1143,13 +1143,15 @@
+ 	 * To save space, the kernel may discard symbols that dtrace needs to
+ 	 * populate various providers. Update any missing kernel symbols.
+ 	 */
+-	dtrace_update_kernel_symbols(dtp);
++	if (!(flags & DTRACE_O_NODEV))
++		dtrace_update_kernel_symbols(dtp);
+ 
+ 	/*
+ 	 * Update the module list using /system/object and load the values for
+ 	 * the macro variable definitions according to the current process.
+ 	 */
+-	dtrace_update(dtp);
++	if (!(flags & DTRACE_O_NODEV))
++		dtrace_update(dtp);
+ 	
+ 	/*
+ 	 * Select the intrinsics and typedefs we want based on the data model.
+--- a/lib/libdtrace/common/dt_provider.c
++++ b/lib/libdtrace/common/dt_provider.c
+@@ -213,7 +213,7 @@
+ static char *
+ dt_probe_key(const dtrace_probedesc_t *pdp, char *s)
+ {
+-	(void) snprintf(s, INT_MAX, "%s:%s:%s",
++	(void) snprintf(s, dt_probe_keylen(pdp), "%s:%s:%s",
+ 	    pdp->dtpd_mod, pdp->dtpd_func, pdp->dtpd_name);
+ 	return (s);
+ }
+--- a/lib/libdtrace/common/dt_subr.c
++++ b/lib/libdtrace/common/dt_subr.c
+@@ -36,7 +36,9 @@
+ #include <assert.h>
+ #include <libgen.h>
+ #include <limits.h>
++#if !defined(__linux__)
+ #include <sys/sysctl.h>
++#endif
+ 
+ #include <dt_impl.h>
+ 
+@@ -504,9 +506,13 @@
+ 			case _SC_NPROCESSORS_MAX:
+ 			{
+ 				long ncpu;
++#if defined(__linux__)
++				ncpu = sysconf(_SC_NPROCESSORS_CONF);
++#else
+ 				size_t len = sizeof(ncpu);
+ 				int mib[2] = { CTL_HW, HW_NCPU };
+ 				sysctl(mib, 2, (void *)&ncpu, &len, NULL, 0);
++#endif
+ 				
+ 				if ( _SC_CPUID_MAX == name )
+ 					return ncpu - 1;
+--- a/lib/libelf/begin.c
++++ b/lib/libelf/begin.c
+@@ -40,21 +40,30 @@
+ 
+ static const char	armag[] = ARMAG;
+ 
++#if !defined(__linux__)
+ #include <crt_externs.h>
+ #include <mach/mach.h>
+-#include <mach-o/loader.h>
++#include <sys/sysctl.h>
+ #include <mach-o/dyld.h>
++#endif
++#include <mach-o/loader.h>
+ #include <mach-o/fat.h>
+-#include <sys/sysctl.h>
+ 
+ static cpu_type_t current_program_arch(void)
+ {
++#if defined(__linux__)
++        return CPU_TYPE_X86_64;
++#else
+         cpu_type_t current_arch = (_NSGetMachExecuteHeader())->cputype;
+         return current_arch;
++#endif
+ }
+ 
+ static cpu_type_t current_kernel_arch(void)
+ {
++#if defined(__linux__)
++        return CPU_TYPE_X86_64;
++#else
+         struct host_basic_info  hi;
+         unsigned int            size;
+         kern_return_t           kret;
+@@ -83,6 +92,7 @@
+                 current_arch |= CPU_ARCH_ABI64;
+         }
+         return current_arch;
++#endif
+ }
+ 
+ static Elf *
+--- a/lib/libdtrace/apple/dt_subr_apple.c
++++ b/lib/libdtrace/apple/dt_subr_apple.c
+@@ -4,8 +4,10 @@
+ #include <stdlib.h>
+ #include <string.h>
+ 
++#if !defined(__linux__)
+ #include <sys/sysctl.h>
+ #include <os/assumes.h>
++#endif
+ 
+ #if TARGET_OS_IPHONE && (TARGET_OS_SIMULATOR || !TARGET_OS_IOS)
+ #define TARGET_SUPPORTS_NATIVE_SYSTEM 0
+@@ -24,6 +26,10 @@
+ static int
+ dt_pid_from_process_name(const char* name)
+ {
++#if defined(__linux__)
++	(void)name;
++	return -1;
++#else
+ 	/*
+ 	 * Because of the statically cached array, this function is not thread safe.
+ 	 * Most of this code is from [VMUProcInfo getProcessIds]
+@@ -79,6 +85,7 @@ dt_pid_from_process_name(const char* name)
+ 	}
+ 
+ 	return -1;
++#endif
+ }
+ 
+ 
+@@ -135,6 +142,9 @@ dtrace_str2arch(const char *str)
+ int
+ dt_kernel_lp64(void)
+ {
++#if defined(__linux__)
++	return sizeof(void *) == 8;
++#else
+ 	int mib[] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, 0 /* kernproc */ };
+ 	struct kinfo_proc kp;
+ 	size_t len = sizeof(kp);
+@@ -150,7 +160,7 @@ dt_kernel_lp64(void)
+ 	}
+ 
+ 	return 0;
+-
++#endif
+ }
+ 
+ int 
+@@ -237,4 +247,3 @@ dt_system(const char *command)
+ 	return (rval);
+ #endif /* TARGET_SUPPORTS_NATIVE_SYSTEM */
+ }
+-
+--- a/compat/opensolaris/darwin_shim.c
++++ b/compat/opensolaris/darwin_shim.c
+@@ -22,9 +22,14 @@
+ 
+ #include "darwin_shim.h"
+ 
++#if defined(__linux__)
++#include <time.h>
++#include <sys/utsname.h>
++#else
+ #include <mach/mach.h>
+ #include <mach/mach_time.h>
+ #include <sys/sysctl.h>
++#endif
+ #include <sys/time.h>
+ #include <sys/errno.h>
+ #include <unistd.h>
+@@ -33,6 +38,12 @@
+ hrtime_t
+ gethrtime(void)
+ {
++#if defined(__linux__)
++	struct timespec now;
++	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
++		return 0;
++	return (hrtime_t)now.tv_sec * 1000000000LL + now.tv_nsec;
++#else
+ 	uint64_t elapsed;
+ 	static uint64_t start;
+ 	static mach_timebase_info_data_t sTimebaseInfo = { 0, 0 };
+@@ -77,6 +88,7 @@ gethrtime(void)
+ 
+ 		return (q32 << 32) + ((r32 << 32) + lambda64)/denom;
+ 	}
++#endif
+ }
+ 
+ int 
+@@ -89,6 +101,18 @@ gmatch(const char *s, const char *p)
+ long 
+ sysinfo(int command, char *buf, long count)
+ {
++#if defined(__linux__)
++	struct utsname info;
++	const char *value;
++	if (uname(&info) != 0 || count <= 0)
++		return -1;
++	value = command == SI_RELEASE ? info.release :
++	    command == SI_SYSNAME ? info.sysname : NULL;
++	if (value == NULL)
++		return -1;
++	(void)snprintf(buf, (size_t)count, "%s", value);
++	return (long)strlen(buf);
++#else
+ 	switch (command)
+ 	{
+ 	int mib[2];
+@@ -112,6 +136,7 @@ sysinfo(int command, char *buf, long count)
+ 	
+ 	/* NOTREACHED */
+ 	return 0;
++#endif
+ }
+ 
+ // The following are used only for "assert()"
+@@ -148,10 +173,14 @@ p_online(processorid_t processorid, int flag)
+ 	static int ncpu = -1;
+ 	
+ 	if (ncpu == -1) {
++#if defined(__linux__)
++		ncpu = (int)sysconf(_SC_NPROCESSORS_CONF);
++#else
+ 		size_t len = sizeof(ncpu);
+ 		int mib[2] = { CTL_HW, HW_NCPU };
+ 		
+ 		(void)sysctl(mib, 2, (void *)&ncpu, &len, NULL, 0);
++#endif
+ 	}
+ 
+ 	switch(flag) {
+--- a/lib/libproc/libproc.h
++++ b/lib/libproc/libproc.h
+@@ -41,7 +41,9 @@
+ #endif
+ 
+ /* From Sun's link.h */
++#ifndef LM_ID_BASE
+ #define LM_ID_BASE              0x00
++#endif
+ 
+ /*
+  * Opaque structure tag reference to a process control structure.
