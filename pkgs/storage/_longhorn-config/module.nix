@@ -6,7 +6,14 @@
   ...
 }: let
   inherit (lib) mkIf mkOption types;
-  package = builtins.fromJSON (builtins.readFile "${outputs.self}/share/longhorn-package.json");
+  # The package manifest records the authenticated engine companions as store
+  # paths, so readFile preserves their string context. fromJSON intentionally
+  # rejects context-bearing input. This module consumes only the version; the
+  # companions remain retained and authenticated independently through
+  # configModule.dependencies and runtimeDeps.
+  package = builtins.fromJSON (builtins.unsafeDiscardStringContext (
+    builtins.readFile "${outputs.self}/share/longhorn-package.json"
+  ));
   cfg = config.longhorn;
   values = ''
     defaultSettings:
