@@ -2195,14 +2195,18 @@ in
                   # IcedTea 2.6 drives the same boot javac outputs from several
                   # recursive make branches. Parallel execution can corrupt
                   # javac 7's shared class-writing state and abort in
-                  # ClassWriter.writePool, so keep this legacy bootstrap serial.
+                  # ClassWriter.writePool or leave an enum class without its
+                  # synthetic values() method. The configured PARALLEL_JOBS is
+                  # propagated independently to recursive OpenJDK builds, so
+                  # both that knob and the outer make jobserver must be serial.
                   # JAVAH_CMD is passed on the make command line to override the
                   # OpenJDK build system's computed value. JAVAH_CMD is NOT defined
                   # in source .gmk files — it's generated at build time from BOOTDIR
                   # and other variables. The computed value uses `java -jar javah.jar`
                   # which crashes with NPE under JamVM. Make command-line variables
                   # override all makefile-level assignments including computed ones.
-                  make stamps/bootstrap-directory-symlink-stage2.stamp \
+                  make -j1 PARALLEL_JOBS=1 \
+                    stamps/bootstrap-directory-symlink-stage2.stamp \
                     ALT_UNIXCOMMAND_PATH=$TOOLS/ \
                     ALT_USRBIN_PATH=$TOOLS/ \
                     ALT_DEVTOOLS_PATH=$TOOLS/ \
@@ -2213,8 +2217,7 @@ in
                     DISABLE_NIMBUS=true \
                     SKIP_FASTDEBUG_BUILD=true \
                     SKIP_DEBUG_BUILD=true \
-                    "JAVAH_CMD=$TOOLS/gjavah-wrapper -bootclasspath \$(CLASSBINDIR):\$(BOOTDIR)/jre/lib/rt.jar" \
-                    -j1
+                    "JAVAH_CMD=$TOOLS/gjavah-wrapper -bootclasspath \$(CLASSBINDIR):\$(BOOTDIR)/jre/lib/rt.jar"
 
                   # Nimbus L&F is disabled via DISABLE_NIMBUS make variable (see below)
                   # because boot JDK lacks JAXB classes for the Nimbus source generator.

@@ -50,6 +50,7 @@
   python3,
   openjdk,
   gcc,
+  glibc,
   binutils,
   llvm,
   rust,
@@ -366,6 +367,29 @@
     with open(path) as f:
         src = f.read()
 
+    # Prefer official GitHub mirrors for repositories that publish the same
+    # commit graph there. Chromium's zlib and ICU forks remain canonical.
+    git_mirrors = {
+        'remote = "https://dawn.googlesource.com/dawn.git",':
+            'remote = "https://github.com/google/dawn.git",',
+        'remote = "https://chromium.googlesource.com/chromium/src/third_party/abseil-cpp.git",':
+            'remote = "https://github.com/abseil/abseil-cpp.git",',
+        'remote = "https://chromium.googlesource.com/external/github.com/Maratyszcza/FP16.git",':
+            'remote = "https://github.com/Maratyszcza/FP16.git",',
+    }
+    for origin, mirror in git_mirrors.items():
+        if origin in src:
+            src = src.replace(origin, mirror, 1)
+        else:
+            assert mirror in src, "git_repository remote not found in WORKSPACE: " + origin
+
+    sqlite_origin = 'url = "https://sqlite.org/2023/sqlite-src-3440000.zip",'
+    sqlite_mirror = 'url = "https://www.sqlite.org/2023/sqlite-src-3440000.zip",'
+    if sqlite_origin in src:
+        src = src.replace(sqlite_origin, sqlite_mirror, 1)
+    else:
+        assert sqlite_mirror in src, "sqlite3 archive URL not found in WORKSPACE"
+
     # Idempotent: postPatchScript runs in both the fetch FOD and the build
     # phase (and possibly twice in the build phase), so bail out cleanly if the
     # WORKSPACE has already been rewritten. Injecting twice would produce a
@@ -374,6 +398,8 @@
     # workerd's WORKSPACE already uses `patch_cmds` for other http_archives.
     marker = "result = struct(return_code = 0 if rctx"
     if marker in src:
+        with open(path, "w") as f:
+            f.write(src)
         print("AOS-DEBUG: WORKSPACE already patched; skipping")
         sys.exit(0)
 
@@ -471,14 +497,18 @@
   # Store path scrubbing map — shared between fetch and build phases so that
   # store paths baked into vendored files become reproducible placeholders.
   scrub = builtins.unsafeDiscardStringContext;
-  scrubMap = {
-    "${scrub buildPython}" = "__AOS_PYTHON__";
-    "${scrub buildBash}" = "__AOS_BASH__";
-    "${scrub buildCoreutils}" = "__AOS_COREUTILS__";
-    "${scrub buildRust}" = "__AOS_RUST__";
-    "${scrub buildLlvm}" = "__AOS_LLVM__";
-    "${scrub buildGcc}" = "__AOS_GCC__";
-  };
+  scrubMap =
+    {
+      "${scrub buildPython}" = "__AOS_PYTHON__";
+      "${scrub buildBash}" = "__AOS_BASH__";
+      "${scrub buildCoreutils}" = "__AOS_COREUTILS__";
+      "${scrub buildRust}" = "__AOS_RUST__";
+      "${scrub buildLlvm}" = "__AOS_LLVM__";
+      "${scrub buildGcc}" = "__AOS_GCC__";
+    }
+    // lib.optionalAttrs (!isDarwinCross) {
+      "${scrub glibc}" = "__AOS_GLIBC__";
+    };
 
   # Build a clang/clang++ wrapper directory. AOS clang needs the GCC install dir
   # + glibc + dynamic-linker injected on every invocation; Bazel's CC toolchain
@@ -964,6 +994,10 @@ in
         "--host_crosstool_top=@local_config_cc//:toolchain"
         "--extra_toolchains=//aos-darwin-toolchain:registered-toolchain"
       ];
+    # Native Workerd uses WORKSPACE with Bzlmod disabled, so priming Bazel's
+    # module repository only downloads unrelated toolchains. Preserve the
+    # separately proven Darwin fixed-output graph.
+    populateBCR = isDarwinCross;
     inherit scrubMap;
 
     # --- Fetch-specific ---
@@ -973,12 +1007,25 @@ in
         if stdenv.hostPlatform.isAarch64
         then "sha256-6JSNdFJpprzg6Bp+h0wMKmOGiunpRke0KBcutgzUxTw="
         else "sha256-uy7rYaYP7Rz1sAadbHRG4xux2wooPXbX/pNcofL4yXE="
-      else "sha256-ocxi9B0Fv1mdEGVeq6AXDuWjxdq7wKel2tDFztkeg7g=";
-    fetchPostPatch = "";
-    fetchEnv = {
-      CARGO_BAZEL_REPIN = "true";
-    };
+      else "sha256-GcXWNE6KoPQ+LzOuI+PnQqkRmivDgVM3pZJfuhmgTYo=";
+    fetchPostPatch = lib.optionalString (!isDarwinCross) ''
+      export PATH="$SRCDIR/aos-toolchain:$PATH"
+      export CC="$SRCDIR/aos-toolchain/clang"
+      export CXX="$SRCDIR/aos-toolchain/clang++"
+    '';
+    fetchEnv =
+      if isDarwinCross
+      then {CARGO_BAZEL_REPIN = "true";}
+      else {CIBUILDWHEEL = "1";};
     postFetch = ''
+      ${lib.optionalString (!isDarwinCross) ''
+        rm -rf "$bazelOut/external/host_platform"
+        rm -rf "$bazelOut/external/internal_platforms_do_not_use"
+        rm -rf "$bazelOut/external/local_config_"*
+        rm -f "$bazelOut/external/@host_platform.marker"
+        rm -f "$bazelOut/external/@internal_platforms_do_not_use.marker"
+        rm -f "$bazelOut/external/@local_config_"*.marker
+      ''}
       # Drop prebuilt JDK/Android toolchains Bazel recreates locally.
       rm -rf "$bazelOut/external/remotejdk"* "$bazelOut/external/local_jdk"
       rm -rf "$bazelOut/external/android_tools" "$bazelOut/external/android_gmaven_r8"
