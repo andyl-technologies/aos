@@ -21,6 +21,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{Context, Result, bail};
 
 use super::config::ApmConfig;
+use super::platform::native_platform;
 use super::profile::Profile;
 use super::profile::meta::{list_meta, orphaned_by_registry};
 use super::registry::{Registry, RegistrySet, store_path_hash};
@@ -916,7 +917,7 @@ pub async fn orphans(config: &ApmConfig, printer: &Printer) -> Result<()> {
 fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let enabled = config.enabled_registries();
     let cache_dir = config.cache_path();
-    let platform = current_platform();
+    let platform = native_platform();
     RegistrySet::load(&cache_dir, &enabled, &platform)
 }
 
@@ -1025,28 +1026,6 @@ fn matching_running_sysroot_version<'a>(
     running.and_then(|(running_name, version)| {
         (registry_meta.sysroot && running_name == package_name).then_some(version)
     })
-}
-
-/// Detect the current platform string (e.g. "x86_64-linux").
-fn current_platform() -> String {
-    let arch = std::env::consts::ARCH;
-    let os = std::env::consts::OS;
-
-    let nix_arch = match arch {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
-        "arm" => "armv7l",
-        "riscv64" => "riscv64",
-        _ => arch,
-    };
-
-    let nix_os = match os {
-        "linux" => "linux",
-        "macos" => "darwin",
-        _ => os,
-    };
-
-    format!("{nix_arch}-{nix_os}")
 }
 
 /// Resolve dependency names from a PackageMeta's references using the registry's
@@ -1206,6 +1185,7 @@ mod tests {
                 expose: None,
                 expose_artifact: None,
                 config_module: None,
+                documentation: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),

@@ -11,7 +11,7 @@
 //! Faults are applied in a fixed order so the result is a pure function of the
 //! frame, the table, and the injected RNG draws. The order matters: bandwidth
 //! serialization and latency are deterministic shifts computed first; the
-//! probabilistic faults (jitter, reorder, loss, duplicate, corrupt) each consume
+//! probabilistic effects (jitter, reorder, loss, duplicate, corrupt) each consume
 //! one or more draws in this fixed sequence.
 //!
 //! ```text
@@ -33,9 +33,7 @@
 //! transform functions are owned by [`crate::fault`] and re-exported here so the
 //! block, 9p, and network sub-nodes apply one taxonomy ([IO-25], [IO-26]).
 
-pub use crate::fault::{
-    Probability, corrupt_payload, jitter_shift_ns, reorder_shift_ns, serialization_delay_ns,
-};
+pub use crate::fault::{Probability, corrupt_payload, jitter_shift_ns, reorder_shift_ns};
 
 /// A deterministic payload mutation applied when the link corruption decision fires.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,7 +62,7 @@ impl LinkCorruptionStrategy {
     /// truncation each consume one selector so the mutated byte and truncation
     /// length are schedule material rather than fixed constants.
     #[must_use]
-    pub fn bit_draws(self) -> u32 {
+    pub fn selector_draws(self) -> u32 {
         match self {
             Self::BitFlip { max_bits } => max_bits,
             Self::FieldMutation | Self::Truncation { .. } => 1,
@@ -108,14 +106,7 @@ pub struct LinkFaults {
     /// the consumer's frontier by [`super::link::NetLink`] ([IO-34]).
     pub reorder_window_ns: u64,
 
-    /// The serialization rate in bytes per second; zero means unlimited.
-    ///
-    /// Bandwidth adds a transfer delay proportional to the frame size,
-    /// `serialization_delay_ns = len * 1e9 / bandwidth_bps`, computed in integer
-    /// nanoseconds with no floating point ([IO-20], [IO-24]).
-    pub bandwidth_bytes_per_sec: u64,
-
-    /// Additional RFC-level bandwidth caps in bits per virtual second.
+    /// Active serialization-rate caps in bits per virtual second.
     ///
     /// Each nonzero cap contributes its own integer serialization delay, and the
     /// delays are summed. This keeps model-level `bits_per_second` limits exact
@@ -144,21 +135,12 @@ pub struct LinkFaults {
     /// The probability a frame's payload is corrupted (bits flipped).
     pub corrupt: Probability,
 
-    /// The number of payload bit positions a corruption flips.
-    ///
-    /// Each flipped position is derived from a seeded draw; the same draws flip
-    /// exactly the same bits ([IO-20]).
-    pub corrupt_bit_flips: u32,
-
     /// Concrete corruption strategies applied when [`Self::corrupt`] fires.
-    ///
-    /// An empty list preserves the legacy bit-flip-only behavior described by
-    /// [`Self::corrupt_bit_flips`].
     pub corruption_strategies: Vec<LinkCorruptionStrategy>,
 }
 
 impl LinkFaults {
-    /// Returns a fault-free table (the default): no shifts, no probabilistic faults.
+    /// Returns a fault-free table (the default): no shifts, no probabilistic effects.
     #[must_use]
     pub fn none() -> Self {
         Self::default()
@@ -179,16 +161,15 @@ impl LinkFaults {
 
     /// Returns the total serialization delay from every active bandwidth cap.
     ///
-    /// The legacy byte-rate field and all exact bit-rate fields contribute
-    /// independently. Overlapping bandwidth faults therefore add their delays
-    /// rather than replacing each other.
+    /// Every active exact bit-rate cap contributes independently. Overlapping
+    /// bandwidth faults therefore add their delays rather than replacing each
+    /// other.
     #[must_use]
     pub fn serialization_delay_ns(&self, len_bytes: u64) -> u64 {
-        let legacy_delay = serialization_delay_ns(len_bytes, self.bandwidth_bytes_per_sec);
         self.bandwidth_bits_per_sec
             .iter()
             .copied()
-            .fold(legacy_delay, |total, bits_per_sec| {
+            .fold(0, |total, bits_per_sec| {
                 total.saturating_add(serialization_delay_bits_per_sec(len_bytes, bits_per_sec))
             })
     }
@@ -219,17 +200,13 @@ impl LinkFaults {
 
     /// Returns the number of corruption selector draws required per frame.
     ///
-    /// When concrete strategies are present this is the sum of their selector
-    /// needs. Otherwise it is the legacy [`Self::corrupt_bit_flips`] field.
+    /// This is the sum of every concrete strategy's selector needs.
     #[must_use]
-    pub fn corrupt_bit_draws(&self) -> u32 {
-        if self.corruption_strategies.is_empty() {
-            return self.corrupt_bit_flips;
-        }
+    pub fn corruption_selector_draws(&self) -> u32 {
         self.corruption_strategies
             .iter()
             .fold(0u32, |total, strategy| {
-                total.saturating_add(strategy.bit_draws())
+                total.saturating_add(strategy.selector_draws())
             })
     }
 }
@@ -244,15 +221,23 @@ fn non_firing_draw(probability: Probability) -> u64 {
 
 /// Computes serialization delay for a bit-per-second bandwidth cap.
 #[must_use]
-fn serialization_delay_bits_per_sec(len_bytes: u64, bits_per_sec: u64) -> u64 {
+pub(super) fn serialization_delay_bits_per_sec(len_bytes: u64, bits_per_sec: u64) -> u64 {
+    checked_serialization_delay_bits_per_sec(len_bytes, bits_per_sec).unwrap_or(u64::MAX)
+}
+
+pub(super) fn checked_serialization_delay_bits_per_sec(
+    len_bytes: u64,
+    bits_per_sec: u64,
+) -> Option<u64> {
     if bits_per_sec == 0 {
-        return 0;
+        return None;
     }
     let nanos = u128::from(len_bytes)
-        .saturating_mul(8)
-        .saturating_mul(1_000_000_000_u128)
-        / u128::from(bits_per_sec);
-    u64::try_from(nanos).unwrap_or(u64::MAX)
+        .checked_mul(8)?
+        .checked_mul(1_000_000_000_u128)?;
+    let denominator = u128::from(bits_per_sec);
+    let nanos = nanos.checked_add(denominator.checked_sub(1)?)? / denominator;
+    u64::try_from(nanos).ok()
 }
 
 #[cfg(test)]
@@ -277,16 +262,6 @@ mod tests {
         let p = Probability::new(5, 0);
         assert!(!p.fires(0));
         assert!(!p.fires(u64::MAX));
-    }
-
-    #[test]
-    fn serialization_delay_is_integer_and_saturating() {
-        // 1500 bytes at 1 Gbps = 12_000 ns.
-        assert_eq!(serialization_delay_ns(1500, 125_000_000), 12_000);
-        // Unlimited bandwidth => no delay.
-        assert_eq!(serialization_delay_ns(1_000_000, 0), 0);
-        // Tiny bandwidth, huge frame: saturates at u64::MAX, never overflows.
-        assert_eq!(serialization_delay_ns(u64::MAX, 1), u64::MAX);
     }
 
     #[test]
@@ -332,10 +307,9 @@ mod tests {
         f.duplicate = Probability::ALWAYS;
         f.duplicate_gap_ns = 5;
         f.corrupt = Probability::ALWAYS;
-        f.corrupt_bit_flips = 3;
+        f.corruption_strategies = vec![LinkCorruptionStrategy::BitFlip { max_bits: 3 }];
         f.jitter_window_ns = 5;
         f.reorder_window_ns = 7;
-        f.bandwidth_bytes_per_sec = 1_000;
         f.bandwidth_bits_per_sec.push(10_000);
         assert!(
             !f.affects_latency(),
@@ -346,14 +320,13 @@ mod tests {
     }
 
     #[test]
-    fn bandwidth_delays_sum_across_byte_and_bit_caps() {
+    fn bandwidth_delays_sum_across_exact_bit_caps() {
         let mut faults = LinkFaults::none();
-        faults.bandwidth_bytes_per_sec = 1_000; // 100 bytes => 100_000_000 ns
         faults.bandwidth_bits_per_sec = vec![
             8_000,  // 100 bytes => 100_000_000 ns
             16_000, // 100 bytes => 50_000_000 ns
         ];
 
-        assert_eq!(faults.serialization_delay_ns(100), 250_000_000);
+        assert_eq!(faults.serialization_delay_ns(100), 150_000_000);
     }
 }

@@ -1,0 +1,48 @@
+diff --git a/libctf/ctf-link.c b/libctf/ctf-link.c
+--- a/libctf/ctf-link.c
++++ b/libctf/ctf-link.c
+@@ -20,10 +20,6 @@
+ #include <ctf-impl.h>
+ #include <string.h>
+ 
+-#if defined (PIC)
+-#pragma weak ctf_open
+-#endif
+-
+ /* CTF linking consists of adding CTF archives full of content to be merged into
+    this one to the current file (which must be writable) by calling
+    ctf_link_add_ctf.  Once this is done, a call to ctf_link will merge the type
+@@ -181,14 +177,9 @@ ctf_link_add (ctf_dict_t *fp, ctf_archive_t *ctf, const char *name,
+     return (ctf_set_errno (fp, EINVAL));
+ 
+   /* We can only lazily open files if libctf.so is in use rather than
+-     libctf-nobfd.so.  This is a little tricky: in shared libraries, we can use
+-     a weak symbol so that -lctf -lctf-nobfd works, but in static libraries we
+-     must distinguish between the two libraries explicitly.  */
++     libctf-nobfd.so.  */
+ 
+-#if defined (PIC)
+-  if (!buf && !ctf && name && !ctf_open)
+-    return (ctf_set_errno (fp, ECTF_NEEDSBFD));
+-#elif NOBFD
++#if NOBFD
+   if (!buf && !ctf && name)
+     return (ctf_set_errno (fp, ECTF_NEEDSBFD));
+ #endif
+@@ -238,13 +230,13 @@ ctf_link_lazy_open (ctf_dict_t *fp, ctf_link_input_t *input)
+     return 1;
+ 
+   /* See ctf_link_add_ctf.  */
+-#if defined (PIC) || !NOBFD
+-  input->clin_arc = ctf_open (input->clin_filename, NULL, &err);
+-#else
++#if NOBFD
+   ctf_err_warn (fp, 0, ECTF_NEEDSBFD, _("cannot open %s lazily"),
+ 		input->clin_filename);
+   ctf_set_errno (fp, ECTF_NEEDSBFD);
+   return -1;
++#else
++  input->clin_arc = ctf_open (input->clin_filename, NULL, &err);
+ #endif
+ 
+   /* Having no CTF sections is not an error.  We just don't need to do

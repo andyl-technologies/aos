@@ -6,11 +6,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
   modelCanonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
@@ -42,10 +38,6 @@
       {
         label = "content hash hex rendering";
         needle = "pub fn to_hex(self) -> String";
-      }
-      {
-        label = "fault-active predicate leaf";
-        needle = "FaultActive {";
       }
       {
         label = "plan-aware assertion DSL constructor";
@@ -562,54 +554,6 @@
       {
         label = "content-addressing seam";
         needle = "FUTURE_RATCHET_INTEGRATION_SEAM";
-      }
-    ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
-      {
-        label = "fault-active condition evaluation";
-        needle = "Condition::FaultActive { tag } => fault_tag_is_active(evaluator.fault_facts(), tag)";
-      }
-      {
-        label = "fault facts observation";
-        needle = "fn fault_tag_is_active(facts: &[ObservedFaultFact], expected_tag: &FaultTag) -> bool";
-      }
-      {
-        label = "fault-active graph validation";
-        needle = "UnknownFaultTagReference";
-      }
-    ]
-    ++ failuresFor "crates/crucible/tests/predicate_dsl.rs" predicateDsl [
-      {
-        label = "T-ASRT-17 regression module";
-        needle = "Checks T-ASRT-17 predicate DSL desugaring.";
-      }
-      {
-        label = "properties desugar to concrete identity";
-        needle = "predicate_dsl_desugars_to_concrete_conditions_for_properties";
-      }
-      {
-        label = "DSL hashes as expanded condition tree";
-        needle = "DSL properties must hash as the concrete expanded condition tree";
-      }
-      {
-        label = "string-authored properties TOML";
-        needle = "predicate = \"no_active_faults\"";
-      }
-      {
-        label = "string-authored trigger TOML";
-        needle = "trigger = \"quiescent\"";
-      }
-      {
-        label = "fault-active leaf coverage";
-        needle = "Predicate::fault_active(tag(\"split\"))";
-      }
-      {
-        label = "recorded fault facts coverage";
-        needle = "fault_active_condition_uses_recorded_fault_facts";
-      }
-      {
-        label = "host predicate additivity";
-        needle = "uncovered predicates remain host-extensible";
       }
     ]
     ++ failuresFor "crates/crucible/tests/gate_content_address.rs" crucibleGate [

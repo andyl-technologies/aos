@@ -25,6 +25,12 @@ pub enum LivePluginQuantumGateError {
         /// Underlying filesystem error.
         source: std::io::Error,
     },
+    /// The bounded scheduler-preemption adversary could not run or clean up.
+    #[error("bounded scheduler-preemption adversary failed: {source}")]
+    SchedulerPreemption {
+        /// Underlying controller, signal, or watchdog error.
+        source: crate::BoundedSchedulerPreemptionError,
+    },
     /// The conservative deterministic launch profile was invalid.
     #[error("build deterministic launch profile failed: {source}")]
     LaunchProfile {
@@ -66,6 +72,31 @@ pub enum LivePluginQuantumGateError {
     /// The plugin replied `SetupAck` with a non-ready status.
     #[error("quantum plugin refused to become schedulable after SetupAck")]
     SetupAckNotReady,
+    /// Connecting or draining the output-only guest evidence stream failed.
+    #[error("observe quantum guest SMP rendezvous failed: {source}")]
+    GuestEvidenceIo {
+        /// Underlying socket or console-drain error.
+        source: std::io::Error,
+    },
+    /// The guest did not emit the exact PAUSE-dependent SMP rendezvous proof.
+    #[error(
+        "quantum guest SMP rendezvous evidence mismatch: expected {expected:?}, observed {observed:?}"
+    )]
+    GuestSmpRendezvousMismatch {
+        /// Exact ordered evidence required from the configured vCPU count.
+        expected: Vec<u8>,
+        /// Complete bounded output observed from the guest.
+        observed: Vec<u8>,
+    },
+    /// QEMU failed after emitting a bounded prefix of the SMP guest proof.
+    #[error("quantum QEMU failed after guest evidence {observed:?}: {source}")]
+    GuestEvidenceBeforeFailure {
+        /// Complete bounded console prefix available when QEMU failed.
+        observed: Vec<u8>,
+        /// Underlying live-gate failure caused by the test-only QEMU abort.
+        #[source]
+        source: Box<LivePluginQuantumGateError>,
+    },
     /// Mapping the completed shared-memory setup region failed.
     #[error("map quantum loaded-QEMU shared-memory region failed: {source}")]
     RegionMap {
@@ -98,13 +129,15 @@ pub enum LivePluginQuantumGateError {
     },
     /// A quantum did not publish a boundary before the host bound expired.
     #[error(
-        "quantum did not reach a boundary at ceiling {ceiling_icount} within {timeout:?}; last icount was {last_icount}"
+        "quantum did not reach a boundary at ceiling {ceiling_icount} within {timeout:?}; last snapshot was {last_snapshot:?}, next deadline was {last_deadline_icount:?}"
     )]
     QuantumTimeout {
         /// Ceiling the quantum was advancing toward.
         ceiling_icount: u64,
-        /// Last observed node icount.
-        last_icount: u64,
+        /// Last coherent shared-memory node snapshot.
+        last_snapshot: crucible_shmem::NodeSlotSnapshot,
+        /// Last published next-deadline coordinate, when one was armed.
+        last_deadline_icount: Option<u64>,
         /// Host-side diagnostic timeout.
         timeout: Duration,
     },
@@ -125,6 +158,21 @@ pub enum LivePluginQuantumGateError {
         expected_icount: u64,
         /// Later boundary published by the worker.
         sample_icount: u64,
+    },
+    /// The exact main-loop boundary used for terminal fingerprint capture did
+    /// not acknowledge its host request within the liveness bound.
+    #[error(
+        "terminal fingerprint boundary at icount {expected_icount} did not acknowledge request {request} within {timeout:?}; observed token {observed}"
+    )]
+    FingerprintControlBoundaryTimeout {
+        /// Exact terminal coordinate whose fingerprint was requested.
+        expected_icount: u64,
+        /// Even host request token.
+        request: u32,
+        /// Last observed request or acknowledgement token.
+        observed: u32,
+        /// Host-side diagnostic timeout.
+        timeout: Duration,
     },
     /// QEMU exited before a quantum published its boundary.
     #[error("quantum QEMU exited before reaching a boundary at ceiling {ceiling_icount}: {status}")]

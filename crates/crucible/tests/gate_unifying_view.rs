@@ -11,14 +11,14 @@ use crucible::{
     AssertionDef, AssertionId, AssertionQuantifierKind, AssertionRunVerdict, BlackBoxHostOracle,
     Checkpoint, CheckpointKind, ChoiceTag, Configuration, ContentHash, CoverageGuidedFuzzConfig,
     Decision, EngineError, EventLogCoverageFeedback, EventLogCoverageFeedbackConsumer, FamilySpace,
-    FaultDensity, FaultDensityRange, FindingDiscoveryPath, FindingReproductionArtifact,
-    GenesisCheckpoint, Icount, MarkerId, MaterializationPolicy, MaterializationTrigger,
-    MemoryDagStore, MinimizationConfig, NodeTemplate, ObservableEvent, OfflineAssertionChecker,
-    OverrideDecision, Plan, Predicate, Properties, Property, ReadyPoint, RecordedAssertionLog,
-    ScenarioDefForm, ScenarioFamily, SchedulingPoint, SearchBudget, SearchFailureOracle,
-    SearchFrontierChoices, SearchStrategy, Seed, TemporalGraph, TopologyShape, TopologySizeRange,
-    UnifiedGraphOperationEvidence, UnifiedGraphOperationKind, UnifiedGraphOperationReport,
-    VirtualTime, WhiteBoxPolicy, World, WorldNode, bake, reduce, try_step,
+    FindingDiscoveryPath, FindingReproductionArtifact, GenesisCheckpoint, Icount, MarkerId,
+    MaterializationPolicy, MaterializationTrigger, MemoryDagStore, MinimizationConfig,
+    NodeTemplate, ObservableEvent, OfflineAssertionChecker, OverrideDecision, Plan, Predicate,
+    Properties, Property, ReadyPoint, RecordedAssertionLog, ScenarioDefForm, ScenarioFamily,
+    SchedulingPoint, SearchBudget, SearchFailureOracle, SearchFrontierChoices, SearchStrategy,
+    Seed, TemporalGraph, TopologyShape, TopologySizeRange, UnifiedGraphOperationEvidence,
+    UnifiedGraphOperationKind, UnifiedGraphOperationReport, VirtualTime, WhiteBoxPolicy, World,
+    WorldNode, bake, reduce, try_step,
 };
 
 #[test]
@@ -625,10 +625,8 @@ fn bake_for_scenario_form(scenario: &ScenarioDefForm) -> Result<GenesisCheckpoin
 }
 
 fn fuzz_family() -> Result<ScenarioFamily, EngineError> {
-    let density_one = FaultDensity::from_millionths(1)?;
     let space = FamilySpace::new(
         crucible::SeedSpace::explicit(vec![Seed::from_u64(0x11)])?,
-        FaultDensityRange::new(FaultDensity::ZERO, density_one)?,
         TopologySizeRange::new(2, 2)?,
         vec![TopologyShape::Ring],
     )?;

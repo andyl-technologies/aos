@@ -6,11 +6,11 @@ use crucible::{
     Action, AssertionId, AssertionPhase, BackendInput, Checkpoint, CheckpointKind, ChoiceTag,
     DebugNonCanonicalBranchAction, DebugNonCanonicalBranchTrigger, DebugOperatorControlKind,
     DebugReverseStepGrain, Decision, DeliveryOrderDecision, Event, EventGraph, EventGraphState,
-    EventId, EventKey, GdbAttachInfo, GenesisCheckpoint, LogLevel, MembershipFault, NodeId,
-    NodeLifecycle, NodeTemplate, OverrideDecision, Predicate, ReadyPoint, ScenarioDef,
-    ScheduledEvent, ScheduledEventKey, SchedulerNodeId, SchedulingNodeKind, SchedulingPoint, Seed,
-    TimerId, TriggerActionApplication, VirtualTime, VmArchitecture, WhiteBoxPolicy, World,
-    WorldNode, bake, step, try_step,
+    EventId, EventKey, GdbAttachInfo, GenesisCheckpoint, LogLevel, NodeId, NodeLifecycle,
+    NodeTemplate, OverrideDecision, Predicate, ReadyPoint, ScenarioDef, ScheduledEvent,
+    ScheduledEventKey, SchedulerNodeId, SchedulingNodeKind, SchedulingPoint, Seed, TimerId,
+    TriggerActionApplication, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode, bake,
+    step, try_step,
 };
 
 #[path = "tests/actor_runtime.rs"]

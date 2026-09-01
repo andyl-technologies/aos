@@ -9,15 +9,18 @@ use crucible::{
     Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, EngineError,
     MaterializedState, NodeBlobRef, RuntimeState, ScenarioDef, ScheduleError, World,
 };
+use std::sync::Arc;
 use thiserror::Error;
 
 use crate::{
-    QemuLoadvmCommandAuthorization, QemuLoadvmCommandPurpose, QemuLoadvmRealizationAdmission,
-    QemuReplayOracleValidation, QemuSavevmCompletenessPolicy, QemuSavevmPolicyError,
+    QemuExactSnapshotPolicy, QemuExactSnapshotPolicyError, QemuLoadvmCommandAuthorization,
+    QemuLoadvmCommandPurpose, QemuLoadvmRealizationAdmission, QemuReplayOracleValidation,
 };
 
 mod backend_executor;
 pub use backend_executor::QemuBackendRealizationExecutor;
+mod snapshot_codec;
+pub use snapshot_codec::QemuVmSnapshotCodecError;
 #[cfg(target_os = "linux")]
 mod node_executor;
 #[cfg(target_os = "linux")]
@@ -30,9 +33,160 @@ pub use node_executor::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuVmSnapshot {
     /// The checkpoint that owns the cached VM snapshot.
-    pub checkpoint: Checkpoint,
+    checkpoint: Arc<Checkpoint>,
+    /// Apache-side device continuation captured at the same scheduler boundary.
+    host_io: crate::QemuHostIoCheckpoint,
+    /// Scheduler-facing Apache node continuation captured at the same boundary.
+    node: crate::QemuNodeContinuationCheckpoint,
     /// Replay-oracle evidence for the runtime restored from this snapshot.
-    pub replay_oracle_validation: QemuReplayOracleValidation,
+    replay_oracle_validation: QemuReplayOracleValidation,
+    live_capture: bool,
+    identity: ContentHash,
+}
+
+impl QemuVmSnapshot {
+    /// Builds a snapshot whose QEMU and host-I/O halves share one identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError::InvalidCheckpoint`] when the host-I/O
+    /// continuation was captured for a different VMState checkpoint.
+    pub(crate) fn from_live_capture(
+        checkpoint: Arc<Checkpoint>,
+        host_io: crate::QemuHostIoCheckpoint,
+        node: crate::QemuNodeContinuationCheckpoint,
+        replay_oracle_validation: QemuReplayOracleValidation,
+    ) -> Result<Self, QemuVmRealizationError> {
+        if host_io.execution_binding() != checkpoint.id || node.execution_binding() != checkpoint.id
+        {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "paired exact snapshot",
+                message: String::from(
+                    "host-I/O continuation is bound to another QEMU VMState checkpoint",
+                ),
+            });
+        }
+        let identity =
+            exact_snapshot_identity(&checkpoint, &host_io, &node, replay_oracle_validation, true)
+                .map_err(|error| QemuVmRealizationError::InvalidCheckpoint {
+                role: "paired exact snapshot",
+                message: format!("cannot authenticate complete snapshot state: {error}"),
+            })?;
+        Ok(Self {
+            checkpoint,
+            host_io,
+            node,
+            replay_oracle_validation,
+            live_capture: true,
+            identity,
+        })
+    }
+
+    /// Returns the materialized scheduler checkpoint paired with this snapshot.
+    #[must_use]
+    pub fn checkpoint(&self) -> &Checkpoint {
+        &self.checkpoint
+    }
+
+    /// Returns the Apache host-I/O continuation paired with this snapshot.
+    #[must_use]
+    pub const fn host_io(&self) -> &crate::QemuHostIoCheckpoint {
+        &self.host_io
+    }
+
+    /// Returns the scheduler-facing node continuation paired with this snapshot.
+    #[must_use]
+    pub const fn node_continuation(&self) -> &crate::QemuNodeContinuationCheckpoint {
+        &self.node
+    }
+
+    pub(crate) const fn is_live_capture(&self) -> bool {
+        self.live_capture
+    }
+
+    /// Returns the aggregate identity binding VMState metadata and Apache state.
+    #[must_use]
+    pub const fn id(&self) -> ContentHash {
+        self.identity
+    }
+
+    pub(crate) fn has_valid_identity(&self) -> bool {
+        exact_snapshot_identity(
+            &self.checkpoint,
+            &self.host_io,
+            &self.node,
+            self.replay_oracle_validation,
+            self.live_capture,
+        )
+        .is_ok_and(|identity| self.identity == identity)
+    }
+
+    /// Returns replay-oracle evidence associated with this snapshot.
+    #[must_use]
+    pub const fn replay_oracle_validation(&self) -> QemuReplayOracleValidation {
+        self.replay_oracle_validation
+    }
+
+    /// Builds a paired snapshot for a runtime with no host-serviced block device.
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError::InvalidCheckpoint`] if the generated
+    /// owner continuations cannot be canonically authenticated.
+    pub fn diskless(
+        checkpoint: Checkpoint,
+        replay_oracle_validation: QemuReplayOracleValidation,
+    ) -> Result<Self, QemuVmRealizationError> {
+        let host_io = crate::QemuHostIoCheckpoint::without_devices(checkpoint.id);
+        let node = crate::QemuNodeContinuationCheckpoint {
+            execution_binding: checkpoint.id,
+            last_observed_time: checkpoint.virtual_time,
+            logical_time_calibration: crate::QemuLogicalTimeCalibration {
+                logical_icount: checkpoint.virtual_time.ticks,
+                raw_icount: checkpoint.virtual_time.ticks,
+            },
+            console_observation_boundary: checkpoint.virtual_time,
+            pending_preemption: None,
+            pending_network_outputs: Vec::new(),
+            network_transport: crate::QemuNetworkTransportCheckpoint::empty(),
+            next_fault_command_sequence: 2,
+            next_fault_event_sequence: 1,
+        };
+        let identity = exact_snapshot_identity(
+            &checkpoint,
+            &host_io,
+            &node,
+            replay_oracle_validation,
+            false,
+        )
+        .map_err(|error| QemuVmRealizationError::InvalidCheckpoint {
+            role: "diskless exact snapshot",
+            message: format!("cannot authenticate generated snapshot state: {error}"),
+        })?;
+        Ok(Self {
+            checkpoint: Arc::new(checkpoint),
+            host_io,
+            node,
+            replay_oracle_validation,
+            live_capture: false,
+            identity,
+        })
+    }
+}
+
+fn exact_snapshot_identity(
+    checkpoint: &Checkpoint,
+    host_io: &crate::QemuHostIoCheckpoint,
+    node: &crate::QemuNodeContinuationCheckpoint,
+    replay_oracle_validation: QemuReplayOracleValidation,
+    live_capture: bool,
+) -> Result<ContentHash, QemuVmSnapshotCodecError> {
+    snapshot_codec::canonical_snapshot_identity(
+        checkpoint,
+        host_io,
+        node,
+        replay_oracle_validation,
+        live_capture,
+    )
 }
 
 /// A baked genesis snapshot shared by worlds with identical VM inputs.
@@ -237,45 +391,37 @@ pub trait QemuVmLoadvmAdmissionPolicy {
     /// Authorizes loading the trusted baked-genesis ready-point snapshot.
     ///
     /// This does not admit arbitrary exact fat checkpoints; it only supplies
-    /// the low-level QMP token needed by the baked-genesis fallback branch.
+    /// the low-level QMP token needed by the baked-genesis branch.
     fn authorize_baked_genesis_runtime(self) -> QemuLoadvmCommandAuthorization;
 
     /// Authorizes the low-level runtime `loadvm` command.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuSavevmPolicyError`] when runtime `loadvm` is disabled.
-    fn authorize_loadvm_runtime(
-        self,
-    ) -> Result<QemuLoadvmCommandAuthorization, QemuSavevmPolicyError>;
+    fn authorize_loadvm_runtime(self) -> QemuLoadvmCommandAuthorization;
 
     /// Admits a replay-oracle-validated runtime restored through `loadvm`.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuSavevmPolicyError`] when runtime `loadvm` is disabled or
-    /// when replay-oracle evidence is missing or mismatched.
+    /// Returns [`QemuExactSnapshotPolicyError`] when replay-oracle evidence is missing
+    /// or mismatched.
     fn accept_loadvm_realized_runtime(
         self,
         validation: QemuReplayOracleValidation,
-    ) -> Result<QemuLoadvmRealizationAdmission, QemuSavevmPolicyError>;
+    ) -> Result<QemuLoadvmRealizationAdmission, QemuExactSnapshotPolicyError>;
 }
 
-impl QemuVmLoadvmAdmissionPolicy for QemuSavevmCompletenessPolicy {
+impl QemuVmLoadvmAdmissionPolicy for QemuExactSnapshotPolicy {
     fn authorize_baked_genesis_runtime(self) -> QemuLoadvmCommandAuthorization {
         self.authorize_baked_genesis_runtime()
     }
 
-    fn authorize_loadvm_runtime(
-        self,
-    ) -> Result<QemuLoadvmCommandAuthorization, QemuSavevmPolicyError> {
+    fn authorize_loadvm_runtime(self) -> QemuLoadvmCommandAuthorization {
         self.authorize_loadvm_runtime()
     }
 
     fn accept_loadvm_realized_runtime(
         self,
         validation: QemuReplayOracleValidation,
-    ) -> Result<QemuLoadvmRealizationAdmission, QemuSavevmPolicyError> {
+    ) -> Result<QemuLoadvmRealizationAdmission, QemuExactSnapshotPolicyError> {
         self.accept_loadvm_realized_runtime(validation)
     }
 }
@@ -445,8 +591,8 @@ pub fn fork_qemu_vm(
 /// Realizes `config` through the single QEMU instantiate path.
 ///
 /// Branch priority is exact fat snapshot, nearest cached ancestor replay, then
-/// baked-genesis load plus replay. Runtime `loadvm` remains gated by
-/// [`QemuSavevmCompletenessPolicy`].
+/// baked-genesis load plus replay. Exact `loadvm` requires replay-oracle
+/// admission through [`QemuExactSnapshotPolicy`].
 ///
 /// # Errors
 ///
@@ -491,7 +637,7 @@ pub fn bake_qemu_genesis_vm(
 
 /// Checks `loadvm(snapshot(config))` against replay from an ancestor.
 ///
-/// The exact snapshot is loaded with [`QemuSavevmCompletenessPolicy`]'s probe
+/// The exact snapshot is loaded with [`QemuExactSnapshotPolicy`]'s probe
 /// authorization, not production runtime admission. The thin side uses the
 /// ordinary instantiate/replay machinery and excludes the target exact snapshot
 /// from branch selection.
@@ -506,7 +652,7 @@ pub fn check_qemu_replay_oracle(
     config: &Configuration,
     store: &mut impl QemuVmRealizationStore,
     executor: &mut impl QemuVmRealizationExecutor,
-    policy: QemuSavevmCompletenessPolicy,
+    policy: QemuExactSnapshotPolicy,
 ) -> Result<QemuReplayOracleValidation, QemuVmRealizationError> {
     let snapshot =
         store
@@ -516,6 +662,7 @@ pub fn check_qemu_replay_oracle(
                 message: String::from("exact snapshot required for replay-oracle check"),
             })?;
     validate_checkpoint_matches_config(&snapshot.checkpoint, config, "exact snapshot")?;
+    validate_snapshot_pair(&snapshot)?;
     if snapshot.checkpoint.kind != CheckpointKind::Fat {
         return Err(QemuVmRealizationError::InvalidCheckpoint {
             role: "exact snapshot",
@@ -570,32 +717,24 @@ fn instantiate_qemu_vm_inner(
 ) -> Result<QemuVmRealization, QemuVmRealizationError> {
     if let Some(snapshot) = store.exact_snapshot(&config)? {
         validate_checkpoint_matches_config(&snapshot.checkpoint, &config, "exact snapshot")?;
+        validate_snapshot_pair(&snapshot)?;
         if snapshot.checkpoint.kind == CheckpointKind::Fat {
             validate_checkpoint_loadvm_state(&snapshot.checkpoint, "exact snapshot")?;
-            match policy.authorize_loadvm_runtime() {
-                Ok(authorization) => {
-                    let admission = policy
-                        .accept_loadvm_realized_runtime(snapshot.replay_oracle_validation)
-                        .map_err(|source| QemuVmRealizationError::SavevmPolicy { source })?;
-                    let runtime = executor.load_exact_snapshot(
-                        &config,
-                        &snapshot,
-                        authorization,
-                        admission,
-                    )?;
-                    validate_runtime_matches_admission(&runtime, admission)?;
-                    return Ok(QemuVmRealization {
-                        operation: QemuVmRealizationOperation::Instantiate,
-                        configuration: config,
-                        runtime,
-                        branch: QemuVmRealizationKind::ExactSnapshotLoadvm {
-                            checkpoint: snapshot.checkpoint,
-                        },
-                    });
-                }
-                Err(QemuSavevmPolicyError::LoadvmBranchDisabled { .. }) => {}
-                Err(source) => return Err(QemuVmRealizationError::SavevmPolicy { source }),
-            }
+            let authorization = policy.authorize_loadvm_runtime();
+            let admission = policy
+                .accept_loadvm_realized_runtime(snapshot.replay_oracle_validation)
+                .map_err(|source| QemuVmRealizationError::SavevmPolicy { source })?;
+            let runtime =
+                executor.load_exact_snapshot(&config, &snapshot, authorization, admission)?;
+            validate_runtime_matches_admission(&runtime, admission)?;
+            return Ok(QemuVmRealization {
+                operation: QemuVmRealizationOperation::Instantiate,
+                configuration: config,
+                runtime,
+                branch: QemuVmRealizationKind::ExactSnapshotLoadvm {
+                    checkpoint: Arc::unwrap_or_clone(snapshot.checkpoint),
+                },
+            });
         }
     }
 
@@ -673,6 +812,18 @@ fn instantiate_qemu_vm_inner(
     })
 }
 
+fn validate_snapshot_pair(snapshot: &QemuVmSnapshot) -> Result<(), QemuVmRealizationError> {
+    if snapshot.host_io.execution_binding() != snapshot.checkpoint.id {
+        return Err(QemuVmRealizationError::InvalidCheckpoint {
+            role: "paired exact snapshot",
+            message: String::from(
+                "host-I/O continuation is bound to another QEMU VMState checkpoint",
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn replay_decisions(
     mut runtime: RuntimeState,
     from: Configuration,
@@ -708,7 +859,7 @@ fn realize_qemu_replay_oracle_thin_path(
     config: Configuration,
     store: &mut impl QemuVmRealizationStore,
     executor: &mut impl QemuVmRealizationExecutor,
-    policy: QemuSavevmCompletenessPolicy,
+    policy: QemuExactSnapshotPolicy,
 ) -> Result<RuntimeState, QemuVmRealizationError> {
     if let Some(ancestor) = store.nearest_cached_ancestor(&config)? {
         validate_checkpoint_matches_config(
@@ -1029,7 +1180,7 @@ pub enum QemuVmRealizationError {
     #[error("savevm/loadvm policy rejected runtime realization: {source}")]
     SavevmPolicy {
         /// Underlying policy error.
-        source: QemuSavevmPolicyError,
+        source: QemuExactSnapshotPolicyError,
     },
     /// A low-level `loadvm` token had the wrong purpose for the selected branch.
     #[error("invalid QEMU loadvm authorization for {operation}: got {purpose:?}")]
@@ -1066,9 +1217,17 @@ mod tests {
     };
 
     use super::*;
-    use crate::{QemuLoadvmCommandPurpose, QemuSavevmFallback};
+    use crate::QemuLoadvmCommandPurpose;
 
     type SharedLog = Rc<RefCell<Vec<RealizationCall>>>;
+
+    fn diskless_snapshot(
+        checkpoint: Checkpoint,
+        validation: QemuReplayOracleValidation,
+    ) -> QemuVmSnapshot {
+        QemuVmSnapshot::diskless(checkpoint, validation)
+            .unwrap_or_else(|error| panic!("build diskless snapshot: {error}"))
+    }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum RealizationCall {
@@ -1104,8 +1263,48 @@ mod tests {
     }
 
     #[derive(Clone, Copy)]
-    struct ScriptedLoadvmPolicy {
-        admit: bool,
+    struct ScriptedLoadvmPolicy;
+
+    #[test]
+    fn qemu_vm_snapshot_codec_round_trips_complete_diskless_state() {
+        let definition = scenario("snapshot-codec");
+        let configuration = config_with_decisions(definition, 1);
+        let node_icounts = std::collections::BTreeMap::from([(
+            NodeId {
+                name: String::from("qemu"),
+            },
+            crucible::Icount { retired: 0 },
+        )]);
+        let checkpoint = Checkpoint::from_recorded_configuration(
+            &configuration,
+            Some(&Configuration::genesis(configuration.def.clone())),
+            crucible::VirtualTime { ticks: 0 },
+            node_icounts,
+            CheckpointKind::Fat,
+            qemu_materialized_node_blobs(&configuration),
+        )
+        .unwrap_or_else(|error| panic!("build checkpoint: {error}"));
+        let snapshot = diskless_snapshot(
+            checkpoint,
+            QemuReplayOracleValidation::Match {
+                runtime_hash: hash("runtime", "snapshot-codec"),
+            },
+        );
+        let bytes = snapshot
+            .to_canonical_bytes()
+            .unwrap_or_else(|error| panic!("encode VM snapshot: {error}"));
+        assert_eq!(
+            QemuVmSnapshot::from_canonical_bytes(&bytes)
+                .unwrap_or_else(|error| panic!("decode VM snapshot: {error}")),
+            snapshot
+        );
+
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert_eq!(
+            QemuVmSnapshot::from_canonical_bytes(&trailing),
+            Err(QemuVmSnapshotCodecError::Noncanonical)
+        );
     }
 
     impl QemuVmRealizationStore for ScriptedStore {
@@ -1154,25 +1353,15 @@ mod tests {
             QemuLoadvmCommandAuthorization::baked_genesis_realization_for_test()
         }
 
-        fn authorize_loadvm_runtime(
-            self,
-        ) -> Result<QemuLoadvmCommandAuthorization, QemuSavevmPolicyError> {
-            if self.admit {
-                Ok(QemuLoadvmCommandAuthorization::runtime_realization_for_test())
-            } else {
-                Err(disabled_loadvm())
-            }
+        fn authorize_loadvm_runtime(self) -> QemuLoadvmCommandAuthorization {
+            QemuLoadvmCommandAuthorization::runtime_realization_for_test()
         }
 
         fn accept_loadvm_realized_runtime(
             self,
             validation: QemuReplayOracleValidation,
-        ) -> Result<QemuLoadvmRealizationAdmission, QemuSavevmPolicyError> {
-            if !self.admit {
-                return Err(disabled_loadvm());
-            }
-
-            crate::savevm_policy::validate_loadvm_realized_runtime(validation)
+        ) -> Result<QemuLoadvmRealizationAdmission, QemuExactSnapshotPolicyError> {
+            crate::exact_snapshot_policy::validate_loadvm_realized_runtime(validation)
         }
     }
 
@@ -1331,14 +1520,14 @@ mod tests {
             &def,
             &mut store,
             &mut executor,
-            QemuSavevmCompletenessPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
         let resume = resume_qemu_vm(
             &world,
             &tip,
             &mut store,
             &mut executor,
-            QemuSavevmCompletenessPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
         let fork = fork_qemu_vm(
             &world,
@@ -1346,7 +1535,7 @@ mod tests {
             1,
             &mut store,
             &mut executor,
-            QemuSavevmCompletenessPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
 
         assert_eq!(start.operation, QemuVmRealizationOperation::Start);
@@ -1393,7 +1582,7 @@ mod tests {
             &def,
             &mut start_store,
             &mut start_executor,
-            QemuSavevmCompletenessPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
         let direct_start =
             direct_instantiate_for_test(&world, &def, &Configuration::genesis(def.clone()))?;
@@ -1402,7 +1591,7 @@ mod tests {
             &tip,
             &mut resume_store,
             &mut resume_executor,
-            QemuSavevmCompletenessPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
         let direct_resume = direct_instantiate_for_test(&world, &def, &tip)?;
         let fork = fork_qemu_vm(
@@ -1411,7 +1600,7 @@ mod tests {
             1,
             &mut fork_store,
             &mut fork_executor,
-            QemuSavevmCompletenessPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
         let direct_fork = direct_instantiate_for_test(&world, &def, &fork_prefix)?;
 
@@ -1425,49 +1614,6 @@ mod tests {
             QemuVmRealizationOperation::Fork { prefix_len: 1 }
         );
 
-        Ok(())
-    }
-
-    #[test]
-    fn qemu_loadvm_preserves_materialized_scheduler_active_tags()
-    -> Result<(), QemuVmRealizationError> {
-        let log = shared_log();
-        let mut executor = scripted_executor(log);
-        let def = scenario("qemu-active-tags");
-        let config = Configuration::genesis(def);
-        let tag = crucible::FaultTag::from_name("qemu-tag");
-        let fault = crucible::MembershipFault::NotYetJoined {
-            node: NodeId {
-                name: String::from("qemu"),
-            },
-        };
-        let mut scheduler = crucible::SchedulerState::empty();
-        scheduler
-            .active_fault_tags
-            .insert(tag.clone(), fault.clone());
-        let state = MaterializedState::from_components(
-            std::collections::BTreeMap::new(),
-            std::collections::BTreeMap::new(),
-            scheduler,
-            crucible::DecisionRngState::empty(),
-            crucible::EventLogOffset::default(),
-        );
-        let snapshot = QemuVmSnapshot {
-            checkpoint: checkpoint_for_config("qemu-active-tags", &config, CheckpointKind::Fat)
-                .with_materialized_state(Some(state)),
-            replay_oracle_validation: QemuReplayOracleValidation::Match {
-                runtime_hash: config.id(),
-            },
-        };
-
-        let runtime = executor.load_exact_snapshot(
-            &config,
-            &snapshot,
-            QemuLoadvmCommandAuthorization::runtime_realization_for_test(),
-            QemuLoadvmRealizationAdmission::for_test(config.id()),
-        )?;
-
-        assert_eq!(runtime.scheduler.active_fault_tags.get(&tag), Some(&fault));
         Ok(())
     }
 
@@ -1494,7 +1640,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            QemuSavevmCompletenessPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
 
         assert_eq!(
@@ -1541,7 +1687,7 @@ mod tests {
             &genesis,
             &mut store,
             &mut executor,
-            QemuSavevmCompletenessPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
 
         assert_eq!(
@@ -1590,21 +1736,21 @@ mod tests {
     }
 
     #[test]
-    fn qemu_exact_snapshot_loadvm_is_skipped_while_fallback_policy_disables_branch()
+    fn qemu_exact_snapshot_loadvm_is_the_default_complete_realization_path()
     -> Result<(), QemuVmRealizationError> {
-        let world = world("loadvm-disabled");
-        let def = scenario("loadvm-disabled");
+        let world = world("loadvm-complete");
+        let def = scenario("loadvm-complete");
         let target = config_with_decisions(def.clone(), 1);
         let log = shared_log();
         let mut store = scripted_store(Rc::clone(&log), &world, &def);
         store.exact_snapshots.push((
             target.id(),
-            QemuVmSnapshot {
-                checkpoint: checkpoint_for_config("exact-fat", &target, CheckpointKind::Fat),
-                replay_oracle_validation: QemuReplayOracleValidation::Match {
+            diskless_snapshot(
+                checkpoint_for_config("exact-fat", &target, CheckpointKind::Fat),
+                QemuReplayOracleValidation::Match {
                     runtime_hash: hash("runtime", "exact-fat"),
                 },
-            },
+            ),
         ));
         let mut executor = scripted_executor(Rc::clone(&log));
 
@@ -1613,21 +1759,20 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            QemuSavevmCompletenessPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
 
-        assert_eq!(
+        assert!(matches!(
             realized.branch,
-            QemuVmRealizationKind::AncestorReplay {
-                ancestor_configuration: Configuration::genesis(target.def.clone()).id(),
-                replayed_decisions: 1,
+            QemuVmRealizationKind::ExactSnapshotLoadvm { .. }
+        ));
+        assert!(logged(&log).iter().any(|call| matches!(
+            call,
+            RealizationCall::LoadExact {
+                authorization: QemuLoadvmCommandPurpose::RuntimeRealization,
+                ..
             }
-        );
-        assert!(
-            !logged(&log)
-                .iter()
-                .any(|call| matches!(call, RealizationCall::LoadExact { .. }))
-        );
+        )));
 
         Ok(())
     }
@@ -1644,10 +1789,10 @@ mod tests {
         let checkpoint = checkpoint_for_config("exact-fat", &target, CheckpointKind::Fat);
         store.exact_snapshots.push((
             target.id(),
-            QemuVmSnapshot {
-                checkpoint: checkpoint.clone(),
-                replay_oracle_validation: QemuReplayOracleValidation::Match { runtime_hash },
-            },
+            diskless_snapshot(
+                checkpoint.clone(),
+                QemuReplayOracleValidation::Match { runtime_hash },
+            ),
         ));
         let mut executor = scripted_executor(Rc::clone(&log));
 
@@ -1656,7 +1801,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            ScriptedLoadvmPolicy { admit: true },
+            ScriptedLoadvmPolicy,
         )?;
 
         assert_eq!(
@@ -1687,10 +1832,10 @@ mod tests {
         let mut store = scripted_store(Rc::clone(&log), &world, &def);
         store.exact_snapshots.push((
             target.id(),
-            QemuVmSnapshot {
-                checkpoint: checkpoint_for_config("oracle-exact", &target, CheckpointKind::Fat),
-                replay_oracle_validation: QemuReplayOracleValidation::NotRun,
-            },
+            diskless_snapshot(
+                checkpoint_for_config("oracle-exact", &target, CheckpointKind::Fat),
+                QemuReplayOracleValidation::NotRun,
+            ),
         ));
         let mut executor = scripted_executor(Rc::clone(&log));
 
@@ -1699,7 +1844,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            QemuSavevmCompletenessPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
 
         assert_eq!(
@@ -1710,7 +1855,7 @@ mod tests {
         );
         assert!(logged(&log).contains(&RealizationCall::LoadExact {
             config: target.id(),
-            authorization: QemuLoadvmCommandPurpose::SnapshotCompletenessProbe,
+            authorization: QemuLoadvmCommandPurpose::ReplayOracleProbe,
         }));
         assert!(logged(&log).contains(&RealizationCall::BakedGenesis(world.id)));
         assert!(logged(&log).contains(&RealizationCall::LoadBaked {
@@ -1737,10 +1882,7 @@ mod tests {
         let mut store = scripted_store(Rc::clone(&log), &world, &def);
         store.exact_snapshots.push((
             target.id(),
-            QemuVmSnapshot {
-                checkpoint,
-                replay_oracle_validation: QemuReplayOracleValidation::NotRun,
-            },
+            diskless_snapshot(checkpoint, QemuReplayOracleValidation::NotRun),
         ));
         let mut executor = scripted_executor(Rc::clone(&log));
 
@@ -1749,7 +1891,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            QemuSavevmCompletenessPolicy::default(),
+            QemuExactSnapshotPolicy,
         );
 
         assert!(matches!(
@@ -1775,10 +1917,10 @@ mod tests {
         let mut store = scripted_store(Rc::clone(&log), &world, &def);
         store.exact_snapshots.push((
             target.id(),
-            QemuVmSnapshot {
-                checkpoint: checkpoint_for_config("oracle-exact", &target, CheckpointKind::Fat),
-                replay_oracle_validation: QemuReplayOracleValidation::NotRun,
-            },
+            diskless_snapshot(
+                checkpoint_for_config("oracle-exact", &target, CheckpointKind::Fat),
+                QemuReplayOracleValidation::NotRun,
+            ),
         ));
         let mut executor = ScriptedExecutor {
             log,
@@ -1790,7 +1932,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            QemuSavevmCompletenessPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
 
         assert_eq!(
@@ -1813,10 +1955,10 @@ mod tests {
         let mut store = scripted_store(Rc::clone(&log), &world, &def);
         store.exact_snapshots.push((
             target.id(),
-            QemuVmSnapshot {
-                checkpoint: checkpoint_for_config("exact-fat", &target, CheckpointKind::Fat),
-                replay_oracle_validation: QemuReplayOracleValidation::NotRun,
-            },
+            diskless_snapshot(
+                checkpoint_for_config("exact-fat", &target, CheckpointKind::Fat),
+                QemuReplayOracleValidation::NotRun,
+            ),
         ));
         let mut executor = scripted_executor(Rc::clone(&log));
 
@@ -1825,13 +1967,13 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            ScriptedLoadvmPolicy { admit: true },
+            ScriptedLoadvmPolicy,
         );
 
         assert!(matches!(
             result,
             Err(QemuVmRealizationError::SavevmPolicy {
-                source: QemuSavevmPolicyError::ReplayOracleValidationRequired
+                source: QemuExactSnapshotPolicyError::ReplayOracleValidationRequired
             })
         ));
         assert_eq!(
@@ -1851,12 +1993,12 @@ mod tests {
         let mut store = scripted_store(Rc::clone(&log), &world, &def);
         store.exact_snapshots.push((
             target.id(),
-            QemuVmSnapshot {
+            diskless_snapshot(
                 checkpoint,
-                replay_oracle_validation: QemuReplayOracleValidation::Match {
+                QemuReplayOracleValidation::Match {
                     runtime_hash: target.id(),
                 },
-            },
+            ),
         ));
         let mut executor = scripted_executor(Rc::clone(&log));
 
@@ -1865,7 +2007,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            ScriptedLoadvmPolicy { admit: true },
+            ScriptedLoadvmPolicy,
         );
 
         assert!(matches!(
@@ -1892,13 +2034,13 @@ mod tests {
         let mut store = scripted_store(Rc::clone(&log), &world, &def);
         store.exact_snapshots.push((
             target.id(),
-            QemuVmSnapshot {
-                checkpoint: checkpoint_for_config("exact-fat", &target, CheckpointKind::Fat),
-                replay_oracle_validation: QemuReplayOracleValidation::Mismatch {
+            diskless_snapshot(
+                checkpoint_for_config("exact-fat", &target, CheckpointKind::Fat),
+                QemuReplayOracleValidation::Mismatch {
                     fat_hash,
                     thin_hash,
                 },
-            },
+            ),
         ));
         let mut executor = scripted_executor(Rc::clone(&log));
 
@@ -1907,13 +2049,13 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            ScriptedLoadvmPolicy { admit: true },
+            ScriptedLoadvmPolicy,
         );
 
         assert!(matches!(
             result,
             Err(QemuVmRealizationError::SavevmPolicy {
-                source: QemuSavevmPolicyError::ReplayOracleMismatch {
+                source: QemuExactSnapshotPolicyError::ReplayOracleMismatch {
                     fat_hash: actual_fat,
                     thin_hash: actual_thin,
                 }
@@ -1935,12 +2077,12 @@ mod tests {
         let mut store = scripted_store(Rc::clone(&log), &world, &def);
         store.exact_snapshots.push((
             target.id(),
-            QemuVmSnapshot {
-                checkpoint: checkpoint_for_config("wrong-exact", &wrong, CheckpointKind::Fat),
-                replay_oracle_validation: QemuReplayOracleValidation::Match {
+            diskless_snapshot(
+                checkpoint_for_config("wrong-exact", &wrong, CheckpointKind::Fat),
+                QemuReplayOracleValidation::Match {
                     runtime_hash: hash("runtime", "wrong-exact"),
                 },
-            },
+            ),
         ));
         let mut executor = scripted_executor(log);
 
@@ -1949,7 +2091,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            ScriptedLoadvmPolicy { admit: true },
+            ScriptedLoadvmPolicy,
         );
 
         assert!(matches!(
@@ -1971,12 +2113,12 @@ mod tests {
         let mut store = scripted_store(Rc::clone(&log), &world, &def);
         store.exact_snapshots.push((
             target.id(),
-            QemuVmSnapshot {
-                checkpoint: checkpoint_for_config("exact-fat", &target, CheckpointKind::Fat),
-                replay_oracle_validation: QemuReplayOracleValidation::Match {
+            diskless_snapshot(
+                checkpoint_for_config("exact-fat", &target, CheckpointKind::Fat),
+                QemuReplayOracleValidation::Match {
                     runtime_hash: admitted,
                 },
-            },
+            ),
         ));
         let mut executor = ScriptedExecutor {
             log,
@@ -1988,7 +2130,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            ScriptedLoadvmPolicy { admit: true },
+            ScriptedLoadvmPolicy,
         );
 
         assert!(matches!(
@@ -2102,7 +2244,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            QemuSavevmCompletenessPolicy::default(),
+            QemuExactSnapshotPolicy,
         );
 
         assert!(matches!(
@@ -2134,7 +2276,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            QemuSavevmCompletenessPolicy::default(),
+            QemuExactSnapshotPolicy,
         );
 
         assert!(matches!(
@@ -2161,7 +2303,7 @@ mod tests {
             &genesis,
             &mut store,
             &mut executor,
-            QemuSavevmCompletenessPolicy::default(),
+            QemuExactSnapshotPolicy,
         );
 
         assert!(matches!(
@@ -2189,7 +2331,7 @@ mod tests {
             &genesis,
             &mut store,
             &mut executor,
-            QemuSavevmCompletenessPolicy::default(),
+            QemuExactSnapshotPolicy,
         );
 
         assert!(matches!(
@@ -2239,7 +2381,7 @@ mod tests {
             &genesis,
             &mut store,
             &mut executor,
-            QemuSavevmCompletenessPolicy::default(),
+            QemuExactSnapshotPolicy,
         );
 
         assert!(matches!(
@@ -2270,7 +2412,7 @@ mod tests {
             &requested_genesis,
             &mut store,
             &mut executor,
-            QemuSavevmCompletenessPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
 
         assert_eq!(
@@ -2303,7 +2445,7 @@ mod tests {
             2,
             &mut tip_store,
             &mut tip_executor,
-            QemuSavevmCompletenessPolicy::default(),
+            QemuExactSnapshotPolicy,
         );
         let out_of_range = fork_qemu_vm(
             &world,
@@ -2311,7 +2453,7 @@ mod tests {
             3,
             &mut scripted_store(shared_log(), &world, &def),
             &mut scripted_executor(shared_log()),
-            QemuSavevmCompletenessPolicy::default(),
+            QemuExactSnapshotPolicy,
         );
 
         match tip_fork {
@@ -2379,7 +2521,7 @@ mod tests {
             config,
             &mut store,
             &mut executor,
-            QemuSavevmCompletenessPolicy::default(),
+            QemuExactSnapshotPolicy,
         )
     }
 
@@ -2463,12 +2605,6 @@ mod tests {
         match decision {
             Decision::RngDraw(draw) => draw.value,
             _ => 0,
-        }
-    }
-
-    fn disabled_loadvm() -> QemuSavevmPolicyError {
-        QemuSavevmPolicyError::LoadvmBranchDisabled {
-            fallback: QemuSavevmFallback::ThinReplayUntilFullS3,
         }
     }
 

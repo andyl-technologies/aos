@@ -1,0 +1,39 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ x86_64-macos, arm64-macos ]
+install-name: '/System/Library/Frameworks/Carbon.framework/Versions/A/Carbon'
+current-version: 170.0.0
+compatibility-version: 2.0.0
+reexported-libraries:
+  - targets: [ x86_64-macos, arm64-macos ]
+    libraries:
+      - '/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices'
+      - '/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices'
+exports:
+  - targets: [ x86_64-macos, arm64-macos ]
+    symbols:
+      - _AEGetDescData
+      - _AEGetDescDataSize
+      - _ATSFontActivateFromFileReference
+      - _FSFindFolder
+      - _FSRefMakePath
+      - _FSPathMakeRef
+      - _FSPathMakeRefWithOptions
+      - _FSResolveAliasFileWithMountFlags
+      - _GetIconRef
+      - _GetCurrentEventKeyModifiers
+      - _GetCurrentProcess
+      - _HIThemeBeginFocus
+      - _HIThemeEndFocus
+      - _LSCopyDisplayNameForRef
+      - _LSCopyItemInfoForRef
+      - _LSOpenURLsWithRole
+      - _ReleaseIconRef
+      - _LMGetKbdType
+      - _TISCopyCurrentKeyboardInputSource
+      - _TISGetInputSourceProperty
+      - _UCKeyTranslate
+      - _kTISPropertyUnicodeKeyLayoutData
+      - _UCConvertCFAbsoluteTimeToLongDateTime
+      - _UCConvertLongDateTimeToCFAbsoluteTime
+...

@@ -6,11 +6,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
@@ -101,7 +97,7 @@
     ++ failuresFor "crates/crucible/tests/gate_minimization.rs" minimizationTest [
       {
         label = "deterministic shrink gate";
-        needle = "gate_minimization_shrinks_schedule_and_fault_decisions_deterministically";
+        needle = "gate_minimization_shrinks_schedule_and_rng_decisions_deterministically";
       }
       {
         label = "non reproducing start gate";
@@ -132,8 +128,8 @@
         needle = "assert_eq!(first, second)";
       }
       {
-        label = "fault decision removed";
-        needle = "fault_decision(\"unused-network-loss\", false)";
+        label = "unused RNG decision removed";
+        needle = "rng_decision(\"unused-network-draw\", 0)";
       }
       {
         label = "minimal schedule assertion";

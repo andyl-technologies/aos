@@ -1,4 +1,5 @@
 diff --git a/plugins/api-system.c b/plugins/api-system.c
+index fbf66542b..ec7b664f9 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -250,6 +250,9 @@ int qemu_plugin_advance_time_ns(int64_t new_time)

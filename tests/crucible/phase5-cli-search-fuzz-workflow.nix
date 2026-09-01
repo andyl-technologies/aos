@@ -7,12 +7,9 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   networkInitramfs = import ./phase2-qemu-live-network-io-guest.nix {inherit pkgs;};
+  fuzzGuest = import ./phase5-cli-fuzz-guest.nix {inherit pkgs;};
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
@@ -486,7 +483,7 @@
       }
       {
         label = "scenario family schema";
-        needle = "crucible.scenario-family.v1";
+        needle = "crucible.scenario-family.v2";
       }
       {
         label = "local-double fuzz runner";
@@ -1108,6 +1105,7 @@ in
               "$TMPDIR/crucible-cli-fuzz-artifacts" \
               "$TMPDIR/crucible-cli-fuzz-store"
             CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+              CRUCIBLE_RUN_STATE_ROOT="$TMPDIR/crucible-cli-search-state" \
               "${pkgs.crucible}/bin/crucible" \
               --backend qemu \
               --seed 42 \
@@ -1119,7 +1117,9 @@ in
               --max-states 1 \
               --on-violation collect \
               > "$TMPDIR/production-search.jsonl"
-            CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+            CRUCIBLE_KERNEL="${fuzzGuest}/fuzz-guest.elf" \
+              CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+              CRUCIBLE_RUN_STATE_ROOT="$TMPDIR/crucible-cli-fuzz-state" \
               "${pkgs.crucible}/bin/crucible" \
                 --backend qemu \
                 --seed 42 \

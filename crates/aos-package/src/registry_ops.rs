@@ -60,6 +60,12 @@ use aos_oci_types::{
     CONTAINER_RELEASE_SIDECAR_PATH, ContainerRelease, ContainerSignatureInput,
     limits::MAX_JSON_BYTES,
 };
+use aos_doc_model::{
+    ActivationEffect, ActivationKind, ConfinementSummary, CredentialContract, DOCUMENT_FORMAT,
+    DOCUMENT_SCHEMA, DocumentationIdentity, DocumentedPackage, DocumentedValue, OptionDocument,
+    OptionOwner, OptionType, PackageDocumentation, PathSegment, ProseBlock, RuntimeCapability,
+    RuntimeConfigArtifact, RuntimeListener, RuntimeSurface, RuntimeUnit, Section, Visibility,
+};
 use clap::ValueEnum as _;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -68,6 +74,7 @@ use serde_json::Value;
 use aos_core::output::{OutputMode, Printer};
 
 use crate::config::ApmConfig;
+use crate::platform::native_platform;
 use crate::provenance::{
     TrustedProvenanceKey, builder_id as provenance_builder_id, digest_map as provenance_digest_map,
     sha256_hex_payload, sign_statement_dsse_jsonl,
@@ -95,17 +102,18 @@ use crate::security::{
 use crate::sshkey;
 use crate::types::{
     AttestationMeta, BpfLsmPolicyMeta, CacheEntry, ConfigModuleMeta, ConfigOptionDeclaration,
-    ConfigOutputMeta, ConfinementClass, ExposeArtifactMeta, ExposeMeta, FEATURE_ATTESTATION_V1,
-    FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1,
-    FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
-    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PERMISSIONS_V1,
-    FEATURE_RECOVERY_UKIS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, FEATURE_UKI_SLOTS_V1,
-    ModuleAbiCompat, OwnedRoot, PACKAGE_META_FORMAT, PermissionsMeta, RecoveryBundleComponent,
-    RecoveryBundleComponentId, RecoveryBundleManifest, RecoveryUkiEntry, RegistryConfig,
-    RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig, RootContribution, SbatEntry,
-    SigningKeySource, SigningKeySpec, SysrootUkiEntry, UkiSlot, package_name_bucket,
-    rfc0001_metadata_requires_provenance, validate_attestation_meta, validate_branch_name,
-    validate_channel_name, validate_config_module_meta, validate_config_output_meta,
+    ConfigOutputMeta, ConfinementClass, DocumentationArtifactMeta, ExposeArtifactMeta, ExposeMeta,
+    FEATURE_ATTESTATION_V1, FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_MODULE_V1,
+    FEATURE_CONFIG_V1, FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
+    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_OPTIONAL_CREDENTIALS_V1,
+    FEATURE_PACKAGE_DOCUMENTATION_V1, FEATURE_PERMISSIONS_V1, FEATURE_RECOVERY_UKIS_V1,
+    FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, FEATURE_UKI_SLOTS_V1, ModuleAbiCompat, OwnedRoot,
+    PACKAGE_META_FORMAT, PermissionsMeta, RecoveryBundleComponent, RecoveryBundleComponentId,
+    RecoveryBundleManifest, RecoveryUkiEntry, RegistryConfig, RegistryFile, RegistryRootConfig,
+    RegistryUploadAuthConfig, RootContribution, SbatEntry, SigningKeySource, SigningKeySpec,
+    SysrootUkiEntry, UkiSlot, package_name_bucket, rfc0001_metadata_requires_provenance,
+    validate_attestation_meta, validate_branch_name, validate_channel_name,
+    validate_config_module_meta, validate_config_output_meta, validate_documentation_artifact_meta,
     validate_expose_artifact_meta, validate_expose_meta_for_package, validate_git_ref_name,
     validate_package_name, validate_permissions_meta, validate_platform_name,
     validate_registry_name,
@@ -169,20 +177,82 @@ struct PublishConfigModuleManifest {
     #[serde(default)]
     contributes: Vec<RootContribution>,
     #[serde(default)]
+    artifacts: crate::types::ConfigModuleArtifacts,
+    #[serde(default)]
     provides_capabilities: Vec<String>,
     #[serde(default)]
     dependencies: Vec<String>,
+    #[serde(default)]
+    documentation: PublishDocumentationManifest,
+}
+
+/// Package-authored enrichment that cannot be inferred from option/expose
+/// declarations. It is closed data copied into the trusted config companion;
+/// the canonical document model performs the final deep validation.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublishDocumentationManifest {
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    sections: BTreeMap<String, PublishDocumentationSection>,
+    #[serde(default)]
+    options: BTreeMap<String, PublishOptionDocumentation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublishDocumentationSection {
+    title: String,
+    blocks: Vec<ProseBlock>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublishOptionDocumentation {
+    #[serde(default)]
+    activation: Option<ActivationEffect>,
+    #[serde(default)]
+    deprecated: Option<String>,
+    #[serde(default)]
+    replacement: Option<Vec<PathSegment>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DerivedOptionDeclaration {
+    path: Vec<String>,
     #[serde(rename = "pathStr")]
     path_str: String,
     #[serde(rename = "typeSig")]
     type_sig: String,
+    #[serde(rename = "type")]
+    option_type: OptionType,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    default: Option<DocumentedValue>,
+    #[serde(default)]
+    example: Option<DocumentedValue>,
+    visibility: Visibility,
+    #[serde(default, rename = "readOnly")]
+    read_only: bool,
     #[serde(default)]
     contributable: bool,
+    owner: String,
+}
+
+#[derive(Debug)]
+struct PublishedDocumentation {
+    metadata: DocumentationArtifactMeta,
+    info: StorePathInfo,
+}
+
+#[derive(Debug)]
+struct PublishedConfigModule {
+    metadata: ConfigModuleMeta,
+    authored: PublishConfigModuleManifest,
+    declarations: Vec<DerivedOptionDeclaration>,
 }
 
 #[derive(Debug)]
@@ -483,18 +553,6 @@ fn first_letter(name: &str) -> String {
     package_name_bucket(name)
 }
 
-/// Get the default platform string.
-#[allow(dead_code)]
-fn default_platform() -> String {
-    if cfg!(target_arch = "x86_64") {
-        "x86_64-linux".to_string()
-    } else if cfg!(target_arch = "aarch64") {
-        "aarch64-linux".to_string()
-    } else {
-        "x86_64-linux".to_string()
-    }
-}
-
 /// Runs one stable `nix-store --query` operation for the supplied paths.
 fn nix_store_query(query: &str, store_paths: &[&str]) -> Result<Vec<String>> {
     let output = nix_command("nix-store")
@@ -637,6 +695,7 @@ fn store_dir_from_store_path(path: &str) -> Option<&str> {
 }
 
 /// Metadata returned by `nix-store --query` for a single store path.
+#[derive(Debug)]
 struct StorePathInfo {
     path: String,
     nar_hash: String,
@@ -646,6 +705,47 @@ struct StorePathInfo {
 }
 
 const RELEASE_POLICY_RELATIVE_PATH: &str = "nix-support/aos-release-policy";
+const TARGET_PLATFORM_RELATIVE_PATH: &str = "nix-support/aos-target-platform";
+
+/// Resolves the platform a store output is published for.
+///
+/// New AOS derivations stamp their canonical target platform in
+/// `nix-support/aos-target-platform`. An explicit producer override must agree
+/// with that stamp, preventing a Linux-hosted Darwin cross build from being
+/// mislabeled in registry metadata. Outputs created before the stamp existed
+/// retain the native-platform default.
+fn resolve_publish_platform(store_path: &str, platform_override: Option<&str>) -> Result<String> {
+    let marker = Path::new(store_path).join(TARGET_PLATFORM_RELATIVE_PATH);
+    let marker_exists = marker
+        .try_exists()
+        .with_context(|| format!("checking target platform marker {}", marker.display()))?;
+    let stamped = if marker_exists {
+        let platform = fs::read_to_string(&marker)
+            .with_context(|| format!("reading target platform marker {}", marker.display()))?
+            .trim()
+            .to_string();
+        validate_platform_name(&platform)
+            .with_context(|| format!("invalid target platform marker {}", marker.display()))?;
+        Some(platform)
+    } else {
+        None
+    };
+
+    if let Some(platform_override) = platform_override {
+        validate_platform_name(platform_override)?;
+        if let Some(stamped) = stamped.as_deref()
+            && stamped != platform_override
+        {
+            bail!(
+                "--platform '{platform_override}' disagrees with target platform marker '{stamped}' in {}",
+                marker.display()
+            );
+        }
+        return Ok(platform_override.to_string());
+    }
+
+    Ok(stamped.unwrap_or_else(native_platform))
+}
 
 /// Enforces package-authored restrictions on publishing a store-path root.
 ///
@@ -1634,8 +1734,11 @@ description = ""
 /// touched paths are committed (SSH-signed when `--key`/`--key-id` is
 /// given) and the dumb-HTTP object store is refreshed.
 ///
-/// Package name, version, and platform are parsed from the store path
-/// basename and can each be overridden. `--image-payload`, `--image-disk`,
+/// Package name and version are parsed from the store path basename and can
+/// be overridden. Platform is read from the output's AOS target-platform
+/// marker, falling back to the producer's native platform for legacy outputs;
+/// `--platform` may override only an unstamped output or agree with its stamp.
+/// `--image-payload`, `--image-disk`,
 /// `--image-info`, `--image-format`, and `--image-uki` groups attach explicit
 /// cache artifacts and their exact canonical UKI to the platform entry;
 /// `--sysroot` marks
@@ -1652,6 +1755,9 @@ description = ""
 /// library used by the restricted, no-IFD options-only evaluation. The signed
 /// provenance binds the payload, config output, base lib, and (when present)
 /// expose manifest in one statement.
+/// `--documentation-base-lib` additionally extracts image-owned service
+/// options selected by the base library's canonical Nix service catalog. It
+/// changes documentation only and never grants package configuration authority.
 ///
 /// # Errors
 ///
@@ -1690,6 +1796,7 @@ pub async fn publish(
     expose_manifest_path: Option<&str>,
     config_module_path: Option<&str>,
     config_base_lib_path: Option<&str>,
+    documentation_base_lib_path: Option<&str>,
     config_dependencies: &[String],
     bless: bool,
     no_ca: bool,
@@ -1707,6 +1814,8 @@ pub async fn publish(
     let name = resolve_registry_name(config, registry)?;
     let dir = config.scope.registries_path().join(&name);
     ensure_writable_registry_clone(&name, &dir)?;
+    let require_signed_ukis =
+        read_registry_toml(&dir)?.is_some_and(|root| root.registry.require_signed_ukis);
     if let Some(name) = name_override {
         validate_package_name(name)?;
     }
@@ -1759,10 +1868,7 @@ pub async fn publish(
     let pkg_name = name_override.unwrap_or(&parsed_name);
     let pkg_version = version_override.unwrap_or(&parsed_version);
     validate_package_name(pkg_name)?;
-    let platform = platform_override
-        .map(|s| s.to_string())
-        .unwrap_or_else(default_platform);
-    validate_platform_name(&platform)?;
+    let platform = resolve_publish_platform(&info.path, platform_override)?;
     let config_module_info = config_module_path
         .map(introspect_store_path)
         .transpose()
@@ -1771,8 +1877,12 @@ pub async fn publish(
         .map(introspect_store_path)
         .transpose()
         .context("introspecting config base-lib")?;
+    let documentation_base_lib_info = documentation_base_lib_path
+        .map(introspect_store_path)
+        .transpose()
+        .context("introspecting documentation base-lib")?;
     let config_dependency_outputs = parse_config_dependency_outputs(config_dependencies, &info)?;
-    let config_module = match (config_module_info.as_ref(), config_base_lib_info.as_ref()) {
+    let config_module_bundle = match (config_module_info.as_ref(), config_base_lib_info.as_ref()) {
         (Some(output), Some(base_lib)) => Some(read_publish_config_module(
             output,
             base_lib,
@@ -1783,6 +1893,11 @@ pub async fn publish(
         (None, None) => None,
         _ => bail!("--config-module and --config-base-lib must be specified together"),
     };
+    let config_module = config_module_bundle.as_ref().map(|bundle| &bundle.metadata);
+    let system_documentation = documentation_base_lib_info
+        .map(|base_lib| derive_system_documentation(base_lib, pkg_name))
+        .transpose()?
+        .flatten();
     // Bind the exact disk, canonical per-format metadata, and paired UKI
     // before catalog construction. Committed Secure Boot policy is enforced
     // below.
@@ -1811,7 +1926,12 @@ pub async fn publish(
         )?);
     }
     let sb_catalog = sb_certs::load_sb_certs_toml(&dir)?;
-    apply_publish_sb_policy(&mut image_infos, sb_catalog.as_ref(), sb_db_cert.is_some())?;
+    apply_publish_sb_policy(
+        &mut image_infos,
+        sb_catalog.as_ref(),
+        sb_db_cert.is_some(),
+        require_signed_ukis,
+    )?;
     let expose_manifest = expose_manifest_path
         .map(|path| read_publish_expose_manifest(path, pkg_name))
         .transpose()?;
@@ -1821,16 +1941,39 @@ pub async fn publish(
     let expose_manifest_digest = expose_manifest_path
         .map(|path| read_publish_manifest_digest(Path::new(path)))
         .transpose()?;
-    let provenance_signer = if expose_manifest_path.is_some() || config_module.is_some() {
-        Some(resolve_package_provenance_signer(
-            &dir,
-            &name,
-            signing_key.as_ref(),
-            key_id,
-        )?)
-    } else {
-        None
-    };
+    let documentation_declarations = config_module_bundle
+        .as_ref()
+        .into_iter()
+        .flat_map(|bundle| bundle.declarations.iter().cloned())
+        .chain(
+            system_documentation
+                .as_ref()
+                .into_iter()
+                .flat_map(|surface| surface.declarations.iter().cloned()),
+        )
+        .collect::<Vec<_>>();
+    let documentation = publish_package_documentation(
+        pkg_name,
+        pkg_version,
+        &platform,
+        description,
+        homepage,
+        license,
+        &info,
+        source_info.as_ref(),
+        config_module,
+        config_module_bundle.as_ref().map(|bundle| &bundle.authored),
+        system_documentation.as_ref(),
+        expose_manifest.as_ref(),
+        expose_artifact_info.as_ref(),
+        &documentation_declarations,
+    )?;
+    let provenance_signer = Some(resolve_package_provenance_signer(
+        &dir,
+        &name,
+        signing_key.as_ref(),
+        key_id,
+    )?);
 
     let _publish_lock = RegistryPublishLock::acquire(&dir)?;
 
@@ -1849,7 +1992,6 @@ pub async fn publish(
     };
 
     let config_attestation = config_module
-        .as_ref()
         .map(|module| {
             publish_config_attestation_meta(
                 pkg_name,
@@ -1860,8 +2002,22 @@ pub async fn publish(
                 expose_manifest_digest.as_deref(),
             )
         })
+        .transpose()?
+        .map(|attestation| {
+            bind_documentation_provenance(attestation, pkg_name, &platform, &documentation.metadata)
+        })
         .transpose()?;
-    let new_content = build_package_toml(
+    let documentation_attestation = if config_module.is_none() && expose_manifest.is_none() {
+        Some(bind_documentation_provenance(
+            publish_documentation_attestation_meta(pkg_name, pkg_version, &platform, &info)?,
+            pkg_name,
+            &platform,
+            &documentation.metadata,
+        )?)
+    } else {
+        None
+    };
+    let new_content = build_package_toml_with_documentation(
         &content,
         pkg_name,
         pkg_version,
@@ -1878,44 +2034,63 @@ pub async fn publish(
         expose_manifest.as_ref(),
         expose_artifact_info.as_ref(),
         expose_manifest_digest.as_deref(),
-        config_module.as_ref(),
+        config_module,
         config_attestation.as_ref(),
+        Some(&documentation.metadata),
+        documentation_attestation.as_ref(),
     )?;
-    let provenance_artifact = if let (Some(module), Some(attestation)) =
-        (config_module.as_ref(), config_attestation.as_ref())
-    {
-        Some(publish_config_provenance_artifact(
-            &name,
-            pkg_name,
-            pkg_version,
-            &platform,
-            &info,
-            source_info.as_ref(),
-            module,
-            expose_manifest_digest.as_deref(),
-            attestation,
-            provenance_signer
-                .as_ref()
-                .context("provenance signer missing for config-module package")?,
-        )?)
-    } else {
-        match (expose_manifest.as_ref(), expose_manifest_digest.as_deref()) {
-            (Some(manifest), Some(manifest_digest)) => publish_provenance_artifact(
+    let provenance_artifact =
+        if let (Some(module), Some(attestation)) = (config_module, config_attestation.as_ref()) {
+            Some(publish_config_provenance_artifact_with_documentation(
                 &name,
                 pkg_name,
                 pkg_version,
                 &platform,
                 &info,
                 source_info.as_ref(),
-                manifest,
-                manifest_digest,
+                module,
+                expose_manifest_digest.as_deref(),
+                attestation,
+                &documentation.metadata,
                 provenance_signer
                     .as_ref()
-                    .context("provenance signer missing for exposed package")?,
-            )?,
-            _ => None,
-        }
-    };
+                    .context("provenance signer missing for config-module package")?,
+            )?)
+        } else {
+            match (expose_manifest.as_ref(), expose_manifest_digest.as_deref()) {
+                (Some(manifest), Some(manifest_digest)) => {
+                    publish_provenance_artifact_with_documentation(
+                        &name,
+                        pkg_name,
+                        pkg_version,
+                        &platform,
+                        &info,
+                        source_info.as_ref(),
+                        manifest,
+                        manifest_digest,
+                        &documentation.metadata,
+                        provenance_signer
+                            .as_ref()
+                            .context("provenance signer missing for exposed package")?,
+                    )?
+                }
+                _ => Some(publish_documentation_provenance_artifact(
+                    &name,
+                    pkg_name,
+                    pkg_version,
+                    &platform,
+                    &info,
+                    source_info.as_ref(),
+                    &documentation.metadata,
+                    documentation_attestation
+                        .as_ref()
+                        .context("documentation-only package is missing attestation metadata")?,
+                    provenance_signer
+                        .as_ref()
+                        .context("provenance signer missing for documented package")?,
+                )?),
+            }
+        };
 
     std::fs::write(&toml_path, &new_content)?;
     let provenance_path = if let Some(artifact) = &provenance_artifact {
@@ -1974,6 +2149,19 @@ pub async fn publish(
     } else {
         None
     };
+    let documentation_store_report = write_store_files(
+        &dir,
+        &documentation.info.path,
+        content_addressed,
+        bless,
+        printer,
+    )
+    .with_context(|| {
+        format!(
+            "writing store/ realisation graph for documentation {}",
+            documentation.info.path
+        )
+    })?;
     let transparency_log_path = if let Some(artifact) = &provenance_artifact {
         let provenance_file_path = provenance_path
             .as_ref()
@@ -2019,6 +2207,8 @@ pub async fn publish(
     if let Some(report) = &config_store_report {
         printer.kv("Config module graph", &report.summary());
     }
+    printer.kv("Documentation", &documentation.info.path);
+    printer.kv("Documentation graph", &documentation_store_report.summary());
     if let Some(artifact) = &provenance_artifact {
         printer.kv("Provenance", &artifact.path);
     }
@@ -2195,12 +2385,51 @@ fn validate_release_publish_metadata(
     Ok(())
 }
 
+/// Requires an authenticated roster identity for a package-bearing release.
+fn validate_release_publish_signing_identity(
+    store_path: Option<&str>,
+    key_id: Option<&str>,
+) -> Result<()> {
+    if store_path.is_some() && key_id.is_none() {
+        bail!(
+            "releasing a store path requires --key-id so package provenance is tied to keys.toml"
+        );
+    }
+    Ok(())
+}
+
 fn apply_publish_sb_policy(
     images: &mut [PublishedImage],
     catalog: Option<&SbCertsToml>,
     has_db_cert: bool,
+    require_signed_ukis: bool,
 ) -> Result<()> {
     for image in images {
+        if require_signed_ukis {
+            if image.sb.signer_cert_sha256.is_none()
+                || image
+                    .sb
+                    .ukis
+                    .iter()
+                    .any(|uki| uki.sb_signer_cert_sha256.is_none())
+            {
+                bail!(
+                    "registry [registry] require_signed_ukis = true refuses unsigned UKIs in '{}' image",
+                    image.format
+                );
+            }
+            if catalog.is_none() {
+                bail!(
+                    "registry [registry] require_signed_ukis = true requires a committed sb-certs.toml policy"
+                );
+            }
+            if !has_db_cert {
+                bail!(
+                    "registry [registry] require_signed_ukis = true requires the matching registry sb-certs/db.pem for publish-time verification"
+                );
+            }
+        }
+
         let signers = image
             .sb
             .signer_cert_sha256
@@ -2268,7 +2497,7 @@ fn ensure_writable_registry_clone(name: &str, dir: &Path) -> Result<()> {
 /// unrelated versions and platforms. Panics if an existing `versions` array
 /// entry is not a table.
 #[allow(clippy::too_many_arguments)]
-fn build_package_toml(
+fn build_package_toml_with_documentation(
     existing: &str,
     name: &str,
     version: &str,
@@ -2287,6 +2516,8 @@ fn build_package_toml(
     expose_manifest_digest: Option<&str>,
     config_module: Option<&ConfigModuleMeta>,
     config_attestation: Option<&AttestationMeta>,
+    documentation: Option<&DocumentationArtifactMeta>,
+    documentation_attestation: Option<&AttestationMeta>,
 ) -> Result<String> {
     let desc = description.context("package description is required")?;
     let lic = license.context("package license is required")?;
@@ -2309,6 +2540,12 @@ fn build_package_toml(
         expose_artifact_info,
         expose_manifest_digest,
     )?;
+    if let Some(documentation) = documentation {
+        let table = platform_table
+            .as_table_mut()
+            .context("new package platform metadata is not a TOML table")?;
+        record_documentation_platform_fields(table, documentation)?;
+    }
     if let Some(module) = config_module {
         let table = platform_table
             .as_table_mut()
@@ -2319,6 +2556,49 @@ fn build_package_toml(
             config_attestation
                 .context("config-module package is missing its publish provenance attestation")?,
         )?;
+    } else if let Some(attestation) = documentation_attestation {
+        let table = platform_table
+            .as_table_mut()
+            .context("new package platform metadata is not a TOML table")?;
+        record_attestation_platform_fields(table, attestation)?;
+    }
+    if let Some(documentation) = documentation {
+        let table = platform_table
+            .as_table_mut()
+            .context("new package platform metadata is not a TOML table")?;
+        let measurement = table
+            .get("measurement")
+            .and_then(toml::Value::as_str)
+            .context("documented package platform is missing its measurement")?;
+        let attestation = bind_documentation_provenance(
+            AttestationMeta {
+                root_digest: table
+                    .get("root_digest")
+                    .and_then(toml::Value::as_str)
+                    .map(str::to_string),
+                root_hash: table
+                    .get("root_hash")
+                    .and_then(toml::Value::as_str)
+                    .map(str::to_string),
+                root_hash_sig: table
+                    .get("root_hash_sig")
+                    .and_then(toml::Value::as_str)
+                    .map(str::to_string),
+                provenance: None,
+                measurement: Some(measurement.to_string()),
+            },
+            name,
+            platform,
+            documentation,
+        )?;
+        table.insert(
+            "provenance".into(),
+            toml::Value::String(
+                attestation
+                    .provenance
+                    .context("documented attestation is missing provenance")?,
+            ),
+        );
     }
 
     if existing.is_empty() {
@@ -2446,6 +2726,52 @@ fn build_package_toml(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
+fn build_package_toml(
+    existing: &str,
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+    description: Option<&str>,
+    homepage: Option<&str>,
+    license: Option<&str>,
+    maintainer: Option<&str>,
+    sysroot: bool,
+    previous: Option<&str>,
+    image_infos: &[PublishedImage],
+    source_info: Option<&StorePathInfo>,
+    expose_manifest: Option<&PublishExposeManifest>,
+    expose_artifact_info: Option<&StorePathInfo>,
+    expose_manifest_digest: Option<&str>,
+    config_module: Option<&ConfigModuleMeta>,
+    config_attestation: Option<&AttestationMeta>,
+) -> Result<String> {
+    build_package_toml_with_documentation(
+        existing,
+        name,
+        version,
+        platform,
+        info,
+        description,
+        homepage,
+        license,
+        maintainer,
+        sysroot,
+        previous,
+        image_infos,
+        source_info,
+        expose_manifest,
+        expose_artifact_info,
+        expose_manifest_digest,
+        config_module,
+        config_attestation,
+        None,
+        None,
+    )
+}
+
 fn read_publish_expose_manifest(path: &str, package_name: &str) -> Result<PublishExposeManifest> {
     let content =
         fs::read_to_string(path).with_context(|| format!("reading expose manifest {path}"))?;
@@ -2517,7 +2843,7 @@ fn read_publish_config_module(
     package_name: &str,
     runtime_output: &str,
     dependency_outputs: &BTreeMap<String, String>,
-) -> Result<ConfigModuleMeta> {
+) -> Result<PublishedConfigModule> {
     let root = Path::new(&config_output.path);
     let module_path = root.join("module.nix");
     let manifest_path = root.join("config-meta.json");
@@ -2597,14 +2923,8 @@ fn read_publish_config_module(
         .iter()
         .map(|owned| (owned.root.as_str(), owned))
         .collect::<BTreeMap<_, _>>();
-    let mut derived_owned_roots = declares
-        .iter()
-        .filter_map(|path| path.split('.').next())
-        .filter(|root| *root != package_name)
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    derived_owned_roots.sort();
-    derived_owned_roots.dedup();
+    let derived_owned_roots =
+        derive_owned_root_names(&declares, package_name, &authored.owns_roots);
     let mut owns_roots = Vec::with_capacity(derived_owned_roots.len());
     for root in &derived_owned_roots {
         let authored_root = owned_by_name.remove(root.as_str()).with_context(|| {
@@ -2685,11 +3005,41 @@ fn read_publish_config_module(
         requires,
         owns_roots,
         contributes,
+        artifacts: authored.artifacts.clone(),
         provides_capabilities,
     };
     validate_config_output_meta(&module.config_output)?;
     validate_config_module_meta(package_name, &module)?;
-    Ok(module)
+    Ok(PublishedConfigModule {
+        metadata: module,
+        authored,
+        declarations: declarations
+            .into_iter()
+            .filter(|declaration| !declaration.path_str.starts_with("_module."))
+            .collect(),
+    })
+}
+
+fn derive_owned_root_names(
+    declares: &[String],
+    package_name: &str,
+    authored_roots: &[OwnedRoot],
+) -> Vec<String> {
+    let mut roots = declares
+        .iter()
+        .filter_map(|path| path.split('.').next())
+        .filter(|root| {
+            // Package-prefixed declarations are private by default, but an
+            // explicit ownsRoots entry promotes that same-name root into a
+            // versioned contributor interface. Publication must validate the
+            // claim just like any differently named shared root.
+            *root != package_name || authored_roots.iter().any(|owned| owned.root == *root)
+        })
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    roots.sort();
+    roots.dedup();
+    roots
 }
 
 fn reject_config_derivation_references(config_output: &str) -> Result<()> {
@@ -2751,22 +3101,25 @@ fn derive_config_option_declarations(
       name = {};
       configRoot = <aos-publish-config-module>;
       module = <aos-publish-config-module/module.nix>;
-      outputs = {{ self = {}; dependencies = {{ {} }}; }};
+      outputs = {{ self = builtins.toString <aos-publish-runtime-output>; dependencies = {{ {} }}; }};
       authorization = {{ owns = [ {owns} ]; contributes = {{ {contributes} }}; }};
     }} ];
     inherit (base) lib;
   }};
-in builtins.map (decl: {{ inherit (decl) pathStr typeSig contributable; }})
+in builtins.map (decl: {{
+  inherit (decl)
+    path pathStr typeSig type description default example visibility readOnly
+    contributable owner;
+}})
   (base.lib.optionSurface evaluated)"#,
         nix_publish_string(package_name),
-        nix_publish_string(runtime_output),
         dependency_outputs
             .iter()
-            .map(|(name, path)| {
+            .enumerate()
+            .map(|(index, (name, _path))| {
                 format!(
-                    "{} = {};",
+                    "{} = builtins.toString <aos-publish-config-dependency-{index}>;",
                     nix_publish_string(name),
-                    nix_publish_string(path)
                 )
             })
             .collect::<Vec<_>>()
@@ -2774,6 +3127,7 @@ in builtins.map (decl: {{ inherit (decl) pathStr typeSig contributable; }})
     );
     let base_search_path = format!("aos-publish-base-lib={base_lib_path}");
     let module_search_path = format!("aos-publish-config-module={config_output}");
+    let runtime_search_path = format!("aos-publish-runtime-output={runtime_output}");
     let evaluator = std::env::var_os("PATH")
         .and_then(|path| {
             std::env::split_paths(&path)
@@ -2783,26 +3137,31 @@ in builtins.map (decl: {{ inherit (decl) pathStr typeSig contributable; }})
         .context("cannot find nix-instantiate in the AOS command path")?;
     let mut command = Command::new(evaluator);
     command.env_clear();
+    command.args([
+        "--store",
+        "dummy://",
+        "--eval",
+        "--strict",
+        "--json",
+        "--option",
+        "restrict-eval",
+        "true",
+        "--option",
+        "allow-import-from-derivation",
+        "false",
+        "-I",
+        &base_search_path,
+        "-I",
+        &module_search_path,
+        "-I",
+        &runtime_search_path,
+    ]);
+    for (index, path) in dependency_outputs.values().enumerate() {
+        let search_path = format!("aos-publish-config-dependency-{index}={path}");
+        command.args(["-I", &search_path]);
+    }
     let output = command
-        .args([
-            "--store",
-            "dummy://",
-            "--eval",
-            "--strict",
-            "--json",
-            "--option",
-            "restrict-eval",
-            "true",
-            "--option",
-            "allow-import-from-derivation",
-            "false",
-            "-I",
-            &base_search_path,
-            "-I",
-            &module_search_path,
-            "--expr",
-            &expression,
-        ])
+        .args(["--expr", &expression])
         .output()
         .with_context(|| {
             format!("running options-only config-module eval for package '{package_name}'")
@@ -2816,6 +3175,507 @@ in builtins.map (decl: {{ inherit (decl) pathStr typeSig contributable; }})
     serde_json::from_slice(&output.stdout).with_context(|| {
         format!("parsing options-only config-module eval for package '{package_name}'")
     })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DerivedSystemDocumentation {
+    declarations: Vec<DerivedOptionDeclaration>,
+    units: Vec<String>,
+}
+
+#[derive(Debug)]
+struct PublishedSystemDocumentation {
+    base_lib: StorePathInfo,
+    declarations: Vec<DerivedOptionDeclaration>,
+    units: Vec<String>,
+}
+
+/// Extracts system-owned service options from the immutable Nix catalog in an
+/// image evaluation base library.
+fn derive_system_documentation(
+    base_lib: StorePathInfo,
+    package_name: &str,
+) -> Result<Option<PublishedSystemDocumentation>> {
+    let expression = format!(
+        r#"let
+  base = import <aos-documentation-base-lib>;
+  catalog = import <aos-documentation-base-lib/lib/service-documentation.nix>;
+  service = catalog.services.{} or null;
+  evaluated = base.evalHostConfig {{}};
+  publicDeclarations = builtins.filter
+    (declaration: declaration.visibility != "internal")
+    (base.lib.optionSurface evaluated);
+  matchesPrefix = prefix: declaration:
+    declaration.pathStr == prefix || base.lib.hasPrefix "${{prefix}}." declaration.pathStr;
+  selected =
+    if service == null || service.ownership == "package" then []
+    else if service.ownership == "platform" then publicDeclarations
+    else builtins.filter
+      (declaration: builtins.any (prefix: matchesPrefix prefix declaration) service.optionPrefixes)
+      publicDeclarations;
+in assert catalog.schema == "aos.service-documentation/v1";
+  if service == null || service.ownership == "package" then null else {{
+    declarations = builtins.map (declaration: {{
+      inherit (declaration)
+        path pathStr typeSig type description default example visibility readOnly
+        contributable;
+      owner = "aos";
+    }}) selected;
+    units = service.units or [];
+  }}"#,
+        nix_publish_string(package_name),
+    );
+    let search_path = format!("aos-documentation-base-lib={}", base_lib.path);
+    let evaluator = std::env::var_os("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|directory| directory.join("nix-instantiate"))
+                .find(|candidate| candidate.is_file())
+        })
+        .context("cannot find nix-instantiate in the AOS command path")?;
+    let output = Command::new(evaluator)
+        .env_clear()
+        .args([
+            "--eval",
+            "--strict",
+            "--json",
+            "--option",
+            "restrict-eval",
+            "true",
+            "--option",
+            "allow-import-from-derivation",
+            "false",
+            "-I",
+            &search_path,
+            "--expr",
+            &expression,
+        ])
+        .output()
+        .with_context(|| {
+            format!("extracting system-owned documentation for package '{package_name}'")
+        })?;
+    if !output.status.success() {
+        bail!(
+            "system-owned documentation evaluation failed for package '{package_name}': {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let surface: Option<DerivedSystemDocumentation> = serde_json::from_slice(&output.stdout)
+        .with_context(|| {
+            format!("parsing system-owned documentation for package '{package_name}'")
+        })?;
+    let Some(mut surface) = surface else {
+        return Ok(None);
+    };
+    if surface.declarations.is_empty() {
+        bail!(
+            "system-owned documentation catalog entry for package '{package_name}' selects no options"
+        );
+    }
+    surface.units.sort();
+    surface.units.dedup();
+    Ok(Some(PublishedSystemDocumentation {
+        base_lib,
+        declarations: surface.declarations,
+        units: surface.units,
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_package_documentation(
+    name: &str,
+    version: &str,
+    platform: &str,
+    description: &str,
+    homepage: Option<&str>,
+    license: &str,
+    runtime: &StorePathInfo,
+    source: Option<&StorePathInfo>,
+    config_module: Option<&ConfigModuleMeta>,
+    config_manifest: Option<&PublishConfigModuleManifest>,
+    system_documentation: Option<&PublishedSystemDocumentation>,
+    expose_manifest: Option<&PublishExposeManifest>,
+    expose_artifact: Option<&StorePathInfo>,
+    declarations: &[DerivedOptionDeclaration],
+) -> Result<PublishedDocumentation> {
+    let authored = config_manifest
+        .map(|manifest| &manifest.documentation)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(summary) = authored.summary.as_deref()
+        && summary != description
+    {
+        bail!(
+            "package '{name}' documentation summary must equal its catalog description so there is one summary authority"
+        );
+    }
+
+    let declaration_paths = documented_option_declarations(declarations)
+        .map(|declaration| declaration.path_str.as_str())
+        .collect::<HashSet<_>>();
+    if let Some(foreign) = authored
+        .options
+        .keys()
+        .find(|path| !declaration_paths.contains(path.as_str()))
+    {
+        bail!("package '{name}' documentation enriches undeclared option '{foreign}'");
+    }
+
+    let sections = authored
+        .sections
+        .into_iter()
+        .map(|(id, section)| Section {
+            id,
+            title: section.title,
+            blocks: section.blocks,
+        })
+        .collect::<Vec<_>>();
+    let options = documented_option_declarations(declarations)
+        .map(|declaration| {
+            let enrichment = authored.options.get(&declaration.path_str);
+            if declaration.description.trim().is_empty() {
+                bail!(
+                    "public configuration option '{}' has no description",
+                    declaration.path_str
+                );
+            }
+            let description = declaration.description.clone();
+            let root = declaration
+                .path
+                .first()
+                .cloned()
+                .context("documentation option path is empty")?;
+            let interface_abi = config_manifest.and_then(|manifest| {
+                manifest
+                    .owns_roots
+                    .iter()
+                    .find(|owned| owned.root == root)
+                    .map(|owned| owned.interface_abi)
+            });
+            Ok(OptionDocument {
+                path: declaration
+                    .path
+                    .iter()
+                    .cloned()
+                    .map(|value| PathSegment::Literal { value })
+                    .collect(),
+                display_path: declaration.path_str.clone(),
+                option_type: declaration.option_type.clone(),
+                type_signature: declaration.type_sig.clone(),
+                description: vec![ProseBlock::Paragraph {
+                    spans: vec![aos_doc_model::InlineSpan::Text { text: description }],
+                }],
+                default: declaration.default.clone(),
+                example: declaration.example.clone(),
+                visibility: declaration.visibility,
+                read_only: declaration.read_only,
+                deprecated: enrichment.and_then(|entry| entry.deprecated.clone()),
+                replacement: enrichment.and_then(|entry| entry.replacement.clone()),
+                owner: OptionOwner {
+                    package: declaration.owner.clone(),
+                    root,
+                    interface_abi,
+                },
+                contributable: declaration.contributable,
+                activation: enrichment.and_then(|entry| entry.activation.clone()),
+                source: None,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut document = PackageDocumentation {
+        schema: DOCUMENT_SCHEMA.to_string(),
+        package: DocumentedPackage {
+            name: name.to_string(),
+            version: version.to_string(),
+            platform: platform.to_string(),
+            summary: description.to_string(),
+            homepage: homepage.map(str::to_string),
+            license: license.to_string(),
+        },
+        identity: DocumentationIdentity {
+            semantic_schema_sha256: format!("sha256:{}", "0".repeat(64)),
+            runtime_nar_hash: documentation_nar_identity(&runtime.nar_hash)?,
+            config_module_nar_hash: config_module
+                .map(|module| documentation_nar_identity(&module.config_output.nar_hash))
+                .transpose()?,
+            system_module_nar_hash: system_documentation
+                .map(|surface| documentation_nar_identity(&surface.base_lib.nar_hash))
+                .transpose()?,
+            expose_artifact_nar_hash: expose_artifact
+                .map(|artifact| documentation_nar_identity(&artifact.nar_hash))
+                .transpose()?,
+            source_nar_hash: documentation_nar_identity(
+                source.map_or(runtime.nar_hash.as_str(), |source| source.nar_hash.as_str()),
+            )?,
+        },
+        sections,
+        options,
+        runtime: documentation_runtime_surface(expose_manifest, system_documentation),
+    };
+    document.identity.semantic_schema_sha256 = document
+        .computed_semantic_schema_sha256()
+        .context("computing package documentation semantic schema digest")?;
+    document
+        .verify_semantic_schema_sha256()
+        .context("verifying package documentation semantic schema digest")?;
+    let bytes = document
+        .canonical_json()
+        .context("encoding canonical package documentation")?;
+    let document_sha256 = format!("sha256:{}", sha256_hex(&bytes));
+
+    let directory = tempfile::tempdir().context("creating documentation materialization input")?;
+    let path = directory
+        .path()
+        .join(format!("{name}-{version}-aos-docs.json"));
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("creating documentation input {}", path.display()))?;
+    file.write_all(&bytes)
+        .with_context(|| format!("writing documentation input {}", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("syncing documentation input {}", path.display()))?;
+    drop(file);
+
+    let output = nix_command("nix-store")
+        .args(["--add-fixed", "sha256"])
+        .arg(&path)
+        .output()
+        .context("adding canonical package documentation to the Nix store")?;
+    if !output.status.success() {
+        bail!(
+            "nix-store --add-fixed failed for package documentation: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let store_path = String::from_utf8(output.stdout)
+        .context("documentation store path is not UTF-8")?
+        .trim()
+        .to_string();
+    let info = introspect_store_path(&store_path)
+        .context("introspecting canonical package documentation store object")?;
+    if !info.references.is_empty() {
+        bail!("package documentation store object must have no references");
+    }
+    let stored = fs::metadata(&info.path)
+        .with_context(|| format!("inspecting documentation object {}", info.path))?;
+    if !stored.is_file() || stored.len() != bytes.len() as u64 {
+        bail!("package documentation store object must be one exact regular file");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if stored.permissions().mode() & 0o111 != 0 {
+            bail!("package documentation store object must not be executable");
+        }
+    }
+
+    let metadata = DocumentationArtifactMeta {
+        format: DOCUMENT_FORMAT.to_string(),
+        store_path: info.path.clone(),
+        nar_hash: info.nar_hash.clone(),
+        nar_size: info.nar_size,
+        document_sha256,
+        document_size: bytes.len() as u64,
+        semantic_schema_sha256: document.identity.semantic_schema_sha256,
+        system_module_nar_hash: system_documentation
+            .map(|surface| documentation_nar_identity(&surface.base_lib.nar_hash))
+            .transpose()?,
+        references: Vec::new(),
+    };
+    validate_documentation_artifact_meta(&metadata)
+        .context("validating published package documentation metadata")?;
+    Ok(PublishedDocumentation { metadata, info })
+}
+
+/// Selects the declarations that form the user/tooling documentation surface.
+///
+/// Internal module-system plumbing remains part of the signed config-module
+/// declaration schema and authorization checks, but it is not a package API
+/// and may intentionally use reserved path segments such as
+/// `_aosExposeConfigProjection`.
+fn documented_option_declarations(
+    declarations: &[DerivedOptionDeclaration],
+) -> impl Iterator<Item = &DerivedOptionDeclaration> {
+    declarations
+        .iter()
+        .filter(|declaration| declaration.visibility != Visibility::Internal)
+}
+
+fn documentation_runtime_surface(
+    manifest: Option<&PublishExposeManifest>,
+    system_documentation: Option<&PublishedSystemDocumentation>,
+) -> RuntimeSurface {
+    let Some(manifest) = manifest else {
+        let units = system_documentation
+            .into_iter()
+            .flat_map(|surface| surface.units.iter())
+            .map(|name| RuntimeUnit {
+                name: name.clone(),
+                kind: name
+                    .rsplit_once('.')
+                    .map_or("unit", |(_, kind)| kind)
+                    .to_string(),
+                summary: "System-owned service unit".to_string(),
+                requires: Vec::new(),
+            })
+            .collect();
+        return RuntimeSurface {
+            units,
+            ..RuntimeSurface::default()
+        };
+    };
+    let expose = &manifest.expose;
+    let permissions = &manifest.permissions;
+    let network = match permissions.network {
+        Some(crate::types::NetworkPermission::PrivateOutbound) => "private-outbound",
+        Some(crate::types::NetworkPermission::Host) => "host",
+        Some(crate::types::NetworkPermission::Private) | None => "private",
+    };
+    let mut units = expose
+        .units
+        .iter()
+        .map(|name| RuntimeUnit {
+            name: name.clone(),
+            kind: name
+                .rsplit_once('.')
+                .map_or("unit", |(_, kind)| kind)
+                .to_string(),
+            summary: String::new(),
+            requires: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    if !units.iter().any(|unit| unit.name == expose.target) {
+        units.push(RuntimeUnit {
+            name: expose.target.clone(),
+            kind: "target".to_string(),
+            summary: "Package activation target".to_string(),
+            requires: Vec::new(),
+        });
+    }
+    units.sort_by(|left, right| left.name.cmp(&right.name));
+
+    let listeners = permissions
+        .tcp_bind
+        .iter()
+        .copied()
+        .map(|port| RuntimeListener {
+            unit: expose.target.clone(),
+            protocol: "tcp".to_string(),
+            port: Some(port),
+            network_mode: network.to_string(),
+        })
+        .collect();
+    let mut managed_paths = permissions
+        .host_paths
+        .iter()
+        .map(|path| aos_doc_model::ManagedPath {
+            path: path.path.clone(),
+            purpose: "host-path".to_string(),
+            writable: path.mode == crate::types::HostPathMode::Rw,
+        })
+        .collect::<Vec<_>>();
+    managed_paths.extend(expose.config.artifacts.iter().map(|artifact| {
+        aos_doc_model::ManagedPath {
+            path: artifact.path.clone(),
+            purpose: "configuration".to_string(),
+            writable: false,
+        }
+    }));
+    managed_paths.sort_by(|left, right| left.path.cmp(&right.path));
+
+    let config_artifacts = expose
+        .config
+        .artifacts
+        .iter()
+        .map(|artifact| {
+            let kind = match artifact.reload {
+                crate::types::ConfigReloadPolicy::Reload => ActivationKind::Reload,
+                crate::types::ConfigReloadPolicy::Restart => ActivationKind::Restart,
+                crate::types::ConfigReloadPolicy::None => ActivationKind::None,
+            };
+            let mut units = artifact.units.clone();
+            units.sort();
+            units.dedup();
+            RuntimeConfigArtifact {
+                name: artifact.name.clone(),
+                destination: artifact.path.clone(),
+                format: match artifact.format {
+                    crate::types::ConfigArtifactFormat::Env => "env",
+                    crate::types::ConfigArtifactFormat::Json => "json",
+                    crate::types::ConfigArtifactFormat::Toml => "toml",
+                }
+                .to_string(),
+                activation: Some(ActivationEffect { kind, units }),
+            }
+        })
+        .collect();
+    let credentials = expose
+        .config
+        .credentials
+        .iter()
+        .map(|credential| CredentialContract {
+            name: credential.name.clone(),
+            purpose: format!("Credential consumed by {}", credential.units.join(", ")),
+            destination: format!("%d/{}", credential.name),
+            accepted_kinds: if credential.encrypted {
+                vec![
+                    "tpm2-credential".to_string(),
+                    "system-credential".to_string(),
+                ]
+            } else {
+                vec!["system-credential".to_string()]
+            },
+            required: !credential.optional,
+            mode: 0o600,
+            activation: Some(ActivationEffect {
+                kind: ActivationKind::Restart,
+                units: {
+                    let mut units = credential.units.clone();
+                    units.sort();
+                    units.dedup();
+                    units
+                },
+            }),
+        })
+        .collect();
+    let mut capabilities = expose
+        .provides
+        .iter()
+        .map(|capability| RuntimeCapability {
+            name: capability.name.clone(),
+            direction: "provides".to_string(),
+        })
+        .chain(expose.uses.iter().map(|capability| RuntimeCapability {
+            name: format!("{}/{}", capability.provider, capability.name),
+            direction: "uses".to_string(),
+        }))
+        .collect::<Vec<_>>();
+    capabilities
+        .sort_by(|left, right| (&left.direction, &left.name).cmp(&(&right.direction, &right.name)));
+    let computed = permissions.computed_confinement();
+    let class = match computed.class {
+        ConfinementClass::Sandboxed => "sandboxed",
+        ConfinementClass::SandboxedWithHoles => "sandboxed-with-holes",
+        ConfinementClass::Unconfined => "unconfined",
+    };
+
+    RuntimeSurface {
+        units,
+        listeners,
+        managed_paths,
+        config_artifacts,
+        credentials,
+        capabilities,
+        confinement: Some(ConfinementSummary {
+            class: class.to_string(),
+            network: network.to_string(),
+            private_root: computed.class != ConfinementClass::Unconfined,
+        }),
+    }
 }
 
 fn nix_publish_string(value: &str) -> String {
@@ -2836,8 +3696,14 @@ fn scan_config_module_interface(
     owned_roots: &[String],
     authored_contributions: &[RootContribution],
 ) -> Result<(Vec<RootContribution>, Vec<String>, Vec<String>)> {
-    let access = Regex::new(r"(?:config|options)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+)")?;
-    let assignment = Regex::new(r"config\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+)\s*=")?;
+    // The leading boundary is security-relevant: an owned path such as
+    // `cloudcore.config.runtime` must not be reinterpreted from its suffix as
+    // a foreign write to `runtime`.
+    let access = Regex::new(
+        r"(?m)(?:^|[^A-Za-z0-9_.-])(?:config|options)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+)",
+    )?;
+    let assignment =
+        Regex::new(r"(?m)(?:^|[^A-Za-z0-9_.-])config\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+)\s*=")?;
     let mut requires = Vec::new();
     let mut writes = Vec::new();
     let mut pending = vec![root.to_path_buf()];
@@ -5998,29 +6864,36 @@ fn publish_config_attestation_meta(
     Ok(meta)
 }
 
+fn publish_documentation_attestation_meta(
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+) -> Result<AttestationMeta> {
+    let root_digest = package_nar_root_digest(&info.nar_hash);
+    let binding_digest = format!("sha256:{}", sha256_hex(b"aos.package-runtime-binding/v1"));
+    let measurement = crate::package_attestation::package_measurement_digest(
+        name,
+        version,
+        &root_digest,
+        &binding_digest,
+    );
+    let meta = AttestationMeta {
+        root_digest: Some(root_digest),
+        root_hash: None,
+        root_hash_sig: None,
+        provenance: Some(publish_provenance_ref(name, platform, &measurement)?),
+        measurement: Some(measurement),
+    };
+    validate_attestation_meta(&meta)?;
+    Ok(meta)
+}
+
 fn config_publish_binding_digest(
     module: &ConfigModuleMeta,
     expose_manifest_digest: Option<&str>,
 ) -> Result<String> {
-    let base_lib = module
-        .evaluation_base_lib
-        .as_ref()
-        .context("published config module is missing its evaluation base-lib binding")?;
-    let metadata = serde_json::to_vec(module)
-        .context("serializing derived config-module metadata for provenance binding")?;
-    Ok(format!(
-        "sha256:{}",
-        sha256_hex(
-            format!(
-                "config={}\nbase-lib={}\nmetadata=sha256:{}\nexpose={}\n",
-                module.config_output.nar_hash,
-                base_lib.nar_hash,
-                sha256_hex(&metadata),
-                expose_manifest_digest.unwrap_or("")
-            )
-            .as_bytes()
-        )
-    ))
+    crate::package_attestation::config_module_binding_digest(module, expose_manifest_digest)
 }
 
 fn package_nar_root_digest(nar_hash: &str) -> String {
@@ -6029,6 +6902,14 @@ fn package_nar_root_digest(nar_hash: &str) -> String {
     } else {
         format!("sha256:{}", sha256_hex(nar_hash.as_bytes()))
     }
+}
+
+/// Returns the canonical hexadecimal identity of the NAR bytes themselves.
+fn documentation_nar_identity(nar_hash: &str) -> Result<String> {
+    Ok(format!(
+        "sha256:{}",
+        aos_registry_surface::store::canonical_digest_hex(nar_hash)?
+    ))
 }
 
 const PACKAGE_PROVENANCE_TRANSPARENCY_LOG: &str = "transparency/package-provenance.jsonl";
@@ -6193,7 +7074,7 @@ struct StagedPackageRfc0001Meta {
     bpf_lsm: Option<BpfLsmPolicyMeta>,
 }
 
-fn publish_provenance_artifact(
+fn publish_provenance_artifact_inner(
     registry_name: &str,
     name: &str,
     version: &str,
@@ -6202,6 +7083,7 @@ fn publish_provenance_artifact(
     source_info: Option<&StorePathInfo>,
     manifest: &PublishExposeManifest,
     manifest_digest: &str,
+    documentation: Option<&DocumentationArtifactMeta>,
     signer: &PackageProvenanceSigner,
 ) -> Result<Option<PublishProvenanceArtifact>> {
     let Some(attestation) = publish_attestation_meta(
@@ -6215,11 +7097,17 @@ fn publish_provenance_artifact(
     else {
         return Ok(None);
     };
+    let attestation = match documentation {
+        Some(documentation) => {
+            bind_documentation_provenance(attestation, name, platform, documentation)?
+        }
+        None => attestation,
+    };
     let provenance = attestation.provenance.as_deref().map(str::to_string);
     let Some(provenance) = provenance else {
         return Ok(None);
     };
-    let statement = publish_provenance_statement(
+    let mut statement = publish_provenance_statement(
         registry_name,
         name,
         version,
@@ -6230,6 +7118,15 @@ fn publish_provenance_artifact(
         &attestation,
         &signer.key_id,
     )?;
+    if let Some(documentation) = documentation {
+        append_documentation_provenance_subject(
+            &mut statement,
+            name,
+            version,
+            platform,
+            documentation,
+        )?;
+    }
     let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
     Ok(Some(PublishProvenanceArtifact {
         path: provenance,
@@ -6239,7 +7136,61 @@ fn publish_provenance_artifact(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn publish_config_provenance_artifact(
+#[cfg(test)]
+fn publish_provenance_artifact(
+    registry_name: &str,
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+    source_info: Option<&StorePathInfo>,
+    manifest: &PublishExposeManifest,
+    manifest_digest: &str,
+    signer: &PackageProvenanceSigner,
+) -> Result<Option<PublishProvenanceArtifact>> {
+    publish_provenance_artifact_inner(
+        registry_name,
+        name,
+        version,
+        platform,
+        info,
+        source_info,
+        manifest,
+        manifest_digest,
+        None,
+        signer,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_provenance_artifact_with_documentation(
+    registry_name: &str,
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+    source_info: Option<&StorePathInfo>,
+    manifest: &PublishExposeManifest,
+    manifest_digest: &str,
+    documentation: &DocumentationArtifactMeta,
+    signer: &PackageProvenanceSigner,
+) -> Result<Option<PublishProvenanceArtifact>> {
+    publish_provenance_artifact_inner(
+        registry_name,
+        name,
+        version,
+        platform,
+        info,
+        source_info,
+        manifest,
+        manifest_digest,
+        Some(documentation),
+        signer,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_config_provenance_artifact_inner(
     registry_name: &str,
     name: &str,
     version: &str,
@@ -6249,6 +7200,7 @@ fn publish_config_provenance_artifact(
     module: &ConfigModuleMeta,
     expose_manifest_digest: Option<&str>,
     attestation: &AttestationMeta,
+    documentation: Option<&DocumentationArtifactMeta>,
     signer: &PackageProvenanceSigner,
 ) -> Result<PublishProvenanceArtifact> {
     let provenance = attestation
@@ -6300,12 +7252,156 @@ fn publish_config_provenance_artifact(
         "uri": base_lib.store_path,
         "digest": provenance_digest_map(&base_lib.nar_hash),
     }));
+    if let Some(documentation) = documentation {
+        append_documentation_provenance_subject(
+            &mut statement,
+            name,
+            version,
+            platform,
+            documentation,
+        )?;
+    }
     let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
     Ok(PublishProvenanceArtifact {
         path: provenance,
         jsonl,
         attestation: attestation.clone(),
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
+fn publish_config_provenance_artifact(
+    registry_name: &str,
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+    source_info: Option<&StorePathInfo>,
+    module: &ConfigModuleMeta,
+    expose_manifest_digest: Option<&str>,
+    attestation: &AttestationMeta,
+    signer: &PackageProvenanceSigner,
+) -> Result<PublishProvenanceArtifact> {
+    publish_config_provenance_artifact_inner(
+        registry_name,
+        name,
+        version,
+        platform,
+        info,
+        source_info,
+        module,
+        expose_manifest_digest,
+        attestation,
+        None,
+        signer,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_config_provenance_artifact_with_documentation(
+    registry_name: &str,
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+    source_info: Option<&StorePathInfo>,
+    module: &ConfigModuleMeta,
+    expose_manifest_digest: Option<&str>,
+    attestation: &AttestationMeta,
+    documentation: &DocumentationArtifactMeta,
+    signer: &PackageProvenanceSigner,
+) -> Result<PublishProvenanceArtifact> {
+    publish_config_provenance_artifact_inner(
+        registry_name,
+        name,
+        version,
+        platform,
+        info,
+        source_info,
+        module,
+        expose_manifest_digest,
+        attestation,
+        Some(documentation),
+        signer,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_documentation_provenance_artifact(
+    registry_name: &str,
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+    source_info: Option<&StorePathInfo>,
+    documentation: &DocumentationArtifactMeta,
+    attestation: &AttestationMeta,
+    signer: &PackageProvenanceSigner,
+) -> Result<PublishProvenanceArtifact> {
+    let provenance = attestation
+        .provenance
+        .clone()
+        .context("documentation attestation is missing its provenance reference")?;
+    let binding_digest = format!("sha256:{}", sha256_hex(b"aos.package-runtime-binding/v1"));
+    let mut statement = publish_provenance_statement(
+        registry_name,
+        name,
+        version,
+        platform,
+        info,
+        source_info,
+        &binding_digest,
+        attestation,
+        &signer.key_id,
+    )?;
+    append_documentation_provenance_subject(
+        &mut statement,
+        name,
+        version,
+        platform,
+        documentation,
+    )?;
+    let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
+    Ok(PublishProvenanceArtifact {
+        path: provenance,
+        jsonl,
+        attestation: attestation.clone(),
+    })
+}
+
+fn append_documentation_provenance_subject(
+    statement: &mut Value,
+    name: &str,
+    version: &str,
+    platform: &str,
+    documentation: &DocumentationArtifactMeta,
+) -> Result<()> {
+    let subjects = statement
+        .get_mut("subject")
+        .and_then(Value::as_array_mut)
+        .context("generated provenance statement has no subject array")?;
+    subjects.push(serde_json::json!({
+        "name": format!("aos:package-documentation:{name}:{version}:{platform}"),
+        "digest": provenance_digest_map(&documentation.nar_hash),
+    }));
+    subjects.push(serde_json::json!({
+        "name": format!("aos:package-document:{name}:{version}:{platform}"),
+        "digest": provenance_digest_map(&documentation.document_sha256),
+    }));
+    subjects.push(serde_json::json!({
+        "name": format!("aos:package-schema:{name}:{version}:{platform}"),
+        "digest": provenance_digest_map(&documentation.semantic_schema_sha256),
+    }));
+    let dependencies = statement
+        .pointer_mut("/predicate/buildDefinition/resolvedDependencies")
+        .and_then(Value::as_array_mut)
+        .context("generated provenance statement has no resolvedDependencies array")?;
+    dependencies.push(serde_json::json!({
+        "uri": documentation.store_path,
+        "digest": provenance_digest_map(&documentation.nar_hash),
+    }));
+    Ok(())
 }
 
 fn resolve_package_provenance_signer(
@@ -6486,6 +7582,29 @@ fn append_package_provenance_transparency_log(
             jsonl_sha256: format!("sha256:{}", sha256_hex(&provenance_file)),
         },
     };
+
+    if path.is_file() {
+        let content =
+            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        let (_, _, entries) =
+            parse_package_provenance_transparency_log(&content, &path.display().to_string())?;
+        if let Some(existing) = entries
+            .iter()
+            .find(|entry| entry.body.provenance == body.provenance)
+        {
+            let mut expected = body.clone();
+            expected.sequence = existing.body.sequence;
+            expected.previous_entry_hash = existing.body.previous_entry_hash.clone();
+            if existing.body == expected {
+                return Ok(path);
+            }
+            bail!(
+                "package transparency provenance '{}' is already bound to different publication metadata",
+                body.provenance
+            );
+        }
+    }
+
     let entry_hash = package_provenance_transparency_entry_hash(&body)?;
     let entry = PackageProvenanceTransparencyLogEntry { body, entry_hash };
     let parent = path
@@ -7932,6 +9051,33 @@ fn publish_provenance_ref(name: &str, platform: &str, measurement: &str) -> Resu
     ))
 }
 
+fn bind_documentation_provenance(
+    mut attestation: AttestationMeta,
+    name: &str,
+    platform: &str,
+    documentation: &DocumentationArtifactMeta,
+) -> Result<AttestationMeta> {
+    let measurement = attestation
+        .measurement
+        .as_deref()
+        .context("documented attestation is missing its measurement")?;
+    let measurement_hex = sha256_hex_payload(measurement).with_context(|| {
+        format!("package measurement must be a sha256 digest with 64 hex characters: {measurement}")
+    })?;
+    let documentation_hex =
+        sha256_hex_payload(&documentation_nar_identity(&documentation.nar_hash)?)
+            .context("documentation NAR identity is not a canonical sha256 digest")?;
+
+    validate_package_name(name)?;
+    validate_platform_name(platform)?;
+    attestation.provenance = Some(format!(
+        "provenance/{}/{name}/{platform}/{measurement_hex}-{documentation_hex}.intoto.jsonl",
+        package_name_bucket(name)
+    ));
+    validate_attestation_meta(&attestation)?;
+    Ok(attestation)
+}
+
 fn package_platform_table(
     name: &str,
     version: &str,
@@ -8164,6 +9310,11 @@ fn package_platform_table(
         if !manifest.expose.config.is_empty() {
             required_features.push(toml::Value::String(FEATURE_CONFIG_V1.to_string()));
         }
+        if manifest.expose.config.has_optional_credentials() {
+            required_features.push(toml::Value::String(
+                FEATURE_OPTIONAL_CREDENTIALS_V1.to_string(),
+            ));
+        }
         if manifest.expose.config.has_unit_reconciliation() {
             required_features.push(toml::Value::String(FEATURE_RELOAD_V1.to_string()));
         }
@@ -8242,6 +9393,55 @@ fn package_platform_table(
     }
 
     Ok(toml::Value::Table(table))
+}
+
+fn record_documentation_platform_fields(
+    table: &mut toml::map::Map<String, toml::Value>,
+    documentation: &DocumentationArtifactMeta,
+) -> Result<()> {
+    validate_documentation_artifact_meta(documentation)
+        .context("validating package documentation metadata for publish")?;
+    let feature = toml::Value::String(FEATURE_PACKAGE_DOCUMENTATION_V1.to_string());
+    let features = table
+        .entry("requires-features")
+        .or_insert_with(|| toml::Value::Array(Vec::new()))
+        .as_array_mut()
+        .context("platform requires-features metadata is not an array")?;
+    if !features.contains(&feature) {
+        features.push(feature.clone());
+    }
+    table.insert(
+        "min-format".into(),
+        toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
+    );
+
+    let references = table
+        .entry("references")
+        .or_insert_with(|| {
+            let mut references = toml::map::Map::new();
+            references.insert("hashes".into(), toml::Value::Array(Vec::new()));
+            toml::Value::Table(references)
+        })
+        .as_table_mut()
+        .context("platform references metadata is not a table")?;
+    references.insert(
+        "min-format".into(),
+        toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
+    );
+    let reference_features = references
+        .entry("requires-features")
+        .or_insert_with(|| toml::Value::Array(Vec::new()))
+        .as_array_mut()
+        .context("platform references requires-features metadata is not an array")?;
+    if !reference_features.contains(&feature) {
+        reference_features.push(feature);
+    }
+    table.insert(
+        "documentation".into(),
+        toml::Value::try_from(documentation)
+            .context("serializing package documentation metadata")?,
+    );
+    Ok(())
 }
 
 /// Records a `config_module` block and its fail-closed format gates.
@@ -13795,6 +14995,14 @@ pub struct ReleaseStorePublish {
     pub bless: bool,
     pub message: Option<String>,
     pub registry: String,
+    /// Stable roster identity corresponding to the resolved release key.
+    pub signing_key_id: Option<String>,
+}
+
+impl ReleaseStorePublish {
+    fn publish_signing_args(&self) -> (Option<&str>, Option<&str>) {
+        (None, self.signing_key_id.as_deref())
+    }
 }
 
 impl ReleaseTreeOptions {
@@ -13923,6 +15131,7 @@ pub async fn release(
     printer: &Printer,
 ) -> Result<()> {
     validate_release_publish_metadata(store_path, description, license, maintainer)?;
+    validate_release_publish_signing_identity(store_path, key_id)?;
 
     let version = semver::Version::parse(semver)
         .with_context(|| format!("parsing release semver '{semver}'"))?;
@@ -13969,6 +15178,7 @@ pub async fn release(
         bless,
         message: message.map(ToString::to_string),
         registry: registry_name.clone(),
+        signing_key_id: key_id.map(ToString::to_string),
     });
     let options = ReleaseTreeOptions {
         version,
@@ -14083,9 +15293,9 @@ fn read_bounded_container_json(path: &Path, label: &str) -> Result<Vec<u8>> {
 /// remain independent.
 async fn publish_release_store_path(
     publish_opts: &ReleaseStorePublish,
-    signing_key: &str,
     printer: &Printer,
 ) -> Result<()> {
+    let (key, key_id) = publish_opts.publish_signing_args();
     publish(
         &publish_opts.config,
         &publish_opts.store_path,
@@ -14107,13 +15317,14 @@ async fn publish_release_store_path(
         None,
         None,
         None,
+        None,
         &[],
         publish_opts.bless,
         false,
         false,
         publish_opts.message.as_deref(),
-        Some(signing_key),
-        None,
+        key,
+        key_id,
         Some(&publish_opts.registry),
         printer,
     )
@@ -14177,7 +15388,7 @@ pub async fn release_registry_tree(
     attach_container_release(dir, registry_name, options, printer)?;
 
     if let Some(publish) = &options.store_publish {
-        publish_release_store_path(publish, &options.signing_key, printer).await?;
+        publish_release_store_path(publish, printer).await?;
     }
 
     // Publishing cache unit (§9): generate into the internal staging dir, push
@@ -15595,6 +16806,97 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    fn documentation_declaration(path: &str, visibility: Visibility) -> DerivedOptionDeclaration {
+        DerivedOptionDeclaration {
+            path: path.split('.').map(str::to_string).collect(),
+            path_str: path.to_string(),
+            type_sig: "boolean".to_string(),
+            option_type: OptionType::Bool,
+            description: "Fixture option.".to_string(),
+            default: None,
+            example: None,
+            visibility,
+            read_only: false,
+            contributable: false,
+            owner: "nginx".to_string(),
+        }
+    }
+
+    #[test]
+    fn package_documentation_excludes_internal_module_plumbing() {
+        let declarations = [
+            documentation_declaration("nginx.enable", Visibility::Public),
+            documentation_declaration("nginx._aosExposeConfigProjection", Visibility::Internal),
+        ];
+
+        let paths = documented_option_declarations(&declarations)
+            .map(|declaration| declaration.path_str.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(paths, ["nginx.enable"]);
+    }
+
+    #[test]
+    fn package_documentation_preserves_the_nar_byte_identity() {
+        let expected = format!("sha256:{}", "0".repeat(64));
+        assert_eq!(documentation_nar_identity(&expected).unwrap(), expected);
+
+        let sri = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        assert_eq!(documentation_nar_identity(sri).unwrap(), expected);
+
+        let nix_base32 = format!("sha256:{}", "0".repeat(52));
+        assert_eq!(documentation_nar_identity(&nix_base32).unwrap(), expected);
+    }
+
+    #[test]
+    fn publish_platform_uses_cross_target_marker() {
+        let output = TempDir::new().unwrap();
+        let support = output.path().join("nix-support");
+        fs::create_dir(&support).unwrap();
+        fs::write(support.join("aos-target-platform"), "aarch64-darwin\n").unwrap();
+
+        assert_eq!(
+            resolve_publish_platform(output.path().to_str().unwrap(), None).unwrap(),
+            "aarch64-darwin"
+        );
+    }
+
+    #[test]
+    fn publish_platform_accepts_matching_explicit_target() {
+        let output = TempDir::new().unwrap();
+        let support = output.path().join("nix-support");
+        fs::create_dir(&support).unwrap();
+        fs::write(support.join("aos-target-platform"), "x86_64-darwin\n").unwrap();
+
+        assert_eq!(
+            resolve_publish_platform(output.path().to_str().unwrap(), Some("x86_64-darwin"))
+                .unwrap(),
+            "x86_64-darwin"
+        );
+    }
+
+    #[test]
+    fn publish_platform_rejects_mismatched_explicit_target() {
+        let output = TempDir::new().unwrap();
+        let support = output.path().join("nix-support");
+        fs::create_dir(&support).unwrap();
+        fs::write(support.join("aos-target-platform"), "aarch64-darwin\n").unwrap();
+
+        let error = resolve_publish_platform(output.path().to_str().unwrap(), Some("x86_64-linux"))
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("disagrees with target platform marker"));
+    }
+
+    #[test]
+    fn publish_platform_preserves_native_fallback_for_legacy_outputs() {
+        let output = TempDir::new().unwrap();
+
+        assert_eq!(
+            resolve_publish_platform(output.path().to_str().unwrap(), None).unwrap(),
+            native_platform()
+        );
+    }
+
     #[test]
     fn portable_filename_accepts_sd_boot_counting_suffix() {
         validate_single_filename("aos-server-2026.08+3.efi", "UKI filename")
@@ -16020,8 +17322,8 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store =
             write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
-        let image_path = Path::new(&store.path).join("aos-test.img.zst");
         let image = inspect_test_image("raw", store, "2026.08", "x86_64-linux").unwrap();
+        let image_path = image.disk.path.clone();
         fs::rename(&image_path, temp.path().join("original.img")).unwrap();
         fs::write(&image_path, b"replacement bytes").unwrap();
         assert!(image.recheck_for_commit().is_err());
@@ -16109,7 +17411,7 @@ mod tests {
         image.sb.signer_cert_sha256 = Some(signer.clone());
         image.delivery.uki.verification = ImageVerificationState::SignedUnverified;
 
-        apply_publish_sb_policy(std::slice::from_mut(&mut image), None, false).unwrap();
+        apply_publish_sb_policy(std::slice::from_mut(&mut image), None, false, false).unwrap();
         assert_eq!(
             image.delivery.uki.verification,
             ImageVerificationState::SignedUnverified
@@ -16123,10 +17425,16 @@ mod tests {
             ..SbCertsToml::default()
         };
         assert!(
-            apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&active), false)
-                .is_err()
+            apply_publish_sb_policy(
+                std::slice::from_mut(&mut image),
+                Some(&active),
+                false,
+                false
+            )
+            .is_err()
         );
-        apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&active), true).unwrap();
+        apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&active), true, false)
+            .unwrap();
         assert_eq!(
             image.delivery.uki.verification,
             ImageVerificationState::PolicyVerified
@@ -16141,8 +17449,48 @@ mod tests {
             ..SbCertsToml::default()
         };
         assert!(
-            apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&revoked), true)
+            apply_publish_sb_policy(
+                std::slice::from_mut(&mut image),
+                Some(&revoked),
+                true,
+                false
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn secure_boot_publish_policy_enforces_opt_in_signed_uki_gate() {
+        let temp = TempDir::new().unwrap();
+        let store =
+            write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
+        let mut image = inspect_test_image("raw", store, "2026.08", "x86_64-linux").unwrap();
+
+        let error = apply_publish_sb_policy(std::slice::from_mut(&mut image), None, false, true)
+            .unwrap_err();
+        assert!(error.to_string().contains("refuses unsigned UKIs"));
+
+        let signer = "e".repeat(64);
+        image.sb.signer_cert_sha256 = Some(signer.clone());
+        let active = SbCertsToml {
+            active: vec![SbCert {
+                id: "staging".into(),
+                cert_sha256: signer,
+            }],
+            ..SbCertsToml::default()
+        };
+        assert!(
+            apply_publish_sb_policy(std::slice::from_mut(&mut image), None, true, true).is_err()
+        );
+        assert!(
+            apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&active), false, true)
                 .is_err()
+        );
+        apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&active), true, true)
+            .unwrap();
+        assert_eq!(
+            image.delivery.uki.verification,
+            ImageVerificationState::PolicyVerified
         );
     }
 
@@ -16217,8 +17565,25 @@ mod tests {
                 contributable: vec!["allowedTCPPorts".to_string()],
             }],
             contributes: vec![],
+            artifacts: Default::default(),
             provides_capabilities: vec!["system.capabilities.dns-resolver".to_string()],
         }
+    }
+
+    #[test]
+    fn publication_validates_explicit_same_name_owned_root() {
+        let declarations = vec!["nginx.enable".to_string(), "nginx.virtualHosts".to_string()];
+        let owned = vec![OwnedRoot {
+            root: "nginx".to_string(),
+            interface_abi: 1,
+            contributable: vec!["virtualHosts".to_string()],
+        }];
+
+        assert_eq!(
+            derive_owned_root_names(&declarations, "nginx", &owned),
+            vec!["nginx".to_string()]
+        );
+        assert!(derive_owned_root_names(&declarations, "nginx", &[]).is_empty());
     }
 
     #[test]
@@ -16325,6 +17690,24 @@ mod tests {
 
         assert!(contributes.is_empty());
         assert!(capabilities.is_empty());
+    }
+
+    #[test]
+    fn config_interface_scan_does_not_reinterpret_owned_config_suffixes() {
+        let tmp = TempDir::new().expect("temporary config module");
+        fs::write(
+            tmp.path().join("module.nix"),
+            "{ config, ... }: {\n  config = {\n    cloudcore.config.runtime.CLOUDCORE_ENABLED = true;\n    cloudcore.config.listener.PORT = config.cloudcore.https.port;\n  };\n}\n",
+        )
+        .expect("write module");
+
+        let (contributes, capabilities, requires) =
+            scan_config_module_interface(tmp.path(), "cloudcore", &["cloudcore".to_string()], &[])
+                .expect("scan module");
+
+        assert!(contributes.is_empty());
+        assert!(capabilities.is_empty());
+        assert!(requires.is_empty());
     }
 
     #[test]
@@ -16532,6 +17915,93 @@ mod tests {
                 .any(|feature| { feature == FEATURE_CONFIG_MODULE_V1 })
         );
         assert_eq!(parsed.attestation.provenance, attestation.provenance);
+    }
+
+    #[test]
+    fn build_package_toml_binds_documentation_as_a_signed_platform_artifact() {
+        let info = StorePathInfo {
+            path: "/nix/store/0000000000000000000000000000000d-firewall-1".to_string(),
+            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            nar_size: 1024,
+            references: vec![],
+            closure_size: 1024,
+        };
+        let documentation = DocumentationArtifactMeta {
+            format: aos_doc_model::DOCUMENT_FORMAT.to_string(),
+            store_path: "/nix/store/0000000000000000000000000000000e-firewall-docs.json"
+                .to_string(),
+            nar_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .to_string(),
+            nar_size: 512,
+            document_sha256:
+                "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    .to_string(),
+            document_size: 384,
+            semantic_schema_sha256:
+                "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                    .to_string(),
+            system_module_nar_hash: None,
+            references: vec![],
+        };
+        let attestation = AttestationMeta {
+            root_digest: Some(info.nar_hash.clone()),
+            provenance: Some("provenance/firewall/1/x86_64-linux.jsonl".to_string()),
+            measurement: Some(
+                "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                    .to_string(),
+            ),
+            ..AttestationMeta::default()
+        };
+
+        let content = build_package_toml_with_documentation(
+            "",
+            "firewall",
+            "1",
+            "x86_64-linux",
+            &info,
+            Some("Firewall configuration"),
+            None,
+            Some("Apache-2.0"),
+            Some("Andyl, Inc."),
+            false,
+            None,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&documentation),
+            Some(&attestation),
+        )
+        .expect("render documentation-bearing package metadata");
+
+        let parsed = crate::registry::parse::parse_package_toml(&content, "x86_64-linux")
+            .expect("parse package metadata")
+            .expect("matching platform");
+        assert_eq!(parsed.documentation, Some(documentation));
+        assert!(
+            parsed
+                .requires_features
+                .iter()
+                .any(|feature| feature == FEATURE_PACKAGE_DOCUMENTATION_V1)
+        );
+        let documented_attestation = bind_documentation_provenance(
+            attestation,
+            "firewall",
+            "x86_64-linux",
+            parsed
+                .documentation
+                .as_ref()
+                .expect("parsed documentation metadata"),
+        )
+        .expect("bind documentation provenance");
+        assert_eq!(
+            parsed.attestation.provenance,
+            documented_attestation.provenance
+        );
     }
 
     fn test_release_options(tmp: &TempDir) -> ReleaseTreeOptions {
@@ -18420,6 +19890,52 @@ mod tests {
     }
 
     #[test]
+    fn release_store_path_requires_and_preserves_roster_identity() {
+        assert!(validate_release_publish_signing_identity(None, None).is_ok());
+        let error =
+            validate_release_publish_signing_identity(Some("/nix/store/example-package"), None)
+                .unwrap_err();
+        assert!(format!("{error:#}").contains("requires --key-id"));
+        assert!(
+            validate_release_publish_signing_identity(
+                Some("/nix/store/example-package"),
+                Some("initial"),
+            )
+            .is_ok()
+        );
+
+        let publish = ReleaseStorePublish {
+            config: ApmConfig {
+                settings: ApmSettings::default(),
+                registries: Vec::new(),
+                scope: ProfileScope::User,
+            },
+            store_path: "/nix/store/example-package".into(),
+            name: None,
+            version: None,
+            platform: None,
+            description: Some("Example package".into()),
+            homepage: None,
+            license: Some("MIT".into()),
+            maintainer: Some("Andyl, Inc.".into()),
+            sysroot: false,
+            previous: None,
+            source_drv: None,
+            image_payload_paths: Vec::new(),
+            image_disk_paths: Vec::new(),
+            image_info_paths: Vec::new(),
+            image_formats: Vec::new(),
+            image_uki_paths: Vec::new(),
+            bless: false,
+            message: None,
+            registry: "production".into(),
+            signing_key_id: Some("initial".into()),
+        };
+        assert_eq!(publish.signing_key_id.as_deref(), Some("initial"));
+        assert_eq!(publish.publish_signing_args(), (None, Some("initial")));
+    }
+
+    #[test]
     fn build_package_toml_refreshes_package_metadata() {
         let info = StorePathInfo {
             path: "/nix/store/abc123-curl-8.5.0".into(),
@@ -19560,6 +21076,76 @@ source_nar_hash = ""
     }
 
     #[test]
+    fn documented_provenance_paths_change_with_the_documentation_nar() {
+        let measurement = crate::package_attestation::package_measurement_digest(
+            "webapp",
+            "1.0.0",
+            "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        );
+        let attestation = AttestationMeta {
+            root_digest: Some(
+                "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    .to_string(),
+            ),
+            measurement: Some(measurement),
+            ..AttestationMeta::default()
+        };
+        let documentation = |nar_hash: &str| DocumentationArtifactMeta {
+            format: aos_doc_model::DOCUMENT_FORMAT.to_string(),
+            store_path: "/nix/store/0000000000000000000000000000000e-webapp-docs.json".to_string(),
+            nar_hash: nar_hash.to_string(),
+            nar_size: 512,
+            document_sha256:
+                "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                    .to_string(),
+            document_size: 384,
+            semantic_schema_sha256:
+                "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                    .to_string(),
+            system_module_nar_hash: None,
+            references: vec![],
+        };
+
+        let first = bind_documentation_provenance(
+            attestation.clone(),
+            "webapp",
+            "x86_64-linux",
+            &documentation(
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+        )
+        .unwrap();
+        let second = bind_documentation_provenance(
+            attestation,
+            "webapp",
+            "x86_64-linux",
+            &documentation(
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+        )
+        .unwrap();
+
+        assert_ne!(first.provenance, second.provenance);
+        assert!(
+            first
+                .provenance
+                .as_deref()
+                .is_some_and(|path| path.ends_with(
+                    "-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.intoto.jsonl"
+                ))
+        );
+        assert!(
+            second
+                .provenance
+                .as_deref()
+                .is_some_and(|path| path.ends_with(
+                    "-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.intoto.jsonl"
+                ))
+        );
+    }
+
+    #[test]
     fn publish_provenance_ref_rejects_malformed_measurements() {
         assert!(publish_provenance_ref("webapp", "x86_64-linux", "not-a-digest").is_err());
         assert!(publish_provenance_ref("webapp", "x86_64-linux", "sha256:abcd").is_err());
@@ -19631,7 +21217,7 @@ source_nar_hash = ""
     }
 
     #[test]
-    fn append_package_provenance_transparency_log_records_hash_chain() {
+    fn append_package_provenance_transparency_log_is_idempotent() {
         let tmp = TempDir::new().unwrap();
         let (info, source, artifact) = sample_transparency_provenance();
         let provenance_path = write_sample_provenance_artifact(tmp.path(), &artifact);
@@ -19669,7 +21255,7 @@ source_nar_hash = ""
             .map(|line| serde_json::from_str::<PackageProvenanceTransparencyLogEntry>(line))
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].body.sequence, 0);
         assert_eq!(entries[0].body.previous_entry_hash, None);
         assert_eq!(entries[0].body.package, "webapp");
@@ -19692,14 +21278,9 @@ source_nar_hash = ""
             entries[0].entry_hash,
             package_provenance_transparency_entry_hash(&entries[0].body).unwrap()
         );
-        assert_eq!(entries[1].body.sequence, 1);
-        assert_eq!(
-            entries[1].body.previous_entry_hash.as_deref(),
-            Some(entries[0].entry_hash.as_str())
-        );
         assert_eq!(
             read_package_provenance_transparency_log_state(&log_path).unwrap(),
-            (2, Some(entries[1].entry_hash.clone()))
+            (1, Some(entries[0].entry_hash.clone()))
         );
     }
 
@@ -19760,15 +21341,21 @@ source_nar_hash = ""
             &provenance_path,
         )
         .unwrap();
+        let (_, _, mut second_artifact) = sample_transparency_provenance();
+        second_artifact.path = second_artifact
+            .path
+            .replace(".intoto.jsonl", "-second.intoto.jsonl");
+        second_artifact.attestation.provenance = Some(second_artifact.path.clone());
+        let second_provenance_path = write_sample_provenance_artifact(tmp.path(), &second_artifact);
         append_package_provenance_transparency_log(
             tmp.path(),
-            "webapp",
+            "worker",
             "1.0.0",
             "x86_64-linux",
             &info,
             Some(&source),
-            &artifact,
-            &provenance_path,
+            &second_artifact,
+            &second_provenance_path,
         )
         .unwrap();
         let content = fs::read_to_string(&log_path).unwrap();

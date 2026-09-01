@@ -10,13 +10,16 @@ use std::path::PathBuf;
 fn gate_single_vm_fingerprint_owns_terminal_state_export() -> Result<(), Box<dyn Error>> {
     let root = workspace_root()?;
     let args = fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/args.rs"))?;
+    let state_dump =
+        fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/args/state_dump.rs"))?;
     let dump = fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/raw_state_dump.rs"))?;
     let gate =
         fs::read_to_string(root.join("tests/crucible/phase2-qemu-live-plugin-fingerprint.nix"))?;
 
     assert!(args.contains("StateDumpWithoutFingerprint"));
-    assert!(args.contains("target_icount == 0"));
-    assert!(args.contains("!output_path.is_absolute()"));
+    assert!(args.contains("let state_dump = state_dump::parse(&parsed, fingerprint)?"));
+    assert!(state_dump.contains("target_icount == 0"));
+    assert!(state_dump.contains("!output_path.is_absolute()"));
     assert!(dump.contains("qemu_plugin_crucible_request_terminal_pause"));
     assert!(dump.contains("qemu_plugin_crucible_guest_ram_regions"));
     assert!(dump.contains("qemu_plugin_crucible_vmstate_snapshot_begin"));

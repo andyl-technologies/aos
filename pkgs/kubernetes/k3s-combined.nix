@@ -14,6 +14,7 @@
   util-linux,
   kmod,
   coreutils,
+  jq,
   writeShellScriptBin,
 }: let
   mkK3sExposePackage = import ./_k3s-expose-package.nix {
@@ -33,15 +34,17 @@
       util-linux
       kmod
       coreutils
+      jq
       writeShellScriptBin
       ;
   };
 in
   mkK3sExposePackage {
     pname = "k3s-combined";
+    role = "combined";
     description = "Lightweight Kubernetes (combined: server + agent)";
     command = "server";
-    requiredEnv = ["K3S_TOKEN"];
+    requiredEnv = [];
     firewall = {
       allowedTCP = [6443 10250];
       allowedUDP = [8472];

@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  stdenv,
 }: let
   version = "1.10.0";
 in
@@ -21,6 +22,8 @@ in
     runtimeDeps = [];
     propagatedDeps = [];
 
+    # The build machine's uname remains Linux during a cross build. Tell the
+    # upstream makefiles which target naming and install-name rules to use.
     phases = [
       {
         name = "unpack";
@@ -32,13 +35,21 @@ in
       {
         name = "build";
         script = ''
-          make PREFIX=$out -j$NIX_BUILD_CORES
+          make PREFIX=$out -j$NIX_BUILD_CORES ${
+            if stdenv.hostPlatform.isDarwin
+            then "TARGET_OS=Darwin"
+            else ""
+          }
         '';
       }
       {
         name = "install";
         script = ''
-          make install PREFIX=$out
+          make install PREFIX=$out ${
+            if stdenv.hostPlatform.isDarwin
+            then "TARGET_OS=Darwin"
+            else ""
+          }
         '';
       }
     ];

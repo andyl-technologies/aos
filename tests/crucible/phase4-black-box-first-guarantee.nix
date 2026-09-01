@@ -5,11 +5,7 @@
   taskIds ? ["T-TRIG-19"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   blackBoxTest = builtins.readFile ../../crates/crucible/tests/black_box_first_guarantee.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
@@ -57,14 +53,6 @@
       {
         label = "readiness coverage observation";
         needle = "Predicate::coverage_point";
-      }
-      {
-        label = "fault injection action";
-        needle = "Action::inject_fault";
-      }
-      {
-        label = "timer heal action";
-        needle = "Action::heal_fault";
       }
       {
         label = "properties assertion state steering";

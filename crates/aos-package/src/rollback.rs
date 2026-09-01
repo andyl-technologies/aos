@@ -18,6 +18,7 @@ use anyhow::{Result, bail};
 
 use super::config::ApmConfig;
 use super::exposed_units::{rebuild_generation_expose_roots, reconcile_system_profile};
+use super::platform::native_platform;
 use super::profile::Profile;
 use super::profile::meta::{self, list_meta};
 use super::registry::RegistrySet;
@@ -39,7 +40,7 @@ pub async fn list(config: &ApmConfig, printer: &Printer) -> Result<()> {
     let generations = profile.list_generations()?;
     let current = profile.current_generation()?.map(|g| g.number);
     let reg_configs = config.enabled_registries();
-    let registries = RegistrySet::load(&config.cache_path(), &reg_configs, "x86_64-linux")?;
+    let registries = RegistrySet::load(&config.cache_path(), &reg_configs, &native_platform())?;
 
     if printer.mode() == OutputMode::Json {
         let mut json_generations = Vec::new();
@@ -368,7 +369,7 @@ fn root_json(hash: &str, path: &PathBuf, registries: &RegistrySet) -> serde_json
 /// Load the enabled registries' caches for root resolution.
 fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
-    RegistrySet::load(&config.cache_path(), &reg_configs, "x86_64-linux")
+    RegistrySet::load(&config.cache_path(), &reg_configs, &native_platform())
 }
 
 /// Number of system generations to surface as a `--system` hint, or `None`.
@@ -456,6 +457,7 @@ pub fn execute_cross_abi_reeval(
         eval_root,
         out,
         verbose,
+        None,
     )
 }
 

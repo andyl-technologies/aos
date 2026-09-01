@@ -57,7 +57,7 @@
       }
       {
         label = "vendored cargo deps";
-        needle = "cargoDeps = fetchCargoDeps";
+        needle = "cargoDeps = fetchCargoVendor";
       }
       {
         label = "plugin crate cargo build";

@@ -1,0 +1,1199 @@
+diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+index 285d36133..7a657fff1 100644
+--- a/accel/tcg/icount-common.c
++++ b/accel/tcg/icount-common.c
+@@ -270,6 +270,23 @@ int64_t icount_to_ns(int64_t icount)
+     return icount << qatomic_read(&timers_state.icount_time_shift);
+ }
+ 
++bool icount_crucible_instructions_to_ns(uint64_t instructions,
++                                        int64_t *nanoseconds)
++{
++    __uint128_t scaled;
++
++    if (!nanoseconds) {
++        return false;
++    }
++    scaled = (__uint128_t)instructions <<
++             qatomic_read(&timers_state.icount_time_shift);
++    if (scaled > INT64_MAX) {
++        return false;
++    }
++    *nanoseconds = scaled;
++    return true;
++}
++
+ /*
+  * Correlation between real and virtual time is always going to be
+  * fairly approximate, so ignore small variation.
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index e5a54f3b6..8bc1b2109 100644
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -120,7 +120,8 @@ static bool rr_crucible_sim_skip_second_events_pass(CPUState *cpu)
+ 
+ static bool rr_crucible_sim_vcpu_is_halted(CPUState *cpu)
+ {
+-    return cpu->halted && !cpu_has_work(cpu);
++    return !qemu_crucible_fault_vcpu_service_eligible(cpu) ||
++           (cpu->halted && !cpu_has_work(cpu));
+ }
+ 
+ static bool rr_crucible_sim_all_vcpus_halted(void)
+@@ -223,6 +224,8 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+ 
+     while (true) {
+         int r;
++        uint64_t service_before;
++        uint64_t service_after;
+ 
+         if (rr_crucible_sim_mode() &&
+             qemu_plugin_time_advance_is_pending()) {
+@@ -279,6 +282,12 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+             }
+         }
+ 
++        *cpu_budget = qemu_crucible_fault_vcpu_service_clamp_budget(
++            cpu, *cpu_budget);
++        if (*cpu_budget == 0) {
++            return false;
++        }
++        service_before = qemu_plugin_icount_raw();
+         bql_unlock();
+         if (icount_enabled()) {
+             icount_prepare_for_run(cpu, *cpu_budget);
+@@ -293,6 +302,15 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+         }
+         qemu_plugin_maybe_fire_tcg_exec_cb(cpu);
+         bql_lock();
++        if (r == EXCP_ATOMIC) {
++            bql_unlock();
++            cpu_exec_step_atomic(cpu);
++            bql_lock();
++        }
++        service_after = qemu_plugin_icount_raw();
++        qemu_crucible_fault_vcpu_service_account(
++            cpu, service_before, service_after,
++            r != EXCP_HALTED && cpu_can_run(cpu));
+ 
+         if (rr_crucible_sim_mode() &&
+             qemu_crucible_fault_next_icount(
+@@ -321,9 +339,6 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+             cpu_handle_guest_debug(cpu);
+             return true;
+         } else if (r == EXCP_ATOMIC) {
+-            bql_unlock();
+-            cpu_exec_step_atomic(cpu);
+-            bql_lock();
+             return true;
+         } else if (r == EXCP_HALTED) {
+             return false;
+@@ -641,7 +656,9 @@ static void *rr_cpu_thread_fn(void *arg)
+                 }
+             }
+ 
+-            if (cpu_can_run(cpu)) {
++            if (!qemu_crucible_fault_vcpu_service_eligible(cpu)) {
++                qemu_crucible_fault_vcpu_service_skipped(cpu);
++            } else if (cpu_can_run(cpu)) {
+                 if (rr_crucible_sim_run_tcg_batch(&cpu, &cpu_budget)) {
+                     break;
+                 }
+diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
+index 9d38f9825..8b3eced85 100644
+--- a/include/qemu/crucible-fault.h
++++ b/include/qemu/crucible-fault.h
+@@ -229,6 +229,21 @@ bool qemu_crucible_fault_hardware_exception_delivered(
+     bool has_fault_address, uint64_t fault_address);
+ void qemu_crucible_fault_hardware_error_event_terminal(void);
+ 
++/* Deterministic vCPU service and fixed-topology eligibility control. */
++int qemu_crucible_fault_vcpu_service_validate(
++    const QemuCrucibleFaultRule *rule);
++void qemu_crucible_fault_vcpu_service_rules_changed(
++    const QemuCrucibleFaultRule *transition_rule,
++    QemuCrucibleFaultEventReservation **event_reservation);
++bool qemu_crucible_fault_vcpu_service_eligible(CPUState *cpu);
++void qemu_crucible_fault_vcpu_service_skipped(CPUState *cpu);
++int64_t qemu_crucible_fault_vcpu_service_clamp_budget(
++    CPUState *cpu, int64_t budget);
++void qemu_crucible_fault_vcpu_service_account(
++    CPUState *cpu, uint64_t before_icount, uint64_t after_icount,
++    bool runnable_after);
++void qemu_crucible_fault_vcpu_service_event_terminal(void);
++
+ /*
+  * Architecture interrupt-controller interception contract.  These objects are
+  * private QEMU process state: only their closed scalar projection is exported
+diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
+index 8c62f9823..fe2bc7c3c 100644
+--- a/include/system/cpu-timers.h
++++ b/include/system/cpu-timers.h
+@@ -62,6 +62,10 @@ int64_t icount_get(void);
+  */
+ int64_t icount_to_ns(int64_t icount);
+ 
++/* Convert an unsigned Crucible service interval without signed overflow. */
++bool icount_crucible_instructions_to_ns(uint64_t instructions,
++                                        int64_t *nanoseconds);
++
+ /**
+  * icount_configure: configure the icount options, including "shift"
+  * @opts: Options to parse
+diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
+index f4de87a4b..24bdbb225 100644
+--- a/plugins/crucible-fault-node.c
++++ b/plugins/crucible-fault-node.c
+@@ -3304,6 +3304,16 @@ static int node_prepare(
+             return status;
+         }
+     }
++    if (staging->rule.command_kind == CRUCIBLE_FAULT_COMMAND_CPU_SERVICE ||
++        staging->rule.command_kind == CRUCIBLE_FAULT_COMMAND_CPU_VCPU_STATE) {
++        status = qemu_crucible_fault_vcpu_service_validate(&staging->rule);
++        if (status != 0) {
++            result->status = status == -ENOTSUP ?
++                CRUCIBLE_FAULT_STATUS_UNSUPPORTED_CAPABILITY :
++                CRUCIBLE_FAULT_STATUS_INVALID_TARGET;
++            return status;
++        }
++    }
+     node_sha256(payload, payload_len, staging->request_hash);
+     node_rules_digest_with(NULL, false, staging->before_hash);
+     if (command->command_flags & CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY) {
+@@ -3337,6 +3347,18 @@ static int node_prepare(
+         }
+         memcpy(staging->after_hash, staging->before_hash, 32);
+     }
++    if ((staging->rule.operation ==
++             CRUCIBLE_NODE_FAULT_OPERATION_UPSERT ||
++         staging->rule.operation ==
++             CRUCIBLE_NODE_FAULT_OPERATION_REMOVE) &&
++        staging->rule.command_kind ==
++            CRUCIBLE_FAULT_COMMAND_CPU_VCPU_STATE) {
++        staging->event_reservation = qemu_crucible_fault_event_reserve(1);
++        if (!staging->event_reservation) {
++            result->status = CRUCIBLE_FAULT_STATUS_RESOURCE_LIMIT;
++            return -ENOSPC;
++        }
++    }
+     memcpy(result->before_hash, staging->before_hash, 32);
+     memcpy(result->after_hash, staging->after_hash, 32);
+     node_encode_evidence(staging, result_payload);
+@@ -3448,6 +3470,7 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
+         qemu_crucible_fault_instruction_event_terminal();
+         qemu_crucible_fault_interrupt_event_terminal();
+         qemu_crucible_fault_hardware_error_event_terminal();
++        qemu_crucible_fault_vcpu_service_event_terminal();
+         qemu_crucible_fault_notify_events();
+         qemu_system_vmstop_request_prepare();
+         qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
+@@ -3479,6 +3502,13 @@ static void node_commit(
+         node_memory_index_rebuild();
+         qemu_crucible_fault_instruction_rules_changed();
+         qemu_crucible_fault_interrupt_rules_changed();
++        qemu_crucible_fault_vcpu_service_rules_changed(
++            &staging->rule, &staging->event_reservation);
++        if (staging->event_reservation) {
++            qemu_crucible_fault_event_reservation_release(
++                staging->event_reservation);
++            staging->event_reservation = NULL;
++        }
+         node_memory_retention_deadline_recompute();
+     } else if (staging->rule.operation ==
+                CRUCIBLE_NODE_FAULT_OPERATION_REMOVE) {
+@@ -3488,6 +3518,13 @@ static void node_commit(
+         node_memory_index_rebuild();
+         qemu_crucible_fault_instruction_rules_changed();
+         qemu_crucible_fault_interrupt_rules_changed();
++        qemu_crucible_fault_vcpu_service_rules_changed(
++            &staging->rule, &staging->event_reservation);
++        if (staging->event_reservation) {
++            qemu_crucible_fault_event_reservation_release(
++                staging->event_reservation);
++            staging->event_reservation = NULL;
++        }
+         node_memory_retention_deadline_recompute();
+     } else {
+         uint8_t opportunity_hash[32];
+@@ -3582,6 +3619,11 @@ void qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
+         handler->capability.required_feature_bits =
+             CRUCIBLE_FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR;
+         break;
++    case CRUCIBLE_FAULT_COMMAND_CPU_SERVICE:
++    case CRUCIBLE_FAULT_COMMAND_CPU_VCPU_STATE:
++        handler->capability.required_feature_bits =
++            CRUCIBLE_FAULT_CAPABILITY_FEATURE_VCPU_SERVICE;
++        break;
+     case CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM:
+     case CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE:
+     case CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE:
+diff --git a/plugins/crucible-fault-vcpu-service.c b/plugins/crucible-fault-vcpu-service.c
+new file mode 100644
+index 000000000..ff1e179e4
+--- /dev/null
++++ b/plugins/crucible-fault-vcpu-service.c
+@@ -0,0 +1,950 @@
++/*
++ * Crucible deterministic vCPU service and fixed-topology eligibility faults
++ *
++ * Copyright (c) 2026 ANDYL Technologies
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "hw/core/cpu.h"
++#include "qemu/accel.h"
++#include "qemu/bswap.h"
++#include "qemu/crucible-fault.h"
++#include "qemu/error-report.h"
++#include "qemu/module.h"
++#include "qemu/qemu-plugin.h"
++#include "qobject/qlist.h"
++#include "qobject/qnum.h"
++#include "system/cpu-timers.h"
++#include "system/runstate.h"
++
++#define CRUCIBLE_VCPU_SERVICE_EVIDENCE_BYTES 192
++#define CRUCIBLE_VCPU_STATE_EVIDENCE_BYTES 192
++#define CRUCIBLE_VCPU_SERVICE_MAX_VCPUS 4096
++
++enum CrucibleVcpuFaultState {
++    CRUCIBLE_VCPU_ONLINE = 1,
++    CRUCIBLE_VCPU_OFFLINE = 2,
++    CRUCIBLE_VCPU_STALLED = 3,
++};
++
++enum CrucibleVcpuServiceDiscipline {
++    CRUCIBLE_VCPU_WORK_CONSERVING = 1,
++    CRUCIBLE_VCPU_STRICT_CAP = 2,
++};
++
++typedef struct CrucibleVcpuService {
++    uint64_t numerator;
++    uint64_t denominator;
++    uint64_t quantum;
++    uint64_t remainder;
++    uint64_t window_remainder_before;
++    uint64_t credit_remaining;
++    uint64_t window_credit;
++    uint64_t window_retired;
++    uint64_t denied_pending;
++    uint64_t skipped_selections;
++    uint64_t window_sequence;
++    uint64_t grant_own;
++    uint64_t grant_borrowed;
++    uint64_t window_own_retired;
++    uint64_t window_borrowed_retired;
++    uint64_t donated_credit;
++    uint32_t discipline;
++    uint32_t state;
++    GPtrArray *service_rules;
++    QemuCrucibleFaultRule *controller_rule;
++    QemuCrucibleFaultRule *state_rule;
++    QemuCrucibleFaultEventReservation *window_reservation;
++} CrucibleVcpuService;
++
++typedef struct CrucibleVcpuRuleApply {
++    const QemuCrucibleFaultRule *rule;
++    bool state_rule;
++} CrucibleVcpuRuleApply;
++
++static GArray *crucible_vcpu_services;
++static bool crucible_vcpu_service_terminal;
++
++static bool crucible_vcpu_service_mode(void)
++{
++    return strcmp(current_accel_name(), "sim") == 0 &&
++           icount_enabled() == ICOUNT_PRECISE &&
++           icount_crucible_rr_switch_quantum() != 0;
++}
++
++static bool crucible_vcpu_field(const QemuCrucibleFaultRule *rule,
++                                uint16_t tag, uint16_t type,
++                                const uint8_t **data, uint32_t *length)
++{
++    return qemu_crucible_fault_rule_field(rule, tag, type, data, length);
++}
++
++static bool crucible_vcpu_u32(const QemuCrucibleFaultRule *rule,
++                              uint16_t tag, uint32_t *value)
++{
++    const uint8_t *data;
++    uint32_t length;
++
++    if (!crucible_vcpu_field(rule, tag,
++            CRUCIBLE_NODE_FAULT_FIELD_TYPE_U32, &data, &length) ||
++        length != sizeof(*value)) {
++        return false;
++    }
++    *value = ldl_le_p(data);
++    return true;
++}
++
++static bool crucible_vcpu_u64(const QemuCrucibleFaultRule *rule,
++                              uint16_t tag, uint64_t *value)
++{
++    const uint8_t *data;
++    uint32_t length;
++
++    if (!crucible_vcpu_field(rule, tag,
++            CRUCIBLE_NODE_FAULT_FIELD_TYPE_U64, &data, &length) ||
++        length != sizeof(*value)) {
++        return false;
++    }
++    *value = ldq_le_p(data);
++    return true;
++}
++
++static bool crucible_vcpu_ratio(const QemuCrucibleFaultRule *rule,
++                                uint64_t *numerator, uint64_t *denominator)
++{
++    const uint8_t *data;
++    uint32_t length;
++
++    if (!crucible_vcpu_field(rule, CRUCIBLE_NODE_FAULT_FIELD_P2,
++            CRUCIBLE_NODE_FAULT_FIELD_TYPE_RATIO, &data, &length) ||
++        length != 16) {
++        return false;
++    }
++    *numerator = ldq_le_p(data);
++    *denominator = ldq_le_p(data + 8);
++    return *numerator != 0 && *numerator <= *denominator;
++}
++
++static uint64_t crucible_vcpu_gcd(uint64_t left, uint64_t right)
++{
++    while (right != 0) {
++        uint64_t remainder = left % right;
++
++        left = right;
++        right = remainder;
++    }
++    return left;
++}
++
++static bool crucible_vcpu_target(const QemuCrucibleFaultRule *rule,
++                                 uint32_t *vcpu)
++{
++    return crucible_vcpu_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_T1, vcpu);
++}
++
++static bool crucible_vcpu_exists(uint32_t target)
++{
++    CPUState *cpu;
++
++    CPU_FOREACH(cpu) {
++        if (cpu->cpu_index == target) {
++            return true;
++        }
++    }
++    return false;
++}
++
++static bool crucible_vcpu_rule_selects(const QemuCrucibleFaultRule *rule,
++                                       uint32_t target)
++{
++    const QObject *object = qemu_crucible_fault_rule_json(
++        rule, CRUCIBLE_NODE_FAULT_FIELD_P1);
++    QList *list = qobject_to(QList, object);
++    QListEntry *entry;
++
++    if (!list) {
++        return false;
++    }
++    QLIST_FOREACH_ENTRY(list, entry) {
++        if (qnum_get_uint(qobject_to(QNum, qlist_entry_obj(entry))) == target) {
++            return true;
++        }
++    }
++    return false;
++}
++
++static size_t crucible_vcpu_count(void)
++{
++    CPUState *cpu;
++    size_t count = 0;
++
++    CPU_FOREACH(cpu) {
++        if (cpu->cpu_index != count || count == CRUCIBLE_VCPU_SERVICE_MAX_VCPUS) {
++            return 0;
++        }
++        count++;
++    }
++    return count;
++}
++
++int qemu_crucible_fault_vcpu_service_validate(
++    const QemuCrucibleFaultRule *rule)
++{
++    uint16_t operation = qemu_crucible_fault_rule_operation(rule);
++    uint16_t kind = qemu_crucible_fault_rule_command_kind(rule);
++    uint32_t target;
++
++    if (!crucible_vcpu_service_mode()) {
++        return -ENOTSUP;
++    }
++    if (operation == CRUCIBLE_NODE_FAULT_OPERATION_REMOVE) {
++        return 0;
++    }
++    if (kind == CRUCIBLE_FAULT_COMMAND_CPU_VCPU_STATE) {
++        uint32_t state;
++
++        return crucible_vcpu_target(rule, &target) &&
++               crucible_vcpu_exists(target) &&
++               crucible_vcpu_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_P1, &state) &&
++               state >= CRUCIBLE_VCPU_ONLINE &&
++               state <= CRUCIBLE_VCPU_STALLED ? 0 : -EINVAL;
++    }
++    if (kind == CRUCIBLE_FAULT_COMMAND_CPU_SERVICE) {
++        const QObject *object = qemu_crucible_fault_rule_json(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_P1);
++        QList *list = qobject_to(QList, object);
++        QListEntry *entry;
++        uint64_t numerator, denominator, quantum;
++        int64_t maximum_window_ns;
++        uint32_t discipline;
++
++        if (!list || qlist_empty(list) ||
++            !crucible_vcpu_ratio(rule, &numerator, &denominator) ||
++            crucible_vcpu_gcd(numerator, denominator) != 1 ||
++            !crucible_vcpu_u64(rule, CRUCIBLE_NODE_FAULT_FIELD_P3, &quantum) ||
++            quantum == 0 ||
++            !icount_crucible_instructions_to_ns(quantum,
++                                                 &maximum_window_ns) ||
++            !crucible_vcpu_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_P4,
++                               &discipline) ||
++            discipline < CRUCIBLE_VCPU_WORK_CONSERVING ||
++            discipline > CRUCIBLE_VCPU_STRICT_CAP) {
++            return -EINVAL;
++        }
++        QLIST_FOREACH_ENTRY(list, entry) {
++            uint64_t value = qnum_get_uint(
++                qobject_to(QNum, qlist_entry_obj(entry)));
++
++            if (value > UINT32_MAX || !crucible_vcpu_exists(value)) {
++                return -EINVAL;
++            }
++        }
++        if (qemu_crucible_fault_rule_target_kind(rule) ==
++                CRUCIBLE_NODE_FAULT_TARGET_VCPU &&
++            (!crucible_vcpu_target(rule, &target) ||
++             !crucible_vcpu_rule_selects(rule, target))) {
++            return -EINVAL;
++        }
++        return 0;
++    }
++    return -EINVAL;
++}
++
++static void crucible_vcpu_service_clear(CrucibleVcpuService *service)
++{
++    if (service->window_reservation) {
++        qemu_crucible_fault_event_reservation_release(
++            service->window_reservation);
++    }
++    if (service->service_rules) {
++        g_ptr_array_unref(service->service_rules);
++    }
++    if (service->state_rule) {
++        qemu_crucible_fault_rule_unref(service->state_rule);
++    }
++    memset(service, 0, sizeof(*service));
++}
++
++static void crucible_vcpu_service_init(CrucibleVcpuService *service)
++{
++    memset(service, 0, sizeof(*service));
++    service->numerator = 1;
++    service->denominator = 1;
++    service->quantum = icount_crucible_rr_switch_quantum();
++    service->discipline = CRUCIBLE_VCPU_STRICT_CAP;
++    service->state = CRUCIBLE_VCPU_ONLINE;
++    service->service_rules = g_ptr_array_new_with_free_func(
++        (GDestroyNotify)qemu_crucible_fault_rule_unref);
++}
++
++static bool crucible_vcpu_ratio_less(uint64_t left_n, uint64_t left_d,
++                                     uint64_t right_n, uint64_t right_d)
++{
++    return (__uint128_t)left_n * right_d < (__uint128_t)right_n * left_d;
++}
++
++static void crucible_vcpu_apply_rule(const QemuCrucibleFaultRule *rule,
++                                     void *opaque)
++{
++    CrucibleVcpuRuleApply *apply = opaque;
++    uint16_t kind = qemu_crucible_fault_rule_command_kind(rule);
++
++    if (apply->state_rule !=
++        (kind == CRUCIBLE_FAULT_COMMAND_CPU_VCPU_STATE)) {
++        return;
++    }
++    if (kind == CRUCIBLE_FAULT_COMMAND_CPU_VCPU_STATE) {
++        uint32_t target, state;
++        CrucibleVcpuService *service;
++
++        if (!crucible_vcpu_target(rule, &target) ||
++            target >= crucible_vcpu_services->len ||
++            !crucible_vcpu_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_P1, &state)) {
++            abort();
++        }
++        service = &g_array_index(
++            crucible_vcpu_services, CrucibleVcpuService, target);
++        /* Offline dominates stalled, and both dominate online. */
++        if ((state == CRUCIBLE_VCPU_OFFLINE &&
++             service->state != CRUCIBLE_VCPU_OFFLINE) ||
++            (state == CRUCIBLE_VCPU_STALLED &&
++             service->state == CRUCIBLE_VCPU_ONLINE)) {
++            service->state = state;
++            if (service->state_rule) {
++                qemu_crucible_fault_rule_unref(service->state_rule);
++            }
++            service->state_rule = qemu_crucible_fault_rule_ref(
++                (QemuCrucibleFaultRule *)rule);
++        }
++        return;
++    }
++
++    for (guint index = 0; index < crucible_vcpu_services->len; index++) {
++        CrucibleVcpuService *service;
++        uint64_t numerator, denominator, quantum;
++        uint32_t discipline;
++        bool first_rule;
++
++        if (!crucible_vcpu_rule_selects(rule, index)) {
++            continue;
++        }
++        service = &g_array_index(
++            crucible_vcpu_services, CrucibleVcpuService, index);
++        if (!crucible_vcpu_ratio(rule, &numerator, &denominator) ||
++            !crucible_vcpu_u64(rule, CRUCIBLE_NODE_FAULT_FIELD_P3, &quantum) ||
++            !crucible_vcpu_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_P4,
++                               &discipline)) {
++            abort();
++        }
++        first_rule = service->service_rules->len == 0;
++        g_ptr_array_add(service->service_rules,
++            qemu_crucible_fault_rule_ref((QemuCrucibleFaultRule *)rule));
++        if (first_rule ||
++            crucible_vcpu_ratio_less(numerator, denominator,
++                                     service->numerator,
++                                     service->denominator)) {
++            service->numerator = numerator;
++            service->denominator = denominator;
++            service->quantum = quantum;
++            service->discipline = discipline;
++            service->controller_rule = (QemuCrucibleFaultRule *)rule;
++        } else if (!crucible_vcpu_ratio_less(
++                       service->numerator, service->denominator,
++                       numerator, denominator)) {
++            service->quantum = MIN(service->quantum, quantum);
++            if (discipline > service->discipline) {
++                service->discipline = discipline;
++                service->controller_rule = (QemuCrucibleFaultRule *)rule;
++            }
++        }
++    }
++}
++
++static bool crucible_vcpu_service_rules_equal(
++    const CrucibleVcpuService *left, const CrucibleVcpuService *right)
++{
++    if (left->numerator != right->numerator ||
++        left->denominator != right->denominator ||
++        left->quantum != right->quantum ||
++        left->discipline != right->discipline ||
++        left->controller_rule != right->controller_rule ||
++        left->service_rules->len != right->service_rules->len) {
++        return false;
++    }
++    for (guint i = 0; i < left->service_rules->len; i++) {
++        if (g_ptr_array_index(left->service_rules, i) !=
++            g_ptr_array_index(right->service_rules, i)) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static void crucible_vcpu_service_preserve_ledger(
++    CrucibleVcpuService *next, CrucibleVcpuService *previous)
++{
++    next->remainder = previous->remainder;
++    next->window_remainder_before = previous->window_remainder_before;
++    next->credit_remaining = previous->credit_remaining;
++    next->window_credit = previous->window_credit;
++    next->window_retired = previous->window_retired;
++    next->denied_pending = previous->denied_pending;
++    next->window_sequence = previous->window_sequence;
++    next->grant_own = previous->grant_own;
++    next->grant_borrowed = previous->grant_borrowed;
++    next->window_own_retired = previous->window_own_retired;
++    next->window_borrowed_retired = previous->window_borrowed_retired;
++    next->donated_credit = previous->donated_credit;
++    next->window_reservation = previous->window_reservation;
++    previous->window_reservation = NULL;
++}
++
++static void crucible_vcpu_state_event(
++    uint32_t vcpu, uint32_t old_state, const CrucibleVcpuService *service,
++    const QemuCrucibleFaultRule *transition_rule,
++    QemuCrucibleFaultEventReservation **event_reservation);
++static void crucible_vcpu_interrupt_window(CPUState *cpu,
++                                           CrucibleVcpuService *service);
++
++void qemu_crucible_fault_vcpu_service_rules_changed(
++    const QemuCrucibleFaultRule *transition_rule,
++    QemuCrucibleFaultEventReservation **event_reservation)
++{
++    size_t count;
++    CrucibleVcpuRuleApply apply = { 0 };
++    GArray *previous = crucible_vcpu_services;
++    GArray *next;
++
++    if (!crucible_vcpu_service_mode()) {
++        return;
++    }
++    count = crucible_vcpu_count();
++    if (count == 0) {
++        abort();
++    }
++    next = g_array_sized_new(
++        false, true, sizeof(CrucibleVcpuService), count);
++    g_array_set_size(next, count);
++    crucible_vcpu_services = next;
++    for (guint i = 0; i < next->len; i++) {
++        crucible_vcpu_service_init(&g_array_index(
++            next, CrucibleVcpuService, i));
++    }
++    qemu_crucible_fault_rule_foreach(
++        CRUCIBLE_FAULT_COMMAND_CPU_SERVICE,
++        crucible_vcpu_apply_rule, &apply);
++    apply.state_rule = true;
++    qemu_crucible_fault_rule_foreach(
++        CRUCIBLE_FAULT_COMMAND_CPU_VCPU_STATE,
++        crucible_vcpu_apply_rule, &apply);
++    if (previous) {
++        g_assert(previous->len == next->len);
++        for (guint i = 0; i < next->len; i++) {
++            CrucibleVcpuService *old_service = &g_array_index(
++                previous, CrucibleVcpuService, i);
++            CrucibleVcpuService *new_service = &g_array_index(
++                next, CrucibleVcpuService, i);
++            uint32_t old_state = old_service->state;
++
++            new_service->window_sequence = old_service->window_sequence;
++            new_service->skipped_selections = old_service->skipped_selections;
++            if (crucible_vcpu_service_rules_equal(old_service,
++                                                  new_service)) {
++                crucible_vcpu_service_preserve_ledger(new_service,
++                                                      old_service);
++            } else {
++                CPUState *cpu = qemu_get_cpu(i);
++
++                if (!cpu) {
++                    abort();
++                }
++                crucible_vcpu_interrupt_window(cpu, old_service);
++            }
++            if (old_state != new_service->state) {
++                if (!transition_rule || !event_reservation ||
++                    !*event_reservation) {
++                    error_report("Crucible vCPU state transition lacked "
++                                 "reserved evidence capacity");
++                    abort();
++                }
++                crucible_vcpu_state_event(i, old_state, new_service,
++                                          transition_rule,
++                                          event_reservation);
++            }
++        }
++        for (guint i = 0; i < previous->len; i++) {
++            crucible_vcpu_service_clear(&g_array_index(
++                previous, CrucibleVcpuService, i));
++        }
++        g_array_unref(previous);
++    } else {
++        for (guint i = 0; i < next->len; i++) {
++            CrucibleVcpuService *new_service = &g_array_index(
++                next, CrucibleVcpuService, i);
++
++            if (new_service->state != CRUCIBLE_VCPU_ONLINE) {
++                if (!transition_rule || !event_reservation ||
++                    !*event_reservation) {
++                    error_report("Crucible initial vCPU state transition "
++                                 "lacked reserved evidence capacity");
++                    abort();
++                }
++                crucible_vcpu_state_event(
++                    i, CRUCIBLE_VCPU_ONLINE, new_service,
++                    transition_rule, event_reservation);
++            }
++        }
++    }
++}
++
++static CrucibleVcpuService *crucible_vcpu_service_for(CPUState *cpu)
++{
++    if (!crucible_vcpu_services || !cpu || cpu->cpu_index < 0 ||
++        (guint)cpu->cpu_index >= crucible_vcpu_services->len) {
++        return NULL;
++    }
++    return &g_array_index(crucible_vcpu_services,
++                          CrucibleVcpuService, cpu->cpu_index);
++}
++
++bool qemu_crucible_fault_vcpu_service_eligible(CPUState *cpu)
++{
++    CrucibleVcpuService *service = crucible_vcpu_service_for(cpu);
++
++    if (!crucible_vcpu_service_mode() || !service) {
++        return true;
++    }
++    return service->state == CRUCIBLE_VCPU_ONLINE;
++}
++
++void qemu_crucible_fault_vcpu_service_skipped(CPUState *cpu)
++{
++    CrucibleVcpuService *service = crucible_vcpu_service_for(cpu);
++
++    if (crucible_vcpu_service_mode() && service &&
++        service->skipped_selections != UINT64_MAX) {
++        service->skipped_selections++;
++    }
++}
++
++static void crucible_vcpu_sha256(const uint8_t *data, size_t length,
++                                 uint8_t digest[32])
++{
++    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    gsize digest_length = 32;
++
++    g_checksum_update(checksum, data, length);
++    g_checksum_get_digest(checksum, digest, &digest_length);
++    g_assert(digest_length == 32);
++}
++
++static void crucible_vcpu_state_event(
++    uint32_t vcpu, uint32_t old_state, const CrucibleVcpuService *service,
++    const QemuCrucibleFaultRule *transition_rule,
++    QemuCrucibleFaultEventReservation **event_reservation)
++{
++    struct qemu_plugin_rr_cursor rr = { 0 };
++    uint8_t evidence[CRUCIBLE_VCPU_STATE_EVIDENCE_BYTES] = { 0 };
++    uint8_t snapshot[CRUCIBLE_VCPU_STATE_EVIDENCE_BYTES];
++    uint8_t before_hash[32], after_hash[32], opportunity_hash[32];
++    const uint8_t *recovery_hash;
++    uint32_t recovery_length;
++    bool has_recovery_field = crucible_vcpu_field(
++        transition_rule, CRUCIBLE_NODE_FAULT_FIELD_P3,
++        CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
++        &recovery_hash, &recovery_length) && recovery_length == 32;
++    bool has_recovery = false;
++
++    if (has_recovery_field) {
++        for (size_t i = 0; i < recovery_length; i++) {
++            has_recovery |= recovery_hash[i] != 0;
++        }
++    }
++
++    if (qemu_plugin_rr_cursor(&rr) != 0) {
++        rr.current_vcpu = qemu_plugin_crucible_rr_current_vcpu();
++        rr.cursor_position = qemu_plugin_crucible_rr_cursor_position();
++        rr.rr_switch_quantum = icount_crucible_rr_switch_quantum();
++    }
++    memcpy(evidence, "CRUCVST1", 8);
++    stw_le_p(evidence + 8, 1);
++    stw_le_p(evidence + 10,
++             qemu_crucible_fault_rule_operation(transition_rule));
++    stl_le_p(evidence + 12, vcpu);
++    stl_le_p(evidence + 16, old_state);
++    stl_le_p(evidence + 20, service->state);
++    stq_le_p(evidence + 24, qemu_plugin_icount_raw());
++    stq_le_p(evidence + 32, rr.current_vcpu);
++    stq_le_p(evidence + 40, rr.cursor_position);
++    stq_le_p(evidence + 48, rr.rr_switch_quantum);
++    stq_le_p(evidence + 56, service->numerator);
++    stq_le_p(evidence + 64, service->denominator);
++    stq_le_p(evidence + 72, service->quantum);
++    stq_le_p(evidence + 80, service->credit_remaining);
++    stq_le_p(evidence + 88, service->remainder);
++    stq_le_p(evidence + 96, service->window_sequence);
++    stq_le_p(evidence + 104, service->skipped_selections);
++    stq_le_p(evidence + 112,
++             service->controller_rule ?
++                 qemu_crucible_fault_rule_generation(
++                     service->controller_rule) : 0);
++    stl_le_p(evidence + 120, has_recovery);
++    stl_le_p(evidence + 124,
++             service->service_rules ? service->service_rules->len : 0);
++    if (has_recovery) {
++        memcpy(evidence + 128, recovery_hash, 32);
++    }
++    memcpy(evidence + 160,
++           qemu_crucible_fault_rule_binding_hash(transition_rule), 32);
++
++    memcpy(snapshot, evidence, sizeof(snapshot));
++    memcpy(snapshot, "CRUCVSB1", 8);
++    stl_le_p(snapshot + 20, old_state);
++    crucible_vcpu_sha256(snapshot, sizeof(snapshot), before_hash);
++    memcpy(snapshot, evidence, sizeof(snapshot));
++    memcpy(snapshot, "CRUCVSA1", 8);
++    stl_le_p(snapshot + 16, service->state);
++    crucible_vcpu_sha256(snapshot, sizeof(snapshot), after_hash);
++    crucible_vcpu_sha256(evidence, sizeof(evidence), opportunity_hash);
++
++    qemu_crucible_fault_event_reservation_consume(*event_reservation);
++    qemu_crucible_fault_rule_event(
++        transition_rule, CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED,
++        qemu_plugin_icount_raw(), opportunity_hash,
++        before_hash, after_hash, evidence, sizeof(evidence));
++    qemu_crucible_fault_event_reservation_release(*event_reservation);
++    *event_reservation = NULL;
++}
++
++static void crucible_vcpu_window_event(CPUState *cpu,
++                                       CrucibleVcpuService *service,
++                                       uint64_t remainder_before,
++                                       int64_t virtual_before,
++                                       int64_t virtual_after,
++                                       bool configuration_interrupted)
++{
++    struct qemu_plugin_rr_cursor rr = { 0 };
++    uint8_t evidence[CRUCIBLE_VCPU_SERVICE_EVIDENCE_BYTES] = { 0 };
++    uint8_t before_hash[32], after_hash[32], opportunity_hash[32];
++
++    if (crucible_vcpu_service_terminal ||
++        service->service_rules->len == 0) {
++        return;
++    }
++    if (!service->window_reservation) {
++        error_report("Crucible vCPU service window lost its event "
++                     "reservation");
++        abort();
++    }
++    if (qemu_plugin_rr_cursor(&rr) != 0) {
++        rr.current_vcpu = qemu_plugin_crucible_rr_current_vcpu();
++        rr.cursor_position = qemu_plugin_crucible_rr_cursor_position();
++        rr.rr_switch_quantum = icount_crucible_rr_switch_quantum();
++    }
++    memcpy(evidence, "CRUCVCS1", 8);
++    stl_le_p(evidence + 8, cpu->cpu_index);
++    stl_le_p(evidence + 12, service->discipline);
++    stq_le_p(evidence + 16, ++service->window_sequence);
++    stq_le_p(evidence + 24, service->numerator);
++    stq_le_p(evidence + 32, service->denominator);
++    stq_le_p(evidence + 40, service->quantum);
++    stq_le_p(evidence + 48, remainder_before);
++    stq_le_p(evidence + 56, service->remainder);
++    stq_le_p(evidence + 64, service->window_credit);
++    stq_le_p(evidence + 72, service->window_retired);
++    stq_le_p(evidence + 80, service->denied_pending);
++    stq_le_p(evidence + 88, virtual_before);
++    stq_le_p(evidence + 96, virtual_after);
++    stq_le_p(evidence + 104, service->skipped_selections);
++    stq_le_p(evidence + 112, qemu_plugin_icount_raw());
++    stl_le_p(evidence + 120, service->state);
++    stl_le_p(evidence + 124, service->service_rules->len);
++    stq_le_p(evidence + 128, service->window_own_retired);
++    stq_le_p(evidence + 136, service->window_borrowed_retired);
++    stq_le_p(evidence + 144, service->donated_credit);
++    stq_le_p(evidence + 152,
++             service->controller_rule ?
++                 qemu_crucible_fault_rule_generation(
++                     service->controller_rule) : 0);
++    stq_le_p(evidence + 160, rr.current_vcpu);
++    stq_le_p(evidence + 168, rr.cursor_position);
++    stq_le_p(evidence + 176, rr.rr_switch_quantum);
++    stl_le_p(evidence + 184,
++             (service->grant_own != 0) |
++             (configuration_interrupted ? 2U : 0U));
++    stl_le_p(evidence + 188, service->grant_borrowed != 0);
++    crucible_vcpu_sha256(evidence, 64, before_hash);
++    crucible_vcpu_sha256(evidence, 160, after_hash);
++    crucible_vcpu_sha256(evidence, sizeof(evidence), opportunity_hash);
++    for (guint index = 0; index < service->service_rules->len; index++) {
++        qemu_crucible_fault_event_reservation_consume(
++            service->window_reservation);
++        qemu_crucible_fault_rule_event(
++            g_ptr_array_index(service->service_rules, index),
++            CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED,
++            qemu_plugin_icount_raw(), opportunity_hash,
++            before_hash, after_hash, evidence, sizeof(evidence));
++    }
++    qemu_crucible_fault_event_reservation_release(
++        service->window_reservation);
++    service->window_reservation = NULL;
++    service->skipped_selections = 0;
++}
++
++static bool crucible_vcpu_reserve_window(CrucibleVcpuService *service)
++{
++    uint8_t evidence[64] = { 0 };
++    uint8_t digest[32];
++    QemuCrucibleFaultRule *rule;
++
++    g_assert(service->service_rules->len != 0);
++    g_assert(!service->window_reservation);
++    service->window_reservation = qemu_crucible_fault_event_reserve(
++        service->service_rules->len);
++    if (service->window_reservation) {
++        return true;
++    }
++    rule = g_ptr_array_index(service->service_rules, 0);
++    memcpy(evidence, "CRUCVCL1", 8);
++    stq_le_p(evidence + 8, service->service_rules->len);
++    stq_le_p(evidence + 16, service->window_sequence + 1);
++    stq_le_p(evidence + 24, qemu_plugin_icount_raw());
++    crucible_vcpu_sha256(evidence, sizeof(evidence), digest);
++    qemu_crucible_fault_rule_event(
++        rule, CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR,
++        qemu_plugin_icount_raw(), digest, digest, digest,
++        evidence, sizeof(evidence));
++    qemu_crucible_fault_vcpu_service_event_terminal();
++    qemu_system_vmstop_request_prepare();
++    qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
++    return false;
++}
++
++static void crucible_vcpu_close_window(CPUState *cpu,
++                                       CrucibleVcpuService *service,
++                                       uint64_t remainder_before)
++{
++    int64_t before = icount_get_observed();
++    int64_t delay;
++    int64_t after;
++
++    if (!icount_crucible_instructions_to_ns(
++            service->denied_pending, &delay) ||
++        before > INT64_MAX - delay) {
++        abort();
++    }
++    after = before + delay;
++    if (delay != 0) {
++        icount_advance_virtual_time_to_ns(after);
++    }
++    crucible_vcpu_window_event(cpu, service, remainder_before, before, after,
++                               false);
++    service->window_credit = 0;
++    service->window_retired = 0;
++    service->denied_pending = 0;
++    service->window_own_retired = 0;
++    service->window_borrowed_retired = 0;
++}
++
++static void crucible_vcpu_interrupt_window(CPUState *cpu,
++                                           CrucibleVcpuService *service)
++{
++    int64_t now;
++
++    if (!service->window_reservation) {
++        return;
++    }
++    now = icount_get_observed();
++    service->grant_own = 0;
++    service->grant_borrowed = 0;
++    crucible_vcpu_window_event(cpu, service,
++                               service->window_remainder_before,
++                               now, now, true);
++}
++
++static bool crucible_vcpu_refill(CPUState *cpu,
++                                 CrucibleVcpuService *service)
++{
++    __uint128_t scaled = (__uint128_t)service->quantum *
++                         service->numerator + service->remainder;
++
++    if (!crucible_vcpu_reserve_window(service)) {
++        return false;
++    }
++    service->donated_credit = 0;
++    service->window_remainder_before = service->remainder;
++    service->credit_remaining = scaled / service->denominator;
++    service->remainder = scaled % service->denominator;
++    service->window_credit = service->credit_remaining;
++    service->denied_pending = service->quantum - service->credit_remaining;
++    if (service->credit_remaining == 0) {
++        crucible_vcpu_close_window(
++            cpu, service, service->window_remainder_before);
++    }
++    return true;
++}
++
++static uint64_t crucible_vcpu_available_donations(
++    const CrucibleVcpuService *recipient, uint32_t recipient_vcpu)
++{
++    __uint128_t total = 0;
++
++    if (!recipient->controller_rule ||
++        recipient->discipline != CRUCIBLE_VCPU_WORK_CONSERVING) {
++        return 0;
++    }
++    for (guint i = 0; i < crucible_vcpu_services->len; i++) {
++        const CrucibleVcpuService *donor = &g_array_index(
++            crucible_vcpu_services, CrucibleVcpuService, i);
++
++        if (i != recipient_vcpu &&
++            donor->controller_rule == recipient->controller_rule &&
++            donor->discipline == CRUCIBLE_VCPU_WORK_CONSERVING) {
++            total += donor->donated_credit;
++        }
++    }
++    return total > UINT64_MAX ? UINT64_MAX : (uint64_t)total;
++}
++
++static void crucible_vcpu_consume_donations(
++    const CrucibleVcpuService *recipient, uint32_t recipient_vcpu,
++    uint64_t amount)
++{
++    for (guint i = 0;
++         i < crucible_vcpu_services->len && amount != 0; i++) {
++        CrucibleVcpuService *donor = &g_array_index(
++            crucible_vcpu_services, CrucibleVcpuService, i);
++        uint64_t consumed;
++
++        if (i == recipient_vcpu ||
++            donor->controller_rule != recipient->controller_rule ||
++            donor->discipline != CRUCIBLE_VCPU_WORK_CONSERVING) {
++            continue;
++        }
++        consumed = MIN(amount, donor->donated_credit);
++        donor->donated_credit -= consumed;
++        amount -= consumed;
++    }
++    if (amount != 0) {
++        error_report("Crucible vCPU service donation ledger underflow");
++        abort();
++    }
++}
++
++int64_t qemu_crucible_fault_vcpu_service_clamp_budget(
++    CPUState *cpu, int64_t budget)
++{
++    CrucibleVcpuService *service = crucible_vcpu_service_for(cpu);
++    uint64_t borrow_available, remaining_budget;
++
++    if (!crucible_vcpu_service_mode() || !service || budget <= 0 ||
++        service->service_rules->len == 0) {
++        return budget;
++    }
++    if (service->state != CRUCIBLE_VCPU_ONLINE) {
++        return 0;
++    }
++    service->grant_own = 0;
++    service->grant_borrowed = 0;
++    if (service->credit_remaining == 0) {
++        if (!crucible_vcpu_refill(cpu, service)) {
++            return 0;
++        }
++        if (service->credit_remaining == 0) {
++            return 0;
++        }
++    }
++    service->grant_own = MIN((uint64_t)budget,
++                             service->credit_remaining);
++    remaining_budget = (uint64_t)budget - service->grant_own;
++    borrow_available = crucible_vcpu_available_donations(
++        service, cpu->cpu_index);
++    service->grant_borrowed = MIN(remaining_budget, borrow_available);
++    return service->grant_own + service->grant_borrowed;
++}
++
++void qemu_crucible_fault_vcpu_service_account(
++    CPUState *cpu, uint64_t before_icount, uint64_t after_icount,
++    bool runnable_after)
++{
++    CrucibleVcpuService *service = crucible_vcpu_service_for(cpu);
++    uint64_t retired, own, borrowed;
++
++    if (!crucible_vcpu_service_mode() || !service ||
++        service->service_rules->len == 0) {
++        return;
++    }
++    if (after_icount < before_icount) {
++        abort();
++    }
++    retired = after_icount - before_icount;
++    if (retired > service->grant_own + service->grant_borrowed) {
++        abort();
++    }
++    own = MIN(retired, service->grant_own);
++    borrowed = retired - own;
++    if (own > service->credit_remaining ||
++        borrowed > crucible_vcpu_available_donations(
++            service, cpu->cpu_index)) {
++        abort();
++    }
++    service->credit_remaining -= own;
++    crucible_vcpu_consume_donations(service, cpu->cpu_index, borrowed);
++    service->window_retired += retired;
++    service->window_own_retired += own;
++    service->window_borrowed_retired += borrowed;
++    service->grant_own = 0;
++    service->grant_borrowed = 0;
++    if (!runnable_after && service->credit_remaining != 0 &&
++        service->discipline == CRUCIBLE_VCPU_WORK_CONSERVING) {
++        service->donated_credit = service->credit_remaining;
++        service->credit_remaining = 0;
++    }
++    if (service->credit_remaining == 0) {
++        crucible_vcpu_close_window(
++            cpu, service, service->window_remainder_before);
++    }
++}
++
++void qemu_crucible_fault_vcpu_service_event_terminal(void)
++{
++    if (crucible_vcpu_service_terminal) {
++        return;
++    }
++    crucible_vcpu_service_terminal = true;
++    if (!crucible_vcpu_services) {
++        return;
++    }
++    for (guint i = 0; i < crucible_vcpu_services->len; i++) {
++        CrucibleVcpuService *service = &g_array_index(
++            crucible_vcpu_services, CrucibleVcpuService, i);
++
++        if (service->window_reservation) {
++            qemu_crucible_fault_event_reservation_release(
++                service->window_reservation);
++            service->window_reservation = NULL;
++        }
++        service->grant_own = 0;
++        service->grant_borrowed = 0;
++        service->donated_credit = 0;
++    }
++}
++
++static void crucible_vcpu_service_register(void)
++{
++    const uint32_t boundary =
++        1U << (CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY - 1);
++
++    qemu_crucible_fault_node_register(
++        CRUCIBLE_FAULT_COMMAND_CPU_SERVICE,
++        QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_ALL, boundary,
++        "qemu.cpu.service.v1", NULL);
++    qemu_crucible_fault_node_register(
++        CRUCIBLE_FAULT_COMMAND_CPU_VCPU_STATE,
++        QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_ALL, boundary,
++        "qemu.cpu.vcpu-state.v1", NULL);
++}
++
++type_init(crucible_vcpu_service_register)
+diff --git a/plugins/meson.build b/plugins/meson.build
+index 09bbc6c4e..30ff5ba97 100644
+--- a/plugins/meson.build
++++ b/plugins/meson.build
+@@ -64,6 +64,7 @@ system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c',
+                     'crucible-fault-register.c',
+                     'crucible-fault-instruction.c',
+                     'crucible-fault-interrupt.c',
+-                    'crucible-fault-hardware-error.c'))
++                    'crucible-fault-hardware-error.c',
++                    'crucible-fault-vcpu-service.c'))
+ 
+ common_ss.add(files('loader.c', 'api.c', 'core.c'))

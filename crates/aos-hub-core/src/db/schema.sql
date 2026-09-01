@@ -2663,7 +2663,10 @@ CREATE TABLE release_artifacts(
   store_path KEYTEXT512 NOT NULL,
   store_hash KEYTEXT64 NOT NULL,
   metadata_digest KEYTEXT128 NOT NULL,
-  CHECK(artifact_kind IN('output', 'image', 'source_derivation')),
+  CHECK(artifact_kind IN(
+    'output', 'image', 'source_derivation', 'expose', 'config',
+    'evaluation_base_lib', 'documentation'
+  )),
   PRIMARY KEY(snapshot_id, package_name, package_version, platform,
 artifact_kind, store_hash),
   FOREIGN KEY(snapshot_id, release_id, registry_id)
@@ -2709,7 +2712,10 @@ CREATE TABLE registry_catalog_artifacts(
   metadata_digest KEYTEXT128 NOT NULL,
   PRIMARY KEY(registry_id, source_revision, package_name, package_version,
 platform, artifact_kind, store_hash),
-  CHECK(artifact_kind IN('output', 'image', 'source_derivation'))
+  CHECK(artifact_kind IN(
+    'output', 'image', 'source_derivation', 'expose', 'config',
+    'evaluation_base_lib', 'documentation'
+  ))
 );
 CREATE INDEX registry_catalog_artifacts_hash_idx
 ON registry_catalog_artifacts(registry_id, source_revision, store_hash);

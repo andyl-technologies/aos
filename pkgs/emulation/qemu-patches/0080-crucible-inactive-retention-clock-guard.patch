@@ -1,0 +1,21 @@
+diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
+index caa2fa7da..b84e544c7 100644
+--- a/plugins/crucible-fault-node.c
++++ b/plugins/crucible-fault-node.c
+@@ -6879,7 +6879,7 @@ static void node_memory_retention_boundary_apply(
+ static void node_memory_retention_boundary(uint16_t phase,
+                                            uint64_t observed_icount)
+ {
+-    CrucibleRetentionBoundaryCount count = { .now = node_virtual_now() };
++    CrucibleRetentionBoundaryCount count = { 0 };
+     CrucibleRetentionBoundaryApply apply = { observed_icount };
+     uint64_t start, length;
+     QDict *parameters;
+@@ -6889,6 +6889,7 @@ static void node_memory_retention_boundary(uint16_t phase,
+         !qemu_crucible_fault_memory_rules_active()) {
+         return;
+     }
++    count.now = node_virtual_now();
+     qemu_crucible_fault_rule_foreach(
+         CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE,
+         node_memory_retention_boundary_count, &count);

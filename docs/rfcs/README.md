@@ -29,7 +29,9 @@ topic files.
 | [0011](0011-on-host-config-eval/README.md) | 2026-06-25 | On-host, eval-only configuration — generations from downloaded Nix modules | Accepted; phased implementation plan and locked decisions |
 | [0012](0012-hub-surface-topology/README.md) | 2026-08-03 | AOS Hub surface topology — multiple placements, simultaneous routes, and principled registry/cache relationships | Proposed; signed system-image distribution implemented and native/Worker E2E-tested |
 | [0013](0013-recovery-uki/README.md) | 2026-08-17 | A/B-aware signed recovery UKIs and initrd fail-closed hardening | Proposed — phased plan in [`implementation.md`](0013-recovery-uki/implementation.md) |
-| [0014](0014-hermetic-cargo-artifacts.md) | 2026-08-21 | Hermetic Cargo artifact graphs and parallel Rust testing | Implemented |
-| [0015](0015-oci-containers/README.md) | 2026-08-27 | Scratch OCI containers built from AOS package closures and published through AOS Hub | Proposed — phased plan in [`implementation-plan.md`](0015-oci-containers/implementation-plan.md) |
+| [0014](0014-signal-driven-fault-model/README.md) | 2026-08-18 | Signal-driven, cross-domain fault modeling for Crucible | Proposed; implementation in progress |
+| [0015](0015-hermetic-cargo-artifacts.md) | 2026-08-21 | Hermetic Cargo artifact graphs and parallel Rust testing | Implemented |
+| [0016](0016-package-documentation/README.md) | 2026-08-28 | Package documentation as authenticated Nix objects | Implemented and staged in PR #219 |
+| [0017](0017-oci-containers/README.md) | 2026-08-27 | Scratch OCI containers built from AOS package closures and published through AOS Hub | Proposed — phased plan in [`implementation-plan.md`](0017-oci-containers/implementation-plan.md) |
 
 Numbering is chronological by the date the design entered the tree.

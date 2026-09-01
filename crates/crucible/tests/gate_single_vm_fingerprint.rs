@@ -6,8 +6,8 @@
 
 use crucible::{
     Checkpoint, CheckpointKind, Configuration, ContentHash, DecisionRecorder, ExecutionFingerprint,
-    FaultId, FaultRateBasisPoints, GenesisCheckpoint, NodeId, RngStreamId, RuntimeState,
-    ScenarioDef, Seed, TemporalGraph, VirtualTime, instantiate,
+    GenesisCheckpoint, NodeId, RngStreamId, RuntimeState, ScenarioDef, Seed, TemporalGraph,
+    VirtualTime, instantiate,
 };
 use crucible_harness::adversarial::{
     HostAdversaryProfile, canonical_host_adversary_matrix, run_profiled_tasks,
@@ -329,14 +329,7 @@ fn record_representative_decision(recorder: &mut DecisionRecorder, index: u64) {
             let _value = recorder.draw_u64(stream(&format!("node-a/faults/{index}")));
         }
         1 => {
-            let _fired = recorder.decide_fault_basis_points(
-                VirtualTime { ticks: index + 1 },
-                FaultId {
-                    name: format!("link-a-b/drop-{index}"),
-                },
-                stream("node-b/faults"),
-                FaultRateBasisPoints::from_basis_points(5_000).expect("test rate should be valid"),
-            );
+            let _value = recorder.draw_u64(stream(&format!("node-b/network/{index}")));
         }
         _ => match recorder.serve_app_random(node("node-a"), stream("node-a/app-random"), 16) {
             Ok(_value) => {}

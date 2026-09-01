@@ -1,0 +1,43 @@
+diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
+index bc4b818a5..216b4e5f9 100644
+--- a/plugins/crucible-fault-node.c
++++ b/plugins/crucible-fault-node.c
+@@ -8887,7 +8887,6 @@ static guint node_memory_retry_key_hash(gconstpointer opaque)
+ 
+     hash ^= (uint64_t)key->access_class << 32;
+     hash ^= key->actor;
+-    hash ^= (uint64_t)key->instruction_ordinal << 17;
+     hash ^= (uint64_t)(uint32_t)key->page_table_level << 29;
+     hash ^= (uint64_t)key->page_table_stage << 43;
+     hash ^= (uint64_t)key->initiating_access_class << 47;
+@@ -8912,7 +8911,6 @@ static gboolean node_memory_retry_key_equal(gconstpointer left_opaque,
+            left->page_table_target_vaddr == right->page_table_target_vaddr &&
+            left->access_class == right->access_class &&
+            left->actor == right->actor &&
+-           left->instruction_ordinal == right->instruction_ordinal &&
+            left->page_table_level == right->page_table_level &&
+            left->page_table_stage == right->page_table_stage &&
+            left->initiating_access_class == right->initiating_access_class &&
+@@ -8925,8 +8923,11 @@ static CrucibleMemoryRetryKey node_memory_retry_key(
+ {
+     /*
+      * An instruction-backed retry is independent of elapsed virtual time and
+-     * translation-block shape.  Accesses without a decoded instruction use
+-     * the observed clock as their only available execution-episode identity.
++     * translation-block shape.  Its instruction ordinal is TB-local and may
++     * change when fault delivery forces retranslation, so the serialized key
++     * retains the field at a canonical zero.  Accesses without a decoded
++     * instruction use the observed clock as their only available
++     * execution-episode identity.
+      */
+     return (CrucibleMemoryRetryKey) {
+         .address = transaction->address,
+@@ -8938,7 +8939,7 @@ static CrucibleMemoryRetryKey node_memory_retry_key(
+             transaction->page_table_target_vaddr,
+         .access_class = transaction->access_class,
+         .actor = transaction->actor,
+-        .instruction_ordinal = transaction->instruction_ordinal,
++        .instruction_ordinal = 0,
+         .page_table_level = transaction->page_table_level,
+         .page_table_stage = transaction->page_table_stage,
+         .initiating_access_class = transaction->initiating_access_class,

@@ -5,9 +5,9 @@
 #   controlplane: pkgs.k3s-control-plane (k3s server --disable-agent)
 #   worker:       pkgs.k3s-worker        (k3s agent)
 #
-# Both receive `K3S_TOKEN` baked into the image /etc via extendModules
-# (extraModules). The worker additionally receives `K3S_URL` pointing at
-# the control plane's harness-assigned IP.
+# Both use the package-owned typed k3s module. The shared join token is
+# generated after boot and resolved through an opaque system-credential
+# reference; its bytes never enter the Nix store.
 #
 # Test cadence:
 #   1. Wait for k3s-preflight + k3s on each machine.
@@ -21,61 +21,6 @@
   pkgs,
   ...
 }: let
-  # k3s's token parser (`pkg/clientaccess/token.go:251`) accepts
-  # kubeadm bootstrap tokens, `username:password` pairs, or K10-
-  # wrapped variants — but `k3s server`'s `pkg/util.NormalizeToken`
-  # then rejects anything that came out as a `BootstrapTokenString`,
-  # leaving only basic-auth shapes (`<password>` or
-  # `K10<CA-HASH>::<USERNAME>:<PASSWORD>`). A bare password is the
-  # simplest form that satisfies both ends; see the longer note in
-  # `tests/fleet/k3s-combined-worker.nix`.
-  testToken = "aoscontrolplanefleet1";
-
-  # Per-node k3s config, baked into the image /etc via extendModules (the
-  # baked machine configuration). Two files:
-  #
-  #   /etc/rancher/k3s/k3s.env    — K3S_TOKEN (+ K3S_URL for the worker),
-  #                                 mode 0600 (holds the join token).
-  #   /etc/rancher/k3s/config.yaml — k3s's default config-file location. Both
-  #                                 `k3s server` and `k3s agent` read it
-  #                                 automatically (`pkg/configfilearg` merges
-  #                                 its keys as CLI flags). Pins node-ip +
-  #                                 flannel-iface per machine.
-  #
-  # Why we pin node-ip: k3s would otherwise call
-  # `apimachinery/pkg/util/net.ChooseHostInterface()`, which reads
-  # `/proc/net/route` for the default-route interface. The fleet harness only
-  # writes `[Network] Address=` on eth0 — no gateway, no default route — so the
-  # lookup fatals with "no default routes found". Pinning node-ip is test glue.
-  #
-  # Why we pin flannel-iface: k3s's embedded flannel walks the same routing
-  # table (`pkg/agent/flannel.LookupExtIface`). With no default route it
-  # `os.Exit(1)`s the agent, trapping the unit in `activating`/`failed`. Pinning
-  # the iface skips the gateway probe. eth0 is deterministic (net.ifnames=0 in
-  # the cmdline; a single mcast NIC per sandbox VM).
-  k3sEtcModule = {
-    token,
-    ip,
-    url ? null,
-  }: {
-    environment.etc = {
-      "rancher/k3s/k3s.env" = {
-        mode = "0600";
-        text =
-          "K3S_TOKEN=${token}\n"
-          + (
-            if url == null
-            then ""
-            else "K3S_URL=${url}\n"
-          );
-      };
-      "rancher/k3s/config.yaml".text = ''
-        node-ip: ${ip}
-        flannel-iface: eth0
-      '';
-    };
-  };
-
   controlPlaneSystem = mkSystem [
     ../../systems/server.nix
     {
@@ -103,7 +48,7 @@ in {
   # (datastore init + cert gen + apiserver bootstrap). Worker
   # registration takes another ~15-30s once the server is up.
   # Budget 6 minutes total so a slow CI runner doesn't tip over.
-  timeout = 360;
+  timeout = 1200;
 
   # The fleet harness in lib/testing/fleet.nix assigns
   # `192.168.50.${i + 10}` per machine via `lib.imap` over
@@ -116,28 +61,103 @@ in {
     controlplane = {
       system = controlPlaneSystem;
       packages = ["k3s-control-plane"];
-      extraModules = [
-        (k3sEtcModule {
-          token = testToken;
-          ip = "192.168.50.10";
-        })
-      ];
     };
 
     worker = {
       system = workerSystem;
       packages = ["k3s-worker"];
-      extraModules = [
-        (k3sEtcModule {
-          token = testToken;
-          ip = "192.168.50.11";
-          url = "https://192.168.50.10:6443";
-        })
-      ];
     };
   };
 
   testScript = ''
+    import base64
+    import shlex
+
+    APM = "${pkgs.aos}/bin/apm"
+
+
+    def apply_k3s_module(machine, name, module):
+        encoded = base64.b64encode(module.encode()).decode()
+        path = f"/run/{name}.nix"
+        cache = f"/run/{name}-cache"
+        machine.succeed(
+            f"mkdir -p {cache} && "
+            f"printf '%s' '{encoded}' | base64 -d > {path} && "
+            f"XDG_CACHE_HOME={cache} {APM} config add "
+            f"{path} --name {name}.nix && "
+            f"XDG_CACHE_HOME={cache} {APM} config apply "
+            f"--eval-root /run/{name}-eval || {{ "
+            "systemctl status --no-pager -l aos-activate.service; "
+            "journalctl -u aos-activate.service --no-pager -n 200; "
+            "exit 1; }",
+            timeout=600,
+        )
+
+
+    # Generate the token inside the control-plane guest and copy it to the
+    # worker's platform credential namespace through the test channel.
+    token = controlplane.succeed(
+        "${pkgs.coreutils}/bin/head -c 24 /dev/urandom | "
+        "${pkgs.coreutils}/bin/od -An -tx1 | "
+        "${pkgs.coreutils}/bin/tr -d ' \\n'"
+    ).strip()
+    assert len(token) == 48, token
+    for machine in (controlplane, worker):
+        machine.succeed(
+            "mkdir -p /run/credentials/@system && "
+            f"printf %s {shlex.quote(token)} > "
+            "/run/credentials/@system/k3s-token && "
+            "chmod 0600 /run/credentials/@system/k3s-token"
+        )
+
+    controlplane.wait_until_succeeds(
+        "systemctl is-active --quiet aos-config.target", timeout=300
+    )
+    worker.wait_until_succeeds(
+        "systemctl is-active --quiet aos-config.target", timeout=300
+    )
+
+    # The fleet test network is intentionally gateway-less. k3s still requires
+    # a default route while discovering the host interface, even when node-ip
+    # and flannel-iface are pinned, so provide a link-scope route for discovery.
+    for machine in (controlplane, worker):
+        machine.succeed("${pkgs.iproute2}/sbin/ip route replace default dev eth0")
+
+    apply_k3s_module(controlplane, "k3s-control-plane", """{
+      aos.apm.desiredPackages = [ "k3s-control-plane" ];
+      k3s = {
+        enable = true;
+        token.ref = "system-credential:k3s-token";
+        node.ip = "192.168.50.10";
+        networking.flannelInterface = "eth0";
+      };
+    }
+    """)
+    apply_k3s_module(worker, "k3s-worker", """{
+      aos.apm.desiredPackages = [ "k3s-worker" ];
+      k3s = {
+        enable = true;
+        serverUrl = "https://192.168.50.10:6443";
+        token.ref = "system-credential:k3s-token";
+        node = {
+          name = "worker";
+          ip = "192.168.50.11";
+        };
+        networking.flannelInterface = "eth0";
+      };
+    }
+    """)
+
+    for machine, package in (
+        (controlplane, "k3s-control-plane"),
+        (worker, "k3s-worker"),
+    ):
+        source = f"/run/credstore/{package}/token"
+        machine.succeed(f"test -s {source} && test $(stat -c %a {source}) = 600")
+        manifest = machine.succeed("cat /run/aos/manifest.json")
+        assert token not in manifest, "cluster token leaked into the manifest"
+
+
     def dump_unit(machine, unit):
         print(f"--- {machine.name}: systemctl status {unit} ---")
         print(
@@ -177,11 +197,8 @@ in {
 
     # ── Pre-flight on each machine ─────────────────────────────────
     # k3s-preflight is a oneshot — `is-active` returns "active"
-    # only after exit-0. A failure here means either the baked env
-    # file is missing (ConditionPathExists short-circuits the unit
-    # to "skipped", which is-active reports as "inactive"), or
-    # systemd's EnvironmentFile= parser rejected the file's
-    # contents, or one of the required vars is empty.
+    # only after exit-0. A failure here means the package-owned
+    # projection or the resolved token credential is unavailable.
     controlplane.wait_until_succeeds(
         "systemctl is-active k3s-preflight.service", timeout=60
     )

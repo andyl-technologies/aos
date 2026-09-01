@@ -5,8 +5,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    BackendInput, ExactLocalEvent, FaultId, Icount, IoCompletion, NetworkLookahead, NodeCounter,
-    NodeId, QuantumLoop, QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
+    BackendInput, ExactLocalEvent, Icount, IoCompletion, NetworkLookahead, NodeCounter, NodeId,
+    QuantumLoop, QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
     SchedulerError, SchedulerHorizon, SchedulerHorizonLimit, SchedulerHorizonSource,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
     SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler, VirtualTime,
@@ -14,13 +14,10 @@ use crucible::{
 };
 
 #[test]
-fn next_exact_local_event_selects_earliest_timer_io_or_fault() {
+fn next_exact_local_event_selects_earliest_timer_or_io() {
     let node = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let disk = scheduler_node("node-a", SchedulingNodeKind::Disk);
-    let events = vec![
-        fault_event(20, &node, "fault-later"),
-        io_event(12, &node, &disk, b"io-earliest"),
-    ];
+    let events = vec![io_event(12, &node, &disk, b"io-earliest")];
 
     let exact = next_exact_local_event(
         &node,
@@ -37,36 +34,6 @@ fn next_exact_local_event_selects_earliest_timer_io_or_fault() {
         ExactLocalEvent::IoCompletion {
             virtual_time: SimInstant { nanos: 12 },
             sub_node: disk,
-        }
-    );
-}
-
-#[test]
-fn next_exact_local_event_uses_fault_when_it_is_earliest() {
-    let node = scheduler_node("node-a", SchedulingNodeKind::Vm);
-    let disk = scheduler_node("node-a", SchedulingNodeKind::Disk);
-    let events = vec![
-        io_event(20, &node, &disk, b"io-later"),
-        fault_event(9, &node, "fault-earliest"),
-    ];
-
-    let exact = next_exact_local_event(
-        &node,
-        ExactLocalEvent::TimerDeadline {
-            virtual_time: SimInstant { nanos: 12 },
-        },
-        &events,
-        shift(0),
-    )
-    .expect("exact local event should reduce");
-
-    assert_eq!(
-        exact,
-        ExactLocalEvent::FaultActivation {
-            virtual_time: SimInstant { nanos: 9 },
-            fault: FaultId {
-                name: String::from("fault-earliest"),
-            },
         }
     );
 }
@@ -128,7 +95,6 @@ fn next_exact_local_event_ignores_network_input_and_other_nodes() {
     let events = vec![
         backend_event(3, &node, &peer, b"network"),
         io_event(4, &peer, &peer_disk, b"other-io"),
-        fault_event(5, &peer, "other-fault"),
     ];
 
     let exact = next_exact_local_event(&node, ExactLocalEvent::NoArmedTimer, &events, shift(0))
@@ -174,41 +140,6 @@ fn single_scheduler_uses_pending_io_completion_as_exact_local_horizon() {
 }
 
 #[test]
-fn single_scheduler_uses_pending_fault_as_exact_local_horizon() {
-    let node = scheduler_node("node-a", SchedulingNodeKind::Vm);
-    let scenario = SchedulerLivenessScenario::from_canonical_material(
-        "exact-local-fault-horizon",
-        shift(0),
-        8,
-        SimInstant { nanos: 40 },
-        vec![scenario_node(
-            "node-a",
-            0,
-            NetworkLookahead::Finite(SimDuration { nanos: 30 }),
-            ExactLocalEvent::NoArmedTimer,
-        )],
-        vec![fault_event(11, &node, "fault-ready")],
-    );
-    let mut scheduler = SingleScheduler::new(scenario).expect("scenario should be valid");
-    let request = QuantumRequest {
-        configuration: scheduler.configuration().clone(),
-        control: Vec::new(),
-    };
-
-    let outcome = scheduler
-        .drive_quantum(request)
-        .expect("scheduler should drive to the fault activation");
-
-    assert_eq!(outcome.advanced_node, Some(node));
-    assert_eq!(outcome.frontier, VirtualTime { ticks: 11 });
-    assert_eq!(outcome.resolved_events.len(), 1);
-    assert!(matches!(
-        outcome.resolved_events[0].payload,
-        ScheduledEventPayload::FaultActivation(_)
-    ));
-}
-
-#[test]
 fn horizon_uses_io_completion_as_exact_local_source() {
     let disk = scheduler_node("node-a", SchedulingNodeKind::Disk);
     let horizon = horizon_from_network_lookahead(
@@ -229,32 +160,6 @@ fn horizon_uses_io_completion_as_exact_local_source() {
                 ceiling: Icount { retired: 14 },
             },
             source: SchedulerHorizonSource::ExactLocalIoCompletion,
-        })
-    );
-}
-
-#[test]
-fn horizon_uses_fault_activation_as_exact_local_source() {
-    let horizon = horizon_from_network_lookahead(
-        SimInstant { nanos: 10 },
-        NetworkLookahead::Finite(SimDuration { nanos: 20 }),
-        ExactLocalEvent::FaultActivation {
-            virtual_time: SimInstant { nanos: 16 },
-            fault: FaultId {
-                name: String::from("local-fault"),
-            },
-        },
-        shift(0),
-    );
-
-    assert_eq!(
-        horizon,
-        Ok(SchedulerHorizon {
-            limit: SchedulerHorizonLimit::Finite {
-                virtual_time: SimInstant { nanos: 16 },
-                ceiling: Icount { retired: 16 },
-            },
-            source: SchedulerHorizonSource::ExactLocalFault,
         })
     );
 }
@@ -306,22 +211,6 @@ fn io_event_at_virtual_time(
                 retired: delivery_icount,
             },
             payload: payload.to_vec(),
-        }),
-    }
-}
-
-fn fault_event(virtual_time: u64, consumer: &SchedulerNodeId, fault_name: &str) -> ScheduledEvent {
-    ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime {
-                ticks: virtual_time,
-            },
-            consumer.clone(),
-            consumer.clone(),
-            virtual_time,
-        ),
-        payload: ScheduledEventPayload::FaultActivation(FaultId {
-            name: fault_name.to_owned(),
         }),
     }
 }

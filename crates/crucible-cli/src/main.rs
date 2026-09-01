@@ -11,6 +11,9 @@
 #[macro_use]
 #[cfg(any(test, feature = "test-double"))]
 mod quantum_loop_method;
+mod portable_artifact_constants;
+
+use portable_artifact_constants::*;
 
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::error::Error;
@@ -74,6 +77,12 @@ const LIVE_QEMU_EVENT_STREAM_MEDIA_TYPE: &str =
     "application/vnd.crucible.live-qemu-event-stream.v1+bytes";
 const LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE: &str =
     "application/vnd.crucible.live-qemu-fingerprint-stream.v1+bytes";
+const LIVE_QEMU_RESOLVED_EFFECT_TRACE_MEDIA_TYPE: &str =
+    "application/vnd.crucible.resolved-effect-trace.v1+cbor";
+const SIGNAL_ARTIFACT_BUNDLE_MEDIA_TYPE: &str =
+    "application/vnd.crucible.signal-artifact-bundle.v1+binary";
+const SIGNAL_MUTATION_PROVENANCE_MEDIA_TYPE: &str =
+    "application/vnd.crucible.signal-mutation-provenance.v1+json";
 const REPLAY_SCHEDULE_PREFIX_PROOF_SCHEMA: &str = "crucible.replay.schedule-prefix-proof.v1";
 const SEARCH_SCHEDULE_NAMED_TRUTHS_SCHEMA: &str = "crucible.search-schedule-named-truths.v1";
 const SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE: &str =
@@ -81,14 +90,6 @@ const SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE: &str =
 const SEARCH_RETAINED_EVIDENCE_SCHEMA: &str = "crucible.search-retained-evidence.v1";
 const SEARCH_RETAINED_EVIDENCE_MEDIA_TYPE: &str =
     "application/vnd.crucible.search-retained-evidence+toml";
-const SAVEPOINT_HANDLE_SCHEMA: &str = "crucible.savepoint-handle.v3";
-const SAVEPOINT_HANDLE_SCHEMA_V2: &str = "crucible.savepoint-handle.v2";
-const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V1: &str = "crucible.failure-triage.findings-ledger.v1";
-const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V2: &str = "crucible.failure-triage.findings-ledger.v2";
-const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V3: &str = "crucible.failure-triage.findings-ledger.v3";
-const RECORDED_DECISION_PAYLOAD_MEDIA_TYPE: &str =
-    "application/vnd.crucible.recorded-decision-payload+text";
-const CONTENT_ADDRESS_PREFIX: &str = "crucible-hash:";
 const CRUCIBLE_SEED_ENV: &str = "CRUCIBLE_SEED";
 const CRUCIBLE_QEMU_ENV: &str = "CRUCIBLE_QEMU";
 const CRUCIBLE_PLUGIN_ENV: &str = "CRUCIBLE_PLUGIN";
@@ -130,9 +131,12 @@ const CANONICAL_GATE_NAMES: &[&str] = &[
     "gate:adversarial-determinism",
     "gate:e2e-determinism",
     "gate:basic-block-coverage",
+    "gate:checkpoint-materialization",
+    "gate:state-space-search",
     "gate:perf-bench",
     "gate:fleet-equivalence",
     "gate:campaign-continuity",
+    "gate:signal-fault-system",
 ];
 
 #[derive(Parser, Debug, PartialEq, Eq)]
@@ -1092,7 +1096,6 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             session_commands: vec![
                 SessionCommandKind::Start,
                 SessionCommandKind::Continue,
-                SessionCommandKind::Snapshot,
                 SessionCommandKind::Query,
             ],
             api_calls: vec![CliApiCall::Hello, CliApiCall::CreateSession],
@@ -1212,11 +1215,7 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
         },
         Commands::Replay(_) => CliThinWrapperPlan {
             subcommand,
-            session_commands: vec![
-                SessionCommandKind::Start,
-                SessionCommandKind::Continue,
-                SessionCommandKind::Snapshot,
-            ],
+            session_commands: vec![SessionCommandKind::Start, SessionCommandKind::Continue],
             api_calls: Vec::new(),
             delegated_drivers: vec![
                 CliDelegatedDriver::SessionControlPlane,
@@ -1283,7 +1282,6 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             subcommand,
             session_commands: vec![
                 SessionCommandKind::Query,
-                SessionCommandKind::Snapshot,
                 SessionCommandKind::AttachGdb,
                 SessionCommandKind::DebugGoto,
                 SessionCommandKind::DebugReverseStep,

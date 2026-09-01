@@ -5,6 +5,7 @@
   gnumake,
   go,
   llvm,
+  lib,
 }: let
   version = "1.17.3";
 in
@@ -71,14 +72,50 @@ in
       {
         name = "install";
         script = ''
-          mkdir -p $out/bin $out/lib/bpf
+          mkdir -p $out/bin $out/lib/bpf $out/share
           install -m 755 _bin/cilium-agent _bin/cilium-dbg $out/bin/
 
           # Install compiled BPF programs
           cp -r bpf/out/* $out/lib/bpf/ 2>/dev/null || true
+          printf '%s\n' '${builtins.toJSON {inherit version;}}' > $out/share/cilium-package.json
         '';
       }
     ];
+
+    configModule = {
+      src = ./_cilium-config;
+      moduleAbiCompat = {
+        min = 1;
+        max = 2;
+      };
+      declares = [
+        "cilium.enable"
+        "cilium.kubeProxyReplacement"
+        "cilium.operatorReplicas"
+      ];
+      ownsRoots = [
+        {
+          root = "cilium";
+          interfaceAbi = 1;
+        }
+      ];
+      contributes = [
+        {
+          root = "k3s";
+          interfaceAbi = 2;
+          paths = [
+            "integrations.cni.cilium"
+            "integrations.resources.cilium"
+          ];
+        }
+      ];
+      documentation = {
+        summary = "Cilium — eBPF-based networking, security, and observability";
+        sections.integration = lib.aosDoc.section "k3s integration" [
+          (lib.aosDoc.paragraph "Cilium contributes only its signed CNI settings and resource bundle. It cannot enable k3s or change unrelated cluster policy; the k3s owner must be installed with interface ABI 2.")
+        ];
+      };
+    };
 
     checks = {
       testing,

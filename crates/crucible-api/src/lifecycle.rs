@@ -14,10 +14,9 @@ use crucible::{
     Action, Checkpoint, CheckpointKind, Configuration, ContentHash, ControlOperationKind,
     DebugAttachReport, DebugGdbEndpoint, Decision, DeliveryOrderDecision, EngineError,
     EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLogOffset, ExecutionFingerprint,
-    FingerprintSample, GdbListen, GenesisCheckpoint, LogLevel, MembershipFault, NodeId,
-    PartitionDirection, QuantumLoop, QuantumOutcome, QuantumRequest, RestartPolicy, ScenarioDef,
-    ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogEntry, SchedulerQuiescence, Seed,
-    TemporalGraph, VirtualTime, WhiteBoxPolicy, bake,
+    FingerprintSample, GdbListen, GenesisCheckpoint, LogLevel, NodeId, QuantumLoop, QuantumOutcome,
+    QuantumRequest, ScenarioDef, ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogEntry,
+    SchedulerQuiescence, Seed, TemporalGraph, VirtualTime, WhiteBoxPolicy, bake,
 };
 use crucible_session::{
     BreakpointDisposition, BreakpointPolicy, CheckpointRef, CommandReply, DebugCapability,
@@ -38,6 +37,13 @@ use crate::{
     InProcessStreamingSession, RPC_OPEN_SET_PAYLOAD_KINDS, RpcAbiError, SendRequest, SendResponse,
     StreamingApiError, negotiate_rpc_protocol,
 };
+
+#[path = "lifecycle/hex.rs"]
+mod hex;
+use hex::{hex_string, optional_hex_string};
+#[path = "lifecycle/resource_limit.rs"]
+mod resource_limit;
+pub use resource_limit::LifecycleResourceLimit;
 
 /// Default actor mailbox capacity for lifecycle-created sessions.
 pub const LIFECYCLE_SESSION_MAILBOX_CAPACITY: usize = 16;
@@ -674,12 +680,6 @@ fn session_control_payload_material(payload: &SessionControlPayload) -> String {
         SessionControlPayload::Fork { from } => {
             format!("payload=fork\nfrom={}\n", checkpoint_ref_material(*from))
         }
-        SessionControlPayload::InjectFault { spec } => {
-            fault_spec_material("payload=inject-fault", &spec.tag.name, &spec.fault)
-        }
-        SessionControlPayload::HealFault { tag } => {
-            format!("payload=heal-fault\ntag={}\n", hex_string(&tag.name))
-        }
         SessionControlPayload::SetBreakpoint { spec } => format!(
             "payload=set-breakpoint\npredicate={}\ndisposition={}\npolicy={}\n",
             hex_string(&spec.predicate.canonical_summary()),
@@ -702,32 +702,8 @@ fn control_operation_material(control: &ControlOperationKind) -> String {
         ControlOperationKind::Step => String::from("control=step\n"),
         ControlOperationKind::Snapshot => String::from("control=snapshot\n"),
         ControlOperationKind::Fork => String::from("control=fork\n"),
-        ControlOperationKind::Inject => String::from("control=inject\n"),
-        ControlOperationKind::InjectFault { tag, fault } => {
-            fault_spec_material("control=inject-fault", &tag.name, fault)
-        }
-        ControlOperationKind::HealFault { tag } => {
-            format!("control=heal-fault\ntag={}\n", hex_string(&tag.name))
-        }
         ControlOperationKind::Query => String::from("control=query\n"),
     }
-}
-
-fn fault_spec_material(prefix: &str, tag: &str, fault: &crucible::Fault) -> String {
-    format!(
-        "{prefix}\ntag={}\n{}",
-        hex_string(tag),
-        fault_taxonomy_material(fault),
-    )
-}
-
-fn fault_taxonomy_material(fault: &crucible::Fault) -> String {
-    format!(
-        "fault-kind={}\nfault-hash={}\nfault-material={}\n",
-        fault.kind_key(),
-        fault.content_hash().to_hex(),
-        hex_string(&fault.canonical_material()),
-    )
 }
 
 fn checkpoint_ref_material(from: CheckpointRef) -> String {
@@ -749,12 +725,6 @@ fn breakpoint_disposition_material(disposition: &BreakpointDisposition) -> Strin
 
 fn action_material(action: &Action) -> String {
     match action {
-        Action::InjectFault { tag, fault } => format!(
-            "action=inject-fault\ntag={}\n{}",
-            hex_string(&tag.name),
-            membership_fault_material(fault),
-        ),
-        Action::HealFault { tag } => format!("action=heal-fault\ntag={}\n", hex_string(&tag.name)),
         Action::ArmTimer { name, after } => format!(
             "action=arm-timer\nname={}\nafter-nanos={}\n",
             hex_string(&name.name),
@@ -797,46 +767,6 @@ fn action_material(action: &Action) -> String {
     }
 }
 
-fn membership_fault_material(fault: &MembershipFault) -> String {
-    match fault {
-        MembershipFault::Crash { node, restart } => format!(
-            "membership-fault=crash\nnode={}\nrestart={}\n",
-            hex_string(&node.name),
-            restart_policy_material(*restart),
-        ),
-        MembershipFault::Partition {
-            endpoint_a,
-            endpoint_b,
-            direction,
-        } => format!(
-            "membership-fault=partition\nendpoint-a={}\nendpoint-b={}\ndirection={}\n",
-            hex_string(&endpoint_a.name),
-            hex_string(&endpoint_b.name),
-            partition_direction_material(*direction),
-        ),
-        MembershipFault::Isolate { node } => {
-            format!(
-                "membership-fault=isolate\nnode={}\n",
-                hex_string(&node.name)
-            )
-        }
-        MembershipFault::NotYetJoined { node } => format!(
-            "membership-fault=not-yet-joined\nnode={}\n",
-            hex_string(&node.name),
-        ),
-        MembershipFault::Taxonomy { fault } => {
-            format!(
-                "membership-fault=taxonomy\n{}",
-                fault_taxonomy_material(fault)
-            )
-        }
-    }
-}
-
-fn optional_hex_string(value: Option<&str>) -> String {
-    value.map_or_else(|| String::from("none"), hex_string)
-}
-
 fn log_level_material(level: LogLevel) -> &'static str {
     match level {
         LogLevel::Debug => "debug",
@@ -846,38 +776,11 @@ fn log_level_material(level: LogLevel) -> &'static str {
     }
 }
 
-fn restart_policy_material(policy: RestartPolicy) -> &'static str {
-    match policy {
-        RestartPolicy::FromReadyPoint => "from-ready-point",
-        RestartPolicy::FromLastCheckpoint => "from-last-checkpoint",
-        RestartPolicy::StayDown => "stay-down",
-    }
-}
-
-fn partition_direction_material(direction: PartitionDirection) -> &'static str {
-    match direction {
-        PartitionDirection::Bidirectional => "bidirectional",
-        PartitionDirection::EndpointAToEndpointB => "endpoint-a-to-endpoint-b",
-        PartitionDirection::EndpointBToEndpointA => "endpoint-b-to-endpoint-a",
-    }
-}
-
 fn breakpoint_policy_material(policy: BreakpointPolicy) -> &'static str {
     match policy {
         BreakpointPolicy::OneShot => "one-shot",
         BreakpointPolicy::Repeatable => "repeatable",
     }
-}
-
-fn hex_string(value: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let bytes = value.as_bytes();
-    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        output.push(char::from(HEX[usize::from(byte >> 4)]));
-        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    output
 }
 
 /// Error returned by lifecycle unary API methods.
@@ -988,6 +891,9 @@ pub enum LifecycleApiError {
     /// The session has no active stable GDB endpoint to relay.
     #[error("session debugger is not attached")]
     DebugEndpointUnavailable,
+    /// A production resource reservation exceeded its authored or compiled bound.
+    #[error(transparent)]
+    ResourceLimit(#[from] LifecycleResourceLimit),
     /// The delegated execution backend could not be constructed.
     #[error("session execution backend construction failed: {message}")]
     LoopFactory {
@@ -999,6 +905,13 @@ pub enum LifecycleApiError {
 /// Source-aware loop factory used by the lifecycle control plane.
 pub type LifecycleLoopFactory<L> = Box<
     dyn Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync,
+>;
+
+/// Factory that realizes one concrete backend from a validated fat checkpoint.
+pub type LifecycleResumeLoopFactory<L> = Box<
+    dyn Fn(&ScenarioDef, &ScenarioDefForm, Seed, &Checkpoint) -> Result<L, LifecycleApiError>
         + Send
         + Sync,
 >;
@@ -1015,6 +928,7 @@ pub struct LifecycleControlPlane<L, F> {
     next_session_id: u64,
     next_epoch: u64,
     loop_factory: F,
+    resume_loop_factory: Option<LifecycleResumeLoopFactory<L>>,
     white_box_policy_provider: WhiteBoxPolicyProvider,
     mailbox_capacity: usize,
     startup_max_actor_yields: u64,
@@ -1067,13 +981,34 @@ where
 
     /// Realizes resumed sessions by deterministic replay from genesis.
     ///
-    /// Production QEMU uses this mode while arbitrary exact `loadvm` remains
-    /// disabled by the savevm completeness policy. The control plane verifies
-    /// the replayed configuration and virtual-time boundary before publishing
-    /// the resumed session.
+    /// Production QEMU uses this mode when the persisted session has no exact
+    /// snapshot. The control plane verifies the replayed configuration and
+    /// virtual-time boundary before publishing the resumed session.
     #[must_use]
     pub const fn with_thin_replay_resume(mut self) -> Self {
         self.resume_via_thin_replay = true;
+        self
+    }
+
+    /// Installs direct production realization for validated fat checkpoints.
+    ///
+    /// The factory must restore the complete concrete continuation named by
+    /// `checkpoint`. Once installed, resume never falls back to genesis replay.
+    #[must_use]
+    pub fn with_fat_checkpoint_resume_factory(
+        mut self,
+        factory: impl Fn(
+            &ScenarioDef,
+            &ScenarioDefForm,
+            Seed,
+            &Checkpoint,
+        ) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.resume_loop_factory = Some(Box::new(factory));
+        self.resume_via_thin_replay = false;
         self
     }
 
@@ -1232,22 +1167,27 @@ where
                 .map_err(resume_checkpoint_error)?;
         }
 
-        let parent_loop = (self.loop_factory)(&scenario, Some(&request.scenario), request.seed)?;
-        let resumed_loop = (self.loop_factory)(&scenario, Some(&request.scenario), request.seed)?;
+        let resumed_loop = match &self.resume_loop_factory {
+            Some(factory) => factory(
+                &scenario,
+                &request.scenario,
+                request.seed,
+                &request.checkpoint,
+            )?,
+            None => (self.loop_factory)(&scenario, Some(&request.scenario), request.seed)?,
+        };
         let white_box_policies =
             self.white_box_policies_for_source(Some(&request.scenario), &scenario);
-        let genesis = Configuration::genesis(scenario.clone());
-        let mut parent =
-            Engine::new(genesis, graph, parent_loop).with_white_box_policies(white_box_policies);
-        let resumed = parent
-            .resume_session_from_checkpoint(request.checkpoint.id, resumed_loop)
+        let engine = Engine::from_recorded_checkpoint(graph, resumed_loop, request.checkpoint.id)
             .map_err(|error| LifecycleApiError::ResumeCheckpoint {
                 message: error.to_string(),
-            })?;
+            })?
+            .with_white_box_policies(white_box_policies);
 
-        let checkpoint = resumed.checkpoint;
-        let configuration = resumed.configuration.id();
-        let actor = resumed.session_actor.with_terminal_command_keepalive(true);
+        let checkpoint = request.checkpoint.id;
+        let configuration = configuration.id();
+        let (sender, receiver) = mpsc::channel(self.mailbox_capacity);
+        let actor = SessionActor::new(engine, receiver).with_terminal_command_keepalive(true);
         let live = actor.live_snapshot();
         let event_log = ControlPlaneEventLog::new(actor.event_log());
         let reproduction_log = actor.reproduction_log();
@@ -1256,11 +1196,7 @@ where
             &Configuration::genesis(scenario.clone()),
             &request.scenario,
         )?);
-        let (sender, actor_task) = {
-            let sender = resumed.session_sender.clone();
-            let actor_task = tokio::spawn(async move { actor.run().await });
-            (sender, actor_task)
-        };
+        let actor_task = tokio::spawn(async move { actor.run().await });
 
         let session_ref = self.next_session_ref(request.seed);
         let runtime = SessionRuntime {
@@ -2153,8 +2089,9 @@ fn validate_resume_checkpoint_closure(
         // erase the true zero-time genesis. Thin replay never registers the
         // supplied material: it may use a nonzero frontier to reconstruct a
         // deterministic runtime whose causal schedule is still empty.
-        let requires_baked_genesis = validation == ResumeCheckpointValidation::DirectLoad
-            || checkpoint.virtual_time == VirtualTime::default();
+        let requires_baked_genesis = checkpoint.execution_closure.is_none()
+            && (validation == ResumeCheckpointValidation::DirectLoad
+                || checkpoint.virtual_time == VirtualTime::default());
         if requires_baked_genesis && checkpoint != &baked {
             return Err(LifecycleApiError::ResumeCheckpoint {
                 message: String::from(

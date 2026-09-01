@@ -1,0 +1,3291 @@
+diff --git a/hw/acpi/ghes-stub.c b/hw/acpi/ghes-stub.c
+index 7cec1812d..4237d716a 100644
+--- a/hw/acpi/ghes-stub.c
++++ b/hw/acpi/ghes-stub.c
+@@ -20,3 +20,29 @@ bool acpi_ghes_present(void)
+ {
+     return false;
+ }
++
++bool acpi_ghes_memory_error_ready(uint16_t source_id)
++{
++    return false;
++}
++
++bool acpi_ghes_memory_error_state(
++    uint16_t source_id, AcpiGhesMemoryErrorState *state)
++{
++    return false;
++}
++
++bool acpi_ghes_memory_error_restore(
++    uint16_t source_id, const AcpiGhesMemoryErrorState *state)
++{
++    return false;
++}
++
++int acpi_ghes_memory_error_record(uint16_t source_id,
++                                  uint64_t error_physical_addr,
++                                  bool corrected, uint64_t syndrome,
++                                  uint16_t channel, uint16_t rank,
++                                  uint16_t bank)
++{
++    return -1;
++}
+diff --git a/hw/acpi/ghes.c b/hw/acpi/ghes.c
+index b85bb4819..dd74c74da 100644
+--- a/hw/acpi/ghes.c
++++ b/hw/acpi/ghes.c
+@@ -20,6 +20,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/accel.h"
+ #include "qemu/units.h"
+ #include "hw/acpi/ghes.h"
+ #include "hw/acpi/aml-build.h"
+@@ -51,7 +52,9 @@
+ #define ACPI_GHES_MEM_CPER_LENGTH           80
+ 
+ /* Masks for block_status flags */
+-#define ACPI_GEBS_UNCORRECTABLE         1
++#define ACPI_GEBS_UNCORRECTABLE         (1U << 0)
++#define ACPI_GEBS_CORRECTABLE           (1U << 1)
++#define ACPI_GEBS_ENTRY_COUNT_ONE       (1U << 4)
+ 
+ /*
+  * Total size for Generic Error Status Block except Generic Error Data Entries
+@@ -86,8 +89,9 @@ static void build_ghes_hw_error_notification(GArray *table, const uint8_t type)
+     build_append_int_noprefix(table, 28, 1);
+     /* Configuration Write Enable */
+     build_append_int_noprefix(table, 0, 2);
+-    /* Poll Interval */
+-    build_append_int_noprefix(table, 0, 4);
++    /* Poll Interval: corrected records use a standard one-second poll. */
++    build_append_int_noprefix(
++        table, type == ACPI_GHES_NOTIFY_POLLED ? 1000 : 0, 4);
+     /* Vector */
+     build_append_int_noprefix(table, 0, 4);
+     /* Switch To Polling Threshold Value */
+@@ -158,33 +162,60 @@ static void acpi_ghes_generic_error_status(GArray *table, uint32_t block_status,
+ 
+ /* UEFI 2.6: N.2.5 Memory Error Section */
+ static void acpi_ghes_build_append_mem_cper(GArray *table,
+-                                            uint64_t error_physical_addr)
++                                            uint64_t error_physical_addr,
++                                            uint64_t syndrome,
++                                            uint16_t channel,
++                                            uint16_t rank,
++                                            uint16_t bank)
+ {
+     /*
+      * Memory Error Record
+      */
+ 
++    /*
++     * Error Status is a standardized UEFI status encoding, not a raw
++     * platform syndrome.  Preserve the raw syndrome in Crucible evidence and
++     * leave Error Status invalid rather than publishing a made-up CPER value.
++     */
++    (void)syndrome;
++
+     /* Validation Bits */
+     build_append_int_noprefix(table,
+                               (1ULL << 14) | /* Type Valid */
++                              (1ULL << 15) | /* Rank Number Valid */
++                              (1ULL << 6) | /* Bank Valid */
++                              (1ULL << 4) | /* Card/channel Valid */
+                               (1ULL << 1) /* Physical Address Valid */,
+                               8);
+     /* Error Status */
+     build_append_int_noprefix(table, 0, 8);
+     /* Physical Address */
+     build_append_int_noprefix(table, error_physical_addr, 8);
+-    /* Skip all the detailed information normally found in such a record */
+-    build_append_int_noprefix(table, 0, 48);
++    /* Physical Address Mask */
++    build_append_int_noprefix(table, 0, 8);
++    /* Node */
++    build_append_int_noprefix(table, 0, 2);
++    /* Card identifies the realized memory channel. */
++    build_append_int_noprefix(table, channel, 2);
++    /* Module */
++    build_append_int_noprefix(table, 0, 2);
++    /* Bank */
++    build_append_int_noprefix(table, bank, 2);
++    /* Device, Row, Column, Bit Position */
++    build_append_int_noprefix(table, 0, 8);
++    /* Requestor, Responder, and Target IDs */
++    build_append_int_noprefix(table, 0, 24);
+     /* Memory Error Type */
+     build_append_int_noprefix(table, 0 /* Unknown error */, 1);
+-    /* Skip all the detailed information normally found in such a record */
+-    build_append_int_noprefix(table, 0, 7);
++    /* Rank Number */
++    build_append_int_noprefix(table, rank, 1);
++    /* Card Handle, Module Handle, reserved */
++    build_append_int_noprefix(table, 0, 6);
+ }
+ 
+ static void
+-ghes_gen_err_data_uncorrectable_recoverable(GArray *block,
+-                                            const uint8_t *section_type,
+-                                            int data_length)
++ghes_gen_err_data(GArray *block, const uint8_t *section_type,
++                  int data_length, bool corrected)
+ {
+     /* invalid fru id: ACPI 4.0: 17.3.2.6.1 Generic Error Data,
+      * Table 17-13 Generic Error Data Entry
+@@ -192,12 +223,18 @@ ghes_gen_err_data_uncorrectable_recoverable(GArray *block,
+     QemuUUID fru_id = {};
+ 
+     /* Build the new generic error status block header */
+-    acpi_ghes_generic_error_status(block, ACPI_GEBS_UNCORRECTABLE,
+-        0, 0, data_length, ACPI_CPER_SEV_RECOVERABLE);
++    uint32_t severity = corrected ? ACPI_CPER_SEV_CORRECTED :
++                                    ACPI_CPER_SEV_RECOVERABLE;
++
++    acpi_ghes_generic_error_status(
++        block, (corrected ? ACPI_GEBS_CORRECTABLE :
++                            ACPI_GEBS_UNCORRECTABLE) |
++                   ACPI_GEBS_ENTRY_COUNT_ONE,
++        0, 0, data_length, severity);
+ 
+     /* Build this new generic error data entry header */
+     acpi_ghes_generic_error_data(block, section_type,
+-        ACPI_CPER_SEV_RECOVERABLE, 0, 0,
++        severity, 0, 0,
+         ACPI_GHES_MEM_CPER_LENGTH, fru_id, 0);
+ }
+ 
+@@ -206,17 +243,25 @@ ghes_gen_err_data_uncorrectable_recoverable(GArray *block,
+  * Initialize "etc/hardware_errors" and "etc/hardware_errors_addr" fw_cfg blobs.
+  * See docs/specs/acpi_hest_ghes.rst for blobs format.
+  */
++static unsigned acpi_ghes_realized_source_count(void)
++{
++    /* Preserve upstream's one-source firmware ABI outside Crucible sim. */
++    return strcmp(current_accel_name(), "sim") == 0 ?
++        ACPI_GHES_ERROR_SOURCE_COUNT : 1;
++}
++
+ static void build_ghes_error_table(GArray *hardware_errors, BIOSLinker *linker)
+ {
+     int i, error_status_block_offset;
++    unsigned source_count = acpi_ghes_realized_source_count();
+ 
+     /* Build error_block_address */
+-    for (i = 0; i < ACPI_GHES_ERROR_SOURCE_COUNT; i++) {
++    for (i = 0; i < source_count; i++) {
+         build_append_int_noprefix(hardware_errors, 0, sizeof(uint64_t));
+     }
+ 
+     /* Build read_ack_register */
+-    for (i = 0; i < ACPI_GHES_ERROR_SOURCE_COUNT; i++) {
++    for (i = 0; i < source_count; i++) {
+         /*
+          * Initialize the value of read_ack_register to 1, so GHES can be
+          * writable after (re)boot.
+@@ -231,13 +276,13 @@ static void build_ghes_error_table(GArray *hardware_errors, BIOSLinker *linker)
+ 
+     /* Reserve space for Error Status Data Block */
+     acpi_data_push(hardware_errors,
+-        ACPI_GHES_MAX_RAW_DATA_LENGTH * ACPI_GHES_ERROR_SOURCE_COUNT);
++        ACPI_GHES_MAX_RAW_DATA_LENGTH * source_count);
+ 
+     /* Tell guest firmware to place hardware_errors blob into RAM */
+     bios_linker_loader_alloc(linker, ACPI_HW_ERROR_FW_CFG_FILE,
+                              hardware_errors, sizeof(uint64_t), false);
+ 
+-    for (i = 0; i < ACPI_GHES_ERROR_SOURCE_COUNT; i++) {
++    for (i = 0; i < source_count; i++) {
+         /*
+          * Tell firmware to patch error_block_address entries to point to
+          * corresponding "Generic Error Status Block"
+@@ -317,7 +362,7 @@ static void build_ghes_v2(GArray *table_data,
+                                    address_offset + GAS_ADDR_OFFSET,
+                                    sizeof(uint64_t),
+                                    ACPI_HW_ERROR_FW_CFG_FILE,
+-                                   (ACPI_GHES_ERROR_SOURCE_COUNT + source_id)
++                                   (acpi_ghes_realized_source_count() + source_id)
+                                    * sizeof(uint64_t));
+ 
+     /*
+@@ -343,9 +388,15 @@ void acpi_build_hest(GArray *table_data, GArray *hardware_errors,
+     acpi_table_begin(&table, table_data);
+ 
+     /* Error Source Count */
+-    build_append_int_noprefix(table_data, ACPI_GHES_ERROR_SOURCE_COUNT, 4);
++    build_append_int_noprefix(
++        table_data, acpi_ghes_realized_source_count(), 4);
+     build_ghes_v2(table_data, linker,
+                   ACPI_GHES_NOTIFY_SEA, ACPI_HEST_SRC_ID_SEA);
++    if (acpi_ghes_realized_source_count() > 1) {
++        build_ghes_v2(table_data, linker,
++                      ACPI_GHES_NOTIFY_POLLED,
++                      ACPI_HEST_SRC_ID_CORRECTED_POLL);
++    }
+ 
+     acpi_table_end(linker, &table);
+ }
+@@ -364,30 +415,22 @@ void acpi_ghes_add_fw_cfg(AcpiGhesState *ags, FWCfgState *s,
+     ags->present = true;
+ }
+ 
+-static void get_hw_error_offsets(uint64_t ghes_addr,
++static void get_hw_error_offsets(uint64_t ghes_addr, uint16_t source_id,
+                                  uint64_t *cper_addr,
+                                  uint64_t *read_ack_register_addr)
+ {
+-    if (!ghes_addr) {
++    if (!ghes_addr || source_id >= acpi_ghes_realized_source_count()) {
+         return;
+     }
+ 
+-    /*
+-     * non-HEST version supports only one source, so no need to change
+-     * the start offset based on the source ID. Also, we can't validate
+-     * the source ID, as it is stored inside the HEST table.
+-     */
+-
+-    cpu_physical_memory_read(ghes_addr, cper_addr,
++    cpu_physical_memory_read(
++        ghes_addr + source_id * sizeof(uint64_t), cper_addr,
+                              sizeof(*cper_addr));
+ 
+     *cper_addr = le64_to_cpu(*cper_addr);
+ 
+-    /*
+-     * As the current version supports only one source, the ack offset is
+-     * just sizeof(uint64_t).
+-     */
+-    *read_ack_register_addr = ghes_addr + sizeof(uint64_t);
++    *read_ack_register_addr = ghes_addr +
++        (acpi_ghes_realized_source_count() + source_id) * sizeof(uint64_t);
+ }
+ 
+ static void ghes_record_cper_errors(const void *cper, size_t len,
+@@ -410,8 +453,7 @@ static void ghes_record_cper_errors(const void *cper, size_t len,
+     }
+     ags = &acpi_ged_state->ghes_state;
+ 
+-    assert(ACPI_GHES_ERROR_SOURCE_COUNT == 1);
+-    get_hw_error_offsets(le64_to_cpu(ags->hw_error_le),
++    get_hw_error_offsets(le64_to_cpu(ags->hw_error_le), source_id,
+                          &cper_addr, &read_ack_register_addr);
+ 
+     if (!cper_addr) {
+@@ -443,6 +485,16 @@ static void ghes_record_cper_errors(const void *cper, size_t len,
+ }
+ 
+ int acpi_ghes_memory_errors(uint16_t source_id, uint64_t physical_address)
++{
++    return acpi_ghes_memory_error_record(source_id, physical_address,
++                                         false, 0, 0, 0, 0);
++}
++
++int acpi_ghes_memory_error_record(uint16_t source_id,
++                                  uint64_t physical_address,
++                                  bool corrected, uint64_t syndrome,
++                                  uint16_t channel, uint16_t rank,
++                                  uint16_t bank)
+ {
+     /* Memory Error Section Type */
+     const uint8_t guid[] =
+@@ -462,10 +514,11 @@ int acpi_ghes_memory_errors(uint16_t source_id, uint64_t physical_address)
+     assert((data_length + ACPI_GHES_GESB_SIZE) <=
+             ACPI_GHES_MAX_RAW_DATA_LENGTH);
+ 
+-    ghes_gen_err_data_uncorrectable_recoverable(block, guid, data_length);
++    ghes_gen_err_data(block, guid, data_length, corrected);
+ 
+     /* Build the memory section CPER for above new generic error data entry */
+-    acpi_ghes_build_append_mem_cper(block, physical_address);
++    acpi_ghes_build_append_mem_cper(block, physical_address, syndrome,
++                                    channel, rank, bank);
+ 
+     /* Report the error */
+     ghes_record_cper_errors(block->data, block->len, source_id, &errp);
+@@ -494,3 +547,107 @@ bool acpi_ghes_present(void)
+     ags = &acpi_ged_state->ghes_state;
+     return ags->present;
+ }
++
++bool acpi_ghes_memory_error_ready(uint16_t source_id)
++{
++    AcpiGedState *acpi_ged_state;
++    AcpiGhesState *ags;
++    uint64_t cper_addr = 0;
++    uint64_t read_ack_register_addr = 0;
++    uint64_t read_ack_register;
++
++    if (source_id >= acpi_ghes_realized_source_count()) {
++        return false;
++    }
++    acpi_ged_state = ACPI_GED(object_resolve_path_type(
++        "", TYPE_ACPI_GED, NULL));
++    if (!acpi_ged_state) {
++        return false;
++    }
++    ags = &acpi_ged_state->ghes_state;
++    if (!ags->present) {
++        return false;
++    }
++    get_hw_error_offsets(le64_to_cpu(ags->hw_error_le), source_id,
++                         &cper_addr, &read_ack_register_addr);
++    if (!cper_addr) {
++        return false;
++    }
++    cpu_physical_memory_read(read_ack_register_addr,
++                             &read_ack_register,
++                             sizeof(read_ack_register));
++    return le64_to_cpu(read_ack_register) != 0;
++}
++
++bool acpi_ghes_memory_error_state(
++    uint16_t source_id, AcpiGhesMemoryErrorState *state)
++{
++    AcpiGedState *acpi_ged_state;
++    AcpiGhesState *ags;
++    uint64_t cper_addr = 0;
++    uint64_t read_ack_register_addr = 0;
++    uint64_t read_ack_register;
++
++    if (!state || source_id >= acpi_ghes_realized_source_count()) {
++        return false;
++    }
++    acpi_ged_state = ACPI_GED(object_resolve_path_type(
++        "", TYPE_ACPI_GED, NULL));
++    if (!acpi_ged_state) {
++        return false;
++    }
++    ags = &acpi_ged_state->ghes_state;
++    if (!ags->present) {
++        return false;
++    }
++    get_hw_error_offsets(le64_to_cpu(ags->hw_error_le), source_id,
++                         &cper_addr, &read_ack_register_addr);
++    if (!cper_addr) {
++        return false;
++    }
++    memset(state, 0, sizeof(*state));
++    cpu_physical_memory_read(read_ack_register_addr,
++                             &read_ack_register,
++                             sizeof(read_ack_register));
++    state->read_ack = le64_to_cpu(read_ack_register);
++    state->record_length = ACPI_GHES_MEMORY_ERROR_RECORD_BYTES;
++    cpu_physical_memory_read(cper_addr, state->record,
++                             sizeof(state->record));
++    return true;
++}
++
++bool acpi_ghes_memory_error_restore(
++    uint16_t source_id, const AcpiGhesMemoryErrorState *state)
++{
++    AcpiGedState *acpi_ged_state;
++    AcpiGhesState *ags;
++    uint64_t cper_addr = 0;
++    uint64_t read_ack_register_addr = 0;
++    uint64_t read_ack_register;
++
++    if (!state || source_id >= acpi_ghes_realized_source_count() ||
++        state->record_length != ACPI_GHES_MEMORY_ERROR_RECORD_BYTES) {
++        return false;
++    }
++    acpi_ged_state = ACPI_GED(object_resolve_path_type(
++        "", TYPE_ACPI_GED, NULL));
++    if (!acpi_ged_state) {
++        return false;
++    }
++    ags = &acpi_ged_state->ghes_state;
++    if (!ags->present) {
++        return false;
++    }
++    get_hw_error_offsets(le64_to_cpu(ags->hw_error_le), source_id,
++                         &cper_addr, &read_ack_register_addr);
++    if (!cper_addr) {
++        return false;
++    }
++    cpu_physical_memory_write(cper_addr, state->record,
++                              sizeof(state->record));
++    read_ack_register = cpu_to_le64(state->read_ack);
++    cpu_physical_memory_write(read_ack_register_addr,
++                              &read_ack_register,
++                              sizeof(read_ack_register));
++    return true;
++}
+diff --git a/hw/core/cpu-system.c b/hw/core/cpu-system.c
+index c1aa5a3f5..dabbca2a0 100644
+--- a/hw/core/cpu-system.c
++++ b/hw/core/cpu-system.c
+@@ -82,6 +82,58 @@ hwaddr cpu_get_phys_page_debug(CPUState *cpu, vaddr addr)
+     return cpu_get_phys_page_attrs_debug(cpu, addr, &attrs);
+ }
+ 
++bool cpu_get_fault_hardware_error_capability(
++    CPUState *cpu, CPUFaultHardwareErrorCapability *capability)
++{
++    if (!cpu->cc->sysemu_ops->get_fault_hardware_error_capability) {
++        return false;
++    }
++    memset(capability, 0, sizeof(*capability));
++    return cpu->cc->sysemu_ops->get_fault_hardware_error_capability(
++        cpu, capability);
++}
++
++bool cpu_get_fault_privilege(CPUState *cpu, uint32_t *privilege)
++{
++    const SysemuCPUOps *ops;
++
++    if (!cpu || !privilege) {
++        return false;
++    }
++    ops = cpu->cc->sysemu_ops;
++    return ops && ops->get_fault_privilege &&
++           ops->get_fault_privilege(cpu, privilege);
++}
++
++bool cpu_read_fault_hardware_error_state(
++    CPUState *cpu, uint32_t bank, CPUFaultHardwareErrorState *state)
++{
++    const SysemuCPUOps *ops;
++
++    if (!cpu || !state) {
++        return false;
++    }
++    ops = cpu->cc->sysemu_ops;
++    if (!ops || !ops->read_fault_hardware_error_state) {
++        return false;
++    }
++    memset(state, 0, sizeof(*state));
++    return ops->read_fault_hardware_error_state(cpu, bank, state);
++}
++
++bool cpu_restore_fault_hardware_error_state(
++    CPUState *cpu, const CPUFaultHardwareErrorState *state)
++{
++    const SysemuCPUOps *ops;
++
++    if (!cpu || !state) {
++        return false;
++    }
++    ops = cpu->cc->sysemu_ops;
++    return ops && ops->restore_fault_hardware_error_state &&
++           ops->restore_fault_hardware_error_state(cpu, state);
++}
++
+ int cpu_asidx_from_attrs(CPUState *cpu, MemTxAttrs attrs)
+ {
+     int ret = 0;
+@@ -330,6 +382,26 @@ bool cpu_validate_fault_exception(CPUState *cpu,
+            ops->validate_fault_exception(cpu, exception);
+ }
+ 
++bool cpu_record_corrected_fault(CPUState *cpu,
++                                const CPUFaultException *exception)
++{
++    const SysemuCPUOps *ops = cpu->cc->sysemu_ops;
++
++    return ops && ops->record_corrected_fault && exception &&
++           cpu_validate_fault_exception(cpu, exception) &&
++           ops->record_corrected_fault(cpu, exception);
++}
++
++bool cpu_queue_fault_hardware_error(CPUState *cpu,
++                                    const CPUFaultException *exception)
++{
++    const SysemuCPUOps *ops = cpu->cc->sysemu_ops;
++
++    return ops && ops->queue_fault_hardware_error && exception &&
++           cpu_validate_fault_exception(cpu, exception) &&
++           ops->queue_fault_hardware_error(cpu, exception);
++}
++
+ void cpu_inject_fault_exception(CPUState *cpu,
+                                 const CPUFaultException *exception,
+                                 uintptr_t retaddr)
+diff --git a/include/hw/acpi/ghes.h b/include/hw/acpi/ghes.h
+index 578a58220..a8a771091 100644
+--- a/include/hw/acpi/ghes.h
++++ b/include/hw/acpi/ghes.h
+@@ -59,7 +59,7 @@ enum AcpiGhesNotifyType {
+ 
+ enum {
+     ACPI_HEST_SRC_ID_SEA = 0,
+-    /* future ids go here */
++    ACPI_HEST_SRC_ID_CORRECTED_POLL,
+ 
+     ACPI_GHES_ERROR_SOURCE_COUNT
+ };
+@@ -69,12 +69,26 @@ typedef struct AcpiGhesState {
+     bool present; /* True if GHES is present at all on this board */
+ } AcpiGhesState;
+ 
++#define ACPI_GHES_MEMORY_ERROR_RECORD_BYTES 172
++
++/** Exact guest-memory state of one GHES memory-error source. */
++typedef struct AcpiGhesMemoryErrorState {
++    uint64_t read_ack;
++    uint32_t record_length;
++    uint8_t record[ACPI_GHES_MEMORY_ERROR_RECORD_BYTES];
++} AcpiGhesMemoryErrorState;
++
+ void acpi_build_hest(GArray *table_data, GArray *hardware_errors,
+                      BIOSLinker *linker,
+                      const char *oem_id, const char *oem_table_id);
+ void acpi_ghes_add_fw_cfg(AcpiGhesState *vms, FWCfgState *s,
+                           GArray *hardware_errors);
+ int acpi_ghes_memory_errors(uint16_t source_id, uint64_t error_physical_addr);
++int acpi_ghes_memory_error_record(uint16_t source_id,
++                                  uint64_t error_physical_addr,
++                                  bool corrected, uint64_t syndrome,
++                                  uint16_t channel, uint16_t rank,
++                                  uint16_t bank);
+ 
+ /**
+  * acpi_ghes_present: Report whether ACPI GHES table is present
+@@ -83,4 +97,9 @@ int acpi_ghes_memory_errors(uint16_t source_id, uint64_t error_physical_addr);
+  * safe to call acpi_ghes_memory_errors() to record a memory error.
+  */
+ bool acpi_ghes_present(void);
++bool acpi_ghes_memory_error_ready(uint16_t source_id);
++bool acpi_ghes_memory_error_state(
++    uint16_t source_id, AcpiGhesMemoryErrorState *state);
++bool acpi_ghes_memory_error_restore(
++    uint16_t source_id, const AcpiGhesMemoryErrorState *state);
+ #endif
+diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
+index c33007482..db2f5f2d4 100644
+--- a/include/hw/core/cpu.h
++++ b/include/hw/core/cpu.h
+@@ -812,8 +812,53 @@ typedef struct CPUFaultException {
+     bool has_fault_address;
+     bool before_instruction;
+     bool maskable;
++    struct {
++        uint32_t bank;
++        uint64_t status;
++        uint64_t global_status;
++        uint64_t address;
++        uint64_t misc;
++        bool corrected;
++        bool has_address;
++        bool has_misc;
++    } x86_machine_check;
++    struct {
++        uint64_t esr;
++        uint64_t far;
++        uint64_t disr;
++        bool asynchronous;
++        bool corrected;
++        bool fatal;
++        bool has_far;
++        bool has_disr;
++    } aarch64_ras;
+ } CPUFaultException;
+ 
++typedef struct CPUFaultHardwareErrorCapability {
++    uint32_t bank_count;
++    bool machine_check;
++    bool ras;
++} CPUFaultHardwareErrorCapability;
++
++/** Canonical snapshot of architecture-owned hardware-error state. */
++typedef struct CPUFaultHardwareErrorState {
++    uint32_t architecture;
++    uint32_t record;
++    uint32_t bank;
++    uint32_t flags;
++    uint32_t interrupt_request;
++    uint64_t bank_control;
++    uint64_t bank_status;
++    uint64_t bank_address;
++    uint64_t bank_misc;
++    uint64_t global_status;
++    uint64_t syndrome;
++    uint64_t fault_address;
++    uint64_t esr;
++    uint64_t far;
++    uint64_t disr;
++} CPUFaultHardwareErrorState;
++
+ /**
+  * cpu_get_fault_translation:
+  * @cpu: The CPU whose current translation context is selected.
+@@ -831,8 +876,19 @@ typedef struct CPUFaultException {
+ bool cpu_get_fault_translation(CPUState *cpu, vaddr addr,
+                                MMUAccessType access_type,
+                                CPUFaultTranslation *result);
++bool cpu_get_fault_hardware_error_capability(
++    CPUState *cpu, CPUFaultHardwareErrorCapability *capability);
++bool cpu_get_fault_privilege(CPUState *cpu, uint32_t *privilege);
++bool cpu_read_fault_hardware_error_state(
++    CPUState *cpu, uint32_t bank, CPUFaultHardwareErrorState *state);
++bool cpu_restore_fault_hardware_error_state(
++    CPUState *cpu, const CPUFaultHardwareErrorState *state);
+ bool cpu_validate_fault_exception(CPUState *cpu,
+                                   const CPUFaultException *exception);
++bool cpu_record_corrected_fault(CPUState *cpu,
++                                const CPUFaultException *exception);
++bool cpu_queue_fault_hardware_error(CPUState *cpu,
++                                    const CPUFaultException *exception);
+ G_NORETURN void cpu_inject_fault_exception(
+     CPUState *cpu, const CPUFaultException *exception, uintptr_t retaddr);
+ G_NORETURN void cpu_inject_fault_access_error(
+diff --git a/include/hw/core/sysemu-cpu-ops.h b/include/hw/core/sysemu-cpu-ops.h
+index b8dcbd290..658ae058b 100644
+--- a/include/hw/core/sysemu-cpu-ops.h
++++ b/include/hw/core/sysemu-cpu-ops.h
+@@ -49,8 +49,19 @@ typedef struct SysemuCPUOps {
+     bool (*get_fault_translation)(CPUState *cpu, vaddr addr,
+                                   MMUAccessType access_type,
+                                   CPUFaultTranslation *result);
++    bool (*get_fault_hardware_error_capability)(
++        CPUState *cpu, CPUFaultHardwareErrorCapability *capability);
++    bool (*get_fault_privilege)(CPUState *cpu, uint32_t *privilege);
++    bool (*read_fault_hardware_error_state)(
++        CPUState *cpu, uint32_t bank, CPUFaultHardwareErrorState *state);
++    bool (*restore_fault_hardware_error_state)(
++        CPUState *cpu, const CPUFaultHardwareErrorState *state);
+     bool (*validate_fault_exception)(CPUState *cpu,
+                                      const CPUFaultException *exception);
++    bool (*record_corrected_fault)(CPUState *cpu,
++                                   const CPUFaultException *exception);
++    bool (*queue_fault_hardware_error)(CPUState *cpu,
++                                       const CPUFaultException *exception);
+     G_NORETURN void (*inject_fault_exception)(
+         CPUState *cpu, const CPUFaultException *exception,
+         uintptr_t retaddr);
+diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
+index 92f634dd2..9d38f9825 100644
+--- a/include/qemu/crucible-fault.h
++++ b/include/qemu/crucible-fault.h
+@@ -214,6 +214,21 @@ int qemu_crucible_fault_interrupt_validate(
+ void qemu_crucible_fault_interrupt_rules_changed(void);
+ void qemu_crucible_fault_interrupt_event_terminal(void);
+ 
++bool qemu_crucible_fault_hardware_error_ensure_registered(void);
++int qemu_crucible_fault_hardware_ecc_validate(
++    const QemuCrucibleFaultRule *rule);
++int qemu_crucible_fault_hardware_exception_validate(
++    const QemuCrucibleFaultRule *rule, CPUState *cpu,
++    const CPUFaultException *exception);
++bool qemu_crucible_fault_hardware_exception_identity(
++    const CPUFaultException *exception, uint32_t *row_index,
++    uint8_t id[32], uint8_t bank[32], uint8_t channel[32], uint8_t rank[32],
++    uint8_t firmware[32], uint8_t state[32], uint8_t manifest_sha256[32]);
++bool qemu_crucible_fault_hardware_exception_delivered(
++    CPUState *cpu, uint32_t vector, uint64_t syndrome,
++    bool has_fault_address, uint64_t fault_address);
++void qemu_crucible_fault_hardware_error_event_terminal(void);
++
+ /*
+  * Architecture interrupt-controller interception contract.  These objects are
+  * private QEMU process state: only their closed scalar projection is exported
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index d82a128f6..12d734b22 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1751,6 +1751,52 @@ size_t qemu_plugin_crucible_fault_interrupt_manifest(
+     struct qemu_plugin_crucible_fault_interrupt_capability *out,
+     size_t capacity, uint16_t *architecture);
+ 
++/** One immutable architecture/platform hardware-error capability row. */
++struct qemu_plugin_crucible_fault_hardware_error_capability {
++    uint16_t record_kind;
++    uint16_t error_class;
++    uint16_t mechanism;
++    uint16_t visibility_mask;
++    uint32_t bank_number;
++    uint32_t bank_count;
++    uint32_t vector;
++    uint32_t reserved0;
++    uint64_t status_required;
++    uint64_t status_allowed;
++    uint64_t syndrome_required;
++    uint64_t syndrome_allowed;
++    uint64_t model_phase_mask;
++    uint16_t privilege_mask;
++    uint8_t corrected;
++    uint8_t maskable;
++    uint8_t vmstate;
++    uint8_t reserved1;
++    const char *id;
++    const char *bank;
++    const char *channel;
++    const char *rank;
++    const char *firmware;
++    const char *state;
++};
++
++/** Copy the closed hardware-error manifest for the realized machine. */
++QEMU_PLUGIN_API
++size_t qemu_plugin_crucible_fault_hardware_error_manifest(
++    struct qemu_plugin_crucible_fault_hardware_error_capability *out,
++    size_t capacity, uint16_t *architecture);
++
++/** Bind one public hardware-error row and its memory topology identities. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fault_hardware_error_bind(
++    uint32_t row_index, const uint8_t id[32], const uint8_t bank[32],
++    const uint8_t channel[32], const uint8_t rank[32],
++    const uint8_t firmware[32], const uint8_t state[32]);
++
++/** Seal the complete hardware-error identity map and canonical manifest. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fault_hardware_error_bindings_seal(
++    const uint8_t manifest_sha256[32]);
++
+ /** Bind one public interrupt row and its component identities. */
+ QEMU_PLUGIN_API
+ int qemu_plugin_crucible_fault_interrupt_bind(
+diff --git a/plugins/crucible-fault-hardware-error.c b/plugins/crucible-fault-hardware-error.c
+new file mode 100644
+index 000000000..3a8523d67
+--- /dev/null
++++ b/plugins/crucible-fault-hardware-error.c
+@@ -0,0 +1,1216 @@
++/*
++ * Crucible architecture and platform hardware-error injection
++ *
++ * Copyright (c) 2026 ANDYL Technologies
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++
++#include "exec/address-spaces.h"
++#include "exec/memory.h"
++#include "hw/acpi/ghes.h"
++#include "hw/core/cpu.h"
++#include "qemu/bswap.h"
++#include "qemu/crucible-fault.h"
++#include "qemu/error-report.h"
++#include "qobject/qdict.h"
++#include "qobject/qobject.h"
++#include "system/runstate.h"
++
++#define CRUCIBLE_HWERR_RECORD_X86_MCE 1
++#define CRUCIBLE_HWERR_RECORD_AARCH64_RAS 2
++#define CRUCIBLE_HWERR_RECORD_MEMORY_ECC 3
++
++#define CRUCIBLE_HWERR_CLASS_CORRECTED 1
++#define CRUCIBLE_HWERR_CLASS_RECOVERABLE 2
++#define CRUCIBLE_HWERR_CLASS_FATAL 3
++#define CRUCIBLE_HWERR_CLASS_SYNCHRONOUS 4
++#define CRUCIBLE_HWERR_CLASS_ASYNCHRONOUS 5
++
++#define CRUCIBLE_HWERR_MECHANISM_X86_MCA 1
++#define CRUCIBLE_HWERR_MECHANISM_ACPI_GHES 2
++#define CRUCIBLE_HWERR_MECHANISM_AARCH64_RAS 3
++
++#define CRUCIBLE_HWERR_VISIBILITY_TELEMETRY (1U << 0)
++#define CRUCIBLE_HWERR_VISIBILITY_INTERRUPT (1U << 1)
++#define CRUCIBLE_HWERR_VISIBILITY_EXCEPTION (1U << 2)
++
++#define CRUCIBLE_HWERR_CPU_PHASES \
++    ((UINT64_C(1) << (11 - 1)) | (UINT64_C(1) << (12 - 1)))
++#define CRUCIBLE_HWERR_MEMORY_PHASES \
++    ((UINT64_C(1) << (9 - 1)) | (UINT64_C(1) << (17 - 1)) | \
++     (UINT64_C(1) << (18 - 1)) | (UINT64_C(1) << (19 - 1)) | \
++     (UINT64_C(1) << (20 - 1)) | (UINT64_C(1) << (21 - 1)) | \
++     (UINT64_C(1) << (22 - 1)))
++#define CRUCIBLE_HWERR_PRIVILEGES 0x0f
++
++#define CRUCIBLE_X86_MCI_STATUS_VAL (UINT64_C(1) << 63)
++#define CRUCIBLE_X86_MCI_STATUS_OVER (UINT64_C(1) << 62)
++#define CRUCIBLE_X86_MCI_STATUS_UC (UINT64_C(1) << 61)
++#define CRUCIBLE_X86_MCI_STATUS_EN (UINT64_C(1) << 60)
++#define CRUCIBLE_X86_MCI_STATUS_MISCV (UINT64_C(1) << 59)
++#define CRUCIBLE_X86_MCI_STATUS_ADDRV (UINT64_C(1) << 58)
++#define CRUCIBLE_X86_MCI_STATUS_PCC (UINT64_C(1) << 57)
++#define CRUCIBLE_X86_MCI_STATUS_S (UINT64_C(1) << 56)
++#define CRUCIBLE_X86_MCI_STATUS_AR (UINT64_C(1) << 55)
++#define CRUCIBLE_X86_MCI_STATUS_DEFERRED (UINT64_C(1) << 44)
++#define CRUCIBLE_X86_MCI_STATUS_POISON (UINT64_C(1) << 43)
++
++typedef struct CrucibleHardwareBinding {
++    uint8_t id[32];
++    uint8_t bank[32];
++    uint8_t channel[32];
++    uint8_t rank[32];
++    uint8_t firmware[32];
++    uint8_t state[32];
++    bool present;
++} CrucibleHardwareBinding;
++
++typedef struct CrucibleHardwarePending {
++    CPUState *cpu;
++    QemuCrucibleFaultRule *rule;
++    QemuCrucibleFaultEventReservation *reservation;
++    CPUFaultException exception;
++    uint64_t command_icount;
++    uint64_t address;
++    uint64_t ecc_syndrome;
++    uint32_t row_index;
++    uint16_t ghes_source_id;
++    uint8_t before_hash[32];
++    uint8_t id[32];
++    uint8_t bank[32];
++    uint8_t channel[32];
++    uint8_t rank[32];
++    uint8_t firmware[32];
++    uint8_t state[32];
++    CPUFaultHardwareErrorState before_cpu_state;
++    CPUFaultHardwareErrorState queued_cpu_state;
++    AcpiGhesMemoryErrorState before_ghes_state;
++    AcpiGhesMemoryErrorState queued_ghes_state;
++} CrucibleHardwarePending;
++
++static GArray *crucible_hardware_manifest;
++static GArray *crucible_hardware_bindings;
++static GPtrArray *crucible_hardware_pending;
++static uint16_t crucible_hardware_architecture;
++static bool crucible_hardware_bindings_sealed;
++static bool crucible_hardware_registered;
++static bool crucible_hardware_terminal;
++static uint8_t crucible_hardware_manifest_sha256[32];
++
++static const uint64_t x86_status_allowed =
++    CRUCIBLE_X86_MCI_STATUS_VAL | CRUCIBLE_X86_MCI_STATUS_UC |
++    CRUCIBLE_X86_MCI_STATUS_EN |
++    CRUCIBLE_X86_MCI_STATUS_MISCV | CRUCIBLE_X86_MCI_STATUS_ADDRV |
++    CRUCIBLE_X86_MCI_STATUS_PCC | CRUCIBLE_X86_MCI_STATUS_S |
++    CRUCIBLE_X86_MCI_STATUS_AR | CRUCIBLE_X86_MCI_STATUS_DEFERRED |
++    CRUCIBLE_X86_MCI_STATUS_POISON | UINT64_C(0xffffffff);
++
++static void crucible_hardware_add_row(
++    uint16_t record_kind, uint16_t error_class, uint16_t mechanism,
++    uint16_t visibility_mask, uint32_t bank_number, uint32_t bank_count,
++    uint64_t status_required, uint64_t status_allowed,
++    uint64_t syndrome_required, uint64_t syndrome_allowed,
++    bool corrected, bool maskable,
++    const char *id, const char *bank, const char *channel,
++    const char *rank, const char *firmware, const char *state)
++{
++    bool memory = record_kind == CRUCIBLE_HWERR_RECORD_MEMORY_ECC;
++    struct qemu_plugin_crucible_fault_hardware_error_capability row = {
++        .record_kind = record_kind,
++        .error_class = error_class,
++        .mechanism = mechanism,
++        .visibility_mask = visibility_mask,
++        .bank_number = bank_number,
++        .bank_count = bank_count,
++        .vector = mechanism == CRUCIBLE_HWERR_MECHANISM_X86_MCA ?
++            18 : (maskable ? 47 : 3),
++        .status_required = status_required,
++        .status_allowed = status_allowed,
++        .syndrome_required = syndrome_required,
++        .syndrome_allowed = syndrome_allowed,
++        .model_phase_mask = memory ? CRUCIBLE_HWERR_MEMORY_PHASES :
++            CRUCIBLE_HWERR_CPU_PHASES,
++        .privilege_mask = CRUCIBLE_HWERR_PRIVILEGES,
++        .corrected = corrected,
++        .maskable = maskable,
++        .vmstate = 0,
++        .id = id,
++        .bank = bank,
++        .channel = channel,
++        .rank = rank,
++        .firmware = firmware,
++        .state = state,
++    };
++
++    g_array_append_val(crucible_hardware_manifest, row);
++}
++
++static gint crucible_hardware_row_compare(gconstpointer left,
++                                          gconstpointer right)
++{
++    const struct qemu_plugin_crucible_fault_hardware_error_capability *a =
++        left;
++    const struct qemu_plugin_crucible_fault_hardware_error_capability *b =
++        right;
++
++    return strcmp(a->id, b->id);
++}
++
++static bool crucible_hardware_manifest_init(void)
++{
++    CPUState *cpu = qemu_get_cpu(0);
++    CPUFaultHardwareErrorCapability capability = { 0 };
++
++    if (crucible_hardware_manifest) {
++        return true;
++    }
++    if (!cpu) {
++        return false;
++    }
++    crucible_hardware_architecture =
++        CPU_GET_CLASS(cpu)->crucible_register_scope;
++    crucible_hardware_manifest = g_array_new(
++        false, true,
++        sizeof(struct qemu_plugin_crucible_fault_hardware_error_capability));
++    if (!cpu_get_fault_hardware_error_capability(cpu, &capability)) {
++        goto complete;
++    }
++    if (crucible_hardware_architecture ==
++            QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64) {
++        if (!capability.machine_check) {
++            goto complete;
++        }
++        crucible_hardware_add_row(
++            CRUCIBLE_HWERR_RECORD_X86_MCE,
++            CRUCIBLE_HWERR_CLASS_CORRECTED,
++            CRUCIBLE_HWERR_MECHANISM_X86_MCA,
++            CRUCIBLE_HWERR_VISIBILITY_TELEMETRY, 0,
++            capability.bank_count,
++            CRUCIBLE_X86_MCI_STATUS_VAL, x86_status_allowed,
++            0, UINT32_MAX, true, false, "x86.machine-check.corrected",
++            "x86.mca.bank", "x86.memory.channel", "x86.memory.rank",
++            "x86-mca", "x86-mca-bank-record");
++        crucible_hardware_add_row(
++            CRUCIBLE_HWERR_RECORD_X86_MCE,
++            CRUCIBLE_HWERR_CLASS_RECOVERABLE,
++            CRUCIBLE_HWERR_MECHANISM_X86_MCA,
++            CRUCIBLE_HWERR_VISIBILITY_EXCEPTION, 0,
++            capability.bank_count,
++            CRUCIBLE_X86_MCI_STATUS_VAL | CRUCIBLE_X86_MCI_STATUS_UC,
++            x86_status_allowed, 0, UINT32_MAX, false, false,
++            "x86.machine-check.recoverable", "x86.mca.bank",
++            "x86.memory.channel", "x86.memory.rank", "x86-mca",
++            "x86-mca-bank-record-machine-check");
++        crucible_hardware_add_row(
++            CRUCIBLE_HWERR_RECORD_X86_MCE,
++            CRUCIBLE_HWERR_CLASS_FATAL,
++            CRUCIBLE_HWERR_MECHANISM_X86_MCA,
++            CRUCIBLE_HWERR_VISIBILITY_EXCEPTION, 0,
++            capability.bank_count,
++            CRUCIBLE_X86_MCI_STATUS_VAL | CRUCIBLE_X86_MCI_STATUS_UC |
++                CRUCIBLE_X86_MCI_STATUS_PCC,
++            x86_status_allowed, 0, UINT32_MAX, false, false,
++            "x86.machine-check.fatal", "x86.mca.bank",
++            "x86.memory.channel", "x86.memory.rank", "x86-mca",
++            "x86-mca-bank-record-machine-check");
++        if (capability.bank_count > 9) {
++            crucible_hardware_add_row(
++                CRUCIBLE_HWERR_RECORD_MEMORY_ECC,
++                CRUCIBLE_HWERR_CLASS_CORRECTED,
++                CRUCIBLE_HWERR_MECHANISM_X86_MCA,
++                CRUCIBLE_HWERR_VISIBILITY_TELEMETRY, 9, 1,
++                CRUCIBLE_X86_MCI_STATUS_VAL, x86_status_allowed,
++                0, UINT32_MAX, true, false, "memory.ecc.corrected",
++                "memory.bank-0", "memory.channel-0", "memory.rank-0",
++                "x86-mca-bank-9", "x86-mca-bank-record");
++            crucible_hardware_add_row(
++                CRUCIBLE_HWERR_RECORD_MEMORY_ECC,
++                CRUCIBLE_HWERR_CLASS_RECOVERABLE,
++                CRUCIBLE_HWERR_MECHANISM_X86_MCA,
++                CRUCIBLE_HWERR_VISIBILITY_EXCEPTION, 9, 1,
++                CRUCIBLE_X86_MCI_STATUS_VAL | CRUCIBLE_X86_MCI_STATUS_UC,
++                x86_status_allowed, 0, UINT32_MAX, false, false,
++                "memory.ecc.uncorrectable", "memory.bank-0",
++                "memory.channel-0", "memory.rank-0", "x86-mca-bank-9",
++                "x86-mca-bank-record-machine-check");
++        }
++    } else if (crucible_hardware_architecture ==
++               QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_AARCH64) {
++        if (!capability.ras) {
++            goto complete;
++        }
++        crucible_hardware_add_row(
++            CRUCIBLE_HWERR_RECORD_AARCH64_RAS,
++            CRUCIBLE_HWERR_CLASS_SYNCHRONOUS,
++            CRUCIBLE_HWERR_MECHANISM_AARCH64_RAS,
++            CRUCIBLE_HWERR_VISIBILITY_EXCEPTION, 0, 1, 0, 0,
++            0x10, UINT32_MAX & ~(UINT64_C(3) << 11), false, false,
++            "aarch64.ras.synchronous",
++            "aarch64.ras.delivery-state", "aarch64.memory.channel",
++            "aarch64.memory.rank", "aarch64-ras",
++            "aarch64-esr-far-data-abort");
++        crucible_hardware_add_row(
++            CRUCIBLE_HWERR_RECORD_AARCH64_RAS,
++            CRUCIBLE_HWERR_CLASS_FATAL,
++            CRUCIBLE_HWERR_MECHANISM_AARCH64_RAS,
++            CRUCIBLE_HWERR_VISIBILITY_EXCEPTION, 0, 1, 0, 0,
++            0x10 | (UINT64_C(2) << 11),
++            UINT32_MAX & ~(UINT64_C(1) << 11), false, false,
++            "aarch64.ras.synchronous-fatal",
++            "aarch64.ras.delivery-state", "aarch64.memory.channel",
++            "aarch64.memory.rank", "aarch64-ras",
++            "aarch64-esr-far-data-abort");
++        crucible_hardware_add_row(
++            CRUCIBLE_HWERR_RECORD_AARCH64_RAS,
++            CRUCIBLE_HWERR_CLASS_ASYNCHRONOUS,
++            CRUCIBLE_HWERR_MECHANISM_AARCH64_RAS,
++            CRUCIBLE_HWERR_VISIBILITY_EXCEPTION, 0, 1, 0, 0,
++            UINT64_C(0xbe000000) | (UINT64_C(3) << 10),
++            UINT32_MAX & ~(UINT64_C(1) << 12), false, true,
++            "aarch64.ras.asynchronous",
++            "aarch64.ras.delivery-state", "aarch64.memory.channel",
++            "aarch64.memory.rank", "aarch64-ras",
++            "aarch64-disr-serror");
++        crucible_hardware_add_row(
++            CRUCIBLE_HWERR_RECORD_AARCH64_RAS,
++            CRUCIBLE_HWERR_CLASS_FATAL,
++            CRUCIBLE_HWERR_MECHANISM_AARCH64_RAS,
++            CRUCIBLE_HWERR_VISIBILITY_EXCEPTION, 0, 1, 0, 0,
++            UINT64_C(0xbe000000),
++            UINT32_MAX & ~(UINT64_C(7) << 10), false, true,
++            "aarch64.ras.asynchronous-fatal",
++            "aarch64.ras.delivery-state", "aarch64.memory.channel",
++            "aarch64.memory.rank", "aarch64-ras",
++            "aarch64-disr-serror");
++        if (acpi_ghes_present()) {
++            crucible_hardware_add_row(
++                CRUCIBLE_HWERR_RECORD_MEMORY_ECC,
++                CRUCIBLE_HWERR_CLASS_CORRECTED,
++                CRUCIBLE_HWERR_MECHANISM_ACPI_GHES,
++                CRUCIBLE_HWERR_VISIBILITY_TELEMETRY, 0, 1, 0, 0,
++                0, UINT64_MAX, true, false, "memory.ecc.corrected",
++                "memory.bank-0", "memory.channel-0", "memory.rank-0",
++                "acpi-apei-ghes-polled", "acpi-ghes-cper-record");
++            crucible_hardware_add_row(
++                CRUCIBLE_HWERR_RECORD_MEMORY_ECC,
++                CRUCIBLE_HWERR_CLASS_RECOVERABLE,
++                CRUCIBLE_HWERR_MECHANISM_ACPI_GHES,
++                CRUCIBLE_HWERR_VISIBILITY_EXCEPTION, 0, 1, 0, 0,
++                0x10, UINT64_MAX, false, false,
++                "memory.ecc.uncorrectable",
++                "memory.bank-0", "memory.channel-0", "memory.rank-0",
++                "acpi-apei-ghes-sea",
++                "acpi-ghes-cper-record-aarch64-data-abort");
++        }
++    }
++complete:
++    g_array_sort(crucible_hardware_manifest,
++                 crucible_hardware_row_compare);
++    crucible_hardware_bindings = g_array_sized_new(
++        false, true, sizeof(CrucibleHardwareBinding),
++        crucible_hardware_manifest->len);
++    g_array_set_size(crucible_hardware_bindings,
++                     crucible_hardware_manifest->len);
++    return true;
++}
++
++size_t qemu_plugin_crucible_fault_hardware_error_manifest(
++    struct qemu_plugin_crucible_fault_hardware_error_capability *out,
++    size_t capacity, uint16_t *architecture)
++{
++    if (!architecture || !crucible_hardware_manifest_init()) {
++        return 0;
++    }
++    *architecture = crucible_hardware_architecture;
++    if (out && capacity >= crucible_hardware_manifest->len) {
++        memcpy(out, crucible_hardware_manifest->data,
++               crucible_hardware_manifest->len * sizeof(*out));
++    }
++    return crucible_hardware_manifest->len;
++}
++
++int qemu_plugin_crucible_fault_hardware_error_bind(
++    uint32_t row_index, const uint8_t id[32], const uint8_t bank[32],
++    const uint8_t channel[32], const uint8_t rank[32],
++    const uint8_t firmware[32], const uint8_t state[32])
++{
++    CrucibleHardwareBinding *binding;
++
++    if (!id || !bank || !channel || !rank || !firmware || !state ||
++        !crucible_hardware_manifest_init() ||
++        crucible_hardware_bindings_sealed ||
++        row_index >= crucible_hardware_bindings->len) {
++        return -EINVAL;
++    }
++    binding = &g_array_index(crucible_hardware_bindings,
++                             CrucibleHardwareBinding, row_index);
++    if (binding->present) {
++        return -EEXIST;
++    }
++    memcpy(binding->id, id, 32);
++    memcpy(binding->bank, bank, 32);
++    memcpy(binding->channel, channel, 32);
++    memcpy(binding->rank, rank, 32);
++    memcpy(binding->firmware, firmware, 32);
++    memcpy(binding->state, state, 32);
++    binding->present = true;
++    return 0;
++}
++
++int qemu_plugin_crucible_fault_hardware_error_bindings_seal(
++    const uint8_t manifest_sha256[32])
++{
++    if (!manifest_sha256 || !crucible_hardware_manifest_init() ||
++        crucible_hardware_bindings_sealed) {
++        return -EINVAL;
++    }
++    for (guint i = 0; i < crucible_hardware_bindings->len; i++) {
++        if (!g_array_index(crucible_hardware_bindings,
++                           CrucibleHardwareBinding, i).present) {
++            return -ENOENT;
++        }
++    }
++    memcpy(crucible_hardware_manifest_sha256, manifest_sha256, 32);
++    crucible_hardware_bindings_sealed = true;
++    return 0;
++}
++
++static bool crucible_hardware_field(
++    const QemuCrucibleFaultRule *rule, uint16_t tag, uint16_t type,
++    const uint8_t **data, uint32_t *length)
++{
++    return qemu_crucible_fault_rule_field(rule, tag, type, data, length);
++}
++
++static bool crucible_hardware_u32(
++    const QemuCrucibleFaultRule *rule, uint16_t tag, uint32_t *value)
++{
++    const uint8_t *data;
++    uint32_t length;
++
++    if (!crucible_hardware_field(
++            rule, tag, CRUCIBLE_NODE_FAULT_FIELD_TYPE_U32,
++            &data, &length) || length != sizeof(*value)) {
++        return false;
++    }
++    *value = ldl_le_p(data);
++    return true;
++}
++
++static bool crucible_hardware_u64(
++    const QemuCrucibleFaultRule *rule, uint16_t tag, uint64_t *value)
++{
++    const uint8_t *data;
++    uint32_t length;
++
++    if (!crucible_hardware_field(
++            rule, tag, CRUCIBLE_NODE_FAULT_FIELD_TYPE_U64,
++            &data, &length) || length != sizeof(*value)) {
++        return false;
++    }
++    *value = ldq_le_p(data);
++    return true;
++}
++
++static bool crucible_hardware_hash(
++    const QemuCrucibleFaultRule *rule, uint16_t tag, const uint8_t **value)
++{
++    uint32_t length;
++
++    return crucible_hardware_field(
++               rule, tag, CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
++               value, &length) && length == 32;
++}
++
++static CPUState *crucible_hardware_target_cpu(
++    const QemuCrucibleFaultRule *rule)
++{
++    uint32_t vcpu_index;
++
++    return crucible_hardware_u32(
++               rule, CRUCIBLE_NODE_FAULT_FIELD_P8, &vcpu_index) ?
++        qemu_get_cpu(vcpu_index) : NULL;
++}
++
++static bool crucible_hardware_realized_ram(uint64_t address)
++{
++    MemoryRegionSection section = memory_region_find(
++        get_system_memory(), address, 1);
++    bool valid = section.mr && int128_nz(section.size) &&
++        memory_region_is_ram(section.mr) && !memory_region_is_rom(section.mr);
++
++    if (section.mr) {
++        memory_region_unref(section.mr);
++    }
++    return valid;
++}
++
++static bool crucible_hardware_privilege_matches(
++    const struct qemu_plugin_crucible_fault_hardware_error_capability *row,
++    CPUState *cpu)
++{
++    uint32_t privilege;
++
++    return cpu_get_fault_privilege(cpu, &privilege) && privilege < 16 &&
++        (row->privilege_mask & (1U << privilege));
++}
++
++static uint16_t crucible_hardware_visibility(const QObject *object,
++                                             const QObject **exception)
++{
++    QDict *dict = qobject_to(QDict, object);
++    const char *kind;
++
++    *exception = NULL;
++    if (!dict) {
++        return 0;
++    }
++    kind = qdict_get_try_str(dict, "kind");
++    if (!kind) {
++        return 0;
++    }
++    if (strcmp(kind, "telemetry_only") == 0) {
++        return CRUCIBLE_HWERR_VISIBILITY_TELEMETRY;
++    }
++    if (strcmp(kind, "corrected_interrupt") == 0) {
++        return CRUCIBLE_HWERR_VISIBILITY_INTERRUPT;
++    }
++    if (strcmp(kind, "exception") == 0) {
++        *exception = qdict_get(dict, "parameters");
++        return *exception ? CRUCIBLE_HWERR_VISIBILITY_EXCEPTION : 0;
++    }
++    return 0;
++}
++
++static int crucible_hardware_ecc_row(
++    const QemuCrucibleFaultRule *rule, uint32_t *row_index,
++    CPUFaultException *exception, uint16_t *visibility_out)
++{
++    const uint8_t *bank;
++    const uint8_t *channel;
++    const uint8_t *rank;
++    const QObject *exception_object;
++    uint64_t address;
++    uint64_t syndrome;
++    uint32_t kind;
++    uint16_t visibility;
++    CPUState *cpu = crucible_hardware_target_cpu(rule);
++
++    if (!cpu || !crucible_hardware_bindings_sealed ||
++        !crucible_hardware_u32(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_P1, &kind) ||
++        !crucible_hardware_u64(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_P2, &address) ||
++        !crucible_hardware_u64(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_P3, &syndrome) ||
++        !crucible_hardware_hash(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_P4, &bank) ||
++        !crucible_hardware_hash(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_P5, &channel) ||
++        !crucible_hardware_hash(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_P6, &rank)) {
++        return -EINVAL;
++    }
++    visibility = crucible_hardware_visibility(
++        qemu_crucible_fault_rule_json(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_P7), &exception_object);
++    if (!visibility ||
++        (kind == 1 && visibility != CRUCIBLE_HWERR_VISIBILITY_TELEMETRY) ||
++        (kind == 2 && visibility != CRUCIBLE_HWERR_VISIBILITY_EXCEPTION)) {
++        return -ENOTSUP;
++    }
++    for (guint i = 0; i < crucible_hardware_manifest->len; i++) {
++        const struct qemu_plugin_crucible_fault_hardware_error_capability *row =
++            &g_array_index(
++                crucible_hardware_manifest,
++                struct qemu_plugin_crucible_fault_hardware_error_capability,
++                i);
++        const CrucibleHardwareBinding *binding = &g_array_index(
++            crucible_hardware_bindings, CrucibleHardwareBinding, i);
++
++        if (row->record_kind != CRUCIBLE_HWERR_RECORD_MEMORY_ECC ||
++            !crucible_hardware_privilege_matches(row, cpu) ||
++            row->corrected != (kind == 1) ||
++            !(row->visibility_mask & visibility) ||
++            memcmp(binding->bank, bank, 32) != 0 ||
++            memcmp(binding->channel, channel, 32) != 0 ||
++            memcmp(binding->rank, rank, 32) != 0) {
++            continue;
++        }
++        if (visibility == CRUCIBLE_HWERR_VISIBILITY_EXCEPTION &&
++            (!qemu_crucible_fault_exception_decode(
++                 exception_object, exception) ||
++             !cpu_validate_fault_exception(cpu, exception) ||
++             !exception->has_fault_address ||
++             exception->fault_address != address ||
++             (exception->record == CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK ?
++                  (!exception->x86_machine_check.has_address ||
++                   exception->x86_machine_check.address != address ||
++                   (exception->x86_machine_check.status & UINT32_MAX) !=
++                       ((syndrome & UINT32_MAX) ?: UINT64_C(0x100))) :
++                  exception->syndrome != syndrome))) {
++            return -EINVAL;
++        }
++        *row_index = i;
++        *visibility_out = visibility;
++        return 0;
++    }
++    return -ENOENT;
++}
++
++static bool crucible_hardware_exception_matches_row(
++    const struct qemu_plugin_crucible_fault_hardware_error_capability *row,
++    const CPUFaultException *exception)
++{
++    bool x86_record =
++        exception->record == CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK;
++    bool arm_record =
++        exception->record == CPU_FAULT_EXCEPTION_AARCH64_RAS;
++
++    if (x86_record &&
++        (row->record_kind == CRUCIBLE_HWERR_RECORD_X86_MCE ||
++         (row->record_kind == CRUCIBLE_HWERR_RECORD_MEMORY_ECC &&
++          row->mechanism == CRUCIBLE_HWERR_MECHANISM_X86_MCA))) {
++        return row->vector == exception->vector &&
++            row->corrected == exception->x86_machine_check.corrected &&
++            exception->x86_machine_check.bank >= row->bank_number &&
++            exception->x86_machine_check.bank <
++                row->bank_number + row->bank_count &&
++            (exception->x86_machine_check.status & row->status_required) ==
++                row->status_required &&
++            !(exception->x86_machine_check.status & ~row->status_allowed) &&
++            (exception->syndrome & row->syndrome_required) ==
++                row->syndrome_required &&
++            !(exception->syndrome & ~row->syndrome_allowed) &&
++            ((row->error_class == CRUCIBLE_HWERR_CLASS_FATAL) ==
++             !!(exception->x86_machine_check.status &
++                CRUCIBLE_X86_MCI_STATUS_PCC));
++    }
++    if (arm_record &&
++        row->record_kind == CRUCIBLE_HWERR_RECORD_AARCH64_RAS) {
++        return row->vector == exception->vector &&
++            row->corrected == exception->aarch64_ras.corrected &&
++            row->maskable == exception->maskable &&
++            (row->error_class == CRUCIBLE_HWERR_CLASS_FATAL) ==
++                exception->aarch64_ras.fatal &&
++            (row->error_class == CRUCIBLE_HWERR_CLASS_FATAL ||
++             row->error_class ==
++                (exception->aarch64_ras.asynchronous ?
++                 CRUCIBLE_HWERR_CLASS_ASYNCHRONOUS :
++                 CRUCIBLE_HWERR_CLASS_SYNCHRONOUS)) &&
++            (exception->syndrome & row->syndrome_required) ==
++                row->syndrome_required &&
++            !(exception->syndrome & ~row->syndrome_allowed);
++    }
++    if (arm_record &&
++        row->record_kind == CRUCIBLE_HWERR_RECORD_MEMORY_ECC &&
++        row->mechanism == CRUCIBLE_HWERR_MECHANISM_ACPI_GHES) {
++        return row->vector == exception->vector &&
++            !exception->aarch64_ras.corrected &&
++            !exception->aarch64_ras.fatal &&
++            !exception->aarch64_ras.asynchronous &&
++            !exception->maskable &&
++            (exception->syndrome & row->syndrome_required) ==
++                row->syndrome_required &&
++            !(exception->syndrome & ~row->syndrome_allowed);
++    }
++    return false;
++}
++
++int qemu_crucible_fault_hardware_ecc_validate(
++    const QemuCrucibleFaultRule *rule)
++{
++    CPUFaultException exception = { 0 };
++    uint32_t row_index;
++    uint16_t visibility;
++    uint16_t model_phase;
++    uint64_t address;
++    const struct qemu_plugin_crucible_fault_hardware_error_capability *row;
++
++    if (!crucible_hardware_u64(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_P2, &address) ||
++        !crucible_hardware_realized_ram(address) ||
++        crucible_hardware_ecc_row(
++            rule, &row_index, &exception, &visibility) != 0 ||
++        !crucible_hardware_target_cpu(rule)) {
++        return -EINVAL;
++    }
++    row = &g_array_index(
++        crucible_hardware_manifest,
++        struct qemu_plugin_crucible_fault_hardware_error_capability,
++        row_index);
++    model_phase = qemu_crucible_fault_rule_model_phase(rule);
++
++    if (model_phase == 0 || model_phase > 64 ||
++        !(row->model_phase_mask & (UINT64_C(1) << (model_phase - 1)))) {
++        return -EINVAL;
++    }
++    if (row->mechanism == CRUCIBLE_HWERR_MECHANISM_ACPI_GHES &&
++        !acpi_ghes_memory_error_ready(
++            row->corrected ? ACPI_HEST_SRC_ID_CORRECTED_POLL :
++                             ACPI_HEST_SRC_ID_SEA)) {
++        return -EBUSY;
++    }
++    if (visibility == CRUCIBLE_HWERR_VISIBILITY_EXCEPTION &&
++        (!cpu_validate_fault_exception(
++             crucible_hardware_target_cpu(rule), &exception) ||
++         !crucible_hardware_exception_matches_row(row, &exception))) {
++        return -EINVAL;
++    }
++    return 0;
++}
++
++int qemu_crucible_fault_hardware_exception_validate(
++    const QemuCrucibleFaultRule *rule, CPUState *cpu,
++    const CPUFaultException *exception)
++{
++    uint16_t model_phase;
++
++    if (!rule || !cpu || !exception || !crucible_hardware_manifest_init()) {
++        return -EINVAL;
++    }
++    model_phase = qemu_crucible_fault_rule_model_phase(rule);
++    if (model_phase == 0 || model_phase > 64) {
++        return -EINVAL;
++    }
++    if (!cpu_validate_fault_exception(cpu, exception)) {
++        return -EINVAL;
++    }
++    for (guint i = 0; i < crucible_hardware_manifest->len; i++) {
++        const struct qemu_plugin_crucible_fault_hardware_error_capability *row =
++            &g_array_index(
++                crucible_hardware_manifest,
++                struct qemu_plugin_crucible_fault_hardware_error_capability,
++                i);
++
++        if (row->model_phase_mask & (UINT64_C(1) << (model_phase - 1)) &&
++            crucible_hardware_privilege_matches(row, cpu) &&
++            crucible_hardware_exception_matches_row(row, exception)) {
++            return 0;
++        }
++    }
++    return -ENOTSUP;
++}
++
++bool qemu_crucible_fault_hardware_exception_identity(
++    const CPUFaultException *exception, uint32_t *row_index,
++    uint8_t id[32], uint8_t bank[32], uint8_t channel[32], uint8_t rank[32],
++    uint8_t firmware[32], uint8_t state[32], uint8_t manifest_sha256[32])
++{
++    if (!exception || !row_index || !id || !bank || !channel || !rank ||
++        !firmware || !state || !manifest_sha256 ||
++        !crucible_hardware_manifest_init() ||
++        !crucible_hardware_bindings_sealed) {
++        return false;
++    }
++    for (guint i = 0; i < crucible_hardware_manifest->len; i++) {
++        const struct qemu_plugin_crucible_fault_hardware_error_capability *row =
++            &g_array_index(
++                crucible_hardware_manifest,
++                struct qemu_plugin_crucible_fault_hardware_error_capability,
++                i);
++        const CrucibleHardwareBinding *binding = &g_array_index(
++            crucible_hardware_bindings, CrucibleHardwareBinding, i);
++
++        if (!crucible_hardware_exception_matches_row(row, exception)) {
++            continue;
++        }
++        *row_index = i;
++        memcpy(id, binding->id, 32);
++        memcpy(bank, binding->bank, 32);
++        memcpy(channel, binding->channel, 32);
++        memcpy(rank, binding->rank, 32);
++        memcpy(firmware, binding->firmware, 32);
++        memcpy(state, binding->state, 32);
++        memcpy(manifest_sha256, crucible_hardware_manifest_sha256, 32);
++        return true;
++    }
++    return false;
++}
++
++static CrucibleHardwarePending *crucible_hardware_find_pending(CPUState *cpu)
++{
++    if (!crucible_hardware_pending) {
++        return NULL;
++    }
++    for (guint i = 0; i < crucible_hardware_pending->len; i++) {
++        CrucibleHardwarePending *pending =
++            g_ptr_array_index(crucible_hardware_pending, i);
++
++        if (pending->cpu == cpu) {
++            return pending;
++        }
++    }
++    return NULL;
++}
++
++static void crucible_hardware_pending_free(gpointer opaque)
++{
++    CrucibleHardwarePending *pending = opaque;
++
++    if (pending->reservation) {
++        qemu_crucible_fault_event_reservation_release(pending->reservation);
++    }
++    qemu_crucible_fault_rule_unref(pending->rule);
++    g_free(pending);
++}
++
++static void crucible_hardware_fail_closed(const char *message)
++{
++    error_report("Crucible hardware-error terminal failure: %s", message);
++    qemu_crucible_fault_hardware_error_event_terminal();
++    qemu_system_vmstop_request_prepare();
++    qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
++}
++
++static bool crucible_hardware_restore(
++    CPUState *cpu, bool restore_cpu,
++    const CPUFaultHardwareErrorState *cpu_state, bool restore_ghes,
++    uint16_t ghes_source_id, const AcpiGhesMemoryErrorState *ghes_state)
++{
++    bool restored = true;
++
++    if (restore_cpu) {
++        restored = cpu_restore_fault_hardware_error_state(cpu, cpu_state);
++    }
++    if (restore_ghes) {
++        restored = acpi_ghes_memory_error_restore(
++            ghes_source_id, ghes_state) && restored;
++    }
++    if (!restored) {
++        crucible_hardware_fail_closed("could not restore pre-command state");
++    }
++    return restored;
++}
++
++static void crucible_hardware_evidence(
++    GByteArray *evidence, const QemuCrucibleFaultRule *rule,
++    uint32_t row_index, uint64_t observed_icount, uint64_t address,
++    uint64_t syndrome, uint32_t target_vcpu,
++    const uint8_t id[32], const uint8_t bank[32],
++    const uint8_t channel[32], const uint8_t rank[32],
++    const uint8_t firmware[32], const uint8_t state_identity[32],
++    const CPUFaultException *exception, uint8_t delivery,
++    const CPUFaultHardwareErrorState *before_cpu,
++    const CPUFaultHardwareErrorState *queued_cpu,
++    const CPUFaultHardwareErrorState *after_cpu,
++    const AcpiGhesMemoryErrorState *before_ghes,
++    const AcpiGhesMemoryErrorState *queued_ghes,
++    const AcpiGhesMemoryErrorState *after_ghes)
++{
++    uint8_t record[416] = { 0 };
++    const CPUFaultHardwareErrorState empty_cpu = { 0 };
++    const AcpiGhesMemoryErrorState empty_ghes = { 0 };
++    const CPUFaultHardwareErrorState *cpu_states[] = {
++        before_cpu ?: &empty_cpu,
++        queued_cpu ?: &empty_cpu,
++        after_cpu ?: &empty_cpu,
++    };
++    const AcpiGhesMemoryErrorState *ghes_states[] = {
++        before_ghes ?: &empty_ghes,
++        queued_ghes ?: &empty_ghes,
++        after_ghes ?: &empty_ghes,
++    };
++
++    memcpy(record, "CRUCHWE1", 8);
++    stw_le_p(record + 8, 1);
++    stw_le_p(record + 10, crucible_hardware_architecture);
++    stl_le_p(record + 12, row_index);
++    stq_le_p(record + 16, observed_icount);
++    stq_le_p(record + 24, address);
++    stq_le_p(record + 32, syndrome);
++    stq_le_p(record + 40,
++             qemu_crucible_fault_rule_command_sequence(rule));
++    record[48] = delivery;
++    stl_le_p(record + 52, target_vcpu);
++    memcpy(record + 64, id, 32);
++    memcpy(record + 96, bank, 32);
++    memcpy(record + 128, channel, 32);
++    memcpy(record + 160, rank, 32);
++    memcpy(record + 320, crucible_hardware_manifest_sha256, 32);
++    memcpy(record + 352, firmware, 32);
++    memcpy(record + 384, state_identity, 32);
++    if (exception) {
++        uint32_t flags = exception->has_fault_address |
++            (exception->before_instruction << 1) |
++            (exception->maskable << 2);
++
++        stw_le_p(record + 192, exception->record);
++        stl_le_p(record + 196, exception->vector);
++        stq_le_p(record + 200, exception->syndrome);
++        stq_le_p(record + 208, exception->fault_address);
++        if (exception->record == CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK) {
++            flags |= exception->x86_machine_check.corrected << 3;
++            flags |= exception->x86_machine_check.has_address << 4;
++            flags |= exception->x86_machine_check.has_misc << 5;
++            stl_le_p(record + 216, exception->x86_machine_check.bank);
++            stq_le_p(record + 224,
++                     exception->x86_machine_check.status);
++            stq_le_p(record + 232,
++                     exception->x86_machine_check.global_status);
++            stq_le_p(record + 240,
++                     exception->x86_machine_check.address);
++            stq_le_p(record + 248,
++                     exception->x86_machine_check.misc);
++        } else if (exception->record ==
++                   CPU_FAULT_EXCEPTION_AARCH64_RAS) {
++            flags |= exception->aarch64_ras.asynchronous << 3;
++            flags |= exception->aarch64_ras.corrected << 4;
++            flags |= exception->aarch64_ras.fatal << 5;
++            flags |= exception->aarch64_ras.has_far << 6;
++            flags |= exception->aarch64_ras.has_disr << 7;
++            stq_le_p(record + 264, exception->aarch64_ras.esr);
++            stq_le_p(record + 272, exception->aarch64_ras.far);
++            stq_le_p(record + 280, exception->aarch64_ras.disr);
++        }
++        stl_le_p(record + 256, flags);
++    }
++    g_byte_array_append(evidence, record, sizeof(record));
++    for (size_t i = 0; i < ARRAY_SIZE(cpu_states); i++) {
++        const CPUFaultHardwareErrorState *state = cpu_states[i];
++        uint8_t encoded[128] = { 0 };
++
++        memcpy(encoded, "CRUCHCS1", 8);
++        stl_le_p(encoded + 8, state->architecture);
++        stl_le_p(encoded + 12, state->record);
++        stl_le_p(encoded + 16, state->bank);
++        stl_le_p(encoded + 20, state->flags);
++        stl_le_p(encoded + 24, state->interrupt_request);
++        stq_le_p(encoded + 32, state->bank_control);
++        stq_le_p(encoded + 40, state->bank_status);
++        stq_le_p(encoded + 48, state->bank_address);
++        stq_le_p(encoded + 56, state->bank_misc);
++        stq_le_p(encoded + 64, state->global_status);
++        stq_le_p(encoded + 72, state->syndrome);
++        stq_le_p(encoded + 80, state->fault_address);
++        stq_le_p(encoded + 88, state->esr);
++        stq_le_p(encoded + 96, state->far);
++        stq_le_p(encoded + 104, state->disr);
++        g_byte_array_append(evidence, encoded, sizeof(encoded));
++    }
++    for (size_t i = 0; i < ARRAY_SIZE(ghes_states); i++) {
++        const AcpiGhesMemoryErrorState *state = ghes_states[i];
++        uint8_t encoded[192] = { 0 };
++
++        memcpy(encoded, "CRUCGHS1", 8);
++        stq_le_p(encoded + 8, state->read_ack);
++        stl_le_p(encoded + 16, state->record_length);
++        memcpy(encoded + 20, state->record, sizeof(state->record));
++        g_byte_array_append(evidence, encoded, sizeof(encoded));
++    }
++}
++
++static int crucible_hardware_ecc_impulse(
++    const QemuCrucibleFaultRule *rule, uint64_t observed_icount,
++    uint8_t before_hash[32], uint8_t after_hash[32], GByteArray *evidence,
++    uint16_t *outcome,
++    QemuCrucibleFaultEventReservation **event_reservation)
++{
++    CPUFaultException exception = { 0 };
++    const struct qemu_plugin_crucible_fault_hardware_error_capability *row;
++    const CrucibleHardwareBinding *binding;
++    CrucibleHardwarePending *pending;
++    CPUState *cpu = crucible_hardware_target_cpu(rule);
++    uint64_t address;
++    uint64_t syndrome;
++    uint32_t row_index;
++    uint32_t snapshot_bank;
++    uint16_t ghes_source_id;
++    uint16_t visibility;
++    CPUFaultHardwareErrorState before_cpu_state = { 0 };
++    CPUFaultHardwareErrorState queued_cpu_state = { 0 };
++    AcpiGhesMemoryErrorState before_ghes_state = { 0 };
++    AcpiGhesMemoryErrorState queued_ghes_state = { 0 };
++
++    if (crucible_hardware_terminal || !cpu || !event_reservation ||
++        !*event_reservation ||
++        qemu_crucible_fault_hardware_ecc_validate(rule) != 0 ||
++        !crucible_hardware_u64(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_P2, &address) ||
++        !crucible_hardware_u64(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_P3, &syndrome) ||
++        crucible_hardware_ecc_row(
++            rule, &row_index, &exception, &visibility) != 0 ||
++        qemu_crucible_fault_execution_fingerprint(
++            observed_icount, before_hash) != 0) {
++        return -EINVAL;
++    }
++    row = &g_array_index(
++        crucible_hardware_manifest,
++        struct qemu_plugin_crucible_fault_hardware_error_capability,
++        row_index);
++    binding = &g_array_index(crucible_hardware_bindings,
++                             CrucibleHardwareBinding, row_index);
++    ghes_source_id = row->corrected ? ACPI_HEST_SRC_ID_CORRECTED_POLL :
++                                      ACPI_HEST_SRC_ID_SEA;
++    snapshot_bank = exception.record == CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK ?
++        exception.x86_machine_check.bank : row->bank_number;
++    if (row->mechanism == CRUCIBLE_HWERR_MECHANISM_ACPI_GHES) {
++        if (!acpi_ghes_memory_error_state(
++                ghes_source_id, &before_ghes_state)) {
++            return -EIO;
++        }
++    }
++    if ((row->mechanism != CRUCIBLE_HWERR_MECHANISM_ACPI_GHES ||
++         visibility == CRUCIBLE_HWERR_VISIBILITY_EXCEPTION) &&
++        !cpu_read_fault_hardware_error_state(
++            cpu, snapshot_bank, &before_cpu_state)) {
++        return -EIO;
++    }
++    if (visibility == CRUCIBLE_HWERR_VISIBILITY_TELEMETRY) {
++        if (row->mechanism == CRUCIBLE_HWERR_MECHANISM_X86_MCA) {
++            exception = (CPUFaultException) {
++                .architecture = CPU_FAULT_EXCEPTION_X86_64,
++                .record = CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK,
++                .vector = 18,
++                .fault_address = address,
++                .has_fault_address = true,
++                .x86_machine_check = {
++                    .bank = row->bank_number,
++                    .status = CRUCIBLE_X86_MCI_STATUS_VAL |
++                              CRUCIBLE_X86_MCI_STATUS_EN |
++                              CRUCIBLE_X86_MCI_STATUS_ADDRV |
++                              ((syndrome & UINT32_MAX) ?: UINT64_C(0x100)),
++                    .address = address,
++                    .corrected = true,
++                    .has_address = true,
++                },
++            };
++            if (!cpu_record_corrected_fault(cpu, &exception)) {
++                return -EINVAL;
++            }
++        } else if (acpi_ghes_memory_error_record(
++                       ghes_source_id, address, true, syndrome,
++                       0, 0, 0) != 0) {
++            return -EIO;
++        }
++        if (row->mechanism == CRUCIBLE_HWERR_MECHANISM_ACPI_GHES) {
++            if (!acpi_ghes_memory_error_state(
++                    ghes_source_id, &queued_ghes_state)) {
++                crucible_hardware_restore(
++                    cpu, false, &before_cpu_state, true, ghes_source_id,
++                    &before_ghes_state);
++                return -EIO;
++            }
++        } else if (!cpu_read_fault_hardware_error_state(
++                       cpu, snapshot_bank, &queued_cpu_state)) {
++            crucible_hardware_restore(
++                cpu, true, &before_cpu_state, false, ghes_source_id,
++                &before_ghes_state);
++            return -EIO;
++        }
++        if (qemu_crucible_fault_execution_fingerprint(
++                observed_icount, after_hash) != 0) {
++            crucible_hardware_restore(
++                cpu,
++                row->mechanism != CRUCIBLE_HWERR_MECHANISM_ACPI_GHES,
++                &before_cpu_state,
++                row->mechanism == CRUCIBLE_HWERR_MECHANISM_ACPI_GHES,
++                ghes_source_id, &before_ghes_state);
++            return -EIO;
++        }
++        crucible_hardware_evidence(
++            evidence, rule, row_index, observed_icount, address, syndrome,
++            cpu->cpu_index,
++            binding->id, binding->bank, binding->channel, binding->rank,
++            binding->firmware, binding->state,
++            &exception, 1, &before_cpu_state, &queued_cpu_state,
++            &queued_cpu_state, &before_ghes_state, &queued_ghes_state,
++            &queued_ghes_state);
++        *outcome = CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED;
++        return 0;
++    }
++    if (crucible_hardware_find_pending(cpu)) {
++        return -EBUSY;
++    }
++    pending = g_new0(CrucibleHardwarePending, 1);
++    pending->cpu = cpu;
++    pending->rule = qemu_crucible_fault_rule_copy(rule);
++    pending->exception = exception;
++    pending->command_icount = observed_icount;
++    pending->address = address;
++    pending->ecc_syndrome = syndrome;
++    pending->row_index = row_index;
++    pending->ghes_source_id = ghes_source_id;
++    memcpy(pending->before_hash, before_hash, 32);
++    memcpy(pending->id, binding->id, 32);
++    memcpy(pending->bank, binding->bank, 32);
++    memcpy(pending->channel, binding->channel, 32);
++    memcpy(pending->rank, binding->rank, 32);
++    memcpy(pending->firmware, binding->firmware, 32);
++    memcpy(pending->state, binding->state, 32);
++    pending->before_cpu_state = before_cpu_state;
++    pending->before_ghes_state = before_ghes_state;
++    if (row->mechanism == CRUCIBLE_HWERR_MECHANISM_ACPI_GHES &&
++        acpi_ghes_memory_error_record(
++            ghes_source_id, address, false, syndrome,
++            0, 0, 0) != 0) {
++        crucible_hardware_pending_free(pending);
++        return -EIO;
++    }
++    if (!cpu_queue_fault_hardware_error(cpu, &exception)) {
++        crucible_hardware_restore(
++            cpu, false, &before_cpu_state,
++            row->mechanism == CRUCIBLE_HWERR_MECHANISM_ACPI_GHES,
++            ghes_source_id, &before_ghes_state);
++        crucible_hardware_pending_free(pending);
++        return -EINVAL;
++    }
++    if (row->mechanism == CRUCIBLE_HWERR_MECHANISM_ACPI_GHES) {
++        if (!acpi_ghes_memory_error_state(
++                ghes_source_id, &queued_ghes_state)) {
++            crucible_hardware_restore(
++                cpu, true, &before_cpu_state, true, ghes_source_id,
++                &before_ghes_state);
++            crucible_hardware_pending_free(pending);
++            return -EIO;
++        }
++    }
++    if (!cpu_read_fault_hardware_error_state(
++            cpu, snapshot_bank, &queued_cpu_state)) {
++        crucible_hardware_restore(
++            cpu, true, &before_cpu_state,
++            row->mechanism == CRUCIBLE_HWERR_MECHANISM_ACPI_GHES,
++            ghes_source_id,
++            &before_ghes_state);
++        crucible_hardware_pending_free(pending);
++        return -EIO;
++    }
++    pending->queued_cpu_state = queued_cpu_state;
++    pending->queued_ghes_state = queued_ghes_state;
++    pending->reservation = *event_reservation;
++    *event_reservation = NULL;
++    if (!crucible_hardware_pending) {
++        crucible_hardware_pending = g_ptr_array_new_with_free_func(
++            crucible_hardware_pending_free);
++    }
++    g_ptr_array_add(crucible_hardware_pending, pending);
++    memcpy(after_hash, before_hash, 32);
++    *outcome = CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED;
++    return QEMU_CRUCIBLE_FAULT_IMPULSE_DEFERRED;
++}
++
++bool qemu_crucible_fault_hardware_exception_delivered(
++    CPUState *cpu, uint32_t vector, uint64_t syndrome,
++    bool has_fault_address, uint64_t fault_address)
++{
++    CrucibleHardwarePending *pending =
++        crucible_hardware_find_pending(cpu);
++    g_autoptr(GByteArray) evidence = NULL;
++    uint8_t opportunity_hash[32];
++    uint8_t after_hash[32];
++    uint64_t observed_icount;
++    CPUFaultHardwareErrorState after_cpu_state = { 0 };
++    AcpiGhesMemoryErrorState after_ghes_state = { 0 };
++
++    if (!pending) {
++        return false;
++    }
++    if (pending->exception.vector != vector ||
++        (pending->exception.record != CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK &&
++         (pending->exception.syndrome != syndrome ||
++          pending->exception.has_fault_address != has_fault_address ||
++          (has_fault_address &&
++           pending->exception.fault_address != fault_address)))) {
++        crucible_hardware_fail_closed("delivery differs from request");
++        return true;
++    }
++    observed_icount = qemu_crucible_fault_observed_icount();
++    if (pending->queued_ghes_state.record_length != 0) {
++        if (!acpi_ghes_memory_error_state(
++                pending->ghes_source_id, &after_ghes_state)) {
++            crucible_hardware_fail_closed("cannot read delivered GHES state");
++            return true;
++        }
++    }
++    if (!cpu_read_fault_hardware_error_state(
++            cpu, pending->exception.record ==
++                     CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK ?
++                pending->exception.x86_machine_check.bank : 0,
++            &after_cpu_state)) {
++        crucible_hardware_fail_closed("cannot read delivered CPU state");
++        return true;
++    }
++    if (qemu_crucible_fault_execution_fingerprint(
++            observed_icount, after_hash) != 0) {
++        crucible_hardware_fail_closed("cannot fingerprint delivered state");
++        return true;
++    }
++    evidence = g_byte_array_new();
++    crucible_hardware_evidence(
++        evidence, pending->rule, pending->row_index, observed_icount,
++        pending->address, pending->ecc_syndrome, cpu->cpu_index, pending->id,
++        pending->bank, pending->channel, pending->rank,
++        pending->firmware, pending->state,
++        &pending->exception, 2, &pending->before_cpu_state,
++        &pending->queued_cpu_state, &after_cpu_state,
++        &pending->before_ghes_state, &pending->queued_ghes_state,
++        &after_ghes_state);
++    qemu_plugin_crucible_sha256_bytes(
++        evidence->data, evidence->len, opportunity_hash);
++    qemu_crucible_fault_event_reservation_consume(pending->reservation);
++    qemu_crucible_fault_rule_event(
++        pending->rule, CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED,
++        observed_icount, opportunity_hash, pending->before_hash,
++        after_hash, evidence->data, evidence->len);
++    qemu_crucible_fault_complete_deferred(
++        pending->rule, pending->command_icount, observed_icount,
++        pending->before_hash, after_hash);
++    pending->reservation = NULL;
++    g_ptr_array_remove(crucible_hardware_pending, pending);
++    return true;
++}
++
++void qemu_crucible_fault_hardware_error_event_terminal(void)
++{
++    crucible_hardware_terminal = true;
++    while (crucible_hardware_pending &&
++           crucible_hardware_pending->len != 0) {
++        CrucibleHardwarePending *pending =
++            g_ptr_array_index(crucible_hardware_pending, 0);
++
++        crucible_hardware_restore(
++            pending->cpu, true, &pending->before_cpu_state,
++            pending->queued_ghes_state.record_length != 0,
++            pending->ghes_source_id, &pending->before_ghes_state);
++        qemu_crucible_fault_fail_deferred(
++            pending->rule, pending->command_icount, pending->before_hash);
++        g_ptr_array_remove_index(crucible_hardware_pending, 0);
++    }
++}
++
++bool qemu_crucible_fault_hardware_error_ensure_registered(void)
++{
++    CPUState *cpu = qemu_get_cpu(0);
++    const uint32_t phases =
++        (1U << (CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY - 1)) |
++        (1U << (CRUCIBLE_FAULT_PHASE_BEFORE_MEMORY_ACCESS - 1)) |
++        (1U << (CRUCIBLE_FAULT_PHASE_AFTER_MEMORY_ACCESS - 1));
++
++    if (crucible_hardware_registered) {
++        return true;
++    }
++    if (!cpu || !crucible_hardware_manifest_init()) {
++        return false;
++    }
++    for (guint i = 0; i < crucible_hardware_manifest->len; i++) {
++        const struct qemu_plugin_crucible_fault_hardware_error_capability *row =
++            &g_array_index(
++                crucible_hardware_manifest,
++                struct qemu_plugin_crucible_fault_hardware_error_capability,
++                i);
++
++        if (row->record_kind == CRUCIBLE_HWERR_RECORD_MEMORY_ECC) {
++            qemu_crucible_fault_node_register(
++                CRUCIBLE_FAULT_COMMAND_MEMORY_ECC_EVENT,
++                CPU_GET_CLASS(cpu)->crucible_register_scope, phases,
++                "qemu.memory.ecc-event.v1", crucible_hardware_ecc_impulse);
++            break;
++        }
++    }
++    crucible_hardware_registered = true;
++    return true;
++}
+diff --git a/plugins/crucible-fault-instruction.c b/plugins/crucible-fault-instruction.c
+index 8c56d0d15..c8bfb5a83 100644
+--- a/plugins/crucible-fault-instruction.c
++++ b/plugins/crucible-fault-instruction.c
+@@ -142,6 +142,15 @@ typedef struct CrucibleInstructionContext {
+     CPUFaultException pending_exception;
+     QemuCrucibleFaultRule *exception_rule;
+     uint8_t exception_before_hash[32];
++    uint8_t hardware_id[32];
++    uint8_t hardware_bank[32];
++    uint8_t hardware_channel[32];
++    uint8_t hardware_rank[32];
++    uint8_t hardware_firmware[32];
++    uint8_t hardware_state[32];
++    uint8_t hardware_manifest_sha256[32];
++    CPUFaultHardwareErrorState hardware_before_state;
++    uint32_t hardware_row_index;
+     uint64_t exception_command_icount;
+     uint16_t pending_exception_phase;
+     QemuCrucibleFaultEventReservation *exception_event_reservation;
+@@ -149,6 +158,7 @@ typedef struct CrucibleInstructionContext {
+     bool replaying;
+     bool exception_pending;
+     bool exception_in_flight;
++    bool hardware_exception;
+     bool stop_after_exception;
+     GByteArray *port_io_entries;
+     uint32_t port_io_bytes;
+@@ -184,6 +194,12 @@ static IntervalTreeRoot crucible_instruction_root;
+ static bool crucible_instruction_registered;
+ static bool crucible_instruction_event_terminal_latched;
+ static bool crucible_instruction_rule_registry_active(void);
++static void crucible_instruction_hardware_recorded(CPUState *cpu,
++                                                   bool delivered,
++                                                   uint32_t vector,
++                                                   uint64_t syndrome,
++                                                   bool has_fault_address,
++                                                   uint64_t fault_address);
+ static void crucible_instruction_context_clear(
+     CrucibleInstructionContext *context);
+ static void crucible_instruction_impulse_remove(
+@@ -1653,12 +1669,22 @@ static void crucible_instruction_context_clear(
+     CPUFaultException pending = context->pending_exception;
+     QemuCrucibleFaultRule *exception_rule = context->exception_rule;
+     uint8_t exception_before_hash[32];
++    uint8_t hardware_id[32];
++    uint8_t hardware_bank[32];
++    uint8_t hardware_channel[32];
++    uint8_t hardware_rank[32];
++    uint8_t hardware_firmware[32];
++    uint8_t hardware_state[32];
++    uint8_t hardware_manifest_sha256[32];
++    CPUFaultHardwareErrorState hardware_before_state = { 0 };
++    uint32_t hardware_row_index = context->hardware_row_index;
+     uint64_t exception_command_icount = context->exception_command_icount;
+     uint16_t pending_phase = context->pending_exception_phase;
+     QemuCrucibleFaultEventReservation *exception_event_reservation =
+         context->exception_event_reservation;
+     bool exception_pending = context->exception_pending;
+     bool exception_in_flight = context->exception_in_flight;
++    bool hardware_exception = context->hardware_exception;
+     bool stop_after_exception = context->stop_after_exception;
+ 
+     g_clear_pointer(&context->port_io_entries, g_byte_array_unref);
+@@ -1666,6 +1692,17 @@ static void crucible_instruction_context_clear(
+ 
+     memcpy(exception_before_hash, context->exception_before_hash,
+            sizeof(exception_before_hash));
++    memcpy(hardware_id, context->hardware_id, sizeof(hardware_id));
++    memcpy(hardware_bank, context->hardware_bank, sizeof(hardware_bank));
++    memcpy(hardware_channel, context->hardware_channel,
++           sizeof(hardware_channel));
++    memcpy(hardware_rank, context->hardware_rank, sizeof(hardware_rank));
++    memcpy(hardware_firmware, context->hardware_firmware,
++           sizeof(hardware_firmware));
++    memcpy(hardware_state, context->hardware_state, sizeof(hardware_state));
++    memcpy(hardware_manifest_sha256, context->hardware_manifest_sha256,
++           sizeof(hardware_manifest_sha256));
++    hardware_before_state = context->hardware_before_state;
+ 
+     qemu_crucible_fault_rule_unref(context->rule);
+     memset(context, 0, sizeof(*context));
+@@ -1673,11 +1710,24 @@ static void crucible_instruction_context_clear(
+     context->exception_rule = exception_rule;
+     memcpy(context->exception_before_hash, exception_before_hash,
+            sizeof(exception_before_hash));
++    memcpy(context->hardware_id, hardware_id, sizeof(hardware_id));
++    memcpy(context->hardware_bank, hardware_bank, sizeof(hardware_bank));
++    memcpy(context->hardware_channel, hardware_channel,
++           sizeof(hardware_channel));
++    memcpy(context->hardware_rank, hardware_rank, sizeof(hardware_rank));
++    memcpy(context->hardware_firmware, hardware_firmware,
++           sizeof(hardware_firmware));
++    memcpy(context->hardware_state, hardware_state, sizeof(hardware_state));
++    memcpy(context->hardware_manifest_sha256, hardware_manifest_sha256,
++           sizeof(hardware_manifest_sha256));
++    context->hardware_before_state = hardware_before_state;
++    context->hardware_row_index = hardware_row_index;
+     context->exception_command_icount = exception_command_icount;
+     context->pending_exception_phase = pending_phase;
+     context->exception_event_reservation = exception_event_reservation;
+     context->exception_pending = exception_pending;
+     context->exception_in_flight = exception_in_flight;
++    context->hardware_exception = hardware_exception;
+     context->stop_after_exception = stop_after_exception;
+ }
+ 
+@@ -2452,7 +2502,6 @@ int qemu_crucible_fault_exception_validate(
+         !qemu_crucible_fault_exception_decode(
+             qemu_crucible_fault_rule_json(
+                 rule, CRUCIBLE_NODE_FAULT_FIELD_P1), &exception) ||
+-        exception.record != CPU_FAULT_EXCEPTION_ARCHITECTURE_DEFAULT ||
+         (qemu_crucible_fault_rule_model_phase(rule) !=
+              QEMU_CRUCIBLE_MODEL_PHASE_BEFORE_INSTRUCTION &&
+          qemu_crucible_fault_rule_model_phase(rule) !=
+@@ -2460,12 +2509,62 @@ int qemu_crucible_fault_exception_validate(
+         exception.before_instruction !=
+             (qemu_crucible_fault_rule_model_phase(rule) ==
+              QEMU_CRUCIBLE_MODEL_PHASE_BEFORE_INSTRUCTION) ||
+-        !cpu_validate_fault_exception(cpu, &exception)) {
++        !cpu_validate_fault_exception(cpu, &exception) ||
++        (exception.record != CPU_FAULT_EXCEPTION_ARCHITECTURE_DEFAULT &&
++         qemu_crucible_fault_hardware_exception_validate(
++             rule, cpu, &exception) != 0)) {
+         return -EINVAL;
+     }
+     return 0;
+ }
+ 
++static void crucible_instruction_exception_record(
++    uint8_t record[256], const CPUFaultException *exception)
++{
++    stw_le_p(record + 160, exception->record);
++    if (exception->record == CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK) {
++        stl_le_p(record + 164, exception->x86_machine_check.bank);
++        stq_le_p(record + 168, exception->x86_machine_check.status);
++        stq_le_p(record + 176,
++                 exception->x86_machine_check.global_status);
++        stq_le_p(record + 184, exception->x86_machine_check.address);
++        stq_le_p(record + 192, exception->x86_machine_check.misc);
++        record[200] = exception->x86_machine_check.corrected;
++        record[201] = exception->x86_machine_check.has_address;
++        record[202] = exception->x86_machine_check.has_misc;
++    } else if (exception->record == CPU_FAULT_EXCEPTION_AARCH64_RAS) {
++        stq_le_p(record + 168, exception->aarch64_ras.esr);
++        stq_le_p(record + 176, exception->aarch64_ras.far);
++        stq_le_p(record + 184, exception->aarch64_ras.disr);
++        record[200] = exception->aarch64_ras.asynchronous;
++        record[201] = exception->aarch64_ras.corrected;
++        record[202] = exception->aarch64_ras.has_far;
++        record[203] = exception->aarch64_ras.has_disr;
++        record[204] = exception->aarch64_ras.fatal;
++    }
++}
++
++static void crucible_instruction_hardware_state_record(
++    uint8_t record[128], const CPUFaultHardwareErrorState *state)
++{
++    memcpy(record, "CRUCHCS1", 8);
++    stl_le_p(record + 8, state->architecture);
++    stl_le_p(record + 12, state->record);
++    stl_le_p(record + 16, state->bank);
++    stl_le_p(record + 20, state->flags);
++    stl_le_p(record + 24, state->interrupt_request);
++    stq_le_p(record + 32, state->bank_control);
++    stq_le_p(record + 40, state->bank_status);
++    stq_le_p(record + 48, state->bank_address);
++    stq_le_p(record + 56, state->bank_misc);
++    stq_le_p(record + 64, state->global_status);
++    stq_le_p(record + 72, state->syndrome);
++    stq_le_p(record + 80, state->fault_address);
++    stq_le_p(record + 88, state->esr);
++    stq_le_p(record + 96, state->far);
++    stq_le_p(record + 104, state->disr);
++}
++
+ static int crucible_instruction_exception_impulse(
+     const QemuCrucibleFaultRule *rule, uint64_t observed_icount,
+     uint8_t before_hash[32], uint8_t after_hash[32], GByteArray *evidence,
+@@ -2476,7 +2575,8 @@ static int crucible_instruction_exception_impulse(
+     CPUFaultException exception;
+     uint32_t target_vcpu;
+     CPUState *cpu;
+-    uint8_t record[192] = { 0 };
++    uint8_t record[256] = { 0 };
++    size_t record_len;
+ 
+     if (qemu_crucible_fault_exception_validate(rule) != 0 ||
+         !crucible_instruction_rule_u32(
+@@ -2496,6 +2596,15 @@ static int crucible_instruction_exception_impulse(
+         !*event_reservation) {
+         return -EBUSY;
+     }
++    if (exception.record != CPU_FAULT_EXCEPTION_ARCHITECTURE_DEFAULT &&
++        !qemu_crucible_fault_hardware_exception_identity(
++            &exception, &context->hardware_row_index,
++            context->hardware_id, context->hardware_bank,
++            context->hardware_channel, context->hardware_rank,
++            context->hardware_firmware, context->hardware_state,
++            context->hardware_manifest_sha256)) {
++        return -EINVAL;
++    }
+     if (qemu_crucible_fault_execution_fingerprint(
+             observed_icount, before_hash) != 0) {
+         return -EIO;
+@@ -2514,8 +2623,13 @@ static int crucible_instruction_exception_impulse(
+     record[49] = exception.before_instruction;
+     record[50] = exception.maskable;
+     memcpy(record + 96, before_hash, 32);
+-    g_byte_array_append(evidence, record, sizeof(record));
++    crucible_instruction_exception_record(record, &exception);
++    record_len = exception.record ==
++        CPU_FAULT_EXCEPTION_ARCHITECTURE_DEFAULT ? 192 : sizeof(record);
++    g_byte_array_append(evidence, record, record_len);
+     context->pending_exception = exception;
++    context->hardware_exception =
++        exception.record != CPU_FAULT_EXCEPTION_ARCHITECTURE_DEFAULT;
+     context->exception_rule = qemu_crucible_fault_rule_copy(rule);
+     memcpy(context->exception_before_hash, before_hash, 32);
+     context->exception_command_icount = observed_icount;
+@@ -2593,6 +2707,16 @@ void qemu_crucible_fault_instruction_boundary_exception(
+     exception = context->pending_exception;
+     context->exception_pending = false;
+     context->exception_in_flight = true;
++    if (context->hardware_exception &&
++        !cpu_read_fault_hardware_error_state(
++            cpu,
++            exception.record == CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK ?
++                exception.x86_machine_check.bank : 0,
++            &context->hardware_before_state)) {
++        error_report("Crucible could not snapshot hardware-error state");
++        crucible_instruction_fail_closed(cpu, context);
++        return;
++    }
+     if (context->rule) {
+         if (context->mutation_kind == 3 && context->replaying) {
+             CrucibleInstructionState after = { 0 };
+@@ -2619,11 +2743,25 @@ void qemu_crucible_fault_instruction_boundary_exception(
+         }
+         crucible_instruction_context_clear(context);
+     }
++    if (exception.record != CPU_FAULT_EXCEPTION_ARCHITECTURE_DEFAULT &&
++        ((exception.record == CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK &&
++          exception.x86_machine_check.corrected) ||
++         (exception.record == CPU_FAULT_EXCEPTION_AARCH64_RAS &&
++          exception.aarch64_ras.corrected))) {
++        if (!cpu_record_corrected_fault(cpu, &exception)) {
++            error_report("Crucible corrected hardware record became invalid");
++            crucible_instruction_fail_closed(cpu, context);
++            return;
++        }
++        crucible_instruction_hardware_recorded(
++            cpu, false, 0, 0, false, 0);
++        return;
++    }
+     cpu_inject_fault_exception(cpu, &exception, 0);
+ }
+ 
+-void qemu_crucible_fault_instruction_exception_delivered(
+-    CPUState *cpu, uint32_t vector, uint64_t syndrome,
++static void crucible_instruction_hardware_recorded(
++    CPUState *cpu, bool delivered, uint32_t vector, uint64_t syndrome,
+     bool has_fault_address, uint64_t fault_address)
+ {
+     CrucibleInstructionContext *context =
+@@ -2632,15 +2770,30 @@ void qemu_crucible_fault_instruction_exception_delivered(
+     uint64_t observed_icount;
+     uint8_t after_hash[32];
+     uint8_t opportunity_hash[32];
+-    uint8_t record[192] = { 0 };
++    uint8_t record[744] = { 0 };
++    size_t record_len;
++    CPUFaultHardwareErrorState hardware_after_state = { 0 };
+ 
++    if (delivered && qemu_crucible_fault_hardware_exception_delivered(
++            cpu, vector, syndrome, has_fault_address, fault_address)) {
++        return;
++    }
+     if (!context || !context->exception_in_flight) {
+         return;
+     }
+     exception = &context->pending_exception;
+-    if (exception->vector != vector || exception->syndrome != syndrome ||
+-        exception->has_fault_address != has_fault_address ||
+-        (has_fault_address && exception->fault_address != fault_address)) {
++    if ((delivered &&
++         (exception->vector != vector ||
++          (exception->record != CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK &&
++           (exception->syndrome != syndrome ||
++            exception->has_fault_address != has_fault_address ||
++            (has_fault_address &&
++             exception->fault_address != fault_address))))) ||
++        (!delivered &&
++         !((exception->record == CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK &&
++            exception->x86_machine_check.corrected) ||
++           (exception->record == CPU_FAULT_EXCEPTION_AARCH64_RAS &&
++            exception->aarch64_ras.corrected)))) {
+         error_report("Crucible delivered exception differs from request");
+         crucible_instruction_fail_closed(cpu, context);
+         return;
+@@ -2664,22 +2817,50 @@ void qemu_crucible_fault_instruction_exception_delivered(
+     record[48] = exception->has_fault_address;
+     record[49] = exception->before_instruction;
+     record[50] = exception->maskable;
+-    record[51] = 1;
++    record[51] = exception->record ==
++        CPU_FAULT_EXCEPTION_ARCHITECTURE_DEFAULT ? 1 : 2;
+     stq_le_p(record + 56, observed_icount);
+-    stq_le_p(record + 64, cpu->cc->get_pc(cpu));
+-    stl_le_p(record + 72, vector);
+-    record[76] = has_fault_address;
+-    stq_le_p(record + 80, syndrome);
+-    stq_le_p(record + 88, fault_address);
++    stq_le_p(record + 64, delivered ? cpu->cc->get_pc(cpu) : 0);
++    stl_le_p(record + 72, delivered ? vector : 0);
++    record[76] = delivered && has_fault_address;
++    stq_le_p(record + 80, delivered ? syndrome : 0);
++    stq_le_p(record + 88, delivered ? fault_address : 0);
+     memcpy(record + 96, context->exception_before_hash, 32);
+     memcpy(record + 128, after_hash, 32);
+-    crucible_instruction_sha256(record, sizeof(record), opportunity_hash);
++    crucible_instruction_exception_record(record, exception);
++    if (context->hardware_exception) {
++        if (!cpu_read_fault_hardware_error_state(
++                cpu,
++                exception->record == CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK ?
++                    exception->x86_machine_check.bank : 0,
++                &hardware_after_state)) {
++            error_report(
++                "Crucible could not snapshot delivered hardware error");
++            crucible_instruction_fail_closed(cpu, context);
++            return;
++        }
++        memcpy(record + 256, context->hardware_id, 32);
++        memcpy(record + 288, context->hardware_bank, 32);
++        memcpy(record + 320, context->hardware_channel, 32);
++        memcpy(record + 352, context->hardware_rank, 32);
++        stl_le_p(record + 384, context->hardware_row_index);
++        crucible_instruction_hardware_state_record(
++            record + 392, &context->hardware_before_state);
++        crucible_instruction_hardware_state_record(
++            record + 520, &hardware_after_state);
++        memcpy(record + 648, context->hardware_manifest_sha256, 32);
++        memcpy(record + 680, context->hardware_firmware, 32);
++        memcpy(record + 712, context->hardware_state, 32);
++    }
++    record_len = exception->record ==
++        CPU_FAULT_EXCEPTION_ARCHITECTURE_DEFAULT ? 192 : sizeof(record);
++    crucible_instruction_sha256(record, record_len, opportunity_hash);
+     qemu_crucible_fault_event_reservation_consume(
+         context->exception_event_reservation);
+     qemu_crucible_fault_rule_event(
+         context->exception_rule, CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED,
+         observed_icount, opportunity_hash, context->exception_before_hash,
+-        after_hash, record, sizeof(record));
++        after_hash, record, record_len);
+     if (crucible_instruction_event_terminal_latched) {
+         crucible_instruction_context_clear(context);
+         return;
+@@ -2703,6 +2884,14 @@ void qemu_crucible_fault_instruction_exception_delivered(
+     }
+ }
+ 
++void qemu_crucible_fault_instruction_exception_delivered(
++    CPUState *cpu, uint32_t vector, uint64_t syndrome,
++    bool has_fault_address, uint64_t fault_address)
++{
++    crucible_instruction_hardware_recorded(
++        cpu, true, vector, syndrome, has_fault_address, fault_address);
++}
++
+ static bool crucible_instruction_rule_registry_active(void)
+ {
+     return crucible_instruction_index &&
+diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
+index 9fbb68197..f4de87a4b 100644
+--- a/plugins/crucible-fault-node.c
++++ b/plugins/crucible-fault-node.c
+@@ -1416,17 +1416,19 @@ static bool node_json_exception(const QObject *object)
+     if (strcmp(record_kind, "aarch64_ras") == 0) {
+         QDict *parameters = qobject_to(QDict, record_parameters);
+         uint64_t esr, far = 0, disr;
+-        bool asynchronous, corrected;
++        bool asynchronous, corrected, fatal;
+         bool has_far, has_disr;
+ 
+         if (strcmp(architecture, "aarch64") != 0 ||
+             !NODE_EXACT(parameters, "asynchronous", "corrected", "disr",
+-                        "esr", "far") ||
++                        "esr", "far", "fatal") ||
+             !node_json_u64(qdict_get(parameters, "esr"), &esr) ||
+             esr != syndrome ||
+             !node_json_bool(qdict_get(parameters, "asynchronous"),
+                             &asynchronous) ||
+-            !node_json_bool(qdict_get(parameters, "corrected"), &corrected)) {
++            !node_json_bool(qdict_get(parameters, "corrected"), &corrected) ||
++            !node_json_bool(qdict_get(parameters, "fatal"), &fatal) ||
++            (corrected && fatal)) {
+             return false;
+         }
+         has_far = !node_json_null(qdict_get(parameters, "far"));
+@@ -1449,6 +1451,8 @@ bool qemu_crucible_fault_exception_decode(const QObject *object,
+     QDict *record;
+     const char *architecture;
+     const char *record_kind;
++    uint32_t vector;
++    uint64_t syndrome, fault_address;
+ 
+     if (!node_json_exception(object)) {
+         return false;
+@@ -1457,15 +1461,22 @@ bool qemu_crucible_fault_exception_decode(const QObject *object,
+     architecture = qdict_get_str(dict, "architecture");
+     exception->architecture = strcmp(architecture, "x86_64") == 0 ?
+         CPU_FAULT_EXCEPTION_X86_64 : CPU_FAULT_EXCEPTION_AARCH64;
+-    exception->vector = qdict_get_int(dict, "vector");
+-    exception->syndrome = qdict_get_int(dict, "syndrome");
++    if (!node_json_u32(qdict_get(dict, "vector"), &vector) ||
++        !node_json_u64(qdict_get(dict, "syndrome"), &syndrome)) {
++        return false;
++    }
++    exception->vector = vector;
++    exception->syndrome = syndrome;
+     exception->before_instruction = qdict_get_bool(
+         dict, "before_instruction");
+     exception->maskable = qdict_get_bool(dict, "maskable");
+     exception->has_fault_address =
+         !node_json_null(qdict_get(dict, "fault_address"));
+     if (exception->has_fault_address) {
+-        exception->fault_address = qdict_get_int(dict, "fault_address");
++        if (!node_json_u64(qdict_get(dict, "fault_address"), &fault_address)) {
++            return false;
++        }
++        exception->fault_address = fault_address;
+     }
+     record = qdict_get_qdict(dict, "record");
+     record_kind = qdict_get_str(record, "kind");
+@@ -1474,6 +1485,69 @@ bool qemu_crucible_fault_exception_decode(const QObject *object,
+         (strcmp(record_kind, "x86_machine_check") == 0 ?
+          CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK :
+          CPU_FAULT_EXCEPTION_AARCH64_RAS);
++    if (exception->record == CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK) {
++        QDict *parameters = qdict_get_qdict(record, "parameters");
++        uint32_t bank;
++        uint64_t status, global_status, address, misc;
++
++        if (!node_json_u32(qdict_get(parameters, "bank"), &bank) ||
++            !node_json_u64(qdict_get(parameters, "status"), &status) ||
++            !node_json_u64(qdict_get(parameters, "global_status"),
++                           &global_status)) {
++            return false;
++        }
++        exception->x86_machine_check.bank = bank;
++        exception->x86_machine_check.status = status;
++        exception->x86_machine_check.global_status = global_status;
++        exception->x86_machine_check.corrected =
++            qdict_get_bool(parameters, "corrected");
++        exception->x86_machine_check.has_address =
++            !node_json_null(qdict_get(parameters, "address"));
++        if (exception->x86_machine_check.has_address) {
++            if (!node_json_u64(qdict_get(parameters, "address"), &address)) {
++                return false;
++            }
++            exception->x86_machine_check.address = address;
++        }
++        exception->x86_machine_check.has_misc =
++            !node_json_null(qdict_get(parameters, "misc"));
++        if (exception->x86_machine_check.has_misc) {
++            if (!node_json_u64(qdict_get(parameters, "misc"), &misc)) {
++                return false;
++            }
++            exception->x86_machine_check.misc = misc;
++        }
++    } else if (exception->record == CPU_FAULT_EXCEPTION_AARCH64_RAS) {
++        QDict *parameters = qdict_get_qdict(record, "parameters");
++        uint64_t esr, far, disr;
++
++        if (!node_json_u64(qdict_get(parameters, "esr"), &esr)) {
++            return false;
++        }
++        exception->aarch64_ras.esr = esr;
++        exception->aarch64_ras.asynchronous =
++            qdict_get_bool(parameters, "asynchronous");
++        exception->aarch64_ras.corrected =
++            qdict_get_bool(parameters, "corrected");
++        exception->aarch64_ras.fatal =
++            qdict_get_bool(parameters, "fatal");
++        exception->aarch64_ras.has_far =
++            !node_json_null(qdict_get(parameters, "far"));
++        if (exception->aarch64_ras.has_far) {
++            if (!node_json_u64(qdict_get(parameters, "far"), &far)) {
++                return false;
++            }
++            exception->aarch64_ras.far = far;
++        }
++        exception->aarch64_ras.has_disr =
++            !node_json_null(qdict_get(parameters, "disr"));
++        if (exception->aarch64_ras.has_disr) {
++            if (!node_json_u64(qdict_get(parameters, "disr"), &disr)) {
++                return false;
++            }
++            exception->aarch64_ras.disr = disr;
++        }
++    }
+     return true;
+ }
+ 
+@@ -1908,7 +1982,7 @@ static const NodeSchemaField schema_memory_access[] = {
+ };
+ static const NodeSchemaField schema_memory_ecc[] = {
+     SF(P1, U32), SF(P2, U64), SF(P3, U64), SF(P4, HASH), SF(P5, HASH),
+-    SF(P6, HASH), SF(P7, BYTES),
++    SF(P6, HASH), SF(P7, BYTES), SF(P8, U32),
+ };
+ static const NodeSchemaField schema_memory_region[] = {
+     SF(P1, U64), SF(P2, U64), SF(P3, U32), SF(P4, BYTES),
+@@ -3209,6 +3283,16 @@ static int node_prepare(
+             return status;
+         }
+     }
++    if (staging->rule.command_kind ==
++            CRUCIBLE_FAULT_COMMAND_MEMORY_ECC_EVENT) {
++        status = qemu_crucible_fault_hardware_ecc_validate(&staging->rule);
++        if (status != 0) {
++            result->status = status == -ENOTSUP ?
++                CRUCIBLE_FAULT_STATUS_UNSUPPORTED_CAPABILITY :
++                CRUCIBLE_FAULT_STATUS_INVALID_TARGET;
++            return status;
++        }
++    }
+     if (staging->rule.command_kind ==
+             CRUCIBLE_FAULT_COMMAND_INTERRUPT_DISPOSITION ||
+         staging->rule.command_kind == CRUCIBLE_FAULT_COMMAND_INTERRUPT_STORM) {
+@@ -3363,6 +3447,7 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
+     if (terminal) {
+         qemu_crucible_fault_instruction_event_terminal();
+         qemu_crucible_fault_interrupt_event_terminal();
++        qemu_crucible_fault_hardware_error_event_terminal();
+         qemu_crucible_fault_notify_events();
+         qemu_system_vmstop_request_prepare();
+         qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
+@@ -3485,10 +3570,18 @@ void qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
+             CRUCIBLE_FAULT_CAPABILITY_FEATURE_INTERRUPT;
+         break;
+     case CRUCIBLE_FAULT_COMMAND_CPU_INSTRUCTION_TRANSFORM:
+-    case CRUCIBLE_FAULT_COMMAND_CPU_EXCEPTION:
+         handler->capability.required_feature_bits =
+             CRUCIBLE_FAULT_CAPABILITY_FEATURE_INSTRUCTION;
+         break;
++    case CRUCIBLE_FAULT_COMMAND_CPU_EXCEPTION:
++        handler->capability.required_feature_bits =
++            CRUCIBLE_FAULT_CAPABILITY_FEATURE_INSTRUCTION |
++            CRUCIBLE_FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR;
++        break;
++    case CRUCIBLE_FAULT_COMMAND_MEMORY_ECC_EVENT:
++        handler->capability.required_feature_bits =
++            CRUCIBLE_FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR;
++        break;
+     case CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM:
+     case CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE:
+     case CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE:
+@@ -3523,7 +3616,12 @@ void qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
+     case CRUCIBLE_FAULT_COMMAND_CPU_EXCEPTION:
+         handler->capability.payload_schema =
+             "crucible.node-fault-payload.v1;"
+-            "exception-records=architecture-default";
++            "exception-records=architecture-default;"
++            "hardware-error-classes=manifest-v1";
++        break;
++    case CRUCIBLE_FAULT_COMMAND_MEMORY_ECC_EVENT:
++        handler->capability.payload_schema =
++            "crucible.node-fault-payload.v1;hardware-error-manifest=v1";
+         break;
+     case CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE:
+         handler->capability.payload_schema =
+diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
+index 566e349a8..31b19e1e4 100644
+--- a/plugins/crucible-fault.c
++++ b/plugins/crucible-fault.c
+@@ -395,7 +395,8 @@ size_t qemu_plugin_crucible_fault_capabilities(
+ 
+     if (!qemu_crucible_fault_register_ensure_registered() ||
+         !qemu_crucible_fault_instruction_ensure_registered() ||
+-        !qemu_crucible_fault_interrupt_ensure_registered()) {
++        !qemu_crucible_fault_interrupt_ensure_registered() ||
++        !qemu_crucible_fault_hardware_error_ensure_registered()) {
+         return 0;
+     }
+     qemu_crucible_fault_registry_seal();
+diff --git a/plugins/meson.build b/plugins/meson.build
+index dd93f06d4..09bbc6c4e 100644
+--- a/plugins/meson.build
++++ b/plugins/meson.build
+@@ -63,6 +63,7 @@ system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c',
+                     'crucible-fault-memory.c', 'crucible-fault-node.c',
+                     'crucible-fault-register.c',
+                     'crucible-fault-instruction.c',
+-                    'crucible-fault-interrupt.c'))
++                    'crucible-fault-interrupt.c',
++                    'crucible-fault-hardware-error.c'))
+ 
+ common_ss.add(files('loader.c', 'api.c', 'core.c'))
+diff --git a/target/arm/cpu.c b/target/arm/cpu.c
+index a51367113..95680db84 100644
+--- a/target/arm/cpu.c
++++ b/target/arm/cpu.c
+@@ -178,6 +178,7 @@ static bool arm_cpu_has_work(CPUState *cs)
+         (CPU_INTERRUPT_FIQ | CPU_INTERRUPT_HARD
+          | CPU_INTERRUPT_NMI | CPU_INTERRUPT_VINMI | CPU_INTERRUPT_VFNMI
+          | CPU_INTERRUPT_VFIQ | CPU_INTERRUPT_VIRQ | CPU_INTERRUPT_VSERR
++         | CPU_INTERRUPT_SERROR
+          | CPU_INTERRUPT_EXITTB);
+ }
+ #endif /* !CONFIG_USER_ONLY */
+@@ -781,6 +782,9 @@ static inline bool arm_excp_unmasked(CPUState *cs, unsigned int excp_idx,
+             return false;
+         }
+         return !(env->daif & PSTATE_A);
++    case EXCP_SERROR:
++        pstate_unmasked = !(env->daif & PSTATE_A);
++        break;
+     default:
+         g_assert_not_reached();
+     }
+@@ -964,12 +968,40 @@ static bool arm_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
+             goto found;
+         }
+     }
++    if (interrupt_request & CPU_INTERRUPT_SERROR) {
++        if (env->crucible_hardware_error.synchronous_pending) {
++            env->crucible_hardware_error.synchronous_pending = 0;
++            if (!env->crucible_hardware_error.asynchronous_pending) {
++                cpu_reset_interrupt(cs, CPU_INTERRUPT_SERROR);
++            }
++            cs->exception_index = EXCP_DATA_ABORT;
++            env->exception.syndrome =
++                env->crucible_hardware_error.syndrome;
++            env->exception.vaddress =
++                env->crucible_hardware_error.address;
++            env->exception.target_el = exception_target_el(env);
++            cs->cc->tcg_ops->do_interrupt(cs);
++            env->crucible_hardware_error.fatal = 0;
++            return true;
++        }
++        excp_idx = EXCP_SERROR;
++        target_el = arm_phys_excp_target_el(cs, excp_idx, cur_el, secure);
++        if (arm_excp_unmasked(cs, excp_idx, target_el,
++                              cur_el, secure, hcr_el2)) {
++            cpu_reset_interrupt(cs, CPU_INTERRUPT_SERROR);
++            env->crucible_hardware_error.asynchronous_pending = 0;
++            goto found;
++        }
++    }
+     return false;
+ 
+  found:
+     cs->exception_index = excp_idx;
+     env->exception.target_el = target_el;
+     cs->cc->tcg_ops->do_interrupt(cs);
++    if (excp_idx == EXCP_SERROR) {
++        env->crucible_hardware_error.fatal = 0;
++    }
+     return true;
+ }
+ 
+@@ -2698,7 +2730,16 @@ static const struct SysemuCPUOps arm_sysemu_ops = {
+     .has_work = arm_cpu_has_work,
+     .get_phys_page_attrs_debug = arm_cpu_get_phys_page_attrs_debug,
+     .get_fault_translation = arm_cpu_get_fault_translation,
++    .get_fault_hardware_error_capability =
++        arm_cpu_get_fault_hardware_error_capability,
++    .get_fault_privilege = arm_cpu_get_fault_privilege,
++    .read_fault_hardware_error_state =
++        arm_cpu_read_fault_hardware_error_state,
++    .restore_fault_hardware_error_state =
++        arm_cpu_restore_fault_hardware_error_state,
+     .validate_fault_exception = arm_cpu_validate_fault_exception,
++    .record_corrected_fault = arm_cpu_record_corrected_fault,
++    .queue_fault_hardware_error = arm_cpu_queue_fault_hardware_error,
+     .inject_fault_exception = arm_cpu_inject_fault_exception,
+     .inject_fault_access_error = arm_cpu_inject_fault_access_error,
+     .asidx_from_attrs = arm_asidx_from_attrs,
+diff --git a/target/arm/cpu.h b/target/arm/cpu.h
+index e468874bc..63928381e 100644
+--- a/target/arm/cpu.h
++++ b/target/arm/cpu.h
+@@ -63,6 +63,7 @@
+ #define EXCP_VINMI          27
+ #define EXCP_VFNMI          28
+ #define EXCP_MON_TRAP       29   /* AArch32 trap to Monitor mode */
++#define EXCP_SERROR         30   /* Physical asynchronous SError */
+ /* NB: add new EXCP_ defines to the array in arm_log_exception() too */
+ 
+ #define ARMV7M_EXCP_RESET   1
+@@ -85,6 +86,7 @@
+ #define CPU_INTERRUPT_NMI   CPU_INTERRUPT_TGT_EXT_4
+ #define CPU_INTERRUPT_VINMI CPU_INTERRUPT_TGT_EXT_0
+ #define CPU_INTERRUPT_VFNMI CPU_INTERRUPT_TGT_INT_1
++#define CPU_INTERRUPT_SERROR CPU_INTERRUPT_TGT_INT_2
+ 
+ /* The usual mapping for an AArch64 system register to its AArch32
+  * counterpart is for the 32 bit world to have access to the lower
+@@ -649,6 +651,15 @@ typedef struct CPUArchState {
+         uint64_t esr;
+     } serror;
+ 
++    struct {
++        uint32_t syndrome;
++        uint64_t address;
++        uint64_t disr;
++        uint8_t synchronous_pending;
++        uint8_t asynchronous_pending;
++        uint8_t fatal;
++    } crucible_hardware_error;
++
+     uint8_t ext_dabt_raised; /* Tracking/verifying injection of ext DABT */
+ 
+     /* State of our input IRQ/FIQ/VIRQ/VFIQ lines */
+@@ -1207,8 +1218,19 @@ hwaddr arm_cpu_get_phys_page_attrs_debug(CPUState *cpu, vaddr addr,
+ bool arm_cpu_get_fault_translation(CPUState *cpu, vaddr addr,
+                                    MMUAccessType access_type,
+                                    CPUFaultTranslation *result);
++bool arm_cpu_get_fault_hardware_error_capability(
++    CPUState *cpu, CPUFaultHardwareErrorCapability *capability);
++bool arm_cpu_get_fault_privilege(CPUState *cpu, uint32_t *privilege);
++bool arm_cpu_read_fault_hardware_error_state(
++    CPUState *cpu, uint32_t bank, CPUFaultHardwareErrorState *state);
++bool arm_cpu_restore_fault_hardware_error_state(
++    CPUState *cpu, const CPUFaultHardwareErrorState *state);
+ bool arm_cpu_validate_fault_exception(
+     CPUState *cpu, const CPUFaultException *exception);
++bool arm_cpu_record_corrected_fault(
++    CPUState *cpu, const CPUFaultException *exception);
++bool arm_cpu_queue_fault_hardware_error(
++    CPUState *cpu, const CPUFaultException *exception);
+ G_NORETURN void arm_cpu_inject_fault_exception(
+     CPUState *cpu, const CPUFaultException *exception, uintptr_t retaddr);
+ G_NORETURN void arm_cpu_inject_fault_access_error(
+diff --git a/target/arm/helper.c b/target/arm/helper.c
+index 6dd86e210..c5c52b46b 100644
+--- a/target/arm/helper.c
++++ b/target/arm/helper.c
+@@ -9913,6 +9913,7 @@ void arm_log_exception(CPUState *cs)
+             [EXCP_VINMI] = "Virtual IRQ NMI",
+             [EXCP_VFNMI] = "Virtual FIQ NMI",
+             [EXCP_MON_TRAP] = "Monitor Trap",
++            [EXCP_SERROR] = "Physical SError",
+         };
+ 
+         if (idx >= 0 && idx < ARRAY_SIZE(excnames)) {
+@@ -10473,6 +10474,20 @@ static void arm_cpu_do_interrupt_aarch32(CPUState *cs)
+             offset = 8;
+         }
+         break;
++    case EXCP_SERROR:
++        {
++            ARMMMUFaultInfo fi = { .type = ARMFault_AsyncExternal, };
++
++            env->exception.fsr = extended_addresses_enabled(env) ?
++                arm_fi_to_lfsc(&fi) : arm_fi_to_sfsc(&fi);
++            env->exception.fsr |= env->cp15.disr_el1 & 0xd000;
++            A32_BANKED_CURRENT_REG_SET(env, dfsr, env->exception.fsr);
++            new_mode = ARM_CPU_MODE_ABT;
++            addr = 0x10;
++            mask = CPSR_A | CPSR_I;
++            offset = 8;
++        }
++        break;
+     case EXCP_SMC:
+         new_mode = ARM_CPU_MODE_MON;
+         addr = 0x08;
+@@ -10753,6 +10768,12 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
+         env->exception.syndrome = syn_serror(env->cp15.vsesr_el2 & 0x1ffffff);
+         env->cp15.esr_el[new_el] = env->exception.syndrome;
+         break;
++    case EXCP_SERROR:
++        addr += 0x180;
++        env->exception.syndrome = syn_serror(
++            env->cp15.disr_el1 & 0x1ffffff);
++        env->cp15.esr_el[new_el] = env->exception.syndrome;
++        break;
+     default:
+         cpu_abort(cs, "Unhandled exception 0x%x\n", cs->exception_index);
+     }
+@@ -10907,6 +10928,9 @@ void arm_cpu_do_interrupt(CPUState *cs)
+     case EXCP_BKPT:
+         crucible_vector = CPU_FAULT_AARCH64_BREAKPOINT;
+         break;
++    case EXCP_SERROR:
++        crucible_vector = EC_SERROR;
++        break;
+     }
+ 
+     assert(!arm_feature(env, ARM_FEATURE_M));
+@@ -10958,6 +10982,9 @@ void arm_cpu_do_interrupt(CPUState *cs)
+     arm_call_el_change_hook(cpu);
+ 
+     if (crucible_vector != 0) {
++        if (cs->exception_index == EXCP_SERROR) {
++            crucible_syndrome = env->cp15.esr_el[new_el];
++        }
+         qemu_crucible_fault_instruction_exception_delivered(
+             cs, crucible_vector, crucible_syndrome,
+             crucible_has_address, crucible_address);
+diff --git a/target/arm/machine.c b/target/arm/machine.c
+index 978249fb7..3409223fb 100644
+--- a/target/arm/machine.c
++++ b/target/arm/machine.c
+@@ -343,6 +343,55 @@ static const VMStateDescription vmstate_serror = {
+     }
+ };
+ 
++static bool crucible_hardware_error_needed(void *opaque)
++{
++    ARMCPU *cpu = opaque;
++
++    return cpu->env.crucible_hardware_error.synchronous_pending ||
++           cpu->env.crucible_hardware_error.asynchronous_pending ||
++           cpu->env.crucible_hardware_error.fatal;
++}
++
++static int crucible_hardware_error_post_load(void *opaque, int version_id)
++{
++    ARMCPU *cpu = opaque;
++    CPUARMState *env = &cpu->env;
++
++    if (env->crucible_hardware_error.synchronous_pending &&
++        env->crucible_hardware_error.asynchronous_pending) {
++        return -EINVAL;
++    }
++    if (env->crucible_hardware_error.fatal &&
++        !env->crucible_hardware_error.synchronous_pending &&
++        !env->crucible_hardware_error.asynchronous_pending) {
++        return -EINVAL;
++    }
++    if (env->crucible_hardware_error.synchronous_pending ||
++        env->crucible_hardware_error.asynchronous_pending) {
++        cpu_interrupt(CPU(cpu), CPU_INTERRUPT_SERROR);
++    }
++    return 0;
++}
++
++static const VMStateDescription vmstate_crucible_hardware_error = {
++    .name = "cpu/crucible-hardware-error",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = crucible_hardware_error_needed,
++    .post_load = crucible_hardware_error_post_load,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT32(env.crucible_hardware_error.syndrome, ARMCPU),
++        VMSTATE_UINT64(env.crucible_hardware_error.address, ARMCPU),
++        VMSTATE_UINT64(env.crucible_hardware_error.disr, ARMCPU),
++        VMSTATE_UINT8(env.crucible_hardware_error.synchronous_pending,
++                      ARMCPU),
++        VMSTATE_UINT8(env.crucible_hardware_error.asynchronous_pending,
++                      ARMCPU),
++        VMSTATE_UINT8(env.crucible_hardware_error.fatal, ARMCPU),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
+ static bool irq_line_state_needed(void *opaque)
+ {
+     return true;
+@@ -1106,6 +1155,7 @@ const VMStateDescription vmstate_arm_cpu = {
+         &vmstate_za,
+ #endif
+         &vmstate_serror,
++        &vmstate_crucible_hardware_error,
+         &vmstate_irq_line_state,
+         &vmstate_wfxt_timer,
+         NULL
+diff --git a/target/arm/ptw.c b/target/arm/ptw.c
+index 5e32dfb46..005213874 100644
+--- a/target/arm/ptw.c
++++ b/target/arm/ptw.c
+@@ -3730,13 +3730,49 @@ bool arm_cpu_get_fault_translation(CPUState *cs, vaddr addr,
+ bool arm_cpu_validate_fault_exception(
+     CPUState *cs, const CPUFaultException *exception)
+ {
++    ARMCPU *cpu = ARM_CPU(cs);
+     bool abort = exception->vector == CPU_FAULT_AARCH64_INSTRUCTION_ABORT ||
+                  exception->vector == CPU_FAULT_AARCH64_DATA_ABORT;
+     uint32_t syndrome = exception->syndrome;
+     uint32_t exception_class = syn_get_ec(syndrome);
+     bool syndrome_valid = false;
+ 
+-    (void)cs;
++    if (exception->architecture == CPU_FAULT_EXCEPTION_AARCH64 &&
++        exception->record == CPU_FAULT_EXCEPTION_AARCH64_RAS) {
++        const bool asynchronous = exception->aarch64_ras.asynchronous;
++        const uint32_t aet = exception->syndrome & (7U << 10);
++        const uint32_t set = exception->syndrome & (3U << 11);
++        const bool serror_syndrome_matches =
++            exception->syndrome ==
++                syn_serror(exception->aarch64_ras.disr & 0x1ffffff);
++        const bool address_matches =
++            exception->aarch64_ras.has_far ==
++                exception->has_fault_address &&
++            (!exception->has_fault_address ||
++             exception->aarch64_ras.far == exception->fault_address);
++
++        return is_a64(&cpu->env) && cpu_isar_feature(aa64_ras, cpu) &&
++            !exception->aarch64_ras.corrected &&
++            exception->syndrome <= UINT32_MAX &&
++            exception->aarch64_ras.esr == exception->syndrome &&
++            address_matches &&
++            exception->maskable == asynchronous &&
++            (asynchronous ?
++             (exception->vector == EC_SERROR &&
++              syn_get_ec(exception->syndrome) == EC_SERROR &&
++              exception->aarch64_ras.has_disr &&
++              serror_syndrome_matches &&
++              aet == (exception->aarch64_ras.fatal ? 0 : (3U << 10)) &&
++              !exception->has_fault_address) :
++             (exception->vector == CPU_FAULT_AARCH64_DATA_ABORT &&
++              syn_get_ec(exception->syndrome) ==
++                  (arm_current_el(&cpu->env) == 0 ?
++                       EC_DATAABORT : EC_DATAABORT_SAME_EL) &&
++              exception->has_fault_address &&
++              (exception->syndrome & 0x3f) == 0x10 &&
++              set == (exception->aarch64_ras.fatal ? (2U << 11) : 0) &&
++              !exception->aarch64_ras.has_disr));
++    }
+     switch (exception->vector) {
+     case CPU_FAULT_AARCH64_UNDEFINED:
+         syndrome_valid = syndrome == syn_uncategorized();
+@@ -3771,12 +3807,124 @@ bool arm_cpu_validate_fault_exception(
+            (abort || !exception->has_fault_address);
+ }
+ 
++bool arm_cpu_get_fault_hardware_error_capability(
++    CPUState *cs, CPUFaultHardwareErrorCapability *capability)
++{
++    ARMCPU *cpu = ARM_CPU(cs);
++
++    if (!is_a64(&cpu->env) || !cpu_isar_feature(aa64_ras, cpu)) {
++        return false;
++    }
++    capability->bank_count = 1;
++    capability->ras = true;
++    return true;
++}
++
++bool arm_cpu_get_fault_privilege(CPUState *cs, uint32_t *privilege)
++{
++    if (!privilege) {
++        return false;
++    }
++    *privilege = arm_current_el(cpu_env(cs));
++    return *privilege <= 3;
++}
++
++bool arm_cpu_read_fault_hardware_error_state(
++    CPUState *cs, uint32_t bank, CPUFaultHardwareErrorState *state)
++{
++    CPUARMState *env = cpu_env(cs);
++
++    if (bank != 0) {
++        return false;
++    }
++    state->architecture = CPU_FAULT_EXCEPTION_AARCH64;
++    state->record = CPU_FAULT_EXCEPTION_AARCH64_RAS;
++    state->bank = bank;
++    state->flags = env->crucible_hardware_error.synchronous_pending |
++        (env->crucible_hardware_error.asynchronous_pending << 1) |
++        (env->crucible_hardware_error.fatal << 2);
++    state->interrupt_request = cs->interrupt_request;
++    state->syndrome = env->crucible_hardware_error.syndrome;
++    state->fault_address = env->crucible_hardware_error.address;
++    state->esr = env->crucible_hardware_error.syndrome;
++    state->far = env->crucible_hardware_error.address;
++    state->disr = env->cp15.disr_el1;
++    return true;
++}
++
++bool arm_cpu_restore_fault_hardware_error_state(
++    CPUState *cs, const CPUFaultHardwareErrorState *state)
++{
++    CPUARMState *env = cpu_env(cs);
++
++    if (!state || state->architecture != CPU_FAULT_EXCEPTION_AARCH64 ||
++        state->record != CPU_FAULT_EXCEPTION_AARCH64_RAS ||
++        state->bank != 0 || (state->flags & ~7U)) {
++        return false;
++    }
++    env->crucible_hardware_error.synchronous_pending = state->flags & 1;
++    env->crucible_hardware_error.asynchronous_pending =
++        (state->flags >> 1) & 1;
++    env->crucible_hardware_error.fatal = (state->flags >> 2) & 1;
++    env->crucible_hardware_error.syndrome = state->syndrome;
++    env->crucible_hardware_error.address = state->fault_address;
++    env->crucible_hardware_error.disr = state->disr;
++    env->cp15.disr_el1 = state->disr;
++    if (state->interrupt_request & CPU_INTERRUPT_SERROR) {
++        cpu_interrupt(cs, CPU_INTERRUPT_SERROR);
++    } else {
++        cpu_reset_interrupt(cs, CPU_INTERRUPT_SERROR);
++    }
++    return true;
++}
++
++bool arm_cpu_record_corrected_fault(
++    CPUState *cs, const CPUFaultException *exception)
++{
++    (void)cs;
++    (void)exception;
++    return false;
++}
++
++bool arm_cpu_queue_fault_hardware_error(
++    CPUState *cs, const CPUFaultException *exception)
++{
++    CPUARMState *env = cpu_env(cs);
++    BQL_LOCK_GUARD();
++
++    if (!arm_cpu_validate_fault_exception(cs, exception) ||
++        exception->aarch64_ras.corrected ||
++        env->crucible_hardware_error.synchronous_pending ||
++        env->crucible_hardware_error.asynchronous_pending) {
++        return false;
++    }
++    if (exception->aarch64_ras.asynchronous) {
++        env->cp15.disr_el1 = exception->aarch64_ras.disr;
++        env->crucible_hardware_error.disr =
++            exception->aarch64_ras.disr;
++        env->crucible_hardware_error.asynchronous_pending = 1;
++    } else {
++        env->crucible_hardware_error.syndrome = exception->syndrome;
++        env->crucible_hardware_error.address = exception->fault_address;
++        env->crucible_hardware_error.synchronous_pending = 1;
++    }
++    env->crucible_hardware_error.fatal = exception->aarch64_ras.fatal;
++    cpu_interrupt(cs, CPU_INTERRUPT_SERROR);
++    return true;
++}
++
+ void arm_cpu_inject_fault_exception(
+     CPUState *cs, const CPUFaultException *exception, uintptr_t retaddr)
+ {
+     CPUARMState *env = cpu_env(cs);
+     uint32_t exception_index;
+ 
++    if (exception->record == CPU_FAULT_EXCEPTION_AARCH64_RAS &&
++        exception->aarch64_ras.asynchronous) {
++        g_assert(arm_cpu_queue_fault_hardware_error(cs, exception));
++        cpu_loop_exit(cs);
++    }
++
+     switch (exception->vector) {
+     case CPU_FAULT_AARCH64_UNDEFINED:
+         exception_index = EXCP_UDEF;
+diff --git a/target/i386/cpu.c b/target/i386/cpu.c
+index 9375caf99..d79bb7182 100644
+--- a/target/i386/cpu.c
++++ b/target/i386/cpu.c
+@@ -8897,7 +8897,16 @@ static const struct SysemuCPUOps i386_sysemu_ops = {
+     .get_paging_enabled = x86_cpu_get_paging_enabled,
+     .get_phys_page_attrs_debug = x86_cpu_get_phys_page_attrs_debug,
+     .get_fault_translation = x86_cpu_get_fault_translation,
++    .get_fault_hardware_error_capability =
++        x86_cpu_get_fault_hardware_error_capability,
++    .get_fault_privilege = x86_cpu_get_fault_privilege,
++    .read_fault_hardware_error_state =
++        x86_cpu_read_fault_hardware_error_state,
++    .restore_fault_hardware_error_state =
++        x86_cpu_restore_fault_hardware_error_state,
+     .validate_fault_exception = x86_cpu_validate_fault_exception,
++    .record_corrected_fault = x86_cpu_record_corrected_fault,
++    .queue_fault_hardware_error = x86_cpu_queue_fault_hardware_error,
+     .inject_fault_exception = x86_cpu_inject_fault_exception,
+     .inject_fault_access_error = x86_cpu_inject_fault_access_error,
+     .asidx_from_attrs = x86_asidx_from_attrs,
+diff --git a/target/i386/cpu.h b/target/i386/cpu.h
+index 04a4e5efe..64d75e8df 100644
+--- a/target/i386/cpu.h
++++ b/target/i386/cpu.h
+@@ -2392,8 +2392,19 @@ hwaddr x86_cpu_get_phys_page_attrs_debug(CPUState *cpu, vaddr addr,
+ bool x86_cpu_get_fault_translation(CPUState *cpu, vaddr addr,
+                                    MMUAccessType access_type,
+                                    CPUFaultTranslation *result);
++bool x86_cpu_get_fault_hardware_error_capability(
++    CPUState *cpu, CPUFaultHardwareErrorCapability *capability);
++bool x86_cpu_get_fault_privilege(CPUState *cpu, uint32_t *privilege);
++bool x86_cpu_read_fault_hardware_error_state(
++    CPUState *cpu, uint32_t bank, CPUFaultHardwareErrorState *state);
++bool x86_cpu_restore_fault_hardware_error_state(
++    CPUState *cpu, const CPUFaultHardwareErrorState *state);
+ bool x86_cpu_validate_fault_exception(
+     CPUState *cpu, const CPUFaultException *exception);
++bool x86_cpu_record_corrected_fault(
++    CPUState *cpu, const CPUFaultException *exception);
++bool x86_cpu_queue_fault_hardware_error(
++    CPUState *cpu, const CPUFaultException *exception);
+ G_NORETURN void x86_cpu_inject_fault_exception(
+     CPUState *cpu, const CPUFaultException *exception, uintptr_t retaddr);
+ G_NORETURN void x86_cpu_inject_fault_access_error(
+diff --git a/target/i386/tcg/system/excp_helper.c b/target/i386/tcg/system/excp_helper.c
+index 5763a1518..f1b4fcbff 100644
+--- a/target/i386/tcg/system/excp_helper.c
++++ b/target/i386/tcg/system/excp_helper.c
+@@ -18,6 +18,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/main-loop.h"
+ #include "cpu.h"
+ #include "exec/cpu_ldst.h"
+ #include "exec/cputlb.h"
+@@ -729,11 +730,74 @@ bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,
+ bool x86_cpu_validate_fault_exception(
+     CPUState *cs, const CPUFaultException *exception)
+ {
++    CPUX86State *env = cpu_env(cs);
+     bool has_error_code;
+     bool supported;
+     bool syndrome_valid;
+ 
+-    (void)cs;
++    if (exception->architecture == CPU_FAULT_EXCEPTION_X86_64 &&
++        exception->record == CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK) {
++        const uint64_t status_flags = MCI_STATUS_VAL | MCI_STATUS_OVER |
++            MCI_STATUS_UC | MCI_STATUS_EN | MCI_STATUS_MISCV |
++            MCI_STATUS_ADDRV | MCI_STATUS_PCC | MCI_STATUS_S |
++            MCI_STATUS_AR | MCI_STATUS_DEFERRED | MCI_STATUS_POISON;
++        const uint64_t global_flags = MCG_STATUS_RIPV | MCG_STATUS_EIPV |
++            MCG_STATUS_MCIP | MCG_STATUS_LMCE;
++        const unsigned banks = env->mcg_cap & 0xff;
++        const uint64_t status = exception->x86_machine_check.status;
++        const uint64_t global =
++            exception->x86_machine_check.global_status;
++        const bool corrected = exception->x86_machine_check.corrected;
++        const bool uc = status & MCI_STATUS_UC;
++        const bool signaled = status & MCI_STATUS_S;
++        const bool action_required = status & MCI_STATUS_AR;
++        const bool context_corrupt = status & MCI_STATUS_PCC;
++        const bool local = global & MCG_STATUS_LMCE;
++
++        return env->mcg_cap && exception->vector == EXCP12_MCHK &&
++            exception->syndrome == 0 && !exception->maskable &&
++            !(cs->interrupt_request & CPU_INTERRUPT_MCE) &&
++            exception->x86_machine_check.bank < banks &&
++            (status & MCI_STATUS_VAL) &&
++            !(status & MCI_STATUS_OVER) &&
++            !(status & ~(status_flags | UINT64_C(0xffffffff))) &&
++            !(global & ~global_flags) &&
++            (corrected ? global == 0 : !!(global & MCG_STATUS_MCIP)) &&
++            corrected == !uc &&
++            (!corrected ||
++             !(status & (MCI_STATUS_S | MCI_STATUS_AR |
++                         MCI_STATUS_PCC | MCI_STATUS_DEFERRED |
++                         MCI_STATUS_POISON))) &&
++            (!signaled || uc) &&
++            (!action_required ||
++             (uc && signaled && !(status & MCI_STATUS_DEFERRED) &&
++              (global & (MCG_STATUS_RIPV | MCG_STATUS_EIPV)) ==
++                  (MCG_STATUS_RIPV | MCG_STATUS_EIPV))) &&
++            (!context_corrupt ||
++             (uc && !(global & (MCG_STATUS_RIPV | MCG_STATUS_EIPV)))) &&
++            !(status & MCI_STATUS_DEFERRED) &&
++            (!(global & MCG_STATUS_EIPV) ||
++             (global & MCG_STATUS_RIPV)) &&
++            (!local ||
++             ((env->mcg_cap & MCG_LMCE_P) &&
++              (env->mcg_ext_ctl & MCG_EXT_CTL_LMCE_EN))) &&
++            exception->x86_machine_check.has_address ==
++                !!(status & MCI_STATUS_ADDRV) &&
++            exception->x86_machine_check.has_misc ==
++                !!(status & MCI_STATUS_MISCV) &&
++            exception->has_fault_address ==
++                exception->x86_machine_check.has_address &&
++            (!exception->has_fault_address ||
++             exception->fault_address ==
++                 exception->x86_machine_check.address) &&
++            (exception->x86_machine_check.corrected ||
++             ((env->cr[4] & CR4_MCE_MASK) &&
++              !(env->mcg_status & MCG_STATUS_MCIP) &&
++              (!(env->mcg_cap & MCG_CTL_P) ||
++               env->mcg_ctl == UINT64_MAX) &&
++              env->mce_banks[4 * exception->x86_machine_check.bank] ==
++                  UINT64_MAX));
++    }
+     has_error_code = exception->vector == EXCP0A_TSS ||
+                      exception->vector == EXCP0B_NOSEG ||
+                      exception->vector == EXCP0C_STACK ||
+@@ -772,11 +836,143 @@ bool x86_cpu_validate_fault_exception(
+            supported && syndrome_valid && !exception->maskable;
+ }
+ 
++bool x86_cpu_get_fault_hardware_error_capability(
++    CPUState *cs, CPUFaultHardwareErrorCapability *capability)
++{
++    CPUX86State *env = cpu_env(cs);
++    uint32_t banks = env->mcg_cap & 0xff;
++
++    if (!env->mcg_cap || banks == 0 || banks > MCE_BANKS_DEF) {
++        return false;
++    }
++    capability->bank_count = banks;
++    capability->machine_check = true;
++    return true;
++}
++
++bool x86_cpu_get_fault_privilege(CPUState *cs, uint32_t *privilege)
++{
++    CPUX86State *env = cpu_env(cs);
++
++    if (!privilege) {
++        return false;
++    }
++    *privilege = env->hflags & HF_CPL_MASK;
++    return *privilege <= 3;
++}
++
++bool x86_cpu_read_fault_hardware_error_state(
++    CPUState *cs, uint32_t bank_number, CPUFaultHardwareErrorState *state)
++{
++    CPUX86State *env = cpu_env(cs);
++    const uint32_t banks = env->mcg_cap & 0xff;
++    const uint64_t *bank;
++
++    if (bank_number >= banks) {
++        return false;
++    }
++    bank = env->mce_banks + 4 * bank_number;
++    state->architecture = CPU_FAULT_EXCEPTION_X86_64;
++    state->record = CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK;
++    state->bank = bank_number;
++    state->interrupt_request = cs->interrupt_request;
++    state->bank_control = bank[0];
++    state->bank_status = bank[1];
++    state->bank_address = bank[2];
++    state->bank_misc = bank[3];
++    state->global_status = env->mcg_status;
++    return true;
++}
++
++bool x86_cpu_restore_fault_hardware_error_state(
++    CPUState *cs, const CPUFaultHardwareErrorState *state)
++{
++    CPUX86State *env = cpu_env(cs);
++    const uint32_t banks = env->mcg_cap & 0xff;
++    uint64_t *bank;
++
++    if (!state || state->architecture != CPU_FAULT_EXCEPTION_X86_64 ||
++        state->record != CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK ||
++        state->bank >= banks) {
++        return false;
++    }
++    bank = env->mce_banks + 4 * state->bank;
++    bank[0] = state->bank_control;
++    bank[1] = state->bank_status;
++    bank[2] = state->bank_address;
++    bank[3] = state->bank_misc;
++    env->mcg_status = state->global_status;
++    if (state->interrupt_request & CPU_INTERRUPT_MCE) {
++        cpu_interrupt(cs, CPU_INTERRUPT_MCE);
++    } else {
++        cpu_reset_interrupt(cs, CPU_INTERRUPT_MCE);
++    }
++    return true;
++}
++
++static void x86_cpu_write_fault_bank(CPUX86State *env,
++                                     const CPUFaultException *exception)
++{
++    uint64_t *bank = env->mce_banks +
++        4 * exception->x86_machine_check.bank;
++    uint64_t status = exception->x86_machine_check.status;
++
++    if (bank[1] & MCI_STATUS_VAL) {
++        status |= MCI_STATUS_OVER;
++    }
++    if (exception->x86_machine_check.corrected &&
++        (bank[1] & (MCI_STATUS_VAL | MCI_STATUS_UC)) ==
++            (MCI_STATUS_VAL | MCI_STATUS_UC)) {
++        bank[1] |= MCI_STATUS_OVER;
++        return;
++    }
++    bank[2] = exception->x86_machine_check.has_address ?
++        exception->x86_machine_check.address : 0;
++    bank[3] = exception->x86_machine_check.has_misc ?
++        exception->x86_machine_check.misc : 0;
++    bank[1] = status;
++}
++
++bool x86_cpu_record_corrected_fault(
++    CPUState *cs, const CPUFaultException *exception)
++{
++    CPUX86State *env = cpu_env(cs);
++
++    if (!x86_cpu_validate_fault_exception(cs, exception) ||
++        !exception->x86_machine_check.corrected) {
++        return false;
++    }
++    x86_cpu_write_fault_bank(env, exception);
++    return true;
++}
++
++bool x86_cpu_queue_fault_hardware_error(
++    CPUState *cs, const CPUFaultException *exception)
++{
++    CPUX86State *env = cpu_env(cs);
++    BQL_LOCK_GUARD();
++
++    if (!x86_cpu_validate_fault_exception(cs, exception) ||
++        exception->x86_machine_check.corrected) {
++        return false;
++    }
++    x86_cpu_write_fault_bank(env, exception);
++    env->mcg_status = exception->x86_machine_check.global_status;
++    cpu_interrupt(cs, CPU_INTERRUPT_MCE);
++    return true;
++}
++
+ void x86_cpu_inject_fault_exception(
+     CPUState *cs, const CPUFaultException *exception, uintptr_t retaddr)
+ {
+     CPUX86State *env = cpu_env(cs);
+ 
++    if (exception->record == CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK) {
++        g_assert(!exception->x86_machine_check.corrected);
++        g_assert(x86_cpu_queue_fault_hardware_error(cs, exception));
++        cpu_loop_exit(cs);
++    }
++
+     if (exception->has_fault_address) {
+         env->cr[2] = exception->fault_address;
+     }

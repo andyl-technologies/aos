@@ -1,4 +1,5 @@
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index 14a95e40e..dc00fb398 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -108,6 +108,49 @@ static bool rr_crucible_sim_skip_second_events_pass(CPUState *cpu)
@@ -108,6 +109,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
  
      /*
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+index 0aca978ad..963d31b59 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
 @@ -181,6 +181,12 @@ extern qemu_plugin_tcg_exec_cb_t qemu_plugin_tcg_exec_cb;
@@ -166,6 +168,7 @@ diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
  void qemu_plugin_add_dyn_cb_arr(GArray *arr)
  { }
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index f568f186a..1e6b12e2d 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -164,6 +164,15 @@ typedef void (*qemu_plugin_tcg_exec_cb_t)(unsigned int vcpu_index,
@@ -207,6 +210,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
   * qemu_plugin_register_blk_cb() - register shmem block callbacks
   * @submit_cb: request submit callback, or NULL to disable shmem forwarding
 diff --git a/plugins/api-system.c b/plugins/api-system.c
+index 96141b30e..5a6abc070 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -118,6 +118,9 @@ static NotifierList qemu_plugin_wake_notifiers =

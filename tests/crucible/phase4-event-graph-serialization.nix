@@ -5,11 +5,7 @@
   taskIds ? ["T-TRIG-18"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
@@ -225,10 +221,6 @@
         needle = "pub fn action(mut self, action: Action) -> EventGraphBuilder";
       }
       {
-        label = "inject-fault action constructor";
-        needle = "pub fn inject_fault";
-      }
-      {
         label = "pass action constructor";
         needle = "pub const fn pass() -> Self";
       }
@@ -243,12 +235,12 @@
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [
       {
-        label = "Plan kind discriminates scheduled and graph forms";
-        needle = "enum PlanKind";
+        label = "Plan has one graph-native representation";
+        needle = "pub struct Plan";
       }
       {
-        label = "Plan carries event graph";
-        needle = "EventGraph { graph: EventGraph }";
+        label = "Plan carries signal-driven faults beside the event graph";
+        needle = "fault_signals: FaultSignalPlan";
       }
       {
         label = "assertion-aware graph Plan constructor";
@@ -264,23 +256,23 @@
       }
       {
         label = "graph Plan accessor";
-        needle = "pub fn event_graph(&self) -> Option<&EventGraph>";
+        needle = "pub const fn event_graph(&self) -> &EventGraph";
       }
       {
         label = "scenario composition validates graph Plan with properties";
         needle = "fn validate_event_graph_plan";
       }
       {
-        label = "Plan-kind canonical material";
-        needle = "fn plan_kind_material";
+        label = "unified Plan canonical material";
+        needle = "fn plan_parts_material";
       }
       {
         label = "event graph canonical material";
         needle = "fn event_graph_plan_material";
       }
       {
-        label = "event graph TOML discriminant";
-        needle = "PlanKindToml::EventGraph";
+        label = "signal-binding TOML discriminant";
+        needle = "FaultModelToml::SignalBindingsV2";
       }
       {
         label = "event binary writer";

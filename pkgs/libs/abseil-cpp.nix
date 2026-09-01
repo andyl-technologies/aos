@@ -4,6 +4,7 @@
   fetchurl,
   cmake,
   gnumake,
+  stdenv,
 }: let
   version = "20230802.0";
 in
@@ -28,10 +29,23 @@ in
     phases = [
       {
         name = "unpack";
-        script = ''
-          tar xf $src
-          cd abseil-cpp-${version}
-        '';
+        script =
+          if stdenv.isCross && stdenv.hostPlatform.isDarwin
+          then ''
+            tar xf $src
+            cd abseil-cpp-${version}
+
+            # Apple's multi-architecture -Xarch forwarding is only valid for
+            # native universal builds. A single-architecture cross compiler
+            # must select the flags from CMAKE_SYSTEM_PROCESSOR.
+            sed -i \
+              's/if(APPLE AND CMAKE_CXX_COMPILER_ID MATCHES \[\[Clang\]\])/if(APPLE AND CMAKE_CXX_COMPILER_ID MATCHES [[Clang]] AND NOT CMAKE_CROSSCOMPILING)/' \
+              absl/copts/AbseilConfigureCopts.cmake
+          ''
+          else ''
+            tar xf $src
+            cd abseil-cpp-${version}
+          '';
       }
       {
         name = "configure";
@@ -39,6 +53,7 @@ in
           mkdir build
           cd build
           cmake .. \
+            $cmakeFlags \
             -DCMAKE_INSTALL_PREFIX=$out \
             -DCMAKE_INSTALL_LIBDIR=lib \
             -DCMAKE_BUILD_TYPE=Release \

@@ -42,7 +42,7 @@ use crate::frozen_surface_access::{
     binding as frozen_access_binding, delete_credential as frozen_delete_credential,
 };
 use crate::keymap;
-use crate::r2_adapter::{R2BucketAdapter, R2Contract, R2ListObject, R2ListPage};
+use crate::r2_adapter::{R2BucketAdapter, R2Contract, R2HeadObject, R2ListObject, R2ListPage};
 
 #[derive(Clone)]
 struct WorkerR2BucketAdapter {
@@ -174,7 +174,7 @@ impl R2BucketAdapter for WorkerR2BucketAdapter {
         })
     }
 
-    async fn head(&self, key: &str) -> Result<Option<u64>> {
+    async fn head(&self, key: &str) -> Result<Option<R2HeadObject>> {
         use wasm_bindgen::JsValue;
         use wasm_bindgen_futures::JsFuture;
         let promise = js_promise(
@@ -196,7 +196,14 @@ impl R2BucketAdapter for WorkerR2BucketAdapter {
             size.is_finite() && size >= 0.0 && size < (u64::MAX as f64) && size.fract() == 0.0,
             "R2 HEAD object size is invalid"
         );
-        Ok(Some(size as u64))
+        let etag = js_sys::Reflect::get(&object, &JsValue::from_str("etag"))
+            .map_err(|e| anyhow::anyhow!("R2 head {key}: etag: {e:?}"))?
+            .as_string()
+            .context("R2 HEAD object has no string etag")?;
+        Ok(Some(R2HeadObject {
+            size: size as u64,
+            etag,
+        }))
     }
 
     async fn read(&self, key: &str) -> Result<Option<Vec<u8>>> {
@@ -782,18 +789,8 @@ impl SurfaceFetch for R2SurfaceFetch {
     }
 
     async fn inventory_strong_etag(&self, path: &str) -> Result<Option<String>> {
-        use js_sys::Reflect;
-        use wasm_bindgen::JsValue;
-
         let key = keymap::r2_key(&self.prefix, path);
-        let Some(object) = r2_get(self.bucket.as_ref(), &key).await? else {
-            return Ok(None);
-        };
-        let etag = Reflect::get(&object, &JsValue::from_str("etag"))
-            .ok()
-            .and_then(|value| value.as_string())
-            .map(|value| value.trim().to_string());
-        Ok(etag.filter(|value| aos_hub_core::surface_write::strong_if_match_etag(value).is_ok()))
+        Ok(self.contract.head(&key).await?.map(|object| object.etag))
     }
 
     async fn inventory_size(&self, path: &str) -> Result<Option<i64>> {
@@ -801,7 +798,7 @@ impl SurfaceFetch for R2SurfaceFetch {
         self.contract
             .head(&key)
             .await?
-            .map(|size| i64::try_from(size).context("R2 object size exceeds i64"))
+            .map(|object| i64::try_from(object.size).context("R2 object size exceeds i64"))
             .transpose()
     }
 
@@ -933,7 +930,7 @@ impl SurfaceFetch for R2SurfaceFetch {
 
     async fn size(&self, path: &str) -> Result<Option<u64>> {
         let key = keymap::r2_key(&self.prefix, path);
-        self.contract.head(&key).await
+        Ok(self.contract.head(&key).await?.map(|object| object.size))
     }
 
     fn describe(&self) -> String {
@@ -1658,6 +1655,11 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
             .push(format!("head:{}", key.as_string().unwrap_or_default()));
         let object = Object::new();
         let _ = Reflect::set(&object, &JsValue::from_str("size"), &JsValue::from_f64(3.0));
+        let _ = Reflect::set(
+            &object,
+            &JsValue::from_str("etag"),
+            &JsValue::from_str("fixture-etag"),
+        );
         Promise::resolve(&object).into()
     }) as Box<dyn FnMut(JsValue) -> JsValue>);
     set_method(&bucket, "head", head.as_ref())?;

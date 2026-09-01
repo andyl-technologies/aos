@@ -15,12 +15,13 @@ use crucible_shmem::FingerprintSample;
 
 use crate::quantum_boundary::{QuantumBoundary, classify_quantum_boundary};
 use crate::{
-    QemuMappedQuantumShmemHotPath, QemuNodeChannelError, QemuNodeIdleState, QemuShmemHotPathChannel,
+    QemuHostIoRuntime, QemuMappedQuantumShmemHotPath, QemuNodeChannelError, QemuNodeIdleState,
+    QemuShmemHotPathChannel,
 };
 
 use super::{
-    LivePluginAdvancementRates, LivePluginIdleObservation, LivePluginQuantumGateConfig,
-    LivePluginQuantumGateError,
+    HostAdversary, LivePluginAdvancementRates, LivePluginIdleObservation,
+    LivePluginQuantumGateConfig, LivePluginQuantumGateError,
 };
 
 /// Host poll interval while waiting on the plugin-owned boundary or teardown.
@@ -38,6 +39,7 @@ pub(super) fn drive_scenario(
     child: &mut crate::QemuNodeChild,
     setup: &crate::QemuHostPluginSetup,
     config: &LivePluginQuantumGateConfig,
+    host_adversary: &mut Option<HostAdversary>,
 ) -> Result<
     (
         LivePluginIdleObservation,
@@ -53,7 +55,7 @@ pub(super) fn drive_scenario(
     let mut host_observable_schedule = Vec::new();
 
     let idle = loop {
-        let (stop, event) = run_quantum(hot_path, child, setup, ceiling, config)?;
+        let (stop, event) = run_quantum(hot_path, child, setup, ceiling, config, host_adversary)?;
         host_observable_schedule.push(event);
         match stop {
             QuantumStop::ReachedCeiling { .. } => {
@@ -78,21 +80,6 @@ pub(super) fn drive_scenario(
     };
     let boot_wall_micros = wall_micros_since(boot_started);
 
-    if !config.prove_idle_jump() {
-        // Descoped: the boot phase (exact per-quantum ceiling ownership) and the
-        // idle observation (parked node + computed timer deadline) are the live
-        // proof of T-PLUG-4/5/6. The idle-jump advancement quantum is skipped
-        // while the QEMU-side queued-time-advance completion defect is open.
-        let rates = LivePluginAdvancementRates {
-            boot_icount_span: idle.idle_onset_icount,
-            boot_wall_micros,
-            idle_icount_span: 0,
-            idle_wall_micros: 0,
-            terminal_icount: idle.idle_onset_icount,
-        };
-        return Ok((idle, rates, host_observable_schedule));
-    }
-
     // Idle-jump: raise the ceiling far beyond the parked deadline in one quantum.
     // A time-owning plugin advances the idle guest by O(1) deadline jumps, so the
     // whole span collapses in wall time even though it spans a large icount range.
@@ -104,7 +91,7 @@ pub(super) fn drive_scenario(
                 .saturating_add(schedule.ceiling_step_icount),
         );
     let idle_started = wall_clock_start();
-    let (stop, event) = run_quantum(hot_path, child, setup, idle_horizon, config)?;
+    let (stop, event) = run_quantum(hot_path, child, setup, idle_horizon, config, host_adversary)?;
     host_observable_schedule.push(event);
     let terminal_icount = match stop {
         QuantumStop::ReachedCeiling { icount } => icount,
@@ -154,12 +141,13 @@ pub(super) fn run_quantum(
     setup: &crate::QemuHostPluginSetup,
     ceiling: u64,
     config: &LivePluginQuantumGateConfig,
+    host_adversary: &mut Option<HostAdversary>,
 ) -> Result<(QuantumStop, SimDoubleHostScheduleEvent), LivePluginQuantumGateError> {
     let from_icount = QemuShmemHotPathChannel::idle_state(hot_path)
         .map_err(|source| channel_error("read pre-quantum icount", source))?
         .current_icount
         .retired;
-    let pending = QemuShmemHotPathChannel::start_quantum(
+    let mut pending = QemuShmemHotPathChannel::start_quantum(
         hot_path,
         ExecutionHorizon {
             icount: Icount { retired: ceiling },
@@ -180,6 +168,8 @@ pub(super) fn run_quantum(
     setup
         .signal_plugin_wake()
         .map_err(|source| channel_error("wake plugin for next quantum", source))?;
+    HostAdversary::certify_mapped_quantum_pending(host_adversary, hot_path, &mut pending)
+        .map_err(|source| LivePluginQuantumGateError::SchedulerPreemption { source })?;
     let stop = wait_for_quantum_boundary(hot_path, child, ceiling, config)?;
     let completion = QemuShmemHotPathChannel::finish_quantum(hot_path, pending)
         .map_err(|source| channel_error("finish quantum", source))?;
@@ -218,7 +208,6 @@ fn wait_for_quantum_boundary(
     loop {
         let idle: QemuNodeIdleState = QemuShmemHotPathChannel::idle_state(hot_path)
             .map_err(|source| channel_error("poll idle state", source))?;
-        let current = idle.current_icount.retired;
         match classify_quantum_boundary(&idle, ceiling) {
             QuantumBoundary::Reached { icount } => {
                 return Ok(QuantumStop::ReachedCeiling { icount });
@@ -240,7 +229,10 @@ fn wait_for_quantum_boundary(
         if started.elapsed() >= config.completion_timeout() {
             return Err(LivePluginQuantumGateError::QuantumTimeout {
                 ceiling_icount: ceiling,
-                last_icount: current,
+                last_snapshot: hot_path
+                    .node_snapshot()
+                    .map_err(|source| channel_error("snapshot timed-out quantum", source))?,
+                last_deadline_icount: idle.next_deadline.map(|deadline| deadline.retired),
                 timeout: config.completion_timeout(),
             });
         }
@@ -290,6 +282,46 @@ pub(super) fn wait_for_fingerprint_sample(
         }
         thread::sleep(POLL_INTERVAL);
     }
+}
+
+/// Requests and waits for an exact BQL-held terminal fingerprint boundary.
+///
+/// # Errors
+///
+/// Returns [`LivePluginQuantumGateError`] when the request cannot be published,
+/// QEMU exits, the acknowledgement does not arrive within the gate timeout, or
+/// the digest worker does not publish the exact terminal sample.
+pub(super) fn publish_terminal_fingerprint(
+    runtime: &mut dyn QemuHostIoRuntime,
+    hot_path: &QemuMappedQuantumShmemHotPath,
+    child: &mut crate::QemuNodeChild,
+    expected_icount: u64,
+    config: &LivePluginQuantumGateConfig,
+) -> Result<FingerprintSample, LivePluginQuantumGateError> {
+    runtime
+        .publish_current_execution_fingerprint(config.completion_timeout())
+        .map_err(|source| {
+            channel_error(
+                "publish production terminal fingerprint boundary",
+                QemuNodeChannelError::new("execution fingerprint boundary", source.to_string()),
+            )
+        })?;
+    let snapshot = hot_path
+        .node_snapshot()
+        .map_err(|source| channel_error("read terminal fingerprint boundary", source))?;
+    if snapshot.current_icount != expected_icount {
+        return Err(channel_error(
+            "verify terminal fingerprint boundary",
+            QemuNodeChannelError::new(
+                "terminal fingerprint boundary",
+                format!(
+                    "acknowledged at icount {} instead of {expected_icount}",
+                    snapshot.current_icount
+                ),
+            ),
+        ));
+    }
+    wait_for_fingerprint_sample(hot_path, child, expected_icount, config)
 }
 
 // crucible-lint: allow clippy-disallowed-method -- quantum-gate host timeout bounds plugin teardown only.

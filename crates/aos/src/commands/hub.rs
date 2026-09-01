@@ -18,7 +18,7 @@ use aos_net::{
     TransferObserver,
 };
 use aos_remote::hub_rpc as HubTopologyMethod;
-use aos_remote::{HubClient, HubRpc, HubSurfaceRef, Placement, hub_types};
+use aos_remote::{hub_types, HubClient, HubRpc, HubSurfaceRef, Placement};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -29,8 +29,8 @@ use crate::cli::{
     HubCacheGcFirstSweepCmd, HubCacheGcJobsCmd, HubCacheGcPlanCmd, HubCacheGcPolicyCmd,
     HubCacheGcRunsCmd, HubCacheIntegrationCmd, HubCacheLeaseCmd, HubCachePopulationCmd,
     HubCacheRetentionCmd, HubCacheRootCmd, HubChannelCmd, HubCmd, HubConfigCmd,
-    HubDomainCertificateCmd, HubDomainCmd, HubDomainDnsCmd, HubEndpointCmd, HubGatewayCmd,
-    HubIdentityProviderCmd, HubIdentityProviderRemoveCmd, HubIdentityProviderSetCmd,
+    HubDocumentationCmd, HubDomainCertificateCmd, HubDomainCmd, HubDomainDnsCmd, HubEndpointCmd,
+    HubGatewayCmd, HubIdentityProviderCmd, HubIdentityProviderRemoveCmd, HubIdentityProviderSetCmd,
     HubInstanceCmd, HubInstanceSettingsMutationCmd, HubInstanceSettingsSectionCmd,
     HubInstanceTopologyDefaultsCmd, HubInvitationCancelCmd, HubInvitationCmd,
     HubInvitationCreateCmd, HubMembershipRemoveCmd, HubMembershipSetRoleCmd, HubMutationArgs,
@@ -272,6 +272,33 @@ mod tests {
     }
 
     #[test]
+    fn documentation_browser_urls_preserve_registry_path_segments() {
+        let url = documentation_browser_url(
+            "https://hub.example.test",
+            "acme/platform/production",
+            "nginx",
+            "1.30.4",
+            "x86_64-linux",
+        )
+        .unwrap();
+
+        assert_eq!(
+            url.as_str(),
+            "https://hub.example.test/acme/platform/production/-/docs/nginx/1.30.4/x86_64-linux"
+        );
+        assert!(
+            documentation_browser_url(
+                "https://hub.example.test",
+                "acme//production",
+                "nginx",
+                "1.30.4",
+                "x86_64-linux",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn network_policy_kinds_use_wire_spelling() {
         assert_eq!(
             canonical_network_policy_kind("source-allowlist"),
@@ -347,47 +374,39 @@ mod tests {
           }]
         }"#;
         assert_eq!(parse_pin_resolution_document(valid).unwrap().len(), 1);
-        assert!(
-            parse_pin_resolution_document(
-                br#"{"schemaVersion":"aos.hub.pin-resolutions.v2","resolutions":[]}"#
-            )
-            .is_err()
-        );
-        assert!(
-            parse_pin_resolution_document(
-                br#"{"schemaVersion":"aos.hub.pin-resolutions.v1","resolutions":[],"extra":true}"#
-            )
-            .is_err()
-        );
+        assert!(parse_pin_resolution_document(
+            br#"{"schemaVersion":"aos.hub.pin-resolutions.v2","resolutions":[]}"#
+        )
+        .is_err());
+        assert!(parse_pin_resolution_document(
+            br#"{"schemaVersion":"aos.hub.pin-resolutions.v1","resolutions":[],"extra":true}"#
+        )
+        .is_err());
     }
 
     #[test]
     fn pin_resolution_document_rejects_malformed_duplicate_and_unsealed_actions() {
         assert!(parse_pin_resolution_document(b"not-json").is_err());
-        assert!(
-            parse_pin_resolution_document(
-                br#"{
+        assert!(parse_pin_resolution_document(
+            br#"{
               "schemaVersion":"aos.hub.pin-resolutions.v1",
               "resolutions":[
                 {"pinId":"pin:one","release":{"expectedSourceResourceVersion":"7"}},
                 {"pinId":"pin:one","release":{"expectedSourceResourceVersion":"8"}}
               ]
             }"#
-            )
-            .is_err()
-        );
-        assert!(
-            parse_pin_resolution_document(
-                br#"{
+        )
+        .is_err());
+        assert!(parse_pin_resolution_document(
+            br#"{
               "schemaVersion":"aos.hub.pin-resolutions.v1",
               "resolutions":[{
                 "pinId":"pin:one",
                 "release":{"expectedSourceResourceVersion":"0"}
               }]
             }"#
-            )
-            .is_err()
-        );
+        )
+        .is_err());
     }
 
     #[test]
@@ -751,11 +770,9 @@ mod tests {
         .unwrap();
 
         let error = publication_from_root(root, "andyl/main").err().unwrap();
-        assert!(
-            error
-                .to_string()
-                .contains("does not identify its compressed FileHash")
-        );
+        assert!(error
+            .to_string()
+            .contains("does not identify its compressed FileHash"));
     }
 
     #[test]
@@ -923,6 +940,7 @@ pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
             },
         },
         HubCmd::Registry { command } => registry(printer, command).await,
+        HubCmd::Docs { command } => documentation(printer, command).await,
         HubCmd::Cache { command } => cache(printer, command).await,
         HubCmd::Placement { command } => placement(printer, command).await,
         HubCmd::PlacementPolicy { command } => placement_policy(printer, command).await,
@@ -939,6 +957,258 @@ pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
         HubCmd::Route { command } => route(printer, command).await,
         HubCmd::Instance { command } => instance(printer, command).await,
     }
+}
+
+async fn documentation(printer: &Printer, command: &HubDocumentationCmd) -> Result<()> {
+    match command {
+        HubDocumentationCmd::Search {
+            access,
+            query,
+            registry,
+            kind,
+            pagination,
+        } => {
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            topology_read::<_, hub_types::SearchPackageDocumentationResponse>(
+                printer,
+                &client,
+                HubTopologyMethod::SearchPackageDocumentation,
+                &hub_types::SearchPackageDocumentationRequest {
+                    registry: registry.clone(),
+                    query: query.clone(),
+                    kind: kind.clone().unwrap_or_default(),
+                    page_size: pagination.page_size.unwrap_or_default(),
+                    page_token: pagination.page_token.clone().unwrap_or_default(),
+                },
+            )
+            .await
+        }
+        HubDocumentationCmd::Package {
+            access,
+            package,
+            registry,
+            version,
+            platform,
+        } => {
+            let response = fetch_documentation(
+                access,
+                registry,
+                package,
+                version.as_deref(),
+                platform.as_deref(),
+            )
+            .await?;
+            print_documentation_response(printer, &response)
+        }
+        HubDocumentationCmd::Option {
+            access,
+            package,
+            registry,
+            version,
+            platform,
+            prefix,
+            owner,
+            option_type,
+            contributable,
+            pagination,
+        } => {
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            topology_read::<_, hub_types::ListPackageOptionsResponse>(
+                printer,
+                &client,
+                HubTopologyMethod::ListPackageOptions,
+                &hub_types::ListPackageOptionsRequest {
+                    registry: registry.clone(),
+                    package: package.clone(),
+                    version: version.clone().unwrap_or_default(),
+                    platform: platform.clone().unwrap_or_default(),
+                    prefix: prefix.clone().unwrap_or_default(),
+                    owner: owner.clone().unwrap_or_default(),
+                    r#type: option_type.clone().unwrap_or_default(),
+                    contributable: *contributable,
+                    page_size: pagination.page_size.unwrap_or_default(),
+                    page_token: pagination.page_token.clone().unwrap_or_default(),
+                },
+            )
+            .await
+        }
+        HubDocumentationCmd::Compare {
+            access,
+            package,
+            registry,
+            from,
+            to,
+            platform,
+        } => {
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let response: hub_types::ComparePackageDocumentationResponse = client
+                .call_topology(
+                    HubTopologyMethod::ComparePackageDocumentation,
+                    &hub_types::ComparePackageDocumentationRequest {
+                        registry: registry.clone(),
+                        package: package.clone(),
+                        from_version: from.clone(),
+                        to_version: to.clone(),
+                        platform: platform.clone(),
+                    },
+                )
+                .await?;
+            let comparison: serde_json::Value =
+                serde_json::from_slice(&response.canonical_comparison_json)
+                    .context("Hub returned invalid canonical comparison JSON")?;
+            if print_hub_json(printer, "documentation_comparison", comparison.clone()) {
+                return Ok(());
+            }
+            println!("{}", serde_json::to_string_pretty(&comparison)?);
+            Ok(())
+        }
+        HubDocumentationCmd::Fetch {
+            access,
+            package,
+            registry,
+            version,
+            platform,
+            output,
+        } => {
+            let response = fetch_documentation(
+                access,
+                registry,
+                package,
+                version.as_deref(),
+                platform.as_deref(),
+            )
+            .await?;
+            verify_documentation_response(&response)?;
+            std::fs::write(output, &response.canonical_json)
+                .with_context(|| format!("writing {}", output.display()))?;
+            printer.success(&format!(
+                "Wrote verified documentation to {}",
+                output.display()
+            ));
+            Ok(())
+        }
+        HubDocumentationCmd::Open {
+            access,
+            package,
+            registry,
+            version,
+            platform,
+        } => {
+            let response = fetch_documentation(
+                access,
+                registry,
+                package,
+                version.as_deref(),
+                platform.as_deref(),
+            )
+            .await?;
+            let identity = response
+                .identity
+                .as_ref()
+                .context("Hub omitted package documentation identity")?;
+            let (origin, _) = crate::commands::hub_auth::resolve_access(
+                access.hub.as_deref(),
+                access.token.as_deref(),
+            )?;
+            let url = documentation_browser_url(
+                &origin,
+                registry,
+                &identity.package,
+                &identity.version,
+                &identity.platform,
+            )?;
+            if print_hub_json(
+                printer,
+                "documentation_url",
+                serde_json::json!({ "url": url.as_str() }),
+            ) {
+                return Ok(());
+            }
+            println!("{url}");
+            Ok(())
+        }
+    }
+}
+
+fn documentation_browser_url(
+    origin: &str,
+    registry: &str,
+    package: &str,
+    version: &str,
+    platform: &str,
+) -> Result<url::Url> {
+    let registry_segments = registry.split('/').collect::<Vec<_>>();
+    anyhow::ensure!(
+        !registry_segments.is_empty()
+            && registry_segments
+                .iter()
+                .all(|segment| !segment.is_empty() && *segment != "." && *segment != ".."),
+        "registry refs contain non-empty canonical path segments"
+    );
+
+    let mut url = url::Url::parse(origin).context("parsing Hub URL")?;
+    let mut path = url
+        .path_segments_mut()
+        .map_err(|_| anyhow::anyhow!("Hub URL cannot carry path segments"))?;
+    path.extend(registry_segments);
+    path.extend(["-", "docs", package, version, platform]);
+    drop(path);
+
+    Ok(url)
+}
+
+async fn fetch_documentation(
+    access: &HubAccessArgs,
+    registry: &str,
+    package: &str,
+    version: Option<&str>,
+    platform: Option<&str>,
+) -> Result<hub_types::GetPackageDocumentationResponse> {
+    hub_client(&access.hub, access.token.as_deref())?
+        .call_topology(
+            HubTopologyMethod::GetPackageDocumentation,
+            &hub_types::GetPackageDocumentationRequest {
+                registry: registry.to_string(),
+                package: package.to_string(),
+                version: version.unwrap_or_default().to_string(),
+                platform: platform.unwrap_or_default().to_string(),
+            },
+        )
+        .await
+}
+
+fn verify_documentation_response(
+    response: &hub_types::GetPackageDocumentationResponse,
+) -> Result<aos_doc_model::PackageDocumentation> {
+    let identity = response
+        .identity
+        .as_ref()
+        .context("Hub omitted package documentation identity")?;
+    let document =
+        aos_doc_model::PackageDocumentation::from_canonical_json(&response.canonical_json)
+            .context("Hub returned invalid canonical package documentation")?;
+    anyhow::ensure!(
+        document.package.name == identity.package
+            && document.package.version == identity.version
+            && document.package.platform == identity.platform
+            && document.document_sha256()? == identity.document_sha256
+            && response.etag == identity.document_sha256,
+        "Hub documentation identity does not match canonical bytes"
+    );
+    Ok(document)
+}
+
+fn print_documentation_response(
+    printer: &Printer,
+    response: &hub_types::GetPackageDocumentationResponse,
+) -> Result<()> {
+    let document = verify_documentation_response(response)?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::from_slice(&response.canonical_json)?);
+    } else {
+        print!("{}", document.render_plain());
+    }
+    Ok(())
 }
 
 /// Renders one placement as a stable public JSON object.
@@ -2770,9 +3040,9 @@ async fn run_coverage_operation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyTopologyPlanRequest,
-        Response = hub_types::OperationResponse,
-    > + Copy,
+            Request = hub_types::ApplyTopologyPlanRequest,
+            Response = hub_types::OperationResponse,
+        > + Copy,
     mutation: &HubMutationArgs,
     operation: &HubOperationArgs,
 ) -> Result<()> {
@@ -4408,9 +4678,9 @@ async fn topology_operation_mutation<PlanReq>(
     client: &HubClient,
     plan_method: impl HubRpc<Request = PlanReq, Response = hub_types::TopologyPlanResponse>,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyTopologyPlanRequest,
-        Response = hub_types::OperationResponse,
-    > + Copy,
+            Request = hub_types::ApplyTopologyPlanRequest,
+            Response = hub_types::OperationResponse,
+        > + Copy,
     plan_request: &PlanReq,
     mutation: &HubMutationArgs,
     operation: &HubOperationArgs,
@@ -4634,6 +4904,28 @@ fn parse_binding_ref(value: &str) -> Result<hub_types::BindingRef> {
     })
 }
 
+async fn binding_grant_stable_id(
+    client: &HubClient,
+    reference: &str,
+    mutation: &HubMutationArgs,
+) -> Result<String> {
+    if mutation.plan_id.is_some() || (!reference.contains([':', '/'])) {
+        return Ok(reference.to_string());
+    }
+    let response: hub_types::GetBindingResponse = client
+        .call_topology(
+            HubTopologyMethod::GetBinding,
+            &hub_types::GetBindingRequest {
+                binding: Some(parse_binding_ref(reference)?),
+            },
+        )
+        .await?;
+    Ok(response
+        .binding
+        .context("Hub returned no binding for the canonical reference")?
+        .stable_id)
+}
+
 fn parse_storage_endpoint(value: &str) -> Result<hub_types::StorageEndpoint> {
     let url = reqwest::Url::parse(value).context("parsing storage endpoint URL")?;
     if url.scheme() != "https" {
@@ -4684,9 +4976,9 @@ async fn consumer_scope_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyConsumerScopeGrantRequest,
-        Response = hub_types::ConsumerScopeGrantResponse,
-    > + Copy,
+            Request = hub_types::ApplyConsumerScopeGrantRequest,
+            Response = hub_types::ConsumerScopeGrantResponse,
+        > + Copy,
 ) -> Result<()> {
     let client = hub_client(&access.hub, access.token.as_deref())?;
     topology_mutation::<
@@ -4728,9 +5020,9 @@ async fn delete_topology_resource(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyDeleteTopologyResourceRequest,
-        Response = hub_types::DeleteTopologyResourceResponse,
-    > + Copy,
+            Request = hub_types::ApplyDeleteTopologyResourceRequest,
+            Response = hub_types::DeleteTopologyResourceResponse,
+        > + Copy,
 ) -> Result<()> {
     let client = hub_client(&access.hub, access.token.as_deref())?;
     topology_mutation::<
@@ -4771,6 +5063,7 @@ async fn binding(printer: &Printer, command: &HubBindingCmd) -> Result<()> {
             hub,
             token,
             org,
+            include_granted,
             pagination,
         } => {
             let client = hub_client(hub, token.as_deref())?;
@@ -4782,6 +5075,7 @@ async fn binding(printer: &Printer, command: &HubBindingCmd) -> Result<()> {
                     owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
+                    include_granted: *include_granted,
                 },
             )
             .await
@@ -4933,7 +5227,7 @@ async fn binding(printer: &Printer, command: &HubBindingCmd) -> Result<()> {
                 HubTopologyMethod::CreateBinding,
                 &hub_types::PlanBindingMutationRequest {
                     stable_id: topology_stable_id(stable_id.as_deref(), "storage-binding"),
-                    owner_scope_key: organization_scope_key(&client, Some(org)).await?,
+                    owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     spec: Some(spec),
                     idempotency_key: new_idempotency_key(),
                     ..Default::default()
@@ -4957,11 +5251,13 @@ async fn binding(printer: &Printer, command: &HubBindingCmd) -> Result<()> {
             consumer_scope,
             mutation,
         } => {
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let binding_stable_id = binding_grant_stable_id(&client, binding_ref, mutation).await?;
             consumer_scope_mutation(
                 printer,
                 access,
                 "binding",
-                binding_ref,
+                &binding_stable_id,
                 0,
                 consumer_scope,
                 mutation,
@@ -4976,11 +5272,13 @@ async fn binding(printer: &Printer, command: &HubBindingCmd) -> Result<()> {
             consumer_scope,
             mutation,
         } => {
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let binding_stable_id = binding_grant_stable_id(&client, binding_ref, mutation).await?;
             consumer_scope_mutation(
                 printer,
                 access,
                 "binding",
-                binding_ref,
+                &binding_stable_id,
                 0,
                 consumer_scope,
                 mutation,
@@ -5611,6 +5909,7 @@ async fn network_policy(printer: &Printer, command: &HubNetworkPolicyCmd) -> Res
         HubNetworkPolicyCmd::List {
             access,
             org,
+            include_granted,
             pagination,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
@@ -5622,6 +5921,7 @@ async fn network_policy(printer: &Printer, command: &HubNetworkPolicyCmd) -> Res
                     owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
+                    include_granted: *include_granted,
                 },
             )
             .await
@@ -6115,9 +6415,9 @@ async fn boundary_lifecycle_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyNetworkPolicyLifecycleRequest,
-        Response = hub_types::NetworkPolicyRevisionResponse,
-    > + Copy,
+            Request = hub_types::ApplyNetworkPolicyLifecycleRequest,
+            Response = hub_types::NetworkPolicyRevisionResponse,
+        > + Copy,
 ) -> Result<()> {
     let (boundary_id, revision) =
         parse_generation_ref(boundary_revision, "network policy revision")?;
@@ -6197,6 +6497,7 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
         HubEndpointCmd::List {
             access,
             org,
+            include_granted,
             pagination,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
@@ -6208,6 +6509,7 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                     owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
+                    include_granted: *include_granted,
                 },
             )
             .await
@@ -6732,7 +7034,7 @@ async fn topology_state_mutation<Resp>(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<Request = hub_types::ApplyDeleteTopologyResourceRequest, Response = Resp>
-    + Copy,
+        + Copy,
 ) -> Result<()>
 where
     Resp: DeserializeOwned + Serialize,
@@ -6777,7 +7079,7 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
                 &client,
                 HubTopologyMethod::ListGateways,
                 &hub_types::ListGatewaysRequest {
-                    binding: Some(parse_binding_ref(binding)?),
+                    binding: binding.as_deref().map(parse_binding_ref).transpose()?,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
                 },
@@ -7029,9 +7331,9 @@ async fn gateway_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyGatewayMutationRequest,
-        Response = hub_types::GatewayResponse,
-    > + Copy,
+            Request = hub_types::ApplyGatewayMutationRequest,
+            Response = hub_types::GatewayResponse,
+        > + Copy,
     request: hub_types::PlanGatewayMutationRequest,
     mutation: &HubMutationArgs,
 ) -> Result<()> {
@@ -7699,10 +8001,8 @@ async fn route_mutation(
         Request = hub_types::PlanRouteMutationRequest,
         Response = hub_types::TopologyPlanResponse,
     >,
-    apply_method: impl HubRpc<
-        Request = hub_types::ApplyRouteMutationRequest,
-        Response = hub_types::RouteResponse,
-    > + Copy,
+    apply_method: impl HubRpc<Request = hub_types::ApplyRouteMutationRequest, Response = hub_types::RouteResponse>
+        + Copy,
     request: hub_types::PlanRouteMutationRequest,
     mutation: &HubMutationArgs,
 ) -> Result<()> {
@@ -7886,9 +8186,9 @@ async fn apply_topology_defaults(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplySetTopologyDefaultsRequest,
-        Response = hub_types::TopologyDefaultsResponse,
-    > + Copy,
+            Request = hub_types::ApplySetTopologyDefaultsRequest,
+            Response = hub_types::TopologyDefaultsResponse,
+        > + Copy,
 ) -> Result<()> {
     if let Some(value) = binding {
         defaults.binding_id = value.clone();
@@ -10866,9 +11166,9 @@ async fn apply_signing_key_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyTopologyPlanRequest,
-        Response = hub_types::SigningKeyResponse,
-    > + Copy,
+            Request = hub_types::ApplyTopologyPlanRequest,
+            Response = hub_types::SigningKeyResponse,
+        > + Copy,
 ) -> Result<()> {
     let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
     let mutation = retained_apply_mutation(apply);

@@ -72,7 +72,7 @@ in
             grep -q "^ipi_rr_switch_quantum=$quantum$" "$LIVE_PREEMPTION_SWEEP_RESULT"
           done
           test "$(grep -c '^PASS$' "$LIVE_PREEMPTION_SWEEP_RESULT")" -eq 4
-          test "$(grep -c '^deterministic_under_host_load=true$' "$LIVE_PREEMPTION_SWEEP_RESULT")" -eq 4
+          test "$(grep -c '^deterministic_under_scheduler_preemption=true$' "$LIVE_PREEMPTION_SWEEP_RESULT")" -eq 4
           test "$(grep -c '^sim_double_schedule_matches=true$' "$LIVE_PREEMPTION_SWEEP_RESULT")" -eq 4
 
           mkdir -p "$out"

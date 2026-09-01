@@ -214,8 +214,8 @@ pub struct LivePluginInstallReport {
     /// the guest can only stop exactly at the ceiling if the plugin blocked on
     /// the boot barrier and then honored the scheduler ceiling as time authority.
     pub boot_barrier_ceiling_enforced: bool,
-    /// Execution fingerprint the Rust plugin published at the boundary.
-    pub execution_fingerprint: ExecutionFingerprint,
+    /// Execution fingerprint the Rust plugin published when sampling was enabled.
+    pub execution_fingerprint: Option<ExecutionFingerprint>,
     /// The plugin sent no unsolicited run-phase control frame before `Quit`.
     pub run_control_silent: bool,
     /// The plugin published `Done` after consuming the control `Quit`.
@@ -294,13 +294,15 @@ pub fn run_live_plugin_install_gate(
     // is the sole sim_shmem dispatch authority for virtual-time advancement.
     let vm = vm_launch_config(config);
     let plugin_base = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
+        .with_fault_target_node(GATE_NODE)
         .with_fingerprint(config.fingerprint);
     let (plugin, whitebox_setup_region) = if config.whitebox == crate::QemuLaunchPluginSwitch::On {
         let probe_command = profile
-            .qemu_launch_command(
+            .qemu_launch_command_for_live_gate(
                 vm.clone(),
                 path_text(&config.qemu_executable),
                 plugin_base.clone(),
+                config.architecture,
             )
             .map_err(|source| LivePluginInstallGateError::LaunchCommand { source })?;
         let validation = match config.architecture {
@@ -328,7 +330,12 @@ pub fn run_live_plugin_install_gate(
         (plugin, None)
     };
     let command = profile
-        .qemu_launch_command(vm, path_text(&config.qemu_executable), plugin)
+        .qemu_launch_command_for_live_gate(
+            vm,
+            path_text(&config.qemu_executable),
+            plugin,
+            config.architecture,
+        )
         .map_err(|source| LivePluginInstallGateError::LaunchCommand { source })?;
 
     let region_config = RegionConfig::new(1, GATE_QUEUE_CAPACITY, 0);
@@ -342,9 +349,13 @@ pub fn run_live_plugin_install_gate(
     .map_err(|source| LivePluginInstallGateError::Spawn { source })?;
     let (mut child, resources) = spawned.into_parts();
 
-    let mut setup =
-        complete_qemu_host_plugin_setup(resources.into_setup_resources(), region_config, GATE_SLOT)
-            .map_err(|source| LivePluginInstallGateError::HostSetup { source })?;
+    let mut setup = complete_qemu_host_plugin_setup(
+        resources.into_setup_resources(),
+        region_config,
+        GATE_SLOT,
+        command.fault_capability_requirement(),
+    )
+    .map_err(|source| LivePluginInstallGateError::HostSetup { source })?;
     let handshake = setup.negotiated_handshake();
     let negotiated_proto_version = handshake.proto_version;
     let negotiated_abi_version = handshake.abi_version;
@@ -388,8 +399,14 @@ pub fn run_live_plugin_install_gate(
             actual: completed_icount,
         });
     }
-    let execution_fingerprint = QemuShmemHotPathChannel::execution_fingerprint(&mut hot_path)
-        .map_err(|source| channel_error("read execution fingerprint", source))?;
+    let execution_fingerprint = match config.fingerprint {
+        crate::QemuLaunchPluginSwitch::On => Some(wait_for_execution_fingerprint(
+            &mut hot_path,
+            &mut child,
+            config,
+        )?),
+        crate::QemuLaunchPluginSwitch::Off => None,
+    };
     let causal_decisions = QemuShmemHotPathChannel::drain_causal_decisions(&mut hot_path)
         .map_err(|source| channel_error("drain boundary causal decisions", source))?;
     let app_random_evidence = validate_app_random_decisions(config, causal_decisions)?;

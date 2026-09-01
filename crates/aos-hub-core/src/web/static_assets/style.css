@@ -157,9 +157,23 @@ table {
   margin: 0.6rem 0 1.6rem;
 }
 .table-scroll {
+  width: 100%;
   max-width: 100%;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
+}
+.table-scroll table {
+  width: max-content;
+  min-width: 100%;
+}
+.table-scroll td { max-width: 36rem; }
+.trust-key,
+.cache-url {
+  display: inline-block;
+  max-width: min(28rem, 55vw);
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: break-word;
 }
 .table-scroll:focus-visible {
   outline: 2px solid var(--accent);
@@ -183,10 +197,11 @@ th, td {
    * headings (which the eye otherwise reads as another table line). */
   border-bottom: 1px solid var(--rule-faint);
   vertical-align: top;
-  /* Long unbreakable strings (trust keys, store paths, NAR hashes) must
-   * wrap inside the cell rather than widen the table past the page. */
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  /* Keep identifiers and headings intact. Tables live in bounded horizontal
+   * scroll regions, so narrow viewports do not force words to split in the
+   * middle or allow the page itself to grow wider than its content area. */
+  overflow-wrap: normal;
+  word-break: normal;
 }
 th {
   color: var(--dim);
@@ -199,38 +214,44 @@ th {
 }
 td.num { text-align: right; }
 
-/* Hashes use one bounded identity control everywhere: a distinctive pill for
- * scanning, the complete value in a custom tooltip, and an adjacent copy
- * action. The button appears only after the enhancement bundle confirms that
- * the Clipboard API is available. */
+/* Hashes use one bounded identity control everywhere: a license-pill-sized
+ * identity and an icon-only copy action inside the same outline. The complete
+ * value remains available in a tooltip. */
 .hash-control {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
   max-width: 100%;
+  padding: 0 0.12rem 0 0.45rem;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  color: var(--ink);
+  font-size: 0.8rem;
+  line-height: 1.45;
   white-space: nowrap;
 }
 .hash-value {
   display: inline-flex;
   min-width: 0;
-  padding: 0.08rem 0.48rem;
-  border: 1px solid var(--rule-strong);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--ink) 4%, var(--paper));
   color: var(--ink);
   cursor: help;
   text-decoration: none;
 }
 .hash-value code {
   overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: inherit;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .hash-value:hover,
 .hash-value:focus-visible {
-  border-color: var(--accent);
+  color: var(--accent);
   outline: none;
 }
+.hash-control:hover,
+.hash-control:focus-within { border-color: var(--accent); }
 .hash-tooltip {
   display: none;
   position: fixed;
@@ -249,12 +270,32 @@ td.num { text-align: right; }
 .hash-tooltip.open { display: block; }
 .hash-copy {
   display: none;
-  padding: 0.05rem 0.38rem;
-  border-color: var(--rule-strong);
+  width: 1.35rem;
+  height: 1.35rem;
+  margin-left: 0.18rem;
+  padding: 0.2rem;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
   color: var(--dim);
-  font-size: 0.72rem;
+  line-height: 1;
 }
-.hash-controls-ready .hash-copy { display: inline-block; }
+.hash-controls-ready .hash-copy { display: inline-grid; place-items: center; }
+.hash-copy:hover { color: var(--accent); background: transparent; }
+.hash-copy:focus-visible { border: 0; outline-offset: 0; }
+.hash-copy svg {
+  width: 0.85rem;
+  height: 0.85rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.4;
+}
+.hash-copy-done { display: none; }
+.hash-copy.copied { color: var(--ok); }
+.hash-copy.copied .hash-copy-icon { display: none; }
+.hash-copy.copied .hash-copy-done { display: block; }
 
 /* Bindings — a compact stacked list, not a 4-column table: a long
  * object-store endpoint URL gets the full content width to wrap into rather
@@ -561,7 +602,9 @@ p.chips { margin: 0.2rem 0 0.8rem; }
   margin: 0 0.2rem 0.2rem 0;
   font-size: 0.85rem;
 }
-.license-pill {
+.license-pill,
+.platform-pill,
+.release-count-pill {
   display: inline-block;
   max-width: 16ch;
   overflow: hidden;
@@ -575,11 +618,21 @@ p.chips { margin: 0.2rem 0 0.8rem; }
   vertical-align: middle;
   white-space: nowrap;
 }
-.license-pill:hover {
+.license-pill:hover,
+.platform-pill:hover,
+.release-count-pill:hover {
   border-color: var(--accent);
   color: var(--accent);
   text-decoration: none;
 }
+.release-shortlinks {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  min-width: 0;
+}
+.release-count-pill { max-width: none; }
+.release-count-pill strong { font-variant-numeric: tabular-nums; }
 
 /* Package artifacts use comparable, bounded facts in the summary row and put
  * unbounded paths, hashes, and references on full-width detail rows. */
@@ -644,37 +697,47 @@ p.chips { margin: 0.2rem 0 0.8rem; }
   border-bottom: 0;
   white-space: nowrap;
 }
-.images-table .image-detail th,
-.images-table .image-detail td {
-  padding-block: 0.25rem 0.7rem;
+.images-table .image-detail > th,
+.images-table .image-detail > td {
+  padding-block: 0.35rem 0.75rem;
   border-bottom: 0;
   font-size: 0.84rem;
 }
-.images-table .image-detail th {
+.images-table .image-detail > th {
+  width: 5rem;
   color: var(--dim);
   font-size: 0.75rem;
   white-space: nowrap;
 }
-.image-detail-item {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 0.35rem;
-  margin: 0 1rem 0.3rem 0;
-  white-space: nowrap;
+.table-scroll .image-facts {
+  width: 100%;
+  min-width: 42rem;
+  margin: 0;
+  table-layout: fixed;
 }
-.checksum-item { max-width: 100%; }
-.image-checksum {
-  display: inline-block;
-  max-width: 9.5ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  vertical-align: bottom;
-  white-space: nowrap;
+.image-facts th,
+.image-facts td {
+  padding: 0.35rem 0.65rem 0.35rem 0;
+  border-bottom: 1px solid var(--rule-faint);
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: normal;
 }
-.image-copy {
-  padding: 0.05rem 0.4rem;
-  border-color: var(--rule-strong);
-  font-size: 0.75rem;
+.image-facts tr:last-child > * { border-bottom: 0; }
+.image-facts th {
+  width: 7.5rem;
+  color: var(--dim);
+  font-size: 0.72rem;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.image-facts td { padding-right: 1.25rem; }
+.image-store-path {
+  background: none;
+  border: 0;
+  padding: 0;
+  overflow-wrap: anywhere;
 }
 
 /* Account tokens follow the same stacked-object hierarchy as storage
@@ -712,7 +775,13 @@ p.chips { margin: 0.2rem 0 0.8rem; }
 @media (max-width: 40rem) {
   .artifact-table .artifact-summary td,
   .images-table .image-summary td { white-space: normal; }
-  .image-detail-item { white-space: normal; }
+  .table-scroll .image-facts { min-width: 24rem; }
+  .image-facts tbody { display: block; }
+  .image-facts tr {
+    display: grid;
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+  }
+  .image-facts th { width: auto; }
   .token-head { flex-wrap: wrap; }
   .token-scope { max-width: calc(100% - 6rem); }
 }
@@ -1385,6 +1454,150 @@ label.inline {
 .diff .dl-del { background: color-mix(in srgb, var(--bad) 12%, var(--paper)); }
 .diff .dl-meta { color: var(--dim); }
 .diff-file { margin: 1rem 0 0.2rem; }
+
+.eyebrow, .section-kicker {
+  margin: 0 0 0.35rem;
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.package-section-nav {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  gap: 0.25rem;
+  margin: 1rem 0;
+  padding: 0.45rem;
+  overflow-x: auto;
+  border: 1px solid var(--rule);
+  background: color-mix(in srgb, var(--paper) 94%, transparent);
+  backdrop-filter: blur(0.4rem);
+}
+.package-section-nav a {
+  padding: 0.4rem 0.65rem;
+  border-radius: 0.25rem;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.package-section-nav a:hover,
+.package-section-nav a:focus-visible {
+  background: color-mix(in srgb, var(--accent) 12%, var(--paper));
+}
+.docs-search, .documentation-search {
+  display: grid;
+  grid-template-columns: minmax(16rem, 1fr) minmax(9rem, 0.25fr) auto;
+  gap: 0.7rem;
+  align-items: end;
+  margin: 1rem 0;
+  padding: 0.8rem;
+  border: 1px solid var(--rule);
+}
+.docs-search label, .documentation-search label { display: grid; gap: 0.25rem; }
+.docs-search input, .docs-search select,
+.documentation-search input, .documentation-search select { width: 100%; }
+.docs-results, .documentation-results {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 25rem), 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0;
+  padding: 0;
+}
+.docs-results li { min-width: 0; }
+.docs-results a, .documentation-result {
+  display: grid;
+  gap: 0.35rem;
+  height: 100%;
+  padding: 0.85rem;
+  border: 1px solid var(--rule);
+  background: color-mix(in srgb, var(--ink) 2%, var(--paper));
+  color: var(--ink);
+  text-align: left;
+}
+.documentation-result { width: 100%; font: inherit; cursor: pointer; }
+.docs-results a:hover, .documentation-result:hover,
+.docs-results a:focus-visible, .documentation-result:focus-visible {
+  border-color: var(--accent);
+  text-decoration: none;
+}
+.doc-kind, .documentation-result-kind {
+  width: fit-content;
+  padding: 0.05rem 0.35rem;
+  border: 1px solid var(--rule);
+  color: var(--accent);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.docs-results code, .documentation-result code {
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+.docs-tools, .docs-detail-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.7rem 0;
+  border-block: 1px solid var(--rule);
+}
+.docs-provenance-card, .documentation-identity {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.7rem;
+  margin: 1rem 0;
+  padding: 0.85rem;
+  border: 1px solid var(--rule);
+  background: color-mix(in srgb, var(--ok) 5%, var(--paper));
+}
+.docs-provenance-card > div, .docs-provenance-card details {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+.docs-provenance-card span { color: var(--dim); font-size: 0.75rem; text-transform: uppercase; }
+.docs-provenance-card code, .docs-provenance { overflow-wrap: anywhere; }
+.package-docs { margin: 2rem 0; }
+.package-docs .section-heading { display: flex; align-items: end; justify-content: space-between; gap: 1rem; }
+.package-documentation {
+  margin: 1rem 0;
+  padding: clamp(1rem, 3vw, 1.7rem);
+  border: 1px solid var(--rule);
+  background: color-mix(in srgb, var(--ink) 1.5%, var(--paper));
+}
+.package-documentation > header {
+  padding-bottom: 1rem;
+  border-bottom: 2px solid var(--rule-strong);
+}
+.package-documentation > header h1 { font-size: clamp(1.2rem, 3vw, 1.75rem); }
+.package-documentation section { scroll-margin-top: 1rem; }
+.package-documentation dl { margin: 0; }
+.package-documentation dt {
+  margin-top: 0.9rem;
+  padding: 0.55rem 0.7rem;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--paper));
+  overflow-wrap: anywhere;
+}
+.package-documentation dd { margin: 0; padding: 0.6rem 0.8rem 0.9rem; border-bottom: 1px solid var(--rule-faint); }
+.package-documentation aside {
+  margin: 0.8rem 0;
+  padding: 0.7rem 0.9rem;
+  border-left: 3px solid var(--warn);
+  background: color-mix(in srgb, var(--warn) 7%, var(--paper));
+}
+.package-documentation aside[data-severity="security"] { border-left-color: var(--bad); }
+.package-documentation pre, .docs-offline pre { overflow: auto; }
+.documentation-detail { margin-top: 1.2rem; }
+
+@media (max-width: 48rem) {
+  .docs-search, .documentation-search { grid-template-columns: 1fr; }
+  .package-docs .section-heading { align-items: start; flex-direction: column; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

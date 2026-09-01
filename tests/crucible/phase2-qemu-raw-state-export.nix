@@ -59,6 +59,7 @@ in
       buildDeps = [
         pkgs.coreutils
         pkgs.glib
+        pkgs.glib.dev
         pkgs.grep
         pkgs.jq
         pkgs.pkg-config
@@ -113,7 +114,7 @@ in
                 fclose(result);
               }
               qemu_plugin_outs("crucible raw-state probe failed\n");
-              qemu_plugin_crucible_pause_vm();
+              qemu_plugin_request_shutdown(1);
             }
 
             static uint64_t

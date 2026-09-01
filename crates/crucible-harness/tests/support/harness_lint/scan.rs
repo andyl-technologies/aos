@@ -91,7 +91,7 @@ pub(super) fn scan_content(path: &Path, content: &str) -> Vec<String> {
                 "getrandom",
                 "host-rng",
             ),
-            "HashMap" | "HashSet" => push_finding(
+            "HashMap" | "HashSet" if token_is_hash_container_type(&tokens, index) => push_finding(
                 &mut findings,
                 path,
                 content,
@@ -138,317 +138,12 @@ pub(super) fn custom_static_analysis_failures(path: &Path, content: &str) -> Vec
     findings.extend(default_random_hasher_failures(path, content, &tokens));
     findings.extend(unordered_select_failures(path, content, &tokens));
     findings.extend(bare_unsafe_block_failures(path, content, &tokens));
-    findings.extend(fault_apply_path_failures(path, content));
     findings.extend(distribution_metadata_flow_failures(path, content, &tokens));
     findings.extend(guidance::guidance_ordering_float_failures(
         path, content, &tokens,
     ));
     findings.extend(allow_annotation_failures(path, content));
     filter_cfg_test_findings(content, findings)
-}
-
-const INJECT_ACTIVE_FAULTS_EFFECT: &[TokenNeedle] = &[
-    TokenNeedle::Ident("state"),
-    TokenNeedle::Punct('.'),
-    TokenNeedle::Ident("active_faults"),
-    TokenNeedle::Punct('.'),
-    TokenNeedle::Ident("insert"),
-    TokenNeedle::Punct('('),
-    TokenNeedle::Ident("tag"),
-    TokenNeedle::Punct('.'),
-    TokenNeedle::Ident("clone"),
-    TokenNeedle::Punct('('),
-    TokenNeedle::Punct(')'),
-    TokenNeedle::Punct(','),
-    TokenNeedle::Ident("fault"),
-    TokenNeedle::Punct('.'),
-    TokenNeedle::Ident("clone"),
-    TokenNeedle::Punct('('),
-    TokenNeedle::Punct(')'),
-    TokenNeedle::Punct(')'),
-];
-const HEAL_ACTIVE_FAULTS_EFFECT: &[TokenNeedle] = &[
-    TokenNeedle::Ident("state"),
-    TokenNeedle::Punct('.'),
-    TokenNeedle::Ident("active_faults"),
-    TokenNeedle::Punct('.'),
-    TokenNeedle::Ident("remove"),
-    TokenNeedle::Punct('('),
-    TokenNeedle::Ident("tag"),
-    TokenNeedle::Punct(')'),
-];
-const INJECT_ACTIVE_FAULTS_CALL_OFFSETS: &[usize] = &[4, 8, 14];
-const HEAL_ACTIVE_FAULTS_CALL_OFFSETS: &[usize] = &[4];
-const INJECT_ACTIVE_FAULTS_HELPER_CALL: &[TokenNeedle] = &[
-    TokenNeedle::Ident("activate_fault_tag"),
-    TokenNeedle::Punct('('),
-    TokenNeedle::Ident("state"),
-    TokenNeedle::Punct(','),
-    TokenNeedle::Ident("tag"),
-    TokenNeedle::Punct(','),
-    TokenNeedle::Ident("fault"),
-    TokenNeedle::Punct(')'),
-];
-const HEAL_ACTIVE_FAULTS_HELPER_CALL: &[TokenNeedle] = &[
-    TokenNeedle::Ident("heal_fault_tag"),
-    TokenNeedle::Punct('('),
-    TokenNeedle::Ident("state"),
-    TokenNeedle::Punct(','),
-    TokenNeedle::Ident("tag"),
-    TokenNeedle::Punct(')'),
-];
-const FAULT_HELPER_CALL_OFFSETS: &[usize] = &[0];
-
-const FAULT_APPLY_REQUIRED_PATTERNS: &[FaultApplyRequiredPattern] = &[
-    FaultApplyRequiredPattern {
-        variant: "InjectFault",
-        label: "state.active_faults.insert(tag.clone(), fault.clone())",
-        pattern: INJECT_ACTIVE_FAULTS_EFFECT,
-        call_offsets: INJECT_ACTIVE_FAULTS_CALL_OFFSETS,
-        helper_name: "activate_fault_tag",
-        helper_pattern: INJECT_ACTIVE_FAULTS_HELPER_CALL,
-        helper_call_offsets: FAULT_HELPER_CALL_OFFSETS,
-    },
-    FaultApplyRequiredPattern {
-        variant: "HealFault",
-        label: "state.active_faults.remove(tag)",
-        pattern: HEAL_ACTIVE_FAULTS_EFFECT,
-        call_offsets: HEAL_ACTIVE_FAULTS_CALL_OFFSETS,
-        helper_name: "heal_fault_tag",
-        helper_pattern: HEAL_ACTIVE_FAULTS_HELPER_CALL,
-        helper_call_offsets: FAULT_HELPER_CALL_OFFSETS,
-    },
-];
-
-const FAULT_APPLY_FORBIDDEN_PATTERNS: &[&str] = &[
-    "SystemTime",
-    "Instant",
-    "thread_rng",
-    "rand::rng",
-    "rand::random",
-    "from_entropy",
-    "OsRng",
-    "getrandom",
-    "std::fs",
-    "fs::",
-    "File::",
-    "read_dir",
-    "metadata",
-    "std::thread",
-    "thread::",
-    "spawn",
-    "sleep",
-    "yield_now",
-    "trigger_static_topology",
-    "effective_topology",
-    "topology_changes",
-    "lookahead_graph",
-    "SchedulerLookaheadGraph",
-    "WorldStaticTopology",
-    "with_effective_topology_edges",
-];
-
-#[derive(Clone, Copy)]
-struct FaultApplyRequiredPattern {
-    variant: &'static str,
-    label: &'static str,
-    pattern: &'static [TokenNeedle],
-    call_offsets: &'static [usize],
-    helper_name: &'static str,
-    helper_pattern: &'static [TokenNeedle],
-    helper_call_offsets: &'static [usize],
-}
-
-#[derive(Clone, Copy)]
-enum TokenNeedle {
-    Ident(&'static str),
-    Punct(char),
-}
-
-pub(super) fn fault_apply_path_failures(path: &Path, content: &str) -> Vec<String> {
-    if !content.contains("fn apply_trigger_effect(") {
-        return Vec::new();
-    }
-
-    let mut findings = Vec::new();
-    let scrubbed = scrub_comments_and_strings(content);
-    let tokens = tokenize(&scrubbed);
-    let Some(function_range) = function_token_range(&tokens, "apply_trigger_effect") else {
-        let line = content
-            .find("fn apply_trigger_effect(")
-            .map_or(1, |offset| line_for_offset(content, offset));
-        findings.push(finding(
-            path,
-            line,
-            "unrecognizable fault apply path",
-            "apply_trigger_effect",
-        ));
-        return findings;
-    };
-    let mut helper_requirements = Vec::new();
-
-    for required in FAULT_APPLY_REQUIRED_PATTERNS {
-        let Some(arm_range) =
-            action_arm_body_range(&tokens, function_range.clone(), required.variant)
-        else {
-            findings.push(finding(
-                path,
-                token_range_line(&tokens, &function_range),
-                "unrecognizable fault apply path",
-                &format!("Action::{}", required.variant),
-            ));
-            continue;
-        };
-
-        let mut allowed_call_indices = BTreeSet::new();
-        if let Some(start) = find_token_sequence(&tokens, arm_range.clone(), required.pattern) {
-            allowed_call_indices.extend(
-                required
-                    .call_offsets
-                    .iter()
-                    .map(|offset| start.saturating_add(*offset)),
-            );
-        } else if let Some(start) =
-            find_token_sequence(&tokens, arm_range.clone(), required.helper_pattern)
-        {
-            allowed_call_indices.extend(
-                required
-                    .helper_call_offsets
-                    .iter()
-                    .map(|offset| start.saturating_add(*offset)),
-            );
-            helper_requirements.push(*required);
-        } else {
-            findings.push(finding(
-                path,
-                token_range_line(&tokens, &arm_range),
-                "missing modeled fault-state effect",
-                required.label,
-            ));
-        }
-
-        findings.extend(fault_apply_forbidden_token_failures(
-            path,
-            &tokens,
-            arm_range.clone(),
-        ));
-        findings.extend(fault_apply_direct_effect_failures(
-            path,
-            &tokens,
-            arm_range,
-            &allowed_call_indices,
-        ));
-    }
-
-    for required in helper_requirements {
-        findings.extend(fault_apply_helper_failures(path, &tokens, required));
-    }
-
-    findings
-}
-
-fn function_token_range(tokens: &[Token], name: &str) -> Option<std::ops::Range<usize>> {
-    let fn_index = tokens.windows(2).position(|window| {
-        window[0].kind.as_ident() == Some("fn") && window[1].kind.as_ident() == Some(name)
-    })?;
-    let open_brace = tokens[fn_index + 2..]
-        .iter()
-        .position(|token| matches!(token.kind, TokenKind::Punct('{')))
-        .map(|relative| fn_index + 2 + relative)?;
-    let close_brace = matching_brace(tokens, open_brace)?;
-    Some(open_brace + 1..close_brace)
-}
-
-fn fault_apply_helper_failures(
-    path: &Path,
-    tokens: &[Token],
-    required: FaultApplyRequiredPattern,
-) -> Vec<String> {
-    let mut findings = Vec::new();
-    let Some(helper_range) = function_token_range(tokens, required.helper_name) else {
-        findings.push(finding(
-            path,
-            1,
-            "missing modeled fault-state helper",
-            required.helper_name,
-        ));
-        return findings;
-    };
-
-    if find_token_sequence(tokens, helper_range.clone(), required.pattern).is_none() {
-        findings.push(finding(
-            path,
-            token_range_line(tokens, &helper_range),
-            "missing modeled fault-state effect",
-            required.label,
-        ));
-    }
-    findings.extend(fault_apply_forbidden_token_failures(
-        path,
-        tokens,
-        helper_range,
-    ));
-    findings
-}
-
-fn action_arm_body_range(
-    tokens: &[Token],
-    function_range: std::ops::Range<usize>,
-    variant: &str,
-) -> Option<std::ops::Range<usize>> {
-    let variant_index = find_action_variant(tokens, function_range.clone(), variant)?;
-    let arrow_index = find_match_arrow(tokens, variant_index, function_range.end)?;
-    let body_open = tokens[arrow_index + 2..function_range.end]
-        .iter()
-        .position(|token| matches!(token.kind, TokenKind::Punct('{')))
-        .map(|relative| arrow_index + 2 + relative)?;
-    let body_close = matching_brace(tokens, body_open)?;
-    (body_close <= function_range.end).then_some(body_open + 1..body_close)
-}
-
-fn find_action_variant(
-    tokens: &[Token],
-    range: std::ops::Range<usize>,
-    variant: &str,
-) -> Option<usize> {
-    range.into_iter().find(|index| {
-        tokens.get(*index).and_then(|token| token.kind.as_ident()) == Some("Action")
-            && matches!(
-                (tokens.get(index + 1), tokens.get(index + 2)),
-                (
-                    Some(Token {
-                        kind: TokenKind::Punct(':'),
-                        ..
-                    }),
-                    Some(Token {
-                        kind: TokenKind::Punct(':'),
-                        ..
-                    })
-                )
-            )
-            && tokens
-                .get(index + 3)
-                .and_then(|token| token.kind.as_ident())
-                == Some(variant)
-    })
-}
-
-fn find_match_arrow(tokens: &[Token], start: usize, end: usize) -> Option<usize> {
-    (start..end.saturating_sub(1)).find(|index| {
-        matches!(
-            (tokens.get(*index), tokens.get(index + 1)),
-            (
-                Some(Token {
-                    kind: TokenKind::Punct('='),
-                    ..
-                }),
-                Some(Token {
-                    kind: TokenKind::Punct('>'),
-                    ..
-                })
-            )
-        )
-    })
 }
 
 fn matching_brace(tokens: &[Token], open_brace: usize) -> Option<usize> {
@@ -466,28 +161,6 @@ fn matching_brace(tokens: &[Token], open_brace: usize) -> Option<usize> {
         }
     }
     None
-}
-
-fn find_token_sequence(
-    tokens: &[Token],
-    range: std::ops::Range<usize>,
-    pattern: &[TokenNeedle],
-) -> Option<usize> {
-    range.into_iter().find(|start| {
-        pattern.iter().enumerate().all(|(offset, needle)| {
-            tokens
-                .get(start + offset)
-                .is_some_and(|token| token_matches_needle(token, *needle))
-        })
-    })
-}
-
-fn token_matches_needle(token: &Token, needle: TokenNeedle) -> bool {
-    match (needle, &token.kind) {
-        (TokenNeedle::Ident(expected), TokenKind::Ident(actual)) => actual == expected,
-        (TokenNeedle::Punct(expected), TokenKind::Punct(actual)) => *actual == expected,
-        (TokenNeedle::Ident(_) | TokenNeedle::Punct(_), _) => false,
-    }
 }
 
 pub(super) fn distribution_metadata_flow_failures(
@@ -643,130 +316,6 @@ struct FunctionBodyRange {
     body: std::ops::Range<usize>,
 }
 
-fn fault_apply_forbidden_token_failures(
-    path: &Path,
-    tokens: &[Token],
-    range: std::ops::Range<usize>,
-) -> Vec<String> {
-    let mut findings = Vec::new();
-
-    for index in range {
-        let Some(identifier) = tokens.get(index).and_then(|token| token.kind.as_ident()) else {
-            continue;
-        };
-        let reason_and_pattern = match identifier {
-            "SystemTime" => Some(("host wall-clock", "SystemTime")),
-            "Instant" => Some(("host monotonic time", "Instant")),
-            "thread_rng" => Some(("thread/global RNG", "thread_rng")),
-            "rng" if previous_path_identifier(tokens, index) == Some("rand") => {
-                Some(("thread/global RNG", "rand::rng"))
-            }
-            "random" if previous_path_identifier(tokens, index) == Some("rand") => {
-                Some(("thread/global RNG", "rand::random"))
-            }
-            "from_entropy" => Some(("thread/global RNG", "from_entropy")),
-            "OsRng" => Some(("host RNG", "OsRng")),
-            "getrandom" => Some(("host RNG", "getrandom")),
-            "fs" if previous_path_identifier(tokens, index) == Some("std") => {
-                Some(("host filesystem", "std::fs"))
-            }
-            "fs" if next_is_path_separator(tokens, index) => Some(("host filesystem", "fs::")),
-            "File" if next_is_path_separator(tokens, index) => Some(("host filesystem", "File::")),
-            "read_dir" => Some(("host filesystem", "read_dir")),
-            "metadata" => Some(("host filesystem", "metadata")),
-            "thread" if previous_path_identifier(tokens, index) == Some("std") => {
-                Some(("host thread scheduling", "std::thread"))
-            }
-            "thread" if next_is_path_separator(tokens, index) => {
-                Some(("host thread scheduling", "thread::"))
-            }
-            "spawn" => Some(("host thread scheduling", "spawn")),
-            "sleep" => Some(("host thread scheduling", "sleep")),
-            "yield_now" => Some(("host thread scheduling", "yield_now")),
-            "trigger_static_topology" => Some(("topology mutation", "trigger_static_topology")),
-            "effective_topology" => Some(("topology mutation", "effective_topology")),
-            "topology_changes" => Some(("topology mutation", "topology_changes")),
-            "lookahead_graph" => Some(("topology mutation", "lookahead_graph")),
-            "SchedulerLookaheadGraph" => Some(("topology mutation", "SchedulerLookaheadGraph")),
-            "WorldStaticTopology" => Some(("topology mutation", "WorldStaticTopology")),
-            "with_effective_topology_edges" => {
-                Some(("topology mutation", "with_effective_topology_edges"))
-            }
-            _ => None,
-        };
-
-        if let Some((reason, pattern)) = reason_and_pattern {
-            debug_assert!(FAULT_APPLY_FORBIDDEN_PATTERNS.contains(&pattern));
-            findings.push(finding(path, tokens[index].line, reason, pattern));
-        }
-    }
-
-    findings
-}
-
-fn fault_apply_direct_effect_failures(
-    path: &Path,
-    tokens: &[Token],
-    range: std::ops::Range<usize>,
-    allowed_call_indices: &BTreeSet<usize>,
-) -> Vec<String> {
-    let mut findings = Vec::new();
-
-    for index in range {
-        if matches!(
-            tokens.get(index),
-            Some(Token {
-                kind: TokenKind::Punct('='),
-                ..
-            })
-        ) {
-            findings.push(finding(
-                path,
-                tokens[index].line,
-                "unmodeled fault apply assignment",
-                "=",
-            ));
-            continue;
-        }
-
-        let Some(identifier) = tokens.get(index).and_then(|token| token.kind.as_ident()) else {
-            continue;
-        };
-        if token_starts_call(tokens, index) && !allowed_call_indices.contains(&index) {
-            findings.push(finding(
-                path,
-                tokens[index].line,
-                "unmodeled fault apply call",
-                identifier,
-            ));
-        }
-    }
-
-    findings
-}
-
-fn token_starts_call(tokens: &[Token], index: usize) -> bool {
-    matches!(
-        tokens.get(index + 1),
-        Some(Token {
-            kind: TokenKind::Punct('(' | '!'),
-            ..
-        })
-    )
-}
-
-fn token_range_line(tokens: &[Token], range: &std::ops::Range<usize>) -> usize {
-    tokens.get(range.start).map_or(1, |token| token.line)
-}
-
-fn line_for_offset(content: &str, offset: usize) -> usize {
-    content[..offset]
-        .bytes()
-        .filter(|byte| *byte == b'\n')
-        .count()
-        + 1
-}
-
 pub(super) fn default_random_hasher_failures(
     path: &Path,
     content: &str,
@@ -844,18 +393,56 @@ pub(super) fn token_starts_hash_container_type_annotation(tokens: &[Token], inde
                 TokenKind::Punct(',') | TokenKind::Punct(')') | TokenKind::Punct(';')
             )
         })
-        .any(token_is_hash_container)
+        .enumerate()
+        .any(|(offset, _)| token_is_hash_container_type(tokens, index + 2 + offset))
 }
 
 pub(super) fn statement_contains_hash_container(tokens: &[Token], index: usize) -> bool {
     tokens[index..]
         .iter()
         .take_while(|token| !matches!(token.kind, TokenKind::Punct(';')))
-        .any(token_is_hash_container)
+        .enumerate()
+        .any(|(offset, _)| token_is_hash_container_type(tokens, index + offset))
 }
 
-pub(super) fn token_is_hash_container(token: &Token) -> bool {
-    matches!(token.kind.as_ident(), Some("HashMap" | "HashSet"))
+pub(super) fn token_is_hash_container_type(tokens: &[Token], index: usize) -> bool {
+    if !matches!(
+        tokens.get(index).and_then(|token| token.kind.as_ident()),
+        Some("HashMap" | "HashSet")
+    ) {
+        return false;
+    }
+
+    matches!(
+        tokens.get(index + 1).map(|token| &token.kind),
+        Some(TokenKind::Punct('<'))
+    ) || matches!(
+        (tokens.get(index + 1), tokens.get(index + 2)),
+        (
+            Some(Token {
+                kind: TokenKind::Punct(':'),
+                ..
+            }),
+            Some(Token {
+                kind: TokenKind::Punct(':'),
+                ..
+            })
+        )
+    ) || previous_path_identifier(tokens, index) == Some("collections")
+        || token_is_collections_import_member(tokens, index)
+}
+
+fn token_is_collections_import_member(tokens: &[Token], index: usize) -> bool {
+    tokens[..index]
+        .iter()
+        .rev()
+        .take_while(|token| !matches!(token.kind, TokenKind::Punct(';')))
+        .any(|token| token.kind.as_ident() == Some("collections"))
+        && tokens[..index]
+            .iter()
+            .rev()
+            .take_while(|token| !matches!(token.kind, TokenKind::Punct(';')))
+            .any(|token| token.kind.as_ident() == Some("use"))
 }
 
 pub(super) fn hash_container_iteration_failures(

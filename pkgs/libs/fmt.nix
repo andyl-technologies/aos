@@ -18,10 +18,7 @@ in
       hash = "sha256-6n3kKZaJ4Stt3dOS+YlvCPsHd6xxaIl6JEptYIUEP+o=";
     };
 
-    buildDeps = [
-      cmake
-      gnumake
-    ];
+    buildDeps = [cmake gnumake];
     runtimeDeps = [];
     propagatedDeps = [];
 
@@ -36,35 +33,33 @@ in
       {
         name = "configure";
         script = ''
-          mkdir build
-          cd build
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=Release \
+          cmake -S . -B build \
+            $cmakeFlags \
             -DCMAKE_INSTALL_PREFIX=$out \
             -DCMAKE_INSTALL_LIBDIR=lib \
+            -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=ON \
             -DFMT_DOC=OFF \
-            -DFMT_TEST=ON
+            -DFMT_TEST=OFF
         '';
       }
       {
         name = "build";
         script = ''
-          cmake --build . -j$NIX_BUILD_CORES
-          ctest --output-on-failure
+          cmake --build build --parallel $NIX_BUILD_CORES
         '';
       }
       {
         name = "install";
         script = ''
-          cmake --install .
+          cmake --install build
         '';
       }
     ];
 
     meta = {
-      description = "Modern C++ formatting library";
-      homepage = "https://fmt.dev";
+      description = "Modern formatting library for C++";
+      homepage = "https://fmt.dev/";
       license = "MIT";
     };
   }

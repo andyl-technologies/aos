@@ -1,0 +1,11 @@
+diff --git a/curl/lib/vtls/sectransp.c b/curl/lib/vtls/sectransp.c
+--- a/curl/lib/vtls/sectransp.c
++++ b/curl/lib/vtls/sectransp.c
+@@ -54,6 +54,7 @@
+ #include <Security/SecureTransport.h>
+ #include <CoreFoundation/CoreFoundation.h>
+ #include <CommonCrypto/CommonDigest.h>
++#include <fcntl.h>
+ 
+ /* The Security framework has changed greatly between iOS and different macOS
+    versions, and we will try to support as many of them as we can (back to

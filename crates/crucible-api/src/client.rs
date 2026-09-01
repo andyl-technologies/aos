@@ -5,29 +5,6 @@
 //! session actor path or the HTTP/2 RPC path. The two paths intentionally share
 //! [`ControlWireModel`], which is backed by the frozen RPC ABI message encoder.
 
-use std::collections::{BTreeMap, VecDeque};
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
-
-use bytes::Bytes;
-use crucible::{
-    Action, Checkpoint, Configuration, ContentHash, ControlOperationKind, DebugGdbEndpoint,
-    EventLevel, ExecutionFingerprint, FingerprintSample, NodeId, Predicate, Schedule, Seed,
-    SimDuration, VirtualTime,
-};
-use crucible_session::{
-    BreakpointDisposition, BreakpointFiring, BreakpointId, BreakpointPolicy, DebugClientId,
-    DebugControllerLease, EngineSnapshot, EngineState, LifecycleStateKind, LiveSnapshot,
-    LiveStateKind, Outcome, OutcomeKind, PauseReason, QueryKind, QueryResult,
-    SESSION_EVENT_LOG_BROADCAST_CAPACITY, SavepointInfo, SessionCommand, SessionCommandKind,
-    StepMode,
-};
-use futures_util::StreamExt;
-use futures_util::stream::BoxStream;
-use thiserror::Error;
-use tokio::sync::mpsc;
-
 use crate::event_log_stream::{ControlPlaneEventLog, EventLogCursor};
 use crate::lifecycle::{
     CreateSessionRequest, CreateSessionResponse, CreateSessionSource, DestroySessionRequest,
@@ -52,7 +29,29 @@ use crate::streaming::{
     StreamingCapabilitySet, StreamingCommandCapability, StreamingEventFrame,
     StreamingStateUpdateFrame,
 };
+use bytes::Bytes;
+use crucible::{
+    Action, Checkpoint, Configuration, ContentHash, ControlOperationKind, DebugGdbEndpoint,
+    EventLevel, ExecutionFingerprint, FingerprintSample, NodeId, Predicate, Schedule, Seed,
+    SimDuration, VirtualTime,
+};
+use crucible_session::{
+    BreakpointDisposition, BreakpointFiring, BreakpointId, BreakpointPolicy, DebugClientId,
+    DebugControllerLease, EngineSnapshot, EngineState, LifecycleStateKind, LiveSnapshot,
+    LiveStateKind, Outcome, OutcomeKind, PauseReason, QueryKind, QueryResult,
+    SESSION_EVENT_LOG_BROADCAST_CAPACITY, SavepointInfo, SessionCommand, SessionCommandKind,
+    StepMode,
+};
+use futures_util::StreamExt;
+use futures_util::stream::BoxStream;
+use std::collections::{BTreeMap, VecDeque};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use thiserror::Error;
+use tokio::sync::mpsc;
 
+mod resource_limit;
 const HELLO_RPC_PATH: &str = "/crucible.rpc/hello";
 const LIST_SCENARIOS_RPC_PATH: &str = "/crucible.rpc/list-scenarios";
 const CREATE_SESSION_RPC_PATH: &str = "/crucible.rpc/create-session";
@@ -1625,6 +1624,7 @@ fn query_kind_request_wire(kind: &QueryKind) -> String {
         QueryKind::State => String::from("state"),
         QueryKind::EventLogLength => String::from("event-log-length"),
         QueryKind::SearchFrontier => String::from("search-frontier"),
+        QueryKind::ResolvedEffectTrace => String::from("resolved-effect-trace"),
         QueryKind::ExecutionFingerprint { node } => {
             format!("execution-fingerprint|{}", hex_encode(node.name.as_bytes()))
         }
@@ -1820,6 +1820,7 @@ fn decode_error_response(body: &[u8]) -> Result<ControlClientError, ControlClien
         "scenario-not-found" => decode_scenario_not_found(status, lines),
         "lifecycle-session-not-found" => decode_lifecycle_session_not_found(status, lines),
         "streaming-session-not-found" => decode_streaming_session_not_found(status, lines),
+        "resource-limit" => resource_limit::decode_lifecycle_resource_limit(status, lines),
         reason => decode_generic_rpc_status(status, reason, lines),
     }
 }

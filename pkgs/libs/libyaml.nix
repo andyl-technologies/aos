@@ -30,7 +30,7 @@ in
       {
         name = "configure";
         script = ''
-          ./configure --prefix=$out
+          ./configure $configureFlags --prefix=$out
         '';
       }
       {

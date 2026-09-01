@@ -52,12 +52,36 @@ mkDerivation {
         echo "aos-landlock max ABI: $abi"
 
         mkdir -p /tmp/aos-landlock-allow /tmp/aos-landlock-deny
+        printf original > /tmp/aos-landlock-exact-file
 
         aos-landlock --require-abi 4 \
           --fs-ro / \
           --fs-rw /tmp/aos-landlock-allow \
           -- ${pkgs.coreutils}/bin/touch /tmp/aos-landlock-allow/ok
         test -f /tmp/aos-landlock-allow/ok
+
+        aos-landlock --require-abi 4 \
+          --fs-ro / \
+          --fs-rw /tmp/aos-landlock-exact-file \
+          -- /bin/sh -c 'printf updated > /tmp/aos-landlock-exact-file'
+        test "$(cat /tmp/aos-landlock-exact-file)" = updated
+
+        aos-landlock --require-abi 4 \
+          --fs-ro / \
+          --fs-rw /dev/null \
+          -- /bin/sh -c 'printf quiet > /dev/null'
+
+        aos-landlock --require-abi 4 \
+          --network-unrestricted \
+          --fs-ro / \
+          --fs-rw /dev/null \
+          -- /bin/sh -c 'printf unrestricted > /dev/null'
+
+        if aos-landlock --network-unrestricted --tcp-bind 8080 \
+          -- ${pkgs.coreutils}/bin/true; then
+          echo "FAIL: aos-landlock accepted unrestricted networking with TCP rules" >&2
+          exit 1
+        fi
 
         if aos-landlock --require-abi 4 \
           --fs-ro / \

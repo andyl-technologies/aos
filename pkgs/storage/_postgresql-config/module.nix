@@ -1,0 +1,476 @@
+##! Typed PostgreSQL server configuration owned by the PostgreSQL package.
+##!
+##! The module renders immutable server and host-authentication policy while
+##! keeping bootstrap passwords, TLS private material, and replication
+##! passfiles outside Nix evaluation. The mutable database cluster remains in
+##! the service-owned state directory across package generations.
+{
+  config,
+  lib,
+  ...
+}: let
+  inherit (lib) mkIf mkOption types;
+  cfg = config.postgresql;
+
+  positiveInt = types.addCheck types.int (value: value > 0);
+  nonNegativeInt = types.addCheck types.int (value: value >= 0);
+  nonEmptyLine = types.strMatching "[^\n\r]+";
+  identifier = types.strMatching "[A-Za-z_][A-Za-z0-9_$-]*";
+  address = types.strMatching "[^,'[:space:]]+";
+  memorySize = types.strMatching "[1-9][0-9]*(B|kB|MB|GB|TB)";
+  settingNameRegex = "[a-z][a-z0-9_]*";
+  settingValue = types.either types.bool (types.either types.int (types.strMatching "[^\n\r]*"));
+
+  secretRefType = types.submodule ({name, ...}: {
+    config._module.strict = true;
+    options = {
+      name = mkOption {
+        type = types.strMatching "[A-Za-z0-9_.-]+";
+        default = name;
+        readOnly = true;
+        description = "The systemd credential handle.";
+      };
+      ref = mkOption {
+        type = types.strMatching "(tpm2-credstore|desired-toml|system-credential)(:[A-Za-z0-9_.-]+)?";
+        description = "The opaque credential resolver reference; secret bytes never enter Nix evaluation.";
+      };
+    };
+  });
+
+  endpointType = types.submodule ({...}: {
+    config._module.strict = true;
+    options = {
+      host = mkOption {
+        type = address;
+        description = "Primary PostgreSQL server DNS name or address.";
+      };
+      port = mkOption {
+        type = types.port;
+        default = 5432;
+        description = "Primary PostgreSQL server TCP port.";
+      };
+    };
+  });
+
+  hbaRuleType = types.submodule ({...}: {
+    config._module.strict = true;
+    options = {
+      type = mkOption {
+        type = types.enum ["local" "host" "hostssl" "hostnossl"];
+        default = "host";
+        description = "PostgreSQL host-based authentication record type.";
+      };
+      databases = mkOption {
+        type = types.listOf (types.strMatching "[A-Za-z0-9_.+-]+");
+        default = ["all"];
+        description = "Databases selected by this rule.";
+      };
+      users = mkOption {
+        type = types.listOf (types.strMatching "[A-Za-z0-9_.+-]+");
+        default = ["all"];
+        description = "Database roles selected by this rule.";
+      };
+      address = mkOption {
+        type = types.nullOr (types.strMatching "[^[:space:]]+");
+        default = null;
+        description = "Client CIDR or host name for a non-local rule.";
+      };
+      method = mkOption {
+        type = types.enum ["cert" "md5" "peer" "reject" "scram-sha-256" "trust"];
+        default = "scram-sha-256";
+        description = "Authentication method for matching connections.";
+      };
+    };
+  });
+
+  quote = value: "'${builtins.replaceStrings ["'"] ["''"] value}'";
+  renderSettingValue = value:
+    if builtins.isBool value
+    then
+      if value
+      then "on"
+      else "off"
+    else if builtins.isInt value
+    then toString value
+    else quote value;
+  renderSetting = name: value: "${name} = ${renderSettingValue value}\n";
+  renderHbaRule = rule:
+    lib.concatStringsSep " " (
+      [
+        rule.type
+        (lib.concatStringsSep "," rule.databases)
+        (lib.concatStringsSep "," rule.users)
+      ]
+      ++ lib.optional (rule.type != "local") (
+        if rule.address == null
+        then ""
+        else rule.address
+      )
+      ++ [rule.method]
+    );
+
+  tlsCredentialPath = name: "/run/credentials/postgresql.service/${name}";
+  primary =
+    if cfg.replication.primary == null
+    then {
+      host = "invalid-primary";
+      port = 5432;
+    }
+    else cfg.replication.primary;
+  primaryConnInfo = lib.concatStringsSep " " [
+    "host=${primary.host}"
+    "port=${toString primary.port}"
+    "user=${cfg.replication.user}"
+    "application_name=${cfg.replication.applicationName}"
+    "passfile=${tlsCredentialPath "replication-passfile"}"
+  ];
+  coreSettingNames = [
+    "cluster_name"
+    "config_file"
+    "data_directory"
+    "hba_file"
+    "hot_standby"
+    "listen_addresses"
+    "logging_collector"
+    "maintenance_work_mem"
+    "max_connections"
+    "max_replication_slots"
+    "max_wal_senders"
+    "port"
+    "primary_conninfo"
+    "primary_slot_name"
+    "shared_buffers"
+    "ssl"
+    "ssl_ca_file"
+    "ssl_cert_file"
+    "ssl_key_file"
+    "ssl_min_protocol_version"
+    "unix_socket_directories"
+    "wal_level"
+    "work_mem"
+  ];
+  conflictingSettings = builtins.filter (name: builtins.elem name coreSettingNames) (builtins.attrNames cfg.settings);
+
+  serverConfig = ''
+    # Generated by the PostgreSQL AOS package configuration module. Do not edit.
+    data_directory = '/var/lib/aos-pkg-postgresql/data'
+    hba_file = '/etc/postgresql/pg_hba.conf'
+    listen_addresses = ${quote (lib.concatStringsSep "," cfg.listen.addresses)}
+    port = ${toString cfg.listen.port}
+    unix_socket_directories = '/run/postgresql'
+    cluster_name = ${quote cfg.clusterName}
+
+    max_connections = ${toString cfg.resources.maxConnections}
+    shared_buffers = ${quote cfg.resources.sharedBuffers}
+    work_mem = ${quote cfg.resources.workMem}
+    maintenance_work_mem = ${quote cfg.resources.maintenanceWorkMem}
+
+    wal_level = ${cfg.replication.walLevel}
+    max_wal_senders = ${toString cfg.replication.maxWalSenders}
+    max_replication_slots = ${toString cfg.replication.maxReplicationSlots}
+    hot_standby = ${
+      if cfg.replication.hotStandby
+      then "on"
+      else "off"
+    }
+    ${lib.optionalString (cfg.topology == "standby") "primary_conninfo = ${quote primaryConnInfo}"}
+    ${lib.optionalString (cfg.topology == "standby" && cfg.replication.slot != null) "primary_slot_name = ${quote cfg.replication.slot}"}
+
+    ssl = ${
+      if cfg.tls.enable
+      then "on"
+      else "off"
+    }
+    ${lib.optionalString cfg.tls.enable "ssl_cert_file = ${quote (tlsCredentialPath "tls-certificate")}"}
+    ${lib.optionalString cfg.tls.enable "ssl_key_file = ${quote (tlsCredentialPath "tls-private-key")}"}
+    ${lib.optionalString (cfg.tls.enable && cfg.tls.ca != null) "ssl_ca_file = ${quote (tlsCredentialPath "tls-ca")}"}
+    ssl_min_protocol_version = ${quote cfg.tls.minimumProtocol}
+
+    logging_collector = off
+    log_destination = 'stderr'
+    ${lib.concatStringsSep "" (lib.mapAttrsToList renderSetting cfg.settings)}
+  '';
+
+  hbaConfig = ''
+    # Generated by the PostgreSQL AOS package configuration module. Do not edit.
+    ${lib.concatStringsSep "\n" (builtins.map renderHbaRule cfg.authentication.rules)}
+  '';
+in {
+  options.postgresql = {
+    enable = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Enable the PostgreSQL database server.";
+    };
+
+    clusterName = mkOption {
+      type = nonEmptyLine;
+      default = "aos";
+      description = "Cluster name included in process titles and logs.";
+    };
+
+    topology = mkOption {
+      type = types.enum ["standalone" "primary" "standby"];
+      default = "standalone";
+      description = "The database server's replication role.";
+    };
+
+    listen = {
+      addresses = mkOption {
+        type = types.listOf address;
+        default = ["127.0.0.1" "::1"];
+        description = "TCP addresses on which PostgreSQL accepts connections.";
+      };
+      port = mkOption {
+        type = types.port;
+        default = 5432;
+        description = "TCP port on which PostgreSQL accepts connections.";
+      };
+    };
+
+    bootstrap = {
+      superuser = mkOption {
+        type = identifier;
+        default = "postgres";
+        description = "Database superuser created when an empty cluster is initialized.";
+      };
+      password = mkOption {
+        type = types.nullOr secretRefType;
+        default = null;
+        description = "Opaque reference to the initial superuser password.";
+      };
+    };
+
+    authentication.rules = mkOption {
+      type = types.listOf hbaRuleType;
+      default = [
+        {
+          type = "local";
+          method = "peer";
+        }
+        {
+          address = "127.0.0.1/32";
+          method = "scram-sha-256";
+        }
+        {
+          address = "::1/128";
+          method = "scram-sha-256";
+        }
+      ];
+      description = "Ordered pg_hba.conf authentication rules.";
+    };
+
+    resources = {
+      maxConnections = mkOption {
+        type = positiveInt;
+        default = 100;
+        description = "Maximum concurrent client connections.";
+      };
+      sharedBuffers = mkOption {
+        type = memorySize;
+        default = "128MB";
+        description = "Memory dedicated to PostgreSQL shared buffers.";
+      };
+      workMem = mkOption {
+        type = memorySize;
+        default = "4MB";
+        description = "Memory available to each query operation before spilling.";
+      };
+      maintenanceWorkMem = mkOption {
+        type = memorySize;
+        default = "64MB";
+        description = "Memory available to maintenance operations.";
+      };
+    };
+
+    replication = {
+      walLevel = mkOption {
+        type = types.enum ["minimal" "replica" "logical"];
+        default = "replica";
+        description = "Write-ahead log detail retained for recovery and replication.";
+      };
+      maxWalSenders = mkOption {
+        type = nonNegativeInt;
+        default = 10;
+        description = "Maximum concurrent WAL sender processes.";
+      };
+      maxReplicationSlots = mkOption {
+        type = nonNegativeInt;
+        default = 10;
+        description = "Maximum replication slots retained by this server.";
+      };
+      hotStandby = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Allow read-only queries while the server is in recovery.";
+      };
+      primary = mkOption {
+        type = types.nullOr endpointType;
+        default = null;
+        description = "Primary endpoint used by a standby.";
+      };
+      user = mkOption {
+        type = identifier;
+        default = "replicator";
+        description = "Database role used by a standby connection.";
+      };
+      applicationName = mkOption {
+        type = identifier;
+        default = "aos-standby";
+        description = "Standby application name reported to the primary.";
+      };
+      slot = mkOption {
+        type = types.nullOr identifier;
+        default = null;
+        description = "Optional physical replication slot consumed by the standby.";
+      };
+      passfile = mkOption {
+        type = types.nullOr secretRefType;
+        default = null;
+        description = "Opaque reference to a libpq passfile used by a standby.";
+      };
+    };
+
+    tls = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Enable TLS for TCP connections.";
+      };
+      certificate = mkOption {
+        type = types.nullOr secretRefType;
+        default = null;
+        description = "Opaque reference to the PEM server certificate.";
+      };
+      privateKey = mkOption {
+        type = types.nullOr secretRefType;
+        default = null;
+        description = "Opaque reference to the PEM server private key.";
+      };
+      ca = mkOption {
+        type = types.nullOr secretRefType;
+        default = null;
+        description = "Optional opaque reference to the client-certificate CA bundle.";
+      };
+      minimumProtocol = mkOption {
+        type = types.enum ["TLSv1.2" "TLSv1.3"];
+        default = "TLSv1.2";
+        description = "Minimum accepted TLS protocol version.";
+      };
+    };
+
+    settings = mkOption {
+      type = types.attrsOf settingValue;
+      default = {};
+      description = "Additional non-secret PostgreSQL settings not owned by a dedicated option.";
+    };
+
+    renderedConfig = mkOption {
+      type = types.lines;
+      internal = true;
+      readOnly = true;
+      description = "Rendered postgresql.conf content.";
+    };
+  };
+
+  config = {
+    assertions = [
+      {
+        assertion = !cfg.enable || cfg.topology == "standby" || cfg.bootstrap.password != null;
+        message = "postgresql.bootstrap.password must reference a credential when a primary cluster is enabled";
+      }
+      {
+        assertion = cfg.listen.addresses != [] && builtins.length cfg.listen.addresses == builtins.length (lib.unique cfg.listen.addresses);
+        message = "postgresql.listen.addresses must be non-empty and contain no duplicates";
+      }
+      {
+        assertion = builtins.all (rule: (rule.type == "local") == (rule.address == null)) cfg.authentication.rules;
+        message = "local PostgreSQL authentication rules must omit address; host rules must set address";
+      }
+      {
+        assertion = builtins.all (rule: rule.databases != [] && rule.users != []) cfg.authentication.rules;
+        message = "PostgreSQL authentication rules require at least one database and user";
+      }
+      {
+        assertion = cfg.topology != "standby" || cfg.replication.primary != null;
+        message = "PostgreSQL standby topology requires replication.primary";
+      }
+      {
+        assertion = cfg.topology != "standby" || cfg.replication.passfile != null;
+        message = "PostgreSQL standby topology requires an opaque replication.passfile credential reference";
+      }
+      {
+        assertion = cfg.topology == "standalone" || (cfg.replication.walLevel != "minimal" && cfg.replication.maxWalSenders > 0);
+        message = "PostgreSQL primary and standby topology require replica/logical WAL and at least one WAL sender";
+      }
+      {
+        assertion = !cfg.tls.enable || (cfg.tls.certificate != null && cfg.tls.privateKey != null);
+        message = "TLS-enabled PostgreSQL requires certificate and privateKey credential references";
+      }
+      {
+        assertion = builtins.all (rule: rule.method != "cert" || (rule.type == "hostssl" && cfg.tls.enable && cfg.tls.ca != null)) cfg.authentication.rules;
+        message = "PostgreSQL cert authentication requires a hostssl rule, TLS, and a CA credential reference";
+      }
+      {
+        assertion = conflictingSettings == [];
+        message = "postgresql.settings must not override dedicated settings: ${lib.concatStringsSep ", " conflictingSettings}";
+      }
+      {
+        assertion = builtins.all (name: builtins.match settingNameRegex name != null) (builtins.attrNames cfg.settings);
+        message = "postgresql.settings names must use lowercase PostgreSQL parameter syntax";
+      }
+    ];
+
+    postgresql = {
+      renderedConfig = serverConfig;
+      config.service =
+        {
+          POSTGRESQL_ENABLED =
+            if cfg.enable
+            then "true"
+            else "false";
+          POSTGRESQL_STANDBY =
+            if cfg.topology == "standby"
+            then "true"
+            else "false";
+          POSTGRESQL_SUPERUSER = cfg.bootstrap.superuser;
+          POSTGRESQL_CONFIG_GENERATION = builtins.hashString "sha256" (serverConfig + hbaConfig);
+        }
+        // lib.optionalAttrs (cfg.topology == "standby") {
+          POSTGRESQL_PRIMARY_HOST = primary.host;
+          POSTGRESQL_PRIMARY_PORT = primary.port;
+          POSTGRESQL_REPLICATION_USER = cfg.replication.user;
+        }
+        // lib.optionalAttrs (cfg.topology == "standby" && cfg.replication.slot != null) {
+          POSTGRESQL_REPLICATION_SLOT = cfg.replication.slot;
+        };
+      credentials =
+        lib.optionalAttrs (cfg.bootstrap.password != null) {
+          "bootstrap-superuser-password" = cfg.bootstrap.password;
+        }
+        // lib.optionalAttrs (cfg.replication.passfile != null) {
+          "replication-passfile" = cfg.replication.passfile;
+        }
+        // lib.optionalAttrs (cfg.tls.certificate != null) {
+          "tls-certificate" = cfg.tls.certificate;
+        }
+        // lib.optionalAttrs (cfg.tls.privateKey != null) {
+          "tls-private-key" = cfg.tls.privateKey;
+        }
+        // lib.optionalAttrs (cfg.tls.ca != null) {
+          "tls-ca" = cfg.tls.ca;
+        };
+    };
+
+    environment.etc = {
+      "postgresql/postgresql.conf" = {
+        text = serverConfig;
+        mode = "0444";
+      };
+      "postgresql/pg_hba.conf" = {
+        text = hbaConfig;
+        mode = "0444";
+      };
+    };
+  };
+}

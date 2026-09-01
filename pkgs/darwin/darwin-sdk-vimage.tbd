@@ -1,0 +1,15 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ x86_64-macos, arm64-macos ]
+install-name: '/System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vImage.framework/Versions/A/vImage'
+current-version: 204.5.0
+compatibility-version: 1.0.0
+reexported-libraries:
+  - targets: [ x86_64-macos, arm64-macos ]
+    libraries: [ '/usr/lib/libSystem.B.dylib' ]
+exports:
+  - targets: [ x86_64-macos, arm64-macos ]
+    symbols:
+      - _vImageBufferFill_ARGB8888
+      - _vImageLookupTable_Planar8toPlanarF
+...

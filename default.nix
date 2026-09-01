@@ -32,7 +32,9 @@
 }: let
   lib = import ./lib {
     inherit system;
-    bash = stdenv.bash;
+    # Every Nix builder executes on buildPlatform, including during a cross
+    # build. Never select a target bash as the derivation builder.
+    bash = buildStdenv.bash;
   };
   buildPlatform = lib.platform;
   hostPlatform =
@@ -40,14 +42,51 @@
     then lib.mkPlatform crossSystem
     else buildPlatform;
 
-  # Self-contained stdenv: hex0 bootstrap → toolchain ladder → production stdenv.
-  stdenv = import ./stdenv {
-    inherit buildPlatform hostPlatform;
-    targetPlatform = hostPlatform;
+  # The native stdenv and package set provide tools that execute on the build
+  # machine. A cross stdenv uses those tools while producing hostPlatform
+  # outputs; Darwin selects its dedicated Linux-hosted cross environment below.
+  buildStdenv = import ./stdenv {
+    inherit buildPlatform;
+    hostPlatform = buildPlatform;
+    targetPlatform = buildPlatform;
   };
 
-  # All packages are built hermetically from source using only stdenv.
-  pkgs = import ./pkgs {inherit lib stdenv;};
+  buildPackages =
+    if crossSystem == null
+    then pkgs
+    else
+      import ./pkgs {
+        inherit lib;
+        stdenv = buildStdenv;
+      };
+
+  stdenv =
+    if crossSystem == null
+    then buildStdenv
+    else if hostPlatform.isDarwin
+    then
+      import ./stdenv/darwin-cross.nix {
+        inherit
+          lib
+          buildStdenv
+          buildPackages
+          buildPlatform
+          hostPlatform
+          ;
+        targetPlatform = hostPlatform;
+      }
+    else
+      import ./stdenv {
+        inherit buildPlatform hostPlatform;
+        targetPlatform = hostPlatform;
+      };
+
+  # Host packages produce artifacts for hostPlatform. Package definitions use
+  # pkgs.buildPackages for generators, compilers, and other executable build
+  # dependencies, and ordinary package arguments for host libraries.
+  pkgs = import ./pkgs {
+    inherit lib stdenv buildPackages;
+  };
 
   # Auto-discovered module list.
   modules = import ./modules;
@@ -89,6 +128,12 @@
       if builtins.isAttrs args && args ? operatorModules
       then args.operatorModules
       else [];
+    # Generation-pinned supplemental modules are a distinct resolver lane:
+    # equal operator priority, separately attributable runtime provenance.
+    runtimeModules =
+      if builtins.isAttrs args && args ? runtimeModules
+      then args.runtimeModules
+      else [];
     packageModules =
       if builtins.isAttrs args && args ? packageModules
       then args.packageModules
@@ -111,7 +156,7 @@
               };
             }
           ];
-        inherit pkgs lib specialArgs operatorModules packageModules;
+        inherit pkgs lib specialArgs operatorModules runtimeModules packageModules;
       })
       .config
       .aos
@@ -134,7 +179,7 @@
             };
           }
         ];
-      inherit pkgs lib specialArgs operatorModules packageModules;
+      inherit pkgs lib specialArgs operatorModules runtimeModules packageModules;
     };
 
   # Auto-discover system definitions from ./systems/*.nix
@@ -358,7 +403,7 @@
       specModule = import (./tests/fleet + "/${filename}");
       availableArgs = {
         inherit lib pkgs mkSystem;
-        inherit (testing) dataUrl;
+        inherit (testing) dataUrl mkDarlingFleetSpec mkDarlingFleetSuite;
         systems = discoverSystems;
       };
       raw = specModule (
@@ -1056,7 +1101,7 @@
       referenceIntegrity = crucibleReferenceIntegrity;
     };
 in {
-  inherit lib pkgs stdenv modules mkSystem packagesWithExpose containerImages containerDefinitions;
+  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose containerImages containerDefinitions;
 
   # Auto-discovered golden image systems.
   # Each system has .config, .options, .build, and .checks.
@@ -1091,6 +1136,7 @@ in {
         config-provenance
         config-materialize
         config-parity
+        darling-harness
       ];
       phases = [
         {
@@ -1104,21 +1150,39 @@ in {
     };
     build = let
       critical-pkgs = import ./tests/build/critical-pkgs.nix {inherit pkgs lib;};
+      cross-platform-foundation = import ./tests/build/cross-platform-foundation.nix {
+        pkgs = buildPackages;
+      };
+      darwin-cross-smoke = import ./tests/build/darwin-cross-smoke.nix {
+        pkgs = buildPackages;
+      };
+      darwin-language-toolchains = import ./tests/build/darwin-language-toolchains.nix {
+        pkgs = buildPackages;
+      };
+      darwin-interpreters = import ./tests/build/darwin-interpreters.nix {
+        pkgs = buildPackages;
+      };
+      darwin-package-matrix = import ./tests/build/darwin-package-matrix.nix {
+        pkgs = buildPackages;
+      };
       gcc-config-shell = import ./tests/build/mk-gcc-config-shell.nix {inherit pkgs lib;};
       hardening-probe = import ./tests/build/hardening-probe.nix {inherit pkgs lib;};
       kernel-config = import ./tests/build/kernel-config.nix {inherit pkgs lib;};
+      package-platform-support = import ./tests/build/package-platform-support.nix {
+        pkgs = buildPackages;
+      };
       package-root-image = import ./lib/testing/package-root-image.nix {inherit pkgs lib;};
       systemd-verity = import ./lib/testing/systemd-verity.nix {inherit pkgs lib;};
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
     in {
-      inherit critical-pkgs gcc-config-shell hardening-probe kernel-config package-root-image systemd-verity golden-image-budgets;
+      inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix gcc-config-shell hardening-probe kernel-config package-platform-support package-root-image systemd-verity golden-image-budgets;
       # Single target that pulls in the whole build-check group.
       all = pkgs.mkDerivation {
         pname = "aos-build-checks-all";
         version = "0";
         src = null;
         buildDeps =
-          [critical-pkgs gcc-config-shell kernel-config package-root-image systemd-verity]
+          [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all gcc-config-shell kernel-config package-platform-support package-root-image systemd-verity]
           ++ builtins.attrValues hardening-probe
           ++ builtins.attrValues golden-image-budgets;
         phases = [
@@ -1136,6 +1200,10 @@ in {
     trivial-builders = import ./lib/testing/trivial-builders.nix {inherit pkgs lib;};
     module-args = import ./lib/testing/module-args.nix {inherit pkgs lib;};
     module-enforcement = import ./lib/testing/module-enforcement.nix {inherit pkgs lib;};
+    package-documentation = import ./lib/testing/package-documentation.nix {
+      inherit pkgs lib;
+      system = serverSystem;
+    };
     # Off-host config-eval preflight and flat-to-module parity gates.
     # (operability.md). Pure eval-time, next to checks.eval, cheap on every PR.
     config-eval = import ./lib/testing/config-eval.nix {inherit pkgs lib;};
@@ -1147,6 +1215,18 @@ in {
       inherit pkgs mkSystem;
       serverModule = ./systems/server.nix;
     };
+    nginx-config = import ./lib/testing/nginx-config.nix {
+      inherit pkgs lib mkSystem;
+      serverModule = ./systems/server.nix;
+    };
+    registry-hub = import ./lib/testing/registry-hub.nix {
+      inherit pkgs lib mkSystem;
+      serverModule = ./systems/server.nix;
+    };
+    aos-registry-server-config = import ./lib/testing/aos-registry-server-config.nix {
+      inherit pkgs lib;
+    };
+    k3s-config = import ./lib/testing/k3s-config.nix {inherit pkgs lib;};
     config-source-gc = import ./lib/testing/config-source-gc.nix {inherit pkgs lib;};
     container = {
       phase0 = import ./tests/containers/phase0.nix {
@@ -1210,7 +1290,25 @@ in {
           eval
           module-args
           module-enforcement
+          package-documentation
           package-expose
+          aos-registry-server-config
+          registry-hub
+          nginx-config
+          k3s-config
+          integration.envoy-config-module-contract
+          integration.cloudcore-config
+          integration.conntrack-tools-config
+          integration.containerd-config-module-contract
+          integration.edgecore-config
+          integration.etcd-config-module-contract
+          integration.garage-config-module-contract
+          integration.krb5-config
+          integration.mariadb-config-module-contract
+          integration.openldap-config
+          integration.postgresql-expose-contract
+          integration.postgresql-module-contract
+          integration.rsync-config
           config-source-gc
           config-provenance
           system-structure
@@ -1230,6 +1328,7 @@ in {
         }
       ];
     };
+    darling-harness = import ./lib/testing/darling-check.nix {inherit pkgs lib;};
     fleet-spec = import ./lib/testing/fleet-spec-check.nix {inherit pkgs lib;};
     systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
     systemd-generate = import ./lib/testing/systemd-generate.nix {inherit pkgs lib;};
@@ -1297,17 +1396,24 @@ in {
         "config-image-generation-axes"
         "config-secret-reference"
         "install-from-image"
+        "k3s-combined-worker"
+        "k3s-control-plane-worker"
+        "kubelet-runtime-config"
         "measured-boot"
         "on-host-config-eval"
         "package-attestation-quote"
         "provisioning-boot"
         "runtime-config-role"
+        "runtime-module-composition"
         "system-image-rollback"
       ];
       runtimeConfigFleet = builtins.map (name: base.${name}) runtimeConfigNames;
     in
       base
       // {
+        # Keep the first Darling gate stable for callers while the canonical
+        # suite expands runtime coverage. Both attrs point to one KVM build.
+        darling-darwin-c-smoke = base.darling-x86-runtime-smoke;
         runtime-config-all = pkgs.mkDerivation {
           pname = "runtime-config-fleet-all";
           version = "0";

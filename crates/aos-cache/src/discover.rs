@@ -68,6 +68,10 @@ pub fn discover_fods(nix: &NixCli, drv_path: &str) -> Result<Vec<FixedOutputDrv>
 ///    otherwise treated as a bare package name and instantiated as
 ///    `pkgs.<name>` (the AOS convention) from `file`.
 ///
+/// When `target` is present, file/attribute instantiation receives it as the
+/// top-level `crossSystem` string argument. Raw expressions cannot be paired
+/// with `target` because the expression owns its import arguments.
+///
 /// # Errors
 ///
 /// Returns an error if instantiation fails, or if none of `expr`, `attr`,
@@ -78,15 +82,24 @@ pub fn resolve_to_drv(
     attr: Option<&str>,
     expr: Option<&str>,
     installable: Option<&str>,
+    target: Option<&str>,
 ) -> Result<String> {
     if let Some(expr) = expr {
+        if target.is_some() {
+            anyhow::bail!(
+                "--target cannot be combined with --expr; pass crossSystem in the expression"
+            );
+        }
         let drv = nix.instantiate_expr(expr)?;
         return Ok(drv.to_string_lossy().to_string());
     }
 
     if let Some(attr) = attr {
         let file = file.unwrap_or_else(|| Path::new("./default.nix"));
-        let drv = nix.instantiate(file, attr)?;
+        let drv = match target {
+            Some(target) => nix.instantiate_for_target(file, attr, target)?,
+            None => nix.instantiate(file, attr)?,
+        };
         return Ok(drv.to_string_lossy().to_string());
     }
 
@@ -99,7 +112,10 @@ pub fn resolve_to_drv(
         // Bare name -> pkgs.<name> (AOS convention)
         let attr = format!("pkgs.{installable}");
         let file = file.unwrap_or_else(|| Path::new("./default.nix"));
-        let drv = nix.instantiate(file, &attr)?;
+        let drv = match target {
+            Some(target) => nix.instantiate_for_target(file, &attr, target)?,
+            None => nix.instantiate(file, &attr)?,
+        };
         return Ok(drv.to_string_lossy().to_string());
     }
 

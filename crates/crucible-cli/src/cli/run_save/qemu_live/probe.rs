@@ -36,11 +36,14 @@ impl LiveQemuProbeRunner for ProductionLiveQemuProbeRunner {
             }
         };
         let report = run_live_qemu_backend_probe(backend)?;
+        let execution_fingerprint = report.execution_fingerprint.ok_or_else(|| {
+            backend_error("live QEMU probe did not publish an execution fingerprint")
+        })?;
         Ok(LiveQemuProbeEvidence {
             qemu_build_id: qemu_build_id.clone(),
             plugin_abi: plugin_abi.clone(),
             completed_icount: report.completed_icount,
-            execution_fingerprint: format_content_hash_ref(report.execution_fingerprint.hash),
+            execution_fingerprint: format_content_hash_ref(execution_fingerprint.hash),
         })
     }
 }
@@ -192,6 +195,12 @@ fn escape_debug_plan_field(value: &str) -> String {
 pub(crate) fn run_live_qemu_backend_probe(
     backend: &ResolvedLocalBackend,
 ) -> Result<production_api::ProductionPluginInstallReport, CliError> {
+    if !cfg!(target_os = "linux") {
+        return Err(backend_error(
+            "live local QEMU/plugin execution requires a Linux host",
+        ));
+    }
+
     let (qemu, plugin) = match backend {
         ResolvedLocalBackend::Qemu { qemu, plugin, .. } => (qemu, plugin),
         #[cfg(any(test, feature = "test-double"))]

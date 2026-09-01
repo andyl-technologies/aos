@@ -136,10 +136,18 @@ considered one of NixOS's weaker subsystems (machined coupling,
 restart-on-switch semantics, networking friction); much of that ecosystem moved
 to podman-systemd (quadlet) or per-unit hardening. The landing (Decision 17):
 **per-unit sandboxing as the default materialization, nspawn skipped** until
-a package genuinely needs an init tree. The simple **default** "package root" is a
-**store path consumed via `RootDirectory=`** — no image build, no loop
-device, no udev ordering — and stays the default for early-boot and minimal
-packages. The signed-verity **`RootImage=` path is now IN SCOPE**: the
+a package genuinely needs an init tree. The default confined non-verity root is
+a **per-service volatile overlay under `/run`**, with the authenticated package
+store path as its immutable lower layer. The host-side
+`aos-pkg-<package>-service-roots.service` preparation unit invokes
+`aos-service-root prepare` to create
+`/run/aos/service-roots/<package>/<unit>/{upper,work,merged}` and completes
+before the workload; `RootDirectory=` names the merged path. The trusted helper
+is bounded to `CAP_DAC_OVERRIDE`, `CAP_MKNOD`, and `CAP_SYS_ADMIN`, the minimal
+set required for OverlayFS's private work directory, whiteouts, and mount. This needs no
+image build, loop device, or udev ordering and prevents systemd mount-point
+preparation from writing into the store. The signed-verity **`RootImage=` path
+is now IN SCOPE**: the
 cost-based deferral is **lifted by the unlimited-engineering-budget mandate**,
 and verity-signed package roots are a **built deliverable**, not future work.
 A `RootImage=` carries `RootHash=`/`RootVerity=`/`RootHashSignature=` validated
@@ -226,8 +234,10 @@ Two PID1 strategies, chosen per package:
 Image **format is ext4**, not EROFS, for package roots. The generated service
 consumes it directly from the image store path with `RootImage=`,
 `RootVerity=`, `RootHash=`, `RootHashSignature=`, and
-`RootImagePolicy=root=signed`. Plain store-path roots can also be consumed with
-`RootDirectory=`.
+`RootImagePolicy=root=signed`. Confined services without a verity image instead
+use the per-service volatile overlay described above. The immutable store
+payload remains its lower layer and its authenticated identity; systemd never
+receives the store path itself as `RootDirectory=`.
 
 Where the image lives: in a signed package image store path referenced by
 `expose.images[]`. `apm install` and upgrade carry those image roots into the
@@ -382,8 +392,13 @@ second service manager.
 
 ## Immutable root and writable state
 
-`RootImage=` and `RootDirectory=` make the package root immutable for the
-running service. Runtime writes must be explicit: tmpfs scratch paths through
+`RootImage=` makes the image root immutable. For a non-verity service,
+`RootDirectory=` selects a volatile per-service overlay whose lower layer is
+the immutable authenticated payload; systemd-created mount points land only in
+the overlay upper. The generated package roots preparation unit is ordered
+before every affected workload and uses distinct `upper`, `work`, and `merged`
+directories below `/run/aos/service-roots/<package>/<unit>`. Runtime writes by
+the workload must still be explicit: tmpfs scratch paths through
 `TemporaryFileSystem=`/`RuntimeDirectory=`, persistent state through
 `StateDirectory=` or declared host-path grants. A package upgrade is therefore
 "new package root + restart", not in-place mutation. k3s binds most real state
@@ -631,8 +646,9 @@ Nothing here weakens the target sandbox ([activation.md](activation.md)):
 
 ## Conditional future nspawn work
 
-Decision 17 resolves the current substrate: per-unit `RootImage=` /
-`RootDirectory=` sandboxing is the default and nspawn is skipped. If a future
+Decision 17 resolves the current substrate: per-unit `RootImage=` or volatile
+overlay-backed `RootDirectory=` sandboxing is the default and nspawn is
+skipped. If a future
 multi-unit-init package reopens nspawn, the work is conditional and should start
 from these items:
 

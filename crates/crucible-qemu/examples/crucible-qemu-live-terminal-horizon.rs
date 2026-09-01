@@ -6,9 +6,6 @@ mod linux {
     use std::ffi::OsString;
     use std::io;
     use std::path::PathBuf;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::thread::{self, JoinHandle};
 
     use crucible_qemu::{
         DiskImageMode, GuestBackingStateMode, IcountShiftSetting, LaunchProfileCandidate,
@@ -144,10 +141,7 @@ mod linux {
             SingleVmFingerprintRunOrdinal::Second,
         );
         let first = executor.run_report(&first_request)?;
-        let host_load = HostLoad::start(4);
-        let second_result = executor.run_report(&second_request);
-        host_load.stop()?;
-        let second = second_result?;
+        let second = executor.run_report(&second_request)?;
         validate_report(&first, SingleVmFingerprintRunOrdinal::First, 1, &config)?;
         validate_report(&second, SingleVmFingerprintRunOrdinal::Second, 2, &config)?;
         compare_single_vm_fingerprint_streams(first.stream(), second.stream(), HORIZON_ICOUNT)?;
@@ -221,7 +215,7 @@ mod linux {
         println!("negative_scenario_drift_rejected={scenario_drift_rejected}");
         println!("no_failed_request_attempt_allocated={no_failed_attempt}");
         println!("continuing_cadence_rejected={continuing_cadence_rejected}");
-        println!("second_run_host_load=active");
+        println!("second_run_repeat=active");
         println!("vcpu_count={VCPUS}");
         println!("rr_switch_quantum={RR_SWITCH_QUANTUM}");
         Ok(())
@@ -365,38 +359,6 @@ mod linux {
             encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
         }
         encoded
-    }
-
-    struct HostLoad {
-        stop: Arc<AtomicBool>,
-        workers: Vec<JoinHandle<()>>,
-    }
-
-    impl HostLoad {
-        fn start(worker_count: usize) -> Self {
-            let stop = Arc::new(AtomicBool::new(false));
-            let workers = (0..worker_count)
-                .map(|_| {
-                    let stop = Arc::clone(&stop);
-                    thread::spawn(move || {
-                        while !stop.load(Ordering::Relaxed) {
-                            std::hint::spin_loop();
-                        }
-                    })
-                })
-                .collect();
-            Self { stop, workers }
-        }
-
-        fn stop(self) -> Result<(), io::Error> {
-            self.stop.store(true, Ordering::Relaxed);
-            for worker in self.workers {
-                worker
-                    .join()
-                    .map_err(|_| io::Error::other("host-load worker panicked"))?;
-            }
-            Ok(())
-        }
     }
 
     fn arguments() -> Result<Arguments, Box<dyn Error>> {

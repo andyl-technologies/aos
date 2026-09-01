@@ -14,6 +14,7 @@ members = [
     "aos-cache",
     "aos-remote",
     "aos-doc",
+    "aos-doc-model",
     "aos-package",
     "aos-hub-console-contract",
     "aos-hub-core",
@@ -49,7 +50,8 @@ license = "Apache-2.0"
 # Shared dependencies
 anyhow = "1"
 thiserror = "2"
-serde = { version = "1", features = ["derive"] }
+miette = { version = "7", features = ["fancy"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 # `application/x-www-form-urlencoded` (de)serialization — the same decoder
 # axum 0.8's `Form` extractor uses, so hand-routing a form body to a shared
@@ -204,6 +206,7 @@ aos-server = { path = "aos-server" }
 aos-cache = { path = "aos-cache" }
 aos-remote = { path = "aos-remote" }
 aos-doc = { path = "aos-doc" }
+aos-doc-model = { path = "aos-doc-model" }
 aos-package = { path = "aos-package" }
 aos-hub-console-contract = { path = "aos-hub-console-contract" }
 aos-hub-core = { path = "aos-hub-core" }

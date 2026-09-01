@@ -5,11 +5,7 @@
   taskIds ? ["T-QEMU-6"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   realizationLib = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
@@ -187,8 +183,8 @@
         needle = "qemu_instantiate_loads_baked_genesis_for_genesis_without_cold_boot";
       }
       {
-        label = "loadvm disabled fallback test";
-        needle = "qemu_exact_snapshot_loadvm_is_skipped_while_fallback_policy_disables_branch";
+        label = "default exact snapshot test";
+        needle = "qemu_exact_snapshot_loadvm_is_the_default_complete_realization_path";
       }
       {
         label = "loadvm admitted branch test";
@@ -330,7 +326,7 @@ in
             related_gates=gate:replay-oracle,gate:content-address
             rust_test=crucible-qemu::realization::tests
             instantiate_branches=exact-snapshot-loadvm,ancestor-replay,baked-genesis-load
-            loadvm_runtime_policy=disabled-until-full-s3
+            loadvm_runtime_policy=enabled-with-replay-oracle-admission
             cold_boot_entrypoint=bake-only
             lifecycle_ops=start-resume-fork-share-instantiate
             RESULT

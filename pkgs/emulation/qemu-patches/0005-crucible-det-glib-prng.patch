@@ -1,4 +1,5 @@
 diff --git a/util/guest-random.c b/util/guest-random.c
+index 33607d5ff..cd440b5fc 100644
 --- a/util/guest-random.c
 +++ b/util/guest-random.c
 @@ -19,7 +19,10 @@

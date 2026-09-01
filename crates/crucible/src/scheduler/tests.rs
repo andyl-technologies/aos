@@ -1,8 +1,15 @@
 //! Scheduler unit tests separated from the production quantum-loop implementation.
 
 use super::*;
-use crate::{BackendEffect, MockSimulationBackend, RngDecision, ScenarioDef};
+use crate::model::{BindingSearchChoice, SearchChoiceId, SearchOverride};
+use crate::{
+    BackendEffect, BackendNetworkFaultContinuation, MockSimulationBackend, RngDecision, ScenarioDef,
+};
 
+#[path = "tests/network_checkpoint.rs"]
+mod network_checkpoint;
+#[path = "tests/ordering.rs"]
+mod ordering;
 #[path = "tests/production_backend.rs"]
 mod production_backend;
 
@@ -176,6 +183,292 @@ fn backend_quantum_loop_applies_resolved_preemption_before_run() {
 }
 
 #[test]
+fn pending_network_boundary_release_settles_before_a_far_quantum() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    struct FarLoop;
+
+    impl QuantumLoop for FarLoop {
+        fn drive_quantum(
+            &mut self,
+            request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            Ok(QuantumOutcome {
+                configuration: request.configuration,
+                frontier: VirtualTime { ticks: 10_000 },
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: Vec::new(),
+                event_log_entries: Vec::new(),
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
+                event_log_segment_hash: None,
+                event_log_offset: EventLogOffset::default(),
+                scheduler_quiescence: None,
+            })
+        }
+
+        fn backend_network_output_time(
+            &self,
+            _node: &NodeId,
+            _at: Icount,
+        ) -> Result<VirtualTime, SchedulerError> {
+            Ok(VirtualTime { ticks: 0 })
+        }
+    }
+
+    struct RecordingInterceptor(Rc<Cell<Option<u64>>>);
+
+    impl BackendNetworkOutputInterceptor<FarLoop, MockSimulationBackend> for RecordingInterceptor {
+        fn intercept_network_outputs(
+            &mut self,
+            _loop_impl: &mut FarLoop,
+            _backend: &mut MockSimulationBackend,
+            frontier: VirtualTime,
+            _pending_outputs: &mut Vec<BackendNetworkOutput>,
+            outputs: &mut Vec<BackendNetworkOutput>,
+        ) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError> {
+            self.0.set(Some(frontier.ticks));
+            outputs.clear();
+            Ok(Vec::new())
+        }
+    }
+
+    let observed = Rc::new(Cell::new(None));
+    let mut adapter = BackendQuantumLoop::with_network_output_interceptor(
+        FarLoop,
+        MockSimulationBackend::default(),
+        RecordingInterceptor(Rc::clone(&observed)),
+    );
+    let opportunity = ContentHash::from_bytes(b"boundary-release");
+    let mut output = BackendNetworkOutput {
+        source: NodeId {
+            name: String::from("source"),
+        },
+        destination: NodeId {
+            name: String::from("destination"),
+        },
+        emit_icount: Icount { retired: 0 },
+        sequence: 1,
+        payload: vec![1],
+        route: None,
+        fault_continuation: BackendNetworkFaultContinuation::default(),
+    };
+    output
+        .fault_continuation
+        .cursor_mut()
+        .defer_until(10_000, opportunity);
+    output
+        .fault_continuation
+        .cursor_mut()
+        .reschedule_queue_until(opportunity, 0)
+        .unwrap_or_else(|error| panic!("release pending frame: {error}"));
+    adapter.network_transaction_parts_mut().3.push(output);
+    assert_eq!(adapter.pending_network_output_count(), 1);
+
+    let settlement = adapter
+        .settle_pending_network_outputs_at_current_frontier()
+        .unwrap_or_else(|error| panic!("settle boundary frame: {error}"));
+    let (decisions, configuration, appends) = settlement.into_parts();
+    assert!(decisions.is_empty());
+    assert!(configuration.is_none());
+    assert!(appends.is_empty());
+    assert_eq!(observed.get(), Some(0));
+    assert!(adapter.network_transaction_parts_mut().3.is_empty());
+    assert_eq!(adapter.pending_network_output_count(), 0);
+}
+
+#[test]
+fn equal_boundary_custody_releases_settle_in_priority_order() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    struct BoundaryLoop;
+
+    impl QuantumLoop for BoundaryLoop {
+        fn drive_quantum(
+            &mut self,
+            request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            Ok(QuantumOutcome {
+                configuration: request.configuration,
+                frontier: VirtualTime { ticks: 0 },
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: Vec::new(),
+                event_log_entries: Vec::new(),
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
+                event_log_segment_hash: None,
+                event_log_offset: EventLogOffset::default(),
+                scheduler_quiescence: None,
+            })
+        }
+
+        fn backend_network_output_time(
+            &self,
+            _node: &NodeId,
+            _at: Icount,
+        ) -> Result<VirtualTime, SchedulerError> {
+            Ok(VirtualTime { ticks: 0 })
+        }
+    }
+
+    struct SequenceInterceptor(Rc<RefCell<Vec<u64>>>);
+
+    impl BackendNetworkOutputInterceptor<BoundaryLoop, MockSimulationBackend> for SequenceInterceptor {
+        fn intercept_network_outputs(
+            &mut self,
+            _loop_impl: &mut BoundaryLoop,
+            _backend: &mut MockSimulationBackend,
+            _frontier: VirtualTime,
+            _pending_outputs: &mut Vec<BackendNetworkOutput>,
+            outputs: &mut Vec<BackendNetworkOutput>,
+        ) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError> {
+            self.0
+                .borrow_mut()
+                .extend(outputs.iter().map(|output| output.sequence));
+            outputs.clear();
+            Ok(Vec::new())
+        }
+    }
+
+    let observed = Rc::new(RefCell::new(Vec::new()));
+    let mut adapter = BackendQuantumLoop::with_network_output_interceptor(
+        BoundaryLoop,
+        MockSimulationBackend::default(),
+        SequenceInterceptor(Rc::clone(&observed)),
+    );
+    for (sequence, priority) in [(1_u64, 3_u8), (2_u64, 0_u8)] {
+        let opportunity = ContentHash::from_bytes(&sequence.to_be_bytes());
+        let mut output = BackendNetworkOutput {
+            source: NodeId {
+                name: String::from("source"),
+            },
+            destination: NodeId {
+                name: String::from("destination"),
+            },
+            emit_icount: Icount { retired: 0 },
+            sequence,
+            payload: vec![u8::try_from(sequence).unwrap_or(0)],
+            route: None,
+            fault_continuation: BackendNetworkFaultContinuation::default(),
+        };
+        output
+            .fault_continuation
+            .cursor_mut()
+            .defer_repeated_effect_until(
+                0,
+                opportunity,
+                crate::model::EffectKind::NetworkCustodyQueue,
+                Some(priority),
+            );
+        adapter.network_transaction_parts_mut().3.push(output);
+    }
+    adapter
+        .network_transaction_parts_mut()
+        .3
+        .push(BackendNetworkOutput {
+            source: NodeId {
+                name: String::from("source"),
+            },
+            destination: NodeId {
+                name: String::from("destination"),
+            },
+            emit_icount: Icount { retired: 0 },
+            sequence: 3,
+            payload: vec![3],
+            route: None,
+            fault_continuation: BackendNetworkFaultContinuation::default(),
+        });
+
+    adapter
+        .settle_pending_network_outputs_at_current_frontier()
+        .unwrap_or_else(|error| panic!("settle prioritized custody frames: {error}"));
+    assert_eq!(&*observed.borrow(), &[2, 3, 1]);
+}
+
+#[test]
+fn failed_exact_boundary_network_append_poison_preserves_pending_frame() {
+    struct RejectingLoop;
+
+    impl QuantumLoop for RejectingLoop {
+        fn drive_quantum(
+            &mut self,
+            _request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            Err(SchedulerError::BoundaryViolation {
+                message: String::from("drive must not follow poison"),
+            })
+        }
+
+        fn backend_network_output_time(
+            &self,
+            _node: &NodeId,
+            _at: Icount,
+        ) -> Result<VirtualTime, SchedulerError> {
+            Ok(VirtualTime { ticks: 0 })
+        }
+    }
+
+    let mut adapter = BackendQuantumLoop::with_network_output_interceptor(
+        RejectingLoop,
+        MockSimulationBackend::default(),
+        NoopBackendNetworkOutputInterceptor,
+    );
+    let opportunity = ContentHash::from_bytes(b"failed-boundary-release");
+    let mut output = BackendNetworkOutput {
+        source: NodeId {
+            name: String::from("source"),
+        },
+        destination: NodeId {
+            name: String::from("destination"),
+        },
+        emit_icount: Icount { retired: 0 },
+        sequence: 9,
+        payload: vec![9],
+        route: None,
+        fault_continuation: BackendNetworkFaultContinuation::default(),
+    };
+    output
+        .fault_continuation
+        .cursor_mut()
+        .defer_until(100, opportunity);
+    output
+        .fault_continuation
+        .cursor_mut()
+        .reschedule_queue_until(opportunity, 0)
+        .unwrap_or_else(|error| panic!("release failed-append frame: {error}"));
+    adapter
+        .network_transaction_parts_mut()
+        .3
+        .push(output.clone());
+
+    assert!(
+        adapter
+            .settle_pending_network_outputs_at_current_frontier()
+            .is_err()
+    );
+    assert_eq!(adapter.network_transaction_parts_mut().3, &[output]);
+    let config = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.scheduler.poisoned-network-settlement",
+        "scenario=poisoned-network-settlement",
+    ));
+    let error = adapter
+        .drive_quantum(QuantumRequest {
+            configuration: config,
+            control: Vec::new(),
+        })
+        .expect_err("poisoned settlement must reject all later drive attempts");
+    assert!(
+        error
+            .to_string()
+            .contains("network settlement continuation is poisoned")
+    );
+}
+
+#[test]
 fn event_log_append_rejects_class_catalog_mismatch() {
     let mut entry = scheduler_event_log_entry(
         0,
@@ -271,31 +564,6 @@ fn event_log_segment_binary_round_trips_to_same_bytes() {
     assert_eq!(decoded.encode(), bytes);
     assert_eq!(decoded.text_view(), segment.text_view());
     assert!(decoded.text_view().contains("entry.payload.kind=rng_draw"));
-}
-
-#[test]
-fn scheduled_event_keys_define_total_order() {
-    let vm_a = scheduler_node("a", SchedulingNodeKind::Vm);
-    let vm_b = scheduler_node("b", SchedulingNodeKind::Vm);
-    let disk_a = scheduler_node("a", SchedulingNodeKind::Disk);
-    let mut keys = [
-        event_key(2, &vm_b, &vm_a, 0),
-        event_key(1, &vm_b, &disk_a, 1),
-        event_key(1, &vm_a, &disk_a, 2),
-        event_key(1, &vm_a, &disk_a, 1),
-    ];
-
-    keys.sort();
-
-    assert_eq!(
-        keys,
-        [
-            event_key(1, &vm_a, &disk_a, 1),
-            event_key(1, &vm_a, &disk_a, 2),
-            event_key(1, &vm_b, &disk_a, 1),
-            event_key(2, &vm_b, &vm_a, 0),
-        ]
-    );
 }
 
 #[test]
@@ -798,13 +1066,9 @@ fn scheduler_quiescence_fast_forwards_idle_pending_delivery_without_deadlock() {
 }
 
 #[test]
-fn scheduler_quiescence_blocks_future_io_and_fault_events() {
+fn scheduler_quiescence_blocks_future_io_events() {
     let consumer = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let disk = scheduler_node("node-a", SchedulingNodeKind::Disk);
-    let control_plane = scheduler_node("plan", SchedulingNodeKind::ControlPlane);
-    let fault = FaultId {
-        name: String::from("planned-fault"),
-    };
     let scheduler = test_scheduler(
         vec![test_scenario_node(
             "node-a",
@@ -815,7 +1079,7 @@ fn scheduler_quiescence_blocks_future_io_and_fault_events() {
         )],
         vec![
             io_completion_event(5, &consumer, &disk, 1, b"io"),
-            fault_event(9, &consumer, &control_plane, 2, fault),
+            io_completion_event(9, &consumer, &disk, 2, b"later-io"),
         ],
     );
 
@@ -835,7 +1099,7 @@ fn scheduler_quiescence_blocks_future_io_and_fault_events() {
         quiescence
             .blockers
             .contains(&SchedulerQuiescenceBlocker::PendingEvent {
-                key: event_key(9, &consumer, &control_plane, 2),
+                key: event_key(9, &consumer, &disk, 2),
             })
     );
     assert!(
@@ -902,39 +1166,6 @@ fn scheduler_quiescence_ignores_idle_nodes_when_peer_can_advance() {
         ]
     );
     assert_eq!(outcome.advanced_node, Some(runner));
-}
-
-#[test]
-fn search_frontier_choices_from_scheduled_events_captures_probabilistic_fault_branches() {
-    let configuration = Configuration::genesis(ScenarioDef::from_canonical_material(
-        "crucible.test.scheduler.search-frontier",
-        "scenario=probabilistic-fault",
-    ));
-    let consumer = scheduler_node("vm-a", SchedulingNodeKind::Vm);
-    let producer = scheduler_node("control", SchedulingNodeKind::ControlPlane);
-    let fault = FaultId {
-        name: String::from("packet-loss"),
-    };
-    let event = probabilistic_fault_event(13, &consumer, &producer, 0, fault.clone());
-
-    let choices = search_frontier_choices_from_scheduled_events(configuration, &[event]);
-    let outcomes = choices
-        .decisions()
-        .iter()
-        .map(|decision| match decision {
-            Decision::FaultFires(fired) if fired.fault == fault => fired.fired,
-            other => panic!("unexpected search frontier decision: {other:?}"),
-        })
-        .collect::<BTreeSet<_>>();
-
-    assert_eq!(choices.decisions().len(), 2);
-    assert!(choices.choices().iter().all(|choice| {
-        matches!(
-            choice.decisions(),
-            [Decision::RngDraw(_), Decision::FaultFires(_)]
-        )
-    }));
-    assert_eq!(outcomes, BTreeSet::from([false, true]));
 }
 
 #[test]
@@ -1058,6 +1289,225 @@ fn test_scheduler(
     .unwrap_or_else(|error| panic!("test scheduler should build: {error}"))
 }
 
+#[test]
+fn signal_fault_frontier_preserves_parent_time_and_typed_candidates() {
+    let mut scheduler = test_scheduler(Vec::new(), Vec::new());
+    let parent = scheduler.configuration().clone();
+    let choice = BindingSearchChoice {
+        id: SearchChoiceId::from_content_hash(ContentHash::from_bytes(b"binding-choice")),
+        candidates_digest: ContentHash::from_bytes(b"binding-candidates"),
+        candidate_count: 2,
+        selected_index: None,
+        overridden: false,
+    };
+
+    scheduler
+        .record_signal_fault_search_frontiers(
+            &parent,
+            VirtualTime { ticks: 37 },
+            std::slice::from_ref(&choice),
+        )
+        .unwrap_or_else(|error| panic!("typed fault frontier should record: {error}"));
+    let frontier = scheduler
+        .search_frontiers()
+        .last()
+        .unwrap_or_else(|| panic!("typed fault frontier should exist"));
+    assert_eq!(frontier.configuration, parent);
+    assert_eq!(frontier.at, VirtualTime { ticks: 37 });
+    assert_eq!(frontier.choices.decisions().len(), 2);
+    for (index, decision) in frontier.choices.decisions().iter().enumerate() {
+        let Decision::Override(decision) = decision else {
+            panic!("fault search candidate must remain an override decision");
+        };
+        let (id, search_override) = SearchOverride::from_override_decision(decision)
+            .unwrap_or_else(|| panic!("fault search candidate should decode"));
+        assert_eq!(id, choice.id);
+        assert_eq!(search_override.candidate_index, index as u32);
+        assert_eq!(search_override.parent_branch, Some(parent.id()));
+    }
+
+    let wrong_parent = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.signal-search-test.v1",
+        "wrong-parent",
+    ));
+    assert!(
+        scheduler
+            .record_signal_fault_search_frontiers(
+                &wrong_parent,
+                VirtualTime { ticks: 37 },
+                &[choice],
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn single_scheduler_checkpoint_round_trips_complete_device_and_event_state() {
+    let node = test_scenario_node(
+        "a",
+        11,
+        SchedulerNodeActivity::Runnable,
+        NetworkLookahead::Infinite,
+        ExactLocalEvent::NoArmedTimer,
+    );
+    let consumer = node.id.clone();
+    let producer = scheduler_node("peer", SchedulingNodeKind::Vm);
+    let pending = event(17, &consumer, &producer, 0, b"pending-input");
+    let mut scheduler = test_scheduler(vec![node.clone()], vec![pending.clone()]);
+    scheduler = scheduler.with_device_sub_node(disk_with_reads("a", "disk-a", &[(11, 8)]));
+    let checkpoint = scheduler
+        .checkpoint()
+        .unwrap_or_else(|error| panic!("scheduler checkpoint should capture: {error}"));
+    let bytes = checkpoint
+        .canonical_bytes()
+        .unwrap_or_else(|error| panic!("scheduler checkpoint should encode: {error}"));
+    let decoded = SingleSchedulerCheckpoint::from_canonical_bytes(&bytes)
+        .unwrap_or_else(|error| panic!("scheduler checkpoint should decode: {error}"));
+
+    let mut restored = test_scheduler(vec![node], vec![pending]);
+    restored = restored.with_device_sub_node(disk_with_reads("a", "disk-a", &[]));
+    decoded
+        .restore_into(&mut restored)
+        .unwrap_or_else(|error| panic!("scheduler checkpoint should restore: {error}"));
+
+    assert_eq!(
+        restored
+            .checkpoint()
+            .and_then(|checkpoint| checkpoint.canonical_bytes())
+            .unwrap_or_else(|error| panic!("restored scheduler should encode: {error}")),
+        bytes
+    );
+}
+
+#[test]
+fn network_transition_drop_clears_inflight_and_authenticates_frames() {
+    let source = NodeId {
+        name: String::from("a"),
+    };
+    let destination = NodeId {
+        name: String::from("b"),
+    };
+    let mut scheduler = test_scheduler(
+        vec![
+            test_scenario_node(
+                "a",
+                0,
+                SchedulerNodeActivity::Runnable,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::NoArmedTimer,
+            ),
+            test_scenario_node(
+                "b",
+                0,
+                SchedulerNodeActivity::Runnable,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::NoArmedTimer,
+            ),
+        ],
+        Vec::new(),
+    );
+    let link_id = scheduler_link_id_for_nodes(&source, &destination);
+    let direction = NetworkLinkDirection::EndpointAToEndpointB;
+    let mut link = crucible_device::NetLink::new(0, 0, 10, 1, crucible_device::LinkFaults::none())
+        .unwrap_or_else(|error| panic!("test link should build: {error}"));
+    link.emit(
+        &crucible_device::Frame::new(0, 7, vec![1, 2, 3]),
+        &crucible_device::FrameDraws::default(),
+        crucible_device::PastDeliveryPolicy::FailLoud,
+    )
+    .unwrap_or_else(|error| panic!("test frame should enter flight: {error}"));
+    scheduler.world_network_links.insert(
+        (link_id.clone(), direction),
+        WorldNetworkLinkRuntime {
+            canonical_id: link_id.clone(),
+            endpoint_a: source.clone(),
+            endpoint_b: destination.clone(),
+            direction,
+            scheduler_node: scheduler_node("link-a-b", SchedulingNodeKind::Network),
+            rng_stream: RngStreamId::for_link(link_id.name.clone()),
+            fault_id: crate::DeviceId::from_name("link-a-b"),
+            link,
+        },
+    );
+    scheduler
+        .world_network_rng_positions
+        .insert(link_id.clone(), 19);
+    scheduler
+        .refresh_device_horizons()
+        .unwrap_or_else(|error| panic!("network horizon should refresh: {error}"));
+    assert_eq!(
+        scheduler.world_network_links[&(link_id.clone(), direction)]
+            .link
+            .inflight_len(),
+        1
+    );
+    let before_digest = scheduler
+        .network_continuation_digest()
+        .unwrap_or_else(|error| panic!("network state should encode: {error}"));
+    let checkpoint = scheduler.network_checkpoint();
+    let checkpoint_bytes = checkpoint
+        .canonical_bytes()
+        .unwrap_or_else(|error| panic!("network checkpoint should encode: {error}"));
+    let checkpoint = SchedulerNetworkCheckpoint::from_canonical_bytes(&checkpoint_bytes)
+        .unwrap_or_else(|error| panic!("network checkpoint should decode: {error}"));
+    assert_eq!(
+        checkpoint
+            .canonical_bytes()
+            .unwrap_or_else(|error| panic!("decoded checkpoint should encode: {error}")),
+        checkpoint_bytes
+    );
+    let mut trailing = checkpoint_bytes;
+    trailing.push(0);
+    assert_eq!(
+        SchedulerNetworkCheckpoint::from_canonical_bytes(&trailing),
+        Err(SchedulerNetworkCheckpointCodecError::Noncanonical)
+    );
+
+    let first = scheduler
+        .drop_network_inflight_for_route(&source, &destination)
+        .unwrap_or_else(|error| panic!("network transition should drop the frame: {error}"));
+    let second = scheduler
+        .drop_network_inflight_for_route(&source, &destination)
+        .unwrap_or_else(|error| panic!("repeated transition should be idempotent: {error}"));
+
+    assert_eq!(first.link, link_id);
+    assert_eq!(first.direction, direction);
+    assert_eq!(first.frame_count, 1);
+    assert_eq!(first.frames.len(), 1);
+    assert_eq!(first.frames[0].frame_id, 7);
+    assert_eq!(first.frames[0].payload, vec![1, 2, 3]);
+    assert_ne!(first.evidence, second.evidence);
+    assert_eq!(second.frame_count, 0);
+    assert_eq!(
+        scheduler.world_network_links[&(first.link, direction)]
+            .link
+            .inflight_len(),
+        0
+    );
+    assert!(!scheduler.device_horizons.contains_key(&destination));
+    assert_ne!(
+        before_digest,
+        scheduler
+            .network_continuation_digest()
+            .unwrap_or_else(|error| panic!("dropped network state should encode: {error}"))
+    );
+    scheduler
+        .restore_network_checkpoint(&checkpoint)
+        .unwrap_or_else(|error| panic!("network checkpoint should restore: {error}"));
+    assert_eq!(
+        scheduler
+            .network_continuation_digest()
+            .unwrap_or_else(|error| panic!("restored network state should encode: {error}")),
+        before_digest
+    );
+    assert_eq!(
+        scheduler.world_network_links[&(link_id, direction)]
+            .link
+            .inflight_len(),
+        1
+    );
+}
+
 fn test_scenario_node(
     name: &str,
     counter: u64,
@@ -1090,37 +1540,6 @@ fn io_completion_event(
                 retired: virtual_time,
             },
             payload: payload.to_vec(),
-        }),
-    }
-}
-
-fn fault_event(
-    virtual_time: u64,
-    consumer: &SchedulerNodeId,
-    producer: &SchedulerNodeId,
-    sequence: u64,
-    fault: FaultId,
-) -> ScheduledEvent {
-    ScheduledEvent {
-        key: event_key(virtual_time, consumer, producer, sequence),
-        payload: ScheduledEventPayload::FaultActivation(fault),
-    }
-}
-
-fn probabilistic_fault_event(
-    virtual_time: u64,
-    consumer: &SchedulerNodeId,
-    producer: &SchedulerNodeId,
-    sequence: u64,
-    fault: FaultId,
-) -> ScheduledEvent {
-    ScheduledEvent {
-        key: event_key(virtual_time, consumer, producer, sequence),
-        payload: ScheduledEventPayload::ProbabilisticFault(SchedulerResolveFaultChoice {
-            fault,
-            stream: RngStreamId::from_name("test-probabilistic-fault"),
-            rate: FaultRateBasisPoints::from_basis_points(5_000)
-                .unwrap_or_else(|error| panic!("test rate should be valid: {error}")),
         }),
     }
 }

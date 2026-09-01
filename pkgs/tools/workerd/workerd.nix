@@ -1,18 +1,16 @@
-##! workerd — Cloudflare's Workers runtime, wrapped as an AOS binary seed.
+##! workerd — Cloudflare's Workers runtime.
 ##!
 ##! `workerd` is the open-source server runtime that powers Cloudflare Workers
 ##! and miniflare's local execution. miniflare spawns it to actually run a
 ##! Worker, so the RFC-0004 `checks.vm.worker` test needs a workerd that runs
 ##! under AOS glibc inside the Firecracker VM.
 ##!
-##! ## THIS IS A BINARY SEED (host-built blob, wrapped for AOS)
+##! ## Linux bootstrap and Darwin source builds
 ##!
-##! Building workerd from source requires Cloudflare's full Bazel +
-##! `just`/`edgeworker` build, V8, Cap'n Proto, and a large native-code graph.
-##! That from-source build (via AOS Bazel) is the real target and a follow-on
-##! task — this package is the bootstrap that unblocks the worker VM test in the
-##! meantime, mirroring how AOS seeds other prebuilt bootstrap binaries
-##! (go-bootstrap, bazel-bootstrap, mrustc-seeded rustc).
+##! Linux retains the verified binary seed used by the worker VM. Darwin cannot
+##! execute or distribute that Linux ELF, so cross package sets publish the
+##! matching `workerd-source` build instead. That build uses AOS Bazel and the
+##! Darwin SDK to compile the full V8/Cap'n Proto/BoringSSL/ICU/Rust graph.
 ##!
 ##! ## How the seed is wrapped (no patchelf in AOS)
 ##!
@@ -49,8 +47,11 @@
   fetchurl,
   glibc,
   bash,
+  stdenv,
+  workerd-source,
 }: let
   version = "1.20240909.0";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 
   # The upstream npm platform tarball for linux-x64. Contents:
   #   package/bin/workerd   (the prebuilt ELF)
@@ -63,83 +64,112 @@
     hash = "sha256-C4lSFXS/1M1FhYDgkdoQ83TESUnRL0CM203Qmb1jvpo=";
   };
 in
-  mkDerivation {
-    pname = "workerd";
-    inherit version;
+  if isDarwinCross
+  then
+    mkDerivation {
+      pname = "workerd";
+      inherit version;
 
-    inherit src;
+      src = null;
+      buildDeps = [];
+      runtimeDeps = [];
+      propagatedDeps = [];
 
-    buildDeps = [];
-    # The wrapper resolves the loader + libs by absolute store path, so glibc is
-    # pulled into the closure via the wrapper's string references. Declaring it
-    # as a runtime dep makes the dependency explicit.
-    runtimeDeps = [glibc];
-    propagatedDeps = [];
+      phases = [
+        {
+          name = "install";
+          script = ''
+            mkdir -p "$out/bin"
+            cp ${workerd-source}/bin/workerd "$out/bin/workerd"
+            chmod +x "$out/bin/workerd"
+          '';
+        }
+      ];
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xzf $src
-          # npm tarballs root everything under package/
-          cd package
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          mkdir -p $out/bin $out/libexec
-
-          # Stage the prebuilt ELF. The unpack phase left us inside the npm
-          # tarball's package/ root, so the binary is at bin/workerd. fetchurl
-          # outputs are read-only, but the unpacked tree is writable; copy and
-          # ensure the executable bit so the loader can mmap and exec it.
-          cp bin/workerd $out/libexec/workerd
-          chmod u+wx $out/libexec/workerd
-
-          # Emit the AOS bash wrapper that runs the seed under the AOS glibc
-          # loader. We invoke ld-linux directly (rather than relying on the ELF's
-          # baked-in /lib64 interpreter) because AOS has no patchelf to rewrite
-          # it, and /lib64/ld-linux does not exist in the AOS rootfs / VM.
-          # --library-path supplies AOS glibc; libstdc++ is statically linked in
-          # the binary, so glibc alone satisfies every NEEDED entry.
-          {
-            printf '%s\n' '#!${bash}/bin/bash'
-            printf '%s\n' 'exec ${glibc}/lib/ld-linux-x86-64.so.2 \'
-            printf '%s\n' '  --library-path ${glibc}/lib \'
-            printf '%s\n' "  $out/libexec/workerd \"\$@\""
-          } > $out/bin/workerd
-          chmod +x $out/bin/workerd
-        '';
-      }
-    ];
-
-    meta = {
-      description = "Cloudflare workerd Workers runtime (prebuilt binary seed wrapped for AOS glibc)";
-      homepage = "https://github.com/cloudflare/workerd";
-      license = "Apache-2.0";
-    };
-
-    checks = {
-      testing,
-      self,
-      pkgs,
-    }: {
-      version = testing.mkVMTest {
-        name = "tools-workerd-version";
-        rootfsDeps = [self];
-        testScript = ''
-          OUTPUT=$(workerd --version 2>&1)
-          case "$OUTPUT" in
-            *"2024-09-09"*)
-              echo "==> workerd version: PASS ($OUTPUT)"
-              ;;
-            *)
-              echo "==> ERROR: unexpected workerd version: $OUTPUT" >&2
-              exit 1
-              ;;
-          esac
-        '';
+      meta = {
+        description = "Cloudflare workerd Workers runtime (built from source for Darwin)";
+        homepage = "https://github.com/cloudflare/workerd";
+        license = "Apache-2.0";
       };
-    };
-  }
+    }
+  else
+    mkDerivation {
+      pname = "workerd";
+      inherit version;
+
+      inherit src;
+
+      buildDeps = [];
+      # The wrapper resolves the loader + libs by absolute store path, so glibc is
+      # pulled into the closure via the wrapper's string references. Declaring it
+      # as a runtime dep makes the dependency explicit.
+      runtimeDeps = [glibc];
+      propagatedDeps = [];
+
+      phases = [
+        {
+          name = "unpack";
+          script = ''
+            tar xzf $src
+            # npm tarballs root everything under package/
+            cd package
+          '';
+        }
+        {
+          name = "install";
+          script = ''
+            mkdir -p $out/bin $out/libexec
+
+            # Stage the prebuilt ELF. The unpack phase left us inside the npm
+            # tarball's package/ root, so the binary is at bin/workerd. fetchurl
+            # outputs are read-only, but the unpacked tree is writable; copy and
+            # ensure the executable bit so the loader can mmap and exec it.
+            cp bin/workerd $out/libexec/workerd
+            chmod u+wx $out/libexec/workerd
+
+            # Emit the AOS bash wrapper that runs the seed under the AOS glibc
+            # loader. We invoke ld-linux directly (rather than relying on the ELF's
+            # baked-in /lib64 interpreter) because AOS has no patchelf to rewrite
+            # it, and /lib64/ld-linux does not exist in the AOS rootfs / VM.
+            # --library-path supplies AOS glibc; libstdc++ is statically linked in
+            # the binary, so glibc alone satisfies every NEEDED entry.
+            {
+              printf '%s\n' '#!${bash}/bin/bash'
+              printf '%s\n' 'exec ${glibc}/lib/ld-linux-x86-64.so.2 \'
+              printf '%s\n' '  --library-path ${glibc}/lib \'
+              printf '%s\n' "  $out/libexec/workerd \"\$@\""
+            } > $out/bin/workerd
+            chmod +x $out/bin/workerd
+          '';
+        }
+      ];
+
+      meta = {
+        description = "Cloudflare workerd Workers runtime (prebuilt binary seed wrapped for AOS glibc)";
+        homepage = "https://github.com/cloudflare/workerd";
+        license = "Apache-2.0";
+      };
+
+      checks = {
+        testing,
+        self,
+        pkgs,
+      }: {
+        version = testing.mkVMTest {
+          name = "tools-workerd-version";
+          rootfsDeps = [self];
+          testScript = ''
+            OUTPUT=$(workerd --version 2>&1)
+            case "$OUTPUT" in
+              *"2024-09-09"*)
+                echo "==> workerd version: PASS ($OUTPUT)"
+                ;;
+              *)
+                echo "==> ERROR: unexpected workerd version: $OUTPUT" >&2
+                exit 1
+                ;;
+            esac
+          '';
+        };
+      };
+    }

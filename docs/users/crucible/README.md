@@ -138,6 +138,10 @@ For deeper work:
   artifacts.
 - [Reference](reference.md) summarizes commands and the canonical scenario
   schema.
+- [Signal-driven faults](signal-driven-faults.md) explains how to model static,
+  recorded, spatial, sporadic, shared-cause, network, storage, and node faults.
+- [Fault-model migration](fault-model-migration.md) explains the required
+  one-way move to the signal-driven schema and why old plans are not translated.
 - [Reproduction and branching](reproduction.md) explains `verify`, artifacts,
   `replay`, `save`, `resume`, and `fork`.
 - [Exploration](exploration.md) covers bounded search, fuzzing, and triage.

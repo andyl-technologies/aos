@@ -7,11 +7,7 @@
   root = ../..;
   cratesDir = root + "/crates";
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   shmemContract = builtins.concatStringsSep "\n" [
     (import ./_crucible-shmem-source.nix {inherit lib;})
@@ -91,7 +87,7 @@
       }
       {
         label = "ABI version";
-        needle = "pub const ABI_VERSION: u32 = 6;";
+        needle = "pub const ABI_VERSION: u32 = 17;";
       }
       {
         label = "physical slot capacity";
@@ -154,8 +150,16 @@
         needle = "REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET == 61";
       }
       {
+        label = "region header control padding offset";
+        needle = "REGION_HEADER_CONTROL_PADDING_OFFSET == 62";
+      }
+      {
+        label = "region header fault payload arena offset";
+        needle = "REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET == 64";
+      }
+      {
         label = "region header reserved offset";
-        needle = "REGION_HEADER_RESERVED_OFFSET == 62";
+        needle = "REGION_HEADER_RESERVED_OFFSET == 68";
       }
       {
         label = "node slot size";
@@ -166,8 +170,8 @@
         needle = "NODE_SLOT_PAD0_OFFSET == 39";
       }
       {
-        label = "node slot reserved offset";
-        needle = "NODE_SLOT_RESERVED_OFFSET == 97";
+        label = "node slot logical-time raw offset";
+        needle = "NODE_SLOT_LOGICAL_TIME_RAW_ICOUNT_OFFSET == 104";
       }
       {
         label = "ring header size";
@@ -187,7 +191,11 @@
       }
       {
         label = "frame entry padding offset";
-        needle = "FRAME_ENTRY_PAD_OFFSET == 18";
+        needle = "FRAME_ENTRY_PAD_OFFSET == 19";
+      }
+      {
+        label = "frame entry delivery attempts offset";
+        needle = "FRAME_ENTRY_DELIVERY_ATTEMPTS_OFFSET == 20";
       }
       {
         label = "pinned layout target";

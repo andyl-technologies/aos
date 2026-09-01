@@ -6,11 +6,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
@@ -185,8 +181,8 @@
         needle = "\n          phase6.explorationLifecycle.rawGate\n";
       }
       {
-        label = "phase6 savevm completeness raw dependency";
-        needle = "\n          phase6.savevmCompleteness.rawGate\n";
+        label = "phase6 checkpoint materialization raw dependency";
+        needle = "\n          phase6.checkpointMaterialization.rawGate\n";
       }
       {
         label = "phase4 replay oracle green dependency";
@@ -201,8 +197,8 @@
         needle = "\n        phase6.explorationLifecycle\n";
       }
       {
-        label = "phase6 savevm completeness green dependency";
-        needle = "\n        phase6.savevmCompleteness\n";
+        label = "phase6 checkpoint materialization green dependency";
+        needle = "\n        phase6.checkpointMaterialization\n";
       }
     ];
 in

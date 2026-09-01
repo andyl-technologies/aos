@@ -69,6 +69,7 @@ in rec {
         inherit pkgs;
         attrPath = "checks.crucible.phase0.gates.blockers";
         blockers = [
+          (import ./phase0-bounded-scheduler-preemption.nix {inherit pkgs lib;})
           (import ./phase0-s1.nix {inherit pkgs lib;})
           (import ./phase0-s2.nix {inherit pkgs lib;})
           (import ./phase0-s4.nix {inherit pkgs;})
@@ -87,6 +88,7 @@ in rec {
         dependencies = [blockers];
       };
     };
+    boundedSchedulerPreemption = import ./phase0-bounded-scheduler-preemption.nix {inherit pkgs lib;};
     s1Fingerprint = import ./phase0-s1.nix {inherit pkgs lib;};
     s2HltBusyPoll = import ./phase0-s2.nix {inherit pkgs lib;};
     s3SavevmLoadvm = import ./phase0-s3.nix {inherit pkgs lib;};
@@ -203,7 +205,6 @@ in rec {
     spatialLayerOrthogonality = import ./phase1-spatial-layer-orthogonality.nix {inherit pkgs lib;};
     spatialLinkTransport = import ./phase1-spatial-link-transport.nix {inherit pkgs lib;};
     spatialLogicalTopology = import ./phase1-spatial-logical-topology.nix {inherit pkgs lib;};
-    spatialMembershipFaults = import ./phase1-spatial-membership-faults.nix {inherit pkgs lib;};
     spatialCanonicalization = import ./phase1-spatial-canonicalization.nix {inherit pkgs lib;};
     spatialNodeLaunchInputs = import ./phase1-spatial-node-launch-inputs.nix {inherit pkgs lib;};
     spatialPlanComponent = import ./phase1-spatial-plan-component.nix {inherit pkgs lib;};
@@ -220,7 +221,6 @@ in rec {
     spatialWorldTopology = import ./phase1-spatial-world-topology.nix {inherit pkgs lib;};
     standaloneDependencies = import ./phase1-standalone-dependencies.nix {inherit pkgs lib;};
     testingStandards = import ./phase1-testing-standards.nix {inherit pkgs lib;};
-    timeClockSkew = import ./phase1-time-clock-skew.nix {inherit pkgs lib;};
     timeContractADeterminism = import ./phase1-time-contract-a-determinism.nix {inherit pkgs lib;};
     timeMultiVcpuAggregateClock = import ./phase1-time-multi-vcpu-aggregate-clock.nix {inherit pkgs lib;};
     timeNoRealtimeWarp = import ./phase1-time-no-realtime-warp.nix {inherit pkgs lib;};
@@ -413,14 +413,21 @@ in rec {
     qemuInjectionContract = import ./phase2-qemu-injection-contract.nix {inherit pkgs lib;};
     qemuQuantumShmem = import ./phase2-qemu-quantum-shmem.nix {inherit pkgs lib;};
     qemuRealization = import ./phase2-qemu-realization.nix {inherit pkgs lib;};
-    qemuSavevmFallback = import ./phase2-qemu-savevm-fallback.nix {inherit pkgs lib;};
+    qemuExactSnapshotRestore = import ./phase2-qemu-exact-snapshot-restore.nix {inherit pkgs lib;};
+    qemuFingerprintStateDomains = import ./phase2-qemu-fingerprint-state-domains.nix {inherit pkgs lib;};
     qemuNvcpuFingerprint = import ./phase2-qemu-nvcpu-fingerprint.nix {inherit pkgs lib;};
     qemuLiveGenesisExecutor = import ./phase2-qemu-live-genesis-executor.nix {inherit pkgs lib;};
     qemuLivePluginInstall = import ./phase2-qemu-live-plugin-install.nix {inherit pkgs lib;};
     qemuLiveWhiteboxDoorbell = import ./phase2-qemu-live-whitebox-doorbell.nix {inherit pkgs lib;};
     qemuLiveBlockRealization = import ./phase2-qemu-live-block-realization.nix {inherit pkgs lib;};
+    qemuLiveFaultHardware = import ./phase2-qemu-live-fault-hardware.nix {inherit pkgs lib;};
+    qemuInstructionFaults = import ./phase2-qemu-instruction-faults.nix {inherit pkgs lib;};
+    qemuVcpuService = import ./phase2-qemu-vcpu-service.nix {inherit pkgs lib;};
+    qemuNodeLifecycle = import ./phase2-qemu-node-lifecycle.nix {inherit pkgs lib;};
     qemuLiveNodeStep = import ./phase2-qemu-live-node-step.nix {inherit pkgs lib;};
+    qemuLiveNodeLifecycleFault = import ./phase2-qemu-live-node-lifecycle-fault.nix {inherit pkgs lib;};
     qemuLiveBlockIo = import ./phase2-qemu-live-block-io.nix {inherit pkgs lib;};
+    qemuLiveBlockReset = import ./phase2-qemu-live-block-reset.nix {inherit pkgs lib;};
     qemuLive9pIo = import ./phase2-qemu-live-9p-io.nix {inherit pkgs lib;};
     qemuLiveNetworkIo = import ./phase2-qemu-live-network-io.nix {inherit pkgs lib;};
     qemuLivePluginQuantum = import ./phase2-qemu-live-plugin-quantum.nix {inherit pkgs lib;};
@@ -454,6 +461,7 @@ in rec {
           attrPath = "checks.crucible.phase2.gates.abiConformance";
           taskIds = ["T-HARN-17" "T-API-11" "T-API-12" "T-PAT-8"];
           dependencies = [
+            phase1.gates.licenseBoundary.rawGate
             phase1.gates.harnessLint.rawGate
             phase1.gates.layer0Determinism.rawGate
             phase1.gates.contentAddress.rawGate
@@ -463,6 +471,7 @@ in rec {
           ];
         };
         dependencies = [
+          phase1.gates.licenseBoundary
           phase1.gates.harnessLint
           phase1.gates.layer0Determinism
           phase1.gates.contentAddress
@@ -828,11 +837,13 @@ in rec {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.triggerFiringCausalLog";
       taskIds = ["T-TRIG-11"];
+      dependencies = [phase4.gates.replayOracle.rawGate];
     };
     triggerActionApplication = import ./phase4-trigger-action-application.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.triggerActionApplication";
       taskIds = ["T-TRIG-12"];
+      dependencies = [phase4.eventGraphControlFlow phase4.triggerNodeScheduling phase4.triggerVerdictComposition phase4.gates.replayOracle.rawGate];
     };
     triggerNodeScheduling = import ./phase4-trigger-node-scheduling.nix {
       inherit pkgs lib;
@@ -843,16 +854,19 @@ in rec {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.triggerRelativeTimers";
       taskIds = ["T-TRIG-14"];
+      dependencies = [phase4.timeConditionLeaves phase4.gates.replayOracle.rawGate];
     };
     triggerGraphValidator = import ./phase4-trigger-graph-validator.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.triggerGraphValidator";
       taskIds = ["T-TRIG-15"];
+      dependencies = [phase4.eventGraphControlFlow phase4.timeConditionLeaves phase4.compoundConditionCombinators phase4.triggerNodeScheduling phase4.eventGraphSerialization];
     };
     triggerPlanLowering = import ./phase4-trigger-plan-lowering.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.triggerPlanLowering";
       taskIds = ["T-TRIG-16"];
+      dependencies = [phase4.eventGraphSerialization];
     };
     triggerVerdictComposition = import ./phase4-trigger-verdict-composition.nix {
       inherit pkgs lib;
@@ -868,86 +882,6 @@ in rec {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.blackBoxFirstGuarantee";
       taskIds = ["T-TRIG-19"];
-    };
-    faultTaxonomy = import ./phase4-fault-taxonomy.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.faultTaxonomy";
-      taskIds = ["T-FAULT-1"];
-    };
-    faultModelRule = import ./phase4-fault-model-rule.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.faultModelRule";
-      taskIds = ["T-FAULT-2"];
-    };
-    faultDecisionRng = import ./phase4-fault-decision-rng.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.faultDecisionRng";
-      taskIds = ["T-FAULT-3"];
-    };
-    faultIntegerRates = import ./phase4-fault-integer-rates.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.faultIntegerRates";
-      taskIds = ["T-FAULT-4"];
-    };
-    faultCombination = import ./phase4-fault-combination.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.faultCombination";
-      taskIds = ["T-FAULT-5"];
-    };
-    networkFaultApplication = import ./phase4-network-fault-application.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.networkFaultApplication";
-      taskIds = ["T-FAULT-6"];
-    };
-    nodeFaultApplication = import ./phase4-node-fault-application.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.nodeFaultApplication";
-      taskIds = ["T-FAULT-7"];
-    };
-    nodeCrashApplication = import ./phase4-node-crash-application.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.nodeCrashApplication";
-      taskIds = ["T-FAULT-8"];
-    };
-    ioFaultApplication = import ./phase4-io-fault-application.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.ioFaultApplication";
-      taskIds = ["T-FAULT-9"];
-    };
-    faultPlan = import ./phase4-fault-plan.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.faultPlan";
-      taskIds = ["T-FAULT-10"];
-    };
-    imperativeFaultControl = import ./phase4-imperative-fault-control.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.imperativeFaultControl";
-      taskIds = ["T-FAULT-11"];
-    };
-    faultTagState = import ./phase4-fault-tag-state.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.faultTagState";
-      taskIds = ["T-FAULT-12"];
-    };
-    activeFaultTable = import ./phase4-active-fault-table.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.activeFaultTable";
-      taskIds = ["T-FAULT-13"];
-    };
-    randomFaultConfig = import ./phase4-random-fault-config.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.randomFaultConfig";
-      taskIds = ["T-FAULT-14"];
-    };
-    faultDeterminismGate = import ./phase4-fault-determinism-gate.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.faultDeterminismGate";
-      taskIds = ["T-FAULT-15"];
-    };
-    faultTestDoubleGate = import ./phase4-fault-test-double-gate.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase4.faultTestDoubleGate";
-      taskIds = ["T-FAULT-16"];
     };
     propertyVocabulary = import ./phase4-property-vocabulary.nix {
       inherit pkgs lib;
@@ -1156,6 +1090,7 @@ in rec {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.guestHostEmitterAbsence";
       taskIds = ["T-GHC-11"];
+      dependencies = [phase4.guestHostOsAgnostic phase4.blackBoxFirstGuarantee phase4.guestHostChannelDeterminism];
     };
     guestHostChannelDeterminism = import ./phase4-guest-host-channel-determinism.nix {
       inherit pkgs lib;
@@ -1831,11 +1766,11 @@ in rec {
         phase6.advancedDependencyLadder
       ];
     };
-    savevmCompleteness = greenBeforeAdvance {
-      attrPath = "checks.crucible.phase6.savevmCompleteness";
-      gate = import ./phase6-savevm-completeness.nix {
+    checkpointMaterialization = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.checkpointMaterialization";
+      gate = import ./phase6-checkpoint-materialization.nix {
         inherit pkgs lib;
-        attrPath = "checks.crucible.phase6.savevmCompleteness";
+        attrPath = "checks.crucible.phase6.checkpointMaterialization";
         taskIds = ["T-ADV-6"];
         dependencies = [
           phase4.gates.replayOracle.rawGate
@@ -1859,14 +1794,14 @@ in rec {
           phase4.gates.replayOracle.rawGate
           phase4.gates.e2eDeterminism.rawGate
           phase6.explorationLifecycle.rawGate
-          phase6.savevmCompleteness.rawGate
+          phase6.checkpointMaterialization.rawGate
         ];
       };
       dependencies = [
         phase4.gates.replayOracle
         phase4.gates.e2eDeterminism
         phase6.explorationLifecycle
-        phase6.savevmCompleteness
+        phase6.checkpointMaterialization
       ];
     };
     stateSpaceSearch = greenBeforeAdvance {
@@ -1879,7 +1814,7 @@ in rec {
           phase4.gates.replayOracle.rawGate
           phase4.gates.e2eDeterminism.rawGate
           phase6.restoreStrategies.rawGate
-          phase6.savevmCompleteness.rawGate
+          phase6.checkpointMaterialization.rawGate
           phase6.gates.replayOracle.rawGate
         ];
       };
@@ -1887,7 +1822,7 @@ in rec {
         phase4.gates.replayOracle
         phase4.gates.e2eDeterminism
         phase6.restoreStrategies
-        phase6.savevmCompleteness
+        phase6.checkpointMaterialization
         phase6.gates.replayOracle
       ];
     };
@@ -2540,6 +2475,7 @@ in rec {
     };
   };
   phase7 = {
+    signalSharedCause = import ./phase7-signal-shared-cause.nix {inherit pkgs lib;};
     debuggerPackage = import ./phase7-debugger-package.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.debuggerPackage";
@@ -2687,25 +2623,11 @@ in rec {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.happyPathExample";
       taskIds = ["T-EX-1"];
+      dependencies = [phase4.eventGraphSerialization phase4.blackBoxFirstGuarantee phase7.adversarialExampleVerify];
     };
     nginxCurlHttp200 = import ./phase7-nginx-curl-http-200.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.nginxCurlHttp200";
-    };
-    partitionRecoveryExample = import ./phase7-partition-recovery-example.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase7.partitionRecoveryExample";
-      taskIds = ["T-EX-2"];
-    };
-    crashRestartExample = import ./phase7-crash-restart-example.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase7.crashRestartExample";
-      taskIds = ["T-EX-3"];
-    };
-    faultCampaignExample = import ./phase7-fault-campaign-example.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase7.faultCampaignExample";
-      taskIds = ["T-EX-4"];
     };
     adversarialExampleVerify = import ./phase7-adversarial-example-verify.nix {
       inherit pkgs lib;
@@ -2844,9 +2766,9 @@ in rec {
           attrPath = "checks.crucible.phase7.gates.e2eDeterminism";
           taskIds = ["T-HARN-23"];
           openTaskIds = [];
-          dependencies = [perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];
+          dependencies = [phase1.gates.licenseBoundary.rawGate perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];
         };
-        dependencies = [perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];
+        dependencies = [phase1.gates.licenseBoundary perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];
       };
       fleetEquivalence = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.fleetEquivalence";
@@ -2867,6 +2789,174 @@ in rec {
           dependencies = [fleetEquivalence.rawGate phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignStorageBounding phase7.crucibleCampaignProvenance];
         };
         dependencies = [fleetEquivalence phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignStorageBounding phase7.crucibleCampaignProvenance];
+      };
+      signalFaultSystem = greenBeforeAdvance {
+        attrPath = "checks.crucible.phase7.gates.signalFaultSystem";
+        # lint needle: signalFaultSystem = import ./phase7-signal-fault-system.nix
+        gate = import ./phase7-signal-fault-system.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase7.gates.signalFaultSystem";
+          taskIds = [
+            "T-ATOM-1"
+            "T-ATOM-2"
+            "T-ATOM-3"
+            "T-ATOM-4"
+            "T-ATOM-5"
+            "T-SIG-1"
+            "T-SIG-2"
+            "T-SIG-3"
+            "T-SIG-4"
+            "T-SIG-5"
+            "T-SIG-6"
+            "T-SIG-7"
+            "T-TRACE-1"
+            "T-TRACE-2"
+            "T-TRACE-3"
+            "T-TRACE-4"
+            "T-BIND-1"
+            "T-BIND-2"
+            "T-BIND-3"
+            "T-BIND-4"
+            "T-BIND-5"
+            "T-STATE-1"
+            "T-REPLAY-1"
+            "T-REPLAY-2"
+            "T-SEARCH-1"
+            "T-OBS-1"
+            "T-NET-1"
+            "T-NET-2"
+            "T-NET-3"
+            "T-NET-4"
+            "T-NET-5"
+            "T-NET-6"
+            "T-NET-7"
+            "T-NET-8"
+            "T-NET-9"
+            "T-NET-10"
+            "T-STOR-1"
+            "T-STOR-2"
+            "T-STOR-3"
+            "T-STOR-4"
+            "T-STOR-5"
+            "T-STOR-6"
+            "T-STOR-7"
+            "T-NODE-1"
+            "T-NODE-2"
+            "T-NODE-3"
+            "T-NODE-4"
+            "T-NODE-5"
+            "T-NODE-6"
+            "T-NODE-7"
+            "T-QEMU-0047"
+            "T-QEMU-0048"
+            "T-QEMU-0049"
+            "T-QEMU-0050"
+            "T-QEMU-0051"
+            "T-QEMU-0052"
+            "T-QEMU-0053"
+            "T-QEMU-0054"
+            "T-QEMU-0055"
+            "T-QEMU-0056"
+            "T-QEMU-0060"
+            "T-QEMU-0061"
+            "T-QEMU-0062"
+            "T-QEMU-0063"
+            "T-QEMU-0064"
+            "T-QEMU-0065"
+            "T-QEMU-0066"
+            "T-QEMU-0067"
+            "T-QEMU-0068"
+            "T-QEMU-0069"
+            "T-QEMU-0070"
+            "T-QEMU-0071"
+            "T-QEMU-0072"
+            "T-QEMU-0073"
+            "T-QEMU-0074"
+            "T-QEMU-0075"
+            "T-QEMU-0076"
+            "T-QEMU-0077"
+            "T-QEMU-0078"
+            "T-QEMU-0079"
+            "T-QEMU-0080"
+            "T-QEMU-0081"
+            "T-QEMU-0082"
+            "T-QEMU-0083"
+            "T-QEMU-0084"
+            "T-QEMU-0085"
+            "T-QEMU-0086"
+            "T-QEMU-0087"
+            "T-QEMU-0088"
+            "T-QEMU-0089"
+            "T-QEMU-0090"
+            "T-QEMU-0091"
+            "T-QEMU-0092"
+            "T-QEMU-0093"
+            "T-QEMU-0094"
+            "T-QEMU-0095"
+            "T-QEMU-0096"
+            "T-QEMU-0097"
+            "T-QEMU-0098"
+            "T-QEMU-0099"
+            "T-QEMU-0100"
+            "T-QEMU-0101"
+            "T-QEMU-0102"
+            "T-QEMU-0103"
+            "T-QEMU-0104"
+            "T-QEMU-0105"
+            "T-QEMU-0106"
+            "T-QEMU-0107"
+            "T-QEMU-0108"
+            "T-QEMU-0109"
+            "T-QEMU-0110"
+            "T-QEMU-0111"
+            "T-QEMU-0112"
+            "T-QEMU-0113"
+            "T-QEMU-0114"
+            "T-QEMU-0115"
+            "T-QEMU-LICENSE"
+            "T-SPEC-1"
+            "T-SPEC-2"
+            "T-SPEC-3"
+            "T-DOC-1"
+            "T-DOC-2"
+            "T-DOC-3"
+            "T-DOC-4"
+          ];
+          liveNetwork = phase2.qemuLiveNetworkIo;
+          liveBlock = phase2.qemuLiveBlockIo;
+          liveNineP = phase2.qemuLive9pIo;
+          liveNodeLifecycle = phase2.qemuLiveNodeLifecycleFault;
+          liveFaultHardware = phase2.qemuLiveFaultHardware;
+          sharedCause = phase7.signalSharedCause;
+          patchMicrotests = phase2.gates.patchMicrotests.rawGate;
+          checkpointMaterialization = phase6.checkpointMaterialization.rawGate;
+          replayOracle = phase6.gates.replayOracle.rawGate;
+          stateSpaceSearch = phase6.stateSpaceSearch.rawGate;
+          cliSearchFuzz = phase5.cliSearchFuzzWorkflow;
+          e2eDeterminism = e2eDeterminism.rawGate;
+          campaignContinuity = campaignContinuity.rawGate;
+          dependencies = [
+            phase1.gates.licenseBoundary.rawGate
+            phase2.gates.abiConformance.rawGate
+          ];
+        };
+        dependencies = [
+          phase1.gates.licenseBoundary
+          phase2.gates.abiConformance
+          phase2.qemuLiveNetworkIo
+          phase2.qemuLiveBlockIo
+          phase2.qemuLive9pIo
+          phase2.qemuLiveNodeLifecycleFault
+          phase2.qemuLiveFaultHardware
+          phase7.signalSharedCause
+          phase2.gates.patchMicrotests
+          phase6.checkpointMaterialization
+          phase6.gates.replayOracle
+          phase6.stateSpaceSearch
+          phase5.cliSearchFuzzWorkflow
+          e2eDeterminism
+          campaignContinuity
+        ];
       };
     };
   };

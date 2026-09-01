@@ -11,6 +11,12 @@
   schema = builtins.fromJSON (builtins.readFile ./expose-config.json);
   package = schema.package;
   cfg = config.${package};
+  credentialDeclaration = name: let
+    declarations = builtins.filter (credential: credential.name == name) schema.config.credentials;
+  in
+    if builtins.length declarations == 1
+    then builtins.head declarations
+    else throw "credential reference '${package}.${name}' has no unique signed expose.config declaration";
   secretRefType = lib.types.submodule ({name, ...}: {
     config._module.strict = true;
     options = {
@@ -46,27 +52,34 @@ in {
     };
   };
 
-  config.${package}._aosExposeConfigProjection = {
-    schema = "aos.expose-config-binding/v1";
-    schema_hash = "sha256:${builtins.hashString "sha256" (builtins.toJSON schema.config)}";
-    desired = cfg.config;
-    credentials = lib.mapAttrs (name: reference: let
-      declarations = builtins.filter (credential: credential.name == name) schema.config.credentials;
-      declaration =
-        if builtins.length declarations == 1
-        then builtins.head declarations
-        else throw "credential reference '${package}.${name}' has no unique signed expose.config declaration";
-    in
-      {
-        inherit name;
-        source = declaration.source or null;
-        encrypted = declaration.encrypted or false;
-        units = declaration.units or [];
-        inherit (reference) ref;
-      }
-      // lib.optionalAttrs (declaration ? ciphertext) {
-        inherit (declaration) ciphertext;
+  config = {
+    assertions =
+      lib.mapAttrsToList (name: reference: let
+        declaration = credentialDeclaration name;
+      in {
+        assertion = !(lib.hasPrefix "tpm2-credstore" reference.ref) || (declaration.encrypted or false);
+        message = "credential reference '${package}.${name}' cannot use tpm2-credstore with a plaintext signed destination";
       })
-    cfg.credentials;
+      cfg.credentials;
+
+    ${package}._aosExposeConfigProjection = {
+      schema = "aos.expose-config-binding/v1";
+      schema_hash = "sha256:${builtins.hashString "sha256" (builtins.toJSON schema.config)}";
+      desired = cfg.config;
+      credentials = lib.mapAttrs (name: reference: let
+        declaration = credentialDeclaration name;
+      in
+        {
+          inherit name;
+          source = declaration.source or null;
+          encrypted = declaration.encrypted or false;
+          units = declaration.units or [];
+          inherit (reference) ref;
+        }
+        // lib.optionalAttrs (declaration ? ciphertext) {
+          inherit (declaration) ciphertext;
+        })
+      cfg.credentials;
+    };
   };
 }

@@ -64,11 +64,11 @@
       }
       {
         label = "scoped phase2 ABI gate wiring";
-        needle = "abiConformance = greenBeforeAdvance {\n        attrPath = \"checks.crucible.phase2.gates.abiConformance\";\n        # lint needle: abiConformance = import ./phase2-abi-conformance.nix\n        gate = import ./phase2-abi-conformance.nix {\n          inherit pkgs lib;\n          attrPath = \"checks.crucible.phase2.gates.abiConformance\";\n          taskIds = [\"T-HARN-17\" \"T-API-11\" \"T-API-12\" \"T-PAT-8\"];\n          dependencies = [\n            phase1.gates.harnessLint.rawGate\n            phase1.gates.layer0Determinism.rawGate";
+        needle = "abiConformance = greenBeforeAdvance {\n        attrPath = \"checks.crucible.phase2.gates.abiConformance\";\n        # lint needle: abiConformance = import ./phase2-abi-conformance.nix\n        gate = import ./phase2-abi-conformance.nix {\n          inherit pkgs lib;\n          attrPath = \"checks.crucible.phase2.gates.abiConformance\";\n          taskIds = [\"T-HARN-17\" \"T-API-11\" \"T-API-12\" \"T-PAT-8\"];\n          dependencies = [\n            phase1.gates.licenseBoundary.rawGate\n            phase1.gates.harnessLint.rawGate\n            phase1.gates.layer0Determinism.rawGate";
       }
       {
         label = "scoped phase2 ABI wrapper dependencies";
-        needle = "dependencies = [\n          phase1.gates.harnessLint\n          phase1.gates.layer0Determinism\n          phase1.gates.contentAddress\n          phase1.gates.replayOracle\n          phase1.gates.singleVmFingerprint\n          phase1.gates.divergenceBisect\n        ];";
+        needle = "dependencies = [\n          phase1.gates.licenseBoundary\n          phase1.gates.harnessLint\n          phase1.gates.layer0Determinism\n          phase1.gates.contentAddress\n          phase1.gates.replayOracle\n          phase1.gates.singleVmFingerprint\n          phase1.gates.divergenceBisect\n        ];";
       }
       {
         label = "phase7 package ABI conformance check imported";
@@ -82,11 +82,19 @@
       }
       {
         label = "vendored cargo dependencies";
-        needle = "cargoDeps = pkgs.fetchCargoDeps";
+        needle = "cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};";
       }
       {
         label = "frozen offline cargo gate";
         needle = "cargo test \\\n              --frozen \\\n              --offline";
+      }
+      {
+        label = "ABI owners fail closed on zero registered tests";
+        needle = "require_test_set() {";
+      }
+      {
+        label = "engine ABI owner exact registration guard";
+        needle = "require_test_set 2 engine";
       }
       {
         label = "shmem ABI owner test";
@@ -115,6 +123,10 @@
       {
         label = "ABI gate result marker";
         needle = "gate=gate:abi-conformance";
+      }
+      {
+        label = "ABI zero-test guard result marker";
+        needle = "zero_test_guards=exact-count-and-canonical-owner";
       }
       {
         label = "version bump result marker";
@@ -263,7 +275,7 @@ in
             printf '%s\n' 'cargo_mode=frozen-offline-vendored'
             printf '%s\n' 'shmem_vectors=generated-header,layout-fixture,spsc-structure-aware,spsc-snapshot-byte-codec'
             printf '%s\n' 'protocol_vectors=hello,hello-ack,setup-payload,setup-ack,quit,doorbell-frame,doorbell-marker'
-            printf '%s\n' 'rpc_vectors=hello-request,hello-response,attached,send-request,send-response,event-fault-activated'
+            printf '%s\n' 'rpc_vectors=hello-request,hello-response,attached,send-request,send-response,event-effect-applied'
             printf '%s\n' 'version_bump_rule=shmem+protocol+rpc-golden-corpora'
             printf '%s\n' 'rpc_major_mismatch_rejection=true'
             printf '%s\n' 'engine_test_double_aggregate=true'

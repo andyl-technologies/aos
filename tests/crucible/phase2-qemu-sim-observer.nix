@@ -43,6 +43,7 @@ in
       buildDeps = [
         pkgs.coreutils
         pkgs.glib
+        pkgs.glib.dev
         pkgs.pkg-config
       ];
 

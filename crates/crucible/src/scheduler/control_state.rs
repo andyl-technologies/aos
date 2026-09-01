@@ -2,7 +2,7 @@
 
 use super::*;
 /// Determinism class for a scheduler event-log entry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SchedulerEventLogClass {
     /// Causal entries participate in deterministic replay comparison.
     Causal,
@@ -11,7 +11,7 @@ pub enum SchedulerEventLogClass {
 }
 
 /// Deterministic scheduler boundary that may trigger condition evaluation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SchedulerEvaluationBoundaryKind {
     /// A quantum boundary keyed by virtual time / icount.
     Quantum,
@@ -20,7 +20,7 @@ pub enum SchedulerEvaluationBoundaryKind {
 }
 
 /// Observational diagnostic payload used as the open-set escape hatch.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EventDiagnosticPayload {
     /// Stable diagnostic name.
     pub name: String,
@@ -53,7 +53,7 @@ impl EventDiagnosticPayload {
 }
 
 /// Payload variants emitted by the scheduler EMIT phase.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SchedulerEventLogPayload {
     /// A resolved scheduler happening made visible this quantum.
     ResolvedHappening(ScheduledEvent),
@@ -67,19 +67,17 @@ pub enum SchedulerEventLogPayload {
     TriggerFired(EventFiring),
     /// A deterministic trigger action effect applied at the firing boundary.
     TriggerActionApplied(TriggerActionApplication),
+    /// Typed evidence from signal-driven fault evaluation and application.
+    FaultObservation(crate::model::FaultObservation),
     /// An observational diagnostic escape-hatch entry.
     Diagnostic(EventDiagnosticPayload),
 }
 
 /// Scheduler-owned state produced by deterministic trigger action application.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TriggerActionState {
     /// Every non-group action applied by triggers in deterministic application order.
     pub applications: Vec<TriggerActionApplication>,
-    /// Active membership faults keyed by their stable trigger tag.
-    pub active_faults: BTreeMap<crate::FaultTag, MembershipFault>,
-    /// Active full-taxonomy faults keyed by their stable trigger tag.
-    pub active_taxonomy_faults: BTreeMap<crate::FaultTag, Fault>,
     /// Trigger timers armed by name with their absolute virtual-time fire point.
     pub armed_timers: BTreeMap<TimerId, VirtualTime>,
     /// Trigger-scheduled node lifecycle overrides keyed by declared node.
@@ -97,12 +95,6 @@ pub struct TriggerActionState {
 }
 
 impl TriggerActionState {
-    /// Combines every active full-taxonomy fault currently owned by triggers.
-    #[must_use]
-    pub fn combined_faults(&self) -> CombinedFaults {
-        CombinedFaults::from_membership_faults(self.active_faults.values())
-    }
-
     /// Composes trigger pass/fail state with the final assertion-layer verdict.
     ///
     /// Assertion failures and explicit trigger failures both fail the run. An
@@ -161,7 +153,7 @@ impl TriggerActionState {
 }
 
 /// One deterministic non-group trigger action application.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TriggerActionApplication {
     /// Monotone scheduler-local trigger action sequence.
     pub sequence: u64,
@@ -184,7 +176,7 @@ impl TriggerActionApplication {
 }
 
 /// One trigger request to label a temporal graph boundary.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TriggerLabelRecord {
     /// Trigger action sequence that raised the request.
     pub sequence: u64,
@@ -197,7 +189,7 @@ pub struct TriggerLabelRecord {
 }
 
 /// A trigger-sourced pass/fail verdict request.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TriggerVerdict {
     /// Trigger action sequence that raised the verdict.
     pub sequence: u64,
@@ -328,7 +320,7 @@ pub enum ComposedRunVerdictFailure {
 }
 
 /// One observational diagnostic emitted by a trigger log action.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TriggerDiagnosticRecord {
     /// Trigger action sequence that emitted the diagnostic.
     pub sequence: u64,
@@ -358,7 +350,7 @@ pub struct SchedulerEventLogAppend {
 }
 
 /// The single max-advance ceiling published for one RUN phase.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerRunCeilingPublication {
     /// Monotone index of this publication in the scheduler's publication log.
     pub sequence: u64,
@@ -377,7 +369,9 @@ pub struct SchedulerRunCeilingPublication {
 }
 
 /// Deterministic vCPU RR policy for one scheduler node.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct SchedulerRunSubdivisionPolicy {
     /// Scheduler node whose RUN budget is subdivided internally.
     pub node: SchedulerNodeId,
@@ -409,7 +403,7 @@ impl SchedulerRunSubdivisionPolicy {
 }
 
 /// One plugin-internal vCPU slice inside a node-level RUN.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerRunSubdivisionSlice {
     /// vCPU selected for this slice.
     pub vcpu: VcpuId,
@@ -420,7 +414,7 @@ pub struct SchedulerRunSubdivisionSlice {
 }
 
 /// Evidence that a node-level RUN used deterministic RR subdivision internally.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerRunSubdivisionRecord {
     /// Monotone scheduler-local subdivision record sequence.
     pub sequence: u64,
@@ -435,7 +429,7 @@ pub struct SchedulerRunSubdivisionRecord {
 }
 
 /// Evidence that an explorer-supplied preemption was applied by RESOLVE.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerPreemptionApplication {
     /// Monotone scheduler-local preemption application sequence.
     pub sequence: u64,
@@ -456,7 +450,9 @@ pub struct SchedulerPreemptionApplication {
 }
 
 /// One vCPU's scheduler-visible idle snapshot inside an N-vCPU VM node.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct SchedulerVcpuIdleState {
     /// The vCPU described by this snapshot.
     pub vcpu: VcpuId,
@@ -524,12 +520,14 @@ pub enum SchedulerEffectiveClockSource {
 }
 
 /// The scheduler-side cause for a boundary topology recompute.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum SchedulerTopologyChangeTrigger {
-    /// A fault activation changed the effective topology or latency table.
-    FaultActivation,
-    /// A heal restored effective topology or latency state.
-    Heal,
+    /// Directed edges were removed from the effective topology.
+    EdgeRemoval,
+    /// Directed edges were restored to the effective topology.
+    EdgeRestore,
     /// A latency mutation changed the conservative lookahead bound.
     LatencyChange,
 }
@@ -581,7 +579,7 @@ impl SchedulerTopologyChange {
     pub fn partition(sequence: u64, removed_edges: Vec<SchedulerLookaheadEdgeEndpoint>) -> Self {
         Self {
             sequence,
-            trigger: SchedulerTopologyChangeTrigger::FaultActivation,
+            trigger: SchedulerTopologyChangeTrigger::EdgeRemoval,
             activation_time: None,
             effect: SchedulerTopologyChangeEffect::RemoveEffectiveEdges(removed_edges),
         }
@@ -592,7 +590,7 @@ impl SchedulerTopologyChange {
     pub fn heal(sequence: u64, restored_edges: Vec<SchedulerLookaheadEdge>) -> Self {
         Self {
             sequence,
-            trigger: SchedulerTopologyChangeTrigger::Heal,
+            trigger: SchedulerTopologyChangeTrigger::EdgeRestore,
             activation_time: None,
             effect: SchedulerTopologyChangeEffect::RestoreEffectiveEdges(restored_edges),
         }
@@ -636,7 +634,7 @@ pub(super) fn topology_change_order(
 }
 
 /// One node lookahead value recomputed by a topology change.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerTopologyLookaheadUpdate {
     /// The scheduler node whose network lookahead was recomputed.
     pub node: SchedulerNodeId,
@@ -647,7 +645,7 @@ pub struct SchedulerTopologyLookaheadUpdate {
 }
 
 /// Evidence that a topology change was applied at a quantum boundary.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerTopologyChangeApplication {
     /// Monotone scheduler topology epoch after this application.
     pub topology_epoch: u64,
@@ -661,34 +659,8 @@ pub struct SchedulerTopologyChangeApplication {
     pub updates: Vec<SchedulerTopologyLookaheadUpdate>,
 }
 
-/// One scheduler-owned event discarded by node crash handling.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SchedulerDiscardedEvent {
-    /// The event's deterministic scheduler key.
-    pub key: ScheduledEventKey,
-    /// The resolved event class that would have been emitted if it survived.
-    pub class: ScheduledEventResolveClass,
-}
-
-/// One scheduler-owned device completion discarded by node crash handling.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SchedulerDiscardedIoCompletion {
-    /// The scheduler sub-node that produced the completion.
-    pub sub_node: SchedulerNodeId,
-    /// The target VM node that would have observed the completion.
-    pub target: NodeId,
-    /// The target instruction count where the completion would become visible.
-    pub delivery_icount: Icount,
-    /// The device-core source id in the completion delivery key.
-    pub source_node: u32,
-    /// The device-core sequence number in the completion delivery key.
-    pub sequence: u32,
-    /// The deterministic completion payload.
-    pub payload: Vec<u8>,
-}
-
 /// Scheduler-side checkpoint anchor for one VM node.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerNodeCheckpoint {
     /// The checkpointed VM node.
     pub node: NodeId,
@@ -696,52 +668,6 @@ pub struct SchedulerNodeCheckpoint {
     pub counter: NodeCounter,
     /// Scheduler-time projection of `counter` when the checkpoint was recorded.
     pub at: SimInstant,
-}
-
-/// Evidence that a VM node crash was applied to scheduler-owned state.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SchedulerNodeCrashApplication {
-    /// Session-local sequence number of the applied crash.
-    pub sequence: u64,
-    /// The crashed VM node.
-    pub node: NodeId,
-    /// Restart policy recorded by the crash fault.
-    pub restart: RestartPolicy,
-    /// Scheduler-time point observed for the node at crash activation.
-    pub at: SimInstant,
-    /// Node counter captured at crash activation.
-    pub counter: NodeCounter,
-    /// Runtime activity the node had before the crash stopped it.
-    pub previous_activity: SchedulerNodeActivity,
-    /// Scheduler events deterministically discarded by the crash.
-    pub discarded_events: Vec<SchedulerDiscardedEvent>,
-    /// Device completions deterministically voided by the crash.
-    pub discarded_io: Vec<SchedulerDiscardedIoCompletion>,
-    /// Effective topology edges incident to the crashed node and removed.
-    pub removed_edges: Vec<SchedulerLookaheadEdge>,
-    /// Last checkpoint anchor available to checkpoint-based restart.
-    pub checkpoint: Option<SchedulerNodeCheckpoint>,
-}
-
-/// Evidence that a crashed VM node was healed or kept down.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SchedulerNodeRestartApplication {
-    /// Session-local sequence number of the heal/restart application.
-    pub sequence: u64,
-    /// The VM node whose crash fault healed.
-    pub node: NodeId,
-    /// Restart policy that governed the heal.
-    pub restart: RestartPolicy,
-    /// Scheduler frontier point used as the restart anchor.
-    pub at: SimInstant,
-    /// Whether the node resumed execution automatically.
-    pub restarted: bool,
-    /// Node counter after applying the restart policy.
-    pub counter: NodeCounter,
-    /// Effective topology edges queued for restoration.
-    pub restored_edges: Vec<SchedulerLookaheadEdge>,
-    /// Checkpoint anchor used by [`RestartPolicy::FromLastCheckpoint`].
-    pub checkpoint: Option<SchedulerNodeCheckpoint>,
 }
 
 /// Authorization for emitting one cross-node frame under the current topology.

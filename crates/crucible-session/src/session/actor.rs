@@ -276,16 +276,6 @@ pub enum SessionControlPayload {
         /// Fork source checkpoint.
         from: CheckpointRef,
     },
-    /// Full fault injection payload.
-    InjectFault {
-        /// Fault activation payload.
-        spec: FaultSpec,
-    },
-    /// Fault heal payload.
-    HealFault {
-        /// Stable fault handle to heal.
-        tag: FaultTag,
-    },
     /// Breakpoint registration payload.
     SetBreakpoint {
         /// Breakpoint specification.
@@ -308,8 +298,6 @@ impl SessionControlPayload {
         match command {
             SessionCommand::Acknowledge { command, .. } => Self::from(command),
             SessionCommand::Fork { from, .. } => Self::Fork { from: *from },
-            SessionCommand::InjectFault { spec, .. } => Self::InjectFault { spec: spec.clone() },
-            SessionCommand::HealFault { tag, .. } => Self::HealFault { tag: tag.clone() },
             SessionCommand::SetBreakpoint { spec, .. } => {
                 Self::SetBreakpoint { spec: spec.clone() }
             }
@@ -325,15 +313,9 @@ impl SessionControlPayload {
 
     pub(super) fn from_control_or_kind(
         command: SessionCommandKind,
-        control: Option<&ControlOperationKind>,
+        _control: Option<&ControlOperationKind>,
     ) -> Self {
-        match control {
-            Some(ControlOperationKind::InjectFault { tag, fault }) => Self::InjectFault {
-                spec: FaultSpec::new(tag.clone(), fault.clone()),
-            },
-            Some(ControlOperationKind::HealFault { tag }) => Self::HealFault { tag: tag.clone() },
-            _ => Self::CommandKind { command },
-        }
+        Self::CommandKind { command }
     }
 }
 

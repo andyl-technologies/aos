@@ -1,4 +1,4 @@
-//! Frozen structural admission limits from RFC-0015.
+//! Frozen structural admission limits from RFC-0017.
 //!
 //! Deployments may choose smaller operational blob or quota limits. They must
 //! not raise these structural constants without a compatibility review because

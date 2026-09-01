@@ -34,6 +34,13 @@
 ##!     }
 ##!   ];
 ##!   providesCapabilities = [];
+##!   documentation = {
+##!     sections.operations = lib.aosDoc.section "Operations" [
+##!       (lib.aosDoc.paragraph "Operational guidance stored as structured data.")
+##!     ];
+##!     options."example.enable".activation =
+##!       lib.aosDoc.activation "restart" ["example.service"];
+##!   };
 ##! };
 ##! ```
 {lib}: let
@@ -46,7 +53,9 @@
     "declares"
     "ownsRoots"
     "contributes"
+    "artifacts"
     "providesCapabilities"
+    "documentation"
   ];
 
   validateList = packageName: field: value:
@@ -85,6 +94,44 @@
     validateUnique packageName field (
       builtins.map (validateOptionPath packageName field) (validateList packageName field value)
     );
+
+  validateUniqueStrings = packageName: field: validator: value:
+    validateUnique packageName field (
+      builtins.map (validator packageName field) (validateList packageName field value)
+    );
+
+  validateEtcPath = packageName: field: value: let
+    segments =
+      if builtins.isString value
+      then lib.splitString "/" value
+      else [];
+  in
+    throwIfNot
+    (segments
+      != []
+      && builtins.all
+      (segment:
+        segment
+        != ""
+        && segment != "."
+        && segment != ".."
+        && builtins.match "[A-Za-z0-9_@+.,=-]+" segment != null)
+      segments)
+    "configModule for package '${packageName}' field '${field}' contains unsafe relative /etc path '${toString value}'"
+    value;
+
+  validateUnitName = packageName: field: value:
+    throwIfNot
+    (builtins.isString value
+      && builtins.match "[A-Za-z0-9_@+.-]+\\.(service|socket|target|timer|path|slice|mount|automount)" value != null)
+    "configModule for package '${packageName}' field '${field}' contains invalid systemd unit name '${toString value}'"
+    value;
+
+  validateIdentityName = packageName: field: value:
+    throwIfNot
+    (builtins.isString value && builtins.match "[A-Za-z_][A-Za-z0-9_-]*" value != null)
+    "configModule for package '${packageName}' field '${field}' contains invalid account name '${toString value}'"
+    value;
 
   validateSurfaceList = packageName: field: value:
     validateUnique packageName field (
@@ -185,6 +232,13 @@
       (validateList packageName "contributes" (checkedModule.contributes or []));
     providesCapabilities =
       validatePathList packageName "providesCapabilities" (checkedModule.providesCapabilities or []);
+    artifactsValue = validateRecordKeys packageName "artifacts" ["etc" "groups" "units" "users"] (checkedModule.artifacts or {});
+    artifacts = {
+      etc = validateUniqueStrings packageName "artifacts.etc" validateEtcPath (artifactsValue.etc or []);
+      groups = validateUniqueStrings packageName "artifacts.groups" validateIdentityName (artifactsValue.groups or []);
+      units = validateUniqueStrings packageName "artifacts.units" validateUnitName (artifactsValue.units or []);
+      users = validateUniqueStrings packageName "artifacts.users" validateIdentityName (artifactsValue.users or []);
+    };
     dependencies = checkedModule.dependencies or {};
     dependencyNames = builtins.attrNames dependencies;
     checkedDependencies =
@@ -193,6 +247,28 @@
         && builtins.all (name: builtins.match "[A-Za-z0-9_-]+" name != null) dependencyNames)
       "configModule for package '${packageName}' field 'dependencies' must be an attrset with package-name keys"
       (builtins.mapAttrs (_: value: builtins.toString value) dependencies);
+    documentationValue =
+      validateRecordKeys
+      packageName
+      "documentation"
+      ["options" "sections" "summary"]
+      (checkedModule.documentation or {});
+    documentationSections = documentationValue.sections or {};
+    documentationOptions = documentationValue.options or {};
+    documentation =
+      throwIfNot
+      (builtins.isAttrs documentationSections
+        && builtins.all
+        (id: builtins.match "[A-Za-z0-9][A-Za-z0-9_-]*" id != null)
+        (builtins.attrNames documentationSections))
+      "configModule for package '${packageName}' field 'documentation.sections' must be an attrset with safe section identifiers"
+      (throwIfNot
+        (builtins.isAttrs documentationOptions
+          && builtins.all
+          (path: builtins.match "[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*" path != null)
+          (builtins.attrNames documentationOptions))
+        "configModule for package '${packageName}' field 'documentation.options' must be an attrset keyed by option path"
+        documentationValue);
     ownedRootNames = builtins.map (root: root.root) ownsRoots;
     contributedRootNames = builtins.map (contribution: contribution.root) contributes;
     contributionAuthorizes = declaredPath: contribution: let
@@ -213,28 +289,36 @@
           && !(builtins.any (contributionAuthorizes path) contributes)
       )
       declares;
-    metaJson = builtins.toJSON {
-      schema = "aos.config-module-meta/v1";
-      module_abi_compat = {
-        min = abiMin;
-        max = abiMax;
-      };
-      inherit declares;
-      owns_roots =
-        builtins.map (root: {
-          inherit (root) root contributable;
-          interface_abi = root.interfaceAbi;
-        })
-        ownsRoots;
-      contributes =
-        builtins.map (contribution: {
-          inherit (contribution) root paths;
-          interface_abi = contribution.interfaceAbi;
-        })
-        contributes;
-      provides_capabilities = providesCapabilities;
-      dependencies = dependencyNames;
-    };
+    metaJson = builtins.toJSON (
+      {
+        schema = "aos.config-module-meta/v1";
+        module_abi_compat = {
+          min = abiMin;
+          max = abiMax;
+        };
+        inherit declares;
+        owns_roots =
+          builtins.map (root: {
+            inherit (root) root contributable;
+            interface_abi = root.interfaceAbi;
+          })
+          ownsRoots;
+        contributes =
+          builtins.map (contribution: {
+            inherit (contribution) root paths;
+            interface_abi = contribution.interfaceAbi;
+          })
+          contributes;
+        provides_capabilities = providesCapabilities;
+        dependencies = dependencyNames;
+      }
+      // lib.optionalAttrs (builtins.any (values: values != []) (builtins.attrValues artifacts)) {
+        inherit artifacts;
+      }
+      // lib.optionalAttrs (documentation != {}) {
+        inherit documentation;
+      }
+    );
   in
     throwIfNot
     (extraKeys == [])

@@ -8,6 +8,7 @@
   fingerprintHelpers,
 }: let
   taskList = lib.concatStringsSep "," taskIds;
+  fingerprintWorkerSource = ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks/fingerprint_worker.rs;
 in
   pkgs.mkDerivation {
     pname = "crucible-phase7-fingerprint-digest-offload";
@@ -27,10 +28,10 @@ in
         name = "verify-offload-evidence";
         script = ''
           set -eu
-          grep -Fq 'mpsc::sync_channel::<CapturedFingerprintSample>(1)' ${../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs}
-          grep -Fq '.name("crucible-fingerprint-digest".to_owned())' ${../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs}
-          grep -Fq 'let sample = captured.digest();' ${../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs}
-          grep -Fq 'slot.get().publish(&sample)' ${../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs}
+          grep -Fq 'mpsc::sync_channel::<LiveFingerprintDigestWork>(1)' ${fingerprintWorkerSource}
+          grep -Fq '.name("crucible-fingerprint-digest".to_owned())' ${fingerprintWorkerSource}
+          grep -Fq 'let sample = captured.digest();' ${fingerprintWorkerSource}
+          grep -Fq '.publish(&sample)' ${fingerprintWorkerSource}
           grep -Fq 'last_capture_icount' ${../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs}
           grep -Fq 'fingerprint.worker.submit(captured)?;' ${../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs}
           grep -Fq 'struct CapturedFingerprintMaterial' ${../../crates/crucible-qemu-plugin/src/fingerprint_sampler.rs}
@@ -46,7 +47,8 @@ in
           grep -Fq 'sample_target_icounts=4000000,4000001,8000000,8000001,12000000' ${./phase2-qemu-live-plugin-fingerprint.nix}
           grep -Fxq PASS "${liveFingerprint}/result"
           grep -Fxq 'synchronous_oracle_enabled=false' "${liveFingerprint}/result"
-          grep -Fxq 'second_run_host_load=true' "${liveFingerprint}/result"
+          grep -Fxq 'second_run_scheduler_preemption=true' "${liveFingerprint}/result"
+          grep -Fxq 'host_adversary=bounded-scheduler-preemption' "${liveFingerprint}/result"
           grep -Fxq 'sample_count=5' "${liveFingerprint}/result"
           grep -Fxq 'sample_target_icounts=4000000,4000001,8000000,8000001,12000000' "${liveFingerprint}/result"
           grep -Fxq 'aggregate_icount_equals_target=true' "${liveFingerprint}/result"

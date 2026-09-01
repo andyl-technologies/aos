@@ -124,7 +124,10 @@ fn task_metadata_state_failures(
     check: &Path,
     content: &str,
 ) -> Result<Vec<String>, Box<dyn Error>> {
-    let task_states = rfc_task_states(&repo.join("docs/rfcs/0010-crucible"))?;
+    let mut task_states = rfc_task_states(&repo.join("docs/rfcs/0010-crucible"))?;
+    task_states.extend(rfc_task_states(
+        &repo.join("docs/rfcs/0014-signal-driven-fault-model"),
+    )?);
     Ok(task_metadata_state_findings(check, content, &task_states))
 }
 

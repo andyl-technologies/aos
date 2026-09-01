@@ -1,0 +1,98 @@
+//! Bounded file I/O for durable checkpoint objects.
+
+use std::fs::File;
+use std::io::Read as _;
+use std::path::Path;
+use thiserror::Error;
+
+/// Failure while reading one pre-admitted checkpoint file.
+#[derive(Debug, Error)]
+pub(super) enum BoundedReadError {
+    /// File metadata or contents could not be read exactly.
+    #[error("checkpoint file I/O failed: {0}")]
+    Io(#[from] std::io::Error),
+    /// The file exceeded its role-specific read ceiling.
+    #[error("checkpoint file length {length} exceeds read limit {limit}")]
+    Limit {
+        /// Observed file length.
+        length: u64,
+        /// Role-specific maximum.
+        limit: u64,
+    },
+    /// The file length cannot be represented by the host collection type.
+    #[error("checkpoint file length {length} is not representable")]
+    Representation {
+        /// Observed file length.
+        length: u64,
+    },
+    /// Exact owned storage could not be reserved.
+    #[error("checkpoint file allocation of {requested} bytes failed")]
+    Allocation {
+        /// Refused reservation size.
+        requested: u64,
+    },
+}
+
+/// Reads an exact file whose resource ownership was admitted by the caller.
+///
+/// # Errors
+///
+/// Returns [`BoundedReadError`] for file I/O, role-limit, representation, or
+/// allocation failures, and when the file grows during the read.
+pub(super) fn read_bounded_file(path: &Path, limit: u64) -> Result<Vec<u8>, BoundedReadError> {
+    let mut file = File::open(path)?;
+    let length = file.metadata()?.len();
+    if length > limit {
+        return Err(BoundedReadError::Limit { length, limit });
+    }
+    let requested = length;
+    let length =
+        usize::try_from(length).map_err(|_| BoundedReadError::Representation { length })?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|_| BoundedReadError::Allocation { requested })?;
+    bytes.resize(length, 0);
+    file.read_exact(&mut bytes)?;
+    let mut trailing = [0_u8; 1];
+    if file.read(&mut trailing)? != 0 {
+        return Err(BoundedReadError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "checkpoint file changed while it was read",
+        )));
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    #[test]
+    fn bounded_file_read_accepts_exact_limit_and_rejects_larger_input() {
+        let directory = tempfile::tempdir()
+            .unwrap_or_else(|error| panic!("create bounded-read directory: {error}"));
+        let path = directory.path().join("checkpoint");
+        fs::write(&path, b"12345678")
+            .unwrap_or_else(|error| panic!("write bounded-read fixture: {error}"));
+
+        assert_eq!(
+            read_bounded_file(&path, 8)
+                .unwrap_or_else(|error| panic!("read exact-limit checkpoint: {error}")),
+            b"12345678"
+        );
+        let error = match read_bounded_file(&path, 7) {
+            Ok(_) => panic!("over-limit checkpoint should be rejected"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            BoundedReadError::Limit {
+                length: 8,
+                limit: 7
+            }
+        ));
+    }
+}

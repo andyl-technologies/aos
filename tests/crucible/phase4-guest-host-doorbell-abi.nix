@@ -5,11 +5,7 @@
   taskIds ? ["T-GHC-5"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   pluginLib = import ./_rust-module-source.nix {
     inherit lib;
@@ -222,7 +218,7 @@
       }
       {
         label = "canonical ABI gate runs protocol doorbell ABI tests";
-        needle = "run_doorbell_abi_unit_targets";
+        needle = "assert_doorbell_abi_unit_targets_are_gate_wired";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

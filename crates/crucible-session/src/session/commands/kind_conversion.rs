@@ -23,11 +23,7 @@ impl From<&SessionCommand> for SessionCommandKind {
             SessionCommand::Step {
                 mode: StepMode::Duration(_),
             } => Self::StepDuration,
-            SessionCommand::Snapshot => Self::Snapshot,
             SessionCommand::Fork { .. } => Self::Fork,
-            SessionCommand::Inject => Self::Inject,
-            SessionCommand::InjectFault { .. } => Self::InjectFault,
-            SessionCommand::HealFault { .. } => Self::HealFault,
             SessionCommand::SetBreakpoint { .. } => Self::SetBreakpoint,
             SessionCommand::RemoveBreakpoint { .. } => Self::RemoveBreakpoint,
             SessionCommand::CreateSavepoint { .. } => Self::CreateSavepoint,

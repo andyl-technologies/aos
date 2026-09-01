@@ -1061,6 +1061,80 @@ impl std::fmt::Display for RpcError {
 
 impl std::error::Error for RpcError {}
 
+fn package_documentation_identity(
+    locator: &crate::db::PackageDocumentationLocator,
+) -> pb::PackageDocumentationIdentity {
+    pb::PackageDocumentationIdentity {
+        registry_commit: locator.indexed_commit.clone(),
+        package: locator.package_name.clone(),
+        version: locator.package_version.clone(),
+        platform: locator.platform.clone(),
+        format: locator.artifact.format.clone(),
+        store_path: locator.artifact.store_path.clone(),
+        nar_hash: locator.artifact.nar_hash.clone(),
+        nar_size: locator.artifact.nar_size,
+        document_sha256: locator.artifact.document_sha256.clone(),
+        document_size: locator.artifact.document_size,
+        semantic_schema_sha256: locator.artifact.semantic_schema_sha256.clone(),
+    }
+}
+
+fn package_option_view(
+    identity: &pb::PackageDocumentationIdentity,
+    option: &aos_doc_model::OptionDocument,
+) -> anyhow::Result<pb::PackageOptionView> {
+    Ok(pb::PackageOptionView {
+        identity: Some(identity.clone()),
+        path: option
+            .path
+            .iter()
+            .map(|segment| pb::DocumentationPathSegment {
+                segment: Some(match segment {
+                    aos_doc_model::PathSegment::Literal { value } => {
+                        pb::documentation_path_segment::Segment::Literal(value.clone())
+                    }
+                    aos_doc_model::PathSegment::Wildcard { name } => {
+                        pb::documentation_path_segment::Segment::Wildcard(name.clone())
+                    }
+                }),
+            })
+            .collect(),
+        display_path: option.display_path.clone(),
+        r#type: option.type_signature.clone(),
+        owner_package: option.owner.package.clone(),
+        owner_root: option.owner.root.clone(),
+        contributable: option.contributable,
+        canonical_option_json: serde_json::to_vec(option)?,
+    })
+}
+
+fn proto_documentation_path(
+    path: &[pb::DocumentationPathSegment],
+) -> Result<Vec<aos_doc_model::PathSegment>, RpcError> {
+    path.iter()
+        .map(|segment| match segment.segment.as_ref() {
+            Some(pb::documentation_path_segment::Segment::Literal(value)) if !value.is_empty() => {
+                Ok(aos_doc_model::PathSegment::Literal {
+                    value: value.clone(),
+                })
+            }
+            Some(pb::documentation_path_segment::Segment::Wildcard(name)) if !name.is_empty() => {
+                Ok(aos_doc_model::PathSegment::Wildcard { name: name.clone() })
+            }
+            _ => Err(RpcError::invalid("option path contains an empty segment")),
+        })
+        .collect()
+}
+
+fn is_sha256_digest(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
 /// Slice one page out of `items` using an opaque versioned offset token.
 ///
 /// Returns the page plus the `next_page_token` (empty once exhausted). The
@@ -3080,6 +3154,7 @@ impl RpcService {
                 &req.owner_scope_key,
                 req.page_size,
                 (!req.page_token.is_empty()).then_some(req.page_token.as_str()),
+                req.include_granted,
             )
             .await
             .map_err(RpcError::internal)?;
@@ -5227,6 +5302,7 @@ impl RpcService {
                 &req.owner_scope_key,
                 req.page_size,
                 (!req.page_token.is_empty()).then_some(req.page_token.as_str()),
+                req.include_granted,
             )
             .await
             .map_err(RpcError::internal)?;
@@ -9998,7 +10074,6 @@ impl RpcService {
         self.container_rollout = rollout;
         self
     }
-
     /// Attaches the runtime DNS verifier for organization-domain challenges.
     #[must_use]
     pub fn with_identity_domain_verifier(
@@ -11314,6 +11389,332 @@ impl RpcService {
         })
     }
 
+    /// `DocumentationService.GetPackageDocumentation` — one exact canonical document.
+    ///
+    /// Empty version/platform selectors resolve to the newest indexed version
+    /// and first platform. The canonical JSON is fetched from and reverified
+    /// against the signed Nix object on every uncached service read.
+    ///
+    /// # Errors
+    ///
+    /// Returns the ordinary registry visibility failures, not-found for an
+    /// absent selection, and internal/unavailable errors for object-integrity
+    /// or placement failures.
+    pub async fn get_package_documentation(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetPackageDocumentationRequest,
+    ) -> Result<pb::GetPackageDocumentationResponse, RpcError> {
+        let registry = self.registry_or_not_found(&req.registry).await?;
+        self.require_read(auth, &registry).await?;
+        let (locator, document) = self
+            .load_package_documentation_for_registry(
+                registry.id,
+                &req.package,
+                &req.version,
+                &req.platform,
+            )
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("package documentation"))?;
+        let canonical_json = document.canonical_json().map_err(RpcError::internal)?;
+        let identity = package_documentation_identity(&locator);
+        let artifact = locator.artifact;
+        Ok(pb::GetPackageDocumentationResponse {
+            identity: Some(identity),
+            canonical_json,
+            etag: artifact.document_sha256,
+        })
+    }
+
+    /// Loads and re-verifies one indexed package document after authorization.
+    ///
+    /// The caller must already have authorized access to `registry_id`. This
+    /// helper is shared by the typed API and the session-aware browser so both
+    /// runtimes render bytes from the same signed Nix-object path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for database, placement, transport, NAR, or canonical
+    /// document verification failures.
+    pub(crate) async fn load_package_documentation_for_registry(
+        &self,
+        registry_id: i64,
+        package: &str,
+        version: &str,
+        platform: &str,
+    ) -> anyhow::Result<
+        Option<(
+            crate::db::PackageDocumentationLocator,
+            aos_doc_model::PackageDocumentation,
+        )>,
+    > {
+        let Some(locator) = self
+            .db
+            .resolve_package_documentation_locator(registry_id, package, version, platform)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let document = self
+            .load_package_documentation_locator(registry_id, &locator)
+            .await?;
+        Ok(Some((locator, document)))
+    }
+
+    async fn load_package_documentation_locator(
+        &self,
+        registry_id: i64,
+        locator: &crate::db::PackageDocumentationLocator,
+    ) -> anyhow::Result<aos_doc_model::PackageDocumentation> {
+        let fetch = self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry_id));
+        crate::indexer::fetch_package_documentation(
+            fetch.as_ref(),
+            &locator.package_name,
+            &locator.package_version,
+            &locator.platform,
+            &locator.artifact,
+        )
+        .await
+    }
+
+    /// `DocumentationService.SearchPackageDocumentation` — ranked index search.
+    ///
+    /// # Errors
+    ///
+    /// Returns visibility, argument, pagination, or database errors.
+    pub async fn search_package_documentation(
+        &self,
+        auth: Option<&str>,
+        req: pb::SearchPackageDocumentationRequest,
+    ) -> Result<pb::SearchPackageDocumentationResponse, RpcError> {
+        let registry = self.registry_or_not_found(&req.registry).await?;
+        self.require_read(auth, &registry).await?;
+        if req.query.trim().is_empty() {
+            return Err(RpcError::invalid("documentation query must not be empty"));
+        }
+        let kind = (!req.kind.is_empty()).then_some(req.kind.as_str());
+        if kind.is_some_and(|kind| {
+            !matches!(
+                kind,
+                "package" | "option" | "service" | "credential" | "capability"
+            )
+        }) {
+            return Err(RpcError::invalid("unsupported documentation result kind"));
+        }
+        let results = self
+            .db
+            .search_package_documentation(registry.id, &req.query, kind, 100)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(|result| pb::PackageDocumentationSearchResult {
+                package: result.package_name,
+                version: result.package_version,
+                platform: result.platform,
+                kind: result.kind,
+                key: result.key,
+                title: result.title,
+                summary: result.summary,
+                score: result.score,
+            })
+            .collect();
+        let (results, next_page_token) = paginate(results, req.page_size, &req.page_token)?;
+        Ok(pb::SearchPackageDocumentationResponse {
+            results,
+            next_page_token,
+        })
+    }
+
+    /// Lists structured options for one exact or default package selection.
+    ///
+    /// # Errors
+    ///
+    /// Returns visibility, selection, filter, pagination, or object-integrity errors.
+    pub async fn list_package_options(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListPackageOptionsRequest,
+    ) -> Result<pb::ListPackageOptionsResponse, RpcError> {
+        let registry = self.registry_or_not_found(&req.registry).await?;
+        self.require_read(auth, &registry).await?;
+        let (locator, document) = self
+            .load_package_documentation_for_registry(
+                registry.id,
+                &req.package,
+                &req.version,
+                &req.platform,
+            )
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("package documentation"))?;
+        let identity = package_documentation_identity(&locator);
+        let mut options = Vec::new();
+        for option in &document.options {
+            if !req.prefix.is_empty() && !option.display_path.starts_with(&req.prefix) {
+                continue;
+            }
+            if !req.owner.is_empty()
+                && option.owner.package != req.owner
+                && option.owner.root != req.owner
+            {
+                continue;
+            }
+            if !req.r#type.is_empty() && option.type_signature != req.r#type {
+                continue;
+            }
+            if req
+                .contributable
+                .is_some_and(|contributable| option.contributable != contributable)
+            {
+                continue;
+            }
+            options.push(package_option_view(&identity, option).map_err(RpcError::internal)?);
+        }
+        let (options, next_page_token) = paginate(options, req.page_size, &req.page_token)?;
+        Ok(pb::ListPackageOptionsResponse {
+            options,
+            next_page_token,
+        })
+    }
+
+    /// Loads one structured option by its unambiguous path segments.
+    ///
+    /// # Errors
+    ///
+    /// Returns visibility, selection, path, not-found, or integrity errors.
+    pub async fn get_package_option(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetPackageOptionRequest,
+    ) -> Result<pb::GetPackageOptionResponse, RpcError> {
+        let registry = self.registry_or_not_found(&req.registry).await?;
+        self.require_read(auth, &registry).await?;
+        let requested = proto_documentation_path(&req.path)?;
+        if requested.is_empty() {
+            return Err(RpcError::invalid("option path must not be empty"));
+        }
+        let (locator, document) = self
+            .load_package_documentation_for_registry(
+                registry.id,
+                &req.package,
+                &req.version,
+                &req.platform,
+            )
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("package documentation"))?;
+        let option = document
+            .options
+            .iter()
+            .find(|option| option.path == requested)
+            .ok_or_else(|| RpcError::not_found("package option"))?;
+        Ok(pb::GetPackageOptionResponse {
+            option: Some(
+                package_option_view(&package_documentation_identity(&locator), option)
+                    .map_err(RpcError::internal)?,
+            ),
+        })
+    }
+
+    /// Compares two exact package documentation versions on one platform.
+    ///
+    /// # Errors
+    ///
+    /// Returns visibility, exact-selection, integrity, or comparison errors.
+    pub async fn compare_package_documentation(
+        &self,
+        auth: Option<&str>,
+        req: pb::ComparePackageDocumentationRequest,
+    ) -> Result<pb::ComparePackageDocumentationResponse, RpcError> {
+        if req.from_version.is_empty() || req.to_version.is_empty() || req.platform.is_empty() {
+            return Err(RpcError::invalid(
+                "comparison requires from_version, to_version, and platform",
+            ));
+        }
+        let registry = self.registry_or_not_found(&req.registry).await?;
+        self.require_read(auth, &registry).await?;
+        let (from_locator, from_document) = self
+            .load_package_documentation_for_registry(
+                registry.id,
+                &req.package,
+                &req.from_version,
+                &req.platform,
+            )
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("source package documentation"))?;
+        let (to_locator, to_document) = self
+            .load_package_documentation_for_registry(
+                registry.id,
+                &req.package,
+                &req.to_version,
+                &req.platform,
+            )
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("destination package documentation"))?;
+        let comparison = from_document
+            .compare(&to_document)
+            .map_err(|error| RpcError::invalid(error.to_string()))?;
+        Ok(pb::ComparePackageDocumentationResponse {
+            from: Some(package_documentation_identity(&from_locator)),
+            to: Some(package_documentation_identity(&to_locator)),
+            canonical_comparison_json: serde_json::to_vec(&comparison)
+                .map_err(RpcError::internal)?,
+        })
+    }
+
+    /// Loads one immutable documentation artifact by its signed document digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns visibility, digest, not-found, placement, or integrity errors.
+    pub async fn get_documentation_artifact(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetDocumentationArtifactRequest,
+    ) -> Result<pb::GetPackageDocumentationResponse, RpcError> {
+        if !is_sha256_digest(&req.document_sha256) {
+            return Err(RpcError::invalid("invalid documentation SHA-256 digest"));
+        }
+        let registry = self.registry_or_not_found(&req.registry).await?;
+        self.require_read(auth, &registry).await?;
+        let locator = self
+            .db
+            .package_documentation_locator_by_digest(registry.id, &req.document_sha256)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("documentation artifact"))?;
+        let document = self
+            .load_package_documentation_locator(registry.id, &locator)
+            .await
+            .map_err(RpcError::internal)?;
+        let canonical_json = document.canonical_json().map_err(RpcError::internal)?;
+        Ok(pb::GetPackageDocumentationResponse {
+            identity: Some(package_documentation_identity(&locator)),
+            canonical_json,
+            etag: locator.artifact.document_sha256.clone(),
+        })
+    }
+
+    /// `DocumentationService.GetPackageDocumentationSchema` — closed v1 JSON Schema.
+    ///
+    /// # Errors
+    ///
+    /// This method has no expected error conditions.
+    pub async fn get_package_documentation_schema(
+        &self,
+        _auth: Option<&str>,
+        _req: pb::GetPackageDocumentationSchemaRequest,
+    ) -> Result<pb::GetPackageDocumentationSchemaResponse, RpcError> {
+        Ok(pb::GetPackageDocumentationSchemaResponse {
+            schema: aos_doc_model::DOCUMENT_SCHEMA.to_string(),
+            media_type: aos_doc_model::DOCUMENT_FORMAT.to_string(),
+            json_schema: aos_doc_model::DOCUMENT_JSON_SCHEMA.as_bytes().to_vec(),
+        })
+    }
+
     /// `ChannelService.ListChannels` — channels with full partition maps.
     ///
     /// # Errors
@@ -12173,10 +12574,13 @@ impl RpcService {
                     &mut provider.access_mode,
                 )?;
             }
-            Some(pb::binding_spec::Provider::DeploymentR2(_)) => {
-                return Err(RpcError::invalid(
-                    "deployment R2 bindings are provisioned only by the serving runtime",
-                ));
+            Some(pb::binding_spec::Provider::DeploymentR2(provider)) => {
+                provider.bucket_binding = provider.bucket_binding.trim().to_string();
+                if provider.bucket_binding != crate::binding::DEPLOYMENT_R2_ATTACHMENT {
+                    return Err(RpcError::invalid(
+                        "deployment R2 bucketBinding must name the REGISTRY_BUCKET runtime attachment",
+                    ));
+                }
             }
             None => return Err(RpcError::invalid("binding provider is required")),
         }
@@ -12466,11 +12870,14 @@ impl RpcService {
     ) -> Result<pb::ListBindingsResponse, RpcError> {
         self.readable_storage_owner(auth, &req.owner_scope_key)
             .await?;
-        let records = self
-            .db
-            .list_bindings_by_scope(&req.owner_scope_key)
-            .await
-            .map_err(RpcError::internal)?;
+        let records = if req.include_granted {
+            self.db
+                .list_bindings_available_to_scope(&req.owner_scope_key)
+                .await
+        } else {
+            self.db.list_bindings_by_scope(&req.owner_scope_key).await
+        }
+        .map_err(RpcError::internal)?;
         let mut bindings = Vec::with_capacity(records.len());
         for record in records {
             bindings.push(self.binding_message(record).await?);
@@ -12686,11 +13093,14 @@ impl RpcService {
                     Some(provider.signing_region.as_str()),
                     Some(provider.access_mode.as_str()),
                 ),
-                Some(pb::binding_spec::Provider::DeploymentR2(_)) => {
-                    return Err(RpcError::internal(anyhow::anyhow!(
-                        "deployment R2 provider escaped plan validation"
-                    )));
-                }
+                Some(pb::binding_spec::Provider::DeploymentR2(provider)) => (
+                    "deployment_r2",
+                    None,
+                    Some(provider.bucket_binding.as_str()),
+                    Some(""),
+                    None,
+                    None,
+                ),
                 None => {
                     return Err(RpcError::internal(anyhow::anyhow!(
                         "binding plan has no provider"
@@ -12722,6 +13132,12 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::internal(anyhow::anyhow!("created binding disappeared")))?;
+        if matches!(record.kind.as_str(), "local_fs" | "deployment_r2") {
+            self.db
+                .ensure_deployment_owned_write_revision(&record)
+                .await
+                .map_err(RpcError::internal)?;
+        }
         let response = pb::BindingResponse {
             binding: Some(self.binding_message(record).await?),
         };
@@ -14162,24 +14578,23 @@ impl RpcService {
         if stable_id.is_empty() {
             return Err(RpcError::invalid("bindingId is required"));
         }
-        let binding = match org_id {
-            Some(id) => self
-                .db
-                .list_bindings(id)
-                .await
-                .map_err(RpcError::internal)?
-                .into_iter()
-                .find(|binding| binding.stable_id == stable_id),
-            None => None,
+        let owner_scope_key = match org_id {
+            Some(id) => {
+                self.db
+                    .org_by_id(id)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| RpcError::not_found("organization"))?
+                    .stable_id
+            }
+            None => "instance".to_owned(),
         };
-        if let Some(binding) = binding {
-            return Ok(binding.id);
-        }
         self.db
-            .instance_default_binding()
+            .list_bindings_available_to_scope(&owner_scope_key)
             .await
             .map_err(RpcError::internal)?
-            .filter(|binding| binding.stable_id == stable_id)
+            .into_iter()
+            .find(|binding| binding.stable_id == stable_id)
             .map(|binding| binding.id)
             .ok_or_else(|| RpcError::not_found("binding"))
     }
@@ -14387,6 +14802,7 @@ impl RpcService {
     /// Returns the first stable metadata-deletion precondition.
     fn placement_delete_blocker_error(
         blockers: crate::db::SurfacePlacementBlockers,
+        registry_placement: bool,
     ) -> Option<RpcError> {
         if blockers.direct_route {
             Some(RpcError::FailedPrecondition(
@@ -14396,11 +14812,15 @@ impl RpcService {
             Some(RpcError::FailedPrecondition(
                 "placement is referenced by a placement policy".to_string(),
             ))
-        } else if blockers.object_presence {
+        } else if blockers.object_presence && !registry_placement {
             Some(RpcError::FailedPrecondition(
                 "placement has object-presence inventory".to_string(),
             ))
-        } else if blockers.publication {
+        } else if blockers.active_publication {
+            Some(RpcError::FailedPrecondition(
+                "placement has active registry-publication state".to_string(),
+            ))
+        } else if blockers.publication && !registry_placement {
             Some(RpcError::FailedPrecondition(
                 "placement has registry-publication state".to_string(),
             ))
@@ -17081,6 +17501,9 @@ impl RpcService {
         };
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
             .await?;
+        if let Err(error) = self.topology_probes.wake_controller().await {
+            tracing::warn!(error = %format!("{error:#}"), "waking write-authority controller");
+        }
         Ok(response)
     }
 
@@ -17241,6 +17664,9 @@ impl RpcService {
         };
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
             .await?;
+        if let Err(error) = self.topology_probes.wake_controller().await {
+            tracing::warn!(error = %format!("{error:#}"), "waking write-authority controller");
+        }
         Ok(response)
     }
 
@@ -18278,7 +18704,10 @@ impl RpcService {
             .surface_placement_blockers(current.id)
             .await
             .map_err(RpcError::internal)?;
-        if let Some(error) = Self::placement_delete_blocker_error(blockers) {
+        if let Some(error) = Self::placement_delete_blocker_error(
+            blockers,
+            matches!(surface, SurfaceTarget::Registry(_)),
+        ) {
             return Err(error);
         }
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
@@ -18384,15 +18813,23 @@ impl RpcService {
             .surface_placement_blockers(current.id)
             .await
             .map_err(RpcError::internal)?;
-        if let Some(error) = Self::placement_delete_blocker_error(blockers) {
+        if let Some(error) = Self::placement_delete_blocker_error(
+            blockers,
+            matches!(surface, SurfaceTarget::Registry(_)),
+        ) {
             return Err(error);
         }
-        if !self
-            .db
-            .delete_surface_placement(current.id, input.baseline_resource_version)
-            .await
-            .map_err(RpcError::internal)?
-        {
+        let deleted = if matches!(surface, SurfaceTarget::Registry(_)) {
+            self.db
+                .delete_registry_surface_placement(current.id, input.baseline_resource_version)
+                .await
+        } else {
+            self.db
+                .delete_surface_placement(current.id, input.baseline_resource_version)
+                .await
+        }
+        .map_err(RpcError::internal)?;
+        if !deleted {
             return Err(RpcError::FailedPrecondition(
                 "placement changed while deletion was applied".to_string(),
             ));
@@ -22476,9 +22913,7 @@ impl RpcService {
 
     /// The consumer-facing base URL for a registry's git surface.
     ///
-    /// An explicit canonical Git route is authoritative. Without one, a public
-    /// registry on a complete reconciled instance-default placement derives
-    /// its URL from the configured public storage origin.
+    /// The selected canonical Git route is the only source of a consumer URL.
     ///
     /// # Errors
     ///
@@ -22487,58 +22922,13 @@ impl RpcService {
         &self,
         registry: &RegistryRecord,
     ) -> Result<String, RpcError> {
-        if let Some(url) = self
-            .db
+        self.db
             .ready_registry_canonical_url(registry.id)
             .await
             .map_err(RpcError::internal)?
-        {
-            return Ok(url);
-        }
-
-        // An explicit selection is an operator-owned override. Never bypass
-        // its failed readiness evidence with the convenient default path.
-        if self
-            .db
-            .route_advertisement(SurfaceTarget::Registry(registry.id), "git")
-            .await
-            .map_err(RpcError::internal)?
-            .is_some()
-        {
-            return Err(RpcError::FailedPrecondition(
-                "registry canonical Git route is not ready".to_owned(),
-            ));
-        }
-
-        let Some(base) = self.default_public_delivery_url.as_deref() else {
-            return Err(RpcError::FailedPrecondition(
-                "registry canonical Git route is not ready".to_owned(),
-            ));
-        };
-        if registry.visibility != "public" {
-            return Err(RpcError::FailedPrecondition(
-                "non-public registry requires an explicit canonical Git route".to_owned(),
-            ));
-        }
-        let Some(path) = self
-            .db
-            .default_public_delivery_path(SurfaceTarget::Registry(registry.id))
-            .await
-            .map_err(RpcError::internal)?
-        else {
-            return Err(RpcError::FailedPrecondition(
-                "registry has no published complete placement on default storage".to_owned(),
-            ));
-        };
-
-        let mut url = url::Url::parse(base).map_err(RpcError::internal)?;
-        let joined = [url.path().trim_matches('/'), path.trim_matches('/')]
-            .into_iter()
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>()
-            .join("/");
-        url.set_path(&format!("/{joined}/"));
-        Ok(url.to_string())
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("registry canonical Git route is not ready".to_owned())
+            })
     }
 
     /// Resolves the canonical Nix-cache delivery URL for a binary cache.
@@ -24397,7 +24787,7 @@ impl RpcService {
             .map_err(RpcError::internal)?;
         if placements.is_empty() {
             return Err(RpcError::FailedPrecondition(
-                "registry has no complete validated publication placement".into(),
+                "registry has no validated writable publication placement".into(),
             ));
         }
         let manifest_digest = hex::encode(Sha256::digest(
@@ -32228,6 +32618,15 @@ impl RpcService {
             )
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+        if matches!(
+            updated.operation_kind.as_str(),
+            "scan_placement" | "replicate_placement" | "repair_placement"
+        ) {
+            self.topology_probes
+                .wake_controller()
+                .await
+                .map_err(RpcError::internal)?;
+        }
         Ok(pb::OperationDetailResponse {
             operation: Some(self.operation_detail(&updated).await?),
         })
@@ -32406,6 +32805,7 @@ impl RpcService {
                 .unwrap_or(operation.created_at),
             finished_at: operation.finished_at,
             resource_version: operation.resource_version.to_string(),
+            detail_json: operation.detail_json.clone(),
         })
     }
 }
@@ -36290,14 +36690,30 @@ mod cache_upload_tests {
     }
 
     #[tokio::test]
-    async fn public_registry_derives_git_url_from_default_storage_placement() {
+    async fn registry_without_a_canonical_route_has_no_consumer_url() {
         let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
-        let binding_id = db
-            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
+        let binding = db
+            .ensure_instance_default_binding(
+                "deployment_r2",
+                None,
+                Some(crate::binding::DEPLOYMENT_R2_ATTACHMENT),
+            )
             .await
-            .unwrap()
-            .id;
+            .unwrap();
         let org_id = db.create_org("automatic", "Automatic").await.unwrap();
+        let org = db.org_by_id(org_id).await.unwrap().unwrap();
+        db.grant_consumer_scope(
+            crate::db::GrantResource::Binding {
+                id: binding.id,
+                stable_id: &binding.stable_id,
+            },
+            &org.stable_id,
+            "explicit",
+            "test",
+            "request:automatic-binding-grant",
+        )
+        .await
+        .unwrap();
         let registry_id = db
             .create_managed_registry(org_id, "", "main", "public", &[], false)
             .await
@@ -36306,8 +36722,8 @@ mod cache_upload_tests {
             .create_surface_placement(&NewSurfacePlacementSpec {
                 surface: SurfaceTarget::Registry(registry_id),
                 name: "primary".into(),
-                binding_id,
-                prefix: "registries/registry-stable-id".into(),
+                binding_id: binding.id,
+                prefix: "automatic/main".into(),
                 kind: "complete".into(),
                 desired_state: "active".into(),
                 hash_range: None,
@@ -36322,52 +36738,10 @@ mod cache_upload_tests {
             .unwrap();
         let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
 
-        let service = service
-            .with_default_public_delivery_url("https://cdn.example.test/storage-root".into());
-        assert_eq!(
-            service.registry_consumer_url(&registry).await.unwrap(),
-            "https://cdn.example.test/storage-root/registries/registry-stable-id/"
-        );
-    }
-
-    #[tokio::test]
-    async fn private_registry_does_not_inherit_public_storage_delivery() {
-        let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
-        let binding_id = db
-            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
-            .await
-            .unwrap()
-            .id;
-        let org_id = db.create_org("private-auto", "Private auto").await.unwrap();
-        let registry_id = db
-            .create_managed_registry(org_id, "", "main", "private", &[], false)
-            .await
-            .unwrap();
-        let placement = db
-            .create_surface_placement(&NewSurfacePlacementSpec {
-                surface: SurfaceTarget::Registry(registry_id),
-                name: "primary".into(),
-                binding_id,
-                prefix: "registries/private".into(),
-                kind: "complete".into(),
-                desired_state: "active".into(),
-                hash_range: None,
-                desired_read_enabled: true,
-                read_order: 0,
-                requires_conditional_writes: false,
-            })
-            .await
-            .unwrap();
-        db.observe_surface_placement(placement.id, "ready", "complete", 1)
-            .await
-            .unwrap();
-        let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
-
-        let service = service.with_default_public_delivery_url("https://cdn.example.test".into());
         assert!(matches!(
             service.registry_consumer_url(&registry).await,
             Err(RpcError::FailedPrecondition(message))
-                if message.contains("explicit canonical Git route")
+                if message.contains("canonical Git route")
         ));
     }
 
@@ -38149,6 +38523,13 @@ mod cache_upload_tests {
             ),
             (
                 SurfacePlacementBlockers {
+                    active_publication: true,
+                    ..Default::default()
+                },
+                "placement has active registry-publication state",
+            ),
+            (
+                SurfacePlacementBlockers {
                     deletion_job: true,
                     ..Default::default()
                 },
@@ -38163,11 +38544,33 @@ mod cache_upload_tests {
             ),
         ];
         for (blockers, expected) in cases {
-            let error = RpcService::placement_delete_blocker_error(blockers).unwrap();
+            let error = RpcService::placement_delete_blocker_error(blockers, false).unwrap();
             assert_eq!(error.code(), "failed_precondition");
             assert_eq!(error.message(), expected);
             assert!(!error.message().contains("FOREIGN KEY"));
         }
+
+        assert!(RpcService::placement_delete_blocker_error(
+            SurfacePlacementBlockers {
+                object_presence: true,
+                publication: true,
+                ..Default::default()
+            },
+            true,
+        )
+        .is_none());
+        assert_eq!(
+            RpcService::placement_delete_blocker_error(
+                SurfacePlacementBlockers {
+                    active_publication: true,
+                    ..Default::default()
+                },
+                true,
+            )
+            .unwrap()
+            .message(),
+            "placement has active registry-publication state"
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Live crucible-shmem block-driver realization gate.
 //!
 //! Boots the patched QEMU binary with a crucible-shmem virtio-blk device
-//! attached through the legacy `-drive driver=crucible-shmem` interface and the
+//! attached through the typed `-blockdev driver=crucible-shmem` interface and the
 //! CPU frozen at reset (`-S`), negotiates QMP, and asserts the VM reached the
 //! `prelaunch` run state. Reaching prelaunch proves QEMU parsed the driver name,
 //! ran `bdrv_open` on the crucible-shmem node, and realized the virtio-blk

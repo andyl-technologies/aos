@@ -1,4 +1,4 @@
--- OCI container catalog and lifecycle state (RFC-0015).
+-- OCI container catalog and lifecycle state (RFC-0017).
 --
 -- Repository names are local to one AOS registry. Immutable object bytes live
 -- in the registry surface at oci/blobs/sha256/<digest>; SQL retains only

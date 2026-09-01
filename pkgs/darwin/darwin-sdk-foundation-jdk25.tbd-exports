@@ -1,0 +1,12 @@
+      - _NSClassFromString
+      - _NSEqualRects
+      - _NSPointFromString
+      - _NSRangeFromString
+      - _NSStringFromSelector
+      - _NSUserNotificationDefaultSoundName
+      - '_OBJC_CLASS_$_NSLock'
+      - '_OBJC_METACLASS_$_NSLock'
+      - '_OBJC_CLASS_$_NSPointerArray'
+      - '_OBJC_METACLASS_$_NSPointerArray'
+      - '_OBJC_METACLASS_$_NSUserNotification'
+      - '_OBJC_METACLASS_$_NSUserNotificationCenter'

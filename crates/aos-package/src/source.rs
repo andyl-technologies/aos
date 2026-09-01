@@ -24,30 +24,16 @@ use super::download::{
     DownloadRequest, default_engine, download_nars, fetch_narinfo_closure, resolve_mirror_chain,
     split_mirror_chain,
 };
+use super::platform::native_platform;
 use super::profile::Profile;
 use super::profile::meta;
 use super::registry::{RegistrySet, store_path_hash};
-use super::store::{filter_missing, import_nar};
+use super::store::filter_missing;
 use super::types::{InstalledMeta, PackageMeta};
 use super::verify as hash_verify;
 use aos_core::error::AosError;
 use aos_core::nix::aos_nix_env;
 use aos_core::output::{OutputMode, Printer};
-
-// ---------------------------------------------------------------------------
-// Platform detection (shared helper)
-// ---------------------------------------------------------------------------
-
-/// Nix platform string for the running binary, defaulting to x86_64-linux.
-fn current_platform() -> &'static str {
-    if cfg!(target_arch = "x86_64") {
-        "x86_64-linux"
-    } else if cfg!(target_arch = "aarch64") {
-        "aarch64-linux"
-    } else {
-        "x86_64-linux"
-    }
-}
 
 // ---------------------------------------------------------------------------
 // apm verify <package>
@@ -93,7 +79,7 @@ pub async fn run_verify(config: &ApmConfig, package: &str, printer: &Printer) ->
     // 2. Load registries and resolve the exact installed package entry for
     // its NAR hash. The latest registry candidate may differ after rollback.
     let enabled = config.enabled_registries();
-    let reg_set = RegistrySet::load(&config.cache_path(), &enabled, current_platform())?;
+    let reg_set = RegistrySet::load(&config.cache_path(), &enabled, &native_platform())?;
     let pkg_meta = resolve_installed_package_meta(&reg_set, package, installed)?;
 
     // Prefer the signed store/ graph: a path may have multiple blessed NARs,
@@ -279,7 +265,7 @@ pub async fn run_source(
     printer: &Printer,
 ) -> Result<()> {
     let enabled = config.enabled_registries();
-    let reg_set = RegistrySet::load(&config.cache_path(), &enabled, current_platform())?;
+    let reg_set = RegistrySet::load(&config.cache_path(), &enabled, &native_platform())?;
 
     let mut installed_store_path = None;
     let (registry_name, source_drv, source_nar_hash, expected_hash) = if verify_source {
@@ -575,16 +561,21 @@ async fn fetch_source_from_registry_cache(
     for result in &results {
         hash_verify::verify_download_hash(&result.local_path, &result.download_hash)
             .with_context(|| format!("verifying download for {}", result.store_path))?;
-        hash_verify::verify_nar_hash(&result.local_path, &result.nar_hash)
-            .with_context(|| format!("verifying NAR hash for {}", result.store_path))?;
+        hash_verify::verify_nar_hash_with_compression(
+            &result.local_path,
+            &result.nar_hash,
+            &result.compression,
+        )
+        .with_context(|| format!("verifying NAR hash for {}", result.store_path))?;
     }
 
     for result in &results {
-        import_nar(
+        crate::store::import_nar_with_compression(
             &result.local_path,
             &result.store_path,
             &result.references,
             result.deriver.as_deref(),
+            &result.compression,
         )
         .await
         .with_context(|| format!("importing source path {}", result.store_path))?;
@@ -697,6 +688,7 @@ priority = 500
                 expose: None,
                 expose_artifact: None,
                 config_module: None,
+                documentation: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -859,6 +851,7 @@ references = []
                 expose: None,
                 expose_artifact: None,
                 config_module: None,
+                documentation: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -893,6 +886,7 @@ references = []
                 expose: None,
                 expose_artifact: None,
                 config_module: None,
+                documentation: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -932,6 +926,7 @@ references = []
                 expose: None,
                 expose_artifact: None,
                 config_module: None,
+                documentation: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),

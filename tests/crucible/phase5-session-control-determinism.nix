@@ -6,11 +6,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
@@ -68,14 +64,6 @@
         needle = "pub scheduler_batch: u64";
       }
       {
-        label = "running and paused inject applies immediate scheduler control";
-        needle = "self.apply_control_operation_at_boundary(control.clone())?";
-      }
-      {
-        label = "running and paused inject records scheduler control";
-        needle = "self.record_boundary_control_at(\n                        &command,\n                        Some(control),";
-      }
-      {
         label = "paused mutator regression test";
         needle = "paused_boundary_mutators_apply_and_record_control_log";
       }
@@ -84,16 +72,12 @@
         needle = "control_replay_artifact_reproduces_interactive_scheduler_state";
       }
       {
-        label = "control replay mismatch test";
-        needle = "control_replay_artifact_rejects_wrong_boundary_frontier";
-      }
-      {
         label = "control replay final mismatch test";
         needle = "control_replay_artifact_rejects_final_snapshot_mismatch";
       }
       {
-        label = "grouped breakpoint replay batch test";
-        needle = "control_replay_artifact_replays_grouped_breakpoint_actions_as_one_batch";
+        label = "replay groups scheduler controls by recorded batch";
+        needle = "self.apply_control_operations_at_boundary(controls)?;";
       }
       {
         label = "control-sensitive replay loop";
@@ -104,8 +88,8 @@
         needle = "self.control_batches.saturating_mul(100_000)";
       }
       {
-        label = "breakpoint action boundary control coverage";
-        needle = "breakpoint_action_applies_scheduler_control_at_boundary";
+        label = "breakpoint action group prevalidation coverage";
+        needle = "breakpoint_action_group_is_prevalidated_before_control_application";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

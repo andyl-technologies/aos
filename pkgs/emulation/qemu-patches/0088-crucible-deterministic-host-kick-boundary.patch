@@ -1,0 +1,116 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index 54ed19223..fccb3f282 100644
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -46,11 +46,63 @@
+ #include "system/crucible-sim-ipi.h"
+ #include "system/crucible-sim-preemption.h"
+ 
++static bool rr_crucible_sim_mode(void);
++static CPUState *rr_current_cpu;
++
+ /* Kick all RR vCPUs */
+ void rr_kick_vcpu_thread(CPUState *unused)
+ {
+     CPUState *cpu;
++    bool stateful_exit = false;
+ 
++    if (rr_crucible_sim_mode() &&
++        icount_crucible_rr_switch_quantum() != 0 &&
++        icount_get_raw_observed() > 0 &&
++        qatomic_read(&rr_current_cpu) != NULL) {
++        /*
++         * Host work and main-loop notifications may request a generic vCPU
++         * kick at host-dependent times.  Do not end a running translation
++         * block for those latency hints: the deterministic RR budget reaches
++         * a finite boundary where level-triggered work is observed.
++         *
++         * Before the first guest instruction, cpu_resume() clears the stop
++         * flags before issuing the kick that starts the RR thread.  That kick
++         * cannot choose an architectural coordinate because none exists yet,
++         * and a single-vCPU loop has no alternate RR CPU to force progress.
++         * Retain upstream behavior at icount zero; once execution begins, the
++         * pinned finite quantum supplies the deterministic return boundary.
++         * Between slices, retain the kick so an already-waiting RR thread
++         * receives the exit request needed to re-enter its run loop.
++         *
++         * Stop, unplug, and halted transitions are different.  Their state is
++         * already committed before qemu_cpu_kick(), and a stopped or sleeping
++         * vCPU cannot reach another RR boundary by retiring instructions.
++         * Preserve upstream's exit request for those level-triggered states so
++         * pause, shutdown, hot-unplug, and interrupt wakeups remain live. An
++         * already-published interrupt request is guest-visible state, not a
++         * latency hint, and must retain the same exit path.
++         */
++        CPU_FOREACH(cpu) {
++            if (qemu_plugin_crucible_terminal_pause_pending() ||
++                cpu->stop || cpu->unplug || cpu->halted ||
++                cpu->stopped ||
++                qatomic_read(&cpu->interrupt_request)) {
++                stateful_exit = true;
++                break;
++            }
++        }
++        if (stateful_exit) {
++            /*
++             * RR vCPUs share one host thread.  The committed transition may
++             * target a non-current vCPU, so exit every CPUState exactly as
++             * upstream does to guarantee that the active TCG slice returns.
++             */
++            CPU_FOREACH(cpu) {
++                cpu_exit(cpu);
++            }
++        }
++        return;
++    }
+     CPU_FOREACH(cpu) {
+         cpu_exit(cpu);
+     };
+@@ -69,7 +121,6 @@ void rr_kick_vcpu_thread(CPUState *unused)
+  */
+ 
+ static QEMUTimer *rr_kick_vcpu_timer;
+-static CPUState *rr_current_cpu;
+ 
+ #define RR_CRUCIBLE_SIM_TCG_BATCH_LIMIT 4
+ 
+diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+index 5cd7c7eac..cc17de758 100644
+--- a/include/qemu/plugin.h
++++ b/include/qemu/plugin.h
+@@ -196,6 +196,7 @@ void qemu_plugin_fire_control_boundary_cb(CPUState *cpu);
+ void qemu_plugin_crucible_exact_boundary_enter(void);
+ void qemu_plugin_crucible_exact_boundary_leave(void);
+ bool qemu_plugin_crucible_exact_boundary_active(void);
++bool qemu_plugin_crucible_terminal_pause_pending(void);
+ bool qemu_plugin_crucible_vmstop_pending(void);
+ bool qemu_plugin_crucible_vmstop_admission_pending(void);
+ void qemu_plugin_crucible_vmstop_request_stopped(int flush_status);
+@@ -363,6 +364,11 @@ static inline void qemu_plugin_crucible_exact_boundary_enter(void)
+ static inline void qemu_plugin_crucible_exact_boundary_leave(void)
+ { }
+ 
++static inline bool qemu_plugin_crucible_terminal_pause_pending(void)
++{
++    return false;
++}
++
+ static inline bool qemu_plugin_crucible_vmstop_pending(void)
+ {
+     return false;
+diff --git a/plugins/api.c b/plugins/api.c
+index 54d33612c..592d85f46 100644
+--- a/plugins/api.c
++++ b/plugins/api.c
+@@ -1126,6 +1126,11 @@ static void crucible_terminal_pause_bh(void *opaque)
+     g_free(request);
+ }
+ 
++bool qemu_plugin_crucible_terminal_pause_pending(void)
++{
++    return qatomic_read(&crucible_terminal_pause_pending) != NULL;
++}
++
+ int qemu_plugin_crucible_request_terminal_pause(
+     qemu_plugin_crucible_terminal_paused_cb_t callback,
+     void *userdata)

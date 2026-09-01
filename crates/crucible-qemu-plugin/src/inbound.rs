@@ -1,16 +1,19 @@
 //! Inbound frame polling and deterministic injection ordering.
 //!
-//! The plugin consumes shared-memory SPSC rings owned by executor subnodes. This
-//! module keeps the inbound contract explicit: peek ring heads without consuming
-//! them, dequeue only frames whose delivery icount has been reached by the
-//! current plugin icount, sort all due frames by their in-band delivery key, and
-//! fail loudly if a ring head is behind the idle-pass delivery floor.
+//! The plugin consumes shared-memory SPSC rings owned by executor subnodes. It
+//! peeks without consuming, dequeues only due frames, sorts them by their in-band
+//! delivery key, and fails loudly behind the idle-pass delivery floor.
 
 use thiserror::Error;
 
-use crucible_shmem::{FrameDeliveryKey, FrameEntry, RingHeader, SpscRingError};
+use crucible_shmem::{
+    FrameDeliveryAttemptError, FrameDeliveryKey, FrameDeliveryState, FrameDeliveryStateError,
+    FrameEntry, RingHeader, SpscRingError,
+};
 
 use crate::shmem_ordering::PluginShmemOrdering;
+
+mod commit;
 
 /// A plugin-owned view of one inbound SPSC ring.
 #[derive(Clone, Copy)]
@@ -82,9 +85,12 @@ impl InboundFrameBatch {
 pub struct PluginInboundFrames;
 
 impl PluginInboundFrames {
-    /// Peeks the earliest delivery icount across inbound ring heads.
+    /// Peeks the earliest delivery or retained-retry icount across ring heads.
     ///
-    /// This method never consumes a ring entry.
+    /// A retained head contributes the next retry coordinate measured from its
+    /// last concrete attempt. This prevents an idle overshoot while still
+    /// allowing guest progress between retries. This method never consumes a
+    /// ring entry.
     ///
     /// # Errors
     ///
@@ -95,10 +101,24 @@ impl PluginInboundFrames {
     ) -> Result<Option<u64>, InboundFrameError> {
         let mut next_delivery: Option<u64> = None;
         for ring in rings {
-            let delivery =
-                PluginShmemOrdering::peek_inbound_delivery_icount(ring.header, ring.entries)
-                    .map_err(|source| map_ring_error(ring, source))?;
-            if let Some(delivery) = delivery {
+            if let Some(frame) = peek_head_frame(ring)? {
+                let delivery = match delivery_state(&frame)? {
+                    FrameDeliveryState::Pending => frame.delivery_icount,
+                    FrameDeliveryState::Retained => {
+                        if frame.delivery_attempts() == 0 {
+                            return Err(InboundFrameError::RetainedFrameWithoutAttempt {
+                                frame: frame.delivery_key(),
+                            });
+                        }
+                        frame
+                            .last_delivery_attempt_icount()
+                            .checked_add(crate::NETWORK_RX_RETRY_INTERVAL_ICOUNT)
+                            .ok_or(InboundFrameError::RetryCoordinateOverflow {
+                                frame: frame.delivery_key(),
+                                last_attempt_icount: frame.last_delivery_attempt_icount(),
+                            })?
+                    }
+                };
                 next_delivery = Some(match next_delivery {
                     Some(current) => current.min(delivery),
                     None => delivery,
@@ -108,7 +128,8 @@ impl PluginInboundFrames {
         Ok(next_delivery)
     }
 
-    /// Fails if any inbound ring head is already behind `consumer_current_icount`.
+    /// Fails if an unretained inbound ring head is already behind
+    /// `consumer_current_icount`.
     ///
     /// The check is non-consuming, which lets the idle path reject a scheduler
     /// overshoot before advancing QEMU virtual time.
@@ -126,6 +147,7 @@ impl PluginInboundFrames {
             let head = peek_head_frame(ring)?;
             if let Some(frame) = head
                 && frame.delivery_icount < consumer_current_icount
+                && delivery_state(&frame)? != FrameDeliveryState::Retained
             {
                 return Err(InboundFrameError::DeliveryAlreadyPassed {
                     ring_index: Some(ring.ring_index),
@@ -196,6 +218,56 @@ impl PluginInboundFrames {
             current_icount: consumer_current_icount,
             frames,
         })
+    }
+
+    /// Records backpressure on the exact live head after a concrete RX attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InboundFrameError::RetainedHeadMismatch`] when the expected
+    /// frame is not the unique current head, or
+    /// [`InboundFrameError::InvalidDeliveryState`] for an unknown shared state.
+    pub fn mark_retained_head<'a>(
+        rings: impl IntoIterator<Item = InboundFrameRing<'a>>,
+        expected: FrameDeliveryKey,
+        current_icount: u64,
+    ) -> Result<(), InboundFrameError> {
+        let mut matching = None;
+        for ring in rings {
+            if peek_head_frame(ring)?.is_some_and(|frame| frame.delivery_key() == expected) {
+                if matching.is_some() {
+                    return Err(InboundFrameError::RetainedHeadMismatch {
+                        expected,
+                        actual: None,
+                    });
+                }
+                matching = Some(ring);
+            }
+        }
+        let Some(ring) = matching else {
+            return Err(InboundFrameError::RetainedHeadMismatch {
+                expected,
+                actual: None,
+            });
+        };
+        let slot = (PluginShmemOrdering::consumer_read_index(ring.header)
+            & (ring.entries.len() as u64 - 1)) as usize;
+        let actual = ring.entries[slot].delivery_key();
+        if actual != expected {
+            return Err(InboundFrameError::RetainedHeadMismatch {
+                expected,
+                actual: Some(actual),
+            });
+        }
+        ring.entries[slot]
+            .record_delivery_attempt(current_icount, crate::NETWORK_RX_DELIVERY_ATTEMPT_LIMIT)
+            .map_err(|source| InboundFrameError::DeliveryAttemptLimit {
+                frame: expected,
+                source,
+            })?;
+        ring.entries[slot]
+            .mark_delivery_retained()
+            .map_err(|source| map_delivery_state_error(expected, source))
     }
 
     /// Drains every inbound frame deliverable in the current idle pass.
@@ -303,8 +375,20 @@ impl PluginInboundFrames {
         }
 
         let mut deliverable = Vec::new();
-        for frame in frames {
-            if frame.delivery_icount < passed_delivery_floor_icount {
+        let mut retained_head_authorizes_backlog = false;
+        for (index, frame) in frames.into_iter().enumerate() {
+            let state = delivery_state(&frame)?;
+            if index == 0 && state == FrameDeliveryState::Retained {
+                retained_head_authorizes_backlog = true;
+            } else if state == FrameDeliveryState::Retained {
+                return Err(InboundFrameError::RetainedHeadMismatch {
+                    expected: frame.delivery_key(),
+                    actual: deliverable.first().map(FrameEntry::delivery_key),
+                });
+            }
+            if frame.delivery_icount < passed_delivery_floor_icount
+                && !retained_head_authorizes_backlog
+            {
                 return Err(InboundFrameError::DeliveryAlreadyPassed {
                     ring_index: None,
                     consumer_current_icount,
@@ -363,6 +447,44 @@ pub enum InboundFrameError {
         /// The consumer icount observed while polling or draining.
         consumer_current_icount: u64,
     },
+    /// A shared frame carries a delivery state unknown to this ABI version.
+    #[error("inbound frame {frame:?} has invalid delivery state {state}")]
+    InvalidDeliveryState {
+        /// The affected deterministic frame key.
+        frame: FrameDeliveryKey,
+        /// The rejected shared-memory state byte.
+        state: u8,
+    },
+    /// A retained head lacks a concrete failed-attempt proof.
+    #[error("retained inbound frame {frame:?} has zero delivery attempts")]
+    RetainedFrameWithoutAttempt {
+        /// Invalid retained frame.
+        frame: FrameDeliveryKey,
+    },
+    /// A retained head's next retry coordinate cannot be represented.
+    #[error("retained inbound frame {frame:?} retry overflows after icount {last_attempt_icount}")]
+    RetryCoordinateOverflow {
+        /// Retained frame whose retry cannot be scheduled.
+        frame: FrameDeliveryKey,
+        /// Last concrete attempt coordinate.
+        last_attempt_icount: u64,
+    },
+    /// A retained head exhausted its bounded concrete QEMU RX attempts.
+    #[error("inbound frame {frame:?} exhausted its delivery-attempt bound: {source}")]
+    DeliveryAttemptLimit {
+        /// Canonical frame that exhausted the bound.
+        frame: FrameDeliveryKey,
+        /// Canonical attempt counter and configured hard limit.
+        source: FrameDeliveryAttemptError,
+    },
+    /// The frame reported backpressured is no longer the unique ring head.
+    #[error("retained inbound head mismatch: expected {expected:?}, actual {actual:?}")]
+    RetainedHeadMismatch {
+        /// The frame whose guest delivery returned backpressure.
+        expected: FrameDeliveryKey,
+        /// A different head, when one was available.
+        actual: Option<FrameDeliveryKey>,
+    },
     /// A post-injection commit did not consume the same batch that was previewed.
     #[error("inbound commit consumed {actual:?} after previewing {expected:?}")]
     CommittedBatchMismatch {
@@ -415,11 +537,22 @@ fn collect_ring_deliverable_since(
     let write_idx = PluginShmemOrdering::producer_write_index(ring.header);
     let live = inbound_live_count(ring, read_idx, write_idx, capacity)?;
     let mut frames = Vec::new();
+    let mut retained_head_authorizes_backlog = false;
 
     for offset in 0..live {
         let slot = ((read_idx.wrapping_add(offset)) & (capacity - 1)) as usize;
         let frame = ring.entries[slot].clone();
-        if frame.delivery_icount < passed_delivery_floor_icount {
+        let state = delivery_state(&frame)?;
+        if offset == 0 && state == FrameDeliveryState::Retained {
+            retained_head_authorizes_backlog = true;
+        } else if state == FrameDeliveryState::Retained {
+            return Err(InboundFrameError::RetainedHeadMismatch {
+                expected: frame.delivery_key(),
+                actual: frames.first().map(FrameEntry::delivery_key),
+            });
+        }
+        if frame.delivery_icount < passed_delivery_floor_icount && !retained_head_authorizes_backlog
+        {
             return Err(InboundFrameError::DeliveryAlreadyPassed {
                 ring_index: Some(ring.ring_index),
                 consumer_current_icount,
@@ -433,6 +566,23 @@ fn collect_ring_deliverable_since(
     }
 
     Ok(frames)
+}
+
+fn delivery_state(frame: &FrameEntry) -> Result<FrameDeliveryState, InboundFrameError> {
+    frame
+        .delivery_state()
+        .map_err(|source| map_delivery_state_error(frame.delivery_key(), source))
+}
+
+fn map_delivery_state_error(
+    frame: FrameDeliveryKey,
+    source: FrameDeliveryStateError,
+) -> InboundFrameError {
+    match source {
+        FrameDeliveryStateError::UnknownState { state } => {
+            InboundFrameError::InvalidDeliveryState { frame, state }
+        }
+    }
 }
 
 fn inbound_ring_capacity(ring: InboundFrameRing<'_>) -> Result<u64, InboundFrameError> {
@@ -481,217 +631,5 @@ fn corrupt_indices(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn inbound_frame_peek_uses_minimum_head_delivery_without_consuming() {
-        let ring_a = RingHeader::new();
-        let ring_b = RingHeader::new();
-        let mut entries_a = empty_entries();
-        let mut entries_b = empty_entries();
-        enqueue(&ring_a, &mut entries_a, frame(30, 1, 0, b"a"));
-        enqueue(&ring_b, &mut entries_b, frame(12, 2, 0, b"b"));
-
-        assert_eq!(
-            PluginInboundFrames::peek_next_delivery_icount([
-                InboundFrameRing::new(0, &ring_a, &entries_a),
-                InboundFrameRing::new(1, &ring_b, &entries_b),
-            ]),
-            Ok(Some(12))
-        );
-        assert_eq!(ring_a.read_index(), 0);
-        assert_eq!(ring_b.read_index(), 0);
-    }
-
-    #[test]
-    fn inbound_frame_drain_delivers_current_icount_in_total_order() {
-        let ring_a = RingHeader::new();
-        let ring_b = RingHeader::new();
-        let mut entries_a = empty_entries();
-        let mut entries_b = empty_entries();
-        enqueue(&ring_a, &mut entries_a, frame(20, 9, 4, b"third"));
-        enqueue(&ring_a, &mut entries_a, frame(20, 1, 7, b"first"));
-        enqueue(&ring_b, &mut entries_b, frame(20, 4, 1, b"second"));
-        enqueue(&ring_b, &mut entries_b, frame(25, 0, 0, b"future"));
-
-        let batch = match PluginInboundFrames::drain_deliverable(
-            [
-                InboundFrameRing::new(4, &ring_a, &entries_a),
-                InboundFrameRing::new(5, &ring_b, &entries_b),
-            ],
-            20,
-        ) {
-            Ok(batch) => batch,
-            Err(error) => panic!("current inbound frames should drain: {error}"),
-        };
-
-        assert_eq!(batch.current_icount(), 20);
-        assert_eq!(
-            batch
-                .frames()
-                .iter()
-                .map(FrameEntry::delivery_key)
-                .collect::<Vec<_>>(),
-            vec![
-                frame(20, 1, 7, b"first").delivery_key(),
-                frame(20, 4, 1, b"second").delivery_key(),
-                frame(20, 9, 4, b"third").delivery_key(),
-            ]
-        );
-        assert_eq!(ring_a.read_index(), 2);
-        assert_eq!(ring_b.read_index(), 1);
-        assert_eq!(
-            PluginInboundFrames::peek_next_delivery_icount([
-                InboundFrameRing::new(4, &ring_a, &entries_a),
-                InboundFrameRing::new(5, &ring_b, &entries_b),
-            ]),
-            Ok(Some(25))
-        );
-    }
-
-    #[test]
-    fn inbound_frame_drain_since_includes_jumped_over_delivery_window() {
-        let ring_a = RingHeader::new();
-        let ring_b = RingHeader::new();
-        let mut entries_a = empty_entries();
-        let mut entries_b = empty_entries();
-        enqueue(&ring_a, &mut entries_a, frame(12, 9, 4, b"third"));
-        enqueue(&ring_a, &mut entries_a, frame(20, 1, 7, b"second"));
-        enqueue(&ring_b, &mut entries_b, frame(15, 4, 1, b"first"));
-        enqueue(&ring_b, &mut entries_b, frame(25, 4, 2, b"future"));
-
-        let preview = match PluginInboundFrames::preview_deliverable_since(
-            [
-                InboundFrameRing::new(4, &ring_a, &entries_a),
-                InboundFrameRing::new(5, &ring_b, &entries_b),
-            ],
-            20,
-            10,
-        ) {
-            Ok(batch) => batch,
-            Err(error) => panic!("jump-window inbound frames should preview: {error}"),
-        };
-        assert_eq!(ring_a.read_index(), 0);
-        assert_eq!(ring_b.read_index(), 0);
-        assert_eq!(
-            preview
-                .frames()
-                .iter()
-                .map(FrameEntry::delivery_key)
-                .collect::<Vec<_>>(),
-            vec![
-                frame(12, 9, 4, b"third").delivery_key(),
-                frame(15, 4, 1, b"first").delivery_key(),
-                frame(20, 1, 7, b"second").delivery_key(),
-            ]
-        );
-
-        let batch = match PluginInboundFrames::drain_deliverable_since(
-            [
-                InboundFrameRing::new(4, &ring_a, &entries_a),
-                InboundFrameRing::new(5, &ring_b, &entries_b),
-            ],
-            20,
-            10,
-        ) {
-            Ok(batch) => batch,
-            Err(error) => panic!("jump-window inbound frames should drain: {error}"),
-        };
-
-        assert_eq!(batch.current_icount(), 20);
-        assert_eq!(batch.frames(), preview.frames());
-        assert_eq!(ring_a.read_index(), 2);
-        assert_eq!(ring_b.read_index(), 1);
-        assert_eq!(
-            PluginInboundFrames::peek_next_delivery_icount([
-                InboundFrameRing::new(4, &ring_a, &entries_a),
-                InboundFrameRing::new(5, &ring_b, &entries_b),
-            ]),
-            Ok(Some(25))
-        );
-    }
-
-    #[test]
-    fn inbound_frame_drain_rejects_late_head_without_consuming() {
-        let ring = RingHeader::new();
-        let mut entries = empty_entries();
-        enqueue(&ring, &mut entries, frame(19, 7, 2, b"late"));
-
-        assert_eq!(
-            PluginInboundFrames::drain_deliverable([InboundFrameRing::new(9, &ring, &entries)], 20),
-            Err(InboundFrameError::DeliveryAlreadyPassed {
-                ring_index: Some(9),
-                consumer_current_icount: 20,
-                frame: frame(19, 7, 2, b"late").delivery_key(),
-            })
-        );
-        assert_eq!(ring.read_index(), 0);
-    }
-
-    #[test]
-    fn inbound_frame_drain_since_rejects_before_floor_without_consuming() {
-        let ring = RingHeader::new();
-        let mut entries = empty_entries();
-        enqueue(&ring, &mut entries, frame(9, 7, 2, b"late"));
-
-        assert_eq!(
-            PluginInboundFrames::drain_deliverable_since(
-                [InboundFrameRing::new(9, &ring, &entries)],
-                20,
-                10,
-            ),
-            Err(InboundFrameError::DeliveryAlreadyPassed {
-                ring_index: Some(9),
-                consumer_current_icount: 20,
-                frame: frame(9, 7, 2, b"late").delivery_key(),
-            })
-        );
-        assert_eq!(ring.read_index(), 0);
-    }
-
-    #[test]
-    fn inbound_frame_select_rejects_late_candidate_frame() {
-        assert_eq!(
-            PluginInboundFrames::select_deliverable_frames([frame(7, 1, 1, b"late")], 8),
-            Err(InboundFrameError::DeliveryAlreadyPassed {
-                ring_index: None,
-                consumer_current_icount: 8,
-                frame: frame(7, 1, 1, b"late").delivery_key(),
-            })
-        );
-    }
-
-    #[test]
-    fn inbound_frame_ring_errors_are_fail_loud() {
-        let ring = RingHeader::new();
-        let entries = vec![FrameEntry::default(); 3];
-
-        assert_eq!(
-            PluginInboundFrames::peek_next_delivery_icount([InboundFrameRing::new(
-                11, &ring, &entries
-            )]),
-            Err(InboundFrameError::RingOperation {
-                ring_index: 11,
-                source: SpscRingError::InvalidCapacity { capacity: 3 },
-            })
-        );
-    }
-
-    fn empty_entries() -> Vec<FrameEntry> {
-        vec![FrameEntry::default(); 4]
-    }
-
-    fn enqueue(header: &RingHeader, entries: &mut [FrameEntry], frame: FrameEntry) {
-        if let Err(error) = PluginShmemOrdering::enqueue_outbound_frame(header, entries, &frame) {
-            panic!("test frame should enqueue: {error}");
-        }
-    }
-
-    fn frame(delivery_icount: u64, src_node: u32, seq: u32, payload: &[u8]) -> FrameEntry {
-        match FrameEntry::new(delivery_icount, src_node, seq, payload) {
-            Ok(frame) => frame,
-            Err(error) => panic!("test frame should fit: {error}"),
-        }
-    }
-}
+#[path = "inbound/tests.rs"]
+mod tests;

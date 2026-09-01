@@ -27,6 +27,30 @@ pub enum QemuLiveNodeStepGateError {
         /// Underlying I/O error.
         source: std::io::Error,
     },
+    /// The bounded scheduler-preemption adversary could not run or clean up.
+    #[error("bounded scheduler-preemption adversary failed")]
+    SchedulerPreemption {
+        /// Underlying controller, signal, or watchdog error.
+        source: crate::BoundedSchedulerPreemptionError,
+    },
+    /// A crash-safe exact-snapshot artifact could not be copied.
+    #[error("copy exact-snapshot artifact from {source_path} to {destination_path} failed")]
+    SnapshotArtifactCopy {
+        /// Captured artifact path.
+        source_path: PathBuf,
+        /// Fresh restore artifact path.
+        destination_path: PathBuf,
+        /// Underlying copy error.
+        source: std::io::Error,
+    },
+    /// A canonical exact-snapshot envelope could not be persisted or reloaded.
+    #[error("durable exact-snapshot envelope I/O at {path} failed")]
+    SnapshotEnvelopeIo {
+        /// Canonical envelope path.
+        path: PathBuf,
+        /// Underlying durable file operation error.
+        source: std::io::Error,
+    },
     /// The deterministic launch profile could not be derived.
     #[error("derive deterministic launch profile failed")]
     LaunchProfile {
@@ -80,6 +104,15 @@ pub enum QemuLiveNodeStepGateError {
     /// The plugin setup acknowledgement did not permit scheduling.
     #[error("plugin setup acknowledgement did not permit scheduling")]
     SetupAckNotReady,
+    /// The supplied exact snapshot was not emitted by a live QEMU node.
+    #[error("production exact restore rejected a non-live or identity-inconsistent snapshot")]
+    InvalidExactSnapshot,
+    /// A live exact save/crash/load continuation violated its identity contract.
+    #[error("live exact snapshot invariant failed: {reason}")]
+    ExactSnapshotInvariant {
+        /// Deterministic mismatch or missing-evidence detail.
+        reason: String,
+    },
     /// The priming hot path could not map the shared-memory region.
     #[error("map priming shared-memory region failed")]
     PrimeRegionMap {
@@ -93,7 +126,7 @@ pub enum QemuLiveNodeStepGateError {
         source: QemuMappedQuantumShmemHotPathError,
     },
     /// A priming quantum boundary could not be published or read.
-    #[error("{operation} failed")]
+    #[error("{operation} failed: {source}")]
     Prime {
         /// Priming operation that failed.
         operation: &'static str,
@@ -111,6 +144,24 @@ pub enum QemuLiveNodeStepGateError {
     HostIoRuntime {
         /// Underlying host-I/O runtime error.
         source: QemuLiveHostIoRuntimeError,
+    },
+    /// The World-backed block servicer could not be constructed or configured.
+    #[error("build live block-I/O servicer failed")]
+    BlockServicer {
+        /// Underlying block-servicer error.
+        source: crate::QemuLiveBlockIoServicerError,
+    },
+    /// The World-backed 9p servicer could not be constructed or serviced.
+    #[error("build live 9p-I/O servicer failed")]
+    NinepServicer {
+        /// Underlying 9p-servicer error.
+        source: crate::QemuLive9pIoServicerError,
+    },
+    /// The accelerator host adapter could not be constructed or serviced.
+    #[error("build live accelerator servicer failed")]
+    AcceleratorServicer {
+        /// Underlying accelerator-servicer error.
+        source: crate::QemuLiveAcceleratorServicerError,
     },
     /// The typed QMP VMState channel could not connect.
     #[error("connect QMP VMState channel failed")]
@@ -138,13 +189,15 @@ pub enum QemuLiveNodeStepGateError {
     /// advance path did not rouse it -- the wake defect the first live node user
     /// is expected to surface if a busy window ever hits an idle wait.
     #[error(
-        "node step for ceiling {ceiling_icount} stalled at {last_icount} after {reissue_count} re-issues"
+        "node step for ceiling {ceiling_icount} stalled at {last_icount} with next deadline {next_deadline_icount:?} after {reissue_count} re-issues"
     )]
     StepStalled {
         /// Ceiling the step was driving toward.
         ceiling_icount: u64,
         /// Last observed node icount.
         last_icount: u64,
+        /// Plugin-published idle deadline at the stalled coordinate, if idle.
+        next_deadline_icount: Option<u64>,
         /// Re-issues attempted before the stall was declared.
         reissue_count: u32,
     },

@@ -4,7 +4,7 @@
 //! endpoint, assembles a real scheduler-facing `QemuNode` over the production
 //! host-I/O runtime, and advances it through a busy-window ceiling schedule using
 //! the public `QemuNode::advance_to_ceiling` API. The whole run is repeated -- the
-//! second time under host CPU load -- and the two runs must be byte-identical.
+//! second time under bounded scheduler preemption -- and the two runs must be byte-identical.
 //!
 //! Prints machine-checkable evidence the phase2 gate asserts: per-step
 //! raw-versus-logical accounting (every busy-window boundary's logical offset is
@@ -20,7 +20,7 @@
 //! CRUCIBLE_NODE_STEP_COUNT          number of bounded steps to drive
 //! CRUCIBLE_NODE_STEP_BUSY_CAP       exclusive busy-window icount cap
 //! CRUCIBLE_NODE_STEP_TIMEOUT_SECS   per-step host wait bound (seconds)
-//! CRUCIBLE_NODE_STEP_SECOND_RUN_LOAD "0" disables second-run host load
+//! CRUCIBLE_NODE_STEP_SECOND_RUN_SCHEDULER_PREEMPTION "0" disables second-run bounded scheduler preemption
 //! ```
 
 #[cfg(target_os = "linux")]
@@ -34,7 +34,8 @@ use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 use crucible_qemu::{
-    QemuLiveNodeStepGateConfig, QemuLiveNodeStepSchedule, run_qemu_live_node_step_gate,
+    QemuLaunchPluginSwitch, QemuLiveNodeStepGateConfig, QemuLiveNodeStepSchedule,
+    run_qemu_live_node_step_gate,
 };
 
 #[cfg(target_os = "linux")]
@@ -66,12 +67,16 @@ fn run() -> Result<(), String> {
     }
 
     let mut config = QemuLiveNodeStepGateConfig::new(qemu, plugin, kernel, firmware, run_directory)
+        .with_fingerprint(QemuLaunchPluginSwitch::On)
         .with_schedule(schedule_from_env()?)
         .with_completion_timeout(Duration::from_secs(env_u64(
             "CRUCIBLE_NODE_STEP_TIMEOUT_SECS",
             240,
         )?))
-        .with_second_run_host_load(env_flag("CRUCIBLE_NODE_STEP_SECOND_RUN_LOAD", true)?);
+        .with_second_run_scheduler_preemption(env_flag(
+            "CRUCIBLE_NODE_STEP_SECOND_RUN_SCHEDULER_PREEMPTION",
+            true,
+        )?);
     if let Some(initrd) = initrd {
         config = config.with_initrd(initrd);
     }
@@ -83,7 +88,7 @@ fn run() -> Result<(), String> {
     println!("plugin_loaded=rust-control-cdylib");
     println!("node_kind=live-qemu-node");
     println!("host_io_runtime=qemu-live-host-io-runtime");
-    println!("qmp_channel=vmstate-shutdown-only");
+    println!("qmp_channel=vmstate-exact-snapshot");
     println!("quantum_count={}", report.quanta.len());
     for (index, step) in report.quanta.iter().enumerate() {
         // Raw-versus-logical accounting: target is the raw scheduler ceiling,
@@ -104,10 +109,21 @@ fn run() -> Result<(), String> {
     );
     println!("orderly_child_exit={}", report.orderly_child_exit);
     println!(
-        "deterministic_under_host_load={}",
-        report.deterministic_under_host_load
+        "deterministic_under_scheduler_preemption={}",
+        report.deterministic_under_scheduler_preemption
     );
-    println!("host_load_applied={}", report.host_load_applied);
+    println!(
+        "scheduler_preemption_applied={}",
+        report.scheduler_preemption_applied
+    );
+    println!(
+        "host_adversary={}",
+        if report.scheduler_preemption_applied {
+            "bounded-scheduler-preemption"
+        } else {
+            "none"
+        }
+    );
     println!(
         "execution_fingerprint={}",
         report.execution_fingerprint.hash.to_hex()

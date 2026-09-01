@@ -183,7 +183,14 @@ pub(super) fn is_test_only_source(package_dir: &Path, source: &Path) -> bool {
         relative
             .components()
             .any(|component| component.as_os_str() == "tests")
-            || relative.file_name().is_some_and(|name| name == "tests.rs")
+            || relative.file_name().is_some_and(|name| {
+                name == "tests.rs"
+                    || name.to_str().is_some_and(|name| {
+                        name.ends_with("_test.rs")
+                            || name.ends_with("_tests.rs")
+                            || name.contains("_test_")
+                    })
+            })
     })
 }
 

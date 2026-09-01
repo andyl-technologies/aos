@@ -244,6 +244,7 @@ async fn build(
             printer,
             &attr,
             &format!("container {name} ({selector}, {format})"),
+            None,
             remote,
             view,
             token,

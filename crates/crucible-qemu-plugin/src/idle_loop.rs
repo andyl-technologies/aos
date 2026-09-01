@@ -14,13 +14,17 @@ use crucible_shmem::{
 };
 
 use crate::{
-    ExactDeadlineError, ExactDeadlineReader, ExactDeadlineReport, InboundFrameError,
-    InboundFrameRing, LosslessNetworkRxQueue, NetworkRxError, NetworkRxInjection,
-    PendingIdleAdvance, PluginClockAdvance, PluginClockError, PluginDeviceIoFreeze,
-    PluginInboundFrames, PluginNetworkRx, PluginVirtualClock, QueuedIdleAdvance,
-    QueuedIdleAdvanceError, SchedulerCeiling, TimeAdvanceCompletion,
-    handle_network_rx_idle_callback, shmem_ordering::PluginShmemOrdering,
+    CanonicalNetworkRx, ExactDeadlineError, ExactDeadlineReader, ExactDeadlineReport,
+    InboundFrameError, InboundFrameRing, NetworkRxError, NetworkRxInjection, PendingIdleAdvance,
+    PluginClockAdvance, PluginClockError, PluginDeviceIoFreeze, PluginInboundFrames,
+    PluginNetworkRx, PluginVirtualClock, QueuedIdleAdvance, QueuedIdleAdvanceError,
+    SchedulerCeiling, TimeAdvanceCompletion, handle_network_rx_idle_callback,
+    shmem_ordering::PluginShmemOrdering,
 };
+
+mod planning;
+pub use planning::{compute_idle_wake_plan, timer_deadline_icount};
+use planning::{reject_passed_inbound_delivery, reject_passed_materialized_frames};
 
 /// The source that determined the node's next idle wake.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,12 +121,21 @@ impl IdleWakePlan {
 pub struct IdleParkRequest {
     plan: IdleWakePlan,
     futex_wait: FutexWait,
+    icount_shift: u8,
 }
 
 impl IdleParkRequest {
     /// Retains an already-published idle plan and its race-free futex precondition.
-    pub(crate) const fn from_published(plan: IdleWakePlan, futex_wait: FutexWait) -> Self {
-        Self { plan, futex_wait }
+    pub(crate) const fn from_published(
+        plan: IdleWakePlan,
+        futex_wait: FutexWait,
+        icount_shift: u8,
+    ) -> Self {
+        Self {
+            plan,
+            futex_wait,
+            icount_shift,
+        }
     }
 
     /// Returns the wake plan associated with this park request.
@@ -143,6 +156,8 @@ impl IdleParkRequest {
 pub enum IdleWaitOutcome {
     /// The scheduler raised the node ceiling to the desired wake icount.
     SchedulerReleased,
+    /// A checkpoint pause was acknowledged without advancing virtual time.
+    CheckpointPauseRequested,
     /// The global control plane requested shutdown and the node marked itself done.
     ShutdownRequested,
 }
@@ -307,7 +322,11 @@ impl PluginIdleHotLoop {
         )
         .map_err(|source| IdleHotLoopError::PublishIdle { source })?;
 
-        Ok(IdleParkRequest { plan, futex_wait })
+        Ok(IdleParkRequest {
+            plan,
+            futex_wait,
+            icount_shift: clock.icount_shift(),
+        })
     }
 
     /// Parks on the non-private futex until the scheduler authorizes the wake.
@@ -328,10 +347,26 @@ impl PluginIdleHotLoop {
     ) -> Result<IdleWaitOutcome, IdleHotLoopError> {
         let mut wait = request.futex_wait;
         loop {
-            if PluginShmemOrdering::observe_control_action(header) == RegionControlAction::Shutdown
-            {
-                PluginShmemOrdering::mark_done_after_shutdown(slot);
-                return Ok(IdleWaitOutcome::ShutdownRequested);
+            match PluginShmemOrdering::observe_control_action(header) {
+                RegionControlAction::Shutdown => {
+                    PluginShmemOrdering::mark_done_after_shutdown(slot);
+                    return Ok(IdleWaitOutcome::ShutdownRequested);
+                }
+                RegionControlAction::Pause => {
+                    PluginShmemOrdering::publish_pause_quiesced(
+                        slot,
+                        request.plan.current_icount,
+                        request.plan.current_icount,
+                        request.icount_shift,
+                    )
+                    .map_err(|source| IdleHotLoopError::PublishPause { source })?;
+                    // Return out of the plugin callback after publishing the
+                    // exact boundary. Remaining parked here would retain the
+                    // vCPU execution path and prevent QEMU's main loop from
+                    // processing the already queued QMP `stop` command.
+                    return Ok(IdleWaitOutcome::CheckpointPauseRequested);
+                }
+                RegionControlAction::Continue => {}
             }
             if PluginShmemOrdering::load_scheduler_ceiling(slot) >= request.plan.desired_wake_icount
             {
@@ -564,35 +599,32 @@ impl PluginIdleHotLoop {
         rx_queue: &mut Q,
     ) -> Result<IdleHotLoopResult, IdleHotLoopError>
     where
-        Q: LosslessNetworkRxQueue + ?Sized,
+        Q: CanonicalNetworkRx + ?Sized,
     {
         let inbound_rings = inbound_rings.into_iter().collect::<Vec<_>>();
-        PluginInboundFrames::reject_already_passed_ring_heads(
-            inbound_rings.iter().copied(),
-            request.plan.current_icount,
-        )
-        .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
         let (advance, pending_advance) =
             Self::advance_after_scheduler_wake(slot, clock, queued_idle_advance, &request)?;
         let inbound_batch = PluginInboundFrames::preview_deliverable_since(
             inbound_rings.iter().copied(),
             clock.current_icount(),
-            request.plan.current_icount,
+            0,
         )
         .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
-        let injected_frames = inbound_batch.into_frames();
+        let pending_frames = inbound_batch.into_frames();
         let network_rx_injection = handle_network_rx_idle_callback(
             network_rx,
             rx_queue,
             request.plan.current_icount,
             clock.current_icount(),
-            &injected_frames,
+            &pending_frames,
         )
         .map_err(|source| IdleHotLoopError::NetworkRxInjection { source })?;
-        let committed_batch = PluginInboundFrames::drain_deliverable_since(
-            inbound_rings,
+        let delivered_count = network_rx_injection.delivered_frame_keys().len();
+        let injected_frames = pending_frames[..delivered_count].to_vec();
+        let committed_batch = PluginInboundFrames::commit_delivered_prefix(
+            inbound_rings.iter().copied(),
             clock.current_icount(),
-            request.plan.current_icount,
+            &injected_frames,
         )
         .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
         if committed_batch.frames() != injected_frames.as_slice() {
@@ -609,6 +641,14 @@ impl PluginIdleHotLoop {
                         .collect(),
                 },
             });
+        }
+        if let Some(retained) = network_rx_injection.retained_frame_key() {
+            PluginInboundFrames::mark_retained_head(
+                inbound_rings.iter().copied(),
+                retained,
+                clock.current_icount(),
+            )
+            .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
         }
         Self::publish_completed_idle(
             slot,
@@ -641,14 +681,9 @@ impl PluginIdleHotLoop {
         rx_queue: &mut Q,
     ) -> Result<IdleHotLoopResult, IdleHotLoopError>
     where
-        Q: LosslessNetworkRxQueue + ?Sized,
+        Q: CanonicalNetworkRx + ?Sized,
     {
         let inbound_rings = inbound_rings.into_iter().collect::<Vec<_>>();
-        PluginInboundFrames::reject_already_passed_ring_heads(
-            inbound_rings.iter().copied(),
-            request.plan.current_icount,
-        )
-        .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
         let (advance, completed_advance) = Self::finish_advance_after_completion(
             slot,
             clock,
@@ -659,22 +694,24 @@ impl PluginIdleHotLoop {
         let inbound_batch = PluginInboundFrames::preview_deliverable_since(
             inbound_rings.iter().copied(),
             clock.current_icount(),
-            request.plan.current_icount,
+            0,
         )
         .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
-        let injected_frames = inbound_batch.into_frames();
+        let pending_frames = inbound_batch.into_frames();
         let network_rx_injection = handle_network_rx_idle_callback(
             network_rx,
             rx_queue,
             request.plan.current_icount,
             clock.current_icount(),
-            &injected_frames,
+            &pending_frames,
         )
         .map_err(|source| IdleHotLoopError::NetworkRxInjection { source })?;
-        let committed_batch = PluginInboundFrames::drain_deliverable_since(
-            inbound_rings,
+        let delivered_count = network_rx_injection.delivered_frame_keys().len();
+        let injected_frames = pending_frames[..delivered_count].to_vec();
+        let committed_batch = PluginInboundFrames::commit_delivered_prefix(
+            inbound_rings.iter().copied(),
             clock.current_icount(),
-            request.plan.current_icount,
+            &injected_frames,
         )
         .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
         if committed_batch.frames() != injected_frames.as_slice() {
@@ -691,6 +728,14 @@ impl PluginIdleHotLoop {
                         .collect(),
                 },
             });
+        }
+        if let Some(retained) = network_rx_injection.retained_frame_key() {
+            PluginInboundFrames::mark_retained_head(
+                inbound_rings.iter().copied(),
+                retained,
+                clock.current_icount(),
+            )
+            .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
         }
         Self::publish_completed_idle(
             slot,
@@ -827,227 +872,6 @@ impl PluginIdleHotLoop {
     }
 }
 
-/// Computes the idle wake target from virtual timers, inbound delivery, the
-/// host-published device-I/O completion deadline, and the scheduler ceiling.
-///
-/// # Which live path uses this
-///
-/// The production live TCG sim loop does **not** drive its advance through this
-/// function: it bounds a running guest via the `register_sim_shmem_dispatch`
-/// max-advance callback (`max_advance_icount`) and never reaches an idle-plan
-/// merge for a device-I/O-blocked guest. This function is retained for the
-/// idle-hot-loop path used by non-sim-loop callers and reachable configurations
-/// (`PluginIdleHotLoop::begin_idle`); the device-deadline arm below exists so
-/// that if that path ever executes it honors device completions with the exact
-/// same merge rule the max-advance seam uses, rather than silently diverging.
-/// Keep the two in lockstep.
-///
-/// # Merge rule
-///
-/// The timer deadline lives in QEMU's own virtual-clock domain (converted to
-/// aggregate icount here); the device completion deadline arrives from the host
-/// block-I/O servicer in the shared-memory slot, already in icount units. When
-/// `device_io_holding_ticks` is set the node is blocked on an in-flight device
-/// request, and the wake is the earliest of the pending events:
-///
-/// - **A host-published completion deadline is present** (`Some`, nonzero):
-///   the wake is `min(device_completion, timer, inbound)`. The device
-///   completion is the event that unblocks the guest; the timer rejoins the
-///   merge because a virtual-timer IRQ can wake a device-blocked vCPU before
-///   the I/O completes, after which it re-parks against the same completion.
-///   A completion deadline that is `0`/retracted contributes nothing, and a
-///   deadline in the past is clamped forward to `current_icount` (wake now) so
-///   a stale deadline never rewinds virtual time.
-/// - **No completion deadline is published** (`0`/retracted): timer deadlines
-///   stay held and the node freezes to the ceiling ([`IdleWakeCause::DeviceIoFreeze`]).
-///   Without a completion path, waking to a periodic timer would spin the guest
-///   against an I/O that cannot advance within the quantum.
-///
-/// When `device_io_holding_ticks` is false the device deadline is ignored and
-/// the wake is `min(timer, inbound)`, falling back to the ceiling.
-///
-/// On exact-icount ties the winner is chosen deterministically in the fixed
-/// priority order device completion, then timer, then inbound.
-///
-/// # Errors
-///
-/// Returns [`IdleHotLoopError`] when the timer deadline cannot be converted to
-/// an aggregate icount or the observed ceiling is behind the current icount.
-// crucible-lint: allow rust-allow -- the idle wake merge takes the full set of independent wake inputs (current icount, shift, timer deadline, inbound, ceiling, device-hold, device deadline); bundling them would obscure the merge.
-#[allow(clippy::too_many_arguments)]
-pub fn compute_idle_wake_plan(
-    current_icount: u64,
-    icount_shift: u8,
-    exact_deadline: ExactDeadlineReport,
-    next_inbound_delivery_icount: Option<u64>,
-    ceiling: SchedulerCeiling,
-    device_io_holding_ticks: bool,
-    device_completion_deadline_icount: Option<u64>,
-) -> Result<IdleWakePlan, IdleHotLoopError> {
-    if ceiling.icount() < current_icount {
-        return Err(IdleHotLoopError::CeilingBehindCurrent {
-            current_icount,
-            ceiling_icount: ceiling.icount(),
-        });
-    }
-
-    let timer_deadline_icount = timer_deadline_icount(exact_deadline, icount_shift)?
-        .map(|deadline| deadline.max(current_icount));
-    let inbound_delivery_icount = next_inbound_delivery_icount;
-
-    // The device completion deadline only participates while device I/O holds.
-    // A zero deadline means "none published / retracted"; a past deadline is
-    // clamped forward so it can never rewind virtual time below the current
-    // icount (the classic stale-deadline-in-the-past hazard).
-    let device_completion_deadline_icount = if device_io_holding_ticks {
-        device_completion_deadline_icount
-            .filter(|&deadline| deadline != 0)
-            .map(|deadline| deadline.max(current_icount))
-    } else {
-        None
-    };
-
-    // While device I/O holds without a completion deadline, timer deadlines are
-    // suppressed and the node freezes to the ceiling. Once the host publishes a
-    // completion deadline, the timer rejoins the merge as a legitimate earlier
-    // wake.
-    let effective_timer_deadline_icount =
-        if device_io_holding_ticks && device_completion_deadline_icount.is_none() {
-            None
-        } else {
-            timer_deadline_icount
-        };
-
-    let mut earliest: Option<(u64, IdleWakeCause)> = None;
-    merge_earlier_wake(
-        &mut earliest,
-        device_completion_deadline_icount,
-        IdleWakeCause::DeviceIoCompletion,
-    );
-    merge_earlier_wake(
-        &mut earliest,
-        effective_timer_deadline_icount,
-        IdleWakeCause::TimerDeadline,
-    );
-    merge_earlier_wake(
-        &mut earliest,
-        inbound_delivery_icount,
-        IdleWakeCause::InboundFrame,
-    );
-
-    let (desired_wake_icount, cause) = earliest.unwrap_or_else(|| {
-        if device_io_holding_ticks {
-            (ceiling.icount(), IdleWakeCause::DeviceIoFreeze)
-        } else {
-            (ceiling.icount(), IdleWakeCause::SchedulerCeiling)
-        }
-    });
-
-    Ok(IdleWakePlan {
-        current_icount,
-        desired_wake_icount,
-        ceiling_icount: ceiling.icount(),
-        timer_deadline_icount,
-        inbound_delivery_icount,
-        device_completion_deadline_icount,
-        device_io_holding_ticks,
-        cause,
-    })
-}
-
-/// Keeps `earliest` at the strictly-smallest wake icount seen so far.
-///
-/// A `None` candidate is ignored. On an exact tie the incumbent is retained, so
-/// the caller's invocation order fixes the tie-break priority.
-fn merge_earlier_wake(
-    earliest: &mut Option<(u64, IdleWakeCause)>,
-    candidate: Option<u64>,
-    cause: IdleWakeCause,
-) {
-    if let Some(icount) = candidate
-        && earliest.is_none_or(|(current, _)| icount < current)
-    {
-        *earliest = Some((icount, cause));
-    }
-}
-
-fn reject_passed_materialized_frames(
-    frames: &[FrameEntry],
-    consumer_current_icount: u64,
-) -> Result<(), IdleHotLoopError> {
-    for frame in frames {
-        if frame.delivery_icount < consumer_current_icount {
-            return Err(IdleHotLoopError::InboundFrames {
-                source: InboundFrameError::DeliveryAlreadyPassed {
-                    ring_index: None,
-                    consumer_current_icount,
-                    frame: frame.delivery_key(),
-                },
-            });
-        }
-    }
-    Ok(())
-}
-
-fn reject_passed_inbound_delivery(
-    consumer_current_icount: u64,
-    next_inbound_delivery_icount: Option<u64>,
-) -> Result<(), IdleHotLoopError> {
-    let Some(delivery_icount) = next_inbound_delivery_icount else {
-        return Ok(());
-    };
-    if delivery_icount < consumer_current_icount {
-        return Err(IdleHotLoopError::InboundFrames {
-            source: InboundFrameError::DeliveryAlreadyPassed {
-                ring_index: None,
-                consumer_current_icount,
-                frame: FrameDeliveryKey {
-                    delivery_icount,
-                    src_node: 0,
-                    seq: 0,
-                },
-            },
-        });
-    }
-    Ok(())
-}
-
-/// Converts an exact virtual-clock timer report into aggregate icount units.
-///
-/// # Errors
-///
-/// Returns [`IdleHotLoopError::InvalidIcountShift`] if `icount_shift >= 64`, or
-/// [`IdleHotLoopError::TimerDeadlineOverflow`] when the ceiling conversion would
-/// overflow.
-pub fn timer_deadline_icount(
-    report: ExactDeadlineReport,
-    icount_shift: u8,
-) -> Result<Option<u64>, IdleHotLoopError> {
-    let ExactDeadlineReport::Armed { deadline_ns } = report else {
-        return Ok(None);
-    };
-    if icount_shift >= 64 {
-        return Err(IdleHotLoopError::InvalidIcountShift { icount_shift });
-    }
-
-    let base = deadline_ns >> icount_shift;
-    let remainder_mask = if icount_shift == 0 {
-        0
-    } else {
-        (1_u64 << icount_shift) - 1
-    };
-    if deadline_ns & remainder_mask == 0 {
-        Ok(Some(base))
-    } else {
-        base.checked_add(1)
-            .map(Some)
-            .ok_or(IdleHotLoopError::TimerDeadlineOverflow {
-                deadline_ns,
-                icount_shift,
-            })
-    }
-}
-
 /// An error produced while executing the idle hot-loop state machine.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum IdleHotLoopError {
@@ -1082,6 +906,12 @@ pub enum IdleHotLoopError {
     /// Publishing idle state failed.
     #[error("publishing idle state failed: {source}")]
     PublishIdle {
+        /// The shared-memory slot publication error.
+        source: NodeSlotError,
+    },
+    /// Publishing coordinated-pause quiescence failed.
+    #[error("publishing pause-quiesced state failed: {source}")]
+    PublishPause {
         /// The shared-memory slot publication error.
         source: NodeSlotError,
     },
