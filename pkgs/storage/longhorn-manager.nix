@@ -62,8 +62,6 @@ in
         max = 2;
       };
       declares = [
-        "k3s.integrations.csi.longhorn"
-        "k3s.integrations.resources.longhorn"
         "longhorn.defaultReplicaCount"
         "longhorn.enable"
         "longhorn.nodeLabel"

@@ -106,9 +106,16 @@
           }];
           inherit (base) lib;
         };
+        optionSurface = base.lib.optionSurface evaluated;
         publicOptions = builtins.filter
           (option: option.visibility != "internal")
-          (base.lib.optionSurface evaluated);
+          optionSurface;
+        declaredOptions = builtins.sort builtins.lessThan metadata.declares;
+        evaluatedOptions = builtins.sort builtins.lessThan (builtins.map
+          (option: option.pathStr)
+          (builtins.filter
+            (option: !(builtins.match "_module(\\..*)?" option.pathStr != null))
+            optionSurface));
         undocumented = builtins.map
           (option: option.pathStr)
           (builtins.filter (option: option.description == "") publicOptions);
@@ -117,6 +124,8 @@
           throw "package '${name}' has no public configuration options"
         else if undocumented != [] then
           throw "package '${name}' has undocumented public configuration options: ''${builtins.concatStringsSep ", " undocumented}"
+        else if declaredOptions != evaluatedOptions then
+          throw "package '${name}' declaration claims do not exactly match its evaluated options: declared=''${builtins.toJSON declaredOptions}, evaluated=''${builtins.toJSON evaluatedOptions}"
         else
           ${builtins.toJSON name}
     '';

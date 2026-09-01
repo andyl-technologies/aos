@@ -66,7 +66,7 @@ in {
     registerNode = mkOption {
       type = types.bool;
       default = true;
-      description = "Register and maintain this node through the Kubernetes API.";
+      description = "Register and maintain this node through the Kubernetes API. Disabling registration selects standalone authentication and authorization defaults for static-pod operation.";
     };
     authentication.anonymous = mkOption {
       type = types.bool;
@@ -113,9 +113,12 @@ in {
         readOnlyPort = 0;
         authentication = {
           anonymous.enabled = cfg.authentication.anonymous;
-          webhook.enabled = true;
+          webhook.enabled = cfg.registerNode;
         };
-        authorization.mode = "Webhook";
+        authorization.mode =
+          if cfg.registerNode
+          then "Webhook"
+          else "AlwaysAllow";
       };
     };
     kubelet.credentials = kubeconfigRef;
