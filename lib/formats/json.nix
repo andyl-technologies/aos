@@ -33,6 +33,12 @@
     // {
       name = "json";
       description = "JSON value";
+      # JSON values are recursive; keep their published type finite while
+      # retaining the precise validation contract in `baseType`.
+      _aosDocType = {
+        kind = "opaque";
+        signature = "JSON value";
+      };
     };
 in {
   type = jsonValue;
