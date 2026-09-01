@@ -13,8 +13,9 @@
 //! userspace mounts it, so the guest here first boots to userspace and only then
 //! issues 9p ops. The gate requires those operations to cross `SLOT_9P_IO`,
 //! complete at deterministic device horizons, and let the guest continue to the
-//! scheduler ceiling. A second run adds host CPU load and delays a due response's
-//! physical ring write; both runs must retain identical icount-domain results.
+//! scheduler ceiling. A second run adds bounded scheduler preemption and
+//! delays a due response's physical ring write; both runs must retain identical
+//! icount-domain results.
 
 use std::fs;
 use std::os::unix::net::UnixStream;
@@ -32,7 +33,7 @@ use crucible_shmem::{
 
 pub use self::error::QemuLive9pIoGateError;
 use self::support::{
-    GateSendAuthorizer, HostLoad, bounded_drive_polls, deterministic_projection, node_id,
+    GateSendAuthorizer, HostAdversary, bounded_drive_polls, deterministic_projection, node_id,
     path_text, vm_launch_config,
 };
 use super::ninep_io_servicer::{
@@ -61,15 +62,20 @@ const GATE_SLOT: u32 = 0;
 const GATE_QUEUE_CAPACITY: u32 = 4;
 /// Stable QMP endpoint used to synchronize the post-boot-barrier main loop.
 const GATE_QMP_SOCKET_FILE_NAME: &str = "crucible-live-9p-io-qmp.sock";
+/// Guest-console record emitted only after PID 1 successfully mounts 9p.
+const TCG_CONTROL_MOUNT_MARKER: &str = "CRUCIBLE_9P_MOUNT_OK";
+/// Guest memory used by the independent stock-TCG workload control.
+///
+/// The full fixture kernel needs substantially more decompression and early-boot
+/// headroom under upstream TCG than under the deterministic sim accelerator.
+const TCG_CONTROL_MEMORY_MIB: u32 = 1024;
 /// Guest memory size for the 9p-I/O run.
 ///
 /// Larger than the block gate's 64 MiB: this guest boots a full kernel and runs
 /// a `mount -t 9p` workload, and 64 MiB left too little contiguous room for the
-/// early-boot decompression under the sim accelerator. 128 MiB boots reliably
-/// under both the sim accelerator (the reference leg) and TCG (the control leg).
+/// early-boot decompression under the sim accelerator. The independent TCG leg
+/// uses [`TCG_CONTROL_MEMORY_MIB`] instead.
 const GATE_MEMORY_MIB: u32 = 128;
-/// Number of background threads used to stress host scheduling on the load run.
-const HOST_LOAD_WORKERS: usize = 4;
 /// Host poll interval while driving and servicing the guest.
 const DRIVE_POLL_INTERVAL: Duration = Duration::from_millis(1);
 /// Consecutive no-progress polls (at [`DRIVE_POLL_INTERVAL`]) before the drive
@@ -100,7 +106,7 @@ pub struct QemuLive9pIoGateConfig {
     kernel_cmdline: Option<String>,
     busy_ceiling_icount: u64,
     completion_timeout: Duration,
-    second_run_host_load: bool,
+    second_run_scheduler_preemption: bool,
 }
 
 impl QemuLive9pIoGateConfig {
@@ -123,7 +129,7 @@ impl QemuLive9pIoGateConfig {
             kernel_cmdline: None,
             busy_ceiling_icount: DEFAULT_BUSY_CEILING_ICOUNT,
             completion_timeout: Duration::from_secs(60),
-            second_run_host_load: true,
+            second_run_scheduler_preemption: true,
         }
     }
 
@@ -158,10 +164,13 @@ impl QemuLive9pIoGateConfig {
         self
     }
 
-    /// Returns this configuration with host CPU load on the second run toggled.
+    /// Returns this configuration with bounded scheduler preemption on the second run toggled.
     #[must_use]
-    pub const fn with_second_run_host_load(mut self, second_run_host_load: bool) -> Self {
-        self.second_run_host_load = second_run_host_load;
+    pub const fn with_second_run_scheduler_preemption(
+        mut self,
+        second_run_scheduler_preemption: bool,
+    ) -> Self {
+        self.second_run_scheduler_preemption = second_run_scheduler_preemption;
         self
     }
 }
@@ -211,15 +220,15 @@ pub struct QemuLive9pIoReport {
     pub diagnostics: NinepIoDiagnosticsSnapshot,
     /// The reference run's node shut down cleanly.
     pub orderly_child_exit: bool,
-    /// The second sim run (under host CPU load) matched the first observation.
-    pub deterministic_under_host_load: bool,
-    /// Host CPU load was actually applied during the second sim run.
-    pub host_load_applied: bool,
+    /// The second sim run (under bounded scheduler preemption) matched the first observation.
+    pub deterministic_under_scheduler_preemption: bool,
+    /// Bounded scheduler preemption was actually applied during the second sim run.
+    pub scheduler_preemption_applied: bool,
     /// The second run delayed a due response without changing observations.
     pub delayed_response_applied: bool,
-    /// The TCG control leg saw the guest issue a real 9p op (QEMU's `msize`
-    /// warning) absent the sim accelerator, independently validating the guest
-    /// workload.
+    /// The TCG control leg saw the guest complete a real 9p mount and emit its
+    /// post-mount console marker absent the sim accelerator, independently
+    /// validating the guest workload.
     pub tcg_control_issued_9p: bool,
 }
 
@@ -231,14 +240,14 @@ pub struct QemuLive9pIoReport {
 ///   device and a `mount -t 9p` initrd on the sim+plugin raw hot path, services
 ///   `SLOT_9P_IO`, and requires a request and response before the guest reaches
 ///   its busy ceiling.
-/// - **Host-load sim leg.** Repeats the reference while stressing host scheduling
+/// - **Scheduler-preemption sim leg.** Repeats the reference while interrupting QEMU
 ///   and delays the due response in wall time after virtual time reaches its
 ///   horizon. The request/response counts and modeled completion latency must
 ///   remain identical.
 /// - **TCG control leg.** Boots the same guest + 9p device under TCG with no
-///   plugin, and confirms the guest actually issues a 9p op (QEMU emits its
-///   `msize` degraded-performance warning only when its 9p device receives a
-///   PDU). This independently proves the guest workload issues 9p traffic.
+///   plugin, and requires PID 1's guest-console marker emitted only after the
+///   9p mount succeeds. This independently proves the workload completes a real
+///   virtio-9p request/response exchange.
 ///
 /// # Errors
 ///
@@ -251,8 +260,8 @@ pub fn run_qemu_live_9p_io_gate(
     config: &QemuLive9pIoGateConfig,
 ) -> Result<QemuLive9pIoReport, QemuLive9pIoGateError> {
     let reference = run_one_scenario(config, RunRole::Reference)?;
-    let (second, host_load_applied) = if config.second_run_host_load {
-        (run_one_scenario(config, RunRole::HostLoad)?, true)
+    let (second, scheduler_preemption_applied) = if config.second_run_scheduler_preemption {
+        (run_one_scenario(config, RunRole::Hostile)?, true)
     } else {
         (run_one_scenario(config, RunRole::Repeat)?, false)
     };
@@ -260,13 +269,13 @@ pub fn run_qemu_live_9p_io_gate(
     assert_runs_match(&reference, &second)?;
     certify_run("reference", &reference, false)?;
     certify_run(
-        if config.second_run_host_load {
-            "host-load"
+        if config.second_run_scheduler_preemption {
+            "scheduler-preemption"
         } else {
             "repeat"
         },
         &second,
-        config.second_run_host_load,
+        config.second_run_scheduler_preemption,
     )?;
 
     // Control: the same guest independently issues a real 9p op under TCG.
@@ -279,18 +288,18 @@ pub fn run_qemu_live_9p_io_gate(
         advance: reference.advance,
         diagnostics: reference.diagnostics,
         orderly_child_exit: reference.orderly_child_exit,
-        deterministic_under_host_load: true,
-        host_load_applied,
+        deterministic_under_scheduler_preemption: true,
+        scheduler_preemption_applied,
         delayed_response_applied: second.response_delay_applied,
         tcg_control_issued_9p,
     })
 }
 
-/// Which scenario run this is, controlling the run subdirectory and host load.
+/// Which scenario run this is, controlling the run subdirectory and scheduler preemption.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RunRole {
     Reference,
-    HostLoad,
+    Hostile,
     Repeat,
 }
 
@@ -298,18 +307,18 @@ impl RunRole {
     const fn subdir(self) -> &'static str {
         match self {
             Self::Reference => "run-reference",
-            Self::HostLoad => "run-host-load",
+            Self::Hostile => "run-scheduler-preemption",
             Self::Repeat => "run-repeat",
         }
     }
 
-    const fn applies_host_load(self) -> bool {
-        matches!(self, Self::HostLoad)
+    const fn applies_scheduler_preemption(self) -> bool {
+        matches!(self, Self::Hostile)
     }
 
     const fn response_wall_delay(self) -> Duration {
         match self {
-            Self::HostLoad => DELAYED_RESPONSE_WALL_TIME,
+            Self::Hostile => DELAYED_RESPONSE_WALL_TIME,
             Self::Reference | Self::Repeat => Duration::ZERO,
         }
     }
@@ -326,8 +335,6 @@ fn run_one_scenario(
             source,
         }
     })?;
-
-    let host_load = HostLoad::start_if(role.applies_host_load());
 
     let mut candidate = LaunchProfileCandidate::default().with_memory_mib(GATE_MEMORY_MIB);
     if let Some(cmdline) = &config.kernel_cmdline {
@@ -347,14 +354,16 @@ fn run_one_scenario(
 
     let qmp_config = QemuQmpChannelConfig::new(GATE_QMP_SOCKET_FILE_NAME)
         .map_err(|source| QemuLive9pIoGateError::LaunchCommand { source })?;
-    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT);
+    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
+        .with_fault_target_node(GATE_NODE);
     // QMP connects after the no-wake priming quantum releases the plugin boot
     // barrier and lets the guest park between quanta with the BQL released.
-    let command = QemuLaunchCommandBuilder::new(
+    let command = QemuLaunchCommandBuilder::new_for_live_gate(
         profile,
         vm_launch_config(config),
         path_text(&config.qemu_executable),
         plugin,
+        crate::LivePluginGuestArchitecture::X86_64,
     )
     .with_qmp(qmp_config.clone())
     .build()
@@ -371,9 +380,13 @@ fn run_one_scenario(
     .map_err(|source| QemuLive9pIoGateError::Spawn { source })?;
     let (mut child, resources) = spawned.into_parts();
 
-    let mut setup =
-        complete_qemu_host_plugin_setup(resources.into_setup_resources(), region_config, GATE_SLOT)
-            .map_err(|source| QemuLive9pIoGateError::HostSetup { source })?;
+    let mut setup = complete_qemu_host_plugin_setup(
+        resources.into_setup_resources(),
+        region_config,
+        GATE_SLOT,
+        command.fault_capability_requirement(),
+    )
+    .map_err(|source| QemuLive9pIoGateError::HostSetup { source })?;
     if !setup.setup_ack().can_schedule() {
         return Err(QemuLive9pIoGateError::SetupAckNotReady);
     }
@@ -416,6 +429,10 @@ fn run_one_scenario(
             status: format!("{:?}", run_state.status),
         });
     }
+    // Priming established progress; spend the budget on the device-I/O schedule.
+    let mut host_adversary =
+        HostAdversary::start_if(role.applies_scheduler_preemption(), child.process_id())
+            .map_err(|source| QemuLive9pIoGateError::SchedulerPreemption { source })?;
     let (advance, response_delay_applied) = drive_and_service(
         &mut hot_path,
         &mut servicer,
@@ -427,18 +444,19 @@ fn run_one_scenario(
             timeout: config.completion_timeout,
             response_wall_delay: role.response_wall_delay(),
         },
+        &mut host_adversary,
     )?;
 
-    // Teardown: ask the plugin to quit, then reap. Dropping the child force-kills
-    // if it is still alive, so no QEMU is orphaned on an early return.
+    // Join the signal controller while this exact child is still authenticated
+    // and alive; teardown must never race a raw signal against PID reuse.
+    HostAdversary::finish_if_present(&mut host_adversary)
+        .map_err(|source| QemuLive9pIoGateError::SchedulerPreemption { source })?;
     let _ = QemuPluginIpcControlChannel::send_quit(&mut setup);
     let orderly_child_exit = reap_child(&mut child, config.completion_timeout);
 
     drop(hot_path);
     drop(setup);
     drop(child);
-    drop(host_load);
-
     Ok(NinepIoRunOutcome {
         advance,
         diagnostics: diagnostics.snapshot(),
@@ -450,17 +468,20 @@ fn run_one_scenario(
 /// Boots the same guest + 9p device under TCG with no plugin and reports whether
 /// the guest issued a real 9p op.
 ///
-/// This is a plain QEMU spawn -- no plugin, no shared memory, no icount time
-/// control -- so the guest runs at wall speed under TCG and its `mount -t 9p`
-/// reaches QEMU's stock virtio-9p device, which emits a `msize`
-/// degraded-performance warning to stderr the first time it receives a 9p PDU.
-/// Observing that warning within the bounded budget proves the guest issues a 9p
-/// op absent the sim accelerator; its absence means the guest never mounted.
+/// This is a plain QEMU spawn with no plugin, shared memory, or sim accelerator.
+/// It uses QEMU's upstream TCG icount mode with sleeping and alignment disabled,
+/// matching the repository's inertness corpus and avoiding host-timer waits
+/// during early boot. The guest's `mount -t 9p` reaches QEMU's stock virtio-9p
+/// device. PID 1 writes a stable console marker only after `mount(2)` succeeds.
+/// Observing that marker within the bounded budget proves a real request/response
+/// exchange completed absent the sim accelerator; its absence means the mount
+/// never completed successfully.
 ///
 /// # Errors
 ///
 /// Returns [`QemuLive9pIoGateError`] when the control run directory or its
-/// captured stderr file cannot be created, or the QEMU child cannot be spawned.
+/// captured console or stderr file cannot be created, or the QEMU child cannot
+/// be spawned.
 fn run_tcg_control_leg(config: &QemuLive9pIoGateConfig) -> Result<bool, QemuLive9pIoGateError> {
     let run_directory = config.run_directory.join("run-tcg-control");
     fs::create_dir_all(&run_directory).map_err(|source| {
@@ -475,8 +496,14 @@ fn run_tcg_control_leg(config: &QemuLive9pIoGateConfig) -> Result<bool, QemuLive
             path: stderr_path.clone(),
             source,
         })?;
+    let console_path = run_directory.join("guest-console.log");
+    fs::File::create(&console_path).map_err(|source| QemuLive9pIoGateError::ControlConsole {
+        path: console_path.clone(),
+        source,
+    })?;
 
-    let memory = format!("{GATE_MEMORY_MIB}M");
+    let memory = format!("{TCG_CONTROL_MEMORY_MIB}M");
+    let console_chardev = format!("file,id=controlserial0,path={}", path_text(&console_path));
     let mut command = Command::new(&config.qemu_executable);
     command.args([
         "-nodefaults",
@@ -485,30 +512,35 @@ fn run_tcg_control_leg(config: &QemuLive9pIoGateConfig) -> Result<bool, QemuLive
         "none",
         "-monitor",
         "none",
-        "-serial",
-        "none",
         "-parallel",
         "none",
         "-machine",
-        "pc-q35-9.2",
+        "q35",
         "-m",
         &memory,
         "-accel",
         "tcg,thread=single",
+        "-icount",
+        "shift=0,sleep=off,align=off",
         "-cpu",
         "qemu64,-rdrand,-rdseed",
         "-smp",
         "1",
         "-kernel",
         &path_text(&config.kernel),
-        "-bios",
-        &path_text(&config.firmware),
         "-append",
-        "console=ttyS0 reboot=k panic=1",
+        "console=ttyS0 reboot=k panic=1 rdinit=/init quiet net.ifnames=0 printk.time=0",
     ]);
     if let Some(initrd) = &config.initrd {
         command.args(["-initrd", &path_text(initrd)]);
     }
+    command.args([
+        "-chardev",
+        &console_chardev,
+        "-serial",
+        "chardev:controlserial0",
+        "-no-reboot",
+    ]);
     let mut device_args = Vec::new();
     CrucibleShmem9pDevice::new().append_qemu_args(&mut device_args);
     command.args(&device_args);
@@ -524,7 +556,7 @@ fn run_tcg_control_leg(config: &QemuLive9pIoGateConfig) -> Result<bool, QemuLive
     let max_polls = bounded_drive_polls(config.completion_timeout);
     let mut issued = false;
     for _ in 0..max_polls {
-        if control_stderr_shows_ninep_op(&stderr_path) {
+        if control_console_shows_mount_success(&console_path) {
             issued = true;
             break;
         }
@@ -535,7 +567,7 @@ fn run_tcg_control_leg(config: &QemuLive9pIoGateConfig) -> Result<bool, QemuLive
     }
     // Final read, in case the op landed just before QEMU exited or the budget lapsed.
     if !issued {
-        issued = control_stderr_shows_ninep_op(&stderr_path);
+        issued = control_console_shows_mount_success(&console_path);
     }
 
     let _ = child.kill();
@@ -543,13 +575,16 @@ fn run_tcg_control_leg(config: &QemuLive9pIoGateConfig) -> Result<bool, QemuLive
     Ok(issued)
 }
 
-/// Returns whether the captured control-QEMU stderr shows a 9p op was received.
+/// Returns whether the captured guest console proves the 9p mount succeeded.
 ///
-/// QEMU's stock virtio-9p device logs a `msize` degraded-performance warning the
-/// first time it handles a 9p PDU, so its presence is a faithful marker that the
-/// guest issued at least one 9p request.
-fn control_stderr_shows_ninep_op(stderr_path: &Path) -> bool {
-    fs::read_to_string(stderr_path).is_ok_and(|text| text.contains("msize"))
+/// PID 1 emits [`TCG_CONTROL_MOUNT_MARKER`] only after `mount(2)` returns
+/// success, so kernel boot chatter or a QEMU diagnostic cannot satisfy this
+/// predicate.
+fn control_console_shows_mount_success(console_path: &Path) -> bool {
+    fs::read_to_string(console_path).is_ok_and(|text| {
+        text.lines()
+            .any(|line| line.trim_end_matches('\r') == TCG_CONTROL_MOUNT_MARKER)
+    })
 }
 
 /// Releases the plugin boot barrier without signaling the idle-wake eventfd.
@@ -647,8 +682,9 @@ fn drive_and_service(
     setup: &QemuHostPluginSetup,
     child: &mut QemuNodeChild,
     options: DriveOptions,
+    host_adversary: &mut Option<HostAdversary>,
 ) -> Result<(NinepIoAdvanceOutcome, bool), QemuLive9pIoGateError> {
-    let pending = QemuShmemHotPathChannel::start_quantum(
+    let mut pending = QemuShmemHotPathChannel::start_quantum(
         hot_path,
         crucible::ExecutionHorizon {
             icount: Icount {
@@ -657,6 +693,8 @@ fn drive_and_service(
         },
     )
     .map_err(|source| QemuLive9pIoGateError::drive("start 9p-io drive quantum", source))?;
+    HostAdversary::certify_mapped_quantum_pending(host_adversary, hot_path, &mut pending)
+        .map_err(|source| QemuLive9pIoGateError::SchedulerPreemption { source })?;
 
     let max_polls = bounded_drive_polls(options.timeout);
     let mut last_icount = 0_u64;
@@ -810,7 +848,7 @@ fn reap_child(child: &mut QemuNodeChild, timeout: Duration) -> bool {
     false
 }
 
-/// Requires the load run to reproduce the reference run's deterministic 9p
+/// Requires the scheduler-preempted run to reproduce the reference run's deterministic 9p
 /// observations.
 ///
 /// Only the *icount-domain* observations are compared: whether a 9p request and
@@ -885,7 +923,7 @@ fn certify_run(
     ) {
         Some("the guest did not close the scheduler ceiling")
     } else if require_response_delay && !outcome.response_delay_applied {
-        Some("the host-load leg never injected its due-response wall delay")
+        Some("the scheduler-preemption leg never injected its due-response wall delay")
     } else {
         None
     };

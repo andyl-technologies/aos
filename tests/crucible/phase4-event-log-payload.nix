@@ -5,11 +5,7 @@
   taskIds ? ["T-OBS-3"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   eventCatalog = builtins.readFile ../../crates/crucible/src/event_catalog.rs;
@@ -71,10 +67,6 @@
       {
         label = "typed u64 accessor";
         needle = "pub fn u64(&self, name: &str) -> Option<u64>";
-      }
-      {
-        label = "typed fault accessor";
-        needle = "pub fn fault(&self, name: &str) -> Option<&FaultId>";
       }
       {
         label = "typed level accessor";

@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crucible::{
-    BackendEffect, BackendInput, Checkpoint, CheckpointKind, Configuration,
+    BackendEffect, Checkpoint, CheckpointKind, Configuration,
     ControlOperationKind as SchedulerControlOperationKind, Decision, DeliveryOrderDecision,
     EventClass, EventDiagnosticPayload, EventKey, EventLevel, GenesisCheckpoint, NodeId,
     QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef, SchedulerError,
@@ -50,11 +50,7 @@ async fn gate_control_responsive_accepts_required_ops_within_quantum_bound() {
     let acknowledgements = fixture.issue_required_operations().await;
     assert_eq!(
         fixture.observed_control_operations(),
-        vec![
-            SchedulerControlOperationKind::Snapshot,
-            SchedulerControlOperationKind::Inject,
-            SchedulerControlOperationKind::Query,
-        ]
+        vec![SchedulerControlOperationKind::Query]
     );
 
     let report =
@@ -64,8 +60,8 @@ async fn gate_control_responsive_accepts_required_ops_within_quantum_bound() {
             });
 
     assert_eq!(report.bound_quanta, 1);
-    assert_eq!(report.observations, 4);
-    assert_eq!(report.required_operations_observed, 4);
+    assert_eq!(report.observations, 2);
+    assert_eq!(report.required_operations_observed, 2);
     assert!(report.max_acknowledgement_delta_quanta <= 1);
 
     fixture.stop().await;
@@ -113,7 +109,7 @@ fn gate_control_responsive_requires_running_session_and_all_operation_classes() 
         }
     );
 
-    let missing_query = &applied_acknowledgements()[..3];
+    let missing_query = &applied_acknowledgements()[..1];
     let error = validate_control_responsiveness(missing_query, CONTROL_RESPONSIVE_QUANTUM_BOUND)
         .expect_err("missing query coverage must fail the gate");
     assert_eq!(
@@ -127,8 +123,8 @@ fn gate_control_responsive_requires_running_session_and_all_operation_classes() 
 #[test]
 fn gate_control_responsive_requires_required_operations_to_apply() {
     let mut acknowledgements = applied_acknowledgements();
-    acknowledgements[1] = ControlOperationAcknowledgement::new(
-        ControlOperationKind::Inject,
+    acknowledgements[0] = ControlOperationAcknowledgement::new(
+        ControlOperationKind::Pause,
         ControlSessionState::Running,
         12,
         12,
@@ -141,7 +137,7 @@ fn gate_control_responsive_requires_required_operations_to_apply() {
     assert_eq!(
         error,
         ControlResponsivenessError::RequiredOperationRejected {
-            operation: ControlOperationKind::Inject,
+            operation: ControlOperationKind::Pause,
             status: ControlAcknowledgementStatus::Rejected,
         }
     );
@@ -203,22 +199,8 @@ async fn gate_control_plane_event_log_stream_api_subscribes_without_mutation() {
     }
 }
 
-fn applied_acknowledgements() -> [ControlOperationAcknowledgement; 4] {
+fn applied_acknowledgements() -> [ControlOperationAcknowledgement; 2] {
     [
-        ControlOperationAcknowledgement::new(
-            ControlOperationKind::Snapshot,
-            ControlSessionState::Running,
-            10,
-            10,
-            ControlAcknowledgementStatus::Applied,
-        ),
-        ControlOperationAcknowledgement::new(
-            ControlOperationKind::Inject,
-            ControlSessionState::Running,
-            12,
-            12,
-            ControlAcknowledgementStatus::Applied,
-        ),
         ControlOperationAcknowledgement::new(
             ControlOperationKind::Pause,
             ControlSessionState::Running,
@@ -280,12 +262,7 @@ impl RunningSimDoubleControlPlane {
 
     async fn issue_required_operations(&self) -> Vec<ControlOperationAcknowledgement> {
         let mut acknowledgements = Vec::new();
-        for operation in [
-            ControlOperationKind::Snapshot,
-            ControlOperationKind::Inject,
-            ControlOperationKind::Query,
-            ControlOperationKind::Pause,
-        ] {
+        for operation in [ControlOperationKind::Query, ControlOperationKind::Pause] {
             let acknowledgement = self
                 .probe
                 .issue_against_running_session(operation)
@@ -439,24 +416,10 @@ impl SimDoubleQuantumLoop {
                     let _fingerprint =
                         SimulationBackend::fingerprint(&mut self.backend, control_node().node)?;
                 }
-                SchedulerControlOperationKind::Inject => {
-                    let input = BackendInput {
-                        node: control_node().node,
-                        payload: b"api-control-inject".to_vec(),
-                    };
-                    let now = SimulationBackend::now(&self.backend);
-                    SimulationBackend::apply(
-                        &mut self.backend,
-                        &BackendEffect::DeliverInput(input),
-                        now,
-                    )?;
-                }
                 SchedulerControlOperationKind::Pause
                 | SchedulerControlOperationKind::Resume
                 | SchedulerControlOperationKind::Step
-                | SchedulerControlOperationKind::Fork
-                | SchedulerControlOperationKind::InjectFault { .. }
-                | SchedulerControlOperationKind::HealFault { .. } => {
+                | SchedulerControlOperationKind::Fork => {
                     let now = SimulationBackend::now(&self.backend);
                     SimulationBackend::apply(&mut self.backend, &BackendEffect::Noop, now)?;
                 }

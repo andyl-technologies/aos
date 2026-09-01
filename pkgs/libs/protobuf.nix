@@ -54,6 +54,7 @@ in
           mkdir build
           cd build
           cmake .. \
+            $cmakeFlags \
             -DCMAKE_INSTALL_PREFIX=$out \
             -DCMAKE_INSTALL_LIBDIR=lib \
             -DCMAKE_BUILD_TYPE=Release \
@@ -83,17 +84,20 @@ in
           sed -i "1i set(utf8_range_DIR \"$out/lib/cmake/utf8_range\")" "$config"
           sed -i "1i set(absl_DIR \"${abseil-cpp}/lib/cmake/absl\")" "$config"
 
-          $out/bin/protoc --version
+          if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+            echo "skipping protoc execution while cross-compiling for $AOS_TARGET_PLATFORM"
+          else
+            $out/bin/protoc --version
 
-          mkdir -p "$TMPDIR/protobuf-consumer"
-          cd "$TMPDIR/protobuf-consumer"
-          cat > smoke.proto <<'EOF'
+            mkdir -p "$TMPDIR/protobuf-consumer"
+            cd "$TMPDIR/protobuf-consumer"
+            cat > smoke.proto <<'EOF'
           syntax = "proto3";
           package aos.protobuf.smoke;
           message Probe { string value = 1; }
           EOF
-          $out/bin/protoc --cpp_out=. smoke.proto
-          cat > main.cc <<'EOF'
+            $out/bin/protoc --cpp_out=. smoke.proto
+            cat > main.cc <<'EOF'
           #include "smoke.pb.h"
 
           int main() {
@@ -102,19 +106,20 @@ in
             return probe.value() == "source-built" ? 0 : 1;
           }
           EOF
-          cat > CMakeLists.txt <<'EOF'
+            cat > CMakeLists.txt <<'EOF'
           cmake_minimum_required(VERSION 3.16)
           project(aos_protobuf_consumer LANGUAGES CXX)
           find_package(Protobuf CONFIG REQUIRED)
           add_executable(protobuf-consumer main.cc smoke.pb.cc)
           target_link_libraries(protobuf-consumer PRIVATE protobuf::libprotobuf)
           EOF
-          cmake -S . -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DProtobuf_DIR=$out/lib/cmake/protobuf
-          cmake --build build -j$NIX_BUILD_CORES
-          LD_LIBRARY_PATH="$out/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-            build/protobuf-consumer
+            cmake -S . -B build \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DProtobuf_DIR=$out/lib/cmake/protobuf
+            cmake --build build -j$NIX_BUILD_CORES
+            LD_LIBRARY_PATH="$out/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+              build/protobuf-consumer
+          fi
         '';
       }
     ];

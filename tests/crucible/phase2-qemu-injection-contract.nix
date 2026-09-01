@@ -5,11 +5,7 @@
   taskIds ? ["T-QEMU-13"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   qemuLib = import ./_rust-module-source.nix {
     inherit lib;
@@ -42,6 +38,10 @@
   pluginIdleLoop = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+  };
+  pluginLiveCallbacks = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs;
   };
   pluginNetworkRx = import ./_rust-module-source.nix {
     inherit lib;
@@ -83,8 +83,8 @@
     ]
     ++ failuresFor "crates/crucible-qemu/src/quantum.rs" quantumLib [
       {
-        label = "delivery key helper";
-        needle = "pub fn delivery_key(&self) -> FrameDeliveryKey";
+        label = "delivery keys reconstructed from the shared ring";
+        needle = "ledger.push_back(self.view.inbound_entries[slot].delivery_key())";
       }
       {
         label = "exact delivery ceiling helper";
@@ -95,24 +95,24 @@
         needle = "earliest_possible_delivery_icount == Some(max_advance_icount)";
       }
       {
-        label = "passed-delivery floor tracked";
-        needle = "passed_delivery_floor";
+        label = "plugin-owned inbound consumption baseline";
+        needle = "struct QemuInboundConsumptionBaseline";
       }
       {
-        label = "preview before commit";
-        needle = "fn preview_due_inbound_since";
+        label = "host observes rather than drains inbound";
+        needle = "fn observe_inbound_consumption";
       }
       {
-        label = "late frame error";
-        needle = "DeliveryAlreadyPassed";
+        label = "stable inbound snapshot retry";
+        needle = "InboundConsumptionSnapshotUnstable";
       }
       {
-        label = "commit mismatch error";
-        needle = "DequeuedUnexpectedDelivery";
+        label = "unexpected mid-quantum publication fails closed";
+        needle = "InboundFrameNotConsumedAtDelivery";
       }
       {
-        label = "deterministic due-frame order";
-        needle = "sort_by_key(QemuDueInboundFrame::delivery_key)";
+        label = "untracked ring wrap fails closed";
+        needle = "InboundDeliveryHistoryOverwritten";
       }
       {
         label = "device I/O freeze report type";
@@ -151,16 +151,28 @@
         needle = "qemu_quantum_deliver_frame_fails_loud_on_sequence_overflow";
       }
       {
-        label = "overshoot rejection test";
-        needle = "qemu_quantum_rejects_horizon_that_would_pass_possible_frame_delivery";
+        label = "delivery horizon clamping test";
+        needle = "qemu_quantum_caps_horizon_at_next_possible_frame_delivery";
       }
       {
-        label = "late no-consume test";
-        needle = "qemu_quantum_rejects_late_inbound_frame_without_consuming";
+        label = "canonical retained past-frame test";
+        needle = "qemu_quantum_accepts_canonical_retained_frame_behind_current_icount";
       }
       {
-        label = "mid-quantum late no-consume test";
-        needle = "qemu_quantum_rejects_mid_quantum_late_frame_without_consuming";
+        label = "due backpressured frames remain canonical test";
+        needle = "qemu_quantum_preserves_backpressured_due_frame_for_retry";
+      }
+      {
+        label = "retained frame checkpoint continuation test";
+        needle = "qemu_network_checkpoint_restores_backpressured_inbound_for_retry";
+      }
+      {
+        label = "unconsumed mid-quantum publication test";
+        needle = "qemu_quantum_rejects_unconsumed_mid_quantum_publication";
+      }
+      {
+        label = "ledgered mid-quantum publication test";
+        needle = "qemu_quantum_accepts_ledgered_mid_quantum_publication";
       }
       {
         label = "device I/O freeze report test";
@@ -183,8 +195,8 @@
         needle = "handle_network_rx_idle_callback";
       }
       {
-        label = "lossless RX flush";
-        needle = "flush_lossless_rx";
+        label = "canonical direct RX delivery";
+        needle = "try_deliver_rx";
       }
       {
         label = "delivery gate validation";
@@ -228,7 +240,21 @@
       }
       {
         label = "RX failure does not commit inbound frames";
-        needle = "idle_loop_rx_queue_failure_does_not_commit_inbound_ring_reads";
+        needle = "idle_loop_rx_delivery_failure_does_not_commit_inbound_ring_reads";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs" pluginLiveCallbacks [
+      {
+        label = "plugin sole-consumer boundary injection";
+        needle = "fn inject_due_network_inbound(";
+      }
+      {
+        label = "busy-boundary production RX injection";
+        needle = "self.inject_due_network_inbound(current_icount, passed_delivery_floor_icount)?";
+      }
+      {
+        label = "busy-boundary canonical retention proof";
+        needle = "busy_boundary_retains_backpressured_inbound_until_guest_acceptance";
       }
     ]
     ++ forbiddenFor "crates/crucible-qemu/src/quantum.rs" quantumProd [
@@ -243,6 +269,14 @@
       {
         label = "hard-coded host shell";
         needle = "/bin/sh";
+      }
+      {
+        label = "host-side inbound dequeue helper";
+        needle = "fn drain_due_inbound_since";
+      }
+      {
+        label = "host-side inbound dequeue operation";
+        needle = "dequeue inbound frame";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -356,12 +390,12 @@ in
             PASS
             attr_path=${attrPath}
             tasks=${taskList}
-            qemu_37=exact-delivery-total-order-and-late-fail-loud
+            qemu_37=exact-delivery-total-order-with-canonical-backpressure-retry
             qemu_38=device-io-freeze-observed-through-node-slot
             exact_delivery=authorized-at-delivery-icount
-            overshoot=past-delivery-rejected
+            overshoot=host-publication-guarded-retained-frames-retryable
             emitted_frame=emit-icount-preserved
-            plugin_rx=lossless-queue-and-flush
+            plugin_rx=direct-delivery-with-canonical-shmem-retention
             plugin_device_io=device_io_active-submit-clear-release-wake
             plugin_idle_loop=device_io_freeze-and-rx-injection
             rust_tests=crucible-qemu::quantum::tests,crucible-qemu-plugin::inbound/network_rx/device_io/idle_loop::tests

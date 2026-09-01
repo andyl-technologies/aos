@@ -2,11 +2,13 @@
 {
   mkDerivation,
   fetchurl,
+  buildPackages,
   openjdk-17,
-  bash,
 }: let
   version = "1.10.15";
   jdk = openjdk-17;
+  buildJdk = buildPackages.openjdk-17;
+  buildBash = buildPackages.bash;
 in
   mkDerivation {
     pname = "ant";
@@ -20,8 +22,8 @@ in
     };
 
     buildDeps = [
-      jdk
-      bash
+      buildJdk
+      buildBash
     ];
     runtimeDeps = [jdk];
 
@@ -36,8 +38,8 @@ in
       {
         name = "build";
         script = ''
-          export JAVA_HOME="${jdk}"
-          export PATH="${jdk}/bin:$PATH"
+          export JAVA_HOME="${buildJdk}"
+          export PATH="${buildJdk}/bin:$PATH"
 
           # Follow upstream bootstrap.sh: compile only the core subset that
           # has no external dependencies, then use that to build the rest.

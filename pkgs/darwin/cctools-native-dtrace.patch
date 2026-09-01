@@ -1,0 +1,105 @@
+diff --git a/cctools/ld64/src/ld/passes/dtrace_dof.cpp b/cctools/ld64/src/ld/passes/dtrace_dof.cpp
+index 6155853..45475a2 100644
+--- a/cctools/ld64/src/ld/passes/dtrace_dof.cpp
++++ b/cctools/ld64/src/ld/passes/dtrace_dof.cpp
+@@ -37,8 +37,9 @@
+ #include "MachOFileAbstraction.hpp"
+ #include "dtrace_dof.h"
+ 
+-// prototype for entry point in libdtrace.dylib
+-typedef uint8_t* (*createdof_func_t)(cpu_type_t, unsigned int, const char*[], unsigned int, const char*[], const char*[], uint64_t offsetsInDOF[], size_t* size);
++// The cross linker executes on Linux, so link its source-built compiler-only
++// DOF implementation directly rather than loading a target Darwin dylib.
++extern "C" uint8_t* dtrace_ld_create_dof(cpu_type_t, unsigned int, const char*[], unsigned int, const char*[], const char*[], uint64_t offsetsInDOF[], size_t* size);
+ 
+ 
+ namespace ld {
+@@ -226,13 +227,6 @@ void doPass(const Options& opts, ld::Internal& state)
+ 		const char* providerName = pit->first;
+ 		const std::vector<DTraceProbeInfo>& probes = pit->second;
+ 
+-		// open library and find dtrace_create_dof()
+-		void* handle = dlopen("/usr/lib/libdtrace.dylib", RTLD_LAZY);
+-		if ( handle == NULL )
+-			throwf("couldn't dlopen() /usr/lib/libdtrace.dylib: %s", dlerror());
+-		createdof_func_t pCreateDOF = (createdof_func_t)dlsym(handle, "dtrace_ld_create_dof");
+-		if ( pCreateDOF == NULL )
+-			throwf("couldn't find \"dtrace_ld_create_dof\" in /usr/lib/libdtrace.dylib: %s", dlerror());
+ 		// build list of typedefs/stability infos for this provider
+ 		CStringSet types;
+ 		for(std::vector<DTraceProbeInfo>::const_iterator it = probes.begin(); it != probes.end(); ++it) {
+@@ -284,7 +277,7 @@ void doPass(const Options& opts, ld::Internal& state)
+ 		
+ 		// call dtrace library to create DOF section
+ 		size_t dofSectionSize;
+-		uint8_t* p = (*pCreateDOF)(opts.architecture(), typeCount, typeNames, probeCount, probeNames, funtionNames, offsetsInDOF, &dofSectionSize);
++		uint8_t* p = dtrace_ld_create_dof(opts.architecture(), typeCount, typeNames, probeCount, probeNames, funtionNames, offsetsInDOF, &dofSectionSize);
+		if ( p != NULL ) {
+			char* sectionName = new char[18]; // alloc new string, pass ownership to File()
+			strcpy(sectionName, "__dof_");
+diff --git a/cctools/ld64/src/ld/Makefile.am b/cctools/ld64/src/ld/Makefile.am
+index 4d0bb02..537c453 100644
+--- a/cctools/ld64/src/ld/Makefile.am
++++ b/cctools/ld64/src/ld/Makefile.am
+@@ -11,7 +11,8 @@ ld_LDADD =  \
+ 	$(LTO_RPATH) \
+ 	$(XAR_LIB) \
+ 	$(DL_LIB) \
+-	$(TAPI_LIB) 
++	$(TAPI_LIB) \
++	-ldtrace_dof
+ 
+ ld_LDFLAGS = $(PTHREAD_FLAGS) $(EXECINFO_LIB)
+
+diff --git a/cctools/ld64/src/ld/parsers/textstub_dylib_file.cpp b/cctools/ld64/src/ld/parsers/textstub_dylib_file.cpp
+index 4c1658e..b96c619 100644
+--- a/cctools/ld64/src/ld/parsers/textstub_dylib_file.cpp
++++ b/cctools/ld64/src/ld/parsers/textstub_dylib_file.cpp
+@@ -91,6 +91,7 @@ template <> bool File<x86_64>::useSimulatorVariant() { return true; }
+ template <typename A> bool File<A>::useSimulatorVariant() { return false; }
+ 
+ 
++#if TAPI_API_VERSION_MAJOR == 1
+ static ld::VersionSet mapPlatform(tapi::Platform platform, bool useSimulatorVariant) {
+ 	ld::VersionSet platforms;
+ 	switch (platform) {
+@@ -139,6 +140,7 @@ static ld::VersionSet mapPlatform(tapi::Platform platform, bool useSimulatorVari
+ 
+ 	return platforms;
+ }
++#endif
+ 
+ template <typename A>
+ File<A>::File(const char* path, const uint8_t* fileContent, uint64_t fileLength, const Options *opts,
+@@ -254,14 +256,11 @@ void File<A>::init(tapi::LinkerInterfaceFile* file, const Options *opts, bool bu
+ 	ld::VersionSet lcPlatforms;
+ #if ((TAPI_API_VERSION_MAJOR == 1 &&  TAPI_API_VERSION_MINOR >= 6) || (TAPI_API_VERSION_MAJOR > 1))
+-	if (tapi::APIVersion::isAtLeast(1, 6)) {
+-		for (const auto &platform : file->getPlatformSet())
+-			lcPlatforms.insert((ld::Platform)platform);
+-	} else
+-#endif
+-	{
++	for (const auto &platform : file->getPlatformSet())
++		lcPlatforms.insert((ld::Platform)platform);
++#else
+ 		lcPlatforms = mapPlatform(file->getPlatform(), useSimulatorVariant());
+-	}
++#endif
+ 	this->_platforms = lcPlatforms;
+ 
+ 	// check cross-linking
+ 
+diff --git a/cctools/ld64/src/ld/Makefile.in b/cctools/ld64/src/ld/Makefile.in
+index 43002f4..c62fb49 100644
+--- a/cctools/ld64/src/ld/Makefile.in
++++ b/cctools/ld64/src/ld/Makefile.in
+@@ -410,7 +410,8 @@ ld_LDADD = \
+ 	$(LTO_RPATH) \
+ 	$(XAR_LIB) \
+ 	$(DL_LIB) \
+-	$(TAPI_LIB) 
++	$(TAPI_LIB) \
++	-ldtrace_dof
+ 
+ ld_LDFLAGS = $(PTHREAD_FLAGS) $(EXECINFO_LIB)

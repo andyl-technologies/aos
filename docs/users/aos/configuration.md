@@ -80,6 +80,45 @@ Machine-wide package sets can be reconciled from a reviewed desired-state
 file with `apm install --system --from`. See [Manage packages](packages.md) for
 registry trust, user and system scopes, upgrades, and rollback.
 
+## Discover package configuration
+
+Package option and service reference is generated from the exact signed Nix
+interface selected by a registry release. It is not maintained in a parallel
+Markdown page. Browse a remote registry before installation:
+
+```sh
+apm docs search proxy --hub https://hub.example \
+  --registry acme/production
+apm options search virtualHost --hub https://hub.example \
+  --registry acme/production
+apm schema nginx --hub https://hub.example \
+  --registry acme/production
+```
+
+After installation, the same commands default to the documentation Nix object
+retained by the active package profile. They continue to work without a
+registry, cache, or network connection:
+
+```sh
+apm docs show nginx
+apm options show nginx.enable --package nginx
+apm docs man nginx --install
+apm docs serve
+```
+
+Editors can use that same closed schema and exact package identity through the
+standard-LSP server:
+
+```sh
+aos language-server
+```
+
+Configure an editor to start that command over stdio. Completion, hover,
+definition, links, symbols, diagnostics, and quick fixes are advisory because
+the language server never evaluates an editor buffer. Review the authoritative
+result with `apm config diff` before applying it. `apm options complete` exposes
+the same bounded option-path completion to shells and other editor clients.
+
 ## Understand runtime `host.nix`
 
 Runtime activation follows one transaction:
@@ -121,6 +160,56 @@ lower and records the image generation and module ABI it was built against.
 Same-ABI rollback can reactivate retained configuration directly. Cross-ABI
 rollback re-evaluates retained `host.nix`, facts, and authenticated package
 modules against the running image instead of replaying an incompatible `/etc`.
+
+## Supplement `host.nix` at runtime
+
+Runtime modules layer local operator intent over the authenticated platform
+`host.nix`; they never overwrite or copy it. AOS discovers safe `.nix` files
+recursively beneath `/var/lib/aos/config/modules.d`, snapshots the complete
+tree into the Nix store, and passes every public entrypoint directly to the
+same module evaluator. Names beginning with `_` are private helper files and
+directories: public modules may import them, but AOS does not evaluate them as
+entrypoints.
+
+For a package installed through `apm`, put only its configuration in a module:
+
+```nix
+{
+  nginx = {
+    enable = true;
+    virtualHosts.health = {
+      listen = [8080];
+      locations."/"."return" = {
+        code = 200;
+        body = "healthy\n";
+      };
+    };
+  };
+}
+```
+
+Then stage, review, and activate the complete set:
+
+```sh
+apm config add ./nginx.nix
+apm config diff
+apm config apply
+apm config status
+```
+
+Alternatively, add `aos.apm.desiredPackages = ["nginx"];` to the module so
+package selection and configuration occur in the same transaction. Use
+`replace` and `remove` to edit desired state, and `discard` to restore the
+worktree from the active immutable snapshot. A failed evaluation or activation
+leaves the current generation live; the edited worktree remains dirty for
+inspection. Reboot, rollback, ordinary `apm switch`, and cross-ABI
+re-evaluation use the generation-pinned snapshot, never unsaved worktree bytes.
+
+Runtime modules have full stage-2 local-root operator authority but cannot
+change `aos.provisioning.*`: storage provisioning remains exclusively sourced
+from authenticated boot-time `host.nix`. The initial runtime-set trust mode is
+`local-root`; signed-set ingestion is rejected until AOS can retain and verify
+a signature receipt over the complete set descriptor.
 
 Preview a candidate without fetching its runtime closure or touching the live
 generation:

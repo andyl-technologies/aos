@@ -6,11 +6,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
@@ -226,7 +222,7 @@
       }
       {
         label = "resume checkpoint instantiation";
-        needle = "resume_session_from_checkpoint";
+        needle = "Engine::from_recorded_checkpoint";
       }
       {
         label = "list reads live mirror";
@@ -292,7 +288,7 @@
       }
       {
         label = "resume genesis material rejection test";
-        needle = "resume_session_rejects_non_baked_genesis_checkpoint_material";
+        needle = "resume_session_rejects_tampered_zero_time_baked_genesis";
       }
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [

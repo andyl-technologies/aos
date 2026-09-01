@@ -4,22 +4,31 @@
 //! `-plugin` shared-object path:
 //!
 //! ```text
-//! -plugin /nix/store/.../crucible-qemu-plugin.so,simfd=3,slot=0,whitebox=off,coverage=off
+//! -plugin /nix/store/.../crucible-qemu-plugin.so,simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=off,coverage=off
 //! ```
 //!
 //! This module owns only the safe, typed parsing contract. The FFI registration
 //! entry point will call it before opening the control fd or touching QEMU state.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 mod app_random;
+mod resource_limits;
+mod state_dump;
 mod whitebox;
 pub use app_random::{
     AppRandomArgsParseError, PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER, PLUGIN_ARG_APP_RANDOM_BRANCH_SEED,
     PLUGIN_ARG_APP_RANDOM_CAP, PLUGIN_ARG_APP_RANDOM_DRAW_OFFSET, PLUGIN_ARG_APP_RANDOM_NODE,
     PLUGIN_ARG_APP_RANDOM_POSITIONS, PLUGIN_ARG_APP_RANDOM_SEED, PluginAppRandomConfig,
+};
+pub use resource_limits::{
+    HARD_STORAGE_COMPLETED_HISTORY_EPOCHS, HARD_STORAGE_COMPLETED_HISTORY_GAPS,
+    PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_EPOCHS, PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_GAPS,
+    PluginStorageHistoryLimits,
+};
+pub use state_dump::{
+    PLUGIN_ARG_STATE_DUMP_PATH, PLUGIN_ARG_STATE_DUMP_TARGET, PluginStateDumpConfig,
 };
 pub use whitebox::{
     WHITEBOX_SETUP_AARCH64_HINT_INERT_V1, WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1,
@@ -29,6 +38,12 @@ pub use whitebox::{
 pub const PLUGIN_ARG_SIMFD: &str = "simfd";
 /// The required shared-memory node-slot argument key.
 pub const PLUGIN_ARG_SLOT: &str = "slot";
+/// The required 32-byte lowercase-hex fault target identity.
+pub const PLUGIN_ARG_FAULT_NODE_HASH: &str = "fault_node_hash";
+/// The required nonzero host-supervised process generation.
+pub const PLUGIN_ARG_PROCESS_GENERATION: &str = "process_generation";
+/// The required next sequence for the plugin-owned network TX ring.
+pub const PLUGIN_ARG_NETWORK_TX_NEXT_SEQ: &str = "network_tx_next_seq";
 /// The optional pre-inherited shared-memory fd argument key.
 pub const PLUGIN_ARG_SHMEMFD: &str = "shmemfd";
 /// The optional pre-inherited wake fd argument key.
@@ -43,37 +58,15 @@ pub const PLUGIN_ARG_COVERAGE: &str = "coverage";
 pub const PLUGIN_ARG_FINGERPRINT: &str = "fingerprint";
 /// The optional gate-only synchronous fingerprint-oracle switch argument key.
 pub const PLUGIN_ARG_FINGERPRINT_ORACLE: &str = "fingerprint_oracle";
-/// The optional terminal raw-state dump target-icount argument key.
-pub const PLUGIN_ARG_STATE_DUMP_TARGET: &str = "state_dump_target";
-/// The optional terminal raw-state dump output-path argument key.
-pub const PLUGIN_ARG_STATE_DUMP_PATH: &str = "state_dump_path";
-
-/// A terminal raw-state dump requested at one exact fingerprint boundary.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PluginStateDumpConfig {
-    target_icount: u64,
-    output_path: PathBuf,
-}
-
-impl PluginStateDumpConfig {
-    /// Returns the exact aggregate icount at which QEMU must pause and dump.
-    #[must_use]
-    pub const fn target_icount(&self) -> u64 {
-        self.target_icount
-    }
-
-    /// Returns the absolute output path for the atomic dump artifact.
-    #[must_use]
-    pub fn output_path(&self) -> &Path {
-        &self.output_path
-    }
-}
-
 /// Parsed QEMU plugin launch arguments.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginArgs {
     sim_fd: i32,
     slot: u32,
+    fault_node_hash: [u8; 32],
+    process_generation: u64,
+    network_tx_next_seq: u32,
+    storage_history_limits: PluginStorageHistoryLimits,
     inherited_fds: Option<PluginInheritedFds>,
     whitebox: PluginSwitch,
     whitebox_setup: Option<WhiteboxSetupAttestation>,
@@ -98,6 +91,10 @@ impl PluginArgs {
 
         let sim_fd = parse_required_fd(&parsed, PLUGIN_ARG_SIMFD)?;
         let slot = parse_required_u32(&parsed, PLUGIN_ARG_SLOT)?;
+        let fault_node_hash = parse_required_hash(&parsed, PLUGIN_ARG_FAULT_NODE_HASH)?;
+        let process_generation = parse_required_process_generation(&parsed)?;
+        let network_tx_next_seq = parse_required_u32(&parsed, PLUGIN_ARG_NETWORK_TX_NEXT_SEQ)?;
+        let storage_history_limits = resource_limits::parse(&parsed)?;
         let whitebox = parse_optional_switch(&parsed, PLUGIN_ARG_WHITEBOX)?;
         let whitebox_setup = whitebox::parse(&parsed, whitebox)?;
         let app_random = app_random::parse(&parsed, whitebox)?;
@@ -107,12 +104,16 @@ impl PluginArgs {
         if fingerprint_oracle.is_on() && !fingerprint.is_on() {
             return Err(PluginArgsParseError::FingerprintOracleWithoutFingerprint);
         }
-        let state_dump = parse_state_dump(&parsed, fingerprint)?;
+        let state_dump = state_dump::parse(&parsed, fingerprint)?;
         let inherited_fds = parse_inherited_fds(&parsed)?;
 
         Ok(Self {
             sim_fd,
             slot,
+            fault_node_hash,
+            process_generation,
+            network_tx_next_seq,
+            storage_history_limits,
             inherited_fds,
             whitebox,
             whitebox_setup,
@@ -134,6 +135,30 @@ impl PluginArgs {
     #[must_use]
     pub const fn slot(&self) -> u32 {
         self.slot
+    }
+
+    /// Returns the authenticated next network TX sequence for this process.
+    #[must_use]
+    pub const fn network_tx_next_seq(&self) -> u32 {
+        self.network_tx_next_seq
+    }
+
+    /// Returns the authored completed block-history limits.
+    #[must_use]
+    pub const fn storage_history_limits(&self) -> PluginStorageHistoryLimits {
+        self.storage_history_limits
+    }
+
+    /// Returns the exact fault target identity authenticated for this process.
+    #[must_use]
+    pub const fn fault_node_hash(&self) -> [u8; 32] {
+        self.fault_node_hash
+    }
+
+    /// Returns the nonzero generation provisioned for this process.
+    #[must_use]
+    pub const fn process_generation(&self) -> u64 {
+        self.process_generation
     }
 
     /// Returns optional pre-inherited setup descriptors.
@@ -273,6 +298,30 @@ pub enum PluginArgsParseError {
         /// Key whose value was rejected.
         key: &'static str,
         /// Rejected value.
+        value: String,
+    },
+    /// The process generation was zero or not an unsigned integer.
+    #[error("plugin process generation is invalid: `{value}`")]
+    InvalidProcessGeneration {
+        /// Rejected value.
+        value: String,
+    },
+    /// An authored resource limit was zero, malformed, or above its hard ceiling.
+    #[error("plugin resource limit `{key}` value `{value}` is outside 1..={hard}")]
+    InvalidResourceLimit {
+        /// Resource-limit argument key.
+        key: &'static str,
+        /// Rejected launch text.
+        value: String,
+        /// Immutable compiled ceiling.
+        hard: u64,
+    },
+    /// A required 32-byte hash was not canonical lowercase hexadecimal.
+    #[error("plugin hash argument `{key}` is invalid: `{value}`")]
+    InvalidHash {
+        /// Argument key.
+        key: &'static str,
+        /// Rejected text.
         value: String,
     },
     /// A feature switch was not `on` or `off`.
@@ -428,6 +477,68 @@ fn parse_required_u32(
         })
 }
 
+fn parse_required_process_generation(
+    parsed: &ParsedPluginArgs<'_>,
+) -> Result<u64, PluginArgsParseError> {
+    let Some(value) = parsed.value(PLUGIN_ARG_PROCESS_GENERATION) else {
+        return Err(PluginArgsParseError::MissingRequiredKey {
+            key: PLUGIN_ARG_PROCESS_GENERATION,
+        });
+    };
+    match value.parse::<u64>() {
+        Ok(generation) if generation != 0 => Ok(generation),
+        _ => Err(PluginArgsParseError::InvalidProcessGeneration {
+            value: value.to_owned(),
+        }),
+    }
+}
+
+fn parse_required_hash(
+    parsed: &ParsedPluginArgs<'_>,
+    key: &'static str,
+) -> Result<[u8; 32], PluginArgsParseError> {
+    let Some(value) = parsed.value(key) else {
+        return Err(PluginArgsParseError::MissingRequiredKey { key });
+    };
+    if value.len() != 64
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_hexdigit() || byte.is_ascii_uppercase())
+    {
+        return Err(PluginArgsParseError::InvalidHash {
+            key,
+            value: value.to_owned(),
+        });
+    }
+    let mut hash = [0_u8; 32];
+    for (output, pair) in hash.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
+        let high = hex_nibble(pair[0]).ok_or_else(|| PluginArgsParseError::InvalidHash {
+            key,
+            value: value.to_owned(),
+        })?;
+        let low = hex_nibble(pair[1]).ok_or_else(|| PluginArgsParseError::InvalidHash {
+            key,
+            value: value.to_owned(),
+        })?;
+        *output = (high << 4) | low;
+    }
+    if hash == [0; 32] {
+        return Err(PluginArgsParseError::InvalidHash {
+            key,
+            value: value.to_owned(),
+        });
+    }
+    Ok(hash)
+}
+
+const fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}
+
 fn parse_optional_switch(
     parsed: &ParsedPluginArgs<'_>,
     key: &'static str,
@@ -457,49 +568,14 @@ fn parse_inherited_fds(
     }
 }
 
-fn parse_state_dump(
-    parsed: &ParsedPluginArgs<'_>,
-    fingerprint: PluginSwitch,
-) -> Result<Option<PluginStateDumpConfig>, PluginArgsParseError> {
-    match (
-        parsed.value(PLUGIN_ARG_STATE_DUMP_TARGET),
-        parsed.value(PLUGIN_ARG_STATE_DUMP_PATH),
-    ) {
-        (None, None) => Ok(None),
-        (Some(_), None) | (None, Some(_)) => Err(PluginArgsParseError::IncompleteStateDump),
-        (Some(target), Some(path)) => {
-            if !fingerprint.is_on() {
-                return Err(PluginArgsParseError::StateDumpWithoutFingerprint);
-            }
-            let target_icount = target.parse::<u64>().map_err(|_source| {
-                PluginArgsParseError::InvalidStateDumpTarget {
-                    value: target.to_owned(),
-                }
-            })?;
-            if target_icount == 0 {
-                return Err(PluginArgsParseError::InvalidStateDumpTarget {
-                    value: target.to_owned(),
-                });
-            }
-            let output_path = PathBuf::from(path);
-            if !output_path.is_absolute() || path.contains(',') || path.contains('=') {
-                return Err(PluginArgsParseError::InvalidStateDumpPath {
-                    value: path.to_owned(),
-                });
-            }
-            Ok(Some(PluginStateDumpConfig {
-                target_icount,
-                output_path,
-            }))
-        }
-    }
-}
-
 fn is_known_key(key: &str) -> bool {
     matches!(
         key,
         PLUGIN_ARG_SIMFD
             | PLUGIN_ARG_SLOT
+            | PLUGIN_ARG_FAULT_NODE_HASH
+            | PLUGIN_ARG_PROCESS_GENERATION
+            | PLUGIN_ARG_NETWORK_TX_NEXT_SEQ
             | PLUGIN_ARG_SHMEMFD
             | PLUGIN_ARG_WAKEFD
             | PLUGIN_ARG_WHITEBOX
@@ -507,9 +583,9 @@ fn is_known_key(key: &str) -> bool {
             | PLUGIN_ARG_COVERAGE
             | PLUGIN_ARG_FINGERPRINT
             | PLUGIN_ARG_FINGERPRINT_ORACLE
-            | PLUGIN_ARG_STATE_DUMP_TARGET
-            | PLUGIN_ARG_STATE_DUMP_PATH
     ) || app_random::is_key(key)
+        || resource_limits::is_key(key)
+        || state_dump::is_key(key)
 }
 
 #[cfg(test)]

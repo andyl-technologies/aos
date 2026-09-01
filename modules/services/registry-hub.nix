@@ -25,6 +25,48 @@
   externalArg =
     lib.optionalString (cfg.externalUrl != null)
     " --external-url ${lib.escapeShellArg cfg.externalUrl}";
+  credentialDirectory = "/run/credentials/aos-hub.service";
+  credentialFields = {
+    jwtSecret = {
+      handle = "jwt-secret";
+      environment = "HUB_JWT_SECRET_FILE";
+    };
+    deliveryAttestationKey = {
+      handle = "delivery-attestation-key";
+      environment = "HUB_DELIVERY_ATTESTATION_KEY_FILE";
+    };
+    domainProbeSignerManifest = {
+      handle = "domain-probe-signers";
+      environment = "HUB_DOMAIN_PROBE_SIGNER_MANIFEST_FILE";
+    };
+    routePublicationManifest = {
+      handle = "route-publication-manifest";
+      environment = "HUB_ROUTE_PUBLICATION_MANIFEST_FILE";
+    };
+    routeReservationKeys = {
+      handle = "route-reservation-keys";
+      environment = "HUB_ROUTE_RESERVATION_KEYS_FILE";
+    };
+    secretVersionManifest = {
+      handle = "secret-version-manifest";
+      environment = "HUB_SECRET_VERSION_MANIFEST_FILE";
+    };
+    cloudflareApiToken = {
+      handle = "cloudflare-api-token";
+      environment = "HUB_CLOUDFLARE_API_TOKEN_FILE";
+    };
+  };
+  configuredCredentials = lib.filterAttrs (name: _: cfg.credentials.${name} != null) credentialFields;
+  loadCredentials =
+    lib.mapAttrsToList (
+      name: spec: "${spec.handle}:/run/credentials/@system/${cfg.credentials.${name}}"
+    )
+    configuredCredentials;
+  credentialEnvironment =
+    lib.mapAttrsToList (
+      _: spec: "${spec.environment}=${credentialDirectory}/${spec.handle}"
+    )
+    configuredCredentials;
 in {
   options.aos.registry-hub = {
     enable = lib.mkEnableOption "the AOS registry management hub (aos-hub)";
@@ -32,7 +74,7 @@ in {
     package = lib.mkOption {
       type = lib.types.package;
       default = pkgs.aos-hub;
-      defaultText = lib.literalExpression "pkgs.aos-hub";
+      defaultText = "pkgs.aos-hub";
       description = "The aos-hub package to run.";
     };
 
@@ -52,8 +94,10 @@ in {
       default = "/var/lib/aos-hub";
       description = ''
         State directory holding the hub's sqlite database (hub.db) and any
-        local_fs storage-binding roots. Provisioned as a systemd
-        StateDirectory owned by the service account.
+        local_fs storage-binding roots. The native Hub provisions its
+        deployment-owned instance-default binding at the `storage` directory
+        beneath this root. The root is provisioned as a systemd StateDirectory
+        owned by the service account.
       '';
     };
 
@@ -67,9 +111,51 @@ in {
         let the hub derive it from the listen address.
       '';
     };
+
+    reindexInterval = lib.mkOption {
+      type = lib.serviceTypes.nonNegativeInt;
+      default = 60;
+      description = "Seconds between background re-index runs; zero disables them.";
+    };
+
+    dnsJsonEndpoint = lib.mkOption {
+      type = lib.types.strMatching "https://[^[:space:]]+";
+      default = "https://dns.google/resolve";
+      description = "HTTPS DNS-over-JSON endpoint used for domain verification.";
+    };
+
+    routePublicationPublicKey = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Pinned non-secret Ed25519 key for the signed route-publication manifest.";
+    };
+
+    credentials = lib.mapAttrs (_: _:
+      lib.mkOption {
+        type = lib.types.nullOr lib.serviceTypes.credentialName;
+        default = null;
+        description = "Name of a platform credential beneath /run/credentials/@system.";
+      })
+    credentialFields;
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.credentials.routeReservationKeys != null;
+        message = "aos.registry-hub.credentials.routeReservationKeys is required";
+      }
+      {
+        assertion = cfg.credentials.domainProbeSignerManifest != null;
+        message = "aos.registry-hub.credentials.domainProbeSignerManifest is required";
+      }
+      {
+        assertion =
+          (cfg.credentials.routePublicationManifest == null)
+          == (cfg.routePublicationPublicKey == null);
+        message = "routePublicationManifest and routePublicationPublicKey must be configured together";
+      }
+    ];
     aos.users.users.aos-hub = {
       uid = 802;
       group = "aos-hub";
@@ -111,7 +197,14 @@ in {
           "${cfg.package}/bin/aos-hub"
           + " --root ${lib.escapeShellArg cfg.root}"
           + " serve --listen ${lib.escapeShellArg cfg.listen}"
+          + " --reindex-interval ${toString cfg.reindexInterval}"
           + externalArg;
+        LoadCredential = loadCredentials;
+        Environment =
+          credentialEnvironment
+          ++ ["HUB_DNS_JSON_ENDPOINT=${cfg.dnsJsonEndpoint}"]
+          ++ lib.optional (cfg.routePublicationPublicKey != null)
+          "HUB_ROUTE_PUBLICATION_PUBLIC_KEY=${cfg.routePublicationPublicKey}";
         Restart = "always";
         RestartSec = "5s";
         User = "aos-hub";

@@ -9,7 +9,10 @@
 ##! Stdlib-only — no pip, no venv, no PyPI. Sources live alongside this
 ##! file under ./aos-test-driver/aos_test_driver/.
 {
+  lib,
   mkDerivation,
+  stdenv,
+  buildPackages,
   python3,
   socat,
   bash,
@@ -20,8 +23,12 @@ mkDerivation {
   src = null;
 
   # python3 and socat must be in the runtime closure: the shim re-execs
-  # python3 directly, and qemu.py shells out to socat for serial drain.
-  runtimeDeps = [python3 socat];
+  # python3 directly, and qemu.py shells out to socat for serial drain. Cross
+  # builds also retain the target Bash referenced by the installed shim;
+  # native builds already retain that direct output reference.
+  runtimeDeps =
+    [python3 socat]
+    ++ lib.optionals stdenv.isCross [bash];
 
   phases = [
     {
@@ -42,7 +49,7 @@ mkDerivation {
         # source tree lives under $out which is read-only by the time
         # the install phase finishes. ast.parse is a pure syntax check,
         # no bytecode artifacts.
-        ${python3}/bin/python3 - "$out/lib/aos-test-driver" <<'PYCHECK'
+        ${buildPackages.python3}/bin/python3 - "$out/lib/aos-test-driver" <<'PYCHECK'
         import ast, pathlib, sys
         root = pathlib.Path(sys.argv[1])
         for p in sorted(root.rglob("*.py")):
@@ -83,12 +90,12 @@ mkDerivation {
     pkgs,
     ...
   }: {
-    pyrefly = pkgs.mkDerivation {
+    pyrefly = pkgs.buildPackages.mkDerivation {
       pname = "aos-test-driver-pyrefly";
       version = "0";
       src = null;
 
-      buildDeps = [pkgs.pyrefly];
+      buildDeps = [pkgs.buildPackages.pyrefly];
 
       phases = [
         {

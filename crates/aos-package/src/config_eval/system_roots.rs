@@ -580,6 +580,7 @@ mod tests {
             requires: vec![],
             owns_roots: owns,
             contributes,
+            artifacts: Default::default(),
             provides_capabilities: caps.iter().map(|s| s.to_string()).collect(),
         }
     }

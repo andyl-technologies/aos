@@ -11,8 +11,10 @@
   maxClosureMiB,
   maxDevelopmentPayloadMiB,
   allowTestArtifacts ? false,
+  testArtifactRoots ? [],
 }: let
   mib = 1048576;
+  checkedTestArtifactRoots = assert allowTestArtifacts || testArtifactRoots == []; testArtifactRoots;
 in
   pkgs.mkDerivation {
     pname = "aos-${name}-runtime-closure-audit";
@@ -20,7 +22,10 @@ in
     src = null;
 
     outputChecks = {};
-    exportReferencesGraph.runtime = roots;
+    exportReferencesGraph = {
+      runtime = roots;
+      testArtifacts = checkedTestArtifactRoots;
+    };
     buildDeps = [pkgs.coreutils pkgs.jq];
     dontStrip = true;
     dontNukeRefs = true;
@@ -73,10 +78,12 @@ in
           fi
 
           : > forbidden-paths
+          jq -r '.testArtifacts[].path' "$NIX_ATTRS_JSON_FILE" > allowed-test-paths
           jq -r '.runtime[].path' "$NIX_ATTRS_JSON_FILE" | while IFS= read -r path; do
             store_name=''${path#/nix/store/}
             store_name=''${store_name#*-}
-            if is_forbidden_runtime_name "$store_name"; then
+            if is_forbidden_runtime_name "$store_name" \
+              && ! grep -Fxq "$path" allowed-test-paths; then
               printf '%s\n' "$path" >> forbidden-paths
             fi
           done

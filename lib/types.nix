@@ -147,9 +147,14 @@ in rec {
     description ? name,
     check ? (_: true),
     merge ? lastValue,
+    aosDocType ? {
+      kind = "opaque";
+      signature = description;
+    },
     ...
   }: {
     inherit name description check merge;
+    _aosDocType = aosDocType;
   };
 
   ## Merge function that insists all definitions agree. Used by ported
@@ -178,6 +183,7 @@ in rec {
       val = builtins.elemAt defs (builtins.length defs - 1);
     in
       val.value;
+    _aosDocType = {kind = "bool";};
   };
 
   int = {
@@ -185,6 +191,11 @@ in rec {
     description = "signed integer";
     check = builtins.isInt;
     merge = lastValue;
+    _aosDocType = {
+      kind = "integer";
+      min = null;
+      max = null;
+    };
   };
 
   float = {
@@ -192,6 +203,10 @@ in rec {
     description = "floating point number";
     check = builtins.isFloat;
     merge = lastValue;
+    _aosDocType = {
+      kind = "opaque";
+      signature = "floating point number";
+    };
   };
 
   str = {
@@ -199,6 +214,11 @@ in rec {
     description = "string";
     check = builtins.isString;
     merge = lastValue;
+    _aosDocType = {
+      kind = "string";
+      pattern = null;
+      max_length = null;
+    };
   };
 
   # lines — concatenates multiple string definitions with newlines
@@ -207,6 +227,7 @@ in rec {
     description = "strings concatenated with newlines";
     check = builtins.isString;
     merge = _loc: defs: builtins.concatStringsSep "\n" (builtins.map (d: d.value) defs);
+    _aosDocType = str._aosDocType;
   };
 
   nonEmptyStr = {
@@ -219,6 +240,7 @@ in rec {
       if builtins.stringLength val == 0
       then throw "The option '${showLoc loc}' must be a non-empty string, but is empty."
       else val;
+    _aosDocType = str._aosDocType;
   };
 
   ## Single-line string: any string that does not contain an embedded
@@ -233,6 +255,11 @@ in rec {
       if builtins.match ".*\n.*" val != null
       then throw "The option '${showLoc loc}' must be a single-line string (no embedded newlines)."
       else val;
+    _aosDocType = {
+      kind = "string";
+      pattern = "single-line";
+      max_length = null;
+    };
   };
 
   path = {
@@ -240,6 +267,7 @@ in rec {
     description = "path";
     check = v: builtins.isPath v || (builtins.isString v && builtins.substring 0 1 v == "/");
     merge = lastValue;
+    _aosDocType = {kind = "path";};
   };
 
   ## A path that is known to live inside the Nix store. Matches nixpkgs'
@@ -260,6 +288,7 @@ in rec {
       (builtins.isPath v || builtins.isString v)
       && builtins.match "/nix/store/[^/]+(/.*)?" (builtins.toString v) != null;
     merge = lastValue;
+    _aosDocType = {kind = "path";};
   };
 
   package = {
@@ -267,6 +296,10 @@ in rec {
     description = "package (derivation)";
     check = v: builtins.isAttrs v && (v ? outPath || v ? drvPath || v ? type && v.type == "derivation");
     merge = lastValue;
+    _aosDocType = {
+      kind = "opaque";
+      signature = "package (derivation)";
+    };
   };
 
   attrs = {
@@ -318,6 +351,7 @@ in rec {
       if val < 1 || val > 65535
       then throw "The option '${showLoc loc}' must be a port (1-65535), but is ${builtins.toString val}."
       else val;
+    _aosDocType = {kind = "port";};
   };
 
   ## # Parameterized types
@@ -334,6 +368,21 @@ in rec {
       if builtins.any (a: a == val) allowedValues
       then val
       else throw "The option '${showLoc loc}' must be one of ${builtins.toJSON allowedValues}, but is '${builtins.toJSON val}'.";
+    _aosDocType =
+      if builtins.all builtins.isString allowedValues
+      then {
+        kind = "enum";
+        values =
+          builtins.map (value: {
+            inherit value;
+            description = [];
+          })
+          allowedValues;
+      }
+      else {
+        kind = "opaque";
+        signature = "one of ${builtins.toJSON allowedValues}";
+      };
   };
 
   ## Supports `mkBefore` / `mkAfter` ordering markers at two levels:
@@ -394,6 +443,15 @@ in rec {
       builtins.genList
       (i: resolveOne i (builtins.elemAt sorted i))
       (builtins.length sorted);
+    _aosDocType = {
+      kind = "list";
+      element =
+        elemType._aosDocType or {
+          kind = "opaque";
+          signature = elemType.description;
+        };
+      unique = false;
+    };
   };
 
   ## A list of `elemType` that must contain at least one element after
@@ -498,6 +556,15 @@ in rec {
       );
     in
       builtins.listToAttrs perKeyEntries;
+    _aosDocType = {
+      kind = "attrs-of";
+      value =
+        elemType._aosDocType or {
+          kind = "opaque";
+          signature = elemType.description;
+        };
+      placeholder = "name";
+    };
   };
 
   ## # Type
@@ -515,6 +582,14 @@ in rec {
         elemType.merge loc [
           ((builtins.elemAt defs (builtins.length defs - 1)) // {value = val;})
         ];
+    _aosDocType = {
+      kind = "nullable";
+      value =
+        elemType._aosDocType or {
+          kind = "opaque";
+          signature = elemType.description;
+        };
+    };
   };
 
   ## # Type
@@ -532,6 +607,16 @@ in rec {
       else if type2.check val
       then type2.merge loc [lastDef]
       else throw "The option '${showLoc loc}' does not match either ${type1.name} or ${type2.name}.";
+    _aosDocType = {
+      kind = "one-of";
+      alternatives = builtins.map (
+        type:
+          type._aosDocType or {
+            kind = "opaque";
+            signature = type.description;
+          }
+      ) [type1 type2];
+    };
   };
 
   ## # Type
@@ -558,6 +643,18 @@ in rec {
       if matchingType != null
       then matchingType.merge loc [lastDef]
       else throw "The option '${showLoc loc}' does not match any of the expected types.";
+    _aosDocType = {
+      kind = "one-of";
+      alternatives =
+        builtins.map (
+          type:
+            type._aosDocType or {
+              kind = "opaque";
+              signature = type.description;
+            }
+        )
+        types;
+    };
   };
 
   ## A submodule type: a typed attrset of options declared in a nested
@@ -589,6 +686,11 @@ in rec {
       then evalSubmodule moduleArgs loc defs
       else builtins.foldl' (acc: def: deepMergeSub acc def.value) {} defs;
     _submodule = moduleArgs;
+    _aosDocType = {
+      kind = "submodule";
+      fields = {};
+      open = true;
+    };
   };
 
   ## Wrap a type with an additional check predicate. The inner type's
@@ -616,6 +718,11 @@ in rec {
       if builtins.match regex val == null
       then throw "The option '${showLoc loc}' must match the regex '${regex}' but is '${val}'."
       else val;
+    _aosDocType = {
+      kind = "string";
+      pattern = regex;
+      max_length = null;
+    };
   };
 
   ## A string whose merge concatenates all definitions with a separator.
@@ -626,6 +733,7 @@ in rec {
     description = "string merged with '${sep}'";
     check = builtins.isString;
     merge = _loc: defs: builtins.concatStringsSep sep (builtins.map (d: d.value) defs);
+    _aosDocType = str._aosDocType;
   };
 
   ## A comma-separated string. Multiple definitions concatenate with
@@ -635,6 +743,7 @@ in rec {
     description = "comma-separated string";
     check = builtins.isString;
     merge = _loc: defs: builtins.concatStringsSep "," (builtins.map (d: d.value) defs);
+    _aosDocType = str._aosDocType;
   };
 
   ## # Type combinators
@@ -656,6 +765,11 @@ in rec {
         defs;
     in
       toType.merge loc coerced;
+    _aosDocType =
+      toType._aosDocType or {
+        kind = "opaque";
+        signature = toType.description;
+      };
   };
 
   ## A conflict-rejecting enumerated scalar: `uniq (enum values)`.
@@ -693,5 +807,10 @@ in rec {
       if allSame
       then elemType.merge loc [first]
       else throw "The option '${showLoc loc}' has conflicting definitions. It must have a unique value.";
+    _aosDocType =
+      elemType._aosDocType or {
+        kind = "opaque";
+        signature = elemType.description;
+      };
   };
 }

@@ -5,11 +5,7 @@
   taskIds ? ["T-SPAT-12"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
@@ -61,10 +57,6 @@
       {
         label = "plan entry material helper";
         needle = "fn plan_entry_material(entry: &PlanEntry) -> String";
-      }
-      {
-        label = "membership fault material helper";
-        needle = "fn membership_fault_material(fault: &MembershipFault) -> String";
       }
       {
         label = "world-plan scenario helper";

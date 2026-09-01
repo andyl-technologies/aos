@@ -107,6 +107,13 @@ enum Command {
         /// Enable reviewed OCI garbage collection.
         #[arg(long, env = "HUB_OCI_GC_ENABLED", default_value_t = false)]
         oci_gc_enabled: bool,
+        /// File containing the scoped Cloudflare API token.
+        #[arg(
+            long,
+            env = "HUB_CLOUDFLARE_API_TOKEN_FILE",
+            conflicts_with = "cloudflare_api_token"
+        )]
+        cloudflare_api_token_file: Option<PathBuf>,
     },
     /// Re-index one registry (or all) now.
     Index {
@@ -263,13 +270,6 @@ struct WorkerArgs {
     /// Canonical HTTPS control-plane origin (for example `https://aos.example.com`).
     #[arg(long, env = "HUB_EXTERNAL_URL")]
     external_url: Option<String>,
-    /// Public HTTPS origin that exposes the instance-default storage binding.
-    ///
-    /// Public registries placed on that binding automatically use their
-    /// placement prefix below this origin as the canonical Git URL. Explicit
-    /// delivery-route advertisements override this default.
-    #[arg(long, env = "HUB_DEFAULT_PUBLIC_DELIVERY_URL")]
-    default_public_delivery_url: Option<String>,
     /// Immutable source/build identity exposed for deployment verification.
     #[arg(long, env = "HUB_DEPLOYMENT_ID")]
     deployment_id: Option<String>,
@@ -449,6 +449,7 @@ async fn main() -> Result<()> {
             oci_verified_publication_enabled,
             oci_administration_enabled,
             oci_gc_enabled,
+            cloudflare_api_token_file,
         } => {
             let root = resolve_root(cli.root, dev)?;
             let listener = tokio::net::TcpListener::bind(&listen)
@@ -459,18 +460,19 @@ async fn main() -> Result<()> {
                 .context("reading bound listen address")?;
             let external_url = external_url.unwrap_or_else(|| format!("http://{listen_addr}"));
             let db = Arc::new(Database::open(&root.join("hub.db")).await?);
-            let default_storage_root = root.join("storage");
-            std::fs::create_dir_all(&default_storage_root).with_context(|| {
+            let storage_root = root.join("storage");
+            std::fs::create_dir_all(&storage_root).with_context(|| {
                 format!(
-                    "creating default storage root {}",
-                    default_storage_root.display()
+                    "creating native Hub storage root {}",
+                    storage_root.display()
                 )
             })?;
-            let default_storage_root = default_storage_root
+            let storage_root_text = storage_root
                 .to_str()
-                .context("default storage root is not valid UTF-8")?;
-            db.ensure_instance_default_binding("local_fs", Some(default_storage_root), None)
-                .await?;
+                .context("native Hub storage root is not valid UTF-8")?;
+            db.ensure_instance_default_binding("local_fs", Some(storage_root_text), None)
+                .await
+                .context("provisioning native Hub instance-default binding")?;
             let image_snapshots = aos_hub::image_snapshot::ImageSnapshotStore::open(&root)?;
             image_snapshots.load_tracked(&db).await?;
             let route_reservation_keys_path = route_reservation_keys_file
@@ -712,7 +714,25 @@ async fn main() -> Result<()> {
                     "HUB_ROUTE_PUBLICATION_MANIFEST_FILE and HUB_ROUTE_PUBLICATION_PUBLIC_KEY must be configured together"
                 ),
             }
+            let cloudflare_api_token = match (cloudflare_api_token, cloudflare_api_token_file) {
+                (Some(token), None) => Some(token),
+                (None, Some(path)) => Some(
+                    String::from_utf8(aos_hub::auth::seal::read_secret_file(&path).with_context(
+                        || format!("reading Cloudflare API token at {}", path.display()),
+                    )?)
+                    .context("Cloudflare API token is not UTF-8")?
+                    .trim_end()
+                    .to_owned(),
+                ),
+                (None, None) => None,
+                // clap rejects this combination before dispatch; retain an
+                // explicit fail-closed branch for programmatic construction.
+                (Some(_), Some(_)) => anyhow::bail!(
+                    "HUB_CLOUDFLARE_API_TOKEN and HUB_CLOUDFLARE_API_TOKEN_FILE conflict"
+                ),
+            };
             if let Some(token) = cloudflare_api_token {
+                anyhow::ensure!(!token.is_empty(), "Cloudflare API token file is empty");
                 let api =
                     Arc::new(aos_hub::coreports::CloudflareControlPlaneClient::new(token).await?);
                 route_adapters = route_adapters.with_external(Arc::new(
@@ -1040,18 +1060,6 @@ async fn main() -> Result<()> {
             // `open_db` opens and migrates the local database. Worker HubDb
             // bootstrap is handled by the Worker command family.
             let db = open_db(&cli.root, &cli.target).await?;
-            let default_storage_root = resolve_root(cli.root.clone(), false)?.join("storage");
-            std::fs::create_dir_all(&default_storage_root).with_context(|| {
-                format!(
-                    "creating default storage root {}",
-                    default_storage_root.display()
-                )
-            })?;
-            let default_storage_root = default_storage_root
-                .to_str()
-                .context("default storage root is not valid UTF-8")?;
-            db.ensure_instance_default_binding("local_fs", Some(default_storage_root), None)
-                .await?;
             println!("schema migrated ({})", cli.target);
             if let Some(email) = root_email {
                 let plaintext = read_password(root_password, root_password_stdin)?;
@@ -1237,18 +1245,6 @@ async fn provision_worker(
     assets: &aos_hub::cloudflare::Assets,
     args: &WorkerArgs,
 ) -> Result<aos_hub::cloudflare::DeployConfig> {
-    if let Some(delivery_url) = &args.default_public_delivery_url {
-        let parsed =
-            url::Url::parse(delivery_url).context("default public delivery URL is invalid")?;
-        anyhow::ensure!(
-            parsed.scheme() == "https"
-                && parsed.username().is_empty()
-                && parsed.password().is_none()
-                && parsed.query().is_none()
-                && parsed.fragment().is_none(),
-            "default public delivery URL must be an HTTPS URL without credentials, query, or fragment"
-        );
-    }
     let external_url = args
         .external_url
         .clone()

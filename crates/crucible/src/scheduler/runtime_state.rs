@@ -1,6 +1,10 @@
 //! Terminal conditions, quiescence, World-link runtime, and scheduler-owned state.
 
 use super::*;
+
+mod network_checkpoint;
+
+pub use network_checkpoint::SchedulerNetworkCheckpointCodecError;
 /// The terminal scheduler condition reached by a liveness run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SchedulerTerminal {
@@ -107,7 +111,7 @@ impl From<SchedulerError> for SchedulerLivenessError {
 }
 
 /// Deterministic quiescence evidence computed from scheduler-owned state.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerQuiescence {
     /// Authoritative scheduler-state reasons the system is not quiescent.
     pub blockers: Vec<SchedulerQuiescenceBlocker>,
@@ -122,7 +126,7 @@ impl SchedulerQuiescence {
 }
 
 /// One scheduler-owned state component that prevents quiescence.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SchedulerQuiescenceBlocker {
     /// A node is still runnable and may be selected by PICK.
     RunnableNode {
@@ -243,21 +247,70 @@ pub enum SchedulerWorldInstantiationError {
 #[derive(Clone, Debug)]
 pub struct WorldNetworkLinkRuntime {
     pub(super) canonical_id: LinkId,
-    pub(super) legacy_id: Option<LinkId>,
     pub(super) endpoint_a: NodeId,
     pub(super) endpoint_b: NodeId,
     pub(super) direction: NetworkLinkDirection,
     pub(super) scheduler_node: SchedulerNodeId,
-    pub(super) base_faults: crucible_device::LinkFaults,
     pub(super) rng_stream: RngStreamId,
     pub(super) fault_id: crate::DeviceId,
     pub(super) link: crucible_device::NetLink,
 }
 
+/// Complete scheduler-owned continuation for every modeled network link.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchedulerNetworkCheckpoint {
+    /// Directed link snapshots in canonical link/direction order.
+    pub links: Vec<SchedulerNetworkLinkCheckpoint>,
+    /// Shared RNG positions in canonical link order.
+    pub rng_positions: Vec<(LinkId, u64)>,
+    /// Exact signal-driven wakeup armed at capture time.
+    pub signal_fault_wakeup_nanos: Option<u64>,
+}
+
+/// One directed scheduler link and its complete device continuation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchedulerNetworkLinkCheckpoint {
+    /// Canonical symmetric World-link identity.
+    pub link: LinkId,
+    /// Directed orientation within the symmetric link.
+    pub direction: NetworkLinkDirection,
+    /// Clock, fault, RNG, sequence, and in-flight frame state.
+    pub state: crucible_device::LinkSnapshot,
+}
+
+/// Authenticated result of removing frames during a directed link transition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NetworkInFlightDropEvidence {
+    /// Canonical scheduler link identity.
+    pub link: LinkId,
+    /// Directed runtime edge whose frames were removed.
+    pub direction: NetworkLinkDirection,
+    /// Number of removed frames.
+    pub frame_count: u64,
+    /// Complete removed-frame records in deterministic delivery order.
+    pub frames: Vec<NetworkDroppedFrameEvidence>,
+    /// Digest of every removed delivery key, frame identity, and payload.
+    pub evidence: ContentHash,
+}
+
+/// One recoverable frame record removed by an availability transition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NetworkDroppedFrameEvidence {
+    /// Consumer icount at which the frame would have become visible.
+    pub delivery_icount: u64,
+    /// Producer slot in the deterministic transport ABI.
+    pub source_slot: u32,
+    /// Per-producer delivery sequence.
+    pub delivery_sequence: u32,
+    /// Correlation identity assigned at guest transmission.
+    pub frame_id: u32,
+    /// Exact modeled payload at the instant it was removed.
+    pub payload: Vec<u8>,
+}
+
 impl WorldNetworkLinkRuntime {
     pub(super) fn matches(&self, link: &LinkId, direction: NetworkLinkDirection) -> bool {
-        self.direction == direction
-            && (&self.canonical_id == link || self.legacy_id.as_ref() == Some(link))
+        self.direction == direction && &self.canonical_id == link
     }
 
     /// Returns the canonical collision-free logical link identifier.
@@ -399,6 +452,11 @@ pub struct SingleScheduler {
     /// [`resolve_device_completions`](SingleScheduler::resolve_device_completions)
     /// and is never double-counted.
     pub(super) device_horizons: BTreeMap<NodeId, SimInstant>,
+    /// Earliest exact global evaluation boundary requested by the signal fault runtime.
+    ///
+    /// This runtime-only term is folded into every live VM's horizon so the
+    /// shared frontier reaches cadence and residence deadlines without polling.
+    pub(super) signal_fault_wakeup: Option<SimInstant>,
     /// Test-only fault injection: when `true`,
     /// [`resolve_device_completions`](SingleScheduler::resolve_device_completions)
     /// stamps each I/O completion's key with the consumer's *frontier* icount
@@ -415,12 +473,9 @@ pub struct SingleScheduler {
     /// at the exact branch boundary without rewriting the recorded prefix.
     pub(super) decision_seed: Seed,
     pub(super) decision_rng_cursor: DecisionRngState,
-    /// Explorer-selected probabilistic fault choices awaiting their exact
-    /// scheduler RESOLVE points.
-    pub(super) branch_fault_choices: Vec<(RngDecision, FaultDecision)>,
     /// Explorer-selected live World-network outcomes awaiting exact emissions.
     pub(super) branch_network_choices: Vec<OverrideDecision>,
-    /// Probabilistic RESOLVE frontiers captured in execution order.
+    /// Live World-network frontiers captured in execution order.
     pub(super) search_frontiers: Vec<SearchRuntimeFrontier>,
     pub(super) event_log: EventLog,
     pub(super) trigger_actions: TriggerActionState,
@@ -432,8 +487,6 @@ pub struct SingleScheduler {
     pub(super) quanta: u64,
     pub(super) topology_epoch: u64,
     pub(super) topology_change_applications: Vec<SchedulerTopologyChangeApplication>,
-    pub(super) node_crash_applications: Vec<SchedulerNodeCrashApplication>,
-    pub(super) node_restart_applications: Vec<SchedulerNodeRestartApplication>,
     pub(super) rendezvous_records: Vec<SchedulerRendezvousRecord>,
     pub(super) boundary_yields: u64,
     pub(super) ceiling_publications: Vec<SchedulerRunCeilingPublication>,

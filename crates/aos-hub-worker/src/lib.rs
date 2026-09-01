@@ -411,8 +411,6 @@ mod entry {
     const HUB_ROUTE_PUBLICATION_PUBLIC_KEY: &str = "HUB_ROUTE_PUBLICATION_PUBLIC_KEY";
     /// The Wrangler `[vars]` entry holding the hub's externally-reachable URL.
     const HUB_EXTERNAL_URL: &str = "HUB_EXTERNAL_URL";
-    /// Optional public origin exposing the instance-default R2 binding.
-    const HUB_DEFAULT_PUBLIC_DELIVERY_URL: &str = "HUB_DEFAULT_PUBLIC_DELIVERY_URL";
     /// Immutable source/build identity used to attest the active deployment.
     const HUB_DEPLOYMENT_ID: &str = "HUB_DEPLOYMENT_ID";
     /// Staged request-execution cutover: `off`, `read`, or `on`.
@@ -429,8 +427,6 @@ mod entry {
     const HUB_OCI_GC_ENABLED: &str = "HUB_OCI_GC_ENABLED";
     /// Non-cacheable endpoint exposing [`HUB_DEPLOYMENT_ID`].
     const DEPLOYMENT_ID_PATH: &str = "/.well-known/aos-deployment";
-    /// Required `[vars]` entry naming the deployment's default R2 bucket.
-    const HUB_DEFAULT_BUCKET: &str = "HUB_DEFAULT_BUCKET";
     /// Optional `[vars]` entry: the email-relay endpoint magic links are
     /// `POST`ed to. Unset → [`WorkerMailer`] logs the link instead.
     const HUB_EMAIL_API_URL: &str = "HUB_EMAIL_API_URL";
@@ -438,28 +434,6 @@ mod entry {
     /// Optional repository-owned native egress-router endpoint.
     const HUB_EGRESS_GATEWAY_URL: &str = "HUB_EGRESS_GATEWAY_URL";
 
-    fn default_public_delivery_url(env: &Env) -> Result<Option<String>> {
-        let Ok(value) = env.var(HUB_DEFAULT_PUBLIC_DELIVERY_URL) else {
-            return Ok(None);
-        };
-        let value = value.to_string();
-        let parsed = url::Url::parse(&value).map_err(|error| {
-            worker::Error::RustError(format!(
-                "{HUB_DEFAULT_PUBLIC_DELIVERY_URL} is invalid: {error}"
-            ))
-        })?;
-        if parsed.scheme() != "https"
-            || !parsed.username().is_empty()
-            || parsed.password().is_some()
-            || parsed.query().is_some()
-            || parsed.fragment().is_some()
-        {
-            return Err(worker::Error::RustError(format!(
-                "{HUB_DEFAULT_PUBLIC_DELIVERY_URL} must be HTTPS without credentials, query, or fragment"
-            )));
-        }
-        Ok(Some(value))
-    }
     /// Optional shared authentication key for the egress router.
     const HUB_EGRESS_GATEWAY_KEY: &str = "HUB_EGRESS_GATEWAY_KEY";
     /// Scoped Cloudflare API token used by the control-plane observer.
@@ -820,29 +794,6 @@ mod entry {
         ConsoleDeps,
         Option<Arc<aos_hub_core::delivery_attestation::DeliveryAttestationVerifier>>,
     )> {
-        let default_bucket = env
-            .var(HUB_DEFAULT_BUCKET)
-            .map_err(|_| {
-                worker::Error::RustError(format!(
-                    "{HUB_DEFAULT_BUCKET} is required and must name the deployment R2 bucket"
-                ))
-            })?
-            .to_string();
-        if default_bucket.is_empty() {
-            return Err(worker::Error::RustError(format!(
-                "{HUB_DEFAULT_BUCKET} must not be empty"
-            )));
-        }
-        if runtime_kind == RouterRuntimeKind::Colocated {
-            db.ensure_instance_default_binding("deployment_r2", None, Some(&default_bucket))
-                .await
-                .map_err(|error| {
-                    worker::Error::RustError(format!(
-                        "provisioning instance-default binding: {error:#}"
-                    ))
-                })?;
-        }
-
         let secret = env.secret(HUB_JWT_SECRET)?.to_string();
         if secret.is_empty() {
             return Err(worker::Error::RustError(format!(
@@ -1104,9 +1055,6 @@ mod entry {
         .with_kv(Arc::new(crate::workerkv::WorkerKv::new(
             env.kv(crate::handlers::bindings::KV_SESSIONS)?,
         )));
-        if let Some(delivery_url) = default_public_delivery_url(env)? {
-            service = service.with_default_public_delivery_url(delivery_url);
-        }
         let service = Arc::new(service);
 
         // Seed the editable site chrome (title/banner/footer) from HubDb once per
@@ -2413,32 +2361,36 @@ mod entry {
                 Arc::clone(&secret_versions),
             ),
         ));
-        controller
-            .run_due(25)
-            .await
-            .map_err(|error| worker::Error::RustError(format!("domain probes: {error:#}")))?;
-        let bucket = env.bucket(crate::handlers::bindings::R2).map_err(|error| {
-            worker::Error::RustError(format!("placement scans: R2 binding missing: {error}"))
-        })?;
-        let placement_scans = aos_hub_core::placement_scan::PlacementScanController::new(
-            Arc::clone(&db),
-            Arc::new(crate::surface::R2SurfaceProvider::new(
-                bucket.clone(),
-                Arc::clone(&db),
-                Arc::clone(&secret_versions),
-                Arc::clone(&egress),
-            )),
-        )
-        .with_writes(Arc::new(crate::surface::R2SurfaceWriteProvider::new(
-            bucket,
-            Arc::clone(&db),
-            secret_versions,
-            egress,
-        )));
-        placement_scans
-            .run_due(5)
-            .await
-            .map_err(|error| worker::Error::RustError(format!("placement scans: {error:#}")))?;
+        if let Err(error) = controller.run_due(25).await {
+            worker::console_error!("domain probes: {error:#}");
+        }
+        match env.bucket(crate::handlers::bindings::R2) {
+            Ok(bucket) => {
+                let placement_scans = aos_hub_core::placement_scan::PlacementScanController::new(
+                    Arc::clone(&db),
+                    Arc::new(crate::surface::R2SurfaceProvider::new(
+                        bucket.clone(),
+                        Arc::clone(&db),
+                        Arc::clone(&secret_versions),
+                        Arc::clone(&egress),
+                    )),
+                )
+                .with_writes(Arc::new(
+                    crate::surface::R2SurfaceWriteProvider::new(
+                        bucket,
+                        Arc::clone(&db),
+                        secret_versions,
+                        Arc::clone(&egress),
+                    ),
+                ));
+                if let Err(error) = placement_scans.run_due(5).await {
+                    worker::console_error!("placement scans: {error:#}");
+                }
+            }
+            Err(error) => {
+                worker::console_error!("placement scans: R2 binding missing: {error}");
+            }
+        }
         Ok(())
     }
 

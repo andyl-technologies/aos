@@ -1,10 +1,12 @@
+schema = "crucible.scenario.v5"
+
 [scenario]
-id = "blake3:dd9956d21ecd402ff847e0f6858640ee1abcfc52e2b468baa44581f2a6411333"
+id = "blake3:771e8a9e097f321be3ada6dcf138e3b2dcd18b15cfd1534d8c175fd66e8ebad9"
 seed = "0x2a00000000000000000000000000000000000000000000000000000000000000"
 app_random_draw_cap = 10
 
 [world]
-id = "blake3:b36b7b896f36bd4452ea49d12f796afd6c5ba9d0fe0390fb47e7a5a873230472"
+id = "blake3:8408f8cb2aa137f12d4abcbdae02a5e902cc657730e2bf1a13961237dccb6831"
 
 [[world.node]]
 id = "client"
@@ -44,8 +46,101 @@ jitter_nanos = 1000000
 loss_millionths = 0
 
 [plan]
-id = "blake3:14c2e657cc57addfb612ed58161750fb7ed34f24a713c1e7e6487a7513d116e0"
-kind = "event_graph"
+id = "blake3:0e2a7af775fc643dc04d4592460ee88fe853184e4b9f6c2c8cc90579efdeac2e"
+fault_model = "signal_bindings_v2"
+fault_signal_semantic_version = 2
+
+[plan.resource_limits]
+signal_nodes = 16384
+signal_edges = 65536
+signal_inputs_per_node = 64
+signal_state_bytes = 67108864
+state_machine_states_per_node = 4096
+state_machine_transitions_per_node = 16384
+lookup_points_per_node = 65536
+bindings = 32768
+signals_per_binding = 32
+resolved_targets_per_binding = 65536
+active_contributions_per_target = 1024
+effect_payload_bytes = 1048576
+events_emitted_per_signal_transition = 256
+trace_artifacts = 1024
+trace_channels_total = 16384
+trace_channels_per_artifact = 4096
+trace_entries_per_chunk = 4096
+trace_chunks_total = 4194304
+trace_entries_total = 4294967296
+trace_normalized_bytes_total = 274877906944
+trace_single_payload_bytes = 16777216
+trace_manifest_bytes = 67108864
+spatial_grid_cells_total = 268435456
+spatial_zone_vertices_total = 16777216
+network_interfaces = 16384
+network_segments = 65536
+network_forwarders = 8192
+network_media = 4096
+network_queues = 65536
+network_paths = 65536
+network_path_hops = 256
+network_medium_participants = 4096
+network_resources_per_medium = 4096
+network_pending_frames = 1048576
+network_frame_bytes = 16777216
+network_queue_frames = 262144
+network_queue_bytes = 1073741824
+network_forwarding_entries = 1048576
+network_connection_entries = 1048576
+network_contact_entries = 4194304
+network_custody_bundles = 1048576
+network_loop_hops = 256
+network_retries_per_frame_per_hop = 64
+network_duplicates_per_frame_per_hop = 16
+storage_devices = 4096
+storage_pending_operations = 1048576
+storage_request_bytes = 16777216
+storage_queue_operations = 262144
+storage_cache_bytes_per_device = 17179869184
+storage_cache_entries_per_device = 1048576
+storage_persistence_dependencies = 4194304
+storage_media_intervals_per_device = 1048576
+storage_retained_versions_per_interval = 64
+storage_flash_blocks_per_device = 16777216
+storage_array_members = 256
+storage_retries_per_operation = 64
+storage_completed_history_epochs = 1048576
+storage_completed_history_gaps = 1048576
+ninep_sessions_per_device = 65536
+ninep_fids_per_session = 65536
+ninep_object_versions = 1048576
+nodes = 4096
+vcpus_per_node = 256
+node_mutations_pending = 65536
+memory_mutation_bytes_per_effect = 1048576
+memory_fault_intervals_per_node = 1048576
+memory_access_counters_per_node = 1048576
+instruction_fault_rules_per_node = 65536
+interrupt_fault_rules_per_node = 65536
+interrupt_events_pending_per_node = 262144
+clock_fault_rules_per_node = 4096
+accelerators_per_node = 256
+accelerator_jobs_pending = 262144
+instruction_replay_count = 16
+interrupt_storm_events = 1048576
+event_records = 268435456
+event_log_bytes = 68719476736
+event_inline_payload_bytes = 65536
+checkpoint_count = 65536
+fat_checkpoint_bytes = 17179869184
+thin_replay_events = 268435456
+resolved_effect_records = 268435456
+replay_first_mismatch_context_bytes = 16777216
+search_states = 1048576
+search_depth = 65536
+search_candidates_per_choice = 256
+search_choices_per_state = 65536
+trace_mutation_windows = 65536
+mapping_mutation_points = 65536
+minimization_attempts = 1048576
 
 [[plan.event]]
 id = "pass-on-quiescence"

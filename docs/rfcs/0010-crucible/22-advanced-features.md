@@ -265,12 +265,13 @@ the whole reason Crucible's snapshots are trustworthy:
    produces a snapshot that restores to the wrong state (the snapshot-completeness
    risk, [`30-risks-spikes.md`](30-risks-spikes.md)).
 
-The two strategies are tied together by the **replay oracle** ([INV-2], 07 §6): a
-fat checkpoint MUST hash-equal its replay-from-ancestor derivation, or it is
-rejected as a corrupt cache entry and the thin (replay) form is used instead. This
-is precisely what *makes snapshot bugs visible* instead of silently poisoning every
-descendant: the slow-but-correct strategy is the yardstick the fast strategy is
-measured against, continuously, as a CI gate.
+The two explicit strategies are tied together by the **replay oracle** ([INV-2],
+07 §6): a fat checkpoint MUST hash-equal its replay-from-ancestor derivation or
+the exact capture/restore request fails. Crucible does not silently change that
+request into replay. An operator may issue a separate replay realization after
+inspecting the failure. This is precisely what *makes snapshot bugs visible*
+instead of silently poisoning every descendant: replay is the independent
+yardstick against which snapshot restore is continuously checked.
 
 ```text
   restore strategies for a checkpoint c:
@@ -282,10 +283,9 @@ measured against, continuously, as a CI gate.
                             a cache of reduce(); can be incomplete/wrong
 
   oracle (INV-2, 07 §6):  hash( loadvm(c.fat) ) == hash( replay-to-c )
-                          fail ⇒ reject the fat snapshot, fall back to (A),
-                          localize via divergence bisection (24)  — never smooth over
-  hedge:                  if savevm is unreliable for a device, leave c THIN (07 §4,
-                          [TEMP-13]) — degrade to slow, never to wrong.
+                          fail ⇒ reject the exact operation and localize via
+                          divergence bisection (24); never change mechanisms
+  replay request:         a separate operation selected explicitly by the caller
 ```
 
 - **[ADV-10]** Crucible MUST provide both restore strategies and MUST treat
@@ -299,26 +299,27 @@ measured against, continuously, as a CI gate.
 - **[ADV-11]** A fat (snapshot) checkpoint MUST be validated against its
   replay-from-ancestor derivation by the replay oracle (07 §6, [INV-2]) before it
   is trusted: `hash(loadvm(fat)) == hash(replay-to-c)`. A fat snapshot that fails
-  MUST be rejected (dropped to thin) and the replay strategy used; the failure MUST
-  be localized to the first differing decision/instruction by divergence bisection
+  MUST reject the exact operation without deleting, rewriting, or converting the
+  checkpoint and without automatically invoking replay; the failure MUST be
+  localized to the first differing decision/instruction by divergence bisection
   (24), never smoothed over ([INV-10], 07 [TEMP-18], [TEMP-19]). The oracle is the
   mechanism by which snapshot bugs are *made visible*. *Gate:* `gate:replay-oracle`,
   `gate:divergence-bisect`. *Spec:* §22.4; cross-ref 07 §6.
 
-- **[ADV-12]** When a device's snapshot is unreliable (the savevm-completeness
-  hedge, [`30-risks-spikes.md`](30-risks-spikes.md), 07 [TEMP-13]) the affected
-  checkpoints MUST be kept **thin**: restore degrades to the slower replay strategy
-  but stays bit-correct, because replay-from-ancestor never depends on snapshot
-  completeness. Snapshot completeness MUST therefore never be a *correctness*
-  prerequisite for save/restore, only a *performance* optimization. *Gate:*
+- **[ADV-12]** A target whose complete VMState and host continuation cannot be
+  captured MUST reject exact snapshot capability and every exact capture request.
+  It MUST NOT create a partial checkpoint or redirect the request to replay. Thin
+  reconstruction records remain a separately requested representation whose
+  correctness never depends on snapshot completeness. *Gate:*
   `gate:replay-oracle`. *Spec:* §22.4; cross-ref 07 §4, 30.
 
 - **[ADV-13]** Save (`create_savepoint`, 20 §7) MUST materialize the current
   configuration as a fat checkpoint keyed by `config.id()` (05 [EXEC-4]),
-  CoW-shared (07 §5) and oracle-validated (07 §6), with the thin form
-  `(parent, schedule_delta)` remaining the source of truth (07 §4). Restore MUST be
-  `instantiate` of the recorded configuration (05 §5): `loadvm` if fat-and-valid,
-  else replay-from-nearest-fat-ancestor. A session restored from a savepoint MUST
+  CoW-shared (07 §5) and oracle-validated (07 §6), and MUST fail atomically if
+  any exact component is unavailable. Restore of that savepoint MUST use the
+  recorded exact representation and MUST fail rather than change realization
+  mechanisms. A separately requested replay uses `(parent, schedule_delta)` and
+  replay-from-nearest-fat-ancestor. A session restored from a savepoint MUST
   be the same kind of object as one started at genesis, differing only in its
   configuration (20 [SESS-18]). *Gate:* `gate:replay-oracle`,
   `gate:content-address`. *Spec:* §22.4; cross-ref 20 §7, 05 §5/§9, 07 §3/§4.
@@ -1017,7 +1018,8 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   `TemporalGraph::replay_checkpoint` path used by restore. It proves fork
   validates any cached base before recording a branch, keeps the branch thin
   until ordinary materialization, checks the materialized branch with
-  `graph.replay`, rejects corrupt branch caches, evicts them back to thin replay,
+  `graph.replay`, and rejects corrupt branch caches without changing the
+  requested realization mechanism,
   and feeds the observed mismatch into the existing replay-oracle bisection API
   to localize the first differing fork decision.
 - [x] **T-ADV-5** Implement the two restore strategies (replay-from-seed as the
@@ -1025,23 +1027,24 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   oracle check that makes snapshot bugs visible, with divergence localization. —
   satisfies [ADV-10], [ADV-11]; spec §22.4; cross-ref 07 §6.
   Completed by `checks.crucible.phase6.restoreStrategies`: the temporal graph
-  now has a phase6 gate proving thin replay remains the source-of-truth DAG node,
+  now has a phase6 gate proving the thin record remains the source-of-truth DAG node,
   fat checkpoint materialization is admitted only after `replay_checkpoint`, exact
   snapshot restore agrees with replay-from-seed, and corrupt cached snapshots
-  are rejected by the `instantiate` restore path before being evicted back to
-  thin replay. The gate feeds the observed `ReplayOracleMismatch` into the
+  are rejected by the `instantiate` restore path without automatic replay. The
+  gate feeds the observed `ReplayOracleMismatch` into the
   replay-oracle bisection API and asserts the first differing decision is
   localized for the fat/thin disagreement.
-- [x] **T-ADV-6** Implement the savevm-completeness hedge (keep unreliable-snapshot
-  checkpoints thin; degrade to slow replay, never to wrong) and wire save as a
-  fat-checkpoint materialize keyed by config.id with thin-as-source-of-truth. —
+- [x] **T-ADV-6** Require complete fat-checkpoint materialization keyed by
+  `config.id`, with thin checkpoints retained only as explicit reconstruction
+  records and cache policy. —
   satisfies [ADV-12], [ADV-13]; spec §22.4; cross-ref 07 §4, 30.
-  Completed by `checks.crucible.phase6.savevmCompleteness`: the savevm hedge
-  gate proves device-marked unreliable snapshots are evicted to thin checkpoints
-  and still replay through `instantiate`, global thin-replay fallback evicts hot
-  fat caches without changing runtime identity, and the user-facing `save` path
-  persists a fat checkpoint keyed by the configuration id while retaining the
-  thin source-of-truth DAG node.
+  Completed by `checks.crucible.phase6.checkpointMaterialization` and
+  `checks.crucible.phase2.qemuExactSnapshotRestore`: the user-facing `save` path
+  persists a content-addressed fat checkpoint, QEMU capture pairs VMState with
+  every Apache-side host-I/O continuation under the same execution identity,
+  known-created artifacts are transactionally removed when later pair commit
+  fails, ambiguous or duplicate saves never delete an existing artifact, and
+  incomplete pairs fail closed.
 - [x] **T-ADV-7** Implement state-space search as systematic frontier expansion of
   the temporal graph (enumerate genuine `Decision`s, step each child, dedup by
   content address), realizing each frontier node via `instantiate` from the

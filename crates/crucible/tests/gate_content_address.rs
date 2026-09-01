@@ -14,12 +14,12 @@ use crucible::{
     AppRandomDecision, Checkpoint, CheckpointKind, CheckpointMeta, Configuration, ContentHash,
     CowDeltaKind, CowDeltaRef, DagStore, DagStoreError, DagStoreReproductionArtifact, Decision,
     DecisionRngState, DeliveryOrderDecision, DeviceId, DeviceOverlayDelta, DeviceRngState,
-    EngineError, EventKey, EventLogOffset, EventSequenceState, FaultDecision, FaultId, FaultState,
-    FrontierReductionPolicy, FrontierReductionReason, Icount, IrqVector, LocalDagStore,
-    MaterializationPolicy, MaterializationTrigger, MaterializedState, MemoryDagStore,
-    NetworkLinkRuntimeCursor, NodeBlobRef, NodeId, PartialOrderReductionPolicy, PendingFrame,
-    PreemptionDecision, PreemptionKind, RngDecision, RngStreamId, RngStreamPosition, ScenarioDef,
-    Schedule, SchedulerNodeId, SchedulerState, SchedulingNodeKind, SearchFrontierChoices, State,
+    EngineError, EventKey, EventLogOffset, EventSequenceState, FrontierReductionPolicy,
+    FrontierReductionReason, Icount, IrqVector, LocalDagStore, MaterializationPolicy,
+    MaterializationTrigger, MaterializedState, MemoryDagStore, NetworkLinkRuntimeCursor,
+    NodeBlobRef, NodeId, PartialOrderReductionPolicy, PendingFrame, PreemptionDecision,
+    PreemptionKind, RngDecision, RngStreamId, RngStreamPosition, ScenarioDef, Schedule,
+    SchedulerNodeId, SchedulerState, SchedulingNodeKind, SearchFrontierChoices, State,
     SymmetryClassId, SymmetryReductionClasses, TemporalGraph, TemporalGraphGcRoots,
     TemporalGraphStoreError, TimerId, TimerRegistry, TimerState, VcpuId, VirtualTime,
     VmSnapshotRef, World, bake, instantiate, reduce, step,
@@ -46,15 +46,15 @@ fn gate_content_address_keeps_fixed_vectors_stable() {
             ),
             (
                 "schedule",
-                "c2b68e7b541ae33c09353c9ea1c1d6279528210f38a58b691660656e4b184892"
+                "5229d92c60462a0d25c12ccf3b8f7258ffe2ffd382c1d95d2ccea4050b3ab417"
             ),
             (
                 "configuration",
-                "fb8a2f5a06ec7ab97784f947fe77a7376c18856e9b9b9e7798a8e5dbf88a5040",
+                "583a882853deee3f9180978a33253f9f06771e9ff15ee4f13bd54a13f6459a45",
             ),
             (
                 "state",
-                "15012a0bf6d785b9ef33c4cfb437164c83e0aa213b4cc8263bd1a09248c702cf"
+                "c0f400af9d28d6bfaa5f7ed24cb6bb9f7ec6f58527a301c00e268fe7c769e6f6"
             ),
             (
                 "world-component",
@@ -187,12 +187,9 @@ fn gate_content_address_excludes_materialization_cache_from_identity() {
     let scenario = scenario("scenario=cache\nnodes=a\nseed=17");
     let configuration = step(
         &Configuration::genesis(scenario.clone()),
-        Decision::FaultFires(FaultDecision {
-            at: VirtualTime { ticks: 5 },
-            fault: FaultId {
-                name: String::from("disk-delay"),
-            },
-            fired: true,
+        Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name("disk-delay"),
+            value: 1,
         }),
     );
     let id = configuration.content_hash();
@@ -301,9 +298,6 @@ fn gate_content_address_materialized_state_hashes_loadvm_components() {
     let timer = TimerId {
         name: String::from("heal-after"),
     };
-    let fault = FaultId {
-        name: String::from("partition-a-b"),
-    };
     let stream = RngStreamId::from_name("device/disk-a");
     let parent_blob =
         ContentHash::from_canonical_material("crucible.test.materialized-state", "parent-blob");
@@ -370,15 +364,6 @@ fn gate_content_address_materialized_state_hashes_loadvm_components() {
                 },
             )]),
         },
-        active_faults: BTreeMap::from([(
-            fault,
-            FaultState {
-                active_since: VirtualTime { ticks: 15 },
-                heal_at: Some(VirtualTime { ticks: 120 }),
-            },
-        )]),
-        active_fault_tags: BTreeMap::new(),
-        active_fault_table: crucible::ActiveFaultTable::default(),
         pending_device_decisions: Vec::new(),
         search_frontier: SearchFrontierChoices::empty(),
     };
@@ -1938,12 +1923,9 @@ fn fixed_schedule() -> Schedule {
             at: VirtualTime { ticks: 1 },
             order: vec![event_key(1, 2), event_key(1, 3)],
         }))
-        .appended(Decision::FaultFires(FaultDecision {
-            at: VirtualTime { ticks: 4 },
-            fault: FaultId {
-                name: String::from("link-a-b/drop"),
-            },
-            fired: true,
+        .appended(Decision::RngDraw(RngDecision {
+            stream: RngStreamId::for_link("link-a-b/drop"),
+            value: 1,
         }))
         .appended(Decision::AppRandom(AppRandomDecision {
             node: NodeId {
@@ -1972,14 +1954,9 @@ fn generated_decision(seed: u64, index: u64) -> Decision {
             },
             order: vec![event_key(seed + index, index)],
         }),
-        1 => Decision::FaultFires(FaultDecision {
-            at: VirtualTime {
-                ticks: seed + index,
-            },
-            fault: FaultId {
-                name: format!("fault-{seed}-{index}"),
-            },
-            fired: index.is_multiple_of(2),
+        1 => Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name(format!("stream-{seed}-{index}")),
+            value: u64::from(index.is_multiple_of(2)),
         }),
         _ => Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name(format!("stream-{seed}")),

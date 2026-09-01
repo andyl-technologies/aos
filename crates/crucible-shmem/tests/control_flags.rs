@@ -3,8 +3,8 @@
 #![forbid(unsafe_code)]
 
 use crucible_shmem::{
-    KIND_VM, NodeSlot, RegionConfig, RegionControlAction, RegionHeader, RegionLayout, STATUS_DONE,
-    STATUS_IDLE, WakeAllResult,
+    KIND_VM, LogicalTimeRestoreRequest, NodeSlot, NodeSlotError, RegionConfig, RegionControlAction,
+    RegionHeader, RegionLayout, STATUS_DONE, STATUS_IDLE, WakeAllResult,
 };
 
 #[cfg(target_os = "linux")]
@@ -68,14 +68,78 @@ fn shutdown_request_takes_priority_and_nodes_mark_done() {
 fn node_can_publish_pause_quiescence_at_quantum_boundary() {
     let slot = NodeSlot::new(KIND_VM);
 
-    assert_eq!(slot.publish_pause_quiesced(42, 2), Ok(()));
+    assert_eq!(slot.publish_pause_quiesced(42, 40, 2), Ok(()));
 
     let snapshot = slot.snapshot();
     assert_eq!(snapshot.current_icount, 42);
     assert_eq!(snapshot.current_ns, 168);
     assert_eq!(snapshot.idle_wake_icount, 42);
     assert_eq!(snapshot.status, STATUS_IDLE);
+    assert_eq!(snapshot.logical_time_raw_icount, 40);
     assert_eq!(snapshot.publish_gen % 2, 0);
+}
+
+#[test]
+fn logical_time_restore_is_one_generation_exact_transaction() {
+    let slot = NodeSlot::new(KIND_VM);
+    let generation = match slot.arm_logical_time_restore(500) {
+        Ok(generation) => generation,
+        Err(error) => panic!("first restore request must arm: {error}"),
+    };
+    assert_eq!(
+        slot.pending_logical_time_restore(),
+        Some(LogicalTimeRestoreRequest {
+            generation,
+            target_icount: 500,
+        })
+    );
+    assert_eq!(
+        slot.arm_logical_time_restore(501),
+        Err(NodeSlotError::LogicalTimeRestoreAlreadyPending {
+            request: generation,
+            ack: 0,
+        })
+    );
+
+    let request = match slot.pending_logical_time_restore() {
+        Some(request) => request,
+        None => panic!("armed restore request must remain visible"),
+    };
+    assert_eq!(
+        slot.acknowledge_logical_time_restore(request, 500, 420, 1),
+        Ok(())
+    );
+    assert_eq!(slot.pending_logical_time_restore(), None);
+    let snapshot = slot.snapshot();
+    assert_eq!(snapshot.current_icount, 500);
+    assert_eq!(snapshot.logical_time_raw_icount, 420);
+    assert_eq!(snapshot.logical_time_restore_target, 500);
+    assert_eq!(snapshot.logical_time_restore_request, generation);
+    assert_eq!(snapshot.logical_time_restore_ack, generation);
+    assert_eq!(snapshot.current_ns, 1_000);
+    assert_eq!(snapshot.status, STATUS_IDLE);
+}
+
+#[test]
+fn logical_time_restore_rejects_raw_time_ahead_of_logical_time() {
+    let slot = NodeSlot::new(KIND_VM);
+    let generation = match slot.arm_logical_time_restore(500) {
+        Ok(generation) => generation,
+        Err(error) => panic!("restore request must arm: {error}"),
+    };
+    let request = LogicalTimeRestoreRequest {
+        generation,
+        target_icount: 500,
+    };
+
+    assert_eq!(
+        slot.acknowledge_logical_time_restore(request, 500, 501, 0),
+        Err(NodeSlotError::LogicalTimeRestoreRawAhead {
+            logical_icount: 500,
+            raw_icount: 501,
+        })
+    );
+    assert_eq!(slot.pending_logical_time_restore(), Some(request));
 }
 
 #[test]

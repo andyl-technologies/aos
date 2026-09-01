@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  stdenv,
+  buildPackages,
   ecj-bootstrap,
   fastjar,
   jamvm-1_5,
@@ -9,6 +11,18 @@
   classpath-0_99,
 }: let
   version = "0.99";
+  ecjForBuild =
+    if stdenv.isCross
+    then buildPackages.ecj-bootstrap
+    else ecj-bootstrap;
+  fastjarForBuild =
+    if stdenv.isCross
+    then buildPackages.fastjar
+    else fastjar;
+  jamvmForBuild =
+    if stdenv.isCross
+    then buildPackages.jamvm-1_5
+    else jamvm-1_5;
   classpathSrc = fetchurl {
     urls = [
       "https://mirrors.kernel.org/gnu/classpath/classpath-${version}.tar.gz"
@@ -23,9 +37,9 @@ in
     src = classpathSrc;
 
     buildDeps = [
-      ecj-bootstrap
-      fastjar
-      jamvm-1_5
+      ecjForBuild
+      fastjarForBuild
+      jamvmForBuild
       classpath-0_99
     ];
     runtimeDeps = [
@@ -74,7 +88,7 @@ in
           # Add the javah sources
           find gnu/classpath/tools/javah -name '*.java' >> /tmp/javah-sources.txt
 
-          ${ecj-bootstrap}/bin/ecj \
+          ${ecjForBuild}/bin/ecj \
             -source 1.5 -target 1.5 \
             -encoding UTF-8 \
             -bootclasspath $GLIBJ \
@@ -101,7 +115,7 @@ in
           # Create tools.zip
           mkdir -p $out/lib $out/bin
           cd $PWD/classes
-          ${fastjar}/bin/fastjar cf $out/lib/tools.zip .
+          ${fastjarForBuild}/bin/fastjar cf $out/lib/tools.zip .
 
           # Create gjavah wrapper using JamVM 2.0 (which uses classpath-0.99)
           printf '#!/bin/sh\nexec %s -cp %s gnu.classpath.tools.javah.Main "$@"\n' \

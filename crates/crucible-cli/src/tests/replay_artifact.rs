@@ -260,12 +260,10 @@ pub(super) fn cli_search_fuzz_workflow_plans_drivers_and_rejects_bad_inputs()
 [[truth]]
 name = "cli-search/named-truth"
 value = true
-active_fault_tags = ["network-partition", "network-partition"]
 
 [[truth]]
 name = "cli-search/named-truth"
 value = false
-active_fault_tags = ["network-partition"]
 "#,
     )?;
     let error = match plan_search_invocation(
@@ -480,7 +478,12 @@ quiescent = false
     assert!(fuzz_plan.delegates_policy_to_advanced_engine);
     assert!(fuzz_plan.pins_one_scenario_def_per_iteration);
     assert!(fuzz_plan.counterexamples_are_self_contained);
-    assert_eq!(load_fuzz_family(&fuzz_plan)?.space().cardinality()?, 8);
+    let family = load_fuzz_family(&fuzz_plan)?;
+    assert_eq!(family.space().seeds().len(), 2);
+    assert_eq!(family.space().topology_shapes().len(), 1);
+    assert_eq!(family.space().topology_size().min(), 1);
+    assert_eq!(family.space().topology_size().max(), 2);
+    assert_eq!(family.space().cardinality()?, 4);
 
     let reference = format_content_hash_ref(crucible::ContentHash::from_bytes(b"family-ref"));
     let hash_cli = Cli::parse_from(["crucible", "fuzz", "--family", &reference]);
@@ -1543,7 +1546,7 @@ pub(super) fn cli_search_fuzz_workflow_executes_local_double_fuzz() -> Result<()
 
     let corrupt_family = store.put(
         valid_fuzz_family_toml()
-            .replace("crucible.scenario-family.v1", "wrong.schema")
+            .replace("crucible.scenario-family.v2", "wrong.schema")
             .as_bytes(),
     )?;
     let corrupt_reference = format_content_hash_ref(corrupt_family);
@@ -1722,14 +1725,6 @@ pub(super) fn cli_run_workflow_interactive_pauses_at_genesis_and_accepts_session
     assert!(
         plan.accepted_interactive_commands
             .contains(&SessionCommandKind::StepQuantum)
-    );
-    assert!(
-        plan.accepted_interactive_commands
-            .contains(&SessionCommandKind::InjectFault)
-    );
-    assert!(
-        plan.accepted_interactive_commands
-            .contains(&SessionCommandKind::HealFault)
     );
     assert!(
         plan.accepted_interactive_commands
@@ -2013,17 +2008,14 @@ pub(super) fn cli_run_workflow_executes_remote_daemon_session_against_production
 
 #[test]
 pub(super) fn cli_run_workflow_parses_interactive_session_commands() -> Result<(), Box<dyn Error>> {
-    let commands = parse_interactive_session_commands(
-        "\n# comment\nquery\nstep\ninject-fault\nheal\nsave\nfork\nstop\n",
-    )?;
+    let commands =
+        parse_interactive_session_commands("\n# comment\nquery\nstep\nsave\nfork\nstop\n")?;
 
     assert_eq!(
         commands,
         vec![
             SessionCommandKind::Query,
             SessionCommandKind::StepQuantum,
-            SessionCommandKind::InjectFault,
-            SessionCommandKind::HealFault,
             SessionCommandKind::CreateSavepoint,
             SessionCommandKind::Fork,
             SessionCommandKind::Stop,
@@ -2082,11 +2074,11 @@ pub(super) async fn cli_run_workflow_acknowledges_interactive_reader_commands()
     let mut command_id = 1;
     let mut acknowledged = Vec::new();
     let mut output = Vec::new();
-    let terminal_snapshot = drive_interactive_command_reader(
+    let terminal_evidence = drive_interactive_command_reader(
         &control,
         &mut command_id,
         &mut acknowledged,
-        io::Cursor::new("query\ninject-fault\nquery\n# ignored\n\nstop\nquery\n"),
+        io::Cursor::new("query\nquery\n# ignored\n\nstop\nquery\n"),
         &mut output,
     )
     .await?;
@@ -2096,20 +2088,27 @@ pub(super) async fn cli_run_workflow_acknowledges_interactive_reader_commands()
         vec![
             SessionCommandKind::Query,
             SessionCommandKind::Query,
+            SessionCommandKind::Query,
             SessionCommandKind::Stop,
         ]
     );
-    assert_eq!(command_id, 4);
+    assert_eq!(command_id, 5);
     assert!(matches!(
-        terminal_snapshot.as_deref().map(|snapshot| &snapshot.state),
+        terminal_evidence
+            .as_ref()
+            .map(|evidence| &evidence.snapshot.state),
         Some(EngineState::Stopped { .. })
     ));
+    assert!(
+        terminal_evidence
+            .as_ref()
+            .is_some_and(|evidence| evidence.resolved_effect_trace.is_none())
+    );
     assert_eq!(
         String::from_utf8(output)?,
         concat!(
             "interactive-ack\tcommand=query\tstatus=accepted\n",
             "interactive-query\tstate=paused\n",
-            "interactive-ack\tcommand=inject-fault\tstatus=rejected\treason=unsupported\tdetail=payload-required\n",
             "interactive-ack\tcommand=query\tstatus=accepted\n",
             "interactive-query\tstate=paused\n",
             "interactive-ack\tcommand=stop\tstatus=accepted\n",
@@ -2120,17 +2119,18 @@ pub(super) async fn cli_run_workflow_acknowledges_interactive_reader_commands()
 }
 
 #[test]
-pub(super) fn interactive_fault_commands_never_use_representative_fixture_payloads() {
-    for command in [
-        SessionCommandKind::InjectFault,
-        SessionCommandKind::HealFault,
-    ] {
-        let error = match cli_stream_command(command) {
-            Ok(_) => panic!("payload-less fault command must be rejected"),
+pub(super) fn retired_fault_commands_are_unknown() {
+    for command in ["inject", "inject-fault", "heal", "heal-fault"] {
+        let error = match parse_interactive_session_command(command) {
+            Ok(_) => panic!("retired fault command must be unknown"),
             Err(error) => error,
         };
         assert!(matches!(error, CliError::Usage(_)));
-        assert!(error.to_string().contains("requires a typed fault payload"));
+        assert!(
+            error
+                .to_string()
+                .contains("unknown interactive session command")
+        );
     }
 }
 

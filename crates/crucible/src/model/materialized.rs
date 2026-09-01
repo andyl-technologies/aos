@@ -5,7 +5,9 @@ mod seed;
 pub use seed::{Seed, SeededRngStream};
 
 /// A deterministic decision-stream identifier.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct RngStreamId {
     /// The stable stream domain.
     pub domain: String,
@@ -53,21 +55,25 @@ impl RngStreamId {
 }
 
 /// A scheduling point identifier used by override decisions.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct SchedulingPoint {
     /// The canonical scheduling-point key.
     pub key: String,
 }
 
 /// An override choice identifier used by exploration.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct ChoiceTag {
     /// The canonical choice name.
     pub name: String,
 }
 
 /// A delivery-order decision payload.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct DeliveryOrderDecision {
     /// The virtual time at which the ordering was resolved.
     pub at: VirtualTime,
@@ -75,19 +81,8 @@ pub struct DeliveryOrderDecision {
     pub order: Vec<EventKey>,
 }
 
-/// A probabilistic fault decision payload.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct FaultDecision {
-    /// The virtual time at which the fault was resolved.
-    pub at: VirtualTime,
-    /// The fault whose outcome was resolved.
-    pub fault: FaultId,
-    /// Whether the fault fired.
-    pub fired: bool,
-}
-
 /// A decision-stream draw payload.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RngDecision {
     /// The stream that produced the value.
     pub stream: RngStreamId,
@@ -96,7 +91,7 @@ pub struct RngDecision {
 }
 
 /// A search or fuzzing override payload.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct OverrideDecision {
     /// The scheduling point being overridden.
     pub point: SchedulingPoint,
@@ -105,7 +100,7 @@ pub struct OverrideDecision {
 }
 
 /// A vCPU-switch or interrupt-preemption payload.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PreemptionDecision {
     /// The node whose execution is preempted.
     pub node: NodeId,
@@ -115,8 +110,41 @@ pub struct PreemptionDecision {
     pub kind: PreemptionKind,
 }
 
+impl PreemptionDecision {
+    /// Serializes this preemption decision canonically.
+    #[must_use]
+    pub fn to_compact_binary(&self) -> Vec<u8> {
+        let mut writer = ScenarioBinaryWriter::new(PREEMPTION_DECISION_BINARY_MAGIC);
+        writer.write_string(&self.node.name);
+        writer.write_u64(self.at.retired);
+        write_preemption_kind_binary(&self.kind, &mut writer);
+        writer.finish()
+    }
+
+    /// Parses one complete preemption decision.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] for unsupported,
+    /// malformed, truncated, or trailing data.
+    pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
+        let mut reader = ScenarioBinaryReader::new(bytes, PREEMPTION_DECISION_BINARY_MAGIC)?;
+        let decision = Self {
+            node: NodeId {
+                name: reader.read_string()?,
+            },
+            at: Icount {
+                retired: reader.read_u64()?,
+            },
+            kind: read_preemption_kind_binary(&mut reader)?,
+        };
+        reader.finish()?;
+        Ok(decision)
+    }
+}
+
 /// The kind of a preemption decision.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum PreemptionKind {
     /// A multi-vCPU round-robin switch.
     VcpuSwitch {
@@ -135,7 +163,7 @@ pub enum PreemptionKind {
 }
 
 /// An application-requested random draw payload.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct AppRandomDecision {
     /// The requesting node.
     pub node: NodeId,
@@ -147,34 +175,6 @@ pub struct AppRandomDecision {
     pub width: u8,
     /// The served random value.
     pub value: u64,
-}
-
-/// A boundary-applied imperative fault-control decision.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ControlFaultDecision {
-    /// The virtual time at which the control action applied.
-    pub at: VirtualTime,
-    /// The session-local control operation sequence.
-    pub sequence: u64,
-    /// The fault action applied at the boundary.
-    pub action: ControlFaultAction,
-}
-
-/// A fault action admitted through the control plane.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ControlFaultAction {
-    /// Inject or replace a full-taxonomy fault under `tag`.
-    Inject {
-        /// Stable handle used for later healing.
-        tag: FaultTag,
-        /// Full fault taxonomy value to activate.
-        fault: Fault,
-    },
-    /// Heal an active fault by tag.
-    Heal {
-        /// Stable handle naming the active fault.
-        tag: FaultTag,
-    },
 }
 
 /// A per-VM snapshot reference captured by a fat checkpoint.
@@ -210,7 +210,9 @@ impl DeviceId {
 }
 
 /// A deterministic RNG stream cursor.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct RngStreamPosition {
     /// Number of draws already consumed from the stream.
     pub draws: u64,
@@ -337,9 +339,8 @@ impl SearchFrontierChoices {
     /// Builds a frontier-choice set from scheduler-derived candidate decisions.
     ///
     /// The retained decisions are limited to the closed search taxonomy:
-    /// probabilistic fault outcomes, decision-RNG draws, and search overrides.
-    /// Delivery order is excluded here because RESOLVE already imposes a total
-    /// order over scheduled events.
+    /// decision-RNG draws and search overrides. Delivery order is excluded here
+    /// because RESOLVE already imposes a total order over scheduled events.
     #[must_use]
     pub fn from_decisions<I>(decisions: I) -> Self
     where
@@ -421,7 +422,6 @@ impl SearchFrontierChoice {
         let decisions = decisions.into_iter().collect::<Vec<_>>();
         let decision = match decisions.as_slice() {
             [decision] if is_genuine_search_frontier_decision(decision) => decision.clone(),
-            [Decision::RngDraw(_), decision @ Decision::FaultFires(_)] => decision.clone(),
             [
                 decision @ Decision::Override(override_decision),
                 causal @ ..,
@@ -429,12 +429,10 @@ impl SearchFrontierChoice {
                 .point
                 .key
                 .starts_with("live-world-network/")
-                && causal.iter().all(|decision| {
-                    matches!(decision, Decision::RngDraw(_) | Decision::FaultFires(_))
-                })
                 && causal
                     .iter()
-                    .any(|decision| matches!(decision, Decision::FaultFires(_))) =>
+                    .all(|decision| matches!(decision, Decision::RngDraw(_)))
+                && !causal.is_empty() =>
             {
                 decision.clone()
             }
@@ -514,7 +512,9 @@ impl EventSequenceState {
 }
 
 /// A timer identifier inside the scheduler state.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct TimerId {
     /// The canonical timer name.
     pub name: String,
@@ -550,15 +550,6 @@ impl TimerRegistry {
     }
 }
 
-/// An active fault captured in scheduler state.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct FaultState {
-    /// Virtual time at which the fault became active.
-    pub active_since: VirtualTime,
-    /// Optional virtual time when the fault should heal.
-    pub heal_at: Option<VirtualTime>,
-}
-
 /// Authoritative scheduler state needed to resume a fat checkpoint.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct SchedulerState {
@@ -578,12 +569,6 @@ pub struct SchedulerState {
     pub pending_topology_changes: Vec<crate::scheduler::SchedulerTopologyChange>,
     /// Armed timer registry.
     pub timers: TimerRegistry,
-    /// Faults currently active in the scheduler.
-    pub active_faults: BTreeMap<FaultId, FaultState>,
-    /// Active injected faults keyed by their stable heal tag.
-    pub active_fault_tags: BTreeMap<FaultTag, MembershipFault>,
-    /// Deterministic scheduler lookup table reduced from active faults.
-    pub active_fault_table: ActiveFaultTable,
     /// Device decisions already drawn but not yet emitted at a scheduler boundary.
     pub pending_device_decisions: Vec<Decision>,
     /// Search choices captured from the runtime frontier.
@@ -603,9 +588,6 @@ impl SchedulerState {
             effective_topology_edges: Vec::new(),
             pending_topology_changes: Vec::new(),
             timers: TimerRegistry::empty(),
-            active_faults: BTreeMap::new(),
-            active_fault_tags: BTreeMap::new(),
-            active_fault_table: ActiveFaultTable::default(),
             pending_device_decisions: Vec::new(),
             search_frontier: SearchFrontierChoices::empty(),
         }
@@ -628,30 +610,34 @@ impl SchedulerState {
 
     /// Applies one causal decision that mutates materialized scheduler state.
     pub fn apply_decision(&mut self, decision: &Decision) {
-        let Decision::ControlFault(control) = decision else {
-            return;
-        };
-        match &control.action {
-            ControlFaultAction::Inject { tag, fault } => {
-                self.active_fault_tags
-                    .insert(tag.clone(), MembershipFault::taxonomy(fault.clone()));
-                self.recompute_active_fault_table();
-            }
-            ControlFaultAction::Heal { tag } => {
-                self.active_fault_tags.remove(tag);
-                self.recompute_active_fault_table();
-            }
-        }
+        let _ = decision;
     }
 
-    /// Recomputes the deterministic active-fault table from active tags.
-    pub fn recompute_active_fault_table(&mut self) {
-        self.active_fault_table = ActiveFaultTable::from_active_faults(&self.active_fault_tags);
+    /// Serializes this materialized scheduler continuation canonically.
+    #[must_use]
+    pub fn to_compact_binary(&self) -> Vec<u8> {
+        let mut writer = ScenarioBinaryWriter::new(SCHEDULER_STATE_BINARY_MAGIC);
+        write_scheduler_state_binary(self, &mut writer);
+        writer.finish()
+    }
+
+    /// Parses one complete materialized scheduler continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] for an unsupported
+    /// version, malformed or over-limit collections, invalid nested values, or
+    /// trailing bytes.
+    pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
+        let mut reader = ScenarioBinaryReader::new(bytes, SCHEDULER_STATE_BINARY_MAGIC)?;
+        let state = read_scheduler_state_binary(&mut reader)?;
+        reader.finish()?;
+        Ok(state)
     }
 }
 
 /// Harness decision-RNG cursor state captured at a checkpoint.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct DecisionRngState {
     /// Per-stream cursor positions.
     pub positions: BTreeMap<RngStreamId, RngStreamPosition>,
@@ -668,7 +654,9 @@ impl DecisionRngState {
 }
 
 /// The shared event-log prefix position for a checkpoint.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct EventLogOffset {
     /// Content address of the shared event-log prefix.
     pub prefix: ContentHash,
@@ -980,6 +968,13 @@ pub struct Checkpoint {
     pub metadata: CheckpointMeta,
     /// Per-node VM-state blob references.
     pub node_blobs: BTreeMap<NodeId, NodeBlobRef>,
+    /// Content address of the concrete production continuation closure.
+    ///
+    /// This is distinct from [`Self::id`], which names model configuration.
+    /// Production resume requires this reference for the VMState, host-I/O,
+    /// scheduler, trigger, fault-runtime, and lifecycle-state closure. Pure
+    /// model checkpoints leave it absent.
+    pub execution_closure: Option<ContentHash>,
     /// Whether this is a fat or thin checkpoint.
     pub kind: CheckpointKind,
 }
@@ -1032,6 +1027,7 @@ impl Checkpoint {
             assertion_proximity_fingerprint: ContentHash::default(),
             metadata: CheckpointMeta::empty(),
             node_blobs,
+            execution_closure: None,
             kind,
         })
     }
@@ -1057,6 +1053,7 @@ impl Checkpoint {
             assertion_proximity_fingerprint: ContentHash::default(),
             metadata: CheckpointMeta::empty(),
             node_blobs,
+            execution_closure: None,
             kind,
         }
     }
@@ -1070,6 +1067,13 @@ impl Checkpoint {
             CheckpointKind::Thin
         };
         self.state = state;
+        self
+    }
+
+    /// Attaches the concrete production continuation closure to this checkpoint.
+    #[must_use]
+    pub fn with_execution_closure(mut self, closure: ContentHash) -> Self {
+        self.execution_closure = Some(closure);
         self
     }
 
@@ -1315,81 +1319,5 @@ impl SearchReplayOracleSamplingConfig {
     pub(super) fn samples(&self, sequence: u64, checkpoint: ContentHash) -> bool {
         search_replay_oracle_sampling_score(&self.seed_tag, sequence, checkpoint) % self.denominator
             < self.numerator
-    }
-}
-
-/// Policy for hedging incomplete backend `savevm` coverage.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SavevmCompletenessHedge {
-    pub(super) fat_snapshot_default: bool,
-    pub(super) unreliable_devices: BTreeSet<DeviceId>,
-}
-
-impl SavevmCompletenessHedge {
-    /// Builds a hedge that permits fat snapshots after full replay-oracle proof.
-    #[must_use]
-    pub fn verified() -> Self {
-        Self {
-            fat_snapshot_default: true,
-            unreliable_devices: BTreeSet::new(),
-        }
-    }
-
-    /// Builds the conservative fallback adopted until full S3 is green.
-    #[must_use]
-    pub fn thin_replay_until_full_s3() -> Self {
-        Self {
-            fat_snapshot_default: false,
-            unreliable_devices: BTreeSet::new(),
-        }
-    }
-
-    /// Builds a hedge that keeps checkpoints thin when `devices` are unreliable.
-    ///
-    /// Without complete device-touch provenance from the backend, known
-    /// unreliable device snapshots force the conservative replay path by
-    /// default. Supplied fat checkpoints still flow through
-    /// [`Self::allows_checkpoint`] and are rejected if their materialized state
-    /// touches one of the unreliable devices.
-    #[must_use]
-    pub fn with_unreliable_devices<I>(devices: I) -> Self
-    where
-        I: IntoIterator<Item = DeviceId>,
-    {
-        Self {
-            fat_snapshot_default: false,
-            unreliable_devices: devices.into_iter().collect(),
-        }
-    }
-
-    /// Returns whether fat snapshots are usable by default.
-    #[must_use]
-    pub const fn fat_snapshot_default(&self) -> bool {
-        self.fat_snapshot_default
-    }
-
-    /// Returns the devices whose materialized snapshots must stay thin.
-    #[must_use]
-    pub fn unreliable_devices(&self) -> &BTreeSet<DeviceId> {
-        &self.unreliable_devices
-    }
-
-    /// Returns whether `state` is eligible to be cached as a fat snapshot.
-    #[must_use]
-    pub fn allows_materialized_state(&self, state: &MaterializedState) -> bool {
-        self.fat_snapshot_default
-            && state
-                .device_overlays
-                .keys()
-                .all(|device| !self.unreliable_devices.contains(device))
-    }
-
-    /// Returns whether `checkpoint` is eligible to be cached as a fat snapshot.
-    #[must_use]
-    pub fn allows_checkpoint(&self, checkpoint: &Checkpoint) -> bool {
-        checkpoint
-            .state
-            .as_ref()
-            .is_some_and(|state| self.allows_materialized_state(state))
     }
 }

@@ -4,21 +4,22 @@
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoDeps,
+  fetchCargoVendor,
   glib,
   pkg-config,
   qemu-crucible,
 }: let
   version = "0.1.0";
   src = import ../tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = fetchCargoDeps {
+  cargoDeps = fetchCargoVendor {
     inherit src;
+    name = "crucible-vendor-${version}";
     sourceRoot = "source/crates";
     hash = import ../tools/crucible/_cargo-deps-hash.nix;
   };
   cargoArtifactContract = {
     family = "crucible-gpl-qemu-plugin-release-and-test";
-    nativeInputs = map toString [glib.dev glib.tools pkg-config qemu-crucible];
+    nativeInputs = map toString [glib glib.dev glib.tools pkg-config qemu-crucible];
     licenseScope = "GPL-2.0-only";
   };
   cargoArtifacts = mkCargoArtifacts {
@@ -35,7 +36,7 @@
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-plugin"
     ];
     buildDeps = [glib.dev glib.tools pkg-config qemu-crucible];
-    runtimeDeps = [qemu-crucible];
+    runtimeDeps = [glib qemu-crucible];
   };
 in
   mkCargoPackage {
@@ -53,9 +54,12 @@ in
     doCheck = true;
 
     buildDeps = [glib.dev glib.tools pkg-config qemu-crucible];
-    runtimeDeps = [qemu-crucible];
+    runtimeDeps = [glib qemu-crucible];
 
     preBuild = ''
+      export CRUCIBLE_QEMU_BUILD_ID=${qemu-crucible.passthru.qemuBuildIdentity}
+      export CRUCIBLE_QEMU_PATCH_SERIES_HASH=${qemu-crucible.passthru.patchSeriesHash}
+      export CRUCIBLE_SHMEM_HEADER_HASH=${qemu-crucible.passthru.shmemHeaderHash}
       header="${qemu-crucible}/include/qemu/qemu-plugin.h"
       test -f "$header"
       grep -q 'qemu_plugin_crucible_rr_switch_quantum' "$header"
@@ -161,7 +165,7 @@ in
       cat > "$out/nix-support/crucible-qemu-plugin-build-info" <<INFO
       package=crucible-qemu-plugin
       build_system=mkCargoPackage
-      cargo_deps=fetchCargoDeps
+      cargo_deps=fetchCargoVendor
       qemu_package=qemu-crucible
       qemu_build_id=${qemu-crucible.passthru.qemuBuildIdentity}
       qemu_sim_capability_marker=${qemu-crucible}/share/aos/crucible/qemu-build-identity.env

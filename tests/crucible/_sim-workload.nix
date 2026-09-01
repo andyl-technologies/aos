@@ -180,6 +180,37 @@
       fi
       printf '%s\n' "$observables" | sha256sum | cut -c1-16
     }
+
+    # Exercises the ordinary guest-random API without the later sim-specific
+    # virtio-rng delivery path. Linux probes the SD card during early boot,
+    # causing its generated RCA to request guest-random bytes. The fully
+    # patched binary must reject that unseeded request; full-minus-0008 reaches
+    # guest userspace instead.
+    sim_unseeded_guest_random_policy_probe() {
+      local qemu="$1" firmware="$2" artifact_prefix="$3"
+      local sd_image="$TMPDIR/sim-unseeded-policy.$$.$RANDOM.sd"
+      truncate -s 8M "$sd_image"
+      : > "$artifact_prefix.serial"
+      : > "$artifact_prefix.qemu-stderr"
+      # This boot competes with the finite drop-one build matrix in the
+      # aggregate gate. Its outcome is guest-state based, so retain the same
+      # assertion while allowing the standard live-QEMU wall-time margin.
+      timeout 180 "$qemu" -L "$firmware" \
+        -nodefaults -no-user-config -display none -monitor none -machine q35 \
+        -accel sim,thread=single -icount shift=0,sleep=off,align=off \
+        -cpu qemu64,-rdrand,-rdseed -m 1024 -smp 1 \
+        -rtc base=2026-01-01T00:00:00,clock=vm \
+        -device sdhci-pci \
+        -drive "file=$sd_image,if=none,format=raw,id=simpolicysd" \
+        -device sd-card,drive=simpolicysd \
+        -kernel "$SIM_KERNEL" -initrd "$SIM_INITRD" \
+        -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet net.ifnames=0" \
+        -chardev "file,id=simser0,path=$artifact_prefix.serial" \
+        -serial chardev:simser0 -no-reboot \
+        > /dev/null 2> "$artifact_prefix.qemu-stderr" || true
+      tr -d '\r' < "$artifact_prefix.serial" \
+        > "$artifact_prefix.normalized"
+    }
   '';
 in {
   inherit initramfs probeLib;

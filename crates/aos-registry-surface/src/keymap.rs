@@ -93,6 +93,11 @@ pub fn content_type(path: &str) -> &'static str {
         "text/javascript"
     } else if path.ends_with(".wasm") {
         "application/wasm"
+    } else if path == "info/refs" {
+        // A dumb-HTTP Git server ignores the smart-protocol `service` query.
+        // Git recognizes that fallback only from the exact historical media
+        // type; adding a charset makes it reject the response instead.
+        "text/plain"
     } else if path == "HEAD"
         || path == "nix-cache-info"
         || path.starts_with("info/")
@@ -269,5 +274,11 @@ mod tests {
             assert_eq!(cache_control(path), IMMUTABLE_CACHE_CONTROL, "{path}");
         }
         assert!(!is_mutable_path("not/a/machine/path"));
+    }
+
+    #[test]
+    fn dumb_git_advertisement_uses_the_exact_fallback_media_type() {
+        assert_eq!(content_type("info/refs"), "text/plain");
+        assert_eq!(content_type("HEAD"), "text/plain; charset=utf-8");
     }
 }

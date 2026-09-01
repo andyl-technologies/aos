@@ -380,17 +380,13 @@ quiescent = true
 }
 
 pub(super) fn valid_fuzz_family_toml() -> &'static str {
-    r#"schema = "crucible.scenario-family.v1"
+    r#"schema = "crucible.scenario-family.v2"
 topology_shapes = ["ring"]
 
 [seed_space]
 kind = "generated"
 meta_seed = "0x55"
 count = 2
-
-[fault_density]
-min_millionths = 0
-max_millionths = 1
 
 [topology_size]
 min = 1
@@ -515,12 +511,9 @@ pub(super) fn search_retained_evidence_world() -> Result<crucible::World, Box<dy
 
 pub(super) fn search_frontier_decisions() -> Vec<crucible::Decision> {
     vec![
-        crucible::Decision::FaultFires(crucible::FaultDecision {
-            at: crucible::VirtualTime { ticks: 12 },
-            fault: crucible::FaultId {
-                name: String::from("cli-search/packet-loss"),
-            },
-            fired: true,
+        crucible::Decision::RngDraw(crucible::RngDecision {
+            stream: crucible::RngStreamId::from_name("cli-search/packet-loss"),
+            value: 1,
         }),
         crucible::Decision::RngDraw(crucible::RngDecision {
             stream: crucible::RngStreamId::from_name("cli-search/decision-rng"),

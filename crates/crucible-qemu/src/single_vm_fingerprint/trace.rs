@@ -144,7 +144,7 @@ fn definition_material(cadence_icount: u64, observation: &QemuTraceObservationCo
         "trigger[0]=periodic-aggregate-icount".to_owned(),
         "trigger[1]=horizon-advance".to_owned(),
         "trigger[2]=frame-delivery".to_owned(),
-        "trigger[3]=fault-activation".to_owned(),
+        "trigger[3]=signal-effect-boundary".to_owned(),
         "component[0]=aggregate-icount".to_owned(),
         "component[1]=all-vcpu-register-files-sha256-v1".to_owned(),
         "component[2]=full-guest-ram-sha256-v1".to_owned(),
@@ -577,7 +577,7 @@ impl QemuTraceDefinitionPreflight {
 ///
 /// The launch and raw process argv are validated as provenance, but are not
 /// fingerprint components. The caller must separately validate the typed
-/// [`crate::LiveObservationControl`] and invocation identity that bind the
+/// `LiveObservationControl` and invocation identity that bind the
 /// requested run ordinal before importing. Consequently, two fresh launches
 /// with identical observed machine state produce the same fingerprint even
 /// though their attempt paths and argv identities differ.
@@ -1273,13 +1273,13 @@ impl QemuTraceFingerprintImport {
                 ),
             });
         }
-        let current_retired = retired_counts[rr_cursor.current_vcpu() as usize];
-        if current_retired < rr_cursor.position_in_quantum() {
-            return Err(QemuTraceFingerprintImportError::MalformedTrace {
-                line,
-                reason: "RR cursor position exceeds the current vCPU retired count".to_owned(),
-            });
-        }
+        // The authoritative QEMU RR cursor counts precise-icount execution,
+        // while `register_retired` counts observation-plugin instruction
+        // callbacks. Those domains are independently deterministic but are not
+        // numerically interchangeable: exception/assist execution can advance
+        // QEMU's cursor before the plugin has observed the same number of
+        // callbacks on a newly runnable vCPU. `SingleVmRoundRobinCursor::new`
+        // already enforces the actual cursor invariant (position < quantum).
 
         let ram_bytes = u64_field(value, "ram_bytes", line)?;
         if ram_bytes != self.guest_ram_bytes {
@@ -1577,7 +1577,7 @@ fn sample_trigger(
             let boundary = match boundary {
                 "horizon-advance" => SingleVmFingerprintEventBoundary::HorizonAdvance,
                 "frame-delivery" => SingleVmFingerprintEventBoundary::FrameDelivery,
-                "fault-activation" => SingleVmFingerprintEventBoundary::FaultActivation,
+                "signal-effect-boundary" => SingleVmFingerprintEventBoundary::SignalEffectBoundary,
                 other => {
                     return Err(QemuTraceFingerprintImportError::MalformedTrace {
                         line,

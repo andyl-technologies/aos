@@ -14,15 +14,13 @@ use std::fmt;
 use std::ops::Deref;
 
 use crate::model::{
-    AssertionDef, AssertionId, AssertionPhase, BlockFault, CodePoint, ContentHash,
-    ControlFaultAction, Decision, DeviceId, EngineError, EventKey, EventLogOffset, Fault, FaultId,
-    FaultPlanEntry, FaultTag, FramePredicate, Icount, IoEventKind, LinkDef, LinkId, MarkerId,
-    MemPlace, MembershipFault, MemoryCmp, NetworkFault, NinePFault, NodeFault, NodeId,
-    NodeLifecycle, PartitionDirection, Plan, PlanEntry, Predicate, PreemptionKind, Properties,
-    Property, ReachabilityExpectation, ReachableDisposition, ReadyPoint, RegexProgram,
-    ReproductionArtifact, ReproductionReplay, RestartPolicy, RngStreamId, Schedule,
-    SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration, TimeConversionError, TimerId,
-    VirtualTime, WhiteBoxPolicy, World, WorldDeviceKind, WorldStaticTopology,
+    AssertionDef, AssertionId, AssertionPhase, CodePoint, ContentHash, Decision, DeviceId,
+    EngineError, EventKey, EventLogOffset, FramePredicate, Icount, IoEventKind, LinkDef, LinkId,
+    MarkerId, MemPlace, MemoryCmp, NodeId, NodeLifecycle, Plan, Predicate, PreemptionKind,
+    Properties, Property, ReachabilityExpectation, ReachableDisposition, ReadyPoint, RegexProgram,
+    ReproductionArtifact, ReproductionReplay, RngStreamId, Schedule, SchedulerNodeId,
+    SchedulingNodeKind, Shift, SimDuration, TimeConversionError, TimerId, VirtualTime,
+    WhiteBoxPolicy, World, WorldDeviceKind, WorldStaticTopology,
 };
 use crate::scheduler::{
     AssertionRunVerdict, AssertionVerdictFailure, ControlOperationKind, EventAttributeValue,
@@ -51,6 +49,7 @@ mod evidence;
 mod guest_assertion_declarations;
 mod guest_assertion_observation;
 mod observability;
+mod observation_time;
 
 pub use assertions::*;
 pub(crate) use conditions::guest_assertion_marker_from_whitebox_body;

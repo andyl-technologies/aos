@@ -5,11 +5,7 @@
   taskIds ? ["T-SHM-15"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   shmemGate = builtins.readFile ../../crates/crucible-shmem/tests/gate_layer1_injection.rs;
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;

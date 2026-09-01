@@ -33,6 +33,15 @@ pub struct R2ListObject {
     pub etag: String,
 }
 
+/// Provider identity returned by one body-free R2 metadata lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct R2HeadObject {
+    /// Provider-observed object size.
+    pub size: u64,
+    /// Provider-issued strong entity tag.
+    pub etag: String,
+}
+
 /// Narrow raw operations implemented by the real `worker::Bucket` adapter.
 #[async_trait(?Send)]
 pub trait R2BucketAdapter {
@@ -42,8 +51,8 @@ pub trait R2BucketAdapter {
     async fn delete(&self, key: &str) -> Result<()>;
     /// Lists one backend page.
     async fn list(&self, prefix: &str, cursor: Option<&str>, limit: usize) -> Result<R2ListPage>;
-    /// Reads object size metadata.
-    async fn head(&self, key: &str) -> Result<Option<u64>>;
+    /// Reads object identity metadata without requesting its body.
+    async fn head(&self, key: &str) -> Result<Option<R2HeadObject>>;
     /// Reads a complete small object body.
     async fn read(&self, key: &str) -> Result<Option<Vec<u8>>>;
     /// Creates an upload and returns its opaque id.
@@ -91,9 +100,14 @@ where
         self.adapter.delete(key).await
     }
 
-    /// Reads object size metadata without requesting its body.
-    pub async fn head(&self, key: &str) -> Result<Option<u64>> {
-        self.adapter.head(key).await
+    /// Reads and validates object identity metadata without requesting its body.
+    pub async fn head(&self, key: &str) -> Result<Option<R2HeadObject>> {
+        let Some(object) = self.adapter.head(key).await? else {
+            return Ok(None);
+        };
+        aos_hub_core::surface_write::strong_if_match_etag(&object.etag)
+            .with_context(|| format!("R2 head {key} returned an invalid strong ETag"))?;
+        Ok(Some(object))
     }
 
     /// Lists and validates one raw R2 page.
@@ -126,10 +140,10 @@ where
 
     /// Reads a small body only after its metadata passes the semantic cap.
     pub async fn read_bounded(&self, key: &str, maximum: usize) -> Result<Option<Vec<u8>>> {
-        let Some(size) = self.adapter.head(key).await? else {
+        let Some(object) = self.head(key).await? else {
             return Ok(None);
         };
-        let size = usize::try_from(size).context("R2 object size exceeds usize")?;
+        let size = usize::try_from(object.size).context("R2 object size exceeds usize")?;
         if size > maximum {
             bail!("R2 object exceeds the semantic body cap");
         }
@@ -253,9 +267,12 @@ mod tests {
                 cursor: Some("next".into()),
             })
         }
-        async fn head(&self, key: &str) -> Result<Option<u64>> {
+        async fn head(&self, key: &str) -> Result<Option<R2HeadObject>> {
             self.calls.borrow_mut().push(format!("head:{key}"));
-            Ok(self.size)
+            Ok(self.size.map(|size| R2HeadObject {
+                size,
+                etag: "fixture-etag".into(),
+            }))
         }
         async fn read(&self, key: &str) -> Result<Option<Vec<u8>>> {
             self.calls.borrow_mut().push(format!("read:{key}"));

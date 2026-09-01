@@ -152,7 +152,7 @@ fn read_secret_file_unix(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
         path.display()
     );
     anyhow::ensure!(
-        secret_file_mode_is_secure(path, metadata.st_mode),
+        secret_file_mode_is_secure(path, u32::from(metadata.st_mode)),
         "secret file {} grants group/other permissions",
         path.display()
     );
@@ -240,7 +240,7 @@ fn open_secure_secret_parent(path: &Path) -> Result<(std::os::fd::OwnedFd, &std:
     anyhow::ensure!(
         rustix::fs::FileType::from_raw_mode(metadata.st_mode) == rustix::fs::FileType::Directory
             && trusted_secret_owner(metadata.st_uid)
-            && secret_parent_mode_is_secure(metadata.st_mode),
+            && secret_parent_mode_is_secure(u32::from(metadata.st_mode)),
         "secret parent {} must be a non-writable directory owned by root or the effective user",
         parent.display()
     );

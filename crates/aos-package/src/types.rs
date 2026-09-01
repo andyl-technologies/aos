@@ -47,6 +47,9 @@ pub const FEATURE_REQUIRES_V1: &str = "requires-v1";
 /// Registry feature flag for RFC-0001 package config metadata.
 pub const FEATURE_CONFIG_V1: &str = "config-v1";
 
+/// Registry feature flag for conditionally projected credential bindings.
+pub const FEATURE_OPTIONAL_CREDENTIALS_V1: &str = "optional-credentials-v1";
+
 /// Registry feature flag for RFC-0001 package config reload metadata.
 pub const FEATURE_RELOAD_V1: &str = "reload-v1";
 
@@ -72,6 +75,9 @@ pub const FEATURE_ATTESTATION_V1: &str = "attestation-v1";
 /// its config-module metadata (`ConfigOutputMeta` + `ConfigModuleMeta`).
 pub const FEATURE_CONFIG_MODULE_V1: &str = "config-module-v1";
 
+/// Registry feature flag for canonical RFC-0016 package documentation.
+pub const FEATURE_PACKAGE_DOCUMENTATION_V1: &str = "package-documentation-v1";
+
 /// Registry feature flag for slot-specific A/B UKI measurement metadata.
 pub const FEATURE_UKI_SLOTS_V1: &str = "uki-slots-v1";
 
@@ -84,6 +90,7 @@ const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_PERMISSIONS_V1,
     FEATURE_REQUIRES_V1,
     FEATURE_CONFIG_V1,
+    FEATURE_OPTIONAL_CREDENTIALS_V1,
     FEATURE_RELOAD_V1,
     FEATURE_CAPABILITY_ROUTES_V1,
     FEATURE_NETWORK_POLICY_V1,
@@ -92,6 +99,7 @@ const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_BPF_LSM_POLICY_V1,
     FEATURE_ATTESTATION_V1,
     FEATURE_CONFIG_MODULE_V1,
+    FEATURE_PACKAGE_DOCUMENTATION_V1,
     FEATURE_UKI_SLOTS_V1,
     FEATURE_RECOVERY_UKIS_V1,
 ];
@@ -248,7 +256,7 @@ pub use aos_registry_surface::manifest::{package_name_bucket, validate_package_n
 /// Validate a platform/system name before using it as a package TOML key.
 ///
 /// Platform names become keys under `[versions.platforms]`, for example
-/// `x86_64-linux` or `aarch64-linux`. Keep the accepted syntax to common Nix
+/// `x86_64-linux` or `aarch64-darwin`. Keep the accepted syntax to common Nix
 /// system names so command-line input cannot inject TOML structure or create
 /// ambiguous metadata.
 ///
@@ -542,6 +550,9 @@ pub struct PackageMeta {
     /// Configuration-only module output and its declared interface.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_module: Option<ConfigModuleMeta>,
+    /// Canonical package documentation selected for this version/platform.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation: Option<DocumentationArtifactMeta>,
     /// Signed RFC-0001 permission manifest.
     #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
     pub permissions: PermissionsMeta,
@@ -572,8 +583,8 @@ pub use aos_registry_surface::manifest::{
 // schema (so the hub indexer and the Worker share them) and are re-exported
 // here so `aos_package::types::{ConfigModuleMeta, …}` paths are unchanged.
 pub use aos_registry_surface::manifest::{
-    ConfigModuleMeta, ConfigOptionDeclaration, ConfigOutputMeta, ModuleAbiCompat, OwnedRoot,
-    RootContribution,
+    ConfigModuleArtifacts, ConfigModuleMeta, ConfigOptionDeclaration, ConfigOutputMeta,
+    DocumentationArtifactMeta, ModuleAbiCompat, OwnedRoot, RootContribution,
 };
 
 /// Returns the top-level root segment of a dotted option path.
@@ -597,6 +608,7 @@ pub(crate) fn package_requires_provenance(meta: &PackageMeta) -> bool {
         &meta.permissions,
         meta.bpf_lsm.as_ref(),
     ) || meta.config_module.is_some()
+        || meta.documentation.is_some()
 }
 
 /// Returns whether RFC-0001 metadata fields must be backed by DSSE provenance.
@@ -701,6 +713,12 @@ pub fn validate_supported_package_meta_with(
         validate_config_module_meta(&meta.name, config_module)
             .with_context(|| format!("invalid config-module metadata for '{}'", meta.name))?;
     }
+    if let Some(documentation) = &meta.documentation {
+        require_feature(meta, FEATURE_PACKAGE_DOCUMENTATION_V1)?;
+        validate_documentation_artifact_meta(documentation).with_context(|| {
+            format!("invalid package-documentation metadata for '{}'", meta.name)
+        })?;
+    }
     if meta.images.iter().any(|image| !image.ukis.is_empty()) {
         require_feature(meta, FEATURE_UKI_SLOTS_V1)?;
     }
@@ -718,6 +736,8 @@ pub fn validate_supported_package_meta_with(
     if package_requires_provenance(meta) && meta.attestation.provenance.is_none() {
         let reason = if meta.config_module.is_some() {
             "uses config-module metadata"
+        } else if meta.documentation.is_some() {
+            "uses package-documentation metadata"
         } else {
             "uses RFC-0001 exposed or permission metadata"
         };
@@ -735,6 +755,9 @@ pub fn validate_supported_package_meta_with(
         }
         if !expose.config.is_empty() {
             require_feature(meta, FEATURE_CONFIG_V1)?;
+        }
+        if expose.config.has_optional_credentials() {
+            require_feature(meta, FEATURE_OPTIONAL_CREDENTIALS_V1)?;
         }
         if expose.config.has_unit_reconciliation() {
             require_feature(meta, FEATURE_RELOAD_V1)?;
@@ -1048,6 +1071,86 @@ pub fn validate_config_output_meta(output: &ConfigOutputMeta) -> Result<()> {
     Ok(())
 }
 
+/// Validates a canonical package-documentation artifact locator.
+///
+/// Version 1 is a single regular-file NAR whose canonical JSON is at most 4
+/// MiB and whose reference set is empty. The NAR may be slightly larger than
+/// the document because of archive framing, but both are independently capped.
+///
+/// # Errors
+///
+/// Returns an error when the format is unsupported, the store/NAR identity is
+/// malformed, either size is zero or exceeds the version-1 limit, the document
+/// digest is malformed, or the object claims any store reference.
+pub fn validate_documentation_artifact_meta(
+    documentation: &DocumentationArtifactMeta,
+) -> Result<()> {
+    if documentation.format != aos_doc_model::DOCUMENT_FORMAT {
+        bail!(
+            "unsupported package-documentation format '{}'",
+            documentation.format
+        );
+    }
+    validate_absolute_path(&documentation.store_path, "documentation store path")?;
+    if store_path_hash_component(&documentation.store_path).is_none() {
+        bail!(
+            "documentation store path is not a Nix-style store path: {}",
+            documentation.store_path
+        );
+    }
+    if !documentation.nar_hash.starts_with("sha256:")
+        && !documentation.nar_hash.starts_with("sha256-")
+    {
+        bail!(
+            "documentation '{}' has invalid NAR hash",
+            documentation.store_path
+        );
+    }
+    const LIMIT: u64 = aos_doc_model::MAX_DOCUMENT_BYTES as u64;
+    if documentation.nar_size == 0 || documentation.nar_size > LIMIT {
+        bail!(
+            "documentation '{}' NAR size {} is outside 1..={LIMIT}",
+            documentation.store_path,
+            documentation.nar_size
+        );
+    }
+    if documentation.document_size == 0 || documentation.document_size > LIMIT {
+        bail!(
+            "documentation '{}' JSON size {} is outside 1..={LIMIT}",
+            documentation.store_path,
+            documentation.document_size
+        );
+    }
+    validate_sha256_hex(
+        "documentation document_sha256",
+        &documentation.document_sha256,
+    )?;
+    validate_sha256_hex(
+        "documentation semantic_schema_sha256",
+        &documentation.semantic_schema_sha256,
+    )?;
+    if let Some(digest) = documentation.system_module_nar_hash.as_deref() {
+        validate_sha256_digest("documentation system_module_nar_hash", digest)?;
+    }
+    if !documentation.references.is_empty() {
+        bail!(
+            "documentation '{}' must have an empty reference set",
+            documentation.store_path
+        );
+    }
+    Ok(())
+}
+
+fn validate_sha256_hex(label: &str, digest: &str) -> Result<()> {
+    let Some(hex) = digest.strip_prefix("sha256:") else {
+        bail!("{label} must use sha256:<hex>");
+    };
+    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("{label} is not a 32-byte hexadecimal digest");
+    }
+    Ok(())
+}
+
 /// Validates configuration-module metadata.
 ///
 /// Checks the embedded [`ConfigOutputMeta`], the inclusive ABI band
@@ -1204,6 +1307,11 @@ pub fn validate_config_module_meta(package_name: &str, module: &ConfigModuleMeta
         }
     }
 
+    validate_config_artifact_names("etc", &module.artifacts.etc, validate_relative_etc_path)?;
+    validate_config_artifact_names("unit", &module.artifacts.units, validate_systemd_unit_name)?;
+    validate_config_artifact_names("user", &module.artifacts.users, validate_account_name)?;
+    validate_config_artifact_names("group", &module.artifacts.groups, validate_account_name)?;
+
     let mut capabilities = std::collections::BTreeSet::new();
     for token in &module.provides_capabilities {
         validate_capability_token(token)?;
@@ -1212,6 +1320,75 @@ pub fn validate_config_module_meta(package_name: &str, module: &ConfigModuleMeta
         }
     }
 
+    Ok(())
+}
+
+fn validate_config_artifact_names(
+    kind: &str,
+    values: &[String],
+    validate: fn(&str) -> Result<()>,
+) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for value in values {
+        validate(value)
+            .with_context(|| format!("validating config-module {kind} grant {value:?}"))?;
+        if !seen.insert(value.as_str()) {
+            bail!("config module grants {kind} artifact '{value}' more than once");
+        }
+    }
+    Ok(())
+}
+
+fn validate_relative_etc_path(path: &str) -> Result<()> {
+    if path.is_empty() || path.starts_with('/') {
+        bail!("/etc artifact path must be non-empty and relative");
+    }
+    if path.split('/').any(|segment| {
+        segment.is_empty()
+            || matches!(segment, "." | "..")
+            || !segment.chars().all(|ch| {
+                ch.is_ascii_alphanumeric() || matches!(ch, '_' | '@' | '+' | '.' | ',' | '=' | '-')
+            })
+    }) {
+        bail!("unsafe relative /etc artifact path '{path}'");
+    }
+    Ok(())
+}
+
+fn validate_systemd_unit_name(name: &str) -> Result<()> {
+    const SUFFIXES: &[&str] = &[
+        ".service",
+        ".socket",
+        ".target",
+        ".timer",
+        ".path",
+        ".slice",
+        ".mount",
+        ".automount",
+    ];
+    let stem = SUFFIXES
+        .iter()
+        .find_map(|suffix| name.strip_suffix(suffix))
+        .filter(|stem| !stem.is_empty())
+        .context("systemd artifact name has no supported unit suffix")?;
+    if !stem
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '@' | '+' | '.' | '-'))
+    {
+        bail!("invalid systemd unit artifact name '{name}'");
+    }
+    Ok(())
+}
+
+fn validate_account_name(name: &str) -> Result<()> {
+    let mut chars = name.chars();
+    if !chars
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+        || !chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+    {
+        bail!("invalid account artifact name '{name}'");
+    }
     Ok(())
 }
 
@@ -1509,6 +1686,15 @@ pub fn validate_permissions_meta(package_name: &str, permissions: &PermissionsMe
     for host_path in &permissions.host_paths {
         validate_host_path_permission(host_path)?;
     }
+    let mut static_users = std::collections::BTreeSet::new();
+    for user in &permissions.static_users {
+        validate_account_name(user)?;
+        if !static_users.insert(user) {
+            bail!(
+                "package '{package_name}' permissions.static-users contains duplicate user '{user}'"
+            );
+        }
+    }
     for module in &permissions.kernel_modules {
         validate_kernel_module_name(module)?;
     }
@@ -1778,11 +1964,12 @@ pub(crate) fn validate_unit_name(unit: &str) -> Result<()> {
     .iter()
     .any(|suffix| unit.ends_with(suffix));
 
-    if unit.is_empty()
-        || unit.contains('/')
-        || unit.chars().any(char::is_whitespace)
-        || !has_known_suffix
-    {
+    let overlay_safe = unit.chars().enumerate().all(|(index, character)| {
+        character.is_ascii_alphanumeric()
+            || (index > 0 && matches!(character, '+' | '.' | '_' | '=' | '@' | '-'))
+    });
+
+    if !overlay_safe || !has_known_suffix {
         bail!("invalid systemd unit name '{unit}'");
     }
     Ok(())
@@ -2196,6 +2383,9 @@ pub struct ApmMeta {
     /// Configuration-only module metadata captured at install time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_module: Option<ConfigModuleMeta>,
+    /// Canonical documentation artifact captured at install time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation: Option<DocumentationArtifactMeta>,
     /// RFC-0001 permission manifest captured at install time.
     #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
     pub permissions: PermissionsMeta,
@@ -3534,8 +3724,31 @@ mod tests {
     }
 
     #[test]
+    fn expose_unit_names_use_the_overlay_safe_token_grammar() {
+        for unit in ["web.service", "web+blue=@.service"] {
+            validate_unit_name(unit).unwrap();
+        }
+        for unit in [
+            "bad,unit.service",
+            "bad:unit.service",
+            "bad\\unit.service",
+            "bad/unit.service",
+        ] {
+            let err = validate_unit_name(unit).unwrap_err();
+            assert!(err.to_string().contains("systemd unit name"));
+        }
+    }
+
+    #[test]
     fn platform_name_validation_accepts_nix_system_names() {
-        for name in ["x86_64-linux", "aarch64-linux", "i686-linux", "wasm32-wasi"] {
+        for name in [
+            "x86_64-linux",
+            "aarch64-linux",
+            "x86_64-darwin",
+            "aarch64-darwin",
+            "i686-linux",
+            "wasm32-wasi",
+        ] {
             validate_platform_name(name).unwrap();
         }
     }
@@ -4102,6 +4315,7 @@ last_update = "2026-02-13T10:30:00Z"
                 expose: None,
                 expose_artifact: None,
                 config_module: None,
+                documentation: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -4199,6 +4413,7 @@ last_update = "2026-02-13T10:30:00Z"
                 nar_size: 128,
             }),
             config_module: None,
+            documentation: None,
             permissions: PermissionsMeta {
                 capabilities: vec!["CAP_NET_BIND_SERVICE".into()],
                 network: Some(NetworkPermission::PrivateOutbound),
@@ -4273,6 +4488,25 @@ last_update = "2026-02-13T10:30:00Z"
     }
 
     #[test]
+    fn permissions_bind_static_users_into_confinement() {
+        let mut permissions = PermissionsMeta {
+            static_users: vec!["aos-service".into()],
+            ..PermissionsMeta::default()
+        };
+        permissions.confinement = Some(permissions.computed_confinement());
+
+        validate_permissions_meta("webapp", &permissions).unwrap();
+        assert_eq!(
+            permissions.confinement.as_ref().unwrap().holes,
+            ["static-user:aos-service"]
+        );
+
+        permissions.static_users.push("aos-service".into());
+        let err = validate_permissions_meta("webapp", &permissions).unwrap_err();
+        assert!(err.to_string().contains("duplicate user 'aos-service'"));
+    }
+
+    #[test]
     fn package_meta_requires_supported_feature_gate() {
         let meta = PackageMeta {
             name: "webapp".into(),
@@ -4297,6 +4531,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose: None,
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: PermissionsMeta {
                 network: Some(NetworkPermission::Host),
                 ..PermissionsMeta::default()
@@ -4335,6 +4570,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose: None,
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: PermissionsMeta {
                 tcp_connect: vec![443],
                 ..PermissionsMeta::default()
@@ -4384,6 +4620,7 @@ last_update = "2026-02-13T10:30:00Z"
             }),
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -4434,6 +4671,7 @@ last_update = "2026-02-13T10:30:00Z"
             }),
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -4475,6 +4713,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose: None,
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: PermissionsMeta {
                 tcp_bind: vec![0],
                 ..PermissionsMeta::default()
@@ -4516,6 +4755,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose: None,
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: PermissionsMeta {
                 network: Some(NetworkPermission::Host),
                 confinement: Some(ConfinementMeta {
@@ -4589,6 +4829,7 @@ last_update = "2026-02-13T10:30:00Z"
             }),
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -4598,6 +4839,20 @@ last_update = "2026-02-13T10:30:00Z"
         assert!(err.to_string().contains(FEATURE_RELOAD_V1));
 
         meta.requires_features.push(FEATURE_RELOAD_V1.into());
+        validate_supported_package_meta(&meta).unwrap();
+
+        meta.expose.as_mut().unwrap().config.credentials = vec![CredentialMeta {
+            name: "tls-key".into(),
+            source: None,
+            ciphertext: None,
+            units: vec!["webapp.service".into()],
+            encrypted: true,
+            optional: true,
+        }];
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_OPTIONAL_CREDENTIALS_V1));
+        meta.requires_features
+            .push(FEATURE_OPTIONAL_CREDENTIALS_V1.into());
         validate_supported_package_meta(&meta).unwrap();
     }
 
@@ -4651,6 +4906,7 @@ last_update = "2026-02-13T10:30:00Z"
             }),
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -4670,6 +4926,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ciphertext: None,
                 units: vec!["webapp.socket".into()],
                 encrypted: true,
+                optional: false,
             }],
         };
 
@@ -4687,6 +4944,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ciphertext: None,
                 units: vec!["webapp.service".into()],
                 encrypted: true,
+                optional: false,
             }],
         };
 
@@ -4709,6 +4967,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ciphertext: None,
                 units: vec!["webapp.service".into()],
                 encrypted: true,
+                optional: false,
             }],
         };
 
@@ -4729,6 +4988,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ciphertext: Some("abcDEF0123+/=".into()),
                 units: vec!["webapp.service".into()],
                 encrypted: false,
+                optional: false,
             }],
         };
 
@@ -4746,6 +5006,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ciphertext: Some("abcDEF0123+/=".into()),
                 units: vec!["webapp.service".into()],
                 encrypted: true,
+                optional: false,
             }],
         };
 
@@ -4763,6 +5024,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ciphertext: Some("abc\nPrivateNetwork=false".into()),
                 units: vec!["webapp.service".into()],
                 encrypted: true,
+                optional: false,
             }],
         };
 
@@ -4815,6 +5077,7 @@ last_update = "2026-02-13T10:30:00Z"
             }),
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -4869,6 +5132,7 @@ last_update = "2026-02-13T10:30:00Z"
             }),
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -4906,6 +5170,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose: None,
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: Some(BpfLsmPolicyMeta {
                 policies: vec![BpfLsmPolicyArtifactMeta {
@@ -4980,6 +5245,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose: None,
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta {
@@ -5307,6 +5573,7 @@ last_update = "2026-02-13T10:30:00Z"
             }),
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -5362,6 +5629,7 @@ last_update = "2026-02-13T10:30:00Z"
             }),
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -5697,6 +5965,7 @@ pin = "v2026.02"
                 interface_abi: 1,
                 paths: vec!["virtualHosts".to_string()],
             }],
+            artifacts: Default::default(),
             provides_capabilities: vec!["system.capabilities.dns-resolver".to_string()],
         }
     }
@@ -5980,6 +6249,76 @@ provenance = "provenance/firewall.jsonl"
         );
     }
 
+    fn sample_documentation_artifact() -> DocumentationArtifactMeta {
+        DocumentationArtifactMeta {
+            format: aos_doc_model::DOCUMENT_FORMAT.to_string(),
+            store_path: "/nix/store/0000000000000000000000000000000e-firewall-1.4.0-aos-docs.json"
+                .to_string(),
+            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            nar_size: 1024,
+            document_sha256:
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    .to_string(),
+            document_size: 900,
+            semantic_schema_sha256:
+                "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    .to_string(),
+            system_module_nar_hash: None,
+            references: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn documentation_artifact_is_feature_gated_and_retained() {
+        let mut meta = sample_package_meta();
+        meta.documentation = Some(sample_documentation_artifact());
+        meta.attestation.provenance = Some("provenance/firewall.intoto.jsonl".to_string());
+        meta.requires_features
+            .push(FEATURE_ATTESTATION_V1.to_string());
+
+        let error = validate_supported_package_meta(&meta).expect_err("missing feature");
+        assert!(error.to_string().contains(FEATURE_PACKAGE_DOCUMENTATION_V1));
+
+        meta.requires_features
+            .push(FEATURE_PACKAGE_DOCUMENTATION_V1.to_string());
+        validate_supported_package_meta(&meta).expect("valid documentation metadata");
+
+        let installed = ApmMeta {
+            name: meta.name.clone(),
+            version: meta.version.clone(),
+            explicit: true,
+            registry: "core".to_string(),
+            installed_at: "2026-08-28T00:00:00Z".to_string(),
+            held: false,
+            source_drv: meta.source_drv.clone(),
+            source_nar_hash: meta.source_nar_hash.clone(),
+            expose: None,
+            expose_artifact: None,
+            config_module: None,
+            documentation: meta.documentation.clone(),
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: meta.attestation.clone(),
+        };
+        let encoded = serde_json::to_vec(&installed).expect("installed metadata");
+        let decoded: ApmMeta = serde_json::from_slice(&encoded).expect("decode installed metadata");
+        assert_eq!(decoded.documentation, meta.documentation);
+    }
+
+    #[test]
+    fn documentation_artifact_rejects_references_and_oversize_objects() {
+        let mut artifact = sample_documentation_artifact();
+        artifact
+            .references
+            .push("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into());
+        assert!(validate_documentation_artifact_meta(&artifact).is_err());
+
+        artifact.references.clear();
+        artifact.document_size = aos_doc_model::MAX_DOCUMENT_BYTES as u64 + 1;
+        assert!(validate_documentation_artifact_meta(&artifact).is_err());
+    }
+
     fn sample_package_meta() -> PackageMeta {
         PackageMeta {
             name: "firewall".to_string(),
@@ -6004,6 +6343,7 @@ provenance = "provenance/firewall.jsonl"
             expose: None,
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta::default(),

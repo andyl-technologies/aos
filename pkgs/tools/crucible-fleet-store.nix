@@ -3,6 +3,8 @@
   lib,
   mkCargoPackage,
   fetchCargoDeps,
+  stdenv,
+  buildPackages,
   grep,
   crucible-controller,
 }: let
@@ -10,16 +12,17 @@
   cargoDepsHash = import ./crucible/_cargo-deps-hash.nix;
   src = import ./crucible/_source.nix {inherit lib;};
   cargoArtifacts = crucible-controller.passthru.cargoArtifacts;
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  probeProgram =
+    if isDarwinCross
+    then "${buildPackages.crucible-fleet-store}/bin/crucible-fleet-store"
+    else ''"$out/bin/crucible-fleet-store"'';
 in
   mkCargoPackage {
     pname = "crucible-fleet-store";
     inherit version src;
 
-    cargoDeps = fetchCargoDeps {
-      inherit src;
-      sourceRoot = "source/crates";
-      hash = cargoDepsHash;
-    };
+    cargoDeps = crucible-controller.passthru.cargoDeps;
     inherit cargoArtifacts;
     cargoArtifactContract = cargoArtifacts.passthru.cargoArtifactContract;
     cargoEnv = cargoArtifacts.passthru.cargoArtifactContract.cargoEnv;
@@ -29,14 +32,16 @@ in
     cargoFlags = "-p crucible-cas --bin crucible-fleet-store";
     cargoTestFlags = "-p crucible-cas";
     doCheck = true;
-    buildDeps = [grep];
+    buildDeps =
+      [buildPackages.grep]
+      ++ lib.optionals isDarwinCross [buildPackages.crucible-fleet-store];
     runtimeDeps = [];
 
     postInstall = ''
       test -x "$out/bin/crucible-fleet-store"
 
       probe_root="$TMPDIR/crucible-fleet-store-probe"
-      "$out/bin/crucible-fleet-store" probe "$probe_root" > "$TMPDIR/crucible-fleet-store.probe"
+      ${probeProgram} probe "$probe_root" > "$TMPDIR/crucible-fleet-store.probe"
       grep -q '^backend=SharedDagStore$' "$TMPDIR/crucible-fleet-store.probe"
       grep -q '^location_independent_identity=true$' "$TMPDIR/crucible-fleet-store.probe"
       grep -q '^location_independent_roots=2$' "$TMPDIR/crucible-fleet-store.probe"
@@ -101,7 +106,7 @@ in
       cat > "$out/nix-support/crucible-fleet-store-build-info" <<'INFO'
       package=crucible-fleet-store
       build_system=mkCargoPackage
-      cargo_deps=fetchCargoDeps
+      cargo_deps=fetchCargoVendor
       cargo_deps_source_root=source/crates
       cargo_deps_hash=${cargoDepsHash}
       cargo_package=crucible-cas

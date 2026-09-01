@@ -2,9 +2,11 @@
 {
   mkDerivation,
   fetchurl,
-  gcc,
   gnumake,
   gettext,
+  buildPackages,
+  stdenv,
+  gcc,
 }: let
   version = "1.4.4";
 in
@@ -19,15 +21,16 @@ in
       hash = "sha256-gcOqJ+212KGO8CcIHruYQjTVtYYMZb2Z1KyPAxRaVYs=";
     };
 
-    buildDeps = [
-      # rpcgen probes /lib/cpp and then a bare `cpp` while generating the
-      # installed protocol headers.  The normal compiler wrapper intentionally
-      # exposes only compilation/link tools, so provide GCC's preprocessor as
-      # an explicit build-only dependency.
-      gcc
-      gnumake
-      gettext
-    ];
+    buildDeps =
+      [
+        gnumake
+        gettext
+      ]
+      ++ (
+        if stdenv.isCross
+        then [buildPackages.rpcsvc-proto]
+        else [gcc]
+      );
     runtimeDeps = [gettext];
     propagatedDeps = [];
 
@@ -43,7 +46,42 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out
+
+          # rpcgen otherwise searches /lib/cpp and then PATH for a standalone
+          # cpp binary. The AOS compiler is intentionally exposed through its
+          # wrapper instead, so provide a build-local preprocessor launcher.
+          build_cpp="$CC"
+          if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+            build_cpp="$CC_FOR_BUILD"
+          fi
+          mkdir -p build-tools
+          cat > build-tools/cpp <<EOF
+          #!$CONFIG_SHELL
+          AOS_HARDENING_ENABLE= \
+          C_INCLUDE_PATH= \
+          CPLUS_INCLUDE_PATH= \
+          LIBRARY_PATH= \
+            exec "$build_cpp" -E "\$@"
+          EOF
+          chmod +x build-tools/cpp
+          sed -i \
+            's| -h -o| -Y $(top_builddir)/build-tools -h -o|' \
+            rpcsvc/Makefile
+
+          ${
+            if stdenv.isCross
+            then ''
+              # rpcsvc header generation executes rpcgen during `make`.
+              # Generate with the native tool while still building and
+              # installing the complete Darwin rpcgen executable.
+              sed -i \
+                's|$(top_builddir)/rpcgen/rpcgen|${buildPackages.rpcsvc-proto}/bin/rpcgen|g' \
+                rpcsvc/Makefile
+            ''
+            else ""
+          }
 
           grep '^USE_NLS = yes$' Makefile
         '';

@@ -6,11 +6,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
@@ -18,7 +14,10 @@
   streaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
   session = import ./_crucible-session-source.nix {inherit lib;};
   client = builtins.readFile ../../crates/crucible-api/src/client.rs;
-  rpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
+  rpcAbi = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/src/rpc_abi.rs;
+  };
   controlClientTest = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-api/tests/gate_control_client.rs;
@@ -166,7 +165,7 @@
       }
       {
         label = "RPC minor bumped";
-        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 0;";
+        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 1;";
       }
       {
         label = "rejected command golden vector";

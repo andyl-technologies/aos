@@ -32,8 +32,8 @@ pub enum SingleVmFingerprintEventBoundary {
     HorizonAdvance,
     /// An icount-stamped frame became visible.
     FrameDelivery,
-    /// A scheduled fault activation became visible.
-    FaultActivation,
+    /// A scheduled signal effect boundary became visible.
+    SignalEffectBoundary,
 }
 
 /// Digest of one vCPU architectural register file sampled by the host hook.
@@ -1498,7 +1498,7 @@ fn trigger_token(trigger: SingleVmFingerprintTrigger) -> &'static str {
         SingleVmFingerprintTrigger::Event(event) => match event {
             SingleVmFingerprintEventBoundary::HorizonAdvance => "horizon-advance",
             SingleVmFingerprintEventBoundary::FrameDelivery => "frame-delivery",
-            SingleVmFingerprintEventBoundary::FaultActivation => "fault-activation",
+            SingleVmFingerprintEventBoundary::SignalEffectBoundary => "signal-effect-boundary",
         },
     }
 }

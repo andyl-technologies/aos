@@ -125,6 +125,7 @@ async fn load_surface_bindings(
                 owner_scope_key: owner_scope_key.clone(),
                 page_size: 100,
                 page_token,
+                include_granted: true,
             },
             |response| (response.bindings, response.next_page_token),
         )
@@ -145,7 +146,15 @@ fn PlacementCreate(
             .map(|binding| binding.stable_id.clone())
             .unwrap_or_default(),
     );
-    let prefix = RwSignal::new(String::new());
+    // Canonical slugs are globally unique and are the public object path for
+    // default delivery. Keep opaque stable IDs inside the control plane rather
+    // than asking operators to copy them into client-facing storage paths.
+    let canonical_prefix = match surface.target.as_ref() {
+        Some(aos_proto_types::surface_ref::Target::RegistrySlug(slug))
+        | Some(aos_proto_types::surface_ref::Target::CacheSlug(slug)) => slug.clone(),
+        None => String::new(),
+    };
+    let prefix = RwSignal::new(canonical_prefix);
     let kind = RwSignal::new("complete".to_string());
     let state = RwSignal::new("active".to_string());
     let read_enabled = RwSignal::new(true);
@@ -216,7 +225,7 @@ fn PlacementCreate(
     );
 
     view! {
-        <section class="panel editor-panel"><h2>"Create placement"</h2><form class="editor-form" on:submit=on_plan><label><span>"Name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label><label><span>"Binding"</span><select required prop:value=move || binding.get() on:change=move |event| binding.set(event_target_value(&event))>{bindings.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{binding_option_label(choice)}</option> }).collect_view()}</select>{bindings.is_empty().then(|| view! { <small>"No compatible bindings exist in this surface's owner scope."</small> })}</label><label><span>"Object prefix"</span><input required prop:value=move || prefix.get() on:input=move |event| prefix.set(event_target_value(&event))/></label><label><span>"Kind"</span><select prop:value=move || kind.get() on:change=move |event| kind.set(event_target_value(&event))><option value="complete">"Complete"</option><option value="shard">"Shard"</option><option value="archive">"Archive"</option></select></label><label><span>"Desired state"</span><select prop:value=move || state.get() on:change=move |event| state.set(event_target_value(&event))><option value="active">"Active"</option><option value="draining">"Draining"</option><option value="offline">"Offline"</option></select></label><label><span>"Read order"</span><input required type="number" prop:value=move || read_order.get() on:input=move |event| read_order.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || read_enabled.get() on:change=move |event| read_enabled.set(event_target_checked(&event))/><span>"Enable reads"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || conditional_writes.get() on:change=move |event| conditional_writes.set(event_target_checked(&event))/><span>"Require conditional writes"</span></label>{move || (kind.get() == "shard").then(|| view! { <label><span>"Hash range start"</span><input required type="number" min="0" max="65535" prop:value=move || range_start.get() on:input=move |event| range_start.set(event_target_value(&event))/></label><label><span>"Hash range end"</span><input required type="number" min="1" max="65536" prop:value=move || range_end.get() on:input=move |event| range_end.set(event_target_value(&event))/></label> })}<div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || binding.get().is_empty()>"Review placement"</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section>
+        <section class="panel editor-panel"><h2>"Create placement"</h2><form class="editor-form" on:submit=on_plan><label><span>"Name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label><label><span>"Binding"</span><select required prop:value=move || binding.get() on:change=move |event| binding.set(event_target_value(&event))>{bindings.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{binding_option_label(choice)}</option> }).collect_view()}</select>{bindings.is_empty().then(|| view! { <small>"No compatible bindings are owned by or explicitly granted to this surface's owner scope."</small> })}</label><label><span>"Object prefix"</span><input required prop:value=move || prefix.get() on:input=move |event| prefix.set(event_target_value(&event))/><small>"Routes map this binding-relative prefix to an explicitly configured delivery URL."</small></label><label><span>"Kind"</span><select prop:value=move || kind.get() on:change=move |event| kind.set(event_target_value(&event))><option value="complete">"Complete"</option><option value="shard">"Shard"</option><option value="archive">"Archive"</option></select></label><label><span>"Desired state"</span><select prop:value=move || state.get() on:change=move |event| state.set(event_target_value(&event))><option value="active">"Active"</option><option value="draining">"Draining"</option><option value="offline">"Offline"</option></select></label><label><span>"Read order"</span><input required type="number" prop:value=move || read_order.get() on:input=move |event| read_order.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || read_enabled.get() on:change=move |event| read_enabled.set(event_target_checked(&event))/><span>"Enable reads"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || conditional_writes.get() on:change=move |event| conditional_writes.set(event_target_checked(&event))/><span>"Require conditional writes"</span></label>{move || (kind.get() == "shard").then(|| view! { <label><span>"Hash range start"</span><input required type="number" min="0" max="65535" prop:value=move || range_start.get() on:input=move |event| range_start.set(event_target_value(&event))/></label><label><span>"Hash range end"</span><input required type="number" min="1" max="65536" prop:value=move || range_end.get() on:input=move |event| range_end.set(event_target_value(&event))/></label> })}<div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || binding.get().is_empty()>"Review placement"</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section>
     }
 }
 

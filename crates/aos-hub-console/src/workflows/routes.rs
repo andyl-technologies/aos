@@ -274,6 +274,7 @@ async fn load_route_create_choices(
                 owner_scope_key: endpoint_scope.clone(),
                 page_size: 100,
                 page_token,
+                include_granted: true,
             },
             |response| (response.endpoints, response.next_page_token),
         )
@@ -287,6 +288,7 @@ async fn load_route_create_choices(
                 owner_scope_key: boundary_scope.clone(),
                 page_size: 100,
                 page_token,
+                include_granted: true,
             },
             |response| (response.network_policies, response.next_page_token),
         )
@@ -299,6 +301,7 @@ async fn load_route_create_choices(
                 owner_scope_key: owner_scope_key.clone(),
                 page_size: 100,
                 page_token,
+                include_granted: true,
             },
             |response| (response.bindings, response.next_page_token),
         )

@@ -91,7 +91,7 @@ impl HarnessDevice for BlockHarness {
     }
 
     fn next_exact_local_event(&self) -> Option<u64> {
-        self.device.core().next_exact_local_event()
+        self.device.next_exact_local_event()
     }
 }
 
@@ -197,7 +197,7 @@ pub struct NetLinkHarness {
 ///
 /// The link is the one sub-node whose request is not an opaque payload — it
 /// carries the [`Frame`] to deliver and the [`FrameDraws`] that resolve its
-/// probabilistic faults deterministically ([IO-20], [IO-4]).
+/// probabilistic effects deterministically ([IO-20], [IO-4]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkRequest {
     /// The frame to emit (carries its own `emit_icount`).

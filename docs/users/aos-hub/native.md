@@ -51,6 +51,27 @@ On an AOS system, enable the service in the build-time system variant:
     enable = true;
     listen = "127.0.0.1:8420";
     externalUrl = "https://hub.example.com";
+    credentials = {
+      routeReservationKeys = "hub-route-reservation-keys";
+      domainProbeSignerManifest = "hub-domain-probe-signers";
+      jwtSecret = "hub-jwt-secret";
+    };
+  };
+}
+```
+
+Credential values are names in the platform namespace beneath
+`/run/credentials/@system`; they are never embedded in Nix evaluation or the
+store. Route reservation keys and the domain-probe signer manifest are required.
+Optional names cover JWT signing, delivery attestation, route publication,
+secret-version manifests, and the Cloudflare API token. When route publication
+is enabled, configure its public key beside the credential name:
+
+```nix
+{
+  aos.registry-hub = {
+    credentials.routePublicationManifest = "hub-route-publication-manifest";
+    routePublicationPublicKey = "<base64url-ed25519-public-key>";
   };
 }
 ```

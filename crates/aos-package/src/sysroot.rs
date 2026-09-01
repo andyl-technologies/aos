@@ -60,18 +60,20 @@ use crate::download::{
     DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
     fetch_narinfos, resolve_mirror_chain, split_mirror_chain,
 };
+use crate::platform::native_platform;
 use crate::policy::admit_package_roots;
 use crate::registry::sb_certs::{self, SbCertsToml};
 use crate::registry::{RegistrySet, store_path_hash};
 use crate::resolve::{collect_unique_metas, resolve_multiple};
-use crate::store::{filter_missing, import_nar};
+use crate::store::filter_missing;
 use crate::types::{
     ConfigGeneration, ConfigGenerationState, CrossAbiReEvalInputs, ImageGeneration,
-    ImageGenerationState, ImageSlot, PackageMeta, ProfileScope, ReactivationPlan,
-    RecoveryPublication, RecoveryUkiEntry, SysrootImageEntry, SysrootUkiEntry, UkiSlot,
+    ImageGenerationState, ImageSlot, ImageVerificationState, PackageMeta, ProfileScope,
+    ReactivationPlan, RecoveryPublication, RecoveryUkiEntry, RegistryRootConfig, SysrootImageEntry,
+    SysrootUkiEntry, UkiSlot,
 };
 use crate::unit_diff::{self, UnitDiff};
-use crate::verify::{verify_download_hash, verify_downloads, verify_nar_hash};
+use crate::verify::{verify_download_hash, verify_downloads};
 
 // ---------------------------------------------------------------------------
 // Kernel upgrade mode
@@ -628,11 +630,12 @@ pub async fn install_system(
 
         printer.step(6, 8, "Importing...");
         for result in &results {
-            import_nar(
+            crate::store::import_nar_with_compression(
                 &result.local_path,
                 &result.store_path,
                 &result.references,
                 result.deriver.as_deref(),
+                &result.compression,
             )
             .await
             .with_context(|| format!("importing {}", result.store_path))?;
@@ -749,6 +752,7 @@ fn reeval_and_activate_config_generation(
         eval_root.clone(),
         manifest.clone(),
         0,
+        Some(load_generation_state_readonly(profile_path)?.current),
     )?;
     let graph = eval_root.join("graph.json");
     let marker_root = eval_root.join("markers");
@@ -818,6 +822,7 @@ pub fn reeval_active_config_for_boot(
         eval_root,
         out,
         verbose,
+        Some(state.current),
     )
 }
 
@@ -1058,8 +1063,6 @@ pub async fn upgrade_system(
 
     // Load registries and check for newer version.
     let registries = load_registries(config)?;
-    let _platform = "x86_64-linux";
-
     let mut newer_meta: Option<(PackageMeta, String)> = None;
     for reg in registries.registries() {
         if let Some(meta) = reg.packages.get(&current_gen.package_name) {
@@ -3112,13 +3115,18 @@ async fn ensure_image_imported(
         .first()
         .context("image artifact download returned no result")?;
     verify_download_hash(&result.local_path, &result.download_hash)?;
-    verify_nar_hash(&result.local_path, authenticated_hash)
-        .with_context(|| format!("verifying image update NAR for {authenticated_path}"))?;
-    import_nar(
+    crate::verify::verify_nar_hash_with_compression(
+        &result.local_path,
+        authenticated_hash,
+        &result.compression,
+    )
+    .with_context(|| format!("verifying image update NAR for {authenticated_path}"))?;
+    crate::store::import_nar_with_compression(
         &result.local_path,
         &result.store_path,
         &result.references,
         result.deriver.as_deref(),
+        &result.compression,
     )
     .await?;
     if !store_path.exists() {
@@ -3248,13 +3256,18 @@ async fn download_image(
     // registry signature (images sit outside the store/ graph).
     let result = &results[0];
     verify_download_hash(&result.local_path, &result.download_hash)?;
-    verify_nar_hash(&result.local_path, &img.nar_hash)
-        .with_context(|| format!("verifying image NAR for {}", img.store_path))?;
-    import_nar(
+    crate::verify::verify_nar_hash_with_compression(
+        &result.local_path,
+        &img.nar_hash,
+        &result.compression,
+    )
+    .with_context(|| format!("verifying image NAR for {}", img.store_path))?;
+    crate::store::import_nar_with_compression(
         &result.local_path,
         &result.store_path,
         &result.references,
         result.deriver.as_deref(),
+        &result.compression,
     )
     .await?;
 
@@ -3929,7 +3942,7 @@ const RECONCILE_OK: i32 = 0;
 const RECONCILE_FAILED_UNITS: i32 = 1;
 const RECONCILE_CATASTROPHIC: i32 = 2;
 
-const PLAN_SCHEMA_VERSION: u32 = 1;
+const PLAN_SCHEMA_VERSION: u32 = 4;
 
 /// Where the activation orchestrator keeps the switch lock and plan files. It
 /// lives on tmpfs (`/run`), so crash debris disappears on reboot.
@@ -3943,8 +3956,16 @@ struct Plan {
     schema_version: u32,
     /// Generation number this plan was computed for.
     generation: u32,
-    /// Stopped by the pre-swap phase. Best-effort, informational.
+    /// Stopped by the pre-swap phase, including required ordered barriers.
     stopped: Vec<String>,
+    /// Stops that must succeed before the generation swap is authorized.
+    required_stops: BTreeSet<String>,
+    /// Old helpers re-started under old definitions immediately before stop.
+    required_pre_stop_starts: BTreeSet<String>,
+    /// Routed sources stopped under old definitions, including removed ones.
+    quiesced_external_activation_sources: BTreeSet<String>,
+    /// Routed sources that were active before quiescing and remain candidates.
+    restore_external_activation_sources: BTreeSet<String>,
     /// Remaining post-swap actions, already in apply order.
     to_reload: Vec<String>,
     to_restart: Vec<String>,
@@ -3985,14 +4006,10 @@ async fn activate_pre_etc_swap_inner(
 ) -> Result<i32> {
     // `compute_diff` takes /etc roots and appends `systemd/system` itself.
     // In this phase live `/etc` is intentionally the old generation.
-    let diff = unit_diff::compute_diff(Path::new("/etc"), candidate_etc);
+    let mut diff = unit_diff::compute_diff(Path::new("/etc"), candidate_etc);
+    diff.normalize_service_root_lifecycle();
     for w in &diff.warnings {
         printer.warning(w);
-    }
-
-    if dry_run {
-        print_diff(&diff, printer);
-        return Ok(RECONCILE_OK);
     }
 
     // The candidate systemd tree must exist and be readable; otherwise the
@@ -4011,6 +4028,12 @@ async fn activate_pre_etc_swap_inner(
     let client = SystemdClient::connect()
         .await
         .context("connecting to systemd over D-Bus")?;
+    retain_active_routed_sources(&mut diff, &client).await?;
+
+    if dry_run {
+        print_diff(&diff, printer);
+        return Ok(RECONCILE_OK);
+    }
 
     let plan = plan_from_diff(generation, diff);
     let plan_path = write_plan(run_dir, &plan)?;
@@ -4024,14 +4047,35 @@ async fn activate_pre_etc_swap_inner(
     // introduced by this activation before the health scan.
     client.reset_failed().await.context("reset-failed")?;
 
-    for unit in &plan.stopped {
+    let barrier_result = await_required_barrier_actions(
+        &plan.stopped,
+        &plan.required_stops,
+        &plan.required_pre_stop_starts,
+        |unit| {
+            printer.plain(&format!("  preparing {unit}"));
+            let client = &client;
+            async move { client.start_unit(&unit).await.map(|outcome| outcome.result) }
+        },
+        |unit| {
+            printer.plain(&format!("  stopping   {unit}"));
+            let client = &client;
+            async move { client.stop_unit(&unit).await.map(|outcome| outcome.result) }
+        },
+    )
+    .await;
+    recover_quiesced_sources(barrier_result, || {
+        restore_routed_sources(&client, &plan.quiesced_external_activation_sources)
+    })
+    .await?;
+
+    for unit in plan
+        .stopped
+        .iter()
+        .filter(|unit| !plan.required_stops.contains(*unit))
+    {
         printer.plain(&format!("  stopping   {unit}"));
-        let _ = reconcile_job_failed(
-            printer,
-            "stop",
-            unit,
-            client.stop_unit(unit).await.map(|outcome| outcome.result),
-        );
+        let outcome = client.stop_unit(unit).await.map(|outcome| outcome.result);
+        let _ = reconcile_job_failed(printer, "stop", unit, outcome);
     }
 
     println!("{}", plan_path.display());
@@ -4058,6 +4102,49 @@ pub async fn activate_post_etc_swap(plan_path: &Path, printer: &Printer) -> i32 
     }
 }
 
+/// Restores the routed activation sources recorded by a split activation plan.
+///
+/// The activation shell invokes this idempotently from its exit trap when a
+/// failure occurs after pre-swap quiescing but outside either Rust phase.
+pub async fn activate_restore_routed_sources(
+    plan_path: &Path,
+    candidate: bool,
+    printer: &Printer,
+) -> i32 {
+    let result = async {
+        let plan = read_validated_plan(plan_path)?;
+        ensure_secure_run_dir(Path::new(APM_RUN_DIR))?;
+        let client = SystemdClient::connect()
+            .await
+            .context("connecting to systemd over D-Bus")?;
+        if candidate {
+            client
+                .daemon_reload()
+                .await
+                .context("loading candidate unit definitions before routed-source recovery")?;
+        }
+        let sources = plan_restore_sources(&plan, candidate);
+        restore_routed_sources(&client, sources).await
+    }
+    .await;
+
+    match result {
+        Ok(()) => RECONCILE_OK,
+        Err(error) => {
+            printer.error(&format!("activate-restore-routed-sources: {error:#}"));
+            RECONCILE_CATASTROPHIC
+        }
+    }
+}
+
+fn plan_restore_sources(plan: &Plan, candidate: bool) -> &BTreeSet<String> {
+    if candidate {
+        &plan.restore_external_activation_sources
+    } else {
+        &plan.quiesced_external_activation_sources
+    }
+}
+
 async fn activate_post_etc_swap_inner(plan_path: &Path, printer: &Printer) -> Result<i32> {
     let plan = read_validated_plan(plan_path)?;
     ensure_secure_run_dir(Path::new(APM_RUN_DIR))?;
@@ -4077,7 +4164,10 @@ async fn activate_post_etc_swap_inner(plan_path: &Path, printer: &Printer) -> Re
         ));
     }
 
-    client.daemon_reload().await.context("daemon-reload")?;
+    if let Err(error) = client.daemon_reload().await.context("daemon-reload") {
+        restore_routed_sources(&client, &plan.restore_external_activation_sources).await?;
+        return Err(error);
+    }
 
     let mut action_failed = false;
     for unit in &plan.to_reload {
@@ -4112,6 +4202,11 @@ async fn activate_post_etc_swap_inner(plan_path: &Path, printer: &Printer) -> Re
             client.start_unit(unit).await.map(|outcome| outcome.result),
         );
     }
+
+    // This is deliberately separate from ordinary start actions: every
+    // post-swap path restores the exact sources recorded active pre-swap,
+    // including degraded action outcomes that are reported only after health.
+    restore_routed_sources(&client, &plan.restore_external_activation_sources).await?;
 
     // Drain late job events so the scan below sees settled unit states. Do not
     // reset failed state here; pre-swap reset already cleared stale failures.
@@ -4164,17 +4259,127 @@ fn plan_from_diff(generation: u32, mut diff: UnitDiff) -> Plan {
             diff.to_start.push(unit);
         }
     }
+    diff.to_start
+        .retain(|unit| !diff.restore_external_activation_sources.contains(unit));
 
     Plan {
         schema_version: PLAN_SCHEMA_VERSION,
         generation,
         stopped: diff.to_stop,
+        required_stops: diff.required_stops,
+        required_pre_stop_starts: diff.required_pre_stop_starts,
+        quiesced_external_activation_sources: diff.quiesced_external_activation_sources,
+        restore_external_activation_sources: diff.restore_external_activation_sources,
         to_reload: diff.to_reload,
         to_restart: diff.to_restart,
         to_start: diff.to_start,
         blanket_targets: diff.blanket_targets,
         warnings: diff.warnings,
     }
+}
+
+fn ensure_required_stop_succeeded<E: std::fmt::Display>(
+    unit: &str,
+    result: std::result::Result<JobResult, E>,
+) -> Result<()> {
+    let result = result
+        .map_err(|error| anyhow::anyhow!("required pre-swap stop failed for {unit}: {error}"))?;
+    if !result.is_done() {
+        bail!(
+            "required pre-swap stop for {unit} returned systemd job result '{}'",
+            result.label()
+        );
+    }
+    Ok(())
+}
+
+fn ensure_required_start_succeeded<E: std::fmt::Display>(
+    unit: &str,
+    result: std::result::Result<JobResult, E>,
+) -> Result<()> {
+    let result = result
+        .map_err(|error| anyhow::anyhow!("required pre-swap start failed for {unit}: {error}"))?;
+    if !result.is_done() {
+        bail!(
+            "required pre-swap start for {unit} returned systemd job result '{}'",
+            result.label()
+        );
+    }
+    Ok(())
+}
+
+async fn retain_active_routed_sources(diff: &mut UnitDiff, client: &SystemdClient) -> Result<()> {
+    let sources = diff
+        .service_root_barriers
+        .values()
+        .flat_map(|barrier| barrier.live_external_activation_sources.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    let mut active = BTreeSet::new();
+    for source in sources {
+        if client
+            .is_active(&source)
+            .await
+            .with_context(|| format!("checking routed activation source {source}"))?
+        {
+            active.insert(source);
+        }
+    }
+    diff.retain_active_external_activation_sources(&active);
+    Ok(())
+}
+
+async fn restore_routed_sources(client: &SystemdClient, sources: &BTreeSet<String>) -> Result<()> {
+    for source in sources {
+        ensure_required_start_succeeded(
+            source,
+            client.start_unit(source).await.map(|job| job.result),
+        )
+        .with_context(|| format!("restoring routed activation source {source}"))?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn recover_quiesced_sources<R, Fut>(
+    barrier_result: Result<()>,
+    restore: R,
+) -> Result<()>
+where
+    R: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    if let Err(error) = barrier_result {
+        restore()
+            .await
+            .with_context(|| format!("restoring quiesced activation sources after: {error:#}"))?;
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn await_required_barrier_actions<S, SFut, T, TFut, E>(
+    ordered_stops: &[String],
+    required_stops: &BTreeSet<String>,
+    required_pre_stop_starts: &BTreeSet<String>,
+    mut start: S,
+    mut stop: T,
+) -> Result<()>
+where
+    S: FnMut(String) -> SFut,
+    SFut: std::future::Future<Output = std::result::Result<JobResult, E>>,
+    T: FnMut(String) -> TFut,
+    TFut: std::future::Future<Output = std::result::Result<JobResult, E>>,
+    E: std::fmt::Display,
+{
+    for unit in ordered_stops
+        .iter()
+        .filter(|unit| required_stops.contains(*unit))
+    {
+        if required_pre_stop_starts.contains(unit) {
+            ensure_required_start_succeeded(unit, start(unit.clone()).await)?;
+        }
+        ensure_required_stop_succeeded(unit, stop(unit.clone()).await)?;
+    }
+    Ok(())
 }
 
 /// Create `/run/apm` securely if absent; otherwise reject anything other than a
@@ -4441,6 +4646,15 @@ fn print_diff(diff: &UnitDiff, printer: &Printer) {
         printer.plain(&format!("  {label:<9}{body}"));
     };
     show("stop:", &diff.to_stop);
+    show(
+        "prepare:",
+        &diff
+            .to_stop
+            .iter()
+            .filter(|unit| diff.required_pre_stop_starts.contains(*unit))
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
     show("reload:", &diff.to_reload);
     show("restart:", &diff.to_restart);
     show("start:", &diff.to_start);
@@ -4541,7 +4755,7 @@ fn run_command(cmd: &str, args: &[&str]) -> Result<()> {
 /// Load all enabled registries from the scope's metadata cache.
 fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
-    RegistrySet::load(&config.cache_path(), &reg_configs, "x86_64-linux")
+    RegistrySet::load(&config.cache_path(), &reg_configs, &native_platform())
 }
 
 /// Validate a downloaded sysroot's Secure Boot facts against the registry's
@@ -4609,8 +4823,9 @@ fn validate_sysroot_secure_boot(
 ///
 /// # Errors
 ///
-/// Returns an error when the catalog fails to load/parse or any image fails
-/// [`validate_image_secure_boot`].
+/// Returns an error when the registry root or catalog fails to load/parse, the
+/// registry requires signed UKIs but an image is not policy-verified, or any
+/// signed image fails [`validate_image_secure_boot`].
 fn validate_sysroot_secure_boot_in(
     images: &[crate::types::SysrootImageEntry],
     registry_name: &str,
@@ -4618,6 +4833,39 @@ fn validate_sysroot_secure_boot_in(
     db_cert: Option<&Path>,
     printer: &Printer,
 ) -> Result<()> {
+    let registry_config_path = catalog_dir.join("registry.toml");
+    let require_signed_ukis = if registry_config_path.is_file() {
+        let source = std::fs::read_to_string(&registry_config_path).with_context(|| {
+            format!(
+                "reading committed registry configuration {}",
+                registry_config_path.display()
+            )
+        })?;
+        let root: RegistryRootConfig = toml::from_str(&source).with_context(|| {
+            format!(
+                "parsing committed registry configuration {}",
+                registry_config_path.display()
+            )
+        })?;
+        root.registry.require_signed_ukis
+    } else {
+        false
+    };
+    let direct_images = images
+        .iter()
+        .filter(|image| !image.delivery.is_store_only())
+        .collect::<Vec<_>>();
+    if require_signed_ukis {
+        for image in &direct_images {
+            if image.delivery.uki.verification != ImageVerificationState::PolicyVerified {
+                bail!(
+                    "registry '{registry_name}' requires signed UKIs, but image format '{}' is not policy-verified",
+                    image.format
+                );
+            }
+        }
+    }
+
     let signed_images: Vec<&crate::types::SysrootImageEntry> = images
         .iter()
         .filter(|img| {
@@ -4644,6 +4892,11 @@ fn validate_sysroot_secure_boot_in(
         )
     })?
     else {
+        if require_signed_ukis && !direct_images.is_empty() {
+            bail!(
+                "registry '{registry_name}' requires signed UKIs but publishes no sb-certs.toml policy"
+            );
+        }
         // The registry publishes no Secure Boot catalog; there is no
         // signed floor or active set to enforce against.
         printer.info(
@@ -6224,6 +6477,15 @@ mod tests {
         assert!(
             validate_sysroot_secure_boot_in(&unsigned, "aos", tmp.path(), None, &printer).is_ok()
         );
+
+        std::fs::write(
+            tmp.path().join("registry.toml"),
+            "[registry]\nname = \"aos\"\nrequire_signed_ukis = true\n",
+        )
+        .unwrap();
+        assert!(
+            validate_sysroot_secure_boot_in(&unsigned, "aos", tmp.path(), None, &printer).is_err()
+        );
     }
 
     #[test]
@@ -7074,6 +7336,10 @@ mod tests {
             schema_version: PLAN_SCHEMA_VERSION,
             generation: 42,
             stopped: vec!["old.service".to_string()],
+            required_stops: BTreeSet::from(["old.service".to_string()]),
+            required_pre_stop_starts: BTreeSet::new(),
+            quiesced_external_activation_sources: BTreeSet::new(),
+            restore_external_activation_sources: BTreeSet::new(),
             to_reload: vec!["reload.service".to_string()],
             to_restart: vec!["restart.socket".to_string(), "restart.service".to_string()],
             to_start: vec!["new.service".to_string()],
@@ -7110,6 +7376,443 @@ mod tests {
             ]
         );
         assert_eq!(plan.generation, 7);
+    }
+
+    #[test]
+    fn plan_stops_old_service_root_target_before_generation_swap() {
+        let helper = "aos-pkg-web-service-roots.service";
+        let diff = UnitDiff {
+            service_root_barriers: std::collections::BTreeMap::from([(
+                helper.to_string(),
+                unit_diff::ServiceRootBarrier {
+                    target: "aos-pkg-web.target".to_string(),
+                    live_members: BTreeSet::from(["web.service".to_string()]),
+                    candidate_members: BTreeSet::from(["web.service".to_string()]),
+                    candidate_target_present: true,
+                    ..Default::default()
+                },
+            )]),
+            to_restart: vec![
+                helper.to_string(),
+                "web.service".to_string(),
+                "aos-pkg-web.target".to_string(),
+                "ordinary.service".to_string(),
+            ],
+            to_reload: vec!["web.service".to_string()],
+            blanket_targets: vec!["aos-pkg-web.target".to_string()],
+            ..Default::default()
+        };
+
+        let mut diff = diff;
+        diff.normalize_service_root_lifecycle();
+        let plan = plan_from_diff(8, diff);
+
+        assert_eq!(
+            plan.stopped,
+            vec!["web.service", helper, "aos-pkg-web.target"]
+        );
+        assert_eq!(plan.to_restart, vec!["ordinary.service"]);
+        assert!(plan.to_reload.is_empty());
+        assert!(plan.blanket_targets.is_empty());
+        assert_eq!(plan.to_start, vec!["aos-pkg-web.target"]);
+        assert_eq!(
+            plan.required_pre_stop_starts,
+            BTreeSet::from([helper.to_string()])
+        );
+        assert_eq!(
+            plan.required_stops,
+            BTreeSet::from([
+                "web.service".to_string(),
+                helper.to_string(),
+                "aos-pkg-web.target".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn restore_plan_selects_old_or_candidate_sources_idempotently() {
+        let plan = Plan {
+            quiesced_external_activation_sources: BTreeSet::from([
+                "removed.socket".to_string(),
+                "retained.socket".to_string(),
+            ]),
+            restore_external_activation_sources: BTreeSet::from(["retained.socket".to_string()]),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            plan_restore_sources(&plan, false),
+            &BTreeSet::from(["removed.socket".to_string(), "retained.socket".to_string(),])
+        );
+        assert_eq!(
+            plan_restore_sources(&plan, true),
+            &BTreeSet::from(["retained.socket".to_string()])
+        );
+        assert_eq!(
+            plan_restore_sources(&plan, true),
+            plan_restore_sources(&plan, true)
+        );
+    }
+
+    #[test]
+    fn dry_run_normalization_reports_root_target_barrier_not_member_actions() {
+        let helper = "aos-pkg-web-service-roots.service";
+        let mut diff = UnitDiff {
+            service_root_barriers: std::collections::BTreeMap::from([(
+                helper.to_string(),
+                unit_diff::ServiceRootBarrier {
+                    target: "aos-pkg-web.target".to_string(),
+                    live_members: BTreeSet::from(["web.service".to_string()]),
+                    candidate_members: BTreeSet::from(["web.service".to_string()]),
+                    candidate_target_present: true,
+                    ..Default::default()
+                },
+            )]),
+            to_restart: vec![helper.to_string(), "web.service".to_string()],
+            ..Default::default()
+        };
+
+        diff.normalize_service_root_lifecycle();
+
+        assert_eq!(
+            diff.to_stop,
+            vec![
+                "web.service",
+                "aos-pkg-web-service-roots.service",
+                "aos-pkg-web.target",
+            ]
+        );
+        assert_eq!(diff.to_start, vec!["aos-pkg-web.target"]);
+        assert_eq!(
+            diff.required_pre_stop_starts,
+            BTreeSet::from([helper.to_string()])
+        );
+        assert!(diff.to_restart.is_empty());
+        assert_eq!(
+            diff.required_stops,
+            BTreeSet::from([
+                "web.service".to_string(),
+                helper.to_string(),
+                "aos-pkg-web.target".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn plan_cleans_removed_overlay_before_retained_socket_only_target() {
+        let root_unit = "aos-pkg-web-service-roots.service";
+        let diff = UnitDiff {
+            service_root_barriers: std::collections::BTreeMap::from([(
+                root_unit.to_string(),
+                unit_diff::ServiceRootBarrier {
+                    target: "aos-pkg-web.target".to_string(),
+                    live_members: BTreeSet::from(["web.service".to_string()]),
+                    candidate_members: BTreeSet::from(["web.socket".to_string()]),
+                    candidate_target_present: true,
+                    ..Default::default()
+                },
+            )]),
+            to_stop: vec![root_unit.to_string(), "web.service".to_string()],
+            to_start: vec!["web.socket".to_string()],
+            ..Default::default()
+        };
+
+        let mut diff = diff;
+        diff.normalize_service_root_lifecycle();
+        let plan = plan_from_diff(9, diff);
+
+        assert_eq!(
+            plan.stopped,
+            vec!["web.service", root_unit, "aos-pkg-web.target"]
+        );
+        assert_eq!(plan.to_start, vec!["aos-pkg-web.target"]);
+    }
+
+    #[test]
+    fn plan_does_not_restart_removed_overlay_package_target() {
+        let root_unit = "aos-pkg-web-service-roots.service";
+        let diff = UnitDiff {
+            service_root_barriers: std::collections::BTreeMap::from([(
+                root_unit.to_string(),
+                unit_diff::ServiceRootBarrier {
+                    target: "aos-pkg-web.target".to_string(),
+                    live_members: BTreeSet::from(["web.service".to_string()]),
+                    ..Default::default()
+                },
+            )]),
+            to_stop: vec![root_unit.to_string(), "web.service".to_string()],
+            ..Default::default()
+        };
+
+        let mut diff = diff;
+        diff.normalize_service_root_lifecycle();
+        let plan = plan_from_diff(10, diff);
+
+        assert_eq!(
+            plan.stopped,
+            vec!["web.service", root_unit, "aos-pkg-web.target"]
+        );
+        assert!(plan.to_start.is_empty());
+    }
+
+    #[test]
+    fn required_service_root_barrier_failure_aborts_pre_swap() {
+        let dependency =
+            ensure_required_stop_succeeded::<&str>("aos-pkg-web.target", Ok(JobResult::Dependency))
+                .unwrap_err();
+        assert!(dependency.to_string().contains("required pre-swap stop"));
+
+        let transport =
+            ensure_required_stop_succeeded("aos-pkg-web.target", Err("injected D-Bus failure"))
+                .unwrap_err();
+        assert!(
+            transport
+                .to_string()
+                .contains("required pre-swap stop failed")
+        );
+        ensure_required_stop_succeeded::<&str>("aos-pkg-web.target", Ok(JobResult::Done)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn required_service_root_barrier_waits_for_old_helper_cleanup() {
+        use std::sync::{Arc, Mutex};
+        use tokio::sync::Notify;
+
+        let target = "aos-pkg-web.target".to_string();
+        let helper = "aos-pkg-web-service-roots.service".to_string();
+        let member = "web.service".to_string();
+        let ordered = vec![member.clone(), helper.clone(), target.clone()];
+        let required = BTreeSet::from([member, helper.clone(), target]);
+        let prepare = BTreeSet::from([helper.clone()]);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let helper_started = Arc::new(Notify::new());
+        let helper_release = Arc::new(Notify::new());
+
+        let task = {
+            let calls = Arc::clone(&calls);
+            let helper_started = Arc::clone(&helper_started);
+            let helper_release = Arc::clone(&helper_release);
+            let helper = helper.clone();
+            tokio::spawn(async move {
+                let start_calls = Arc::clone(&calls);
+                await_required_barrier_actions(
+                    &ordered,
+                    &required,
+                    &prepare,
+                    move |unit| {
+                        let calls = Arc::clone(&start_calls);
+                        async move {
+                            calls.lock().unwrap().push(("start", unit));
+                            Ok::<_, &str>(JobResult::Done)
+                        }
+                    },
+                    move |unit| {
+                        let calls = Arc::clone(&calls);
+                        let helper_started = Arc::clone(&helper_started);
+                        let helper_release = Arc::clone(&helper_release);
+                        let helper = helper.clone();
+                        async move {
+                            calls.lock().unwrap().push(("stop", unit.clone()));
+                            if unit == helper {
+                                helper_started.notify_one();
+                                helper_release.notified().await;
+                            }
+                            Ok::<_, &str>(JobResult::Done)
+                        }
+                    },
+                )
+                .await
+            })
+        };
+
+        helper_started.notified().await;
+        assert!(
+            !task.is_finished(),
+            "barrier returned before helper cleanup"
+        );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                ("stop", "web.service".to_string()),
+                ("start", helper.clone()),
+                ("stop", helper.clone()),
+            ],
+            "target stop raced PartOf-propagated helper cleanup"
+        );
+        helper_release.notify_one();
+        task.await.unwrap().unwrap();
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                ("stop", "web.service".to_string()),
+                ("start", helper.clone()),
+                ("stop", helper),
+                ("stop", "aos-pkg-web.target".to_string()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn required_service_root_helper_failure_aborts_barrier() {
+        use std::sync::{Arc, Mutex};
+
+        let target = "aos-pkg-web.target".to_string();
+        let helper = "aos-pkg-web-service-roots.service".to_string();
+        let member = "web.service".to_string();
+        let ordered = vec![member.clone(), helper.clone(), target.clone()];
+        let required = BTreeSet::from([member.clone(), helper.clone(), target]);
+        let prepare = BTreeSet::from([helper.clone()]);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+
+        let start_calls = Arc::clone(&calls);
+        let err = await_required_barrier_actions(
+            &ordered,
+            &required,
+            &prepare,
+            move |unit| {
+                let calls = Arc::clone(&start_calls);
+                async move {
+                    calls.lock().unwrap().push(("start", unit));
+                    Ok::<_, &str>(JobResult::Done)
+                }
+            },
+            {
+                let calls = Arc::clone(&calls);
+                let helper = helper.clone();
+                move |unit| {
+                    let calls = Arc::clone(&calls);
+                    let helper = helper.clone();
+                    async move {
+                        calls.lock().unwrap().push(("stop", unit.clone()));
+                        Ok::<_, &str>(if unit == helper {
+                            JobResult::Dependency
+                        } else {
+                            JobResult::Done
+                        })
+                    }
+                }
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains(&helper));
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                ("stop", member),
+                ("start", helper.clone()),
+                ("stop", helper),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn required_service_root_prepare_failure_aborts_before_cleanup() {
+        use std::sync::{Arc, Mutex};
+
+        let helper = "aos-pkg-web-service-roots.service".to_string();
+        let ordered = vec![
+            "web.service".to_string(),
+            helper.clone(),
+            "aos-pkg-web.target".to_string(),
+        ];
+        let required = ordered.iter().cloned().collect::<BTreeSet<_>>();
+        let prepare = BTreeSet::from([helper.clone()]);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let stop_calls = Arc::clone(&calls);
+        let start_calls = Arc::clone(&calls);
+
+        let error = await_required_barrier_actions(
+            &ordered,
+            &required,
+            &prepare,
+            move |unit| {
+                let calls = Arc::clone(&start_calls);
+                async move {
+                    calls.lock().unwrap().push(("start", unit));
+                    Ok::<_, &str>(JobResult::Dependency)
+                }
+            },
+            move |unit| {
+                let calls = Arc::clone(&stop_calls);
+                async move {
+                    calls.lock().unwrap().push(("stop", unit));
+                    Ok::<_, &str>(JobResult::Done)
+                }
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("required pre-swap start"));
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![("stop", "web.service".to_string()), ("start", helper)]
+        );
+    }
+
+    #[tokio::test]
+    async fn required_remaining_part_of_failure_aborts_before_target() {
+        use std::sync::{Arc, Mutex};
+
+        let ordered = vec![
+            "data.automount".to_string(),
+            "data.mount".to_string(),
+            "aos-pkg-web.target".to_string(),
+        ];
+        let required = ordered.iter().cloned().collect::<BTreeSet<_>>();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let stop_calls = Arc::clone(&calls);
+
+        let error = await_required_barrier_actions(
+            &ordered,
+            &required,
+            &BTreeSet::new(),
+            |_| async { Ok::<_, &str>(JobResult::Done) },
+            move |unit| {
+                let calls = Arc::clone(&stop_calls);
+                async move {
+                    calls.lock().unwrap().push(unit.clone());
+                    Ok::<_, &str>(if unit == "data.mount" {
+                        JobResult::Dependency
+                    } else {
+                        JobResult::Done
+                    })
+                }
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("data.mount"));
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec!["data.automount".to_string(), "data.mount".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_barrier_restores_quiesced_provider_before_returning_error() {
+        use std::sync::{Arc, Mutex};
+
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let restore_calls = Arc::clone(&calls);
+        let error = recover_quiesced_sources(
+            Err(anyhow::anyhow!("helper cleanup failed")),
+            move || async move {
+                restore_calls
+                    .lock()
+                    .unwrap()
+                    .push("provider.socket".to_string());
+                Ok(())
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("helper cleanup failed"));
+        assert_eq!(*calls.lock().unwrap(), vec!["provider.socket".to_string()]);
     }
 
     #[test]

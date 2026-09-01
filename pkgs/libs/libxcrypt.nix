@@ -37,6 +37,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --enable-hashes=strong,glibc \
             --enable-obsolete-api=no \

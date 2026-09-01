@@ -491,7 +491,9 @@ fn write_trigger(hasher: &mut FingerprintHasher, trigger: FingerprintSampleTrigg
         FingerprintSampleTrigger::Event(event) => match event {
             super::definition::FingerprintEventBoundary::HorizonAdvance => "horizon-advance",
             super::definition::FingerprintEventBoundary::FrameDelivery => "frame-delivery",
-            super::definition::FingerprintEventBoundary::FaultActivation => "fault-activation",
+            super::definition::FingerprintEventBoundary::SignalEffectBoundary => {
+                "signal-effect-boundary"
+            }
         },
     });
 }

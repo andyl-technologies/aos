@@ -1,0 +1,94 @@
+diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
+index 994c1957e..acb9d10d7 100644
+--- a/plugins/crucible-fault-register.c
++++ b/plugins/crucible-fault-register.c
+@@ -959,6 +959,49 @@ static void crucible_register_transform(const CrucibleRegisterApply *apply,
+     }
+ }
+ 
++static int crucible_register_cursor(const CrucibleRegisterApply *apply,
++                                    uint16_t model_phase,
++                                    struct qemu_plugin_rr_cursor *rr)
++{
++    CPUState *next_cpu;
++
++    if (model_phase != QEMU_CRUCIBLE_MODEL_PHASE_AFTER_INSTRUCTION) {
++        return qemu_plugin_rr_cursor(rr);
++    }
++
++    rr->current_vcpu = qemu_plugin_crucible_rr_current_vcpu();
++    rr->cursor_position = qemu_plugin_crucible_rr_cursor_position();
++    rr->rr_switch_quantum = qemu_plugin_crucible_rr_switch_quantum();
++    if (rr->current_vcpu != apply->cpu->cpu_index ||
++        rr->rr_switch_quantum == 0 ||
++        rr->cursor_position > rr->rr_switch_quantum) {
++        return -1;
++    }
++
++    /*
++     * The live cursor counts the prefix retired before the current plugin
++     * callback.  An after-instruction mutation belongs to the following
++     * coordinate, including the canonical handoff at a quantum terminal.
++     */
++    if (rr->cursor_position < rr->rr_switch_quantum) {
++        rr->cursor_position++;
++    }
++    if (rr->cursor_position != rr->rr_switch_quantum) {
++        return 0;
++    }
++
++    next_cpu = CPU_NEXT(apply->cpu);
++    if (!next_cpu) {
++        next_cpu = first_cpu;
++    }
++    if (!next_cpu) {
++        return -1;
++    }
++    rr->current_vcpu = next_cpu->cpu_index;
++    rr->cursor_position = 0;
++    return 0;
++}
++
+ static int crucible_register_apply(const CrucibleRegisterApply *apply,
+                                    uint64_t icount,
+                                    uint16_t model_phase,
+@@ -979,17 +1022,11 @@ static int crucible_register_apply(const CrucibleRegisterApply *apply,
+     CPUClass *cc = CPU_GET_CLASS(apply->cpu);
+     const char *failure_stage = NULL;
+ 
+-    if (qemu_plugin_rr_cursor(&rr) != 0 &&
+-        model_phase == QEMU_CRUCIBLE_MODEL_PHASE_AFTER_INSTRUCTION) {
+-        rr.current_vcpu = qemu_plugin_crucible_rr_current_vcpu();
+-        rr.cursor_position = qemu_plugin_crucible_rr_cursor_position();
+-        rr.rr_switch_quantum = qemu_plugin_crucible_rr_switch_quantum();
+-    }
+-    if (rr.current_vcpu != apply->cpu->cpu_index ||
++    if (crucible_register_cursor(apply, model_phase, &rr) != 0 ||
++        (model_phase != QEMU_CRUCIBLE_MODEL_PHASE_AFTER_INSTRUCTION &&
++         rr.current_vcpu != apply->cpu->cpu_index) ||
+         rr.rr_switch_quantum == 0 ||
+-        rr.cursor_position > rr.rr_switch_quantum ||
+-        (rr.cursor_position == rr.rr_switch_quantum &&
+-         model_phase != QEMU_CRUCIBLE_MODEL_PHASE_AFTER_INSTRUCTION)) {
++        rr.cursor_position >= rr.rr_switch_quantum) {
+         error_report("Crucible register mutation lost RR cursor ownership "
+                      "for register %u at phase %u icount %" PRIu64,
+                      apply->target->numeric_id, model_phase, icount);
+diff --git a/tests/tcg/plugins/crucible-register.c b/tests/tcg/plugins/crucible-register.c
+index fc54a8924..cb66fd25b 100644
+--- a/tests/tcg/plugins/crucible-register.c
++++ b/tests/tcg/plugins/crucible-register.c
+@@ -391,11 +391,9 @@ static bool test_validate_register_evidence(const uint8_t *evidence,
+         test_get_u64(evidence + 56) != expected_icount ||
+         test_get_u64(evidence + 64) != 0 ||
+         rr_switch_quantum == 0 ||
+-        cursor_position > rr_switch_quantum ||
+-        (cursor_position == rr_switch_quantum &&
+-         test_model_phase != TEST_MODEL_PHASE_AFTER_INSTRUCTION) ||
++        cursor_position >= rr_switch_quantum ||
+         (test_terminal_cursor_required &&
+-         cursor_position != rr_switch_quantum) ||
++         cursor_position != 0) ||
+         !test_bytes_nonzero(evidence + 88, 32) ||
+         !test_bytes_nonzero(evidence + 120, 32) ||
+         test_get_u32(evidence + 156) != 0) {

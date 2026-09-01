@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-/// A failure to parse or validate an RFC-0015 OCI contract value.
+/// A failure to parse or validate an RFC-0017 OCI contract value.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum Error {
     /// A JSON document exceeded its frozen admission bound.
@@ -54,14 +54,14 @@ pub enum Error {
         actual: u64,
     },
 
-    /// A repository name was not already in canonical RFC-0015 form.
+    /// A repository name was not already in canonical RFC-0017 form.
     #[error("invalid OCI repository name: {reason}")]
     InvalidRepository {
         /// Reason the repository was rejected.
         reason: &'static str,
     },
 
-    /// A tag was not already in canonical RFC-0015 form.
+    /// A tag was not already in canonical RFC-0017 form.
     #[error("invalid OCI tag: {reason}")]
     InvalidTag {
         /// Reason the tag was rejected.

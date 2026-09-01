@@ -1,21 +1,6 @@
 //! Canonical binary plan, action, fault, and predicate codec.
 
 use super::*;
-pub(super) fn collection_count_from_raw(
-    label: &'static str,
-    count: u64,
-) -> Result<usize, EngineError> {
-    let count = usize::try_from(count)
-        .map_err(|_| scenario_serialization_error("binary count does not fit usize"))?;
-    if count > MAX_SCENARIO_BINARY_COLLECTION_ITEMS {
-        Err(scenario_serialization_error(format!(
-            "{label} count exceeds serialized collection limit"
-        )))
-    } else {
-        Ok(count)
-    }
-}
-
 pub(super) fn event_graph_assertion_references(events: &[Event]) -> Vec<AssertionId> {
     let mut assertions = BTreeSet::new();
     for event in events {
@@ -52,116 +37,8 @@ pub(super) fn collect_predicate_assertion_references(
         | Predicate::IoPattern { .. }
         | Predicate::NodeState { .. }
         | Predicate::Quiescent
-        | Predicate::FaultActive { .. }
         | Predicate::Named { .. }
         | Predicate::GuestMarker { .. } => {}
-    }
-}
-
-pub(super) fn write_plan_entry_binary(entry: &PlanEntry, writer: &mut ScenarioBinaryWriter) {
-    match entry {
-        PlanEntry::Activate { at, tag, fault } => {
-            writer.write_u8(0);
-            writer.write_u64(at.ticks);
-            writer.write_string(&tag.name);
-            write_membership_fault_binary(fault, writer);
-        }
-        PlanEntry::Heal { at, tag } => {
-            writer.write_u8(1);
-            writer.write_u64(at.ticks);
-            writer.write_string(&tag.name);
-        }
-    }
-}
-
-pub(super) fn read_plan_entry_binary(
-    reader: &mut ScenarioBinaryReader<'_>,
-) -> Result<PlanEntry, EngineError> {
-    match reader.read_u8()? {
-        0 => Ok(PlanEntry::Activate {
-            at: VirtualTime {
-                ticks: reader.read_u64()?,
-            },
-            tag: FaultTag {
-                name: reader.read_string()?,
-            },
-            fault: read_membership_fault_binary(reader)?,
-        }),
-        1 => Ok(PlanEntry::Heal {
-            at: VirtualTime {
-                ticks: reader.read_u64()?,
-            },
-            tag: FaultTag {
-                name: reader.read_string()?,
-            },
-        }),
-        _ => Err(scenario_serialization_error("invalid plan-entry tag")),
-    }
-}
-
-pub(super) fn write_fault_plan_entry_binary(
-    entry: &FaultPlanEntry,
-    writer: &mut ScenarioBinaryWriter,
-) {
-    match entry {
-        FaultPlanEntry::At {
-            at,
-            duration,
-            tag,
-            fault,
-        } => {
-            writer.write_u8(0);
-            writer.write_u64(at.ticks);
-            writer.write_u64(duration.nanos());
-            writer.write_string(&tag.name);
-            write_fault_binary(fault, writer);
-        }
-        FaultPlanEntry::PermanentAt { at, tag, fault } => {
-            writer.write_u8(1);
-            writer.write_u64(at.ticks);
-            writer.write_string(&tag.name);
-            write_fault_binary(fault, writer);
-        }
-        FaultPlanEntry::Heal { at, tag } => {
-            writer.write_u8(2);
-            writer.write_u64(at.ticks);
-            writer.write_string(&tag.name);
-        }
-    }
-}
-
-pub(super) fn read_fault_plan_entry_binary(
-    reader: &mut ScenarioBinaryReader<'_>,
-) -> Result<FaultPlanEntry, EngineError> {
-    match reader.read_u8()? {
-        0 => Ok(FaultPlanEntry::At {
-            at: VirtualTime {
-                ticks: reader.read_u64()?,
-            },
-            duration: FaultDuration::from_nanos(reader.read_u64()?),
-            tag: FaultTag {
-                name: reader.read_string()?,
-            },
-            fault: read_fault_binary(reader)?,
-        }),
-        1 => Ok(FaultPlanEntry::PermanentAt {
-            at: VirtualTime {
-                ticks: reader.read_u64()?,
-            },
-            tag: FaultTag {
-                name: reader.read_string()?,
-            },
-            fault: read_fault_binary(reader)?,
-        }),
-        2 => Ok(FaultPlanEntry::Heal {
-            at: VirtualTime {
-                ticks: reader.read_u64()?,
-            },
-            tag: FaultTag {
-                name: reader.read_string()?,
-            },
-        }),
-        _ => Err(scenario_serialization_error("invalid fault-plan-entry tag")),
     }
 }
 
@@ -208,52 +85,43 @@ pub(super) fn read_event_binary(
 
 pub(super) fn write_action_binary(action: &Action, writer: &mut ScenarioBinaryWriter) {
     match action {
-        Action::InjectFault { tag, fault } => {
-            writer.write_u8(0);
-            writer.write_string(&tag.name);
-            write_membership_fault_binary(fault, writer);
-        }
-        Action::HealFault { tag } => {
-            writer.write_u8(1);
-            writer.write_string(&tag.name);
-        }
         Action::ArmTimer { name, after } => {
-            writer.write_u8(2);
+            writer.write_u8(0);
             writer.write_string(&name.name);
             writer.write_u64(after.nanos);
         }
         Action::CancelTimer { name } => {
-            writer.write_u8(3);
+            writer.write_u8(1);
             writer.write_string(&name.name);
         }
         Action::StartNode { node } => {
-            writer.write_u8(4);
+            writer.write_u8(2);
             writer.write_string(&node.name);
         }
         Action::StopNode { node } => {
-            writer.write_u8(5);
+            writer.write_u8(3);
             writer.write_string(&node.name);
         }
         Action::CreateSavepoint { label } => {
-            writer.write_u8(6);
+            writer.write_u8(4);
             write_optional_string_binary(label.as_deref(), writer);
         }
         Action::Fork { label } => {
-            writer.write_u8(7);
+            writer.write_u8(5);
             write_optional_string_binary(label.as_deref(), writer);
         }
-        Action::Pass => writer.write_u8(8),
+        Action::Pass => writer.write_u8(6),
         Action::Fail { reason } => {
-            writer.write_u8(9);
+            writer.write_u8(7);
             writer.write_string(reason);
         }
         Action::Log { level, message } => {
-            writer.write_u8(10);
+            writer.write_u8(8);
             write_log_level_binary(*level, writer);
             writer.write_string(message);
         }
         Action::Group(actions) => {
-            writer.write_u8(11);
+            writer.write_u8(9);
             writer.write_count(actions.len());
             for action in actions {
                 write_action_binary(action, writer);
@@ -266,18 +134,7 @@ pub(super) fn read_action_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<Action, EngineError> {
     match reader.read_u8()? {
-        0 => Ok(Action::InjectFault {
-            tag: FaultTag {
-                name: reader.read_string()?,
-            },
-            fault: read_membership_fault_binary(reader)?,
-        }),
-        1 => Ok(Action::HealFault {
-            tag: FaultTag {
-                name: reader.read_string()?,
-            },
-        }),
-        2 => Ok(Action::ArmTimer {
+        0 => Ok(Action::ArmTimer {
             name: TimerId {
                 name: reader.read_string()?,
             },
@@ -285,36 +142,36 @@ pub(super) fn read_action_binary(
                 nanos: reader.read_u64()?,
             },
         }),
-        3 => Ok(Action::CancelTimer {
+        1 => Ok(Action::CancelTimer {
             name: TimerId {
                 name: reader.read_string()?,
             },
         }),
-        4 => Ok(Action::StartNode {
+        2 => Ok(Action::StartNode {
             node: NodeId {
                 name: reader.read_string()?,
             },
         }),
-        5 => Ok(Action::StopNode {
+        3 => Ok(Action::StopNode {
             node: NodeId {
                 name: reader.read_string()?,
             },
         }),
-        6 => Ok(Action::CreateSavepoint {
+        4 => Ok(Action::CreateSavepoint {
             label: read_optional_string_binary(reader)?,
         }),
-        7 => Ok(Action::Fork {
+        5 => Ok(Action::Fork {
             label: read_optional_string_binary(reader)?,
         }),
-        8 => Ok(Action::Pass),
-        9 => Ok(Action::Fail {
+        6 => Ok(Action::Pass),
+        7 => Ok(Action::Fail {
             reason: reader.read_string()?,
         }),
-        10 => Ok(Action::Log {
+        8 => Ok(Action::Log {
             level: read_log_level_binary(reader)?,
             message: reader.read_string()?,
         }),
-        11 => {
+        9 => {
             let count = reader.read_collection_count("action.group")?;
             let mut actions = Vec::with_capacity(count);
             for _ in 0..count {
@@ -336,17 +193,7 @@ pub(super) fn write_control_operation_kind_binary(
         ControlOperationKind::Step => writer.write_u8(2),
         ControlOperationKind::Snapshot => writer.write_u8(3),
         ControlOperationKind::Fork => writer.write_u8(4),
-        ControlOperationKind::Inject => writer.write_u8(5),
-        ControlOperationKind::InjectFault { tag, fault } => {
-            writer.write_u8(6);
-            writer.write_string(&tag.name);
-            write_fault_binary(fault, writer);
-        }
-        ControlOperationKind::HealFault { tag } => {
-            writer.write_u8(7);
-            writer.write_string(&tag.name);
-        }
-        ControlOperationKind::Query => writer.write_u8(8),
+        ControlOperationKind::Query => writer.write_u8(6),
     }
 }
 
@@ -359,19 +206,7 @@ pub(super) fn read_control_operation_kind_binary(
         2 => Ok(ControlOperationKind::Step),
         3 => Ok(ControlOperationKind::Snapshot),
         4 => Ok(ControlOperationKind::Fork),
-        5 => Ok(ControlOperationKind::Inject),
-        6 => Ok(ControlOperationKind::InjectFault {
-            tag: FaultTag {
-                name: reader.read_string()?,
-            },
-            fault: read_fault_binary(reader)?,
-        }),
-        7 => Ok(ControlOperationKind::HealFault {
-            tag: FaultTag {
-                name: reader.read_string()?,
-            },
-        }),
-        8 => Ok(ControlOperationKind::Query),
+        6 => Ok(ControlOperationKind::Query),
         _ => Err(scenario_serialization_error(
             "invalid control-operation-kind tag",
         )),
@@ -419,564 +254,6 @@ pub(super) fn read_log_level_binary(
         3 => Ok(LogLevel::Error),
         _ => Err(scenario_serialization_error("invalid log-level tag")),
     }
-}
-
-pub(super) fn write_membership_fault_binary(
-    fault: &MembershipFault,
-    writer: &mut ScenarioBinaryWriter,
-) {
-    match fault {
-        MembershipFault::Crash { node, restart } => {
-            writer.write_u8(0);
-            writer.write_string(&node.name);
-            writer.write_u8(match restart {
-                RestartPolicy::FromReadyPoint => 0,
-                RestartPolicy::FromLastCheckpoint => 1,
-                RestartPolicy::StayDown => 2,
-            });
-        }
-        MembershipFault::Partition {
-            endpoint_a,
-            endpoint_b,
-            direction,
-        } => {
-            writer.write_u8(1);
-            writer.write_string(&endpoint_a.name);
-            writer.write_string(&endpoint_b.name);
-            writer.write_u8(match direction {
-                PartitionDirection::Bidirectional => 0,
-                PartitionDirection::EndpointAToEndpointB => 1,
-                PartitionDirection::EndpointBToEndpointA => 2,
-            });
-        }
-        MembershipFault::Isolate { node } => {
-            writer.write_u8(2);
-            writer.write_string(&node.name);
-        }
-        MembershipFault::NotYetJoined { node } => {
-            writer.write_u8(3);
-            writer.write_string(&node.name);
-        }
-        MembershipFault::Taxonomy { fault } => {
-            writer.write_u8(4);
-            write_fault_binary(fault, writer);
-        }
-    }
-}
-
-pub(super) fn read_membership_fault_binary(
-    reader: &mut ScenarioBinaryReader<'_>,
-) -> Result<MembershipFault, EngineError> {
-    match reader.read_u8()? {
-        0 => {
-            let node = NodeId {
-                name: reader.read_string()?,
-            };
-            let restart = match reader.read_u8()? {
-                0 => RestartPolicy::FromReadyPoint,
-                1 => RestartPolicy::FromLastCheckpoint,
-                2 => RestartPolicy::StayDown,
-                _ => return Err(scenario_serialization_error("invalid restart-policy tag")),
-            };
-            Ok(MembershipFault::Crash { node, restart })
-        }
-        1 => {
-            let endpoint_a = NodeId {
-                name: reader.read_string()?,
-            };
-            let endpoint_b = NodeId {
-                name: reader.read_string()?,
-            };
-            let direction = match reader.read_u8()? {
-                0 => PartitionDirection::Bidirectional,
-                1 => PartitionDirection::EndpointAToEndpointB,
-                2 => PartitionDirection::EndpointBToEndpointA,
-                _ => {
-                    return Err(scenario_serialization_error(
-                        "invalid partition-direction tag",
-                    ));
-                }
-            };
-            Ok(MembershipFault::Partition {
-                endpoint_a,
-                endpoint_b,
-                direction,
-            })
-        }
-        2 => Ok(MembershipFault::Isolate {
-            node: NodeId {
-                name: reader.read_string()?,
-            },
-        }),
-        3 => Ok(MembershipFault::NotYetJoined {
-            node: NodeId {
-                name: reader.read_string()?,
-            },
-        }),
-        4 => Ok(MembershipFault::Taxonomy {
-            fault: read_fault_binary(reader)?,
-        }),
-        _ => Err(scenario_serialization_error("invalid membership-fault tag")),
-    }
-}
-
-pub(super) fn write_fault_binary(fault: &Fault, writer: &mut ScenarioBinaryWriter) {
-    match fault {
-        Fault::Network(fault) => {
-            writer.write_u8(0);
-            write_network_fault_binary(fault, writer);
-        }
-        Fault::Node(fault) => {
-            writer.write_u8(1);
-            write_node_fault_binary(fault, writer);
-        }
-        Fault::Block(fault) => {
-            writer.write_u8(2);
-            write_block_fault_binary(fault, writer);
-        }
-        Fault::NineP(fault) => {
-            writer.write_u8(3);
-            write_ninep_fault_binary(fault, writer);
-        }
-    }
-}
-
-pub(super) fn read_fault_binary(
-    reader: &mut ScenarioBinaryReader<'_>,
-) -> Result<Fault, EngineError> {
-    match reader.read_u8()? {
-        0 => Ok(Fault::Network(read_network_fault_binary(reader)?)),
-        1 => Ok(Fault::Node(read_node_fault_binary(reader)?)),
-        2 => Ok(Fault::Block(read_block_fault_binary(reader)?)),
-        3 => Ok(Fault::NineP(read_ninep_fault_binary(reader)?)),
-        _ => Err(scenario_serialization_error("invalid fault tag")),
-    }
-}
-
-pub(super) fn write_network_fault_binary(fault: &NetworkFault, writer: &mut ScenarioBinaryWriter) {
-    match fault {
-        NetworkFault::Partition { link, direction } => {
-            writer.write_u8(0);
-            writer.write_string(&link.name);
-            write_partition_direction_binary(*direction, writer);
-        }
-        NetworkFault::Loss { link, rate } => {
-            writer.write_u8(1);
-            writer.write_string(&link.name);
-            writer.write_u32(u32::from(rate.basis_points()));
-        }
-        NetworkFault::Reorder { link, window } => {
-            writer.write_u8(2);
-            writer.write_string(&link.name);
-            writer.write_u64(window.nanos());
-        }
-        NetworkFault::Duplicate { link, rate, gap } => {
-            writer.write_u8(3);
-            writer.write_string(&link.name);
-            writer.write_u32(u32::from(rate.basis_points()));
-            writer.write_u64(gap.nanos());
-        }
-        NetworkFault::Corruption { link, kind } => {
-            writer.write_u8(4);
-            writer.write_string(&link.name);
-            write_network_corruption_fault_binary(kind, writer);
-        }
-        NetworkFault::Bandwidth { link, limit } => {
-            writer.write_u8(5);
-            writer.write_string(&link.name);
-            writer.write_u64(limit.bits_per_second());
-        }
-        NetworkFault::LatencyBump { link, extra } => {
-            writer.write_u8(6);
-            writer.write_string(&link.name);
-            writer.write_u64(extra.nanos());
-        }
-    }
-}
-
-pub(super) fn read_network_fault_binary(
-    reader: &mut ScenarioBinaryReader<'_>,
-) -> Result<NetworkFault, EngineError> {
-    match reader.read_u8()? {
-        0 => Ok(NetworkFault::Partition {
-            link: read_link_id_binary(reader)?,
-            direction: read_partition_direction_binary(reader)?,
-        }),
-        1 => Ok(NetworkFault::Loss {
-            link: read_link_id_binary(reader)?,
-            rate: FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?,
-        }),
-        2 => Ok(NetworkFault::Reorder {
-            link: read_link_id_binary(reader)?,
-            window: FaultDuration::from_nanos(reader.read_u64()?),
-        }),
-        3 => Ok(NetworkFault::Duplicate {
-            link: read_link_id_binary(reader)?,
-            rate: FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?,
-            gap: FaultDuration::from_nanos(reader.read_u64()?),
-        }),
-        4 => Ok(NetworkFault::Corruption {
-            link: read_link_id_binary(reader)?,
-            kind: read_network_corruption_fault_binary(reader)?,
-        }),
-        5 => Ok(NetworkFault::Bandwidth {
-            link: read_link_id_binary(reader)?,
-            limit: FaultBandwidthBitsPerSecond::new(reader.read_u64()?)?,
-        }),
-        6 => Ok(NetworkFault::LatencyBump {
-            link: read_link_id_binary(reader)?,
-            extra: FaultDuration::from_nanos(reader.read_u64()?),
-        }),
-        _ => Err(scenario_serialization_error("invalid network-fault tag")),
-    }
-}
-
-pub(super) fn write_network_corruption_fault_binary(
-    fault: &NetworkCorruptionFault,
-    writer: &mut ScenarioBinaryWriter,
-) {
-    match fault {
-        NetworkCorruptionFault::BitFlip { rate, max_bits } => {
-            writer.write_u8(0);
-            writer.write_u32(u32::from(rate.basis_points()));
-            writer.write_u32(*max_bits);
-        }
-        NetworkCorruptionFault::FieldMutation { rate } => {
-            writer.write_u8(1);
-            writer.write_u32(u32::from(rate.basis_points()));
-        }
-        NetworkCorruptionFault::Truncation { rate, max_bytes } => {
-            writer.write_u8(2);
-            writer.write_u32(u32::from(rate.basis_points()));
-            writer.write_u64(*max_bytes);
-        }
-    }
-}
-
-pub(super) fn read_network_corruption_fault_binary(
-    reader: &mut ScenarioBinaryReader<'_>,
-) -> Result<NetworkCorruptionFault, EngineError> {
-    match reader.read_u8()? {
-        0 => Ok(NetworkCorruptionFault::BitFlip {
-            rate: FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?,
-            max_bits: reader.read_u32()?,
-        }),
-        1 => Ok(NetworkCorruptionFault::FieldMutation {
-            rate: FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?,
-        }),
-        2 => Ok(NetworkCorruptionFault::Truncation {
-            rate: FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?,
-            max_bytes: reader.read_u64()?,
-        }),
-        _ => Err(scenario_serialization_error(
-            "invalid network-corruption-fault tag",
-        )),
-    }
-}
-
-pub(super) fn write_node_fault_binary(fault: &NodeFault, writer: &mut ScenarioBinaryWriter) {
-    match fault {
-        NodeFault::Crash { node, restart } => {
-            writer.write_u8(0);
-            writer.write_string(&node.name);
-            write_restart_policy_binary(*restart, writer);
-        }
-        NodeFault::Slow { node, factor } => {
-            writer.write_u8(1);
-            writer.write_string(&node.name);
-            writer.write_u32(factor.basis_points());
-        }
-        NodeFault::ClockSkew { node, offset } => {
-            writer.write_u8(2);
-            writer.write_string(&node.name);
-            writer.write_i64(offset.nanos);
-        }
-    }
-}
-
-pub(super) fn read_node_fault_binary(
-    reader: &mut ScenarioBinaryReader<'_>,
-) -> Result<NodeFault, EngineError> {
-    match reader.read_u8()? {
-        0 => Ok(NodeFault::Crash {
-            node: read_node_id_binary(reader)?,
-            restart: read_restart_policy_binary(reader)?,
-        }),
-        1 => Ok(NodeFault::Slow {
-            node: read_node_id_binary(reader)?,
-            factor: FaultSlowdownFactorBasisPoints::from_basis_points(reader.read_u32()?)?,
-        }),
-        2 => Ok(NodeFault::ClockSkew {
-            node: read_node_id_binary(reader)?,
-            offset: SimOffset {
-                nanos: reader.read_i64()?,
-            },
-        }),
-        _ => Err(scenario_serialization_error("invalid node-fault tag")),
-    }
-}
-
-pub(super) fn write_block_fault_binary(fault: &BlockFault, writer: &mut ScenarioBinaryWriter) {
-    match fault {
-        BlockFault::Latency {
-            device,
-            extra,
-            jitter,
-        } => {
-            writer.write_u8(0);
-            writer.write_string(&device.name);
-            writer.write_u64(extra.nanos());
-            writer.write_u64(jitter.nanos());
-        }
-        BlockFault::Failure { device, rate, mode } => {
-            writer.write_u8(1);
-            writer.write_string(&device.name);
-            writer.write_u32(u32::from(rate.basis_points()));
-            write_io_failure_mode_binary(*mode, writer);
-        }
-        BlockFault::Reorder { device, window } => {
-            writer.write_u8(2);
-            writer.write_string(&device.name);
-            writer.write_u64(window.nanos());
-        }
-        BlockFault::Duplicate { device, rate, gap } => {
-            writer.write_u8(3);
-            writer.write_string(&device.name);
-            writer.write_u32(u32::from(rate.basis_points()));
-            writer.write_u64(gap.nanos());
-        }
-        BlockFault::Corruption {
-            device,
-            rate,
-            bit_flips,
-        } => {
-            writer.write_u8(4);
-            writer.write_string(&device.name);
-            writer.write_u32(u32::from(rate.basis_points()));
-            writer.write_u32(*bit_flips);
-        }
-        BlockFault::Bandwidth { device, limit } => {
-            writer.write_u8(5);
-            writer.write_string(&device.name);
-            writer.write_u64(limit.bits_per_second());
-        }
-    }
-}
-
-pub(super) fn read_block_fault_binary(
-    reader: &mut ScenarioBinaryReader<'_>,
-) -> Result<BlockFault, EngineError> {
-    match reader.read_u8()? {
-        0 => Ok(BlockFault::Latency {
-            device: read_device_id_binary(reader)?,
-            extra: FaultDuration::from_nanos(reader.read_u64()?),
-            jitter: FaultDuration::from_nanos(reader.read_u64()?),
-        }),
-        1 => Ok(BlockFault::Failure {
-            device: read_device_id_binary(reader)?,
-            rate: FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?,
-            mode: read_io_failure_mode_binary(reader)?,
-        }),
-        2 => Ok(BlockFault::Reorder {
-            device: read_device_id_binary(reader)?,
-            window: FaultDuration::from_nanos(reader.read_u64()?),
-        }),
-        3 => Ok(BlockFault::Duplicate {
-            device: read_device_id_binary(reader)?,
-            rate: FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?,
-            gap: FaultDuration::from_nanos(reader.read_u64()?),
-        }),
-        4 => Ok(BlockFault::Corruption {
-            device: read_device_id_binary(reader)?,
-            rate: FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?,
-            bit_flips: reader.read_u32()?,
-        }),
-        5 => Ok(BlockFault::Bandwidth {
-            device: read_device_id_binary(reader)?,
-            limit: FaultBandwidthBitsPerSecond::new(reader.read_u64()?)?,
-        }),
-        _ => Err(scenario_serialization_error("invalid block-fault tag")),
-    }
-}
-
-pub(super) fn write_ninep_fault_binary(fault: &NinePFault, writer: &mut ScenarioBinaryWriter) {
-    match fault {
-        NinePFault::Latency {
-            device,
-            extra,
-            jitter,
-        } => {
-            writer.write_u8(0);
-            writer.write_string(&device.name);
-            writer.write_u64(extra.nanos());
-            writer.write_u64(jitter.nanos());
-        }
-        NinePFault::Failure {
-            device,
-            rate,
-            errno,
-        } => {
-            writer.write_u8(1);
-            writer.write_string(&device.name);
-            writer.write_u32(u32::from(rate.basis_points()));
-            writer.write_i64(i64::from(errno.code()));
-        }
-        NinePFault::Reorder { device, window } => {
-            writer.write_u8(2);
-            writer.write_string(&device.name);
-            writer.write_u64(window.nanos());
-        }
-        NinePFault::Duplicate { device, rate, gap } => {
-            writer.write_u8(3);
-            writer.write_string(&device.name);
-            writer.write_u32(u32::from(rate.basis_points()));
-            writer.write_u64(gap.nanos());
-        }
-        NinePFault::Corruption {
-            device,
-            rate,
-            bit_flips,
-        } => {
-            writer.write_u8(4);
-            writer.write_string(&device.name);
-            writer.write_u32(u32::from(rate.basis_points()));
-            writer.write_u32(*bit_flips);
-        }
-        NinePFault::Bandwidth { device, limit } => {
-            writer.write_u8(5);
-            writer.write_string(&device.name);
-            writer.write_u64(limit.bits_per_second());
-        }
-    }
-}
-
-pub(super) fn read_ninep_fault_binary(
-    reader: &mut ScenarioBinaryReader<'_>,
-) -> Result<NinePFault, EngineError> {
-    match reader.read_u8()? {
-        0 => Ok(NinePFault::Latency {
-            device: read_device_id_binary(reader)?,
-            extra: FaultDuration::from_nanos(reader.read_u64()?),
-            jitter: FaultDuration::from_nanos(reader.read_u64()?),
-        }),
-        1 => {
-            let device = read_device_id_binary(reader)?;
-            let rate = FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?;
-            let errno_code = i32::try_from(reader.read_i64()?)
-                .map_err(|_error| scenario_serialization_error("9p errno code does not fit i32"))?;
-            Ok(NinePFault::Failure {
-                device,
-                rate,
-                errno: NinePErrno::from_code(errno_code)?,
-            })
-        }
-        2 => Ok(NinePFault::Reorder {
-            device: read_device_id_binary(reader)?,
-            window: FaultDuration::from_nanos(reader.read_u64()?),
-        }),
-        3 => Ok(NinePFault::Duplicate {
-            device: read_device_id_binary(reader)?,
-            rate: FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?,
-            gap: FaultDuration::from_nanos(reader.read_u64()?),
-        }),
-        4 => Ok(NinePFault::Corruption {
-            device: read_device_id_binary(reader)?,
-            rate: FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?,
-            bit_flips: reader.read_u32()?,
-        }),
-        5 => Ok(NinePFault::Bandwidth {
-            device: read_device_id_binary(reader)?,
-            limit: FaultBandwidthBitsPerSecond::new(reader.read_u64()?)?,
-        }),
-        _ => Err(scenario_serialization_error("invalid 9p-fault tag")),
-    }
-}
-
-pub(super) fn write_restart_policy_binary(
-    policy: RestartPolicy,
-    writer: &mut ScenarioBinaryWriter,
-) {
-    writer.write_u8(match policy {
-        RestartPolicy::FromReadyPoint => 0,
-        RestartPolicy::FromLastCheckpoint => 1,
-        RestartPolicy::StayDown => 2,
-    });
-}
-
-pub(super) fn read_restart_policy_binary(
-    reader: &mut ScenarioBinaryReader<'_>,
-) -> Result<RestartPolicy, EngineError> {
-    match reader.read_u8()? {
-        0 => Ok(RestartPolicy::FromReadyPoint),
-        1 => Ok(RestartPolicy::FromLastCheckpoint),
-        2 => Ok(RestartPolicy::StayDown),
-        _ => Err(scenario_serialization_error("invalid restart-policy tag")),
-    }
-}
-
-pub(super) fn write_partition_direction_binary(
-    direction: PartitionDirection,
-    writer: &mut ScenarioBinaryWriter,
-) {
-    writer.write_u8(match direction {
-        PartitionDirection::Bidirectional => 0,
-        PartitionDirection::EndpointAToEndpointB => 1,
-        PartitionDirection::EndpointBToEndpointA => 2,
-    });
-}
-
-pub(super) fn read_partition_direction_binary(
-    reader: &mut ScenarioBinaryReader<'_>,
-) -> Result<PartitionDirection, EngineError> {
-    match reader.read_u8()? {
-        0 => Ok(PartitionDirection::Bidirectional),
-        1 => Ok(PartitionDirection::EndpointAToEndpointB),
-        2 => Ok(PartitionDirection::EndpointBToEndpointA),
-        _ => Err(scenario_serialization_error(
-            "invalid partition-direction tag",
-        )),
-    }
-}
-
-pub(super) fn write_io_failure_mode_binary(mode: IoFailureMode, writer: &mut ScenarioBinaryWriter) {
-    writer.write_u8(match mode {
-        IoFailureMode::Drop => 0,
-        IoFailureMode::ErrorStatus => 1,
-    });
-}
-
-pub(super) fn read_io_failure_mode_binary(
-    reader: &mut ScenarioBinaryReader<'_>,
-) -> Result<IoFailureMode, EngineError> {
-    match reader.read_u8()? {
-        0 => Ok(IoFailureMode::Drop),
-        1 => Ok(IoFailureMode::ErrorStatus),
-        _ => Err(scenario_serialization_error("invalid I/O failure-mode tag")),
-    }
-}
-
-pub(super) fn read_node_id_binary(
-    reader: &mut ScenarioBinaryReader<'_>,
-) -> Result<NodeId, EngineError> {
-    Ok(NodeId {
-        name: reader.read_string()?,
-    })
-}
-
-pub(super) fn read_link_id_binary(
-    reader: &mut ScenarioBinaryReader<'_>,
-) -> Result<LinkId, EngineError> {
-    Ok(LinkId {
-        name: reader.read_string()?,
-    })
-}
-
-pub(super) fn read_device_id_binary(
-    reader: &mut ScenarioBinaryReader<'_>,
-) -> Result<DeviceId, EngineError> {
-    Ok(DeviceId {
-        name: reader.read_string()?,
-    })
 }
 
 pub(super) fn write_properties_binary(properties: &Properties, writer: &mut ScenarioBinaryWriter) {
@@ -1149,10 +426,6 @@ pub(super) fn write_predicate_binary(predicate: &Predicate, writer: &mut Scenari
         Predicate::Quiescent => {
             writer.write_u8(16);
         }
-        Predicate::FaultActive { tag } => {
-            writer.write_u8(17);
-            writer.write_string(&tag.name);
-        }
         Predicate::Named { name, nodes } => {
             writer.write_u8(0);
             writer.write_string(name);
@@ -1308,11 +581,6 @@ pub(super) fn read_predicate_binary(
             state: read_assertion_phase_binary(reader)?,
         }),
         16 => Ok(Predicate::Quiescent),
-        17 => Ok(Predicate::FaultActive {
-            tag: FaultTag {
-                name: reader.read_string()?,
-            },
-        }),
         _ => Err(scenario_serialization_error("invalid predicate tag")),
     }
 }

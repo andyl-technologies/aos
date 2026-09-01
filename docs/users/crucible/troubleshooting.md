@@ -40,9 +40,11 @@ Cargo may not. Either run the packaged binary or set:
 ```text
 CRUCIBLE_KERNEL
 CRUCIBLE_ROOT_IMAGE
+CRUCIBLE_RUN_STATE_ROOT
 ```
 
-Use `CRUCIBLE_INITRD` only when the guest requires one.
+`CRUCIBLE_RUN_STATE_ROOT` must name a writable directory that persists across
+CLI restarts. Use `CRUCIBLE_INITRD` only when the guest requires one.
 
 ## Exit `5`: scenario, artifact, store, or I/O input
 

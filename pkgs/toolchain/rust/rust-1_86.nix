@@ -11,6 +11,8 @@
   which,
   openssl,
   zlib,
+  stdenv,
+  buildPackages,
   rust-1_85,
   llvm-19,
 }: let
@@ -27,6 +29,8 @@
       which
       openssl
       zlib
+      stdenv
+      buildPackages
       ;
   };
 in
@@ -37,4 +41,5 @@ in
     prevRust = rust-1_85;
     llvm = llvm-19;
     needsDownloadRustc = true;
+    disableDarwinLld = true;
   }

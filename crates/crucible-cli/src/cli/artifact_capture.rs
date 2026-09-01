@@ -21,6 +21,8 @@ pub(crate) struct LiveQemuArtifactEvidence {
     pub(crate) event_stream: Vec<u8>,
     /// Canonical producer fingerprint stream compared with the replay.
     pub(crate) fingerprint_stream: Vec<u8>,
+    /// Exact resolved-effect work items, including pass outcomes.
+    pub(crate) resolved_effect_trace: Option<Vec<u8>>,
     /// Typed samples encoded into both the component and top-level artifact.
     pub(crate) fingerprint_samples: Vec<VerifyFingerprintSample>,
 }
@@ -77,15 +79,13 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
             "live-QEMU artifact capture requires execution fingerprint samples",
         ));
     }
-    let (mut fault_choice_indices, mut network_choice_indices) =
-        replay_choice_indices(&terminal.schedule);
+    let mut network_choice_indices = replay_choice_indices(&terminal.schedule);
     let branch_start = match &recipe.branch {
         LiveQemuReplayBranch::None => 0,
         LiveQemuReplayBranch::Resume { base_decisions, .. }
         | LiveQemuReplayBranch::Reseed { base_decisions, .. }
         | LiveQemuReplayBranch::PrefixOverrides { base_decisions, .. } => *base_decisions,
     };
-    fault_choice_indices.retain(|index| *index >= branch_start);
     network_choice_indices.retain(|index| *index >= branch_start);
     let controls = report
         .acknowledged_commands
@@ -122,7 +122,6 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
         coverage: recipe.coverage,
         fingerprint_scope,
         branch: recipe.branch,
-        fault_choice_indices,
         network_choice_indices,
         startup_controls: encode_plan_controls(recipe.startup_commands),
         initial_controls: encode_plan_controls(recipe.initial_control_commands),
@@ -134,6 +133,7 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
         event_stream: canonical_verify_log_stream_bytes(&[], &report.streamed_event_frames),
         fingerprint_stream,
         fingerprint_samples,
+        resolved_effect_trace: report.resolved_effect_trace.clone(),
     })
 }
 
@@ -176,7 +176,7 @@ fn select_live_qemu_artifact_fingerprints(
 pub(crate) fn live_qemu_artifact_payloads(
     evidence: &LiveQemuArtifactEvidence,
 ) -> Vec<ReproductionArtifactComponentPayload> {
-    vec![
+    let mut payloads = vec![
         ReproductionArtifactComponentPayload {
             kind: String::from("live_qemu_replay_contract"),
             name: String::from("live-qemu-replay-contract.txt"),
@@ -195,36 +195,169 @@ pub(crate) fn live_qemu_artifact_payloads(
             media_type: String::from(LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE),
             bytes: evidence.fingerprint_stream.clone(),
         },
-    ]
+    ];
+    if let Some(trace) = &evidence.resolved_effect_trace {
+        payloads.push(ReproductionArtifactComponentPayload {
+            kind: String::from("live_qemu_resolved_effect_trace"),
+            name: String::from("resolved-effect-trace.cbor"),
+            media_type: String::from(LIVE_QEMU_RESOLVED_EFFECT_TRACE_MEDIA_TYPE),
+            bytes: trace.clone(),
+        });
+    }
+    payloads
+}
+
+#[derive(serde::Serialize)]
+struct SignalMutationProvenance<'a> {
+    schema: &'static str,
+    plan: String,
+    cases: Vec<SignalMutationCaseProvenance<'a>>,
+}
+
+#[derive(serde::Serialize)]
+struct SignalMutationCaseProvenance<'a> {
+    original_program: String,
+    binding: &'a str,
+    provenance: String,
+    mutation: &'a crucible::MaterializedSearchMutation,
+    artifacts: Vec<String>,
+}
+
+/// Captures every reachable signal object and optional mutation recipe.
+pub(crate) fn signal_artifact_payloads(
+    plan: &crucible::FaultSignalPlan,
+    store: &dyn crucible::DagStore,
+    mutation: Option<&crucible::MaterializedSearchPlan>,
+) -> Result<Vec<ReproductionArtifactComponentPayload>, CliError> {
+    let objects = crucible_api::collect_signal_artifact_objects(plan, store)
+        .map_err(|error| artifact_error(format!("collect signal artifact closure: {error}")))?;
+    let mut payloads = Vec::new();
+    if !objects.is_empty() || !plan.programs().is_empty() {
+        payloads.push(ReproductionArtifactComponentPayload {
+            kind: String::from("signal_artifact_bundle"),
+            name: String::from("signal-artifacts.bundle"),
+            media_type: String::from(SIGNAL_ARTIFACT_BUNDLE_MEDIA_TYPE),
+            bytes: encode_signal_artifact_bundle(&objects)?,
+        });
+    }
+    if let Some(mutation) = mutation {
+        let provenance = SignalMutationProvenance {
+            schema: "crucible.signal-mutation-provenance.v1",
+            plan: format_content_hash_ref(mutation.provenance),
+            cases: mutation
+                .cases
+                .iter()
+                .map(|case| SignalMutationCaseProvenance {
+                    original_program: format_content_hash_ref(case.original_program),
+                    binding: case.binding_id.as_str(),
+                    provenance: format_content_hash_ref(case.provenance),
+                    mutation: &case.mutation,
+                    artifacts: case
+                        .artifacts
+                        .iter()
+                        .map(|artifact| format_content_hash_ref(*artifact))
+                        .collect(),
+                })
+                .collect(),
+        };
+        payloads.push(ReproductionArtifactComponentPayload {
+            kind: String::from("signal_mutation_provenance"),
+            name: String::from("signal-mutation-provenance.json"),
+            media_type: String::from(SIGNAL_MUTATION_PROVENANCE_MEDIA_TYPE),
+            bytes: serde_json::to_vec_pretty(&provenance).map_err(|error| {
+                artifact_error(format!("encode signal mutation provenance: {error}"))
+            })?,
+        });
+    }
+    Ok(payloads)
+}
+
+fn encode_signal_artifact_bundle(
+    objects: &BTreeMap<crucible::ContentHash, Vec<u8>>,
+) -> Result<Vec<u8>, CliError> {
+    let count = u64::try_from(objects.len())
+        .map_err(|_| artifact_error("signal artifact object count cannot be represented"))?;
+    let mut bytes = Vec::from(&b"CSAB\0\0\0\x01"[..]);
+    bytes.extend_from_slice(&count.to_le_bytes());
+    for (identity, object) in objects {
+        let length = u64::try_from(object.len())
+            .map_err(|_| artifact_error("signal artifact object size cannot be represented"))?;
+        bytes.extend_from_slice(&identity.bytes);
+        bytes.extend_from_slice(&length.to_le_bytes());
+        bytes.extend_from_slice(object);
+    }
+    Ok(bytes)
+}
+
+/// Restores and authenticates an embedded signal-object closure.
+pub(crate) fn decode_signal_artifact_bundle(
+    bytes: &[u8],
+) -> Result<std::sync::Arc<crucible::MemoryDagStore>, CliError> {
+    const HEADER_BYTES: usize = 16;
+    if bytes.len() < HEADER_BYTES || bytes.get(..8) != Some(&b"CSAB\0\0\0\x01"[..]) {
+        return Err(artifact_error(
+            "signal artifact bundle has an invalid header",
+        ));
+    }
+    let count = u64::from_le_bytes(
+        bytes[8..16]
+            .try_into()
+            .map_err(|_| artifact_error("signal artifact bundle count is truncated"))?,
+    );
+    let count = usize::try_from(count)
+        .map_err(|_| artifact_error("signal artifact bundle count cannot be represented"))?;
+    let store = std::sync::Arc::new(crucible::MemoryDagStore::new());
+    let mut cursor = HEADER_BYTES;
+    for _ in 0..count {
+        let identity_end = cursor
+            .checked_add(32)
+            .ok_or_else(|| artifact_error("signal artifact bundle offset overflow"))?;
+        let length_end = identity_end
+            .checked_add(8)
+            .ok_or_else(|| artifact_error("signal artifact bundle offset overflow"))?;
+        if length_end > bytes.len() {
+            return Err(artifact_error("signal artifact bundle record is truncated"));
+        }
+        let identity = crucible::ContentHash {
+            bytes: bytes[cursor..identity_end]
+                .try_into()
+                .map_err(|_| artifact_error("signal artifact identity is truncated"))?,
+        };
+        let length = u64::from_le_bytes(
+            bytes[identity_end..length_end]
+                .try_into()
+                .map_err(|_| artifact_error("signal artifact length is truncated"))?,
+        );
+        let length = usize::try_from(length)
+            .map_err(|_| artifact_error("signal artifact length cannot be represented"))?;
+        let object_end = length_end
+            .checked_add(length)
+            .ok_or_else(|| artifact_error("signal artifact bundle offset overflow"))?;
+        let object = bytes
+            .get(length_end..object_end)
+            .ok_or_else(|| artifact_error("signal artifact object is truncated"))?;
+        if crucible::ContentHash::from_bytes(object) != identity {
+            return Err(artifact_error(
+                "signal artifact object failed authentication",
+            ));
+        }
+        let stored = store.put(object).map_err(CliError::Store)?;
+        if stored != identity {
+            return Err(artifact_error("restored signal artifact identity changed"));
+        }
+        cursor = object_end;
+    }
+    if cursor != bytes.len() {
+        return Err(artifact_error("signal artifact bundle has trailing bytes"));
+    }
+    Ok(store)
 }
 
 /// Returns the typed schedule indices that must be forced during live replay.
-pub(crate) fn replay_choice_indices(schedule: &crucible::Schedule) -> (Vec<u64>, Vec<u64>) {
+pub(crate) fn replay_choice_indices(schedule: &crucible::Schedule) -> Vec<u64> {
     let decisions = schedule.decisions();
-    let mut fault = Vec::new();
     let mut network = Vec::new();
-    let mut recorded_faults = std::collections::BTreeSet::new();
     for (index, decision) in decisions.iter().enumerate() {
-        if let (
-            crucible::Decision::RngDraw(draw),
-            Some(crucible::Decision::FaultFires(fault_decision)),
-        ) = (decision, decisions.get(index.saturating_add(1)))
-        {
-            // World-network RNG/fault pairs are replayed by their enclosing
-            // `live-world-network/` override. Installing them as scheduler
-            // fault choices leaves impossible, permanently pending choices.
-            if fault_decision.fault.name.contains("\nnetwork_direction=") {
-                continue;
-            }
-            let key = (
-                draw.stream.clone(),
-                fault_decision.at,
-                fault_decision.fault.clone(),
-            );
-            if recorded_faults.insert(key) {
-                fault.push(index as u64);
-            }
-        }
         if matches!(
             decision,
             crucible::Decision::Override(override_decision)
@@ -233,7 +366,7 @@ pub(crate) fn replay_choice_indices(schedule: &crucible::Schedule) -> (Vec<u64>,
             network.push(index as u64);
         }
     }
-    (fault, network)
+    network
 }
 
 pub(crate) fn model_reproduction_artifact_payloads(
@@ -418,64 +551,5 @@ pub(crate) fn live_finding_reproduction_artifact_bytes(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn sample(index: u64, node: &str) -> VerifyFingerprintSample {
-        VerifyFingerprintSample {
-            index,
-            instruction: index + 10,
-            node: node.to_string(),
-            digest: format!("blake3:{index:064x}"),
-        }
-    }
-
-    #[test]
-    fn terminal_fingerprint_capture_selects_one_reindexed_sample_per_node()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let scenario = crucible::happy_path_scenario()?.scenario;
-        let nodes = scenario.world().vm_nodes();
-        let first = nodes
-            .first()
-            .ok_or_else(|| std::io::Error::other("fixture has no first node"))?;
-        let second = nodes
-            .get(1)
-            .ok_or_else(|| std::io::Error::other("fixture has no second node"))?;
-        let selected = select_live_qemu_artifact_fingerprints(
-            nodes,
-            vec![
-                sample(0, &first.id.name),
-                sample(1, &second.id.name),
-                sample(2, &first.id.name),
-                sample(3, &second.id.name),
-            ],
-            LiveQemuFingerprintScope::TerminalAllNodes,
-        )?;
-        assert_eq!(selected.len(), 2);
-        assert_eq!(selected[0].index, 0);
-        assert_eq!(selected[0].node, first.id.name);
-        assert_eq!(selected[1].index, 1);
-        assert_eq!(selected[1].node, second.id.name);
-        Ok(())
-    }
-
-    #[test]
-    fn terminal_fingerprint_capture_rejects_duplicate_node_suffix()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let scenario = crucible::happy_path_scenario()?.scenario;
-        let nodes = scenario.world().vm_nodes();
-        let first = nodes
-            .first()
-            .ok_or_else(|| std::io::Error::other("fixture has no first node"))?;
-        let error = match select_live_qemu_artifact_fingerprints(
-            nodes,
-            vec![sample(0, &first.id.name), sample(1, &first.id.name)],
-            LiveQemuFingerprintScope::TerminalAllNodes,
-        ) {
-            Err(error) => error,
-            Ok(_) => panic!("duplicate terminal node samples must fail closed"),
-        };
-        assert!(error.to_string().contains("scenario VM nodes"));
-        Ok(())
-    }
-}
+#[path = "artifact_capture_test.rs"]
+mod tests;

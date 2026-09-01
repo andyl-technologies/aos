@@ -33,6 +33,13 @@
   margin: 0 0 1.8rem;
 }
 
+.panel button,
+.panel .button {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .panel > :first-child,
 .editor-panel > :first-child {
   margin-top: 0;
@@ -181,7 +188,10 @@
 .secondary-button,
 .danger-button,
 .table-action {
+  max-width: 100%;
   font: inherit;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .secondary-button {
@@ -432,9 +442,14 @@
 
 .form-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-start;
   gap: 0.7rem;
   margin: 1rem 0 0 calc(var(--form-label-col) + var(--form-col-gap));
+}
+
+.form-actions > * {
+  max-width: 100%;
 }
 
 .resource-identity {
@@ -505,6 +520,17 @@
 .revision-card {
   display: grid;
   gap: 0.2rem;
+  min-width: 0;
+}
+
+.compact-list-row code,
+.compact-list-row strong,
+.compact-list-row span {
+  overflow-wrap: anywhere;
+}
+
+.compact-list-row > button {
+  flex: 0 1 auto;
 }
 
 .inline-controls {

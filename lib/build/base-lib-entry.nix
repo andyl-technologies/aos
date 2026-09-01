@@ -120,11 +120,15 @@ in {
   };
 
   ## Evaluate the package-name seed required before registry module resolution.
-  evalHostSelection = {operatorModules ? []}:
+  evalHostSelection = {
+    operatorModules ? [],
+    runtimeModules ? [],
+  }:
     lib.evalModules {
       modules = [./modules/base/host-selection.nix];
       pkgs = frozenPkgs;
-      inherit lib operatorModules;
+      inherit lib operatorModules runtimeModules;
+      enforceRuntimeDeclarations = false;
     };
 
   ## Evaluate a host configuration on-host into a config manifest.
@@ -137,6 +141,7 @@ in {
   ## `config.system.build.configManifest`.
   evalHostConfig = {
     operatorModules ? [],
+    runtimeModules ? [],
     packageModules ? [],
     factsModules ? [],
   }:
@@ -159,6 +164,6 @@ in {
           }
         ];
       pkgs = frozenPkgs;
-      inherit lib operatorModules packageModules;
+      inherit lib operatorModules runtimeModules packageModules;
     };
 }

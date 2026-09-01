@@ -7,11 +7,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   schedulerLib = import ./_crucible-scheduler-source.nix {inherit lib;};
@@ -148,16 +144,12 @@
         needle = "breakpoint_once_combinator_latches_across_boundaries";
       }
       {
-        label = "action breakpoint control test";
-        needle = "breakpoint_action_applies_scheduler_control_at_boundary";
+        label = "action breakpoint boundary application";
+        needle = "self.apply_control_operations_at_boundary(planned_controls.clone())?;";
       }
       {
         label = "unsupported action test";
         needle = "unsupported_breakpoint_action_fails_loudly";
-      }
-      {
-        label = "unsupported fault test";
-        needle = "unsupported_breakpoint_fault_fails_loudly";
       }
       {
         label = "action group prevalidation test";

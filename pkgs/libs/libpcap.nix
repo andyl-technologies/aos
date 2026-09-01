@@ -7,8 +7,14 @@
   flex,
   bison,
   libnl,
+  bash,
+  stdenv,
 }: let
   version = "1.10.6";
+  captureBackend =
+    if stdenv.hostPlatform.isDarwin
+    then "bpf"
+    else "linux";
 in
   mkDerivation {
     pname = "libpcap";
@@ -27,8 +33,14 @@ in
       flex
       bison
     ];
-    runtimeDeps = [libnl];
-    propagatedDeps = [libnl];
+    runtimeDeps =
+      if stdenv.hostPlatform.isDarwin
+      then [bash]
+      else [libnl];
+    propagatedDeps =
+      if stdenv.hostPlatform.isDarwin
+      then []
+      else [libnl];
 
     phases = [
       {
@@ -40,13 +52,25 @@ in
       }
       {
         name = "configure";
-        script = ''
-          ./configure \
-            --prefix=$out \
-            --with-pcap=linux \
-            --disable-static \
-            --enable-shared
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --with-pcap=${captureBackend} \
+              --disable-universal \
+              --disable-static \
+              --enable-shared
+          ''
+          else ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --with-pcap=${captureBackend} \
+              --disable-static \
+              --enable-shared
+          '';
       }
       {
         name = "build";
@@ -56,10 +80,17 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-          rm -f $out/lib/libpcap.a
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            make install
+            sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/pcap-config"
+            rm -f $out/lib/libpcap.a
+          ''
+          else ''
+            make install
+            rm -f $out/lib/libpcap.a
+          '';
       }
     ];
 

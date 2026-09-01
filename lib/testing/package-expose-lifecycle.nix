@@ -31,6 +31,46 @@
     printf private-ok > "$state/result"
   '';
 
+  upgradePackageCommand = pkgs.writeShellScriptBin "expose-lifecycle-upgrade-command" ''
+    state=/var/lib/aos-pkg-expose-lifecycle-upgrade
+    ${pkgs.coreutils}/bin/cat /share/expose-lifecycle-upgrade/payload.txt > "$state/result"
+  '';
+
+  mkUpgradePackage = version: payload:
+    pkgs.mkDerivation {
+      pname = "expose-lifecycle-upgrade";
+      inherit version;
+      src = null;
+      phases = [
+        {
+          name = "install";
+          script = ''
+            mkdir -p "$out/share/expose-lifecycle-upgrade"
+            printf '${payload}' > "$out/share/expose-lifecycle-upgrade/payload.txt"
+          '';
+        }
+      ];
+      expose = {
+        units."expose-lifecycle-upgrade.service" = {
+          wantedBy = ["multi-user.target"];
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = "${upgradePackageCommand}/bin/expose-lifecycle-upgrade-command";
+          };
+        };
+        permissions = {
+          network = "private";
+          capabilities = [];
+          devices = [];
+          host-paths = [];
+          syscalls = "restricted";
+        };
+      };
+    };
+  upgradePackageV1 = mkUpgradePackage "1" "upgrade-v1";
+  upgradePackageV2 = mkUpgradePackage "2" "upgrade-v2";
+
   privateOutboundCommand = pkgs.writeShellScriptBin "expose-lifecycle-outbound-command" ''
     state=/var/lib/aos-pkg-expose-lifecycle-outbound
     test -r /share/expose-lifecycle-outbound/payload.txt
@@ -456,6 +496,7 @@
 
     ${pkgs.python3}/bin/python3 - "$profile" \
       expose-lifecycle-private ${privatePackage} ${privatePackage.expose} \
+      expose-lifecycle-upgrade ${upgradePackageV1} ${upgradePackageV1.expose} \
       expose-lifecycle-socket-provider ${socketProviderPackage} ${socketProviderPackage.expose} \
       expose-lifecycle-socket-consumer ${socketConsumerPackage} ${socketConsumerPackage.expose} \
       expose-lifecycle-outbound ${privateOutboundPackage} ${privateOutboundPackage.expose} \
@@ -517,6 +558,43 @@
             },
         }
         write_rooted_meta(store_path, meta)
+        if name == "expose-lifecycle-upgrade":
+            pathlib.Path(profile, "upgrade-v1.json").write_text(
+                json.dumps(meta, sort_keys=True)
+            )
+
+    # The candidate upgrade is authenticated metadata but is not selected by
+    # generation 1. The VM swaps the same package name's rooted payload to
+    # exercise direct attached-unit reconciliation in both directions.
+    upgrade_v2_path = "${upgradePackageV2}"
+    upgrade_v2_expose = "${upgradePackageV2.expose}"
+    upgrade_v2_manifest = json.loads(pathlib.Path(upgrade_v2_expose, "manifest.json").read_text())
+    pathlib.Path(profile, "upgrade-v2.json").write_text(json.dumps({
+        "store_path": upgrade_v2_path,
+        "pushed_at": 2,
+        "pushed_by": "apm",
+        "expires_at": None,
+        "is_root": True,
+        "last_accessed": 2,
+        "access_count": 0,
+        "apm": {
+            "name": "expose-lifecycle-upgrade",
+            "version": "2",
+            "explicit": True,
+            "registry": "test",
+            "installed_at": "2026-06-16T00:00:01Z",
+            "held": False,
+            "source_drv": "",
+            "source_nar_hash": "",
+            "expose": upgrade_v2_manifest["expose"],
+            "expose_artifact": {
+                "store_path": upgrade_v2_expose,
+                "nar_hash": "sha256:test",
+                "nar_size": 1,
+            },
+            "permissions": upgrade_v2_manifest["permissions"],
+        },
+    }, sort_keys=True))
 
     bpf_policy_package = "${pkgs.aos-ebpf-lsm-policy}"
     write_rooted_meta(
@@ -559,9 +637,18 @@
     modules = [
       ../../systems/server.nix
       ({pkgs, ...}: {
+        # mkVMTest's mutable fixture disk boots /dev/vda2 directly rather than
+        # carrying the signed root hash and separate hash partition required by
+        # the production server image's dm-verity contract.
+        aos.security.verity.enable = false;
+
         environment.systemPackages = [
           privatePackage
           privatePackage.expose
+          upgradePackageV1
+          upgradePackageV1.expose
+          upgradePackageV2
+          upgradePackageV2.expose
           socketProviderPackage
           socketProviderPackage.expose
           socketConsumerPackage
@@ -785,9 +872,9 @@ in
       assert vm.succeed(
           "cat /var/lib/aos-pkg-expose-lifecycle-private/userns"
       ).strip() != host_userns
-      assert "${privatePackage}" in vm.succeed(
+      assert vm.succeed(
           "systemctl show -p RootDirectory --value expose-lifecycle-private.service"
-      )
+      ).strip() == "/run/aos/service-roots/expose-lifecycle-private/expose-lifecycle-private.service/merged"
       assert "yes" in vm.succeed(
           "systemctl show -p PrivateNetwork --value expose-lifecycle-private.service"
       )
@@ -795,6 +882,38 @@ in
           "systemctl show -p DynamicUser --value expose-lifecycle-private.service"
       )
       vm.succeed("systemctl stop aos-pkg-expose-lifecycle-private.target")
+
+      upgrade_root = "/run/aos/service-roots/expose-lifecycle-upgrade/expose-lifecycle-upgrade.service/merged"
+      vm.succeed("systemctl start aos-pkg-expose-lifecycle-upgrade.target")
+      assert "upgrade-v1" == vm.succeed(
+          "cat /var/lib/aos-pkg-expose-lifecycle-upgrade/result"
+      ).strip()
+      vm.succeed("findmnt -n -o FS-OPTIONS " + upgrade_root + " | grep -F 'lowerdir=${upgradePackageV1}'")
+      vm.succeed("touch " + upgrade_root + "/old-identity")
+
+      vm.succeed("rm /var/lib/profiles/system-packages/gen-1/usr/${storePathHash upgradePackageV1}")
+      vm.succeed("rm /var/lib/profiles/system-packages/meta/${storePathHash upgradePackageV1}.json")
+      vm.succeed("ln -s ${upgradePackageV2} /var/lib/profiles/system-packages/gen-1/usr/${storePathHash upgradePackageV2}")
+      vm.succeed("cp /var/lib/profiles/system-packages/upgrade-v2.json /var/lib/profiles/system-packages/meta/${storePathHash upgradePackageV2}.json")
+      vm.succeed("${pkgs.aos}/bin/apm _test-reconcile-exposed-units --system")
+      assert "upgrade-v2" == vm.succeed(
+          "cat /var/lib/aos-pkg-expose-lifecycle-upgrade/result"
+      ).strip()
+      vm.succeed("findmnt -n -o FS-OPTIONS " + upgrade_root + " | grep -F 'lowerdir=${upgradePackageV2}'")
+      vm.succeed("test ! -e /run/aos/service-roots/expose-lifecycle-upgrade/expose-lifecycle-upgrade.service/upper/root/old-identity")
+      vm.succeed("touch " + upgrade_root + "/new-identity")
+
+      vm.succeed("rm /var/lib/profiles/system-packages/gen-1/usr/${storePathHash upgradePackageV2}")
+      vm.succeed("rm /var/lib/profiles/system-packages/meta/${storePathHash upgradePackageV2}.json")
+      vm.succeed("ln -s ${upgradePackageV1} /var/lib/profiles/system-packages/gen-1/usr/${storePathHash upgradePackageV1}")
+      vm.succeed("cp /var/lib/profiles/system-packages/upgrade-v1.json /var/lib/profiles/system-packages/meta/${storePathHash upgradePackageV1}.json")
+      vm.succeed("${pkgs.aos}/bin/apm _test-reconcile-exposed-units --system")
+      assert "upgrade-v1" == vm.succeed(
+          "cat /var/lib/aos-pkg-expose-lifecycle-upgrade/result"
+      ).strip()
+      vm.succeed("findmnt -n -o FS-OPTIONS " + upgrade_root + " | grep -F 'lowerdir=${upgradePackageV1}'")
+      vm.succeed("test ! -e /run/aos/service-roots/expose-lifecycle-upgrade/expose-lifecycle-upgrade.service/upper/root/new-identity")
+      vm.succeed("systemctl is-active aos-pkg-expose-lifecycle-upgrade.target expose-lifecycle-upgrade.service")
 
       vm.succeed("rm -rf ${uidSharedPath}")
       vm.succeed("mkdir -m 1777 ${uidSharedPath}")
@@ -841,9 +960,9 @@ in
       assert vm.succeed(
           "cat /var/lib/aos-pkg-expose-lifecycle-socket/userns"
       ).strip() != host_userns
-      assert "${socketConsumerPackage}" in vm.succeed(
+      assert vm.succeed(
           "systemctl show -p RootDirectory --value expose-lifecycle-consumer.service"
-      )
+      ).strip() == "/run/aos/service-roots/expose-lifecycle-socket-consumer/expose-lifecycle-consumer.service/merged"
       assert "yes" in vm.succeed(
           "systemctl show -p PrivateNetwork --value expose-lifecycle-consumer.service"
       )

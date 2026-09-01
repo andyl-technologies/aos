@@ -1,4 +1,4 @@
-//! Checks T-TRIG-1 event-graph control flow.
+//! Checks T-TRIG-1 event-graph control flow after fault actions moved to bindings.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
@@ -6,13 +6,10 @@
 
 mod support;
 
-use crucible::ConditionLeafOracle;
 use crucible::{
-    Action, Condition, ConditionEvaluationPass, ConditionLeaf, Event, EventEvaluationKind,
-    EventFiring, EventGraph, EventGraphError, EventGraphState, EventId, FaultTag, FirePolicy,
-    Icount, LinkDef, LogLevel, MembershipFault, NodeId, NodeTemplate, PartitionDirection,
-    ReadyPoint, RestartPolicy, SimDuration, TimerId, VirtualTime, VmArchitecture, WhiteBoxPolicy,
-    World, WorldNode,
+    Action, Condition, ConditionEvaluationPass, ConditionLeaf, ConditionLeafOracle, Event,
+    EventEvaluationKind, EventFiring, EventGraph, EventGraphError, EventGraphState, EventId,
+    FirePolicy, LogLevel, NodeId, SimDuration, TimerId, VirtualTime,
 };
 
 fn event_id(name: &str) -> EventId {
@@ -23,36 +20,6 @@ fn node(name: &str) -> NodeId {
     NodeId {
         name: String::from(name),
     }
-}
-
-fn ready_node(name: &str) -> WorldNode {
-    WorldNode {
-        id: node(name),
-        arch: VmArchitecture::X86_64,
-        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
-        cmdline: String::new(),
-        ready_point: ReadyPoint::FixedIcount {
-            icount: Icount { retired: 1 },
-        },
-        white_box: WhiteBoxPolicy::Disabled,
-        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
-        kernel: None,
-        root_image: None,
-        initrd: None,
-    }
-}
-
-fn partition_world() -> World {
-    World::from_nodes_and_links(
-        vec![ready_node("db-0"), ready_node("db-1")],
-        vec![LinkDef::new(node("db-0"), node("db-1")).expect("test link should build")],
-    )
-    .expect("partition test world should build")
-}
-
-fn tag(name: &str) -> FaultTag {
-    FaultTag::from_name(name)
 }
 
 fn timer(name: &str) -> TimerId {
@@ -80,14 +47,6 @@ impl ConditionLeafOracle for TrueNames<'_> {
     }
 }
 
-fn partition_fault() -> MembershipFault {
-    MembershipFault::Partition {
-        endpoint_a: node("db-0"),
-        endpoint_b: node("db-1"),
-        direction: PartitionDirection::Bidirectional,
-    }
-}
-
 fn firing_records(firings: &[EventFiring]) -> Vec<(EventId, VirtualTime, Action)> {
     firings
         .iter()
@@ -98,12 +57,12 @@ fn firing_records(firings: &[EventFiring]) -> Vec<(EventId, VirtualTime, Action)
 #[test]
 fn event_graph_evaluates_entrypoints_named_triggers_and_fire_policies() {
     let bootstrap = Event::once(event_id("bootstrap"), None, Action::Pass);
-    let ready_injection = Event::once(
-        event_id("inject-on-ready"),
+    let ready_log = Event::once(
+        event_id("log-on-ready"),
         Some(Condition::named("ready")),
-        Action::InjectFault {
-            tag: tag("split"),
-            fault: partition_fault(),
+        Action::Log {
+            level: LogLevel::Info,
+            message: String::from("ready observed"),
         },
     );
     let pulse_log = Event::repeatable(
@@ -114,15 +73,12 @@ fn event_graph_evaluates_entrypoints_named_triggers_and_fire_policies() {
             message: String::from("pulse observed"),
         },
     );
-    let graph = EventGraph::new_for_world(
-        vec![
-            bootstrap.clone(),
-            ready_injection.clone(),
-            pulse_log.clone(),
-        ],
-        &partition_world(),
-    )
-    .expect("unique event ids should build");
+    let graph = EventGraph::new(vec![
+        bootstrap.clone(),
+        ready_log.clone(),
+        pulse_log.clone(),
+    ])
+    .expect("unique reachable event ids should build");
     let mut state = EventGraphState::new();
     let boundary = support::quantum_prefix(10).point();
     assert_eq!(boundary.at(), VirtualTime { ticks: 10 });
@@ -138,49 +94,49 @@ fn event_graph_evaluates_entrypoints_named_triggers_and_fire_policies() {
         vec![(
             bootstrap.id.clone(),
             VirtualTime { ticks: 0 },
-            bootstrap.action.clone()
+            bootstrap.action.clone(),
         )]
     );
 
-    let ready_false = support::evaluate_graph(&graph, &mut state, evaluator(10, &[]));
-    assert!(ready_false.is_empty());
-
-    let ready_true = support::evaluate_graph(&graph, &mut state, evaluator(11, &["ready"]));
+    assert!(support::evaluate_graph(&graph, &mut state, evaluator(10, &[])).is_empty());
     assert_eq!(
-        firing_records(&ready_true),
+        firing_records(&support::evaluate_graph(
+            &graph,
+            &mut state,
+            evaluator(11, &["ready"]),
+        )),
         vec![(
-            ready_injection.id.clone(),
+            ready_log.id.clone(),
             VirtualTime { ticks: 11 },
-            ready_injection.action.clone()
+            ready_log.action.clone(),
         )]
     );
+    assert!(support::evaluate_graph(&graph, &mut state, evaluator(12, &["ready"])).is_empty());
 
-    let ready_still_true = support::evaluate_graph(&graph, &mut state, evaluator(12, &["ready"]));
-    assert!(ready_still_true.is_empty());
-
-    let pulse_true = support::evaluate_graph(&graph, &mut state, evaluator(13, &["pulse"]));
     assert_eq!(
-        firing_records(&pulse_true),
+        firing_records(&support::evaluate_graph(
+            &graph,
+            &mut state,
+            evaluator(13, &["pulse"]),
+        )),
         vec![(
             pulse_log.id.clone(),
             VirtualTime { ticks: 13 },
-            pulse_log.action.clone()
+            pulse_log.action.clone(),
         )]
     );
-
-    let pulse_still_true = support::evaluate_graph(&graph, &mut state, evaluator(14, &["pulse"]));
-    assert!(pulse_still_true.is_empty());
-
-    let pulse_false = support::evaluate_graph(&graph, &mut state, evaluator(15, &[]));
-    assert!(pulse_false.is_empty());
-
-    let pulse_true_again = support::evaluate_graph(&graph, &mut state, evaluator(16, &["pulse"]));
+    assert!(support::evaluate_graph(&graph, &mut state, evaluator(14, &["pulse"])).is_empty());
+    assert!(support::evaluate_graph(&graph, &mut state, evaluator(15, &[])).is_empty());
     assert_eq!(
-        firing_records(&pulse_true_again),
+        firing_records(&support::evaluate_graph(
+            &graph,
+            &mut state,
+            evaluator(16, &["pulse"]),
+        )),
         vec![(
             pulse_log.id.clone(),
             VirtualTime { ticks: 16 },
-            pulse_log.action.clone()
+            pulse_log.action.clone(),
         )]
     );
 }
@@ -206,7 +162,7 @@ fn event_graph_rejects_duplicate_event_ids() {
     assert_eq!(
         graph,
         Err(EventGraphError::DuplicateEventId {
-            event: duplicate_id
+            event: duplicate_id,
         })
     );
 }
@@ -254,7 +210,7 @@ fn event_graph_preserves_declared_order_for_simultaneous_triggers() {
             },
         ),
     ])
-    .expect("unique event ids should build");
+    .expect("unique reachable event ids should build");
     let mut state = EventGraphState::new();
 
     let fired = support::evaluate_graph(&graph, &mut state, evaluator(99, &["shared"]));
@@ -276,17 +232,12 @@ fn event_graph_preserves_declared_order_for_simultaneous_triggers() {
 #[test]
 fn event_graph_action_spine_names_specified_control_actions() {
     let actions = vec![
-        Action::InjectFault {
-            tag: tag("split"),
-            fault: partition_fault(),
-        },
-        Action::HealFault { tag: tag("split") },
         Action::ArmTimer {
-            name: timer("heal-after"),
+            name: timer("recover-after"),
             after: SimDuration { nanos: 30 },
         },
         Action::CancelTimer {
-            name: timer("heal-after"),
+            name: timer("recover-after"),
         },
         Action::StartNode { node: node("db-0") },
         Action::StopNode { node: node("db-0") },
@@ -304,41 +255,27 @@ fn event_graph_action_spine_names_specified_control_actions() {
             level: LogLevel::Info,
             message: String::from("diagnostic"),
         },
-        Action::Group(vec![
-            Action::StopNode { node: node("db-1") },
-            Action::HealFault { tag: tag("split") },
-        ]),
+        Action::Group(vec![Action::StopNode { node: node("db-1") }, Action::Pass]),
     ];
 
-    assert_eq!(actions.len(), 12);
-    assert!(matches!(actions[0], Action::InjectFault { .. }));
-    assert!(matches!(actions[1], Action::HealFault { .. }));
-    assert!(matches!(actions[2], Action::ArmTimer { .. }));
-    assert!(matches!(actions[3], Action::CancelTimer { .. }));
-    assert!(matches!(actions[4], Action::StartNode { .. }));
-    assert!(matches!(actions[5], Action::StopNode { .. }));
-    assert!(matches!(actions[6], Action::CreateSavepoint { .. }));
-    assert!(matches!(actions[7], Action::Fork { .. }));
-    assert!(matches!(actions[8], Action::Pass));
-    assert!(matches!(actions[9], Action::Fail { .. }));
-    assert!(matches!(actions[10], Action::Log { .. }));
-    assert!(matches!(actions[11], Action::Group(_)));
+    assert_eq!(actions.len(), 10);
+    assert!(matches!(actions[0], Action::ArmTimer { .. }));
+    assert!(matches!(actions[1], Action::CancelTimer { .. }));
+    assert!(matches!(actions[2], Action::StartNode { .. }));
+    assert!(matches!(actions[3], Action::StopNode { .. }));
+    assert!(matches!(actions[4], Action::CreateSavepoint { .. }));
+    assert!(matches!(actions[5], Action::Fork { .. }));
+    assert!(matches!(actions[6], Action::Pass));
+    assert!(matches!(actions[7], Action::Fail { .. }));
+    assert!(matches!(actions[8], Action::Log { .. }));
+    assert!(matches!(actions[9], Action::Group(_)));
 
     let repeatable = Event::repeatable(
         event_id("pulse"),
         Some(Condition::named("pulse")),
-        actions[10].clone(),
+        actions[8].clone(),
     );
     assert_eq!(repeatable.policy, FirePolicy::Repeatable);
-    let once = Event::once(event_id("entry"), None, actions[8].clone());
+    let once = Event::once(event_id("entry"), None, actions[6].clone());
     assert_eq!(once.policy, FirePolicy::Once);
-
-    let crash = Action::InjectFault {
-        tag: tag("crash"),
-        fault: MembershipFault::Crash {
-            node: node("db-2"),
-            restart: RestartPolicy::StayDown,
-        },
-    };
-    assert!(matches!(crash, Action::InjectFault { .. }));
 }

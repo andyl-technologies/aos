@@ -5,16 +5,15 @@
   taskIds ? ["T-SHM-16"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   shmemContract = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible-shmem/src/lib.rs)
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs)
+    (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/layout.rs)
+    (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/runtime.rs)
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs)
+    (builtins.readFile ../../crates/crucible-shmem/src/shmem/region/layout.rs)
   ];
   generatedHeader = builtins.readFile ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
   multiVcpuTest = builtins.readFile ../../crates/crucible-shmem/tests/multi_vcpu_node_slot.rs;
@@ -61,7 +60,7 @@
     failuresFor "crates/crucible-shmem source modules" shmemContract [
       {
         label = "ABI version unchanged for multi-vCPU nodes";
-        needle = "pub const ABI_VERSION: u32 = 6;";
+        needle = "pub const ABI_VERSION: u32 = 17;";
       }
       {
         label = "region config uses VM node count";

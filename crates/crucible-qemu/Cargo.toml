@@ -13,17 +13,23 @@ test-support = ["crucible/test-double"]
 workspace = true
 
 [dependencies]
+blake3 = { workspace = true }
 crucible = { path = "../crucible" }
 crucible-device = { path = "../crucible-device" }
 crucible-protocol = { path = "../crucible-protocol" }
 crucible-shmem = { path = "../crucible-shmem" }
 libc = { workspace = true }
+rustix = { workspace = true, features = ["process"] }
 serde_json = { workspace = true }
+serde = { workspace = true }
+ciborium = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
+tempfile = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
-rustix = { workspace = true, features = ["process"] }
+crucible = { path = "../crucible", features = ["test-double"] }
 
 [[example]]
 name = "crucible-qemu-live-plugin-quantum"

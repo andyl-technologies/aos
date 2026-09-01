@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  fetchCargoDeps,
+  fetchCargoVendor,
   lib,
   qemu-crucible,
 }: let
@@ -33,8 +33,9 @@
       && !lib.hasPrefix characterizationGoldens pathString;
   };
   cargoDepsHash = import ../tools/crucible/_cargo-deps-hash.nix;
-  crucibleCargoDeps = fetchCargoDeps {
+  crucibleCargoDeps = fetchCargoVendor {
     src = crucibleSource;
+    name = "crucible-vendor-${version}";
     sourceRoot = "source/crates";
     hash = cargoDepsHash;
   };
@@ -104,9 +105,9 @@ in
           shmem_abi=${qemu.shmemAbi}
           shmem_header_file=interfaces/crucible_shmem_abi.h
           shmem_header_hash=${qemu.shmemHeaderHash}
-          licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later
+          licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,BSD-2-Clause,BSD-3-Clause
           qemu_license=GPL-2.0-only
-          qemu_component_licenses=GPL-2.0-only,GPL-2.0-or-later,MIT
+          qemu_component_licenses=GPL-2.0-only,GPL-2.0-or-later,MIT,BSD-2-Clause,BSD-3-Clause
           qemu_combined_work_license=GPL-2.0-only
           qemu_created_source_license=GPL-2.0-or-later
           qemu_generated_boundary_header_license_option=MIT
@@ -189,7 +190,7 @@ in
           shmem_header_hash=${qemu.shmemHeaderHash}
           plugin_cargo_deps_hash=${cargoDepsHash}
           corresponding_source_scope=qemu-crucible,crucible-qemu-plugin
-          licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later
+          licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,BSD-2-Clause,BSD-3-Clause
           qemu_combined_work_license=GPL-2.0-only
           qemu_created_source_license=GPL-2.0-or-later
           INFO
@@ -210,6 +211,6 @@ in
     meta = {
       description = "Corresponding source for qemu-crucible and its in-process plugin";
       homepage = "https://www.qemu.org";
-      license = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later"];
+      license = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "BSD-2-Clause" "BSD-3-Clause"];
     };
   }

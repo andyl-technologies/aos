@@ -5,11 +5,7 @@
   taskIds ? ["T-EXEC-5"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   decision = builtins.readFile ../../crates/crucible/src/decision.rs;

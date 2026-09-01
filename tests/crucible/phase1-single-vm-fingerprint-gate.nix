@@ -6,11 +6,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   s1Fingerprint = import ./phase0-s1.nix {
     inherit pkgs lib;
   };
@@ -104,7 +100,7 @@
         needle = "SameConfigurationProbe::Fork";
       }
       {
-        label = "snapshot-completeness probe";
+        label = "replay-oracle probe";
         needle = "SameConfigurationProbe::SnapshotCompleteness";
       }
       {
@@ -650,7 +646,7 @@
         needle = "same-configuration-twice";
       }
       {
-        label = "T-PAT-9 completion names snapshot-completeness probe";
+        label = "T-PAT-9 completion names replay-oracle probe";
         needle = "snapshot-completeness";
       }
       {
@@ -749,7 +745,7 @@ in
             require_fixed "PASS"
             require_fixed "spike=single-vm-fingerprint"
             require_fixed "scenario=stock-linux-diskless-initramfs-workload"
-            require_fixed "host_adversary=jitter-load"
+            require_fixed "host_adversary=bounded-scheduler-preemption"
             require_fixed "samples=36"
             require_fixed "horizon_icount=3600000000"
             require_fixed "extended_fingerprint_match=true"
@@ -786,7 +782,7 @@ in
             real_qemu_source=checks.crucible.phase0.s1Fingerprint
             run_model=run-twice-and-diff
             scenario=stock-linux-diskless-initramfs-workload
-            host_adversary=jitter-load
+            host_adversary=bounded-scheduler-preemption
             samples=36
             horizon_icount=3600000000
             execution_fingerprint=icount-registers-ram

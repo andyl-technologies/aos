@@ -20,6 +20,9 @@ pub struct World {
     /// separate logical topology collection.
     pub(in crate::model) nodes: Vec<WorldNode>,
     pub(in crate::model) links: Vec<LinkDef>,
+    pub(in crate::model) fault_topology: WorldFaultTopology,
+    pub(in crate::model) fault_topology_id: ContentHash,
+    pub(in crate::model) fault_topology_wire: Vec<u8>,
 }
 
 /// A workload config-tree export declared by one world node.
@@ -207,34 +210,6 @@ impl TemporalGraph {
         Ok(())
     }
 
-    /// Registers `checkpoint` only when the savevm hedge allows fat caching.
-    ///
-    /// If the hedge marks the snapshot unreliable, the graph records and
-    /// returns the thin source-of-truth checkpoint instead of inserting the fat
-    /// cache entry.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::CheckpointConfigurationMismatch`] or related
-    /// checkpoint-validation errors when the supplied fat checkpoint metadata is
-    /// invalid. Returns [`EngineError::MissingBakedGenesis`] when the hedge
-    /// rejects the fat checkpoint but no baked root exists to support thin
-    /// replay.
-    pub fn cache_snapshot_with_savevm_hedge(
-        &mut self,
-        configuration: &Configuration,
-        checkpoint: Checkpoint,
-        hedge: &SavevmCompletenessHedge,
-    ) -> Result<Checkpoint, EngineError> {
-        validate_loadable_checkpoint(&checkpoint, configuration)?;
-        if hedge.allows_checkpoint(&checkpoint) {
-            self.cache_snapshot(configuration, checkpoint.clone())?;
-            Ok(checkpoint)
-        } else {
-            self.evict_fat_checkpoint_to_thin(configuration)
-        }
-    }
-
     /// Returns a graph with the baked genesis checkpoint registered for `def`.
     ///
     /// # Errors
@@ -344,63 +319,6 @@ impl TemporalGraph {
         Ok(checkpoint)
     }
 
-    /// Materializes `configuration` only when the savevm hedge permits it.
-    ///
-    /// The thin checkpoint is returned when fat snapshots are disabled or when
-    /// the materialized state touches a device whose snapshot is unreliable.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::MissingBakedGenesis`] when the graph cannot
-    /// record or replay the thin source-of-truth path. Returns other
-    /// [`EngineError`] variants from checkpoint validation or replay-oracle
-    /// validation.
-    pub fn materialize_checkpoint_with_savevm_hedge(
-        &mut self,
-        configuration: &Configuration,
-        hedge: &SavevmCompletenessHedge,
-    ) -> Result<Checkpoint, EngineError> {
-        self.record_configuration(configuration.clone());
-        if configuration.is_genesis() {
-            let genesis = self.genesis_snapshot(&configuration.def).ok_or(
-                EngineError::MissingBakedGenesis {
-                    scenario: configuration.def.id,
-                },
-            )?;
-            return Ok(genesis.checkpoint.clone());
-        }
-        if self.genesis_snapshot(&configuration.def).is_some() {
-            self.record_thin_checkpoint(configuration)?;
-        }
-        if let Some(checkpoint) = self.cached_snapshot(configuration).cloned() {
-            if !hedge.allows_checkpoint(&checkpoint) {
-                return self.evict_fat_checkpoint_to_thin(configuration);
-            }
-            if self.has_replay_oracle_path(configuration)? {
-                self.replay_oracle_admit_cached_snapshot(configuration)?;
-            }
-            if let Some(checkpoint) = self.cached_snapshot(configuration).cloned() {
-                return Ok(checkpoint);
-            }
-        }
-        if !hedge.fat_snapshot_default() {
-            return self.record_thin_checkpoint(configuration);
-        }
-        if self.has_replay_oracle_path(configuration)? {
-            self.replay_oracle_admit_cached_ancestors(configuration)?;
-        }
-
-        let runtime = instantiate(self, configuration)?;
-        let checkpoint = materialized_checkpoint_for_runtime(configuration, runtime)?;
-        self.replay_checkpoint(configuration, &checkpoint)?;
-        if hedge.allows_checkpoint(&checkpoint) {
-            self.cache_snapshot(configuration, checkpoint.clone())?;
-            Ok(checkpoint)
-        } else {
-            self.record_thin_checkpoint(configuration)
-        }
-    }
-
     /// Applies the hot-node materialization policy to `configuration`.
     ///
     /// Hot nodes within budget are materialized through
@@ -428,41 +346,6 @@ impl TemporalGraph {
         }
         if policy.should_materialize(self.cached_snapshot_count(), trigger) {
             self.materialize_checkpoint(configuration)
-        } else {
-            self.record_thin_checkpoint(configuration)
-        }
-    }
-
-    /// Applies both hot-node policy and the savevm-completeness hedge.
-    ///
-    /// Even hot nodes remain thin when fat snapshots are globally disabled or
-    /// their materialized state contains an unreliable device snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::MissingBakedGenesis`] when the graph cannot
-    /// record or replay the thin source-of-truth path. Returns other
-    /// [`EngineError`] variants from checkpoint validation.
-    pub fn materialize_hot_checkpoint_with_savevm_hedge(
-        &mut self,
-        configuration: &Configuration,
-        policy: MaterializationPolicy,
-        trigger: MaterializationTrigger,
-        hedge: &SavevmCompletenessHedge,
-    ) -> Result<Checkpoint, EngineError> {
-        if self.cached_snapshot(configuration).is_some()
-            && self.has_replay_oracle_path(configuration)?
-        {
-            self.replay_oracle_admit_cached_snapshot(configuration)?;
-        }
-        if let Some(checkpoint) = self.cached_snapshot(configuration).cloned() {
-            if hedge.allows_checkpoint(&checkpoint) {
-                return Ok(checkpoint);
-            }
-            return self.evict_fat_checkpoint_to_thin(configuration);
-        }
-        if policy.should_materialize(self.cached_snapshot_count(), trigger) {
-            self.materialize_checkpoint_with_savevm_hedge(configuration, hedge)
         } else {
             self.record_thin_checkpoint(configuration)
         }
@@ -1228,10 +1111,8 @@ impl TemporalGraph {
 
     /// Applies an opportunistic debug checkpoint cadence along a schedule prefix.
     ///
-    /// Cadence materialization is routed through
-    /// [`Self::materialize_checkpoint_with_savevm_hedge`], so the default
-    /// S3-conservative hedge records thin checkpoints and the verified hedge may
-    /// cache fat checkpoints. The denoted configuration identities do not change.
+    /// Cadence materialization uses the ordinary advisory cache policy. The
+    /// denoted configuration identities do not change when a point remains thin.
     ///
     /// # Errors
     ///
@@ -1251,8 +1132,11 @@ impl TemporalGraph {
                 continue;
             }
             let candidate = debug_configuration_prefix(&request.current, prefix_len)?;
-            let checkpoint =
-                self.materialize_checkpoint_with_savevm_hedge(&candidate, &request.hedge)?;
+            let checkpoint = self.materialize_hot_checkpoint(
+                &candidate,
+                request.policy,
+                MaterializationTrigger::InteractiveTarget,
+            )?;
             candidate_configurations.push(candidate.id());
             match checkpoint.kind {
                 CheckpointKind::Fat => fat_checkpoints.push(checkpoint.id),
@@ -1263,7 +1147,7 @@ impl TemporalGraph {
         Ok(DebugCheckpointCadenceReport {
             current_configuration: request.current.id(),
             stride: request.stride,
-            hedge: request.hedge.clone(),
+            policy: request.policy,
             candidate_configurations,
             fat_checkpoints,
             thin_checkpoints,

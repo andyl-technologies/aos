@@ -5,11 +5,7 @@
   taskIds ? ["T-EXEC-2"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   canonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
@@ -28,10 +24,6 @@
       {
         label = "delivery-order decision variant";
         needle = "DeliveryOrder(DeliveryOrderDecision)";
-      }
-      {
-        label = "fault decision variant";
-        needle = "FaultFires(FaultDecision)";
       }
       {
         label = "RNG draw decision variant";
@@ -78,10 +70,6 @@
       {
         label = "delivery-order canonical arm";
         needle = "Decision::DeliveryOrder(order)";
-      }
-      {
-        label = "fault canonical arm";
-        needle = "Decision::FaultFires(fault)";
       }
       {
         label = "RNG draw canonical arm";
@@ -227,7 +215,8 @@ in
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
-            decisions=DeliveryOrder,FaultFires,RngDraw,Override,Preemption,AppRandom
+            decisions=DeliveryOrder,RngDraw,Override,Preemption,AppRandom
+            fault_outcomes=ResolvedEffectTrace
             schedule_api=prefix,appended
             rng_stream_isolation=unrelated-world-edits
             RESULT

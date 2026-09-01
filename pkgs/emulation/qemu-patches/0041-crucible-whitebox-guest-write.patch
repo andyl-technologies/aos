@@ -1,7 +1,8 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index b37dfd519..9a893df07 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1398,6 +1398,24 @@ QEMU_PLUGIN_API
+@@ -1367,6 +1367,24 @@ QEMU_PLUGIN_API
  bool qemu_plugin_read_memory_vaddr(uint64_t addr,
                                     GByteArray *data, size_t len);
  
@@ -27,6 +28,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
   * qemu_plugin_read_register() - read register for current vCPU
   *
 diff --git a/plugins/api.c b/plugins/api.c
+index 9fb02d1ad..8c1f5b41d 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
 @@ -468,6 +468,20 @@ bool qemu_plugin_read_memory_vaddr(uint64_t addr, GByteArray *data, size_t len)

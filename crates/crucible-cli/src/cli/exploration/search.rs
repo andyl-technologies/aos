@@ -393,12 +393,10 @@ pub(crate) fn canonical_log_entries_from_engine_schedule(
 pub(crate) fn engine_decision_kind(decision: &crucible::Decision) -> &'static str {
     match decision {
         crucible::Decision::DeliveryOrder(_) => "delivery-order",
-        crucible::Decision::FaultFires(_) => "fault-fires",
         crucible::Decision::RngDraw(_) => "rng-draw",
         crucible::Decision::Override(_) => "override",
         crucible::Decision::Preemption(_) => "preemption",
         crucible::Decision::AppRandom(_) => "app-random",
-        crucible::Decision::ControlFault(_) => "control-fault",
     }
 }
 

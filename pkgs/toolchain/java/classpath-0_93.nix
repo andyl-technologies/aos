@@ -2,6 +2,9 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
+  buildPackages,
   gnumake,
   jikes,
   fastjar,
@@ -9,6 +12,17 @@
   zip,
 }: let
   version = "0.93";
+  configurePlatformFlags = lib.optionalString (
+    stdenv.isCross && stdenv.hostPlatform.isDarwin
+  ) " \\\n            --build=${stdenv.buildPlatform.config} \\\n            --host=${stdenv.hostPlatform.config}";
+  fastjarForBuild =
+    if stdenv.isCross
+    then buildPackages.fastjar
+    else fastjar;
+  jikesForBuild =
+    if stdenv.isCross
+    then buildPackages.jikes
+    else jikes;
 in
   mkDerivation {
     pname = "classpath-0_93";
@@ -21,13 +35,17 @@ in
       hash = "sha256-3y0JNhKr0j/mfpQJ2JuyqOebFmT+Ky2kDhyO1pPjKUU=";
     };
 
-    buildDeps = [
-      gnumake
-      jikes
-      fastjar
-      pkg-config
-      zip
-    ];
+    buildDeps =
+      [
+        gnumake
+        jikesForBuild
+        fastjarForBuild
+        pkg-config
+        zip
+      ]
+      ++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isDarwin) [
+        buildPackages.automake
+      ];
     runtimeDeps = [];
 
     phases = [
@@ -46,7 +64,16 @@ in
 
           # Disable -Werror — old code triggers many new GCC 14 warnings
           find . -name Makefile.in -exec sed -i 's/-Werror//g' {} +
-          find . -name configure -exec sed -i 's/-Werror//g' {} +
+          find . -name configure -exec sed -i 's/-Werror//g' {} +${lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isDarwin) ''
+
+            # This 2006 release predates AArch64. Refresh only config.sub; the
+            # generated configure logic remains upstream and cross-aware.
+            cp ${buildPackages.automake}/share/automake-*/config.sub config.sub
+
+            # GNU Classpath's fdlibm predates AArch64 but uses the standard
+            # little-endian IEEE-754 word layout on that architecture.
+            sed -i '/#ifdef __alpha__/i #ifdef __aarch64__\n#define __IEEE_LITTLE_ENDIAN\n#endif\n' \
+              native/fdlibm/ieeefp.h''}
         '';
       }
       {
@@ -63,7 +90,7 @@ in
             --disable-plugin \
             --disable-examples \
             --with-jikes \
-            --with-fastjar=${fastjar}/bin/fastjar
+            --with-fastjar=${fastjarForBuild}/bin/fastjar${configurePlatformFlags}
         '';
       }
       {

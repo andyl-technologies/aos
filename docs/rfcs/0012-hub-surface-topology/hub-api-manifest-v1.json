@@ -1794,6 +1794,55 @@
          "service" : "PackageService"
       },
       {
+         "method" : "GetPackageDocumentation",
+         "path" : "aos.hub.v1.DocumentationService/GetPackageDocumentation",
+         "request" : "GetPackageDocumentationRequest",
+         "response" : "GetPackageDocumentationResponse",
+         "service" : "DocumentationService"
+      },
+      {
+         "method" : "SearchPackageDocumentation",
+         "path" : "aos.hub.v1.DocumentationService/SearchPackageDocumentation",
+         "request" : "SearchPackageDocumentationRequest",
+         "response" : "SearchPackageDocumentationResponse",
+         "service" : "DocumentationService"
+      },
+      {
+         "method" : "ListPackageOptions",
+         "path" : "aos.hub.v1.DocumentationService/ListPackageOptions",
+         "request" : "ListPackageOptionsRequest",
+         "response" : "ListPackageOptionsResponse",
+         "service" : "DocumentationService"
+      },
+      {
+         "method" : "GetPackageOption",
+         "path" : "aos.hub.v1.DocumentationService/GetPackageOption",
+         "request" : "GetPackageOptionRequest",
+         "response" : "GetPackageOptionResponse",
+         "service" : "DocumentationService"
+      },
+      {
+         "method" : "ComparePackageDocumentation",
+         "path" : "aos.hub.v1.DocumentationService/ComparePackageDocumentation",
+         "request" : "ComparePackageDocumentationRequest",
+         "response" : "ComparePackageDocumentationResponse",
+         "service" : "DocumentationService"
+      },
+      {
+         "method" : "GetDocumentationArtifact",
+         "path" : "aos.hub.v1.DocumentationService/GetDocumentationArtifact",
+         "request" : "GetDocumentationArtifactRequest",
+         "response" : "GetPackageDocumentationResponse",
+         "service" : "DocumentationService"
+      },
+      {
+         "method" : "GetPackageDocumentationSchema",
+         "path" : "aos.hub.v1.DocumentationService/GetPackageDocumentationSchema",
+         "request" : "GetPackageDocumentationSchemaRequest",
+         "response" : "GetPackageDocumentationSchemaResponse",
+         "service" : "DocumentationService"
+      },
+      {
          "method" : "ListChannels",
          "path" : "aos.hub.v1.ChannelService/ListChannels",
          "request" : "ListChannelsRequest",
@@ -2809,7 +2858,7 @@
    },
    "protobuf_package" : "aos.hub.v1",
    "protobuf_source" : "crates/aos-proto/src/proto/aos/hub/v1/hub.proto",
-   "rpc_count" : 331,
+   "rpc_count" : 334,
    "services" : [
       "RegistryService",
       "OrganizationService",
@@ -2826,6 +2875,7 @@
       "InstanceService",
       "RegistryConfigurationService",
       "PackageService",
+      "DocumentationService",
       "ChannelService",
       "ImageService",
       "ContainerService",

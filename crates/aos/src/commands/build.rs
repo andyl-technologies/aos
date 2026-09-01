@@ -12,6 +12,7 @@ use anyhow::{Context, Result, bail};
 use aos_core::error::AosError;
 use aos_core::nix::NixRunner;
 use aos_core::output::Printer;
+use aos_package::types::validate_platform_name;
 use aos_remote::AosClient;
 
 /// `aos build <package>` or `aos build --all`.
@@ -23,9 +24,19 @@ use aos_remote::AosClient;
 ///
 /// Returns an error if no package is named and `all` is not set, or if
 /// the underlying `nix-build` fails.
-pub fn run(nix: &NixRunner, printer: &Printer, package: Option<&str>, all: bool) -> Result<()> {
+pub fn run(
+    nix: &NixRunner,
+    printer: &Printer,
+    package: Option<&str>,
+    all: bool,
+    target: Option<&str>,
+) -> Result<()> {
+    if let Some(target) = target {
+        validate_platform_name(target)?;
+    }
+
     if all {
-        return build_all(nix, printer);
+        return build_all(nix, printer, target);
     }
 
     let package = package.ok_or_else(|| AosError::InvalidArgument {
@@ -34,16 +45,20 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: Option<&str>, all: bool)
 
     let attr = format!("pkgs.{package}");
 
-    printer.info(&format!("Building package '{package}'..."));
+    let target_label = target.map_or_else(String::new, |target| format!(" for {target}"));
+    printer.info(&format!("Building package '{package}'{target_label}..."));
 
     let spinner = printer.activity(&format!("building {package}"));
-    let store_path = nix
-        .build(&attr, None)
-        .with_context(|| format!("building package '{package}'"))?;
+    let store_path = match target {
+        Some(target) => nix.build_for_target(&attr, None, target),
+        None => nix.build(&attr, None),
+    }
+    .with_context(|| format!("building package '{package}'{target_label}"))?;
     spinner.finish_and_clear();
 
     if printer.json_if_active(&serde_json::json!({
         "package": package,
+        "target": target,
         "store_path": store_path.to_string_lossy(),
     })) {
         return Ok(());
@@ -71,15 +86,20 @@ pub async fn run_remote(
     nix: &NixRunner,
     printer: &Printer,
     package: Option<&str>,
+    target: Option<&str>,
     remote_url: &str,
     view: &str,
     token: Option<&str>,
 ) -> Result<()> {
+    if let Some(target) = target {
+        validate_platform_name(target)?;
+    }
+
     let package = package.ok_or_else(|| AosError::InvalidArgument {
         message: "provide a package name for remote builds".to_string(),
     })?;
     let attr = format!("pkgs.{package}");
-    run_remote_attr(nix, printer, &attr, package, remote_url, view, token).await?;
+    run_remote_attr(nix, printer, &attr, package, target, remote_url, view, token).await?;
     Ok(())
 }
 
@@ -109,6 +129,7 @@ pub async fn run_remote_attr(
     printer: &Printer,
     attr: &str,
     label: &str,
+    target: Option<&str>,
     remote_url: &str,
     view: &str,
     token: Option<&str>,
@@ -117,15 +138,18 @@ pub async fn run_remote_attr(
         message: "provide --token or set AOS_TOKEN for remote builds".to_string(),
     })?;
 
+    let target_label = target.map_or_else(String::new, |target| format!(", target: {target}"));
     printer.info(&format!(
-        "Remote build: {label} on {remote_url} (view: {view})"
+        "Remote build: {label} on {remote_url} (view: {view}{target_label})"
     ));
 
     // Step 1: Evaluate locally to get the .drv path.
     let spinner = printer.activity(&format!("evaluating {label}"));
-    let drv_path = nix
-        .instantiate(attr)
-        .with_context(|| format!("evaluating '{label}'"))?;
+    let drv_path = match target {
+        Some(target) => nix.instantiate_for_target(attr, target),
+        None => nix.instantiate(attr),
+    }
+    .with_context(|| format!("evaluating '{label}'{target_label}"))?;
     spinner.finish_and_clear();
     let drv_str = drv_path.to_string_lossy().to_string();
     printer.info(&format!("Derivation: {drv_str}"));
@@ -266,15 +290,21 @@ pub async fn run_remote_attr(
 }
 
 /// Build every package in the `pkgs` set and list the store paths.
-fn build_all(nix: &NixRunner, printer: &Printer) -> Result<()> {
-    printer.info("Building all packages...");
+fn build_all(nix: &NixRunner, printer: &Printer, target: Option<&str>) -> Result<()> {
+    let target_label = target.map_or_else(String::new, |target| format!(" for {target}"));
+    printer.info(&format!("Building all packages{target_label}..."));
 
     let spinner = printer.activity("building all packages");
-    let paths = nix.build_all("pkgs").context("building all packages")?;
+    let paths = match target {
+        Some(target) => nix.build_target_packages(target),
+        None => nix.build_all("pkgs"),
+    }
+    .with_context(|| format!("building all packages{target_label}"))?;
     spinner.finish_and_clear();
 
     if printer.json_if_active(&serde_json::json!({
         "packages": paths.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>(),
+        "target": target,
         "count": paths.len(),
     })) {
         return Ok(());

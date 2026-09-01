@@ -210,7 +210,7 @@ passes on the Linux builder against the complete carried QEMU package. It:
   icount scheduler ceiling.
 - **R3 stress leg:** a deliberately-slowed servicer (wall delay before writing
   the response frame) produces the same guest-visible diagnostic projection as
-  the fast run under host CPU load. Host `service_calls` is deliberately
+  the fast run under bounded scheduler preemption. Host `service_calls` is deliberately
   excluded because it measures polling cadence rather than guest state.
 - **R1 race leg:** start the servicer so the deadline publish lags the first
   blk_wait fire. The driver's wake/resume/re-fire path still reaches progress,
