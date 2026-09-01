@@ -44,7 +44,12 @@
     && disk.readOnly
     && disk.sizeMiB == 384
     && lib.hasInfix "aos.darling-vm-suite-result/v1" suite.testScript
-    && lib.hasInfix "--uid=65534" suite.testScript;
+    && lib.hasInfix "--uid=65534" suite.testScript
+    && lib.hasInfix "nsenter -t" suite.testScript
+    && lib.hasInfix "mount --bind" suite.testScript
+    && lib.hasInfix "run_case" suite.testScript
+    && !(lib.hasInfix "arguments+=(" suite.testScript)
+    && lib.hasInfix "closure.ready" suite.testScript;
   acceptsSingleFacade = let
     spec = mkDarlingFleetSpec {
       name = "darling-single-check";
