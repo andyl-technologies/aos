@@ -113,8 +113,15 @@ in
         "conntrackd.logConnections"
         "conntrackd.mode"
         "conntrackd.netlinkBufferSize"
+        "conntrackd.netlinkBufferSizeMaxGrowth"
         "conntrackd.pollSeconds"
-        "conntrackd.sync"
+        "conntrackd.sync.ackWindowSize"
+        "conntrackd.sync.checksum"
+        "conntrackd.sync.interface"
+        "conntrackd.sync.localAddress"
+        "conntrackd.sync.peerAddress"
+        "conntrackd.sync.port"
+        "conntrackd.sync.resendQueueSize"
       ];
       ownsRoots = [
         {

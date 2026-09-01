@@ -111,7 +111,19 @@ in
         min = 1;
         max = 2;
       };
-      declares = ["openldap.database.maxBytes" "openldap.enable" "openldap.listenUrls" "openldap.rootDn" "openldap.rootPassword" "openldap.suffix" "openldap.tls"];
+      declares = [
+        "openldap.database.maxBytes"
+        "openldap.enable"
+        "openldap.listenUrls"
+        "openldap.rootDn"
+        "openldap.rootPassword"
+        "openldap.suffix"
+        "openldap.tls.certificate"
+        "openldap.tls.enable"
+        "openldap.tls.privateKey"
+        "openldap.tls.trustedCa"
+        "openldap.tls.verifyClient"
+      ];
       ownsRoots = [
         {
           root = "openldap";
