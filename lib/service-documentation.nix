@@ -7,8 +7,7 @@
 ##!
 ##! `package` entries are covered by their signed config-module companion.
 ##! `system` entries select option prefixes from the exact image base library
-##! and describe the systemd units implemented by that package. `platform`
-##! covers the complete AOS image option surface.
+##! and describe the systemd units implemented by that package.
 {
   schema = "aos.service-documentation/v1";
 
@@ -46,8 +45,8 @@
 
   services = {
     aos = {
-      ownership = "platform";
-      optionPrefixes = [];
+      ownership = "system";
+      optionPrefixes = ["aos"];
       units = [
         "aos-attest.service"
         "aos-eval.service"
