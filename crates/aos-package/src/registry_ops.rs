@@ -15883,8 +15883,8 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store =
             write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
-        let image_path = Path::new(&store.path).join("aos-test.img.zst");
         let image = inspect_test_image("raw", store, "2026.08", "x86_64-linux").unwrap();
+        let image_path = image.disk.path.clone();
         fs::rename(&image_path, temp.path().join("original.img")).unwrap();
         fs::write(&image_path, b"replacement bytes").unwrap();
         assert!(image.recheck_for_commit().is_err());

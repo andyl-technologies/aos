@@ -992,6 +992,11 @@ in
           for gmk in openjdk-boot/jaxws/make/BuildJaxws.gmk openjdk/jaxws/make/BuildJaxws.gmk; do
             if [ -f "$gmk" ]; then
               sed -i 's|-Xbootclasspath/p:\$(OUTPUT_ROOT)/jaxp/dist/lib/classes.jar|-Xbootclasspath/p:$(OUTPUT_ROOT)/jaxp/dist/lib/classes.jar:$(JAXWS_OUTPUTDIR)/jaf_classes|' "$gmk"
+              # The AOS boot JDK does not provide javax.activation. Make the
+              # JAXWS compile wait for the JAF classes added to its boot class
+              # path instead of racing the sibling archive prerequisite.
+              printf '\n%s\n' '$(BUILD_JAXWS): $(BUILD_JAF)' >> "$gmk"
+              grep -Fx '$(BUILD_JAXWS): $(BUILD_JAF)' "$gmk" >/dev/null
             fi
           done
 

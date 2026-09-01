@@ -523,6 +523,7 @@ in
               -DWITH_ROCKSDB_ZSTD:STRING=ON \
               -DWITH_SYSTEMD:STRING=no \
               -DWITH_UNIT_TESTS:BOOL=ON \
+              -DPLUGIN_COLUMNSTORE:STRING=NO \
               -DAWS_SDK_EXTERNAL_PROJECT:BOOL=OFF \
               -DHAVE_ACCEPT4:INTERNAL=0 \
               -DHAVE_AUXV_GETAUXVAL:INTERNAL=0 \
@@ -557,6 +558,7 @@ in
               'WITH_ROCKSDB_ZSTD:STRING=ON' \
               'WITH_SYSTEMD:STRING=no' \
               'WITH_UNIT_TESTS:BOOL=ON' \
+              'PLUGIN_COLUMNSTORE:STRING=NO' \
               'AWS_SDK_EXTERNAL_PROJECT:BOOL=OFF'; do
               grep "^$setting$" CMakeCache.txt
             done
@@ -622,6 +624,7 @@ in
               -DWITH_ROCKSDB_ZSTD:STRING=ON \
               -DWITH_SYSTEMD:STRING=yes \
               -DWITH_UNIT_TESTS:BOOL=ON \
+              -DPLUGIN_COLUMNSTORE:STRING=NO \
               -DAWS_SDK_EXTERNAL_PROJECT:BOOL=OFF \
               -DBOOST_ROOT=${boost.dev}
 
@@ -650,6 +653,7 @@ in
               'WITH_ROCKSDB_ZSTD:STRING=ON' \
               'WITH_SYSTEMD:STRING=yes' \
               'WITH_UNIT_TESTS:BOOL=ON' \
+              'PLUGIN_COLUMNSTORE:STRING=NO' \
               'AWS_SDK_EXTERNAL_PROJECT:BOOL=OFF'; do
               grep "^$setting$" CMakeCache.txt
             done
@@ -707,7 +711,7 @@ in
 
               mkdir -p "$out/share/aos-build-features"
               grep -E \
-                '^(BUILD_CONFIG|FEATURE_SET|WITH_SSL|WITH_ZLIB|WITH_ZSTD|WITH_PCRE|GRN_WITH_LIBEVENT|GRN_WITH_MESSAGE_PACK|WITH_JEMALLOC|WITH_NUMA|WITH_ROCKSDB_BZip2|WITH_ROCKSDB_LZ4|WITH_ROCKSDB_Snappy|WITH_ROCKSDB_ZSTD|WITH_SYSTEMD|WITH_UNIT_TESTS|AWS_SDK_EXTERNAL_PROJECT|PLUGIN_AUTH_PAM):' \
+                '^(BUILD_CONFIG|FEATURE_SET|WITH_SSL|WITH_ZLIB|WITH_ZSTD|WITH_PCRE|GRN_WITH_LIBEVENT|GRN_WITH_MESSAGE_PACK|WITH_JEMALLOC|WITH_NUMA|WITH_ROCKSDB_BZip2|WITH_ROCKSDB_LZ4|WITH_ROCKSDB_Snappy|WITH_ROCKSDB_ZSTD|WITH_SYSTEMD|WITH_UNIT_TESTS|PLUGIN_COLUMNSTORE|AWS_SDK_EXTERNAL_PROJECT|PLUGIN_AUTH_PAM):' \
                 CMakeCache.txt > "$out/share/aos-build-features/mariadb-cmake-cache.txt"
             ''
             else ''
@@ -732,7 +736,7 @@ in
 
               mkdir -p "$out/share/aos-build-features"
               grep -E \
-                '^(BUILD_CONFIG|FEATURE_SET|WITH_SSL|WITH_ZLIB|WITH_ZSTD|WITH_PCRE|GRN_WITH_LIBEVENT|GRN_WITH_MESSAGE_PACK|WITH_JEMALLOC|WITH_NUMA|WITH_LIBURING|WITH_ROCKSDB_BZip2|WITH_ROCKSDB_LZ4|WITH_ROCKSDB_Snappy|WITH_ROCKSDB_ZSTD|WITH_SYSTEMD|WITH_UNIT_TESTS|AWS_SDK_EXTERNAL_PROJECT):' \
+                '^(BUILD_CONFIG|FEATURE_SET|WITH_SSL|WITH_ZLIB|WITH_ZSTD|WITH_PCRE|GRN_WITH_LIBEVENT|GRN_WITH_MESSAGE_PACK|WITH_JEMALLOC|WITH_NUMA|WITH_LIBURING|WITH_ROCKSDB_BZip2|WITH_ROCKSDB_LZ4|WITH_ROCKSDB_Snappy|WITH_ROCKSDB_ZSTD|WITH_SYSTEMD|WITH_UNIT_TESTS|PLUGIN_COLUMNSTORE|AWS_SDK_EXTERNAL_PROJECT):' \
                 CMakeCache.txt > "$out/share/aos-build-features/mariadb-cmake-cache.txt"
             ''
           )

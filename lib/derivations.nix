@@ -969,27 +969,35 @@
       )
     );
 
+    # Named outputs are fresh derivation attrsets. Preserve the package-level
+    # dependency and execution contract when consumers select one directly.
+    outputMetadata = {
+      inherit meta version propagatedDeps;
+      pname = effectivePname;
+      platforms = derivationPlatforms;
+      constraints = {
+        build = buildPlatform.constraints;
+        execute = ourExecute;
+        target =
+          if meta ? target
+          then codeTargetPlatform.constraints
+          else null;
+      };
+    };
+    annotatedOutputs = builtins.listToAttrs (
+      builtins.map (output: {
+        name = output;
+        value = drv.${output} // outputMetadata;
+      })
+      outputs
+    );
+
     # Attach metadata and override mechanism
     result =
       drv
+      // annotatedOutputs
+      // outputMetadata
       // {
-        inherit meta version propagatedDeps;
-        pname = effectivePname;
-        platforms = derivationPlatforms;
-
-        # Expose constraints for downstream chaining verification
-        constraints = {
-          build = buildPlatform.constraints;
-          execute = ourExecute;
-          target =
-            # Only explicit compiler/code-generator metadata participates in
-            # toolchain chaining. Every package has a target platform record,
-            # but ordinary build tools must not be mistaken for compilers.
-            if meta ? target
-            then codeTargetPlatform.constraints
-            else null;
-        };
-
         # Override mechanism
         override = overrideArgs:
           if builtins.isFunction overrideArgs
@@ -1728,6 +1736,49 @@
         scrubMap
       )
     );
+    padPlaceholder = path: placeholder: let
+      padding = builtins.stringLength path - builtins.stringLength placeholder;
+    in
+      if padding < 0
+      then throw "fetchBazelDeps: scrub placeholder '${placeholder}' is longer than '${path}'"
+      else placeholder + builtins.concatStringsSep "" (builtins.genList (_: "_") padding);
+    binaryScrubSedArgs = builtins.concatStringsSep " " (
+      builtins.attrValues (
+        builtins.mapAttrs (
+          path: placeholder: "-e 's|${path}|${padPlaceholder path placeholder}|g'"
+        )
+        scrubMap
+      )
+    );
+    scrubFiles = name: sedArgs:
+      builtins.toFile name ''
+        set -eu
+
+        scratch="$(mktemp "$TMPDIR/${name}.XXXXXX")"
+        active_file=
+        active_mode=
+        cleanup() {
+          if [ -n "$active_file" ] && [ -e "$active_file" ]; then
+            chmod "$active_mode" "$active_file" 2>/dev/null || true
+          fi
+          rm -f "$scratch"
+        }
+        trap cleanup EXIT
+        trap 'exit 1' HUP INT TERM
+
+        for file do
+          active_file="$file"
+          active_mode="$(stat -c '%a' "$file")"
+          sed ${sedArgs} "$file" > "$scratch"
+          chmod u+w "$file"
+          cat "$scratch" > "$file"
+          chmod "$active_mode" "$file"
+          active_file=
+          active_mode=
+        done
+      '';
+    scrubTextFiles = scrubFiles "scrub-bazel-text" scrubSedArgs;
+    scrubBinaryFiles = scrubFiles "scrub-bazel-binary" binaryScrubSedArgs;
     removeReposCmds = builtins.concatStringsSep "\n" (
       builtins.map (
         repo: "rm -rf \"$bazelOut/external/${repo}\" \"$bazelOut/external/@${repo}.marker\""
@@ -1850,9 +1901,15 @@
             if scrubMap != {}
             then ''
               # --- Store path scrubbing ---
-              find "$bazelOut/external" -type f | while read f; do
-                sed -i ${scrubSedArgs} "$f" 2>/dev/null || true
-              done
+              # Binary substitutions must preserve offsets; text substitutions
+              # stay compact. Rewrite through scratch files so read-only caches
+              # retain their original modes.
+              find "$bazelOut/external" -type f -print0 \
+                | xargs -0 -r grep -IlZ . \
+                | xargs -0 -r sh ${scrubTextFiles}
+              find "$bazelOut/external" -type f -print0 \
+                | xargs -0 -r grep -ILZ . \
+                | xargs -0 -r sh ${scrubBinaryFiles}
             ''
             else ""
           }
