@@ -1686,6 +1686,15 @@ pub fn validate_permissions_meta(package_name: &str, permissions: &PermissionsMe
     for host_path in &permissions.host_paths {
         validate_host_path_permission(host_path)?;
     }
+    let mut static_users = std::collections::BTreeSet::new();
+    for user in &permissions.static_users {
+        validate_account_name(user)?;
+        if !static_users.insert(user) {
+            bail!(
+                "package '{package_name}' permissions.static-users contains duplicate user '{user}'"
+            );
+        }
+    }
     for module in &permissions.kernel_modules {
         validate_kernel_module_name(module)?;
     }
@@ -4469,6 +4478,25 @@ last_update = "2026-02-13T10:30:00Z"
                 .contains("read-only host paths under /tmp or /var/tmp"),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn permissions_bind_static_users_into_confinement() {
+        let mut permissions = PermissionsMeta {
+            static_users: vec!["aos-service".into()],
+            ..PermissionsMeta::default()
+        };
+        permissions.confinement = Some(permissions.computed_confinement());
+
+        validate_permissions_meta("webapp", &permissions).unwrap();
+        assert_eq!(
+            permissions.confinement.as_ref().unwrap().holes,
+            ["static-user:aos-service"]
+        );
+
+        permissions.static_users.push("aos-service".into());
+        let err = validate_permissions_meta("webapp", &permissions).unwrap_err();
+        assert!(err.to_string().contains("duplicate user 'aos-service'"));
     }
 
     #[test]

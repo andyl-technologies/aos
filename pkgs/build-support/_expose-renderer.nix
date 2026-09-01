@@ -1367,6 +1367,7 @@ in rec {
     manifestKernel = kernel // {modules = kernelModules;};
     manifestPermissions =
       permissions
+      // lib.optionalAttrs (authoredStaticUsers != []) {static-users = authoredStaticUsers;}
       // {
         security-label = permissions.security-label or "aos-pkg-${packageName}";
         inherit confinement;

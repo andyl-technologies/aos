@@ -1727,6 +1727,13 @@ pub struct PermissionsMeta {
     /// Whether the package requests host-root-equivalent users.
     #[serde(default, rename = "privileged-users", skip_serializing_if = "is_false")]
     pub privileged_users: bool,
+    /// Static non-root service accounts derived from authenticated units.
+    #[serde(
+        default,
+        rename = "static-users",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub static_users: Vec<String>,
     /// Host-fulfilled kernel modules requested by the package.
     #[serde(
         default,
@@ -1760,6 +1767,7 @@ impl PermissionsMeta {
             && self.host_paths.is_empty()
             && !self.cgroup_delegate
             && !self.privileged_users
+            && self.static_users.is_empty()
             && self.kernel_modules.is_empty()
             && self.syscalls.is_none()
             && self.security_label.is_none()
@@ -1831,6 +1839,11 @@ impl PermissionsMeta {
         if self.privileged_users {
             holes.push("privileged-users".into());
         }
+        holes.extend(
+            self.static_users
+                .iter()
+                .map(|user| format!("static-user:{user}")),
+        );
         if syscall_profile != SyscallProfile::Restricted {
             holes.push(format!("syscalls:{}", syscall_profile.as_manifest_str()));
         }

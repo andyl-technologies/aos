@@ -2315,6 +2315,7 @@ in
           fi
           grep -q '"confinement":{"class":"sandboxed-with-holes","holes":\["static-user:aos-static"\],"label":"sandboxed-with-holes (static-user:aos-static)"}' \
             "$staticUserExposePath/manifest.json"
+          grep -q '"static-users":\["aos-static"\]' "$staticUserExposePath/manifest.json"
           permission_only_modules="$permissionOnlyModulesExposePath/units/aos-pkg-expose-smoke-modules.service"
           permission_only_manifest="$permissionOnlyModulesExposePath/manifest.json"
           grep -q 'ExecStart=${pkgs.kmod}/sbin/modprobe -a br_netfilter' \
