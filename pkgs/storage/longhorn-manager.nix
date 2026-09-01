@@ -21,7 +21,10 @@ in
     };
 
     buildDeps = [go];
-    runtimeDeps = [];
+    # The signed add-on resource bundle refers to these payloads as its
+    # authenticated runtime companions. Keep them in the package closure so
+    # publication, installation, rollback, and GC retain one complete add-on.
+    runtimeDeps = [longhorn-engine longhorn-instance-manager];
 
     phases = [
       {
@@ -50,7 +53,11 @@ in
         script = ''
           mkdir -p $out/bin $out/share
           install -m 755 longhorn-manager $out/bin/
-          printf '%s\n' '${builtins.toJSON {inherit version;}}' > $out/share/longhorn-package.json
+          printf '%s\n' '${builtins.toJSON {
+            inherit version;
+            engine = longhorn-engine;
+            instanceManager = longhorn-instance-manager;
+          }}' > $out/share/longhorn-package.json
         '';
       }
     ];
