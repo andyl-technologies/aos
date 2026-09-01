@@ -776,6 +776,7 @@ mod tests {
             semantic_schema_sha256:
                 "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                     .to_string(),
+            system_module_nar_hash: None,
             references: Vec::new(),
         });
         installed

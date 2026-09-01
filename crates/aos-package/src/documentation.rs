@@ -1021,6 +1021,7 @@ mod tests {
                 semantic_schema_sha256: String::new(),
                 runtime_nar_hash: format!("sha256:{}", "a".repeat(64)),
                 config_module_nar_hash: None,
+                system_module_nar_hash: None,
                 expose_artifact_nar_hash: None,
                 source_nar_hash: format!("sha256:{}", "b".repeat(64)),
             },
@@ -1090,6 +1091,7 @@ mod tests {
             document_sha256: document.document_sha256().unwrap(),
             document_size: bytes.len() as u64,
             semantic_schema_sha256: document.identity.semantic_schema_sha256.clone(),
+            system_module_nar_hash: None,
             references: Vec::new(),
         };
         assert!(load_document_file(&path, Some(&artifact), "fixture").is_ok());

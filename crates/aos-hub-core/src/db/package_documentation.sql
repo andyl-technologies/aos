@@ -76,6 +76,7 @@ CREATE TABLE package_documentation(
   document_sha256 KEYTEXT128 NOT NULL,
   document_size INTEGER NOT NULL,
   semantic_schema_sha256 KEYTEXT128 NOT NULL,
+  system_module_nar_hash KEYTEXT128,
   PRIMARY KEY(registry_id, package_name, package_version, platform),
   CHECK(format = 'aos.package-documentation/v1+json'),
   CHECK(nar_size > 0 AND nar_size <= 4194304),

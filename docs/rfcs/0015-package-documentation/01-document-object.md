@@ -68,6 +68,7 @@ closed checked schema and canonical fixture corpus.
     "semantic_schema_sha256": "sha256:...",
     "runtime_nar_hash": "sha256:...",
     "config_module_nar_hash": "sha256:...",
+    "system_module_nar_hash": null,
     "expose_artifact_nar_hash": "sha256:...",
     "source_nar_hash": "sha256:..."
   },
@@ -189,6 +190,16 @@ that authority. It records:
 - exact contributable wildcard subpaths;
 - package contributions and their required owner ABI;
 - artifacts, units, users, groups, and capabilities the module may create.
+
+Image-owned services use the same document model without pretending that their
+package owns a runtime config module. A canonical service catalog in the exact
+image base library maps the implementing package to reviewed option prefixes
+and units. Publication evaluates that immutable base library, records its NAR
+identity in both the signed package selection and canonical document, and
+extracts only the selected public declarations. The Hub independently requires
+those two identities to agree before indexing. This gives packages such as
+`aos-hub`, `chrony`, `openssh`, and `systemd` complete package pages while the
+image module remains their sole configuration authority.
 
 Publication derives these fields from signed `ConfigModuleMeta` and rejects any
 disagreement. A contributor cannot claim documentation ownership or mark a

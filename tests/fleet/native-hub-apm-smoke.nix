@@ -34,6 +34,7 @@
       pkgs.nginx
       pkgs.nginx.config
       pkgs.nginx.expose
+      pkgs.aos-hub
       documentationBaseLib
       pkgs.binutils
       pkgs.sbsigntools
@@ -103,6 +104,7 @@ in {
       NGINX = "${pkgs.nginx}"
       NGINX_CONFIG = "${pkgs.nginx.config}"
       NGINX_EXPOSE = "${pkgs.nginx.expose}"
+      AOS_HUB_PACKAGE = "${pkgs.aos-hub}"
       DOCUMENTATION_BASE_LIB = "${documentationBaseLib}"
       UPGRADE_TOPLEVEL = "${upgradeToplevel}"
       UPGRADE_IMAGE = "${upgradeImage}"
@@ -604,6 +606,12 @@ in {
             --config-module {shlex.quote(NGINX_CONFIG)} \\
             --config-base-lib {shlex.quote(DOCUMENTATION_BASE_LIB)} \\
             --key-id initial
+          {APR} publish {AOS_HUB_PACKAGE} --registry production \\
+            --name aos-hub --version '${pkgs.aos-hub.version}' \\
+            --description 'Native and Worker registry Hub service.' \\
+            --license Apache-2.0 --maintainer publisher@example.test \\
+            --documentation-base-lib {shlex.quote(DOCUMENTATION_BASE_LIB)} \\
+            --key-id initial
           {APR} release 1.0.0 --registry production \\
             --store-path {TOOL_V1} --name hub-tool \\
             --description 'Native Hub production fixture' --license MIT \\
@@ -639,6 +647,16 @@ in {
               "docs package nginx --registry acme/production",
               token,
           ) + f" | {JQ} -e '.package.name == \"nginx\" and (.options | length > 0)'"
+      )
+      publisher.succeed(
+          hub_command(
+              "docs package aos-hub --registry acme/production",
+              token,
+          ) + f" | {JQ} -e '.package.name == \"aos-hub\" "
+          "and (.options | length > 10) "
+          "and (.options | any(.display_path == \"aos.registry-hub.listen\")) "
+          "and (.runtime.units | any(.name == \"aos-hub.service\")) "
+          "and (.identity.system_module_nar_hash | type == \"string\")'"
       )
       publisher.succeed(
           hub_command(

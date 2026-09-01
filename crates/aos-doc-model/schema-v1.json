@@ -39,6 +39,7 @@
         "semantic_schema_sha256": {"$ref": "#/$defs/digest"},
         "runtime_nar_hash": {"$ref": "#/$defs/digest"},
         "config_module_nar_hash": {"$ref": "#/$defs/digest"},
+        "system_module_nar_hash": {"$ref": "#/$defs/digest"},
         "expose_artifact_nar_hash": {"$ref": "#/$defs/digest"},
         "source_nar_hash": {"$ref": "#/$defs/digest"}
       }

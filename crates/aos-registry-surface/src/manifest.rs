@@ -2391,6 +2391,10 @@ pub struct DocumentationArtifactMeta {
     pub document_size: u64,
     /// Digest over configuration semantics, excluding explanatory prose.
     pub semantic_schema_sha256: String,
+    /// NAR identity of the trusted image base library used to extract
+    /// system-owned options, when this package is configured by the image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_module_nar_hash: Option<String>,
     /// Direct references. Version 1 requires this to be empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<String>,

@@ -4228,6 +4228,7 @@ impl Database {
                 artifact.document_sha256,
                 artifact.document_size,
                 artifact.semantic_schema_sha256,
+                artifact.system_module_nar_hash,
             ]);
             for search in &documentation.search {
                 documentation_search_rows.push(vals![
@@ -4248,7 +4249,7 @@ impl Database {
             "INSERT INTO package_documentation
              (registry_id, indexed_commit, package_name, package_version, platform,
               format, store_path, nar_hash, nar_size, document_sha256, document_size,
-              semantic_schema_sha256)",
+              semantic_schema_sha256, system_module_nar_hash)",
             &documentation_rows,
             "",
         )?;
@@ -13771,7 +13772,8 @@ impl Database {
             .backend
             .query_opt(
                 "SELECT indexed_commit, format, store_path, nar_hash, nar_size,
-                        document_sha256, document_size, semantic_schema_sha256
+                        document_sha256, document_size, semantic_schema_sha256,
+                        system_module_nar_hash
                  FROM package_documentation
                  WHERE registry_id = ?1 AND package_name = ?2
                    AND package_version = ?3 AND platform = ?4",
@@ -13794,6 +13796,7 @@ impl Database {
                 document_sha256: row.get(5)?,
                 document_size: row.get(6)?,
                 semantic_schema_sha256: row.get(7)?,
+                system_module_nar_hash: row.get(8)?,
                 references: Vec::new(),
             },
         }))
@@ -13820,7 +13823,7 @@ impl Database {
                 "SELECT d.indexed_commit, d.package_version, d.platform,
                         d.format, d.store_path, d.nar_hash, d.nar_size,
                         d.document_sha256, d.document_size,
-                        d.semantic_schema_sha256
+                        d.semantic_schema_sha256, d.system_module_nar_hash
                  FROM package_documentation d
                  JOIN packages p ON p.registry_id = d.registry_id
                                 AND p.name = d.package_name
@@ -13850,6 +13853,7 @@ impl Database {
                 document_sha256: row.get(7)?,
                 document_size: row.get(8)?,
                 semantic_schema_sha256: row.get(9)?,
+                system_module_nar_hash: row.get(10)?,
                 references: Vec::new(),
             },
         }))
@@ -13870,7 +13874,7 @@ impl Database {
             .query_opt(
                 "SELECT indexed_commit, package_name, package_version, platform,
                         format, store_path, nar_hash, nar_size, document_size,
-                        semantic_schema_sha256
+                        semantic_schema_sha256, system_module_nar_hash
                  FROM package_documentation
                  WHERE registry_id = ?1 AND document_sha256 = ?2
                  ORDER BY package_name, package_version, platform LIMIT 1",
@@ -13893,6 +13897,7 @@ impl Database {
                 document_sha256: document_sha256.to_string(),
                 document_size: row.get(8)?,
                 semantic_schema_sha256: row.get(9)?,
+                system_module_nar_hash: row.get(10)?,
                 references: Vec::new(),
             },
         }))
@@ -27155,6 +27160,7 @@ source_nar_hash = ""
                 document_sha256: "b".repeat(64),
                 document_size: 2048,
                 semantic_schema_sha256: "c".repeat(64),
+                system_module_nar_hash: None,
                 references: Vec::new(),
             },
             search: vec![aos_doc_model::SearchDocument {
