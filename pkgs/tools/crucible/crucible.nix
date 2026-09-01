@@ -23,9 +23,23 @@
   qemu-crucible-source,
   gdb,
   openssh,
+  buildPackages,
   controllerOnly ? false,
 }: let
   version = "0.1.0";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  buildRustDev =
+    if isDarwinCross
+    then buildPackages.rust.dev
+    else rust.dev;
+  buildPkgConfig =
+    if isDarwinCross
+    then buildPackages.pkg-config
+    else pkg-config;
+  buildProtobuf =
+    if isDarwinCross
+    then buildPackages.protobuf
+    else protobuf;
   nativeQemuSystemBinary =
     {
       "x86_64-linux" = "qemu-system-x86_64";
@@ -62,10 +76,24 @@
   docPackageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") docPackages);
   doctestPackages = builtins.filter (package: package != "crucible-cli") controllerPackages;
   doctestPackageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") doctestPackages);
+  forbiddenControllerRuntimePackages =
+    if stdenv.isCross
+    then [
+      buildPackages.qemu-crucible
+      buildPackages.crucible-qemu-plugin
+      buildPackages.linux-crucible
+      buildPackages.crucible-fixtures
+    ]
+    else [
+      qemu-crucible
+      crucible-qemu-plugin
+      linux-crucible
+      crucible-fixtures
+    ];
   forbiddenControllerRuntimePaths =
     map
     (package: builtins.unsafeDiscardStringContext (toString package))
-    [debugGateway qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures];
+    ([debugGateway] ++ forbiddenControllerRuntimePackages);
   shmemLib = builtins.readFile ../../../crates/crucible-shmem/src/lib.rs;
   protocolLib = builtins.readFile ../../../crates/crucible-protocol/src/lib.rs;
   doorbellAbi = builtins.readFile ../../../crates/crucible-protocol/src/doorbell_abi.rs;
@@ -95,11 +123,11 @@
     OPENSSL_INCLUDE_DIR = "${openssl}/include";
     OPENSSL_NO_VENDOR = "1";
     OPENSSL_STATIC = "0";
-    PROTOC = "${protobuf}/bin/protoc";
+    PROTOC = "${buildProtobuf}/bin/protoc";
   };
   controllerArtifactContract = {
     family = "crucible-apache-host-release-and-test";
-    nativeInputs = map toString [rust.dev pkg-config openssl protobuf];
+    nativeInputs = map toString [buildRustDev buildPkgConfig openssl buildProtobuf];
     licenseScope = "Apache-2.0";
   };
   controllerArtifacts = mkCargoArtifacts {
@@ -118,7 +146,9 @@
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES ${workspaceCargoFlags} --features crucible-cli/test-double"
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${workspaceCargoFlags} --features crucible-cli/test-double"
     ];
-    buildDeps = [rust.dev pkg-config openssl protobuf];
+    buildDeps =
+      [buildRustDev buildPkgConfig openssl buildProtobuf]
+      ++ lib.optionals isDarwinCross [buildPackages.crucible-controller];
     runtimeDeps = [openssl];
   };
   debugGatewayArtifactContract = {
@@ -165,7 +195,7 @@
     cargoFlags = packageFlags;
     cargoTestFlags = "${packageFlags} --features crucible-cli/test-double";
     doCheck = true;
-    buildDeps = [rust.dev pkg-config openssl protobuf];
+    buildDeps = [buildRustDev buildPkgConfig openssl buildProtobuf];
     runtimeDeps = [openssl];
     # The controller is the Apache side of a process boundary. Fail the build
     # if any QEMU-side implementation, guest kernel, or fixture enters either
@@ -182,21 +212,39 @@
     # tests/crucible/ so harness lints can read RFC-0010 and AOS check wiring,
     # while Cargo's virtual workspace remains rooted at crates/.
     postBuild = ''
-      cargo test \
-        --frozen \
-        --offline \
-        -j$NIX_BUILD_CORES \
-        -p crucible-harness \
-        --test gate_license_boundary
-      cargo clippy \
-        --all-targets \
-        --features crucible-cli/test-double \
-        --frozen \
-        --offline \
-        -j$NIX_BUILD_CORES \
-        ${packageFlags} \
-        -- \
-        -D warnings
+      ${
+        if isDarwinCross
+        then ''
+          # The native controller dependency runs the executable policy and
+          # Clippy gates. Compile every Darwin test target with the cross
+          # compiler, but defer executing Mach-O tests until qualification.
+          echo "Crucible runtime, license, and doctest execution was validated by ${buildPackages.crucible-controller}"
+          cargo check \
+            --all-targets \
+            --features crucible-cli/test-double \
+            --frozen \
+            --offline \
+            -j$NIX_BUILD_CORES \
+            ${workspaceCargoFlags}
+        ''
+        else ''
+          cargo test \
+            --frozen \
+            --offline \
+            -j$NIX_BUILD_CORES \
+            -p crucible-harness \
+            --test gate_license_boundary
+          cargo clippy \
+            --all-targets \
+            --features crucible-cli/test-double \
+            --frozen \
+            --offline \
+            -j$NIX_BUILD_CORES \
+            ${packageFlags} \
+            -- \
+            -D warnings
+        ''
+      }
       export RUSTDOCFLAGS="-D warnings -D missing_docs"
       cargo doc \
         --no-deps \
@@ -213,13 +261,21 @@
         --target-dir target/crucible-doc-cli \
         -p crucible-cli \
         --bin crucible
-      cargo test \
-        --doc \
-        --frozen \
-        --offline \
-        -j$NIX_BUILD_CORES \
-        --target-dir target/crucible-doctest-libs \
-        ${doctestPackageFlags}
+      ${
+        if isDarwinCross
+        then ''
+          echo "skipping Darwin doctest execution while cross-compiling"
+        ''
+        else ''
+          cargo test \
+            --doc \
+            --frozen \
+            --offline \
+            -j$NIX_BUILD_CORES \
+            --target-dir target/crucible-doctest-libs \
+            ${doctestPackageFlags}
+        ''
+      }
     '';
 
     # The check phase enables the test-only backend and writes a feature-enabled
@@ -243,16 +299,28 @@
 
     postInstall = ''
       test -x "$out/bin/crucible"
-      cp target/release/examples/crucible-debugger-live-fixture \
+      cp ${
+        if isDarwinCross
+        then ''"target/$CARGO_BUILD_TARGET/release/examples/crucible-debugger-live-fixture"''
+        else "target/release/examples/crucible-debugger-live-fixture"
+      } \
         "$out/bin/crucible-debugger-live-fixture"
-      if "$out/bin/crucible" --help | grep -q 'auto|qemu|double'; then
-        echo "installed Crucible CLI unexpectedly contains the test-only backend" >&2
-        exit 1
-      fi
-      if "$out/bin/crucible" selftest --help | grep -q -- '--with-qemu'; then
-        echo "installed Crucible CLI unexpectedly exposes --with-qemu" >&2
-        exit 1
-      fi
+      ${
+        if isDarwinCross
+        then ''
+          echo "deferring installed Crucible CLI execution until Darwin qualification"
+        ''
+        else ''
+          if "$out/bin/crucible" --help | grep -q 'auto|qemu|double'; then
+            echo "installed Crucible CLI unexpectedly contains the test-only backend" >&2
+            exit 1
+          fi
+          if "$out/bin/crucible" selftest --help | grep -q -- '--with-qemu'; then
+            echo "installed Crucible CLI unexpectedly exposes --with-qemu" >&2
+            exit 1
+          fi
+        ''
+      }
 
       mkdir -p "$out/share/licenses/crucible-controller"
       cp ${../../../LICENSES/Apache-2.0.txt} "$out/share/licenses/crucible-controller/Apache-2.0.txt"

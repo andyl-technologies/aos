@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  stdenv,
 }: let
   version = "1.3.1";
 in
@@ -21,6 +22,9 @@ in
     runtimeDeps = [];
     propagatedDeps = [];
 
+    # zlib's configure script understands a synthetic Darwin uname, but then
+    # assumes Apple's /usr/bin/libtool creates static archives. Keep llvm-ar
+    # and llvm-ranlib selected explicitly for the Linux-hosted cross build.
     phases = [
       {
         name = "unpack";
@@ -32,19 +36,31 @@ in
       {
         name = "configure";
         script = ''
-          ./configure --prefix=$out
+          ./configure --prefix=$out ${
+            if stdenv.hostPlatform.isDarwin
+            then "--uname=${stdenv.hostPlatform.config}"
+            else ""
+          }
         '';
       }
       {
         name = "build";
         script = ''
-          make -j$NIX_BUILD_CORES
+          make -j$NIX_BUILD_CORES ${
+            if stdenv.hostPlatform.isDarwin
+            then ''AR="$AR" ARFLAGS=rc RANLIB="$RANLIB"''
+            else ""
+          }
         '';
       }
       {
         name = "install";
         script = ''
-          make install
+          make install ${
+            if stdenv.hostPlatform.isDarwin
+            then ''AR="$AR" ARFLAGS=rc RANLIB="$RANLIB" LDCONFIG=:''
+            else ""
+          }
         '';
       }
     ];

@@ -5,6 +5,7 @@
   gnumake,
   gmp,
   mpfr,
+  stdenv,
 }: let
   version = "1.3.1";
 in
@@ -41,7 +42,19 @@ in
       {
         name = "configure";
         script = ''
+          ${
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              # Mach-O debug symbols retain compilation and object paths even
+              # after stripping. Remap the sandbox prefix at compile time so
+              # cached libraries contain no ephemeral /build references.
+              export CFLAGS="''${CFLAGS:-} -ffile-prefix-map=$PWD=. -fdebug-prefix-map=$PWD=. -fdebug-compilation-dir=."
+            ''
+            else ""
+          }
+
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --with-gmp=${gmp} \
             --with-mpfr=${mpfr} \

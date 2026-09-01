@@ -6,6 +6,8 @@
 {
   mkBazelPackage,
   fetchBazelDeps,
+  stdenv,
+  buildPackages,
   fetchurl,
   lib,
   bazel-7,
@@ -43,6 +45,158 @@
   bootstrapTools,
 }: let
   version = "1.37.0";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+
+  # Repository rules, generators, and execution-platform actions run on the
+  # Linux builder.  Keep those tools native while the explicit Bazel target
+  # toolchains below select the AOS Darwin compiler and Rust standard library
+  # for the final Envoy binary.
+  buildBazel =
+    if isDarwinCross
+    then buildPackages.bazel-7
+    else bazel-7;
+  buildJdk =
+    if isDarwinCross
+    then buildPackages.openjdk
+    else openjdk;
+  buildBash =
+    if isDarwinCross
+    then buildPackages.bash
+    else bash;
+  buildCoreutils =
+    if isDarwinCross
+    then buildPackages.coreutils
+    else coreutils;
+  buildWhich =
+    if isDarwinCross
+    then buildPackages.which
+    else which;
+  buildZip =
+    if isDarwinCross
+    then buildPackages.zip
+    else zip;
+  buildUnzip =
+    if isDarwinCross
+    then buildPackages.unzip
+    else unzip;
+  buildGawk =
+    if isDarwinCross
+    then buildPackages.gawk
+    else gawk;
+  buildPython =
+    if isDarwinCross
+    then buildPackages.python3
+    else python3;
+  buildGcc =
+    if isDarwinCross
+    then buildPackages.gcc
+    else gcc;
+  buildBinutils =
+    if isDarwinCross
+    then buildPackages.binutils
+    else binutils;
+  buildLlvm =
+    if isDarwinCross
+    then buildPackages.llvm
+    else llvm;
+  buildRust =
+    if isDarwinCross
+    then rust.passthru.buildTool
+    else rust;
+  nativeRust =
+    if isDarwinCross
+    then buildPackages.rust
+    else rust;
+  buildCmake =
+    if isDarwinCross
+    then buildPackages.cmake
+    else cmake;
+  buildNinja =
+    if isDarwinCross
+    then buildPackages.ninja
+    else ninja;
+  buildGrep =
+    if isDarwinCross
+    then buildPackages.grep
+    else grep;
+  buildGzip =
+    if isDarwinCross
+    then buildPackages.gzip
+    else gzip;
+  buildPatch =
+    if isDarwinCross
+    then buildPackages.patch
+    else patch;
+  buildDiffutils =
+    if isDarwinCross
+    then buildPackages.diffutils
+    else diffutils;
+  buildFindutils =
+    if isDarwinCross
+    then buildPackages.findutils
+    else findutils;
+  buildSed =
+    if isDarwinCross
+    then buildPackages.sed
+    else sed;
+  buildTar =
+    if isDarwinCross
+    then buildPackages.tar
+    else tar;
+  buildXz =
+    if isDarwinCross
+    then buildPackages.xz
+    else xz;
+  buildFile =
+    if isDarwinCross
+    then buildPackages.file
+    else file;
+  buildPerl =
+    if isDarwinCross
+    then buildPackages.perl
+    else perl;
+  buildGnumake =
+    if isDarwinCross
+    then buildPackages.gnumake
+    else gnumake;
+  buildPkgConfig =
+    if isDarwinCross
+    then buildPackages.pkg-config
+    else pkg-config;
+  buildAutoconf =
+    if isDarwinCross
+    then buildPackages.autoconf
+    else autoconf;
+  buildAutomake =
+    if isDarwinCross
+    then buildPackages.automake
+    else automake;
+  buildM4 =
+    if isDarwinCross
+    then buildPackages.m4
+    else m4;
+  buildCaCertificates =
+    if isDarwinCross
+    then buildPackages.ca-certificates
+    else ca-certificates;
+  buildPatchelf =
+    if isDarwinCross
+    then buildPackages.patchelf
+    else patchelf;
+  buildBootstrapTools =
+    if isDarwinCross
+    then buildPackages.bootstrapTools
+    else bootstrapTools;
+  darwinBazelCpu =
+    if stdenv.hostPlatform.isAarch64
+    then "darwin_arm64"
+    else "darwin_x86_64";
+  darwinBazelCpuConstraint =
+    if stdenv.hostPlatform.isAarch64
+    then "aarch64"
+    else "x86_64";
+  darwinTargetTriple = stdenv.hostPlatform.config;
+  llvmMajor = builtins.head (lib.splitString "." buildLlvm.version);
 
   envoyCredentialNames = [
     "tls-certificate"
@@ -53,34 +207,34 @@
   envoyCredentialSource = name: "/run/credstore/envoy/${name}";
 
   tools = [
-    bash
-    coreutils
-    which
-    zip
-    unzip
-    gawk
-    python3
-    gcc
-    binutils
-    llvm
-    rust
-    cmake
-    ninja
-    grep
-    gzip
-    patch
-    diffutils
-    findutils
-    sed
-    tar
-    xz
-    file
-    perl
-    gnumake
-    pkg-config
-    autoconf
-    automake
-    m4
+    buildBash
+    buildCoreutils
+    buildWhich
+    buildZip
+    buildUnzip
+    buildGawk
+    buildPython
+    buildGcc
+    buildBinutils
+    buildLlvm
+    buildRust
+    buildCmake
+    buildNinja
+    buildGrep
+    buildGzip
+    buildPatch
+    buildDiffutils
+    buildFindutils
+    buildSed
+    buildTar
+    buildXz
+    buildFile
+    buildPerl
+    buildGnumake
+    buildPkgConfig
+    buildAutoconf
+    buildAutomake
+    buildM4
   ];
 
   src = fetchurl {
@@ -89,6 +243,16 @@
     ];
     hash = "sha256-XPOlNCvf/owcwowK+mGiRlTR94FIDT3MImyB/kGh5xM=";
   };
+  darwinMdnsResponderSrc =
+    if isDarwinCross
+    then
+      fetchurl {
+        urls = [
+          "https://github.com/darlinghq/darling-mDNSResponder/archive/7e38ef562b4f3d41bffabb3e30d844d8042d3bbd.tar.gz"
+        ];
+        hash = "sha256-hPVgEJgzqCQA0xNHfdnwSIhKHaVFMHONnKY72L2Rk5c=";
+      }
+    else null;
 
   # Script to clean up python toolchain references that the patch may miss
   fixPythonBzl = builtins.toFile "fix_python_bzl.py" ''
@@ -147,153 +311,393 @@
   # Use unsafeDiscardStringContext because Nix disallows store path refs as dynamic attr keys
   scrub = builtins.unsafeDiscardStringContext;
   scrubMap = {
-    "${scrub python3}" = "__AOS_PYTHON__";
-    "${scrub bash}" = "__AOS_BASH__";
-    "${scrub coreutils}" = "__AOS_COREUTILS__";
-    "${scrub rust}" = "__AOS_RUST__";
-    "${scrub openjdk}" = "__AOS_JDK__";
-    "${scrub gcc}" = "__AOS_GCC__";
-    "${scrub binutils}" = "__AOS_BINUTILS__";
-    "${scrub llvm}" = "__AOS_LLVM__";
+    "${scrub buildPython}" = "__AOS_PYTHON__";
+    "${scrub buildBash}" = "__AOS_BASH__";
+    "${scrub buildCoreutils}" = "__AOS_COREUTILS__";
+    "${scrub buildRust}" = "__AOS_RUST__";
+    "${scrub buildJdk}" = "__AOS_JDK__";
+    "${scrub buildGcc}" = "__AOS_GCC__";
+    "${scrub buildBinutils}" = "__AOS_BINUTILS__";
+    "${scrub buildLlvm}" = "__AOS_LLVM__";
   };
 
+  # Bazel's repository and execution platforms remain native Linux.  This
+  # crosstool is selected only for target C, C++, and link actions, so no
+  # Mach-O helper is ever executed by the builder.
+  darwinToolchainSetup = lib.optionalString isDarwinCross ''
+    mkdir -p aos-darwin-toolchain
+    ${buildUnzip}/bin/unzip -jo "${buildBazel.src}" \
+      tools/cpp/unix_cc_toolchain_config.bzl \
+      -d aos-darwin-toolchain
+    mkdir -p aos-darwin-toolchain/include
+    ${buildTar}/bin/tar -xOf ${darwinMdnsResponderSrc} \
+      --wildcards '*/mDNSShared/dns_sd.h' \
+      > aos-darwin-toolchain/include/dns_sd.h
+
+    # Envoy registers the upstream download-only LLVM toolchain even when an
+    # explicit target crosstool is selected.  Its only remaining consumers are
+    # two compiler-rt/libunwind build settings in .bazelrc; AOS supplies both
+    # from the Darwin runtimes instead.  Remove the registration and settings
+    # together so offline repository resolution remains fail closed.
+    test "$(grep -Fc '    _toolchains_llvm()' bazel/repositories.bzl)" = 1
+    test "$(grep -Fc -- '@toolchains_llvm//toolchain/config:' .bazelrc)" = 4
+    sed -i '/^    _toolchains_llvm()$/d' bazel/repositories.bzl
+    sed -i '\|@toolchains_llvm//toolchain/config:|d' .bazelrc
+
+    # The generated macOS feature assumes `ar` is Apple's libtool and emits
+    # `-static -o`. AOS uses LLVM ar, whose archive operation is `rcs`.
+    if ! grep -q 'enabled = not is_linux,' \
+      aos-darwin-toolchain/unix_cc_toolchain_config.bzl; then
+      echo "Envoy ${version}: macOS libtool feature anchor is missing" >&2
+      exit 1
+    fi
+    sed -i 's/enabled = not is_linux,/enabled = False,/' \
+      aos-darwin-toolchain/unix_cc_toolchain_config.bzl
+
+    {
+      printf '%s\n' '#!${buildBash}/bin/bash'
+      printf '%s\n' 'set -eu'
+      printf '%s\n' 'compiling=false'
+      printf '%s\n' 'c_source=false'
+      printf '%s\n' 'cxx_source=false'
+      printf '%s\n' 'for arg in "$@"; do'
+      printf '%s\n' '  case "$arg" in'
+      printf '%s\n' '    -c|-S|-E|-M|-MM|-fsyntax-only) compiling=true ;;'
+      printf '%s\n' '    *.c|*.m|*.s|*.S) c_source=true ;;'
+      printf '%s\n' '    *.cc|*.cp|*.cpp|*.cxx|*.C|*.mm) cxx_source=true ;;'
+      printf '%s\n' '  esac'
+      printf '%s\n' 'done'
+      printf '%s\n' 'if [ "$compiling" = true ] && [ "$c_source" = true ] && [ "$cxx_source" = false ]; then'
+      printf '%s\n' '  exec ${stdenv.cc}/bin/cc "$@"'
+      printf '%s\n' 'fi'
+      printf '%s\n' 'exec ${stdenv.cc}/bin/c++ "$@"'
+    } > aos-darwin-toolchain/compiler
+    chmod +x aos-darwin-toolchain/compiler
+
+    cat > aos-darwin-toolchain/BUILD.bazel <<'DARWIN_TOOLCHAIN_EOF'
+    load(":unix_cc_toolchain_config.bzl", "cc_toolchain_config")
+    load("@rules_cc//cc:defs.bzl", "cc_toolchain", "cc_toolchain_suite")
+
+    package(default_visibility = ["//visibility:public"])
+
+    platform(
+        name = "target-platform",
+        constraint_values = [
+            "@platforms//cpu:${darwinBazelCpuConstraint}",
+            "@platforms//os:osx",
+        ],
+    )
+
+    filegroup(name = "empty")
+    filegroup(
+        name = "compiler-files",
+        srcs = ["compiler", "unix_cc_toolchain_config.bzl"] + glob(["include/**"]),
+    )
+
+    cc_toolchain_suite(
+        name = "toolchain",
+        toolchains = {
+            "${darwinBazelCpu}": ":cc-compiler",
+            "${darwinBazelCpu}|clang": ":cc-compiler",
+        },
+    )
+
+    cc_toolchain(
+        name = "cc-compiler",
+        toolchain_identifier = "aos-${darwinBazelCpu}",
+        toolchain_config = ":config",
+        all_files = ":compiler-files",
+        ar_files = ":compiler-files",
+        as_files = ":compiler-files",
+        compiler_files = ":compiler-files",
+        dwp_files = ":empty",
+        linker_files = ":compiler-files",
+        objcopy_files = ":compiler-files",
+        strip_files = ":compiler-files",
+        supports_header_parsing = 1,
+        supports_param_files = 1,
+    )
+
+    toolchain(
+        name = "registered-toolchain",
+        exec_compatible_with = [
+            "@platforms//cpu:x86_64",
+            "@platforms//os:linux",
+        ],
+        target_compatible_with = [
+            "@platforms//cpu:${darwinBazelCpuConstraint}",
+            "@platforms//os:osx",
+        ],
+        toolchain = ":cc-compiler",
+        toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+    )
+
+    cc_toolchain_config(
+        name = "config",
+        cpu = "${darwinBazelCpu}",
+        compiler = "clang",
+        toolchain_identifier = "aos-${darwinBazelCpu}",
+        host_system_name = "x86_64-unknown-linux-gnu",
+        target_system_name = "${darwinTargetTriple}",
+        target_libc = "macosx",
+        abi_version = "darwin",
+        abi_libc_version = "darwin",
+        builtin_sysroot = "${stdenv.sdk}",
+        cxx_builtin_include_directories = [
+            "${stdenv.darwinRuntimes}/include/c++/v1",
+            "${stdenv.cc}/lib/clang/aos-darwin/include",
+            "${buildLlvm}/lib/clang/${llvmMajor}/include",
+            "${stdenv.sdk}/usr/include",
+            "${stdenv.sdk}/System/Library/Frameworks",
+        ],
+        tool_paths = {
+            "ar": "${stdenv.cc}/bin/ar",
+            "c++filt": "${buildLlvm}/bin/llvm-cxxfilt",
+            "cpp": "${stdenv.cc}/bin/cc",
+            "dwp": "${buildLlvm}/bin/llvm-dwp",
+            "gcc": "compiler",
+            "gcov": "${buildLlvm}/bin/llvm-cov",
+            "ld": "compiler",
+            "llvm-cov": "${buildLlvm}/bin/llvm-cov",
+            "llvm-profdata": "${buildLlvm}/bin/llvm-profdata",
+            "nm": "${stdenv.cc}/bin/nm",
+            "objcopy": "${stdenv.cc}/bin/objcopy",
+            "objdump": "${stdenv.cc}/bin/objdump",
+            "strip": "${stdenv.cc}/bin/strip",
+        },
+        compile_flags = ["-Iaos-darwin-toolchain/include", "-D__HAS_DISPATCH__=1"],
+        dbg_compile_flags = ["-g"],
+        opt_compile_flags = ["-O2", "-DNDEBUG"],
+        conly_flags = [],
+        cxx_flags = ["-stdlib=libc++", "-faligned-allocation"],
+        link_flags = [],
+        archive_flags = [],
+        link_libs = [],
+        opt_link_flags = [],
+        unfiltered_compile_flags = [],
+        coverage_compile_flags = [],
+        coverage_link_flags = [],
+        supports_start_end_lib = False,
+        extra_flags_per_feature = {},
+    )
+    DARWIN_TOOLCHAIN_EOF
+  '';
+
   # Source patching — shared between fetch and build phases
-  postPatchScript = ''
-        # Apply patches
-        patch -p1 < ${./envoy-patches/0001-use-system-python.patch}
-        patch -p1 < ${./envoy-patches/0003-use-system-cc-toolchains.patch}
-        patch -p1 < ${./envoy-patches/0004-bump-rules-rust.patch}
-        # The AOS rules_rust bump changes the crate repository rule digest, but
-        # not Envoy's Cargo.lock-selected dependency graph. Keep the committed
-        # generated graph and advance its exact input checksum instead of
-        # repinning against the live registry index during every fetch.
+  postPatchScript =
+    darwinToolchainSetup
+    + ''
+          # Apply patches
+          patch -p1 < ${./envoy-patches/0001-use-system-python.patch}
+          patch -p1 < ${./envoy-patches/0003-use-system-cc-toolchains.patch}
+          patch -p1 < ${./envoy-patches/0004-bump-rules-rust.patch}
+          ${lib.optionalString (!isDarwinCross) ''
+        # Keep the committed Cargo graph while advancing rules_rust's
+        # exact repository-rule checksum. Darwin retains its separately
+        # proven cross-platform fixed-output graph.
         sed -i \
           's/"checksum": "b864c94e442ea41673dcae0f7039f7afb9ef5c4287962b4464b406f670a8e6d7"/"checksum": "1a3594db8f7293ad95cc02e807d844330cdf741cbb8edcbbbc42b36ee953adba"/' \
           source/extensions/dynamic_modules/sdk/rust/Cargo.Bazel.lock
         grep -q \
           '"checksum": "1a3594db8f7293ad95cc02e807d844330cdf741cbb8edcbbbc42b36ee953adba"' \
           source/extensions/dynamic_modules/sdk/rust/Cargo.Bazel.lock
-        cat >> bazel/rules_rust.patch << 'RULES_RUST_SHEBANG_EOF'
+      ''}
+          cat >> bazel/rules_rust.patch << 'RULES_RUST_SHEBANG_EOF'
 
-    --- crate_universe/src/metadata/cargo_tree_rustc_wrapper.sh
-    +++ crate_universe/src/metadata/cargo_tree_rustc_wrapper.sh
-    @@ -1,4 +1,4 @@
-    -#!/usr/bin/env bash
-    +#!${bash}/bin/bash
-     #
-     # For details, see:
-     # `@rules_rust//crate_universe/src/metadata/cargo_tree_resolver.rs - TreeResolver::create_rustc_wrapper`
-    RULES_RUST_SHEBANG_EOF
+      --- crate_universe/src/metadata/cargo_tree_rustc_wrapper.sh
+      +++ crate_universe/src/metadata/cargo_tree_rustc_wrapper.sh
+      @@ -1,4 +1,4 @@
+      -#!/usr/bin/env bash
+      +#!${buildBash}/bin/bash
+       #
+       # For details, see:
+       # `@rules_rust//crate_universe/src/metadata/cargo_tree_resolver.rs - TreeResolver::create_rustc_wrapper`
+      RULES_RUST_SHEBANG_EOF
 
-        # Remove .bazelversion so AOS Bazel is used directly
-        rm -f .bazelversion
+          # Remove .bazelversion so AOS Bazel is used directly
+          rm -f .bazelversion
 
-        # Ensure python toolchain registration is fully removed
-        python3 ${fixPythonBzl} bazel/repositories_extra.bzl
+          # Ensure python toolchain registration is fully removed
+          python3 ${fixPythonBzl} bazel/repositories_extra.bzl
 
-        # Replace yq-based YAML parsing with dummy data
-        python3 ${fixRepoBzl} bazel/repo.bzl
+          # Replace yq-based YAML parsing with dummy data
+          python3 ${fixRepoBzl} bazel/repo.bzl
 
-        # Remove yq/jq toolchain registrations (pre-built Go binaries)
-        sed -i '/register_yq_toolchains/d' bazel/dependency_imports.bzl
-        sed -i '/register_jq_toolchains/d' bazel/dependency_imports.bzl
+          # Remove yq/jq toolchain registrations (pre-built Go binaries)
+          sed -i '/register_yq_toolchains/d' bazel/dependency_imports.bzl
+          sed -i '/register_jq_toolchains/d' bazel/dependency_imports.bzl
 
-        # Disable toolchains_llvm setup — we use AOS-built GCC
-        sed -i '/bazel_toolchain_dependencies/d' bazel/repositories_extra.bzl
-        sed -i '/toolchain_llvm/d' bazel/repositories_extra.bzl 2>/dev/null || true
+          # Disable toolchains_llvm setup — we use AOS-built GCC
+          sed -i '/bazel_toolchain_dependencies/d' bazel/repositories_extra.bzl
+          sed -i '/toolchain_llvm/d' bazel/repositories_extra.bzl 2>/dev/null || true
 
-        # Remove envoy_toolchains() from WORKSPACE — it loads @toolchains_llvm rules
-        # which transitively need @helly25_bzl (defined by bazel_toolchain_dependencies, now removed)
-        sed -i '/envoy_toolchains/d' WORKSPACE
-        cat > bazel/toolchains.bzl << 'TOOLCHAINS_EOF'
-    # AOS: toolchains_llvm disabled — using AOS-built GCC directly
-    def envoy_toolchains():
-        pass
-    TOOLCHAINS_EOF
+          # Remove envoy_toolchains() from WORKSPACE — it loads @toolchains_llvm rules
+          # which transitively need @helly25_bzl (defined by bazel_toolchain_dependencies, now removed)
+          sed -i '/envoy_toolchains/d' WORKSPACE
+          cat > bazel/toolchains.bzl << 'TOOLCHAINS_EOF'
+      # AOS: toolchains_llvm disabled — using AOS-built GCC directly
+      def envoy_toolchains():
+          pass
+      TOOLCHAINS_EOF
 
-        # Remove llvm_toolchain references from dependency_imports_extra.bzl
-        sed -i '/llvm_toolchain/d' bazel/dependency_imports_extra.bzl
-        sed -i '/llvm_register_toolchains/d' bazel/dependency_imports_extra.bzl
+          # Remove llvm_toolchain references from dependency_imports_extra.bzl
+          sed -i '/llvm_toolchain/d' bazel/dependency_imports_extra.bzl
+          sed -i '/llvm_register_toolchains/d' bazel/dependency_imports_extra.bzl
 
-        # Remove emsdk/emscripten (wasm toolchain — not needed)
-        sed -i '/emsdk/d' bazel/dependency_imports.bzl
-        sed -i '/emscripten/d' bazel/dependency_imports.bzl
-        sed -i '/emsdk/d' bazel/repositories_extra.bzl
-        sed -i '/_emsdk/d' bazel/repositories.bzl
+          # Remove emsdk/emscripten (wasm toolchain — not needed)
+          sed -i '/emsdk/d' bazel/dependency_imports.bzl
+          sed -i '/emscripten/d' bazel/dependency_imports.bzl
+          sed -i '/emsdk/d' bazel/repositories_extra.bzl
+          sed -i '/_emsdk/d' bazel/repositories.bzl
 
-        # Remove Envoy's upstream bazel_toolchains repository. Execution policy
-        # remains external and can still be supplied by the system Bazel rc.
-        sed -i '/bazel_toolchains/d' bazel/repositories.bzl
+          # Remove Envoy's upstream bazel_toolchains repository. Execution
+          # policy remains external and can still be supplied by Bazel's rc.
+          sed -i '/bazel_toolchains/d' bazel/repositories.bzl
 
-        # Stub out RBE BUILD files that use @bazel_toolchains
-        # Provide stub platform targets so references from other BUILD files work
-        cat > bazel/rbe/toolchains/BUILD << 'RBE_EOF'
-    # AOS: upstream RBE platform disabled — provide stub platform target
-    platform(
-        name = "rbe_linux_gcc_platform",
-        visibility = ["//visibility:public"],
-    )
-    RBE_EOF
-        cat > bazel/platforms/rbe/BUILD << 'RBE_EOF'
-    # AOS: upstream RBE platform disabled
-    RBE_EOF
-        if [ -f mobile/bazel/platforms/rbe/BUILD ]; then
-          echo '# AOS: upstream RBE platform disabled' > mobile/bazel/platforms/rbe/BUILD
-        fi
+          # Stub out RBE BUILD files that use @bazel_toolchains
+          # Provide stub platform targets so references from other BUILD files work
+          cat > bazel/rbe/toolchains/BUILD << 'RBE_EOF'
+      # AOS: upstream RBE platform disabled — provide stub platform target
+      platform(
+          name = "rbe_linux_gcc_platform",
+          visibility = ["//visibility:public"],
+      )
+      RBE_EOF
+          cat > bazel/platforms/rbe/BUILD << 'RBE_EOF'
+      # AOS: upstream RBE platform disabled
+      RBE_EOF
+          if [ -f mobile/bazel/platforms/rbe/BUILD ]; then
+            echo '# AOS: upstream RBE platform disabled' > mobile/bazel/platforms/rbe/BUILD
+          fi
 
-        # Remove -Werror (GCC may produce warnings Clang doesn't)
-        sed -i '/"-Werror"/d' bazel/envoy_internal.bzl
+          # Remove -Werror (GCC may produce warnings Clang doesn't)
+          sed -i '/"-Werror"/d' bazel/envoy_internal.bzl
 
-        # Remove host_platform from --config=gcc (our stub platform has no CC toolchain)
-        # We'll set flags directly instead
-        sed -i '/host_platform.*rbe_linux_gcc/d' .bazelrc
-        # Use lld linker (envoy's auto-configured CC toolchain uses lld-specific flags
-        # like --start-lib that bfd doesn't support)
-        sed -i 's/-fuse-ld=gold/-fuse-ld=lld/g' .bazelrc
+          # Remove host_platform from --config=gcc (our stub platform has no CC toolchain)
+          # We'll set flags directly instead
+          sed -i '/host_platform.*rbe_linux_gcc/d' .bazelrc
+          # Use lld linker (envoy's auto-configured CC toolchain uses lld-specific flags
+          # like --start-lib that bfd doesn't support)
+          sed -i 's/-fuse-ld=gold/-fuse-ld=lld/g' .bazelrc
 
-        # Remove javabase from .bazelrc (set via --server_javabase)
-        sed -i '/javabase=/d' .bazelrc
+          # Remove javabase from .bazelrc (set via --server_javabase)
+          sed -i '/javabase=/d' .bazelrc
 
-        # Set up Rust toolchain symlinks for Bazel
-        mkdir -p bazel/nix
-        ln -sf ${rust}/bin/rustc bazel/nix/rustc
-        ln -sf ${rust}/bin/cargo bazel/nix/cargo
-        ln -sf ${rust}/bin/rustdoc bazel/nix/rustdoc
-        ln -sf ${rust} bazel/nix/rustcroot
-        sed "s|@bash@|${bash}/bin/bash|g" ${./envoy-patches/nix-build.BUILD.bazel} > bazel/nix/BUILD.bazel
+          # Set up Rust toolchain symlinks for Bazel
+          mkdir -p bazel/nix
+          ln -sf ${
+        if isDarwinCross
+        then "${nativeRust}/bin/rustc.unwrapped"
+        else "${buildRust}/bin/rustc"
+      } bazel/nix/rustc
+          ln -sf ${
+        if isDarwinCross
+        then "${nativeRust}/bin/cargo"
+        else "${buildRust}/bin/cargo"
+      } bazel/nix/cargo
+          ln -sf ${
+        if isDarwinCross
+        then "${nativeRust}/bin/rustdoc.unwrapped"
+        else "${buildRust}/bin/rustdoc"
+      } bazel/nix/rustdoc
+          ln -sf ${buildRust} bazel/nix/rustcroot
+          ${
+        if isDarwinCross
+        then ''
+          cat > bazel/nix/BUILD.bazel <<'DARWIN_RUST_TOOLCHAIN_EOF'
+          load("@bazel_tools//tools/sh:sh_toolchain.bzl", "sh_toolchain")
+          load("@rules_rust//rust:toolchain.bzl", "rust_toolchain")
+          load("@rules_rust//rust:defs.bzl", "rust_stdlib_filegroup")
 
-        # Inject Rust toolchain templates and bootstrap settings into crate_universe
-        sed -i \
-          -e 's|crate_universe_dependencies()|crate_universe_dependencies(bootstrap=True, rust_toolchain_cargo_template="@@//bazel/nix:cargo", rust_toolchain_rustc_template="@@//bazel/nix:rustc")|' \
-          -e 's|crates_repository(|crates_repository(generator="@@cargo_bazel_bootstrap//:cargo-bazel", supported_platform_triples=["x86_64-unknown-linux-gnu"], rust_toolchain_cargo_template="@@//bazel/nix:cargo", rust_toolchain_rustc_template="@@//bazel/nix:rustc",|' \
-          bazel/dependency_imports.bzl
+          exports_files(["cargo", "rustdoc", "rustc"])
 
-        # Fix luajit build script shebang
-        sed -i 's|#!/usr/bin/env python3|#!${python3}/bin/python3|' \
-          bazel/foreign_cc/luajit.patch 2>/dev/null || true
+          rust_stdlib_filegroup(
+              name = "rust_nix_target_stdlib",
+              srcs = glob([
+                  "rustcroot/lib/rustlib/${darwinTargetTriple}/lib/**",
+              ]),
+          )
 
-        # Replace shebangs throughout the source tree
-        find . -type f \( -name '*.sh' -o -name '*.bzl' -o -name 'BUILD' \
-             -o -name 'BUILD.*' -o -name 'WORKSPACE' -o -name '*.py' \
-             -o -name '*.tpl' \) | \
-          while read f; do
-            sed -i \
-              -e "s|/usr/local/bin/bash|${bash}/bin/bash|g" \
-              -e "s|/usr/bin/bash|${bash}/bin/bash|g" \
-              -e "s|/bin/bash|${bash}/bin/bash|g" \
-              -e "s|/usr/bin/env python3|${python3}/bin/python3|g" \
-              -e "s|/usr/bin/env python|${python3}/bin/python3|g" \
-              -e "s|/usr/bin/env bash|${bash}/bin/bash|g" \
-              -e "s|/usr/bin/env|${coreutils}/bin/env|g" \
-              -e "s|/bin/true|${coreutils}/bin/true|g" \
-              "$f" 2>/dev/null || true
-          done
-  '';
+          rust_toolchain(
+              name = "rust_nix_target_impl",
+              binary_ext = "",
+              dylib_ext = ".dylib",
+              exec_triple = "x86_64-unknown-linux-gnu",
+              cargo = ":cargo",
+              rust_doc = ":rustdoc",
+              rust_std = ":rust_nix_target_stdlib",
+              rustc = ":rustc",
+              stdlib_linkflags = [],
+              staticlib_ext = ".a",
+              target_triple = "${darwinTargetTriple}",
+              extra_rustc_flags = ["-Clinker=${stdenv.cc}/bin/cc"],
+          )
+
+          toolchain(
+              name = "rust_nix_target",
+              exec_compatible_with = [
+                  "@platforms//cpu:x86_64",
+                  "@platforms//os:linux",
+              ],
+              target_compatible_with = [
+                  "@platforms//cpu:${darwinBazelCpuConstraint}",
+                  "@platforms//os:osx",
+              ],
+              toolchain = ":rust_nix_target_impl",
+              toolchain_type = "@rules_rust//rust:toolchain_type",
+          )
+
+          sh_toolchain(
+              name = "local_sh_impl",
+              path = "${buildBash}/bin/bash",
+          )
+
+          toolchain(
+              name = "local_sh",
+              toolchain = ":local_sh_impl",
+              toolchain_type = "@bazel_tools//tools/sh:toolchain_type",
+          )
+          DARWIN_RUST_TOOLCHAIN_EOF
+        ''
+        else ''sed "s|@bash@|${buildBash}/bin/bash|g" ${./envoy-patches/nix-build.BUILD.bazel} > bazel/nix/BUILD.bazel''
+      }
+
+          # Inject Rust toolchain templates and bootstrap settings into crate_universe
+          sed -i \
+            -e 's|crate_universe_dependencies()|crate_universe_dependencies(bootstrap=True, rust_toolchain_cargo_template="@@//bazel/nix:cargo", rust_toolchain_rustc_template="@@//bazel/nix:rustc")|' \
+            -e 's|crates_repository(|crates_repository(generator="@@cargo_bazel_bootstrap//:cargo-bazel", supported_platform_triples=["x86_64-unknown-linux-gnu"${
+        lib.optionalString isDarwinCross '', "x86_64-apple-darwin", "aarch64-apple-darwin"''
+      }], rust_toolchain_cargo_template="@@//bazel/nix:cargo", rust_toolchain_rustc_template="@@//bazel/nix:rustc",|' \
+            bazel/dependency_imports.bzl
+
+          # Fix luajit build script shebang
+          sed -i 's|#!/usr/bin/env python3|#!${buildPython}/bin/python3|' \
+            bazel/foreign_cc/luajit.patch 2>/dev/null || true
+
+          # Replace shebangs throughout the source tree
+          find . -type f \( -name '*.sh' -o -name '*.bzl' -o -name 'BUILD' \
+               -o -name 'BUILD.*' -o -name 'WORKSPACE' -o -name '*.py' \
+               -o -name '*.tpl' \) | \
+            while read f; do
+              sed -i \
+                -e "s|/usr/local/bin/bash|${buildBash}/bin/bash|g" \
+                -e "s|/usr/bin/bash|${buildBash}/bin/bash|g" \
+                -e "s|/bin/bash|${buildBash}/bin/bash|g" \
+                -e "s|/usr/bin/env python3|${buildPython}/bin/python3|g" \
+                -e "s|/usr/bin/env python|${buildPython}/bin/python3|g" \
+                -e "s|/usr/bin/env bash|${buildBash}/bin/bash|g" \
+                -e "s|/usr/bin/env|${buildCoreutils}/bin/env|g" \
+                -e "s|/bin/true|${buildCoreutils}/bin/true|g" \
+                "$f" 2>/dev/null || true
+            done
+    '';
 in
   mkBazelPackage {
     pname = "envoy";
     inherit version src;
 
+    bazel = buildBazel;
+    jdk = buildJdk;
     configModule = {
       src = ./_envoy-config;
       moduleAbiCompat = {
@@ -392,10 +796,8 @@ in
       };
     };
 
-    bazel = bazel-7;
-    jdk = openjdk;
     inherit tools;
-    caCertificates = ca-certificates;
+    caCertificates = buildCaCertificates;
 
     # The Bazel build already passes --linkopt=-no-pie and
     # --host_linkopt=-no-pie; make the policy explicit.
@@ -403,18 +805,40 @@ in
 
     postPatch = postPatchScript;
     bazelTarget = "//source/exe:envoy-static";
-    bazelFlags = [
-      "--noenable_bzlmod"
-      "--define=wasm=disabled"
-    ];
+    bazelFlags =
+      [
+        "--noenable_bzlmod"
+        "--define=wasm=disabled"
+      ]
+      ++ lib.optionals isDarwinCross [
+        "--noenable_platform_specific_config"
+        "--platforms=//aos-darwin-toolchain:target-platform"
+        "--cpu=${darwinBazelCpu}"
+        "--host_cpu=k8"
+        "--crosstool_top=//aos-darwin-toolchain:toolchain"
+        "--host_crosstool_top=@local_config_cc//:toolchain"
+        "--extra_toolchains=//aos-darwin-toolchain:registered-toolchain"
+        "--repo_env=CC=${buildGcc}/bin/gcc"
+        "--repo_env=CXX=${buildGcc}/bin/g++"
+      ];
     inherit scrubMap;
 
     # --- Fetch-specific ---
-    depsHash = "sha256-NpOZJqaq2eKswg/ZMIsvxAPMD2r61qfqgpYsam4fR/Y=";
+    depsHash =
+      if isDarwinCross
+      then "sha256-OFSJQxEQ+LWGa8ZnTBZ6R16IauY5EL7Kh80T+m17emU="
+      else "sha256-NpOZJqaq2eKswg/ZMIsvxAPMD2r61qfqgpYsam4fR/Y=";
     fetchPostPatch = "";
     bazelFetchFlags = [
-      "--extra_toolchains=//bazel/nix:rust_nix_x86_64"
+      "--extra_toolchains=//bazel/nix:${
+        if isDarwinCross
+        then "rust_nix_target"
+        else "rust_nix_x86_64"
+      }"
     ];
+    fetchEnv = lib.optionalAttrs isDarwinCross {
+      CARGO_BAZEL_REPIN = "true";
+    };
     postFetch = ''
       # Fix tcmalloc GCC warning
       find "$bazelOut/external" -path "*/com_github_google_tcmalloc/tcmalloc/copts.bzl" | \
@@ -455,25 +879,40 @@ in
     '';
 
     # --- Build-specific ---
-    bazelBuildFlags = [
-      "-c opt"
-      "--config=gcc"
-      "--spawn_strategy=remote,standalone"
-      "--extra_toolchains=@local_jdk//:all"
-      "--java_runtime_version=local_jdk"
-      "--tool_java_runtime_version=local_jdk"
-      "--extra_toolchains=//bazel/nix:rust_nix_x86_64"
-      "--strip=always"
-      "--linkopt=-fuse-ld=lld"
-      "--host_linkopt=-fuse-ld=lld"
-      "--action_env=BAZEL_LINKOPTS=-lm:-fuse-ld=lld"
-      "--linkopt=-no-pie"
-      "--host_linkopt=-no-pie"
-      "--linkopt=-Wl,-z,noexecstack"
-      "--linkopt=-Wl,--unresolved-symbols=ignore-in-object-files"
-      "--cxxopt=-Wno-changes-meaning"
-      "--cxxopt=-Wno-error"
-    ];
+    bazelBuildFlags =
+      if isDarwinCross
+      then [
+        "-c opt"
+        "--config=macos"
+        "--spawn_strategy=standalone"
+        "--extra_toolchains=@local_jdk//:all"
+        "--java_runtime_version=local_jdk"
+        "--tool_java_runtime_version=local_jdk"
+        "--extra_toolchains=//bazel/nix:rust_nix_target"
+        "--strip=always"
+        "--host_linkopt=-fuse-ld=lld"
+        "--host_linkopt=-no-pie"
+        "--cxxopt=-Wno-error"
+      ]
+      else [
+        "-c opt"
+        "--config=gcc"
+        "--spawn_strategy=remote,standalone"
+        "--extra_toolchains=@local_jdk//:all"
+        "--java_runtime_version=local_jdk"
+        "--tool_java_runtime_version=local_jdk"
+        "--extra_toolchains=//bazel/nix:rust_nix_x86_64"
+        "--strip=always"
+        "--linkopt=-fuse-ld=lld"
+        "--host_linkopt=-fuse-ld=lld"
+        "--action_env=BAZEL_LINKOPTS=-lm:-fuse-ld=lld"
+        "--linkopt=-no-pie"
+        "--host_linkopt=-no-pie"
+        "--linkopt=-Wl,-z,noexecstack"
+        "--linkopt=-Wl,--unresolved-symbols=ignore-in-object-files"
+        "--cxxopt=-Wno-changes-meaning"
+        "--cxxopt=-Wno-error"
+      ];
     preBazelBuild = ''
                 # Restore Cargo.Bazel.lock if saved in FOD
                 if [ -f "$TMPDIR/output/external/Cargo.Bazel.lock" ]; then
@@ -483,8 +922,8 @@ in
 
                 # Let the cc-wrapper provide glibc headers with -idirafter. Adding
                 # glibc as -isystem breaks libstdc++'s #include_next <stdlib.h>.
-                GLIBC=$(cat ${bootstrapTools}/nix-support/orig-libc)
-                INTERP=$(cat ${bootstrapTools}/nix-support/dynamic-linker)
+                GLIBC=$(cat ${buildBootstrapTools}/nix-support/orig-libc)
+                INTERP=$(cat ${buildBootstrapTools}/nix-support/dynamic-linker)
                 # Fix library path and dynamic linker for linking
                 echo "build --linkopt=-L$GLIBC/lib" >> .bazelrc
                 echo "build --host_linkopt=-L$GLIBC/lib" >> .bazelrc
@@ -500,23 +939,47 @@ in
                      -o -name '*.tpl' -o -name '*.txt' \) 2>/dev/null | \
                   while read f; do
                     sed -i \
-                      -e "s|/usr/local/bin/bash|${bash}/bin/bash|g" \
-                      -e "s|/usr/bin/bash|${bash}/bin/bash|g" \
-                      -e "s|/bin/bash|${bash}/bin/bash|g" \
-                      -e "s|/usr/bin/env python3|${python3}/bin/python3|g" \
-                      -e "s|/usr/bin/env python|${python3}/bin/python3|g" \
-                      -e "s|/usr/bin/env bash|${bash}/bin/bash|g" \
-                      -e "s|/usr/bin/env perl|${perl}/bin/perl|g" \
-                      -e "s|/usr/bin/env|${coreutils}/bin/env|g" \
-                      -e "s|/usr/bin/perl|${perl}/bin/perl|g" \
+                      -e "s|/usr/local/bin/bash|${buildBash}/bin/bash|g" \
+                      -e "s|/usr/bin/bash|${buildBash}/bin/bash|g" \
+                      -e "s|/bin/bash|${buildBash}/bin/bash|g" \
+                      -e "s|/usr/bin/env python3|${buildPython}/bin/python3|g" \
+                      -e "s|/usr/bin/env python|${buildPython}/bin/python3|g" \
+                      -e "s|/usr/bin/env bash|${buildBash}/bin/bash|g" \
+                      -e "s|/usr/bin/env perl|${buildPerl}/bin/perl|g" \
+                      -e "s|/usr/bin/env|${buildCoreutils}/bin/env|g" \
+                      -e "s|/usr/bin/perl|${buildPerl}/bin/perl|g" \
                       "$f" 2>/dev/null || true
                   done
 
                 # Patch #!/bin/sh shebangs (first line only to avoid false matches)
                 find "$TMPDIR/repo-overrides" -type f \( -name '*.sh' -o -name 'configure' \) 2>/dev/null | \
                   while read f; do
-                    sed -i "1s|^#!/bin/sh|#!${bash}/bin/bash|" "$f" 2>/dev/null || true
-                  done
+                    sed -i "1s|^#!/bin/sh|#!${buildBash}/bin/bash|" "$f" 2>/dev/null || true
+                  done${lib.optionalString isDarwinCross ''
+
+                # LuaJIT uses small generators while producing its target library.
+                # Keep target flags captured by its configure wrapper, but build and
+                # link those generators with native GCC so Linux can execute them.
+                luajit_build="$TMPDIR/repo-overrides/com_github_luajit_luajit/luajit_build.sh"
+                luajit_make="$TMPDIR/repo-overrides/com_github_luajit_luajit/src/Makefile"
+                test -f "$luajit_build"
+                test -f "$luajit_make"
+                test "$(grep -Fc 'EXTRA_MAKE_ARGS=()' "$luajit_build")" = 1
+                test "$(grep -Fc '    export CFLAGS=""' "$luajit_build")" = 2
+                test "$(grep -Fc '  TARGET_XCFLAGS+= -DLUA_ROOT=\"$(PREFIX)\"' "$luajit_make")" = 1
+                test "$(grep -Fc '  TARGET_XCFLAGS+= -DLUA_LJDIR=\"$(INSTALL_LJLIBD)\"' "$luajit_make")" = 1
+                sed -i '/^EXTRA_MAKE_ARGS=()$/a\
+        EXTRA_MAKE_ARGS+=("HOST_CC=${buildGcc}/bin/gcc" "TARGET_SYS=Darwin")' "$luajit_build"
+                sed -i '0,/^    export CFLAGS=""$/s//    export CFLAGS=""\
+            export LDFLAGS=""/' "$luajit_build"
+
+                # foreign_cc's PREFIX is a disposable staging directory, not the
+                # installed Envoy runtime prefix. Keep LuaJIT's ordinary /usr/local
+                # module search defaults instead of compiling the staging paths into
+                # Envoy's embedded Lua runtime.
+                sed -i '/^  TARGET_XCFLAGS+= -DLUA_ROOT=\\"$(PREFIX)\\"$/d' "$luajit_make"
+                sed -i '/^  TARGET_XCFLAGS+= -DLUA_LJDIR=\\"$(INSTALL_LJLIBD)\\"$/d' "$luajit_make"
+      ''}
 
                 # Afero's generated Gazelle BUILD file is missing strict deps for
                 # util.go. Rehydrate the needed x/text packages from the cached Go
@@ -573,7 +1036,7 @@ in
 
                   afero_build="$TMPDIR/repo-overrides/com_github_spf13_afero/BUILD.bazel"
                   if [ -f "$afero_build" ] && ! grep -q '@org_golang_x_text//runes' "$afero_build"; then
-                    ${gawk}/bin/awk '
+                    ${buildGawk}/bin/awk '
                       { print }
                       $0 ~ /"\/\/mem",/ {
                         print "        \"@org_golang_x_text//runes:go_default_library\","
@@ -655,7 +1118,7 @@ in
 
                 pgs_go_build="$TMPDIR/repo-overrides/com_github_lyft_protoc_gen_star_v2/lang/go/BUILD.bazel"
                 if [ -f "$pgs_go_build" ] && ! grep -q '@org_golang_x_tools//imports' "$pgs_go_build"; then
-                  ${gawk}/bin/awk '
+                  ${buildGawk}/bin/awk '
                     $0 ~ /deps = \["\/\/:protoc-gen-star"\],/ {
                       print "    deps = ["
                       print "        \"//:protoc-gen-star\","
@@ -677,15 +1140,15 @@ in
                 # GCC's collect2 needs to find the linker (ld.lld since we use -fuse-ld=lld).
                 # Go's builder-cc wrapper restricts PATH, so collect2 can't find it normally.
                 # Provide symlinks and tell GCC via -B and COMPILER_PATH.
-                ln -sf ${llvm}/bin/ld.lld "$TMPDIR/fake-bin/ld.lld"
-                ln -sf ${llvm}/bin/ld.lld "$TMPDIR/fake-bin/ld"
+                ln -sf ${buildLlvm}/bin/ld.lld "$TMPDIR/fake-bin/ld.lld"
+                ln -sf ${buildLlvm}/bin/ld.lld "$TMPDIR/fake-bin/ld"
                 echo "build --linkopt=-B$TMPDIR/fake-bin" >> .bazelrc
                 echo "build --host_linkopt=-B$TMPDIR/fake-bin" >> .bazelrc
                 echo "build --action_env=COMPILER_PATH=$TMPDIR/fake-bin" >> .bazelrc
 
                 # Provide a fake git — bazel/get_workspace_status calls git for revision info
                 {
-                  printf '%s\n' '#!${bash}/bin/bash'
+                  printf '%s\n' '#!${buildBash}/bin/bash'
                   printf '%s\n' '# Fake git for workspace status — return empty/dummy values'
                   printf '%s\n' 'case "$*" in'
                   printf '%s\n' '  *rev-parse*HEAD*) echo "0000000000000000000000000000000000000000" ;;'
@@ -699,42 +1162,115 @@ in
                   printf '%s\n' 'exit 0'
                 } > "$TMPDIR/fake-bin/git"
                 chmod +x "$TMPDIR/fake-bin/git"
-                export PATH="$TMPDIR/fake-bin:$PATH"
+                export PATH="$TMPDIR/fake-bin:$PATH"${lib.optionalString isDarwinCross ''
+
+        # mkBazelPackage supplies Linux compatibility link paths for ordinary
+        # native builds. Retain them for host actions, but keep every ELF-only
+        # option out of the Darwin target link.
+        sed -i \
+          -e "\|^build --linkopt=-L$TMPDIR/rust-link-libs$|d" \
+          -e "\|^build --linkopt=-L$GLIBC/lib$|d" \
+          -e "\|^build --linkopt=-Wl,-dynamic-linker,$INTERP$|d" \
+          -e "\|^build --linkopt=-Wl,-rpath,$GLIBC/lib$|d" \
+          -e "\|^build --linkopt=-B$TMPDIR/fake-bin$|d" \
+          -e "\|^build --action_env=COMPILER_PATH=$TMPDIR/fake-bin$|d" \
+          .bazelrc
+
+        # Bazel discovers @local_config_cc before selecting the explicit
+        # Darwin target crosstool.  Run that discovery with the native GCC
+        # toolchain and without target SDK identity; otherwise it records the
+        # Darwin SDK as the only builtin include root for Linux host actions.
+        unset AOS_CROSS_COMPILING AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+        unset MACOSX_DEPLOYMENT_TARGET SDKROOT
+        export CC="${buildGcc}/bin/gcc"
+        export CXX="${buildGcc}/bin/g++"
+        export AR="${buildGcc}/bin/ar"
+        export LD="${buildGcc}/bin/ld"
+        export NM="${buildGcc}/bin/nm"
+        export OBJCOPY="${buildGcc}/bin/objcopy"
+        export OBJDUMP="${buildGcc}/bin/objdump"
+        export RANLIB="${buildGcc}/bin/ranlib"
+        export STRIP="${buildGcc}/bin/strip"
+        echo "build --action_env=CC=$PWD/aos-darwin-toolchain/compiler" >> .bazelrc
+        echo "build --action_env=CXX=$PWD/aos-darwin-toolchain/compiler" >> .bazelrc
+        echo "build --host_action_env=CC=${buildGcc}/bin/gcc" >> .bazelrc
+        echo "build --host_action_env=CXX=${buildGcc}/bin/g++" >> .bazelrc
+        echo "build --host_action_env=COMPILER_PATH=$TMPDIR/fake-bin" >> .bazelrc
+
+        for leaked_flag in dynamic-linker noexecstack unresolved-symbols; do
+          if grep '^build --linkopt=' .bazelrc | grep -q -- "$leaked_flag"; then
+            echo "ELF-only $leaked_flag flag leaked into the Darwin target" >&2
+            exit 1
+          fi
+        done
+      ''}
     '';
-    installPhase = ''
-      mkdir -p $out/bin
+    installPhase =
+      if isDarwinCross
+      then ''
+        # Repository and host-tool discovery run without Darwin target
+        # identity. Restore it before the generic Darwin fixup validates and
+        # records the installed output.
+        export AOS_CROSS_COMPILING=1
+        export AOS_TARGET_PLATFORM="${stdenv.hostPlatform.system}"
+        export AOS_TARGET_ARCH="${stdenv.hostPlatform.darwinArch}"
 
-      ENVOY_BIN=$TMPDIR/output/execroot/envoy/bazel-out/k8-opt/bin/source/exe/envoy-static
-      if [ ! -f "$ENVOY_BIN" ]; then
-        # Try alternative path
-        ENVOY_BIN=$(find $TMPDIR/output -name envoy-static -type f 2>/dev/null | head -1)
-      fi
-      if [ -z "$ENVOY_BIN" ] || [ ! -f "$ENVOY_BIN" ]; then
-        echo "ERROR: bazel did not produce envoy-static binary" >&2
-        find $TMPDIR/output -name 'envoy*' -type f 2>&1 || true
-        exit 1
-      fi
+        mkdir -p $out/bin
 
-      cp "$ENVOY_BIN" $out/bin/envoy
-      chmod +x $out/bin/envoy
+        ENVOY_BIN=$TMPDIR/output/execroot/envoy/bazel-out/${darwinBazelCpu}-opt/bin/source/exe/envoy-static
+        if [ ! -f "$ENVOY_BIN" ]; then
+          echo "ERROR: Bazel did not produce the ${darwinBazelCpu} Envoy binary" >&2
+          find "$TMPDIR/output" -name envoy-static -type f -print >&2 || true
+          exit 1
+        fi
 
-      # Patch ELF interpreter and RPATH
-      INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
-      BT_LIB=$(dirname "$INTERP")
-      STDCXX_FILE=$(find "$BT_LIB" -name 'libstdc++.so.6' -not -name '*.py' 2>/dev/null | head -1)
-      STDCXX_DIR=""
-      if [ -n "$STDCXX_FILE" ]; then
-        STDCXX_DIR=$(dirname "$STDCXX_FILE")
-      fi
-      RPATH="$BT_LIB"
-      if [ -n "$STDCXX_DIR" ]; then
-        RPATH="$RPATH:$STDCXX_DIR"
-      fi
-      ${patchelf}/bin/patchelf --set-interpreter "$INTERP" --set-rpath "$RPATH" \
-               $out/bin/envoy 2>/dev/null || true
-    '';
+        cp "$ENVOY_BIN" $out/bin/envoy
+        chmod +x $out/bin/envoy
 
-    buildDeps = [patchelf];
+        header=$(${stdenv.cc}/bin/objdump --macho --private-header $out/bin/envoy)
+        case "${stdenv.hostPlatform.parsed.cpu.name}:$header" in
+          x86_64:*X86_64*|aarch64:*ARM64*) ;;
+          *)
+            echo "Envoy output has the wrong Mach-O architecture" >&2
+            echo "$header" >&2
+            exit 1
+            ;;
+        esac
+      ''
+      else ''
+        mkdir -p $out/bin
+
+        ENVOY_BIN=$TMPDIR/output/execroot/envoy/bazel-out/k8-opt/bin/source/exe/envoy-static
+        if [ ! -f "$ENVOY_BIN" ]; then
+          # Try alternative path
+          ENVOY_BIN=$(find $TMPDIR/output -name envoy-static -type f 2>/dev/null | head -1)
+        fi
+        if [ -z "$ENVOY_BIN" ] || [ ! -f "$ENVOY_BIN" ]; then
+          echo "ERROR: bazel did not produce envoy-static binary" >&2
+          find $TMPDIR/output -name 'envoy*' -type f 2>&1 || true
+          exit 1
+        fi
+
+        cp "$ENVOY_BIN" $out/bin/envoy
+        chmod +x $out/bin/envoy
+
+        # Patch ELF interpreter and RPATH
+        INTERP=$(cat "${buildBootstrapTools}/nix-support/dynamic-linker")
+        BT_LIB=$(dirname "$INTERP")
+        STDCXX_FILE=$(find "$BT_LIB" -name 'libstdc++.so.6' -not -name '*.py' 2>/dev/null | head -1)
+        STDCXX_DIR=""
+        if [ -n "$STDCXX_FILE" ]; then
+          STDCXX_DIR=$(dirname "$STDCXX_FILE")
+        fi
+        RPATH="$BT_LIB"
+        if [ -n "$STDCXX_DIR" ]; then
+          RPATH="$RPATH:$STDCXX_DIR"
+        fi
+        ${buildPatchelf}/bin/patchelf --set-interpreter "$INTERP" --set-rpath "$RPATH" \
+                 $out/bin/envoy 2>/dev/null || true
+      '';
+
+    buildDeps = [buildPatchelf];
     runtimeDeps = [];
     propagatedDeps = [];
 

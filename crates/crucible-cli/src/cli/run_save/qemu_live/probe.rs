@@ -195,6 +195,12 @@ fn escape_debug_plan_field(value: &str) -> String {
 pub(crate) fn run_live_qemu_backend_probe(
     backend: &ResolvedLocalBackend,
 ) -> Result<production_api::ProductionPluginInstallReport, CliError> {
+    if !cfg!(target_os = "linux") {
+        return Err(backend_error(
+            "live local QEMU/plugin execution requires a Linux host",
+        ));
+    }
+
     let (qemu, plugin) = match backend {
         ResolvedLocalBackend::Qemu { qemu, plugin, .. } => (qemu, plugin),
         #[cfg(any(test, feature = "test-double"))]

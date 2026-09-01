@@ -252,7 +252,7 @@ pub use aos_registry_surface::manifest::{package_name_bucket, validate_package_n
 /// Validate a platform/system name before using it as a package TOML key.
 ///
 /// Platform names become keys under `[versions.platforms]`, for example
-/// `x86_64-linux` or `aarch64-linux`. Keep the accepted syntax to common Nix
+/// `x86_64-linux` or `aarch64-darwin`. Keep the accepted syntax to common Nix
 /// system names so command-line input cannot inject TOML structure or create
 /// ambiguous metadata.
 ///
@@ -3633,7 +3633,14 @@ mod tests {
 
     #[test]
     fn platform_name_validation_accepts_nix_system_names() {
-        for name in ["x86_64-linux", "aarch64-linux", "i686-linux", "wasm32-wasi"] {
+        for name in [
+            "x86_64-linux",
+            "aarch64-linux",
+            "x86_64-darwin",
+            "aarch64-darwin",
+            "i686-linux",
+            "wasm32-wasi",
+        ] {
             validate_platform_name(name).unwrap();
         }
     }

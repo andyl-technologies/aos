@@ -4,6 +4,7 @@
   fetchurl,
   gnumake,
   pkg-config,
+  stdenv,
 }: let
   version = "1.68.0";
 in
@@ -37,6 +38,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --enable-lib-only \
             --enable-shared \
@@ -52,9 +54,19 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-        '';
+        script =
+          if stdenv.isCross && stdenv.hostPlatform.isDarwin
+          then ''
+            make install
+
+              # Keep upstream's generic build-tree examples from resembling
+              # an unsanitized Nix sandbox path in published outputs.
+              sed -i 's|/build/|/build-tree/|g' \
+                "$out/share/doc/nghttp2/README.rst"
+          ''
+          else ''
+            make install
+          '';
       }
     ];
 

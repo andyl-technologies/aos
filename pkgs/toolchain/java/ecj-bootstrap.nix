@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  stdenv,
+  buildPackages,
   jikes,
   fastjar,
   jamvm-1_5,
@@ -10,6 +12,18 @@
   unzip,
 }: let
   version = "3.2.2";
+  jikesForBuild =
+    if stdenv.isCross
+    then buildPackages.jikes
+    else jikes;
+  fastjarForBuild =
+    if stdenv.isCross
+    then buildPackages.fastjar
+    else fastjar;
+  antBootstrapForBuild =
+    if stdenv.isCross
+    then buildPackages.ant-bootstrap
+    else ant-bootstrap;
 in
   mkDerivation {
     pname = "ecj-bootstrap";
@@ -23,11 +37,11 @@ in
     };
 
     buildDeps = [
-      jikes
-      fastjar
+      jikesForBuild
+      fastjarForBuild
       jamvm-1_5
       classpath-0_93
-      ant-bootstrap
+      antBootstrapForBuild
       unzip
     ];
     runtimeDeps = [
@@ -54,8 +68,8 @@ in
           # Jikes needs the bootclasspath to find core Java classes
           # ECJ's JDTCompilerAdapter extends Ant's DefaultCompilerAdapter
           mkdir -p classes
-          jikes -bootclasspath ${classpath-0_93}/share/classpath/glibj.zip \
-            -classpath ${ant-bootstrap}/lib/ant.jar \
+          ${jikesForBuild}/bin/jikes -bootclasspath ${classpath-0_93}/share/classpath/glibj.zip \
+            -classpath ${antBootstrapForBuild}/lib/ant.jar \
             -d classes \
             -nowarn \
             @sources.txt
@@ -78,7 +92,7 @@ in
 
           # Package into ecj.jar
           cd classes
-          ${fastjar}/bin/fastjar cf ../ecj.jar .
+          ${fastjarForBuild}/bin/fastjar cf ../ecj.jar .
           cd ..
         '';
       }

@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  stdenv,
+  buildPackages,
   gnumake,
   autoconf,
   bash,
@@ -19,12 +21,16 @@
   freetype,
   xorg-stubs,
   bootstrapTools,
+  krb5,
+  java-native-foundation,
   openjdk-8,
 }: let
   mkOpenJDKBootstrap = import ./_openjdk-bootstrap.nix {
     inherit
       fetchurl
       mkDerivation
+      stdenv
+      buildPackages
       gnumake
       autoconf
       bash
@@ -42,6 +48,7 @@
       freetype
       xorg-stubs
       bootstrapTools
+      krb5
       ;
   };
 in
@@ -51,4 +58,5 @@ in
     build = "12";
     srcHash = "sha256-Y1hwtR++gwC9zF6xrFEArtBnVvHSES0+g6KYuJ3OPtI=";
     prevJdk = openjdk-8;
+    extraDarwinFrameworks = [java-native-foundation];
   }

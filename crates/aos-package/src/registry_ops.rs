@@ -64,6 +64,7 @@ use serde_json::Value;
 use aos_core::output::{OutputMode, Printer};
 
 use crate::config::ApmConfig;
+use crate::platform::native_platform;
 use crate::provenance::{
     TrustedProvenanceKey, builder_id as provenance_builder_id, digest_map as provenance_digest_map,
     sha256_hex_payload, sign_statement_dsse_jsonl,
@@ -481,18 +482,6 @@ fn first_letter(name: &str) -> String {
     package_name_bucket(name)
 }
 
-/// Get the default platform string.
-#[allow(dead_code)]
-fn default_platform() -> String {
-    if cfg!(target_arch = "x86_64") {
-        "x86_64-linux".to_string()
-    } else if cfg!(target_arch = "aarch64") {
-        "aarch64-linux".to_string()
-    } else {
-        "x86_64-linux".to_string()
-    }
-}
-
 /// Runs one stable `nix-store --query` operation for the supplied paths.
 fn nix_store_query(query: &str, store_paths: &[&str]) -> Result<Vec<String>> {
     let output = nix_command("nix-store")
@@ -644,6 +633,47 @@ struct StorePathInfo {
 }
 
 const RELEASE_POLICY_RELATIVE_PATH: &str = "nix-support/aos-release-policy";
+const TARGET_PLATFORM_RELATIVE_PATH: &str = "nix-support/aos-target-platform";
+
+/// Resolves the platform a store output is published for.
+///
+/// New AOS derivations stamp their canonical target platform in
+/// `nix-support/aos-target-platform`. An explicit producer override must agree
+/// with that stamp, preventing a Linux-hosted Darwin cross build from being
+/// mislabeled in registry metadata. Outputs created before the stamp existed
+/// retain the native-platform default.
+fn resolve_publish_platform(store_path: &str, platform_override: Option<&str>) -> Result<String> {
+    let marker = Path::new(store_path).join(TARGET_PLATFORM_RELATIVE_PATH);
+    let marker_exists = marker
+        .try_exists()
+        .with_context(|| format!("checking target platform marker {}", marker.display()))?;
+    let stamped = if marker_exists {
+        let platform = fs::read_to_string(&marker)
+            .with_context(|| format!("reading target platform marker {}", marker.display()))?
+            .trim()
+            .to_string();
+        validate_platform_name(&platform)
+            .with_context(|| format!("invalid target platform marker {}", marker.display()))?;
+        Some(platform)
+    } else {
+        None
+    };
+
+    if let Some(platform_override) = platform_override {
+        validate_platform_name(platform_override)?;
+        if let Some(stamped) = stamped.as_deref()
+            && stamped != platform_override
+        {
+            bail!(
+                "--platform '{platform_override}' disagrees with target platform marker '{stamped}' in {}",
+                marker.display()
+            );
+        }
+        return Ok(platform_override.to_string());
+    }
+
+    Ok(stamped.unwrap_or_else(native_platform))
+}
 
 /// Enforces package-authored restrictions on publishing a store-path root.
 ///
@@ -1632,8 +1662,11 @@ description = ""
 /// touched paths are committed (SSH-signed when `--key`/`--key-id` is
 /// given) and the dumb-HTTP object store is refreshed.
 ///
-/// Package name, version, and platform are parsed from the store path
-/// basename and can each be overridden. `--image-payload`, `--image-disk`,
+/// Package name and version are parsed from the store path basename and can
+/// be overridden. Platform is read from the output's AOS target-platform
+/// marker, falling back to the producer's native platform for legacy outputs;
+/// `--platform` may override only an unstamped output or agree with its stamp.
+/// `--image-payload`, `--image-disk`,
 /// `--image-info`, `--image-format`, and `--image-uki` groups attach explicit
 /// cache artifacts and their exact canonical UKI to the platform entry;
 /// `--sysroot` marks
@@ -1759,10 +1792,7 @@ pub async fn publish(
     let pkg_name = name_override.unwrap_or(&parsed_name);
     let pkg_version = version_override.unwrap_or(&parsed_version);
     validate_package_name(pkg_name)?;
-    let platform = platform_override
-        .map(|s| s.to_string())
-        .unwrap_or_else(default_platform);
-    validate_platform_name(&platform)?;
+    let platform = resolve_publish_platform(&info.path, platform_override)?;
     let config_module_info = config_module_path
         .map(introspect_store_path)
         .transpose()
@@ -15378,6 +15408,55 @@ mod tests {
     };
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn publish_platform_uses_cross_target_marker() {
+        let output = TempDir::new().unwrap();
+        let support = output.path().join("nix-support");
+        fs::create_dir(&support).unwrap();
+        fs::write(support.join("aos-target-platform"), "aarch64-darwin\n").unwrap();
+
+        assert_eq!(
+            resolve_publish_platform(output.path().to_str().unwrap(), None).unwrap(),
+            "aarch64-darwin"
+        );
+    }
+
+    #[test]
+    fn publish_platform_accepts_matching_explicit_target() {
+        let output = TempDir::new().unwrap();
+        let support = output.path().join("nix-support");
+        fs::create_dir(&support).unwrap();
+        fs::write(support.join("aos-target-platform"), "x86_64-darwin\n").unwrap();
+
+        assert_eq!(
+            resolve_publish_platform(output.path().to_str().unwrap(), Some("x86_64-darwin"))
+                .unwrap(),
+            "x86_64-darwin"
+        );
+    }
+
+    #[test]
+    fn publish_platform_rejects_mismatched_explicit_target() {
+        let output = TempDir::new().unwrap();
+        let support = output.path().join("nix-support");
+        fs::create_dir(&support).unwrap();
+        fs::write(support.join("aos-target-platform"), "aarch64-darwin\n").unwrap();
+
+        let error = resolve_publish_platform(output.path().to_str().unwrap(), Some("x86_64-linux"))
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("disagrees with target platform marker"));
+    }
+
+    #[test]
+    fn publish_platform_preserves_native_fallback_for_legacy_outputs() {
+        let output = TempDir::new().unwrap();
+
+        assert_eq!(
+            resolve_publish_platform(output.path().to_str().unwrap(), None).unwrap(),
+            native_platform()
+        );
+    }
 
     #[test]
     fn portable_filename_accepts_sd_boot_counting_suffix() {

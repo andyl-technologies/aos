@@ -11,6 +11,9 @@
   zlib,
   nghttp2,
   ca-certificates,
+  bash,
+  stdenv,
+  buildPackages,
 }: let
   version = "8.12.1";
 in
@@ -30,12 +33,18 @@ in
       pkg-config
       perl
     ];
-    runtimeDeps = [
-      openssl
-      zlib
-      nghttp2
-      ca-certificates
-    ];
+    runtimeDeps =
+      [
+        openssl
+        zlib
+        nghttp2
+        ca-certificates
+      ]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [bash]
+        else []
+      );
     propagatedDeps = [
       openssl
       zlib
@@ -45,10 +54,10 @@ in
     # Guard: keep the autotools build toolchain out of curl's
     # `--version`-baked CC/PKG_CONFIG_PATH strings.
     disallowedReferences = [
-      gnumake
-      pkg-config
-      patch
-      patchelf
+      buildPackages.gnumake
+      buildPackages.pkg-config
+      buildPackages.patch
+      buildPackages.patchelf
     ];
 
     phases = [
@@ -63,6 +72,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --with-openssl=${openssl} \
             --with-zlib=${zlib} \
@@ -89,11 +99,19 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-          # Create curl.pc symlink (some consumers look for "curl" not "libcurl")
-          ln -sf libcurl.pc $out/lib/pkgconfig/curl.pc
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            make install
+            sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/curl-config"
+            # Create curl.pc symlink (some consumers look for "curl" not "libcurl")
+            ln -sf libcurl.pc $out/lib/pkgconfig/curl.pc
+          ''
+          else ''
+            make install
+            # Create curl.pc symlink (some consumers look for "curl" not "libcurl")
+            ln -sf libcurl.pc $out/lib/pkgconfig/curl.pc
+          '';
       }
     ];
 

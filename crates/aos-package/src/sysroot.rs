@@ -60,6 +60,7 @@ use crate::download::{
     DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
     fetch_narinfos, resolve_mirror_chain, split_mirror_chain,
 };
+use crate::platform::native_platform;
 use crate::policy::admit_package_roots;
 use crate::registry::sb_certs::{self, SbCertsToml};
 use crate::registry::{RegistrySet, store_path_hash};
@@ -1061,8 +1062,6 @@ pub async fn upgrade_system(
 
     // Load registries and check for newer version.
     let registries = load_registries(config)?;
-    let _platform = "x86_64-linux";
-
     let mut newer_meta: Option<(PackageMeta, String)> = None;
     for reg in registries.registries() {
         if let Some(meta) = reg.packages.get(&current_gen.package_name) {
@@ -4745,7 +4744,7 @@ fn run_command(cmd: &str, args: &[&str]) -> Result<()> {
 /// Load all enabled registries from the scope's metadata cache.
 fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
-    RegistrySet::load(&config.cache_path(), &reg_configs, "x86_64-linux")
+    RegistrySet::load(&config.cache_path(), &reg_configs, &native_platform())
 }
 
 /// Validate a downloaded sysroot's Secure Boot facts against the registry's

@@ -6,6 +6,7 @@
   autoconf,
   automake,
   libtool,
+  m4,
   perl,
   openssl,
 }: let
@@ -23,7 +24,7 @@ in
     };
 
     # perl provides pod2man, which libtpms uses to build its man pages.
-    buildDeps = [gnumake pkg-config autoconf automake libtool perl];
+    buildDeps = [gnumake pkg-config autoconf automake libtool m4 perl];
     runtimeDeps = [openssl];
     propagatedDeps = [openssl];
 
@@ -42,9 +43,12 @@ in
         # TPM 2.0 personality swtpm drives.
         name = "configure";
         script = ''
-          export ACLOCAL_PATH="${pkg-config}/share/aclocal:${libtool}/share/aclocal''${ACLOCAL_PATH:+:$ACLOCAL_PATH}"
+          nativePkgConfig=$(dirname "$(dirname "$(command -v pkg-config)")")
+          nativeLibtool=$(dirname "$(dirname "$(command -v libtoolize)")")
+          export ACLOCAL_PATH="$nativePkgConfig/share/aclocal:$nativeLibtool/share/aclocal''${ACLOCAL_PATH:+:$ACLOCAL_PATH}"
           NOCONFIGURE=1 ./autogen.sh
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --disable-static \
             --with-openssl \

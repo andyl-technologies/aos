@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  stdenv,
+  buildPackages,
   gnumake,
   autoconf,
   bash,
@@ -19,12 +21,16 @@
   freetype,
   xorg-stubs,
   bootstrapTools,
+  krb5,
+  java-native-foundation,
   openjdk-9,
 }: let
   mkOpenJDKBootstrap = import ./_openjdk-bootstrap.nix {
     inherit
       fetchurl
       mkDerivation
+      stdenv
+      buildPackages
       gnumake
       autoconf
       bash
@@ -42,6 +48,7 @@
       freetype
       xorg-stubs
       bootstrapTools
+      krb5
       ;
   };
 in
@@ -51,6 +58,7 @@ in
     build = "13";
     srcHash = "sha256-Oc4SONWyBm/+HBoJ2HwXB2Ywn+GCkPJ6SrfRWETTTcE=";
     prevJdk = openjdk-9;
+    extraDarwinFrameworks = [java-native-foundation];
     # JDK-8299435 records the matching javac failure: jrtfs iterates a mutable
     # ImageReader child list. Resolving entries during that traversal can
     # extend the same list, even in a single-job build.
