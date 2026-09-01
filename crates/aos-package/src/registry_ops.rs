@@ -3250,11 +3250,13 @@ fn publish_package_documentation(
     let options = documented_option_declarations(declarations)
         .map(|declaration| {
             let enrichment = authored.options.get(&declaration.path_str);
-            let description = if declaration.description.trim().is_empty() {
-                format!("Configuration option {}.", declaration.path_str)
-            } else {
-                declaration.description.clone()
-            };
+            if declaration.description.trim().is_empty() {
+                bail!(
+                    "public configuration option '{}' has no description",
+                    declaration.path_str
+                );
+            }
+            let description = declaration.description.clone();
             let root = declaration
                 .path
                 .first()

@@ -12,6 +12,38 @@
 {
   schema = "aos.service-documentation/v1";
 
+  # Runnable engines that deliberately are not install-and-start APM
+  # services. Their lifecycle authority belongs to a caller or orchestrator.
+  nonServices = {
+    aos-hub-cloudflare = "Deployment bundle configured by the Hub Worker installer.";
+    aos-hub-worker-dist = "Immutable Worker deployment artifact, not a host daemon.";
+    firecracker = "Per-VM monitor launched by a VM orchestrator.";
+    gnupg = "Interactive CLI suite with a per-user on-demand agent.";
+    k3s = "Shared payload selected through the configurable k3s role packages.";
+    longhorn-engine = "Pod-scoped engine launched by the Longhorn controller.";
+    longhorn-instance-manager = "Kubernetes-managed instance-manager payload.";
+    miniflare = "Developer command that launches a requested Worker instance.";
+    nix = "Package/store CLI used by AOS control services; no standalone nix-daemon contract.";
+    qemu = "Per-VM monitor launched by a VM orchestrator.";
+    qemu-crucible = "Crucible-controlled QEMU process across the licensed process boundary.";
+    swtpm = "Per-VM TPM process launched by a VM orchestrator.";
+    workerd = "Seed runtime invoked for one authored Worker deployment.";
+    workerd-source = "Source-built runtime invoked for one authored Worker deployment.";
+  };
+
+  fixtures = [
+    "aos-secret-reference-test"
+    "aos-test-agent"
+    "apm-systemd-client-test"
+    "config-module-smoke"
+    "desired-config-test"
+    "desired-prune-test"
+    "expose-smoke"
+    "landlock-argv-test"
+    "test-http-server"
+    "test-static-cache-server"
+  ];
+
   services = {
     aos = {
       ownership = "platform";
@@ -94,6 +126,7 @@
     k3s-control-plane.ownership = "package";
     k3s-worker.ownership = "package";
     krb5.ownership = "package";
+    kubelet.ownership = "package";
     longhorn-manager.ownership = "package";
     mariadb.ownership = "package";
     nginx.ownership = "package";
