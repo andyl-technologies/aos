@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 
 use crate::config::ApmConfig;
+use crate::platform::native_platform;
 use crate::registry::store_path_hash;
 use crate::sysroot;
 
@@ -232,9 +233,9 @@ impl IgnoreSysrootLock {
 pub fn build_registry_lookup(config: &ApmConfig) -> HashMap<String, (String, String, String)> {
     let reg_configs = config.enabled_registries();
     let cache_dir = config.cache_path();
-    let platform = "x86_64-linux";
+    let platform = native_platform();
 
-    let registries = match crate::registry::RegistrySet::load(&cache_dir, &reg_configs, platform) {
+    let registries = match crate::registry::RegistrySet::load(&cache_dir, &reg_configs, &platform) {
         Ok(r) => r,
         Err(_) => return HashMap::new(),
     };
@@ -298,7 +299,7 @@ pub fn get_sysroot_references(config: &ApmConfig) -> Option<(Vec<String>, String
     let reg_configs = config.enabled_registries();
     let cache_dir = config.cache_path();
     let registries =
-        crate::registry::RegistrySet::load(&cache_dir, &reg_configs, "x86_64-linux").ok()?;
+        crate::registry::RegistrySet::load(&cache_dir, &reg_configs, &native_platform()).ok()?;
 
     for reg in registries.registries() {
         if let Some(meta) = reg.package_versions().find(|meta| {

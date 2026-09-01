@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  stdenv,
+  buildPackages,
   gnumake,
   jikes,
   fastjar,
@@ -9,6 +11,14 @@
   classpath-0_93,
 }: let
   version = "1.8.4";
+  jikesForBuild =
+    if stdenv.isCross
+    then buildPackages.jikes
+    else jikes;
+  fastjarForBuild =
+    if stdenv.isCross
+    then buildPackages.fastjar
+    else fastjar;
 in
   mkDerivation {
     pname = "ant-bootstrap";
@@ -23,8 +33,8 @@ in
 
     buildDeps = [
       gnumake
-      jikes
-      fastjar
+      jikesForBuild
+      fastjarForBuild
       jamvm-1_5
       classpath-0_93
     ];
@@ -53,7 +63,7 @@ in
             > $TOOLS/ant/version.txt
 
           # Compile the bootstrap subset (exact same files as bootstrap.sh)
-          ${jikes}/bin/jikes \
+          ${jikesForBuild}/bin/jikes \
             -bootclasspath ${classpath-0_93}/share/classpath/glibj.zip \
             -sourcepath src/main \
             -d $CLASSDIR -nowarn \
@@ -82,8 +92,8 @@ in
           # Create jars
           mkdir -p bootstrap/lib
           cd $CLASSDIR
-          ${fastjar}/bin/fastjar cf ../../bootstrap/lib/ant.jar .
-          ${fastjar}/bin/fastjar cf ../../bootstrap/lib/ant-launcher.jar \
+          ${fastjarForBuild}/bin/fastjar cf ../../bootstrap/lib/ant.jar .
+          ${fastjarForBuild}/bin/fastjar cf ../../bootstrap/lib/ant-launcher.jar \
             org/apache/tools/ant/launch
           cd ../..
         '';

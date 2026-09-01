@@ -6,6 +6,13 @@
   patch,
   patchelf,
   pkg-config,
+  bash,
+  coreutils,
+  curl,
+  gnupg,
+  sed,
+  stdenv,
+  buildPackages,
 }: let
   version = "7.4";
 in
@@ -21,17 +28,20 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [];
+    runtimeDeps =
+      if stdenv.hostPlatform.isDarwin
+      then [bash coreutils curl gnupg sed]
+      else [];
     propagatedDeps = [];
 
     # Guard: keep the autotools build toolchain out of smartctl/smartd's
     # `--version` strings (which previously pinned xz-5.6.4 and the entire
     # live-bootstrap chain into the closure).
     disallowedReferences = [
-      gnumake
-      pkg-config
-      patch
-      patchelf
+      buildPackages.gnumake
+      buildPackages.pkg-config
+      buildPackages.patch
+      buildPackages.patchelf
     ];
 
     phases = [
@@ -46,6 +56,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --sysconfdir=$out/etc \
             --without-systemdsystemunitdir \
@@ -60,9 +71,21 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            make install
+            updateScript="$out/sbin/update-smart-drivedb"
+            if [ -f "$updateScript" ]; then
+              sed -i \
+                -e "1s|^#!.*|#!${bash}/bin/bash|" \
+                -e "s|^export PATH=.*|export PATH=\"${curl}/bin:${gnupg}/bin:${coreutils}/bin:${sed}/bin\"|" \
+                "$updateScript"
+            fi
+          ''
+          else ''
+            make install
+          '';
       }
     ];
 

@@ -7,6 +7,8 @@
   flex,
   bison,
   libyaml,
+  bash,
+  stdenv,
 }: let
   version = "1.7.2";
 in
@@ -27,7 +29,13 @@ in
       flex
       bison
     ];
-    runtimeDeps = [libyaml];
+    runtimeDeps =
+      [libyaml]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [bash]
+        else []
+      );
     propagatedDeps = [];
 
     phases = [
@@ -40,15 +48,48 @@ in
       }
       {
         name = "build";
-        script = ''
-          make -j$NIX_BUILD_CORES NO_PYTHON=1
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            # The release makefile does not declare util.o's dependency on
+            # this generated header, which races under a parallel build.
+            make HOSTOS=darwin NO_PYTHON=1 version_gen.h
+            make -j$NIX_BUILD_CORES \
+              HOSTOS=darwin \
+              SHAREDLIB_LDFLAGS="-fPIC -dynamiclib -Wl,-install_name,$out/lib/" \
+              EXTRA_CFLAGS="-Wno-error=unknown-warning-option -Wno-error=unused-command-line-argument -ffile-prefix-map=$PWD=. -fdebug-prefix-map=$PWD=. -fdebug-compilation-dir=." \
+              NO_PYTHON=1
+          ''
+          else ''
+            make -j$NIX_BUILD_CORES \
+              ${
+              if stdenv.hostPlatform.isDarwin
+              then "HOSTOS=darwin"
+              else ""
+            } \
+              NO_PYTHON=1
+          '';
       }
       {
         name = "install";
-        script = ''
-          make NO_PYTHON=1 PREFIX=$out install
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            make \
+              HOSTOS=darwin \
+              SHAREDLIB_LDFLAGS="-fPIC -dynamiclib -Wl,-install_name,$out/lib/" \
+              EXTRA_CFLAGS="-Wno-error=unknown-warning-option -Wno-error=unused-command-line-argument -ffile-prefix-map=$PWD=. -fdebug-prefix-map=$PWD=. -fdebug-compilation-dir=." \
+              NO_PYTHON=1 \
+              PREFIX=$out \
+              install
+            sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/dtdiff"
+          ''
+          else ''
+            make \
+              NO_PYTHON=1 \
+              PREFIX=$out \
+              install
+          '';
       }
     ];
 

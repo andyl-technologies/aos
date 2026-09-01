@@ -776,6 +776,12 @@ fn build_production_vm_lifecycle_loop_with_restore(
     config: &ProductionVmLifecycleConfig,
     mut restore_checkpoint: Option<ProductionVmExactCheckpointSet>,
 ) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
+    if !cfg!(target_os = "linux") {
+        return Err(loop_factory_error(
+            "production local-QEMU lifecycle requires a Linux host",
+        ));
+    }
+
     let network_implementations = fault_implementation::network_effect_implementation_registry()
         .map_err(|error| {
             loop_factory_error(format!(

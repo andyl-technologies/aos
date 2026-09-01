@@ -30,6 +30,14 @@ pub enum CacheCmd {
         /// Raw Nix expression to evaluate
         #[arg(long)]
         expr: Option<String>,
+        /// Evaluate installables for this cross-compilation target
+        #[arg(
+            long,
+            visible_alias = "system",
+            value_name = "PLATFORM",
+            conflicts_with = "expr"
+        )]
+        target: Option<String>,
         /// Parallel connections
         #[arg(short, long, default_value_t = 8)]
         jobs: usize,
@@ -79,6 +87,14 @@ pub enum CacheCmd {
         /// Raw Nix expression to evaluate
         #[arg(long)]
         expr: Option<String>,
+        /// Evaluate installables for this cross-compilation target
+        #[arg(
+            long,
+            visible_alias = "system",
+            value_name = "PLATFORM",
+            conflicts_with = "expr"
+        )]
+        target: Option<String>,
         /// Parallel connections
         #[arg(short, long, default_value_t = 8)]
         jobs: usize,
@@ -116,6 +132,14 @@ pub enum CacheCmd {
         /// Raw Nix expression to evaluate
         #[arg(long)]
         expr: Option<String>,
+        /// Evaluate installables for this cross-compilation target
+        #[arg(
+            long,
+            visible_alias = "system",
+            value_name = "PLATFORM",
+            conflicts_with = "expr"
+        )]
+        target: Option<String>,
         /// Parallel connections
         #[arg(short, long, default_value_t = 8)]
         jobs: usize,
@@ -141,6 +165,14 @@ pub enum CacheCmd {
         /// Raw Nix expression to evaluate
         #[arg(long)]
         expr: Option<String>,
+        /// Evaluate installables for this cross-compilation target
+        #[arg(
+            long,
+            visible_alias = "system",
+            value_name = "PLATFORM",
+            conflicts_with = "expr"
+        )]
+        target: Option<String>,
         #[command(flatten)]
         auth: CacheAuthArgs,
     },

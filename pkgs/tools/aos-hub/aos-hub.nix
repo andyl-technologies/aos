@@ -25,8 +25,23 @@
   protobuf,
   zlib,
   aos-hub-console-dist,
+  stdenv,
+  buildPackages,
 }: let
   version = "0.1.0";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  buildPerl =
+    if isDarwinCross
+    then buildPackages.perl
+    else perl;
+  buildPkgConfig =
+    if isDarwinCross
+    then buildPackages.pkg-config
+    else pkg-config;
+  buildProtobuf =
+    if isDarwinCross
+    then buildPackages.protobuf
+    else protobuf;
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
   src = builtins.path {
@@ -60,7 +75,7 @@
     OPENSSL_INCLUDE_DIR = "${openssl}/include";
     OPENSSL_NO_VENDOR = "1";
     OPENSSL_STATIC = "0";
-    PROTOC = "${protobuf}/bin/protoc";
+    PROTOC = "${buildProtobuf}/bin/protoc";
     AOS_HUB_CONSOLE_JS = "${aos-hub-console-dist}/hub-console.js";
     AOS_HUB_CONSOLE_WASM = "${aos-hub-console-dist}/hub-console_bg.wasm";
     AOS_HUB_CONSOLE_CSS = "${aos-hub-console-dist}/hub-console.css";
@@ -68,7 +83,7 @@
   cargoArtifactContract = {
     family = "aos-hub-native-postgres-release";
     features = ["postgres"];
-    nativeInputs = map toString [openssl pkg-config protobuf aos-hub-console-dist];
+    nativeInputs = map toString [openssl buildPkgConfig buildProtobuf aos-hub-console-dist];
   };
   cargoArtifacts = mkCargoArtifacts {
     pname = "aos-hub-native-postgres-artifacts";
@@ -80,7 +95,7 @@
     };
     cargoRoot = "crates";
     cargoFlags = "-p aos-hub --features postgres";
-    buildDeps = [perl pkg-config openssl protobuf aos-hub-console-dist];
+    buildDeps = [buildPerl buildPkgConfig openssl buildProtobuf aos-hub-console-dist];
     runtimeDeps = [openssl zlib];
   };
 in
@@ -96,7 +111,7 @@ in
     inherit cargoDeps cargoArtifacts cargoEnv cargoArtifactContract;
     cargoRoot = "crates";
 
-    buildDeps = [perl pkg-config openssl protobuf];
+    buildDeps = [buildPerl buildPkgConfig openssl buildProtobuf];
     # rusqlite is built with the `bundled` feature (its own sqlite amalgamation).
     # libgit2 still links zlib for compressed Git objects.
     runtimeDeps = [openssl zlib];

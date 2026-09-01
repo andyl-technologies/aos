@@ -3,6 +3,8 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  buildPackages,
+  stdenv,
 }: let
   version = "1.07.1";
 in
@@ -17,7 +19,13 @@ in
       hash = "sha256-Yq38qJsKHAFkws3KWcohDB1Ew//Eba+ZMc9JQmZMsCo=";
     };
 
-    buildDeps = [gnumake];
+    buildDeps =
+      [gnumake]
+      ++ (
+        if stdenv.isCross
+        then [buildPackages.bc]
+        else []
+      );
     runtimeDeps = [];
     propagatedDeps = [];
 
@@ -33,8 +41,20 @@ in
         name = "configure";
         script = ''
                   ./configure \
+                    $configureFlags \
                     --prefix=$out \
                     --with-readline=no
+
+                  ${
+            if stdenv.isCross
+            then ''
+              # The libmath header rule links and executes a temporary `fbc`
+              # with the target compiler.  Use the native bc compiler for the
+              # generation step while retaining the complete target build.
+              sed -i 's|\./fbc -c|${buildPackages.bc}/bin/bc -c|' bc/Makefile
+            ''
+            else ""
+          }
 
                   # Replace fix-libmath_h: the original uses 'ed' to transform fbc
                   # output into a C char* array initializer.  Replicate with sed.
@@ -45,7 +65,7 @@ in
                   #   $,$d          — delete last (empty) line
                   #   $,$s/,$/,0}/  — replace trailing , with ,0} on last line
                   cat > bc/fix-libmath_h << 'FIXSCRIPT'
-          #!/bin/sh
+          #!@CONFIG_SHELL@
           # Remove trailing empty lines
           sed -i -e :a -e '/^[[:space:]]*$/{ $d; N; ba; }' libmath.h
           # Transform into C char* array initializer: {"line1","line2",...,0}
@@ -56,6 +76,7 @@ in
             -e '$s/,$/,0}/' \
             libmath.h
           FIXSCRIPT
+                  sed -i "1s|@CONFIG_SHELL@|$CONFIG_SHELL|" bc/fix-libmath_h
                   chmod +x bc/fix-libmath_h
         '';
       }

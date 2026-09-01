@@ -87,12 +87,35 @@ impl NixCli {
     /// Returns an error if `nix-instantiate` cannot be spawned, exits
     /// non-zero, or prints non-UTF-8 output.
     pub fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
+        self.instantiate_inner(file, attr, None)
+    }
+
+    /// Instantiates an attribute with a top-level cross-compilation target.
+    ///
+    /// Runs `nix-instantiate -f <file> -A <attr> --argstr crossSystem
+    /// <target>` and returns the resulting derivation path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `nix-instantiate` cannot be spawned, exits
+    /// non-zero, or prints non-UTF-8 output.
+    pub fn instantiate_for_target(&self, file: &Path, attr: &str, target: &str) -> Result<PathBuf> {
+        self.instantiate_inner(file, attr, Some(target))
+    }
+
+    fn instantiate_inner(
+        &self,
+        file: &Path,
+        attr: &str,
+        cross_system: Option<&str>,
+    ) -> Result<PathBuf> {
         let mut cmd = Command::new("nix-instantiate");
         cmd.envs(aos_nix_env())
             .arg("-f")
             .arg(file)
             .arg("-A")
             .arg(attr);
+        add_cross_system_arg(&mut cmd, cross_system);
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
@@ -149,12 +172,27 @@ impl NixCli {
     /// Returns an error if `nix-build` cannot be spawned, exits
     /// non-zero (i.e. the build failed), or prints non-UTF-8 output.
     pub fn build(&self, file: &Path, attr: &str) -> Result<PathBuf> {
+        self.build_inner(file, attr, None)
+    }
+
+    /// Builds an attribute with a top-level cross-compilation target.
+    ///
+    /// Runs `nix-build <file> -A <attr> --argstr crossSystem <target>
+    /// --no-out-link`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `nix-build` cannot be spawned, exits non-zero, or
+    /// prints non-UTF-8 output.
+    pub fn build_for_target(&self, file: &Path, attr: &str, target: &str) -> Result<PathBuf> {
+        self.build_inner(file, attr, Some(target))
+    }
+
+    fn build_inner(&self, file: &Path, attr: &str, cross_system: Option<&str>) -> Result<PathBuf> {
         let mut cmd = Command::new("nix-build");
-        cmd.envs(aos_nix_env())
-            .arg(file)
-            .arg("-A")
-            .arg(attr)
-            .arg("--no-out-link");
+        cmd.envs(aos_nix_env()).arg(file).arg("-A").arg(attr);
+        add_cross_system_arg(&mut cmd, cross_system);
+        cmd.arg("--no-out-link");
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
@@ -471,6 +509,13 @@ impl NixCli {
             .filter(|l| !l.is_empty())
             .map(String::from)
             .collect())
+    }
+}
+
+/// Appends the top-level cross-compilation argument to a Nix command.
+fn add_cross_system_arg(command: &mut Command, cross_system: Option<&str>) {
+    if let Some(target) = cross_system {
+        command.args(["--argstr", "crossSystem", target]);
     }
 }
 

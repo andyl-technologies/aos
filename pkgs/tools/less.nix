@@ -34,7 +34,7 @@ in
       {
         name = "build";
         script = ''
-          $CONFIG_SHELL ./configure --prefix=$out --sysconfdir=/etc
+          $CONFIG_SHELL ./configure $configureFlags --prefix=$out --sysconfdir=/etc
           make -j$NIX_BUILD_CORES
         '';
       }

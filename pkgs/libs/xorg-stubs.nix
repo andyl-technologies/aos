@@ -8,7 +8,9 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  stdenv,
 }: let
+  sharedLibraryExtension = stdenv.hostPlatform.sharedLibraryExtension;
   # ── sources ──────────────────────────────────────────────────────────
   xorgprotoSrc = fetchurl {
     urls = [
@@ -167,8 +169,23 @@ in
           # ── 11. Stub shared libraries for linking ────────────────────
           # OpenJDK links against these but never calls them in headless mode.
           for lib in X11 Xext Xrender Xtst Xi Xt Xrandr Xcomposite Xfixes; do
-            echo "void _xorg_stub_''${lib}(void){}" | \
-              gcc -shared -o $out/lib/lib''${lib}.so -x c - -Wl,-soname,lib''${lib}.so
+            ${
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              echo "void _xorg_stub_$lib(void){}" | \
+                $CC -dynamiclib \
+                  -Wl,-install_name,$out/lib/lib"$lib".${sharedLibraryExtension} \
+                  -o $out/lib/lib"$lib".${sharedLibraryExtension} \
+                  -x c -
+            ''
+            else ''
+              echo "void _xorg_stub_$lib(void){}" | \
+                $CC -shared \
+                  -Wl,-soname,lib"$lib".${sharedLibraryExtension} \
+                  -o $out/lib/lib"$lib".${sharedLibraryExtension} \
+                  -x c -
+            ''
+          }
           done
         '';
       }

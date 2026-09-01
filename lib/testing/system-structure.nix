@@ -28,7 +28,12 @@
     (builtins.attrNames (lib.filterAttrs
       (path: _entry: lib.hasPrefix "systemd/system/" path)
       manifest.etc));
-  manifestSystemdPathsText = lib.concatStringsSep "\n" manifestSystemdPaths + "\n";
+  # Every directory derivation carries its publication target marker. Keep the
+  # focused system-output contract explicit about that metadata alongside the
+  # rendered unit paths supplied by the manifest.
+  manifestSystemdPathsText =
+    lib.concatStringsSep "\n" (manifestSystemdPaths ++ ["nix-support/aos-target-platform"])
+    + "\n";
 in
   assert builtins.isAttrs manifest;
   assert !(lib.isDerivation manifest);

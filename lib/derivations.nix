@@ -41,7 +41,6 @@
     (import ./platform.nix)
     satisfies
     canRun
-    canBuildOn
     mkPlatform
     platformIsCompatible
     constraintsCompatible
@@ -150,12 +149,14 @@
   fixupPhase = {
     name = "fixup";
     script = ''
+      object_format="''${AOS_OBJECT_FORMAT:-elf}"
+
       if [ -z "''${dontStrip:-}" ]; then
         echo "stripping..."
-        for o in ''${outputs:-out}; do
+        for o in ''${AOS_OUTPUT_NAMES:-out}; do
           eval "p=\"\''${$o:-}\""
           [ -d "$p" ] || continue
-          find "$p" -type f -name '*.so*' -exec strip --strip-unneeded {} \; 2>/dev/null || true
+          find "$p" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) -exec strip --strip-unneeded {} \; 2>/dev/null || true
           find "$p" -type f -name '*.a' -exec strip -S {} \; 2>/dev/null || true
           for d in bin sbin libexec; do
             if [ -d "$p/$d" ]; then
@@ -165,9 +166,9 @@
         done
       fi
 
-      if [ -z "''${dontPatchELF:-}" ] && command -v patchelf >/dev/null 2>&1; then
+      if [ "$object_format" = elf ] && [ -z "''${dontPatchELF:-}" ] && command -v patchelf >/dev/null 2>&1; then
         echo "shrinking ELF RPATHs..."
-        for o in ''${outputs:-out}; do
+        for o in ''${AOS_OUTPUT_NAMES:-out}; do
           eval "p=\"\''${$o:-}\""
           [ -d "$p" ] || continue
           find "$p" -type f \( -name '*.so*' -o -perm -u+x \) | while read f; do
@@ -175,8 +176,61 @@
           done
         done
       fi
+
+      # Cross builds cannot execute their Darwin outputs. Validate every
+      # Mach-O candidate structurally and fail if it has the wrong CPU type.
+      if [ "$object_format" = macho ] && [ -z "''${dontValidateMachO:-}" ]; then
+        echo "validating Mach-O outputs for ''${AOS_TARGET_PLATFORM:-Darwin}..."
+        case "''${AOS_TARGET_ARCH:-}" in
+          x86_64) expected_cpu=X86_64 ;;
+          arm64) expected_cpu=ARM64 ;;
+          *)
+            echo "unknown Darwin target architecture: ''${AOS_TARGET_ARCH:-unset}" >&2
+            exit 1
+            ;;
+        esac
+
+        for o in ''${AOS_OUTPUT_NAMES:-out}; do
+          eval "p=\"\''${$o:-}\""
+          [ -d "$p" ] || continue
+          find "$p" -type f \( -name '*.dylib' -o -name '*.dylib.*' -o -name '*.so' -o -perm -u+x \) | while read f; do
+            if ! header=$(objdump --macho --private-header "$f" 2>/dev/null); then
+              # Scripts and data files may be executable, but an ELF image in
+              # a Darwin output is always a host/target splice failure. Do not
+              # silently stamp a Linux executable or shared library as Darwin.
+              magic=$(od -An -tx1 -N4 "$f" 2>/dev/null | tr -d ' \n')
+              if [ "$magic" = 7f454c46 ]; then
+                echo "ELF artifact in Darwin output: $f" >&2
+                exit 1
+              fi
+              continue
+            fi
+            if ! echo "$header" | grep -q "$expected_cpu"; then
+              echo "Mach-O architecture mismatch in $f: expected $expected_cpu" >&2
+              echo "$header" >&2
+              exit 1
+            fi
+          done
+        done
+      fi
     '';
   };
+
+  # Preserve the native phase bytes while avoiding grep -q's intentional
+  # early pipe close for large Mach-O archives in Darwin cross builds.
+  darwinCrossFixupPhase = let
+    script =
+      builtins.replaceStrings
+      [
+        "      if ! echo \"$header\" | grep -q \"$expected_cpu\"; then\n        echo \"Mach-O architecture mismatch in $f: expected $expected_cpu\" >&2\n        echo \"$header\" >&2\n        exit 1\n      fi"
+      ]
+      [
+        "      case \"$header\" in\n        *\"$expected_cpu\"*) ;;\n        *)\n          echo \"Mach-O architecture mismatch in $f: expected $expected_cpu\" >&2\n          echo \"$header\" >&2\n          exit 1\n          ;;\n      esac"
+      ]
+      fixupPhase.script;
+  in
+    assert script != fixupPhase.script;
+      fixupPhase // {inherit script;};
 
   # Scrub phase: rewrite build-time /nix/store/<hash>- references inside
   # the output so the Nix reference scanner doesn't pull build-only
@@ -202,7 +256,7 @@
         # The env vars are nixpkgs-style ($buildInputs = runtimeDeps,
         # $propagatedBuildInputs = propagatedDeps).
         keep_args=""
-        for o in ''${outputs:-out}; do
+        for o in ''${AOS_OUTPUT_NAMES:-out}; do
           eval "p=\"\''${$o:-}\""
           [ -n "$p" ] && keep_args="$keep_args -e $p"
         done
@@ -216,12 +270,13 @@
         # __pycache__ is included because import compiles _sysconfigdata
         # to .pyc at install time, baking the build-time toolchain refs
         # into a binary blob that the .py-only pattern would miss.
-        for o in ''${outputs:-out}; do
+        for o in ''${AOS_OUTPUT_NAMES:-out}; do
           eval "p=\"\''${$o:-}\""
           [ -d "$p" ] || continue
           find "$p" \( \
                -path "*/bin/*" -o -path "*/sbin/*" -o -path "*/libexec/*" \
             -o -name "*.so" -o -name "*.so.*" \
+            -o -name "*.dylib" -o -name "*.dylib.*" \
             -o -name "*.pc"  -o -name "*.la" \
             -o -name "Makefile" \
             -o -name "_sysconfigdata*.py"  -o -name "_sysconfigdata*.pyc" \
@@ -230,6 +285,27 @@
           | xargs -0 -r nuke-refs $keep_args
         done
       fi
+    '';
+  };
+
+  # Record the platform of the produced artifacts independently from the Nix
+  # scheduler system. APR and cache publication consume this marker rather
+  # than mistaking a Linux-hosted cross build for a Linux package. Ordinary
+  # package outputs are directories. File and symlink outputs are helper
+  # artifacts with no directory in which the nix-support contract can live.
+  targetPlatformMetadataPhase = outputSystem: {
+    name = "target-platform-metadata";
+    script = ''
+      for o in ''${AOS_OUTPUT_NAMES:-out}; do
+        eval "p=\"\''${$o:-}\""
+        [ -n "$p" ] || continue
+        if [ -d "$p" ] && [ ! -L "$p" ]; then
+          mkdir -p "$p/nix-support"
+          printf '%s\n' '${outputSystem}' > "$p/nix-support/aos-target-platform"
+        else
+          echo "target-platform-metadata: $o is not a directory output; marker omitted" >&2
+        fi
+      done
     '';
   };
 
@@ -383,12 +459,18 @@
     if [ -n "''${NIX_ATTRS_SH_FILE:-}" ]; then
       . "$NIX_ATTRS_SH_FILE"
       if declare -p outputs 2>/dev/null | grep -q 'declare -A'; then
+        AOS_OUTPUT_NAMES="''${!outputs[*]}"
         for __o in "''${!outputs[@]}"; do
           declare -g "$__o=''${outputs[$__o]}"
         done
         unset __o
+      else
+        AOS_OUTPUT_NAMES="''${outputs:-out}"
       fi
+    else
+      AOS_OUTPUT_NAMES="''${outputs:-out}"
     fi
+    export AOS_OUTPUT_NAMES
 
     # Source the stdenv setup if available
     if [ -n "''${stdenv:-}" ] && [ -f "$stdenv/setup.sh" ]; then
@@ -475,6 +557,9 @@
   #   phases;          — ordered list of { name; script; } records
   #   meta;            — package metadata
   #   storeDir;        — store directory (default: /nix/store)
+  #   hostPlatform;    — structured platform where the output executes
+  #   targetPlatform;  — structured code-generation target
+  #   hostSystem;      — system where the output executes
   #   buildExecutionSystem; — system where build dependencies execute
   #   ...              — additional attributes passed to builtins.derivation
   # }
@@ -489,6 +574,9 @@
     meta ? {},
     storeDir ? "/nix/store",
     system ? defaultSystem,
+    hostPlatform ? null,
+    targetPlatform ? null,
+    hostSystem ? null,
     buildExecutionSystem ? null,
     shell ? builderPath,
     outputs ? ["out"],
@@ -571,6 +659,7 @@
     # then pcre2 will be on dbus's PKG_CONFIG_PATH automatically.
     directDeps = buildDeps ++ runtimeDeps ++ propagatedDeps;
     allBuildDeps = collectPropagated directDeps directDeps;
+    nativeBuildClosure = collectPropagated buildDeps buildDeps;
 
     # Prepend patch phase if patches are provided
     patchPhase = {
@@ -610,13 +699,24 @@
     # scrubPhase always runs last, regardless of whether the caller
     # supplied a custom fixup. Inlining it into fixup would skip it
     # whenever cargo/go/bazel templates override the fixup phase.
+    defaultFixupPhase =
+      if
+        buildPlatform.system
+        != outputPlatform.system
+        && outputPlatform.objectFormat == "macho"
+      then darwinCrossFixupPhase
+      else fixupPhase;
+
     allPhases =
       (
         if builtins.any (p: p.name == "fixup") finalPhases
         then finalPhases
-        else finalPhases ++ [fixupPhase]
+        else finalPhases ++ [defaultFixupPhase]
       )
-      ++ [scrubPhase];
+      ++ [
+        scrubPhase
+        (targetPlatformMetadataPhase outputPlatform.system)
+      ];
 
     builder = phasesToScript allPhases shell;
 
@@ -633,6 +733,9 @@
       "meta"
       "storeDir"
       "system"
+      "hostPlatform"
+      "targetPlatform"
+      "hostSystem"
       "buildExecutionSystem"
       "shell"
       "outputs"
@@ -669,24 +772,51 @@
       then buildExecutionSystem
       else system
     );
+    selectedOutputPlatform =
+      if hostPlatform != null
+      then hostPlatform
+      else if hostSystem != null
+      then mkPlatform hostSystem
+      else buildPlatform;
+    # Toolchain bootstrap records may override `.system` to the physical Nix
+    # scheduler while retaining the real output identity in constraints. The
+    # derivation-facing record always restores the canonical output system.
+    outputPlatform =
+      selectedOutputPlatform
+      // {
+        system = "${selectedOutputPlatform.constraints.cpu}-${selectedOutputPlatform.constraints.os}";
+      };
+    selectedCodeTargetPlatform =
+      if targetPlatform != null
+      then targetPlatform
+      else if meta ? target && meta.target ? cpu && meta.target ? os
+      then mkPlatform "${meta.target.cpu}-${meta.target.os}"
+      else outputPlatform;
+    codeTargetPlatform =
+      selectedCodeTargetPlatform
+      // {
+        system = "${selectedCodeTargetPlatform.constraints.cpu}-${selectedCodeTargetPlatform.constraints.os}";
+      };
+    derivationPlatforms = {
+      build = buildPlatform;
+      host = outputPlatform;
+      target = codeTargetPlatform;
+    };
 
     # Effective compiler-hardening token set, exported to the builder for
     # the cc-wrapper to translate into flags. Tokens are filtered for the
-    # platform the output runs on; for native builds that is buildPlatform.
+    # platform where the output runs, which differs from the build platform
+    # during cross-compilation.
     hardeningEnableStr = hardening.effectiveString {
       inherit name hardeningEnable hardeningDisable;
       defaultFlags = defaultHardeningFlags;
-      platform = buildPlatform;
+      platform = outputPlatform;
     };
 
-    # Our execution constraint — where this derivation's output runs.
-    ourExecute =
-      if meta ? execute
-      then meta.execute
-      else {
-        os = buildPlatform.constraints.os;
-        cpu = buildPlatform.constraints.cpu;
-      };
+    # Concrete execution identity for this derivation. `meta.execute` remains
+    # an eligibility constraint; it must not erase the CPU or ABI of the
+    # particular output being produced.
+    ourExecute = outputPlatform.constraints;
 
     # Rule 1: every buildDep must execute in the logical build environment or
     # on the physical scheduler. Cross transitions use both: target-native
@@ -701,43 +831,43 @@
       "mkDerivation (${name}): build dep '${depName}' cannot execute on ${buildPlatform.system} or scheduler ${system}"
       true;
 
-    # Rule 2: every toolchain dep must target our execute platform
+    # Rule 2: an explicitly identified compiler/code-generator must target
+    # either build-machine programs or the requested code-generation platform.
+    # Canadian-cross builds legitimately carry both roles in buildDeps.
     validateDepTarget = dep: let
       dc = getDepConstraints dep;
       depName = dep.name or dep.pname or "(unknown)";
     in
       dc.target
       == null
-      || throwIfNot (constraintsCompatible dc.target ourExecute)
+      || throwIfNot (
+        constraintsCompatible dc.target codeTargetPlatform.constraints
+        || constraintsCompatible dc.target buildPlatform.constraints
+        || constraintsCompatible dc.target schedulingPlatform.constraints
+      )
       "mkDerivation (${name}): toolchain '${depName}' targets incompatible platform"
       true;
 
-    # Only validate on linux (the only platform AOS supports). On other
-    # platforms mkPlatform would throw; skip gracefully via short-circuit.
-    systemIsLinux = let
-      parts = builtins.match "([a-z0-9_]+)-([a-z]+)" system;
-    in
-      parts != null && builtins.elemAt parts 1 == "linux";
-
     chainingOk =
-      !systemIsLinux
-      || (builtins.all validateDepExecute allBuildDeps && builtins.all validateDepTarget allBuildDeps);
+      builtins.all validateDepExecute nativeBuildClosure
+      && builtins.all validateDepTarget allBuildDeps;
 
     # Platform compatibility check: supports new-style structured constraints
     # (meta.build / meta.execute) and old-style meta.platforms string lists.
     platformOk =
-      # New-style: structured BUILD constraint (where can this be built?)
-      if meta ? build
-      then canBuildOn system meta.build
-      # New-style: structured EXECUTE constraint (where does the output run?)
-      else if meta ? execute
-      then satisfies buildPlatform meta.execute
-      # Old-style: platform string list (backward compat with ISA awareness)
-      else if meta ? platforms
-      then platformIsCompatible system meta.platforms
-      else true;
+      # New-style BUILD and EXECUTE constraints are independent and both apply
+      # when a package declares both. The old string list remains an additional
+      # compatibility boundary during migration.
+      (!(meta ? build) || canRun buildPlatform meta.build || canRun schedulingPlatform meta.build)
+      && (!(meta ? execute) || satisfies outputPlatform meta.execute)
+      && (
+        !(meta ? platforms)
+        || platformIsCompatible
+        "${outputPlatform.constraints.cpu}-${outputPlatform.constraints.os}"
+        meta.platforms
+      );
 
-    drv = throwIfNot platformOk "${name} is not supported on ${system}" (
+    drv = throwIfNot platformOk "${name} is not supported on ${outputPlatform.constraints.cpu}-${outputPlatform.constraints.os}" (
       throwIfNot chainingOk "${name}: dependency constraint validation failed" (
         builtins.derivation (
           {
@@ -756,7 +886,10 @@
               else "";
 
             # Environment variables for the build
-            PATH = makePath allBuildDeps;
+            # Only native build dependencies contribute executables and loader
+            # libraries. Host runtime dependencies may contain Darwin binaries
+            # or Mach-O libraries that a Linux builder cannot load.
+            PATH = makePath nativeBuildClosure;
 
             # Configuration flags
             inherit
@@ -772,7 +905,7 @@
             C_INCLUDE_PATH = makeIncPath allBuildDeps;
             CPLUS_INCLUDE_PATH = makeIncPath allBuildDeps;
             LIBRARY_PATH = makeLibPath allBuildDeps;
-            LD_LIBRARY_PATH = makeLibPath allBuildDeps;
+            LD_LIBRARY_PATH = makeLibPath nativeBuildClosure;
 
             # Inject -Wl,-rpath for runtime dep lib dirs so binaries can find
             # shared libraries at runtime without LD_LIBRARY_PATH.
@@ -836,18 +969,19 @@
       )
     );
 
-    # A named output from builtins.derivation is a fresh derivation attrset;
-    # package-level metadata attached to `drv` is not present on `drv.dev`,
-    # `drv.tools`, and other outputs. Preserve the dependency and execution
-    # contract on every output so downstream consumers inherit propagated
-    # dependencies regardless of which output they select.
+    # Named outputs are fresh derivation attrsets. Preserve the package-level
+    # dependency and execution contract when consumers select one directly.
     outputMetadata = {
       inherit meta version propagatedDeps;
       pname = effectivePname;
+      platforms = derivationPlatforms;
       constraints = {
-        build = meta.build or null;
-        execute = meta.execute or null;
-        target = meta.target or null;
+        build = buildPlatform.constraints;
+        execute = ourExecute;
+        target =
+          if meta ? target
+          then codeTargetPlatform.constraints
+          else null;
       };
     };
     annotatedOutputs = builtins.listToAttrs (
@@ -878,6 +1012,7 @@
           passthru
           // {
             inherit phases;
+            platforms = derivationPlatforms;
           }
           // (
             if expose != null
@@ -1766,11 +1901,9 @@
             if scrubMap != {}
             then ''
               # --- Store path scrubbing ---
-              # Variable-length substitutions corrupt offsets in binary formats
-              # such as ELF. Use compact placeholders for text and padded,
-              # equal-length placeholders for binary files. Rewrite through a
-              # scratch file so read-only repository caches keep their modes and
-              # do not require writable directories for sed's rename operation.
+              # Binary substitutions must preserve offsets; text substitutions
+              # stay compact. Rewrite through scratch files so read-only caches
+              # retain their original modes.
               find "$bazelOut/external" -type f -print0 \
                 | xargs -0 -r grep -IlZ . \
                 | xargs -0 -r sh ${scrubTextFiles}

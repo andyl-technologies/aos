@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  stdenv,
+  buildPackages,
   gnumake,
   autoconf,
   bash,
@@ -19,12 +21,15 @@
   freetype,
   xorg-stubs,
   bootstrapTools,
+  krb5,
   openjdk-10,
 }: let
   mkOpenJDKBootstrap = import ./_openjdk-bootstrap.nix {
     inherit
       fetchurl
       mkDerivation
+      stdenv
+      buildPackages
       gnumake
       autoconf
       bash
@@ -42,6 +47,7 @@
       freetype
       xorg-stubs
       bootstrapTools
+      krb5
       ;
   };
 in
@@ -55,11 +61,12 @@ in
     # but does not make the old module reader safe for arbitrary concurrent
     # callers. Keep this bootstrap boundary serialized.
     buildJobs = 1;
-    # Avoid sharing the JDK 10 module reader across compiler requests. Cap the
-    # boot JVM at AVX2 as well: its HotSpot defaults to AVX-512 on newer CPUs
-    # and can crash in libjvm while compiling a large module batch.
+    # Avoid sharing the JDK 10 module reader across compiler requests. Its old
+    # optimizing VM also crashes while compiling JDK 11's large Graal module
+    # on current CPUs, so keep bootstrap execution interpreted, single-threaded,
+    # and capped at AVX2. This affects only tools executed by the boot JDK.
     extraConfigureFlags = [
       "--enable-javac-server=no"
-      "--with-boot-jdk-jvmargs=-XX:UseAVX=2"
+      ''--with-boot-jdk-jvmargs="-Xint -XX:+UseSerialGC -XX:ActiveProcessorCount=1 -XX:UseAVX=2"''
     ];
   }

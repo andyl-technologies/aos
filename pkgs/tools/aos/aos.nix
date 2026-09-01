@@ -33,8 +33,35 @@
   which,
   zlib,
   zstd,
+  stdenv,
+  buildPackages,
 }: let
   version = "0.1.0";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  buildPerl =
+    if isDarwinCross
+    then buildPackages.perl
+    else perl;
+  buildPkgConfig =
+    if isDarwinCross
+    then buildPackages.pkg-config
+    else pkg-config;
+  buildProtobuf =
+    if isDarwinCross
+    then buildPackages.protobuf
+    else protobuf;
+  buildCmake =
+    if isDarwinCross
+    then buildPackages.cmake
+    else cmake;
+  buildGitMinimal =
+    if isDarwinCross
+    then buildPackages.git-minimal
+    else git-minimal;
+  buildOpenSsh =
+    if isDarwinCross
+    then buildPackages.openssh
+    else openssh;
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
   # Every external tool the aos/apm/apr binaries shell out to by bare name
@@ -61,11 +88,38 @@
   # scrubPhase keeps their store-path references in the wrappers and pulls them
   # into the runtime closure; without that, nuke-refs would rewrite these paths
   # to placeholders and the wrappers would point at nonexistent stores.
-  runtimeTools = [bash nix openssl sbsigntools systemd mtools qemu-img util-linux zstd which];
-  runtimeBinPath = lib.concatStringsSep ":" [
-    (lib.makeBinPath runtimeTools)
-    "${systemd}/lib/systemd"
+  portableRuntimeTools = [bash nix sbsigntools mtools qemu-img tpm2-tools zstd which];
+  runtimeTools =
+    portableRuntimeTools
+    ++ lib.optionals (!isDarwinCross) [systemd util-linux];
+  runtimeBinPath = lib.concatStringsSep ":" (
+    [(lib.makeBinPath runtimeTools)]
+    ++ lib.optionals (!isDarwinCross) ["${systemd}/lib/systemd"]
+  );
+  linuxRuntimeDeps = [
+    aos-landlock
+    aos-service-root
+    aos-selinux-run
+    aos-verity-root-guard
+    aos-ebpf-net-policy
+    aos-ebpf-lsm-policy
+    checkpolicy
+    policycoreutils
+    semodule-utils
   ];
+  linuxToolEnvironment = ''
+    export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
+    export AOS_SERVICE_ROOT_HELPER="${aos-service-root}/bin/aos-service-root"
+    export AOS_SELINUX_RUNNER="${aos-selinux-run}/bin/aos-selinux-run"
+    export AOS_VERITY_ROOT_GUARD="${aos-verity-root-guard}/bin/aos-verity-root-guard"
+    export AOS_SYSTEMD_PCREXTEND="${systemd}/lib/systemd/systemd-pcrextend"
+    export AOS_EBPF_NET_POLICY="${aos-ebpf-net-policy}/bin/aos-ebpf-net-policy"
+    export AOS_EBPF_NET_POLICY_OBJECT="${aos-ebpf-net-policy}/lib/bpf/aos-ebpf-net-policy.bpf.o"
+    export AOS_EBPF_LSM_POLICY="${aos-ebpf-lsm-policy}/bin/aos-ebpf-lsm-policy"
+    export AOS_CHECKMODULE="${checkpolicy}/bin/checkmodule"
+    export AOS_SEMODULE="${policycoreutils}/sbin/semodule"
+    export AOS_SEMODULE_PACKAGE="${semodule-utils}/bin/semodule_package"
+  '';
   src = import ./_workspace-source.nix {inherit lib;};
   applicationTestPackages = [
     "aos"
@@ -98,7 +152,7 @@
   cargoArtifactContract = {
     family = "aos-native-release-and-test";
     checkType = "debug";
-    nativeInputs = map toString [openssl protobuf cmake libssh2];
+    nativeInputs = map toString [openssl buildProtobuf buildCmake libssh2];
   };
   cargoEnv = {
     OPENSSL_DIR = "${openssl}";
@@ -106,7 +160,7 @@
     OPENSSL_INCLUDE_DIR = "${openssl}/include";
     OPENSSL_NO_VENDOR = "1";
     OPENSSL_STATIC = "0";
-    PROTOC = "${protobuf}/bin/protoc";
+    PROTOC = "${buildProtobuf}/bin/protoc";
   };
   cargoArtifacts = mkCargoArtifacts {
     pname = "aos-native-release-and-test-artifacts";
@@ -123,7 +177,7 @@
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}"
     ];
     inherit cargoEnv;
-    buildDeps = [perl pkg-config openssl protobuf cmake libssh2];
+    buildDeps = [buildPerl buildPkgConfig openssl buildProtobuf buildCmake libssh2];
     runtimeDeps = [openssl zlib];
   };
 in
@@ -148,8 +202,13 @@ in
     # `gitcmd`/`testutil` helpers). They are deliberately NOT in `runtimeDeps`,
     # so scrubPhase nukes their references and they never enter the runtime
     # closure — production code uses libgit2 + ssh-key, never these binaries.
-    buildDeps = [perl pkg-config openssl protobuf cmake libssh2 git-minimal openssh];
-    runtimeDeps = [openssl zlib aos-landlock aos-service-root aos-selinux-run aos-verity-root-guard aos-ebpf-net-policy aos-ebpf-lsm-policy checkpolicy policycoreutils semodule-utils tpm2-tools] ++ runtimeTools;
+    buildDeps =
+      [buildPerl buildPkgConfig openssl buildProtobuf buildCmake libssh2 buildGitMinimal buildOpenSsh]
+      ++ lib.optionals isDarwinCross [buildPackages.aos];
+    runtimeDeps =
+      [openssl zlib]
+      ++ runtimeTools
+      ++ lib.optionals (!isDarwinCross) linuxRuntimeDeps;
 
     preBuild = ''
       # Keep the integration-test executable below the bounded verifier-
@@ -163,12 +222,7 @@ in
       export OPENSSL_INCLUDE_DIR="${openssl}/include"
       export OPENSSL_NO_VENDOR=1
       export OPENSSL_STATIC=0
-      export PROTOC="${protobuf}/bin/protoc"
-      export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
-      export AOS_SERVICE_ROOT_HELPER="${aos-service-root}/bin/aos-service-root"
-      export AOS_SELINUX_RUNNER="${aos-selinux-run}/bin/aos-selinux-run"
-      export AOS_VERITY_ROOT_GUARD="${aos-verity-root-guard}/bin/aos-verity-root-guard"
-      export AOS_SYSTEMD_PCREXTEND="${systemd}/lib/systemd/systemd-pcrextend"
+      export PROTOC="${buildProtobuf}/bin/protoc"
       export AOS_MCOPY="${mtools}/bin/mcopy"
       export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
       export AOS_TPM2_CREATEEK="${tpm2-tools}/bin/tpm2_createek"
@@ -178,21 +232,24 @@ in
       export AOS_TPM2_PCRREAD="${tpm2-tools}/bin/tpm2_pcrread"
       export AOS_TPM2_CHECKQUOTE="${tpm2-tools}/bin/tpm2_checkquote"
       export AOS_TPM2_FLUSHCONTEXT="${tpm2-tools}/bin/tpm2_flushcontext"
-      export AOS_EBPF_NET_POLICY="${aos-ebpf-net-policy}/bin/aos-ebpf-net-policy"
-      export AOS_EBPF_NET_POLICY_OBJECT="${aos-ebpf-net-policy}/lib/bpf/aos-ebpf-net-policy.bpf.o"
-      export AOS_EBPF_LSM_POLICY="${aos-ebpf-lsm-policy}/bin/aos-ebpf-lsm-policy"
-      export AOS_CHECKMODULE="${checkpolicy}/bin/checkmodule"
-      export AOS_SEMODULE="${policycoreutils}/sbin/semodule"
-      export AOS_SEMODULE_PACKAGE="${semodule-utils}/bin/semodule_package"
+      ${lib.optionalString (!isDarwinCross) linuxToolEnvironment}
       # The real-Git interoperability test intentionally exercises stock
       # OpenSSH signing. Nix builders have numeric uids without /etc/passwd
       # entries, while ssh-keygen requires getpwuid(3) even with an explicit
       # key path. Compile the repository-owned identity shim and scope it to
       # that test's child processes; it never enters the runtime closure.
-      export AOS_TEST_IDENTITY_PRELOAD="$NIX_BUILD_TOP/aos-test-identity.so"
-      cc -shared -fPIC -O2 -Wall -Wextra -Werror \
-        -o "$AOS_TEST_IDENTITY_PRELOAD" \
-        aos-hub/tests/nix_builder_identity.c
+      ${
+        if isDarwinCross
+        then ''
+          echo "native AOS policy and integration gates were validated by ${buildPackages.aos}"
+        ''
+        else ''
+          export AOS_TEST_IDENTITY_PRELOAD="$NIX_BUILD_TOP/aos-test-identity.so"
+          cc -shared -fPIC -O2 -Wall -Wextra -Werror \
+            -o "$AOS_TEST_IDENTITY_PRELOAD" \
+            aos-hub/tests/nix_builder_identity.c
+        ''
+      }
     '';
 
     doCheck = true;
@@ -229,11 +286,7 @@ in
             cat > $out/bin/$name << 'WRAPPER'
       #!${bash}/bin/bash
       export AOS_HOST_PATH="''${AOS_HOST_PATH-$PATH}"
-      export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
-      export AOS_SERVICE_ROOT_HELPER="${aos-service-root}/bin/aos-service-root"
-      export AOS_SELINUX_RUNNER="${aos-selinux-run}/bin/aos-selinux-run"
-      export AOS_VERITY_ROOT_GUARD="${aos-verity-root-guard}/bin/aos-verity-root-guard"
-      export AOS_SYSTEMD_PCREXTEND="${systemd}/lib/systemd/systemd-pcrextend"
+      ${lib.optionalString (!isDarwinCross) linuxToolEnvironment}
       export AOS_MCOPY="${mtools}/bin/mcopy"
       export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
       export AOS_TPM2_CREATEEK="${tpm2-tools}/bin/tpm2_createek"
@@ -243,12 +296,6 @@ in
       export AOS_TPM2_PCRREAD="${tpm2-tools}/bin/tpm2_pcrread"
       export AOS_TPM2_CHECKQUOTE="${tpm2-tools}/bin/tpm2_checkquote"
       export AOS_TPM2_FLUSHCONTEXT="${tpm2-tools}/bin/tpm2_flushcontext"
-      export AOS_EBPF_NET_POLICY="${aos-ebpf-net-policy}/bin/aos-ebpf-net-policy"
-      export AOS_EBPF_NET_POLICY_OBJECT="${aos-ebpf-net-policy}/lib/bpf/aos-ebpf-net-policy.bpf.o"
-      export AOS_EBPF_LSM_POLICY="${aos-ebpf-lsm-policy}/bin/aos-ebpf-lsm-policy"
-      export AOS_CHECKMODULE="${checkpolicy}/bin/checkmodule"
-      export AOS_SEMODULE="${policycoreutils}/sbin/semodule"
-      export AOS_SEMODULE_PACKAGE="${semodule-utils}/bin/semodule_package"
       export PATH="@PATH@"
       exec "@SELF@" "$@"
       WRAPPER
@@ -262,6 +309,12 @@ in
           # Exercise the installed wrapper, not the pre-install Cargo binary.
           # The wrapper must exec .aos-unwrapped so current_exe() materializes
           # exactly the bytes that the bundled verifier will later execute.
+          ${
+        if isDarwinCross
+        then ''
+          echo "deferring installed AOS wrapper execution until Darwin qualification"
+        ''
+        else ''
           wrapperMaterializerRoot="$NIX_BUILD_TOP/aos-cutover-wrapper-materializer"
           bundleRecipe="$NIX_BUILD_TOP/source/docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-bundle-generation-v1.fixture.json"
           mkdir -p "$wrapperMaterializerRoot/bundle/bin"
@@ -269,6 +322,8 @@ in
             --bundle "$wrapperMaterializerRoot/bundle" \
             --bundle-recipe "$bundleRecipe"
           cmp $out/bin/.aos-unwrapped "$wrapperMaterializerRoot/bundle/bin/aos"
+        ''
+      }
     '';
 
     checks = {

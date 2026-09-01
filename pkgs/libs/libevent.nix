@@ -6,6 +6,8 @@
   pkg-config,
   openssl,
   zlib,
+  python3,
+  stdenv,
 }: let
   version = "2.1.12";
 in
@@ -24,10 +26,16 @@ in
       gnumake
       pkg-config
     ];
-    runtimeDeps = [
-      openssl
-      zlib
-    ];
+    runtimeDeps =
+      [
+        openssl
+        zlib
+      ]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [python3]
+        else []
+      );
     propagatedDeps = [];
 
     phases = [
@@ -40,13 +48,32 @@ in
       }
       {
         name = "configure";
-        script = ''
-          ./configure \
-            --prefix=$out \
-            --enable-shared \
-            --enable-static \
-            --with-openssl=${openssl}
-        '';
+        script =
+          if stdenv.isCross && stdenv.hostPlatform.isDarwin
+          then ''
+            # Darwin's linker requires the pthread and OpenSSL companion
+            # dylibs to resolve their libevent-core references at link time.
+            # Treat Darwin like libevent's other no-undefined platforms so
+            # Automake also records the correct parallel-build dependency.
+            sed -i \
+              's/if test x$bwin32 = xtrue || test x$cygwin = xtrue || test x$midipix = xtrue; then/if test x$host_os = xdarwin || test x$bwin32 = xtrue || test x$cygwin = xtrue || test x$midipix = xtrue; then/' \
+              configure
+
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --enable-shared \
+              --enable-static \
+              --with-openssl=${openssl}
+          ''
+          else ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --enable-shared \
+              --enable-static \
+              --with-openssl=${openssl}
+          '';
       }
       {
         name = "build";
@@ -56,9 +83,17 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            make install
+            if [ -f "$out/bin/event_rpcgen.py" ]; then
+              sed -i "1s|^#!.*|#!${python3}/bin/python3|" "$out/bin/event_rpcgen.py"
+            fi
+          ''
+          else ''
+            make install
+          '';
       }
     ];
 
