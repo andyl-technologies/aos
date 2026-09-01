@@ -1,0 +1,32 @@
+diff --git a/tests/tcg/plugins/crucible-instruction.c b/tests/tcg/plugins/crucible-instruction.c
+index 5b0808556..0a653e920 100644
+--- a/tests/tcg/plugins/crucible-instruction.c
++++ b/tests/tcg/plugins/crucible-instruction.c
+@@ -431,6 +431,10 @@ static uint8_t *test_build_instruction_payload(
+              "\"ffffffffffffffffffffffffffffffff"
+              "ffffffffffffffffffffffffffffffff\"" :
+              "null");
++    uint64_t occurrence_first =
++        test_control_plane_mode() ? G_MAXUINT64 : 1;
++    uint64_t selector_occurrence_count =
++        test_control_plane_mode() ? 1 : occurrence_count;
+     g_autofree char *opcode_class = NULL;
+ 
+     if (test_mode == TEST_REJECT_BYTES) {
+@@ -530,12 +534,13 @@ static uint8_t *test_build_instruction_payload(
+         "CRUCJSN1{\"input_state_sha256\":%s,"
+         "\"instruction_bytes\":\"%s\","
+         "\"occurrence\":{\"kind\":\"periodic\",\"parameters\":{"
+-        "\"count\":%" G_GUINT64_FORMAT ",\"first\":1"
++        "\"count\":%" G_GUINT64_FORMAT ",\"first\":%"
++        G_GUINT64_FORMAT
+         ",\"period\":1}},"
+         "\"opcode_class\":%s,\"pc_length\":%zu,"
+         "\"pc_start\":%" G_GUINT64_FORMAT "}",
+-        input_state, instruction_hex, occurrence_count, opcode_class,
+-        selector_len, test_pc);
++        input_state, instruction_hex, selector_occurrence_count,
++        occurrence_first, opcode_class, selector_len, test_pc);
+     g_autofree char *mask = g_malloc0(test_register_bytes * 2 + 1);
+     g_autofree char *value = g_malloc0(test_register_bytes * 2 + 1);
+     g_autofree char *mutation = NULL;

@@ -99,27 +99,18 @@ fn qemu_patch_created_files_match_license_inventory() -> Result<(), Box<dyn Erro
         }
     }
 
-    let expected = BTreeSet::from([
-        "accel/tcg/crucible-translation-prefetch.c".to_owned(),
-        "accel/tcg/tcg-accel-ops-preemption.c".to_owned(),
-        "accel/tcg/tcg-accel-ops-sim-shmem.c".to_owned(),
-        "accel/tcg/tcg-accel-ops-sim-shmem.h".to_owned(),
-        "accel/tcg/tcg-accel-ops-sim.c".to_owned(),
-        "block/crucible-shmem.c".to_owned(),
-        "include/system/crucible-plugin-wake.h".to_owned(),
-        "include/system/crucible-sim-ipi.h".to_owned(),
-        "include/system/crucible-sim-preemption.h".to_owned(),
-    ]);
-    assert_eq!(created, expected, "QEMU patch-created file set drifted");
-
     let inventory = fs::read_to_string(patch_dir.join("LICENSES.md"))?;
-    for path in expected {
-        let row = format!("| `{path}` | GPL-2.0-or-later |");
-        assert!(
-            inventory.contains(&row),
-            "QEMU patch license inventory must contain `{row}`"
-        );
-    }
+    let inventoried = inventory
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('|').map(str::trim);
+            let _leading = fields.next()?;
+            let path = fields.next()?.strip_prefix('`')?.strip_suffix('`')?;
+            let license = fields.next()?;
+            (license == "GPL-2.0-or-later").then(|| path.to_owned())
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(created, inventoried, "QEMU patch-created file set drifted");
     Ok(())
 }
 
@@ -401,7 +392,7 @@ fn independent_fixture_parser_matches_all_abi_views() -> Result<(), Box<dyn Erro
     assert!(header.contains("#define CRUCIBLE_SHMEM_REGION_HEADER_SIZE 256u"));
     assert!(header.contains("#define CRUCIBLE_SHMEM_NODE_SLOT_SIZE 128u"));
     assert!(header.contains("#define CRUCIBLE_SHMEM_RING_HEADER_SIZE 128u"));
-    assert!(header.contains("#define CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE 4632u"));
+    assert!(header.contains("#define CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE 4640u"));
 
     let magic = bytes_at(&fixture, 0, 8)?;
     assert_eq!(magic, b"CRUCSHM1");
@@ -413,7 +404,7 @@ fn independent_fixture_parser_matches_all_abi_views() -> Result<(), Box<dyn Erro
         version_bytes[3],
     ]);
     assert_eq!(version, fixture.abi_version);
-    assert_eq!(fixture.total_len, 14_552);
+    assert_eq!(fixture.total_len, 19_296);
     Ok(())
 }
 

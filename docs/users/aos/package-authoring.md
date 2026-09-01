@@ -185,7 +185,10 @@ target.
 Declare the narrowest permissions the service needs. `network = "private"`
 gives the package an isolated network namespace. A service that must use the
 host network needs `network = "host"` and the appropriate `tcp-bind` ports.
-The package renderer rejects inconsistent permissions during evaluation.
+The package renderer rejects inconsistent permissions during evaluation. The
+port list remains signed audit and socket-listener intent, but host networking
+is an explicit downgrade from per-package Landlock/eBPF network enforcement;
+filesystem, MAC, capability, and systemd sandboxing still apply.
 
 ## Add an on-host configuration module
 

@@ -268,8 +268,8 @@ in
           experimental-features = nix-command
           NIXCONF
 
-          echo "==> Testing nix store init"
-          nix store init
+          echo "==> Testing nix-store --init"
+          nix-store --init
           echo "    Store initialized"
 
           echo "==> Testing nix eval --expr"
@@ -281,7 +281,7 @@ in
           fi
 
           echo "==> Testing nix eval builtins.currentSystem"
-          RESULT2=$(nix eval --expr 'builtins.currentSystem')
+          RESULT2=$(nix eval --impure --expr 'builtins.currentSystem')
           echo "    builtins.currentSystem = $RESULT2"
 
           echo "Nix store ops: PASS"

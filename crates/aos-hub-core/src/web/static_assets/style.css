@@ -157,9 +157,23 @@ table {
   margin: 0.6rem 0 1.6rem;
 }
 .table-scroll {
+  width: 100%;
   max-width: 100%;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
+}
+.table-scroll table {
+  width: max-content;
+  min-width: 100%;
+}
+.table-scroll td { max-width: 36rem; }
+.trust-key,
+.cache-url {
+  display: inline-block;
+  max-width: min(28rem, 55vw);
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: break-word;
 }
 .table-scroll:focus-visible {
   outline: 2px solid var(--accent);
@@ -183,10 +197,11 @@ th, td {
    * headings (which the eye otherwise reads as another table line). */
   border-bottom: 1px solid var(--rule-faint);
   vertical-align: top;
-  /* Long unbreakable strings (trust keys, store paths, NAR hashes) must
-   * wrap inside the cell rather than widen the table past the page. */
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  /* Keep identifiers and headings intact. Tables live in bounded horizontal
+   * scroll regions, so narrow viewports do not force words to split in the
+   * middle or allow the page itself to grow wider than its content area. */
+  overflow-wrap: normal;
+  word-break: normal;
 }
 th {
   color: var(--dim);
@@ -199,38 +214,44 @@ th {
 }
 td.num { text-align: right; }
 
-/* Hashes use one bounded identity control everywhere: a distinctive pill for
- * scanning, the complete value in a custom tooltip, and an adjacent copy
- * action. The button appears only after the enhancement bundle confirms that
- * the Clipboard API is available. */
+/* Hashes use one bounded identity control everywhere: a license-pill-sized
+ * identity and an icon-only copy action inside the same outline. The complete
+ * value remains available in a tooltip. */
 .hash-control {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
   max-width: 100%;
+  padding: 0 0.12rem 0 0.45rem;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  color: var(--ink);
+  font-size: 0.8rem;
+  line-height: 1.45;
   white-space: nowrap;
 }
 .hash-value {
   display: inline-flex;
   min-width: 0;
-  padding: 0.08rem 0.48rem;
-  border: 1px solid var(--rule-strong);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--ink) 4%, var(--paper));
   color: var(--ink);
   cursor: help;
   text-decoration: none;
 }
 .hash-value code {
   overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: inherit;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .hash-value:hover,
 .hash-value:focus-visible {
-  border-color: var(--accent);
+  color: var(--accent);
   outline: none;
 }
+.hash-control:hover,
+.hash-control:focus-within { border-color: var(--accent); }
 .hash-tooltip {
   display: none;
   position: fixed;
@@ -249,12 +270,32 @@ td.num { text-align: right; }
 .hash-tooltip.open { display: block; }
 .hash-copy {
   display: none;
-  padding: 0.05rem 0.38rem;
-  border-color: var(--rule-strong);
+  width: 1.35rem;
+  height: 1.35rem;
+  margin-left: 0.18rem;
+  padding: 0.2rem;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
   color: var(--dim);
-  font-size: 0.72rem;
+  line-height: 1;
 }
-.hash-controls-ready .hash-copy { display: inline-block; }
+.hash-controls-ready .hash-copy { display: inline-grid; place-items: center; }
+.hash-copy:hover { color: var(--accent); background: transparent; }
+.hash-copy:focus-visible { border: 0; outline-offset: 0; }
+.hash-copy svg {
+  width: 0.85rem;
+  height: 0.85rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.4;
+}
+.hash-copy-done { display: none; }
+.hash-copy.copied { color: var(--ok); }
+.hash-copy.copied .hash-copy-icon { display: none; }
+.hash-copy.copied .hash-copy-done { display: block; }
 
 /* Bindings — a compact stacked list, not a 4-column table: a long
  * object-store endpoint URL gets the full content width to wrap into rather
@@ -561,7 +602,9 @@ p.chips { margin: 0.2rem 0 0.8rem; }
   margin: 0 0.2rem 0.2rem 0;
   font-size: 0.85rem;
 }
-.license-pill {
+.license-pill,
+.platform-pill,
+.release-count-pill {
   display: inline-block;
   max-width: 16ch;
   overflow: hidden;
@@ -575,11 +618,21 @@ p.chips { margin: 0.2rem 0 0.8rem; }
   vertical-align: middle;
   white-space: nowrap;
 }
-.license-pill:hover {
+.license-pill:hover,
+.platform-pill:hover,
+.release-count-pill:hover {
   border-color: var(--accent);
   color: var(--accent);
   text-decoration: none;
 }
+.release-shortlinks {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  min-width: 0;
+}
+.release-count-pill { max-width: none; }
+.release-count-pill strong { font-variant-numeric: tabular-nums; }
 
 /* Package artifacts use comparable, bounded facts in the summary row and put
  * unbounded paths, hashes, and references on full-width detail rows. */
@@ -644,37 +697,47 @@ p.chips { margin: 0.2rem 0 0.8rem; }
   border-bottom: 0;
   white-space: nowrap;
 }
-.images-table .image-detail th,
-.images-table .image-detail td {
-  padding-block: 0.25rem 0.7rem;
+.images-table .image-detail > th,
+.images-table .image-detail > td {
+  padding-block: 0.35rem 0.75rem;
   border-bottom: 0;
   font-size: 0.84rem;
 }
-.images-table .image-detail th {
+.images-table .image-detail > th {
+  width: 5rem;
   color: var(--dim);
   font-size: 0.75rem;
   white-space: nowrap;
 }
-.image-detail-item {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 0.35rem;
-  margin: 0 1rem 0.3rem 0;
-  white-space: nowrap;
+.table-scroll .image-facts {
+  width: 100%;
+  min-width: 42rem;
+  margin: 0;
+  table-layout: fixed;
 }
-.checksum-item { max-width: 100%; }
-.image-checksum {
-  display: inline-block;
-  max-width: 9.5ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  vertical-align: bottom;
-  white-space: nowrap;
+.image-facts th,
+.image-facts td {
+  padding: 0.35rem 0.65rem 0.35rem 0;
+  border-bottom: 1px solid var(--rule-faint);
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: normal;
 }
-.image-copy {
-  padding: 0.05rem 0.4rem;
-  border-color: var(--rule-strong);
-  font-size: 0.75rem;
+.image-facts tr:last-child > * { border-bottom: 0; }
+.image-facts th {
+  width: 7.5rem;
+  color: var(--dim);
+  font-size: 0.72rem;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.image-facts td { padding-right: 1.25rem; }
+.image-store-path {
+  background: none;
+  border: 0;
+  padding: 0;
+  overflow-wrap: anywhere;
 }
 
 /* Account tokens follow the same stacked-object hierarchy as storage
@@ -712,7 +775,13 @@ p.chips { margin: 0.2rem 0 0.8rem; }
 @media (max-width: 40rem) {
   .artifact-table .artifact-summary td,
   .images-table .image-summary td { white-space: normal; }
-  .image-detail-item { white-space: normal; }
+  .table-scroll .image-facts { min-width: 24rem; }
+  .image-facts tbody { display: block; }
+  .image-facts tr {
+    display: grid;
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+  }
+  .image-facts th { width: auto; }
   .token-head { flex-wrap: wrap; }
   .token-scope { max-width: calc(100% - 6rem); }
 }

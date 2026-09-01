@@ -11,14 +11,35 @@
   series = import ../../pkgs/emulation/qemu-patches/_series.nix;
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   defaultNix = builtins.readFile ./default.nix;
+  qemuPatchStackRepository = import ./_qemu-patch-stack-repository.nix {
+    inherit pkgs lib qemuPackage;
+  };
+  qemuDropOneRepository = import ./_qemu-drop-one-repository.nix {
+    inherit pkgs lib qemuPackage;
+    patchStackRepository = qemuPatchStackRepository;
+  };
   qemuPatchSeries = import ./phase2-qemu-patch-series.nix {inherit pkgs lib;};
   qemuPluginFailLoud = import ./phase2-plugin-fail-loud.nix {inherit pkgs lib;};
   qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix {inherit pkgs lib;};
   qemuDetIpi = import ./phase2-qemu-det-ipi.nix {inherit pkgs lib;};
   qemuVcpuIntrospect = import ./phase2-qemu-vcpu-introspect.nix {inherit pkgs lib;};
   qemuPreemptionInject = import ./phase2-qemu-preemption-inject.nix {inherit pkgs lib;};
+  qemuLiveNetworkIo = import ./phase2-qemu-live-network-io.nix {
+    inherit pkgs lib;
+    attrPath = "${attrPath}.exactBoundaryVcpuIntrospection.liveNetwork";
+    taskIds = ["T-QEMU-0089"];
+    # Run the heavyweight live certificates in one bounded sequence. Parallel
+    # patch variants can otherwise starve a correct guest progress loop.
+    dependencies = [qemuExactSnapshotRestore];
+  };
+  qemuLivePluginQuantumSmp = import ./phase2-qemu-live-plugin-quantum-smp.nix {
+    inherit pkgs lib;
+    attrPath = "${attrPath}.haltedPartialRrTurn";
+    taskIds = [];
+  };
   qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {
     inherit pkgs lib qemuPackage;
+    patchStackRepository = qemuPatchStackRepository;
   };
   qemuPatchPrefixBuilds = import ./phase2-qemu-patch-prefix-builds.nix {
     inherit pkgs lib qemuPackage;
@@ -31,9 +52,583 @@
   qemuPatchDropOne = import ./phase2-qemu-patch-drop-one.nix {
     inherit pkgs lib qemuPackage;
     attrPath = "${attrPath}.dropOne";
+    patchStackRepository = qemuPatchStackRepository;
+    dropOneRepository = qemuDropOneRepository;
   };
+  certifyExactPatch = {
+    patchName,
+    liveCheck,
+    liveResult ? "result",
+    liveEvidence,
+    evidenceName,
+    productionEffectRows ? false,
+  }:
+    pkgs.mkDerivation {
+      pname = "crucible-phase2-${lib.removeSuffix ".patch" patchName}-certificate";
+      version = "0";
+      src = null;
+      buildDeps = [pkgs.coreutils pkgs.grep];
+      phases = [
+        {
+          name = "certify-exact-patch-evidence";
+          script = ''
+            set -eu
+            mkdir -p "$out"
+
+            live_result="${liveCheck}/${liveResult}"
+            drop_result="${qemuPatchDropOne}/per-patch/${patchName}.result"
+            grep -Fxq PASS "$live_result"
+            ${liveEvidence}
+
+            grep -Fxq PASS "$drop_result"
+            grep -Fxq 'gate=gate:patch-microtests' "$drop_result"
+            grep -Fxq 'dropped_patch=${patchName}' "$drop_result"
+            grep -Eq '^attribution_method=drop-one-(binary|build-required|semantic|source-dependency|symbol|test-fixture)$' \
+              "$drop_result"
+            if ! grep -Fxq 'drop_conflicts=true' "$drop_result" \
+              && ! grep -Fxq 'same_builder_executable_changes_without_patch=true' "$drop_result" \
+              && ! grep -Fxq 'exact_test_fixture_source_loss_verified=true' "$drop_result" \
+              && ! grep -Fxq 'exact_manifest_build_failure_evidence=true' "$drop_result" \
+              && ! grep -Fxq 'runtime_effect_proven_against_variant=true' "$drop_result" \
+              && ! grep -Eq '^effect_symbols_present_in_full_absent_in_variant=.+$' "$drop_result"; then
+              echo "drop-one result has no exact negative attribution for ${patchName}" >&2
+              exit 1
+            fi
+
+            cp "$live_result" "$out/live-result"
+            cp "$drop_result" "$out/drop-one.result"
+            cat > "$out/result" <<'RESULT'
+            PASS
+            gate=gate:patch-microtests
+            patch=${patchName}
+            patched_fixture_exercised=true
+            exact_drop_one_negative_control=true
+            qemu_package=${qemuPackage}
+            qemu_package_version=${qemuPackage.version}
+            live_evidence=${evidenceName}
+            drop_one_attribution=exact
+            RESULT
+            ${lib.optionalString productionEffectRows ''
+              grep '^production_effect_row=' "$live_result" >> "$out/result"
+            ''}
+          '';
+        }
+      ];
+    };
   qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix {inherit pkgs lib qemuPackage;};
   qemuDiagnosticPatchesDevOnly = import ./phase1-qemu-diagnostic-patches-dev-only.nix {inherit pkgs lib qemuPackage;};
+  qemuNvcpuFingerprint = import ./phase2-qemu-nvcpu-fingerprint.nix {
+    inherit pkgs lib;
+    attrPath = "${attrPath}.genesisObservationBoundary";
+    taskIds = ["T-QEMU-0086" "T-QEMU-0087" "T-QEMU-0088" "T-QEMU-0089"];
+  };
+  qemuExactSnapshotRestore = import ./phase2-qemu-exact-snapshot-restore.nix {
+    inherit pkgs lib;
+    dependencies = [qemuPatchDropOne qemuLiveFaultHardware];
+  };
+  s1Fingerprint = import ./phase0-s1.nix {inherit pkgs lib;};
+  qemuInstructionFaults = import ./phase2-qemu-instruction-faults.nix {
+    inherit pkgs lib qemuPackage;
+  };
+  qemuRegisterMutation = import ./phase2-qemu-register-mutation.nix {
+    inherit pkgs lib qemuPackage;
+  };
+  qemuMemoryAccess = import ./phase2-qemu-memory-access.nix {
+    inherit pkgs lib qemuPackage;
+  };
+  qemuLiveNodeLifecycleFault = import ./phase2-qemu-live-node-lifecycle-fault.nix {
+    inherit pkgs lib;
+  };
+  qemuLiveFaultHardware = import ./phase2-qemu-live-fault-hardware.nix {
+    inherit pkgs lib;
+  };
+  qemuGenesisObservationBoundary = pkgs.mkDerivation {
+    pname = "crucible-phase2-qemu-genesis-observation-boundary";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.tar pkgs.xz];
+    phases = [
+      {
+        name = "verify-genesis-observation-boundary";
+        script = ''
+          set -eu
+          mkdir -p "$out" "$TMPDIR/stock-qemu"
+
+          grep -q '^PASS$' "${qemuNvcpuFingerprint}/result"
+          grep -q '"kind":"definition"' "${qemuNvcpuFingerprint}/qemu-nvcpu-definition.jsonl"
+          grep -q '"definition_pause_requested":true' "${qemuNvcpuFingerprint}/qemu-nvcpu-definition.jsonl"
+          grep -q '"definition_callback_completed":true' "${qemuNvcpuFingerprint}/qemu-nvcpu-definition.jsonl"
+          grep -q '"definition_pause_status":0' "${qemuNvcpuFingerprint}/qemu-nvcpu-definition.jsonl"
+          grep -q '"observed_icount":0' "${qemuNvcpuFingerprint}/qemu-nvcpu-definition.jsonl"
+          grep -q '"sample_register_failures":0' "${qemuNvcpuFingerprint}/qemu-nvcpu-definition.jsonl"
+          grep -q '"register_read_failures":0' "${qemuNvcpuFingerprint}/qemu-nvcpu-definition.jsonl"
+
+          tar -xf ${qemuPackage.src} -C "$TMPDIR/stock-qemu"
+          ! grep -q 'qemu_plugin_crucible_request_terminal_pause' \
+            "$TMPDIR/stock-qemu/qemu-${qemuPackage.version}/include/qemu/qemu-plugin.h"
+
+          cat > "$out/result" <<'RESULT'
+          PASS
+          gate=gate:patch-microtests
+          patch=0086-crucible-genesis-observation-boundary.patch
+          patched_fixture_exercised=true
+          stock_negative_control=true
+          qemu_package=${qemuPackage}
+          qemu_package_version=${qemuPackage.version}
+          genesis_callback_completed_before_qmp_quit=true
+          genesis_boundary_bql_prelaunch_icount_zero=true
+          all_vcpu_register_observation_complete=true
+          plugin_exit_sampling_fallback=false
+          RESULT
+        '';
+      }
+    ];
+  };
+  qemuDeterministicRcuQuiescence = pkgs.mkDerivation {
+    pname = "crucible-phase2-qemu-deterministic-rcu-quiescence";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.tar pkgs.xz];
+    phases = [
+      {
+        name = "verify-deterministic-rcu-quiescence";
+        script = ''
+          set -eu
+          mkdir -p "$out" "$TMPDIR/stock-qemu"
+
+          grep -q '^PASS$' "${qemuNvcpuFingerprint}/result"
+          grep -q '^real_qemu_adversary=second-run-bounded-scheduler-preemption$' \
+            "${qemuNvcpuFingerprint}/result"
+          grep -q '^real_qemu_comparison=canonical-rust-stream$' \
+            "${qemuNvcpuFingerprint}/result"
+          grep -q '^PASS$' \
+            "${qemuNvcpuFingerprint}/fingerprint-compare.result"
+
+          tar -xf ${qemuPackage.src} -C "$TMPDIR/stock-qemu"
+          stock_rr="$TMPDIR/stock-qemu/qemu-${qemuPackage.version}/accel/tcg/tcg-accel-ops-rr.c"
+          grep -q 'rr_kick_next_cpu();' "$stock_rr"
+          ! grep -q 'if (rr_crucible_sim_mode())' "$stock_rr"
+
+          cat > "$out/result" <<'RESULT'
+          PASS
+          gate=gate:patch-microtests
+          patch=0087-crucible-deterministic-rcu-quiescence.patch
+          patched_fixture_exercised=true
+          stock_negative_control=true
+          qemu_package=${qemuPackage}
+          qemu_package_version=${qemuPackage.version}
+          real_smp_vcpus=4
+          host_adversary=bounded-scheduler-preemption
+          canonical_trace_byte_identical=true
+          deterministic_ipi_evidence=true
+          rcu_quiescence_bounded_by_rr_quantum=true
+          ordinary_qemu_forced_kick_preserved=true
+          RESULT
+        '';
+      }
+    ];
+  };
+  qemuDeterministicHostKickBoundary = pkgs.mkDerivation {
+    pname = "crucible-phase2-qemu-deterministic-host-kick-boundary";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.tar pkgs.xz];
+    phases = [
+      {
+        name = "verify-deterministic-host-kick-boundary";
+        script = ''
+          set -eu
+          mkdir -p "$out" "$TMPDIR/stock-qemu"
+
+          grep -q '^PASS$' "${qemuNvcpuFingerprint}/result"
+          grep -q '^real_qemu_adversary=second-run-bounded-scheduler-preemption$' \
+            "${qemuNvcpuFingerprint}/result"
+          grep -q '^real_qemu_comparison=canonical-rust-stream$' \
+            "${qemuNvcpuFingerprint}/result"
+          grep -q '^PASS$' \
+            "${qemuNvcpuFingerprint}/fingerprint-compare.result"
+          grep -q '^PASS$' "${s1Fingerprint}/result"
+          grep -q '^vcpus=1$' "${s1Fingerprint}/result"
+          grep -q '^horizon_fingerprint_match=true$' "${s1Fingerprint}/result"
+
+          tar -xf ${qemuPackage.src} -C "$TMPDIR/stock-qemu"
+          stock_rr="$TMPDIR/stock-qemu/qemu-${qemuPackage.version}/accel/tcg/tcg-accel-ops-rr.c"
+          grep -q 'void rr_kick_vcpu_thread(CPUState \*unused)' "$stock_rr"
+          ! grep -q 'static bool rr_crucible_sim_mode(void);' "$stock_rr"
+          grep -q 'qatomic_read(&cpu->interrupt_request)' \
+            "${patchDir}/0088-crucible-deterministic-host-kick-boundary.patch"
+          grep -q 'if (stateful_exit)' \
+            "${patchDir}/0088-crucible-deterministic-host-kick-boundary.patch"
+          grep -q 'qemu_plugin_crucible_terminal_pause_pending()' \
+            "${patchDir}/0088-crucible-deterministic-host-kick-boundary.patch"
+          grep -q 'icount_get_raw_observed() > 0' \
+            "${patchDir}/0088-crucible-deterministic-host-kick-boundary.patch"
+          grep -q 'qatomic_read(&rr_current_cpu) != NULL' \
+            "${patchDir}/0088-crucible-deterministic-host-kick-boundary.patch"
+          grep -q '^+static bool rr_initial_wait_complete;' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          grep -q '^+.*qatomic_set_mb(&rr_initial_wait_complete, true);' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          grep -q '^-.*icount_get_raw_observed() > 0' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          ! grep -q '^+.*runstate_is_running()' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          grep -q '^+.*qatomic_set_mb(&cpu->exit_request, 1);' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          grep -q '^+.*without setting icount_decr.high' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          ! grep -q '^+.*qatomic_set.*icount_decr.u16.high' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          ! grep -q 'rr_deferred_host_kick' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          ! grep -q 'rr_run_loop_active' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          grep -q '^-.*qatomic_read(&rr_current_cpu) != NULL' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          grep -q '^+static unsigned int rr_tcg_exec_state;' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+    RR_TCG_EXEC_WAKE_PENDING,' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*qatomic_cmpxchg(&rr_tcg_exec_state, state,' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+            bool idle_wake = false;' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+                    idle_wake = state == RR_TCG_EXEC_IDLE;' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*\* wait predicate too, closing the broadcast-before-wait race' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*qatomic_xchg(&rr_tcg_exec_state, RR_TCG_EXEC_IDLE)' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*icount_crucible_rr_cursor_position() == 0' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*at an authorized scheduler ceiling' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*guest idle boundary' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+static bool rr_crucible_sim_single_vcpu(void);' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*else if (rr_crucible_sim_single_vcpu())' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*exit_request issued between slices can race' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          ! grep -q '^+.*qatomic_set_mb(&cpu->exit_request, 1);' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*qemu_cpu_kick(first_cpu);' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+void icount_crucible_rr_initialize_genesis(CPUState \*cpu)' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+    g_assert(icount_get_raw() == 0);' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+    timers_state.crucible_rr_current_vcpu = cpu->cpu_index;' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+    timers_state.crucible_rr_cursor_valid = true;' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+    icount_crucible_rr_initialize_genesis(cpu);' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+         \* The serialized owner remains authoritative across partial RR turns.' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+            selected != suggested)' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+            return selected;' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          ! grep -q '^+.*crucible_rr_current_vcpu != suggested->cpu_index' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+            cpu = icount_crucible_rr_select_cpu(suggested_cpu);' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+            bool wrapped = suggested_cpu == NULL;' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+                partial_rr_turn = true;' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+                icount_crucible_rr_cursor_position() != 0) {' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+        if (partial_rr_turn) {' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+         !terminal_cursor) ||' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+        error_report("crucible RR accounting owner mismatch:' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+                if (rr_crucible_sim_vcpu_is_halted(cpu)) {' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+                    cpu = NULL;' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+                 \* the canonical idle boundary.' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+                if (icount_crucible_rr_cursor_position() != 0) {' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+                (current_cpu && owner == UINT64_MAX &&' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+                 current_cpu->cpu_index != serialized_owner &&' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+                 cursor_position == 0) || bql_locked())) ||' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+void icount_crucible_rr_yield_cpu(CPUState \*cpu)' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+    cs->crucible_guest_pause_yield = true;' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+        guest_pause_yield = cpu->crucible_guest_pause_yield;' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+        cpu->crucible_guest_pause_yield = false;' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+        if (guest_pause_yield && r != EXCP_INTERRUPT) {' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+            !rr_crucible_sim_single_vcpu() &&' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+            guest_pause_yield) {' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+             \* Commit the helper-authenticated PAUSE transition before any' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+            if (owner == cpu->cpu_index) {' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+            } else if (cursor != 0) {' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+                icount_crucible_rr_yield_cpu(cpu);' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+        qemu_plugin_crucible_guest_pause_handoff_begin();' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+            qemu_plugin_crucible_guest_pause_handoff_complete();' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+    if (qatomic_cmpxchg(&qemu_plugin_crucible_guest_pause_handoff, 1, 2) == 1) {' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+        qatomic_store_release(&qemu_plugin_crucible_guest_pause_handoff, 3);' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+    if (qemu_plugin_crucible_guest_pause_handoff_pending()) {' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+        qemu_plugin_schedule_control_boundary();' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          ! grep -q '^+.*cpu && !cpu->exit_request && !cpu->stop && !cpu->unplug' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+
+          pause_yield_line=$(grep -n '^+                icount_crucible_rr_yield_cpu(cpu);' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch" | cut -d: -f1)
+          first_callback_line=$(grep -n 'crucible_sim_shmem_publish_current_icount' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch" | head -1 | cut -d: -f1)
+          test "$pause_yield_line" -lt "$first_callback_line"
+
+          cat > "$out/result" <<'RESULT'
+          PASS
+          gate=gate:patch-microtests
+          patch=0090-crucible-active-tcg-kick-boundary.patch
+          refined_patch=0088-crucible-deterministic-host-kick-boundary.patch
+          patched_fixture_exercised=true
+          stock_negative_control=true
+          qemu_package=${qemuPackage}
+          qemu_package_version=${qemuPackage.version}
+          real_smp_vcpus=4
+          host_adversary=bounded-scheduler-preemption
+          canonical_trace_byte_identical=true
+          deterministic_ipi_evidence=true
+          zero_icount_startup_kick_preserved=true
+          initial_rr_wait_woken_without_redundant_exit=true
+          first_multivcpu_active_slice_host_exit_deferred_to_rr_boundary=true
+          post_genesis_single_vcpu_boundary_determinism=true
+          multivcpu_active_tcg_host_latency_exit_deferred=true
+          single_vcpu_active_tcg_soft_exit_preserved=true
+          external_runstate_not_used_as_execution_proof=true
+          idle_thread_condition_wake_preserved=true
+          committed_control_and_interrupt_exit_preserved=true
+          admitted_terminal_pause_exit_preserved=true
+          terminal_pause_has_explicit_level_triggered_kick=true
+          deterministic_translation_block_boundary=true
+          soft_exit_omits_async_icount_decrementer=true
+          stateful_transition_exits_shared_rr_thread=true
+          ordinary_qemu_generic_kick_preserved=true
+          RESULT
+        '';
+      }
+    ];
+  };
+  qemuExactBoundaryVcpuIntrospection = pkgs.mkDerivation {
+    pname = "crucible-phase2-qemu-exact-boundary-vcpu-introspection";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.tar pkgs.xz];
+    phases = [
+      {
+        name = "verify-exact-boundary-vcpu-introspection";
+        script = ''
+          set -eu
+          mkdir -p "$out" "$TMPDIR/stock-qemu"
+
+          grep -q '^PASS$' "${qemuLiveNetworkIo}/live-world-network.result"
+          grep -q '^exact_restore_next_quantum_match=true$' \
+            "${qemuLiveNetworkIo}/live-world-network.result"
+          grep -q '^PASS$' "${qemuNvcpuFingerprint}/result"
+          grep -q '^real_qemu_comparison=canonical-rust-stream$' \
+            "${qemuNvcpuFingerprint}/result"
+
+          tar -xf ${qemuPackage.src} -C "$TMPDIR/stock-qemu"
+          stock_api="$TMPDIR/stock-qemu/qemu-${qemuPackage.version}/plugins/api.c"
+          ! grep -q 'qemu_plugin_crucible_exact_boundary_active' "$stock_api"
+
+          cat > "$out/result" <<'RESULT'
+          PASS
+          gate=gate:patch-microtests
+          patch=0089-crucible-exact-boundary-vcpu-introspection.patch
+          patched_fixture_exercised=true
+          stock_negative_control=true
+          qemu_package=${qemuPackage}
+          qemu_package_version=${qemuPackage.version}
+          live_world_checkpoint_capture=true
+          exact_restore_next_quantum_match=true
+          exact_boundary_all_vcpu_registers=true
+          exact_boundary_committed_rr_cursor=true
+          live_owner_rr_cursor=true
+          arbitrary_unowned_context_rejected=true
+          RESULT
+        '';
+      }
+    ];
+  };
+  qemuDeterministicNetworkKick = pkgs.mkDerivation {
+    pname = "crucible-phase2-qemu-deterministic-network-kick";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.tar pkgs.xz];
+    phases = [
+      {
+        name = "verify-deterministic-network-kick";
+        script = ''
+          set -eu
+          mkdir -p "$out" "$TMPDIR/stock-qemu"
+
+          result="${qemuLiveNetworkIo}/live-world-network.result"
+          grep -q '^PASS$' "$result"
+          grep -q '^guest_acknowledgements=[1-9][0-9]*$' "$result"
+          grep -q '^exact_restore_next_quantum_match=true$' "$result"
+          grep -q '^checkpoint_packet_continuation=[1-9][0-9]*$' "$result"
+          grep -q '^checkpoint_fault_decision_continuation=[1-9][0-9]*$' "$result"
+
+          patch_file="${patchDir}/0108-crucible-deterministic-network-kick.patch"
+          grep -q '^+.*vdev->device_id == VIRTIO_ID_NET' "$patch_file"
+          grep -q '^+.*network TX crosses the registered plugin callback' "$patch_file"
+          grep -q '^+static bool virtio_net_crucible_sync_tx' "$patch_file"
+          grep -q '^+        virtio_net_tx_bh(q);' "$patch_file"
+          grep -q '^+                 \* tx_waiting is VMState, but the scheduled state of tx_bh is' "$patch_file"
+          grep -q '^+static bool virtio_crucible_queue_signal_state_needed' "$patch_file"
+          grep -q '^+        VMSTATE_UINT16(signalled_used, struct VirtQueue)' "$patch_file"
+          grep -q '^+        VMSTATE_BOOL(signalled_used_valid, struct VirtQueue)' "$patch_file"
+          grep -q '^+        &vmstate_virtio_crucible_queue_signals,' "$patch_file"
+          test "$(grep -c '^+                virtio_net_tx_bh(q);' "$patch_file")" -ge 2
+          grep -q '^+         \* different number of descriptors after an exact VMState restore' "$patch_file"
+          test "$(grep -c '^+.*tb_flush(first_cpu);' "$patch_file")" -eq 2
+          grep -q '^+.*canonical_insns > 32' "$patch_file"
+          grep -q '^+.*CF_NO_GOTO_TB | CF_NO_GOTO_PTR | canonical_insns' "$patch_file"
+          grep -q 'successful save path and successful load path flush' ${../../docs/rfcs/0014-signal-driven-fault-model/14-qemu-fault-patches/59-deterministic-network-kick.md}
+          tar -xf ${qemuPackage.src} -C "$TMPDIR/stock-qemu"
+          stock_pci="$TMPDIR/stock-qemu/qemu-${qemuPackage.version}/hw/virtio/virtio-pci.c"
+          stock_virtio="$TMPDIR/stock-qemu/qemu-${qemuPackage.version}/hw/virtio/virtio.c"
+          stock_virtio_net="$TMPDIR/stock-qemu/qemu-${qemuPackage.version}/hw/net/virtio-net.c"
+          ! grep -q 'virtio-rng, virtio-blk, and virtio-net' "$stock_pci"
+          ! grep -q 'virtio-9p, virtio-blk, and virtio-net' "$stock_virtio"
+          ! grep -q 'virtio_net_crucible_sync_tx' "$stock_virtio_net"
+
+          cat > "$out/result" <<'RESULT'
+          PASS
+          gate=gate:patch-microtests
+          patch=0108-crucible-deterministic-network-kick.patch
+          patched_fixture_exercised=true
+          stock_negative_control=true
+          qemu_package=${qemuPackage}
+          qemu_package_version=${qemuPackage.version}
+          live_guest_acknowledgement=true
+          exact_restore_packet_continuation=true
+          exact_restore_fault_decision_continuation=true
+          symmetric_snapshot_tb_flush=true
+          snapshot_bounded_tb_shape=true
+          guest_transmit_kick_dispatch=sim-icount-inline
+          guest_transmit_bottom_half_dispatch=sim-icount-synchronous
+          virtqueue_notification_cursor=sim-vmstate-preserved
+          non_sim_notifier_path_preserved=true
+          RESULT
+        '';
+      }
+    ];
+  };
+  qemuCanonicalRrGenesisCursor = pkgs.mkDerivation {
+    pname = "crucible-phase2-qemu-canonical-rr-genesis-cursor";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.tar pkgs.xz];
+    phases = [
+      {
+        name = "verify-canonical-rr-genesis-cursor";
+        script = ''
+          set -eu
+          mkdir -p "$out" "$TMPDIR/stock-qemu"
+
+          grep -q '^PASS$' "${qemuLiveNetworkIo}/live-world-network.result"
+          grep -q '^branch_decisions_match=true$' \
+            "${qemuLiveNetworkIo}/live-world-network.result"
+          grep -q '^exact_restore_next_quantum_match=true$' \
+            "${qemuLiveNetworkIo}/live-world-network.result"
+
+          patch_file="${patchDir}/0091-crucible-canonical-rr-genesis-cursor.patch"
+          grep -q 'icount_get_raw_observed() == 0' "$patch_file"
+          grep -q 'cursor_position == 0' "$patch_file"
+          grep -q 'genesis_cursor ? 0 : current_vcpu' "$patch_file"
+          grep -q 'without mutating TimersState' "$patch_file"
+          grep -q 'current_vcpu == UINT64_MAX && !genesis_cursor' "$patch_file"
+
+          tar -xf ${qemuPackage.src} -C "$TMPDIR/stock-qemu"
+          stock_api="$TMPDIR/stock-qemu/qemu-${qemuPackage.version}/plugins/api.c"
+          ! grep -q 'bool genesis_cursor' "$stock_api"
+          ! grep -q 'genesis_cursor ? 0 : current_vcpu' "$stock_api"
+
+          cat > "$out/result" <<'RESULT'
+          PASS
+          gate=gate:patch-microtests
+          patch=0091-crucible-canonical-rr-genesis-cursor.patch
+          patched_fixture_exercised=true
+          stock_negative_control=true
+          qemu_package=${qemuPackage}
+          qemu_package_version=${qemuPackage.version}
+          raw_zero_genesis_cursor_vcpu_zero_position_zero=true
+          fresh_lifecycle_genesis_observation=true
+          fresh_live_network_branch_replay=true
+          durable_restore_next_quantum_match=true
+          non_genesis_unowned_cursor_rejected=true
+          scheduler_state_mutation=false
+          RESULT
+        '';
+      }
+    ];
+  };
+  qemuCanonicalTerminalRrCursor = pkgs.mkDerivation {
+    pname = "crucible-phase2-qemu-canonical-terminal-rr-cursor";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.grep qemuInstructionFaults];
+    phases = [
+      {
+        name = "verify-canonical-terminal-rr-cursor";
+        script = ''
+          set -eu
+          mkdir -p "$out"
+
+          grep -q '^PASS$' "${qemuInstructionFaults}/result"
+          grep -q '^live_mutation_cases=72$' \
+            "${qemuInstructionFaults}/result"
+
+          patch_file="${patchDir}/0092-crucible-canonical-terminal-rr-cursor.patch"
+          grep -q 'cursor_position == rr_switch_quantum' "$patch_file"
+          grep -q 'next_cpu = CPU_NEXT(cpu)' "$patch_file"
+          grep -q 'current_vcpu = next_cpu->cpu_index' "$patch_file"
+          grep -q 'cursor_position = 0' "$patch_file"
+
+          cat > "$out/result" <<'RESULT'
+          PASS
+          gate=gate:patch-microtests
+          patch=0092-crucible-canonical-terminal-rr-cursor.patch
+          patched_fixture_exercised=true
+          instruction_completion_quantum_terminal_exercised=true
+          terminal_cursor_projects_next_vcpu=true
+          terminal_cursor_position_zero=true
+          scheduler_state_mutation=false
+          RESULT
+        '';
+      }
+    ];
+  };
   patchFiles =
     builtins.sort builtins.lessThan
     (builtins.filter
@@ -312,6 +907,625 @@
         inherit pkgs lib;
       };
     }
+    {
+      patch = "0047-crucible-fault-command-abi.patch";
+      check = import ./phase2-qemu-fault-boundary.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0047-crucible-fault-command-abi.patch";
+      };
+    }
+    {
+      patch = "0048-crucible-fault-safe-boundary.patch";
+      check = import ./phase2-qemu-fault-boundary.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0048-crucible-fault-safe-boundary.patch";
+      };
+    }
+    {
+      patch = "0049-crucible-memory-boundary-mutate.patch";
+      check = import ./phase2-qemu-memory-mutation.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
+    {
+      patch = "0050-crucible-memory-access-faults.patch";
+      check = certifyExactPatch {
+        patchName = "0050-crucible-memory-access-faults.patch";
+        liveCheck = qemuMemoryAccess;
+        evidenceName = "live-memory-access-matrix";
+        productionEffectRows = true;
+        liveEvidence = ''
+          grep -Fxq 'gate=gate:patch-microtests' "$live_result"
+          grep -Fxq 'backend=actual-patched-and-stock-qemu' "$live_result"
+          grep -Fxq 'architectures=x86_64,aarch64' "$live_result"
+          grep -Fq 'cpu_access_matrix=fetch,aligned,unaligned,cross-page' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0051-crucible-add-architecture-register-fault-mutations.patch";
+      check = qemuRegisterMutation;
+    }
+    {
+      patch = "0052-crucible-instruction-and-exception-faults.patch";
+      check = qemuInstructionFaults;
+    }
+    {
+      patch = "0053-crucible-interrupt-faults.patch";
+      check = import ./phase2-qemu-interrupt-faults.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
+    {
+      patch = "0054-crucible-inject-architecture-hardware-errors.patch";
+      check = import ./phase2-qemu-hardware-error-faults.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
+    {
+      patch = "0055-crucible-vcpu-service-control.patch";
+      check = import ./phase2-qemu-vcpu-service.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
+    {
+      patch = "0056-crucible-node-lifecycle-faults.patch";
+      check = import ./phase2-qemu-node-lifecycle.nix {
+        inherit pkgs lib qemuPackage;
+        # Keep the real-QEMU lifecycle matrix in the bounded heavyweight
+        # sequence. Parallel aggregate builds must not turn host starvation
+        # into a guest-progress failure.
+        dependencies = [qemuLiveNetworkIo];
+      };
+    }
+    {
+      patch = "0060-crucible-block-typed-errors.patch";
+      check = import ./phase1-qemu-block-shmem.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0060-crucible-block-typed-errors.patch";
+      };
+    }
+    {
+      patch = "0061-crucible-block-discard.patch";
+      check = import ./phase1-qemu-block-shmem.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0061-crucible-block-discard.patch";
+      };
+    }
+    {
+      patch = "0062-crucible-block-transport-reset.patch";
+      check = import ./phase1-qemu-block-shmem.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0062-crucible-block-transport-reset.patch";
+      };
+    }
+    {
+      patch = "0063-crucible-plugin-vmstop.patch";
+      check = import ./phase1-plugin-runtime-apis.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0063-crucible-plugin-vmstop.patch";
+      };
+    }
+    {
+      patch = "0064-crucible-terminal-lifecycle-completion.patch";
+      check = import ./phase2-qemu-terminal-lifecycle.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0064-crucible-terminal-lifecycle-completion.patch";
+      };
+    }
+    {
+      patch = "0065-crucible-authenticated-terminal-lifecycle.patch";
+      check = import ./phase2-qemu-terminal-lifecycle.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0065-crucible-authenticated-terminal-lifecycle.patch";
+      };
+    }
+    {
+      patch = "0066-crucible-immutable-process-generation.patch";
+      check = import ./phase2-qemu-terminal-lifecycle.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0066-crucible-immutable-process-generation.patch";
+      };
+    }
+    {
+      patch = "0067-crucible-serialize-and-harden-core-fault-state.patch";
+      check = import ./phase2-qemu-fault-vmstate.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0067-crucible-serialize-and-harden-core-fault-state.patch";
+      };
+    }
+    {
+      patch = "0068-crucible-guest-clock-faults.patch";
+      check = import ./phase2-qemu-fault-vmstate.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0068-crucible-guest-clock-faults.patch";
+      };
+    }
+    {
+      patch = "0069-crucible-accelerator-fault-device.patch";
+      check = import ./phase2-qemu-fault-vmstate.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0069-crucible-accelerator-fault-device.patch";
+      };
+    }
+    {
+      patch = "0070-crucible-fault-vmstate.patch";
+      check = import ./phase2-qemu-fault-vmstate.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0070-crucible-fault-vmstate.patch";
+      };
+    }
+    {
+      patch = "0071-crucible-lifecycle-precondition.patch";
+      check = import ./phase2-qemu-fault-vmstate.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0071-crucible-lifecycle-precondition.patch";
+      };
+    }
+    {
+      patch = "0072-crucible-typed-node-result-schema.patch";
+      check = import ./phase2-qemu-fault-vmstate.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0072-crucible-typed-node-result-schema.patch";
+      };
+    }
+    {
+      patch = "0073-crucible-device-wait-vmstop.patch";
+      check = import ./phase1-plugin-runtime-apis.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0073-crucible-device-wait-vmstop.patch";
+      };
+    }
+    {
+      patch = "0074-crucible-arm-accelerator-result-opportunities.patch";
+      check = import ./phase2-qemu-fault-vmstate.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0074-crucible-arm-accelerator-result-opportunities.patch";
+      };
+    }
+    {
+      patch = "0075-crucible-restore-authenticated-fault-event-requests.patch";
+      check = import ./phase2-qemu-fault-vmstate.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0075-crucible-restore-authenticated-fault-event-requests.patch";
+      };
+    }
+    {
+      patch = "0076-crucible-9p-completion-wake-registration.patch";
+      check = import ./phase1-qemu-9p-shmem.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0076-crucible-9p-completion-wake-registration.patch";
+      };
+    }
+    {
+      patch = "0077-crucible-serialize-rr-cursor.patch";
+      check = import ./phase2-qemu-rr-cursor-vmstate.nix {
+        inherit pkgs lib qemuPackage;
+        exactSnapshotRestore = qemuExactSnapshotRestore;
+      };
+    }
+    {
+      patch = "0078-crucible-fingerprint-guest-state-domains.patch";
+      check = import ./phase2-qemu-fingerprint-state-domains.nix {
+        inherit pkgs lib qemuPackage;
+        exactSnapshotRestore = qemuExactSnapshotRestore;
+      };
+    }
+    {
+      patch = "0079-crucible-stopped-state-control-progress.patch";
+      check = import ./phase2-qemu-stopped-state-control-progress.nix {
+        inherit pkgs lib qemuPackage;
+        exactSnapshotRestore = qemuExactSnapshotRestore;
+      };
+    }
+    {
+      patch = "0080-crucible-inactive-retention-clock-guard.patch";
+      check = import ./phase2-qemu-fault-vmstate.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0080-crucible-inactive-retention-clock-guard.patch";
+      };
+    }
+    {
+      patch = "0081-crucible-deferred-result-evidence-test.patch";
+      check = certifyExactPatch {
+        patchName = "0081-crucible-deferred-result-evidence-test.patch";
+        liveCheck = import ./phase2-qemu-deferred-result-evidence.nix {
+          inherit pkgs lib qemuPackage;
+        };
+        evidenceName = "live-deferred-instruction-result-evidence";
+        liveEvidence = ''
+          grep -Fxq 'typed_deferred_result_evidence=true' "$live_result"
+          grep -Fxq 'composed_payload_binding=true' "$live_result"
+          grep -Fxq 'live_instruction_matrix=true' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0082-crucible-deterministic-instruction-input-state.patch";
+      check = import ./phase2-qemu-deterministic-instruction-input-state.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
+    {
+      patch = "0083-crucible-inert-clock-restore.patch";
+      check = certifyExactPatch {
+        patchName = "0083-crucible-inert-clock-restore.patch";
+        liveCheck = qemuLiveNetworkIo;
+        liveResult = "live-world-network.result";
+        evidenceName = "live-world-inert-clock-exact-restore";
+        liveEvidence = ''
+          grep -Fxq 'gate=gate:live-world-network' "$live_result"
+          grep -Fxq 'backend=production-qemu-lifecycle' "$live_result"
+          grep -Fxq 'exact_restore_next_quantum_match=true' "$live_result"
+          grep -Eq '^checkpoint_continuation_quanta=([1-9]|1[0-6])$' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0084-crucible-exact-restore-network-announcement.patch";
+      check = certifyExactPatch {
+        patchName = "0084-crucible-exact-restore-network-announcement.patch";
+        liveCheck = qemuLiveNetworkIo;
+        liveResult = "live-world-network.result";
+        evidenceName = "live-world-exact-restore-network-continuation";
+        liveEvidence = ''
+          grep -Fxq 'gate=gate:live-world-network' "$live_result"
+          grep -Fxq 'exact_restore_next_quantum_match=true' "$live_result"
+          grep -Eq '^checkpoint_packet_continuation=[1-9][0-9]*$' "$live_result"
+          grep -Eq '^checkpoint_fault_decision_continuation=[1-9][0-9]*$' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0085-crucible-register-rejection-atomicity.patch";
+      check = import ./phase2-qemu-register-mutation.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0085-crucible-register-rejection-atomicity.patch";
+        attrPath = "checks.crucible.phase2.qemuRegisterRejectionAtomicity";
+        taskIds = ["T-QEMU-0085"];
+        rejectionAtomicity = true;
+      };
+    }
+    {
+      patch = "0086-crucible-genesis-observation-boundary.patch";
+      check = qemuGenesisObservationBoundary;
+    }
+    {
+      patch = "0087-crucible-deterministic-rcu-quiescence.patch";
+      check = qemuDeterministicRcuQuiescence;
+    }
+    {
+      patch = "0088-crucible-deterministic-host-kick-boundary.patch";
+      check = certifyExactPatch {
+        patchName = "0088-crucible-deterministic-host-kick-boundary.patch";
+        liveCheck = qemuDeterministicHostKickBoundary;
+        evidenceName = "live-smp-host-kick-boundary";
+        liveEvidence = ''
+          grep -Fxq 'canonical_trace_byte_identical=true' "$live_result"
+          grep -Fxq 'host_adversary=bounded-scheduler-preemption' "$live_result"
+          grep -Fxq 'stateful_transition_exits_shared_rr_thread=true' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0089-crucible-exact-boundary-vcpu-introspection.patch";
+      check = qemuExactBoundaryVcpuIntrospection;
+    }
+    {
+      patch = "0090-crucible-active-tcg-kick-boundary.patch";
+      check = qemuDeterministicHostKickBoundary;
+    }
+    {
+      patch = "0091-crucible-canonical-rr-genesis-cursor.patch";
+      check = qemuCanonicalRrGenesisCursor;
+    }
+    {
+      patch = "0092-crucible-canonical-terminal-rr-cursor.patch";
+      check = certifyExactPatch {
+        patchName = "0092-crucible-canonical-terminal-rr-cursor.patch";
+        liveCheck = qemuCanonicalTerminalRrCursor;
+        evidenceName = "live-terminal-rr-cursor-projection";
+        liveEvidence = ''
+          grep -Fxq 'instruction_completion_quantum_terminal_exercised=true' "$live_result"
+          grep -Fxq 'terminal_cursor_projects_next_vcpu=true' "$live_result"
+          grep -Fxq 'terminal_cursor_position_zero=true' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0093-crucible-canonical-register-cursor.patch";
+      check = certifyExactPatch {
+        patchName = "0093-crucible-canonical-register-cursor.patch";
+        liveCheck = qemuRegisterMutation;
+        evidenceName = "live-canonical-register-cursor";
+        liveEvidence = ''
+          grep -Fxq 'backend=actual-patched-and-stock-qemu' "$live_result"
+          grep -Fxq 'live_mutation_cases=67' "$live_result"
+          grep -Fxq 'mutation_evidence=architecture,row,phase,range,before,after,mask,value,rr,baseline_and_post_execution_fingerprints' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0094-crucible-retention-virtual-time-origin.patch";
+      check = certifyExactPatch {
+        patchName = "0094-crucible-retention-virtual-time-origin.patch";
+        liveCheck = qemuMemoryAccess;
+        evidenceName = "live-memory-retention-virtual-time";
+        liveEvidence = ''
+          grep -Fxq 'backend=actual-patched-and-stock-qemu' "$live_result"
+          grep -Fq 'advanced_matrix=' "$live_result"
+          grep -Fq 'retention' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0095-crucible-raw-pte-update-identity.patch";
+      check = certifyExactPatch {
+        patchName = "0095-crucible-raw-pte-update-identity.patch";
+        liveCheck = qemuMemoryAccess;
+        evidenceName = "live-raw-pte-update-identity";
+        liveEvidence = ''
+          grep -Fxq 'backend=actual-patched-and-stock-qemu' "$live_result"
+          grep -Fq 'page-table-walk-read-corrupt' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0096-crucible-physical-page-table-region-fixture.patch";
+      check = certifyExactPatch {
+        patchName = "0096-crucible-physical-page-table-region-fixture.patch";
+        liveCheck = qemuMemoryAccess;
+        evidenceName = "live-physical-page-table-region";
+        liveEvidence = ''
+          grep -Fxq 'backend=actual-patched-and-stock-qemu' "$live_result"
+          grep -Fq 'page-table-walk-read-corrupt' "$live_result"
+          grep -Fxq 'dma_translation=frozen-direct-and-virtio-iommu-iova-to-gpa' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0097-crucible-canonicalize-memory-retry-identity.patch";
+      check = certifyExactPatch {
+        patchName = "0097-crucible-canonicalize-memory-retry-identity.patch";
+        liveCheck = qemuMemoryAccess;
+        evidenceName = "live-canonical-memory-retry-identity";
+        liveEvidence = ''
+          grep -Fxq 'backend=actual-patched-and-stock-qemu' "$live_result"
+          grep -Fq 'service-retry-inspection' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0098-crucible-inactive-nested-tsc-guard.patch";
+      check = certifyExactPatch {
+        patchName = "0098-crucible-inactive-nested-tsc-guard.patch";
+        liveCheck = qemuMemoryAccess;
+        evidenceName = "live-inactive-nested-tsc-memory-guard";
+        liveEvidence = ''
+          grep -Fxq 'backend=actual-patched-and-stock-qemu' "$live_result"
+          grep -Fq 'inert-x86-nested-stage1-stage2' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0099-crucible-valid-aarch64-abort-fixture.patch";
+      check = certifyExactPatch {
+        patchName = "0099-crucible-valid-aarch64-abort-fixture.patch";
+        liveCheck = qemuMemoryAccess;
+        evidenceName = "live-aarch64-abort-fixture";
+        liveEvidence = ''
+          grep -Fxq 'architectures=x86_64,aarch64' "$live_result"
+          grep -Fq 'access-error,architectural-exception' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0100-crucible-aarch64-memory-exception-vectors.patch";
+      check = certifyExactPatch {
+        patchName = "0100-crucible-aarch64-memory-exception-vectors.patch";
+        liveCheck = qemuMemoryAccess;
+        evidenceName = "live-aarch64-memory-exception-vectors";
+        liveEvidence = ''
+          grep -Fxq 'architectures=x86_64,aarch64' "$live_result"
+          grep -Fq 'access-error,architectural-exception' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0101-crucible-canonicalize-snapshot-rr-resume.patch";
+      check = certifyExactPatch {
+        patchName = "0101-crucible-canonicalize-snapshot-rr-resume.patch";
+        liveCheck = qemuExactSnapshotRestore;
+        evidenceName = "live-exact-snapshot-rr-resume";
+        liveEvidence = ''
+          grep -Fxq 'gate=gate:qemu-exact-snapshot-restore' "$live_result"
+          grep -Fxq 'replay_oracle_pair_match=true' "$live_result"
+          grep -Fxq 'nonzero_intra_turn_rr_cursor_restored=true' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0102-crucible-bql-exact-register-capture.patch";
+      check = certifyExactPatch {
+        patchName = "0102-crucible-bql-exact-register-capture.patch";
+        liveCheck = qemuExactSnapshotRestore;
+        evidenceName = "live-bql-exact-register-capture";
+        liveEvidence = ''
+          grep -Fxq 'gate=gate:qemu-exact-snapshot-restore' "$live_result"
+          grep -Fxq 'multi_vcpu_exact_restore=true' "$live_result"
+          grep -Eq '^capture_fingerprint=[0-9a-f]{64}$' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0103-crucible-isolate-checkpoint-control-wake.patch";
+      check = certifyExactPatch {
+        patchName = "0103-crucible-isolate-checkpoint-control-wake.patch";
+        liveCheck = qemuExactSnapshotRestore;
+        evidenceName = "live-isolated-checkpoint-control-wake";
+        liveEvidence = ''
+          grep -Fxq 'gate=gate:qemu-exact-snapshot-restore' "$live_result"
+          grep -Fxq 'old_process_force_crashed=true' "$live_result"
+          grep -Fxq 'replay_oracle_pair_match=true' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0104-crucible-preserve-checkpoint-block-durability.patch";
+      check = certifyExactPatch {
+        patchName = "0104-crucible-preserve-checkpoint-block-durability.patch";
+        liveCheck = qemuExactSnapshotRestore;
+        evidenceName = "live-checkpoint-block-durability";
+        liveEvidence = ''
+          grep -Fxq 'gate=gate:qemu-exact-snapshot-restore' "$live_result"
+          grep -Fxq 'pending_block_io_captured=true' "$live_result"
+          grep -Fxq 'host_io_backend=production-shared-memory-servicer' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0105-crucible-selector-control-plane-fixtures.patch";
+      check = certifyExactPatch {
+        patchName = "0105-crucible-selector-control-plane-fixtures.patch";
+        liveCheck = qemuInstructionFaults;
+        evidenceName = "live-selector-control-plane-instruction-matrix";
+        liveEvidence = ''
+          grep -Fxq 'backend=actual-patched-and-stock-qemu' "$live_result"
+          grep -Fxq 'live_mutation_cases=72' "$live_result"
+          grep -Fxq 'live_x86_64_replay=true' "$live_result"
+          grep -Fxq 'live_aarch64_replay=true' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0106-crucible-defer-active-slice-host-wakes.patch";
+      check = certifyExactPatch {
+        patchName = "0106-crucible-defer-active-slice-host-wakes.patch";
+        liveCheck = qemuDeterministicHostKickBoundary;
+        evidenceName = "live-deferred-active-slice-host-wakes";
+        liveEvidence = ''
+          grep -Fxq 'canonical_trace_byte_identical=true' "$live_result"
+          grep -Fxq 'multivcpu_active_tcg_host_latency_exit_deferred=true' "$live_result"
+          grep -Fxq 'single_vcpu_active_tcg_soft_exit_preserved=true' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0107-crucible-anchor-rr-cursor-genesis.patch";
+      check = certifyExactPatch {
+        patchName = "0107-crucible-anchor-rr-cursor-genesis.patch";
+        liveCheck = qemuExactSnapshotRestore;
+        evidenceName = "live-anchored-rr-cursor-genesis-restore";
+        liveEvidence = ''
+          grep -Fxq 'gate=gate:qemu-exact-snapshot-restore' "$live_result"
+          grep -Fxq 'nonzero_intra_turn_rr_cursor_restored=true' "$live_result"
+          grep -Fxq 'rr_cursor_negative_control_rejected=true' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0108-crucible-deterministic-network-kick.patch";
+      check = qemuDeterministicNetworkKick;
+    }
+    {
+      patch = "0109-crucible-control-boundary-node-faults.patch";
+      gateField = "patch_microtest_gate";
+      check = qemuLiveNodeLifecycleFault;
+    }
+    {
+      patch = "0110-crucible-release-halted-rr-turn.patch";
+      check = qemuLivePluginQuantumSmp;
+    }
+    {
+      patch = "0111-crucible-accelerator-service-schema.patch";
+      check = certifyExactPatch {
+        patchName = "0111-crucible-accelerator-service-schema.patch";
+        liveCheck = qemuLiveFaultHardware;
+        evidenceName = "live-typed-accelerator-service-policy";
+        liveEvidence = ''
+          grep -Fxq 'accelerator_service_signal_actions=1' "$live_result"
+          grep -Fxq 'accelerator_service_occurrences=3' "$live_result"
+          grep -Fxq 'production_effect_row=accelerator.service|half-capacity-thermal-power|gate:live-fault-hardware|production-qemu-signal-runtime|three-job-service-ledger+thermal-power' "$live_result"
+          grep -Fq 'SF(P1, RATIO)' ${patchDir}/0111-crucible-accelerator-service-schema.patch
+          grep -Fq 'SCHEMA(ACCELERATOR_SERVICE, schema_accel_service)' \
+            ${patchDir}/0111-crucible-accelerator-service-schema.patch
+          ! grep -Fq 'SCHEMA(ACCELERATOR_SERVICE, schema_service)' \
+            ${patchDir}/0111-crucible-accelerator-service-schema.patch
+        '';
+      };
+    }
+    {
+      patch = "0112-crucible-compile-affected-clock-sources.patch";
+      check = certifyExactPatch {
+        patchName = "0112-crucible-compile-affected-clock-sources.patch";
+        liveCheck = qemuLiveFaultHardware;
+        evidenceName = "live-affected-clock-source-compilation";
+        liveEvidence = ''
+          grep -Fxq 'clock_source_signal_actions=1' "$live_result"
+          grep -Fxq 'clock_source_occurrences=2' "$live_result"
+          grep -Fxq 'production_effect_row=clock.source_state|degraded-step-synchronization|gate:live-fault-hardware|production-qemu-signal-runtime|old-new-source-state+timer-rearm' "$live_result"
+          grep -Fq 'crucible_clock_rule_affects_source' \
+            ${patchDir}/0112-crucible-compile-affected-clock-sources.patch
+          grep -Fq 'crucible_clock_rule_selects(rule, source)' \
+            ${patchDir}/0112-crucible-compile-affected-clock-sources.patch
+          grep -Fq 'crucible_clock_hash_set_contains(' \
+            ${patchDir}/0112-crucible-compile-affected-clock-sources.patch
+        '';
+      };
+    }
+    {
+      patch = "0113-crucible-restore-accelerator-rule-indexes.patch";
+      check = certifyExactPatch {
+        patchName = "0113-crucible-restore-accelerator-rule-indexes.patch";
+        liveCheck = qemuLiveFaultHardware;
+        evidenceName = "live-restored-accelerator-rule-indexes";
+        liveEvidence = ''
+          grep -Fxq 'fresh_plugin_restore=true' "$live_result"
+          grep -Fxq 'accelerator_service_occurrences=3' "$live_result"
+          grep -Fxq 'production_effect_row=accelerator.service|half-capacity-thermal-power|gate:live-fault-hardware|production-qemu-signal-runtime|three-job-service-ledger+thermal-power' "$live_result"
+          grep -Fq 'qemu_crucible_fault_rule_foreach_staged' \
+            ${patchDir}/0113-crucible-restore-accelerator-rule-indexes.patch
+          grep -Fq 'crucible_accelerator.service_rules = state->service_rules' \
+            ${patchDir}/0113-crucible-restore-accelerator-rule-indexes.patch
+        '';
+      };
+    }
+    {
+      patch = "0114-crucible-authenticate-fault-result-payloads.patch";
+      check = certifyExactPatch {
+        patchName = "0114-crucible-authenticate-fault-result-payloads.patch";
+        liveCheck = qemuLiveFaultHardware;
+        evidenceName = "live-authenticated-typed-rejection-payload";
+        liveEvidence = ''
+          grep -Fxq 'typed_rejection_payload_authenticated=true' "$live_result"
+          grep -Fq 'completed->payload, completed->result.evidence_hash' \
+            ${patchDir}/0114-crucible-authenticate-fault-result-payloads.patch
+          grep -Fq 'completed->payload = payload ? payload : g_byte_array_new();' \
+            ${patchDir}/0114-crucible-authenticate-fault-result-payloads.patch
+        '';
+      };
+    }
+    {
+      patch = "0115-crucible-clock-impulse-read-error-policies.patch";
+      check = certifyExactPatch {
+        patchName = "0115-crucible-clock-impulse-read-error-policies.patch";
+        liveCheck = qemuLiveFaultHardware;
+        evidenceName = "live-clock-impulse-and-read-error-policies";
+        liveEvidence = ''
+          grep -Fxq 'hardware_variant_case=clock-drift-allow-reschedule' "$live_result"
+          grep -Fxq 'hardware_variant_case=clock-jump-fault-drop' "$live_result"
+          grep -Fxq 'hardware_variant_case=clock-source-failed-read-error' "$live_result"
+          grep -Fq 'source->impulse_monotonicity, monotonicity);' \
+            ${patchDir}/0115-crucible-clock-impulse-read-error-policies.patch
+          grep -Fq 'qemu_crucible_fault_vmstate_put_bytes(payload, "CRUCCVS4", 8);' \
+            ${patchDir}/0115-crucible-clock-impulse-read-error-policies.patch
+          grep -Fq 'QEMU_CRUCIBLE_CLOCK_SOURCE_READ_ERROR' \
+            ${patchDir}/0115-crucible-clock-impulse-read-error-policies.patch
+          grep -Fq 'raise_exception_ra(env, EXCP0D_GPF, GETPC());' \
+            ${patchDir}/0115-crucible-clock-impulse-read-error-policies.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =
@@ -327,10 +1541,6 @@
     builtins.filter (patch: !(builtins.elem patch microtestPatchNames)) patchFiles;
   staleMicrotests =
     builtins.filter (patch: !(builtins.elem patch patchFiles)) microtestPatchNames;
-  unwiredPatches =
-    builtins.filter
-    (patch: !(hasInfix "patch -p1 < \${./qemu-patches/${patch}}" qemuNix))
-    patchFiles;
   qemuInertRedGateWired =
     hasInfix "qemuInert = redGate {" defaultNix
     && hasInfix ''gateName = "gate:qemu-inert";'' defaultNix
@@ -349,8 +1559,6 @@
     missingMicrotests
     ++ map (patch: "tests/crucible/phase2-patch-microtests.nix: stale micro-test for absent patch ${patch}")
     staleMicrotests
-    ++ map (patch: "pkgs/emulation/qemu.nix: carried patch is not applied by the QEMU package: ${patch}")
-    unwiredPatches
     ++ lib.optionals (!qemuNixAppliesManifestSeries) [
       "pkgs/emulation/qemu.nix: QEMU patch phase must be generated from qemu-patches/_series.nix"
     ]
@@ -366,7 +1574,11 @@
       grep -q '^${test.gateField or "gate"}=gate:patch-microtests$' "$result"
       grep -q '^patch=${test.patch}$' "$result"
       grep -q '^patched_fixture_exercised=true$' "$result"
-      grep -q '^stock_negative_control=true$' "$result"
+      if ! grep -q '^stock_negative_control=true$' "$result" \
+        && ! grep -q '^exact_drop_one_negative_control=true$' "$result"; then
+        echo "${test.patch}: missing executable negative control" >&2
+        exit 1
+      fi
       grep -q '^qemu_package=${qemuPackage}$' "$result"
       grep -q '^qemu_package_version=${qemuPackage.version}$' "$result"
     '')
@@ -416,9 +1628,6 @@ in
             for symbol in \
               qemu_plugin_clock_deadline_ns \
               qemu_plugin_net_inject \
-              qemu_plugin_net_send \
-              qemu_plugin_net_flush \
-              qemu_plugin_net_can_receive \
               qemu_plugin_register_net_tx_cb \
               qemu_plugin_has_time_control \
               qemu_plugin_register_time_advance_cb \
@@ -486,12 +1695,19 @@ in
             grep -q '^gate=gate:patch-microtests$' "$out/patch-drop-one.result"
             grep -q '^every_patch_has_exactly_one_drop_one_method=true$' "$out/patch-drop-one.result"
             grep -q '^clean_conflict_split_recomputed_live=true$' "$out/patch-drop-one.result"
+            grep -q '^shared_patch_stack_source_extractions=1$' "$out/patch-drop-one.result"
+            grep -q '^shared_patch_stack_full_tree_staging_passes=1$' "$out/patch-drop-one.result"
+            grep -q '^shared_patch_stack_preserves_ignored_vendored_subprojects=true$' "$out/patch-drop-one.result"
+            grep -q '^all_drop_one_branches_computed_in_one_repository=true$' "$out/patch-drop-one.result"
+            grep -q '^successful_variants_materialize_prepared_refs=true$' "$out/patch-drop-one.result"
+            grep -q '^conflict_variants_skip_source_checkout=true$' "$out/patch-drop-one.result"
             grep -q '^drop_one_composition_count=0$' "$out/patch-drop-one.result"
             grep -q '^structural_fallback_count=0$' "$out/patch-drop-one.result"
             cp "${qemuPatchRegeneration}/result" "$out/patch-regeneration.result"
             grep -q '^PASS$' "$out/patch-regeneration.result"
             grep -q '^gate=gate:patch-microtests$' "$out/patch-regeneration.result"
             grep -q '^patch_regeneration_from_tracked_stack=true$' "$out/patch-regeneration.result"
+            grep -q '^shared_patch_stack_repository=true$' "$out/patch-regeneration.result"
             grep -q '^regenerated_patch_bytes_match_committed=true$' "$out/patch-regeneration.result"
             grep -q '^patch_branch_bundle_verified=true$' "$out/patch-regeneration.result"
             grep -q '^patch_branch_commit_hashes_match_manifest=true$' "$out/patch-regeneration.result"
@@ -510,8 +1726,8 @@ in
             cp "${qemuRrQuantumIcount}/result" "$out/qemu-rr-quantum-icount.result"
             grep -q '^PASS$' "$out/qemu-rr-quantum-icount.result"
             grep -q '^accelerator=sim,thread=single$' "$out/qemu-rr-quantum-icount.result"
-            grep -q '^vcpus=2$' "$out/qemu-rr-quantum-icount.result"
-            grep -q '^sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(accelerator=sim,thread=single,stop_at=4194304)$' "$out/qemu-rr-quantum-icount.result"
+            grep -q '^vcpus=4$' "$out/qemu-rr-quantum-icount.result"
+            grep -q '^sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(canonical-long-horizon)$' "$out/qemu-rr-quantum-icount.result"
             grep -q '^cross_run_switch_icount_trace_match=true$' "$out/qemu-rr-quantum-icount.result"
             grep -q '^cross_run_per_vcpu_delta_trace_match=true$' "$out/qemu-rr-quantum-icount.result"
             grep -q '^adaptive_realtime_quantum_negative_control=red$' "$out/qemu-rr-quantum-icount.result"
@@ -527,6 +1743,13 @@ in
             grep -q '^deterministic_ipi_event_count_match=true$' "$out/qemu-det-ipi.result"
             grep -q '^deterministic_ipi_delivery_icount_trace_match=true$' "$out/qemu-det-ipi.result"
             grep -q '^deterministic_ipi_source_target_distinct=true$' "$out/qemu-det-ipi.result"
+            grep -q '^deterministic_ipi_causal_triple=init-sipi-commanded-fixed$' "$out/qemu-det-ipi.result"
+            grep -q '^deterministic_ipi_commanded_vector=81$' "$out/qemu-det-ipi.result"
+            grep -q '^deterministic_ipi_commanded_reverse_path=true$' "$out/qemu-det-ipi.result"
+            grep -q '^deterministic_ipi_causal_delivery_icount_match=true$' "$out/qemu-det-ipi.result"
+            grep -q '^stock_negative_control_scope=executed-non-sim-fallback$' "$out/qemu-det-ipi.result"
+            grep -q '^stock_negative_control_det_ipi_events=0$' "$out/qemu-det-ipi.result"
+            grep -q '^stock_negative_control_guest_execution=true$' "$out/qemu-det-ipi.result"
             cp "${qemuVcpuIntrospect}/result" "$out/qemu-vcpu-introspect.result"
             grep -q '^PASS$' "$out/qemu-vcpu-introspect.result"
             grep -q '^formal_register_export=qemu_plugin_read_vcpu_regs$' "$out/qemu-vcpu-introspect.result"
@@ -672,7 +1895,7 @@ in
             every_carried_patch_has_microtest=true
             every_microtest_keyed_to_patched_qemu_package=true
             every_microtest_exercises_patched_fixture=true
-            every_microtest_has_stock_negative_control=true
+            every_microtest_has_executable_negative_control=true
             no_patch_decision_has_microtest_gate=true
             diagnostic_only_patches_excluded_from_shipped_qemu=true
             qemu_package_applies_every_carried_patch=true

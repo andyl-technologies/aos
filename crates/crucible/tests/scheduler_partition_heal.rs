@@ -40,7 +40,7 @@ fn partition_removes_one_inbound_edge_and_recomputes_next_minimum() {
     let application = only_topology_application(&scheduler);
     assert_eq!(
         application.trigger,
-        SchedulerTopologyChangeTrigger::FaultActivation
+        SchedulerTopologyChangeTrigger::EdgeRemoval
     );
     assert_eq!(
         application.updates[0].previous_lookahead,
@@ -134,14 +134,14 @@ fn heal_restores_edge_over_current_partitioned_graph() {
     let partition = &scheduler.topology_change_applications()[0];
     assert_eq!(
         partition.trigger,
-        SchedulerTopologyChangeTrigger::FaultActivation
+        SchedulerTopologyChangeTrigger::EdgeRemoval
     );
     assert_eq!(
         partition.updates[0].recomputed_lookahead,
         finite_lookahead(30)
     );
     let heal = &scheduler.topology_change_applications()[1];
-    assert_eq!(heal.trigger, SchedulerTopologyChangeTrigger::Heal);
+    assert_eq!(heal.trigger, SchedulerTopologyChangeTrigger::EdgeRestore);
     assert_eq!(heal.updates[0].previous_lookahead, finite_lookahead(30));
     assert_eq!(heal.updates[0].recomputed_lookahead, finite_lookahead(6));
     assert!(

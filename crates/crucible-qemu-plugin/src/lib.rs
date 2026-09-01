@@ -26,7 +26,7 @@
 //! the virtual-time hold for in-flight device I/O; `idle_loop` owns the idle
 //! callback hot-loop state machine; `inbound` owns inbound frame polling and
 //! deterministic injection ordering; `network_rx` owns idle-context guest network
-//! receive injection through QEMU's lossless queue; `network_tx` owns guest
+//! receive injection with canonical shared-memory retention; `network_tx` owns guest
 //! network transmit interception and outbound ring enqueueing; `registration` owns
 //! the fail-stop registration sequencer; `setup` owns descriptor mapping and setup
 //! acknowledgement; `shmem_ordering` owns the plugin-side shared-memory access
@@ -66,6 +66,7 @@ pub mod boot_barrier;
 pub mod coverage;
 pub mod deadline;
 pub mod device_io;
+pub mod fault_command;
 pub mod fingerprint_sampler;
 pub mod handshake;
 pub mod idle_loop;
@@ -95,22 +96,31 @@ pub use abi::{
     PluginStatePartition, QEMU_PLUGIN_API_VERSION, QEMU_PLUGIN_FORCE_VCPU_EXIT_SYMBOL,
     QEMU_PLUGIN_ICOUNT_RAW_SYMBOL, QEMU_PLUGIN_INSTALL_ERROR, QEMU_PLUGIN_INSTALL_OK,
     QEMU_PLUGIN_INSTALL_SYMBOL, QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL,
-    QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL, QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL,
-    QEMU_PLUGIN_REGISTER_ENTRYPOINT_SYMBOL, QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_ACCELERATOR_CB_SYMBOL, QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_BLK_EVENT_CB_SYMBOL, QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_CONTROL_BOUNDARY_CB_SYMBOL, QEMU_PLUGIN_REGISTER_ENTRYPOINT_SYMBOL,
+    QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL, QEMU_PLUGIN_REQUEST_SHUTDOWN_SYMBOL,
-    QEMU_PLUGIN_VERSION_SYMBOL, QemuBlkPollCbFn, QemuBlkSubmitCbFn, QemuBlkWaitCbFn,
-    QemuForceVcpuExitFn, QemuIcountRawFn, QemuNinePBurstCbFn, QemuNinePPollCbFn,
-    QemuNinePSubmitCbFn, QemuPluginAbiError, QemuPluginExecutionModel, QemuPluginId,
-    QemuPluginInfo, QemuRegisterBlkCbFn, QemuRegisterBlkWaitCbFn, QemuRegisterNinePCbFn,
+    QEMU_PLUGIN_REQUEST_VMSTOP_SYMBOL, QEMU_PLUGIN_SET_PROCESS_GENERATION_SYMBOL,
+    QEMU_PLUGIN_VERSION_SYMBOL, QemuAcceleratorCancelCbFn, QemuAcceleratorPollCbFn,
+    QemuAcceleratorRestoreAbortCbFn, QemuAcceleratorRestoreBeginCbFn, QemuAcceleratorRestoreCbFn,
+    QemuAcceleratorRestoreCommitCbFn, QemuAcceleratorSubmitCbFn, QemuAcceleratorWaitCbFn,
+    QemuBlkEventCommitCbFn, QemuBlkEventPollCbFn, QemuBlkPollCbFn, QemuBlkSubmitCbFn,
+    QemuBlkTransportRestoreCbFn, QemuBlkTransportSaveCbFn, QemuBlkWaitCbFn, QemuForceVcpuExitFn,
+    QemuIcountRawFn, QemuNinePBurstCbFn, QemuNinePPollCbFn, QemuNinePSubmitCbFn,
+    QemuPluginAbiError, QemuPluginExecutionModel, QemuPluginId, QemuPluginInfo,
+    QemuRegisterAcceleratorCbFn, QemuRegisterBlkCbFn, QemuRegisterBlkEventCbFn,
+    QemuRegisterBlkWaitCbFn, QemuRegisterControlBoundaryCbFn, QemuRegisterNinePCbFn,
     QemuRegisterSimShmemDispatchCbFn, QemuRegisterTcgExecCbFn, QemuRegisterVcpuIdleResumeCbFn,
-    QemuRegisterVcpuInitCbFn, QemuRegisterWakeFdFn, QemuRequestShutdownFn,
-    QemuSimShmemMaxAdvanceIcountCbFn, QemuSimShmemPublishIcountCbFn, QemuTcgExecCbFn,
-    QemuTcgThreading, QemuVcpuIdleResumeCbFn, QemuVcpuSimpleCbFn, RegisteredDeviceCallbacks,
-    execution_model_from_qemu_info, install_inert_scaffold, install_inert_scaffold_from_qemu_info,
-    install_required_deadline_scaffold, install_required_deadline_scaffold_from_qemu_info,
-    install_required_preemption_scaffold, install_required_preemption_scaffold_from_qemu_info,
-    install_required_runtime_api_scaffold, install_required_runtime_api_scaffold_from_qemu_info,
+    QemuRegisterVcpuInitCbFn, QemuRegisterWakeFdFn, QemuRequestShutdownFn, QemuRequestVmstopFn,
+    QemuSetProcessGenerationFn, QemuSimShmemMaxAdvanceIcountCbFn, QemuSimShmemPublishIcountCbFn,
+    QemuTcgExecCbFn, QemuTcgThreading, QemuVcpuIdleResumeCbFn, QemuVcpuSimpleCbFn,
+    RegisteredDeviceCallbacks, execution_model_from_qemu_info, install_inert_scaffold,
+    install_inert_scaffold_from_qemu_info, install_required_deadline_scaffold,
+    install_required_deadline_scaffold_from_qemu_info, install_required_preemption_scaffold,
+    install_required_preemption_scaffold_from_qemu_info, install_required_runtime_api_scaffold,
+    install_required_runtime_api_scaffold_from_qemu_info,
     install_required_time_capability_scaffold,
     install_required_time_capability_scaffold_from_qemu_info,
     install_required_vcpu_introspection_scaffold,
@@ -118,26 +128,34 @@ pub use abi::{
     qemu_plugin_version, resolve_qemu_advance_time_ns_symbol, resolve_qemu_clock_deadline_symbol,
     resolve_qemu_force_vcpu_exit_symbol, resolve_qemu_icount_raw_symbol,
     resolve_qemu_inject_preemption_symbol, resolve_qemu_read_vcpu_regs_symbol,
-    resolve_qemu_register_9p_cb_symbol, resolve_qemu_register_blk_cb_symbol,
-    resolve_qemu_register_blk_wait_cb_symbol, resolve_qemu_register_sim_shmem_dispatch_cb_symbol,
-    resolve_qemu_register_tcg_exec_cb_symbol, resolve_qemu_register_time_advance_cb_symbol,
-    resolve_qemu_register_vcpu_idle_resume_cb_symbol, resolve_qemu_register_vcpu_init_cb_symbol,
-    resolve_qemu_register_wake_fd_symbol, resolve_qemu_request_shutdown_symbol,
-    resolve_qemu_request_time_control_symbol, resolve_qemu_rr_cursor_symbol,
-    validate_install_boundary,
+    resolve_qemu_register_9p_cb_symbol, resolve_qemu_register_accelerator_cb_symbol,
+    resolve_qemu_register_blk_cb_symbol, resolve_qemu_register_blk_event_cb_symbol,
+    resolve_qemu_register_blk_wait_cb_symbol, resolve_qemu_register_control_boundary_cb_symbol,
+    resolve_qemu_register_sim_shmem_dispatch_cb_symbol, resolve_qemu_register_tcg_exec_cb_symbol,
+    resolve_qemu_register_time_advance_cb_symbol, resolve_qemu_register_vcpu_idle_resume_cb_symbol,
+    resolve_qemu_register_vcpu_init_cb_symbol, resolve_qemu_register_wake_fd_symbol,
+    resolve_qemu_request_shutdown_symbol, resolve_qemu_request_time_control_symbol,
+    resolve_qemu_request_vmstop_symbol, resolve_qemu_rr_cursor_symbol,
+    resolve_qemu_set_process_generation_symbol, validate_install_boundary,
 };
 pub use args::{
+    HARD_STORAGE_COMPLETED_HISTORY_EPOCHS, HARD_STORAGE_COMPLETED_HISTORY_GAPS,
     PLUGIN_ARG_APP_RANDOM_CAP, PLUGIN_ARG_APP_RANDOM_NODE, PLUGIN_ARG_APP_RANDOM_SEED,
-    PLUGIN_ARG_COVERAGE, PLUGIN_ARG_FINGERPRINT, PLUGIN_ARG_SHMEMFD, PLUGIN_ARG_SIMFD,
-    PLUGIN_ARG_SLOT, PLUGIN_ARG_WAKEFD, PLUGIN_ARG_WHITEBOX, PLUGIN_ARG_WHITEBOX_SETUP,
-    PluginAppRandomConfig, PluginArgs, PluginArgsParseError, PluginInheritedFds,
-    PluginStateDumpConfig, PluginSwitch, WHITEBOX_SETUP_AARCH64_HINT_INERT_V1,
+    PLUGIN_ARG_COVERAGE, PLUGIN_ARG_FAULT_NODE_HASH, PLUGIN_ARG_FINGERPRINT,
+    PLUGIN_ARG_PROCESS_GENERATION, PLUGIN_ARG_SHMEMFD, PLUGIN_ARG_SIMFD, PLUGIN_ARG_SLOT,
+    PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_EPOCHS, PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_GAPS,
+    PLUGIN_ARG_WAKEFD, PLUGIN_ARG_WHITEBOX, PLUGIN_ARG_WHITEBOX_SETUP, PluginAppRandomConfig,
+    PluginArgs, PluginArgsParseError, PluginInheritedFds, PluginStateDumpConfig,
+    PluginStorageHistoryLimits, PluginSwitch, WHITEBOX_SETUP_AARCH64_HINT_INERT_V1,
     WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1, WhiteboxSetupAttestation,
 };
 pub use block_io::{
     BlockGuestCompletion, BlockGuestCompletionError, BlockInboundRing, BlockIoError,
-    BlockOperation, BlockOutboundRing, BlockPoll, BlockRequest, BlockRequestToken, BlockResponse,
-    BlockResponseStatus, BlockSubmit, BlockWireError, PluginBlockIo, handle_block_poll_callback,
+    BlockOperation, BlockOutboundRing, BlockPoll, BlockRequest, BlockRequestIdentity,
+    BlockRequestToken, BlockResponse, BlockResponseErrorCode, BlockResponseStatus, BlockSubmit,
+    BlockTransportEvent, BlockTransportPending, BlockTransportRequestIds, BlockTransportReset,
+    BlockTransportResolved, BlockTransportUnadmitted, BlockTransportUndelivered, BlockWireError,
+    PendingBlockTransportEvent, PluginBlockIo, handle_block_poll_callback,
     handle_block_submit_callback,
 };
 pub use boot_barrier::{
@@ -169,6 +187,12 @@ pub use device_io::{
     DeviceIoBurstState, DeviceIoFreezeError, DeviceIoRequestOutcome, DeviceIoRequestRelease,
     DeviceIoRequestToken, PluginDeviceIoFreeze,
 };
+pub use fault_command::{
+    FaultCommandBridgeError, QEMU_PLUGIN_CRUCIBLE_FAULT_CANCEL_SYMBOL,
+    QEMU_PLUGIN_CRUCIBLE_FAULT_CAPABILITIES_SYMBOL, QEMU_PLUGIN_CRUCIBLE_FAULT_PEEK_SYMBOL,
+    QEMU_PLUGIN_CRUCIBLE_FAULT_POLL_SYMBOL, QEMU_PLUGIN_CRUCIBLE_FAULT_REGISTER_BIND_SYMBOL,
+    QEMU_PLUGIN_CRUCIBLE_FAULT_REGISTER_MANIFEST_SYMBOL, QEMU_PLUGIN_CRUCIBLE_FAULT_SUBMIT_SYMBOL,
+};
 pub use fingerprint_sampler::{
     FINGERPRINT_FAILURE_DEVICE_STATE, FINGERPRINT_FAILURE_DEVICE_STATE_SCHEMA,
     FINGERPRINT_FAILURE_RAM, FingerprintSamplerError, PluginFingerprintDigester,
@@ -197,12 +221,10 @@ pub use io_wire_fuzz::{
     run_io_wire_fuzz_target,
 };
 pub use network_rx::{
-    LosslessNetworkRxQueue, NetworkRxError, NetworkRxInjection, NetworkRxQueueError,
-    NetworkRxQueueOperation, PluginNetworkRx, QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL,
-    QEMU_PLUGIN_NET_FLUSH_SYMBOL, QEMU_PLUGIN_NET_SEND_SYMBOL, QemuLosslessNetworkRxQueue,
-    QemuPluginNetCanReceiveFn, QemuPluginNetFlushFn, QemuPluginNetSendFn,
-    handle_network_rx_idle_callback, resolve_qemu_net_can_receive_symbol,
-    resolve_qemu_net_flush_symbol, resolve_qemu_net_send_symbol,
+    CanonicalNetworkRx, NETWORK_RX_DELIVERY_ATTEMPT_LIMIT, NETWORK_RX_RETRY_INTERVAL_ICOUNT,
+    NetworkRxDeliveryError, NetworkRxDeliveryOperation, NetworkRxDeliveryOutcome, NetworkRxError,
+    NetworkRxInjection, PluginNetworkRx, QEMU_PLUGIN_NET_INJECT_SYMBOL, QemuCanonicalNetworkRx,
+    QemuPluginNetInjectFn, handle_network_rx_idle_callback, resolve_qemu_net_inject_symbol,
 };
 pub use network_tx::{
     NetworkTxEnqueue, NetworkTxError, NetworkTxRing, PluginNetworkTx,

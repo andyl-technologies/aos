@@ -1,0 +1,23 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index a181beba6..54ed19223 100644
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -706,6 +706,18 @@ static void rr_deal_with_unplugged_cpus(void)
+ 
+ static void rr_force_rcu(Notifier *notify, void *data)
+ {
++    if (rr_crucible_sim_mode() &&
++        icount_crucible_rr_switch_quantum() != 0) {
++        /*
++         * A forced RCU kick is initiated by a host thread and can terminate
++         * the current translation block at a host-scheduling-dependent guest
++         * instruction.  That changes where a pending guest interrupt becomes
++         * visible.  Sim mode already bounds every run by the deterministic RR
++         * quantum, so the vCPU thread reaches an RCU quiescent state without
++         * an asynchronous kick.
++         */
++        return;
++    }
+     rr_kick_next_cpu();
+ }
+ 

@@ -468,6 +468,18 @@ where
     std::fs::create_dir_all(&params.profile)
         .with_context(|| format!("creating {}", params.profile.display()))?;
     let mut state = recover_generation_state_pub(&params.profile)?;
+    if manifest.inputs.runtime_modules.is_some() {
+        let expected = manifest
+            .inputs
+            .expected_current_generation
+            .context("runtime-module manifest has no expected current generation")?;
+        if state.current != expected {
+            bail!(
+                "stale configuration candidate: evaluated from generation {expected}, but generation {} is current",
+                state.current
+            );
+        }
+    }
     let image_parent = running_image.number;
 
     let existing = state.generations.iter().find(|generation| {
@@ -797,6 +809,7 @@ fn prepare_generation(
         "/inputs/evaluator/store_path",
         "/inputs/host_nix/store_path",
         "/inputs/instance_facts/store_path",
+        "/inputs/runtime_modules/store_path",
     ] {
         if let Some(source) = manifest
             .pointer(pointer)
@@ -1391,6 +1404,38 @@ mod tests {
                 "missing GC root for {input}"
             );
         }
+    }
+
+    #[test]
+    fn runtime_candidate_rejects_a_stale_generation_base_under_the_switch_lock() {
+        let (_root, params, mut manifest) = setup();
+        manifest["schema"] = json!(ConfigManifest::SCHEMA_V2);
+        manifest["inputs"]["runtime_modules"] = json!({
+            "schema": "aos.runtime-module-set/v1",
+            "trust_mode": "local-root",
+            "store_path": "/nix/store/99999999999999999999999999999999-runtime-modules",
+            "nar_hash": format!("sha256:{}", "a".repeat(64)),
+            "entrypoints": ["module.nix"]
+        });
+        manifest["inputs"]["expected_current_generation"] = json!(0);
+        write_json_atomic(&params.manifest, &manifest).unwrap();
+        mark(&params, "firewall");
+        mark(&params, "web");
+
+        let error = activate_config_with(
+            &params,
+            false,
+            false,
+            false,
+            |_activate, _number, _nonce, _barrier| {
+                panic!("stale candidate must fail before invoking activation")
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("stale configuration candidate"));
+        let state = load_generation_state_pub(&params.profile).unwrap();
+        assert_eq!(state.current, 1);
+        assert!(!params.profile.join("gen-2").exists());
     }
 
     #[test]

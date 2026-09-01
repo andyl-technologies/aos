@@ -34,6 +34,7 @@ const GENERATED_CREDSTORE_SOURCE_PREFIX: &str = "/run/credstore.encrypted/";
 const LANDLOCK_WRAPPER_ENV: &str = "AOS_LANDLOCK_WRAPPER";
 const SELINUX_RUNNER_ENV: &str = "AOS_SELINUX_RUNNER";
 const VERITY_ROOT_GUARD_ENV: &str = "AOS_VERITY_ROOT_GUARD";
+const SERVICE_ROOT_HELPER_ENV: &str = "AOS_SERVICE_ROOT_HELPER";
 const EBPF_NET_POLICY_ENV: &str = "AOS_EBPF_NET_POLICY";
 const EBPF_NET_POLICY_OBJECT_ENV: &str = "AOS_EBPF_NET_POLICY_OBJECT";
 const SEMODULE_ENV: &str = "AOS_SEMODULE";
@@ -206,40 +207,56 @@ pub(crate) async fn reconcile_system_profile(config: &ApmConfig, printer: &Print
         .difference(&current_targets)
         .cloned()
         .collect::<Vec<_>>();
-    let attached_diff = compute_attached_unit_diff(&root, &packages)?;
+    let mut attached_diff = compute_attached_unit_diff(&root, &packages)?;
+    attached_diff.normalize_service_root_lifecycle();
+    retain_active_routed_sources(&root, &mut attached_diff).await?;
 
-    let had_attached_units = has_attached_units(&root)?;
-    if packages.is_empty() && removed_targets.is_empty() {
+    stop_service_root_barriers_before_swap(&root, &mut attached_diff).await?;
+
+    let reconcile_result: Result<()> = async {
+        let had_attached_units = has_attached_units(&root)?;
+        if packages.is_empty() && removed_targets.is_empty() {
+            write_attached_units(&root, &packages)?;
+            let changed_credential_units = write_generated_credential_blobs(&root, &packages)?;
+            write_exact_preset(&root, &current_targets)?;
+            if had_attached_units {
+                apply_systemd_changes(
+                    &root,
+                    &current_targets,
+                    &attached_diff,
+                    &changed_credential_units,
+                )
+                .await?;
+            }
+            return Ok(());
+        }
+
+        disable_removed_targets(&root, &removed_targets)?;
         write_attached_units(&root, &packages)?;
         let changed_credential_units = write_generated_credential_blobs(&root, &packages)?;
         write_exact_preset(&root, &current_targets)?;
-        if had_attached_units {
-            apply_systemd_changes(
-                &root,
-                &current_targets,
-                &attached_diff,
-                &changed_credential_units,
-            )
-            .await?;
-        }
+        load_ebpf_lsm_before_package_targets(&root, &current_targets)?;
+        crate::package_attestation::measure_activated_packages(&root, &installed)
+            .context("measuring exposed package set into PCR 15")?;
+        apply_systemd_changes(
+            &root,
+            &current_targets,
+            &attached_diff,
+            &changed_credential_units,
+        )
+        .await?;
+        Ok(())
+    }
+    .await;
+    if let Err(error) = reconcile_result {
+        restore_external_activation_sources(&root, &attached_diff).await?;
+        return Err(error);
+    }
+
+    if packages.is_empty() && removed_targets.is_empty() {
         printer.info("No exposed package targets are installed.");
         return Ok(());
     }
-
-    disable_removed_targets(&root, &removed_targets)?;
-    write_attached_units(&root, &packages)?;
-    let changed_credential_units = write_generated_credential_blobs(&root, &packages)?;
-    write_exact_preset(&root, &current_targets)?;
-    load_ebpf_lsm_before_package_targets(&root, &current_targets)?;
-    crate::package_attestation::measure_activated_packages(&root, &installed)
-        .context("measuring exposed package set into PCR 15")?;
-    apply_systemd_changes(
-        &root,
-        &current_targets,
-        &attached_diff,
-        &changed_credential_units,
-    )
-    .await?;
 
     if current_targets.is_empty() {
         printer.info("Removed exposed package target enablement.");
@@ -305,7 +322,28 @@ fn exposed_packages_from_expose_dir(
         let artifact_hash = store_path_hash(&artifact.store_path).to_string();
         let artifact_root = expose_dir.join(&artifact_hash).join("units");
         let mut units = expose.units.iter().cloned().collect::<BTreeSet<_>>();
+        for unit in &units {
+            if is_synthesized_package_target(unit) && unit != &expose.target {
+                bail!(
+                    "package '{}' declares foreign synthesized package target unit '{}'",
+                    apm.name,
+                    unit
+                );
+            }
+        }
         units.insert(expose.target.clone());
+        for unit in &units {
+            if let Some(target) = unit_diff::service_root_target(unit)
+                && target != expose.target
+            {
+                bail!(
+                    "package '{}' declares foreign synthesized service-root unit '{}'",
+                    apm.name,
+                    unit
+                );
+            }
+        }
+        validate_package_target_ownership(&apm.name, &artifact_root, &units, &expose.target)?;
         validate_network_policy_artifact(
             &apm.name,
             Path::new(&artifact.store_path),
@@ -341,7 +379,15 @@ fn exposed_packages_from_expose_dir(
         }
         validate_socket_listener_permissions(&apm.name, &artifact_root, &units, &apm.permissions)?;
         validate_workload_exec_wrappers(&apm.name, &artifact_root, &units, &apm.permissions)?;
-        validate_workload_root_images(&apm.name, &artifact_root, &units, expose)?;
+        validate_workload_roots(
+            &apm.name,
+            Path::new(&entry.store_path),
+            Path::new(&artifact.store_path),
+            &artifact_root,
+            &units,
+            expose,
+            &apm.permissions,
+        )?;
         validate_ebpf_policy_service(
             &apm.name,
             &expose.target,
@@ -389,6 +435,67 @@ fn exposed_packages_from_expose_dir(
     packages.sort_by(|left, right| left.name.cmp(&right.name));
     validate_capability_routes(&packages)?;
     Ok(packages)
+}
+
+fn validate_package_target_ownership(
+    package_name: &str,
+    artifact_root: &Path,
+    units: &BTreeSet<String>,
+    own_target: &str,
+) -> Result<()> {
+    for unit in units {
+        let path = artifact_root.join(unit);
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading exposed unit {}", path.display()))?;
+        let parsed = Parsed::parse(&text);
+        for (section, key) in [
+            ("Unit", "After"),
+            ("Unit", "Before"),
+            ("Unit", "BindsTo"),
+            ("Unit", "Conflicts"),
+            ("Unit", "JoinsNamespaceOf"),
+            ("Unit", "OnFailure"),
+            ("Unit", "OnSuccess"),
+            ("Unit", "PartOf"),
+            ("Unit", "PropagatesReloadTo"),
+            ("Unit", "PropagatesStopTo"),
+            ("Unit", "ReloadPropagatedFrom"),
+            ("Unit", "Requires"),
+            ("Unit", "Requisite"),
+            ("Unit", "StopPropagatedFrom"),
+            ("Unit", "Upholds"),
+            ("Unit", "Wants"),
+            ("Install", "Alias"),
+            ("Install", "WantedBy"),
+            ("Install", "RequiredBy"),
+            ("Install", "UpheldBy"),
+        ] {
+            let Some(values) = parsed
+                .sections
+                .get(section)
+                .and_then(|values| values.get(key))
+            else {
+                continue;
+            };
+            for reference in values
+                .iter()
+                .flat_map(|value| value.split_ascii_whitespace())
+            {
+                if is_synthesized_package_target(reference) && reference != own_target {
+                    bail!(
+                        "unit '{unit}' for package '{package_name}' claims ownership through foreign synthesized package target '{reference}' in {section}.{key}"
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_synthesized_package_target(unit: &str) -> bool {
+    unit.strip_prefix("aos-pkg-")
+        .and_then(|name| name.strip_suffix(".target"))
+        .is_some_and(|name| !name.is_empty())
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -509,9 +616,11 @@ fn validate_network_policy_artifact(
         connect: expected_permissions.tcp_connect.clone(),
     };
     let expected_fs = expected_manifest_fs(&expected_permissions);
-    let expected_state_paths = expected_landlock_state_paths(package_name, artifact_root, units)
-        .with_context(|| format!("reading StateDirectory grants for package '{package_name}'"))?;
-    let expected_landlock_fs = expected_landlock_fs(&expected_permissions, &expected_state_paths);
+    let expected_service_paths =
+        expected_landlock_service_paths(package_name, artifact_root, units).with_context(|| {
+            format!("reading service directory grants for package '{package_name}'")
+        })?;
+    let expected_landlock_fs = expected_landlock_fs(&expected_permissions, &expected_service_paths);
     let policy_fs = policy.fs.unwrap_or_default();
     let policy_landlock_fs = policy.landlock.fs.unwrap_or_else(|| {
         if expected_fs == NetworkPolicyFs::default() {
@@ -1012,9 +1121,11 @@ fn validate_workload_exec_wrappers(
         return Ok(());
     }
 
-    let expected_state_paths = expected_landlock_state_paths(package_name, artifact_root, units)
-        .with_context(|| format!("reading StateDirectory grants for package '{package_name}'"))?;
-    let expected_args = expected_landlock_args(&permissions, &expected_state_paths);
+    let expected_service_paths =
+        expected_landlock_service_paths(package_name, artifact_root, units).with_context(|| {
+            format!("reading service directory grants for package '{package_name}'")
+        })?;
+    let expected_args = expected_landlock_args(&permissions, &expected_service_paths);
     let trusted_selinux_runner = trusted_selinux_runner_path()?;
     let trusted_landlock_wrapper = trusted_landlock_wrapper_path()?;
     let trusted_verity_root_guard = trusted_verity_root_guard_path()?;
@@ -1084,11 +1195,14 @@ fn validate_workload_exec_wrappers(
     Ok(())
 }
 
-fn validate_workload_root_images(
+fn validate_workload_roots(
     package_name: &str,
+    runtime_store_path: &Path,
+    artifact_store_path: &Path,
     artifact_root: &Path,
     units: &BTreeSet<String>,
     expose: &ExposeMeta,
+    permissions: &PermissionsMeta,
 ) -> Result<()> {
     let verity_images = expose
         .images
@@ -1099,14 +1213,38 @@ fn validate_workload_root_images(
         bail!("package '{package_name}' declares multiple verity root images");
     }
     let expected = verity_images.first().copied();
+    let confinement = normalized_permissions(package_name, permissions)
+        .confinement
+        .context("normalized permissions have no confinement summary")?
+        .class;
+    let root_unit = format!("aos-pkg-{package_name}-service-roots.service");
+    let workload_units = units
+        .iter()
+        .filter(|unit| {
+            unit.ends_with(".service")
+                && !is_generated_expose_side_effect_service(package_name, unit)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let uses_overlay_roots = expected.is_none()
+        && confinement != ConfinementClass::Unconfined
+        && !workload_units.is_empty();
 
-    for unit in units {
-        if !unit.ends_with(".service")
-            || is_generated_expose_side_effect_service(package_name, unit)
-        {
-            continue;
-        }
+    if uses_overlay_roots {
+        validate_service_root_preparation(
+            package_name,
+            runtime_store_path,
+            artifact_root,
+            &root_unit,
+            &workload_units,
+        )?;
+    } else if units.contains(&root_unit) {
+        bail!(
+            "package '{package_name}' declares a service-root preparation unit without confined non-verity workloads"
+        );
+    }
 
+    for unit in &workload_units {
         let path = artifact_root.join(unit);
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading exposed unit {}", path.display()))?;
@@ -1137,9 +1275,112 @@ fn validate_workload_root_images(
                 unit,
                 package_name
             );
+        } else if uses_overlay_roots {
+            let expected_root = format!("/run/aos/service-roots/{package_name}/{unit}/merged");
+            require_service_value(package_name, unit, service, "RootDirectory", &expected_root)?;
+            if Path::new(&expected_root) == runtime_store_path
+                || expected_root.starts_with(artifact_store_path.to_string_lossy().as_ref())
+            {
+                bail!(
+                    "service unit '{unit}' for package '{package_name}' must use its volatile overlay root"
+                );
+            }
+            require_section_word(package_name, unit, &parsed, "Unit", "After", &root_unit)?;
+            require_section_word(package_name, unit, &parsed, "Unit", "Requires", &root_unit)?;
         }
     }
 
+    Ok(())
+}
+
+fn validate_service_root_preparation(
+    package_name: &str,
+    runtime_store_path: &Path,
+    artifact_root: &Path,
+    root_unit: &str,
+    workload_units: &[String],
+) -> Result<()> {
+    let path = artifact_root.join(root_unit);
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading service-root preparation unit {}", path.display()))?;
+    let parsed = Parsed::parse(&text);
+    let service = parsed.sections.get("Service").with_context(|| {
+        format!("service-root preparation unit '{root_unit}' has no [Service] section")
+    })?;
+    let trusted_helper = trusted_service_root_helper_path()?;
+    let mut expected_prepare = vec![
+        trusted_helper.as_str(),
+        "prepare",
+        package_name,
+        runtime_store_path
+            .to_str()
+            .context("runtime package store path is not UTF-8")?,
+    ];
+    expected_prepare.extend(workload_units.iter().map(String::as_str));
+    let prepare = single_service_value(package_name, root_unit, service, "ExecStart")?;
+    if prepare.split_whitespace().collect::<Vec<_>>() != expected_prepare {
+        bail!(
+            "service-root preparation unit '{root_unit}' for package '{package_name}' has an invalid trusted-helper prepare command"
+        );
+    }
+    let expected_cleanup = format!(
+        "{trusted_helper} cleanup {package_name} {} {}",
+        runtime_store_path.display(),
+        workload_units.join(" ")
+    );
+    require_service_value(
+        package_name,
+        root_unit,
+        service,
+        "ExecStop",
+        &expected_cleanup,
+    )?;
+    require_service_value(
+        package_name,
+        root_unit,
+        service,
+        "ExecStopPost",
+        &expected_cleanup,
+    )?;
+    require_service_value(package_name, root_unit, service, "Type", "oneshot")?;
+    require_service_value(package_name, root_unit, service, "RemainAfterExit", "true")?;
+    require_service_value(
+        package_name,
+        root_unit,
+        service,
+        "CapabilityBoundingSet",
+        "CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN",
+    )?;
+    require_service_value(
+        package_name,
+        root_unit,
+        service,
+        "AmbientCapabilities",
+        "CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN",
+    )?;
+    require_service_value(package_name, root_unit, service, "PrivateMounts", "false")?;
+    require_service_value(package_name, root_unit, service, "NoNewPrivileges", "false")?;
+    require_service_value(
+        package_name,
+        root_unit,
+        service,
+        "RestrictAddressFamilies",
+        "AF_UNIX",
+    )?;
+    require_service_value(package_name, root_unit, service, "UMask", "0077")?;
+    let target = format!("aos-pkg-{package_name}.target");
+    require_section_word(package_name, root_unit, &parsed, "Unit", "PartOf", &target)?;
+    require_section_word(
+        package_name,
+        root_unit,
+        &parsed,
+        "Install",
+        "WantedBy",
+        &target,
+    )?;
+    for unit in workload_units {
+        require_section_word(package_name, root_unit, &parsed, "Unit", "Before", unit)?;
+    }
     Ok(())
 }
 
@@ -1300,10 +1541,11 @@ fn validate_ebpf_policy_service(
         .context("normalized permissions have no confinement summary")?
         .class
         == ConfinementClass::Unconfined;
-    if unconfined {
+    let network_unrestricted = permissions.network == Some(NetworkPermission::Host);
+    if unconfined || network_unrestricted {
         if units.contains(&ebpf_unit) {
             bail!(
-                "unconfined package '{}' must not declare eBPF network policy service {}",
+                "package '{}' without eBPF network confinement must not declare network policy service {}",
                 package_name,
                 ebpf_unit
             );
@@ -1743,9 +1985,13 @@ fn requires_landlock_wrapper(package_name: &str, permissions: &PermissionsMeta) 
         != ConfinementClass::Unconfined)
 }
 
-fn expected_landlock_args(permissions: &PermissionsMeta, state_paths: &[String]) -> Vec<String> {
+fn expected_landlock_args(permissions: &PermissionsMeta, service_paths: &[String]) -> Vec<String> {
     let mut args = vec!["--require-abi".to_string(), "4".to_string()];
-    let fs = expected_landlock_fs(permissions, state_paths);
+    let network_unrestricted = permissions.network == Some(NetworkPermission::Host);
+    if network_unrestricted {
+        args.push("--network-unrestricted".to_string());
+    }
+    let fs = expected_landlock_fs(permissions, service_paths);
     for path in fs.read_only {
         args.push("--fs-ro".to_string());
         args.push(path);
@@ -1754,13 +2000,15 @@ fn expected_landlock_args(permissions: &PermissionsMeta, state_paths: &[String])
         args.push("--fs-rw".to_string());
         args.push(path);
     }
-    for port in &permissions.tcp_bind {
-        args.push("--tcp-bind".to_string());
-        args.push(port.to_string());
-    }
-    for port in &permissions.tcp_connect {
-        args.push("--tcp-connect".to_string());
-        args.push(port.to_string());
+    if !network_unrestricted {
+        for port in &permissions.tcp_bind {
+            args.push("--tcp-bind".to_string());
+            args.push(port.to_string());
+        }
+        for port in &permissions.tcp_connect {
+            args.push("--tcp-connect".to_string());
+            args.push(port.to_string());
+        }
     }
     args.push("--".to_string());
     args
@@ -1781,7 +2029,10 @@ fn expected_manifest_fs(permissions: &PermissionsMeta) -> NetworkPolicyFs {
     }
 }
 
-fn expected_landlock_fs(permissions: &PermissionsMeta, state_paths: &[String]) -> NetworkPolicyFs {
+fn expected_landlock_fs(
+    permissions: &PermissionsMeta,
+    service_paths: &[String],
+) -> NetworkPolicyFs {
     let unconfined = permissions
         .confinement
         .as_ref()
@@ -1793,8 +2044,12 @@ fn expected_landlock_fs(permissions: &PermissionsMeta, state_paths: &[String]) -
         };
     }
 
-    let mut read_write = vec!["/tmp".to_string(), "/var/tmp".to_string()];
-    for path in state_paths {
+    let mut read_write = vec![
+        "/tmp".to_string(),
+        "/var/tmp".to_string(),
+        "/dev/null".to_string(),
+    ];
+    for path in service_paths {
         if !read_write.contains(path) {
             read_write.push(path.clone());
         }
@@ -1821,7 +2076,7 @@ fn expected_landlock_fs(permissions: &PermissionsMeta, state_paths: &[String]) -
     }
 }
 
-fn expected_landlock_state_paths(
+fn expected_landlock_service_paths(
     package_name: &str,
     artifact_root: &Path,
     units: &BTreeSet<String>,
@@ -1837,36 +2092,49 @@ fn expected_landlock_state_paths(
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading exposed unit {}", path.display()))?;
         let parsed = Parsed::parse(&text);
-        let state_paths = parsed.sections.get("Service").map_or_else(
+        let service_paths = parsed.sections.get("Service").map_or_else(
             || default_state_paths(package_name),
-            |service| landlock_state_paths_for_service(package_name, service),
+            |service| landlock_service_paths_for_service(package_name, service),
         );
-        append_unique_strings(&mut paths, state_paths);
+        append_unique_strings(&mut paths, service_paths);
     }
     Ok(paths)
 }
 
-fn landlock_state_paths_for_service(
+fn landlock_service_paths_for_service(
     package_name: &str,
     service: &BTreeMap<String, Vec<String>>,
 ) -> Vec<String> {
-    let values = service
+    let state_values = service
         .get("StateDirectory")
         .filter(|values| !values.is_empty())
         .cloned()
         .unwrap_or_else(|| vec![format!("aos-pkg-{package_name}")]);
-    state_directory_values_to_paths(&values)
+    let mut paths = service_directory_values_to_paths("/var/lib", &state_values);
+    for (key, prefix) in [
+        ("RuntimeDirectory", "/run"),
+        ("CacheDirectory", "/var/cache"),
+        ("LogsDirectory", "/var/log"),
+    ] {
+        if let Some(values) = service.get(key) {
+            append_unique_strings(
+                &mut paths,
+                service_directory_values_to_paths(prefix, values),
+            );
+        }
+    }
+    paths
 }
 
 fn default_state_paths(package_name: &str) -> Vec<String> {
     vec![format!("/var/lib/aos-pkg-{package_name}")]
 }
 
-fn state_directory_values_to_paths(values: &[String]) -> Vec<String> {
+fn service_directory_values_to_paths(prefix: &str, values: &[String]) -> Vec<String> {
     let mut paths = Vec::new();
     for value in values {
         for name in value.split_whitespace().filter(|name| !name.is_empty()) {
-            append_unique_string(&mut paths, format!("/var/lib/{name}"));
+            append_unique_string(&mut paths, format!("{prefix}/{name}"));
         }
     }
     paths
@@ -1950,9 +2218,32 @@ fn trusted_verity_root_guard_path() -> Result<String> {
     }
 }
 
+fn trusted_service_root_helper_path() -> Result<String> {
+    if let Ok(path) = std::env::var(SERVICE_ROOT_HELPER_ENV) {
+        if path.is_empty() {
+            bail!("{SERVICE_ROOT_HELPER_ENV} must not be empty");
+        }
+        if !path.starts_with('/') || !path.ends_with("/bin/aos-service-root") {
+            bail!("{SERVICE_ROOT_HELPER_ENV} must point to an absolute aos-service-root binary");
+        }
+        return Ok(path);
+    }
+
+    #[cfg(test)]
+    {
+        return Ok("/nix/store/hash-aos-service-root-0/bin/aos-service-root".to_string());
+    }
+
+    #[cfg(not(test))]
+    {
+        bail!("{SERVICE_ROOT_HELPER_ENV} is not configured for service-root validation");
+    }
+}
+
 fn is_generated_expose_side_effect_service(package_name: &str, unit: &str) -> bool {
     [
         "host-paths",
+        "service-roots",
         "modules",
         "sysctl",
         "firewall",
@@ -2904,27 +3195,35 @@ async fn apply_systemd_changes(
     if root == Path::new("/") {
         let client = SystemdClient::connect().await?;
         let start_mode = exposed_target_start_mode();
-        client.daemon_reload().await?;
-        preset_targets(root, current_targets)?;
-        apply_attached_unit_diff(&client, attached_diff).await?;
-        for target in current_targets {
-            match start_mode {
-                ExposedTargetStartMode::QueueOnly => {
-                    client.start_unit_no_wait(target).await.with_context(|| {
-                        format!("queueing start for exposed package target {target}")
-                    })?;
-                }
-                ExposedTargetStartMode::AwaitJob => {
-                    let outcome = client.start_unit(target).await?;
-                    if !outcome.result.is_done() {
-                        bail!(
-                            "systemd failed to start exposed package target {target}: {}",
-                            outcome.result.label()
-                        );
+        let apply_result: Result<()> = async {
+            client.daemon_reload().await?;
+            preset_targets(root, current_targets)?;
+            apply_attached_unit_diff(&client, attached_diff).await?;
+            for target in current_targets {
+                match start_mode {
+                    ExposedTargetStartMode::QueueOnly => {
+                        client.start_unit_no_wait(target).await.with_context(|| {
+                            format!("queueing start for exposed package target {target}")
+                        })?;
+                    }
+                    ExposedTargetStartMode::AwaitJob => {
+                        let outcome = client.start_unit(target).await?;
+                        if !outcome.result.is_done() {
+                            bail!(
+                                "systemd failed to start exposed package target {target}: {}",
+                                outcome.result.label()
+                            );
+                        }
                     }
                 }
             }
+            Ok(())
         }
+        .await;
+        let restore_result =
+            restore_external_activation_sources_with_client(&client, attached_diff).await;
+        apply_result?;
+        restore_result?;
         let restarted_units = attached_diff
             .to_restart
             .iter()
@@ -2938,6 +3237,107 @@ async fn apply_systemd_changes(
     } else {
         preset_targets(root, current_targets)?;
     }
+    Ok(())
+}
+
+async fn retain_active_routed_sources(root: &Path, diff: &mut UnitDiff) -> Result<()> {
+    if root != Path::new("/") {
+        return Ok(());
+    }
+    let client = SystemdClient::connect().await?;
+    let sources = diff
+        .service_root_barriers
+        .values()
+        .flat_map(|barrier| barrier.live_external_activation_sources.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    let mut active = BTreeSet::new();
+    for source in sources {
+        if client.is_active(&source).await? {
+            active.insert(source);
+        }
+    }
+    diff.retain_active_external_activation_sources(&active);
+    Ok(())
+}
+
+async fn restore_external_activation_sources(root: &Path, diff: &UnitDiff) -> Result<()> {
+    if root != Path::new("/") {
+        return Ok(());
+    }
+    let client = SystemdClient::connect().await?;
+    restore_external_activation_sources_with_client(&client, diff).await
+}
+
+async fn restore_external_activation_sources_with_client(
+    client: &SystemdClient,
+    diff: &UnitDiff,
+) -> Result<()> {
+    restore_activation_sources_with_client(client, &diff.restore_external_activation_sources).await
+}
+
+async fn restore_activation_sources_with_client(
+    client: &SystemdClient,
+    sources: &BTreeSet<String>,
+) -> Result<()> {
+    for source in sources {
+        ensure_job_done("restore", source, client.start_unit(source).await?)?;
+    }
+    Ok(())
+}
+
+async fn stop_service_root_barriers_before_swap(
+    root: &Path,
+    attached_diff: &mut UnitDiff,
+) -> Result<()> {
+    if root != Path::new("/") {
+        return Ok(());
+    }
+
+    if attached_diff.required_stops.is_empty() {
+        return Ok(());
+    }
+
+    let client = SystemdClient::connect().await?;
+    let barrier_result: Result<()> = async {
+        for unit in attached_diff
+            .to_stop
+            .iter()
+            .filter(|unit| attached_diff.required_stops.contains(*unit))
+        {
+            if attached_diff.required_pre_stop_starts.contains(unit) {
+                match client.start_unit(unit).await {
+                    Ok(outcome) => ensure_job_done("prepare", unit, outcome)?,
+                    Err(err) => {
+                        return Err(err).with_context(|| {
+                            format!(
+                                "preparing exposed package service-root helper {unit} before cleanup"
+                            )
+                        });
+                    }
+                }
+            }
+            match client.stop_unit(unit).await {
+                Ok(outcome) => ensure_job_done("stop", unit, outcome)?,
+                Err(err) => {
+                    return Err(err).with_context(|| {
+                        format!("stopping exposed package service-root barrier {unit} before attached-unit swap")
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+    .await;
+    crate::sysroot::recover_quiesced_sources(barrier_result, || {
+        restore_activation_sources_with_client(
+            &client,
+            &attached_diff.quiesced_external_activation_sources,
+        )
+    })
+    .await?;
+    attached_diff
+        .to_stop
+        .retain(|unit| !attached_diff.required_stops.contains(unit));
     Ok(())
 }
 
@@ -3315,13 +3715,15 @@ mod tests {
         artifact_hash: &str,
     ) -> InstalledMeta {
         let artifact = tmp.path().join(format!("{artifact_hash}-expose-{name}"));
+        let runtime_store_path = format!("/var/lib/store/{package_hash}-{name}-1.0");
+        let service_root_unit = format!("aos-pkg-{name}-service-roots.service");
         std::fs::create_dir_all(artifact.join("units")).unwrap();
         std::fs::write(
             artifact
                 .join("units")
                 .join(format!("aos-pkg-{name}.target")),
             format!(
-                "[Unit]\nWants=aos-pkg-{name}.slice {name}.service aos-pkg-{name}-mac.service aos-pkg-{name}-ebpf.service\n"
+                "[Unit]\nWants=aos-pkg-{name}.slice {name}.service aos-pkg-{name}-mac.service aos-pkg-{name}-ebpf.service {service_root_unit}\n"
             ),
         )
         .unwrap();
@@ -3345,7 +3747,11 @@ mod tests {
         );
         std::fs::write(
             artifact.join("units").join(format!("{name}.service")),
-            workload_service_text(name, &format!("[Service]\nSlice=aos-pkg-{name}.slice\n")),
+            workload_service_text(
+                name,
+                &format!("{name}.service"),
+                &format!("[Service]\nSlice=aos-pkg-{name}.slice\n"),
+            ),
         )
         .unwrap();
         std::fs::write(
@@ -3362,9 +3768,14 @@ mod tests {
             ebpf_policy_service_text(name, &ebpf_exec_start),
         )
         .unwrap();
+        std::fs::write(
+            artifact.join("units").join(&service_root_unit),
+            service_root_unit_text(name, &runtime_store_path, &[format!("{name}.service")]),
+        )
+        .unwrap();
 
         let installed = InstalledMeta {
-            store_path: format!("/var/lib/store/{package_hash}-{name}-1.0"),
+            store_path: runtime_store_path,
             pushed_at: 1,
             pushed_by: "apm".into(),
             expires_at: None,
@@ -3387,6 +3798,7 @@ mod tests {
                         format!("aos-pkg-{name}.slice"),
                         format!("aos-pkg-{name}-mac.service"),
                         format!("aos-pkg-{name}-ebpf.service"),
+                        service_root_unit,
                     ],
                     images: Vec::new(),
                     requires: Vec::new(),
@@ -3546,6 +3958,232 @@ mod tests {
         );
     }
 
+    #[test]
+    fn exposed_packages_rejects_missing_service_root_preparation() {
+        let tmp = TempDir::new().unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkgwebhash11", "artifactweb11");
+        let apm = installed.apm.as_mut().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        let root_unit = "aos-pkg-web-service-roots.service";
+        apm.expose
+            .as_mut()
+            .unwrap()
+            .units
+            .retain(|unit| unit != root_unit);
+        std::fs::remove_file(Path::new(&artifact).join("units").join(root_unit)).unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile-missing-service-root"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("reading service-root preparation unit"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_foreign_service_root_helper_shape() {
+        let tmp = TempDir::new().unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkgwebhash11", "artifactweb11");
+        installed
+            .apm
+            .as_mut()
+            .unwrap()
+            .expose
+            .as_mut()
+            .unwrap()
+            .units
+            .push("aos-pkg-victim-service-roots.service".into());
+        let profile = Profile {
+            path: tmp.path().join("profile-foreign-service-root"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("foreign synthesized service-root unit"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_foreign_package_target_ownership() {
+        for (section, key) in [
+            ("Unit", "PartOf"),
+            ("Unit", "Conflicts"),
+            ("Unit", "PropagatesStopTo"),
+            ("Install", "WantedBy"),
+        ] {
+            let tmp = TempDir::new().unwrap();
+            let installed = installed_with_expose(&tmp, "web", "pkgwebhash11", "artifactweb11");
+            let apm = installed.apm.as_ref().unwrap();
+            let artifact = PathBuf::from(&apm.expose_artifact.as_ref().unwrap().store_path);
+            std::fs::write(
+                artifact.join("units/web.service"),
+                format!("[{section}]\n{key}=aos-pkg-victim.target\n"),
+            )
+            .unwrap();
+            let profile = Profile {
+                path: tmp.path().join(format!("profile-foreign-{key}")),
+                scope: ProfileScope::System,
+            };
+            std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+            link_expose_artifact(&profile, &installed);
+
+            let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+            assert!(
+                format!("{err:#}").contains("foreign synthesized package target"),
+                "{err:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn exposed_packages_rejects_authored_synthesized_package_target_name() {
+        let tmp = TempDir::new().unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkgwebhash11", "artifactweb11");
+        installed
+            .apm
+            .as_mut()
+            .unwrap()
+            .expose
+            .as_mut()
+            .unwrap()
+            .units
+            .push("aos-pkg-victim.target".into());
+        let profile = Profile {
+            path: tmp.path().join("profile-foreign-target-unit"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("foreign synthesized package target unit"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_accepts_confined_socket_only_package_without_service_roots() {
+        let tmp = TempDir::new().unwrap();
+        let mut installed =
+            installed_with_expose(&tmp, "listener", "pkglistener1", "artifactlistener1");
+        let apm = installed.apm.as_mut().unwrap();
+        let artifact = PathBuf::from(&apm.expose_artifact.as_ref().unwrap().store_path);
+        let expose = apm.expose.as_mut().unwrap();
+        let root_unit = "aos-pkg-listener-service-roots.service";
+
+        expose
+            .units
+            .retain(|unit| unit != "listener.service" && unit != root_unit);
+        expose.units.push("listener.socket".into());
+        std::fs::remove_file(artifact.join("units/listener.service")).unwrap();
+        std::fs::remove_file(artifact.join("units").join(root_unit)).unwrap();
+        std::fs::write(
+            artifact.join("units/listener.socket"),
+            "[Unit]\nPartOf=aos-pkg-listener.target\n[Socket]\nListenStream=127.0.0.1:18080\n",
+        )
+        .unwrap();
+        std::fs::write(
+            artifact.join("units/aos-pkg-listener.target"),
+            "[Unit]\nWants=aos-pkg-listener.slice listener.socket aos-pkg-listener-mac.service aos-pkg-listener-ebpf.service\n",
+        )
+        .unwrap();
+        grant_tcp_bind(&mut installed, 18080);
+        write_network_policy_file(&installed, &[18080], &[]);
+
+        let profile = Profile {
+            path: tmp.path().join("profile-socket-only"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let packages = exposed_packages(&profile, &[installed]).unwrap();
+        assert_eq!(packages.len(), 1);
+    }
+
+    #[test]
+    fn exposed_packages_rejects_malformed_service_root_preparation() {
+        let tmp = TempDir::new().unwrap();
+        let installed = installed_with_expose(&tmp, "web", "pkgwebhash11", "artifactweb11");
+        let artifact = installed
+            .apm
+            .as_ref()
+            .unwrap()
+            .expose_artifact
+            .as_ref()
+            .unwrap()
+            .store_path
+            .clone();
+        let root_unit = Path::new(&artifact).join("units/aos-pkg-web-service-roots.service");
+        let text = std::fs::read_to_string(&root_unit)
+            .unwrap()
+            .replace(" prepare web ", " prepare other ");
+        std::fs::write(root_unit, text).unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile-malformed-service-root"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("invalid trusted-helper prepare command"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_incomplete_service_root_capabilities() {
+        let tmp = TempDir::new().unwrap();
+        let installed = installed_with_expose(&tmp, "web", "pkgwebhash11", "artifactweb11");
+        let artifact = installed
+            .apm
+            .as_ref()
+            .unwrap()
+            .expose_artifact
+            .as_ref()
+            .unwrap()
+            .store_path
+            .clone();
+        let root_unit = Path::new(&artifact).join("units/aos-pkg-web-service-roots.service");
+        let text = std::fs::read_to_string(&root_unit).unwrap().replace(
+            "CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN",
+            "CapabilityBoundingSet=CAP_SYS_ADMIN",
+        );
+        std::fs::write(root_unit, text).unwrap();
+        let profile = Profile {
+            path: tmp
+                .path()
+                .join("profile-incomplete-service-root-capabilities"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("CapabilityBoundingSet"),
+            "{err:#}"
+        );
+    }
+
     fn write_exposed_unit_surface(root: &Path, packages: &[ExposedPackage]) {
         write_attached_units(root, packages).unwrap();
         let targets = packages
@@ -3589,6 +4227,7 @@ mod tests {
             ciphertext: None,
             units: vec![format!("{package}.service")],
             encrypted: true,
+            optional: false,
         });
     }
 
@@ -3627,10 +4266,10 @@ mod tests {
             .cloned()
             .collect::<BTreeSet<_>>();
         units.insert(apm.expose.as_ref().unwrap().target.clone());
-        let state_paths =
-            expected_landlock_state_paths(&apm.name, &Path::new(&artifact).join("units"), &units)
+        let service_paths =
+            expected_landlock_service_paths(&apm.name, &Path::new(&artifact).join("units"), &units)
                 .unwrap();
-        let landlock_fs = expected_landlock_fs(&permissions, &state_paths);
+        let landlock_fs = expected_landlock_fs(&permissions, &service_paths);
         let label = permissions.security_label.clone().unwrap();
         let mode = permissions.network.unwrap_or(NetworkPermission::Private);
         let policy = serde_json::json!({
@@ -3751,7 +4390,21 @@ mod tests {
         } else {
             format!("{text}Slice=aos-pkg-{}.slice\n", apm.name)
         };
-        let text = workload_service_text(&apm.name, &text);
+        let uses_overlay_root = !apm
+            .expose
+            .as_ref()
+            .unwrap()
+            .images
+            .iter()
+            .any(is_verity_root_image)
+            && normalized_permissions(&apm.name, &apm.permissions)
+                .confinement
+                .is_some_and(|confinement| confinement.class != ConfinementClass::Unconfined);
+        let text = if uses_overlay_root {
+            workload_service_text(&apm.name, &format!("{}.service", apm.name), &text)
+        } else {
+            text
+        };
         std::fs::write(
             Path::new(&artifact)
                 .join("units")
@@ -3789,6 +4442,7 @@ mod tests {
             ),
             root_hash_sig: Some("root.roothash.p7s".to_string()),
         }];
+        remove_service_root_preparation(installed);
     }
 
     fn verity_workload_service_text(
@@ -3821,14 +4475,80 @@ mod tests {
             + "\n"
     }
 
-    fn workload_service_text(package_name: &str, text: &str) -> String {
-        if text.contains("[Unit]") {
-            text.to_string()
+    fn workload_service_text(package_name: &str, unit_name: &str, text: &str) -> String {
+        let root_unit = format!("aos-pkg-{package_name}-service-roots.service");
+        let text = if text.contains("[Unit]") {
+            text.replacen(
+                "[Unit]\n",
+                &format!("[Unit]\nAfter={root_unit}\nRequires={root_unit}\n"),
+                1,
+            )
         } else {
             format!(
-                "[Unit]\nAfter=aos-pkg-{package_name}-mac.service aos-pkg-{package_name}-ebpf.service\nRequires=aos-pkg-{package_name}-mac.service aos-pkg-{package_name}-ebpf.service\n{text}"
+                "[Unit]\nAfter=aos-pkg-{package_name}-mac.service aos-pkg-{package_name}-ebpf.service {root_unit}\nRequires=aos-pkg-{package_name}-mac.service aos-pkg-{package_name}-ebpf.service {root_unit}\n{text}"
+            )
+        };
+        if text.contains("RootDirectory=") {
+            text
+        } else {
+            text.replacen(
+                "[Service]\n",
+                &format!(
+                    "[Service]\nRootDirectory=/run/aos/service-roots/{package_name}/{unit_name}/merged\n"
+                ),
+                1,
             )
         }
+    }
+
+    fn service_root_unit_text(
+        package_name: &str,
+        runtime_store_path: &str,
+        workload_units: &[String],
+    ) -> String {
+        let helper = trusted_service_root_helper_path().unwrap();
+        let target = format!("aos-pkg-{package_name}.target");
+        let workloads = workload_units.join(" ");
+        let command = format!("{package_name} {runtime_store_path} {workloads}");
+        format!(
+            "[Unit]\nPartOf={target}\nBefore={workloads}\n[Service]\nType=oneshot\nRemainAfterExit=true\nExecStart={helper} prepare {command}\nExecStop={helper} cleanup {command}\nExecStopPost={helper} cleanup {command}\nCapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN\nAmbientCapabilities=CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN\nPrivateMounts=false\nNoNewPrivileges=false\nRestrictAddressFamilies=AF_UNIX\nUMask=0077\n[Install]\nWantedBy={target}\n"
+        )
+    }
+
+    fn rewrite_service_root_preparation(installed: &InstalledMeta) {
+        let apm = installed.apm.as_ref().unwrap();
+        let expose = apm.expose.as_ref().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        let workloads = expose
+            .units
+            .iter()
+            .filter(|unit| {
+                unit.ends_with(".service")
+                    && !is_generated_expose_side_effect_service(&apm.name, unit)
+            })
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        std::fs::write(
+            Path::new(&artifact)
+                .join("units")
+                .join(format!("aos-pkg-{}-service-roots.service", apm.name)),
+            service_root_unit_text(&apm.name, &installed.store_path, &workloads),
+        )
+        .unwrap();
+    }
+
+    fn remove_service_root_preparation(installed: &mut InstalledMeta) {
+        let apm = installed.apm.as_mut().unwrap();
+        let root_unit = format!("aos-pkg-{}-service-roots.service", apm.name);
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        apm.expose
+            .as_mut()
+            .unwrap()
+            .units
+            .retain(|unit| unit != &root_unit);
+        std::fs::remove_file(Path::new(&artifact).join("units").join(root_unit)).unwrap();
     }
 
     fn trusted_landlock_wrapper_for_test() -> String {
@@ -4067,7 +4787,7 @@ mod tests {
             "web",
             root_hash,
             &root_hash_signature,
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web",
             "/bin/true",
         );
         let unit_text = format!(
@@ -4100,7 +4820,7 @@ mod tests {
             "web",
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             &root_hash_signature,
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web",
             "/bin/true",
         );
         let unit_text = format!(
@@ -4137,7 +4857,7 @@ mod tests {
             "web",
             root_hash,
             &root_hash_signature,
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web",
             "/bin/true",
         );
         let unit_text = format!(
@@ -4537,7 +5257,7 @@ mod tests {
 
         let exec_start = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web --tcp-connect 443",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web --tcp-connect 443",
             "/bin/true",
         );
         write_service_unit(&installed, &format!("[Service]\nExecStart={exec_start}\n"));
@@ -4623,7 +5343,7 @@ mod tests {
         write_network_policy_file(&installed, &[], &[443]);
         let exec_start = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web --tcp-connect 443",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web --tcp-connect 443",
             "/bin/true",
         );
         write_service_unit(
@@ -4683,7 +5403,7 @@ mod tests {
         write_network_policy_file(&installed, &[], &[]);
         let exec_start = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web",
             "/bin/true",
         );
         write_service_unit(&installed, &format!("[Service]\nExecStart={exec_start}\n"));
@@ -4738,7 +5458,7 @@ mod tests {
         write_network_policy_file(&installed, &[], &[]);
         let exec_start = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web",
             "|/bin/true",
         );
         write_service_unit(&installed, &format!("[Service]\nExecStart={exec_start}\n"));
@@ -4765,7 +5485,7 @@ mod tests {
         write_network_policy_file(&installed, &[], &[]);
         let exec_start = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web",
             "true",
         );
         write_service_unit(&installed, &format!("[Service]\nExecStart={exec_start}\n"));
@@ -4793,12 +5513,12 @@ mod tests {
         write_network_policy_file(&installed, &[], &[443]);
         let exec_start_pre = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web --tcp-connect 443",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web --tcp-connect 443",
             "/bin/true",
         );
         let exec_start = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web --tcp-connect 443",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web --tcp-connect 443",
             "/bin/true",
         );
         write_service_unit(
@@ -4824,7 +5544,7 @@ mod tests {
         write_network_policy_file(&installed, &[], &[]);
         let exec_start = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web",
             "/bin/true",
         );
         write_service_unit(&installed, &format!("[Service]\nExecStart={exec_start}\n"));
@@ -4926,7 +5646,7 @@ mod tests {
         let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
         std::fs::write(
             Path::new(&artifact).join("units/web.service"),
-            "[Unit]\nAfter=aos-pkg-web-ebpf.service\nRequires=aos-pkg-web-mac.service aos-pkg-web-ebpf.service\n[Service]\nSlice=aos-pkg-web.slice\n",
+            "[Unit]\nAfter=aos-pkg-web-ebpf.service aos-pkg-web-service-roots.service\nRequires=aos-pkg-web-mac.service aos-pkg-web-ebpf.service aos-pkg-web-service-roots.service\n[Service]\nRootDirectory=/run/aos/service-roots/web/web.service/merged\nSlice=aos-pkg-web.slice\n",
         )
         .unwrap();
         link_expose_artifact(&profile, &installed);
@@ -5062,7 +5782,7 @@ mod tests {
         let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
         std::fs::write(
             Path::new(&artifact).join("units/web.service"),
-            "[Unit]\nRequires=aos-pkg-web-ebpf.service\n[Service]\nSlice=aos-pkg-web.slice\n",
+            "[Unit]\nAfter=aos-pkg-web-service-roots.service\nRequires=aos-pkg-web-ebpf.service aos-pkg-web-service-roots.service\n[Service]\nRootDirectory=/run/aos/service-roots/web/web.service/merged\nSlice=aos-pkg-web.slice\n",
         )
         .unwrap();
         link_expose_artifact(&profile, &installed);
@@ -5085,7 +5805,7 @@ mod tests {
         let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
         std::fs::write(
             Path::new(&artifact).join("units/web.service"),
-            "[Unit]\nAfter=aos-pkg-web-ebpf.service\n[Service]\nSlice=aos-pkg-web.slice\n",
+            "[Unit]\nAfter=aos-pkg-web-ebpf.service aos-pkg-web-service-roots.service\nRequires=aos-pkg-web-service-roots.service\n[Service]\nRootDirectory=/run/aos/service-roots/web/web.service/merged\nSlice=aos-pkg-web.slice\n",
         )
         .unwrap();
         link_expose_artifact(&profile, &installed);
@@ -5108,12 +5828,16 @@ mod tests {
         let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
         let exec_start = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web",
             "/bin/true",
         );
         std::fs::write(
             Path::new(&artifact).join("units/web.service"),
-            workload_service_text("web", &format!("[Service]\nExecStart={exec_start}\n")),
+            workload_service_text(
+                "web",
+                "web.service",
+                &format!("[Service]\nExecStart={exec_start}\n"),
+            ),
         )
         .unwrap();
         link_expose_artifact(&profile, &installed);
@@ -5143,6 +5867,7 @@ mod tests {
             Path::new(&artifact).join("units/web-worker.service"),
             workload_service_text(
                 "web",
+                "web-worker.service",
                 "[Service]\nStateDirectory=aos-pkg-web-worker\nSlice=aos-pkg-web.slice\n",
             ),
         )
@@ -5151,7 +5876,7 @@ mod tests {
 
         let exec_start = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web-worker --fs-rw /var/lib/aos-pkg-web",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web-worker --fs-rw /var/lib/aos-pkg-web",
             "/bin/true",
         );
         write_service_unit(&installed, &format!("[Service]\nExecStart={exec_start}\n"));
@@ -5159,12 +5884,14 @@ mod tests {
             Path::new(&artifact).join("units/web-worker.service"),
             workload_service_text(
                 "web",
+                "web-worker.service",
                 &format!(
                     "[Service]\nStateDirectory=aos-pkg-web-worker\nSlice=aos-pkg-web.slice\nExecStart={exec_start}\n"
                 ),
             ),
         )
         .unwrap();
+        rewrite_service_root_preparation(&installed);
         link_expose_artifact(&profile, &installed);
 
         let packages = exposed_packages(&profile, &[installed]).unwrap();
@@ -5274,7 +6001,7 @@ mod tests {
         write_network_policy_file(&installed, &[], &[]);
         let exec_start = sandbox_exec_for_test(
             "web",
-            "--require-abi 4 --fs-ro / --fs-ro /srv/public --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web --fs-rw /srv/data",
+            "--require-abi 4 --fs-ro / --fs-ro /srv/public --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-web --fs-rw /srv/data",
             "/bin/true",
         );
         write_service_unit(&installed, &format!("[Service]\nExecStart={exec_start}\n"));
@@ -5304,6 +6031,7 @@ mod tests {
         write_mac_profile_file(&installed);
         remove_mac_policy_service(&mut installed);
         remove_ebpf_policy_service(&mut installed);
+        remove_service_root_preparation(&mut installed);
         write_service_unit(
             &installed,
             "[Unit]\n[Service]\nSlice=aos-pkg-web.slice\nExecStart=/bin/true\n",
@@ -6383,6 +7111,73 @@ mod tests {
     }
 
     #[test]
+    fn direct_reconcile_normalizes_service_root_barriers_and_member_actions() {
+        let web_helper = "aos-pkg-web-service-roots.service";
+        let api_helper = "aos-pkg-api-service-roots.service";
+        let mut diff = UnitDiff {
+            service_root_barriers: BTreeMap::from([
+                (
+                    web_helper.to_string(),
+                    unit_diff::ServiceRootBarrier {
+                        target: "aos-pkg-web.target".to_string(),
+                        live_external_activation_sources: BTreeSet::from([
+                            "provider.socket".to_string()
+                        ]),
+                        live_members: BTreeSet::from(["web.service".to_string()]),
+                        candidate_external_activation_sources: BTreeSet::from([
+                            "provider.socket".to_string()
+                        ]),
+                        candidate_members: BTreeSet::from(["web.service".to_string()]),
+                        candidate_target_present: true,
+                        ..Default::default()
+                    },
+                ),
+                (
+                    api_helper.to_string(),
+                    unit_diff::ServiceRootBarrier {
+                        target: "aos-pkg-api.target".to_string(),
+                        live_members: BTreeSet::from(["api.service".to_string()]),
+                        ..Default::default()
+                    },
+                ),
+            ]),
+            to_restart: vec![
+                web_helper.to_string(),
+                "web.service".to_string(),
+                "aos-pkg-web.target".to_string(),
+            ],
+            to_reload: vec!["web.service".to_string()],
+            to_stop: vec![api_helper.to_string(), "api.service".to_string()],
+            ..Default::default()
+        };
+        diff.normalize_service_root_lifecycle();
+
+        assert_eq!(
+            diff.to_stop,
+            vec![
+                "api.service",
+                api_helper,
+                "aos-pkg-api.target",
+                "provider.socket",
+                "web.service",
+                web_helper,
+                "aos-pkg-web.target",
+            ]
+        );
+        assert!(diff.to_restart.is_empty());
+        assert!(diff.to_reload.is_empty());
+        assert_eq!(diff.to_start, vec!["aos-pkg-web.target", "provider.socket"]);
+        assert_eq!(
+            diff.restore_external_activation_sources,
+            BTreeSet::from(["provider.socket".to_string()])
+        );
+        assert_eq!(
+            diff.required_pre_stop_starts,
+            BTreeSet::from([api_helper.to_string(), web_helper.to_string()])
+        );
+    }
+
+    #[test]
     fn write_exact_preset_removes_stale_targets() {
         let tmp = TempDir::new().unwrap();
         let mut targets = BTreeSet::new();
@@ -6395,5 +7190,62 @@ mod tests {
         for path in preset_paths(tmp.path()) {
             assert_eq!(std::fs::read_to_string(path).unwrap(), "");
         }
+    }
+
+    #[test]
+    fn landlock_service_paths_include_systemd_managed_directories() {
+        let service = BTreeMap::from([
+            ("StateDirectory".into(), vec!["state-a state-b".into()]),
+            ("RuntimeDirectory".into(), vec!["runtime-a".into()]),
+            ("CacheDirectory".into(), vec!["cache-a".into()]),
+            ("LogsDirectory".into(), vec!["logs-a".into()]),
+        ]);
+
+        assert_eq!(
+            landlock_service_paths_for_service("web", &service),
+            vec![
+                "/var/lib/state-a",
+                "/var/lib/state-b",
+                "/run/runtime-a",
+                "/var/cache/cache-a",
+                "/var/log/logs-a",
+            ]
+        );
+        assert_eq!(
+            landlock_service_paths_for_service("web", &BTreeMap::new()),
+            vec!["/var/lib/aos-pkg-web"]
+        );
+    }
+
+    #[test]
+    fn host_network_keeps_filesystem_landlock_only() {
+        let permissions = PermissionsMeta {
+            network: Some(NetworkPermission::Host),
+            tcp_bind: vec![8080],
+            tcp_connect: vec![443],
+            ..PermissionsMeta::default()
+        };
+
+        let args = expected_landlock_args(&permissions, &["/var/lib/example".to_string()]);
+
+        assert_eq!(
+            args,
+            vec![
+                "--require-abi",
+                "4",
+                "--network-unrestricted",
+                "--fs-ro",
+                "/",
+                "--fs-rw",
+                "/tmp",
+                "--fs-rw",
+                "/var/tmp",
+                "--fs-rw",
+                "/dev/null",
+                "--fs-rw",
+                "/var/lib/example",
+                "--",
+            ]
+        );
     }
 }

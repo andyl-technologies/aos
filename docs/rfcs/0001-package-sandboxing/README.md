@@ -27,11 +27,13 @@ only the permissions its policy allows, and every package's effects hang off a
 single systemd handle, `aos-pkg-<name>.target`, which is the one switch for
 turning the package on or off.
 
-The default materialization is **per-unit sandboxing**: a package's service runs
-from its own store-path root (`RootDirectory=`) with `PrivateNetwork=`,
-`PrivateUsers=`, a `CapabilityBoundingSet=`, `SystemCallFilter=`, and
-`DeviceAllow=` all generated from its manifest. An empty manifest is a
-tightly-confined sandbox; a package gets only what it declares. High-privilege
+The default materialization is **per-unit sandboxing**: a confined non-verity
+service runs from its own volatile overlay root (`RootDirectory=`) under
+`/run`, with the authenticated package store path as its immutable lower layer.
+`PrivateNetwork=`, `PrivateUsers=`, a `CapabilityBoundingSet=`,
+`SystemCallFilter=`, and `DeviceAllow=` are all generated from its manifest. An
+empty manifest is a tightly-confined sandbox; a package gets only what it
+declares. High-privilege
 software (k3s) is the same mechanism with a long, explicit manifest — its
 privilege is visible and signed, not a special case. Config delivery is
 layered: TPM2-sealed systemd credentials for secrets, schema-validated apm
@@ -70,7 +72,7 @@ not only baked into the image. The `modules/roles/` machinery has dissolved into
 | **package** | The registry-installable unit. Resolvable by `apm install <name>`; described by `PackageMeta` in `crates/aos-package/src/types.rs`. |
 | **package target** | `aos-pkg-<name>.target` — the single systemd handle for the package's effects (the sandbox of [`activation.md`](activation.md)). |
 | **`[permissions]` manifest** | The declared, signed privilege list on a package (see [`permissions.md`](permissions.md)). Empty = a tight sandbox; entries grant host network, capabilities, devices, host-paths, cgroup-delegate, kernel-modules, etc. The single source of truth for a package's privilege. |
-| **per-unit sandboxing** | The default materialization: the service runs with `RootDirectory=`, `PrivateNetwork=`, `PrivateUsers=`, `CapabilityBoundingSet=`, `SystemCallFilter=`, `DeviceAllow=` generated from the manifest (Decision 17, [`container-model.md`](container-model.md)). |
+| **per-unit sandboxing** | The default materialization: a confined non-verity service runs from a per-service volatile overlay `RootDirectory=` whose immutable lower layer is the authenticated payload store path, with `PrivateNetwork=`, `PrivateUsers=`, `CapabilityBoundingSet=`, `SystemCallFilter=`, and `DeviceAllow=` generated from the manifest (Decision 17, [`container-model.md`](container-model.md)). |
 | **default (sandboxed) package** | A package with an empty `[permissions]` manifest — a real isolation boundary. |
 | **high-privilege package** | A package like k3s whose manifest declares host privilege (host net/cgroups, global kernel modules, broad caps). Its boundary is *nominal* — a packaging/lifecycle wrapper, not a security boundary; see the honesty note below. |
 | **privilege gradient** | Boundary strength runs from "full sandbox" (empty manifest) to "packaging wrapper" (k3s), set entirely by the manifest — not a categorical shape split. |
@@ -193,9 +195,9 @@ In scope:
   and the honest host-level limits (`kernel-modules`, `network: host`).
 - [`container-model.md`](container-model.md) — the substrate. The resolved
   per-unit sandboxing default (`RootDirectory=` + isolation directives), how
-  package roots are delivered as store paths, networking modes, cgroup
-  delegation, cross-package **composition rules** (flat siblings, no permission
-  inheritance, no nesting, `aos.slice` hierarchy), the honest
+  package payloads back per-service volatile overlay roots, networking modes,
+  cgroup delegation, cross-package **composition rules** (flat siblings, no
+  permission inheritance, no nesting, `aos.slice` hierarchy), the honest
   k3s-as-high-privilege case, and the future nspawn path.
 - [`apm-integration.md`](apm-integration.md) — how a package declares its
   target/manifest in the registry: the `PackageMeta`/`ExposeMeta` schema, the

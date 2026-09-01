@@ -19,6 +19,30 @@ The series currently creates these QEMU source files:
 | `accel/tcg/tcg-accel-ops-preemption.c` | GPL-2.0-or-later | QEMU default |
 | `include/system/crucible-sim-preemption.h` | GPL-2.0-or-later | QEMU default |
 | `accel/tcg/crucible-translation-prefetch.c` | GPL-2.0-or-later | QEMU default |
+| `include/qemu/crucible-fault.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-process.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-fault.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-fault-memory.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-fault-node.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-fault-register.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-fault-instruction.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-fault-interrupt.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-fault-hardware-error.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-fault-vcpu-service.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-fault-lifecycle.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-fault-vmstate.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-fault-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-fault-accelerator.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `target/arm/crucible-register.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `target/i386/crucible-register.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/tcg/plugins/crucible-register.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/tcg/plugins/crucible-instruction.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/tcg/plugins/crucible-memory.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/tcg/plugins/crucible-memory-access.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/tcg/plugins/crucible-memory-dma.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/hw/virtio/virtio-crucible-accelerator.h` | GPL-2.0-or-later | Explicit file notice |
+| `hw/virtio/virtio-crucible-accelerator.c` | GPL-2.0-or-later | Explicit file notice |
+| `hw/virtio/virtio-crucible-accelerator-pci.c` | GPL-2.0-or-later | Explicit file notice |
 
 The separately built Rust `crucible-qemu-plugin` and C
 `crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The generated

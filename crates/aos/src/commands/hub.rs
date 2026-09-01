@@ -18,7 +18,7 @@ use aos_net::{
     TransferObserver,
 };
 use aos_remote::hub_rpc as HubTopologyMethod;
-use aos_remote::{HubClient, HubRpc, HubSurfaceRef, Placement, hub_types};
+use aos_remote::{hub_types, HubClient, HubRpc, HubSurfaceRef, Placement};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -170,6 +170,24 @@ fn endpoint_probe_configuration(
     }
 }
 
+fn network_policy_revision_update_mask(
+    protected_transport: bool,
+    trusted_ingress: bool,
+    source_allowlist_cidrs: bool,
+    probe_location: bool,
+) -> Vec<String> {
+    [
+        protected_transport.then_some("protected_transport_required"),
+        trusted_ingress.then_some("trusted_ingress"),
+        source_allowlist_cidrs.then_some("source_allowlist_cidrs"),
+        probe_location.then_some("probe_location_configuration_ref"),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::to_string)
+    .collect()
+}
+
 /// Handles `aos hub login` through device authorization or explicit bootstrap.
 async fn login(
     printer: &Printer,
@@ -282,6 +300,23 @@ mod tests {
     }
 
     #[test]
+    fn network_policy_revision_masks_use_service_field_names() {
+        assert_eq!(
+            network_policy_revision_update_mask(true, true, true, true),
+            [
+                "protected_transport_required",
+                "trusted_ingress",
+                "source_allowlist_cidrs",
+                "probe_location_configuration_ref",
+            ]
+        );
+        assert_eq!(
+            network_policy_revision_update_mask(false, false, true, false),
+            ["source_allowlist_cidrs"]
+        );
+    }
+
+    #[test]
     fn endpoint_probe_configuration_is_complete_and_canonical() {
         assert_eq!(
             endpoint_probe_configuration(
@@ -312,47 +347,39 @@ mod tests {
           }]
         }"#;
         assert_eq!(parse_pin_resolution_document(valid).unwrap().len(), 1);
-        assert!(
-            parse_pin_resolution_document(
-                br#"{"schemaVersion":"aos.hub.pin-resolutions.v2","resolutions":[]}"#
-            )
-            .is_err()
-        );
-        assert!(
-            parse_pin_resolution_document(
-                br#"{"schemaVersion":"aos.hub.pin-resolutions.v1","resolutions":[],"extra":true}"#
-            )
-            .is_err()
-        );
+        assert!(parse_pin_resolution_document(
+            br#"{"schemaVersion":"aos.hub.pin-resolutions.v2","resolutions":[]}"#
+        )
+        .is_err());
+        assert!(parse_pin_resolution_document(
+            br#"{"schemaVersion":"aos.hub.pin-resolutions.v1","resolutions":[],"extra":true}"#
+        )
+        .is_err());
     }
 
     #[test]
     fn pin_resolution_document_rejects_malformed_duplicate_and_unsealed_actions() {
         assert!(parse_pin_resolution_document(b"not-json").is_err());
-        assert!(
-            parse_pin_resolution_document(
-                br#"{
+        assert!(parse_pin_resolution_document(
+            br#"{
               "schemaVersion":"aos.hub.pin-resolutions.v1",
               "resolutions":[
                 {"pinId":"pin:one","release":{"expectedSourceResourceVersion":"7"}},
                 {"pinId":"pin:one","release":{"expectedSourceResourceVersion":"8"}}
               ]
             }"#
-            )
-            .is_err()
-        );
-        assert!(
-            parse_pin_resolution_document(
-                br#"{
+        )
+        .is_err());
+        assert!(parse_pin_resolution_document(
+            br#"{
               "schemaVersion":"aos.hub.pin-resolutions.v1",
               "resolutions":[{
                 "pinId":"pin:one",
                 "release":{"expectedSourceResourceVersion":"0"}
               }]
             }"#
-            )
-            .is_err()
-        );
+        )
+        .is_err());
     }
 
     #[test]
@@ -518,6 +545,31 @@ mod tests {
     }
 
     #[test]
+    fn terminal_operation_status_fails_closed() {
+        let response = |state: &str, error: &str| hub_types::WatchOperationResponse {
+            operation: Some(hub_types::OperationDetail {
+                operation: Some(hub_types::OperationRef {
+                    operation_id: "operation-1".into(),
+                    state: state.into(),
+                    ..Default::default()
+                }),
+                error: error.into(),
+                ..Default::default()
+            }),
+            terminal: true,
+        };
+
+        assert!(terminal_operation_status(&response("succeeded", "")).is_ok());
+        let failed = terminal_operation_status(&response("failed", "copy rejected"))
+            .unwrap_err()
+            .to_string();
+        assert!(failed.contains("operation-1"));
+        assert!(failed.contains("copy rejected"));
+        assert!(terminal_operation_status(&response("cancelled", "")).is_err());
+        assert!(terminal_operation_status(&response("running", "")).is_err());
+    }
+
+    #[test]
     fn access_policy_variants_reject_cross_kind_fields() {
         let input = HubAccessPolicyArgs {
             access: Some("public".into()),
@@ -525,6 +577,34 @@ mod tests {
             ..Default::default()
         };
         assert!(build_access_policy(&input, true).is_err());
+    }
+
+    #[test]
+    fn route_update_masks_name_each_changed_wire_field_once() {
+        let input = HubRouteSpecArgs {
+            endpoint: None,
+            endpoint_generation: Some(2),
+            base_path: None,
+            mode: Some("hub-proxy".into()),
+            placement: Some("primary".into()),
+            placement_policy: None,
+            gateway: None,
+            serves: vec!["web".into()],
+            policy: HubAccessPolicyArgs {
+                access: Some("public".into()),
+                ..Default::default()
+            },
+        };
+
+        assert_eq!(
+            route_update_mask(&input),
+            [
+                "spec.endpoint_generation",
+                "spec.target",
+                "spec.access_policy",
+                "spec.capabilities",
+            ]
+        );
     }
 
     #[test]
@@ -663,11 +743,9 @@ mod tests {
         .unwrap();
 
         let error = publication_from_root(root, "andyl/main").err().unwrap();
-        assert!(
-            error
-                .to_string()
-                .contains("does not identify its compressed FileHash")
-        );
+        assert!(error
+            .to_string()
+            .contains("does not identify its compressed FileHash"));
     }
 
     #[test]
@@ -2362,6 +2440,41 @@ async fn cache_retention(printer: &Printer, command: &HubCacheRetentionCmd) -> R
 
 async fn cache_root(printer: &Printer, command: &HubCacheRootCmd) -> Result<()> {
     match command {
+        HubCacheRootCmd::List {
+            access,
+            cache,
+            pagination,
+        } => {
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            topology_read::<_, hub_types::ListRetentionRootsResponse>(
+                printer,
+                &client,
+                HubTopologyMethod::ListRetentionRoots,
+                &hub_types::ListRetentionRootsRequest {
+                    cache_id: cache.clone(),
+                    page_size: pagination.page_size.unwrap_or_default(),
+                    page_token: pagination.page_token.clone().unwrap_or_default(),
+                },
+            )
+            .await
+        }
+        HubCacheRootCmd::Show {
+            access,
+            cache,
+            root_id,
+        } => {
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            topology_read::<_, hub_types::RetentionRootResponse>(
+                printer,
+                &client,
+                HubTopologyMethod::GetRetentionRoot,
+                &hub_types::GetRetentionRootRequest {
+                    cache_id: cache.clone(),
+                    root_id: root_id.clone(),
+                },
+            )
+            .await
+        }
         HubCacheRootCmd::Create {
             access,
             cache,
@@ -2647,9 +2760,9 @@ async fn run_coverage_operation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyTopologyPlanRequest,
-        Response = hub_types::OperationResponse,
-    > + Copy,
+            Request = hub_types::ApplyTopologyPlanRequest,
+            Response = hub_types::OperationResponse,
+        > + Copy,
     mutation: &HubMutationArgs,
     operation: &HubOperationArgs,
 ) -> Result<()> {
@@ -2802,13 +2915,25 @@ async fn cache_gc_plan(printer: &Printer, command: &HubCacheGcPlanCmd) -> Result
     match command {
         HubCacheGcPlanCmd::Create { access, cache } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
+            let current: hub_types::GetCacheGcPolicyResponse = client
+                .call_topology(
+                    HubTopologyMethod::GetCacheGcPolicy,
+                    &hub_types::GetCacheGcPolicyRequest {
+                        cache_id: cache.clone(),
+                    },
+                )
+                .await?;
+            let expected_resource_version = current
+                .generation
+                .context("the Hub returned cache GC policy without a generation")?
+                .resource_version;
             topology_read::<_, hub_types::TopologyPlanResponse>(
                 printer,
                 &client,
                 HubTopologyMethod::PlanRunCacheGc,
                 &hub_types::PlanRunCacheGcRequest {
                     cache_id: cache.clone(),
-                    expected_resource_version: String::new(),
+                    expected_resource_version,
                     idempotency_key: new_idempotency_key(),
                 },
             )
@@ -2843,6 +2968,18 @@ async fn cache_gc_first_sweep(printer: &Printer, command: &HubCacheGcFirstSweepC
             idempotency_key,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
+            let current: hub_types::GetCacheGcPolicyResponse = client
+                .call_topology(
+                    HubTopologyMethod::GetCacheGcPolicy,
+                    &hub_types::GetCacheGcPolicyRequest {
+                        cache_id: cache.clone(),
+                    },
+                )
+                .await?;
+            let expected_resource_version = current
+                .generation
+                .context("the Hub returned cache GC policy without a generation")?
+                .resource_version;
             topology_read::<_, hub_types::TopologyPlanResponse>(
                 printer,
                 &client,
@@ -2850,7 +2987,7 @@ async fn cache_gc_first_sweep(printer: &Printer, command: &HubCacheGcFirstSweepC
                 &hub_types::PlanAcknowledgeCacheGcFirstSweepRequest {
                     cache_id: cache.clone(),
                     gc_plan_id: gc_plan_id.clone(),
-                    expected_resource_version: String::new(),
+                    expected_resource_version,
                     idempotency_key: idempotency_key.clone(),
                 },
             )
@@ -2949,7 +3086,7 @@ async fn watch_hub_operation(
             if let Some(response) = last_response {
                 print_topology_message(printer, &response)?;
             }
-            return Ok(());
+            anyhow::bail!("timed out waiting for Hub operation '{operation_id}'");
         }
         let response: hub_types::WatchOperationResponse = client
             .call_topology(
@@ -2973,9 +3110,40 @@ async fn watch_hub_operation(
             if printer.mode() == OutputMode::Json {
                 print_topology_message(printer, &response)?;
             }
-            return Ok(());
+            return terminal_operation_status(&response);
         }
         last_response = Some(response);
+    }
+}
+
+fn terminal_operation_status(response: &hub_types::WatchOperationResponse) -> Result<()> {
+    let detail = response
+        .operation
+        .as_ref()
+        .context("the Hub returned a terminal watch response without operation detail")?;
+    let operation = detail
+        .operation
+        .as_ref()
+        .context("the Hub returned terminal operation detail without an operation")?;
+
+    match operation.state.as_str() {
+        "succeeded" => Ok(()),
+        "failed" | "cancelled" => {
+            let reason = if detail.error.is_empty() {
+                "no error detail was provided"
+            } else {
+                detail.error.as_str()
+            };
+            anyhow::bail!(
+                "Hub operation '{}' {}: {reason}",
+                operation.operation_id,
+                operation.state
+            )
+        }
+        state => anyhow::bail!(
+            "Hub operation '{}' was marked terminal in unexpected state '{state}'",
+            operation.operation_id
+        ),
     }
 }
 
@@ -3324,6 +3492,7 @@ async fn registry_cache_stack(printer: &Printer, command: &HubRegistryCacheStack
                 ),
                 _ => anyhow::bail!("exactly one of --cache or --url is required"),
             };
+            let entry_id = topology_stable_id(None, "cache-stack-entry");
             registry_cache_stack_mutation(
                 printer,
                 access,
@@ -3332,7 +3501,7 @@ async fn registry_cache_stack(printer: &Printer, command: &HubRegistryCacheStack
                     operation: "add".into(),
                     entry_id: String::new(),
                     desired: Some(hub_types::ConsumerCacheStackEntry {
-                        entry_id: String::new(),
+                        entry_id,
                         source: Some(source),
                         priority: 0,
                         mirror_group_id: String::new(),
@@ -3517,19 +3686,22 @@ async fn preview_cache_integration(
     if population_trigger.is_some() && populate.is_none() {
         anyhow::bail!("--population-trigger requires --populate");
     }
-    let publication = use_for_clients.then(|| hub_types::ConsumerCacheChange {
-        operation: "add".into(),
-        entry_id: String::new(),
-        desired: Some(hub_types::ConsumerCacheStackEntry {
+    let publication = use_for_clients.then(|| {
+        let entry_id = topology_stable_id(None, "cache-stack-entry");
+        hub_types::ConsumerCacheChange {
+            operation: "add".into(),
             entry_id: String::new(),
-            source: Some(
-                hub_types::consumer_cache_stack_entry::Source::BinaryCacheId(cache.into()),
-            ),
-            priority: 0,
-            mirror_group_id: String::new(),
-        }),
-        before_entry_id: String::new(),
-        mirror_with_entry_id: String::new(),
+            desired: Some(hub_types::ConsumerCacheStackEntry {
+                entry_id,
+                source: Some(
+                    hub_types::consumer_cache_stack_entry::Source::BinaryCacheId(cache.into()),
+                ),
+                priority: 0,
+                mirror_group_id: String::new(),
+            }),
+            before_entry_id: String::new(),
+            mirror_with_entry_id: String::new(),
+        }
     });
     let retention = has_retention
         .then(|| {
@@ -3631,6 +3803,7 @@ async fn cache(printer: &Printer, command: &HubCacheCmd) -> Result<()> {
                 .await;
             }
             let owner = qualified_cache_owner(cache)?;
+            let owner_scope_key = organization_scope_key(&client, Some(owner)).await?;
             let name = name
                 .as_ref()
                 .context("cache create requires --name when creating a plan")?;
@@ -3652,7 +3825,7 @@ async fn cache(printer: &Printer, command: &HubCacheCmd) -> Result<()> {
                     desired: Some(hub_types::BinaryCacheSpec {
                         slug: cache.clone(),
                         name: name.clone(),
-                        owner_scope_key: format!("org:{owner}"),
+                        owner_scope_key,
                         visibility: visibility.clone(),
                         nix_priority: *nix_priority,
                         compression: compression.clone(),
@@ -4225,9 +4398,9 @@ async fn topology_operation_mutation<PlanReq>(
     client: &HubClient,
     plan_method: impl HubRpc<Request = PlanReq, Response = hub_types::TopologyPlanResponse>,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyTopologyPlanRequest,
-        Response = hub_types::OperationResponse,
-    > + Copy,
+            Request = hub_types::ApplyTopologyPlanRequest,
+            Response = hub_types::OperationResponse,
+        > + Copy,
     plan_request: &PlanReq,
     mutation: &HubMutationArgs,
     operation: &HubOperationArgs,
@@ -4501,9 +4674,9 @@ async fn consumer_scope_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyConsumerScopeGrantRequest,
-        Response = hub_types::ConsumerScopeGrantResponse,
-    > + Copy,
+            Request = hub_types::ApplyConsumerScopeGrantRequest,
+            Response = hub_types::ConsumerScopeGrantResponse,
+        > + Copy,
 ) -> Result<()> {
     let client = hub_client(&access.hub, access.token.as_deref())?;
     topology_mutation::<
@@ -4545,9 +4718,9 @@ async fn delete_topology_resource(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyDeleteTopologyResourceRequest,
-        Response = hub_types::DeleteTopologyResourceResponse,
-    > + Copy,
+            Request = hub_types::ApplyDeleteTopologyResourceRequest,
+            Response = hub_types::DeleteTopologyResourceResponse,
+        > + Copy,
 ) -> Result<()> {
     let client = hub_client(&access.hub, access.token.as_deref())?;
     topology_mutation::<
@@ -4588,6 +4761,7 @@ async fn binding(printer: &Printer, command: &HubBindingCmd) -> Result<()> {
             hub,
             token,
             org,
+            include_granted,
             pagination,
         } => {
             let client = hub_client(hub, token.as_deref())?;
@@ -4599,6 +4773,7 @@ async fn binding(printer: &Printer, command: &HubBindingCmd) -> Result<()> {
                     owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
+                    include_granted: *include_granted,
                 },
             )
             .await
@@ -4750,7 +4925,7 @@ async fn binding(printer: &Printer, command: &HubBindingCmd) -> Result<()> {
                 HubTopologyMethod::CreateBinding,
                 &hub_types::PlanBindingMutationRequest {
                     stable_id: topology_stable_id(stable_id.as_deref(), "storage-binding"),
-                    owner_scope_key: organization_scope_key(&client, Some(org)).await?,
+                    owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     spec: Some(spec),
                     idempotency_key: new_idempotency_key(),
                     ..Default::default()
@@ -5428,6 +5603,7 @@ async fn network_policy(printer: &Printer, command: &HubNetworkPolicyCmd) -> Res
         HubNetworkPolicyCmd::List {
             access,
             org,
+            include_granted,
             pagination,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
@@ -5439,6 +5615,7 @@ async fn network_policy(printer: &Printer, command: &HubNetworkPolicyCmd) -> Res
                     owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
+                    include_granted: *include_granted,
                 },
             )
             .await
@@ -5763,20 +5940,12 @@ async fn network_policy(printer: &Printer, command: &HubNetworkPolicyCmd) -> Res
                     }),
                     expected_resource_version: mutation.if_version.clone().unwrap_or_default(),
                     idempotency_key: new_idempotency_key(),
-                    update_mask: [
-                        protected_transport
-                            .as_ref()
-                            .map(|_| "spec.protected_transport_required"),
-                        updates_trusted_ingress.then_some("spec.trusted_ingress"),
-                        ((!cidrs.is_empty() || *clear_cidrs)
-                            .then_some("spec.source_allowlist_cidrs")),
-                        ((probe_location.is_some() || *clear_probe_location)
-                            .then_some("spec.probe_location_configuration_ref")),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .map(str::to_string)
-                    .collect(),
+                    update_mask: network_policy_revision_update_mask(
+                        protected_transport.is_some(),
+                        updates_trusted_ingress,
+                        !cidrs.is_empty() || *clear_cidrs,
+                        probe_location.is_some() || *clear_probe_location,
+                    ),
                 },
                 mutation,
                 |plan_id, idempotency_key, confirmation_hash| {
@@ -5940,9 +6109,9 @@ async fn boundary_lifecycle_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyNetworkPolicyLifecycleRequest,
-        Response = hub_types::NetworkPolicyRevisionResponse,
-    > + Copy,
+            Request = hub_types::ApplyNetworkPolicyLifecycleRequest,
+            Response = hub_types::NetworkPolicyRevisionResponse,
+        > + Copy,
 ) -> Result<()> {
     let (boundary_id, revision) =
         parse_generation_ref(boundary_revision, "network policy revision")?;
@@ -6022,6 +6191,7 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
         HubEndpointCmd::List {
             access,
             org,
+            include_granted,
             pagination,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
@@ -6033,6 +6203,7 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                     owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
+                    include_granted: *include_granted,
                 },
             )
             .await
@@ -6557,7 +6728,7 @@ async fn topology_state_mutation<Resp>(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<Request = hub_types::ApplyDeleteTopologyResourceRequest, Response = Resp>
-    + Copy,
+        + Copy,
 ) -> Result<()>
 where
     Resp: DeserializeOwned + Serialize,
@@ -6602,7 +6773,7 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
                 &client,
                 HubTopologyMethod::ListGateways,
                 &hub_types::ListGatewaysRequest {
-                    binding: Some(parse_binding_ref(binding)?),
+                    binding: binding.as_deref().map(parse_binding_ref).transpose()?,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
                 },
@@ -6634,6 +6805,20 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
             if policy.access.is_none() {
                 anyhow::bail!("gateway add requires --access");
             }
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let binding_response: hub_types::GetBindingResponse = client
+                .call_topology(
+                    HubTopologyMethod::GetBinding,
+                    &hub_types::GetBindingRequest {
+                        binding: Some(parse_binding_ref(binding)?),
+                    },
+                )
+                .await?;
+            let binding = binding_response
+                .binding
+                .context("Hub returned no binding")?;
+            let owner_scope_key = binding.owner_scope_key;
+            let binding_stable_id = binding.stable_id;
             let (endpoint_id, endpoint_generation) = endpoint
                 .rsplit_once('@')
                 .map(|(id, generation)| {
@@ -6648,8 +6833,9 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
                 HubTopologyMethod::CreateGateway,
                 hub_types::PlanGatewayMutationRequest {
                     stable_id: topology_stable_id(stable_id.as_deref(), "storage-gateway"),
+                    owner_scope_key,
                     revision: Some(hub_types::GatewayRevisionSpec {
-                        binding_id: binding.clone(),
+                        binding_id: binding_stable_id,
                         endpoint_id,
                         endpoint_generation,
                         client_base_path: client_base_path.clone(),
@@ -6657,7 +6843,6 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
                         access_policy: build_access_policy(policy, false)?,
                     }),
                     idempotency_key: new_idempotency_key(),
-                    update_mask: vec!["revision".into()],
                     ..Default::default()
                 },
                 mutation,
@@ -6840,9 +7025,9 @@ async fn gateway_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyGatewayMutationRequest,
-        Response = hub_types::GatewayResponse,
-    > + Copy,
+            Request = hub_types::ApplyGatewayMutationRequest,
+            Response = hub_types::GatewayResponse,
+        > + Copy,
     request: hub_types::PlanGatewayMutationRequest,
     mutation: &HubMutationArgs,
 ) -> Result<()> {
@@ -7197,6 +7382,27 @@ fn merge_route_spec(
     Ok(current)
 }
 
+fn route_update_mask(input: &HubRouteSpecArgs) -> Vec<String> {
+    let mut mask = Vec::with_capacity(4);
+    if input.endpoint_generation.is_some() {
+        mask.push("spec.endpoint_generation".into());
+    }
+    if input.mode.is_some()
+        || input.placement.is_some()
+        || input.placement_policy.is_some()
+        || input.gateway.is_some()
+    {
+        mask.push("spec.target".into());
+    }
+    if access_policy_args_present(&input.policy) {
+        mask.push("spec.access_policy".into());
+    }
+    if !input.serves.is_empty() {
+        mask.push("spec.capabilities".into());
+    }
+    mask
+}
+
 async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
     match command {
         HubRouteCmd::List {
@@ -7300,7 +7506,7 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
                     spec: Some(merge_route_spec(current_spec, spec)?),
                     expected_resource_version: mutation.if_version.clone().unwrap_or_default(),
                     idempotency_key: new_idempotency_key(),
-                    update_mask: vec!["spec".into()],
+                    update_mask: route_update_mask(spec),
                 },
                 mutation,
             )
@@ -7331,6 +7537,21 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
                 )
                 .await;
             }
+            let predecessor: hub_types::RouteResponse = client
+                .call_topology(
+                    HubTopologyMethod::GetRoute,
+                    &hub_types::GetTopologyResourceRequest {
+                        stable_id: route.clone(),
+                    },
+                )
+                .await?;
+            let surface = predecessor
+                .route
+                .and_then(|route| route.spec)
+                .and_then(|spec| spec.surface)
+                .context("the Hub returned a predecessor route without a surface")?;
+            let mut replacement_spec = route_spec(None, spec, true)?;
+            replacement_spec.surface = Some(surface);
             topology_mutation::<
                 _,
                 hub_types::ApplyRouteMutationRequest,
@@ -7343,7 +7564,8 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
                 HubTopologyMethod::ReplaceRoute,
                 &hub_types::PlanReplaceRouteRequest {
                     predecessor_route_id: route.clone(),
-                    spec: Some(route_spec(None, spec, true)?),
+                    stable_id: topology_stable_id(None, "delivery-route"),
+                    spec: Some(replacement_spec),
                     expected_resource_version: mutation.if_version.clone().unwrap_or_default(),
                     idempotency_key: new_idempotency_key(),
                     ..Default::default()
@@ -7471,10 +7693,8 @@ async fn route_mutation(
         Request = hub_types::PlanRouteMutationRequest,
         Response = hub_types::TopologyPlanResponse,
     >,
-    apply_method: impl HubRpc<
-        Request = hub_types::ApplyRouteMutationRequest,
-        Response = hub_types::RouteResponse,
-    > + Copy,
+    apply_method: impl HubRpc<Request = hub_types::ApplyRouteMutationRequest, Response = hub_types::RouteResponse>
+        + Copy,
     request: hub_types::PlanRouteMutationRequest,
     mutation: &HubMutationArgs,
 ) -> Result<()> {
@@ -7658,9 +7878,9 @@ async fn apply_topology_defaults(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplySetTopologyDefaultsRequest,
-        Response = hub_types::TopologyDefaultsResponse,
-    > + Copy,
+            Request = hub_types::ApplySetTopologyDefaultsRequest,
+            Response = hub_types::TopologyDefaultsResponse,
+        > + Copy,
 ) -> Result<()> {
     if let Some(value) = binding {
         defaults.binding_id = value.clone();
@@ -8598,9 +8818,7 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
             };
             let client = publication_client(access).await?;
             bind_publication_parent(&client, &mut pinned.request).await?;
-            let publication: hub_types::RegistryPublication = client
-                .call_topology(HubTopologyMethod::BeginRegistryPublication, &pinned.request)
-                .await?;
+            let publication = begin_registry_publication_chunked(&client, &pinned.request).await?;
             let publication_id = publication.publication_id.clone();
             let result: Result<hub_types::RegistryPublication> = async {
                 anyhow::ensure!(
@@ -8667,13 +8885,8 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
         } => {
             let request = publication_manifest_request(manifest, registry)?;
             let client = hub_client(&access.hub, access.token.as_deref())?;
-            topology_read::<_, hub_types::RegistryPublication>(
-                printer,
-                &client,
-                HubTopologyMethod::BeginRegistryPublication,
-                &request,
-            )
-            .await
+            let publication = begin_registry_publication_chunked(&client, &request).await?;
+            print_topology_message(printer, &publication)
         }
         HubPublishCmd::Show {
             access,
@@ -8736,7 +8949,15 @@ async fn upload_publication_object_class(
 ) -> Result<()> {
     const CONCURRENT_UPLOADS: usize = 32;
     const SNAPSHOT_PERMIT_BYTES: u64 = 1024 * 1024;
-    const SNAPSHOT_BUDGET_PERMITS: u32 = 128;
+    // Cloudflare Durable Objects have a 128 MiB isolate limit. A request body
+    // exists in both the Worker stream and the verified Rust buffer while R2
+    // accepts it, so bounding client-side snapshots to 32 MiB leaves room for
+    // the router, database transport, and provider SDK. Request count is also
+    // bounded independently: even tiny uploads retain a Wasm request context
+    // until R2 and the publication coordinator confirm the write. The keyed
+    // publication-object lookup keeps each remote-SQL response constant-sized;
+    // near-limit objects naturally serialize through the byte budget.
+    const SNAPSHOT_BUDGET_PERMITS: u32 = 32;
     const CONCURRENT_MULTIPART_UPLOADS: usize = 1;
 
     let snapshot_budget = std::sync::Arc::new(tokio::sync::Semaphore::new(
@@ -9072,6 +9293,127 @@ async fn bind_publication_parent(
         request.parent_publication_id = current.publication_id.clone();
     }
     Ok(())
+}
+
+async fn begin_registry_publication_chunked(
+    client: &HubClient,
+    request: &hub_types::BeginRegistryPublicationRequest,
+) -> Result<hub_types::RegistryPublication> {
+    const MANIFEST_CHUNK_OBJECTS: usize = 256;
+
+    let mut objects = request.objects.clone();
+    objects.sort_by(|left, right| left.path.cmp(&right.path));
+    anyhow::ensure!(
+        !objects.is_empty() && objects.len() <= MAX_PUBLICATION_OBJECTS,
+        "publication manifest requires 1..={MAX_PUBLICATION_OBJECTS} objects"
+    );
+    let manifest_digest = publication_manifest_digest(&objects)?;
+    let mut session: hub_types::RegistryPublicationManifestSession = client
+        .call_topology(
+            HubTopologyMethod::BeginRegistryPublicationManifest,
+            &hub_types::BeginRegistryPublicationManifestRequest {
+                registry: request.registry.clone(),
+                generation: request.generation.clone(),
+                refs_digest: request.refs_digest.clone(),
+                default_commit: request.default_commit.clone(),
+                parent_publication_id: request.parent_publication_id.clone(),
+                manifest_digest,
+                object_count: u32::try_from(objects.len())?,
+            },
+        )
+        .await?;
+    anyhow::ensure!(
+        usize::try_from(session.object_count)? == objects.len(),
+        "Hub publication session changed the declared object count"
+    );
+    let admitted = usize::try_from(session.admitted_object_count)?;
+    anyhow::ensure!(
+        admitted <= objects.len(),
+        "Hub publication session has an invalid continuation cursor"
+    );
+
+    for chunk in objects[admitted..].chunks(MANIFEST_CHUNK_OBJECTS) {
+        let expected_count = session
+            .admitted_object_count
+            .checked_add(u32::try_from(chunk.len())?)
+            .context("publication manifest progress overflowed")?;
+        session = client
+            .call_topology(
+                HubTopologyMethod::AppendRegistryPublicationManifest,
+                &hub_types::AppendRegistryPublicationManifestRequest {
+                    publication_id: session.publication_id.clone(),
+                    lease_token: session.lease_token.clone(),
+                    chunk_index: session.next_chunk_index,
+                    chunk_digest: publication_manifest_chunk_digest(chunk)?,
+                    objects: chunk.to_vec(),
+                },
+            )
+            .await?;
+        anyhow::ensure!(
+            session.admitted_object_count == expected_count,
+            "Hub publication session did not advance by the appended chunk"
+        );
+    }
+    anyhow::ensure!(
+        session.admitted_object_count == session.object_count,
+        "Hub publication session remains incomplete"
+    );
+    client
+        .call_topology(
+            HubTopologyMethod::SealRegistryPublicationManifest,
+            &hub_types::SealRegistryPublicationManifestRequest {
+                publication_id: session.publication_id,
+                lease_token: session.lease_token,
+            },
+        )
+        .await
+}
+
+fn publication_manifest_digest(
+    objects: &[hub_types::RegistryPublicationObjectInput],
+) -> Result<String> {
+    use sha2::{Digest as _, Sha256};
+
+    let mut canonical = objects
+        .iter()
+        .map(|object| {
+            (
+                &object.path,
+                &object.sha256,
+                object.byte_size,
+                &object.kind,
+                &object.media_type,
+            )
+        })
+        .collect::<Vec<_>>();
+    canonical.sort();
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&canonical)?)
+    ))
+}
+
+fn publication_manifest_chunk_digest(
+    objects: &[hub_types::RegistryPublicationObjectInput],
+) -> Result<String> {
+    use sha2::{Digest as _, Sha256};
+
+    let canonical = objects
+        .iter()
+        .map(|object| {
+            (
+                &object.path,
+                &object.sha256,
+                object.byte_size,
+                &object.kind,
+                &object.media_type,
+            )
+        })
+        .collect::<Vec<_>>();
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&canonical)?)
+    ))
 }
 
 struct PinnedPublication {
@@ -10510,9 +10852,9 @@ async fn apply_signing_key_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyTopologyPlanRequest,
-        Response = hub_types::SigningKeyResponse,
-    > + Copy,
+            Request = hub_types::ApplyTopologyPlanRequest,
+            Response = hub_types::SigningKeyResponse,
+        > + Copy,
 ) -> Result<()> {
     let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
     let mutation = retained_apply_mutation(apply);

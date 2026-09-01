@@ -508,6 +508,7 @@ in rec {
     installCargoArtifacts ? false,
     cargoArtifactContract ? {},
     cargoNextest ? null,
+    cargoNextestOpenFilesLimit ? null,
     nextestFlags ? "",
     cargoFlags ? "",
     buildType ? "release",
@@ -521,6 +522,12 @@ in rec {
     doParallelCheck ? true,
     gitDeps ? [],
   }: let
+    validatedNextestOpenFilesLimit =
+      if cargoNextestOpenFilesLimit == null
+      then null
+      else if builtins.isInt cargoNextestOpenFilesLimit && cargoNextestOpenFilesLimit > 0
+      then cargoNextestOpenFilesLimit
+      else throw "cargoNextestOpenFilesLimit must be a positive integer";
     shellQuote = value: "'${builtins.replaceStrings ["'"] ["'\"'\"'"] (toString value)}'";
     cargoEnvExports = builtins.concatStringsSep "\n" (
       builtins.map
@@ -633,6 +640,24 @@ in rec {
               ${
               if cargoNextest != null
               then ''
+                ${
+                  if validatedNextestOpenFilesLimit == null
+                  then ""
+                  else ''
+                    # Nextest enumerates test binaries concurrently. Large
+                    # workspaces can exceed a conservative sandbox soft limit
+                    # without requiring more build or test parallelism.
+                    if ! ulimit -S -n ${toString validatedNextestOpenFilesLimit}; then
+                      echo "could not install the bounded Nextest open-file limit ${toString validatedNextestOpenFilesLimit}" >&2
+                      exit 1
+                    fi
+                    nextestOpenFilesLimit=$(ulimit -S -n)
+                    if [ "$nextestOpenFilesLimit" -lt ${toString validatedNextestOpenFilesLimit} ]; then
+                      echo "Nextest open-file soft limit is $nextestOpenFilesLimit, expected at least ${toString validatedNextestOpenFilesLimit}" >&2
+                      exit 1
+                    fi
+                  ''
+                }
                 cargo nextest run \
                   ${
                   if checkType == "release"

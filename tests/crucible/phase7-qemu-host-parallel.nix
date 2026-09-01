@@ -6,11 +6,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   idleInitramfs = import ./phase2-qemu-live-plugin-quantum-guest.nix {inherit pkgs;};
   taskList = builtins.concatStringsSep "," taskIds;
 in
@@ -71,6 +67,54 @@ in
           fi
           vmlinuz=$(ls "$GUEST_KERNEL"/boot/vmlinuz-* | head -1)
           test -n "$vmlinuz"
+
+          retry_test_list="$TMPDIR/host-worker-retry.tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-host-parallel-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --test host_worker_pool \
+            -- \
+            --list > "$retry_test_list"
+          grep -Fxq \
+            'qemu_host_worker_allows_the_complete_network_retry_budget: test' \
+            "$retry_test_list"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-host-parallel-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --test host_worker_pool \
+            qemu_host_worker_allows_the_complete_network_retry_budget \
+            -- \
+            --exact
+
+          fingerprint_test='supervision::host_parallel_gate::tests::host_parallel_gate_enables_fingerprinting_before_launch'
+          fingerprint_test_list="$TMPDIR/host-parallel-fingerprint.tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-host-parallel-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --lib \
+            -- \
+            --list > "$fingerprint_test_list"
+          grep -Fxq "$fingerprint_test: test" "$fingerprint_test_list"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-host-parallel-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --lib \
+            "$fingerprint_test" \
+            -- \
+            --exact \
+            --include-ignored
 
           cargo build \
             --frozen \

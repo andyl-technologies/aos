@@ -5,13 +5,10 @@
   taskIds ? ["T-QEMU-1"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
+  faultCapabilityLib = builtins.readFile ../../crates/crucible-qemu/src/fault_capability.rs;
   launchLib =
     builtins.readFile ../../crates/crucible-qemu/src/launch.rs
     + builtins.readFile ../../crates/crucible-qemu/src/launch/error.rs
@@ -26,7 +23,7 @@
 
   taskList = builtins.concatStringsSep "," taskIds;
 
-  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
+  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
@@ -95,6 +92,30 @@
         needle = "executable: impl Into<String>,";
       }
       {
+        label = "builder requires explicit fault capabilities";
+        needle = "fault_capability_requirement: crate::QemuFaultCapabilityRequirement,";
+      }
+      {
+        label = "production launch rejects non-World requirements";
+        needle = "!fault_capability_requirement.is_world_bound()";
+      }
+      {
+        label = "production launch requires an exact manifest";
+        needle = "required_target.exact_manifest().is_none()";
+      }
+      {
+        label = "launch verifies World node identity";
+        needle = "QemuLaunchCommandError::FaultCapabilityNodeMismatch";
+      }
+      {
+        label = "launch verifies executable architecture";
+        needle = "QemuLaunchCommandError::FaultCapabilityArchitectureMismatch";
+      }
+      {
+        label = "launch verifies realized CPU model";
+        needle = "QemuLaunchCommandError::FaultCapabilityCpuModelMismatch";
+      }
+      {
         label = "fixed plugin control fd";
         needle = "const FIXED_PLUGIN_SIM_FD: i32 = 3;";
       }
@@ -120,7 +141,7 @@
       }
       {
         label = "kernel hash material";
-        needle = "format!(\"kernel_hash={}\", content_hash_hex(self.kernel.content_hash)),";
+        needle = "\"kernel_hash={}\",";
       }
       {
         label = "root image hash material";
@@ -251,6 +272,40 @@
         needle = "command.vm_launch_hash_material()";
       }
     ]
+    ++ failuresFor "crates/crucible-qemu/src/fault_capability.rs" faultCapabilityLib [
+      {
+        label = "World-bound capability constructor";
+        needle = "pub fn current_v1_for_node(";
+      }
+      {
+        label = "exact World register manifest binding";
+        needle = "target.exact_manifest = Some(manifest.clone());";
+      }
+      {
+        label = "World node identity binding";
+        needle = "crate::qemu_fault_target_hash(node.node.as_str()),";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-qemu/src/fault_capability.rs" faultCapabilityLib [
+      {
+        label = "public arbitrary exact capability constructor";
+        needle = "pub fn exact(rows:";
+      }
+      {
+        label = "public unbound current capability constructor";
+        needle = "pub fn current_v1(";
+      }
+      {
+        label = "public ABI-only capability constructor";
+        needle = "pub fn abi_boundary_v1(";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-qemu/src/launch.rs" launchLib [
+      {
+        label = "post-construction fault capability override";
+        needle = "with_fault_capability_requirement";
+      }
+    ]
     ++ failuresFor "crates/crucible-qemu/tests/deterministic_launch.rs" launchTest [
       {
         label = "launch command builder test";
@@ -266,11 +321,11 @@
       }
       {
         label = "default plugin argv assertion";
-        needle = "simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off";
+        needle = "simfd=3,slot=0,fault_node_hash={fault_hash},shmemfd=4,wakefd=5,whitebox=off,coverage=off";
       }
       {
         label = "fixed fd plugin argv assertion";
-        needle = "simfd=3,slot=2,shmemfd=4,wakefd=5,whitebox=on,coverage=on";
+        needle = "simfd=3,slot=2,fault_node_hash={fault_hash},shmemfd=4,wakefd=5,whitebox=on,coverage=on";
       }
       {
         label = "kernel argv assertion";

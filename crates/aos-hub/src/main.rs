@@ -88,6 +88,13 @@ enum Command {
         /// Scoped Cloudflare API token used by authenticated CDN route probes.
         #[arg(long, env = "HUB_CLOUDFLARE_API_TOKEN")]
         cloudflare_api_token: Option<String>,
+        /// File containing the scoped Cloudflare API token.
+        #[arg(
+            long,
+            env = "HUB_CLOUDFLARE_API_TOKEN_FILE",
+            conflicts_with = "cloudflare_api_token"
+        )]
+        cloudflare_api_token_file: Option<PathBuf>,
     },
     /// Re-index one registry (or all) now.
     Index {
@@ -399,6 +406,7 @@ async fn main() -> Result<()> {
             route_reservation_keys_file,
             secret_version_manifest_file,
             cloudflare_api_token,
+            cloudflare_api_token_file,
         } => {
             let root = resolve_root(cli.root, dev)?;
             let listener = tokio::net::TcpListener::bind(&listen)
@@ -409,18 +417,6 @@ async fn main() -> Result<()> {
                 .context("reading bound listen address")?;
             let external_url = external_url.unwrap_or_else(|| format!("http://{listen_addr}"));
             let db = Arc::new(Database::open(&root.join("hub.db")).await?);
-            let default_storage_root = root.join("storage");
-            std::fs::create_dir_all(&default_storage_root).with_context(|| {
-                format!(
-                    "creating default storage root {}",
-                    default_storage_root.display()
-                )
-            })?;
-            let default_storage_root = default_storage_root
-                .to_str()
-                .context("default storage root is not valid UTF-8")?;
-            db.ensure_instance_default_binding("local_fs", Some(default_storage_root), None)
-                .await?;
             let image_snapshots = aos_hub::image_snapshot::ImageSnapshotStore::open(&root)?;
             image_snapshots.load_tracked(&db).await?;
             let route_reservation_keys_path = route_reservation_keys_file
@@ -655,7 +651,25 @@ async fn main() -> Result<()> {
                     "HUB_ROUTE_PUBLICATION_MANIFEST_FILE and HUB_ROUTE_PUBLICATION_PUBLIC_KEY must be configured together"
                 ),
             }
+            let cloudflare_api_token = match (cloudflare_api_token, cloudflare_api_token_file) {
+                (Some(token), None) => Some(token),
+                (None, Some(path)) => Some(
+                    String::from_utf8(aos_hub::auth::seal::read_secret_file(&path).with_context(
+                        || format!("reading Cloudflare API token at {}", path.display()),
+                    )?)
+                    .context("Cloudflare API token is not UTF-8")?
+                    .trim_end()
+                    .to_owned(),
+                ),
+                (None, None) => None,
+                // clap rejects this combination before dispatch; retain an
+                // explicit fail-closed branch for programmatic construction.
+                (Some(_), Some(_)) => anyhow::bail!(
+                    "HUB_CLOUDFLARE_API_TOKEN and HUB_CLOUDFLARE_API_TOKEN_FILE conflict"
+                ),
+            };
             if let Some(token) = cloudflare_api_token {
+                anyhow::ensure!(!token.is_empty(), "Cloudflare API token file is empty");
                 let api =
                     Arc::new(aos_hub::coreports::CloudflareControlPlaneClient::new(token).await?);
                 route_adapters = route_adapters.with_external(Arc::new(
@@ -679,7 +693,14 @@ async fn main() -> Result<()> {
                     )
                     .with_credentials(Arc::clone(&app_state.secret_versions)),
                 ),
-            );
+            )
+            .with_writes(Arc::new(
+                aos_hub::coreports::HubSurfaceWriteProvider::new(
+                    Arc::clone(&app_state.db),
+                    app_state.http.clone(),
+                )
+                .with_credentials(Arc::clone(&app_state.secret_versions)),
+            ));
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
                 loop {
@@ -912,18 +933,6 @@ async fn main() -> Result<()> {
             // `open_db` opens and migrates the local database. Worker HubDb
             // bootstrap is handled by the Worker command family.
             let db = open_db(&cli.root, &cli.target).await?;
-            let default_storage_root = resolve_root(cli.root.clone(), false)?.join("storage");
-            std::fs::create_dir_all(&default_storage_root).with_context(|| {
-                format!(
-                    "creating default storage root {}",
-                    default_storage_root.display()
-                )
-            })?;
-            let default_storage_root = default_storage_root
-                .to_str()
-                .context("default storage root is not valid UTF-8")?;
-            db.ensure_instance_default_binding("local_fs", Some(default_storage_root), None)
-                .await?;
             println!("schema migrated ({})", cli.target);
             if let Some(email) = root_email {
                 let plaintext = read_password(root_password, root_password_stdin)?;
@@ -1501,4 +1510,66 @@ fn tracing_subscriber_init() {
         fn exit(&self, _: &tracing::span::Id) {}
     }
     let _ = tracing::subscriber::set_global_default(StderrLogger);
+}
+
+#[cfg(test)]
+mod production_vm_coverage {
+    use std::fs;
+    use std::path::Path;
+
+    use clap::{Command as ClapCommand, CommandFactory as _};
+
+    use super::Cli;
+
+    fn collect_native_leaves(
+        command: &ClapCommand,
+        prefix: &mut Vec<String>,
+        leaves: &mut Vec<String>,
+    ) {
+        let visible = command
+            .get_subcommands()
+            .filter(|subcommand| {
+                !subcommand.is_hide_set()
+                    && !(prefix.is_empty() && subcommand.get_name() == "worker")
+            })
+            .collect::<Vec<_>>();
+        if visible.is_empty() {
+            leaves.push(prefix.join(" "));
+            return;
+        }
+
+        for subcommand in visible {
+            prefix.push(subcommand.get_name().to_string());
+            collect_native_leaves(subcommand, prefix, leaves);
+            prefix.pop();
+        }
+    }
+
+    #[test]
+    fn every_native_command_leaf_is_owned_by_the_native_vm_test() {
+        let mut leaves = Vec::new();
+        collect_native_leaves(&Cli::command(), &mut Vec::new(), &mut leaves);
+        leaves.sort();
+
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let source = fs::read_to_string(repository.join("tests/vm/hub-native-operations.nix"))
+            .expect("native Hub operation test must be readable")
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let missing = leaves
+            .into_iter()
+            .filter(|leaf| !source.contains(leaf))
+            .collect::<Vec<_>>();
+
+        assert!(
+            missing.is_empty(),
+            "native aos-hub commands without executable VM ownership:\n{}",
+            missing.join("\n")
+        );
+    }
 }

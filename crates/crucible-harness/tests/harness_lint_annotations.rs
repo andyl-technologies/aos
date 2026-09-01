@@ -26,6 +26,32 @@ use lex::*;
 use scan::*;
 
 #[test]
+fn harness_lint_recognizes_split_test_modules() {
+    let package = Path::new("crucible-example");
+
+    assert!(is_test_only_source(
+        package,
+        Path::new("crucible-example/src/protocol_test.rs")
+    ));
+    assert!(is_test_only_source(
+        package,
+        Path::new("crucible-example/src/protocol_tests.rs")
+    ));
+    assert!(is_test_only_source(
+        package,
+        Path::new("crucible-example/src/protocol_test_support.rs")
+    ));
+    assert!(is_test_only_source(
+        package,
+        Path::new("crucible-example/tests/support/mod.rs")
+    ));
+    assert!(!is_test_only_source(
+        package,
+        Path::new("crucible-example/src/protocol.rs")
+    ));
+}
+
+#[test]
 fn harness_lint_enforces_annotated_exceptions() {
     let map_findings = scan_content(
         Path::new("synthetic.rs"),

@@ -50,14 +50,18 @@
       "x86_64-linux" = "ttyS0";
       "aarch64-linux" = "ttyAMA0";
     }
-    .${pkgs.stdenv.hostPlatform.system}
+    .${
+      pkgs.stdenv.hostPlatform.system
+    }
     or (throw "crucible phase7 linux-crucible check does not support ${pkgs.stdenv.hostPlatform.system}");
   fixtureSerialConsoleConfig =
     {
       "x86_64-linux" = "CONFIG_SERIAL_8250_CONSOLE=y";
       "aarch64-linux" = "CONFIG_SERIAL_AMBA_PL011_CONSOLE=y";
     }
-    .${pkgs.stdenv.hostPlatform.system}
+    .${
+      pkgs.stdenv.hostPlatform.system
+    }
     or (throw "crucible phase7 linux-crucible check does not support ${pkgs.stdenv.hostPlatform.system}");
   linuxCruciblePname = linuxCrucibleMetadata.pname or "(missing)";
   linuxCrucibleFixtureOnly =
@@ -280,8 +284,16 @@
         needle = "# CONFIG_KMOD is not set";
       }
       {
-        label = "no ACPI";
-        needle = "# CONFIG_ACPI is not set";
+        label = "ACPI topology";
+        needle = "CONFIG_ACPI=y";
+      }
+      {
+        label = "virtio IOMMU";
+        needle = "CONFIG_VIRTIO_IOMMU=y";
+      }
+      {
+        label = "ACPI VIOT topology";
+        needle = "CONFIG_ACPI_VIOT=y";
       }
     ]
     ++ forbiddenFor "pkgs.linux-crucible.passthru.crucibleExtraConfig" linuxCrucibleExtraConfig forbiddenKernelSuppression
@@ -327,7 +339,7 @@
       }
       {
         label = "phase7 e2e determinism consumes linux-crucible package proof";
-        needle = "dependencies = [perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
+        needle = "dependencies = [phase1.gates.licenseBoundary.rawGate perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
       }
     ];
 in
@@ -395,7 +407,9 @@ in
             require_config '^CONFIG_9P_FS=y$' '9p filesystem built in'
             require_config '^CONFIG_EXT4_FS=y$' 'ext4 fixture root image support'
             require_config '^# CONFIG_MODULES is not set$' 'no loadable modules'
-            require_config '^# CONFIG_ACPI is not set$' 'no ACPI'
+            require_config '^CONFIG_ACPI=y$' 'ACPI topology'
+            require_config '^CONFIG_VIRTIO_IOMMU=y$' 'virtio IOMMU'
+            require_config '^CONFIG_ACPI_VIOT=y$' 'ACPI VIOT topology'
 
             forbid_config '^CONFIG_RANDOM=n$' 'disabled kernel RNG'
             forbid_config '^# CONFIG_RANDOM is not set$' 'disabled kernel RNG'

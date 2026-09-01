@@ -47,6 +47,9 @@ pub const FEATURE_REQUIRES_V1: &str = "requires-v1";
 /// Registry feature flag for RFC-0001 package config metadata.
 pub const FEATURE_CONFIG_V1: &str = "config-v1";
 
+/// Registry feature flag for conditionally projected credential bindings.
+pub const FEATURE_OPTIONAL_CREDENTIALS_V1: &str = "optional-credentials-v1";
+
 /// Registry feature flag for RFC-0001 package config reload metadata.
 pub const FEATURE_RELOAD_V1: &str = "reload-v1";
 
@@ -84,6 +87,7 @@ const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_PERMISSIONS_V1,
     FEATURE_REQUIRES_V1,
     FEATURE_CONFIG_V1,
+    FEATURE_OPTIONAL_CREDENTIALS_V1,
     FEATURE_RELOAD_V1,
     FEATURE_CAPABILITY_ROUTES_V1,
     FEATURE_NETWORK_POLICY_V1,
@@ -572,8 +576,8 @@ pub use aos_registry_surface::manifest::{
 // schema (so the hub indexer and the Worker share them) and are re-exported
 // here so `aos_package::types::{ConfigModuleMeta, …}` paths are unchanged.
 pub use aos_registry_surface::manifest::{
-    ConfigModuleMeta, ConfigOptionDeclaration, ConfigOutputMeta, ModuleAbiCompat, OwnedRoot,
-    RootContribution,
+    ConfigModuleArtifacts, ConfigModuleMeta, ConfigOptionDeclaration, ConfigOutputMeta,
+    ModuleAbiCompat, OwnedRoot, RootContribution,
 };
 
 /// Returns the top-level root segment of a dotted option path.
@@ -735,6 +739,9 @@ pub fn validate_supported_package_meta_with(
         }
         if !expose.config.is_empty() {
             require_feature(meta, FEATURE_CONFIG_V1)?;
+        }
+        if expose.config.has_optional_credentials() {
+            require_feature(meta, FEATURE_OPTIONAL_CREDENTIALS_V1)?;
         }
         if expose.config.has_unit_reconciliation() {
             require_feature(meta, FEATURE_RELOAD_V1)?;
@@ -1204,6 +1211,11 @@ pub fn validate_config_module_meta(package_name: &str, module: &ConfigModuleMeta
         }
     }
 
+    validate_config_artifact_names("etc", &module.artifacts.etc, validate_relative_etc_path)?;
+    validate_config_artifact_names("unit", &module.artifacts.units, validate_systemd_unit_name)?;
+    validate_config_artifact_names("user", &module.artifacts.users, validate_account_name)?;
+    validate_config_artifact_names("group", &module.artifacts.groups, validate_account_name)?;
+
     let mut capabilities = std::collections::BTreeSet::new();
     for token in &module.provides_capabilities {
         validate_capability_token(token)?;
@@ -1212,6 +1224,75 @@ pub fn validate_config_module_meta(package_name: &str, module: &ConfigModuleMeta
         }
     }
 
+    Ok(())
+}
+
+fn validate_config_artifact_names(
+    kind: &str,
+    values: &[String],
+    validate: fn(&str) -> Result<()>,
+) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for value in values {
+        validate(value)
+            .with_context(|| format!("validating config-module {kind} grant {value:?}"))?;
+        if !seen.insert(value.as_str()) {
+            bail!("config module grants {kind} artifact '{value}' more than once");
+        }
+    }
+    Ok(())
+}
+
+fn validate_relative_etc_path(path: &str) -> Result<()> {
+    if path.is_empty() || path.starts_with('/') {
+        bail!("/etc artifact path must be non-empty and relative");
+    }
+    if path.split('/').any(|segment| {
+        segment.is_empty()
+            || matches!(segment, "." | "..")
+            || !segment.chars().all(|ch| {
+                ch.is_ascii_alphanumeric() || matches!(ch, '_' | '@' | '+' | '.' | ',' | '=' | '-')
+            })
+    }) {
+        bail!("unsafe relative /etc artifact path '{path}'");
+    }
+    Ok(())
+}
+
+fn validate_systemd_unit_name(name: &str) -> Result<()> {
+    const SUFFIXES: &[&str] = &[
+        ".service",
+        ".socket",
+        ".target",
+        ".timer",
+        ".path",
+        ".slice",
+        ".mount",
+        ".automount",
+    ];
+    let stem = SUFFIXES
+        .iter()
+        .find_map(|suffix| name.strip_suffix(suffix))
+        .filter(|stem| !stem.is_empty())
+        .context("systemd artifact name has no supported unit suffix")?;
+    if !stem
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '@' | '+' | '.' | '-'))
+    {
+        bail!("invalid systemd unit artifact name '{name}'");
+    }
+    Ok(())
+}
+
+fn validate_account_name(name: &str) -> Result<()> {
+    let mut chars = name.chars();
+    if !chars
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+        || !chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+    {
+        bail!("invalid account artifact name '{name}'");
+    }
     Ok(())
 }
 
@@ -1778,11 +1859,12 @@ pub(crate) fn validate_unit_name(unit: &str) -> Result<()> {
     .iter()
     .any(|suffix| unit.ends_with(suffix));
 
-    if unit.is_empty()
-        || unit.contains('/')
-        || unit.chars().any(char::is_whitespace)
-        || !has_known_suffix
-    {
+    let overlay_safe = unit.chars().enumerate().all(|(index, character)| {
+        character.is_ascii_alphanumeric()
+            || (index > 0 && matches!(character, '+' | '.' | '_' | '=' | '@' | '-'))
+    });
+
+    if !overlay_safe || !has_known_suffix {
         bail!("invalid systemd unit name '{unit}'");
     }
     Ok(())
@@ -2047,12 +2129,18 @@ fn validate_image_verity_entry(image: &SysrootImageEntry) -> Result<()> {
     .filter(|field| field.is_some())
     .count();
     let verity_format = matches!(image.format.as_str(), "ext4-verity" | "erofs-verity");
+    // A production A/B disk is distributed as one raw GPT container while
+    // its authenticated update payload carries the root image and verity
+    // sidecars. Recovery metadata distinguishes that contract from an
+    // ordinary raw disk that must not claim standalone verity artifacts.
+    let raw_recovery_image = image.format == "raw" && !image.recovery_ukis.is_empty();
+    let supports_verity = verity_format || raw_recovery_image;
 
-    if verity_field_count == 0 && !verity_format {
+    if verity_field_count == 0 && !supports_verity {
         return Ok(());
     }
 
-    if !verity_format {
+    if !supports_verity {
         bail!(
             "image '{}' declares dm-verity fields but format '{}' is not a verity root format",
             image.store_path,
@@ -3528,6 +3616,22 @@ mod tests {
     }
 
     #[test]
+    fn expose_unit_names_use_the_overlay_safe_token_grammar() {
+        for unit in ["web.service", "web+blue=@.service"] {
+            validate_unit_name(unit).unwrap();
+        }
+        for unit in [
+            "bad,unit.service",
+            "bad:unit.service",
+            "bad\\unit.service",
+            "bad/unit.service",
+        ] {
+            let err = validate_unit_name(unit).unwrap_err();
+            assert!(err.to_string().contains("systemd unit name"));
+        }
+    }
+
+    #[test]
     fn platform_name_validation_accepts_nix_system_names() {
         for name in [
             "x86_64-linux",
@@ -4600,6 +4704,20 @@ last_update = "2026-02-13T10:30:00Z"
 
         meta.requires_features.push(FEATURE_RELOAD_V1.into());
         validate_supported_package_meta(&meta).unwrap();
+
+        meta.expose.as_mut().unwrap().config.credentials = vec![CredentialMeta {
+            name: "tls-key".into(),
+            source: None,
+            ciphertext: None,
+            units: vec!["webapp.service".into()],
+            encrypted: true,
+            optional: true,
+        }];
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_OPTIONAL_CREDENTIALS_V1));
+        meta.requires_features
+            .push(FEATURE_OPTIONAL_CREDENTIALS_V1.into());
+        validate_supported_package_meta(&meta).unwrap();
     }
 
     #[test]
@@ -4671,6 +4789,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ciphertext: None,
                 units: vec!["webapp.socket".into()],
                 encrypted: true,
+                optional: false,
             }],
         };
 
@@ -4688,6 +4807,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ciphertext: None,
                 units: vec!["webapp.service".into()],
                 encrypted: true,
+                optional: false,
             }],
         };
 
@@ -4710,6 +4830,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ciphertext: None,
                 units: vec!["webapp.service".into()],
                 encrypted: true,
+                optional: false,
             }],
         };
 
@@ -4730,6 +4851,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ciphertext: Some("abcDEF0123+/=".into()),
                 units: vec!["webapp.service".into()],
                 encrypted: false,
+                optional: false,
             }],
         };
 
@@ -4747,6 +4869,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ciphertext: Some("abcDEF0123+/=".into()),
                 units: vec!["webapp.service".into()],
                 encrypted: true,
+                optional: false,
             }],
         };
 
@@ -4764,6 +4887,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ciphertext: Some("abc\nPrivateNetwork=false".into()),
                 units: vec!["webapp.service".into()],
                 encrypted: true,
+                optional: false,
             }],
         };
 
@@ -5222,6 +5346,32 @@ last_update = "2026-02-13T10:30:00Z"
     }
 
     #[test]
+    fn raw_recovery_image_accepts_complete_verity_metadata() {
+        let mut image = verity_image_entry();
+        image.format = "raw".into();
+        image.recovery_ukis.push(RecoveryUkiEntry {
+            copy: UkiSlot::A,
+            path: "recovery-a.efi".into(),
+            entry_path: "recovery-a.conf".into(),
+            byte_size: 1,
+            sha256: "b".repeat(64),
+            release: "test".into(),
+            recovery_abi: 1,
+            sb_signer_cert_sha256: "c".repeat(64),
+            sbat: vec![SbatEntry {
+                component: "aos".into(),
+                generation: 1,
+            }],
+        });
+
+        validate_image_verity_entry(&image).unwrap();
+
+        image.recovery_ukis.clear();
+        let error = validate_image_verity_entry(&image).unwrap_err();
+        assert!(error.to_string().contains("is not a verity root format"));
+    }
+
+    #[test]
     fn expose_meta_rejects_unsafe_verity_member_path() {
         let mut image = verity_image_entry();
         image.root_image = Some("../root.img".into());
@@ -5672,6 +5822,7 @@ pin = "v2026.02"
                 interface_abi: 1,
                 paths: vec!["virtualHosts".to_string()],
             }],
+            artifacts: Default::default(),
             provides_capabilities: vec!["system.capabilities.dns-resolver".to_string()],
         }
     }

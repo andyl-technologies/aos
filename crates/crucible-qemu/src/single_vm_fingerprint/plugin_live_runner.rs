@@ -1,24 +1,21 @@
 //! Live single-VM fingerprint runner driven by the Rust control plugin.
 //!
 //! This is the production [`SingleVmFingerprintRunner`] backend: it boots the
-//! patched QEMU binary once with the real Rust control plugin loaded and
-//! `fingerprint=on`, drives the shared-memory quantum hot path to a fixed
-//! ascending cadence of aggregate-icount targets, and reads the black-box
-//! [`FingerprintSample`] the plugin publishes into its per-node slot at each
-//! boundary. The Rust plugin — not the imported C trace plugin — is the sole
+//! patched QEMU binary with the real Rust control plugin and `fingerprint=on`,
+//! drives the shared-memory quantum hot path to ascending aggregate-icount
+//! targets, and reads each black-box [`FingerprintSample`] from the plugin's
+//! per-node slot. The Rust plugin — not the imported C trace plugin — is the sole
 //! fingerprint authority here, so the definition digest binds
 //! `rust_plugin_build_digest` (see [`definition`]).
 //!
 //! Bring-up mirrors [`crate::run_live_plugin_quantum_gate`]'s `run_one_scenario`
-//! exactly (launch profile, fd-passing spawn, host plugin setup handshake,
-//! mapped quantum hot path), adding only `.with_fingerprint(On)` and the
-//! per-target [`QemuMappedQuantumShmemHotPath::fingerprint_sample`] read.
+//! (launch profile, fd-passing spawn, setup handshake, and mapped quantum hot
+//! path), adding only `.with_fingerprint(On)` and each per-target
+//! [`QemuMappedQuantumShmemHotPath::fingerprint_sample`] read.
 //!
-//! Every cadence target is below the diskless firmware guest's idle onset, so
-//! each is reached by a busy quantum that stops exactly at the host-published
-//! ceiling. That gives an instruction-exact guest state at every boundary and a
-//! deterministic stream that reproduces byte-for-byte across the run-twice gate,
-//! including the second run under deliberate host CPU load.
+//! Every cadence target precedes guest idle onset. A busy quantum stops exactly
+//! at the host-published ceiling, yielding instruction-exact guest state and
+//! byte-for-byte replay, including under bounded scheduler preemption.
 
 mod config;
 mod definition;
@@ -28,8 +25,6 @@ mod raw_dump;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -39,11 +34,13 @@ use crate::single_vm_fingerprint::{
     SingleVmFingerprintStream, SingleVmFingerprintTrigger, build_plugin_fingerprint_stream,
 };
 
+use crate::supervision::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
 use crate::{
-    LaunchProfileCandidate, QemuLaunchArtifact, QemuLaunchCommandBuilder, QemuLaunchPluginConfig,
-    QemuLaunchPluginSwitch, QemuMappedQuantumShmemHotPath, QemuNodeChild,
-    QemuPluginIpcControlChannel, QemuQuantumShmemConfig, QemuShmemHotPathChannel,
-    QemuVmLaunchConfig, complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
+    CrucibleShmemNetworkDevice, LaunchProfileCandidate, QemuLaunchArtifact,
+    QemuLaunchCommandBuilder, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
+    QemuMappedQuantumShmemHotPath, QemuNodeChild, QemuPluginIpcControlChannel,
+    QemuQuantumShmemConfig, QemuShmemHotPathChannel, QemuVmLaunchConfig,
+    complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
 };
 pub use config::PluginFingerprintRunnerConfig;
 use crucible::{
@@ -56,8 +53,8 @@ use crucible_shmem::{
 };
 
 pub use definition::{
-    CADENCE_ICOUNT, FAULT_ACTIVATION_ICOUNT, FRAME_DELIVERY_ICOUNT, RUST_PLUGIN_FINGERPRINT_DOMAIN,
-    RustPluginFingerprintDefinition, SAMPLE_ICOUNTS,
+    CADENCE_ICOUNT, FRAME_DELIVERY_ICOUNT, RUST_PLUGIN_FINGERPRINT_DOMAIN,
+    RustPluginFingerprintDefinition, SAMPLE_ICOUNTS, SIGNAL_EFFECT_BOUNDARY_ICOUNT,
 };
 pub use error::PluginFingerprintRunnerError;
 use error::{channel_error, hash_file, node_id, path_text, to_run_error};
@@ -88,8 +85,6 @@ const DEFAULT_RUNNER_MEMORY_MIB: u32 = 64;
 /// on it. M3 raises the count to drive the multi-vCPU aggregate-icount clock and
 /// sample every vCPU's register file into the N-vCPU fingerprint.
 const DEFAULT_RUNNER_SMP_VCPUS: u16 = 1;
-/// Number of background threads used to stress host scheduling on the load run.
-const HOST_LOAD_WORKERS: usize = 4;
 /// Host poll interval while waiting on the plugin-owned boundary or teardown.
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
 
@@ -158,7 +153,7 @@ impl PluginFingerprintRunner {
     ///
     /// The returned pairs are `(target_icount, sample)` in ascending order, one
     /// per requested target. `role` selects the run subdirectory and whether
-    /// deliberate host CPU load runs concurrently.
+    /// bounded scheduler preemption runs concurrently.
     fn run_to_targets(
         &self,
         role: RunRole,
@@ -200,14 +195,12 @@ impl PluginFingerprintRunner {
             }
         })?;
 
-        let host_load = HostLoad::start_if(role.applies_host_load());
-
         let mut candidate = LaunchProfileCandidate::default()
             .with_memory_mib(self.config.memory_mib)
             .with_smp_vcpus(self.config.smp_vcpus);
         if let Some(cmdline) = &self.config.kernel_cmdline {
             let cmdline = if self.config.second_run_divergence_control
-                && matches!(role, RunRole::HostLoad | RunRole::Repeat)
+                && matches!(role, RunRole::Hostile | RunRole::Repeat)
             {
                 format!("{cmdline} crucible_negative_control=1")
             } else {
@@ -229,6 +222,7 @@ impl PluginFingerprintRunner {
         // A single production control plugin with fingerprint sampling enabled:
         // the Rust plugin is the sole time authority and the fingerprint author.
         let mut plugin = QemuLaunchPluginConfig::new(path_text(&self.config.plugin), RUNNER_SLOT)
+            .with_fault_target_node(RUNNER_NODE)
             .with_fingerprint(QemuLaunchPluginSwitch::On);
         if self.config.synchronous_oracle {
             plugin = plugin.with_fingerprint_oracle(QemuLaunchPluginSwitch::On);
@@ -267,11 +261,12 @@ impl PluginFingerprintRunner {
                 }
             }
         }
-        let mut command_builder = QemuLaunchCommandBuilder::new(
+        let mut command_builder = QemuLaunchCommandBuilder::new_for_live_gate(
             profile,
             self.vm_launch_config(),
             path_text(&self.config.qemu_executable),
             plugin,
+            crate::LivePluginGuestArchitecture::X86_64,
         );
         if let (Some(enabled), Some(path)) =
             (self.config.translation_prefetch_experiment, &report_path)
@@ -298,6 +293,7 @@ impl PluginFingerprintRunner {
             resources.into_setup_resources(),
             region_config,
             RUNNER_SLOT,
+            command.fault_capability_requirement(),
         )
         .map_err(|source| PluginFingerprintRunnerError::HostSetup { source })?;
         if !setup.setup_ack().can_schedule() {
@@ -312,11 +308,15 @@ impl PluginFingerprintRunner {
             QemuMappedQuantumShmemHotPath::new(hot_path_config, region, RunnerSendAuthorizer)
                 .map_err(|source| PluginFingerprintRunnerError::MappedHotPath { source })?;
 
+        // Start at the first workload boundary, after excluded launch/setup work.
+        let mut adversary =
+            HostAdversary::start_if(role.applies_scheduler_preemption(), child.process_id())
+                .map_err(|source| PluginFingerprintRunnerError::SchedulerPreemption { source })?;
         let mut boundaries = Vec::with_capacity(targets.len());
         for &target in targets {
             if target == FRAME_DELIVERY_ICOUNT {
                 let payload = if self.config.second_run_divergence_control
-                    && matches!(role, RunRole::HostLoad | RunRole::Repeat)
+                    && matches!(role, RunRole::Hostile | RunRole::Repeat)
                 {
                     b"crucible-fingerprint-frame-negative-control-v1".to_vec()
                 } else {
@@ -331,9 +331,9 @@ impl PluginFingerprintRunner {
                 )
                 .map_err(|source| channel_error("enqueue fingerprint frame event", source))?;
             }
-            let preemption_sequence = if target == FAULT_ACTIVATION_ICOUNT {
+            let preemption_sequence = if target == SIGNAL_EFFECT_BOUNDARY_ICOUNT {
                 let irq = if self.config.second_run_divergence_control
-                    && matches!(role, RunRole::HostLoad | RunRole::Repeat)
+                    && matches!(role, RunRole::Hostile | RunRole::Repeat)
                 {
                     0xf2
                 } else {
@@ -355,17 +355,20 @@ impl PluginFingerprintRunner {
             } else {
                 None
             };
-            let reached = self.drive_to_target(&mut hot_path, &mut child, &setup, target)?;
+            let reached =
+                self.drive_to_target(&mut hot_path, &mut child, &setup, target, &mut adversary)?;
             if let Some(expected) = preemption_sequence {
                 let observed = hot_path
                     .consumed_preemption_sequence()
                     .map_err(|source| PluginFingerprintRunnerError::MappedHotPath { source })?;
                 if observed != expected {
-                    return Err(PluginFingerprintRunnerError::FaultActivationNotConsumed {
-                        target_icount: target,
-                        expected_sequence: expected,
-                        observed_sequence: observed,
-                    });
+                    return Err(
+                        PluginFingerprintRunnerError::SignalEffectBoundaryNotConsumed {
+                            target_icount: target,
+                            expected_sequence: expected,
+                            observed_sequence: observed,
+                        },
+                    );
                 }
             }
             let sample =
@@ -390,6 +393,8 @@ impl PluginFingerprintRunner {
             None => None,
         };
 
+        HostAdversary::finish_if_present(&mut adversary)
+            .map_err(|source| PluginFingerprintRunnerError::SchedulerPreemption { source })?;
         setup
             .assert_run_control_silent()
             .map_err(|source| channel_error("prove run control silence", source))?;
@@ -409,7 +414,6 @@ impl PluginFingerprintRunner {
         }
         drop(setup);
         drop(child);
-        drop(host_load);
 
         Ok(PluginRunResult {
             boundaries,
@@ -459,8 +463,9 @@ impl PluginFingerprintRunner {
         child: &mut QemuNodeChild,
         setup: &crate::QemuHostPluginSetup,
         target: u64,
+        host_adversary: &mut Option<HostAdversary>,
     ) -> Result<u64, PluginFingerprintRunnerError> {
-        let pending = QemuShmemHotPathChannel::start_quantum(
+        let mut pending = QemuShmemHotPathChannel::start_quantum(
             hot_path,
             ExecutionHorizon {
                 icount: Icount { retired: target },
@@ -473,6 +478,8 @@ impl PluginFingerprintRunner {
         setup
             .signal_plugin_wake()
             .map_err(|source| channel_error("wake plugin for next quantum", source))?;
+        HostAdversary::certify_mapped_quantum_pending(host_adversary, hot_path, &mut pending)
+            .map_err(|source| PluginFingerprintRunnerError::SchedulerPreemption { source })?;
         let reached = self.wait_for_target_boundary(hot_path, child, target)?;
         let completion = QemuShmemHotPathChannel::finish_quantum(hot_path, pending)
             .map_err(|source| channel_error("finish quantum", source))?;
@@ -652,7 +659,8 @@ impl PluginFingerprintRunner {
             RUNNER_NODE,
             kernel,
             self.launch_artifact("firmware", &self.config.firmware),
-        );
+        )
+        .with_crucible_shmem_network(CrucibleShmemNetworkDevice::new());
         match &self.config.initrd {
             Some(initrd) => vm.with_initrd(self.launch_artifact("initrd", initrd)),
             None => vm,
@@ -731,9 +739,9 @@ fn trigger_for_icount(icount: u64) -> SingleVmFingerprintTrigger {
         FRAME_DELIVERY_ICOUNT => {
             SingleVmFingerprintTrigger::Event(SingleVmFingerprintEventBoundary::FrameDelivery)
         }
-        FAULT_ACTIVATION_ICOUNT => {
-            SingleVmFingerprintTrigger::Event(SingleVmFingerprintEventBoundary::FaultActivation)
-        }
+        SIGNAL_EFFECT_BOUNDARY_ICOUNT => SingleVmFingerprintTrigger::Event(
+            SingleVmFingerprintEventBoundary::SignalEffectBoundary,
+        ),
         _ => SingleVmFingerprintTrigger::Periodic,
     }
 }
@@ -764,28 +772,30 @@ impl SingleVmFingerprintRunner for PluginFingerprintRunner {
 }
 
 impl PluginFingerprintRunner {
-    /// Maps a run ordinal to its subdirectory and host-load role.
+    /// Maps a run ordinal to its subdirectory and scheduler-preemption role.
     ///
-    /// The second run applies deliberate host CPU load when enabled, which is
+    /// The second run applies bounded scheduler preemption when enabled, which is
     /// the run-twice determinism evidence: a plugin that owns icount-derived
     /// virtual time must produce a byte-identical stream regardless of host
     /// scheduling pressure.
     fn role_for(&self, ordinal: SingleVmFingerprintRunOrdinal) -> RunRole {
         match ordinal {
             SingleVmFingerprintRunOrdinal::First => RunRole::Reference,
-            SingleVmFingerprintRunOrdinal::Second if self.config.second_run_host_load => {
-                RunRole::HostLoad
+            SingleVmFingerprintRunOrdinal::Second
+                if self.config.second_run_scheduler_preemption =>
+            {
+                RunRole::Hostile
             }
             SingleVmFingerprintRunOrdinal::Second => RunRole::Repeat,
         }
     }
 }
 
-/// Which run this is, controlling the run subdirectory and host load.
+/// Which run this is, controlling the run subdirectory and scheduler preemption.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RunRole {
     Reference,
-    HostLoad,
+    Hostile,
     Repeat,
 }
 
@@ -798,57 +808,13 @@ impl RunRole {
     const fn subdir(self) -> &'static str {
         match self {
             Self::Reference => "run-reference",
-            Self::HostLoad => "run-host-load",
+            Self::Hostile => "run-scheduler-preemption",
             Self::Repeat => "run-repeat",
         }
     }
 
-    const fn applies_host_load(self) -> bool {
-        matches!(self, Self::HostLoad)
-    }
-}
-
-/// A background host-CPU load generator that stresses scheduling around a run.
-///
-/// The busy threads consume CPU without touching the guest, the plugin, or the
-/// shared-memory region, so a deterministic, icount-owning plugin must produce
-/// an identical fingerprint whether or not the load is present.
-struct HostLoad {
-    stop: Arc<AtomicBool>,
-    workers: Vec<thread::JoinHandle<()>>,
-}
-
-impl HostLoad {
-    fn start_if(enabled: bool) -> Option<Self> {
-        if !enabled {
-            return None;
-        }
-        let stop = Arc::new(AtomicBool::new(false));
-        let mut workers = Vec::with_capacity(HOST_LOAD_WORKERS);
-        for _ in 0..HOST_LOAD_WORKERS {
-            let stop = Arc::clone(&stop);
-            workers.push(thread::spawn(move || {
-                let mut accumulator: u64 = 0;
-                while !stop.load(Ordering::Relaxed) {
-                    for value in 0..4096_u64 {
-                        accumulator = accumulator
-                            .wrapping_mul(6_364_136_223_846_793_005)
-                            .wrapping_add(value);
-                    }
-                    std::hint::black_box(accumulator);
-                }
-            }));
-        }
-        Some(Self { stop, workers })
-    }
-}
-
-impl Drop for HostLoad {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        for worker in self.workers.drain(..) {
-            let _ = worker.join();
-        }
+    const fn applies_scheduler_preemption(self) -> bool {
+        matches!(self, Self::Hostile)
     }
 }
 

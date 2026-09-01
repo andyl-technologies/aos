@@ -1,0 +1,21 @@
+diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
+index 501f55f6c..ec70c3c63 100644
+--- a/block/crucible-shmem.c
++++ b/block/crucible-shmem.c
+@@ -293,6 +293,16 @@ static void crucible_shmem_wake(Notifier *notifier, void *data)
+     } else if (event != QEMU_PLUGIN_WAKE_EVENT_DRAINED) {
+         qemu_mutex_unlock(&s->pending_lock);
+         return;
++    } else if (qemu_plugin_crucible_vmstop_pending()) {
++        /*
++         * An exact checkpoint has already published its frozen coordinate and
++         * queued native VM stop.  The host rings the control fd solely to hand
++         * the BQL back to QEMU's main loop.  Resuming a parked request here
++         * could admit a new deterministic completion beyond that coordinate,
++         * making the already-published pause impossible to drain.
++         */
++        qemu_mutex_unlock(&s->pending_lock);
++        return;
+     }
+     s->wake_generation++;
+ 

@@ -43,7 +43,7 @@ use anyhow::{bail, Result};
 /// Integers (including booleans, stored as `0`/`1`) live in [`Value::Int`];
 /// floating-point columns in [`Value::Real`]; text in [`Value::Text`]; binary
 /// blobs in [`Value::Bytes`]; and SQL `NULL` in [`Value::Null`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Value {
     /// SQL `NULL`.
     Null,
@@ -70,7 +70,7 @@ impl Value {
 /// Backends return query results as `Vec<Row>`; method code reads columns by
 /// zero-based index with [`Row::get`], mirroring the `row.get::<_, T>(idx)`
 /// shape of the rusqlite code the hub grew from.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Row {
     values: Vec<Value>,
 }
@@ -331,6 +331,20 @@ mod tests {
         assert_eq!(row.get::<Option<String>>(2).unwrap(), None);
         assert_eq!(row.get::<Option<i64>>(2).unwrap(), None);
         assert!(row.get::<bool>(3).unwrap());
+    }
+
+    #[test]
+    fn rows_round_trip_across_the_worker_database_protocol() {
+        let row = Row::new(vec![
+            Value::Null,
+            Value::Int(42),
+            Value::Real(1.5),
+            Value::Text("registry".into()),
+            Value::Bytes(vec![0, 1, 255]),
+        ]);
+        let encoded = serde_json::to_vec(&row).unwrap();
+        let decoded: Row = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded, row);
     }
 
     #[test]

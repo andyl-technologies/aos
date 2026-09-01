@@ -82,13 +82,13 @@ impl LiveInstallFixture {
     }
 
     pub(super) fn args(&self) -> PluginArgs {
-        PluginArgs::parse(&format!("simfd={},slot=0", self.plugin.as_raw_fd()))
+        PluginArgs::parse(&format!("simfd={},slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576", self.plugin.as_raw_fd()))
             .unwrap_or_else(|error| panic!("test plugin args should parse: {error}"))
     }
 
     pub(super) fn coverage_args(&self) -> PluginArgs {
         PluginArgs::parse(&format!(
-            "simfd={},slot=0,coverage=on",
+            "simfd={},slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,coverage=on",
             self.plugin.as_raw_fd()
         ))
         .unwrap_or_else(|error| panic!("test coverage plugin args should parse: {error}"))
@@ -96,7 +96,7 @@ impl LiveInstallFixture {
 
     pub(super) fn whitebox_args(&self) -> PluginArgs {
         PluginArgs::parse(&format!(
-            "simfd={},slot=0,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1",
+            "simfd={},slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1",
             self.plugin.as_raw_fd()
         ))
         .unwrap_or_else(|error| panic!("test white-box plugin args should parse: {error}"))
@@ -224,6 +224,7 @@ pub(super) const fn test_capabilities() -> LiveInstallCapabilities {
     LiveInstallCapabilities {
         icount_raw: test_icount_raw,
         force_vcpu_exit: test_force_vcpu_exit,
+        request_vmstop: test_request_vmstop,
         inject_preemption: Some(test_inject_preemption),
         request_time_control: Some(test_request_time_control),
         clock_deadline_ns: Some(test_deadline),
@@ -234,13 +235,16 @@ pub(super) const fn test_capabilities() -> LiveInstallCapabilities {
         basic_block_coverage: None,
         register_vcpu_init: Some(test_register_vcpu_init),
         register_vcpu_idle_resume: Some(test_register_vcpu_idle_resume),
+        register_control_boundary: Some(test_register_control_boundary),
         register_sim_shmem_dispatch: Some(test_register_sim_shmem_dispatch),
         register_net_tx: Some(test_register_net_tx),
-        net_send: Some(test_net_send),
-        net_flush: Some(test_net_flush),
+        net_inject: Some(test_net_inject),
         register_block: Some(test_register_block),
+        register_block_event: Some(test_register_block_event),
         register_block_wait: Some(test_register_block_wait),
         register_ninep: Some(test_register_ninep),
+        register_accelerator: Some(test_register_accelerator),
+        fault_commands: crate::fault_command::QemuFaultCommandApis::test_stub(),
     }
 }
 
@@ -356,6 +360,10 @@ pub(super) extern "C" fn test_icount_raw() -> u64 {
 
 pub(super) extern "C" fn test_force_vcpu_exit() {}
 
+pub(super) extern "C" fn test_request_vmstop() -> std::os::raw::c_int {
+    0
+}
+
 extern "C" fn test_register_wake_fd(_fd: i32) -> i32 {
     WAKE_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
     0
@@ -380,6 +388,12 @@ extern "C" fn test_register_vcpu_idle_resume(
 ) {
 }
 
+extern "C" fn test_register_control_boundary(
+    _callback: Option<crate::QemuVcpuIdleResumeCbFn>,
+    _userdata: *mut std::ffi::c_void,
+) {
+}
+
 extern "C" fn test_register_sim_shmem_dispatch(
     _publish_callback: Option<crate::QemuSimShmemPublishIcountCbFn>,
     _ceiling_callback: Option<crate::QemuSimShmemMaxAdvanceIcountCbFn>,
@@ -393,17 +407,22 @@ extern "C" fn test_register_net_tx(
 ) {
 }
 
-extern "C" fn test_net_send(_payload: *const u8, _payload_len: usize) -> std::os::raw::c_int {
-    0
-}
-
-extern "C" fn test_net_flush() -> std::os::raw::c_int {
+extern "C" fn test_net_inject(_payload: *const u8, _payload_len: usize) -> std::os::raw::c_int {
     0
 }
 
 extern "C" fn test_register_block(
     _submit: Option<crate::QemuBlkSubmitCbFn>,
     _poll: Option<crate::QemuBlkPollCbFn>,
+    _userdata: *mut std::ffi::c_void,
+) {
+}
+
+extern "C" fn test_register_block_event(
+    _poll: Option<crate::QemuBlkEventPollCbFn>,
+    _commit: Option<crate::QemuBlkEventCommitCbFn>,
+    _save: Option<crate::QemuBlkTransportSaveCbFn>,
+    _restore: Option<crate::QemuBlkTransportRestoreCbFn>,
     _userdata: *mut std::ffi::c_void,
 ) {
 }
@@ -419,6 +438,19 @@ extern "C" fn test_register_ninep(
     _submit: Option<crate::QemuNinePSubmitCbFn>,
     _poll: Option<crate::QemuNinePPollCbFn>,
     _burst_done: Option<crate::QemuNinePBurstCbFn>,
+    _userdata: *mut std::ffi::c_void,
+) {
+}
+
+pub(super) extern "C" fn test_register_accelerator(
+    _submit: Option<crate::QemuAcceleratorSubmitCbFn>,
+    _poll: Option<crate::QemuAcceleratorPollCbFn>,
+    _wait: Option<crate::QemuAcceleratorWaitCbFn>,
+    _restore_begin: Option<crate::QemuAcceleratorRestoreBeginCbFn>,
+    _restore: Option<crate::QemuAcceleratorRestoreCbFn>,
+    _restore_commit: Option<crate::QemuAcceleratorRestoreCommitCbFn>,
+    _restore_abort: Option<crate::QemuAcceleratorRestoreAbortCbFn>,
+    _cancel: Option<crate::QemuAcceleratorCancelCbFn>,
     _userdata: *mut std::ffi::c_void,
 ) {
 }

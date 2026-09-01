@@ -528,7 +528,12 @@ in {
         RemainAfterExit = true;
         # Per-eval hardened resource budget. A runaway is OOM- or
         # timeout-killed by the cgroup.
-        TimeoutStartSec = "120s";
+        # A cold stock-Nix fixpoint performs at least two strict evaluations.
+        # On production-sized base libraries, a constrained two-vCPU guest can
+        # legitimately spend more than two minutes in those passes even while
+        # remaining well below the memory and task budgets below. Keep a hard
+        # wall-clock bound, but leave enough room for the complete fixpoint.
+        TimeoutStartSec = "5min";
         MemoryMax = "2G";
         MemoryHigh = "1536M";
         TasksMax = 4096;
@@ -563,70 +568,93 @@ in {
         # downstream ConditionPathExists guards prevent any configuration swap.
       };
       script = ''
-        set -u
-        mkdir -p /run/aos-eval /run/aos
-        # Invalidate every prior attempt's runtime evidence before any
-        # operation which can fail.  `After=`/`Wants=` intentionally keeps a
-        # failed evaluation non-fatal to boot, so downstream path conditions
-        # must never be satisfiable by a same-boot stale manifest or graph.
-        rm -f "${cfg.manifest}" /run/aos/graph.json
-        config_state=/var/lib/profiles/system/state.json
-        if [ -e /run/aos/image-reeval-required ] \
-          && ${pkgs.jq}/bin/jq -e \
-            '(.current > 0) and (.current as $current | any(.generations[]; .number == $current))' \
-            "$config_state" >/dev/null; then
-          # Rebind the exact active configuration intent to the image that
-          # actually booted. Persistent platform metadata may still contain
-          # the machine's original provisioning input, so it cannot be used as
-          # the authority for an image transition after runtime config changes.
-          # Generation zero has no retained input and follows the normal
-          # provisioning path below on an image's initial seed boot.
-          ${pkgs.aos}/bin/apm __eval-retained \
-            --out "${cfg.manifest}" \
-            --eval-root /run/aos-eval || exit 1
-          exit 0
-        fi
-        # Confirm delivered bytes against the initrd authorization result. If
-        # neither metadata nor the durable last-known-good cache supplied an
-        # operator module, use a narrowly marked image-authored empty module.
-        # That no-input arm still evaluates and activates, binding a fresh
-        # config generation to the running image before boot assessment.
-        image_default_arg=""
-        if [ -e "${cfg.hostNix}" ]; then
-          ${pkgs.aos}/bin/aos metadata verify-binding
-          cp -f "${cfg.hostNix}" /run/aos-eval/host.nix
-        else
-          printf '{}\n' > /run/aos-eval/host.nix
-          image_default_arg="--image-default-host"
-        fi
-        # Prefer the immutable running image's os-release. `/etc/os-release`
-        # is a configuration overlay and can still belong to the prior image
-        # during the first boot after an A/B transition.
-        module_abi="${toString cfg.moduleAbi}"
-        if [ -r /aos-toplevel/os-release ]; then
-          # shellcheck disable=SC1091
-          . /aos-toplevel/os-release
-          if [ -n "''${AOS_MODULE_ABI:-}" ]; then
-            module_abi="$AOS_MODULE_ABI"
-          fi
-        fi
+                set -u
+                mkdir -p /run/aos-eval /run/aos
+                # Invalidate every prior attempt's runtime evidence before any
+                # operation which can fail.  `After=`/`Wants=` intentionally keeps a
+                # failed evaluation non-fatal to boot, so downstream path conditions
+                # must never be satisfiable by a same-boot stale manifest or graph.
+                rm -f "${cfg.manifest}" /run/aos/graph.json
+                config_state=/var/lib/profiles/system/state.json
+                if [ -e /run/aos/image-reeval-required ] \
+                  && ${pkgs.jq}/bin/jq -e \
+                    '(.current > 0) and (.current as $current | any(.generations[]; .number == $current))' \
+                    "$config_state" >/dev/null; then
+                  # Rebind the exact active configuration intent to the image that
+                  # actually booted. Persistent platform metadata may still contain
+                  # the machine's original provisioning input, so it cannot be used as
+                  # the authority for an image transition after runtime config changes.
+                  # Generation zero has no retained input and follows the normal
+                  # provisioning path below on an image's initial seed boot.
+                  ${pkgs.aos}/bin/apm __eval-retained \
+                    --out "${cfg.manifest}" \
+                    --eval-root /run/aos-eval || exit 1
+                  exit 0
+                fi
+                # Confirm delivered bytes against the initrd authorization result. If
+                # neither metadata nor the durable last-known-good cache supplied an
+                # operator module, use a narrowly marked image-authored empty module.
+                # That no-input arm still evaluates and activates, binding a fresh
+                # config generation to the running image before boot assessment.
+                image_default_arg=""
+                if [ -e "${cfg.hostNix}" ]; then
+                  ${pkgs.aos}/bin/aos metadata verify-binding
+                  cp -f "${cfg.hostNix}" /run/aos-eval/host.nix
+                else
+                  printf '{}\n' > /run/aos-eval/host.nix
+                  image_default_arg="--image-default-host"
+                fi
+                # Prefer the immutable running image's os-release. `/etc/os-release`
+                # is a configuration overlay and can still belong to the prior image
+                # during the first boot after an A/B transition.
+                module_abi="${toString cfg.moduleAbi}"
+                if [ -r /aos-toplevel/os-release ]; then
+                  # shellcheck disable=SC1091
+                  . /aos-toplevel/os-release
+                  if [ -n "''${AOS_MODULE_ABI:-}" ]; then
+                    module_abi="$AOS_MODULE_ABI"
+                  fi
+                fi
 
-        desired_arg=""
-        if [ -r "${cfg.desired}" ]; then
-          desired_arg="--desired ${cfg.desired}"
-        fi
+                desired_arg=""
+                if [ -r "${cfg.desired}" ]; then
+                  desired_arg="--desired ${cfg.desired}"
+                fi
 
-        # Failure-safe: on any error apm __eval writes no manifest and exits
-        # non-zero. Wants ordering keeps the boot reachable; downstream
-        # manifest guards make the attempted switch a no-op.
-        ${pkgs.aos}/bin/apm __eval \
-          --host-nix /run/aos-eval/host.nix \
-          --base-lib "${cfg.baseLib}" \
-          --module-abi "$module_abi" \
-          --out "${cfg.manifest}" \
-          --eval-root /run/aos-eval \
-          $image_default_arg \
-          $desired_arg || exit 1
+                runtime_args=""
+                active_manifest=/var/lib/profiles/system/current/manifest.json
+                if [ -r "$active_manifest" ] \
+                  && ${pkgs.jq}/bin/jq -e '.schema == "aos.config-manifest/v2" and (.inputs.runtime_modules != null)' "$active_manifest" >/dev/null; then
+                  runtime_root=$(${pkgs.jq}/bin/jq -er '.inputs.runtime_modules.store_path' "$active_manifest")
+                  expected_generation=$(${pkgs.jq}/bin/jq -er '.current' "$config_state")
+                  runtime_args="--runtime-module-root $runtime_root --expected-current-generation $expected_generation"
+                  if ${pkgs.jq}/bin/jq -e '.inputs.runtime_modules.entrypoints | length > 0' "$active_manifest" >/dev/null; then
+                    while IFS= read -r entry; do
+                      case "$entry" in
+                        /*|*[!A-Za-z0-9_./-]*)
+                          echo "aos-eval: unsafe retained runtime module entrypoint: $entry" >&2
+                          exit 1
+                          ;;
+                      esac
+                      runtime_args="$runtime_args --runtime-module $runtime_root/$entry"
+                    done <<EOF
+        $(${pkgs.jq}/bin/jq -r '.inputs.runtime_modules.entrypoints[]' "$active_manifest")
+        EOF
+                  fi
+                fi
+
+                # Failure-safe: on any error apm __eval writes no manifest and exits
+                # non-zero. Wants ordering keeps the boot reachable; downstream
+                # manifest guards make the attempted switch a no-op.
+                ${pkgs.aos}/bin/apm __eval \
+                  --host-nix /run/aos-eval/host.nix \
+                  --base-lib "${cfg.baseLib}" \
+                  --module-abi "$module_abi" \
+                  --out "${cfg.manifest}" \
+                  --eval-root /run/aos-eval \
+                  $image_default_arg \
+                  $runtime_args \
+                  $desired_arg || exit 1
       '';
     };
 

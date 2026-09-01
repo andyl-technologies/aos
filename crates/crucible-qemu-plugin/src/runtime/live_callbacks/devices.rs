@@ -5,19 +5,23 @@
 //! device-I/O freeze state so block requests and 9p bursts cannot clear each
 //! other's virtual-time hold.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::raw::{c_int, c_void};
 use std::sync::{MutexGuard, TryLockError};
 
-use crucible_shmem::{FrameEntry, NodeSlot, RingHeader};
+use crucible_shmem::{
+    ACCELERATOR_STATUS_CANCELLED, AcceleratorClass, AcceleratorEntry,
+    DetachedPluginAcceleratorRings, FrameEntry, NodeSlot, RingHeader,
+};
 use thiserror::Error;
 
 use crate::{
     BlockGuestCompletion, BlockGuestCompletionError, BlockInboundRing, BlockIoError,
-    BlockOutboundRing, BlockPoll, BlockRequest, BlockRequestToken, BlockResponse,
-    BlockResponseStatus, BlockWireError, NinePGuestCompletion, NinePGuestCompletionError,
-    NinePInboundRing, NinePIoError, NinePOutboundRing, NinePPoll, NinePRequest, NinePRequestToken,
-    NinePResponse, PluginBlockIo, PluginDeviceIoFreeze, PluginNinePIo,
+    BlockOutboundRing, BlockPoll, BlockRequest, BlockRequestIdentity, BlockRequestToken,
+    BlockResponse, BlockResponseErrorCode, BlockResponseStatus, BlockWireError,
+    DeviceIoRequestToken, NinePGuestCompletion, NinePGuestCompletionError, NinePInboundRing,
+    NinePIoError, NinePOutboundRing, NinePPoll, NinePRequest, NinePRequestToken, NinePResponse,
+    PendingBlockTransportEvent, PluginBlockIo, PluginDeviceIoFreeze, PluginNinePIo,
     handle_9p_burst_done_callback, handle_9p_burst_start_callback, handle_9p_poll_callback,
     handle_9p_submit_callback, handle_block_poll_callback, handle_block_submit_callback,
 };
@@ -27,17 +31,34 @@ use super::{
     StableDirectedRingHandle, abort_live_callback, callback_userdata_or_abort,
 };
 
+mod attachment;
+
 const QEMU_PLUGIN_BLOCK_POLL_PENDING: i64 = -2;
+const QEMU_PLUGIN_BLOCK_RETRY_PRESERVE_ID: i64 = -3;
+const QEMU_PLUGIN_BLOCK_RETRY_NEW_ID: i64 = -4;
+const QEMU_PLUGIN_BLOCK_DROP_COMPLETION: i64 = -5;
+const QEMU_PLUGIN_BLOCK_ERROR_BASE: i64 = 4096;
+const QEMU_PLUGIN_BLOCK_EVENT_CAPACITY: usize = 52;
+const QEMU_PLUGIN_BLOCK_TRANSPORT_SAVE_BUSY: i64 = -1;
 const QEMU_PLUGIN_NINEP_POLL_PENDING: i64 = -2;
+const QEMU_PLUGIN_ACCELERATOR_POLL_PENDING: i64 = -2;
 
 pub(super) struct LiveDeviceCallbackState {
     freeze: PluginDeviceIoFreeze,
     block: PluginBlockIo,
     block_rings: LiveDirectedRingPair,
-    block_tokens: BTreeMap<u32, BlockRequestToken>,
+    block_tokens: BTreeMap<BlockRequestIdentity, BlockRequestToken>,
+    block_reissue_preserve: BTreeSet<BlockRequestIdentity>,
+    pending_block_event: Option<PendingBlockTransportEvent>,
     ninep: PluginNinePIo,
     ninep_rings: LiveDirectedRingPair,
     ninep_tokens: BTreeMap<u32, PendingNinePRequest>,
+    accelerator_generation: u64,
+    accelerator_rings: DetachedPluginAcceleratorRings,
+    accelerator_pending: BTreeMap<u64, PendingAcceleratorRequest>,
+    accelerator_completed: BTreeMap<u64, AcceleratorEntry>,
+    accelerator_cancelled: BTreeMap<u64, AcceleratorEntry>,
+    accelerator_restore_staging: Option<(u32, BTreeMap<u64, PendingAcceleratorEnvelope>)>,
 }
 
 struct PendingNinePRequest {
@@ -45,33 +66,342 @@ struct PendingNinePRequest {
     response_capacity: usize,
 }
 
+struct PendingAcceleratorRequest {
+    token: DeviceIoRequestToken,
+    device_id: [u8; 32],
+    class_id: u16,
+    job_kind: u16,
+    queue_id: u16,
+    service_units: u64,
+    output_capacity: usize,
+}
+
+#[derive(Clone)]
+struct PendingAcceleratorEnvelope {
+    device_id: [u8; 32],
+    class_id: u16,
+    job_kind: u16,
+    queue_id: u16,
+    service_units: u64,
+    output_capacity: usize,
+}
+
 impl LiveDeviceCallbackState {
-    pub(super) fn new(
-        vm_slot: u32,
-        block_rings: LiveDirectedRingPair,
-        ninep_rings: LiveDirectedRingPair,
-    ) -> Result<Self, LiveDeviceCallbackError> {
-        let block = PluginBlockIo::from_directed_rings(
-            vm_slot,
-            block_rings.outbound.descriptor,
-            block_rings.inbound.descriptor,
+    // crucible-lint: allow rust-allow -- the accelerator request preserves every fixed public envelope field.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the public accelerator envelope has fixed fields"
+    )]
+    fn submit_accelerator(
+        &mut self,
+        slot: &NodeSlot,
+        current_icount: u64,
+        sequence: u64,
+        device_id: [u8; 32],
+        class_id: u16,
+        job_kind: u16,
+        queue_id: u16,
+        service_units: u64,
+        input: &[u8],
+        output_capacity: usize,
+    ) -> Result<(), LiveDeviceCallbackError> {
+        if self.accelerator_pending.contains_key(&sequence)
+            || self.accelerator_completed.contains_key(&sequence)
+        {
+            return Err(LiveDeviceCallbackError::DuplicateAcceleratorSequence { sequence });
+        }
+        let class = match class_id {
+            1 => AcceleratorClass::Gpu,
+            2 => AcceleratorClass::Tpu,
+            3 => AcceleratorClass::Fpga,
+            _ => return Err(LiveDeviceCallbackError::UnknownAcceleratorClass { class_id }),
+        };
+        let entry = AcceleratorEntry::new(
+            sequence,
+            self.accelerator_generation,
+            device_id,
+            class,
+            job_kind,
+            queue_id,
+            0,
+            false,
+            service_units,
+            u32::try_from(output_capacity).map_err(|_error| {
+                LiveDeviceCallbackError::AcceleratorOutputTooLarge {
+                    sequence,
+                    len: output_capacity,
+                    capacity: crucible_shmem::ACCELERATOR_ENTRY_DATA_BYTES,
+                }
+            })?,
+            input,
         )
-        .map_err(|source| LiveDeviceCallbackError::Block { source })?;
-        let ninep = PluginNinePIo::from_directed_rings(
-            vm_slot,
-            ninep_rings.outbound.descriptor,
-            ninep_rings.inbound.descriptor,
+        .map_err(|source| LiveDeviceCallbackError::AcceleratorEntry { source })?;
+        let token = self
+            .freeze
+            .begin_independent_submit(slot, current_icount)
+            .map_err(|source| LiveDeviceCallbackError::AcceleratorFreeze { source })?;
+        if let Err(source) = self.accelerator_rings.enqueue_request(entry) {
+            self.freeze
+                .fail_request(slot, token)
+                .map_err(|source| LiveDeviceCallbackError::AcceleratorFreeze { source })?;
+            return Err(LiveDeviceCallbackError::AcceleratorRing { source });
+        }
+        self.accelerator_pending.insert(
+            sequence,
+            PendingAcceleratorRequest {
+                token,
+                device_id,
+                class_id,
+                job_kind,
+                queue_id,
+                service_units,
+                output_capacity,
+            },
+        );
+        Ok(())
+    }
+
+    fn poll_accelerator(
+        &mut self,
+        slot: &NodeSlot,
+        sequence: u64,
+        output: &mut [u8],
+    ) -> Result<(u16, i64), LiveDeviceCallbackError> {
+        while let Some(entry) = self
+            .accelerator_rings
+            .dequeue_completion()
+            .map_err(|source| LiveDeviceCallbackError::AcceleratorRing { source })?
+        {
+            let completion_sequence = entry.sequence();
+            if !entry.is_completion() || entry.generation() != self.accelerator_generation {
+                return Err(LiveDeviceCallbackError::InvalidAcceleratorCompletion {
+                    sequence: completion_sequence,
+                });
+            }
+            if let Some(cancellation) = self.accelerator_cancelled.get(&completion_sequence) {
+                if entry.status() != ACCELERATOR_STATUS_CANCELLED
+                    || entry.device_id() != cancellation.device_id()
+                    || entry.class() != cancellation.class()
+                    || entry.job_kind() != cancellation.job_kind()
+                    || entry.queue_id() != cancellation.queue_id()
+                    || entry.service_units() != cancellation.service_units()
+                    || entry.output_capacity() != cancellation.output_capacity()
+                {
+                    return Err(LiveDeviceCallbackError::InvalidAcceleratorCompletion {
+                        sequence: completion_sequence,
+                    });
+                }
+                self.accelerator_cancelled.remove(&completion_sequence);
+                continue;
+            }
+            if self
+                .accelerator_completed
+                .insert(completion_sequence, entry)
+                .is_some()
+            {
+                return Err(LiveDeviceCallbackError::DuplicateAcceleratorSequence {
+                    sequence: completion_sequence,
+                });
+            }
+        }
+        if sequence == 0 {
+            return Ok((0, QEMU_PLUGIN_ACCELERATOR_POLL_PENDING));
+        }
+        let Some(completion) = self.accelerator_completed.get(&sequence).copied() else {
+            return Ok((0, QEMU_PLUGIN_ACCELERATOR_POLL_PENDING));
+        };
+        let pending = self
+            .accelerator_pending
+            .get(&sequence)
+            .ok_or(LiveDeviceCallbackError::UnknownAcceleratorSequence { sequence })?;
+        if completion.device_id() != pending.device_id
+            || completion.class() != pending.class_id
+            || completion.job_kind() != pending.job_kind
+            || completion.queue_id() != pending.queue_id
+            || completion.service_units() != pending.service_units
+            || completion.output_capacity() as usize != pending.output_capacity
+        {
+            return Err(LiveDeviceCallbackError::InvalidAcceleratorCompletion { sequence });
+        }
+        let data = completion
+            .data()
+            .map_err(|source| LiveDeviceCallbackError::AcceleratorEntry { source })?;
+        if data.len() > output.len() || data.len() > pending.output_capacity {
+            return Err(LiveDeviceCallbackError::AcceleratorOutputTooLarge {
+                sequence,
+                len: data.len(),
+                capacity: output.len(),
+            });
+        }
+        output[..data.len()].copy_from_slice(data);
+        let pending = self
+            .accelerator_pending
+            .remove(&sequence)
+            .ok_or(LiveDeviceCallbackError::UnknownAcceleratorSequence { sequence })?;
+        self.accelerator_completed.remove(&sequence);
+        self.freeze
+            .complete_request(slot, pending.token)
+            .map_err(|source| LiveDeviceCallbackError::AcceleratorFreeze { source })?;
+        let len = i64::try_from(data.len()).map_err(|_error| {
+            LiveDeviceCallbackError::ResponseLengthOverflow {
+                family: "accelerator",
+                len: data.len(),
+            }
+        })?;
+        Ok((completion.status(), len))
+    }
+
+    fn cancel_accelerator(
+        &mut self,
+        slot: &NodeSlot,
+        sequence: u64,
+    ) -> Result<(), LiveDeviceCallbackError> {
+        let pending = self
+            .accelerator_pending
+            .get(&sequence)
+            .ok_or(LiveDeviceCallbackError::UnknownAcceleratorSequence { sequence })?;
+        let class = match pending.class_id {
+            1 => AcceleratorClass::Gpu,
+            2 => AcceleratorClass::Tpu,
+            3 => AcceleratorClass::Fpga,
+            class_id => return Err(LiveDeviceCallbackError::UnknownAcceleratorClass { class_id }),
+        };
+        let cancellation = AcceleratorEntry::cancellation(
+            sequence,
+            self.accelerator_generation,
+            pending.device_id,
+            class,
+            pending.job_kind,
+            pending.queue_id,
+            pending.service_units,
+            u32::try_from(pending.output_capacity).map_err(|_error| {
+                LiveDeviceCallbackError::AcceleratorOutputTooLarge {
+                    sequence,
+                    len: pending.output_capacity,
+                    capacity: crucible_shmem::ACCELERATOR_ENTRY_DATA_BYTES,
+                }
+            })?,
         )
-        .map_err(|source| LiveDeviceCallbackError::NineP { source })?;
-        Ok(Self {
-            freeze: PluginDeviceIoFreeze::new(),
-            block,
-            block_rings,
-            block_tokens: BTreeMap::new(),
-            ninep,
-            ninep_rings,
-            ninep_tokens: BTreeMap::new(),
-        })
+        .map_err(|source| LiveDeviceCallbackError::AcceleratorEntry { source })?;
+        self.accelerator_rings
+            .enqueue_request(cancellation)
+            .map_err(|source| LiveDeviceCallbackError::AcceleratorRing { source })?;
+        let pending = self
+            .accelerator_pending
+            .remove(&sequence)
+            .ok_or(LiveDeviceCallbackError::UnknownAcceleratorSequence { sequence })?;
+        self.accelerator_completed.remove(&sequence);
+        self.accelerator_cancelled.insert(sequence, cancellation);
+        self.freeze
+            .fail_request(slot, pending.token)
+            .map(|_release| ())
+            .map_err(|source| LiveDeviceCallbackError::AcceleratorFreeze { source })
+    }
+
+    fn begin_accelerator_restore(&mut self, count: u32) -> Result<(), LiveDeviceCallbackError> {
+        if self.accelerator_restore_staging.is_some() {
+            return Err(LiveDeviceCallbackError::AcceleratorRestoreAlreadyActive);
+        }
+        self.accelerator_restore_staging = Some((count, BTreeMap::new()));
+        Ok(())
+    }
+
+    // crucible-lint: allow rust-allow -- restore preserves every fixed accelerator continuation field.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the public accelerator envelope has fixed fields"
+    )]
+    fn stage_accelerator_restore(
+        &mut self,
+        sequence: u64,
+        device_id: [u8; 32],
+        class_id: u16,
+        job_kind: u16,
+        queue_id: u16,
+        service_units: u64,
+        output_capacity: usize,
+    ) -> Result<(), LiveDeviceCallbackError> {
+        if !matches!(class_id, 1..=3)
+            || sequence == 0
+            || device_id.iter().all(|byte| *byte == 0)
+            || job_kind == 0
+            || queue_id != 0
+            || service_units == 0
+            || output_capacity == 0
+            || output_capacity > crucible_shmem::ACCELERATOR_ENTRY_DATA_BYTES
+            || self.accelerator_pending.contains_key(&sequence)
+            || self.accelerator_completed.contains_key(&sequence)
+            || self.accelerator_cancelled.contains_key(&sequence)
+        {
+            return Err(LiveDeviceCallbackError::InvalidAcceleratorRestore { sequence });
+        }
+        let Some((expected, staged)) = self.accelerator_restore_staging.as_mut() else {
+            return Err(LiveDeviceCallbackError::AcceleratorRestoreNotActive);
+        };
+        if staged.len() >= *expected as usize
+            || staged
+                .insert(
+                    sequence,
+                    PendingAcceleratorEnvelope {
+                        device_id,
+                        class_id,
+                        job_kind,
+                        queue_id,
+                        service_units,
+                        output_capacity,
+                    },
+                )
+                .is_some()
+        {
+            return Err(LiveDeviceCallbackError::InvalidAcceleratorRestore { sequence });
+        }
+        Ok(())
+    }
+
+    fn commit_accelerator_restore(
+        &mut self,
+        slot: &NodeSlot,
+        current_icount: u64,
+    ) -> Result<(), LiveDeviceCallbackError> {
+        let Some((expected, staged)) = self.accelerator_restore_staging.take() else {
+            return Err(LiveDeviceCallbackError::AcceleratorRestoreNotActive);
+        };
+        if staged.len() != expected as usize {
+            return Err(LiveDeviceCallbackError::AcceleratorRestoreCountMismatch {
+                expected,
+                observed: staged.len(),
+            });
+        }
+        if staged.keys().any(|sequence| {
+            self.accelerator_pending.contains_key(sequence)
+                || self.accelerator_completed.contains_key(sequence)
+                || self.accelerator_cancelled.contains_key(sequence)
+        }) {
+            return Err(LiveDeviceCallbackError::AcceleratorRestoreConflict);
+        }
+        let tokens = self
+            .freeze
+            .begin_independent_batch(slot, current_icount, expected)
+            .map_err(|source| LiveDeviceCallbackError::AcceleratorFreeze { source })?;
+        for ((sequence, envelope), token) in staged.into_iter().zip(tokens) {
+            self.accelerator_pending.insert(
+                sequence,
+                PendingAcceleratorRequest {
+                    token,
+                    device_id: envelope.device_id,
+                    class_id: envelope.class_id,
+                    job_kind: envelope.job_kind,
+                    queue_id: envelope.queue_id,
+                    service_units: envelope.service_units,
+                    output_capacity: envelope.output_capacity,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn abort_accelerator_restore(&mut self) {
+        self.accelerator_restore_staging = None;
     }
 
     // crucible-lint: allow rust-allow -- the adapter validates every fixed field in QEMU's block-submit ABI.
@@ -83,41 +413,65 @@ impl LiveDeviceCallbackState {
         &mut self,
         slot: &NodeSlot,
         current_icount: u64,
+        qemu_epoch: u64,
         qemu_request_id: u32,
         operation: u32,
         offset: u64,
         data: Option<&[u8]>,
         len: usize,
     ) -> Result<(), LiveDeviceCallbackError> {
-        if self.block.next_request_id() != qemu_request_id
-            || self.block_tokens.contains_key(&qemu_request_id)
+        let qemu_identity = BlockRequestIdentity::new(qemu_epoch, qemu_request_id);
+        let plugin_identity =
+            BlockRequestIdentity::new(self.block.request_epoch(), self.block.next_request_id());
+        let retry_preserve = self.block_reissue_preserve.contains(&qemu_identity);
+        if (!retry_preserve && plugin_identity != qemu_identity)
+            || self.block_tokens.contains_key(&qemu_identity)
         {
             return Err(LiveDeviceCallbackError::RequestIdMismatch {
                 family: "block",
+                qemu_epoch,
                 qemu_request_id,
+                plugin_epoch: plugin_identity.epoch(),
                 plugin_request_id: self.block.next_request_id(),
             });
         }
         let request = block_request(operation, offset, data, len)?;
         let mut outbound = self.block_rings.outbound.block_outbound();
-        let submit = handle_block_submit_callback(
-            &self.block,
-            &mut self.freeze,
-            slot,
-            &mut outbound,
-            current_icount,
-            &request,
-        )
+        let submit = if retry_preserve {
+            self.block.submit_retry_request(
+                &mut self.freeze,
+                slot,
+                &mut outbound,
+                current_icount,
+                &request,
+                qemu_identity,
+            )
+        } else {
+            handle_block_submit_callback(
+                &self.block,
+                &mut self.freeze,
+                slot,
+                &mut outbound,
+                current_icount,
+                &request,
+            )
+        }
         .map_err(|source| LiveDeviceCallbackError::Block { source })?;
-        if submit.request_id() != qemu_request_id {
+        let token = submit.into_token();
+        if token.identity() != qemu_identity {
             return Err(LiveDeviceCallbackError::RequestIdMismatch {
                 family: "block",
+                qemu_epoch,
                 qemu_request_id,
-                plugin_request_id: submit.request_id(),
+                plugin_epoch: token.identity().epoch(),
+                plugin_request_id: token.request_id(),
             });
         }
-        self.block_tokens
-            .insert(qemu_request_id, submit.into_token());
+        self.block_tokens.insert(qemu_identity, token);
+        if retry_preserve {
+            let removed = self.block_reissue_preserve.remove(&qemu_identity);
+            debug_assert!(removed, "successful preserved retry had authorization");
+        }
         Ok(())
     }
 
@@ -125,15 +479,19 @@ impl LiveDeviceCallbackState {
         &mut self,
         slot: &NodeSlot,
         current_icount: u64,
+        epoch: u64,
         request_id: u32,
         output: &mut [u8],
     ) -> Result<i64, LiveDeviceCallbackError> {
-        let token = self.block_tokens.remove(&request_id).ok_or(
-            LiveDeviceCallbackError::UnknownRequest {
-                family: "block",
-                request_id,
-            },
-        )?;
+        let identity = BlockRequestIdentity::new(epoch, request_id);
+        let token =
+            self.block_tokens
+                .remove(&identity)
+                .ok_or(LiveDeviceCallbackError::UnknownRequest {
+                    family: "block",
+                    epoch,
+                    request_id,
+                })?;
         let inbound = self.block_rings.inbound.block_inbound();
         let mut completion = BlockOutput { output };
         match handle_block_poll_callback(
@@ -148,7 +506,7 @@ impl LiveDeviceCallbackState {
         .map_err(|source| LiveDeviceCallbackError::Block { source })?
         {
             BlockPoll::NotReady { token } => {
-                self.block_tokens.insert(request_id, token);
+                self.block_tokens.insert(identity, token);
                 Ok(QEMU_PLUGIN_BLOCK_POLL_PENDING)
             }
             BlockPoll::Completed { response, .. } => match response.status() {
@@ -160,9 +518,131 @@ impl LiveDeviceCallbackState {
                         }
                     })
                 }
-                BlockResponseStatus::Error => Ok(-1),
+                BlockResponseStatus::Error => {
+                    let errno = block_error_errno(response.error_code().map_err(|source| {
+                        LiveDeviceCallbackError::Block {
+                            source: BlockIoError::Wire { source },
+                        }
+                    })?);
+                    Ok(-(QEMU_PLUGIN_BLOCK_ERROR_BASE + errno))
+                }
+                BlockResponseStatus::TransportReset => {
+                    Err(LiveDeviceCallbackError::UnexpectedBlockResetPrimary {
+                        request_id: response.request_id(),
+                    })
+                }
+                BlockResponseStatus::DuplicateIgnored
+                | BlockResponseStatus::DuplicateProtocolError => {
+                    Err(LiveDeviceCallbackError::UnexpectedBlockDuplicatePrimary {
+                        request_id: response.request_id(),
+                    })
+                }
+                BlockResponseStatus::RetryPreserveId => {
+                    self.block_reissue_preserve.insert(identity);
+                    Ok(QEMU_PLUGIN_BLOCK_RETRY_PRESERVE_ID)
+                }
+                BlockResponseStatus::RetryNewId => Ok(QEMU_PLUGIN_BLOCK_RETRY_NEW_ID),
+                BlockResponseStatus::DropCompletion => Ok(QEMU_PLUGIN_BLOCK_DROP_COMPLETION),
             },
         }
+    }
+
+    fn poll_block_event(
+        &mut self,
+        slot: &NodeSlot,
+        current_icount: u64,
+        output: &mut [u8],
+    ) -> Result<i64, LiveDeviceCallbackError> {
+        if output.len() < QEMU_PLUGIN_BLOCK_EVENT_CAPACITY {
+            return Err(LiveDeviceCallbackError::ResponseBufferTooSmall {
+                family: "block event",
+                required: QEMU_PLUGIN_BLOCK_EVENT_CAPACITY,
+                observed: output.len(),
+            });
+        }
+        if self.pending_block_event.is_none() {
+            let inbound = self.block_rings.inbound.block_inbound();
+            self.pending_block_event = self
+                .block
+                .peek_transport_event(&inbound, current_icount)
+                .map_err(|source| LiveDeviceCallbackError::Block { source })?;
+        }
+        let Some(event) = self.pending_block_event else {
+            return Ok(0);
+        };
+        let _slot = slot;
+        let encoded = event
+            .encode()
+            .map_err(|source| LiveDeviceCallbackError::BlockWire { source })?;
+        output[..encoded.len()].copy_from_slice(&encoded);
+        i64::try_from(encoded.len()).map_err(|_error| {
+            LiveDeviceCallbackError::ResponseLengthOverflow {
+                family: "block event",
+                len: encoded.len(),
+            }
+        })
+    }
+
+    fn commit_block_event(&mut self) -> Result<(), LiveDeviceCallbackError> {
+        let pending = self
+            .pending_block_event
+            .ok_or(LiveDeviceCallbackError::NoPreparedBlockEvent)?;
+        let inbound = self.block_rings.inbound.block_inbound();
+        self.block
+            .commit_transport_event(&inbound, pending)
+            .map_err(|source| LiveDeviceCallbackError::Block { source })?;
+        self.pending_block_event = None;
+        Ok(())
+    }
+
+    fn save_block_transport(&self, output: &mut [u8]) -> Result<usize, LiveDeviceCallbackError> {
+        if !self.block_tokens.is_empty()
+            || !self.block_reissue_preserve.is_empty()
+            || self.pending_block_event.is_some()
+        {
+            return Err(LiveDeviceCallbackError::TransportContinuationBusy {
+                block_tokens: self.block_tokens.len(),
+                retry_authorizations: self.block_reissue_preserve.len(),
+                prepared_event: self.pending_block_event.is_some(),
+            });
+        }
+        let encoded = self
+            .block
+            .encode_transport_continuation()
+            .map_err(|source| LiveDeviceCallbackError::Block { source })?;
+        if output.is_empty() {
+            return Ok(encoded.len());
+        }
+        if output.len() < encoded.len() {
+            return Err(LiveDeviceCallbackError::ResponseBufferTooSmall {
+                family: "block transport continuation",
+                required: encoded.len(),
+                observed: output.len(),
+            });
+        }
+        output[..encoded.len()].copy_from_slice(&encoded);
+        Ok(encoded.len())
+    }
+
+    fn restore_block_transport(
+        &mut self,
+        encoded: &[u8],
+        qemu_epoch: u64,
+        qemu_next_request_id: u32,
+    ) -> Result<(), LiveDeviceCallbackError> {
+        if !self.block_tokens.is_empty()
+            || !self.block_reissue_preserve.is_empty()
+            || self.pending_block_event.is_some()
+        {
+            return Err(LiveDeviceCallbackError::TransportContinuationBusy {
+                block_tokens: self.block_tokens.len(),
+                retry_authorizations: self.block_reissue_preserve.len(),
+                prepared_event: self.pending_block_event.is_some(),
+            });
+        }
+        self.block
+            .restore_transport_continuation(encoded, qemu_epoch, qemu_next_request_id)
+            .map_err(|source| LiveDeviceCallbackError::Block { source })
     }
 
     fn begin_ninep_burst(&mut self, slot: &NodeSlot) -> Result<(), LiveDeviceCallbackError> {
@@ -190,7 +670,9 @@ impl LiveDeviceCallbackState {
         {
             return Err(LiveDeviceCallbackError::RequestIdMismatch {
                 family: "9p",
+                qemu_epoch: 0,
                 qemu_request_id,
+                plugin_epoch: 0,
                 plugin_request_id: self.ninep.next_request_id(),
             });
         }
@@ -208,7 +690,9 @@ impl LiveDeviceCallbackState {
         if submit.request_id() != qemu_request_id {
             return Err(LiveDeviceCallbackError::RequestIdMismatch {
                 family: "9p",
+                qemu_epoch: 0,
                 qemu_request_id,
+                plugin_epoch: 0,
                 plugin_request_id: submit.request_id(),
             });
         }
@@ -234,6 +718,7 @@ impl LiveDeviceCallbackState {
             .get(&request_id)
             .ok_or(LiveDeviceCallbackError::UnknownRequest {
                 family: "9p",
+                epoch: 0,
                 request_id,
             })?
             .response_capacity;
@@ -248,6 +733,7 @@ impl LiveDeviceCallbackState {
         let pending = self.ninep_tokens.remove(&request_id).ok_or(
             LiveDeviceCallbackError::UnknownRequest {
                 family: "9p",
+                epoch: 0,
                 request_id,
             },
         )?;
@@ -286,6 +772,21 @@ impl LiveDeviceCallbackState {
         handle_9p_burst_done_callback(&self.ninep, &mut self.freeze, slot)
             .map(|_state| ())
             .map_err(|source| LiveDeviceCallbackError::NineP { source })
+    }
+}
+
+const fn block_error_errno(error: BlockResponseErrorCode) -> i64 {
+    match error {
+        BlockResponseErrorCode::Offline => 123,
+        BlockResponseErrorCode::ReadOnly => 30,
+        BlockResponseErrorCode::InvalidRange => 22,
+        BlockResponseErrorCode::Busy => 16,
+        BlockResponseErrorCode::Timeout => 110,
+        BlockResponseErrorCode::MediumError | BlockResponseErrorCode::IoError => 5,
+        BlockResponseErrorCode::IntegrityError => 84,
+        BlockResponseErrorCode::NoSpace => 28,
+        BlockResponseErrorCode::NotFound => 2,
+        BlockResponseErrorCode::Stale => 116,
     }
 }
 
@@ -451,6 +952,21 @@ fn block_request(
             }
             Ok(BlockRequest::flush())
         }
+        3 => {
+            if data.is_some() {
+                return Err(LiveDeviceCallbackError::UnexpectedPayloadPointer {
+                    family: "block discard",
+                    len,
+                });
+            }
+            let count = u32::try_from(len).map_err(|_error| {
+                LiveDeviceCallbackError::RequestLengthOverflow {
+                    family: "block discard",
+                    len,
+                }
+            })?;
+            Ok(BlockRequest::discard(offset, count))
+        }
         operation => Err(LiveDeviceCallbackError::UnknownBlockOperation { operation }),
     }
 }
@@ -475,6 +991,7 @@ impl LiveVcpuTimeCallbackState {
 
     fn block_submit(
         &self,
+        epoch: u64,
         request_id: u32,
         operation: u32,
         offset: u64,
@@ -486,6 +1003,7 @@ impl LiveVcpuTimeCallbackState {
             .submit_block(
                 self.slot.get(),
                 current_icount,
+                epoch,
                 request_id,
                 operation,
                 offset,
@@ -503,15 +1021,54 @@ impl LiveVcpuTimeCallbackState {
 
     fn block_poll(
         &self,
+        epoch: u64,
         request_id: u32,
         output: &mut [u8],
     ) -> Result<i64, LiveVcpuTimeCallbackError> {
-        if self.idle_advance_is_pending()? {
+        if self.idle_advance_is_pending() {
             return Ok(QEMU_PLUGIN_BLOCK_POLL_PENDING);
         }
         let current_icount = self.callback_current_icount()?;
+        let result = self
+            .lock_devices()?
+            .poll_block(self.slot.get(), current_icount, epoch, request_id, output)
+            .map_err(LiveVcpuTimeCallbackError::live_device)?;
+        self.publish_device_completion_pause_if_quiesced("block-poll")?;
+        Ok(result)
+    }
+
+    fn block_event_poll(&self, output: &mut [u8]) -> Result<i64, LiveVcpuTimeCallbackError> {
+        // A wake carrying a transport event is edge-triggered. When it races
+        // QEMU's queued idle-advance completion, deferring the poll would lose
+        // the only wake and strand the event in the inbound ring. Device events
+        // belong to the already-authorized advance target, just like requests
+        // dispatched from the same main-loop timer slice.
+        let current_icount = self.device_callback_icount()?;
         self.lock_devices()?
-            .poll_block(self.slot.get(), current_icount, request_id, output)
+            .poll_block_event(self.slot.get(), current_icount, output)
+            .map_err(LiveVcpuTimeCallbackError::live_device)
+    }
+
+    fn block_event_commit(&self) -> Result<(), LiveVcpuTimeCallbackError> {
+        self.lock_devices()?
+            .commit_block_event()
+            .map_err(LiveVcpuTimeCallbackError::live_device)
+    }
+
+    fn block_transport_save(&self, output: &mut [u8]) -> Result<usize, LiveVcpuTimeCallbackError> {
+        self.lock_devices()?
+            .save_block_transport(output)
+            .map_err(LiveVcpuTimeCallbackError::live_device)
+    }
+
+    fn block_transport_restore(
+        &self,
+        encoded: &[u8],
+        qemu_epoch: u64,
+        qemu_next_request_id: u32,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        self.lock_devices()?
+            .restore_block_transport(encoded, qemu_epoch, qemu_next_request_id)
             .map_err(LiveVcpuTimeCallbackError::live_device)
     }
 
@@ -536,7 +1093,13 @@ impl LiveVcpuTimeCallbackState {
                 payload,
                 response_capacity,
             )
-            .map_err(LiveVcpuTimeCallbackError::live_device)
+            .map_err(LiveVcpuTimeCallbackError::live_device)?;
+        // Match block and accelerator submission: once the request and active
+        // hold are release-published, revoke the current TCG reservation so
+        // max-advance can freeze at this request coordinate until the host
+        // publishes its deterministic completion deadline.
+        (self.force_vcpu_exit)();
+        Ok(())
     }
 
     fn ninep_poll(
@@ -544,13 +1107,16 @@ impl LiveVcpuTimeCallbackState {
         request_id: u32,
         output: &mut [u8],
     ) -> Result<i64, LiveVcpuTimeCallbackError> {
-        if self.idle_advance_is_pending()? {
+        if self.idle_advance_is_pending() {
             return Ok(QEMU_PLUGIN_NINEP_POLL_PENDING);
         }
         let current_icount = self.callback_current_icount()?;
-        self.lock_devices()?
+        let result = self
+            .lock_devices()?
             .poll_ninep(self.slot.get(), current_icount, request_id, output)
-            .map_err(LiveVcpuTimeCallbackError::live_device)
+            .map_err(LiveVcpuTimeCallbackError::live_device)?;
+        self.publish_device_completion_pause_if_quiesced("ninep-poll")?;
+        Ok(result)
     }
 
     fn ninep_burst_done(&self) -> Result<(), LiveVcpuTimeCallbackError> {
@@ -560,11 +1126,264 @@ impl LiveVcpuTimeCallbackState {
         // it must remain legal at that boundary.
         self.lock_devices()?
             .finish_ninep_burst(self.slot.get())
+            .map_err(LiveVcpuTimeCallbackError::live_device)?;
+        self.publish_device_completion_pause_if_quiesced("ninep-burst-done")
+    }
+
+    // crucible-lint: allow rust-allow -- the callback mirrors every fixed field in QEMU's accelerator ABI.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the QEMU accelerator ABI has fixed fields"
+    )]
+    fn accelerator_submit(
+        &self,
+        sequence: u64,
+        device_id: [u8; 32],
+        class_id: u16,
+        job_kind: u16,
+        queue_id: u16,
+        service_units: u64,
+        input: &[u8],
+        output_capacity: usize,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        let current_icount = self.device_callback_icount()?;
+        self.lock_devices()?
+            .submit_accelerator(
+                self.slot.get(),
+                current_icount,
+                sequence,
+                device_id,
+                class_id,
+                job_kind,
+                queue_id,
+                service_units,
+                input,
+                output_capacity,
+            )
+            .map_err(LiveVcpuTimeCallbackError::live_device)?;
+        (self.force_vcpu_exit)();
+        Ok(())
+    }
+
+    fn accelerator_poll(
+        &self,
+        sequence: u64,
+        output: &mut [u8],
+    ) -> Result<(u16, i64), LiveVcpuTimeCallbackError> {
+        if self.idle_advance_is_pending() {
+            return Ok((0, QEMU_PLUGIN_ACCELERATOR_POLL_PENDING));
+        }
+        let result = self
+            .lock_devices()?
+            .poll_accelerator(self.slot.get(), sequence, output)
+            .map_err(LiveVcpuTimeCallbackError::live_device)?;
+        self.publish_device_completion_pause_if_quiesced("accelerator-poll")?;
+        Ok(result)
+    }
+}
+
+// crucible-lint: allow rust-allow -- the callback mirrors every fixed field in QEMU's accelerator ABI.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the QEMU accelerator ABI has fixed fields"
+)]
+pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_submit_cb(
+    sequence: u64,
+    device_id: *const u8,
+    class_id: u16,
+    job_kind: u16,
+    queue_id: u16,
+    service_units: u64,
+    data: *const u8,
+    len: usize,
+    output_capacity: usize,
+    userdata: *mut c_void,
+) -> c_int {
+    let state = callback_userdata_or_abort(userdata);
+    let Some(_in_flight) = state.callback_guard() else {
+        return -1;
+    };
+    let Some(device_id) = std::ptr::NonNull::new(device_id.cast_mut()) else {
+        return -1;
+    };
+    // SAFETY: QEMU supplies a readable fixed 32-byte identity for this call.
+    let identity = unsafe { core::slice::from_raw_parts(device_id.as_ptr(), 32) };
+    let mut identity_bytes = [0_u8; 32];
+    identity_bytes.copy_from_slice(identity);
+    // SAFETY: QEMU keeps the input readable for `len` bytes for this call.
+    let input = unsafe { input_payload(data, len) }
+        .ok_or(LiveDeviceCallbackError::NullPayload {
+            family: "accelerator",
+            len,
+        })
+        .unwrap_or_else(|source| {
+            abort_live_callback(LiveVcpuTimeCallbackError::live_device(source))
+        });
+    match state.accelerator_submit(
+        sequence,
+        identity_bytes,
+        class_id,
+        job_kind,
+        queue_id,
+        service_units,
+        input,
+        output_capacity,
+    ) {
+        Ok(()) => 0,
+        Err(error) => abort_live_callback(error),
+    }
+}
+
+pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_restore_cb(
+    sequence: u64,
+    device_id: *const u8,
+    class_id: u16,
+    job_kind: u16,
+    queue_id: u16,
+    service_units: u64,
+    output_capacity: usize,
+    userdata: *mut c_void,
+) -> c_int {
+    let state = callback_userdata_or_abort(userdata);
+    let Some(_in_flight) = state.callback_guard() else {
+        return -1;
+    };
+    let Some(device_id) = std::ptr::NonNull::new(device_id.cast_mut()) else {
+        return -1;
+    };
+    // SAFETY: QEMU supplies a readable fixed identity for this call.
+    let identity = unsafe { core::slice::from_raw_parts(device_id.as_ptr(), 32) };
+    let mut identity_bytes = [0_u8; 32];
+    identity_bytes.copy_from_slice(identity);
+    let mut devices = match state.lock_devices() {
+        Ok(value) => value,
+        Err(error) => abort_live_callback(error),
+    };
+    match devices.stage_accelerator_restore(
+        sequence,
+        identity_bytes,
+        class_id,
+        job_kind,
+        queue_id,
+        service_units,
+        output_capacity,
+    ) {
+        Ok(()) => 0,
+        Err(_error) => -1,
+    }
+}
+
+pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_restore_begin_cb(
+    count: u32,
+    userdata: *mut c_void,
+) -> c_int {
+    let state = callback_userdata_or_abort(userdata);
+    let Some(_in_flight) = state.callback_guard() else {
+        return -1;
+    };
+    match state.lock_devices().and_then(|mut devices| {
+        devices
+            .begin_accelerator_restore(count)
             .map_err(LiveVcpuTimeCallbackError::live_device)
+    }) {
+        Ok(()) => 0,
+        Err(_error) => -1,
+    }
+}
+
+pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_restore_commit_cb(
+    userdata: *mut c_void,
+) -> c_int {
+    let state = callback_userdata_or_abort(userdata);
+    let Some(_in_flight) = state.callback_guard() else {
+        return -1;
+    };
+    let current_icount = match state.callback_current_icount() {
+        Ok(value) => value,
+        Err(_error) => return -1,
+    };
+    match state.lock_devices().and_then(|mut devices| {
+        devices
+            .commit_accelerator_restore(state.slot.get(), current_icount)
+            .map_err(LiveVcpuTimeCallbackError::live_device)
+    }) {
+        Ok(()) => 0,
+        Err(_error) => -1,
+    }
+}
+
+pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_restore_abort_cb(
+    userdata: *mut c_void,
+) {
+    let state = callback_userdata_or_abort(userdata);
+    let Some(_in_flight) = state.callback_guard() else {
+        return;
+    };
+    if let Ok(mut devices) = state.lock_devices() {
+        devices.abort_accelerator_restore();
+    }
+}
+
+pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_poll_cb(
+    sequence: u64,
+    status: *mut u16,
+    output: *mut u8,
+    capacity: usize,
+    userdata: *mut c_void,
+) -> i64 {
+    let state = callback_userdata_or_abort(userdata);
+    let Some(_in_flight) = state.callback_guard() else {
+        return -1;
+    };
+    let Some(mut status) = std::ptr::NonNull::new(status) else {
+        return -1;
+    };
+    let output =
+        // SAFETY: QEMU grants exclusive output access for this callback.
+        unsafe { output_buffer(output, capacity, "accelerator") }.unwrap_or_else(|source| {
+            abort_live_callback(LiveVcpuTimeCallbackError::live_device(source))
+        });
+    match state.accelerator_poll(sequence, output) {
+        Ok((completion_status, len)) => {
+            // SAFETY: QEMU supplies a writable status word for this callback.
+            unsafe { *status.as_mut() = completion_status };
+            len
+        }
+        Err(error) => abort_live_callback(error),
+    }
+}
+
+pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_wait_cb(
+    _sequence: u64,
+    userdata: *mut c_void,
+) {
+    let state = callback_userdata_or_abort(userdata);
+    let Some(_in_flight) = state.callback_guard() else {
+        return;
+    };
+    (state.force_vcpu_exit)();
+}
+
+pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_cancel_cb(
+    sequence: u64,
+    userdata: *mut c_void,
+) -> c_int {
+    let state = callback_userdata_or_abort(userdata);
+    let Some(_in_flight) = state.callback_guard() else {
+        return -1;
+    };
+    match state.lock_devices().and_then(|mut devices| {
+        devices
+            .cancel_accelerator(state.slot.get(), sequence)
+            .map_err(LiveVcpuTimeCallbackError::live_device)
+    }) {
+        Ok(()) => 0,
+        Err(error) => abort_live_callback(error),
     }
 }
 
 pub(super) extern "C" fn crucible_qemu_plugin_live_block_submit_cb(
+    epoch: u64,
     request_id: u32,
     operation: u32,
     offset: u64,
@@ -579,13 +1398,14 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_block_submit_cb(
     // SAFETY: QEMU owns the callback input and keeps it readable for `len`
     // bytes until this callback returns.
     let data = unsafe { input_payload(data, len) };
-    if let Err(error) = state.block_submit(request_id, operation, offset, data, len) {
+    if let Err(error) = state.block_submit(epoch, request_id, operation, offset, data, len) {
         abort_live_callback(error);
     }
     0
 }
 
 pub(super) extern "C" fn crucible_qemu_plugin_live_block_poll_cb(
+    epoch: u64,
     request_id: u32,
     output: *mut u8,
     capacity: usize,
@@ -600,9 +1420,115 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_block_poll_cb(
     let output = unsafe { output_buffer(output, capacity, "block") }.unwrap_or_else(|source| {
         abort_live_callback(LiveVcpuTimeCallbackError::live_device(source))
     });
-    match state.block_poll(request_id, output) {
+    match state.block_poll(epoch, request_id, output) {
         Ok(result) => result,
         Err(error) => abort_live_callback(error),
+    }
+}
+
+pub(super) extern "C" fn crucible_qemu_plugin_live_block_event_poll_cb(
+    output: *mut u8,
+    capacity: usize,
+    userdata: *mut c_void,
+) -> i64 {
+    let state = callback_userdata_or_abort(userdata);
+    let Some(_in_flight) = state.callback_guard() else {
+        return -1;
+    };
+    let output =
+        // SAFETY: QEMU grants this callback exclusive access to the output buffer
+        // for `capacity` bytes until this callback returns.
+        unsafe { output_buffer(output, capacity, "block event") }.unwrap_or_else(|source| {
+            abort_live_callback(LiveVcpuTimeCallbackError::live_device(source))
+        });
+    match state.block_event_poll(output) {
+        Ok(result) => result,
+        Err(error) => abort_live_callback(error),
+    }
+}
+
+pub(super) extern "C" fn crucible_qemu_plugin_live_block_event_commit_cb(
+    userdata: *mut c_void,
+) -> c_int {
+    let state = callback_userdata_or_abort(userdata);
+    let Some(_in_flight) = state.callback_guard() else {
+        return -1;
+    };
+    match state.block_event_commit() {
+        Ok(()) => 0,
+        Err(error) => abort_live_callback(error),
+    }
+}
+
+pub(super) extern "C" fn crucible_qemu_plugin_live_block_transport_save_cb(
+    output: *mut u8,
+    capacity: usize,
+    userdata: *mut c_void,
+) -> i64 {
+    let state = callback_userdata_or_abort(userdata);
+    let Some(_in_flight) = state.callback_guard() else {
+        return -1;
+    };
+    // SAFETY: QEMU grants exclusive writable access for `capacity` bytes. A
+    // null pointer is valid only for the zero-capacity size query.
+    let output = unsafe { output_buffer(output, capacity, "block transport continuation") }
+        .unwrap_or_else(|source| {
+            abort_live_callback(LiveVcpuTimeCallbackError::live_device(source))
+        });
+    match state.block_transport_save(output) {
+        Ok(len) => i64::try_from(len).unwrap_or_else(|_error| {
+            abort_live_callback(LiveVcpuTimeCallbackError::live_device(
+                LiveDeviceCallbackError::ResponseLengthOverflow {
+                    family: "block transport continuation",
+                    len,
+                },
+            ))
+        }),
+        Err(LiveVcpuTimeCallbackError::LiveDevice { source })
+            if matches!(
+                source.as_ref(),
+                LiveDeviceCallbackError::TransportContinuationBusy { .. }
+            ) =>
+        {
+            /*
+             * A busy continuation is an expected migration rejection.  The
+             * QEMU ABI interprets a negative length as pre-save failure and
+             * leaves the source VM alive so its in-flight I/O can finish.
+             */
+            QEMU_PLUGIN_BLOCK_TRANSPORT_SAVE_BUSY
+        }
+        Err(error) => abort_live_callback(error),
+    }
+}
+
+pub(super) extern "C" fn crucible_qemu_plugin_live_block_transport_restore_cb(
+    input: *const u8,
+    len: usize,
+    qemu_epoch: u64,
+    qemu_next_request_id: u32,
+    userdata: *mut c_void,
+) -> c_int {
+    let Some(state) = std::ptr::NonNull::new(userdata.cast::<LiveVcpuTimeCallbackState>()) else {
+        return -1;
+    };
+    // SAFETY: the registrar passes only the pinned live callback allocation
+    // retained by `OwnedCallbackRuntimeState` for the QEMU process lifetime.
+    let state = unsafe { state.as_ref() };
+    let Some(_in_flight) = state.callback_guard() else {
+        return -1;
+    };
+    // SAFETY: QEMU keeps this VMState-owned input readable for `len` bytes for
+    // the duration of the callback.
+    let Some(input) = (unsafe { input_payload(input, len) }) else {
+        return -1;
+    };
+    match state.block_transport_restore(input, qemu_epoch, qemu_next_request_id) {
+        Ok(()) => 0,
+        Err(error) => {
+            // crucible-lint: allow direct-diagnostic -- this C callback cannot return structured diagnostics; stderr preserves the restore rejection before returning failure.
+            eprintln!("crucible-qemu-plugin: rejected block transport restore: {error}");
+            -1
+        }
     }
 }
 
@@ -711,6 +1637,81 @@ unsafe fn output_buffer<'a>(
 /// A live block or 9p callback registration/dispatch error.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum LiveDeviceCallbackError {
+    /// An accelerator shared-memory operation failed.
+    #[error("accelerator shared-memory operation failed: {source}")]
+    AcceleratorRing {
+        /// Underlying SPSC error.
+        source: crucible_shmem::SpscRingError,
+    },
+    /// An accelerator record was not canonical.
+    #[error("accelerator record is invalid: {source}")]
+    AcceleratorEntry {
+        /// Underlying fixed-record error.
+        source: crucible_shmem::AcceleratorEntryError,
+    },
+    /// Accelerator device-I/O freeze accounting failed.
+    #[error("accelerator device-I/O freeze failed: {source}")]
+    AcceleratorFreeze {
+        /// Underlying freeze-state error.
+        source: crate::DeviceIoFreezeError,
+    },
+    /// The accelerator class was outside the closed public enum.
+    #[error("unknown accelerator class {class_id}")]
+    UnknownAcceleratorClass {
+        /// Rejected class number.
+        class_id: u16,
+    },
+    /// A request sequence was reused before its lifecycle ended.
+    #[error("duplicate accelerator sequence {sequence}")]
+    DuplicateAcceleratorSequence {
+        /// Reused publication sequence.
+        sequence: u64,
+    },
+    /// A completion did not correspond to a submitted request.
+    #[error("unknown accelerator sequence {sequence}")]
+    UnknownAcceleratorSequence {
+        /// Completion sequence without a pending request.
+        sequence: u64,
+    },
+    /// A completion's envelope disagreed with the submitted request.
+    #[error("invalid accelerator completion for sequence {sequence}")]
+    InvalidAcceleratorCompletion {
+        /// Completion sequence whose envelope was invalid.
+        sequence: u64,
+    },
+    /// QEMU began a second accelerator restore transaction.
+    #[error("accelerator restore transaction is already active")]
+    AcceleratorRestoreAlreadyActive,
+    /// QEMU staged or committed without beginning an accelerator restore.
+    #[error("accelerator restore transaction is not active")]
+    AcceleratorRestoreNotActive,
+    /// A staged restore entry was malformed, duplicated, or conflicted.
+    #[error("invalid accelerator restore entry for sequence {sequence}")]
+    InvalidAcceleratorRestore {
+        /// Rejected sequence.
+        sequence: u64,
+    },
+    /// The restore batch ended with a different number of entries than declared.
+    #[error("accelerator restore declared {expected} entries but staged {observed}")]
+    AcceleratorRestoreCountMismatch {
+        /// Count declared by QEMU before staging.
+        expected: u32,
+        /// Number of valid entries staged.
+        observed: usize,
+    },
+    /// Live callback activity conflicted with a staged restore before commit.
+    #[error("accelerator restore entries conflict with live transport state")]
+    AcceleratorRestoreConflict,
+    /// A completion exceeded QEMU's guest-provided output buffer.
+    #[error("accelerator completion {sequence} length {len} exceeds capacity {capacity}")]
+    AcceleratorOutputTooLarge {
+        /// Completion publication sequence.
+        sequence: u64,
+        /// Returned output length.
+        len: usize,
+        /// Available guest buffer capacity.
+        capacity: usize,
+    },
     /// Registration-fixed block state or callback handling failed.
     #[error("live block callback failed: {source}")]
     Block {
@@ -722,6 +1723,33 @@ pub enum LiveDeviceCallbackError {
     BlockWire {
         /// Underlying block wire error.
         source: BlockWireError,
+    },
+    /// A transport reset appeared where the driver expected a primary result.
+    #[error("block request {request_id} returned reset as its primary completion")]
+    UnexpectedBlockResetPrimary {
+        /// Request whose primary completion was invalid.
+        request_id: u32,
+    },
+    /// A duplicate-only status appeared in a primary request poll.
+    #[error("block request {request_id} returned a duplicate-only primary completion")]
+    UnexpectedBlockDuplicatePrimary {
+        /// Request whose primary completion was invalid.
+        request_id: u32,
+    },
+    /// QEMU attempted to commit without first preparing a block event.
+    #[error("no block transport event is prepared for commit")]
+    NoPreparedBlockEvent,
+    /// VMState attempted to save or restore while transport state was in flight.
+    #[error(
+        "block transport continuation is busy: {block_tokens} requests, {retry_authorizations} retry authorizations, prepared_event={prepared_event}"
+    )]
+    TransportContinuationBusy {
+        /// Submitted requests not yet terminally polled.
+        block_tokens: usize,
+        /// Preserve-ID retry authorizations not yet resubmitted.
+        retry_authorizations: usize,
+        /// Whether an event was prepared but not committed.
+        prepared_event: bool,
     },
     /// Registration-fixed 9p state or callback handling failed.
     #[error("live 9p callback failed: {source}")]
@@ -740,21 +1768,27 @@ pub enum LiveDeviceCallbackError {
     StatePoisoned,
     /// QEMU and the plugin's fixed request sequence disagreed.
     #[error(
-        "live {family} request id mismatch: QEMU supplied {qemu_request_id}, plugin expected {plugin_request_id}"
+        "live {family} request identity mismatch: QEMU supplied ({qemu_epoch}, {qemu_request_id}), plugin expected ({plugin_epoch}, {plugin_request_id})"
     )]
     RequestIdMismatch {
         /// Device callback family.
         family: &'static str,
+        /// Driver-supplied request epoch.
+        qemu_epoch: u64,
         /// Driver-supplied request id.
         qemu_request_id: u32,
+        /// Plugin's current request epoch.
+        plugin_epoch: u64,
         /// Plugin's next fixed request id.
         plugin_request_id: u32,
     },
     /// QEMU polled a request that was not retained after submit.
-    #[error("live {family} poll named unknown request {request_id}")]
+    #[error("live {family} poll named unknown request ({epoch}, {request_id})")]
     UnknownRequest {
         /// Device callback family.
         family: &'static str,
+        /// Unknown request epoch.
+        epoch: u64,
         /// Unknown request id.
         request_id: u32,
     },
@@ -825,6 +1859,16 @@ pub enum LiveDeviceCallbackError {
         family: &'static str,
         /// Unrepresentable response length.
         len: usize,
+    },
+    /// QEMU supplied a buffer too small for a fixed response envelope.
+    #[error("live {family} buffer has {observed} bytes but requires at least {required}")]
+    ResponseBufferTooSmall {
+        /// Device callback family.
+        family: &'static str,
+        /// Minimum fixed capacity.
+        required: usize,
+        /// Supplied capacity.
+        observed: usize,
     },
     /// QEMU changed a retained 9p response capacity before polling.
     #[error(

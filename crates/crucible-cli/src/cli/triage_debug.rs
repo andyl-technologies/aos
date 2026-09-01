@@ -1648,7 +1648,7 @@ pub(super) fn plan_debug_invocation(
         ));
     }
     let read_only = !(explicit_fork || guest_shell);
-    let mut session_commands = vec![SessionCommand::query_snapshot(), SessionCommand::Snapshot];
+    let mut session_commands = vec![SessionCommand::query_snapshot()];
     let mut engine_operations = vec![
         DebugEngineOperation::ResolveTarget,
         DebugEngineOperation::Instantiate,

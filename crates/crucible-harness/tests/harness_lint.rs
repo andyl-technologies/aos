@@ -70,6 +70,147 @@ fn gate_evidence_rejects_checklist_state_needles() {
 }
 
 #[test]
+fn retired_fault_surfaces_cannot_reenter_executable_or_user_documentation_paths()
+-> Result<(), Box<dyn Error>> {
+    let identifier_fragments: &[&[&str]] = &[
+        &["Fault", "PlanEntry"],
+        &["Fault", "Tag"],
+        &["Active", "FaultTable"],
+        &["Inject", "Fault"],
+        &["Heal", "Fault"],
+        &["Random", "Fault"],
+        &["Membership", "Fault"],
+        &["Network", "Fault"],
+        &["Block", "Fault"],
+        &["NineP", "Fault"],
+        &["Node", "Fault"],
+        &["Fault", "Id"],
+        &["Fault", "State"],
+        &["Fault", "Duration"],
+        &["Fault", "RateBasisPoints"],
+        &["Fault", "BandwidthBitsPerSecond"],
+        &["Fault", "SlowdownFactorBasisPoints"],
+        &["NineP", "Errno"],
+        &["Fault", "Activation"],
+        &["SessionCommand", "Inject"],
+        &["SessionCommandKind", "Inject"],
+        &["ControlOperationKind", "Inject"],
+        &["SessionCommand", "Snapshot"],
+        &["SessionCommandKind", "Snapshot"],
+    ];
+    let snake_fragments: &[&[&str]] = &[
+        &["active", "faults"],
+        &["active", "fault", "tags"],
+        &["inject", "fault"],
+        &["heal", "fault"],
+        &["random", "fault"],
+        &["no", "active", "faults"],
+        &["fault", "entry"],
+        &["fault", "plan"],
+        &["fault", "active"],
+        &["fault", "activation"],
+    ];
+    let retired = identifier_fragments
+        .iter()
+        .map(|parts| parts.concat())
+        .chain(snake_fragments.iter().map(|parts| parts.join("_")))
+        .collect::<BTreeSet<_>>();
+
+    let workspace = workspace_root();
+    let repo = repo_root();
+    let mut files = Vec::new();
+    for package in [
+        "crucible",
+        "crucible-api",
+        "crucible-cli",
+        "crucible-device",
+        "crucible-harness",
+        "crucible-protocol",
+        "crucible-qemu",
+        "crucible-session",
+        "crucible-shmem",
+    ] {
+        for directory in ["src", "tests", "examples"] {
+            collect_fault_surface_files(&workspace.join(package).join(directory), &mut files)?;
+        }
+    }
+    collect_fault_surface_files(&repo.join("docs/users/crucible"), &mut files)?;
+    collect_fault_surface_files(&repo.join("tests/crucible"), &mut files)?;
+    files.sort();
+
+    let mut findings = Vec::new();
+    for file in files {
+        if file.ends_with("fault-model-migration.md") {
+            continue;
+        }
+        let content = fs::read_to_string(&file)?;
+        for (line_index, line) in content.lines().enumerate() {
+            for token in line
+                .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+            {
+                if retired.contains(token) {
+                    findings.push(format!(
+                        "{}:{}: retired fault surface `{token}`",
+                        file.display(),
+                        line_index + 1
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        findings.is_empty(),
+        "retired fault surfaces remain outside historical RFCs or the migration guide:\n{}",
+        findings.join("\n")
+    );
+    Ok(())
+}
+
+#[test]
+fn user_reference_names_every_executable_effect_kind() -> Result<(), Box<dyn Error>> {
+    let reference = fs::read_to_string(repo_root().join("docs/users/crucible/reference.md"))?;
+    let registry = fs::read_to_string(
+        workspace_root().join("crucible/src/model/fault_signal/effect_registry.rs"),
+    )?;
+    let missing = registry
+        .lines()
+        .filter_map(|line| line.split_once("=> { key: \"").map(|(_, rest)| rest))
+        .filter_map(|rest| rest.split_once('\"').map(|(key, _)| key))
+        .filter(|kind| !reference.contains(&format!("`{kind}`")))
+        .collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "Crucible user reference omits executable effect kinds: {}",
+        missing.join(", ")
+    );
+    Ok(())
+}
+
+fn collect_fault_surface_files(
+    directory: &Path,
+    files: &mut Vec<PathBuf>,
+) -> Result<(), Box<dyn Error>> {
+    if !directory.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(directory)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_fault_surface_files(&path, files)?;
+            continue;
+        }
+        if matches!(
+            path.extension().and_then(|extension| extension.to_str()),
+            Some("rs" | "toml" | "md" | "nix")
+        ) {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn session_terminal_outcomes_have_one_engine_owned_construction_path() -> Result<(), Box<dyn Error>>
 {
     let source =
@@ -406,6 +547,26 @@ fn harness_lint_rejects_error_and_logging_drift() {
         cfg_all_test_findings.is_empty(),
         "{cfg_all_test_findings:?}"
     );
+
+    let standard_error_source = error_logging_failures(
+        Path::new("crucible-sim/src/error.rs"),
+        r#"
+            impl Error for TypedError {
+                fn source(&self) -> Option<&(dyn Error + 'static)> {
+                    Some(&self.source)
+                }
+            }
+
+            fn tuple_success() -> Result<(String, BTreeMap<String, u64>), TypedError> {
+                todo!()
+            }
+        "#,
+        false,
+    );
+    assert!(
+        standard_error_source.is_empty(),
+        "{standard_error_source:?}"
+    );
 }
 
 #[test]
@@ -696,95 +857,6 @@ fn harness_lint_allows_distribution_metadata_in_coordination_paths() {
         findings.is_empty(),
         "coordination-only distribution metadata should be accepted: {findings:?}"
     );
-}
-
-#[test]
-fn harness_lint_rejects_host_or_topology_mutation_in_fault_apply_path() {
-    let findings = fault_apply_path_failures(
-        Path::new("crucible/src/scheduler.rs"),
-        r#"
-            fn apply_trigger_effect(
-                state: &mut TriggerActionState,
-                application: &TriggerActionApplication,
-            ) -> Result<(), SchedulerError> {
-                match &application.action {
-                    Action::InjectFault { tag, fault } => {
-                        let _stamp = std::time::SystemTime::now();
-                        state.active_faults.insert(tag.clone(), fault.clone());
-                        self.trigger_static_topology = None;
-                    }
-                    Action::HealFault { tag } => {
-                        state.active_faults.remove(tag);
-                    }
-                    Action::ArmTimer { .. } => {}
-                }
-                Ok(())
-            }
-        "#,
-    );
-
-    assert_contains(&findings, "host wall-clock");
-    assert_contains(&findings, "topology mutation");
-}
-
-#[test]
-fn harness_lint_rejects_non_direct_fault_apply_path_effects() {
-    let findings = fault_apply_path_failures(
-        Path::new("crucible/src/scheduler.rs"),
-        r#"
-            fn apply_trigger_effect(
-                state: &mut TriggerActionState,
-                application: &TriggerActionApplication,
-            ) -> Result<(), SchedulerError> {
-                match &application.action {
-                    Action::InjectFault { tag, fault } => {
-                        // state.active_faults.insert(tag.clone(), fault.clone());
-                        apply_fault_with_host_fs(tag, fault);
-                    }
-                    Action::HealFault { tag } => {
-                        let _fake = "state.active_faults.remove(tag)";
-                    }
-                    Action::ArmTimer { .. } => {}
-                }
-                Ok(())
-            }
-        "#,
-    );
-
-    assert_contains(&findings, "missing modeled fault-state effect");
-    assert_contains(&findings, "unmodeled fault apply call");
-    assert_contains(&findings, "unmodeled fault apply assignment");
-}
-
-#[test]
-fn harness_lint_accepts_scheduler_fault_apply_path() -> Result<(), Box<dyn Error>> {
-    let source = workspace_root().join("crucible/src/scheduler.rs");
-    let content = fs::read_to_string(&source)?;
-    let findings = fault_apply_path_failures(&source, &content);
-
-    assert!(
-        findings.is_empty(),
-        "scheduler fault apply path findings:\n{}",
-        findings.join("\n")
-    );
-
-    Ok(())
-}
-
-#[test]
-fn harness_lint_custom_static_analysis_covers_scheduler_fault_apply_path()
--> Result<(), Box<dyn Error>> {
-    let source = workspace_root().join("crucible/src/scheduler.rs");
-    let content = fs::read_to_string(&source)?;
-    let findings = custom_static_analysis_failures(&source, &content);
-
-    assert!(
-        findings.is_empty(),
-        "scheduler custom static-analysis findings:\n{}",
-        findings.join("\n")
-    );
-
-    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]

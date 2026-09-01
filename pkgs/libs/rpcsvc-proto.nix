@@ -6,6 +6,7 @@
   gettext,
   buildPackages,
   stdenv,
+  gcc,
 }: let
   version = "1.4.4";
 in
@@ -28,7 +29,7 @@ in
       ++ (
         if stdenv.isCross
         then [buildPackages.rpcsvc-proto]
-        else []
+        else [gcc]
       );
     runtimeDeps = [gettext];
     propagatedDeps = [];

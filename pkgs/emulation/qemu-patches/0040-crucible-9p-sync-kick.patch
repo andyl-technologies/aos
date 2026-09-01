@@ -1,4 +1,5 @@
 diff --git a/block/file-posix.c b/block/file-posix.c
+index 56d1972d1..9f58a7584 100644
 --- a/block/file-posix.c
 +++ b/block/file-posix.c
 @@ -23,6 +23,7 @@
@@ -26,6 +27,7 @@ diff --git a/block/file-posix.c b/block/file-posix.c
  }
  
 diff --git a/hw/block/virtio-blk.c b/hw/block/virtio-blk.c
+index 5077793e5..b69d0997a 100644
 --- a/hw/block/virtio-blk.c
 +++ b/hw/block/virtio-blk.c
 @@ -12,6 +12,7 @@
@@ -64,6 +66,7 @@ diff --git a/hw/block/virtio-blk.c b/hw/block/virtio-blk.c
          blk_aio_pwritev(blk, sector_num << BDRV_SECTOR_BITS, qiov,
                          flags, virtio_blk_rw_complete,
 diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
+index 85110bce3..5c1154221 100644
 --- a/hw/virtio/virtio.c
 +++ b/hw/virtio/virtio.c
 @@ -12,6 +12,8 @@
@@ -91,8 +94,8 @@ diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
 +     * Dispatch sim+icount 9p and block kicks through their ordinary inline
 +     * device handlers.  Their completion paths remain unchanged: shmem devices
 +     * still complete at their deterministic delivery icount, while a standard
-+     * file-backed virtio-blk device completes through QEMU's AIO context.  Every
-+     * non-sim launch retains its existing notifier behavior.
++     * file-backed virtio-blk device completes through QEMU's AIO context.
++     * Every non-sim launch retains its existing notifier behavior.
 +     */
 +    if (vq->host_notifier_enabled &&
 +        !(icount_enabled() &&

@@ -21,7 +21,7 @@ pub type RequestId = u32;
 /// Concrete devices map richer device errors (out-of-range read, `EROFS`, a
 /// dropped frame) onto these two outcomes at their wire boundary; the uniform
 /// core only needs to know whether the operation succeeded.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ResponseStatus {
     /// The operation completed successfully.
     Ok,
@@ -34,7 +34,7 @@ pub enum ResponseStatus {
 /// The payload is opaque bytes the concrete device interprets. The
 /// `request_icount` is the requester's icount at ARRIVE; it is the base for the
 /// completion-time computation ([IO-2]) and never the host clock.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Request {
     /// The requester's icount when the request was emitted (ARRIVE time).
     pub request_icount: u64,
@@ -62,7 +62,7 @@ impl Request {
 /// exact virtual-time instant at which the response becomes visible to the
 /// consumer ([IO-2]). Until the consumer clock reaches it, the response sits in
 /// the in-flight queue.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Response {
     /// The correlation id echoed from the originating request.
     pub request_id: RequestId,
@@ -80,6 +80,53 @@ impl Response {
             request_id,
             status,
             payload,
+        }
+    }
+}
+
+/// One additional protocol-valid completion derived from a primary response.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AdditionalCompletion {
+    /// Delay after the primary completion in virtual nanoseconds.
+    pub gap_nanos: u64,
+    /// Exact duplicate or protocol-transformed response.
+    pub response: Response,
+}
+
+/// Complete deterministic COMPUTE result before delivery-time scheduling.
+///
+/// A device returns the primary response together with adapter-owned timing and
+/// duplication decisions. [`crate::subnode::IoCore`] converts every nanosecond
+/// delay to the device clock exactly once and inserts all completions into its
+/// canonical delivery order.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ComputedResponse {
+    /// Primary response, or none when completion is intentionally retained.
+    pub primary: Option<Response>,
+    /// Additional delay applied after the device's immutable base latency.
+    pub additional_latency_nanos: u64,
+    /// Ordered protocol-valid additional completions.
+    pub additional: Vec<AdditionalCompletion>,
+}
+
+impl ComputedResponse {
+    /// Builds an ordinary result with no dynamic delay or duplicate.
+    #[must_use]
+    pub fn primary(response: Response) -> Self {
+        Self {
+            primary: Some(response),
+            additional_latency_nanos: 0,
+            additional: Vec::new(),
+        }
+    }
+
+    /// Builds a retained result that schedules no completion yet.
+    #[must_use]
+    pub const fn retained() -> Self {
+        Self {
+            primary: None,
+            additional_latency_nanos: 0,
+            additional: Vec::new(),
         }
     }
 }
@@ -104,7 +151,7 @@ pub trait LatencyModel {
 /// `u64::MAX` so an adversarial byte count cannot panic. This is the device-
 /// agnostic default; concrete devices may supply richer models that still honor
 /// the purity contract of [`LatencyModel`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AffineLatency {
     /// The fixed latency floor in nanoseconds.
     pub base_ns: u64,

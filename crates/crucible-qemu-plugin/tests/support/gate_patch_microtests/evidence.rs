@@ -106,6 +106,11 @@ pub(super) fn assert_per_patch_evidence() -> Result<(), Box<dyn Error>> {
             "0014-crucible-plugin-tcg-exec-cb.patch",
         ),
         (
+            "tests/crucible/phase1-plugin-runtime-apis.nix",
+            "tests/crucible/phase1-plugin-runtime-apis.c",
+            "0063-crucible-plugin-vmstop.patch",
+        ),
+        (
             "tests/crucible/phase1-qemu-block-shmem.nix",
             "tests/crucible/phase1-qemu-block-shmem.c",
             "0015-crucible-blk-shmem.patch",

@@ -214,37 +214,65 @@ fn resolved_production_graph_failures(
 }
 
 fn gpl2_compatible_external_license(license: &str) -> bool {
-    matches!(
+    external_license_has_approved_choice(
         license,
-        "MIT"
-            | "MIT OR Apache-2.0"
-            | "Apache-2.0 OR MIT"
-            | "(MIT OR Apache-2.0) AND Unicode-3.0"
-            | "BSD-2-Clause"
-            | "BSD-3-Clause"
-            | "ISC"
-            | "Zlib"
-            | "0BSD"
-            | "CC0-1.0"
-            | "GPL-2.0-only"
-            | "GPL-2.0-or-later"
+        &[
+            "MIT",
+            "BSD-2-Clause",
+            "BSD-3-Clause",
+            "ISC",
+            "Zlib",
+            "0BSD",
+            "CC0-1.0",
+            "GPL-2.0-only",
+            "GPL-2.0-or-later",
+        ],
     )
 }
 
 fn permissive_external_license(license: &str) -> bool {
-    matches!(
+    external_license_has_approved_choice(
         license,
-        "MIT"
-            | "MIT OR Apache-2.0"
-            | "Apache-2.0 OR MIT"
-            | "(MIT OR Apache-2.0) AND Unicode-3.0"
-            | "BSD-2-Clause"
-            | "BSD-3-Clause"
-            | "ISC"
-            | "Zlib"
-            | "0BSD"
-            | "CC0-1.0"
+        &[
+            "MIT",
+            "BSD-2-Clause",
+            "BSD-3-Clause",
+            "ISC",
+            "Zlib",
+            "0BSD",
+            "CC0-1.0",
+        ],
     )
+}
+
+fn external_license_has_approved_choice(license: &str, approved: &[&str]) -> bool {
+    if license == "(MIT OR Apache-2.0) AND Unicode-3.0" {
+        return approved.contains(&"MIT");
+    }
+    if license.contains(" AND ") {
+        return false;
+    }
+    license
+        .split(" OR ")
+        .flat_map(|choice| choice.split('/'))
+        .map(|choice| choice.trim_matches(['(', ')', ' ']))
+        .any(|choice| approved.contains(&choice))
+}
+
+#[test]
+fn external_license_choice_parser_accepts_only_an_independently_approved_branch() {
+    assert!(permissive_external_license(
+        "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception"
+    ));
+    assert!(permissive_external_license("Unlicense OR MIT"));
+    assert!(permissive_external_license("MIT/Apache-2.0"));
+    assert!(gpl2_compatible_external_license(
+        "MIT OR Apache-2.0 OR LGPL-2.1-or-later"
+    ));
+    assert!(!permissive_external_license("Apache-2.0"));
+    assert!(!permissive_external_license(
+        "MIT AND LicenseRef-unapproved"
+    ));
 }
 
 #[test]

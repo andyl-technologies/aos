@@ -6,22 +6,30 @@ use crucible_shmem::{
     ABI_VERSION, COVERAGE_ENTRY_ALIGN, COVERAGE_ENTRY_BLOCK_LEN_OFFSET,
     COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET, COVERAGE_ENTRY_GUEST_PC_OFFSET,
     COVERAGE_ENTRY_MAP_INDEX_OFFSET, COVERAGE_ENTRY_RESERVED_OFFSET, COVERAGE_ENTRY_SIZE,
-    COVERAGE_ENTRY_VCPU_INDEX_OFFSET, COVERAGE_QUEUE_CAPACITY, DEFAULT_QUEUE_CAPACITY,
-    FINGERPRINT_SAMPLE_SLOT_ALIGN, FINGERPRINT_SAMPLE_SLOT_SIZE, FRAME_ENTRY_ALIGN,
-    FRAME_ENTRY_DATA_OFFSET, FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET, FRAME_ENTRY_LEN_OFFSET,
+    COVERAGE_ENTRY_VCPU_INDEX_OFFSET, COVERAGE_QUEUE_CAPACITY, DEFAULT_FAULT_COMMAND_CAPACITY,
+    DEFAULT_FAULT_PAYLOAD_ARENA_BYTES, DEFAULT_FAULT_PAYLOAD_BYTES, DEFAULT_QUEUE_CAPACITY,
+    FAULT_COMMAND_SLOT_V1_BYTES, FAULT_EVENT_SLOT_V1_BYTES, FAULT_PAYLOAD_ARENA_HEADER_BYTES,
+    FAULT_RESULT_SLOT_V1_BYTES, FINGERPRINT_SAMPLE_SLOT_ALIGN, FINGERPRINT_SAMPLE_SLOT_SIZE,
+    FRAME_ENTRY_ALIGN, FRAME_ENTRY_DATA_OFFSET, FRAME_ENTRY_DELIVERY_ATTEMPTS_OFFSET,
+    FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET, FRAME_ENTRY_DELIVERY_STATE_OFFSET,
+    FRAME_ENTRY_LAST_DELIVERY_ATTEMPT_ICOUNT_OFFSET, FRAME_ENTRY_LEN_OFFSET,
     FRAME_ENTRY_PAD_OFFSET, FRAME_ENTRY_SEQ_OFFSET, FRAME_ENTRY_SIZE, FRAME_ENTRY_SRC_NODE_OFFSET,
     GUEST_INTROSPECTION_ENTRY_ALIGN, GUEST_INTROSPECTION_ENTRY_DATA_OFFSET,
     GUEST_INTROSPECTION_ENTRY_LEN_OFFSET, GUEST_INTROSPECTION_ENTRY_PAD_OFFSET,
     GUEST_INTROSPECTION_ENTRY_RESERVED_OFFSET, GUEST_INTROSPECTION_ENTRY_SEQUENCE_OFFSET,
     GUEST_INTROSPECTION_ENTRY_SIZE, GUEST_INTROSPECTION_QUEUE_CAPACITY, GuestIntrospectionEntry,
-    GuestIntrospectionRingDirection, KIND_9P, KIND_BLK, KIND_NET, LAYOUT_TARGET_SUPPORTED,
-    LAYOUT_TARGET_TRIPLE, MAX_NODES, MAX_VM_NODES, NODE_SLOT_ALIGN,
+    GuestIntrospectionRingDirection, HARD_FAULT_PAYLOAD_ARENA_BYTES, KIND_9P, KIND_BLK, KIND_NET,
+    LAYOUT_TARGET_SUPPORTED, LAYOUT_TARGET_TRIPLE, MAX_NODES, MAX_VM_NODES, NODE_SLOT_ALIGN,
     NODE_SLOT_CURRENT_ICOUNT_OFFSET, NODE_SLOT_CURRENT_NS_OFFSET,
     NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET, NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET,
-    NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, NODE_SLOT_KIND_OFFSET, NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET,
-    NODE_SLOT_PAD0_OFFSET, NODE_SLOT_PUBLISH_GEN_OFFSET, NODE_SLOT_RESERVED_OFFSET, NODE_SLOT_SIZE,
-    NODE_SLOT_STATUS_OFFSET, NODE_SLOT_WAKE_SIGNAL_OFFSET, REGION_HEADER_ABI_VERSION_OFFSET,
-    REGION_HEADER_ALIGN, REGION_HEADER_ENTRY_STRIDE_OFFSET, REGION_HEADER_ICOUNT_SHIFT_OFFSET,
+    NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, NODE_SLOT_KIND_OFFSET,
+    NODE_SLOT_LOGICAL_TIME_RAW_ICOUNT_OFFSET, NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET,
+    NODE_SLOT_LOGICAL_TIME_RESTORE_REQUEST_OFFSET, NODE_SLOT_LOGICAL_TIME_RESTORE_TARGET_OFFSET,
+    NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET, NODE_SLOT_PAD0_OFFSET, NODE_SLOT_PAD2_OFFSET,
+    NODE_SLOT_PUBLISH_GEN_OFFSET, NODE_SLOT_SIZE, NODE_SLOT_STATUS_OFFSET,
+    NODE_SLOT_WAKE_SIGNAL_OFFSET, REGION_HEADER_ABI_VERSION_OFFSET, REGION_HEADER_ALIGN,
+    REGION_HEADER_CONTROL_PADDING_OFFSET, REGION_HEADER_ENTRY_STRIDE_OFFSET,
+    REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET, REGION_HEADER_ICOUNT_SHIFT_OFFSET,
     REGION_HEADER_MAGIC_OFFSET, REGION_HEADER_NODE_COUNT_OFFSET,
     REGION_HEADER_PAUSE_REQUESTED_OFFSET, REGION_HEADER_QUEUE_CAPACITY_OFFSET,
     REGION_HEADER_REGION_SIZE_OFFSET, REGION_HEADER_RESERVED_OFFSET,
@@ -66,7 +74,9 @@ fn region_header_layout_matches_wire_contract() {
     assert_eq!(REGION_HEADER_ICOUNT_SHIFT_OFFSET, 56);
     assert_eq!(REGION_HEADER_PAUSE_REQUESTED_OFFSET, 60);
     assert_eq!(REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET, 61);
-    assert_eq!(REGION_HEADER_RESERVED_OFFSET, 62);
+    assert_eq!(REGION_HEADER_CONTROL_PADDING_OFFSET, 62);
+    assert_eq!(REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET, 64);
+    assert_eq!(REGION_HEADER_RESERVED_OFFSET, 68);
 
     assert_eq!(MAX_NODES, 32);
     assert_eq!(RESERVED_SLOTS, 3);
@@ -87,14 +97,21 @@ fn region_header_layout_matches_wire_contract() {
     assert_eq!(NODE_SLOT_PAD0_OFFSET, 39);
     assert_eq!(NODE_SLOT_PUBLISH_GEN_OFFSET, 40);
     assert_eq!(NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET, 48);
-    assert_eq!(NODE_SLOT_RESERVED_OFFSET, 97);
+    assert_eq!(NODE_SLOT_PAD2_OFFSET, 97);
+    assert_eq!(NODE_SLOT_LOGICAL_TIME_RAW_ICOUNT_OFFSET, 104);
+    assert_eq!(NODE_SLOT_LOGICAL_TIME_RESTORE_TARGET_OFFSET, 112);
+    assert_eq!(NODE_SLOT_LOGICAL_TIME_RESTORE_REQUEST_OFFSET, 120);
+    assert_eq!(NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET, 124);
     assert_eq!(FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET, 0);
     assert_eq!(FRAME_ENTRY_SRC_NODE_OFFSET, 8);
     assert_eq!(FRAME_ENTRY_SEQ_OFFSET, 12);
     assert_eq!(FRAME_ENTRY_LEN_OFFSET, 16);
-    assert_eq!(FRAME_ENTRY_PAD_OFFSET, 18);
-    assert_eq!(FRAME_ENTRY_DATA_OFFSET, 24);
-    assert_eq!(FRAME_ENTRY_SIZE, 24 + 4608);
+    assert_eq!(FRAME_ENTRY_DELIVERY_STATE_OFFSET, 18);
+    assert_eq!(FRAME_ENTRY_PAD_OFFSET, 19);
+    assert_eq!(FRAME_ENTRY_DELIVERY_ATTEMPTS_OFFSET, 20);
+    assert_eq!(FRAME_ENTRY_LAST_DELIVERY_ATTEMPT_ICOUNT_OFFSET, 24);
+    assert_eq!(FRAME_ENTRY_DATA_OFFSET, 32);
+    assert_eq!(FRAME_ENTRY_SIZE, 32 + 4608);
     assert_eq!(FRAME_ENTRY_ALIGN, 8);
     assert_eq!(RING_HEADER_READ_IDX_OFFSET, 0);
     assert_eq!(RING_HEADER_PAD_READ_OFFSET, 8);
@@ -193,8 +210,89 @@ fn region_layout_computes_offsets_and_directed_rings() {
         layout.whitebox_marker_entry_stride,
         WHITEBOX_MARKER_ENTRY_SIZE as u64
     );
-    let whitebox_marker_data_end = layout.whitebox_marker_ring_data_off
+    let whitebox_data_end = layout.whitebox_marker_ring_data_off
         + layout.whitebox_marker_entry_count() * layout.whitebox_marker_entry_stride;
+    assert_eq!(layout.fault_command_ring_count, layout.vm_node_count);
+    assert_eq!(
+        layout.fault_command_queue_capacity,
+        DEFAULT_FAULT_COMMAND_CAPACITY
+    );
+    assert_eq!(layout.fault_command_ring_hdr_off, whitebox_data_end);
+    assert_eq!(
+        layout.fault_command_slot_off,
+        layout.fault_command_ring_hdr_off
+            + u64::from(layout.fault_command_ring_count) * RING_HEADER_SIZE as u64
+    );
+    assert_eq!(
+        layout.fault_command_slot_stride,
+        FAULT_COMMAND_SLOT_V1_BYTES as u64
+    );
+    assert_eq!(
+        layout.fault_command_arena_hdr_off,
+        layout.fault_command_slot_off
+            + layout.fault_command_slot_count() * layout.fault_command_slot_stride
+    );
+    assert_eq!(
+        layout.fault_command_arena_off,
+        layout.fault_command_arena_hdr_off
+            + u64::from(layout.fault_command_ring_count) * FAULT_PAYLOAD_ARENA_HEADER_BYTES as u64
+    );
+    assert_eq!(
+        layout.fault_command_arena_stride,
+        u64::from(DEFAULT_FAULT_PAYLOAD_BYTES)
+    );
+    let command_data_end = layout.fault_command_arena_off
+        + u64::from(layout.fault_command_ring_count) * layout.fault_command_arena_stride;
+    assert_eq!(
+        layout.fault_result_ring_hdr_off,
+        command_data_end.div_ceil(RING_HEADER_ALIGN as u64) * RING_HEADER_ALIGN as u64
+    );
+    assert_eq!(
+        layout.fault_result_slot_off,
+        layout.fault_result_ring_hdr_off
+            + u64::from(layout.fault_result_ring_count) * RING_HEADER_SIZE as u64
+    );
+    assert_eq!(
+        layout.fault_result_slot_stride,
+        FAULT_RESULT_SLOT_V1_BYTES as u64
+    );
+    assert_eq!(
+        layout.fault_result_arena_hdr_off,
+        layout.fault_result_slot_off
+            + layout.fault_result_slot_count() * layout.fault_result_slot_stride
+    );
+    assert_eq!(
+        layout.fault_result_arena_off,
+        layout.fault_result_arena_hdr_off
+            + u64::from(layout.fault_result_ring_count) * FAULT_PAYLOAD_ARENA_HEADER_BYTES as u64
+    );
+    let result_data_end = layout.fault_result_arena_off
+        + u64::from(layout.fault_result_ring_count) * layout.fault_result_arena_stride;
+    assert_eq!(
+        layout.fault_event_ring_hdr_off,
+        result_data_end.div_ceil(RING_HEADER_ALIGN as u64) * RING_HEADER_ALIGN as u64
+    );
+    assert_eq!(
+        layout.fault_event_slot_off,
+        layout.fault_event_ring_hdr_off
+            + u64::from(layout.fault_event_ring_count) * RING_HEADER_SIZE as u64
+    );
+    assert_eq!(
+        layout.fault_event_slot_stride,
+        FAULT_EVENT_SLOT_V1_BYTES as u64
+    );
+    assert_eq!(
+        layout.fault_event_arena_hdr_off,
+        layout.fault_event_slot_off
+            + layout.fault_event_slot_count() * layout.fault_event_slot_stride
+    );
+    assert_eq!(
+        layout.fault_event_arena_off,
+        layout.fault_event_arena_hdr_off
+            + u64::from(layout.fault_event_ring_count) * FAULT_PAYLOAD_ARENA_HEADER_BYTES as u64
+    );
+    let fault_event_data_end = layout.fault_event_arena_off
+        + u64::from(layout.fault_event_ring_count) * layout.fault_event_arena_stride;
     assert_eq!(
         layout.guest_introspection_ring_count,
         2 * layout.vm_node_count
@@ -205,7 +303,7 @@ fn region_layout_computes_offsets_and_directed_rings() {
     );
     assert_eq!(
         layout.guest_introspection_ring_hdr_off,
-        whitebox_marker_data_end.div_ceil(RING_HEADER_ALIGN as u64) * RING_HEADER_ALIGN as u64
+        fault_event_data_end.div_ceil(RING_HEADER_ALIGN as u64) * RING_HEADER_ALIGN as u64
     );
     assert_eq!(
         layout.guest_introspection_ring_data_off,
@@ -217,9 +315,22 @@ fn region_layout_computes_offsets_and_directed_rings() {
         GUEST_INTROSPECTION_ENTRY_SIZE as u64
     );
     assert_eq!(
+        layout.accelerator_ring_hdr_off,
+        (layout.guest_introspection_ring_data_off
+            + layout.guest_introspection_entry_count() * layout.guest_introspection_entry_stride)
+            .div_ceil(RING_HEADER_ALIGN as u64)
+            * RING_HEADER_ALIGN as u64
+    );
+    assert_eq!(layout.accelerator_ring_count, 2 * layout.vm_node_count);
+    assert_eq!(
+        layout.accelerator_ring_data_off,
+        layout.accelerator_ring_hdr_off
+            + u64::from(layout.accelerator_ring_count) * RING_HEADER_SIZE as u64
+    );
+    assert_eq!(
         layout.region_size,
-        layout.guest_introspection_ring_data_off
-            + layout.guest_introspection_entry_count() * layout.guest_introspection_entry_stride
+        layout.accelerator_ring_data_off
+            + layout.accelerator_entry_count() * layout.accelerator_entry_stride
     );
     assert_eq!(
         layout.frame_entry_count(),
@@ -301,6 +412,7 @@ fn region_header_records_computed_geometry() {
             icount_shift: 7,
             pause_requested: 0,
             shutdown_requested: 0,
+            fault_payload_arena_bytes: DEFAULT_FAULT_PAYLOAD_ARENA_BYTES,
         }
     );
     assert!(header.reserved_bytes_are_zero());
@@ -327,6 +439,39 @@ fn region_layout_rejects_invalid_shapes() {
         RegionLayout::for_config(RegionConfig::new(1, 8, 64)),
         Err(RegionLayoutError::InvalidIcountShift { shift_bits: 64 })
     );
+    assert_eq!(
+        RegionLayout::for_config(
+            RegionConfig::new(1, 8, 0)
+                .with_fault_payload_arena_bytes(DEFAULT_FAULT_PAYLOAD_BYTES - 1),
+        ),
+        Err(RegionLayoutError::InvalidFaultPayloadArenaBytes {
+            bytes: DEFAULT_FAULT_PAYLOAD_BYTES - 1,
+            minimum: DEFAULT_FAULT_PAYLOAD_BYTES,
+            maximum: HARD_FAULT_PAYLOAD_ARENA_BYTES,
+        })
+    );
+    assert_eq!(
+        RegionLayout::for_config(
+            RegionConfig::new(1, 8, 0)
+                .with_fault_payload_arena_bytes(HARD_FAULT_PAYLOAD_ARENA_BYTES + 1),
+        ),
+        Err(RegionLayoutError::InvalidFaultPayloadArenaBytes {
+            bytes: HARD_FAULT_PAYLOAD_ARENA_BYTES + 1,
+            minimum: DEFAULT_FAULT_PAYLOAD_BYTES,
+            maximum: HARD_FAULT_PAYLOAD_ARENA_BYTES,
+        })
+    );
+}
+
+#[test]
+fn region_header_round_trips_explicit_fault_payload_geometry() {
+    let configured = DEFAULT_FAULT_PAYLOAD_ARENA_BYTES + 4096;
+    let layout = layout(RegionConfig::new(2, 8, 3).with_fault_payload_arena_bytes(configured));
+    let snapshot = RegionHeader::new(layout).snapshot();
+
+    assert_eq!(snapshot.fault_payload_arena_bytes, configured);
+    assert_eq!(layout.fault_command_arena_stride, u64::from(configured));
+    assert_eq!(layout.fault_result_arena_stride, u64::from(configured));
 }
 
 #[test]
@@ -447,55 +592,7 @@ fn reserved_executor_slot_constants_are_stable() {
     assert_eq!(ReservedExecutorSlot::NineP.kind(), KIND_9P);
 }
 
-fn layout(config: RegionConfig) -> RegionLayout {
-    match RegionLayout::for_config(config) {
-        Ok(layout) => layout,
-        Err(error) => panic!("region layout should be valid: {error}"),
-    }
-}
+#[path = "region_layout/support.rs"]
+mod support;
 
-#[cfg(all(
-    target_arch = "x86_64",
-    target_abi = "",
-    target_endian = "little",
-    target_env = "gnu",
-    target_os = "linux",
-    target_pointer_width = "64"
-))]
-fn allocation(config: RegionConfig) -> RegionAllocation {
-    match RegionAllocation::new(config) {
-        Ok(allocation) => allocation,
-        Err(error) => panic!("region allocation should be valid: {error}"),
-    }
-}
-
-#[cfg(all(
-    target_arch = "x86_64",
-    target_abi = "",
-    target_endian = "little",
-    target_env = "gnu",
-    target_os = "linux",
-    target_pointer_width = "64"
-))]
-fn assert_slot(allocation: &RegionAllocation, slot: usize, kind: u8, status: u8) {
-    let snapshot = allocation.slots()[slot].snapshot();
-    assert_eq!(snapshot.kind, kind);
-    assert_eq!(snapshot.status, status);
-    assert_eq!(snapshot.max_advance_icount, 0);
-}
-
-#[cfg(all(
-    target_arch = "x86_64",
-    target_abi = "",
-    target_endian = "little",
-    target_env = "gnu",
-    target_os = "linux",
-    target_pointer_width = "64"
-))]
-fn ring(index: u32, src_slot: usize, dst_slot: usize) -> DirectedRing {
-    DirectedRing {
-        index,
-        src_slot: src_slot as u32,
-        dst_slot: dst_slot as u32,
-    }
-}
+use support::*;

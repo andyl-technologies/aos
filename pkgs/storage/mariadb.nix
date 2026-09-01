@@ -1,5 +1,6 @@
 ##! MariaDB — Community relational database server
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -17,6 +18,7 @@
   libaio,
   libevent,
   liburing,
+  linux-pam,
   lz4,
   ncurses,
   numactl,
@@ -28,10 +30,13 @@
   xz,
   zlib,
   zstd,
-  linux-pam,
   openpam,
   stdenv,
   buildPackages,
+  bash,
+  coreutils,
+  sed,
+  writeShellScriptBin,
 }: let
   version = "11.4.12";
   isDarwin = stdenv.hostPlatform.isDarwin;
@@ -101,6 +106,136 @@
       description = "MessagePack C serialization library";
       homepage = "https://msgpack.org/";
       license = "BSL-1.0";
+    };
+  };
+
+  expose = {
+    units = {
+      "mariadb-init.service" = {
+        description = "Initialize MariaDB state";
+        before = ["mariadb.service"];
+        serviceConfig = {
+          Type = "oneshot";
+          User = "mariadb";
+          Group = "mariadb";
+          EnvironmentFile = "/etc/aos/packages/mariadb/runtime.env";
+          ExecCondition = "/bin/mariadb-control enabled";
+          ExecStart = "/bin/mariadb-control init";
+          StateDirectory = "aos-pkg-mariadb";
+          StateDirectoryMode = "0750";
+          RuntimeDirectory = "mariadb";
+          RuntimeDirectoryMode = "0750";
+          RemainAfterExit = true;
+          UMask = "0027";
+        };
+      };
+
+      "mariadb.service" = {
+        description = "MariaDB database server";
+        after = ["network.target" "mariadb-init.service"];
+        requires = ["mariadb-init.service"];
+        restartIfChanged = true;
+        stopOnRemoval = true;
+        serviceConfig = {
+          Type = "notify";
+          NotifyAccess = "all";
+          User = "mariadb";
+          Group = "mariadb";
+          EnvironmentFile = "/etc/aos/packages/mariadb/runtime.env";
+          ExecCondition = "/bin/mariadb-control enabled";
+          ExecStartPre = "/bin/mariadb-control prepare";
+          ExecStart = "/bin/mariadb-control run";
+          ExecStartPost = "/bin/mariadb-control cleanup";
+          ExecStopPost = "/bin/mariadb-control cleanup";
+          Restart = "on-failure";
+          RestartSec = "5s";
+          StateDirectory = "aos-pkg-mariadb";
+          StateDirectoryMode = "0750";
+          RuntimeDirectory = "mariadb";
+          RuntimeDirectoryMode = "0750";
+          LogsDirectory = "mariadb";
+          LogsDirectoryMode = "0750";
+          UMask = "0027";
+          LimitNOFILE = "65536";
+        };
+      };
+    };
+
+    config = {
+      artifacts = [
+        {
+          name = "runtime";
+          path = "/etc/aos/packages/mariadb/runtime.env";
+          format = "env";
+          required = ["MARIADB_CONFIG_GENERATION" "MARIADB_ENABLED"];
+          units = ["mariadb-init.service" "mariadb.service"];
+          reload = "restart";
+        }
+      ];
+      credentials =
+        builtins.map (name: {
+          inherit name;
+          source = "/run/credstore/mariadb/${name}";
+          units = ["mariadb.service"];
+          encrypted = false;
+          optional = true;
+        }) [
+          "tls-certificate"
+          "tls-private-key"
+          "tls-ca"
+          "admin-bootstrap-sql"
+          "replication-bootstrap-sql"
+        ];
+    };
+
+    permissions = {
+      network = "host";
+      capabilities = [];
+      devices = [];
+      host-paths = [
+        {
+          path = "/etc/aos/packages/mariadb/my.cnf";
+          mode = "read-only";
+        }
+      ];
+      syscalls = "system-service";
+      security-label = "aos-pkg-mariadb";
+    };
+  };
+
+  configModule = {
+    src = ./_mariadb-config;
+    moduleAbiCompat = {
+      min = 1;
+      max = 2;
+    };
+    declares = [
+      "mariadb.bindAddress"
+      "mariadb.bootstrap.adminSql"
+      "mariadb.bootstrap.replicationSql"
+      "mariadb.characterSet"
+      "mariadb.collation"
+      "mariadb.enable"
+      "mariadb.maxConnections"
+      "mariadb.port"
+      "mariadb.skipNameResolve"
+      "mariadb.sqlMode"
+      "mariadb.tls.ca"
+      "mariadb.tls.certificate"
+      "mariadb.tls.enable"
+      "mariadb.tls.privateKey"
+    ];
+    ownsRoots = [
+      {
+        root = "mariadb";
+        interfaceAbi = 1;
+      }
+    ];
+    artifacts = {
+      etc = ["aos/packages/mariadb/my.cnf"];
+      units = [];
+      users = ["mariadb"];
+      groups = ["mariadb"];
     };
   };
 
@@ -191,6 +326,43 @@
           }
         ];
       };
+  control = writeShellScriptBin "mariadb-control" ''
+    set -euo pipefail
+
+    runtime=/etc/aos/packages/mariadb/runtime.env
+    config=/etc/aos/packages/mariadb/my.cnf
+    bootstrap=/run/mariadb/bootstrap.sql
+
+    enabled() {
+      set -a
+      source "$runtime"
+      set +a
+      [[ "''${MARIADB_ENABLED:-0}" == 1 ]]
+    }
+
+    case "''${1:-}" in
+      enabled) enabled ;;
+      prepare)
+        ${coreutils}/bin/install -m 0600 /dev/null "$bootstrap"
+        for name in admin-bootstrap-sql replication-bootstrap-sql; do
+          source="''${CREDENTIALS_DIRECTORY:-}/$name"
+          if [[ -n "''${CREDENTIALS_DIRECTORY:-}" && -r "$source" ]]; then
+            ${coreutils}/bin/cat "$source" >> "$bootstrap"
+            printf '\n' >> "$bootstrap"
+          fi
+        done
+        ;;
+      init)
+        if [[ ! -d /var/lib/aos-pkg-mariadb/mysql ]]; then
+          /bin/mariadb-install-db --defaults-file="$config" \
+            --auth-root-authentication-method=socket --force --skip-test-db
+        fi
+        ;;
+      run) exec /bin/mariadbd --defaults-file="$config" ;;
+      cleanup) ${coreutils}/bin/rm -f -- "$bootstrap" ;;
+      *) echo "usage: mariadb-control {enabled|prepare|init|run|cleanup}" >&2; exit 64 ;;
+    esac
+  '';
 in
   mkDerivation {
     pname = "mariadb";
@@ -241,30 +413,33 @@ in
         zlib
         zstd
       ]
-      else [
-        boost
-        bzip2
-        curl
-        fmt
-        icu
-        jemalloc
-        libaio
-        libevent
-        liburing
-        lz4
-        messagePack
-        ncurses
-        numactl
-        linux-pam
-        openssl
-        pcre2
-        snappy
-        systemd
-        xz
-        zlib
-        zstd
-      ];
+      else
+        [
+          boost
+          bzip2
+          curl
+          fmt
+          icu
+          jemalloc
+          libaio
+          libevent
+          liburing
+          lz4
+          messagePack
+          ncurses
+          numactl
+          linux-pam
+          openssl
+          pcre2
+          snappy
+          systemd
+          xz
+          zlib
+          zstd
+        ]
+        ++ [bash coreutils sed control];
     propagatedDeps = [];
+    inherit expose configModule;
 
     phases = [
       {
@@ -494,70 +669,79 @@ in
       {
         name = "install";
         script =
-          if isDarwin
-          then ''
-            cd build
-            make install
+          (
+            if isDarwin
+            then ''
+              cd build
+              make install
 
-            # These native test-suite helpers are installed below the usual
-            # bin/sbin/libexec roots, so the generic fixup does not discover
-            # them as executables. Strip their Mach-O symbols explicitly via
-            # the Darwin wrapper to remove build-tree N_OSO string-table data.
-            for helper in my_safe_process wsrep_check_version; do
-              "$STRIP" --strip-unneeded \
-                "$out/mariadb-test/lib/My/SafeProcess/$helper"
-            done
+              # These native test-suite helpers are installed below the usual
+              # bin/sbin/libexec roots, so the generic fixup does not discover
+              # them as executables. Strip their Mach-O symbols explicitly via
+              # the Darwin wrapper to remove build-tree N_OSO string-table data.
+              for helper in my_safe_process wsrep_check_version; do
+                "$STRIP" --strip-unneeded \
+                  "$out/mariadb-test/lib/My/SafeProcess/$helper"
+              done
 
-            test -f "$out/lib/plugin/ha_rocksdb.so"
-            "$OBJDUMP" --macho --dylibs-used \
-              "$out/lib/plugin/ha_rocksdb.so" > rocksdb-needed.txt
-            for library in libbz2 liblz4 libsnappy libzstd; do
-              grep "$library" rocksdb-needed.txt
-            done
+              test -f "$out/lib/plugin/ha_rocksdb.so"
+              "$OBJDUMP" --macho --dylibs-used \
+                "$out/lib/plugin/ha_rocksdb.so" > rocksdb-needed.txt
+              for library in libbz2 liblz4 libsnappy libzstd; do
+                grep "$library" rocksdb-needed.txt
+              done
 
-            test -f "$out/lib/plugin/ha_mroonga.so"
-            # Groonga gates its libevent consumers on a combined suggestion
-            # feature set. Darwin's linker dead-strips libevent from targets
-            # which do not call it, so prove provider detection in the cache
-            # instead of requiring every Mroonga module to retain the dylib.
-            grep '^HAVE_LIBEVENT:INTERNAL=1$' CMakeCache.txt
-            grep '^#define GRN_WITH_MESSAGE_PACK$' \
-              storage/mroonga/vendor/groonga/config.h
-            grep '^MESSAGE_PACK_FOUND:INTERNAL=1$' CMakeCache.txt
-            grep '^MESSAGE_PACK_LIBRARIES:INTERNAL=msgpackc$' CMakeCache.txt
-            test -f "$out/lib/plugin/auth_pam.so"
-            "$OBJDUMP" --macho --dylibs-used \
-              "$out/lib/plugin/auth_pam.so" | grep libpam
+              test -f "$out/lib/plugin/ha_mroonga.so"
+              # Groonga gates its libevent consumers on a combined suggestion
+              # feature set. Darwin's linker dead-strips libevent from targets
+              # which do not call it, so prove provider detection in the cache
+              # instead of requiring every Mroonga module to retain the dylib.
+              grep '^HAVE_LIBEVENT:INTERNAL=1$' CMakeCache.txt
+              grep '^#define GRN_WITH_MESSAGE_PACK$' \
+                storage/mroonga/vendor/groonga/config.h
+              grep '^MESSAGE_PACK_FOUND:INTERNAL=1$' CMakeCache.txt
+              grep '^MESSAGE_PACK_LIBRARIES:INTERNAL=msgpackc$' CMakeCache.txt
+              test -f "$out/lib/plugin/auth_pam.so"
+              "$OBJDUMP" --macho --dylibs-used \
+                "$out/lib/plugin/auth_pam.so" | grep libpam
 
-            mkdir -p "$out/share/aos-build-features"
-            grep -E \
-              '^(BUILD_CONFIG|FEATURE_SET|WITH_SSL|WITH_ZLIB|WITH_ZSTD|WITH_PCRE|GRN_WITH_LIBEVENT|GRN_WITH_MESSAGE_PACK|WITH_JEMALLOC|WITH_NUMA|WITH_ROCKSDB_BZip2|WITH_ROCKSDB_LZ4|WITH_ROCKSDB_Snappy|WITH_ROCKSDB_ZSTD|WITH_SYSTEMD|WITH_UNIT_TESTS|AWS_SDK_EXTERNAL_PROJECT|PLUGIN_AUTH_PAM):' \
-              CMakeCache.txt > "$out/share/aos-build-features/mariadb-cmake-cache.txt"
-          ''
-          else ''
-            cd build
-            make install
+              mkdir -p "$out/share/aos-build-features"
+              grep -E \
+                '^(BUILD_CONFIG|FEATURE_SET|WITH_SSL|WITH_ZLIB|WITH_ZSTD|WITH_PCRE|GRN_WITH_LIBEVENT|GRN_WITH_MESSAGE_PACK|WITH_JEMALLOC|WITH_NUMA|WITH_ROCKSDB_BZip2|WITH_ROCKSDB_LZ4|WITH_ROCKSDB_Snappy|WITH_ROCKSDB_ZSTD|WITH_SYSTEMD|WITH_UNIT_TESTS|AWS_SDK_EXTERNAL_PROJECT|PLUGIN_AUTH_PAM):' \
+                CMakeCache.txt > "$out/share/aos-build-features/mariadb-cmake-cache.txt"
+            ''
+            else ''
+              cd build
+              make install
 
-            # Prove the requested features reached built artifacts, not merely
-            # the CMake cache. MariaRocks vendors its matched RocksDB source but
-            # must link every distributable compression and I/O provider from
-            # AOS packages; Mroonga is the sole libevent consumer.
-            test -f "$out/lib/plugin/ha_rocksdb.so"
-            readelf -d "$out/lib/plugin/ha_rocksdb.so" > rocksdb-needed.txt
-            for library in libbz2 liblz4 libsnappy liburing libzstd; do
-              grep "$library" rocksdb-needed.txt
-            done
-            test -f "$out/lib/plugin/ha_mroonga.so"
-            readelf -d "$out/lib/plugin/ha_mroonga.so" | grep libevent
-            grep '^#define GRN_WITH_MESSAGE_PACK$' \
-              storage/mroonga/vendor/groonga/config.h
-            grep '^MESSAGE_PACK_FOUND:INTERNAL=1$' CMakeCache.txt
-            grep '^MESSAGE_PACK_LIBRARIES:INTERNAL=msgpackc$' CMakeCache.txt
+              # Prove the requested features reached built artifacts, not merely
+              # the CMake cache. MariaRocks vendors its matched RocksDB source but
+              # must link every distributable compression and I/O provider from
+              # AOS packages; Mroonga is the sole libevent consumer.
+              test -f "$out/lib/plugin/ha_rocksdb.so"
+              readelf -d "$out/lib/plugin/ha_rocksdb.so" > rocksdb-needed.txt
+              for library in libbz2 liblz4 libsnappy liburing libzstd; do
+                grep "$library" rocksdb-needed.txt
+              done
+              test -f "$out/lib/plugin/ha_mroonga.so"
+              readelf -d "$out/lib/plugin/ha_mroonga.so" | grep libevent
+              grep '^#define GRN_WITH_MESSAGE_PACK$' \
+                storage/mroonga/vendor/groonga/config.h
+              grep '^MESSAGE_PACK_FOUND:INTERNAL=1$' CMakeCache.txt
+              grep '^MESSAGE_PACK_LIBRARIES:INTERNAL=msgpackc$' CMakeCache.txt
 
-            mkdir -p "$out/share/aos-build-features"
-            grep -E \
-              '^(BUILD_CONFIG|FEATURE_SET|WITH_SSL|WITH_ZLIB|WITH_ZSTD|WITH_PCRE|GRN_WITH_LIBEVENT|GRN_WITH_MESSAGE_PACK|WITH_JEMALLOC|WITH_NUMA|WITH_LIBURING|WITH_ROCKSDB_BZip2|WITH_ROCKSDB_LZ4|WITH_ROCKSDB_Snappy|WITH_ROCKSDB_ZSTD|WITH_SYSTEMD|WITH_UNIT_TESTS|AWS_SDK_EXTERNAL_PROJECT):' \
-              CMakeCache.txt > "$out/share/aos-build-features/mariadb-cmake-cache.txt"
+              mkdir -p "$out/share/aos-build-features"
+              grep -E \
+                '^(BUILD_CONFIG|FEATURE_SET|WITH_SSL|WITH_ZLIB|WITH_ZSTD|WITH_PCRE|GRN_WITH_LIBEVENT|GRN_WITH_MESSAGE_PACK|WITH_JEMALLOC|WITH_NUMA|WITH_LIBURING|WITH_ROCKSDB_BZip2|WITH_ROCKSDB_LZ4|WITH_ROCKSDB_Snappy|WITH_ROCKSDB_ZSTD|WITH_SYSTEMD|WITH_UNIT_TESTS|AWS_SDK_EXTERNAL_PROJECT):' \
+                CMakeCache.txt > "$out/share/aos-build-features/mariadb-cmake-cache.txt"
+            ''
+          )
+          + ''
+            install -m 0755 "$out/scripts/mariadb-install-db" "$out/bin/mariadb-install-db"
+            sed -i '1c#!${bash}/bin/bash' "$out/bin/mariadb-install-db"
+            ln -s ${control}/bin/mariadb-control "$out/bin/mariadb-control"
+            test -x "$out/bin/mariadb-install-db"
+            test -x "$out/bin/mariadb-control"
           '';
       }
     ];
@@ -571,8 +755,83 @@ in
     checks = {
       testing,
       self,
+      pkgs,
       ...
-    }: {
+    }: let
+      moduleStub = {
+        options = {
+          assertions = lib.mkOption {
+            type = lib.types.listOf lib.types.attrs;
+            default = [];
+          };
+          mariadb.config = lib.mkOption {
+            type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
+            default = {};
+          };
+          mariadb.credentials = lib.mkOption {
+            type = lib.types.attrsOf lib.types.attrs;
+            default = {};
+          };
+          environment.etc = lib.mkOption {
+            type = lib.types.attrsOf lib.types.attrs;
+            default = {};
+          };
+          aos.users.users = lib.mkOption {
+            type = lib.types.attrsOf lib.types.attrs;
+            default = {};
+          };
+          aos.users.groups = lib.mkOption {
+            type = lib.types.attrsOf lib.types.attrs;
+            default = {};
+          };
+        };
+      };
+      evaluate = value:
+        lib.evalModules {
+          modules = [moduleStub ./_mariadb-config/module.nix {mariadb = value;}];
+          inherit lib;
+        };
+      evaluated = evaluate {
+        enable = true;
+        bindAddress = "127.0.0.1";
+        maxConnections = 200;
+        tls = {
+          enable = true;
+          certificate.ref = "system-credential:mariadb-certificate";
+          privateKey.ref = "system-credential:mariadb-private-key";
+          ca.ref = "tpm2-credstore:mariadb-ca";
+        };
+        bootstrap = {
+          adminSql.ref = "system-credential:mariadb-admin-bootstrap";
+          replicationSql.ref = "desired-toml:mariadb-replication-bootstrap";
+        };
+      };
+      assertionsHold = builtins.all (assertion: assertion.assertion) evaluated.config.assertions;
+      rendered = evaluated.config.environment.etc."aos/packages/mariadb/my.cnf".text;
+      renderedFile = pkgs.writeTextFile {
+        name = "mariadb-config-module-check";
+        destination = "/my.cnf";
+        text = rendered;
+      };
+      lifecycleEvaluated = evaluate {
+        enable = true;
+        bindAddress = "127.0.0.1";
+        maxConnections = 200;
+      };
+      lifecycleRenderedFile = pkgs.writeTextFile {
+        name = "mariadb-lifecycle-config";
+        destination = "/my.cnf";
+        text = lifecycleEvaluated.config.environment.etc."aos/packages/mariadb/my.cnf".text;
+      };
+      invalidTls = evaluate {
+        enable = true;
+        tls = {
+          enable = true;
+          certificate.ref = "system-credential:mariadb-certificate";
+        };
+      };
+      invalidTlsRejected = !builtins.all (assertion: assertion.assertion) invalidTls.config.assertions;
+    in {
       version = testing.mkToolCheck {
         pname = "storage-mariadb";
         tool = self;
@@ -605,6 +864,57 @@ in
           grep '^WITH_UNIT_TESTS:BOOL=ON$' "$features"
           grep '^AWS_SDK_EXTERNAL_PROJECT:BOOL=OFF$' "$features"
         '';
+      };
+
+      config-module-contract = assert assertionsHold;
+      assert invalidTlsRejected;
+      assert evaluated.config.mariadb.config.runtime.MARIADB_ENABLED == "1";
+      assert builtins.stringLength evaluated.config.mariadb.config.runtime.MARIADB_CONFIG_GENERATION == 64;
+      assert evaluated.config.mariadb.credentials."tls-certificate".ref == "system-credential:mariadb-certificate";
+        pkgs.runCommand "storage-mariadb-config-module-contract" {} ''
+            test -f ${self.config}/module.nix
+            test -f ${self.config}/config-meta.json
+            grep -q '"root":"mariadb"' ${self.config}/config-meta.json
+            grep -q 'aos/packages/mariadb/my.cnf' ${self.config}/config-meta.json
+
+          grep -q '^bind-address=127.0.0.1$' ${renderedFile}/my.cnf
+          grep -q '^max-connections=200$' ${renderedFile}/my.cnf
+          grep -q '^ssl-cert=/run/credentials/mariadb.service/tls-certificate$' ${renderedFile}/my.cnf
+          ${self}/bin/my_print_defaults --defaults-file=${renderedFile}/my.cnf mariadbd \
+            | grep -q -- '--max-connections=200'
+
+          for name in tls-certificate tls-private-key tls-ca admin-bootstrap-sql replication-bootstrap-sql; do
+            grep -q "\"encrypted\":false,\"name\":\"$name\",\"optional\":true,\"source\":\"/run/credstore/mariadb/$name\",\"units\":\[\"mariadb.service\"\]" \
+                ${self.expose}/manifest.json
+            done
+            if grep -Eq 'LoadCredential(Encrypted)?=.*(tls-|bootstrap-sql)' ${self.expose}/units/mariadb.service; then
+            echo "optional MariaDB credentials became unconditional unit bindings" >&2
+            exit 1
+          fi
+            grep -qx 'User=mariadb' ${self.expose}/units/mariadb.service
+            grep -Eq '^Requires=.*mariadb-init\.service( |$)' ${self.expose}/units/mariadb.service
+            grep -Eq '^After=.*mariadb-init\.service( |$)' ${self.expose}/units/mariadb.service
+            grep -Eq '^After=.*network\.target( |$)' ${self.expose}/units/mariadb.service
+            grep -qx 'StateDirectory=aos-pkg-mariadb' ${self.expose}/units/mariadb.service
+            grep -qx 'BindReadOnlyPaths=/etc/aos/packages/mariadb/my.cnf' ${self.expose}/units/mariadb.service
+
+          printf '[mariadbd]\nunknown-aos-option=1\n' > malformed.cnf
+          if ${self}/bin/mariadbd --defaults-file="$PWD/malformed.cnf" --verbose --help >/dev/null 2>&1; then
+            echo "MariaDB accepted an unknown generated option" >&2
+            exit 1
+          fi
+
+          mkdir -p "$out"
+          printf '%s\n' PASS > "$out/result"
+        '';
+
+      config-module-lifecycle = import ./_mariadb-tests/lifecycle.nix {
+        inherit testing self;
+        renderedFile = lifecycleRenderedFile;
+        coreutils = pkgs.coreutils;
+        grep = pkgs.grep;
+        iproute2 = pkgs.iproute2;
+        sed = pkgs.sed;
       };
     };
   }

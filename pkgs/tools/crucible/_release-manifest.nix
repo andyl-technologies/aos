@@ -126,7 +126,7 @@
       qemu = {
         package = "qemu-crucible";
         path = componentPath qemuPackage;
-        licenses = ["GPL-2.0-only" "GPL-2.0-or-later" "MIT"];
+        licenses = ["GPL-2.0-only" "GPL-2.0-or-later" "MIT" "BSD-2-Clause" "BSD-3-Clause"];
         combinedWorkLicense = "GPL-2.0-only";
         createdSourceLicense = "GPL-2.0-or-later";
         generatedBoundaryHeaderLicenseOption = "MIT";
@@ -167,14 +167,14 @@
       correspondingSource = {
         package = "qemu-crucible-source";
         path = componentPath qemuSourcePackage;
-        licenses = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later"];
+        licenses = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "BSD-2-Clause" "BSD-3-Clause"];
         scope = ["qemu-crucible" "crucible-qemu-plugin"];
         qemuBuildId = qemuPassthru.qemuBuildIdentity;
       };
     };
     licensing = {
       aggregate = true;
-      licenses = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later" "BSD-2-Clause"];
+      licenses = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later" "BSD-2-Clause" "BSD-3-Clause"];
       licenseSetScope = "primary-project-components";
       thirdPartyLicenseMetadata = "vendored-source-manifests";
       processBoundary = "unix-socket-control+memfd-shared-memory-data";
@@ -246,7 +246,7 @@
     controller_license=Apache-2.0
     qemu_path=${manifest.components.qemu.path}
     qemu_license=GPL-2.0-only
-    qemu_component_licenses=GPL-2.0-only,GPL-2.0-or-later,MIT
+    qemu_component_licenses=GPL-2.0-only,GPL-2.0-or-later,MIT,BSD-2-Clause,BSD-3-Clause
     qemu_combined_work_license=GPL-2.0-only
     qemu_created_source_license=GPL-2.0-or-later
     qemu_generated_boundary_header_license_option=MIT
@@ -276,7 +276,7 @@
     publication_root_package=crucible
     publication_raw_qemu_allowed=false
     publication_policy=aggregate-direct-reference-pair
-    aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause
+    aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause,BSD-3-Clause
     aggregate_license_scope=primary-project-components
     third_party_license_metadata=vendored-source-manifests
     process_boundary=unix-socket-control+memfd-shared-memory-data

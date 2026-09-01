@@ -58,6 +58,16 @@
       serverRoleSystem.config.systemd.services.sshd.after
     then throw "server sshd must not form a cycle with graph activation"
     else "post-swap marker";
+  activationRestoresRoutedSources = let
+    script = builtins.readFile ../../modules/base/activate.sh.in;
+  in
+    if !(containsStr "activate-restore-routed-sources" script)
+    then throw "activation aborts must restore routed sources from the retained plan"
+    else if !(containsStr ''if [ "''${etc_swapped:-0}" = 1 ]; then'' script)
+    then throw "activation recovery must select old versus candidate definitions at the /etc crossing"
+    else if !(containsStr "reconcile_plan_active=0" script)
+    then throw "successful post-swap reconciliation must disarm activation-plan recovery"
+    else "phase-aware and idempotent";
   # The kernel-lockdown option was removed: SECURITY_LOCKDOWN_LSM selects
   # MODULE_SIG, whose default key generation breaks third-party
   # bit-reproducibility of the public base image. Fail loudly at eval time
@@ -478,12 +488,10 @@
     then throw "the stock system must restore its last fully evaluated host input"
     else if !(builtins.hasAttr "aos-host-config-cache" system.config.systemd.services)
     then throw "the stock system must cache fully evaluated host input"
-    else if
-      system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
+    else if system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
       ? ConditionPathExists
     then throw "metadata acquisition must run on provisioned boots"
-    else if
-      system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
+    else if system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
       ? ConditionPathExists
     then throw "the restricted storage projection must remain available as a post-commit advisory check"
     else if
@@ -1165,13 +1173,19 @@ in
         coreutils=${pkgs.coreutils}/bin
         security_threshold=55
         security_units=0
+        security_roots_helpers=0
         security_skipped=0
         security_skipped_names=
         security_failed=0
 
         is_allowed_unconfined_package() {
           case "$1" in
-            aos-test-agent|k3s-combined|k3s-control-plane|k3s-worker)
+            # These workloads deliberately cross the ordinary package sandbox
+            # boundary: containerd owns namespaces/cgroups, EdgeCore manages
+            # edge workloads, and each k3s role owns a Kubernetes node. Keep
+            # this an exact list so a newly unconfined package still fails the
+            # aggregate security gate until its privilege model is reviewed.
+            aos-test-agent|containerd|edgecore|k3s-combined|k3s-control-plane|k3s-worker)
               return 0
               ;;
             *)
@@ -1180,12 +1194,135 @@ in
           esac
         }
 
+        unit_single_value() {
+          key=$1
+          path=$2
+          found=
+          while IFS= read -r line; do
+            case "$line" in
+              "$key="*)
+                if [ -n "$found" ]; then
+                  return 1
+                fi
+                found=''${line#*=}
+                ;;
+            esac
+          done < "$path"
+          if [ -z "$found" ]; then
+            return 1
+          fi
+          printf '%s\n' "$found"
+        }
+
+        is_authenticated_service_roots_unit() {
+          package_name=$1
+          service_path=$2
+          expose_path=$3
+          helper=${pkgs.aos-service-root}/bin/aos-service-root
+
+          if ! prepare=$(unit_single_value ExecStart "$service_path") \
+            || ! cleanup=$(unit_single_value ExecStop "$service_path") \
+            || ! cleanup_post=$(unit_single_value ExecStopPost "$service_path"); then
+            return 1
+          fi
+
+          read -r -a prepare_args <<< "$prepare"
+          if [ "''${#prepare_args[@]}" -lt 5 ] \
+            || [ "''${prepare_args[0]}" != "$helper" ] \
+            || [ "''${prepare_args[1]}" != prepare ] \
+            || [ "''${prepare_args[2]}" != "$package_name" ]; then
+            return 1
+          fi
+          payload=''${prepare_args[3]}
+          case "$payload" in
+            /nix/store/*) ;;
+            *) return 1 ;;
+          esac
+          payload_name=''${payload#/nix/store/}
+          case "$payload_name" in
+            ""|*/*|*,*|*:*|*\\*) return 1 ;;
+          esac
+
+          expected_cleanup="$helper cleanup ''${prepare#"$helper prepare "}"
+          if [ "$cleanup" != "$expected_cleanup" ] \
+            || [ "$cleanup_post" != "$expected_cleanup" ] \
+            || [ "$(unit_single_value Type "$service_path")" != oneshot ] \
+            || [ "$(unit_single_value RemainAfterExit "$service_path")" != true ] \
+            || [ "$(unit_single_value CapabilityBoundingSet "$service_path")" != "CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN" ] \
+            || [ "$(unit_single_value AmbientCapabilities "$service_path")" != "CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN" ] \
+            || [ "$(unit_single_value NoNewPrivileges "$service_path")" != false ] \
+            || [ "$(unit_single_value PrivateMounts "$service_path")" != false ] \
+            || [ "$(unit_single_value RestrictAddressFamilies "$service_path")" != AF_UNIX ] \
+            || [ "$(unit_single_value UMask "$service_path")" != 0077 ]; then
+            return 1
+          fi
+
+          declared_units=()
+          for ((i = 4; i < ''${#prepare_args[@]}; i++)); do
+            unit=''${prepare_args[i]}
+            for declared in "''${declared_units[@]}"; do
+              if [ "$declared" = "$unit" ]; then
+                return 1
+              fi
+            done
+            workload_path="$expose_path/units/$unit"
+            if [ ! -f "$workload_path" ] \
+              || [ "$(unit_single_value RootDirectory "$workload_path")" != "/run/aos/service-roots/$package_name/$unit/merged" ]; then
+              return 1
+            fi
+            declared_units+=("$unit")
+          done
+
+          discovered_units=0
+          shopt -s nullglob
+          for candidate in "$expose_path"/units/*.service; do
+            candidate_name=''${candidate##*/}
+            if [ "$candidate_name" = "aos-pkg-$package_name-service-roots.service" ]; then
+              continue
+            fi
+            root=$(unit_single_value RootDirectory "$candidate" 2>/dev/null || true)
+            case "$root" in
+              /run/aos/service-roots/"$package_name"/*/merged)
+                expected_root="/run/aos/service-roots/$package_name/$candidate_name/merged"
+                if [ "$root" != "$expected_root" ]; then
+                  shopt -u nullglob
+                  return 1
+                fi
+                matched=0
+                for declared in "''${declared_units[@]}"; do
+                  if [ "$declared" = "$candidate_name" ]; then
+                    matched=1
+                    break
+                  fi
+                done
+                if [ "$matched" -ne 1 ]; then
+                  shopt -u nullglob
+                  return 1
+                fi
+                discovered_units=$((discovered_units + 1))
+                ;;
+            esac
+          done
+          shopt -u nullglob
+
+          [ "$discovered_units" -eq "''${#declared_units[@]}" ]
+        }
+
         is_side_effect_unit() {
           package_name=$1
           unit_name=$2
+          service_path=$3
+          expose_path=$4
           case "$unit_name" in
             aos-pkg-"$package_name"-host-paths.service|aos-pkg-"$package_name"-modules.service|aos-pkg-"$package_name"-sysctl.service|aos-pkg-"$package_name"-firewall.service|aos-pkg-"$package_name"-netns.service|aos-pkg-"$package_name"-ebpf.service)
               return 0
+              ;;
+            aos-pkg-"$package_name"-service-roots.service)
+              if is_authenticated_service_roots_unit "$package_name" "$service_path" "$expose_path"; then
+                security_roots_helpers=$((security_roots_helpers + 1))
+                return 0
+              fi
+              return 1
               ;;
             *)
               return 1
@@ -1217,7 +1354,7 @@ in
           shopt -s nullglob
           for service_path in "$expose_path"/units/*.service; do
             unit_name=''${service_path##*/}
-            if is_side_effect_unit "$package_name" "$unit_name"; then
+            if is_side_effect_unit "$package_name" "$unit_name" "$service_path" "$expose_path"; then
               continue
             fi
             security_units=$((security_units + 1))
@@ -1240,6 +1377,11 @@ in
 
         if [ "$security_units" -eq 0 ]; then
           echo "systemd security gate did not check any workload services" >&2
+          exit 1
+        fi
+
+        if [ "$security_roots_helpers" -eq 0 ]; then
+          echo "systemd security gate did not recognize any exact authenticated service-roots helper" >&2
           exit 1
         fi
 
@@ -1272,13 +1414,21 @@ in
           exit 1
         fi
 
+        case "$("$coreutils"/cat ${system.config.environment.etc."os-release".source})" in
+          *$'\nAOS_CONFIG_INPUT_ABI=2\n'*) ;;
+          *) echo "os-release lacks config input ABI 2" >&2; exit 1 ;;
+        esac
+        test "$("$coreutils"/cat ${system.config.system.build.toplevel}/meta/config-input-abi)" = 2
+
         echo "config keys:    ${builtins.toJSON (builtins.attrNames system.config.aos)}"
         echo "config artifacts: $artifact_count frozen closure root(s) verified"
         echo "base-lib ABI:    follows image module overrides (${baseLibFollowsImageAbi})"
+        echo "config input ABI: advertised in os-release and toplevel metadata (2)"
         echo "kernelLockdown: removed (${noKernelLockdown})"
         echo "verity LUKS gate: exact (${verityDisablesGenericLuks})"
         echo "configuration pipeline: structural default (${structuralConfiguration}), closed early projection (${provisioningProjectionIsClosed}), pure JSON (${provisioningProjectionHasNoModuleInternals}), closed package selection (${hostSelectionProjectionIsClosed})"
         echo "server SSH:      waits for live host policy (${serverSshWaitsForLiveHostPolicy})"
+        echo "activation recovery: routed sources (${activationRestoresRoutedSources})"
         echo "activation overlay: changed job scripts and removed image artifacts (${activationImageOverride}), structural replacements (${activationStructuralReplacement})"
         echo "lifecycle units: recurrent provisioning/tmpfiles/sysusers (${rfcLifecycleRecurrence})"
         echo "edge boundary:   image capability only (${edgeImageHostBoundary}), host-selectable runtime role (${edgeHostRole})"
@@ -1287,7 +1437,7 @@ in
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"
         echo "firewall:       no package drop-in include (${firewallNoNftablesDropin}), scan-dir storage rejected (${scanDirStorageRejected})"
         echo "package expose: enumerated ${builtins.toJSON exposedPackageNames} (${exposeEnumeration})"
-        echo "systemd gate:   $security_units workload services under threshold $security_threshold; $security_skipped allowlisted unconfined package(s) skipped: ''${security_skipped_names:-none}"
+        echo "systemd gate:   $security_units workload services under threshold $security_threshold; $security_roots_helpers exact authenticated service-roots helper(s); $security_skipped allowlisted unconfined package(s) skipped: ''${security_skipped_names:-none}"
         echo "package policy: baked profile (${packagePolicyModule}), preset requires bundle (${packagePolicyRejectsPresetWithoutBundle}), target mismatch (${packagePolicyRejectsWrongTarget})"
         echo "derivations:    meta.execute uses build execution identity (${executionCompatibilityUsesBuildExecutionSystem})"
         echo "bare metal:    encrypted ZFS zvol slots and authoritative ESPs (${bareMetalStorageProfile})"

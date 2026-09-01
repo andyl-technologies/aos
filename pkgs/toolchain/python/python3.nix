@@ -67,14 +67,14 @@ in
         # other systemd build-time scripts (elf2efi.py, generate-hwids-
         # section.py) that need it.
         libffi
+        sqlite
+        readline
       ]
       ++ (
         if isDarwinCross
         then [
           bzip2
           ncurses
-          readline
-          sqlite
           zstd
         ]
         else []

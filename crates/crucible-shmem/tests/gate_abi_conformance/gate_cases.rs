@@ -39,6 +39,7 @@ fn generated_header_carries_static_asserts_for_every_shared_struct() {
         "offsetof(crucible_shmem_region_header, icount_shift)",
         "offsetof(crucible_shmem_region_header, pause_requested)",
         "offsetof(crucible_shmem_region_header, shutdown_requested)",
+        "offsetof(crucible_shmem_region_header, fault_payload_arena_bytes)",
         "offsetof(crucible_shmem_region_header, reserved)",
         "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_node_slot)",
         "CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_node_slot)",
@@ -52,6 +53,7 @@ fn generated_header_carries_static_asserts_for_every_shared_struct() {
         "offsetof(crucible_shmem_node_slot, device_io_active)",
         "offsetof(crucible_shmem_node_slot, pad0)",
         "offsetof(crucible_shmem_node_slot, publish_gen)",
+        "offsetof(crucible_shmem_node_slot, control_boundary_ack)",
         "offsetof(crucible_shmem_node_slot, preemption_at_icount)",
         "offsetof(crucible_shmem_node_slot, preemption_deadline_icount)",
         "offsetof(crucible_shmem_node_slot, preemption_ceiling_icount)",
@@ -60,7 +62,10 @@ fn generated_header_carries_static_asserts_for_every_shared_struct() {
         "offsetof(crucible_shmem_node_slot, preemption_arg0)",
         "offsetof(crucible_shmem_node_slot, preemption_arg1)",
         "offsetof(crucible_shmem_node_slot, preemption_kind)",
-        "offsetof(crucible_shmem_node_slot, reserved)",
+        "offsetof(crucible_shmem_node_slot, logical_time_raw_icount)",
+        "offsetof(crucible_shmem_node_slot, logical_time_restore_target)",
+        "offsetof(crucible_shmem_node_slot, logical_time_restore_request)",
+        "offsetof(crucible_shmem_node_slot, logical_time_restore_ack)",
         "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_ring_header)",
         "CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_ring_header)",
         "offsetof(crucible_shmem_ring_header, read_idx)",
@@ -73,6 +78,8 @@ fn generated_header_carries_static_asserts_for_every_shared_struct() {
         "offsetof(crucible_shmem_frame_entry, src_node)",
         "offsetof(crucible_shmem_frame_entry, seq)",
         "offsetof(crucible_shmem_frame_entry, len)",
+        "offsetof(crucible_shmem_frame_entry, delivery_attempts)",
+        "offsetof(crucible_shmem_frame_entry, last_delivery_attempt_icount)",
         "offsetof(crucible_shmem_frame_entry, pad)",
         "offsetof(crucible_shmem_frame_entry, data)",
         "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_coverage_entry)",
@@ -91,6 +98,28 @@ fn generated_header_carries_static_asserts_for_every_shared_struct() {
         "offsetof(crucible_shmem_whitebox_marker_entry, payload_len)",
         "offsetof(crucible_shmem_whitebox_marker_entry, payload)",
         "offsetof(crucible_shmem_whitebox_marker_entry, reserved)",
+        "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_fault_command_slot_v1)",
+        "CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_fault_command_slot_v1)",
+        "offsetof(crucible_fault_command_slot_v1, reservation_start)",
+        "offsetof(crucible_fault_command_slot_v1, payload_start)",
+        "offsetof(crucible_fault_command_slot_v1, reservation_end)",
+        "offsetof(crucible_fault_command_slot_v1, header)",
+        "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_fault_result_slot_v1)",
+        "CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_fault_result_slot_v1)",
+        "offsetof(crucible_fault_result_slot_v1, reservation_start)",
+        "offsetof(crucible_fault_result_slot_v1, payload_start)",
+        "offsetof(crucible_fault_result_slot_v1, reservation_end)",
+        "offsetof(crucible_fault_result_slot_v1, header)",
+        "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_fault_payload_arena_header)",
+        "CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_fault_payload_arena_header)",
+        "offsetof(crucible_fault_payload_arena_header, read_cursor)",
+        "offsetof(crucible_fault_payload_arena_header, write_cursor)",
+        "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_fault_event_slot_v1)",
+        "offsetof(crucible_fault_event_slot_v1, reservation_start)",
+        "offsetof(crucible_fault_event_slot_v1, payload_start)",
+        "offsetof(crucible_fault_event_slot_v1, reservation_end)",
+        "offsetof(crucible_fault_event_slot_v1, header)",
+        "offsetof(crucible_fault_event_slot_v1, reserved)",
         "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_guest_introspection_entry)",
         "CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_guest_introspection_entry)",
         "offsetof(crucible_shmem_guest_introspection_entry, sequence)",
@@ -149,7 +178,21 @@ fn assert_frozen_golden_vectors() -> Fixture {
 
     assert_eq!(fixture.abi_version, ABI_VERSION);
     assert_eq!(fixture.bytes.len(), GOLDEN_TOTAL_LEN);
-    assert_eq!(fixture.bytes, live_golden_bytes());
+    let live = live_golden_bytes();
+    if let Some(index) = fixture
+        .bytes
+        .iter()
+        .zip(&live)
+        .position(|(frozen, generated)| frozen != generated)
+    {
+        panic!(
+            "frozen ABI vector first differs at byte {index}: frozen={:02x} generated={:02x}; frozen region-size={:02x?} generated region-size={:02x?}",
+            fixture.bytes[index],
+            live[index],
+            &fixture.bytes[REGION_HEADER_REGION_SIZE_OFFSET..REGION_HEADER_REGION_SIZE_OFFSET + 8],
+            &live[REGION_HEADER_REGION_SIZE_OFFSET..REGION_HEADER_REGION_SIZE_OFFSET + 8],
+        );
+    }
     fixture
 }
 
@@ -196,7 +239,14 @@ fn assert_structure_aware_fuzz_corpus(fixture: &Fixture, decoded: &GoldenState) 
     assert_eq!(decoded.region.ring_count, 12);
     assert_eq!(decoded.node.status, STATUS_IDLE);
     assert_eq!(decoded.node.kind, 0);
+    assert_eq!(decoded.node.logical_time_raw_icount, 96);
+    assert_eq!(decoded.node.logical_time_restore_target, 128);
+    assert_eq!(decoded.node.logical_time_restore_request, 13);
+    assert_eq!(decoded.node.logical_time_restore_ack, 13);
     assert_eq!(decoded.frame.payload, b"PING");
+    assert_eq!(decoded.frame.delivery_state, FRAME_DELIVERY_RETAINED);
+    assert_eq!(decoded.frame.delivery_attempts, 3);
+    assert_eq!(decoded.frame.last_delivery_attempt_icount, 777);
     assert_eq!(decoded.coverage.current_icount, 901);
     assert_eq!(decoded.coverage.guest_pc, 0x4010);
     assert_eq!(decoded.coverage.map_index, 17);
@@ -211,6 +261,14 @@ fn assert_structure_aware_fuzz_corpus(fixture: &Fixture, decoded: &GoldenState) 
         decoded.guest_introspection.record,
         GOLDEN_GUEST_INTROSPECTION_RECORD
     );
+    assert_eq!(decoded.accelerator.sequence, 23);
+    assert_eq!(decoded.accelerator.generation, 5);
+    assert_eq!(decoded.accelerator.device_id, vec![0xa5; 32]);
+    assert_eq!(decoded.accelerator.class, 2);
+    assert_eq!(decoded.accelerator.job_kind, 1);
+    assert_eq!(decoded.accelerator.queue_id, 7);
+    assert_eq!(decoded.accelerator.service_units, 16);
+    assert_eq!(decoded.accelerator.data, b"TENS");
 
     let mut payload_mutation = fixture.bytes.clone();
     payload_mutation[GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_DATA_OFFSET

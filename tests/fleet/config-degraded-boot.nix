@@ -35,6 +35,8 @@
         bundle = true;
         preset = false;
       };
+      aos.image.allowTestArtifacts = true;
+      aos.image.testArtifactRoots = [pkgs.test-http-server.expose];
       # Bundling installs the runtime projections. The in-guest publisher also
       # needs each package's registry-only expose and config outputs so it can
       # construct the authenticated fixture catalog.

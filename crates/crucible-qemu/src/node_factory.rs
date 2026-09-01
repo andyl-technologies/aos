@@ -2,10 +2,8 @@
 //!
 //! This module composes the post-spawn pieces into the scheduler-facing
 //! [`QemuNode`] wrapper after Linux descriptor setup and QMP negotiation have
-//! already completed. It deliberately wraps VMState QMP in a shutdown-only
-//! machine-control adapter so the generic backend snapshot/restore methods
-//! cannot issue `savevm` or `loadvm` without the explicit realization-policy
-//! authorization path.
+//! already completed. It wraps VMState QMP in an exact-capture control adapter;
+//! runtime `loadvm` remains confined to the explicit realization-policy path.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,17 +29,19 @@ use crate::{
     QmpTimeoutStream, complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
 };
 
+mod restore_cleanup;
 mod restore_plan;
+use restore_cleanup::*;
 
 pub use restore_plan::{QemuNodeRestoreAdmission, QemuNodeRestorePlan};
 
-/// QMP machine-control adapter that only exposes graceful shutdown.
+/// QMP machine-control adapter for exact snapshot capture and graceful shutdown.
 #[derive(Debug)]
-pub struct QemuQmpShutdownOnlyControlChannel<S> {
+pub struct QemuQmpExactSnapshotControlChannel<S> {
     vmstate: QemuQmpVmStateControlChannel<S>,
 }
 
-impl<S> QemuQmpShutdownOnlyControlChannel<S> {
+impl<S> QemuQmpExactSnapshotControlChannel<S> {
     /// Wraps an explicitly VMState-authorized QMP channel for node shutdown use.
     #[must_use]
     pub const fn new(vmstate: QemuQmpVmStateControlChannel<S>) -> Self {
@@ -49,22 +49,44 @@ impl<S> QemuQmpShutdownOnlyControlChannel<S> {
     }
 }
 
-impl<S> QemuQmpMachineControlChannel for QemuQmpShutdownOnlyControlChannel<S>
+impl<S> QemuQmpMachineControlChannel for QemuQmpExactSnapshotControlChannel<S>
 where
     S: QmpTimeoutStream,
 {
-    fn save_checkpoint(&mut self) -> Result<Checkpoint, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "save_checkpoint",
-            "generic QEMU node checkpointing requires explicit VMState policy authorization",
-        ))
+    fn stop_for_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
+        self.vmstate.stop_for_checkpoint()
     }
 
-    fn restore_checkpoint(&mut self, _checkpoint: &Checkpoint) -> Result<(), QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "restore_checkpoint",
-            "generic QEMU node restore requires explicit VMState policy authorization",
-        ))
+    fn resume_after_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
+        self.vmstate.resume_after_checkpoint()
+    }
+
+    fn complete_terminal_lifecycle_exit(
+        &mut self,
+        action: crucible::ContentHash,
+        evidence: crucible::ContentHash,
+        process_generation: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate
+            .complete_terminal_lifecycle_exit(action, evidence, process_generation)
+    }
+
+    fn save_checkpoint_vmstate(
+        &mut self,
+        checkpoint: &Checkpoint,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate
+            .save_checkpoint_vmstate(checkpoint)
+            .map(|_complete| ())
+    }
+
+    fn delete_checkpoint_vmstate(
+        &mut self,
+        checkpoint: &Checkpoint,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate
+            .delete_checkpoint_vmstate(checkpoint)
+            .map(|_complete| ())
     }
 
     fn quit(&mut self) -> Result<(), QemuNodeChannelError> {
@@ -106,6 +128,86 @@ pub enum QemuNodeFactoryError {
     VmStateRestore {
         /// Underlying VMState restore channel error.
         source: QemuNodeChannelError,
+    },
+    /// QMP could not release the consumed restore anchor from the working image.
+    #[error("QEMU VMState restore anchor release failed after load")]
+    VmStateRestoreAnchorRelease {
+        /// Underlying VMState snapshot-delete channel error.
+        source: QemuNodeChannelError,
+    },
+    /// The host-I/O half did not match before QMP was allowed to change state.
+    #[error("QEMU host-I/O checkpoint prevalidation failed")]
+    HostIoCheckpointValidation {
+        /// Exact host runtime validation failure.
+        source: crate::QemuAsyncDriverRuntimeError,
+    },
+    /// The prevalidated host-I/O half could not be committed after QMP restore.
+    #[error("QEMU host-I/O checkpoint restore failed after VMState restore")]
+    HostIoCheckpointRestore {
+        /// Exact host runtime commit failure.
+        source: crate::QemuAsyncDriverRuntimeError,
+    },
+    /// The shared scheduler slot could not be armed for the restored icount.
+    #[error("QEMU VMState restore ceiling could not be armed")]
+    VmStateRestoreCeiling {
+        /// Underlying mapped shared-memory channel failure.
+        source: QemuNodeChannelError,
+    },
+    /// The fresh process could not enter the coordinated restore barrier.
+    #[error("QEMU restore checkpoint pause failed")]
+    CheckpointPause {
+        /// Underlying host runtime failure.
+        source: crate::QemuAsyncDriverRuntimeError,
+    },
+    /// QMP could not confirm the native paused run state after the exact plugin boundary.
+    #[error("QEMU restore checkpoint stop failed")]
+    CheckpointStop {
+        /// Underlying QMP machine-control failure.
+        source: QemuNodeChannelError,
+    },
+    /// QMP stop failed and the plugin pause request also could not be released.
+    #[error(
+        "QEMU restore checkpoint stop failed ({stop}); releasing the plugin pause also failed ({release})"
+    )]
+    CheckpointStopAndPauseRelease {
+        /// Primary QMP stop failure.
+        stop: QemuNodeChannelError,
+        /// Independent plugin-pause release failure.
+        release: Box<crate::QemuAsyncDriverRuntimeError>,
+    },
+    /// The stopped process could not release its plugin pause request.
+    #[error("QEMU restore plugin-pause release failed")]
+    CheckpointPauseRelease {
+        /// Underlying host runtime failure.
+        source: crate::QemuAsyncDriverRuntimeError,
+    },
+    /// The fresh process could not resume after a successful restore.
+    #[error("QEMU restore checkpoint resume failed")]
+    CheckpointResume {
+        /// Underlying QMP machine-control failure.
+        source: QemuNodeChannelError,
+    },
+    /// The post-load logical-time boundary transaction failed.
+    #[error("QEMU post-load logical-time restore boundary failed during {stage}: {message}")]
+    LogicalTimeRestoreBoundary {
+        /// Exact transaction stage that failed.
+        stage: &'static str,
+        /// Deterministic channel or timeout detail.
+        message: String,
+    },
+    /// A fresh realization failed and its child could not be reaped.
+    #[error("QEMU restore failed ({primary}); mandatory child reap also failed ({cleanup})")]
+    FailedRestoreCleanup {
+        /// Primary realization failure.
+        primary: Box<QemuNodeFactoryError>,
+        /// Independent force-kill/reap failure.
+        cleanup: crate::QemuShutdownTargetError,
+    },
+    /// Scheduler-facing Apache node continuation could not be restored.
+    #[error("QEMU node continuation restore failed: {message}")]
+    NodeContinuationRestore {
+        /// Deterministic validation or restoration detail.
+        message: String,
     },
     /// The authorization token did not match the restore admission kind.
     #[error("QEMU VMState restore authorization does not match admission kind, got {purpose:?}")]
@@ -191,6 +293,10 @@ impl QemuWarmRestoreLaunchError {
 struct PreparedQemuNodeSetup {
     plugin_control: QemuHostPluginSetup,
     shmem_hot_path: QemuMappedQuantumShmemHotPath,
+    next_fault_command_sequence: u64,
+    fault_capabilities: Vec<crucible_shmem::FaultCapabilityRowV1>,
+    ready_markers: std::collections::BTreeSet<crucible::model::FaultObjectId>,
+    exact_fault_manifests: Option<crate::fault_capability::QemuExactFaultManifests>,
 }
 
 /// Runtime inputs shared by cold and warm QEMU node factory paths.
@@ -231,8 +337,8 @@ impl<A, R> QemuNodeFactoryRuntime<A, R> {
 /// an already-connected QMP VMState channel, and the runtime inputs used by
 /// [`QemuNode`]. The returned node owns the plugin
 /// IPC control channel, a mapped shared-memory hot path, and a QMP shutdown
-/// adapter. Generic backend snapshot/restore operations remain disabled; VMState
-/// save/load must continue to go through the explicit realization-policy API.
+/// adapter. VMState capture uses the paired exact-snapshot API, while `loadvm`
+/// remains confined to the explicit realization-policy API.
 ///
 /// # Errors
 ///
@@ -412,7 +518,7 @@ fn bounded_warm_restore_polls(timeout: Duration) -> u64 {
 /// lower-level boundary explicit: spawn owns fixed descriptor inheritance,
 /// host setup owns plugin handoff, QMP owns checkpoint-tagged VMState restore,
 /// and [`build_qemu_node_from_restored_checkpoint`] reduces QMP to
-/// shutdown-only control before returning the scheduler-facing [`QemuNode`].
+/// exact-snapshot capture control before returning the scheduler-facing [`QemuNode`].
 ///
 /// # Boot-barrier priming
 ///
@@ -468,6 +574,7 @@ where
         resources.into_setup_resources(),
         region_config,
         slot_index,
+        command.fault_capability_requirement(),
     )
     .map_err(|source| QemuWarmRestoreLaunchError::HostSetup { source })?;
 
@@ -490,7 +597,7 @@ where
 ///
 /// This is the warm-realization factory path: callers must provide an explicit
 /// `loadvm` authorization token and matching admission proof before the QMP
-/// channel is reduced to shutdown-only node control. Baked-genesis restores use
+/// channel is reduced to exact-snapshot capture and shutdown control. Baked-genesis restores use
 /// an admission object produced by the realization coordinator after validating
 /// the baked snapshot against its world; exact fat-checkpoint restores use
 /// replay-oracle admission. Snapshot-completeness probes carry a probe-only
@@ -507,9 +614,51 @@ where
 pub fn build_qemu_node_from_restored_checkpoint<S, A, R>(
     child: QemuNodeChild,
     setup: QemuHostPluginSetup,
+    qmp: QemuQmpVmStateControlChannel<S>,
+    restore: QemuNodeRestorePlan<'_>,
+    runtime: QemuNodeFactoryRuntime<A, R>,
+) -> Result<QemuNode, QemuNodeFactoryError>
+where
+    S: QmpTimeoutStream + 'static,
+    A: SchedulerSendAuthorizer + 'static,
+    R: QemuHostIoRuntime + 'static,
+{
+    build_qemu_node_from_restored_checkpoint_inner(child, setup, qmp, restore, runtime, true)
+}
+
+/// Restores QEMU VMState into a scheduler-facing node that remains paused.
+///
+/// This is the power-off realization path. It performs the complete restore
+/// handshake, including a stopped-state control wake that acknowledges
+/// logical-time calibration without executing guest instructions, but does not
+/// resume the guest after the final native stop.
+///
+/// # Errors
+///
+/// Returns [`QemuNodeFactoryError`] under the same conditions as
+/// [`build_qemu_node_from_restored_checkpoint`].
+pub fn build_qemu_node_from_restored_checkpoint_paused<S, A, R>(
+    child: QemuNodeChild,
+    setup: QemuHostPluginSetup,
+    qmp: QemuQmpVmStateControlChannel<S>,
+    restore: QemuNodeRestorePlan<'_>,
+    runtime: QemuNodeFactoryRuntime<A, R>,
+) -> Result<QemuNode, QemuNodeFactoryError>
+where
+    S: QmpTimeoutStream + 'static,
+    A: SchedulerSendAuthorizer + 'static,
+    R: QemuHostIoRuntime + 'static,
+{
+    build_qemu_node_from_restored_checkpoint_inner(child, setup, qmp, restore, runtime, false)
+}
+
+fn build_qemu_node_from_restored_checkpoint_inner<S, A, R>(
+    mut child: QemuNodeChild,
+    setup: QemuHostPluginSetup,
     mut qmp: QemuQmpVmStateControlChannel<S>,
     restore: QemuNodeRestorePlan<'_>,
     runtime: QemuNodeFactoryRuntime<A, R>,
+    resume_guest: bool,
 ) -> Result<QemuNode, QemuNodeFactoryError>
 where
     S: QmpTimeoutStream + 'static,
@@ -522,19 +671,221 @@ where
         shutdown_policy,
         async_policy,
         crash_detector,
-        host_io_runtime,
+        mut host_io_runtime,
     } = runtime;
     let QemuNodeRestorePlan {
         checkpoint,
         authorization,
         admission,
+        host_io_checkpoint,
+        node_continuation,
     } = restore;
-    validate_runtime_restore_authorization(authorization, admission)?;
-    let prepared_setup = prepare_qemu_node_setup(setup, shmem_config, send_authorizer)?;
-    qmp.restore_checkpoint_vmstate(checkpoint, authorization)
-        .map_err(|source| QemuNodeFactoryError::VmStateRestore { source })?;
+    if let Err(error) = validate_runtime_restore_authorization(authorization, admission) {
+        return Err(reap_failed_restore_child(&mut child, error));
+    }
+    if let Some(continuation) = node_continuation {
+        if continuation.execution_binding() != checkpoint.id {
+            return Err(reap_failed_restore_child(
+                &mut child,
+                QemuNodeFactoryError::NodeContinuationRestore {
+                    message: String::from(
+                        "node continuation belongs to another VMState checkpoint",
+                    ),
+                },
+            ));
+        }
+        if continuation.next_fault_command_sequence() < 2 {
+            return Err(reap_failed_restore_child(
+                &mut child,
+                QemuNodeFactoryError::NodeContinuationRestore {
+                    message: String::from(
+                        "restored fault-command sequence precedes setup capability admission",
+                    ),
+                },
+            ));
+        }
+        let calibration = continuation.logical_time_calibration();
+        if calibration.logical_icount != continuation.last_observed_time().ticks {
+            return Err(reap_failed_restore_child(
+                &mut child,
+                QemuNodeFactoryError::NodeContinuationRestore {
+                    message: String::from(
+                        "logical-time calibration does not match the scheduler continuation boundary",
+                    ),
+                },
+            ));
+        }
+        if let Err(source) = calibration.offset() {
+            return Err(reap_failed_restore_child(
+                &mut child,
+                QemuNodeFactoryError::NodeContinuationRestore {
+                    message: source.to_string(),
+                },
+            ));
+        }
+    }
+    let mut prepared_setup = match prepare_qemu_node_setup(setup, shmem_config, send_authorizer) {
+        Ok(prepared_setup) => prepared_setup,
+        Err(error) => return Err(reap_failed_restore_child(&mut child, error)),
+    };
+    let no_block_checkpoint = crate::QemuHostIoCheckpoint::without_devices(checkpoint.id);
+    let host_io_checkpoint = host_io_checkpoint.unwrap_or(&no_block_checkpoint);
+    if let Err(source) = host_io_runtime.quiesce_for_checkpoint(async_policy.qmp_command_timeout) {
+        return Err(reap_failed_restore_child(
+            &mut child,
+            QemuNodeFactoryError::CheckpointPause { source },
+        ));
+    }
+    // Prevalidate while the plugin's exact barrier is still acknowledged and
+    // guest/device dispatch is frozen. Delaying this work until after QMP stop
+    // and pause release admits a transient callback publication; delaying
+    // pause release until after validation can instead strand the stopped
+    // callback behind the BQL. Validation is read-only, so this position keeps
+    // both halves exact without extending the native stopped interval.
+    if let Err(source) =
+        host_io_runtime.validate_host_io_checkpoint(checkpoint.id, host_io_checkpoint)
+    {
+        return Err(reap_failed_restore_child(
+            &mut child,
+            QemuNodeFactoryError::HostIoCheckpointValidation { source },
+        ));
+    }
+    if let Err(stop) = qmp.stop_for_checkpoint() {
+        let primary = match host_io_runtime.abort_checkpoint_pause() {
+            Ok(()) => QemuNodeFactoryError::CheckpointStop { source: stop },
+            Err(release) => QemuNodeFactoryError::CheckpointStopAndPauseRelease {
+                stop,
+                release: Box::new(release),
+            },
+        };
+        return Err(reap_failed_restore_child(&mut child, primary));
+    }
+    if let Err(release) = host_io_runtime.clear_checkpoint_pause_while_stopped() {
+        return Err(reap_failed_restore_child(
+            &mut child,
+            QemuNodeFactoryError::CheckpointPauseRelease { source: release },
+        ));
+    }
+    let restore_result = (|| {
+        let restored_icount = node_continuation
+            .map_or(checkpoint.virtual_time.ticks, |continuation| {
+                continuation.last_observed_time().ticks
+            });
+        let published_icount =
+            QemuShmemHotPathChannel::current_icount(&mut prepared_setup.shmem_hot_path)
+                .map_err(|source| QemuNodeFactoryError::VmStateRestoreCeiling { source })?
+                .retired;
+        let restore_ceiling = restored_icount.max(published_icount);
+        prepared_setup
+            .shmem_hot_path
+            .arm_vmstate_restore_ceiling(restore_ceiling)
+            .map_err(|source| QemuNodeFactoryError::VmStateRestoreCeiling { source })?;
+        qmp.restore_checkpoint_vmstate_authorized(checkpoint)
+            .map_err(|source| QemuNodeFactoryError::VmStateRestore { source })?;
+        // The durable checkpoint closure retains the authoritative VMState
+        // image. This child owns a materialized working copy. Once load has
+        // completed, remove the consumed internal snapshot from that copy so a
+        // deterministic replay may capture the same checkpoint identity again.
+        // Keeping the anchor would make a correct replay fail with QEMU's
+        // "snapshot already exists" error even though the live state matches.
+        qmp.delete_checkpoint_vmstate(checkpoint)
+            .map_err(|source| QemuNodeFactoryError::VmStateRestoreAnchorRelease { source })?;
+        host_io_runtime
+            .restore_host_io_checkpoint(checkpoint.id, host_io_checkpoint)
+            .map_err(|source| QemuNodeFactoryError::HostIoCheckpointRestore { source })
+    })();
+    if let Err(error) = restore_result {
+        // A post-load error may not return until the fresh child is killed and
+        // synchronously reaped; destructor cleanup has a bounded fallback and
+        // is deliberately insufficient for this realization transaction.
+        return Err(reap_failed_restore_child(&mut child, error));
+    }
 
-    Ok(build_qemu_node_from_prepared_setup(
+    let restored_calibration = node_continuation.map_or(
+        crate::QemuLogicalTimeCalibration {
+            logical_icount: checkpoint.virtual_time.ticks,
+            raw_icount: checkpoint.virtual_time.ticks,
+        },
+        crate::QemuNodeContinuationCheckpoint::logical_time_calibration,
+    );
+    let restored_icount = restored_calibration.logical_icount;
+    let restore_generation = prepared_setup
+        .shmem_hot_path
+        .arm_logical_time_restore_boundary(restored_icount)
+        .map_err(|source| QemuNodeFactoryError::LogicalTimeRestoreBoundary {
+            stage: "arm",
+            message: source.to_string(),
+        });
+    let restore_generation = match restore_generation {
+        Ok(generation) => generation,
+        Err(error) => return Err(reap_failed_restore_child(&mut child, error)),
+    };
+    if let Err(source) = prepared_setup.plugin_control.signal_plugin_wake() {
+        return Err(reap_failed_restore_child(
+            &mut child,
+            QemuNodeFactoryError::LogicalTimeRestoreBoundary {
+                stage: "signal stopped control wake",
+                message: source.to_string(),
+            },
+        ));
+    }
+    let polls = bounded_warm_restore_polls(async_policy.qmp_command_timeout);
+    let mut acknowledged = false;
+    for attempt in 0..polls {
+        let boundary_acknowledged = prepared_setup
+            .shmem_hot_path
+            .logical_time_restore_boundary_acknowledged(restore_generation, restored_calibration)
+            .map_err(|source| QemuNodeFactoryError::LogicalTimeRestoreBoundary {
+                stage: "observe acknowledgement",
+                message: source.to_string(),
+            });
+        let boundary_acknowledged = match boundary_acknowledged {
+            Ok(acknowledged) => acknowledged,
+            Err(error) => return Err(reap_failed_restore_child(&mut child, error)),
+        };
+        if boundary_acknowledged {
+            acknowledged = true;
+            break;
+        }
+        if attempt + 1 < polls {
+            if let Err(source) = prepared_setup.plugin_control.signal_plugin_wake() {
+                return Err(reap_failed_restore_child(
+                    &mut child,
+                    QemuNodeFactoryError::LogicalTimeRestoreBoundary {
+                        stage: "wake plugin",
+                        message: source.to_string(),
+                    },
+                ));
+            }
+            thread::sleep(WARM_RESTORE_POLL_INTERVAL);
+        }
+    }
+    if !acknowledged {
+        return Err(reap_failed_restore_child(
+            &mut child,
+            QemuNodeFactoryError::LogicalTimeRestoreBoundary {
+                stage: "await acknowledgement",
+                message: format!(
+                    "plugin did not acknowledge generation {restore_generation} at icount {restored_icount} within {:?}",
+                    async_policy.qmp_command_timeout
+                ),
+            },
+        ));
+    }
+    if let Err(source) = qmp.confirm_restore_boundary_pause() {
+        return Err(reap_failed_restore_child(
+            &mut child,
+            QemuNodeFactoryError::LogicalTimeRestoreBoundary {
+                stage: "confirm native stop",
+                message: source.to_string(),
+            },
+        ));
+    }
+    prepared_setup
+        .shmem_hot_path
+        .clear_logical_time_restore_pause();
+
+    let mut node = build_qemu_node_from_prepared_setup(
         child,
         prepared_setup,
         qmp,
@@ -542,7 +893,22 @@ where
         async_policy,
         crash_detector,
         host_io_runtime,
-    ))
+    );
+    if let Some(continuation) = node_continuation
+        && let Err(source) = node.restore_node_continuation(continuation)
+    {
+        let primary = QemuNodeFactoryError::NodeContinuationRestore {
+            message: source.to_string(),
+        };
+        return Err(reap_failed_restored_node(&mut node, primary));
+    }
+    if resume_guest && let Err(source) = node.resume_after_restore() {
+        let primary = QemuNodeFactoryError::CheckpointResume {
+            source: QemuNodeChannelError::new("resume restored QEMU", source.to_string()),
+        };
+        return Err(reap_failed_restored_node(&mut node, primary));
+    }
+    Ok(node)
 }
 
 fn prepare_qemu_node_setup<A>(
@@ -555,6 +921,11 @@ where
 {
     validate_setup_slot_matches_config(&setup, &shmem_config)?;
 
+    let fault_capabilities = setup.fault_capabilities().to_vec();
+    let ready_markers = setup.ready_markers().clone();
+    let exact_fault_manifests = setup.exact_fault_manifests();
+    let next_fault_command_sequence = setup.next_fault_command_sequence();
+
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
         .map_err(|source| QemuNodeFactoryError::SetupRegionMap { source })?;
     let shmem_hot_path = QemuMappedQuantumShmemHotPath::new(shmem_config, region, send_authorizer)
@@ -563,6 +934,10 @@ where
     Ok(PreparedQemuNodeSetup {
         plugin_control: setup,
         shmem_hot_path,
+        next_fault_command_sequence,
+        fault_capabilities,
+        ready_markers,
+        exact_fault_manifests,
     })
 }
 
@@ -579,7 +954,7 @@ where
     S: QmpTimeoutStream + 'static,
     R: QemuHostIoRuntime + 'static,
 {
-    let qmp_machine_control = QemuQmpShutdownOnlyControlChannel::new(qmp);
+    let qmp_machine_control = QemuQmpExactSnapshotControlChannel::new(qmp);
     let channels = QemuNodeChannels::new(
         prepared_setup.plugin_control,
         prepared_setup.shmem_hot_path,
@@ -593,50 +968,15 @@ where
         async_policy,
         crash_detector,
         host_io_runtime,
+        prepared_setup.next_fault_command_sequence,
     )
+    .with_fault_capabilities(prepared_setup.fault_capabilities)
+    .with_ready_markers(prepared_setup.ready_markers)
+    .with_exact_fault_manifests(prepared_setup.exact_fault_manifests)
 }
 
-fn validate_setup_slot_matches_config(
-    setup: &QemuHostPluginSetup,
-    shmem_config: &QemuQuantumShmemConfig,
-) -> Result<(), QemuNodeFactoryError> {
-    let setup_slot = setup.negotiated_handshake().slot_index;
-    if setup_slot != shmem_config.vm_slot {
-        return Err(QemuNodeFactoryError::SetupSlotMismatch {
-            setup_slot,
-            shmem_slot: shmem_config.vm_slot,
-        });
-    }
-    Ok(())
-}
-
-fn validate_runtime_restore_authorization(
-    authorization: QemuLoadvmCommandAuthorization,
-    admission: QemuNodeRestoreAdmission,
-) -> Result<(), QemuNodeFactoryError> {
-    let purpose = authorization.purpose();
-    match (purpose, admission) {
-        (
-            QemuLoadvmCommandPurpose::RuntimeRealization,
-            QemuNodeRestoreAdmission::ReplayOracle(admission),
-        ) => {
-            let _admitted_runtime_hash = admission.runtime_hash();
-            Ok(())
-        }
-        (
-            QemuLoadvmCommandPurpose::BakedGenesisRealization,
-            QemuNodeRestoreAdmission::BakedGenesis { world_id },
-        ) => {
-            let _admitted_world_id = world_id;
-            Ok(())
-        }
-        (
-            QemuLoadvmCommandPurpose::SnapshotCompletenessProbe,
-            QemuNodeRestoreAdmission::SnapshotCompletenessProbe,
-        ) => Ok(()),
-        (purpose, _) => Err(QemuNodeFactoryError::VmStateRestoreAuthorization { purpose }),
-    }
-}
+mod validation;
+use validation::*;
 
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

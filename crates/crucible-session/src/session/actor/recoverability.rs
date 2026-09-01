@@ -73,11 +73,6 @@ pub(in super::super) fn is_recoverable_engine_rejection(error: &EngineError) -> 
         error,
         EngineError::CheckpointNotRecorded { .. }
             | EngineError::MissingBakedGenesis { .. }
-            | EngineError::PlanFaultUnknownNode { .. }
-            | EngineError::PlanFaultUnknownLink { .. }
-            | EngineError::PlanFaultUnknownLinkId { .. }
-            | EngineError::PlanFaultUnknownDevice { .. }
-            | EngineError::PlanHealUnknownTag { .. }
             | EngineError::PropertyPredicateUnknownNode { .. }
             | EngineError::PropertyPredicateUnknownAssertion { .. }
             | EngineError::DebugAttachUnknownNode { .. }
@@ -95,7 +90,6 @@ pub(in super::super) fn is_recoverable_engine_rejection(error: &EngineError) -> 
             | EngineError::WorldNodeUnsupportedWorkloadPattern { .. }
             | EngineError::WorldNodeUnsupportedWorkloadSpikeMode { .. }
             | EngineError::WorldNodeUnsupportedWorkloadTimeSource { .. }
-            | EngineError::PlanFaultUnsupportedParam { .. }
             | EngineError::DebugBreakpointRequiresAllowMutate { .. }
             | EngineError::EventLogReplayUnsupported { .. }
             | EngineError::SchedulePrefix(_)
@@ -108,6 +102,7 @@ pub(in super::super) const fn is_recoverable_scheduler_rejection(error: &Schedul
         | SchedulerError::BoundaryViolation { .. }
         | SchedulerError::TimeConversion(_)
         | SchedulerError::TopologyActivationInPast { .. } => true,
+        SchedulerError::ResourceLimit { .. } => false,
         SchedulerError::Backend(error) => is_recoverable_backend_rejection(error),
     }
 }
@@ -117,5 +112,6 @@ pub(in super::super) const fn is_recoverable_backend_rejection(error: &BackendEr
         BackendError::NotImplemented { .. }
         | BackendError::Unsupported { .. }
         | BackendError::Rejected { .. } => true,
+        BackendError::ResourceLimit { .. } => false,
     }
 }

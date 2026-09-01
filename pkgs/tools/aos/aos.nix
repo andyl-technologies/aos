@@ -12,6 +12,7 @@
   perl,
   openssl,
   aos-landlock,
+  aos-service-root,
   aos-selinux-run,
   aos-verity-root-guard,
   aos-ebpf-net-policy,
@@ -77,6 +78,7 @@
   #   nix           nix / nix-store: cache and store operations
   #   systemd       systemctl and systemd-measure; systemctl also captures
   #                 failed-unit diagnostics after activation reconciliation
+  #   openssl       X.509 and detached recovery-bundle signature verification
   #   sbsigntools   sbverify for image signature verification
   #   zstd          pack-delta compression and store decompression
   #   util-linux    mount: scoped EFI System Partition remount transactions
@@ -96,6 +98,7 @@
   );
   linuxRuntimeDeps = [
     aos-landlock
+    aos-service-root
     aos-selinux-run
     aos-verity-root-guard
     aos-ebpf-net-policy
@@ -106,6 +109,7 @@
   ];
   linuxToolEnvironment = ''
     export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
+    export AOS_SERVICE_ROOT_HELPER="${aos-service-root}/bin/aos-service-root"
     export AOS_SELINUX_RUNNER="${aos-selinux-run}/bin/aos-selinux-run"
     export AOS_VERITY_ROOT_GUARD="${aos-verity-root-guard}/bin/aos-verity-root-guard"
     export AOS_SYSTEMD_PCREXTEND="${systemd}/lib/systemd/systemd-pcrextend"
@@ -143,7 +147,7 @@
     inherit src;
     name = "aos-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-nwEvuWQPu98b6w5O/yM0d0XYHYhoGyuf0gn+XLzZ6P0=";
+    hash = "sha256-rmYNgTCj8u9Q20rXN1NFSEKJshparvTKNmFC7qtsVVM=";
   };
   cargoArtifactContract = {
     family = "aos-native-release-and-test";

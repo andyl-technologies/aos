@@ -10,9 +10,8 @@ use std::error::Error;
 use crucible::{
     CoverageGuidedCorpusAdmissionDecision, CoverageGuidedCorpusConfig, CoverageGuidedFuzzConfig,
     DagStore, EngineError, EventLogCoverageFeedback, EventLogCoverageFeedbackConsumer, FamilySpace,
-    FaultDensity, FaultDensityRange, Icount, MarkerId, MemoryDagStore, NodeTemplate,
-    ObservableEvent, ReproductionArtifact, ScenarioFamily, Seed, SeedSpace, TopologyShape,
-    TopologySizeRange,
+    Icount, MarkerId, MemoryDagStore, NodeTemplate, ObservableEvent, ReproductionArtifact,
+    ScenarioFamily, Seed, SeedSpace, TopologyShape, TopologySizeRange,
 };
 
 #[test]
@@ -139,10 +138,8 @@ fn gate_coverage_guided_corpus_is_seeded_and_deduplicated() -> Result<(), Box<dy
 }
 
 fn fuzz_family() -> Result<ScenarioFamily, EngineError> {
-    let density_one = FaultDensity::from_millionths(1)?;
     let space = FamilySpace::new(
         SeedSpace::explicit(vec![Seed::from_u64(0x11)])?,
-        FaultDensityRange::new(FaultDensity::ZERO, density_one)?,
         TopologySizeRange::new(2, 2)?,
         vec![TopologyShape::Ring],
     )?;

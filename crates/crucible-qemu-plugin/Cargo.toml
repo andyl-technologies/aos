@@ -12,11 +12,16 @@ crate-type = ["cdylib"]
 workspace = true
 
 [dependencies]
+blake3 = { workspace = true }
 crucible-protocol = { path = "../crucible-protocol" }
 crucible-shmem = { path = "../crucible-shmem" }
+hex = { workspace = true }
 libc = { workspace = true }
+sha2 = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 # Test-only HARN-16 cross-check: production plugin dependencies stay L1-only.
 crucible = { path = "../crucible", features = ["test-double", "test-support"] }
+sha2 = { workspace = true }

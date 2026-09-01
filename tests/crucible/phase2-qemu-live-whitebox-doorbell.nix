@@ -6,11 +6,7 @@
   openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   guest = pkgs.mkDerivation {
     pname = "crucible-live-whitebox-doorbell-guest";
@@ -328,6 +324,7 @@ in
           grep -Fxq 'whitebox_marker_count=2' "$aarch64_report"
           grep -Fxq 'whitebox_marker_point=hot-path' "$aarch64_report"
           grep -Fxq 'fingerprint=off' "$aarch64_report"
+          grep -Fxq 'execution_fingerprint=not-observed' "$aarch64_report"
           grep -Fxq 'boot_barrier_ceiling_enforced=true' "$aarch64_report"
           grep -Fxq 'orderly_child_exit=true' "$aarch64_report"
           aarch64_first_icount=$(sed -n \
@@ -360,6 +357,7 @@ in
           fi
           grep -Fxq PASS "$aarch64_repeat_report"
           grep -Fxq 'whitebox_marker_count=2' "$aarch64_repeat_report"
+          grep -Fxq 'execution_fingerprint=not-observed' "$aarch64_repeat_report"
           repeat_first_icount=$(sed -n \
             's/^whitebox_marker_icount=\([0-9][0-9]*\)$/\1/p' "$aarch64_repeat_report")
           repeat_last_icount=$(sed -n \
@@ -392,6 +390,7 @@ in
           grep -Fxq 'whitebox=off' "$aarch64_off_report"
           grep -Fxq 'whitebox_setup_region=not-required' "$aarch64_off_report"
           grep -Fxq 'whitebox_marker_count=0' "$aarch64_off_report"
+          grep -Fxq 'execution_fingerprint=not-observed' "$aarch64_off_report"
           grep -Fxq 'whitebox_marker_icount=not-observed' "$aarch64_off_report"
           grep -Fxq 'whitebox_last_marker_icount=not-observed' "$aarch64_off_report"
           grep -Fxq 'boot_barrier_ceiling_enforced=true' "$aarch64_off_report"

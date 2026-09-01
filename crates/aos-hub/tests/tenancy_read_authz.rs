@@ -20,8 +20,9 @@ use std::sync::Arc;
 use aos_hub::auth::extract::AuthState;
 use aos_hub::auth::jwt::JwtKeys;
 use aos_hub::db::{
-    ChannelSummary, Database, EndpointHostInput, EndpointRevisionSpec, IndexSnapshot,
-    NewBindingWriteRevision, NewSurfacePlacementSpec, RouteSpec, SurfaceTarget, TokenAuth,
+    ChannelSummary, Database, EndpointHostInput, EndpointRevisionSpec, GrantResource,
+    IndexSnapshot, NewBindingWriteRevision, NewSurfacePlacementSpec, RouteSpec, SurfaceTarget,
+    TokenAuth,
 };
 use aos_hub::domain::{Permission, Principal, Scope};
 use aos_hub::server::{router, AppState};
@@ -1126,6 +1127,17 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
     assert_eq!(status, StatusCode::OK, "get read-only authority: {resp}");
     assert!(resp["authority"].is_null());
 
+    db.grant_consumer_scope(
+        GrantResource::NetworkPolicy {
+            id: "instance:public",
+        },
+        &owner_scope,
+        "explicit",
+        "test",
+        "request:placement-route-public-boundary",
+    )
+    .await
+    .unwrap();
     db.create_endpoint(
         "endpoint:placement-route-test",
         &owner_scope,

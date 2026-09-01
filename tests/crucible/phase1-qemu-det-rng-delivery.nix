@@ -288,7 +288,7 @@
   qemuNixRequirements = [
     {
       label = "det rng delivery patch wiring";
-      needle = "patch -p1 < \${./qemu-patches/0031-crucible-det-rng-delivery.patch}";
+      needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
     }
   ];
 

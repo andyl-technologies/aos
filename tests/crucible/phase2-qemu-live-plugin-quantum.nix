@@ -13,10 +13,6 @@
   # phase1-clock-deadline.
   taskIds ? ["T-HARN-4" "T-PLUG-4" "T-PLUG-5" "T-PLUG-6" "T-PLUG-7" "T-TIME-5" "T-TIME-7"],
   openTaskIds ? [],
-  # Drive the authorized idle-jump advancement (not just observe idle onset). The
-  # example reads this via `.with_prove_idle_jump`; on it asserts the guest jumps
-  # from idle onset past the timer deadline and the O(1) idle-advance rate.
-  proveIdleJump ? "1",
   # Scheduler tuning for the diskless multiboot guest, which arms a periodic PIT
   # deadline and then parks every configured vCPU in HLT.
   ceilingStep ? "4000000",
@@ -24,20 +20,21 @@
   idleHorizonMargin ? "40000000",
   minIdleSpeedup ? "4",
   quantumTimeoutSecs ? "250",
-  # Run the whole scenario twice, the second run under host CPU load, and require
+  # Run the whole scenario twice, the second run under bounded scheduler preemption, and require
   # byte-identical idle observations — the boot-phase clock-ownership determinism
   # evidence for T-PLUG-4.
-  secondRunLoad ? "1",
+  secondRunSchedulerPreemption ? "1",
   smpVcpus ? "1",
   memoryMib ? "64",
+  requireSmpPauseRendezvous ? "0",
   customGuestKernel ? null,
+  qemuPackage ? pkgs.qemu-crucible,
+  pluginPackage ? pkgs.crucible-qemu-plugin,
+  expectedQemuFailureMarker ? "",
+  expectedQemuFailureEvidence ? "",
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   defaultGuest = import ./phase2-qemu-live-plugin-quantum-smp-guest.nix {
     inherit pkgs;
@@ -54,9 +51,9 @@ in
 
     buildDeps = [
       pkgs.coreutils
-      pkgs.crucible-qemu-plugin
+      pluginPackage
       pkgs.grep
-      pkgs.qemu-crucible
+      qemuPackage
       pkgs.rust
       pkgs.sed
     ];
@@ -67,17 +64,19 @@ in
       else builtins.toString customGuestKernel;
     GUEST_KERNEL_IS_FILE = "1";
     GUEST_INITRD = "";
-    GUEST_FIRMWARE = "${pkgs.qemu-crucible}/share/qemu/bios-256k.bin";
+    GUEST_FIRMWARE = "${qemuPackage}/share/qemu/bios-256k.bin";
     GUEST_KERNEL_APPEND = "";
     CRUCIBLE_QUANTUM_CEILING_STEP = ceilingStep;
     CRUCIBLE_QUANTUM_MAX_SEARCH = maxSearch;
     CRUCIBLE_QUANTUM_IDLE_HORIZON_MARGIN = idleHorizonMargin;
     CRUCIBLE_QUANTUM_MIN_IDLE_SPEEDUP = minIdleSpeedup;
     CRUCIBLE_QUANTUM_TIMEOUT_SECS = quantumTimeoutSecs;
-    CRUCIBLE_QUANTUM_SECOND_RUN_LOAD = secondRunLoad;
-    CRUCIBLE_QUANTUM_PROVE_IDLE_JUMP = proveIdleJump;
+    CRUCIBLE_QUANTUM_SECOND_RUN_SCHEDULER_PREEMPTION = secondRunSchedulerPreemption;
     CRUCIBLE_QUANTUM_SMP_VCPUS = smpVcpus;
     CRUCIBLE_QUANTUM_MEMORY_MIB = memoryMib;
+    CRUCIBLE_QUANTUM_REQUIRE_SMP_PAUSE_RENDEZVOUS = requireSmpPauseRendezvous;
+    EXPECTED_QEMU_FAILURE_MARKER = expectedQemuFailureMarker;
+    EXPECTED_QEMU_FAILURE_EVIDENCE = expectedQemuFailureEvidence;
     TASK_IDS = taskList;
     OPEN_TASK_IDS = openTaskList;
     ATTR_PATH = attrPath;
@@ -131,34 +130,85 @@ in
             --features test-support \
             --example crucible-qemu-live-plugin-quantum
 
+          if [ "$CRUCIBLE_QUANTUM_REQUIRE_SMP_PAUSE_RENDEZVOUS" = 1 ]; then
+            fingerprint_test='node::tests::fingerprint::stale_execution_fingerprint_requests_production_control_boundary'
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/live-plugin-quantum-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu \
+              --features test-support \
+              --lib \
+              -- --list > "$TMPDIR/crucible-qemu-tests.list"
+            grep -Fxq "$fingerprint_test: test" "$TMPDIR/crucible-qemu-tests.list"
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/live-plugin-quantum-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu \
+              --features test-support \
+              --lib \
+              "$fingerprint_test" \
+              -- --exact
+          fi
+
           run_dir="$TMPDIR/live-plugin-quantum-run"
           mkdir -p "$run_dir"
           report="$TMPDIR/live-plugin-quantum.result"
+          stderr_report="$TMPDIR/live-plugin-quantum.stderr"
           # The diskless firmware-pinned launch attaches no block device. The
           # ROOT_IMAGE argument is unused when CRUCIBLE_QUANTUM_FIRMWARE is set,
           # so pass /dev/null as a placeholder.
           export CRUCIBLE_QUANTUM_FIRMWARE="$GUEST_FIRMWARE"
+          set +e
           if [ -n "$GUEST_INITRD" ]; then
             timeout -k 15 590 \
               "$TMPDIR/live-plugin-quantum-target/debug/examples/crucible-qemu-live-plugin-quantum" \
-              ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
-              ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+              ${qemuPackage}/bin/qemu-system-x86_64 \
+              ${pluginPackage}/lib/libcrucible_qemu_plugin.so \
               "$vmlinuz" \
               /dev/null \
               "$run_dir" \
               "$GUEST_INITRD" \
               "$GUEST_KERNEL_APPEND" \
-              > "$report"
+              > "$report" 2> "$stderr_report"
           else
             timeout -k 15 590 \
               "$TMPDIR/live-plugin-quantum-target/debug/examples/crucible-qemu-live-plugin-quantum" \
-              ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
-              ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+              ${qemuPackage}/bin/qemu-system-x86_64 \
+              ${pluginPackage}/lib/libcrucible_qemu_plugin.so \
               "$vmlinuz" \
               /dev/null \
               "$run_dir" \
-              > "$report"
+              > "$report" 2> "$stderr_report"
           fi
+          run_status=$?
+          set -e
+
+          if [ -n "$EXPECTED_QEMU_FAILURE_MARKER" ]; then
+            test "$run_status" -ne 0
+            grep -Fq "$EXPECTED_QEMU_FAILURE_MARKER" "$stderr_report"
+            test -n "$EXPECTED_QEMU_FAILURE_EVIDENCE"
+            grep -Fq "$EXPECTED_QEMU_FAILURE_EVIDENCE" "$stderr_report"
+            if grep -Fxq PASS "$report"; then
+              echo 'FAIL: QEMU negative control emitted PASS' >&2
+              exit 1
+            fi
+            mkdir -p "$out"
+            {
+              printf 'PASS\n'
+              printf 'expected_qemu_failure_marker=%s\n' "$EXPECTED_QEMU_FAILURE_MARKER"
+              printf 'observed_qemu_failure_evidence=%s\n' \
+                "$EXPECTED_QEMU_FAILURE_EVIDENCE"
+              printf 'negative_control_exit_status=%s\n' "$run_status"
+            } > "$out/result"
+            cp "$stderr_report" "$out/stderr"
+            exit 0
+          fi
+
+          test "$run_status" -eq 0
 
           cat "$report"
           grep -Fxq PASS "$report"
@@ -167,16 +217,20 @@ in
           grep -Fxq "smp_vcpus=$CRUCIBLE_QUANTUM_SMP_VCPUS" "$report"
           grep -Fxq "memory_mib=$CRUCIBLE_QUANTUM_MEMORY_MIB" "$report"
           grep -Fxq 'all_vcpus_halted_idle_observed=true' "$report"
+          if [ "$CRUCIBLE_QUANTUM_REQUIRE_SMP_PAUSE_RENDEZVOUS" = 1 ]; then
+            grep -Fxq 'guest_smp_pause_rendezvous_observed=true' "$report"
+          fi
           # T-PLUG-4: the guest advanced through several busy boot quanta, each
           # stopping exactly at the host-published ceiling, and the two runs (the
-          # second under host CPU load) produced byte-identical idle observations.
+          # second under bounded scheduler preemption) produced byte-identical idle observations.
           grep -Eq '^boot_quantum_count=[1-9][0-9]*$' "$report"
-          grep -Fxq 'deterministic_under_host_load=true' "$report"
-          grep -Fxq 'host_load_applied=true' "$report"
+          grep -Fxq 'deterministic_under_scheduler_preemption=true' "$report"
+          grep -Fxq 'scheduler_preemption_applied=true' "$report"
+          grep -Fxq 'host_adversary=bounded-scheduler-preemption' "$report"
           # T-HARN-4: the host records each completed production-plugin
           # quantum in the shared canonical schedule vocabulary, replays the
           # exact horizons through SimDouble, and compares the versioned byte
-          # encoding. The host-load run must reproduce the same schedule too.
+          # encoding. The scheduler-preemption run must reproduce the same schedule too.
           grep -Fxq 'sim_double_schedule_matches=true' "$report"
           grep -Eq '^host_observable_schedule_len=[1-9][0-9]*$' "$report"
           # T-PLUG-5/6 + T-TIME-6: the guest parked idle with a computed next
@@ -189,12 +243,12 @@ in
           # re-idled below the published ceiling, never self-extending past it. The
           # idle span is a real O(1) jump (idle_icount_span icount in
           # idle_wall_micros of wall time), byte-identical on the second,
-          # host-loaded run.
+          # scheduler-preemptioned run.
           grep -Fxq 'idle_jump_proven=true' "$report"
-          ! grep -q '^idle_jump_defect=' "$report"
           grep -Eq '^idle_icount_span=[1-9][0-9]*$' "$report"
           grep -Eq '^idle_wall_micros=[0-9]+$' "$report"
           grep -Eq '^terminal_icount=[1-9][0-9]*$' "$report"
+          grep -Eq '^execution_fingerprint=[0-9a-f]{64}$' "$report"
           onset=$(sed -n 's/^idle_onset_icount=//p' "$report")
           terminal=$(sed -n 's/^terminal_icount=//p' "$report")
           test "$terminal" -gt "$onset"

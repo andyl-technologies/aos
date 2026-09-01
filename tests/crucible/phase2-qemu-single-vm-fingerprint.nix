@@ -162,7 +162,7 @@ in
             grep -q '^gate_target=crucible-qemu::gate_single_vm_fingerprint$' "$gate_result"
             grep -q '^real_qemu_source=checks.crucible.phase0.s1Fingerprint$' "$gate_result"
             grep -q '^run_model=run-twice-and-diff$' "$gate_result"
-            grep -q '^host_adversary=jitter-load$' "$gate_result"
+            grep -q '^host_adversary=bounded-scheduler-preemption$' "$gate_result"
             grep -q '^execution_fingerprint=icount-registers-ram$' "$gate_result"
             grep -q '^mismatch_policy=first-mismatch-is-failure$' "$gate_result"
             grep -q '^bisection_result=required-on-mismatch$' "$gate_result"
@@ -170,7 +170,7 @@ in
             grep -q '^PASS$' "$real_qemu_result"
             grep -q '^status=partial$' "$real_qemu_result"
             grep -q '^real_qemu_runs=two-bounded-sim-smp4-stop-at-traces$' "$real_qemu_result"
-            grep -q '^real_qemu_adversary=second-run-host-cpu-load$' "$real_qemu_result"
+            grep -q '^real_qemu_adversary=second-run-bounded-scheduler-preemption$' "$real_qemu_result"
             grep -q '^real_qemu_comparison=canonical-rust-stream$' "$real_qemu_result"
             grep -q '^real_qemu_gate_hook=run_single_vm_fingerprint_gate$' "$real_qemu_result"
             grep -q '^postprocessing_negative_controls=register,rr,retired,ram,device,device-schema,zero-register,zero-ram,zero-device,cadence,horizon,ram-bytes,topology$' "$real_qemu_result"
@@ -187,15 +187,15 @@ in
             gate=gate:single-vm-fingerprint
             hook=crucible-qemu::run_single_vm_fingerprint_gate
             run_model=run-twice-and-diff
-            host_adversary=jitter-load
+            host_adversary=bounded-scheduler-preemption
             fingerprint_definition=content-addressed
             mismatch_policy=first-mismatch-is-failure
             bisection=required-on-mismatch
             real_qemu_source=checks.crucible.phase0.s1Fingerprint
             provisional_importer=crucible-qemu-fingerprint
-            production_real_qemu_runs=two-under-host-load
+            production_real_qemu_runs=reference-plus-bounded-scheduler-preemption
             postprocessing_mismatch_negatives=register,rr,retired,ram,device,device-schema,zero-register,zero-ram,zero-device,cadence,horizon,ram-bytes,topology
-            live_perturbation_controls=second-run-host-cpu-load
+            live_perturbation_controls=second-run-bounded-scheduler-preemption
             device_component_scope=current-non-ram-qemu-vmstate
             event_boundary_sampling=horizon-advance-live;frame-and-fault-model-only
             full_device_state_complete=true

@@ -231,6 +231,25 @@
   typedUnitsRejected = typedExposeRejects "units" {
     units."bad.service" = "not-an-attrset";
   };
+  unsafeOverlayUnitNamesRejected =
+    lib.throwIfNot
+    (builtins.all (
+        unit:
+          !(builtins.tryEval (builtins.deepSeq
+            (pkg.overrideAttrs (_: {
+              expose.units = {"${unit}" = {};};
+            }))
+            .expose
+            true))
+          .success
+      ) [
+        "bad,unit.service"
+        "bad:unit.service"
+        "bad\\unit.service"
+        "aos-pkg-victim-service-roots.service"
+      ])
+    "expose renderer accepted an overlay-unsafe unit token"
+    true;
   typedArtifactsRejected = typedExposeRejects "config.artifacts" {
     config.artifacts = [
       {
@@ -480,6 +499,13 @@
             encrypted = true;
           }
           {
+            name = "optional-tls-key";
+            source = "/usr/lib/credstore.encrypted/optional-tls-key";
+            units = ["expose-config.service"];
+            encrypted = true;
+            optional = true;
+          }
+          {
             name = "plain-note";
           }
         ];
@@ -501,6 +527,31 @@
       ];
     };
   };
+  plaintextTpm2CredentialEval = lib.evalModules {
+    modules = [
+      (import "${configPackage.config}/module.nix")
+      ({lib, ...}: {
+        options.assertions = lib.mkOption {
+          type = lib.types.listOf lib.types.attrs;
+          default = [];
+        };
+      })
+      {
+        config."expose-config".credentials."plain-note".ref = "tpm2-credstore:plain-note";
+      }
+    ];
+  };
+  plaintextTpm2CredentialRejected =
+    if
+      builtins.any (
+        assertion:
+          !assertion.assertion
+          && assertion.message
+          == "credential reference 'expose-config.plain-note' cannot use tpm2-credstore with a plaintext signed destination"
+      )
+      plaintextTpm2CredentialEval.assertions
+    then "ok"
+    else throw "generated expose config module must reject tpm2-credstore for plaintext destinations";
   splitConfigPackage = pkgs.mkDerivation {
     pname = "expose-config-split";
     version = "0";
@@ -1015,6 +1066,64 @@
   targetMismatchRejected =
     if targetMismatch.success
     then throw "expose renderer must reject expose.target values that are not bound to the package name"
+    else "ok";
+  foreignOwnershipTargetRejected = field: let
+    attempted = builtins.tryEval (
+      (pkg.overrideAttrs (_: {
+        expose = {
+          units."expose-smoke-foreign-ownership.service" = {
+            "${field}" = ["aos-pkg-victim.target"];
+            serviceConfig = {
+              Type = "oneshot";
+              ExecStart = "${pkgs.bash}/bin/bash -c true";
+            };
+          };
+          permissions.network = "private";
+        };
+      }))
+      .expose
+      .outPath
+    );
+  in
+    if attempted.success
+    then throw "expose renderer must reject foreign synthesized package targets in ${field}"
+    else "ok";
+  foreignPartOfTargetRejected = foreignOwnershipTargetRejected "partOf";
+  foreignWantedByTargetRejected = foreignOwnershipTargetRejected "wantedBy";
+  foreignConflictsTargetRejected = foreignOwnershipTargetRejected "conflicts";
+  foreignPropagationTarget = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."expose-smoke-foreign-propagation.service" = {
+          unitConfig.PropagatesStopTo = "aos-pkg-victim.target";
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = "${pkgs.bash}/bin/bash -c true";
+          };
+        };
+        permissions.network = "private";
+      };
+    }))
+    .expose
+    .outPath
+  );
+  foreignPropagationTargetRejected =
+    if foreignPropagationTarget.success
+    then throw "expose renderer must reject foreign synthesized package targets in PropagatesStopTo"
+    else "ok";
+  foreignTargetUnit = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."aos-pkg-victim.target" = {};
+        permissions.network = "private";
+      };
+    }))
+    .expose
+    .outPath
+  );
+  foreignTargetUnitRejected =
+    if foreignTargetUnit.success
+    then throw "expose renderer must reject authored synthesized package target unit names"
     else "ok";
   privilegedExecPrefix = builtins.tryEval (
     (pkg.overrideAttrs (_: {
@@ -1542,9 +1651,11 @@ in
       typedFirewallRejected
       typedKernelRejected
       typedUnitsRejected
+      unsafeOverlayUnitNamesRejected
       typedArtifactsRejected
       typedPermissionsRejected
       typedCredentialsRejected
+      plaintextTpm2CredentialRejected
       ;
     phaseExitConfig = phaseExitPackage.config;
     exitTrapConfig = exitTrapPackage.config;
@@ -1573,6 +1684,11 @@ in
     inherit
       reservedCollisionRejected
       targetMismatchRejected
+      foreignPartOfTargetRejected
+      foreignWantedByTargetRejected
+      foreignConflictsTargetRejected
+      foreignPropagationTargetRejected
+      foreignTargetUnitRejected
       verityTupleMissingRejected
       privilegedExecPrefixRejected
       landlockScriptDerivedExecRejected
@@ -1649,9 +1765,11 @@ in
           : "$typedFirewallRejected"
           : "$typedKernelRejected"
           : "$typedUnitsRejected"
+          : "$unsafeOverlayUnitNamesRejected"
           : "$typedArtifactsRejected"
           : "$typedPermissionsRejected"
           : "$typedCredentialsRejected"
+          : "$plaintextTpm2CredentialRejected"
           test "$configModuleOutput" != "$configModulePayload"
           test "$configModuleAlias" = "$configModuleOutput"
           test -f "$configModuleOutput/module.nix"
@@ -1698,6 +1816,7 @@ in
           netns="$exposePath/units/aos-pkg-expose-smoke-netns.service"
           mac="$exposePath/units/aos-pkg-expose-smoke-mac.service"
           ebpf="$exposePath/units/aos-pkg-expose-smoke-ebpf.service"
+          service_roots="$exposePath/units/aos-pkg-expose-smoke-service-roots.service"
           manifest="$exposePath/manifest.json"
           policy="$exposePath/network-policy.json"
           mac_profile="$exposePath/mac-profile.json"
@@ -1715,6 +1834,7 @@ in
           test ! -f "$netns"
           test -f "$mac"
           test -f "$ebpf"
+          test -f "$service_roots"
           test -f "$manifest"
           test -f "$policy"
           test -f "$mac_profile"
@@ -1725,10 +1845,19 @@ in
           grep -q 'Description=RFC-0001 expose smoke service' "$unit"
           grep -q 'PartOf=aos-pkg-expose-smoke.target' "$unit"
           grep -q 'WantedBy=aos-pkg-expose-smoke.target' "$unit"
-          grep -q 'After=network.target aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' "$unit"
-          grep -q 'Requires=aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' "$unit"
-          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2eexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke -- ${pkgs.bash}/bin/bash -c true' "$unit"
-          grep -q "RootDirectory=$payload" "$unit"
+          grep -q 'After=network.target aos-pkg-expose-smoke-service-roots.service aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' "$unit"
+          grep -q 'Requires=aos-pkg-expose-smoke-service-roots.service aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' "$unit"
+          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2eexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-expose-smoke -- ${pkgs.bash}/bin/bash -c true' "$unit"
+          grep -q 'RootDirectory=/run/aos/service-roots/expose-smoke/expose-smoke.service/merged' "$unit"
+          if grep -q "RootDirectory=$payload" "$unit"; then
+            echo "workload must not use the immutable payload as RootDirectory" >&2
+            exit 1
+          fi
+          grep -q "ExecStart=.*/bin/aos-service-root prepare expose-smoke $payload expose-smoke.service" "$service_roots"
+          grep -q "ExecStop=.*/bin/aos-service-root cleanup expose-smoke $payload expose-smoke.service" "$service_roots"
+          grep -q 'Before=expose-smoke.service' "$service_roots"
+          grep -q '^CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN$' "$service_roots"
+          grep -q '^AmbientCapabilities=CAP_DAC_OVERRIDE CAP_MKNOD CAP_SYS_ADMIN$' "$service_roots"
           grep -q 'MountAPIVFS=true' "$unit"
           grep -q 'ProtectSystem=strict' "$unit"
           grep -q 'ProtectHome=true' "$unit"
@@ -1768,7 +1897,7 @@ in
           grep -q 'Where=/var/lib/exposesmoke' "$exposePath/units/var-lib-exposesmoke.mount"
 
           grep -q 'Description=Activation target for expose-smoke' "$target"
-          grep -q 'Wants=aos-pkg-expose-smoke.slice expose-smoke.service var-lib-exposesmoke.mount aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' "$target"
+          grep -q 'Wants=aos-pkg-expose-smoke.slice expose-smoke.service var-lib-exposesmoke.mount aos-pkg-expose-smoke-service-roots.service aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' "$target"
           test ! -e "$exposePath/units/multi-user.target.wants/aos-pkg-expose-smoke.target"
           test -L "$exposePath/units/aos-pkg-expose-smoke.target.wants/aos-pkg-expose-smoke.slice"
           test -L "$exposePath/units/aos-pkg-expose-smoke.target.wants/expose-smoke.service"
@@ -1911,7 +2040,7 @@ in
           grep -q '"expose-smoke.service"' "$manifest"
           grep -q '"var-lib-exposesmoke.mount"' "$manifest"
           grep -q '"modules":\["br_netfilter"\]' "$manifest"
-          grep -q '"landlock":{"abi":4,"fs":{"readOnly":\["/"\],"readWrite":\["/tmp","/var/tmp","/var/lib/aos-pkg-expose-smoke"\]}' \
+          grep -q '"landlock":{"abi":4,"fs":{"readOnly":\["/"\],"readWrite":\["/tmp","/var/tmp","/dev/null","/var/lib/aos-pkg-expose-smoke"\]}' \
             "$policy"
           grep -q '"ebpf":{"hooks":\["socket_bind","socket_connect"\],"identity":"aos.expose-smoke","tcp":{"bind":\[\],"connect":\[\]}}' \
             "$policy"
@@ -1974,9 +2103,13 @@ in
           test -s "$minimal_selinux_module"
           test -f "$minimal_selinux_source"
           grep -q 'Description=RFC-0001 expose minimal service' "$minimal_unit"
-          grep -q "RootDirectory=$minimalPayload" "$minimal_unit"
+          grep -q 'RootDirectory=/run/aos/service-roots/expose-minimal/expose-minimal.service/merged' "$minimal_unit"
+          if grep -q "RootDirectory=$minimalPayload" "$minimal_unit"; then
+            echo "minimal workload must not use the immutable payload as RootDirectory" >&2
+            exit 1
+          fi
           grep -q 'Slice=aos-pkg-expose-minimal.slice' "$minimal_unit"
-          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dminimal_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-minimal -- ${pkgs.bash}/bin/bash -c true' \
+          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dminimal_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-expose-minimal -- ${pkgs.bash}/bin/bash -c true' \
             "$minimal_unit"
           grep -q 'PrivateNetwork=true' "$minimal_unit"
           grep -q 'PrivateDevices=true' "$minimal_unit"
@@ -2054,7 +2187,7 @@ in
             echo "manual-start services must not be enabled by the package target preset" >&2
             exit 1
           fi
-          if grep -q 'Wants=.*expose-manual-start.service' "$manual_start_target"; then
+          if grep -Eq '^Wants=(.* )?expose-manual-start\.service( |$)' "$manual_start_target"; then
             echo "manual-start services must not be target members" >&2
             exit 1
           fi
@@ -2071,10 +2204,14 @@ in
           grep -q 'LoadCredentialEncrypted=join-token:/usr/lib/credstore.encrypted/join-token' "$config_unit"
           grep -q 'LoadCredentialEncrypted=generated-token:/run/credstore.encrypted/aos/expose-config/generated-token' "$config_unit"
           grep -q 'SetCredentialEncrypted=inline-secret:abcDEF0123+/=' "$config_unit"
+          if grep -q 'optional-tls-key' "$config_unit"; then
+            echo "optional credentials must not create unconditional static unit bindings" >&2
+            exit 1
+          fi
           grep -q 'X-ReloadIfChanged=true' "$config_unit"
           grep -q 'X-Reload-Triggers=/etc/aos/packages/expose-config/config.env' "$config_unit"
           test -s "$configExposePath/credstore.encrypted/aos/expose-config/generated-token"
-          grep -q '"config":{"artifacts":\[{"format":"env","name":"env","optional":\["URL"\],"path":"/etc/aos/packages/expose-config/config.env","reload":"reload","required":\["TOKEN"\],"units":\["expose-config.service"\]}\],"credentials":\[{"encrypted":true,"name":"join-token","source":"/usr/lib/credstore.encrypted/join-token","units":\["expose-config.service"\]},{"encrypted":true,"name":"generated-token","source":"/run/credstore.encrypted/aos/expose-config/generated-token","units":\["expose-config.service"\]},{"ciphertext":"abcDEF0123+/=","encrypted":true,"name":"inline-secret","units":\["expose-config.service"\]},{"encrypted":false,"name":"plain-note","units":\[\]}\]}' "$config_manifest"
+          grep -q '"config":{"artifacts":\[{"format":"env","name":"env","optional":\["URL"\],"path":"/etc/aos/packages/expose-config/config.env","reload":"reload","required":\["TOKEN"\],"units":\["expose-config.service"\]}\],"credentials":\[{"encrypted":true,"name":"join-token","source":"/usr/lib/credstore.encrypted/join-token","units":\["expose-config.service"\]},{"encrypted":true,"name":"generated-token","source":"/run/credstore.encrypted/aos/expose-config/generated-token","units":\["expose-config.service"\]},{"ciphertext":"abcDEF0123+/=","encrypted":true,"name":"inline-secret","units":\["expose-config.service"\]},{"encrypted":true,"name":"optional-tls-key","optional":true,"source":"/usr/lib/credstore.encrypted/optional-tls-key","units":\["expose-config.service"\]},{"encrypted":false,"name":"plain-note","units":\[\]}\]}' "$config_manifest"
           if grep -q 'encryptedFile' "$config_manifest"; then
             echo "vendored credential build input leaked into manifest" >&2
             exit 1
@@ -2097,6 +2234,13 @@ in
           split_sidecar="$splitConfigExposePath/units/expose-config-split-sidecar.service"
           split_socket_service="$splitConfigExposePath/units/expose-config-split-socket.service"
           split_socket="$splitConfigExposePath/units/expose-config-split-socket.socket"
+          split_roots="$splitConfigExposePath/units/aos-pkg-expose-config-split-service-roots.service"
+          grep -q 'RootDirectory=/run/aos/service-roots/expose-config-split/expose-config-split-main.service/merged' "$split_main"
+          grep -q 'RootDirectory=/run/aos/service-roots/expose-config-split/expose-config-split-sidecar.service/merged' "$split_sidecar"
+          grep -q 'RootDirectory=/run/aos/service-roots/expose-config-split/expose-config-split-socket.service/merged' "$split_socket_service"
+          grep -q 'Before=expose-config-split-main.service expose-config-split-sidecar.service expose-config-split-socket.service' "$split_roots"
+          grep -q 'ExecStart=.*/bin/aos-service-root prepare expose-config-split ${splitConfigPackage} expose-config-split-main.service expose-config-split-sidecar.service expose-config-split-socket.service' "$split_roots"
+          grep -q 'ExecStop=.*/bin/aos-service-root cleanup expose-config-split ${splitConfigPackage} expose-config-split-main.service expose-config-split-sidecar.service expose-config-split-socket.service' "$split_roots"
           grep -q 'BindReadOnlyPaths=/etc/aos/packages/expose-config-split/main.env' "$split_main"
           grep -q 'ConditionPathExists=/etc/aos/packages/expose-config-split/main.env' "$split_main"
           grep -q 'ConditionPathExists=/usr/lib/credstore.encrypted/main-secret' "$split_main"
@@ -2131,6 +2275,11 @@ in
             "$overriddenExposePath/units/expose-smoke-override.service"
           test "$reservedCollisionRejected" = ok
           test "$targetMismatchRejected" = ok
+          test "$foreignPartOfTargetRejected" = ok
+          test "$foreignWantedByTargetRejected" = ok
+          test "$foreignConflictsTargetRejected" = ok
+          test "$foreignPropagationTargetRejected" = ok
+          test "$foreignTargetUnitRejected" = ok
           test "$privilegedExecPrefixRejected" = ok
           test "$landlockScriptDerivedExecRejected" = ok
           test "$landlockShellExecPrefixRejected" = ok
@@ -2140,8 +2289,8 @@ in
           reset_unit="$landlockExecResetExposePath/units/expose-smoke-landlock-reset.service"
           grep -qx 'ExecStart=' "$reset_unit"
           grep -qx 'ExecStartPre=' "$reset_unit"
-          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke -- ${pkgs.bash}/bin/bash -c true' "$reset_unit"
-          grep -q 'ExecStartPre=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke -- ${pkgs.bash}/bin/bash -c true' "$reset_unit"
+          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-expose-smoke -- ${pkgs.bash}/bin/bash -c true' "$reset_unit"
+          grep -q 'ExecStartPre=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-expose-smoke -- ${pkgs.bash}/bin/bash -c true' "$reset_unit"
           test "$socketMissingTcpBindRejected" = ok
           test "$socketListenStreamsMissingTcpBindRejected" = ok
           test "$socketListenStreamResetAccepted" = ok
@@ -2238,19 +2387,19 @@ in
           test -f "$private_outbound_mac"
           test -f "$private_outbound_ebpf"
           test -f "$private_outbound_policy"
-          grep -q 'After=aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' \
+          grep -q 'After=aos-pkg-expose-smoke-service-roots.service aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' \
             "$private_outbound_unit"
-          grep -q 'Requires=aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' \
+          grep -q 'Requires=aos-pkg-expose-smoke-service-roots.service aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' \
             "$private_outbound_unit"
           grep -q 'Slice=aos-pkg-expose-smoke.slice' "$private_outbound_unit"
           grep -q 'PrivateNetwork=false' "$private_outbound_unit"
           grep -q 'NetworkNamespacePath=/run/netns/aos-pkg-expose-smoke' "$private_outbound_unit"
-          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke --tcp-bind 8000 --tcp-connect 443 -- ${pkgs.bash}/bin/bash -c true' \
+          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-expose-smoke --tcp-bind 8000 --tcp-connect 443 -- ${pkgs.bash}/bin/bash -c true' \
             "$private_outbound_unit"
-          grep -q 'ExecReload=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke --tcp-bind 8000 --tcp-connect 443 -- ${pkgs.bash}/bin/bash -c true' \
+          grep -q 'ExecReload=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-expose-smoke --tcp-bind 8000 --tcp-connect 443 -- ${pkgs.bash}/bin/bash -c true' \
             "$private_outbound_unit"
           grep -q 'aos-landlock' "$private_outbound_unit"
-          grep -q 'Wants=aos-pkg-expose-smoke.slice expose-smoke-private-outbound.service aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' \
+          grep -q 'Wants=aos-pkg-expose-smoke.slice expose-smoke-private-outbound.service aos-pkg-expose-smoke-service-roots.service aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' \
             "$private_outbound_target"
           grep -q 'Description=Create outbound network namespace for expose-smoke' \
             "$private_outbound_netns"
@@ -2342,11 +2491,11 @@ in
           test -f "$host_path_without_prepare_unit"
           test -f "$host_path_without_prepare_policy"
           grep -q 'BindPaths=/srv/expose-smoke-rw' "$host_path_without_prepare_unit"
-          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke --fs-rw /srv/expose-smoke-rw -- ${pkgs.bash}/bin/bash -c true' \
+          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /dev/null --fs-rw /var/lib/aos-pkg-expose-smoke --fs-rw /srv/expose-smoke-rw -- ${pkgs.bash}/bin/bash -c true' \
             "$host_path_without_prepare_unit"
           grep -q '"fs":{"readOnly":\[\],"readWrite":\["/srv/expose-smoke-rw"\]}' \
             "$host_path_without_prepare_policy"
-          grep -q '"readWrite":\["/tmp","/var/tmp","/var/lib/aos-pkg-expose-smoke","/srv/expose-smoke-rw"\]' \
+          grep -q '"readWrite":\["/tmp","/var/tmp","/dev/null","/var/lib/aos-pkg-expose-smoke","/srv/expose-smoke-rw"\]' \
             "$host_path_without_prepare_policy"
           test ! -f "$hostPathWithoutPrepareExposePath/units/aos-pkg-expose-smoke-host-paths.service"
           if grep -q 'aos-pkg-expose-smoke-host-paths.service' "$host_path_without_prepare_target"; then
@@ -2396,13 +2545,15 @@ in
             exit 1
           fi
           grep -q 'WantedBy=aos-pkg-k3s-worker.target' "$k3s_worker_unit"
-          grep -q 'ExecStart=${pkgs.k3s}/bin/k3s agent' "$k3s_worker_unit"
+          grep -q 'ExecStart=.*/bin/k3s-k3s-worker-start' "$k3s_worker_unit"
           grep -q 'KillMode=process' "$k3s_worker_unit"
           grep -q 'Requisite=k3s-preflight.service' "$k3s_worker_unit"
           grep -q 'After=.*k3s-preflight.service' "$k3s_worker_unit"
           grep -q 'Wants=network-online.target' "$k3s_worker_unit"
           grep -q 'Environment="PATH=.*${pkgs.k3s}/bin' "$k3s_worker_unit"
-          grep -q 'EnvironmentFile=/etc/rancher/k3s/k3s.env' "$k3s_worker_unit"
+          grep -q 'EnvironmentFile=-/etc/aos/packages/k3s-worker/k3s.env' "$k3s_worker_unit"
+          grep -q 'ExecCondition=.*/bin/k3s-k3s-worker-enabled' "$k3s_worker_unit"
+          grep -q 'LoadCredential=token' "$k3s_worker_unit"
           grep -q 'LimitNOFILE=1048576' "$k3s_worker_unit"
           grep -q 'LimitNPROC=infinity' "$k3s_worker_unit"
           grep -q 'LimitCORE=infinity' "$k3s_worker_unit"
@@ -2410,8 +2561,8 @@ in
           grep -q 'TimeoutStartSec=infinity' "$k3s_worker_unit"
           grep -q 'Restart=always' "$k3s_worker_unit"
           grep -q 'RestartSec=5s' "$k3s_worker_unit"
-          grep -q 'ConditionPathExists=/etc/rancher/k3s/k3s.env' "$k3sWorkerExposePath/units/k3s-preflight.service"
-          grep -q 'EnvironmentFile=/etc/rancher/k3s/k3s.env' "$k3sWorkerExposePath/units/k3s-preflight.service"
+          grep -q 'EnvironmentFile=-/etc/aos/packages/k3s-worker/k3s.env' "$k3sWorkerExposePath/units/k3s-preflight.service"
+          test "$(grep -c '^ExecCondition=' "$k3sWorkerExposePath/units/k3s-preflight.service" || true)" -eq 0
           # Script-derived Exec directives point at the
           # gen-local `aos-job-scripts/<unit>:<slot>.<index>` materialization
           # (derivation `aos-job-script-<scriptName>`) instead of the legacy
@@ -2463,11 +2614,13 @@ in
           grep -q 'Description=Lightweight Kubernetes (control plane, no agent)' \
             "$k3s_control_plane_unit"
           grep -q 'WantedBy=aos-pkg-k3s-control-plane.target' "$k3s_control_plane_unit"
-          grep -q 'ExecStart=${pkgs.k3s}/bin/k3s server --disable-agent' \
+          grep -q 'ExecStart=.*/bin/k3s-k3s-control-plane-start' \
             "$k3s_control_plane_unit"
           require_host_unit "k3s control-plane" "$k3s_control_plane_unit"
           grep -q 'Environment="PATH=.*${pkgs.k3s}/bin' "$k3s_control_plane_unit"
-          grep -q 'EnvironmentFile=/etc/rancher/k3s/k3s.env' "$k3s_control_plane_unit"
+          grep -q 'EnvironmentFile=-/etc/aos/packages/k3s-control-plane/k3s.env' "$k3s_control_plane_unit"
+          grep -q 'ExecCondition=.*/bin/k3s-k3s-control-plane-enabled' "$k3s_control_plane_unit"
+          grep -q 'LoadCredential=token' "$k3s_control_plane_unit"
           grep -q 'LimitNOFILE=1048576' "$k3s_control_plane_unit"
           grep -q 'LimitNPROC=infinity' "$k3s_control_plane_unit"
           grep -q 'LimitCORE=infinity' "$k3s_control_plane_unit"
@@ -2489,10 +2642,12 @@ in
           grep -q 'Description=Lightweight Kubernetes (combined: server + agent)' \
             "$k3s_combined_unit"
           grep -q 'WantedBy=aos-pkg-k3s-combined.target' "$k3s_combined_unit"
-          grep -Fxq 'ExecStart=${pkgs.k3s}/bin/k3s server' "$k3s_combined_unit"
+          grep -q 'ExecStart=.*/bin/k3s-k3s-combined-start' "$k3s_combined_unit"
           require_host_unit "k3s combined" "$k3s_combined_unit"
           grep -q 'Environment="PATH=.*${pkgs.k3s}/bin' "$k3s_combined_unit"
-          grep -q 'EnvironmentFile=/etc/rancher/k3s/k3s.env' "$k3s_combined_unit"
+          grep -q 'EnvironmentFile=-/etc/aos/packages/k3s-combined/k3s.env' "$k3s_combined_unit"
+          grep -q 'ExecCondition=.*/bin/k3s-k3s-combined-enabled' "$k3s_combined_unit"
+          grep -q 'LoadCredential=token' "$k3s_combined_unit"
           grep -q 'LimitNOFILE=1048576' "$k3s_combined_unit"
           grep -q 'LimitNPROC=infinity' "$k3s_combined_unit"
           grep -q 'LimitCORE=infinity' "$k3s_combined_unit"

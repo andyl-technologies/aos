@@ -81,7 +81,7 @@ const REPLAY_ORACLE_MARKERS: &[&str] = &[
 ];
 
 const DECISION_RNG_MARKERS: &[&str] = &[
-    "decision_recorder_records_rng_draws_and_fault_outcomes",
+    "decision_recorder_records_rng_draws_and_app_random_outcomes",
     "decision_recorder_keeps_per_entity_streams_stable",
     "decision_recorder_records_app_random_after_rng_draw",
     "decision_recorder_records_app_random_guest_request_id",

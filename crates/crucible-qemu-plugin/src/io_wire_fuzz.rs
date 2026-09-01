@@ -6,57 +6,73 @@
 //! message envelopes forwarded by the plugin callbacks.
 
 use crate::{
-    BlockRequest, BlockResponse, BlockWireError, NinePWireError, NinePWireHandlerOutcome,
-    NinePWireMessage, handle_ninep_wire_fuzz_message,
+    BlockRequest, BlockRequestIdentity, BlockResponse, BlockWireError, NinePWireError,
+    NinePWireHandlerOutcome, NinePWireMessage, handle_ninep_wire_fuzz_message,
 };
 
 /// Negotiated 9p `msize` used by the pure wire fuzz target.
 pub const NINEP_FUZZ_MSIZE: u32 = 15;
 
-const BLOCK_REQUEST_UNKNOWN_OP: [u8; 20] = [
-    9, 1, 0, 0, // type/version/reserved
+const BLOCK_REQUEST_UNKNOWN_OP: [u8; 28] = [
+    9, 4, 0, 0, // type/version/reserved
+    0, 0, 0, 0, 0, 0, 0, 0, // epoch
     1, 0, 0, 0, // request_id
     0, 0, 0, 0, 0, 0, 0, 0, // offset
     0, 0, 0, 0, // count
 ];
-const BLOCK_REQUEST_BAD_VERSION: [u8; 20] = [
-    0, 2, 0, 0, // type/version/reserved
+const BLOCK_REQUEST_BAD_VERSION: [u8; 28] = [
+    0, 99, 0, 0, // type/version/reserved
+    0, 0, 0, 0, 0, 0, 0, 0, // epoch
     1, 0, 0, 0, // request_id
     0, 0, 0, 0, 0, 0, 0, 0, // offset
     1, 0, 0, 0, // count
 ];
-const BLOCK_REQUEST_NONZERO_RESERVED: [u8; 20] = [
-    0, 1, 1, 0, // type/version/reserved
+const BLOCK_REQUEST_NONZERO_RESERVED: [u8; 28] = [
+    0, 4, 1, 0, // type/version/reserved
+    0, 0, 0, 0, 0, 0, 0, 0, // epoch
     1, 0, 0, 0, // request_id
     0, 0, 0, 0, 0, 0, 0, 0, // offset
     1, 0, 0, 0, // count
 ];
-const BLOCK_REQUEST_WRITE_COUNT_EXCEEDS: [u8; 22] = [
-    1, 1, 0, 0, // type/version/reserved
+const BLOCK_REQUEST_WRITE_COUNT_EXCEEDS: [u8; 30] = [
+    1, 4, 0, 0, // type/version/reserved
+    0, 0, 0, 0, 0, 0, 0, 0, // epoch
     1, 0, 0, 0, // request_id
     0, 0, 0, 0, 0, 0, 0, 0, // offset
     4, 0, 0, 0, // count
     b'a', b'b',
 ];
-const BLOCK_REQUEST_READ_TRAILING_PAYLOAD: [u8; 21] = [
-    0, 1, 0, 0, // type/version/reserved
+const BLOCK_REQUEST_READ_TRAILING_PAYLOAD: [u8; 29] = [
+    0, 4, 0, 0, // type/version/reserved
+    0, 0, 0, 0, 0, 0, 0, 0, // epoch
     1, 0, 0, 0, // request_id
     0, 0, 0, 0, 0, 0, 0, 0, // offset
     1, 0, 0, 0, // count
     b'x',
 ];
-const BLOCK_RESPONSE_UNKNOWN_STATUS: [u8; 12] = [
-    2, 1, 0, 0, // status/version/reserved
+const BLOCK_REQUEST_DISCARD_TRAILING_PAYLOAD: [u8; 29] = [
+    4, 4, 0, 0, // type/version/reserved
+    0, 0, 0, 0, 0, 0, 0, 0, // epoch
+    1, 0, 0, 0, // request_id
+    0, 0, 0, 0, 0, 0, 0, 0, // offset
+    1, 0, 0, 0, // count
+    b'x',
+];
+const BLOCK_RESPONSE_UNKNOWN_STATUS: [u8; 20] = [
+    2, 4, 0, 0, // status/version/reserved
+    0, 0, 0, 0, 0, 0, 0, 0, // epoch
     1, 0, 0, 0, // request_id
     0, 0, 0, 0, // count
 ];
-const BLOCK_RESPONSE_COUNT_EXCEEDS: [u8; 12] = [
-    0, 1, 0, 0, // status/version/reserved
+const BLOCK_RESPONSE_COUNT_EXCEEDS: [u8; 20] = [
+    0, 4, 0, 0, // status/version/reserved
+    0, 0, 0, 0, 0, 0, 0, 0, // epoch
     1, 0, 0, 0, // request_id
     4, 0, 0, 0, // count
 ];
-const BLOCK_RESPONSE_TRAILING_PAYLOAD: [u8; 13] = [
-    0, 1, 0, 0, // status/version/reserved
+const BLOCK_RESPONSE_TRAILING_PAYLOAD: [u8; 21] = [
+    0, 4, 0, 0, // status/version/reserved
+    0, 0, 0, 0, 0, 0, 0, 0, // epoch
     1, 0, 0, 0, // request_id
     0, 0, 0, 0, // count
     b'!',
@@ -95,7 +111,7 @@ pub enum IoWireFuzzChannel {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IoWireFuzzOutcome {
     /// Block-request decode result.
-    pub block_request: Result<(u32, BlockRequest), BlockWireError>,
+    pub block_request: Result<(BlockRequestIdentity, BlockRequest), BlockWireError>,
     /// Block-response decode result.
     pub block_response: Result<BlockResponse, BlockWireError>,
     /// 9p envelope decode result.
@@ -105,7 +121,7 @@ pub struct IoWireFuzzOutcome {
 }
 
 /// Seeded regression corpus for malformed and adversarial block/9p wire frames.
-pub const IO_WIRE_FUZZ_REGRESSION_CORPUS: [IoWireFuzzCase; 14] = [
+pub const IO_WIRE_FUZZ_REGRESSION_CORPUS: [IoWireFuzzCase; 15] = [
     IoWireFuzzCase {
         name: "empty",
         channel: IoWireFuzzChannel::BlockRequest,
@@ -135,6 +151,11 @@ pub const IO_WIRE_FUZZ_REGRESSION_CORPUS: [IoWireFuzzCase; 14] = [
         name: "block-request-read-trailing-payload",
         channel: IoWireFuzzChannel::BlockRequest,
         frame: &BLOCK_REQUEST_READ_TRAILING_PAYLOAD,
+    },
+    IoWireFuzzCase {
+        name: "block-request-discard-trailing-payload",
+        channel: IoWireFuzzChannel::BlockRequest,
+        frame: &BLOCK_REQUEST_DISCARD_TRAILING_PAYLOAD,
     },
     IoWireFuzzCase {
         name: "block-response-unknown-status",
@@ -295,9 +316,9 @@ mod tests {
     fn structure_aware_malformed_wire_frames_never_panic() {
         for operation in [0, 1, 2, 3, 4, u8::MAX] {
             for payload_len in [0, 1, 2, 4, 8] {
-                let frame = structured_block_request(operation, 1, 0, 7, 4096, 3, payload_len);
+                let frame = structured_block_request(operation, 3, 0, 7, 4096, 3, payload_len);
                 let outcome = assert_clean_reject_or_deterministic_decode(&frame);
-                if operation > 3 {
+                if operation > 4 {
                     assert!(outcome.block_request.is_err());
                 }
             }
@@ -305,7 +326,7 @@ mod tests {
 
         for status in [0, 1, 2, u8::MAX] {
             for payload_len in [0, 1, 2, 4, 8] {
-                let frame = structured_block_response(status, 1, 0, 7, 3, payload_len);
+                let frame = structured_block_response(status, 3, 0, 7, 3, payload_len);
                 let outcome = assert_clean_reject_or_deterministic_decode(&frame);
                 if status > 1 {
                     assert!(outcome.block_response.is_err());
@@ -378,9 +399,10 @@ mod tests {
 
     fn assert_io_wire_fuzz_corpus() {
         let regression_corpus = IO_WIRE_FUZZ_REGRESSION_CORPUS;
-        assert!(regression_corpus.len() >= 14);
+        assert!(regression_corpus.len() >= 15);
         assert!(corpus_contains("block-request-unknown-operation"));
         assert!(corpus_contains("block-request-write-count-exceeds-payload"));
+        assert!(corpus_contains("block-request-discard-trailing-payload"));
         assert!(corpus_contains("block-response-unknown-status"));
         assert!(corpus_contains("block-response-trailing-payload"));
         assert!(corpus_contains("9p-declared-size-too-small"));
@@ -391,17 +413,18 @@ mod tests {
 
     fn assert_decode_encode_roundtrip() {
         for (request_id, request) in generated_block_requests() {
-            let encoded = match request.encode(request_id) {
+            let identity = BlockRequestIdentity::new(0, request_id);
+            let encoded = match request.encode(identity) {
                 Ok(encoded) => encoded,
                 Err(error) => panic!("block request should encode: {error}"),
             };
             assert_eq!(
                 BlockRequest::decode(&encoded),
-                Ok((request_id, request.clone()))
+                Ok((identity, request.clone()))
             );
             assert_eq!(
                 assert_clean_reject_or_deterministic_decode(&encoded).block_request,
-                Ok((request_id, request)),
+                Ok((identity, request)),
             );
         }
     }
@@ -443,6 +466,7 @@ mod tests {
             (2, write),
             (3, BlockRequest::flush()),
             (4, BlockRequest::get_length()),
+            (5, BlockRequest::discard(8192, 4096)),
         ]
     }
 
@@ -451,7 +475,7 @@ mod tests {
             BlockResponse::new(BlockResponseStatus::Ok, 0, Vec::new()),
             BlockResponse::new(BlockResponseStatus::Ok, 1, b"abcd".to_vec()),
             BlockResponse::new(BlockResponseStatus::Ok, 2, 4096_u64.to_le_bytes().to_vec()),
-            BlockResponse::new(BlockResponseStatus::Error, 3, Vec::new()),
+            BlockResponse::new(BlockResponseStatus::Error, 3, vec![8]),
         ]
     }
 
@@ -467,7 +491,7 @@ mod tests {
     fn well_formed_block_request_frames() -> Vec<Vec<u8>> {
         let mut frames = Vec::new();
         for (request_id, request) in generated_block_requests() {
-            match request.encode(request_id) {
+            match request.encode(BlockRequestIdentity::new(0, request_id)) {
                 Ok(encoded) => frames.push(encoded),
                 Err(error) => panic!("block request should encode: {error}"),
             }

@@ -1484,6 +1484,13 @@ impl ExposeConfigMeta {
             .iter()
             .any(|artifact| !artifact.units.is_empty())
     }
+
+    /// Returns whether configuration may conditionally bind credentials.
+    pub fn has_optional_credentials(&self) -> bool {
+        self.credentials
+            .iter()
+            .any(|credential| credential.optional)
+    }
 }
 
 /// Structured config artifact materialized from host desired-package config.
@@ -1559,6 +1566,12 @@ pub struct CredentialMeta {
     /// Whether the credential is expected to be TPM2/systemd encrypted.
     #[serde(default, rename = "encrypted", skip_serializing_if = "is_false")]
     pub encrypted: bool,
+    /// Whether the unit binding is emitted only when configuration references
+    /// this credential. Optional declarations remain signed authorization for
+    /// runtime credential reconciliation, but do not make unrelated service
+    /// configurations depend on an absent credential.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub optional: bool,
 }
 
 /// Typed package capability kind.
@@ -2053,6 +2066,14 @@ pub struct RegistryRootMeta {
     /// set `false` for a pure input-addressed registry.
     #[serde(default = "default_content_addressed")]
     pub content_addressed: bool,
+    /// Whether every directly delivered system image must contain UKIs whose
+    /// signatures verify against the committed `sb-certs.toml` policy.
+    ///
+    /// This is an authenticated, opt-in release gate. Package-only releases
+    /// are unaffected. The default remains `false` for development and legacy
+    /// registries that intentionally publish unsigned images.
+    #[serde(default)]
+    pub require_signed_ukis: bool,
 }
 
 /// Serde default for [`RegistryRootMeta::content_addressed`].
@@ -2255,12 +2276,14 @@ pub fn parse_package_file(content: &str) -> Result<PackageToml> {
                                 == first_image.sb_signer_cert_sha256
                             && image.sbat == first_image.sbat
                             && image.expected_pcr11 == first_image.expected_pcr11
-                            && image.recovery_ukis == first_image.recovery_ukis
-                            && image.recovery_bundle == first_image.recovery_bundle,
+                            && image.recovery_ukis == first_image.recovery_ukis,
                         "release '{}' platform '{}' image encodings have different UKI or Secure Boot facts",
                         version.version,
                         platform
                     );
+                    // The recovery manifest authenticates the format-specific
+                    // image-info.json, so its component digest legitimately
+                    // differs between raw, QCOW2, VMDK, and VHD encodings.
                 }
             }
         }
@@ -2317,6 +2340,18 @@ mod root_config_tests {
         assert!(cfg.caches.is_none());
         assert!(cfg.cache_entries().is_empty());
         assert!(cfg.cache_stack().is_none());
+        assert!(!cfg.registry.require_signed_ukis);
+    }
+
+    #[test]
+    fn signed_uki_release_gate_is_explicitly_opt_in() {
+        let source = r#"
+            [registry]
+            name = "example"
+            require_signed_ukis = true
+        "#;
+        let cfg: RegistryRootConfig = toml::from_str(source).unwrap();
+        assert!(cfg.registry.require_signed_ukis);
     }
 
     #[test]
@@ -2409,10 +2444,44 @@ pub struct ConfigModuleMeta {
     /// owner-declared contributable sub-paths (F3-B).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contributes: Vec<RootContribution>,
+    /// Exact core artifact names this module may materialize.
+    ///
+    /// These grants are deliberately leaf-scoped: they do not confer
+    /// ownership of the structural `environment`, `systemd`, or `aos` roots.
+    #[serde(default, skip_serializing_if = "ConfigModuleArtifacts::is_empty")]
+    pub artifacts: ConfigModuleArtifacts,
     /// Capability tokens this module *sets* (write-provider index entries),
     /// e.g. `system.capabilities.dns-resolver`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provides_capabilities: Vec<String>,
+}
+
+/// Exact core artifact leaves a package configuration module may write.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigModuleArtifacts {
+    /// Targets below `environment.etc`, such as `nginx/nginx.conf`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub etc: Vec<String>,
+    /// Full systemd unit names, such as `nginx.service`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub units: Vec<String>,
+    /// Exact names below `aos.users.users`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub users: Vec<String>,
+    /// Exact names below `aos.users.groups`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
+}
+
+impl ConfigModuleArtifacts {
+    /// Returns whether this authorization grants no core artifact leaves.
+    pub fn is_empty(&self) -> bool {
+        self.etc.is_empty()
+            && self.units.is_empty()
+            && self.users.is_empty()
+            && self.groups.is_empty()
+    }
 }
 
 /// One mechanically derived option declaration in a config module's schema.

@@ -822,8 +822,9 @@ determinism contract (04).
   `crucible-qemu`: it owns a private `std::process::Child` handle through
   `QemuNodeChild` plus a `QemuNodeChannels` bundle, exposes the synchronous
   `crucible::Backend` boundary, routes current icount/advance/frame/idle/
-  fingerprint operations only through the shmem hot path, routes snapshot/
-  restore through QMP, and runs scheduler shutdown through the existing
+  fingerprint operations only through the shmem hot path, rejects generic
+  backend snapshot/restore, routes the paired exact-checkpoint API through QMP,
+  and runs scheduler shutdown through the existing
   plugin-Quit → QMP-quit → signal → reap ladder using the owned child. Spawn,
   fd passing, and die-with-host behavior remain tracked by [T-QEMU-7]; the
   concrete per-quantum shmem implementation remains tracked by [T-QEMU-12] and
@@ -832,17 +833,25 @@ determinism contract (04).
   `qmp_capabilities`, typed `savevm`/`loadvm`/`quit`, event-skipping,
   error-as-typed-Result), with snapshot tags derived from checkpoint content
   addresses. — satisfies [QEMU-19], [QEMU-20]; spec §10.4.
-- [x] **T-QEMU-5** Run the savevm-completeness spike (icount/bias/TCG/timer/
-  time-control preserved across `loadvm`) under the replay oracle; default to the
-  thin-checkpoint (replay) fallback until green, and oracle-validate any
-  loadvm-realized runtime. — satisfies [QEMU-21], [QEMU-22]; spec §10.4,
-  forward-ref §30.
-  Completed as PASS WITH FALLBACK, not full fat-snapshot validation: the Phase 2
-  check codifies the Phase 0 S3 record where diskless and CPU-timer suffixes
-  match under plugin time control but the marked block pending-I/O negative
-  control diverges. Fat `loadvm` realization remains disabled, and any future
-  `loadvm` runtime still requires replay-oracle validation. The full S3 pass
-  remains open with `full_fat_checkpoint_complete=false`.
+- [x] **T-QEMU-5** Implement exact snapshot capture and restore with icount,
+  bias, TCG, timer, plugin time-control, QEMU device state, and Apache-side
+  host-I/O continuations preserved under one content identity; oracle-validate
+  every `loadvm`-realized runtime. — satisfies [QEMU-21], [QEMU-22], [SHM-49];
+  spec §10.4, 13 §13.3.2, forward-ref §30.
+  Completed by `QemuNode::capture_exact_snapshot`, `QemuVmSnapshot`,
+  `QemuHostIoCheckpoint`, `QemuExactSnapshotPolicy`, and
+  `checks.crucible.phase2.qemuExactSnapshotRestore`. Capture writes the host
+  continuation before QEMU VMState while a shared-memory coordinated pause is
+  active. The plugin acknowledges that specific pause with a new slot publish
+  generation at the unchanged icount; busy guests clamp at their current raw
+  icount without blocking QMP, halted guests park on the non-private futex, and
+  capture/restore release both the futex and doorbell only after the paired
+  host/QEMU transaction finishes. Later transaction failures remove only
+  artifacts known to have been created by that transaction, while ambiguous or
+  duplicate saves preserve pre-existing state. The mandatory live gate covers
+  diskless and pending-block snapshots, force-kills the captured QEMU, restores
+  in a fresh process, continues execution, and compares the complete pair and
+  suffix against independent replay. There is no incomplete-snapshot fallback.
 - [x] **T-QEMU-6** Implement the VM `instantiate` realization with three branches
   (loadvm / ancestor-replay / baked-genesis load) plus `bake`'s single cold boot
   to the ready point; wire `start`/`resume`/`fork` as the same call differing
@@ -852,7 +861,7 @@ determinism contract (04).
   `instantiate_qemu_vm` plus `start`, `resume`, and `fork` wrappers that all
   delegate to the same instantiate path, selects exact-snapshot `loadvm`,
   nearest-ancestor replay, or baked-genesis load in priority order, keeps runtime
-  `loadvm` gated by replay-oracle admission through the savevm-completeness
+  `loadvm` gated by replay-oracle admission through the exact-snapshot
   policy, validates checkpoint/configuration and baked-World identity, rejects
   invalid ancestors and out-of-range fork prefixes, dispatches replay one recorded
   decision at a time to the quantum executor, and exposes `bake_qemu_genesis_vm`
@@ -903,10 +912,10 @@ determinism contract (04).
   content-addressed fingerprint definition. — satisfies [QEMU-34]; spec §10.7,
   §24.
   Completed by `checks.crucible.phase2.qemuLivePluginFingerprint`. The
-  production Rust runner performs fresh exact-input launches, applies
-  adversarial host load to the second run, and compares a content-addressed
+  production Rust runner performs fresh exact-input launches, applies bounded
+  scheduler preemption to QEMU in the second run, and compares a content-addressed
   five-boundary stream containing periodic, real frame-delivery, and real
-  fault-activation samples. Its negative control proves the complete diagnostic
+  signal-effect-boundary samples. Its negative control proves the complete diagnostic
   path: ordinal-aware fresh-run probes localize a real launch divergence to one
   instruction, and the plugin's terminal paused callback exports complete
   per-vCPU registers, writable RAM, and serialized non-RAM VMState from both
@@ -1004,7 +1013,8 @@ determinism contract (04).
   differing component, including per-vCPU register digests and RR cursor
   position. The task check realizes the plugin per-vCPU introspection check and
   the typed QMP control-boundary check, runs the same bounded real-QEMU `-smp 4`
-  sim/RR-TCG workload twice with second-run host load, checks exact sorted QMP
+  sim/RR-TCG workload twice with second-run bounded scheduler preemption after
+  the first positive guest trace coordinate, checks exact sorted QMP
   CPU indexes on both runs, binds register schemas/bytes and retired-count sums,
   uses a definition-only QEMU preflight to pin the observation shape before
   importing both plugin traces through the Rust path, and executes
@@ -1024,7 +1034,7 @@ determinism contract (04).
   `rr_position_in_quantum` per sample. Those components are in the compared digest
   (`per_vcpu_registers_match_run_twice`, `rr_cursor_matches_run_twice`, plus
   guest-RAM and device-state digests, all byte-identical over two runs, the second
-  under host load, plus a restart probe). The definition mints under the new
+  under bounded scheduler preemption, plus a restart probe). The definition mints under the new
   `crucible.qemu.rust-plugin-fingerprint.v2` domain. Mismatch localization to the
   first differing icount window is realized by the run-twice stream comparison and
   its bisection report (`SingleVmFingerprintGateError::Mismatch` names the first
