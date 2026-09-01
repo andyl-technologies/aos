@@ -6,15 +6,17 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
+  bindingRuntime = builtins.concatStringsSep "\n" (map builtins.readFile [
+    ../../crates/crucible/src/model/fault_signal/binding_runtime.rs
+    ../../crates/crucible/src/model/fault_signal/binding_runtime/runtime_api.rs
+    ../../crates/crucible/src/model/fault_signal/binding_runtime/search_helpers.rs
+  ]);
+  bindingRuntimeTest = builtins.readFile ../../crates/crucible/src/model/fault_signal/binding_runtime_test.rs;
   modelCanonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
   stateSpaceGateTest = builtins.readFile ../../crates/crucible/tests/gate_state_space_search.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -104,7 +106,7 @@
       }
       {
         label = "non-search decisions excluded";
-        needle = "Decision::Preemption(_) | Decision::AppRandom(_) | Decision::ControlFault(_) => false";
+        needle = "Decision::Preemption(_) | Decision::AppRandom(_) => false";
       }
       {
         label = "search result reports realized frontier";
@@ -145,28 +147,44 @@
         needle = "state.pending_frames = pending_frames_from_scheduled_events(&self.pending_events);";
       }
       {
-        label = "materialized scheduler active faults";
-        needle = "state.recompute_active_fault_table();";
+        label = "retired scheduler fault frontier is empty";
+        needle = "state.search_frontier = SearchFrontierChoices::empty();";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/model/fault_signal/binding_runtime.rs" bindingRuntime [
+      {
+        label = "typed binding policy dispatch";
+        needle = "fn apply_search_policy(";
       }
       {
-        label = "materialized scheduler search frontier";
-        needle = "state.search_frontier = search_frontier_choices_from_scheduled_events(";
+        label = "finite outcome branch";
+        needle = "BindingSearchPolicy::BranchOutcome { maximum_branches }";
       }
       {
-        label = "probabilistic search frontier capture";
-        needle = "ScheduledEventPayload::ProbabilisticFault(choice)";
+        label = "finite transition branch";
+        needle = "BindingSearchPolicy::BranchTransition { candidates }";
       }
       {
-        label = "probabilistic false branch";
-        needle = "u64::from(choice.rate.basis_points()),\n                false,";
+        label = "finite parameter branch";
+        needle = "BindingSearchPolicy::BranchParameter { candidates, .. }";
       }
       {
-        label = "probabilistic true branch";
-        needle = "probabilistic_fault_search_choice(event, choice, 0, true)";
+        label = "authenticated candidate set";
+        needle = "search_override.candidates_digest != candidates_digest";
       }
       {
-        label = "probabilistic frontier capture test";
-        needle = "search_frontier_choices_from_scheduled_events_captures_probabilistic_fault_branches";
+        label = "one-shot search override";
+        needle = "consumed_overrides.contains(&id)";
+      }
+      {
+        label = "unused override rejection";
+        needle = "pub fn verify_search_overrides_consumed";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/model/fault_signal/binding_runtime_test.rs" bindingRuntimeTest [
+      {
+        label = "typed finite choice replay test";
+        needle = "finite_binding_search_choices_replay_once_and_reject_unused_overrides";
       }
     ]
     ++ failuresFor "crates/crucible/src/model/canonical.rs" modelCanonical [
@@ -205,20 +223,12 @@
         needle = "SearchFrontierChoices::from_decisions";
       }
       {
-        label = "invalid control fault candidate";
-        needle = "fn control_fault_decision";
-      }
-      {
         label = "non-genuine delivery candidate";
         needle = "fn non_genuine_delivery_decision";
       }
       {
         label = "delivery-order candidate rejected";
         needle = "Decision::DeliveryOrder";
-      }
-      {
-        label = "fault-fires frontier decision";
-        needle = "Decision::FaultFires";
       }
       {
         label = "decision-rng frontier decision";
@@ -286,10 +296,6 @@
         label = "pending frames as search branches";
         needle = "fn delivery_tie_decisions_from_pending_frames";
       }
-      {
-        label = "active faults as search branches";
-        needle = "for (fault, state) in &runtime.scheduler.active_faults";
-      }
     ]
     ++ forbiddenFailuresFor "crates/crucible/tests/gate_state_space_search.rs" stateSpaceGateTest [
       {
@@ -331,8 +337,8 @@
         needle = "\n          phase6.restoreStrategies.rawGate\n";
       }
       {
-        label = "phase6 savevm completeness raw dependency";
-        needle = "\n          phase6.savevmCompleteness.rawGate\n";
+        label = "phase6 checkpoint materialization raw dependency";
+        needle = "\n          phase6.checkpointMaterialization.rawGate\n";
       }
       {
         label = "phase6 replay oracle raw dependency";
@@ -351,8 +357,8 @@
         needle = "\n        phase6.restoreStrategies\n";
       }
       {
-        label = "phase6 savevm completeness green dependency";
-        needle = "\n        phase6.savevmCompleteness\n";
+        label = "phase6 checkpoint materialization green dependency";
+        needle = "\n        phase6.checkpointMaterialization\n";
       }
       {
         label = "phase6 replay oracle green dependency";
@@ -425,7 +431,7 @@ in
               --target-dir "$TMPDIR/crucible-state-space-search-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible \
-              --lib search_frontier_choices_from_scheduled_events_captures_probabilistic_fault_branches \
+              --lib finite_binding_search_choices_replay_once_and_reject_unused_overrides \
               -- --test-threads=1
           '';
         }

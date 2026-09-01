@@ -5,11 +5,7 @@
   taskIds ? ["T-TRIG-1"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
@@ -42,7 +38,7 @@
       }
       {
         label = "event graph serialization task text";
-        needle = "serializable content-addressed form";
+        needle = "content-addressed** form";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [
@@ -234,14 +230,6 @@
       }
     ]
     ++ forbiddenFor "engine-facing control-flow surfaces" engineFacingSources [
-      {
-        label = "direct scenario fault injection API";
-        needle = "fn inject_fault(&mut";
-      }
-      {
-        label = "direct scenario fault healing API";
-        needle = "fn heal_fault(&mut";
-      }
       {
         label = "direct scenario poke API";
         needle = "fn poke";

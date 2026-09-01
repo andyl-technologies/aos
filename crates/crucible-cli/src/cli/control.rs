@@ -37,6 +37,14 @@ pub(super) enum InteractiveCommandDriver<'a> {
     Stdin,
 }
 
+/// Terminal state captured while the live session still accepts evidence queries.
+pub(super) struct InteractiveTerminalEvidence {
+    /// Authoritative snapshot returned by the accepted stop command.
+    pub(super) snapshot: Box<crucible_session::EngineSnapshot>,
+    /// Canonical signal-fault trace queried immediately before stopping.
+    pub(super) resolved_effect_trace: Option<Vec<u8>>,
+}
+
 pub(super) async fn run_control_client_workflow_with_interactive_driver<C>(
     client: &C,
     run_plan: &RunInvocationPlan,
@@ -108,7 +116,7 @@ where
         .await?;
     }
 
-    let interactive_terminal_snapshot = match run_plan.execution_mode {
+    let interactive_terminal_evidence = match run_plan.execution_mode {
         RunExecutionMode::ToCompletion => {
             // Budget boundaries are replay evidence. Drive them one quantum at
             // a time so frontend observation latency cannot add a final quantum.
@@ -139,8 +147,18 @@ where
         }
         RunExecutionMode::Interactive => match interactive_driver {
             InteractiveCommandDriver::Preparsed(commands) => {
-                let mut terminal_snapshot = None;
+                let mut terminal_evidence = None;
                 for command in commands {
+                    let resolved_effect_trace = if *command == SessionCommandKind::Stop {
+                        query_resolved_effect_trace(
+                            &control,
+                            &mut command_id,
+                            &mut acknowledged_commands,
+                        )
+                        .await?
+                    } else {
+                        None
+                    };
                     let response = acknowledge_stream_command_payload(
                         &control,
                         &mut command_id,
@@ -149,11 +167,14 @@ where
                     )
                     .await?;
                     if *command == SessionCommandKind::Stop {
-                        terminal_snapshot = terminal_snapshot_from_stop_response(response)?;
+                        terminal_evidence = Some(InteractiveTerminalEvidence {
+                            snapshot: terminal_snapshot_from_stop_response(response)?,
+                            resolved_effect_trace,
+                        });
                         break;
                     }
                 }
-                terminal_snapshot
+                terminal_evidence
             }
             InteractiveCommandDriver::Stdin => {
                 drive_interactive_stdin_commands(
@@ -183,7 +204,9 @@ where
         &mut streamed_event_frames,
         &mut coverage_events,
         &mut streamed_event_cursor,
-        interactive_terminal_snapshot.as_deref(),
+        interactive_terminal_evidence
+            .as_ref()
+            .map(|evidence| evidence.snapshot.as_ref()),
     )
     .await?;
     if reject_pending_branch_choices {
@@ -196,6 +219,11 @@ where
         )
         .await?;
     }
+    let resolved_effect_trace = if let Some(evidence) = interactive_terminal_evidence {
+        evidence.resolved_effect_trace
+    } else {
+        query_resolved_effect_trace(&control, &mut command_id, &mut acknowledged_commands).await?
+    };
     if state_updates.last() != Some(&observation.final_state) {
         state_updates.push(observation.final_state.clone());
     }
@@ -216,9 +244,36 @@ where
         streamed_event_frames,
         coverage_feedback: coverage_feedback_from_streamed_events(coverage_events)?,
         execution_fingerprints,
+        resolved_effect_trace,
         acknowledged_commands,
         watch_statuses: observation.watch_statuses,
     })
+}
+
+async fn query_resolved_effect_trace(
+    control: &crucible_api::ClientControlStream,
+    command_id: &mut u64,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+) -> Result<Option<Vec<u8>>, CliError> {
+    let response = acknowledge_stream_command_payload(
+        control,
+        command_id,
+        SessionCommand::Query {
+            kind: QueryKind::ResolvedEffectTrace,
+            reply: CommandReply::discard(),
+        },
+        acknowledged_commands,
+    )
+    .await?;
+    match response.query_result {
+        Some(QueryResult::ResolvedEffectTrace(trace)) => Ok(trace),
+        Some(other) => Err(backend_error(format!(
+            "resolved-effect trace query returned {other:?}"
+        ))),
+        None => Err(backend_error(
+            "resolved-effect trace query returned no result",
+        )),
+    }
 }
 
 async fn reject_unconsumed_run_branch_choices<C>(
@@ -328,10 +383,9 @@ where
             client,
             session,
             |summary| {
-                matches!(
-                    summary.state,
-                    LiveStateKind::Paused | LiveStateKind::Stopped
-                ) && summary.quanta_stepped > before.quanta_stepped
+                summary.state == LiveStateKind::Stopped
+                    || (summary.state == LiveStateKind::Paused
+                        && summary.quanta_stepped > before.quanta_stepped)
             },
             "completed bounded-run quantum boundary",
             Duration::from_millis(RUN_INTERACTIVE_ACK_QUANTA_BOUND),
@@ -345,7 +399,7 @@ pub(super) async fn drive_interactive_stdin_commands(
     control: &crucible_api::ClientControlStream,
     command_id: &mut u64,
     acknowledged_commands: &mut Vec<SessionCommandKind>,
-) -> Result<Option<Box<crucible_session::EngineSnapshot>>, CliError> {
+) -> Result<Option<InteractiveTerminalEvidence>, CliError> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     drive_interactive_command_reader(
@@ -364,21 +418,22 @@ pub(super) async fn drive_interactive_command_reader<R, W>(
     acknowledged_commands: &mut Vec<SessionCommandKind>,
     reader: R,
     writer: &mut W,
-) -> Result<Option<Box<crucible_session::EngineSnapshot>>, CliError>
+) -> Result<Option<InteractiveTerminalEvidence>, CliError>
 where
     R: BufRead,
     W: Write,
 {
-    let mut terminal_snapshot = None;
+    let mut terminal_evidence = None;
     for line in reader.lines() {
         let line = line?;
         let Some(command) = parse_interactive_session_command_line(&line)? else {
             continue;
         };
-        let Some(model_command) = interactive_stream_command(command)? else {
-            write_interactive_payload_required(writer, command)?;
-            writer.flush()?;
-            continue;
+        let model_command = cli_stream_command(command)?;
+        let resolved_effect_trace = if command == SessionCommandKind::Stop {
+            query_resolved_effect_trace(control, command_id, acknowledged_commands).await?
+        } else {
+            None
         };
         let response = acknowledge_stream_command_payload(
             control,
@@ -396,14 +451,17 @@ where
             write_interactive_query_result(writer, response.query_result.as_ref())?;
         }
         if command == SessionCommandKind::Stop {
-            terminal_snapshot = terminal_snapshot_from_stop_response(response)?;
+            terminal_evidence = Some(InteractiveTerminalEvidence {
+                snapshot: terminal_snapshot_from_stop_response(response)?,
+                resolved_effect_trace,
+            });
         }
         writer.flush()?;
         if command == SessionCommandKind::Stop {
             break;
         }
     }
-    Ok(terminal_snapshot)
+    Ok(terminal_evidence)
 }
 
 fn write_interactive_query_result<W: Write>(
@@ -438,9 +496,9 @@ pub(super) fn write_interactive_query_state<W: Write>(
 
 fn terminal_snapshot_from_stop_response(
     response: crucible_api::SendResponse,
-) -> Result<Option<Box<crucible_session::EngineSnapshot>>, CliError> {
+) -> Result<Box<crucible_session::EngineSnapshot>, CliError> {
     match response.query_result {
-        Some(QueryResult::Snapshot(snapshot)) => Ok(Some(snapshot)),
+        Some(QueryResult::Snapshot(snapshot)) => Ok(snapshot),
         Some(other) => Err(backend_error(format!(
             "interactive stop returned unexpected terminal payload: {other:?}"
         ))),
@@ -493,46 +551,12 @@ pub(super) fn cli_stream_command(command: SessionCommandKind) -> Result<SessionC
             reply: CommandReply::discard(),
         });
     }
-    if matches!(
-        command,
-        SessionCommandKind::InjectFault | SessionCommandKind::HealFault
-    ) {
-        return Err(usage_error(format!(
-            "session command `{}` requires a typed fault payload",
-            session_command_name(command)
-        )));
-    }
     command.representative_command().ok_or_else(|| {
         backend_error(format!(
             "session command `{}` is not supported",
             session_command_name(command)
         ))
     })
-}
-
-pub(super) fn interactive_stream_command(
-    command: SessionCommandKind,
-) -> Result<Option<SessionCommand>, CliError> {
-    if matches!(
-        command,
-        SessionCommandKind::InjectFault | SessionCommandKind::HealFault
-    ) {
-        Ok(None)
-    } else {
-        cli_stream_command(command).map(Some)
-    }
-}
-
-pub(super) fn write_interactive_payload_required<W: Write>(
-    writer: &mut W,
-    command: SessionCommandKind,
-) -> Result<(), CliError> {
-    writeln!(
-        writer,
-        "interactive-ack\tcommand={}\tstatus=rejected\treason=unsupported\tdetail=payload-required",
-        session_command_name(command)
-    )?;
-    Ok(())
 }
 
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
@@ -681,6 +705,11 @@ where
                 session.clone(),
                 watch_statuses,
                 run_plan.watch_streams_live_status,
+                run_plan.observer_profile.event_timeout_ms,
+                streamed_events,
+                streamed_event_frames,
+                coverage_events,
+                streamed_event_cursor,
             )
             .await;
         }
@@ -694,6 +723,11 @@ where
                 session.clone(),
                 watch_statuses,
                 run_plan.watch_streams_live_status,
+                run_plan.observer_profile.event_timeout_ms,
+                streamed_events,
+                streamed_event_frames,
+                coverage_events,
+                streamed_event_cursor,
             )
             .await;
         }
@@ -820,71 +854,6 @@ pub(super) async fn observe_next_state_update(
     }
 }
 
-// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn stop_budget_timed_out_session<C>(
-    client: &C,
-    // crucible-lint: allow host-nondeterminism-state -- the typed client stream is observation transport; the session engine remains authoritative.
-    control: &crucible_api::ClientControlStream,
-    command_id: &mut u64,
-    acknowledged_commands: &mut Vec<SessionCommandKind>,
-    final_state: String,
-    initial: crucible_api::SessionSummary,
-    mut watch_statuses: Vec<String>,
-    watch_streams_live_status: bool,
-) -> Result<RunObservation, CliError>
-where
-    C: ControlClient + Sync,
-{
-    let stopped = if initial.state == LiveStateKind::Stopped {
-        initial
-    } else {
-        acknowledge_stream_command(
-            control,
-            command_id,
-            SessionCommandKind::ExhaustBudget,
-            acknowledged_commands,
-        )
-        .await?;
-        let mut stopped = initial;
-        for _ in 0..RUN_INTERACTIVE_ACK_QUANTA_BOUND {
-            let sessions = client.list_sessions().await.map_err(control_client_error)?;
-            let Some(session) = sessions
-                .sessions
-                .iter()
-                .find(|summary| summary.session == stopped.session)
-            else {
-                break;
-            };
-            stopped = session.clone();
-            if watch_streams_live_status {
-                watch_statuses.push(run_watch_status(session));
-            }
-            if session.state == LiveStateKind::Stopped {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-        stopped
-    };
-
-    Ok(RunObservation {
-        final_state,
-        outcome: stopped.outcome,
-        terminal_savepoint: stopped.terminal_savepoint,
-        terminal_configuration: query_run_terminal_configuration(
-            control,
-            command_id,
-            acknowledged_commands,
-        )
-        .await?,
-        frontier_ticks: stopped.frontier.ticks,
-        quanta: stopped.quanta_stepped,
-        budget_timed_out: stopped.outcome == Some(OutcomeKind::Timeout),
-        watch_statuses,
-    })
-}
-
 // crucible-lint: allow host-nondeterminism-state -- formatting a validated API summary cannot admit host-derived engine state.
 pub(super) fn run_watch_status(session: &crucible_api::SessionSummary) -> String {
     format!(
@@ -985,9 +954,6 @@ pub(super) fn parse_interactive_session_command(
         "step-assertion" => Ok(SessionCommandKind::StepAssertion),
         "step-timer" => Ok(SessionCommandKind::StepTimer),
         "step-duration" => Ok(SessionCommandKind::StepDuration),
-        "inject" => Ok(SessionCommandKind::Inject),
-        "inject-fault" => Ok(SessionCommandKind::InjectFault),
-        "heal" | "heal-fault" => Ok(SessionCommandKind::HealFault),
         "save" | "create-savepoint" => Ok(SessionCommandKind::CreateSavepoint),
         "fork" => Ok(SessionCommandKind::Fork),
         "query" => Ok(SessionCommandKind::Query),
@@ -1076,9 +1042,6 @@ pub(super) fn session_command_name(command: SessionCommandKind) -> &'static str 
         SessionCommandKind::StepAssertion => "step-assertion",
         SessionCommandKind::StepTimer => "step-timer",
         SessionCommandKind::StepDuration => "step-duration",
-        SessionCommandKind::Inject => "inject",
-        SessionCommandKind::InjectFault => "inject-fault",
-        SessionCommandKind::HealFault => "heal-fault",
         SessionCommandKind::SetBreakpoint => "set-breakpoint",
         SessionCommandKind::RemoveBreakpoint => "remove-breakpoint",
         SessionCommandKind::CreateSavepoint => "create-savepoint",
@@ -1086,7 +1049,6 @@ pub(super) fn session_command_name(command: SessionCommandKind) -> &'static str 
         SessionCommandKind::Query => "query",
         SessionCommandKind::Stop => "stop",
         SessionCommandKind::ExhaustBudget => "exhaust-budget",
-        SessionCommandKind::Snapshot => "snapshot",
         SessionCommandKind::AttachGdb => "attach-gdb",
         SessionCommandKind::DebugGoto => "debug-goto",
         SessionCommandKind::DebugReverseStep => "debug-reverse-step",

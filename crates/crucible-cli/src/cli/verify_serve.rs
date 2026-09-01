@@ -980,6 +980,7 @@ where
             config = config.with_rendezvous_interval_icount(interval);
         }
         let config = config.with_debug_gdbstubs_for_all_nodes("127.0.0.1:0");
+        let resume_config = config.clone();
         let mut control_plane = LifecycleControlPlane::new_with_fallible_source_factory(
             "crucible-cli-qemu-daemon",
             Vec::new(),
@@ -993,7 +994,14 @@ where
                 crucible_api::build_production_vm_lifecycle_loop(scenario, source, &config)
             },
         )
-        .with_thin_replay_resume();
+        .with_fat_checkpoint_resume_factory(move |scenario, source, _seed, checkpoint| {
+            crucible_api::build_production_vm_lifecycle_loop_from_checkpoint(
+                scenario,
+                source,
+                &resume_config,
+                checkpoint,
+            )
+        });
         if let Some(max_sessions) = args.max_sessions {
             control_plane = control_plane.with_max_sessions(max_sessions);
         }
@@ -1413,6 +1421,7 @@ where
             streamed_event_frames: Vec::new(),
             coverage_feedback: crucible::EventLogCoverageFeedback::from_event_log(&[]),
             execution_fingerprints: Vec::new(),
+            resolved_effect_trace: None,
             acknowledged_commands,
             watch_statuses: Vec::new(),
         },

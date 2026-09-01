@@ -420,8 +420,9 @@ impl OwnedCallbackRegistrar for SuccessfulCallbackRegistrar {
     fn register(
         &self,
         args: &PluginArgs,
-        _state: Pin<&mut OwnedCallbackRuntimeState>,
+        mut state: Pin<&mut OwnedCallbackRuntimeState>,
     ) -> Result<OwnedCallbackRegistrationMask, OwnedCallbackRegistrationError> {
+        state.as_mut().allow_missing_fault_command_state_for_test();
         Ok(OwnedCallbackRegistrationMask::required_for(args))
     }
 }
@@ -583,6 +584,14 @@ extern "C" fn capture_vcpu_idle_resume_registration(
     LIVE_IDLE_RESUME_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
 }
 
+extern "C" fn capture_control_boundary_registration(
+    callback: Option<crate::QemuVcpuIdleResumeCbFn>,
+    userdata: *mut std::ffi::c_void,
+) {
+    assert!(callback.is_some());
+    assert!(!userdata.is_null());
+}
+
 extern "C" fn capture_sim_dispatch_registration(
     publish: Option<crate::QemuSimShmemPublishIcountCbFn>,
     ceiling: Option<crate::QemuSimShmemMaxAdvanceIcountCbFn>,
@@ -638,6 +647,20 @@ extern "C" fn capture_block_registration(
     LIVE_BLOCK_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
 }
 
+extern "C" fn capture_block_event_registration(
+    poll: Option<crate::QemuBlkEventPollCbFn>,
+    commit: Option<crate::QemuBlkEventCommitCbFn>,
+    save: Option<crate::QemuBlkTransportSaveCbFn>,
+    restore: Option<crate::QemuBlkTransportRestoreCbFn>,
+    userdata: *mut std::ffi::c_void,
+) {
+    assert!(poll.is_some());
+    assert!(commit.is_some());
+    assert!(save.is_some());
+    assert!(restore.is_some());
+    assert!(!userdata.is_null());
+}
+
 extern "C" fn capture_block_wait_registration(
     wait: Option<crate::QemuBlkWaitCbFn>,
     userdata: *mut std::ffi::c_void,
@@ -662,14 +685,32 @@ extern "C" fn capture_ninep_registration(
     LIVE_NINEP_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
 }
 
-extern "C" fn live_network_send_ok(
+extern "C" fn capture_accelerator_registration(
+    submit: Option<crate::QemuAcceleratorSubmitCbFn>,
+    poll: Option<crate::QemuAcceleratorPollCbFn>,
+    wait: Option<crate::QemuAcceleratorWaitCbFn>,
+    restore_begin: Option<crate::QemuAcceleratorRestoreBeginCbFn>,
+    restore: Option<crate::QemuAcceleratorRestoreCbFn>,
+    restore_commit: Option<crate::QemuAcceleratorRestoreCommitCbFn>,
+    restore_abort: Option<crate::QemuAcceleratorRestoreAbortCbFn>,
+    cancel: Option<crate::QemuAcceleratorCancelCbFn>,
+    userdata: *mut std::ffi::c_void,
+) {
+    assert!(submit.is_some());
+    assert!(poll.is_some());
+    assert!(wait.is_some());
+    assert!(restore_begin.is_some());
+    assert!(restore.is_some());
+    assert!(restore_commit.is_some());
+    assert!(restore_abort.is_some());
+    assert!(cancel.is_some());
+    assert!(!userdata.is_null());
+}
+
+extern "C" fn live_network_inject_ok(
     _payload: *const u8,
     _payload_len: usize,
 ) -> std::os::raw::c_int {
-    0
-}
-
-extern "C" fn live_network_flush_ok() -> std::os::raw::c_int {
     0
 }
 
@@ -697,6 +738,7 @@ impl OwnedCallbackRegistrar for RecordingSuccessfulCallbackRegistrar {
         args: &PluginArgs,
         mut state: Pin<&mut OwnedCallbackRuntimeState>,
     ) -> Result<OwnedCallbackRegistrationMask, OwnedCallbackRegistrationError> {
+        state.as_mut().allow_missing_fault_command_state_for_test();
         let userdata = state.as_mut().userdata();
         let state = state.as_ref().get_ref();
         self.state_address.set(userdata as usize);
@@ -857,19 +899,23 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
             LiveVcpuTimeCallbackCapabilities {
                 icount_raw: test_icount_raw,
                 force_vcpu_exit: test_force_vcpu_exit,
+                request_vmstop: test_request_vmstop,
                 inject_preemption: Some(test_inject_preemption),
                 clock_deadline_ns: Some(test_deadline),
                 advance_time_ns: Some(test_direct_advance),
                 register_vcpu_init: Some(capture_vcpu_init_registration),
                 register_vcpu_idle_resume: Some(capture_vcpu_idle_resume_registration),
+                register_control_boundary: Some(capture_control_boundary_registration),
                 register_sim_shmem_dispatch: Some(capture_sim_dispatch_registration),
                 register_time_advance_cb: Some(capture_time_advance_completion_registration),
                 register_net_tx: Some(capture_network_tx_registration),
-                net_send: Some(live_network_send_ok),
-                net_flush: Some(live_network_flush_ok),
+                net_inject: Some(live_network_inject_ok),
                 register_block: Some(capture_block_registration),
+                register_block_event: Some(capture_block_event_registration),
                 register_block_wait: Some(capture_block_wait_registration),
                 register_ninep: Some(capture_ninep_registration),
+                register_accelerator: Some(capture_accelerator_registration),
+                fault_commands: crate::fault_command::QemuFaultCommandApis::test_stub(),
                 request_shutdown: test_request_shutdown,
             },
         ),
@@ -1098,8 +1144,7 @@ fn production_registrar_installs_default_block_ninep_and_network_families() {
     capabilities.register_sim_shmem_dispatch = Some(capture_sim_dispatch_registration);
     capabilities.register_time_advance_cb = Some(capture_time_advance_completion_registration);
     capabilities.register_net_tx = Some(capture_network_tx_registration);
-    capabilities.net_send = Some(live_network_send_ok);
-    capabilities.net_flush = Some(live_network_flush_ok);
+    capabilities.net_inject = Some(live_network_inject_ok);
     capabilities.register_block = Some(capture_block_registration);
     capabilities.register_block_wait = Some(capture_block_wait_registration);
     capabilities.register_ninep = Some(capture_ninep_registration);
@@ -1184,7 +1229,7 @@ fn missing_live_network_capability_fails_preflight_before_control_io() {
     let fixture = LiveInstallFixture::new();
     let state = test_state();
     let mut capabilities = test_capabilities();
-    capabilities.net_send = None;
+    capabilities.net_inject = None;
     let callback_registrar = FailClosedOwnedCallbackRegistrar::production(
         53,
         state.lifecycle_core().execution_model(),
@@ -1211,7 +1256,7 @@ fn missing_live_network_capability_fails_preflight_before_control_io() {
             source: OwnedCallbackRegistrationError::LiveVcpuTime {
                 source: LiveVcpuTimeCallbackError::NetworkRx {
                     source: crate::NetworkRxError::CapabilityUnavailable {
-                        symbol: crate::QEMU_PLUGIN_NET_SEND_SYMBOL,
+                        symbol: crate::QEMU_PLUGIN_NET_INJECT_SYMBOL,
                     },
                 },
             },

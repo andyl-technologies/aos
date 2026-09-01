@@ -73,8 +73,6 @@ impl SingleScheduler {
             .keys()
             .map(|(link, _direction)| (link.clone(), 0))
             .collect();
-        let active = scheduler.trigger_actions.combined_faults();
-        scheduler.apply_trigger_device_faults(&active)?;
         Ok(scheduler)
     }
 
@@ -119,7 +117,6 @@ impl SingleScheduler {
 
         scheduler.event_sequences = state.event_sequences.clone();
         scheduler.world_network_decisions = state.pending_device_decisions.clone();
-        scheduler.trigger_actions.active_faults = state.active_fault_tags.clone();
         scheduler.effective_topology =
             SchedulerLookaheadGraph::from_edges(state.effective_topology_edges.clone());
         for node in &mut scheduler.nodes {
@@ -127,7 +124,6 @@ impl SingleScheduler {
         }
         scheduler.topology_changes = state.pending_topology_changes.clone();
         scheduler.topology_epoch = state.topology_epoch;
-        scheduler.apply_trigger_device_faults(&state.active_fault_table.combined)?;
 
         let mut shared_positions = BTreeMap::new();
         for runtime in scheduler.world_network_links.values_mut() {
@@ -246,9 +242,8 @@ impl SingleScheduler {
                         node.node.name, node.kind
                     ),
                 })?;
-            runtime.ready_counter = counter;
-            runtime.timing_faults.anchor_counter = counter;
-            runtime.timing_faults.anchor_time = SimInstant::EPOCH;
+            runtime.time_mapping.anchor_counter = counter;
+            runtime.time_mapping.anchor_time = SimInstant::EPOCH;
         }
         nodes.sort_by(|left, right| left.id.cmp(&right.id));
         let mut run_subdivision_policies = scenario.run_subdivision_policies;
@@ -263,8 +258,7 @@ impl SingleScheduler {
         )?;
 
         let frontier = frontier_for(&nodes, scenario.shift)?;
-        let (trigger_actions, replay_fault_sequence) =
-            trigger_action_state_from_control_fault_decisions(configuration.schedule.decisions());
+        let trigger_actions = TriggerActionState::default();
 
         let world_scheduling_nodes = scenario
             .trigger_static_topology
@@ -272,7 +266,7 @@ impl SingleScheduler {
             .map(|topology| topology.scheduling_nodes.iter().cloned().collect())
             .unwrap_or_default();
         let decision_seed = configuration.def.seed();
-        let mut scheduler = Self {
+        let scheduler = Self {
             configuration,
             timeline,
             quantum_budget: scenario.quantum_budget,
@@ -295,12 +289,12 @@ impl SingleScheduler {
             world_network_rng_positions: BTreeMap::new(),
             world_network_decisions: Vec::new(),
             device_horizons: BTreeMap::new(),
+            signal_fault_wakeup: None,
             #[cfg(test)]
             broken_device_delivery_stamp: false,
             control_inbox: Vec::new(),
             decision_seed,
             decision_rng_cursor: DecisionRngState::empty(),
-            branch_fault_choices: Vec::new(),
             branch_network_choices: Vec::new(),
             search_frontiers: Vec::new(),
             event_log,
@@ -311,8 +305,6 @@ impl SingleScheduler {
             quanta: 0,
             topology_epoch: 0,
             topology_change_applications: Vec::new(),
-            node_crash_applications: Vec::new(),
-            node_restart_applications: Vec::new(),
             rendezvous_records: Vec::new(),
             boundary_yields: 0,
             ceiling_publications: Vec::new(),
@@ -320,7 +312,6 @@ impl SingleScheduler {
             last_advance: None,
             last_topology_recompute: false,
         };
-        scheduler.hydrate_control_fault_schedule_prefix(replay_fault_sequence)?;
         Ok(scheduler)
     }
 
@@ -328,6 +319,62 @@ impl SingleScheduler {
     #[must_use]
     pub fn configuration(&self) -> &Configuration {
         &self.configuration
+    }
+
+    /// Replaces the exact global wakeup requested by signal-driven bindings.
+    ///
+    /// The wakeup is folded into every live node's effective exact horizon so
+    /// the shared frontier reaches the evaluation coordinate without polling.
+    /// `None` disarms the wakeup when no cadence or residence transition is due.
+    /// A nanosecond coordinate between representable icounts is rounded upward,
+    /// so a modeled delay is never shortened by the machine time scale.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when the requested wakeup
+    /// is not strictly after the current shared frontier or upward alignment
+    /// overflows the virtual-time representation.
+    pub fn set_signal_fault_wakeup(
+        &mut self,
+        wakeup_nanos: Option<u64>,
+    ) -> Result<(), SchedulerError> {
+        if let Some(wakeup_nanos) = wakeup_nanos
+            && wakeup_nanos <= self.frontier.ticks
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "signal fault wakeup {wakeup_nanos} must be after scheduler frontier {}",
+                    self.frontier.ticks
+                ),
+            });
+        }
+        let wakeup_nanos = if let Some(wakeup_nanos) = wakeup_nanos {
+            let scale = 1_u64 << self.timeline.shift().bits;
+            let remainder = wakeup_nanos % scale;
+            let aligned = if remainder == 0 {
+                wakeup_nanos
+            } else {
+                wakeup_nanos
+                    .checked_add(scale - remainder)
+                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "signal fault wakeup {wakeup_nanos} overflows while aligning to icount shift {}",
+                            self.timeline.shift().bits
+                        ),
+                    })?
+            };
+            Some(aligned)
+        } else {
+            None
+        };
+        self.signal_fault_wakeup = wakeup_nanos.map(|nanos| SimInstant { nanos });
+        Ok(())
+    }
+
+    /// Returns the armed exact signal-fault evaluation boundary.
+    #[must_use]
+    pub const fn signal_fault_wakeup(&self) -> Option<SimInstant> {
+        self.signal_fault_wakeup
     }
 
     /// Installs a deterministic exact-completion I/O sub-node (disk/9p) on its target VM node
@@ -481,9 +528,6 @@ impl SingleScheduler {
         // iteration) so the refresh is deterministic.
         let mut earliest_by_target: Vec<(NodeId, SimInstant)> = Vec::new();
         for (target, sub_nodes) in &self.device_sub_nodes {
-            if self.is_node_down(target) {
-                continue;
-            }
             let mut earliest: Option<SimInstant> = None;
             for sub_node in sub_nodes {
                 if let Some(delivery_icount) = sub_node.next_exact_local_event() {
@@ -505,9 +549,6 @@ impl SingleScheduler {
         }
         for runtime in self.world_network_links.values() {
             let target = runtime.target();
-            if self.is_node_down(target) {
-                continue;
-            }
             let Some(delivery_icount) = runtime.link.next_exact_local_event() else {
                 continue;
             };
@@ -532,14 +573,143 @@ impl SingleScheduler {
                 .nodes
                 .iter_mut()
                 .find(|runtime| runtime.id.node == target)
-                && runtime.crash.is_none()
-                && runtime.stopped_crash.is_none()
                 && runtime.activity == SchedulerNodeActivity::Idle
             {
                 runtime.activity = SchedulerNodeActivity::Runnable;
             }
         }
         Ok(())
+    }
+
+    /// Drops every resolved network frame on one exact directed World route.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when the endpoint pair is
+    /// not exactly one admitted directed World link, a frame count overflows,
+    /// or recomputing exact device horizons fails.
+    pub fn drop_network_inflight_for_route(
+        &mut self,
+        source: &NodeId,
+        destination: &NodeId,
+    ) -> Result<NetworkInFlightDropEvidence, SchedulerError> {
+        let keys = self
+            .world_network_links
+            .iter()
+            .filter(|(_key, runtime)| runtime.source() == source && runtime.target() == destination)
+            .map(|(key, _runtime)| key.clone())
+            .collect::<Vec<_>>();
+        let [key] = keys.as_slice() else {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "network transition route `{}` to `{}` resolves to {} directed World links",
+                    source.name,
+                    destination.name,
+                    keys.len()
+                ),
+            });
+        };
+        let runtime = self.world_network_links.get_mut(key).ok_or_else(|| {
+            SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "network transition route disappeared after exact resolution",
+                ),
+            }
+        })?;
+        let dropped = runtime.link.drop_inflight();
+        let frame_count =
+            u64::try_from(dropped.len()).map_err(|_error| SchedulerError::BoundaryViolation {
+                message: String::from("dropped network frame count exceeds the evidence width"),
+            })?;
+        let direction = match runtime.direction {
+            NetworkLinkDirection::EndpointAToEndpointB => "a-to-b",
+            NetworkLinkDirection::EndpointBToEndpointA => "b-to-a",
+        };
+        let frames = dropped
+            .into_iter()
+            .map(|delivery| NetworkDroppedFrameEvidence {
+                delivery_icount: delivery.key.delivery_icount,
+                source_slot: delivery.key.src_node,
+                delivery_sequence: delivery.key.seq,
+                frame_id: delivery.frame_id,
+                payload: delivery.payload,
+            })
+            .collect::<Vec<_>>();
+        let mut material = Vec::new();
+        append_len_prefixed(&mut material, runtime.canonical_id.name.as_bytes())?;
+        append_len_prefixed(&mut material, direction.as_bytes())?;
+        material.extend_from_slice(&frame_count.to_be_bytes());
+        for frame in &frames {
+            material.extend_from_slice(&frame.delivery_icount.to_be_bytes());
+            material.extend_from_slice(&frame.source_slot.to_be_bytes());
+            material.extend_from_slice(&frame.delivery_sequence.to_be_bytes());
+            material.extend_from_slice(&frame.frame_id.to_be_bytes());
+            append_len_prefixed(&mut material, &frame.payload)?;
+        }
+        let evidence = ContentHash::from_bytes(&material);
+        let result = NetworkInFlightDropEvidence {
+            link: runtime.canonical_id.clone(),
+            direction: runtime.direction,
+            frame_count,
+            frames,
+            evidence,
+        };
+        self.refresh_device_horizons()?;
+        Ok(result)
+    }
+
+    /// Returns a canonical identity for scheduler-owned network continuation state.
+    ///
+    /// The digest covers every directed link, its mutable sequencing cursors,
+    /// and every full in-flight response. It deliberately excludes process-local
+    /// addresses and map allocation details.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] if any variable-width field
+    /// cannot be represented by the canonical length prefix.
+    pub fn network_continuation_digest(&self) -> Result<ContentHash, SchedulerError> {
+        let mut material = Vec::new();
+        for ((link, direction), runtime) in &self.world_network_links {
+            append_len_prefixed(&mut material, link.name.as_bytes())?;
+            material.push(match direction {
+                NetworkLinkDirection::EndpointAToEndpointB => 1,
+                NetworkLinkDirection::EndpointBToEndpointA => 2,
+            });
+            let snapshot = runtime.link.snapshot();
+            material.extend_from_slice(&snapshot.current_icount.to_be_bytes());
+            material.push(snapshot.shift_bits);
+            material.extend_from_slice(&snapshot.src_node.to_be_bytes());
+            material.extend_from_slice(&snapshot.base_latency_ns.to_be_bytes());
+            material.extend_from_slice(&snapshot.floor_ns.to_be_bytes());
+            material.extend_from_slice(&snapshot.next_seq.to_be_bytes());
+            material.push(u8::from(snapshot.lookahead_recompute_pending));
+            material.extend_from_slice(&snapshot.rng_position.to_be_bytes());
+            let inflight_count = u64::try_from(snapshot.inflight.len()).map_err(|_error| {
+                SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "network continuation frame count exceeds the canonical width",
+                    ),
+                }
+            })?;
+            material.extend_from_slice(&inflight_count.to_be_bytes());
+            for pending in &snapshot.inflight {
+                material.extend_from_slice(&pending.key.delivery_icount.to_be_bytes());
+                material.extend_from_slice(&pending.key.src_node.to_be_bytes());
+                material.extend_from_slice(&pending.key.seq.to_be_bytes());
+                material.extend_from_slice(&pending.response.request_id.to_be_bytes());
+                material.push(match pending.response.status {
+                    crucible_device::ResponseStatus::Ok => 1,
+                    crucible_device::ResponseStatus::Error => 2,
+                });
+                append_len_prefixed(&mut material, &pending.response.payload)?;
+            }
+        }
+        for (link, position) in &self.world_network_rng_positions {
+            append_len_prefixed(&mut material, link.name.as_bytes())?;
+            material.extend_from_slice(&position.to_be_bytes());
+        }
+        Ok(ContentHash::from_bytes(&material))
     }
 
     /// RESOLVEs every device completion for `node` due at or before
@@ -870,13 +1040,8 @@ impl SingleScheduler {
         state.topology_epoch = self.topology_epoch;
         state.effective_topology_edges = self.effective_topology.edges().to_vec();
         state.pending_topology_changes = self.topology_changes.clone();
-        state.active_fault_tags = self.trigger_actions.active_faults.clone();
-        state.recompute_active_fault_table();
         state.pending_device_decisions = self.world_network_decisions.clone();
-        state.search_frontier = search_frontier_choices_from_scheduled_events(
-            self.configuration.clone(),
-            &self.pending_events,
-        );
+        state.search_frontier = SearchFrontierChoices::empty();
         Ok(state)
     }
 
@@ -905,8 +1070,8 @@ impl SingleScheduler {
 
     /// Returns a scheduler-owned directed World network link.
     ///
-    /// `link` may be either the canonical structured identifier or an
-    /// unambiguous legacy `endpoint-a--endpoint-b` spelling.
+    /// `link` must be the structured identity returned by
+    /// [`LinkId::for_endpoints`].
     #[must_use]
     pub fn world_network_link(
         &self,
@@ -1000,6 +1165,19 @@ impl SingleScheduler {
         events: impl IntoIterator<Item = ObservableEvent>,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         self.event_log.append_observable_events(events)
+    }
+
+    /// Appends typed signal-driven fault evidence to the unified event log.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when assigning dense event-log sequences or
+    /// appending the canonical segment would overflow scheduler offsets.
+    pub fn append_fault_observations(
+        &mut self,
+        observations: impl IntoIterator<Item = crate::model::FaultObservation>,
+    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        self.event_log.append_fault_observations(observations)
     }
 
     /// Appends assertion-proximity steering feedback to the scheduler event log.
@@ -1097,7 +1275,6 @@ impl SingleScheduler {
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         self.validate_trigger_firings(firings)?;
         let mut entries = self.trigger_firing_entries(firings)?;
-        let previous_faults = self.trigger_actions.combined_faults();
         let mut trigger_actions = self.trigger_actions.clone();
         let mut action_entries = Vec::new();
         for firing in firings.iter() {
@@ -1111,20 +1288,6 @@ impl SingleScheduler {
                 &mut action_entries,
             )?;
         }
-        let next_faults = trigger_actions.combined_faults();
-        let fault_sequence = u64::try_from(trigger_actions.applications.len()).map_err(|_| {
-            SchedulerError::BoundaryViolation {
-                message: String::from("trigger fault application sequence exceeds u64"),
-            }
-        })?;
-        self.apply_trigger_taxonomy_faults(fault_sequence, &previous_faults, &next_faults)?;
-        for application in &action_entries {
-            if let Action::StartNode { node } = &application.action
-                && self.is_node_stopped_after_crash(node)
-            {
-                self.restart_stopped_node(application.sequence, node)?;
-            }
-        }
         for application in action_entries {
             let sequence = self.event_log.next_sequence(entries.len())?;
             entries.push(scheduler_event_log_entry(
@@ -1136,261 +1299,6 @@ impl SingleScheduler {
         let append = self.event_log.append_entries(entries)?;
         self.trigger_actions = trigger_actions;
         Ok(append)
-    }
-
-    /// Applies active trigger-owned network faults to one live directed link.
-    ///
-    /// Trigger action application owns the deterministic fault set and the
-    /// scheduler-owned topology effects, while the concrete [`crucible_device::NetLink`]
-    /// fault table is owned by the caller's network device. This bridge reads the
-    /// current trigger taxonomy projection for `link_id`, installs the resulting
-    /// [`crucible_device::LinkFaults`] on `link`, queues any partition topology
-    /// change through the scheduler, and consumes any link latency recompute signal
-    /// when the directed edge is still live.
-    ///
-    /// Pass `restored_edges` when this call follows a heal that may restore edges
-    /// previously removed by a partition. For ordinary activation or non-partition
-    /// updates, pass an empty vector.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when the scheduler rejects a topology or latency
-    /// recompute queued by the applied network fault set.
-    // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
-    #[allow(clippy::too_many_arguments)]
-    pub fn apply_trigger_network_faults_to_link(
-        &mut self,
-        sequence: u64,
-        link_id: &LinkId,
-        endpoint_a: SchedulerNodeId,
-        endpoint_b: SchedulerNodeId,
-        link: &mut crucible_device::NetLink,
-        direction: NetworkLinkDirection,
-        restored_edges: Vec<SchedulerLookaheadEdge>,
-    ) -> Result<NetworkFaultApplication, SchedulerError> {
-        let combined = self.trigger_actions.combined_faults();
-        let faults = combined_network_faults_for_link(
-            &combined.network,
-            link_id,
-            &endpoint_a.node,
-            &endpoint_b.node,
-        );
-        let has_restored_edges = !restored_edges.is_empty();
-        let application = if has_restored_edges {
-            heal_combined_network_faults_to_scheduler(
-                sequence,
-                endpoint_a.clone(),
-                endpoint_b.clone(),
-                link,
-                &faults,
-                direction,
-                restored_edges,
-                self,
-            )?
-        } else {
-            apply_combined_network_faults_to_scheduler(
-                sequence,
-                endpoint_a.clone(),
-                endpoint_b.clone(),
-                link,
-                &faults,
-                direction,
-                self,
-            )?
-        };
-
-        let partitioned = faults
-            .partition
-            .as_ref()
-            .is_some_and(|partition| network_direction_is_partitioned(direction, partition));
-        if !partitioned && !has_restored_edges {
-            let _ = self.schedule_link_latency_recompute(sequence, endpoint_a, endpoint_b, link)?;
-        }
-
-        Ok(application)
-    }
-
-    pub(super) fn apply_trigger_taxonomy_faults(
-        &mut self,
-        sequence: u64,
-        previous: &CombinedFaults,
-        next: &CombinedFaults,
-    ) -> Result<(), SchedulerError> {
-        if previous == next {
-            return Ok(());
-        }
-
-        self.apply_trigger_node_faults(sequence, previous, next)?;
-        self.apply_trigger_network_topology_faults(sequence, previous, next)?;
-        self.apply_trigger_device_faults(next)?;
-        Ok(())
-    }
-
-    pub(super) fn hydrate_control_fault_schedule_prefix(
-        &mut self,
-        sequence: Option<u64>,
-    ) -> Result<(), SchedulerError> {
-        let Some(sequence) = sequence else {
-            return Ok(());
-        };
-        let previous = CombinedFaults::default();
-        let next = self.trigger_actions.combined_faults();
-        if previous == next {
-            return Ok(());
-        }
-
-        self.apply_trigger_node_faults(sequence, &previous, &next)?;
-        self.hydrate_network_partition_faults(sequence, &next)?;
-        self.apply_trigger_device_faults(&next)
-    }
-
-    pub(super) fn hydrate_network_partition_faults(
-        &mut self,
-        sequence: u64,
-        next: &CombinedFaults,
-    ) -> Result<(), SchedulerError> {
-        if network_topology_faults(&next.network).is_empty() {
-            return Ok(());
-        }
-        let Some(static_topology) = &self.trigger_static_topology else {
-            return Ok(());
-        };
-        let legacy_counts =
-            legacy_link_id_counts_from_world_edges(&static_topology.lookahead_graph);
-        let effective_edges = static_topology
-            .lookahead_graph
-            .iter()
-            .filter_map(|edge| world_edge_with_network_faults(edge, &next.network, &legacy_counts))
-            .collect::<Vec<_>>();
-        let graph = SchedulerLookaheadGraph::from_edges(effective_edges);
-        let graph = self.suppress_down_edges(graph);
-        let mut updates = Vec::with_capacity(self.nodes.len());
-        for node in &mut self.nodes {
-            let previous_lookahead = node.network_lookahead;
-            let recomputed_lookahead = graph.lookahead(&node.id);
-            node.network_lookahead = recomputed_lookahead;
-            updates.push(SchedulerTopologyLookaheadUpdate {
-                node: node.id.clone(),
-                previous_lookahead,
-                recomputed_lookahead,
-            });
-        }
-        self.effective_topology = graph;
-        self.topology_epoch = self.topology_epoch.checked_add(1).ok_or_else(|| {
-            SchedulerError::BoundaryViolation {
-                message: String::from("scheduler topology epoch overflow"),
-            }
-        })?;
-        self.topology_change_applications
-            .push(SchedulerTopologyChangeApplication {
-                topology_epoch: self.topology_epoch,
-                sequence,
-                trigger: SchedulerTopologyChangeTrigger::FaultActivation,
-                activation_time: None,
-                updates,
-            });
-        Ok(())
-    }
-
-    pub(super) fn apply_trigger_node_faults(
-        &mut self,
-        sequence: u64,
-        previous: &CombinedFaults,
-        next: &CombinedFaults,
-    ) -> Result<(), SchedulerError> {
-        let mut nodes = previous.node.keys().cloned().collect::<BTreeSet<_>>();
-        nodes.extend(next.node.keys().cloned());
-        for node in nodes {
-            let previous_faults = previous.node.get(&node).cloned().unwrap_or_default();
-            let next_faults = next.node.get(&node).cloned().unwrap_or_default();
-            let previous_crashed = previous_faults.is_crashed();
-            let next_crashed = next_faults.is_crashed();
-            if !previous_crashed && next_crashed {
-                if let Some(restart) = next_faults.crash_restart {
-                    self.apply_node_crash(sequence, &node, restart)?;
-                }
-            } else if previous_crashed && !next_crashed {
-                let _ = self.heal_node_crash(sequence, &node)?;
-            }
-            self.apply_combined_node_timing_faults(&node, &next_faults)?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn apply_trigger_network_topology_faults(
-        &mut self,
-        sequence: u64,
-        previous: &CombinedFaults,
-        next: &CombinedFaults,
-    ) -> Result<(), SchedulerError> {
-        let previous_topology = network_topology_faults(&previous.network);
-        let next_topology = network_topology_faults(&next.network);
-        if previous_topology == next_topology {
-            return Ok(());
-        }
-        let Some(static_topology) = &self.trigger_static_topology else {
-            return Ok(());
-        };
-        let legacy_counts =
-            legacy_link_id_counts_from_world_edges(&static_topology.lookahead_graph);
-        let trigger = if network_topology_faults_were_relaxed(&previous_topology, &next_topology) {
-            SchedulerTopologyChangeTrigger::Heal
-        } else {
-            SchedulerTopologyChangeTrigger::FaultActivation
-        };
-        let effective_edges = static_topology
-            .lookahead_graph
-            .iter()
-            .filter_map(|edge| world_edge_with_network_faults(edge, &next.network, &legacy_counts))
-            .collect::<Vec<_>>();
-        self.schedule_topology_change(SchedulerTopologyChange::new(
-            sequence,
-            trigger,
-            effective_edges,
-        ))
-    }
-
-    pub(super) fn apply_trigger_device_faults(
-        &mut self,
-        next: &CombinedFaults,
-    ) -> Result<(), SchedulerError> {
-        for sub_nodes in self.device_sub_nodes.values_mut() {
-            for sub_node in sub_nodes {
-                match sub_node.sub_node().kind {
-                    SchedulingNodeKind::Disk => {
-                        let faults = next.block.get(sub_node.device_id());
-                        let table = faults.map_or_else(
-                            crucible_device::IoFaults::none,
-                            block_faults_from_combined_block,
-                        );
-                        sub_node.set_io_faults(table);
-                    }
-                    SchedulingNodeKind::NineP => {
-                        let faults = next.ninep.get(sub_node.device_id());
-                        let table = faults.map_or_else(
-                            crucible_device::IoFaults::none,
-                            ninep_faults_from_combined_ninep,
-                        );
-                        sub_node.set_io_faults(table);
-                    }
-                    SchedulingNodeKind::Vm
-                    | SchedulingNodeKind::Network
-                    | SchedulingNodeKind::ControlPlane => {}
-                }
-            }
-        }
-        for network in self.world_network_links.values_mut() {
-            let active = combined_network_faults_for_world_link(
-                &next.network,
-                &network.canonical_id,
-                network.legacy_id.as_ref(),
-            );
-            let table =
-                merge_world_network_faults(&network.base_faults, &active, network.direction);
-            network.link.set_faults(table);
-            let _ = network.link.take_lookahead_recompute();
-        }
-        self.refresh_device_horizons()
     }
 
     pub(super) fn validate_trigger_firings(
@@ -1465,18 +1373,6 @@ impl SingleScheduler {
     #[must_use]
     pub fn topology_change_applications(&self) -> &[SchedulerTopologyChangeApplication] {
         &self.topology_change_applications
-    }
-
-    /// Returns node crash applications completed by this scheduler.
-    #[must_use]
-    pub fn node_crash_applications(&self) -> &[SchedulerNodeCrashApplication] {
-        &self.node_crash_applications
-    }
-
-    /// Returns node heal/restart applications completed by this scheduler.
-    #[must_use]
-    pub fn node_restart_applications(&self) -> &[SchedulerNodeRestartApplication] {
-        &self.node_restart_applications
     }
 
     /// Returns allowed rendezvous records completed at scheduler boundaries.
@@ -1568,34 +1464,6 @@ impl SingleScheduler {
             .collect()
     }
 
-    /// Applies combined node timing faults to a VM scheduler node.
-    ///
-    /// Slowdown is installed as an anchored counter-to-virtual-time projection
-    /// at the node's current counter, preserving continuity on the scheduler
-    /// axis. Clock skew is stored only in the node's guest-visible timing
-    /// projection. Crash and restart effects are intentionally outside this
-    /// timing-only entry point.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name a
-    /// VM scheduler node in this scheduler, or [`SchedulerError::TimeConversion`]
-    /// when the current timing projection cannot be computed.
-    pub fn apply_combined_node_timing_faults(
-        &mut self,
-        node: &NodeId,
-        faults: &CombinedNodeFaults,
-    ) -> Result<NodeTimingFaults, SchedulerError> {
-        let index = self.vm_node_index(node)?;
-        let anchor_counter = self.nodes[index].counter;
-        let anchor_time = self.node_current_time(&self.nodes[index])?;
-        let timing_faults =
-            node_timing_faults_from_combined_node(faults, anchor_counter, anchor_time);
-        self.nodes[index].timing_faults = timing_faults;
-        self.frontier = frontier_for(&self.nodes, self.timeline.shift())?;
-        Ok(timing_faults)
-    }
-
     /// Projects one VM node's current counter under active timing faults.
     ///
     /// # Errors
@@ -1603,13 +1471,13 @@ impl SingleScheduler {
     /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name a
     /// VM scheduler node in this scheduler, or [`SchedulerError::TimeConversion`]
     /// when the projection cannot be computed.
-    pub fn node_timing_projection(
+    pub fn node_time_projection(
         &self,
         node: &NodeId,
-    ) -> Result<NodeTimingProjection, SchedulerError> {
+    ) -> Result<NodeTimeProjection, SchedulerError> {
         let index = self.vm_node_index(node)?;
         self.nodes[index]
-            .timing_faults
+            .time_mapping
             .project(self.nodes[index].counter, self.timeline.shift())
             .map_err(SchedulerError::from)
     }
@@ -1620,8 +1488,8 @@ impl SingleScheduler {
     ///
     /// Returns [`SchedulerError`] when the node cannot be found or its timing
     /// projection cannot be computed.
-    pub fn guest_visible_time_for_node(&self, node: &NodeId) -> Result<SimInstant, SchedulerError> {
-        Ok(self.node_timing_projection(node)?.guest_visible_time)
+    pub fn logical_time_for_node(&self, node: &NodeId) -> Result<SimInstant, SchedulerError> {
+        Ok(self.node_time_projection(node)?.logical_time)
     }
 
     /// Computes terminal quiescence from authoritative scheduler state only.
@@ -1677,9 +1545,6 @@ impl SingleScheduler {
         // system is not quiescent while one is undelivered, even when every node
         // is parked `Idle`. Ordered by target `NodeId` (BTreeMap iteration).
         for (target, sub_nodes) in &self.device_sub_nodes {
-            if self.is_node_down(target) {
-                continue;
-            }
             if sub_nodes
                 .iter()
                 .any(|sub_node| sub_node.next_exact_local_event().is_some())
@@ -1700,7 +1565,6 @@ impl SingleScheduler {
         blockers.extend(
             network_targets
                 .into_iter()
-                .filter(|target| !self.is_node_down(target))
                 .map(|target| SchedulerQuiescenceBlocker::DeviceCompletionInFlight { target }),
         );
 
@@ -1728,4 +1592,14 @@ impl SingleScheduler {
 
         Ok(SchedulerQuiescence { blockers })
     }
+}
+
+fn append_len_prefixed(output: &mut Vec<u8>, value: &[u8]) -> Result<(), SchedulerError> {
+    let length =
+        u64::try_from(value.len()).map_err(|_error| SchedulerError::BoundaryViolation {
+            message: String::from("network transition evidence value exceeds the canonical width"),
+        })?;
+    output.extend_from_slice(&length.to_be_bytes());
+    output.extend_from_slice(value);
+    Ok(())
 }

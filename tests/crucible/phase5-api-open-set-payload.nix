@@ -6,18 +6,17 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
   apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
   openSet = builtins.readFile ../../crates/crucible-api/src/open_set.rs;
-  rpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
+  rpcAbi = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/src/rpc_abi.rs;
+  };
   abiTest = builtins.readFile ../../crates/crucible-api/tests/gate_abi_conformance.rs;
   openSetTest = builtins.readFile ../../crates/crucible-api/tests/gate_open_set_payload.rs;
   controlClientTest = import ./_rust-module-source.nix {
@@ -123,18 +122,18 @@
         needle = "crucible.cmd.continue";
       }
       {
-        label = "golden event kind uses catalog namespace";
-        needle = "crucible.event.fault_activated";
+        label = "golden signal-effect event kind uses catalog namespace";
+        needle = "crucible.event.effect_applied";
       }
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_abi_conformance.rs" abiTest [
       {
-        label = "ABI test expects open-set categories";
-        needle = "crucible.fault.*";
+        label = "ABI test expects the active non-imperative open-set categories";
+        needle = ''&["crucible.cmd.*", "crucible.bp.*", "crucible.event.*",]'';
       }
       {
-        label = "ABI test expects catalog event kind";
-        needle = "event-fault-activated";
+        label = "ABI test expects signal-effect catalog event kind";
+        needle = "event-effect-applied";
       }
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_open_set_payload.rs" openSetTest [

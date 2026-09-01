@@ -6,17 +6,17 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
-  cliControl = builtins.readFile ../../crates/crucible-cli/src/cli/control.rs;
+  cliControl = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-cli/src/cli/control.rs;
+  };
   cliResumeFork = builtins.readFile ../../crates/crucible-cli/src/cli/resume_fork.rs;
+  nullOperationRecorder = builtins.readFile ../../crates/crucible-cli/src/null_operation_recorder.rs;
   session = import ./_crucible-session-source.nix {inherit lib;};
   sessionValidation = builtins.readFile ../../crates/crucible-session/src/validation.rs;
   apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
@@ -97,10 +97,6 @@
       {
         label = "session command closed set";
         needle = "SessionCommandKind::ALL.contains(command)";
-      }
-      {
-        label = "dispatch plan executor";
-        needle = "fn execute_cli_dispatch_plan";
       }
       {
         label = "operation recorder trait";
@@ -189,6 +185,12 @@
       {
         label = "fake recorder records session commands";
         needle = "struct RecordingOperationRecorder";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/src/null_operation_recorder.rs" nullOperationRecorder [
+      {
+        label = "dispatch plan executor";
+        needle = "fn execute_cli_dispatch_plan";
       }
     ]
     ++ failuresFor "crates/crucible-session/src/lib.rs" session [

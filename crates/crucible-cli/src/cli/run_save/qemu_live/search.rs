@@ -13,12 +13,14 @@ struct QemuSearchFinding {
     snapshot: crucible_session::EngineSnapshot,
     event_frames: Vec<Vec<u8>>,
     fingerprints: Vec<crucible::FingerprintSample>,
+    resolved_effect_trace: Option<Vec<u8>>,
 }
 
 fn search_finding_reproduction_artifact_bytes(
     backend_plan: &BackendSelectionPlan,
     plan: &SearchDriverPlan,
     finding: &QemuSearchFinding,
+    mutation: Option<&crucible::MaterializedSearchPlan>,
 ) -> Result<Vec<u8>, CliError> {
     let model = &finding.evidence.finding;
     let scenario = model.artifact.scenario_form();
@@ -48,8 +50,7 @@ fn search_finding_reproduction_artifact_bytes(
         }
     };
     let status = status_from_outcome(Some(outcome))?;
-    let (fault_choice_indices, network_choice_indices) =
-        replay_choice_indices(model.artifact.schedule());
+    let network_choice_indices = replay_choice_indices(model.artifact.schedule());
     let live = LiveQemuArtifactEvidence {
         contract: LiveQemuReplayContract {
             producer: String::from("search"),
@@ -67,7 +68,6 @@ fn search_finding_reproduction_artifact_bytes(
             coverage: plan.engine_strategy == crucible::SearchStrategy::CoverageGuided,
             fingerprint_scope: LiveQemuFingerprintScope::TerminalAllNodes,
             branch: LiveQemuReplayBranch::None,
-            fault_choice_indices,
             network_choice_indices,
             startup_controls: Vec::new(),
             initial_controls: Vec::new(),
@@ -76,9 +76,16 @@ fn search_finding_reproduction_artifact_bytes(
         event_stream: canonical_verify_log_stream_bytes(&[], &finding.event_frames),
         fingerprint_stream: verify_fingerprint_stream_bytes(&fingerprints),
         fingerprint_samples: fingerprints.clone(),
+        resolved_effect_trace: finding.resolved_effect_trace.clone(),
     };
     let mut payloads = model_reproduction_artifact_payloads(&model.artifact, model.replay.state);
     payloads.extend(live_qemu_artifact_payloads(&live));
+    let store = crucible::LocalDagStore::new(plan.store_root.clone());
+    payloads.extend(signal_artifact_payloads(
+        scenario.plan().fault_signals(),
+        &store,
+        mutation,
+    )?);
     let scenario_bytes = scenario.to_compact_binary();
     reproduction_artifact_bytes_with_scenario_payload(
         seed_to_u64(model.artifact.seed()),
@@ -100,6 +107,69 @@ pub(crate) fn run_local_qemu_search_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     plan: &SearchDriverPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
+    let store = crucible::LocalDagStore::new(plan.store_root.clone());
+    let mutation_plans = crucible::materialize_search_plans(
+        plan.scenario.scenario_form().plan().fault_signals(),
+        &store,
+    )
+    .map_err(|error| backend_error(format!("materialize fault search candidates: {error}")))?;
+    if !mutation_plans.is_empty() {
+        return run_local_qemu_mutation_search_workflow(
+            thin_plan,
+            backend_plan,
+            ergonomics_plan,
+            plan,
+            mutation_plans,
+        );
+    }
+    run_local_qemu_search_scenario(
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        plan,
+        plan.scenario.scenario_form(),
+        plan.budget.max_expansions,
+        None,
+    )
+    .map(|execution| execution.outcome)
+}
+
+struct QemuSearchExecution {
+    outcome: BackendCommandOutcome,
+    expansions: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MutationSearchBudget {
+    remaining_states: u64,
+}
+
+impl MutationSearchBudget {
+    const fn new(max_states: u64) -> Self {
+        Self {
+            remaining_states: max_states,
+        }
+    }
+
+    fn begin_case(&mut self) -> Option<u64> {
+        self.remaining_states = self.remaining_states.checked_sub(1)?;
+        Some(self.remaining_states)
+    }
+
+    fn charge_expansions(&mut self, expansions: u64) {
+        self.remaining_states = self.remaining_states.saturating_sub(expansions);
+    }
+}
+
+fn run_local_qemu_search_scenario(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    plan: &SearchDriverPlan,
+    scenario: &crucible::ScenarioDefForm,
+    expansion_budget: u64,
+    mutation: Option<&crucible::MaterializedSearchPlan>,
+) -> Result<QemuSearchExecution, CliError> {
     let backend = backend_plan
         .resolved_backend
         .as_ref()
@@ -112,15 +182,27 @@ pub(crate) fn run_local_qemu_search_workflow(
     let config = production_qemu_lifecycle_config(backend)?
         .with_run_ceiling_icount(LIVE_EXPLORATION_RUN_CEILING_ICOUNT)
         .with_quantum_budget(LIVE_EXPLORATION_QUANTUM_LIMIT)
-        .with_coverage(coverage);
+        .with_coverage(coverage)
+        .with_signal_artifacts(std::sync::Arc::new(crucible::LocalDagStore::new(
+            plan.store_root.clone(),
+        )));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let (mut graph, root_configuration, root, mut discovered_findings) =
-        runtime.block_on(qemu_search_root(&config, plan.scenario.scenario_form()))?;
+        runtime.block_on(qemu_search_root(&config, scenario))?;
     let mut pending = root
         .as_ref()
         .map(|frontier| vec![frontier.configuration.clone()])
+        .unwrap_or_default();
+    let mut live_frontiers = root
+        .as_ref()
+        .map(|frontier| {
+            BTreeMap::from([(
+                frontier.configuration.id(),
+                (frontier.configuration.clone(), frontier.at),
+            )])
+        })
         .unwrap_or_default();
     let mut scheduled = pending
         .iter()
@@ -132,7 +214,7 @@ pub(crate) fn run_local_qemu_search_workflow(
     let mut expansions = Vec::new();
     let mut live_realizations = usize::from(root.is_some());
     let mut replay_oracle_validations = 0_usize;
-    'search: while (expansions.len() as u64) < plan.budget.max_expansions {
+    'search: while (expansions.len() as u64) < expansion_budget {
         if plan.on_violation == SearchOnViolationArg::Stop && !discovered_findings.is_empty() {
             break;
         }
@@ -142,10 +224,15 @@ pub(crate) fn run_local_qemu_search_workflow(
             break;
         };
         let frontier = pending.remove(index);
+        let branch_frontier = live_frontiers.get(&frontier.id()).cloned();
+        let materialization_budget = match usize::try_from(expansion_budget) {
+            Ok(max_expansions) => max_expansions,
+            Err(_) => usize::MAX,
+        };
         let search = graph
             .search_frontier(
                 &frontier,
-                MaterializationPolicy::with_budget(0),
+                MaterializationPolicy::with_budget(materialization_budget),
                 MaterializationTrigger::RepeatedForkSource,
             )
             .map_err(|error| backend_error(format!("QEMU live-frontier search failed: {error}")))?;
@@ -153,8 +240,11 @@ pub(crate) fn run_local_qemu_search_workflow(
             explored.insert(child.configuration.id());
             let (realized, failure) = runtime.block_on(qemu_search_realize(
                 &config,
-                plan.scenario.scenario_form(),
+                scenario,
                 &child.configuration,
+                branch_frontier
+                    .as_ref()
+                    .map(|(configuration, at)| (configuration, *at)),
             ))?;
             replay_oracle_validations = replay_oracle_validations.saturating_add(1);
             if let Some(finding) = failure
@@ -173,6 +263,10 @@ pub(crate) fn run_local_qemu_search_workflow(
                 live_realizations = live_realizations.saturating_add(1);
                 explored.insert(realized.configuration.id());
                 qemu_search_cache_frontier(&mut graph, &realized)?;
+                live_frontiers.insert(
+                    realized.configuration.id(),
+                    (realized.configuration.clone(), realized.at),
+                );
                 if scheduled.insert(realized.configuration.id()) {
                     pending.push(realized.configuration);
                 }
@@ -189,7 +283,7 @@ pub(crate) fn run_local_qemu_search_workflow(
     let run = crucible::TemporalGraphSearchRun {
         root: root_configuration.id(),
         strategy: plan.engine_strategy,
-        budget: plan.budget,
+        budget: crucible::SearchBudget::new(expansion_budget),
         explored_graph: explored,
         expansions,
         discovered_failures: discovered_findings
@@ -200,7 +294,9 @@ pub(crate) fn run_local_qemu_search_workflow(
     };
     let counterexample_artifact = discovered_findings
         .first()
-        .map(|finding| search_finding_reproduction_artifact_bytes(backend_plan, plan, finding))
+        .map(|finding| {
+            search_finding_reproduction_artifact_bytes(backend_plan, plan, finding, mutation)
+        })
         .transpose()?;
     let counterexample = run
         .discovered_failures
@@ -285,6 +381,7 @@ pub(crate) fn run_local_qemu_search_workflow(
             backend_plan,
             plan,
             &finding,
+            mutation,
         )?);
         evidence.push(finding.evidence);
     }
@@ -322,7 +419,139 @@ pub(crate) fn run_local_qemu_search_workflow(
     }
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
     append_qemu_control_plane_execution_proof(&mut outcome, backend, "search-live-branches");
-    Ok(outcome)
+    Ok(QemuSearchExecution {
+        outcome,
+        expansions: run.expansions.len() as u64,
+    })
+}
+
+fn run_local_qemu_mutation_search_workflow(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    plan: &SearchDriverPlan,
+    mutation_plans: Vec<crucible::MaterializedSearchPlan>,
+) -> Result<BackendCommandOutcome, CliError> {
+    let original = plan.scenario.scenario_form();
+    let total = mutation_plans.len();
+    let mut selected_outcome = None;
+    let mut budget = MutationSearchBudget::new(plan.max_states);
+    for (index, materialized) in mutation_plans.into_iter().enumerate() {
+        let Some(expansion_budget) = budget.begin_case() else {
+            break;
+        };
+        let materialized_plan = original
+            .plan()
+            .clone()
+            .with_fault_signals_for_world(original.world(), materialized.plan.clone())
+            .map_err(|error| {
+                backend_error(format!("validate fault search candidate {index}: {error}"))
+            })?;
+        let form = original.with_plan(materialized_plan).map_err(|error| {
+            backend_error(format!("rebuild fault search candidate {index}: {error}"))
+        })?;
+        let mut materialized_driver = plan.clone();
+        materialized_driver.scenario = plan.scenario.with_form(form.clone());
+        let execution = run_local_qemu_search_scenario(
+            thin_plan,
+            backend_plan,
+            ergonomics_plan,
+            &materialized_driver,
+            &form,
+            expansion_budget,
+            Some(&materialized),
+        )?;
+        budget.charge_expansions(execution.expansions);
+        let mut outcome = execution.outcome;
+        outcome.canonical_log.push(CanonicalLogEntry {
+            sequence: outcome.canonical_log.len() as u64,
+            virtual_time_ticks: outcome.canonical_log.len() as u64,
+            node: String::from("search"),
+            kind: String::from("signal_fault_mutation_case"),
+            summary: format!(
+                "candidate={} total={} provenance={} scenario={}",
+                index,
+                total,
+                format_content_hash_ref(materialized.provenance),
+                format_content_hash_ref(form.id())
+            ),
+        });
+        outcome.canonical_log.push(CanonicalLogEntry {
+            sequence: outcome.canonical_log.len() as u64,
+            virtual_time_ticks: outcome.canonical_log.len() as u64,
+            node: String::from("search"),
+            kind: String::from("signal_fault_mutation_budget"),
+            summary: format!(
+                "global_max_states={} root_and_expansions_consumed={} remaining={}",
+                plan.max_states,
+                execution.expansions.saturating_add(1),
+                budget.remaining_states
+            ),
+        });
+        outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+
+        merge_mutation_search_outcome(&mut selected_outcome, index, outcome);
+        if plan.on_violation == SearchOnViolationArg::Stop
+            && selected_outcome
+                .as_ref()
+                .is_some_and(|outcome| outcome.status.is_non_passing())
+        {
+            break;
+        }
+    }
+    selected_outcome.ok_or_else(|| backend_error("fault mutation search produced no candidates"))
+}
+
+fn merge_mutation_search_outcome(
+    aggregate: &mut Option<BackendCommandOutcome>,
+    candidate: usize,
+    mut outcome: BackendCommandOutcome,
+) {
+    if let Some(artifact) = outcome.reproduction_artifact.take() {
+        outcome
+            .side_reproduction_artifacts
+            .push((format!("mutation-{candidate}-finding"), artifact));
+    }
+    outcome.side_reproduction_artifacts = outcome
+        .side_reproduction_artifacts
+        .into_iter()
+        .map(|(label, artifact)| {
+            let label = if label.starts_with(&format!("mutation-{candidate}-")) {
+                label
+            } else {
+                format!("mutation-{candidate}-{label}")
+            };
+            (label, artifact)
+        })
+        .collect();
+    let Some(current) = aggregate.as_mut() else {
+        *aggregate = Some(outcome);
+        return;
+    };
+    current.stdout.append(&mut outcome.stdout);
+    current.stderr.append(&mut outcome.stderr);
+    for mut entry in outcome.canonical_log {
+        entry.sequence = current.canonical_log.len() as u64;
+        current.canonical_log.push(entry);
+    }
+    current
+        .side_reproduction_artifacts
+        .append(&mut outcome.side_reproduction_artifacts);
+    if mutation_outcome_rank(outcome.status) > mutation_outcome_rank(current.status) {
+        current.status = outcome.status;
+        current.exit_code = outcome.exit_code;
+        current.artifact_digest = outcome.artifact_digest;
+    }
+    current.canonical_log_digest = canonical_log_digest(&current.canonical_log);
+}
+
+const fn mutation_outcome_rank(status: BackendCommandStatus) -> u8 {
+    match status {
+        BackendCommandStatus::Passed => 0,
+        BackendCommandStatus::Timeout => 1,
+        BackendCommandStatus::Failed => 2,
+        BackendCommandStatus::Crashed => 3,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -349,7 +578,7 @@ async fn qemu_search_root(
 > {
     // crucible-lint: allow host-nondeterminism-state -- genesis is a pure function of canonical scenario material.
     let root = crucible::Configuration::genesis(scenario.scenario_def());
-    let (frontier, failure) = qemu_search_realize(config, scenario, &root).await?;
+    let (frontier, failure) = qemu_search_realize(config, scenario, &root, None).await?;
     let Some(frontier) = frontier else {
         return Ok((
             save_validation_graph(&scenario.scenario_def())?,
@@ -387,13 +616,33 @@ async fn qemu_search_realize(
     scenario: &crucible::ScenarioDefForm,
     // crucible-lint: allow host-nondeterminism-state -- requested search state is canonical input checked against every live replay prefix.
     requested: &crucible::Configuration,
+    branch: Option<(&crucible::Configuration, crucible::VirtualTime)>,
 ) -> Result<(Option<QemuSearchFrontier>, Option<QemuSearchFinding>), CliError> {
-    let choices = branch_fault_choice_decisions(&requested.schedule);
     let network_choices = branch_network_choice_decisions(&requested.schedule);
-    let branch_config = config
-        .clone()
-        .with_branch_fault_choices(choices)
-        .with_branch_network_choices(network_choices);
+    let mut branch_config = config.clone().with_branch_network_choices(network_choices);
+    if let Some((base, at)) = branch {
+        let signal_fault_decisions = requested
+            .schedule
+            .decisions()
+            .iter()
+            .skip(base.schedule.len())
+            .filter(|decision| {
+                matches!(
+                    decision,
+                    crucible::Decision::Override(override_decision)
+                        if override_decision.point.key.starts_with("signal-fault/")
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !signal_fault_decisions.is_empty() {
+            branch_config = branch_config.with_branch_prefix_overrides(
+                base.clone(),
+                at,
+                signal_fault_decisions,
+            );
+        }
+    }
     let control_plane = production_qemu_control_plane(branch_config, scenario);
     let client = InProcessLifecycleClient::new(control_plane);
     let seed = scenario.scenario_def().seed();
@@ -493,6 +742,11 @@ async fn qemu_search_realize(
     } else {
         Vec::new()
     };
+    let resolved_effect_trace = if terminal_snapshot.is_some() {
+        qemu_search_query_resolved_effect_trace(&control, &mut command_id).await?
+    } else {
+        None
+    };
     let terminal_failure = terminal_snapshot
         .as_ref()
         .map(|snapshot| {
@@ -503,11 +757,12 @@ async fn qemu_search_realize(
                 &coverage,
                 max_quanta,
                 &terminal_fingerprints,
+                resolved_effect_trace,
             )
         })
         .transpose()?
         .flatten();
-    let _ = qemu_search_stop(&control, &mut command_id).await;
+    qemu_search_stop(&control, &mut command_id).await?;
     Ok((
         captured.map(|frontier| QemuSearchFrontier {
             // crucible-lint: allow host-nondeterminism-state -- the queried configuration passed the exact requested-prefix check above.
@@ -527,6 +782,7 @@ fn qemu_search_terminal_finding(
     coverage: &crucible::EventLogCoverageFeedback,
     configured_quanta: u64,
     fingerprints: &[crucible::FingerprintSample],
+    resolved_effect_trace: Option<Vec<u8>>,
 ) -> Result<Option<QemuSearchFinding>, CliError> {
     let Some(failure) = qemu_search_terminal_failure(scenario, snapshot)? else {
         return Ok(None);
@@ -535,7 +791,7 @@ fn qemu_search_terminal_finding(
         crucible_session::EngineState::Stopped {
             outcome: crucible_session::Outcome::Failed { .. },
         } => {
-            let violation = qemu_property_violation_from_frames(
+            let violation = property_violation_from_frames(
                 scenario,
                 streamed_frames,
                 failure.reproduction_artifact.artifact.id(),
@@ -579,7 +835,33 @@ fn qemu_search_terminal_finding(
         snapshot: snapshot.clone(),
         event_frames: streamed_frames.to_vec(),
         fingerprints: fingerprints.to_vec(),
+        resolved_effect_trace,
     }))
+}
+
+async fn qemu_search_query_resolved_effect_trace(
+    control: &crucible_api::ClientControlStream,
+    command_id: &mut u64,
+) -> Result<Option<Vec<u8>>, CliError> {
+    let response = qemu_search_command(
+        control,
+        command_id,
+        SessionCommand::Query {
+            kind: QueryKind::ResolvedEffectTrace,
+            reply: CommandReply::discard(),
+        },
+        "resolved-effect trace query",
+    )
+    .await?;
+    match response.query_result {
+        Some(QueryResult::ResolvedEffectTrace(trace)) => Ok(trace),
+        Some(other) => Err(backend_error(format!(
+            "QEMU search resolved-effect trace query returned unexpected payload: {other:?}"
+        ))),
+        None => Err(backend_error(
+            "QEMU search resolved-effect trace query returned no payload",
+        )),
+    }
 }
 
 async fn qemu_search_query_fingerprints(
@@ -734,26 +1016,6 @@ fn configuration_has_prefix(
 }
 
 // crucible-lint: allow host-nondeterminism-state -- this pure projection selects recorded causal decisions from a canonical schedule.
-fn branch_fault_choice_decisions(schedule: &crucible::Schedule) -> Vec<crucible::Decision> {
-    // crucible-lint: allow host-nondeterminism-state -- the immutable decision slice remains owned by canonical schedule material.
-    let decisions = schedule.decisions();
-    let mut choices = Vec::new();
-    let mut index = 0;
-    while index + 1 < decisions.len() {
-        // crucible-lint: allow host-nondeterminism-state -- matching the closed decision taxonomy cannot inject a host-derived choice.
-        if matches!(decisions[index], crucible::Decision::RngDraw(_))
-            // crucible-lint: allow host-nondeterminism-state -- the adjacent fault outcome is retained only with its recorded draw.
-            && matches!(decisions[index + 1], crucible::Decision::FaultFires(_))
-        {
-            choices.extend_from_slice(&decisions[index..=index + 1]);
-            index += 2;
-        } else {
-            index += 1;
-        }
-    }
-    choices
-}
-
 fn branch_network_choice_decisions(
     // crucible-lint: allow host-nondeterminism-state -- this pure projection reads only canonical scheduler decisions.
     schedule: &crucible::Schedule,
@@ -812,4 +1074,68 @@ fn qemu_search_cache_frontier(
     graph
         .cache_snapshot(&frontier.configuration, checkpoint)
         .map_err(|error| backend_error(format!("cache live QEMU search frontier: {error}")))
+}
+
+#[cfg(test)]
+mod mutation_search_tests {
+    use super::*;
+
+    fn outcome(status: BackendCommandStatus, artifact: &[u8]) -> BackendCommandOutcome {
+        BackendCommandOutcome {
+            subcommand: CliSubcommand::Search,
+            status,
+            exit_code: status.exit_code(),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            canonical_log: Vec::new(),
+            canonical_log_digest: content_address_bytes(b"log"),
+            artifact_digest: content_address_bytes(artifact),
+            terminal_savepoint: None,
+            savepoint_oracle: None,
+            save_boundary_evidence: None,
+            reproduction_artifact: Some(artifact.to_vec()),
+            side_reproduction_artifacts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn mutation_search_budget_is_shared_across_roots_and_expansions() {
+        let mut budget = MutationSearchBudget::new(5);
+        assert_eq!(budget.begin_case(), Some(4));
+        budget.charge_expansions(2);
+        assert_eq!(budget.begin_case(), Some(1));
+        budget.charge_expansions(1);
+        assert_eq!(budget.begin_case(), None);
+    }
+
+    #[test]
+    fn mutation_aggregation_retains_every_primary_artifact() {
+        let mut aggregate = None;
+        merge_mutation_search_outcome(
+            &mut aggregate,
+            0,
+            outcome(BackendCommandStatus::Timeout, b"candidate-zero"),
+        );
+        merge_mutation_search_outcome(
+            &mut aggregate,
+            1,
+            outcome(BackendCommandStatus::Crashed, b"candidate-one"),
+        );
+        let aggregate = aggregate.unwrap_or_else(|| panic!("aggregation must produce an outcome"));
+        assert_eq!(aggregate.status, BackendCommandStatus::Crashed);
+        assert!(aggregate.reproduction_artifact.is_none());
+        assert_eq!(
+            aggregate.side_reproduction_artifacts,
+            vec![
+                (
+                    String::from("mutation-0-finding"),
+                    b"candidate-zero".to_vec()
+                ),
+                (
+                    String::from("mutation-1-finding"),
+                    b"candidate-one".to_vec()
+                ),
+            ]
+        );
+    }
 }

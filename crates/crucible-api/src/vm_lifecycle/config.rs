@@ -4,12 +4,17 @@ use super::*;
 
 impl ProductionVmLifecycleConfig {
     /// Builds a local-QEMU lifecycle configuration with bounded defaults.
+    ///
+    /// `run_state_root` must be a durable writable directory. Each scenario
+    /// receives an isolated process manifest and lifecycle journal beneath it;
+    /// there is no ephemeral recovery fallback.
     #[must_use]
     pub fn new(
         executable: impl Into<PathBuf>,
         plugin: impl Into<PathBuf>,
         kernel: impl Into<PathBuf>,
         root_image: impl Into<PathBuf>,
+        run_state_root: impl Into<PathBuf>,
     ) -> Self {
         Self::new_for_guest_architecture(
             executable,
@@ -17,10 +22,13 @@ impl ProductionVmLifecycleConfig {
             VmArchitecture::X86_64,
             kernel,
             root_image,
+            run_state_root,
         )
     }
 
     /// Builds a local-QEMU lifecycle configuration for one native guest architecture.
+    ///
+    /// `run_state_root` has the same durable recovery contract as [`Self::new`].
     #[must_use]
     pub fn new_for_guest_architecture(
         executable: impl Into<PathBuf>,
@@ -28,6 +36,7 @@ impl ProductionVmLifecycleConfig {
         architecture: VmArchitecture,
         kernel: impl Into<PathBuf>,
         root_image: impl Into<PathBuf>,
+        run_state_root: impl Into<PathBuf>,
     ) -> Self {
         let mut guest_assets = BTreeMap::new();
         guest_assets.insert(
@@ -46,6 +55,7 @@ impl ProductionVmLifecycleConfig {
             initrd: None,
             kernel_cmdline_prefix: None,
             root_image_format: ProductionRootImageFormat::Qcow2,
+            run_state_root: run_state_root.into(),
             run_ceiling_icount: DEFAULT_RUN_CEILING_ICOUNT,
             quantum_budget: DEFAULT_QUANTUM_BUDGET,
             rendezvous_interval_icount: None,
@@ -54,8 +64,10 @@ impl ProductionVmLifecycleConfig {
             debug_gateway_executable: None,
             debug: None,
             branch: None,
-            branch_fault_choices: Vec::new(),
             branch_network_choices: Vec::new(),
+            signal_artifacts: None,
+            fault_replay: None,
+            world_artifacts: None,
             validate_guest_asset_references: false,
         }
     }
@@ -241,17 +253,6 @@ impl ProductionVmLifecycleConfig {
         self
     }
 
-    /// Returns this configuration with exact probabilistic fault branch choices.
-    ///
-    /// The decisions are installed into the authoritative scheduler and consumed
-    /// only at matching RESOLVE points. Invalid or unconsumed choices fail the
-    /// lifecycle rather than silently falling back to the seeded default.
-    #[must_use]
-    pub fn with_branch_fault_choices(mut self, decisions: Vec<Decision>) -> Self {
-        self.branch_fault_choices = decisions;
-        self
-    }
-
     /// Returns this configuration with exact live World-network branch choices.
     #[must_use]
     pub fn with_branch_network_choices(mut self, choices: Vec<crucible::OverrideDecision>) -> Self {
@@ -259,7 +260,32 @@ impl ProductionVmLifecycleConfig {
         self
     }
 
-    pub(super) fn for_thin_replay(self) -> Self {
+    /// Returns this configuration with an authoritative resolved-effect replay.
+    ///
+    /// The lifecycle validates and installs the trace before the first QEMU
+    /// quantum and rejects a successful shutdown unless every work item was
+    /// consumed.
+    #[must_use]
+    pub fn with_fault_replay(mut self, trace: ResolvedEffectTrace) -> Self {
+        self.fault_replay = Some(trace);
+        self
+    }
+
+    /// Returns this configuration with the authoritative signal artifact store.
+    ///
+    /// Exact checkpoints copy every transitively referenced signal object into
+    /// their authenticated execution closure, so direct restore does not depend
+    /// on this original store remaining available.
+    #[must_use]
+    pub fn with_signal_artifacts(mut self, artifacts: Arc<dyn DagStore>) -> Self {
+        self.signal_artifacts = Some(artifacts);
+        self
+    }
+
+    /// Returns this configuration with the content-addressed World artifact store.
+    #[must_use]
+    pub fn with_world_artifacts(mut self, artifacts: Arc<dyn DagStore>) -> Self {
+        self.world_artifacts = Some(artifacts);
         self
     }
 

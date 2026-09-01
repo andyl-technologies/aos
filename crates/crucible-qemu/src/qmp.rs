@@ -1,10 +1,8 @@
 //! Minimal typed QMP client.
 //!
 //! RFC-0010 QEMU-19 limits QMP use to capability negotiation, typed VM
-//! status/topology observation, VM snapshot save/load, snapshot job polling,
-//! graceful quit, plus the legacy fixed debug-agent device-add sequence used by
-//! focused compatibility tests. Production launches use the inert endpoint and
-//! do not issue those device-add commands. The client parses
+//! status/topology observation, VM snapshot save/load/delete, snapshot job polling,
+//! and graceful quit. The client parses
 //! JSON-line QMP responses internally, skips asynchronous event objects while
 //! waiting for a command response, and exposes no public arbitrary-command
 //! execution path.
@@ -19,10 +17,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use thiserror::Error;
 
-use crate::{
-    QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID, QEMU_DEBUG_GUEST_ACTIVATION_PORT_NAME,
-    QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
-};
+use crate::{QemuLoadvmCommandAuthorization, QemuNodeChannelError};
 
 mod snapshot_tag;
 #[cfg(target_os = "linux")]
@@ -38,18 +33,24 @@ pub const QMP_CAPABILITIES_COMMAND: &str = "qmp_capabilities";
 pub const QMP_SNAPSHOT_SAVE_COMMAND: &str = "snapshot-save";
 /// QMP command name used for loading the QEMU VMState half of a checkpoint.
 pub const QMP_SNAPSHOT_LOAD_COMMAND: &str = "snapshot-load";
+/// QMP command name used for deleting the QEMU VMState half of a checkpoint.
+pub const QMP_SNAPSHOT_DELETE_COMMAND: &str = "snapshot-delete";
 /// QMP command name used for polling snapshot job completion.
 pub const QMP_QUERY_JOBS_COMMAND: &str = "query-jobs";
+/// QMP command name used to release one concluded snapshot job.
+pub const QMP_JOB_DISMISS_COMMAND: &str = "job-dismiss";
 /// QMP command name used for reading the VM run state.
 pub const QMP_QUERY_STATUS_COMMAND: &str = "query-status";
+/// QMP command used to stop guest execution at a lifecycle boundary.
+pub const QMP_STOP_COMMAND: &str = "stop";
+/// QMP command used to resume guest execution after a lifecycle boundary.
+pub const QMP_CONT_COMMAND: &str = "cont";
+/// QMP command that authorizes one authenticated terminal lifecycle exit.
+pub const QMP_COMPLETE_TERMINAL_LIFECYCLE_COMMAND: &str = "crucible-complete-terminal-lifecycle";
 /// QMP command name used for reading configured vCPU indexes.
 pub const QMP_QUERY_CPUS_FAST_COMMAND: &str = "query-cpus-fast";
 /// QMP command name used for graceful QEMU termination.
 pub const QMP_QUIT_COMMAND_NAME: &str = "quit";
-/// QMP command used to create the activation-only character backend.
-pub const QMP_CHARDEV_ADD_COMMAND: &str = "chardev-add";
-/// QMP command used to hot-add the activation-only controller and port.
-pub const QMP_DEVICE_ADD_COMMAND: &str = "device_add";
 /// Versioned token consumed by the dormant fixture-side debugger bootstrap.
 pub const QMP_DEBUG_GUEST_ACTIVATION_TOKEN: &str = "CRUCIBLE_DEBUG_AGENT_V1\n";
 /// QMP snapshot device name used for diskless VMState snapshots.
@@ -112,17 +113,7 @@ pub struct QmpClient<S> {
     greeting: QmpGreeting,
     job_poll_policy: QmpJobPollPolicy,
     io_timeout_policy: QmpIoTimeoutPolicy,
-    debug_guest_activation_stage: DebugGuestActivationStage,
     predeclared_debug_guest_endpoint: bool,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-enum DebugGuestActivationStage {
-    #[default]
-    NotStarted,
-    ChardevAdded,
-    ControllerAdded,
-    PortAdded,
 }
 
 impl<S> QmpClient<S>
@@ -180,7 +171,6 @@ where
             },
             job_poll_policy,
             io_timeout_policy,
-            debug_guest_activation_stage: DebugGuestActivationStage::NotStarted,
             predeclared_debug_guest_endpoint: false,
         };
         client.greeting = client.read_greeting()?;
@@ -232,7 +222,19 @@ where
     pub fn loadvm(
         &mut self,
         tag: &QmpSnapshotTag,
-        _authorization: QemuLoadvmCommandAuthorization,
+        authorization: QemuLoadvmCommandAuthorization,
+    ) -> Result<QmpCommandComplete, QmpError> {
+        if authorization.purpose() != crate::QemuLoadvmCommandPurpose::ReplayOracleProbe {
+            return Err(QmpError::UnauthorizedLoadvmPurpose {
+                purpose: authorization.purpose(),
+            });
+        }
+        self.loadvm_authorized(tag)
+    }
+
+    pub(crate) fn loadvm_authorized(
+        &mut self,
+        tag: &QmpSnapshotTag,
     ) -> Result<QmpCommandComplete, QmpError> {
         let job_id = snapshot_job_id("load", tag);
         self.send_command(QmpCommand::LoadVm {
@@ -240,6 +242,24 @@ where
             job_id: &job_id,
         })?;
         self.wait_for_job(QmpCommandKind::LoadVm, &job_id)
+    }
+
+    /// Deletes the VMState snapshot named by a checkpoint-derived tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the request cannot be written, when the response
+    /// cannot be decoded, or when the delete job fails or exceeds its poll bound.
+    pub fn delete_snapshot(
+        &mut self,
+        tag: &QmpSnapshotTag,
+    ) -> Result<QmpCommandComplete, QmpError> {
+        let job_id = snapshot_job_id("delete", tag);
+        self.send_command(QmpCommand::DeleteSnapshot {
+            tag,
+            job_id: &job_id,
+        })?;
+        self.wait_for_job(QmpCommandKind::DeleteSnapshot, &job_id)
     }
 
     /// Requests graceful QEMU termination over QMP.
@@ -252,40 +272,18 @@ where
         self.send_command(QmpCommand::Quit)
     }
 
-    /// Prepares the fixed guest-introspection activation channel.
-    ///
-    /// Production launches return immediately because their inert endpoint is
-    /// already present. The compatibility command surface is deliberately fixed:
-    /// callers cannot select an arbitrary device, chardev, or guest-visible bytes.
+    /// Confirms that launch predeclared the fixed guest-introspection channel.
     ///
     /// # Errors
     ///
-    /// Returns [`QmpError`] when the request cannot be written, when the
-    /// response cannot be decoded, or when QEMU rejects the configured socket
-    /// chardev, controller, or port.
-    pub fn prepare_debug_guest(&mut self) -> Result<QmpCommandComplete, QmpError> {
+    /// Returns [`QmpError::DebugGuestEndpointNotPredeclared`] when the launch
+    /// omitted the endpoint. Runtime QMP mutation is never attempted.
+    pub const fn confirm_predeclared_debug_guest_endpoint(&self) -> Result<(), QmpError> {
         if self.predeclared_debug_guest_endpoint {
-            return Ok(QmpCommandComplete {
-                command: QmpCommandKind::AddDebugGuestPort,
-            });
+            Ok(())
+        } else {
+            Err(QmpError::DebugGuestEndpointNotPredeclared)
         }
-        if self.debug_guest_activation_stage < DebugGuestActivationStage::ChardevAdded {
-            self.send_command(QmpCommand::AddDebugGuestChardev)?;
-            self.debug_guest_activation_stage = DebugGuestActivationStage::ChardevAdded;
-        }
-        if self.debug_guest_activation_stage < DebugGuestActivationStage::ControllerAdded
-            && !self.predeclared_debug_guest_endpoint
-        {
-            self.send_command(QmpCommand::AddDebugGuestController)?;
-        }
-        self.debug_guest_activation_stage = DebugGuestActivationStage::ControllerAdded;
-        if self.debug_guest_activation_stage < DebugGuestActivationStage::PortAdded {
-            self.send_command(QmpCommand::AddDebugGuestPort)?;
-            self.debug_guest_activation_stage = DebugGuestActivationStage::PortAdded;
-        }
-        Ok(QmpCommandComplete {
-            command: QmpCommandKind::AddDebugGuestPort,
-        })
     }
 
     /// Returns the current VM run state.
@@ -312,6 +310,85 @@ where
                 response: response.value.to_string(),
             }),
         }
+    }
+
+    /// Stops guest execution while leaving the QMP main loop responsive.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the command fails or QEMU does not report the
+    /// typed paused state after acknowledging it.
+    pub fn stop(&mut self) -> Result<QmpCommandComplete, QmpError> {
+        let complete = self.send_command(QmpCommand::Stop)?;
+        let state = self.query_status()?;
+        if state.running || state.status != QmpRunStateKind::Paused {
+            return Err(QmpError::UnexpectedRunState {
+                command: QmpCommandKind::Stop,
+                status: state.status,
+                running: state.running,
+            });
+        }
+        Ok(complete)
+    }
+
+    /// Resumes guest execution after a lifecycle boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the command fails or QEMU does not report the
+    /// typed running state after acknowledging it.
+    pub fn cont(&mut self) -> Result<QmpCommandComplete, QmpError> {
+        let complete = self.send_command(QmpCommand::Cont)?;
+        let state = self.query_status()?;
+        if !state.running || state.status != QmpRunStateKind::Running {
+            return Err(QmpError::UnexpectedRunState {
+                command: QmpCommandKind::Cont,
+                status: state.status,
+                running: state.running,
+            });
+        }
+        Ok(complete)
+    }
+
+    /// Resumes guest execution and returns after QEMU acknowledges `cont`.
+    ///
+    /// This narrower operation is for an exact restore whose simulator may
+    /// immediately park on the plugin barrier. A follow-up QMP query would then
+    /// create an ordering cycle: the query cannot run until the scheduler
+    /// receives the restored node and publishes its next ceiling. The `cont`
+    /// reply itself is emitted only after QEMU accepts the run-state change;
+    /// the first bounded node step provides the subsequent execution proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the command cannot be written, its response
+    /// cannot be decoded, or QEMU rejects the run-state transition.
+    pub(crate) fn cont_acknowledged(&mut self) -> Result<QmpCommandComplete, QmpError> {
+        self.send_command(QmpCommand::Cont)
+    }
+
+    /// Completes an authenticated terminal lifecycle transition.
+    ///
+    /// This dedicated command never resumes guest execution. Patched QEMU
+    /// validates the action, evidence, and process generation before scheduling
+    /// the transition-specific exit. Repeating the same request is idempotent.
+    /// The owning process supervisor must independently reap and verify that
+    /// exact child after this method returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when QEMU does not acknowledge the command.
+    pub fn complete_terminal_lifecycle_exit(
+        &mut self,
+        action: crucible::ContentHash,
+        evidence: crucible::ContentHash,
+        process_generation: u64,
+    ) -> Result<QmpCommandComplete, QmpError> {
+        self.send_command(QmpCommand::CompleteTerminalLifecycle {
+            action,
+            evidence,
+            process_generation,
+        })
     }
 
     /// Returns the exact sorted set of configured vCPU indexes.
@@ -448,6 +525,7 @@ where
                     continue;
                 }
                 if let Some(error) = job.get("error") {
+                    self.send_command(QmpCommand::JobDismiss { job_id })?;
                     return Err(QmpError::JobFailed {
                         command,
                         job_id: job_id.to_owned(),
@@ -455,6 +533,7 @@ where
                     });
                 }
                 if job.get("status").and_then(Value::as_str) == Some("concluded") {
+                    self.send_command(QmpCommand::JobDismiss { job_id })?;
                     return Ok(QmpCommandComplete { command });
                 }
             }
@@ -815,20 +894,24 @@ pub enum QmpCommandKind {
     SaveVm,
     /// VMState snapshot load.
     LoadVm,
+    /// VMState snapshot deletion.
+    DeleteSnapshot,
     /// Snapshot job status query.
     QueryJobs,
+    /// Release a concluded snapshot job.
+    JobDismiss,
     /// VM run-state query.
     QueryStatus,
+    /// Stop guest execution.
+    Stop,
+    /// Resume guest execution.
+    Cont,
+    /// Authenticated terminal lifecycle completion.
+    CompleteTerminalLifecycle,
     /// Configured vCPU topology query.
     QueryCpusFast,
     /// Graceful QEMU quit.
     Quit,
-    /// Activation-only chardev hot-add.
-    AddDebugGuestChardev,
-    /// Activation-only virtio-serial controller hot-add.
-    AddDebugGuestController,
-    /// Activation-only virtio-serial port hot-add.
-    AddDebugGuestPort,
 }
 
 impl QmpCommandKind {
@@ -837,12 +920,15 @@ impl QmpCommandKind {
             Self::Capabilities => QMP_CAPABILITIES_COMMAND,
             Self::SaveVm => QMP_SNAPSHOT_SAVE_COMMAND,
             Self::LoadVm => QMP_SNAPSHOT_LOAD_COMMAND,
+            Self::DeleteSnapshot => QMP_SNAPSHOT_DELETE_COMMAND,
             Self::QueryJobs => QMP_QUERY_JOBS_COMMAND,
+            Self::JobDismiss => QMP_JOB_DISMISS_COMMAND,
             Self::QueryStatus => QMP_QUERY_STATUS_COMMAND,
+            Self::Stop => QMP_STOP_COMMAND,
+            Self::Cont => QMP_CONT_COMMAND,
+            Self::CompleteTerminalLifecycle => QMP_COMPLETE_TERMINAL_LIFECYCLE_COMMAND,
             Self::QueryCpusFast => QMP_QUERY_CPUS_FAST_COMMAND,
             Self::Quit => QMP_QUIT_COMMAND_NAME,
-            Self::AddDebugGuestChardev => QMP_CHARDEV_ADD_COMMAND,
-            Self::AddDebugGuestController | Self::AddDebugGuestPort => QMP_DEVICE_ADD_COMMAND,
         }
     }
 }
@@ -875,13 +961,24 @@ enum QmpCommand<'a> {
         tag: &'a QmpSnapshotTag,
         job_id: &'a str,
     },
+    DeleteSnapshot {
+        tag: &'a QmpSnapshotTag,
+        job_id: &'a str,
+    },
     QueryJobs,
+    JobDismiss {
+        job_id: &'a str,
+    },
     QueryStatus,
+    Stop,
+    Cont,
+    CompleteTerminalLifecycle {
+        action: crucible::ContentHash,
+        evidence: crucible::ContentHash,
+        process_generation: u64,
+    },
     QueryCpusFast,
     Quit,
-    AddDebugGuestChardev,
-    AddDebugGuestController,
-    AddDebugGuestPort,
 }
 
 impl QmpCommand<'_> {
@@ -890,13 +987,15 @@ impl QmpCommand<'_> {
             Self::Capabilities => QmpCommandKind::Capabilities,
             Self::SaveVm { .. } => QmpCommandKind::SaveVm,
             Self::LoadVm { .. } => QmpCommandKind::LoadVm,
+            Self::DeleteSnapshot { .. } => QmpCommandKind::DeleteSnapshot,
             Self::QueryJobs => QmpCommandKind::QueryJobs,
+            Self::JobDismiss { .. } => QmpCommandKind::JobDismiss,
             Self::QueryStatus => QmpCommandKind::QueryStatus,
+            Self::Stop => QmpCommandKind::Stop,
+            Self::Cont => QmpCommandKind::Cont,
+            Self::CompleteTerminalLifecycle { .. } => QmpCommandKind::CompleteTerminalLifecycle,
             Self::QueryCpusFast => QmpCommandKind::QueryCpusFast,
             Self::Quit => QmpCommandKind::Quit,
-            Self::AddDebugGuestChardev => QmpCommandKind::AddDebugGuestChardev,
-            Self::AddDebugGuestController => QmpCommandKind::AddDebugGuestController,
-            Self::AddDebugGuestPort => QmpCommandKind::AddDebugGuestPort,
         }
     }
 
@@ -911,52 +1010,47 @@ impl QmpCommand<'_> {
             Self::LoadVm { tag, job_id } => {
                 snapshot_request(QMP_SNAPSHOT_LOAD_COMMAND, job_id, tag)
             }
+            Self::DeleteSnapshot { tag, job_id } => json!({
+                "execute": QMP_SNAPSHOT_DELETE_COMMAND,
+                "arguments": {
+                    "job-id": job_id,
+                    "tag": tag.as_str(),
+                    "devices": [QMP_SNAPSHOT_VMSTATE_DEVICE],
+                },
+            }),
             Self::QueryJobs => json!({
                 "execute": QMP_QUERY_JOBS_COMMAND,
             }),
+            Self::JobDismiss { job_id } => json!({
+                "execute": QMP_JOB_DISMISS_COMMAND,
+                "arguments": { "id": job_id },
+            }),
             Self::QueryStatus => json!({
                 "execute": QMP_QUERY_STATUS_COMMAND,
+            }),
+            Self::Stop => json!({
+                "execute": QMP_STOP_COMMAND,
+            }),
+            Self::Cont => json!({
+                "execute": QMP_CONT_COMMAND,
+            }),
+            Self::CompleteTerminalLifecycle {
+                action,
+                evidence,
+                process_generation,
+            } => json!({
+                "execute": QMP_COMPLETE_TERMINAL_LIFECYCLE_COMMAND,
+                "arguments": {
+                    "action-sha256": action.to_hex(),
+                    "evidence-sha256": evidence.to_hex(),
+                    "process-generation": process_generation,
+                },
             }),
             Self::QueryCpusFast => json!({
                 "execute": QMP_QUERY_CPUS_FAST_COMMAND,
             }),
             Self::Quit => json!({
                 "execute": QMP_QUIT_COMMAND_NAME,
-            }),
-            Self::AddDebugGuestChardev => json!({
-                "execute": QMP_CHARDEV_ADD_COMMAND,
-                "arguments": {
-                    "id": QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID,
-                    "backend": {
-                        "type": "socket",
-                        "data": {
-                            "addr": {
-                                "type": "unix",
-                                "data": { "path": crate::QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME },
-                            },
-                            "server": true,
-                            "wait": false,
-                        },
-                    },
-                },
-            }),
-            Self::AddDebugGuestController => json!({
-                "execute": QMP_DEVICE_ADD_COMMAND,
-                "arguments": {
-                    "driver": "virtio-serial-pci",
-                    "id": QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID,
-                    "bus": "pcie.0",
-                },
-            }),
-            Self::AddDebugGuestPort => json!({
-                "execute": QMP_DEVICE_ADD_COMMAND,
-                "arguments": {
-                    "driver": "virtserialport",
-                    "id": QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID,
-                    "chardev": QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID,
-                    "name": QEMU_DEBUG_GUEST_ACTIVATION_PORT_NAME,
-                    "bus": format!("{QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID}.0"),
-                },
             }),
         }
     }

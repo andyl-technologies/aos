@@ -286,20 +286,6 @@ qemu_receive_packet(NetClientState *nc, const uint8_t *buf, int size)
 }
 
 bool
-qemu_net_queue_append_lossless(NetQueue *queue, NetClientState *sender,
-                               unsigned flags, const uint8_t *data,
-                               size_t size, NetPacketSent *sent_cb)
-{
-  (void)queue;
-  (void)sender;
-  (void)flags;
-  (void)data;
-  (void)size;
-  (void)sent_cb;
-  return true;
-}
-
-bool
 qemu_net_queue_flush(NetQueue *queue)
 {
   (void)queue;

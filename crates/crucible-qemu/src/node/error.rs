@@ -144,6 +144,86 @@ pub enum QemuNodeError {
         /// Deterministic event-log failure diagnostic.
         message: String,
     },
+    /// A coordinated QEMU/host-I/O checkpoint transaction failed.
+    #[error("QEMU exact checkpoint failed: {message}")]
+    Checkpoint {
+        /// Deterministic capture, binding, or cleanup failure detail.
+        message: String,
+    },
+    /// A plugin-emitted network frame broke the per-node sequence contract.
+    #[error("QEMU network output sequence mismatch: expected {expected}, observed {observed}")]
+    NetworkOutputSequence {
+        /// Next sequence required by the host continuation.
+        expected: u64,
+        /// Sequence carried by the emitted frame.
+        observed: u64,
+    },
+    /// A live QEMU fault command violated its admitted boundary contract.
+    #[error("QEMU fault command failed closed: {message}")]
+    FaultCommand {
+        /// Deterministic command, capability, coordinate, or result mismatch.
+        message: String,
+    },
+    /// Precommit storage for the lossless QEMU result payload could not be reserved.
+    #[error(
+        "cannot admit or reserve {requested} bytes for the QEMU fault result against limit {configured}"
+    )]
+    FaultResultStorage {
+        /// Exact result storage requested before visible mutation.
+        requested: u64,
+        /// Authored or hard byte ceiling governing the request.
+        configured: u64,
+    },
+    /// Lossless occurrence-event staging exceeded its authored record ceiling.
+    #[error(
+        "cannot stage {requested} QEMU fault event records at current {current} against limit {configured}"
+    )]
+    FaultEventStorage {
+        /// Events already retained by the in-flight command fence.
+        current: u64,
+        /// Additional records required before the plugin can acknowledge.
+        requested: u64,
+        /// Authored record ceiling governing the operation.
+        configured: u64,
+    },
+    /// Non-consuming occurrence preview exceeded its authored event-log byte ceiling.
+    #[error(
+        "cannot stage {requested} QEMU fault-event log bytes at current {current} against limit {configured}"
+    )]
+    FaultEventPayloadStorage {
+        /// Event-log bytes already retained by the production event continuation.
+        current: u64,
+        /// Additional canonical header and payload bytes required by the event.
+        requested: u64,
+        /// Authored aggregate event-log byte ceiling.
+        configured: u64,
+    },
+    /// Non-consuming occurrence preview exceeded its authored inline payload ceiling.
+    #[error(
+        "cannot stage a QEMU fault-event payload of {requested} bytes against inline limit {configured}"
+    )]
+    FaultEventInlinePayloadStorage {
+        /// Payload bytes required by the previewed event.
+        requested: u64,
+        /// Authored per-event inline payload ceiling.
+        configured: u64,
+    },
+    /// A host-I/O adapter exceeded an authored production resource ceiling.
+    #[error(
+        "cannot reserve {requested} units of `{field}` at current {current}; configured {configured}, hard {hard}"
+    )]
+    ResourceLimit {
+        /// Closed resource field whose reservation failed.
+        field: &'static str,
+        /// Existing admitted usage in field units.
+        current: u64,
+        /// Additional requested usage in field units.
+        requested: u64,
+        /// Scenario-authored ceiling in field units.
+        configured: u64,
+        /// Compiled ceiling in field units.
+        hard: u64,
+    },
 }
 
 impl QemuNodeError {
@@ -165,7 +245,19 @@ impl QemuNodeError {
 
     /// Attaches scheduler-node context to an async-driver failure.
     #[must_use]
-    pub const fn from_async_driver(source: QemuAsyncDriverError) -> Self {
+    pub fn from_async_driver(source: QemuAsyncDriverError) -> Self {
+        if let QemuAsyncDriverError::Runtime(runtime) = &source
+            && let Some((field, current, requested, configured, hard)) =
+                runtime.resource_limit_coordinates()
+        {
+            return Self::ResourceLimit {
+                field,
+                current,
+                requested,
+                configured,
+                hard,
+            };
+        }
         Self::AsyncDriver { source }
     }
 
@@ -177,12 +269,46 @@ impl QemuNodeError {
             message: message.into(),
         }
     }
+
+    /// Creates a coordinated checkpoint error.
+    #[must_use]
+    pub fn checkpoint(message: impl Into<String>) -> Self {
+        Self::Checkpoint {
+            message: message.into(),
+        }
+    }
+
+    /// Creates a fail-closed live fault-command error.
+    #[must_use]
+    pub fn fault_command(message: impl Into<String>) -> Self {
+        Self::FaultCommand {
+            message: message.into(),
+        }
+    }
 }
 
 impl From<QemuNodeError> for BackendError {
     fn from(error: QemuNodeError) -> Self {
-        Self::Rejected {
-            message: error.to_string(),
+        match error {
+            QemuNodeError::ResourceLimit {
+                field,
+                current,
+                requested,
+                configured,
+                hard,
+            } => Self::ResourceLimit {
+                field,
+                current,
+                requested,
+                configured,
+                hard,
+            },
+            error => Self::Rejected {
+                message: error.to_string(),
+            },
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

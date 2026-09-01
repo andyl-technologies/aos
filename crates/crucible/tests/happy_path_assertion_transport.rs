@@ -24,11 +24,7 @@ fn opaque_happy_path_does_not_parse_network_payloads_as_application_verdicts() {
             .iter()
             .all(|assertion| !property_has_network_match(&assertion.property))
     );
-    let graph = fixture
-        .scenario
-        .plan()
-        .event_graph()
-        .expect("happy path should use a graph-native plan");
+    let graph = fixture.scenario.plan().event_graph();
     let pass_trigger = graph.events()[0]
         .trigger
         .as_ref()
@@ -70,7 +66,6 @@ fn predicate_has_network_match(predicate: &Predicate) -> bool {
         | Predicate::NodeState { .. }
         | Predicate::AssertionState { .. }
         | Predicate::Quiescent
-        | Predicate::FaultActive { .. }
         | Predicate::Named { .. }
         | Predicate::GuestMarker { .. } => false,
     }
@@ -97,7 +92,6 @@ fn predicate_has_satisfied_assertion_state(predicate: &Predicate, expected: &str
         | Predicate::IoPattern { .. }
         | Predicate::NodeState { .. }
         | Predicate::Quiescent
-        | Predicate::FaultActive { .. }
         | Predicate::Named { .. }
         | Predicate::GuestMarker { .. } => false,
     }

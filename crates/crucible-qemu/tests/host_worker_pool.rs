@@ -20,7 +20,7 @@ use crucible_qemu::{
 struct GatedBackend {
     inner: MockSimulationBackend,
     gate: Option<Arc<Barrier>>,
-    pause_once: bool,
+    pauses_remaining: usize,
 }
 
 impl GatedBackend {
@@ -28,7 +28,7 @@ impl GatedBackend {
         Self {
             inner: MockSimulationBackend::new(),
             gate,
-            pause_once: false,
+            pauses_remaining: 0,
         }
     }
 
@@ -36,7 +36,15 @@ impl GatedBackend {
         Self {
             inner: MockSimulationBackend::new(),
             gate: None,
-            pause_once: true,
+            pauses_remaining: 1,
+        }
+    }
+
+    fn pausing_times(pauses_remaining: usize) -> Self {
+        Self {
+            inner: MockSimulationBackend::new(),
+            gate: None,
+            pauses_remaining,
         }
     }
 }
@@ -46,13 +54,14 @@ impl SimulationBackend for GatedBackend {
         if let Some(gate) = &self.gate {
             gate.wait();
         }
-        if self.pause_once {
-            self.pause_once = false;
+        if self.pauses_remaining > 0 {
+            let pause_offset = u64::try_from(self.pauses_remaining).unwrap_or(u64::MAX);
+            self.pauses_remaining -= 1;
             return Ok(StepObservation::from_advance_outcome(
                 ceiling,
                 AdvanceOutcome::Paused {
                     at: Icount {
-                        retired: ceiling.ticks.saturating_sub(1),
+                        retired: ceiling.ticks.saturating_sub(pause_offset),
                     },
                 },
             ));
@@ -198,4 +207,25 @@ fn qemu_host_worker_count_does_not_change_state_or_canonical_outcomes() {
     assert_eq!(serial_fingerprints, parallel_fingerprints);
     assert_eq!(serial_report.realized_parallelism, 1);
     assert_eq!(parallel_report.realized_parallelism, 2);
+}
+
+/// A retained RX head may produce one exact pause at every canonical retry
+/// deadline. The worker must not terminate at the legacy 64-reissue ceiling;
+/// it follows the public transport attempt bound used by the production node
+/// adapter.
+#[test]
+fn qemu_host_worker_allows_the_complete_network_retry_budget() {
+    let attempts = crucible_shmem::MAX_FRAME_DELIVERY_ATTEMPTS as usize;
+    let ceiling = u64::from(crucible_shmem::MAX_FRAME_DELIVERY_ATTEMPTS) + 1;
+    let mut pool = QemuHostWorkerPool::new();
+    pool.insert_factory(node("retained"), move || {
+        Ok(GatedBackend::pausing_times(attempts))
+    })
+    .expect("retained backend");
+
+    let report = pool
+        .execute(vec![run("retained", ceiling, 0)], 1)
+        .expect("canonical retained-frame retry budget");
+
+    assert_eq!(report.outcomes[0].step.reached.ticks, ceiling);
 }

@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **46 patches**. This count is checked against
+The carried series contains **76 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -62,8 +62,13 @@ all four; the per-patch detail (§11.4–§11.8) states how each one does.
   upstream-equivalent invocations (boot, run, migrate, QMP introspection) against
   both the unpatched pinned QEMU and the AOS-patched QEMU *with sim mode off*, and
   MUST observe byte-identical guest-visible behavior (same instruction streams
-  under plain `-icount`, same device enumeration, same migration streams). A patch
-  that perturbs any of these out of sim mode fails the gate. *Gate:*
+  under plain `-icount`, same device enumeration, same migration streams). The
+  patched QEMU may expose an explicitly enumerated Crucible host-control command
+  when its versioned lifecycle protocol requires one, but the gate MUST prove
+  that command fails closed without sim mode, leaves the VM stopped in its
+  original run state, and is the complete QMP command-set delta. A patch that
+  perturbs any guest-visible or upstream management behavior out of sim mode
+  fails the gate. *Gate:*
   `gate:qemu-inert`. *Spec:* §11.1.1; satisfies [INV-7], [DET-36].
 
 - **[PATCH-3]** Inertness MUST be achieved structurally, by one of three
@@ -206,15 +211,27 @@ PLUGIN TIME CONTROL (API surface)                      class  enforces
   crucible-plugin-vcpu-exit ..... force vCPU exit            D    DET-1, INV-10
   crucible-plugin-wake-fd ....... main-loop wake-fd          F    SHM-26, INV-8
   crucible-plugin-tcg-exec-cb ... TCG-exec callback          F    coverage, INV-7
+  crucible-plugin-vmstop ........ exact boundary to native pause D  DET-1, INV-10, QEMU-43
+  crucible-serialize-rr-cursor .. authoritative RR cursor VMState D  DET-1, DET-18, INV-10
+  crucible-fingerprint-state-domains guest-only state domains D  DET-18, DET-19, INV-10
+  crucible-stopped-state-control-progress bounded native-stop wake D  DET-1, INV-10, QEMU-43
+  crucible-inactive-retention-clock-guard active-rule-before-clock D  DET-1, QFP-STATE-2, FAULT-ORDER
+  crucible-deferred-result-evidence-test typed deferred evidence coverage F  QEMU-44, FAULT-EVIDENCE
+  crucible-deterministic-instruction-input-state stable instruction selector identity D  DET-1, QEMU-44, FAULT-EVIDENCE
+  crucible-inert-clock-restore preserve native timers for inactive restored clocks D DET-1, QFP-CLOCK-2, QFP-STATE-2
 
 DEVICE CO-SIM (shmem transport)                        class  enforces
   crucible-blk-shmem ............ virtio-blk over shmem      F    PATCH-26, DET-16, E19, SHM-13
   crucible-blk-shmem-io-fixes ... blk I/O correctness        D    PATCH-27, DET-16, E19
   crucible-blk-write-sentinel ... write/flush 0-len sentinel D    PATCH-28, DET-16, E19
   crucible-9p-shmem ............. virtio-9p over shmem       F    PATCH-29, DET-16, E19
+  crucible-9p-completion-wake-registration realize-time notifier lifetime D PATCH-20, DET-1, INV-10
   crucible-dev-cb-api ........... register blk/9p callbacks  F    PATCH-30, PLUG, SHM-17
   crucible-net-tx-callback ...... intercept guest TX         F    PATCH-31, DET-18, E18, SHM-17
-  crucible-net-flush-api ........ lossless RX inject + flush F    PATCH-32, DET-18, E18
+  crucible-net-direct-inject-api  lossless direct RX status F    PATCH-32, DET-18, E18
+  crucible-block-typed-errors ... exact block result to errno     F    STOR-RESULT, IO-8, PATCH-26
+  crucible-block-discard ........ deterministic discard transport F    STOR-DISCARD, DET-16, PATCH-26
+  crucible-block-transport-reset  epoch/recovery/reset transport       F    STOR-RESET, STOR-RESULT, DET-16, PATCH-26
 
 TCG SIM CORRECTNESS / PERF                             class  enforces
   crucible-sim-loop-fix ......... single-vCPU loop fixes     D    PATCH-34, DET-1, NG-1
@@ -230,6 +247,35 @@ TCG SIM CORRECTNESS / PERF                             class  enforces
   crucible-9p-sync-kick ......... sync sim-mode 9p vq dispatch D    DET-16, PATCH-29, PLUG-22, IO-32
   crucible-whitebox-guest-write . callback guest-memory reply   F    PLUG-34, PLUG-51, GHC-32, GHC-37
   crucible-translation-prefetch-helper dedicated demand TCG helper F PERF-32
+
+SIGNAL-DRIVEN FAULT EXECUTION                          class  enforces
+  crucible-fault-command-abi ... closed command/result registry F FAULT-ABI, FAULT-CAP, FAULT-ORDER
+  crucible-fault-safe-boundary exact icount/quiescent commit      D FAULT-BOUNDARY, FAULT-AUTH, DET-1
+  crucible-memory-boundary-mutate atomic GPA/GVA RAM mutation    F QFP-MEM-1, QFP-MEM-2, FAULT-ORDER
+  crucible-memory-access-faults typed CPU/DMA memory rules       D QFP-MEMA-1, QFP-MEMA-2, FAULT-ORDER
+  crucible-architecture-register-faults typed CPU registers     D QFP-REG-1, QFP-REG-2, FAULT-ORDER
+  crucible-instruction-and-exception-faults exact instruction/exception effects D QFP-INSN-1, QFP-EXC-1, FAULT-ORDER
+  crucible-interrupt-faults ... realized controller disposition/storms D QFP-IRQ-1, QFP-IRQ-2, FAULT-ORDER
+  crucible-hardware-error-inject architecture error/ECC delivery D QFP-HWERR-1, QFP-HWERR-2, FAULT-ORDER
+  crucible-vcpu-service-control rational CPU service/stall/offline D QFP-VCPU-1, QFP-VCPU-2, FAULT-ORDER
+  crucible-node-lifecycle-faults crash/hang/reset/power lifecycle D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
+  crucible-block-typed-errors closed guest-visible block errors F STOR-RESULT, IO-8, PATCH-26
+  crucible-block-discard .... deterministic discard transport F STOR-DISCARD, DET-16, PATCH-26
+  crucible-block-transport-reset transactional reset/recovery F STOR-RESET, STOR-RESULT, DET-16, PATCH-26
+  crucible-plugin-vmstop ... exact plugin-boundary native pause D DET-1, INV-10, QEMU-43
+  crucible-terminal-lifecycle-completion staged terminal exit D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
+  crucible-authenticated-terminal-lifecycle authenticated exit D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
+  crucible-immutable-process-generation launch-bound process ID D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
+  crucible-core-fault-vmstate transactional bounded core state D QFP-STATE-1, QFP-STATE-2, FAULT-ORDER
+  crucible-guest-clock-faults guest clocks/timer rearming/evidence D QFP-CLOCK-1, QFP-CLOCK-2, FAULT-ORDER
+  crucible-accelerator-fault-device deterministic accelerator device/faults D QFP-ACCEL-1, QFP-ACCEL-2, FAULT-ORDER
+  crucible-fault-vmstate aggregate fault-state identity D QFP-STATE-1, QFP-STATE-2, QFP-STATE-3
+  crucible-lifecycle-precondition atomic lifecycle VM-state precondition D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
+  crucible-typed-node-result-schema fixed typed result and occurrence evidence D QFP-RESULT-1, QFP-EVENT-1, FAULT-ORDER
+  crucible-device-wait-vmstop nonblocking exact control/device-completion pause D QFP-STATE-2, DET-1, INV-10
+  crucible-accelerator-result-opportunity exact one-shot accelerator result arming F QFP-ACCEL-3, QFP-RESULT-1, QFP-EVENT-1, FAULT-ORDER
+  crucible-authenticated-event-request-envelope restored authenticated occurrence requests F QFP-STATE-2, QFP-ACCEL-3, QFP-EVENT-1, FAULT-ORDER
+  crucible-inert-clock-restore inactive clock VMState commits retain native device timers D DET-1, QFP-CLOCK-2, QFP-STATE-2
 
 GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
   (no new patch required — see §11.7)                   —     GHC reuse
@@ -249,7 +295,7 @@ not additional files:
 - `crucible-plugin-advance-barrier` -> `0010-crucible-plugin-time-advance.patch`
 - `crucible-plugin-device-wake` -> `0013-crucible-plugin-wake-fd.patch`,
   `0019-crucible-9p-shmem.patch`, and `0024-crucible-sim-poll-immediate.patch`
-- `crucible-net-flush-api` -> `0009-crucible-net-deterministic.patch`
+- `crucible-net-direct-inject-api` -> `0009-crucible-net-deterministic.patch`
 
 - **[PATCH-10]** The catalog above is the **authoritative inventory** of the
   series. A patch present in the AOS QEMU package but absent from this catalog, or
@@ -429,12 +475,14 @@ determinism-critical.
 - **Enforces:** [DET-11], [DET-13]; eliminates E18 (network arrival timing)
   partially on the QEMU side (the rest is the scheduler + transport).
 - **Mechanism:** adds a plugin-callable **frame-injection** entry point
-  (`qemu_plugin_net_inject`) plus lossless queue/flush helpers
-  (`qemu_plugin_net_send`, `qemu_plugin_net_flush`,
-  `qemu_plugin_net_can_receive`) so an inbound frame is either delivered
-  directly at the plugin's chosen virtual-time moment or appended to QEMU's
-  incoming queue and made architecturally visible only when the plugin flushes
-  at that moment. Delivery is therefore a pure function of icount, not "as it
+  (`qemu_plugin_net_inject`) whose return status distinguishes complete delivery
+  from transient guest backpressure and permanent failure. The plugin consumes
+  a frame from the bounded shared-memory ring only after complete delivery; a
+  backpressured frame remains canonical and checkpoint-visible there for retry
+  at a later idle boundary. Each retry clears QEMU's otherwise persistent
+  `receive_disabled` hint before re-probing the guest device: that hint normally
+  belongs to QEMU's private packet queue, which this canonical path deliberately
+  does not use. Delivery is therefore a pure function of icount, not "as it
   arrives on a socket."
 - **Micro-test:** inject the same frame at the same delivery icount under skewed
   producer timing across two runs; assert the guest observes it at the identical
@@ -1006,7 +1054,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   post-completion waiter notification in the reconstructed patch prefix. The
   live block-I/O gate additionally boots a real guest, services its block request
   at a future delivery icount, and requires progress to the scheduler ceiling
-  with identical observations under host load and with the due response's
+  with identical observations under bounded scheduler preemption and with the due response's
   physical ring write deliberately delayed in wall time.
 - **Inertness:** [PATCH-3](a), [PATCH-3](c) — the hook runs only for the selected
   `crucible-shmem` driver and only when a plugin registers it; otherwise the
@@ -1032,11 +1080,829 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   results remain unchanged. The live 9p gate additionally boots a mounting
   guest, requires nonzero request and response frames on `SLOT_9P_IO`, closes
   the scheduler ceiling by retirement or a later idle wake, and reproduces
-  identical icount-domain observations under host load with a deliberately
+  identical icount-domain observations under bounded scheduler preemption with a deliberately
   late physical response write.
 - **Inertness:** [PATCH-3](a), [PATCH-3](c) — outside sim-mode icount the
   upstream ioeventfd predicate is unchanged; other virtio devices are unchanged.
 - **Risk:** D.
+
+### crucible-9p-completion-wake-registration — bind notifier lifetime to the device
+
+- **Patch:** `0076-crucible-9p-completion-wake-registration.patch`.
+- **Enforces:** [PATCH-20], [DET-1], [INV-10].
+- **Mechanism:** registers the virtio-9p completion-wake notifier whenever the
+  device is realized and unregisters it when the device is unrealized. Notifier
+  lifetime is therefore owned by the QEMU device, not by whether plugin callback
+  registration happened to precede device realization. The notifier remains
+  inert until a Crucible-forwarded PDU is pending. At a drained wake it still
+  checks that the complete 9p callback family is installed before polling; a
+  missing callback family with pending Crucible work fails through the existing
+  device-error and shutdown path. No callback is invoked merely by registering
+  the notifier.
+- **Ordering requirement:** plugin installation may occur before or after
+  virtio-9p realization. In either order, once runtime request forwarding is
+  admitted, every host response doorbell reaches `virtio_9p_crucible_wake`, the
+  response is polled once, and `crucible_9p_finish_burst` releases the shared
+  `device_io_active` hold before the scheduler certifies quiescence. Registration
+  must not be conditional on the earlier, transient value of
+  `crucible_9p_callbacks_ready()`.
+- **Micro-test:** reconstruct the patch prefix through 0075 and prove the old
+  realize path conditionally registers the notifier; apply 0076 and require
+  unconditional add, symmetric unrealize removal, and the retained callback-
+  readiness guard in the pending-wake handler. The live 9p gate is the
+  integration test: a request submitted after device realization must stop at
+  its request icount, consume its deterministic response from a later doorbell,
+  clear `device_io_active`, and close the scheduler ceiling in both reference
+  and bounded-scheduler-preemption legs.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — stock 9p processing never creates a
+  Crucible pending PDU, so the registered notifier observes no work and leaves
+  upstream device behavior unchanged when sim forwarding is not installed.
+- **Risk:** D.
+
+### crucible-serialize-rr-cursor — restore the exact multi-vCPU continuation
+
+- **Patch:** `0077-crucible-serialize-rr-cursor.patch`.
+- **Enforces:** [DET-1], [DET-18], [INV-10].
+- **Mechanism:** maintains one authoritative record/replay cursor across normal
+  round-robin handoffs and host execution ceilings, serializes that cursor with
+  icount VMState, and restores the selected vCPU and intra-turn position before
+  any guest instruction can execute. The VMState section has one supported
+  version; there is no compatibility reader for the earlier incomplete layout.
+- **Micro-test:** checkpoints a nonzero intra-turn cursor in a multi-vCPU guest,
+  restores it in a fresh QEMU process, and requires the restored register, RAM,
+  device, icount, and cursor fingerprint plus the subsequent replay suffix to
+  match exactly. A control that changes only the serialized cursor must fail the
+  production restore-admission comparison.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — the state is consumed only by
+  precise-icount sim execution and migration/checkpoint operations.
+- **Risk:** D.
+
+### crucible-fingerprint-state-domains — hash guest-semantic state only
+
+- **Patch:** `0078-crucible-fingerprint-guest-state-domains.patch`.
+- **Enforces:** [DET-18], [DET-19], [INV-10].
+- **Mechanism:** samples live interrupt state under the BQL without mutating it,
+  includes guest-delivery-relevant interrupt bits and all declared architectural
+  CPU state, and excludes only target-declared transient scheduler-exit bits.
+  x86 canonicalizes `CPU_INTERRUPT_POLL`; the generic target layer canonicalizes
+  `CPU_INTERRUPT_EXITTB`. Every other interrupt bit remains fingerprinted.
+- **Micro-test:** proves repeated capture is side-effect-free, a fresh-process
+  restore produces the same fingerprint before guest execution, guest-visible
+  interrupt changes alter the digest, and transient host scheduling exits do
+  not. The changed-cursor negative control is recomputed through the same
+  canonical black-box fingerprint and rejected by the production runtime.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — the helpers are additive and run
+  only when the Crucible plugin requests an exact fingerprint boundary.
+- **Risk:** D.
+
+### crucible-stopped-state-control-progress — close native-stop wake races
+
+- **Patch:** `0079-crucible-stopped-state-control-progress.patch`.
+- **Enforces:** [DET-1], [INV-10], [QEMU-43].
+- **Mechanism:** after the serialized RR thread drains host work for every vCPU,
+  it rechecks both stop/unplug state and queued vCPU work under the BQL before
+  sleeping. It uses a one-millisecond bounded BQL-aware condition wait so a
+  non-BQL producer racing with the recheck cannot strand the native VM-stop
+  handshake if its condition signal arrived just before the sleep.
+- **Micro-test:** requires all three progress guards in the isolated patch,
+  proves pristine QEMU lacks them, and consumes the fresh-process exact-snapshot
+  gate where the plugin must publish state while the VM remains paused and QEMU
+  must finish the native stop/restore control handshake without executing guest
+  instructions.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — the loop is entered only while a
+  Crucible exact-boundary VM-stop request is pending in precise-icount sim mode.
+- **Risk:** D.
+
+### crucible-inactive-retention-clock-guard — admit work before reading time
+
+- **Patch:** `0080-crucible-inactive-retention-clock-guard.patch`.
+- **Enforces:** [DET-1], [QFP-STATE-2], [FAULT-ORDER].
+- **Mechanism:** `node_memory_retention_boundary()` rejects an inactive memory
+  fault domain before it samples QEMU virtual time. Active retention work keeps
+  the existing clock, deadline, counter, mutation, and event ordering.
+- **Micro-test:** checkpoints a pending node-boundary command, restores it into
+  a fresh paused QEMU process with no memory fault rule, and requires the command
+  to continue exactly once. Static assertions require the active-rule guard to
+  precede `node_virtual_now()`, and the live memory gates remain the positive
+  control for active retention timing.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — inactive domains now return before
+  a clock read; active-domain behavior is unchanged.
+- **Risk:** D.
+
+### crucible-deferred-result-evidence-test — validate typed deferred results
+
+- **Patch:** `0081-crucible-deferred-result-evidence-test.patch`.
+- **Enforces:** [QEMU-44], [FAULT-EVIDENCE].
+- **Mechanism:** updates the GPL-side live instruction plugin to validate the
+  canonical typed node-result evidence added to deferred completions by patch
+  0074. Composed commands select the payload bound to their exact command
+  sequence before checking the request and evidence digests.
+- **Micro-test:** runs the complete patched-QEMU instruction-fault matrix and
+  retains its stock-QEMU and non-sim negative controls. The patch-local check
+  requires the obsolete empty-evidence assertion to be removed by the diff.
+- **Inertness:** [PATCH-3](a) — this changes test code only and adds no runtime
+  path.
+- **Risk:** F.
+
+### crucible-deterministic-instruction-input-state — stabilize selector identity
+
+- **Patch:** `0082-crucible-deterministic-instruction-input-state.patch`.
+- **Enforces:** [DET-1], [QEMU-44], [FAULT-EVIDENCE].
+- **Mechanism:** instruction `input_state_sha256` selectors use a versioned
+  digest of canonical architecture-register state. PC, exact instruction bytes
+  and/or opcode class remain independently bound by the instruction selector.
+  Whole RAM and raw non-RAM VMState stay in occurrence evidence and the
+  normalized host fingerprint, but are excluded from the QEMU-local selector
+  because unrelated RAM and raw device bookkeeping are not canonical
+  instruction inputs. A dedicated register-state digest excludes icount and
+  round-robin scheduler coordinates while the existing full execution
+  fingerprint remains unchanged in occurrence evidence. Both digests are
+  derived from one ordered register sample when needed together. The live
+  retry fixture arms its naturally faulting load only after the exact-PC rule
+  is translated and QEMU confirms commit installation.
+- **Micro-test:** captures selector identities in one patched-QEMU process and
+  reuses them in a fresh process for single and composed x86-64 and AArch64
+  result transforms; the explicit mismatch and stock-QEMU controls remain red.
+  The same matrix proves committed retry after a natural guest page fault and
+  exhausts all 4,096 event slots without reducing production capacity.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — the digest is computed only for an
+  admitted instruction rule at its exact safe boundary.
+- **Risk:** D.
+
+### crucible-inert-clock-restore — preserve native timers for inert clocks
+
+- **Patch:** `0083-crucible-inert-clock-restore.patch`.
+- **Enforces:** [DET-1], [QFP-CLOCK-2], [QFP-STATE-2].
+- **Mechanism:** aggregate clock VMState restores each source before deciding
+  whether its device timers need Crucible reprojection. If the restored source
+  has no rule, source-state fault, accumulated transform, freeze, or
+  synchronization, native QEMU device VMState is authoritative and its timers
+  are left untouched. Sources with an effective Crucible transform still run
+  their device rearm callback. Wander-timer rearm remains unconditional so a
+  same-process rollback cannot retain a timer from state newer than the loaded
+  checkpoint.
+- **Micro-test:** the production two-node live-network world captures an exact
+  checkpoint under an empty fault plan, shuts both QEMU processes down, restores
+  both nodes into fresh processes, and must complete the first restored quantum
+  and the remaining deterministic packet exchange. The existing active-clock
+  gates remain the positive control that transformed sources still rearm.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — with no effective clock mutation,
+  the patch removes a Crucible callback from restore and leaves upstream device
+  VMState authoritative; active fault behavior is unchanged.
+- **Risk:** D.
+
+### crucible-exact-restore-network-announcement — keep restored traffic exact
+
+- **Patch:** `0084-crucible-exact-restore-network-announcement.patch`.
+- **Enforces:** [DET-1], [QFP-STATE-2], [FAULT-ORDER].
+- **Mechanism:** exposes whether the central VMState deserialization transaction
+  is inside a Crucible exact restore. During that transaction only,
+  `virtio_net_post_load_device` deletes and clears the migration announcement
+  timer instead of synthesizing guest-announcement traffic. A Crucible restore
+  returns to the same modeled link and peer population, so a migration-only
+  announcement would be an unrecorded frame absent from uninterrupted
+  execution. The ordinary QEMU migration branch retains the upstream timer
+  reset, immediate scheduling, and deletion behavior byte for byte.
+- **Micro-test:** the production two-node live-network world captures an exact
+  checkpoint after establishing its deterministic route, terminates both QEMU
+  processes, restores both nodes into fresh processes, and requires the first
+  restored quantum and the remaining packet exchange to match the uninterrupted
+  branch exactly. The per-patch catalog reconstructs the QEMU prefix before
+  0084 as the negative control, applies 0084 with zero fuzz, and binds the live
+  result to this patch entry.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — the new predicate is read only
+  during virtio-net post-load, and the changed branch is reachable only while
+  Crucible's central exact-load transaction is active. Ordinary migration and
+  non-restore execution retain upstream behavior.
+- **Risk:** D.
+
+### crucible-register-rejection-atomicity — prove rejected commands are inert
+
+- **Patch:** `0085-crucible-register-rejection-atomicity.patch`.
+- **Enforces:** [DET-1], [QFP-REG-1], [QFP-REG-2], [FAULT-EVIDENCE].
+- **Mechanism:** live register observation requires exact-boundary depth and an
+  exact match between `current_cpu` and the serialized RR owner. Both plugin
+  callbacks and every complete internal node/instruction boundary transaction
+  own the nestable exact-boundary token. Register read
+  and decode revalidate every manifest row for every realized vCPU. Rejection
+  transactions hash every vCPU's canonical GDB register export and compare
+  counters wired to the production TLB, TB, flags, interrupt, timer, and
+  control-flow side-effect paths before reporting a non-applied result. Those
+  counters are admitted only inside the thread-local architecture-register
+  write scope, preventing unrelated emulator activity from being attributed to
+  the mutation under audit; the timer class remains zero because no supported
+  register advertises that side effect.
+- **Micro-test:** the full x86-64 and AArch64 register matrix proves equal,
+  nonzero canonical hashes, unchanged side-effect counters, zero applied
+  icount, empty evidence, no emitted event, and unchanged selected-register
+  bytes for every delayed rejection. The inconsistent-identity case performs
+  the same whole-machine comparison around its reentrant synchronous result.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — observation and counters do not
+  mutate guest state; they are consulted only by register-fault validation and
+  its live gate. The user-mode hook is inert, and non-Crucible execution does
+  not read or branch on the counters.
+- **Risk:** D.
+
+### crucible-genesis-observation-boundary — sample the exact prelaunch state
+
+- **Patch:** `0086-crucible-genesis-observation-boundary.patch`.
+- **Enforces:** [DET-1], [QFP-REG-1], [QFP-STATE-2].
+- **Mechanism:** extends the BQL-held observation callback to admit exactly one
+  additional run state: prelaunch while raw icount is zero. The independent
+  definition process uses that boundary to read every realized vCPU, RAM, and
+  registered device section after machine initialization but before any guest
+  instruction. Running and terminal-pause behavior is unchanged; prelaunch
+  after execution and every other stopped state fail closed.
+- **Micro-test:** launches a real four-vCPU QEMU process with `-S`, waits for
+  exactly one complete callback-authorized definition record before QMP quit,
+  and requires zero icount, all-vCPU register manifests, and complete nonzero
+  RAM and device digests. Stock QEMU is the negative API control.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — the new branch is reachable only
+  from the additive Crucible callback at exact prelaunch genesis and performs
+  observation only. Ordinary QEMU launch and plugin exit retain their existing
+  paths.
+- **Risk:** D.
+
+### crucible-deterministic-rcu-quiescence — remove host-timed sim exits
+
+- **Patch:** `0087-crucible-deterministic-rcu-quiescence.patch`.
+- **Enforces:** [DET-1], [DET-29], [QEMU-43].
+- **Mechanism:** the single-threaded TCG forced-RCU notifier retains its
+  ordinary `rr_kick_next_cpu()` behavior except when precise Crucible sim mode
+  has a nonzero pinned RR quantum. In that bounded mode it does not let a host
+  RCU worker asynchronously choose a translation-block exit, because doing so
+  can change the guest instruction at which a pending interrupt is observed.
+  The finite remaining RR budget provides the next natural RCU quiescent state.
+- **Micro-test:** runs the real four-vCPU deterministic fingerprint workload
+  twice through a non-cadence terminal horizon, applies six configured 15 ms
+  SIGSTOP/SIGCONT preemptions to QEMU only after the second run's first positive
+  trace coordinate and under a two-second resume watchdog, and requires the
+  canonical all-vCPU, RR-switch,
+  deterministic-IPI, RAM, and device evidence to compare equal. The stock
+  source proves the forced-kick path remains the default outside the guarded
+  mode.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — accelerators other than sim,
+  imprecise icount, and sim configurations without a pinned quantum execute the
+  prior forced-kick statement unchanged.
+- **Risk:** D.
+
+### crucible-deterministic-host-kick-boundary — bound generic host work
+
+- **Patch:** `0088-crucible-deterministic-host-kick-boundary.patch`.
+- **Enforces:** [DET-1], [DET-29], [QEMU-43].
+- **Mechanism:** QEMU's generic RR vCPU kick keeps its immediate all-vCPU
+  `cpu_exit()` loop unless precise Crucible sim mode has a nonzero pinned RR
+  quantum. In that mode, patch 0090 converts state-free latency hints into a
+  soft all-vCPU `exit_request`: the current translation block completes at its
+  deterministic endpoint and `cpu_exec` observes the request before starting
+  another block. The host arrival therefore cannot asynchronously select an
+  instruction endpoint, while QEMU still services the requested work promptly.
+  Already-committed stop,
+  unplug, halted, stopped, and
+  interrupt-request states and an admitted exact terminal pause retain an
+  immediate all-vCPU exit request for the shared RR execution thread, so a
+  transition targeting a non-current vCPU still returns the active TCG slice.
+  Native control, wakeup, terminal observation, and published interrupt
+  semantics remain live without allowing a state-free host arrival to choose a
+  guest coordinate.
+- **Genesis progress:** `qemu_cpu_kick()` broadcasts the halt condition before
+  calling the accelerator hook. Until the RR thread records that its initial
+  stopped wait is complete, the hook does not treat the initialization-time
+  `stopped` bit as a committed lifecycle transition. The condition broadcast
+  still starts the thread, and the soft request is normalized before first
+  execution. Raw observed icount, QEMU runstate, and `rr_current_cpu` are not
+  used as execution proxies.
+- **Micro-test:** the production four-vCPU fingerprint workload compares two
+  exact-horizon executions while only the second has bounded scheduler
+  preemption after its first positive trace coordinate.
+  It requires equal canonical all-vCPU, RR, deterministic-IPI, RAM, and device
+  evidence and bounded QMP stop/teardown. Stock QEMU supplies the immediate-kick
+  negative control. The production single-vCPU fingerprint gate separately
+  proves boot, exact-horizon stop, checkpoint, and replay progress with the
+  pinned quantum.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — non-sim accelerators, imprecise
+  icount, and configurations without a pinned quantum execute the existing
+  kick loop unchanged. In bounded sim mode, only state-free generic kicks use
+  the soft between-TB exit; admitted terminal observation and committed
+  control, halt, unplug, stop, and interrupt state are handled immediately.
+- **Risk:** D.
+
+### crucible-exact-boundary-vcpu-introspection — observe checkpoint CPU state
+
+- **Patch:** `0089-crucible-exact-boundary-vcpu-introspection.patch`.
+- **Enforces:** [DET-1], [QFP-REG-1], [QFP-STATE-2].
+- **Mechanism:** all-vCPU register reads retain live serialized-owner and
+  stopped-BQL admission, and add the exact main-loop case where no vCPU is
+  current, QEMU's exact-boundary scope is active, and the BQL makes every vCPU
+  quiescent. `qemu_plugin_rr_cursor()` likewise reads the authoritative committed
+  `TimersState` cursor at that boundary. Quantum, owner, and range checks remain
+  mandatory.
+- **Micro-test:** production World networking captures an exact checkpoint from
+  the main-loop control callback, restores it in fresh QEMU processes, and
+  requires the next complete live quantum to match. The four-vCPU horizon gate
+  retains live-owner cursor coverage, while plugin-install cursor reads retain
+  the unowned-context negative control.
+- **Inertness:** [PATCH-3](c) — the added path is reachable only inside QEMU's
+  existing exact deterministic plugin boundary while the BQL is held. Every
+  ordinary QEMU or unowned plugin context executes the prior rejection rules.
+- **Risk:** D.
+
+### crucible-active-tcg-kick-boundary — preserve bounded kick liveness
+
+- **Patch:** `0090-crucible-active-tcg-kick-boundary.patch`.
+- **Enforces:** [DET-1], [DET-29], [QEMU-43].
+- **Mechanism:** state-free generic kicks in precise bounded sim mode set each
+  RR vCPU's atomic `exit_request` without setting `icount_decr.high`. A running
+  vCPU therefore finishes the current deterministic translation block and
+  exits before another block begins; an idle RR thread is already awakened by
+  `qemu_cpu_kick()`'s condition broadcast. The RR thread separately publishes
+  completion of its initial stopped wait so initialization state cannot be
+  mistaken for a committed stop. Stateful transitions retain `cpu_exit()`.
+- **Micro-test:** structural checks require the soft atomic request, forbid an
+  asynchronous decrementer write, and require the initial-wait completion
+  proof. Patch 0106 tightens active execution after the production four-vCPU
+  adversary proved that host arrival could otherwise choose which translation
+  block observed the soft request.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — the soft exit applies only inside
+  the existing precise sim-mode, pinned-quantum guard. Every other accelerator
+  and icount configuration retains the upstream all-vCPU `cpu_exit()` path;
+  committed lifecycle and interrupt transitions retain it within the guard.
+- **Risk:** D.
+
+### crucible-defer-active-slice-host-wakes — seal the active RR slice
+
+- **Patch:** `0106-crucible-defer-active-slice-host-wakes.patch`.
+- **Enforces:** [DET-1], [DET-29], [QEMU-43].
+- **Mechanism:** in multi-vCPU mode, an atomic idle/active/pending handshake
+  retains each state-free generic host wake across every partial TCG slice and
+  consumes it only after a full pinned RR handoff, at an authorized scheduler
+  ceiling, or at a guest halt/idle boundary. An idle-to-pending claimant can
+  safely publish `exit_request` because the atomic claim prevents TCG from
+  starting; this closes the condition broadcast-before-wait race without
+  selecting a guest execution endpoint.
+  Single-vCPU mode retains the soft between-block
+  request because it has no alternate RR allocation to perturb and requires
+  bounded main-loop service. Terminal pause publishes its
+  pending state and explicitly kicks the vCPU; committed terminal, lifecycle,
+  and interrupt state retains immediate `cpu_exit()`.
+- **Micro-test:** the production four-vCPU fingerprint compares complete
+  canonical streams with bounded scheduler preemption applied only after the
+  second run's first positive trace coordinate. S1 and
+  live-network gates prove startup, between-slice, terminal-pause, and device
+  wake liveness. Structural checks require the single-vCPU liveness exception,
+  the idle/active/pending handshake and its canonical service points, plus cleanup on
+  idle, boot, and stateful paths; they forbid a multi-vCPU soft exit.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — the new admission guard is inside
+  precise sim mode with a nonzero pinned RR quantum. Other accelerators and
+  icount configurations retain upstream behavior.
+- **Risk:** D.
+
+### crucible-anchor-rr-cursor-genesis — establish scheduler state before execution
+
+- **Patch:** `0107-crucible-anchor-rr-cursor-genesis.patch`.
+- **Enforces:** [DET-1], [QFP-STATE-2], [QEMU-43].
+- **Mechanism:** after the RR thread completes QEMU's initial stopped wait and
+  before it computes the first per-vCPU budget, a fresh sim guest commits vCPU
+  0 at position 0 as its serialized cursor. The initializer requires raw
+  icount zero and leaves any valid cursor loaded from VMState untouched. A
+  valid serialized owner also overrides a mismatching loop-local suggestion
+  after host control service; only quantum completion or guest halt hands the
+  turn to another runnable vCPU. Inner `CPU_NEXT` transitions consult the same
+  selector, and accounting fails loudly rather than resetting a mismatched
+  owner. A partial turn returns directly to the outer timer/budget loop without
+  publishing an idle RR state, so its next slice is freshly clamped while the
+  active-slice host-wake guard remains armed.
+- **Micro-test:** the exact-snapshot gate fixes aggregate capture icount and
+  compares independent derivation outputs byte for byte, including the nonzero
+  intra-turn cursor and capture fingerprint. Structural checks require the
+  initializer, its raw-zero assertion, its placement before the RR loop's first
+  budget, and serialized-owner authority throughout a partial turn.
+- **Inertness:** the initializer returns immediately outside sim mode, when no
+  bounded RR quantum is configured, or when VMState already supplies a valid
+  cursor. Other accelerators retain upstream scheduler state.
+- **Risk:** D.
+
+### crucible-deterministic-network-kick — preserve exact network continuation
+
+- **Patch:** `0108-crucible-deterministic-network-kick.patch`.
+- **Enforces:** [DET-1], [PLUG-23], [PLUG-24], [QEMU-43].
+- **Mechanism:** sim-mode virtio-net queue kicks and serialized `tx_waiting`
+  resumes drain deferred transmit bottom halves synchronously and publish the
+  committed raw transmit icount. An optional sim-only VMState subsection
+  preserves each virtqueue notification cursor, and exact snapshot handling
+  flushes translation history symmetrically on source and restore while using
+  bounded cache-independent translation-block shapes without direct chaining.
+- **Micro-test:** the production two-node live-network gate requires a real
+  guest acknowledgement, then compares uninterrupted and fresh-process-restored
+  quanta until both a packet and new fault decisions occur. The per-patch
+  micro-test also requires the optional VMState fields and retains stock-mode
+  negative controls.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — synchronous kicks, the VMState
+  subsection, and translation-history handling are admitted only by precise
+  sim mode with the Crucible time-control boundary. Ordinary QEMU networking
+  and migration retain upstream behavior.
+- **Risk:** D.
+
+### crucible-control-boundary-node-faults — complete halted-node mutations
+
+- **Patch:** `0109-crucible-control-boundary-node-faults.patch`.
+- **Enforces:** [QFP-LIFE-1], [QFP-LIFE-2], [FAULT-ORDER].
+- **Mechanism:** QEMU samples one raw icount for the drained control callback,
+  lets the plugin dequeue and submit commands, and then dispatches any due
+  node-boundary command at that same coordinate before leaving the exact
+  boundary. The pending predicate is phase-qualified, so instruction and
+  device mutations remain owned by their native execution seams. Terminal
+  lifecycle authorization hashes zero the raw-coordinate field in CRUCLIF
+  evidence before the plugin translates it to scheduler-logical space; the
+  action and event header still bind the exact logical coordinate.
+- **Micro-test:** the production shared-cause gate reaches the event with a
+  halted real guest, requires typed lifecycle PREPARE and APPLY to complete,
+  and compares uninterrupted execution with fresh-process restore. The plugin
+  unit regression fills the lossless event ring and proves command pumping
+  withholds the control-token release acknowledgement until the host consumes
+  enough capacity and the complete private event queue is published.
+- **Inertness:** the added dispatch runs only inside the existing exact drained
+  control callback and only when a due node-boundary command is pending. It does
+  not advance guest time, synthesize a result, or affect ordinary QEMU modes.
+- **Risk:** F.
+
+### crucible-release-halted-rr-turn — publish idle inside a partial RR turn
+
+- **Patch:** `0110-crucible-release-halted-rr-turn.patch`.
+- **Enforces:** [DET-1], [PLUG-24], [QEMU-43].
+- **Mechanism:** after a vCPU executes `HLT`, the RR selector first looks for a
+  different runnable vCPU. If none exists and it returns the halted cursor
+  owner, the execution loop leaves the partial turn and enters the ordinary
+  all-vCPU-idle path. The serialized cursor position is retained for the next
+  runnable slice; it no longer causes QEMU to call `tcg_cpu_exec()` repeatedly
+  on a halted CPU that cannot retire another instruction. The exact halted
+  callback may capture cross-vCPU registers at an exact completed-turn handoff
+  only when the committed cursor is zero at the next serialized owner and
+  `current_cpu` still names the vCPU whose turn just finished; other owner
+  mismatches remain rejected. The x86 `PAUSE` helper sets a transient private
+  marker that the RR loop consumes and clears immediately after TCG returns;
+  generic `EXCP_INTERRUPT` exits cannot masquerade as a guest yield. A marked
+  multi-vCPU `PAUSE` commits the RFC-authorized early handoff at cursor zero
+  immediately after instruction accounting and before plugin callbacks,
+  vmstop, scheduled fault dispatch, or host preemption can return from the
+  batch. Host work at that same boundary is serviced after the canonical guest
+  transition. An atomic handoff fence makes a colliding BQL control callback
+  relinquish its token; the RR writer commits the owner/cursor transition and
+  schedules a fresh boundary before any fingerprint or checkpoint request can
+  acknowledge it. Ordinary accounting remains the sole handoff when the `PAUSE`
+  coincides with a completed quantum, and single-vCPU cursor behavior is
+  unchanged.
+- **Micro-test:** the diskless live quantum guests deliberately reach their
+  final `HLT` at a nonzero RR cursor position. The one-vCPU and four-vCPU gates
+  require QEMU to publish the all-halted boundary, complete the exact timer
+  idle jump, and reproduce the result under bounded scheduler preemption. The
+  four-vCPU gate additionally captures the exact output-only sequence
+  `AAABPPPR`: every AP publishes online and contends on a lock held by the BSP.
+  The BSP releases the lock, executes `PAUSE`, and immediately attempts to
+  reacquire it. Reacquisition emits `F` and parks forever. A passing `P` before
+  that next BSP instruction proves a waiter ran before the reacquire. A
+  non-distributable QEMU variant arms an exact abort marker only after the
+  guest has issued the `AAAB` prefix and immediately before the critical
+  release-site `PAUSE`. It aborts only if that marked PAUSE takes the
+  still-partial early-yield branch. Earlier startup/contention PAUSEs and an
+  ordinary 4096-instruction completion cannot satisfy that negative control;
+  the negative additionally requires the live gate's captured pre-abort UART
+  bytes to equal `AAAB`.
+  The remaining APs acquire in turn before `R`, so INIT/SIPI delivery alone
+  cannot satisfy the evidence.
+  Structural checks require the halted-owner escape before the partial-turn
+  continuation.
+- **Inertness:** both branches are inside precise sim mode's RR loop. The idle
+  branch requires the selected cursor owner to be halted with no pending work;
+  the yield branch requires the helper-authored transient marker, multiple
+  vCPUs, and a still-partial owner-matched turn. The marker transition commits
+  before any control callback or host-work exit and is not VMState. Every
+  ordinary QEMU accelerator retains its prior behavior.
+- **Risk:** D.
+
+### crucible-accelerator-service-schema — admit typed service capacity
+
+- **Patch:** `0111-crucible-accelerator-service-schema.patch`.
+- **Enforces:** [QFP-ACCEL-SERVICE], [FAULT-ORDER].
+- **Mechanism:** the accelerator service command uses a dedicated closed schema
+  whose capacity field is a ratio, matching both the versioned host encoder and
+  QEMU's command-specific validator. Compute and memory-rate service limits,
+  enable flags, and thermal/power policy retain their existing field types.
+- **Micro-test:** the production live hardware gate submits the typed
+  state-machine effect through PREPARE and APPLY, then requires three exact
+  job-service occurrences and guest-visible completion under the installed
+  half-capacity thermal/power policy. The per-patch certificate also requires
+  the dedicated mapping and consumes the exact drop-one negative control.
+- **Inertness:** only accelerator service command parsing changes. Other generic
+  service commands and ordinary QEMU execution retain their prior schema and
+  behavior.
+- **Risk:** F.
+
+### crucible-compile-affected-clock-sources — isolate rule compilation
+
+- **Patch:** `0112-crucible-compile-affected-clock-sources.patch`.
+- **Enforces:** [QFP-CLOCK-SOURCE], [FAULT-ORDER].
+- **Mechanism:** post-commit clock compilation receives the exact changed rule.
+  A transform selects sources through its target predicate; a source-state rule
+  selects the identities in its typed hash set. Unrelated registered sources
+  are not projected or rearmed at that transaction boundary.
+- **Micro-test:** the production live hardware gate commits a degraded local
+  APIC timer source while unrelated clock devices are registered, then requires
+  authenticated source-transition and timer-rearm occurrences without an
+  unrelated projection failure.
+- **Inertness:** non-clock rules and unselected clock sources perform no work;
+  selected sources preserve the existing compilation and timer-rearm path.
+- **Risk:** F.
+
+### crucible-restore-accelerator-rule-indexes — restore persistent policy
+
+- **Patch:** `0113-crucible-restore-accelerator-rule-indexes.patch`.
+- **Enforces:** [QFP-ACCEL-SERVICE], [FAULT-RESTORE].
+- **Mechanism:** accelerator VMState preparation rebuilds its four private rule
+  indexes by retaining references from the already-authenticated staged node
+  ledger. Commit atomically replaces the live indexes alongside accelerator
+  counters and memory; abort releases every staged reference.
+- **Micro-test:** the production live hardware gate installs a persistent
+  half-capacity service rule, captures VMState, destroys QEMU and its plugin,
+  restores into a fresh process, and requires exact service evidence for the
+  GPU, TPU, and FPGA jobs.
+- **Inertness:** no VMState bytes or public protocol fields change. Cold starts
+  and accelerators with no retained rules reconstruct empty indexes.
+- **Risk:** F.
+
+### crucible-authenticate-fault-result-payloads — bind results to payloads
+
+- **Patch:** `0114-crucible-authenticate-fault-result-payloads.patch`.
+- **Enforces:** [QFP-RESULT], [FAULT-ORDER].
+- **Mechanism:** every queued fault result hashes the exact payload retained
+  beside it, including prepare-time rejection evidence. The host authenticates
+  that evidence before classifying an unsupported typed request as a rejection.
+- **Micro-test:** the production live hardware gate submits an unsupported APIC
+  read-error request, requires an authenticated typed rejection payload, and
+  proves the adapter preserves transaction ownership rather than reporting a
+  fatal malformed result.
+- **Inertness:** successful result payloads retain their existing bytes and
+  semantics; this patch only makes their already-present evidence hash cover
+  the retained payload uniformly.
+- **Risk:** F.
+
+### crucible-clock-impulse-read-error-policies — retain clock policy
+
+- **Patch:** `0115-crucible-clock-impulse-read-error-policies.patch`.
+- **Enforces:** [QFP-CLOCK-TRANSFORM], [QFP-CLOCK-SOURCE], [FAULT-ORDER].
+- **Mechanism:** clock VMState version 4 persists effective impulse
+  monotonicity and overdue-timer policy, and x86 TSC reads raise deterministic
+  `#GP` while the selected source is in read-error state. Internal clock
+  projections continue from the last valid source value.
+- **Micro-test:** the production live hardware matrix exercises drift and jump
+  impulse policy, an x86 TSC read-error transition, recovery, and fresh-process
+  restore while the VMState gate pins `CRUCCVS4` encode/decode symmetry.
+- **Inertness:** clocks without an active impulse retain the existing default
+  policy, and sources outside read-error state follow their prior read path.
+- **Risk:** F.
+
+### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
+
+- **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
+- **Enforces:** [DET-1], [QFP-REG-1], [QFP-STATE-2].
+- **Mechanism:** at the exact deterministic raw-zero boundary before QEMU's
+  first runnable selection, `qemu_plugin_rr_cursor()` maps the intentionally
+  unowned serialized cursor to its unique next scheduler coordinate: vCPU 0,
+  position 0. The read does not mutate `TimersState`. An invalid owner at any
+  later coordinate or outside the exact boundary remains rejected.
+- **Micro-test:** the production live-world lifecycle captures canonical
+  genesis state in a fresh QEMU process, executes the selected lossy-network
+  branch, and requires its decisions to match the branch found before a durable
+  checkpoint and exact next-quantum restore. Structural checks pin the raw-zero
+  and position-zero conjunction and retain the non-genesis negative control.
+- **Inertness:** [PATCH-3](c) — the new success case requires the existing
+  exact-boundary scope, invalid serialized owner, raw icount zero, and cursor
+  position zero simultaneously. Every post-genesis and ordinary unowned read
+  follows the prior fail-closed path.
+- **Risk:** D.
+
+### crucible-canonical-terminal-rr-cursor — project terminal live observations
+
+- **Patch:** `0092-crucible-canonical-terminal-rr-cursor.patch`.
+- **Enforces:** [DET-1], [DET-29], [QFP-STATE-2].
+- **Mechanism:** when the current serialized owner observes the transient live
+  position equal to `rr_switch_quantum`, `qemu_plugin_rr_cursor()` reports the
+  scheduler's next vCPU at position zero. This is the coordinate RR accounting
+  commits when the translation block returns; the projection does not mutate
+  scheduler state or admit any other out-of-range cursor.
+- **Micro-test:** the full production instruction and exception mutation matrix
+  exercises fingerprint capture at instruction completion, while structural
+  checks pin terminal equality, next-vCPU selection, and position-zero output.
+- **Inertness:** [PATCH-3](c) — the projection requires sim's pinned quantum,
+  a live current owner, and exact terminal equality. Exact-boundary, genesis,
+  non-sim, and invalid-owner behavior remains unchanged.
+- **Risk:** D.
+
+### crucible-canonical-register-cursor — commit after-instruction coordinates
+
+- **Patch:** `0093-crucible-canonical-register-cursor.patch`.
+- **Enforces:** [DET-1], [DET-29], [QFP-STATE-2].
+- **Mechanism:** register mutations advance the callback-local retired prefix
+  by the current instruction for after-instruction evidence. An exact terminal
+  is projected onto the next RR owner at position zero, matching the serialized
+  coordinate that scheduler accounting commits.
+- **Micro-test:** the full live register mutation matrix exercises before and
+  after phases, and its terminal case rejects the legacy position-equal-quantum
+  encoding in favor of the canonical position-zero handoff.
+- **Inertness:** [PATCH-3](c) — only register evidence in the existing
+  after-instruction mutation phase receives the semantic advancement; before
+  phase and non-register behavior is unchanged.
+- **Risk:** D.
+
+### crucible-retention-virtual-time-origin — keep retention in one clock domain
+
+- **Patch:** `0094-crucible-retention-virtual-time-origin.patch`.
+- **Enforces:** [DET-1], [TIME-23], [E14].
+- **Mechanism:** memory-retention installation records its initial exposure from
+  QEMU's authoritative virtual nanosecond clock. It no longer interprets the
+  raw instruction coordinate on a boundary result as virtual time before adding
+  the configured nanosecond interval.
+- **Micro-test:** the live memory-access matrix installs a one-nanosecond
+  retention rule under precise icount and requires decay exactly one virtual
+  nanosecond and one raw instruction after installation. Clock-biased immediate
+  decay at the installation coordinate fails the test.
+- **Inertness:** [PATCH-3](c) — only the initial deadline of an explicitly
+  installed retention fault changes. Other memory rules and inactive fault
+  execution remain unchanged.
+- **Risk:** D.
+
+### crucible-raw-pte-update-identity — separate transient PTEs from A/D writes
+
+- **Patch:** `0095-crucible-raw-pte-update-identity.patch`.
+- **Enforces:** [QFP-MEMA-1], [QFP-MEMA-2], [FAULT-ORDER].
+- **Mechanism:** the x86 page-table walker retains the raw low word loaded from
+  backing RAM before applying a transient corrected-poison transform.
+  Translation and protection checks consume the corrected PTE, while accessed
+  and dirty updates compare and update the raw backing word. Corrected fault
+  bits therefore remain transient and cannot force an endless cmpxchg retry.
+- **Micro-test:** the production x86 memory-access matrix applies corrected
+  poison to a live page-table entry whose accessed bit must be updated. The
+  guest must finish the translation, observe the intended mapping, publish one
+  corrected event, and terminate before the hard timeout.
+- **Inertness:** [PATCH-3](c) — without an active page-table-walk correction,
+  the retained raw word equals the translated word and the upstream cmpxchg is
+  unchanged.
+- **Risk:** D.
+
+### crucible-physical-page-table-region-fixture — target descriptor storage
+
+- **Patch:** `0096-crucible-physical-page-table-region-fixture.patch`.
+- **Enforces:** [QFP-MEMA-1], [QFP-MEMA-2], [FAULT-EVIDENCE].
+- **Mechanism:** the live TCG plugin fixture declares persistent page-table
+  descriptor regions as physical targets. A walk transaction identifies the
+  initiating guest virtual address separately from the descriptor GPA, so a
+  descriptor region indexed as a GVA cannot match the physical walk access.
+  Ordinary guest-memory region scenarios remain virtual targets.
+- **Micro-test:** the x86_64 and AArch64 live memory matrices install a failed
+  region over a page-table descriptor and require one error event plus the
+  architecture's guest-visible fault result.
+- **Inertness:** [PATCH-3](c) — only the test plugin's target-address-space bit
+  changes; production QEMU code and inactive execution are untouched.
+- **Risk:** F.
+
+### crucible-canonical-memory-retry-identity — survive TB retranslation
+
+- **Patch:** `0097-crucible-canonicalize-memory-retry-identity.patch`.
+- **Enforces:** [DET-1], [QFP-MEMA-1], [QFP-STATE-2].
+- **Mechanism:** memory retry keys identify instruction-backed accesses by
+  architectural PC, address, length, actor, access class, and page-walk
+  identity without hashing or comparing the TB-local instruction ordinal.
+  Fault delivery may retranslate the same instruction at a different local
+  ordinal. The retained serialized field is canonicalized to zero so
+  checkpoints do not encode translation-block shape.
+- **Micro-test:** the live page-table retry case first applies a one-shot
+  access error, then requires the retried architectural access to carry retry
+  ordinal one and apply the observer transform exactly once.
+- **Inertness:** [PATCH-3](c) — the key is consulted only while active memory
+  fault rules track a poisoned access retry.
+- **Risk:** D.
+
+### crucible-inactive-nested-tsc-guard — preserve SVM icount parity
+
+- **Patch:** `0098-crucible-inactive-nested-tsc-guard.patch`.
+- **Enforces:** [DET-1], [QFP-CLOCK-2], [PATCH-3].
+- **Mechanism:** SVM entry and exit test whether the x86 TSC fault source is
+  active before evaluating `cpu_get_tsc()` arguments for the discontinuity
+  hook. The inactive path performs only the upstream TSC-offset assignment.
+  This prevents an otherwise irrelevant virtual-clock read from accounting the
+  virtualization instruction before QEMU's exception restore bookkeeping.
+- **Micro-test:** the live nested stage-1 and stage-2 page-table cases execute
+  VMRUN and VMEXIT with no active clock rule and must complete without a
+  negative icount delta.
+- **Inertness:** [PATCH-3](c) — the inactive branch is exactly the upstream
+  offset update; active TSC faults retain discontinuity rebasing.
+- **Risk:** D.
+
+### crucible-valid-aarch64-abort-fixture — reach exception delivery
+
+- **Patch:** `0099-crucible-valid-aarch64-abort-fixture.patch`.
+- **Enforces:** [QFP-MEMA-1], [FAULT-EVIDENCE], [PATCH-3].
+- **Mechanism:** the live AArch64 memory poison scenario supplies the
+  architecture validator with data-abort vector `3` and a same-EL syndrome
+  carrying the required exception class and instruction-length bit. The old
+  vector `4` identifies a breakpoint, and a zero syndrome is uncategorized, so
+  that pair cannot prepare a data-abort command.
+- **Micro-test:** the focused AArch64 poison-exception case must prepare and
+  commit canonical evidence, deliver the abort through the guest vector, and
+  publish `0xe1` exactly once.
+- **Inertness:** [PATCH-3](c) — this is a GPL-side test fixture and changes no
+  production execution path.
+- **Risk:** F.
+
+### crucible-aarch64-memory-exception-vectors — admit architectural aborts
+
+- **Patch:** `0100-crucible-aarch64-memory-exception-vectors.patch`.
+- **Enforces:** [QFP-MEMA-1], [FAULT-EVIDENCE], [PATCH-3].
+- **Mechanism:** the production memory-rule admission check requires AArch64
+  instruction-abort vector `2` for fetch-only rules and data-abort vector `3`
+  for non-fetch rules. The old shifted pair, vectors `3` and `4`, contradicted
+  QEMU's architectural enum and rejected every valid memory exception before
+  the architecture validator ran.
+- **Micro-test:** the focused poison-exception and one-shot retry cases must
+  prepare and commit canonical evidence, then complete through the guest's data
+  abort vector; the full invalid-rule matrix must retain atomic rejection.
+- **Inertness:** [PATCH-3](c) — the check changes only explicit commanded-fault
+  admission; with no matching command, it is unreachable.
+- **Risk:** D.
+
+### crucible-canonical-snapshot-rr-resume — preserve source continuation
+
+- **Patch:** `0101-crucible-canonicalize-snapshot-rr-resume.patch`.
+- **Enforces:** [DET-1], [QFP-STATE-2], [QEMU-43].
+- **Mechanism:** after a successful deterministic snapshot, QEMU arms the
+  existing one-shot serialized-owner selection. Source execution therefore
+  resumes from the same RR owner and intra-turn position that a fresh process
+  selects after loading the snapshot.
+- **Micro-test:** exact snapshot source continuation and two fresh-process
+  restores must converge at the same canonical RR coordinate and guest-state
+  fingerprint, including a nonzero intra-turn cursor.
+- **Inertness:** [PATCH-3](c) — the hook changes only successful sim-mode
+  snapshots with a valid serialized RR cursor.
+- **Risk:** D.
+
+### crucible-bql-exact-register-capture — observe snapshot boundaries
+
+- **Patch:** `0102-crucible-bql-exact-register-capture.patch`.
+- **Enforces:** [DET-1], [QFP-STATE-2], [QEMU-43].
+- **Mechanism:** a BQL-held exact callback may read quiescent vCPU registers
+  while post-snapshot RR owner reselection is pending. Idle-time advance
+  completions explicitly enter the exact-boundary scope; concurrent and
+  non-exact running contexts remain rejected.
+- **Micro-test:** exact snapshot source continuation and two fresh-process
+  restores must capture identical register state, while negative admission
+  cases remain fail-closed.
+- **Inertness:** [PATCH-3](c) — the widened admission requires both an explicit
+  exact callback and BQL ownership in deterministic single-threaded RR mode.
+- **Risk:** D.
+
+### crucible-isolate-checkpoint-control-wake — preserve frozen device state
+
+- **Patch:** `0103-crucible-isolate-checkpoint-control-wake.patch`.
+- **Enforces:** [DET-1], [QFP-STATE-2], [PATCH-20].
+- **Mechanism:** once exact VM stop is pending, the shared eventfd wake hands
+  the BQL to QEMU's main loop without incrementing the block wake generation or
+  resuming a parked request coroutine. Response and reset notifications keep
+  their normal production progress semantics.
+- **Micro-test:** the pending-block exact snapshot scenario must reach native
+  stopped state and restore durably without admitting a completion beyond the
+  published pause coordinate.
+- **Inertness:** [PATCH-3](c) — request suppression is limited to a drained
+  wake after the exact native-stop handoff has already been queued.
+- **Risk:** D.
+
+### crucible-preserve-checkpoint-block-durability — retain volatile state
+
+- **Patch:** `0104-crucible-preserve-checkpoint-block-durability.patch`.
+- **Enforces:** [DET-1], [QFP-STATE-2], [QFP-BLOCK-3].
+- **Mechanism:** while an exact Crucible VM stop is pending, the shared-memory
+  block backend treats QEMU's synthetic stop-time flush as complete without
+  submitting a request. The paired Apache checkpoint remains authoritative for
+  volatile cache, controller, media, and fault continuations.
+- **Micro-test:** the pending-durability exact snapshot must stop, save, and
+  restore twice without a post-quiescence flush request or a change to its
+  canonical storage continuation; ordinary guest flush gates remain green.
+- **Inertness:** [PATCH-3](c) — suppression requires the exact Crucible VM-stop
+  state; guest flushes and ordinary QEMU stops retain the production transport.
+- **Risk:** D.
+
+### crucible-selector-control-plane-fixtures — isolate selector admission
+
+- **Patch:** `0105-crucible-selector-control-plane-fixtures.patch`.
+- **Enforces:** [FAULT-ORDER], [PATCH-3], [QFP-INST-3].
+- **Mechanism:** live instruction-fault overlap and exclusivity modes install
+  selectors whose occurrence cannot be reached during the fixture. This keeps
+  control-plane admission independent of the guest instruction used for the
+  preparation rendezvous.
+- **Micro-test:** x86 and AArch64 live QEMU runs must reject overlapping and
+  non-exclusive selectors without emitting an instruction-fault event first.
+- **Inertness:** [PATCH-3](c) — only the QEMU test plugin changes; production
+  selector admission, matching, mutation, and wire behavior are unchanged.
+- **Risk:** F.
 
 ### crucible-whitebox-guest-write — return synchronous doorbell replies
 
@@ -1137,31 +2003,33 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   upstream. *Gate:* `gate:layer1-injection`, `gate:qemu-inert`. *Spec:* §11.6;
   satisfies [DET-18] (E18), [SHM-17], [INV-7].
 
-### crucible-net-flush-api — lossless RX inject + flush
+### crucible-net-direct-inject-api — canonical, lossless RX injection
 
 - **Enforces:** [DET-18]; the RX side correctness.
 - **Mechanism:** the naive inject path (`qemu_receive_packet`) silently drops
-  frames when the receiver (virtio-net) is momentarily unready — nondeterministic
-  loss. The QEMU-side append/flush primitives are introduced by
-  `crucible-net-deterministic`: `qemu_plugin_net_send` appends to QEMU's
-  incoming queue through a callback-backed lossless append helper,
-  `qemu_plugin_net_flush` drains that queue with an observable success/failure
-  result, and `qemu_plugin_net_can_receive` is diagnostic. This item completes
-  the end-to-end co-sim integration around those primitives: the plugin flushes
-  at the start of each idle callback, then injects, so backpressure buffering
-  lives in QEMU's queue and the harness inbox stays focused on virtual-time
-  scheduling.
+  frames when the receiver (virtio-net) is momentarily unready - nondeterministic
+  loss. `qemu_plugin_net_inject` instead reports complete delivery, transient
+  backpressure, or permanent failure. The plugin advances the shared-memory read
+  index only for the completely delivered prefix. Backpressure buffering remains
+  in the bounded, checkpointed shared-memory ring; QEMU-private packet queues are
+  deliberately not used because they are neither canonical nor part of the
+  durable checkpoint protocol.
 - **Micro-test:** inject a frame while the receiver is momentarily unready; assert
-  it is not dropped and is delivered at the chosen icount when flushed; two runs
-  agree.
+  it is not dropped, remains in the canonical ring, QEMU's `receive_disabled`
+  latch cannot suppress the later canonical probe, and the frame is delivered
+  on a deterministic retry; two runs agree.
 - **Inertness:** [PATCH-3](c).
 - **Risk:** D (it determines RX delivery timing; a regression reintroduces
   nondeterministic loss).
 
-- **[PATCH-32]** The series MUST provide lossless RX injection (queue + flush)
-  so an inbound frame is never silently dropped when the receiver is momentarily
-  unready, and is delivered at the plugin's chosen virtual-time moment; backpressure
-  buffering MUST stay in QEMU's queue. *Gate:* `gate:layer1-injection`,
+- **[PATCH-32]** The series MUST provide lossless direct RX injection with
+  distinct complete, backpressure, and permanent-failure results so an inbound
+  frame is never silently dropped when the receiver is momentarily unready and
+  is delivered at the plugin's chosen virtual-time moment. Backpressure
+  retention MUST remain in the bounded, checkpointed shared-memory ring, never
+  a QEMU-private packet queue. A canonical retry MUST re-probe the guest device
+  independently of QEMU's private-queue `receive_disabled` latch. *Gate:*
+  `gate:layer1-injection`,
   `gate:qemu-inert`. *Spec:* §11.6; satisfies [DET-18] (E18).
 
 ## 11.7 Guest↔host channel: no new patch required
@@ -1475,8 +2343,9 @@ time-control primitives the whole design rests on.
     configuration, then runs it against patched `qemu-crucible` with no plugin,
     sim accelerator, or sim flags. Its curated upstream-equivalent corpus covers
     raw boot serial and block/9p/virtio-rng output under upstream TCG
-    instruction clocks at the production shift and plain shift zero, QMP
-    capability/state introspection, a migration stream, and
+    instruction clocks at the production shift and plain shift zero, upstream
+    QMP capability/state introspection plus the exact fail-closed terminal
+    lifecycle control extension, a migration stream, and
     snapshot save/load. These surfaces represent guest execution and device I/O,
     management compatibility, live state transfer, and durable state restore.
     The unmodified stock Linux kernel runs without Crucible-specific boot
@@ -1542,11 +2411,10 @@ time-control primitives the whole design rests on.
   satisfies [PATCH-17]; spec §11.4 (E18).
   - Completed by `0009-crucible-net-deterministic.patch` and
     `checks.crucible.phase1.qemuNetDeterministic`: QEMU exports
-    `qemu_plugin_net_inject`, `qemu_plugin_net_send`,
-    `qemu_plugin_net_flush`, and `qemu_plugin_net_can_receive`; direct injection
-    fails closed when the NIC cannot receive; `qemu_plugin_net_send` appends to
-    QEMU's incoming queue without guest-visible delivery even when the NIC is
-    ready; flush fails loudly while the NIC is not ready or link-down; skewed
+    `qemu_plugin_net_inject`; direct injection returns success only for complete
+    guest delivery, reports transient backpressure without taking ownership, and
+    fails loudly for missing or link-down NICs and malformed frames. The plugin
+    retains backpressured frames in the bounded canonical ring, and skewed
     producer timing observes the same guest-visible delivery icount.
 - [x] **T-PATCH-9** Implement the plugin time-control surface
   `crucible-plugin-time-advance` (+ `has_time_control`) and the event-driven
@@ -1570,7 +2438,7 @@ time-control primitives the whole design rests on.
     `checks.crucible.phase2.qemuLivePluginQuantum`: the timer-driven multiboot
     guest idle-jumps through the exact PIT deadline, completion-first, then
     wakes and re-idles below the published ceiling without self-extension — a
-    40M-icount O(1) advance that is deterministic run-twice under host load.
+    40M-icount O(1) advance that is deterministic run-twice under bounded scheduler preemption.
     `checks.crucible.phase1.pluginTimeAdvance` models
     the icount clock and asserts the qtest set-based advance cannot converge
     while the bias-bump reaches the target (the regression guard for this class).
@@ -1580,10 +2448,14 @@ time-control primitives the whole design rests on.
     device rings, the host publishes completions at exact future icounts, the
     plugin holds virtual time while the response is unavailable, and the
     completion wakes the normal main-loop path. Both guests progress after the
-    hold clears, including a run with host CPU load and a deliberately delayed
+    hold clears, including a run with bounded scheduler preemption and a deliberately delayed
     response. Drop-one runtime probes for patches 0017 and 0019 prove the live
     block and 9p handoffs are patch-attributed rather than supplied by a later
-    patch.
+    patch. Patch `0076-crucible-9p-completion-wake-registration.patch` closes the
+    device/plugin initialization-order case by binding notifier registration to
+    virtio-9p realization; the same live gate proves a plugin installed after
+    device realization still consumes the response doorbell and releases the
+    device-I/O hold.
 - [x] **T-PATCH-10** Implement `crucible-clock-deadline` (exact next
   `QEMU_CLOCK_VIRTUAL` deadline, REQUIRED) and ban the overshoot-and-correct
   fallback; fail loudly if the capability is unavailable. — satisfies [PATCH-21],
@@ -1676,8 +2548,8 @@ time-control primitives the whole design rests on.
     9p mount and layer-1 workload evidence remains a later gate.
 - [x] **T-PATCH-14** Implement the network co-sim patches
   `crucible-net-tx-callback` (TX intercept) and complete
-  `crucible-net-flush-api` QEMU patch ABI/Rust resolver integration over the
-  QEMU-side RX append/flush primitives, with no-loss /
+  `crucible-net-direct-inject-api` QEMU patch ABI/Rust resolver integration over
+  the direct-injection result contract, with no-loss /
   deterministic-delivery micro-tests. — satisfies [PATCH-31], [PATCH-32];
   spec §11.6 (E18).
   - Completed by `0020-crucible-net-tx-callback.patch`,
@@ -1691,13 +2563,12 @@ time-control primitives the whole design rests on.
     exact flat/iov frame capture, registered-backend bypass for guest NIC
     senders, non-NIC upstream fallback, oversized iov fail-loud behavior,
     fail-loud callback rejection, and link-down fallback semantics. The RX half
-    remains the `qemu_plugin_net_send`/`qemu_plugin_net_flush` lossless queue
-    from `crucible-net-deterministic`; the reused RX fixture proves not-ready
-    frames are retained until a deterministic flush icount, flush failure is
-    loud, and skewed producer host timing does not change guest-visible
-    delivery. The Rust plugin now exports typed resolvers for TX callback
-    registration and the RX send/flush/can-receive patch symbols; live install
-    registration remains owned by the later plugin lifecycle gates.
+    uses `qemu_plugin_net_inject` from `crucible-net-deterministic`; the reused RX
+    fixture proves not-ready frames remain caller-owned until a deterministic
+    retry, permanent failure is loud, and skewed producer host timing does not
+    change guest-visible delivery. The Rust plugin exports typed resolvers for TX
+    callback registration and direct RX injection; live install registration
+    remains owned by the later plugin lifecycle gates.
 - [x] **T-PATCH-15** Confirm (or spike) that the guest↔host doorbell needs **no
   new patch**: reuse the existing port-I/O/MMIO trap + plugin mem-read; any patch
   added is white-box-only, inert, and spike-gated. — satisfies [PATCH-33]; spec
@@ -1782,9 +2653,12 @@ time-control primitives the whole design rests on.
     `gate:patch-microtests`: the gate rebuilds the ordered patch stack from the
     checked-in `crucible/qemu-10.0.0` thin git bundle, requires the pinned QEMU
     base commit as its prerequisite, verifies the base/head commits and each
-    per-patch commit/tree entry, regenerates deterministic `--unified=3`
-    patch bytes, fails on committed-file drift, applies the regenerated series
-    with fuzz disabled, and records the QEMU source hash, patch count,
+    per-patch commit/tree entry, and requires exactly one DCO `Signed-off-by`
+    trailer matching the manifest's authorized human contributor on every patch
+    commit. It regenerates canonical
+    `--unified=3` patch bytes, including Git blob-identity `index` lines, fails
+    on committed-file drift, applies the regenerated series with fuzz disabled,
+    and records the QEMU source hash, patch count,
     patch-series hash, patch-branch bundle/material, and QEMU build identity. The
     reproduction-artifact-shaped fixture pins that build identity and rejects a
     deliberate changed-build negative control, making a QEMU pin or patch change
@@ -1829,8 +2703,11 @@ time-control primitives the whole design rests on.
     preemption callbacks onto the architecture's hard-interrupt path; non-sim,
     unpinned, and self-IPI paths fall through to upstream behavior; and
     the trace plugin records `det_ipi` delivery rows while the bounded
-    multi-vCPU S11 fixture diffs INIT/SIPI delivery-icount traces plus an
-    opt-in commanded FIXED delivery probe across jittered runs.
+    multi-vCPU S11 fixture diffs the exact causal INIT, SIPI, and reverse-path
+    commanded FIXED triple across scheduler-preempted runs. A bounded live
+    firmware fixture enables the same probe under ordinary TCG, proves guest
+    instruction retirement, and requires zero deterministic-delivery rows,
+    executing the non-sim fallback control.
 - [x] **T-PATCH-23** Implement `crucible-vcpu-introspect`: per-vCPU register-file
   read (arbitrary index) + round-robin cursor read for the N-vCPU fingerprint,
   side-effect-free, additive/inert until called. — satisfies [PATCH-46]; spec

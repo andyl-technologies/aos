@@ -5,11 +5,7 @@
   taskIds ? ["T-SHM-8" "T-SHM-9" "T-SHM-10"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   handoffTest = import ./_rust-module-source.nix {

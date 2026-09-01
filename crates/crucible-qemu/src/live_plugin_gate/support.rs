@@ -45,6 +45,43 @@ pub(super) fn wait_for_exact_boundary(
     }
 }
 
+// crucible-lint: allow clippy-disallowed-method -- install-gate host timeout bounds digest-worker liveness only.
+#[allow(clippy::disallowed_methods)]
+pub(super) fn wait_for_execution_fingerprint(
+    hot_path: &mut QemuMappedQuantumShmemHotPath,
+    child: &mut crate::QemuNodeChild,
+    config: &LivePluginInstallGateConfig,
+) -> Result<ExecutionFingerprint, LivePluginInstallGateError> {
+    let started = Instant::now();
+    loop {
+        match QemuShmemHotPathChannel::execution_fingerprint(hot_path) {
+            Ok(fingerprint) => return Ok(fingerprint),
+            Err(source) if source.is_retryable() => {
+                if let Some(status) = child
+                    .try_wait_natural_exit()
+                    .map_err(|source| LivePluginInstallGateError::ChildWait { source })?
+                {
+                    return Err(LivePluginInstallGateError::ChildExitBeforeFingerprint {
+                        icount: config.horizon_icount,
+                        status: status.to_string(),
+                    });
+                }
+                if started.elapsed() >= config.completion_timeout {
+                    return Err(LivePluginInstallGateError::FingerprintTimeout {
+                        icount: config.horizon_icount,
+                        timeout: config.completion_timeout,
+                        last_error: source.to_string(),
+                    });
+                }
+            }
+            Err(source) => {
+                return Err(channel_error("read execution fingerprint", source));
+            }
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
 // crucible-lint: allow clippy-disallowed-method -- install-gate host timeout bounds plugin teardown only.
 #[allow(clippy::disallowed_methods)]
 pub(super) fn wait_for_plugin_teardown(

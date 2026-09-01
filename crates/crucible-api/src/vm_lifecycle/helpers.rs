@@ -1,6 +1,37 @@
 //! Private construction and event-log helpers for production VM lifecycles.
 
 use super::*;
+use std::io::Read;
+
+pub(super) fn validate_exact_checkpoint_target(
+    node: &NodeId,
+    target: &ProductionVmExactCheckpointTarget,
+    fault_identity: ContentHash,
+) -> Result<(), LifecycleApiError> {
+    validate_exact_checkpoint_artifact(&target.overlay_artifact, "root overlay")?;
+    validate_exact_checkpoint_artifact(&target.vmstate_artifact, "VMState")?;
+    let observed = ContentHash::from_canonical_material(
+        "crucible.production-vm-exact-checkpoint.v1",
+        &format!(
+            "configuration={}\nnode={}\ncounter={}\nscheduler_time={}\nsnapshot={}\nfault={}\noverlay={}\nvmstate={}",
+            target.configuration.id().to_hex(),
+            node.name,
+            target.counter,
+            target.scheduler_time.ticks,
+            target.snapshot.id().to_hex(),
+            fault_identity.to_hex(),
+            target.overlay_artifact.identity.to_hex(),
+            target.vmstate_artifact.identity.to_hex(),
+        ),
+    );
+    if observed != target.manifest_identity {
+        return Err(loop_factory_error(format!(
+            "exact checkpoint target for `{}` failed manifest authentication",
+            node.name
+        )));
+    }
+    Ok(())
+}
 
 pub(super) const fn production_guest_architecture(
     architecture: crucible::VmArchitecture,
@@ -58,11 +89,75 @@ pub(super) fn production_app_random_launch_config(
     config
 }
 
+pub(super) fn production_app_random_checkpoint_config(
+    scheduler: &SingleSchedulerCheckpoint,
+    scenario: &ScenarioDef,
+    branch: Option<&ProductionVmBranchConfig>,
+    node: &NodeId,
+) -> Result<ProductionAppRandomConfig, SchedulerError> {
+    let branch = if scheduler.branch_frontier_cap().is_some() {
+        branch
+    } else {
+        None
+    };
+    let configuration = scheduler.configuration_for(scenario).map_err(|error| {
+        SchedulerError::BoundaryViolation {
+            message: format!("decode scheduler checkpoint configuration: {error}"),
+        }
+    })?;
+    let streams = configuration
+        .schedule
+        .decisions()
+        .iter()
+        .filter_map(|decision| match decision {
+            Decision::AppRandom(random) if random.node == *node => Some(random.stream.clone()),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let positions = scheduler
+        .future_decision_rng_state()
+        .positions
+        .iter()
+        .filter(|(stream, _position)| streams.contains(*stream))
+        .map(|(stream, position)| (stream.name.clone(), position.draws))
+        .collect::<BTreeMap<_, _>>();
+    let draw_offset = positions.values().try_fold(0_u64, |sum, draws| {
+        sum.checked_add(*draws)
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "app-random continuation cursor overflow for `{}`",
+                    node.name
+                ),
+            })
+    })?;
+    let mut config = ProductionAppRandomConfig::from_seed(
+        scheduler.future_decision_seed(),
+        scenario.app_random_draw_cap(),
+        node.name.clone(),
+    )
+    .with_continuation(draw_offset, positions);
+    if let Some(branch) = branch
+        && let Some(seed) = branch.seed
+    {
+        let prefix_draws = branch
+            .base
+            .schedule
+            .decisions()
+            .iter()
+            .filter(
+                |decision| matches!(decision, Decision::AppRandom(random) if random.node == *node),
+            )
+            .count() as u64;
+        config = config.with_branch_seed(seed, prefix_draws);
+    }
+    Ok(config)
+}
+
 pub(super) fn private_backend_gdbstub_path(node_directory: &Path) -> PathBuf {
     node_directory.join("debug-rsp.sock")
 }
 
-pub(super) fn qemu_unix_gdbstub_endpoint(path: &Path) -> Result<String, LifecycleApiError> {
+pub(super) fn live_unix_gdbstub_endpoint(path: &Path) -> Result<String, LifecycleApiError> {
     let path = path.to_str().ok_or_else(|| {
         loop_factory_error(format!(
             "QEMU gdbstub path is not valid UTF-8: {}",
@@ -146,9 +241,7 @@ pub(super) fn collect_terminal_actions(
                 collect_terminal_actions(action, passed, violations);
             }
         }
-        Action::InjectFault { .. }
-        | Action::HealFault { .. }
-        | Action::ArmTimer { .. }
+        Action::ArmTimer { .. }
         | Action::CancelTimer { .. }
         | Action::StartNode { .. }
         | Action::StopNode { .. }
@@ -191,6 +284,22 @@ pub(super) fn prepare_root_overlay(
     )))
 }
 
+pub(super) fn hash_file(path: &Path) -> Result<crucible::ContentHash, std::io::Error> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(crucible::ContentHash {
+        bytes: *hasher.finalize().as_bytes(),
+    })
+}
+
 pub(super) fn loop_factory_error(message: impl Into<String>) -> LifecycleApiError {
     LifecycleApiError::LoopFactory {
         message: message.into(),
@@ -209,9 +318,10 @@ mod tests {
 
     #[test]
     fn scheduler_step_bound_counts_quanta_instead_of_instruction_slices() {
-        let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root")
-            .with_run_ceiling_icount(12_000_000_000)
-            .with_quantum_budget(16);
+        let config =
+            ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state")
+                .with_run_ceiling_icount(12_000_000_000)
+                .with_quantum_budget(16);
 
         assert_eq!(config.maximum_scheduler_quanta(2), 19);
     }
@@ -260,7 +370,7 @@ mod tests {
         let path = private_backend_gdbstub_path(directory);
 
         assert_eq!(path, directory.join("debug-rsp.sock"));
-        let Ok(endpoint) = qemu_unix_gdbstub_endpoint(&path) else {
+        let Ok(endpoint) = live_unix_gdbstub_endpoint(&path) else {
             panic!("ordinary private socket path must be accepted");
         };
         assert_eq!(
@@ -271,7 +381,7 @@ mod tests {
 
     #[test]
     fn private_gdbstub_endpoint_rejects_qemu_option_delimiters() {
-        let Err(error) = qemu_unix_gdbstub_endpoint(Path::new("/tmp/node,server=off")) else {
+        let Err(error) = live_unix_gdbstub_endpoint(Path::new("/tmp/node,server=off")) else {
             panic!("comma must not enter the QEMU character-device syntax");
         };
 

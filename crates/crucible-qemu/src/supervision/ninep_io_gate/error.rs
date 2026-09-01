@@ -21,6 +21,12 @@ pub enum QemuLive9pIoGateError {
         /// Underlying I/O error.
         source: std::io::Error,
     },
+    /// The bounded scheduler-preemption adversary could not run or clean up.
+    #[error("bounded scheduler-preemption adversary failed")]
+    SchedulerPreemption {
+        /// Underlying controller, signal, or watchdog error.
+        source: crate::BoundedSchedulerPreemptionError,
+    },
     /// The deterministic launch profile could not be derived.
     #[error("derive deterministic launch profile failed")]
     LaunchProfile {
@@ -134,8 +140,8 @@ pub enum QemuLive9pIoGateError {
         /// Debug rendering of the live 9p observations.
         diagnostics: String,
     },
-    /// The TCG control leg never observed the guest issue a 9p op.
-    #[error("TCG control leg did not observe the guest issue a 9p op (no msize warning)")]
+    /// The TCG control leg never observed the guest complete its 9p mount.
+    #[error("TCG control leg did not observe the successful 9p mount console marker")]
     ControlDidNotIssue9p,
     /// The TCG control run subdirectory could not be created.
     #[error("prepare TCG control run directory {path} failed")]
@@ -149,6 +155,14 @@ pub enum QemuLive9pIoGateError {
     #[error("create TCG control stderr capture {path} failed")]
     ControlStderr {
         /// Stderr capture file path.
+        path: PathBuf,
+        /// Underlying I/O error.
+        source: std::io::Error,
+    },
+    /// The TCG control guest-console capture file could not be created.
+    #[error("create TCG control guest-console capture {path} failed")]
+    ControlConsole {
+        /// Guest-console capture path.
         path: PathBuf,
         /// Underlying I/O error.
         source: std::io::Error,

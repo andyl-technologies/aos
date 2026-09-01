@@ -154,6 +154,8 @@ pub fn probe_x86_whitebox_setup(
     command: &QemuLaunchCommand,
     run_directory: &Path,
 ) -> Result<QemuWhiteboxSetupValidation, QemuWhiteboxSetupError> {
+    crate::spawn::prepare_vmstate_container(command, run_directory)
+        .map_err(|source| QemuWhiteboxSetupError::VmStatePreparation { source })?;
     let mut args = Vec::with_capacity(command.args.len() + 1);
     let mut index = 0;
     while index < command.args.len() {
@@ -239,6 +241,13 @@ pub enum QemuWhiteboxSetupError {
         expected: u16,
         /// Instruction ABI declared by the guest asset.
         actual: u16,
+    },
+    /// The stopped probe's exact-VMState container could not be prepared.
+    #[error("failed to prepare stopped QEMU white-box VMState container: {source}")]
+    VmStatePreparation {
+        /// Underlying run-directory or qemu-img failure.
+        #[source]
+        source: crate::QemuSpawnError,
     },
     /// The launch command ended with an option lacking its value.
     #[error("QEMU launch option `{option}` is missing its value")]

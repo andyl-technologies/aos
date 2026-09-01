@@ -2,130 +2,12 @@
 
 use super::*;
 
-/// The deterministic order key for frames visible to one consumer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct FrameDeliveryKey {
-    /// The consumer icount at which the frame becomes visible.
-    pub delivery_icount: u64,
-    /// The producer node id.
-    pub src_node: u32,
-    /// The per-producer sequence number.
-    pub seq: u32,
-}
-
-/// Returns all currently deliverable frames in deterministic visibility order.
-#[must_use]
-pub fn deliverable_frames_at(
-    frames: &[FrameEntry],
-    consumer_current_icount: u64,
-) -> Vec<&FrameEntry> {
-    let mut deliverable = frames
-        .iter()
-        .filter(|frame| frame.is_deliverable_at(consumer_current_icount))
-        .collect::<Vec<_>>();
-
-    deliverable.sort_by_key(|frame| frame.delivery_key());
-
-    deliverable
-}
-
-/// An advance authorization bounded by the lookahead gate.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AdvanceCeiling {
-    pub(super) current_icount: u64,
-    pub(super) max_advance_icount: u64,
-}
-
-impl AdvanceCeiling {
-    /// Returns the consumer icount observed before authorization.
-    #[must_use]
-    pub fn current_icount(&self) -> u64 {
-        self.current_icount
-    }
-
-    /// Returns the scheduler-authorized maximum icount the consumer may reach.
-    #[must_use]
-    pub fn max_advance_icount(&self) -> u64 {
-        self.max_advance_icount
-    }
-}
-
-/// Authorizes a max-advance ceiling under the conservative lookahead gate.
-///
-/// When `earliest_possible_delivery_icount` is present, the returned ceiling is
-/// strictly before that icount. The scheduler must publish a fresh
-/// authorization once the input group is present and deliverable.
-///
-/// # Errors
-///
-/// Returns [`LookaheadGateError::CeilingBeforeCurrent`] when `max_advance_icount`
-/// is behind `current_icount`, and
-/// [`LookaheadGateError::AdvanceReachesPossibleDelivery`] when the requested
-/// ceiling would reach or pass an input that could become visible.
-pub fn authorize_advance_ceiling(
-    current_icount: u64,
-    max_advance_icount: u64,
-    earliest_possible_delivery_icount: Option<u64>,
-) -> Result<AdvanceCeiling, LookaheadGateError> {
-    if max_advance_icount < current_icount {
-        return Err(LookaheadGateError::CeilingBeforeCurrent {
-            current_icount,
-            max_advance_icount,
-        });
-    }
-
-    if let Some(earliest_possible_delivery_icount) = earliest_possible_delivery_icount
-        && max_advance_icount >= earliest_possible_delivery_icount
-    {
-        return Err(LookaheadGateError::AdvanceReachesPossibleDelivery {
-            max_advance_icount,
-            earliest_possible_delivery_icount,
-        });
-    }
-
-    Ok(AdvanceCeiling {
-        current_icount,
-        max_advance_icount,
-    })
-}
-
-/// Verifies that a newly enqueued frame has not already missed its delivery.
-///
-/// A frame at the consumer's exact current boundary remains admissible. The
-/// consumer is quiescent while the scheduler publishes the frame, and the next
-/// drain makes that frame visible without advancing the consumer.
-///
-/// # Errors
-///
-/// Returns [`LookaheadGateError::DeliveryAlreadyPassed`] when the consumer has
-/// advanced past the frame's delivery icount.
-pub fn validate_frame_delivery_is_future(
-    frame: &FrameEntry,
-    consumer_current_icount: u64,
-) -> Result<(), LookaheadGateError> {
-    if frame.delivery_icount < consumer_current_icount {
-        Err(LookaheadGateError::DeliveryAlreadyPassed {
-            consumer_current_icount,
-            frame: frame.delivery_key(),
-        })
-    } else {
-        Ok(())
-    }
-}
-
-/// A validation error for shared-memory frame entries.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum FrameEntryError {
-    /// The advertised payload length does not fit in [`MAX_FRAME_DATA`].
-    #[error("frame payload length {len} exceeds capacity {capacity}")]
-    PayloadLengthExceedsCapacity {
-        /// The requested or advertised payload length.
-        len: usize,
-        /// The configured frame payload capacity.
-        capacity: usize,
-    },
-}
-
+#[path = "delivery_errors/frame.rs"]
+mod frame;
+pub use frame::{
+    AdvanceCeiling, FrameDeliveryKey, FrameDeliveryStateError, FrameEntryError,
+    authorize_advance_ceiling, deliverable_frames_at, validate_frame_delivery_is_future,
+};
 /// A validation error for plugin-to-host coverage entries.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum CoverageEntryError {
@@ -296,6 +178,16 @@ pub enum RegionLayoutError {
         /// The rejected shift value.
         shift_bits: u32,
     },
+    /// The per-direction fault payload arena cannot carry the supported envelope.
+    #[error("fault payload arena size {bytes} is outside supported range {minimum}..={maximum}")]
+    InvalidFaultPayloadArenaBytes {
+        /// Rejected arena byte count.
+        bytes: u32,
+        /// Smallest arena that carries the default mutation envelope.
+        minimum: u32,
+        /// Largest arena permitted by the public transport ABI.
+        maximum: u32,
+    },
     /// The computed region byte geometry overflowed an integer.
     #[error("computed shared-memory region geometry overflowed")]
     GeometryOverflow,
@@ -370,6 +262,13 @@ pub enum SpscRingError {
         #[source]
         source: GuestIntrospectionEntryError,
     },
+    /// An accelerator entry failed fixed-layout validation.
+    #[error("SPSC accelerator entry is malformed")]
+    InvalidAcceleratorEntry {
+        /// Entry validation failure.
+        #[source]
+        source: AcceleratorEntryError,
+    },
     /// A directional guest-introspection publication sequence is discontinuous.
     #[error("SPSC guest-introspection sequence mismatch: expected {expected}, actual {actual}")]
     GuestIntrospectionSequenceMismatch {
@@ -394,6 +293,30 @@ pub enum SpscRingError {
         /// The maximum payload capacity in bytes.
         capacity: usize,
     },
+    /// A frame carries a delivery state unknown to this ABI version.
+    #[error("SPSC frame delivery state {state} is not recognized")]
+    InvalidFrameDeliveryState {
+        /// The rejected shared-memory state byte.
+        state: u8,
+    },
+    /// A frame's state and retained-attempt count are inconsistent.
+    #[error("SPSC frame delivery state {state} has invalid attempt count {attempts}")]
+    InvalidFrameDeliveryAttempts {
+        /// Canonical delivery-state tag.
+        state: u8,
+        /// Rejected concrete attempt count.
+        attempts: u32,
+    },
+    /// A retained attempt coordinate precedes the frame's delivery coordinate.
+    #[error(
+        "SPSC frame retained attempt icount {attempt_icount} precedes delivery {delivery_icount}"
+    )]
+    InvalidFrameDeliveryAttemptIcount {
+        /// Frame visibility coordinate.
+        delivery_icount: u64,
+        /// Rejected last-attempt coordinate.
+        attempt_icount: u64,
+    },
     /// The snapshot frame count cannot fit in the canonical byte encoding.
     #[error("SPSC snapshot length {len} cannot be encoded as u64")]
     SnapshotLengthOverflow {
@@ -405,6 +328,24 @@ pub enum SpscRingError {
     SnapshotFrameCountOverflow {
         /// The rejected encoded frame count.
         count: u64,
+    },
+    /// The decoded snapshot frame vector could not reserve its bounded storage.
+    #[error("SPSC snapshot cannot reserve storage for {count} decoded frames")]
+    SnapshotAllocationFailed {
+        /// Canonical frame count that could not be admitted.
+        count: usize,
+    },
+    /// The compact payload for one decoded frame could not be reserved.
+    #[error("SPSC snapshot cannot reserve {len} payload bytes")]
+    SnapshotPayloadAllocationFailed {
+        /// Valid payload length that could not be admitted.
+        len: usize,
+    },
+    /// The canonical byte representation could not be reserved.
+    #[error("SPSC snapshot cannot reserve {len} canonical bytes")]
+    SnapshotByteAllocationFailed {
+        /// Canonical byte length that could not be admitted.
+        len: usize,
     },
     /// The canonical snapshot byte stream ended before the declared field.
     #[error(
@@ -533,6 +474,40 @@ pub enum NodeSlotError {
         current_icount: u64,
         /// The rejected idle wake icount.
         idle_wake_icount: u64,
+    },
+    /// A host attempted to arm a second logical-time restore request.
+    #[error("logical-time restore request {request} is still pending acknowledgement {ack}")]
+    LogicalTimeRestoreAlreadyPending {
+        /// Outstanding request generation.
+        request: u32,
+        /// Last acknowledged generation.
+        ack: u32,
+    },
+    /// The restore request changed while the plugin was acknowledging it.
+    #[error("logical-time restore request changed from {expected} to {observed}")]
+    LogicalTimeRestoreRequestChanged {
+        /// Generation acquired before recalibration.
+        expected: u32,
+        /// Generation observed at acknowledgement.
+        observed: u32,
+    },
+    /// The plugin attempted to acknowledge a different logical target.
+    #[error("logical-time restore requested icount {requested}, reached {reached}")]
+    LogicalTimeRestoreTargetMismatch {
+        /// Host-requested logical icount.
+        requested: u64,
+        /// Plugin-published logical icount.
+        reached: u64,
+    },
+    /// The restored raw QEMU counter is ahead of its requested logical value.
+    #[error(
+        "logical-time restore raw icount {raw_icount} is ahead of logical icount {logical_icount}"
+    )]
+    LogicalTimeRestoreRawAhead {
+        /// Host-requested and plugin-published logical icount.
+        logical_icount: u64,
+        /// Raw QEMU icount observed after VMState restore.
+        raw_icount: u64,
     },
     /// A non-private futex wake failed after `wake_signal` was incremented.
     #[error("non-private futex wake failed after incrementing wake_signal: {source}")]

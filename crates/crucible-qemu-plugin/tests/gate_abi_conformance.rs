@@ -4,8 +4,7 @@
 
 use std::error::Error;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 
 #[test]
 fn gate_abi_conformance_covers_plugin_io_wire_fuzzing() -> Result<(), Box<dyn Error>> {
@@ -17,6 +16,8 @@ fn gate_abi_conformance_covers_plugin_io_wire_fuzzing() -> Result<(), Box<dyn Er
     let ninep_io = fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/ninep_io.rs"))?;
     let phase_check =
         fs::read_to_string(root.join("tests/crucible/phase2-protocol-codec-fuzz.nix"))?;
+    let canonical_gate =
+        fs::read_to_string(root.join("tests/crucible/phase2-abi-conformance.nix"))?;
     let harness_spec =
         fs::read_to_string(root.join("docs/rfcs/0010-crucible/24-determinism-harness-testing.md"))?;
 
@@ -27,7 +28,7 @@ fn gate_abi_conformance_covers_plugin_io_wire_fuzzing() -> Result<(), Box<dyn Er
 
     assert_contains(
         &block_io,
-        "pub fn decode(payload: &[u8]) -> Result<(u32, Self), BlockWireError>",
+        "pub fn decode(payload: &[u8]) -> Result<(BlockRequestIdentity, Self), BlockWireError>",
     );
     assert_contains(&block_io, "UnknownOperation");
     assert_contains(&block_io, "RequestCountExceedsPayload");
@@ -55,7 +56,7 @@ fn gate_abi_conformance_covers_plugin_io_wire_fuzzing() -> Result<(), Box<dyn Er
     assert_contains(&harness_spec, "- [x] **T-HARN-19**");
     assert_contains(&harness_spec, "filesystem semantics");
 
-    run_plugin_io_wire_fuzz_unit_target(&root)?;
+    assert_plugin_io_wire_fuzz_unit_target_is_gate_wired(&canonical_gate);
 
     Ok(())
 }
@@ -72,6 +73,8 @@ fn gate_abi_conformance_covers_whitebox_doorbell_instruction_abi() -> Result<(),
     let guest_lib = fs::read_to_string(root.join("crates/crucible-guest/src/lib.rs"))?;
     let phase_check =
         fs::read_to_string(root.join("tests/crucible/phase4-guest-host-doorbell-abi.nix"))?;
+    let canonical_gate =
+        fs::read_to_string(root.join("tests/crucible/phase2-abi-conformance.nix"))?;
     let guest_host_spec =
         fs::read_to_string(root.join("docs/rfcs/0010-crucible/16-guest-host-channel.md"))?;
 
@@ -120,7 +123,7 @@ fn gate_abi_conformance_covers_whitebox_doorbell_instruction_abi() -> Result<(),
     assert_contains(&guest_host_spec, "x86_64   out 0xe7,al");
     assert_contains(&guest_host_spec, "aarch64  hint #0x4c");
 
-    run_doorbell_abi_unit_targets(&root)?;
+    assert_doorbell_abi_unit_targets_are_gate_wired(&canonical_gate);
 
     Ok(())
 }
@@ -146,71 +149,20 @@ fn workspace_root() -> Result<PathBuf, Box<dyn Error>> {
     }
 }
 
-fn run_doorbell_abi_unit_targets(root: &Path) -> Result<(), Box<dyn Error>> {
-    run_cargo_test(
-        root,
-        &[
-            "test",
-            "--frozen",
-            "--offline",
-            "--manifest-path",
-            "crates/Cargo.toml",
-            "-p",
-            "crucible-protocol",
-            "doorbell_abi",
-            "--",
-            "--test-threads=1",
-        ],
-    )?;
-    run_cargo_test(
-        root,
-        &[
-            "test",
-            "--frozen",
-            "--offline",
-            "--manifest-path",
-            "crates/Cargo.toml",
-            "-p",
-            "crucible-qemu-plugin",
-            "--lib",
-            "whitebox_doorbell",
-            "--",
-            "--test-threads=1",
-        ],
-    )
+fn assert_doorbell_abi_unit_targets_are_gate_wired(phase_check: &str) {
+    // The focused Nix gate executes these targets. Recursively invoking Cargo
+    // from an integration test contends on Cargo's package and artifact locks
+    // when the package test suite runs in parallel.
+    assert_contains(phase_check, "-p crucible-protocol");
+    assert_contains(phase_check, "doorbell_abi \\");
+    assert_contains(phase_check, "-p crucible-qemu-plugin");
+    assert_contains(phase_check, "--lib whitebox_doorbell");
 }
 
-fn run_plugin_io_wire_fuzz_unit_target(root: &Path) -> Result<(), Box<dyn Error>> {
-    run_cargo_test(
-        root,
-        &[
-            "test",
-            "--frozen",
-            "--offline",
-            "--manifest-path",
-            "crates/Cargo.toml",
-            "-p",
-            "crucible-qemu-plugin",
-            "--lib",
-            "io_wire_fuzz",
-            "--",
-            "--test-threads=1",
-        ],
-    )
-}
-
-fn run_cargo_test(root: &Path, args: &[&str]) -> Result<(), Box<dyn Error>> {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let nested_target = std::env::temp_dir().join("crucible-gate-abi-conformance-target");
-    let status = Command::new(cargo)
-        .current_dir(root)
-        .env("CARGO_TARGET_DIR", nested_target)
-        .args(args)
-        .status()?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("cargo test target failed with status {status}: {args:?}").into())
-    }
+fn assert_plugin_io_wire_fuzz_unit_target_is_gate_wired(phase_check: &str) {
+    // The gate owns the hermetic Cargo invocation; this integration test owns
+    // the cross-file proof that the executable target remains attached to it.
+    assert_contains(phase_check, "-p crucible-qemu-plugin");
+    assert_contains(phase_check, "--lib io_wire_fuzz \\");
+    assert_contains(phase_check, "plugin_io_wire_fuzz_executed=true");
 }

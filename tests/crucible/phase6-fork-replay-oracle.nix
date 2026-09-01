@@ -6,11 +6,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
@@ -272,10 +268,10 @@ in
         {
           name = "write-result";
           script = ''
-                        set -eu
-                        mkdir -p "$out"
-                        cat > "$out/result" <<RESULT
-                        PASS
+            set -eu
+            mkdir -p "$out"
+            cat > "$out/result" <<RESULT
+            PASS
             check=${attrPath}
             tasks=${taskList}
             gate=gate:replay-oracle

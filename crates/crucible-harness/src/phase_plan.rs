@@ -115,8 +115,8 @@ pub enum PhasePlanInvariantFailureKind {
     OutOfOrderPhase,
     /// A phase has no exit-gate occurrence.
     EmptyPhase,
-    /// No Phase 7 terminal `gate:e2e-determinism` occurrence exists.
-    MissingTerminalE2eDeterminism,
+    /// No Phase 7 terminal `gate:signal-fault-system` occurrence exists.
+    MissingTerminalSignalFaultSystem,
     /// A terminal marker is attached to the wrong occurrence.
     InvalidTerminalAcceptanceGate,
     /// A gate occurrence depends on `SimDouble` before Phase 1 makes it available.
@@ -716,6 +716,22 @@ pub const PHASE_GATE_ORDER: &[PhaseGateOccurrence] = &[
         false,
     ),
     catalog_gate(
+        PhasePlanPhase::Phase6,
+        "gate:checkpoint-materialization",
+        "checks.crucible.phase6.checkpointMaterialization",
+        "exact durable search state",
+        false,
+        false,
+    ),
+    catalog_gate(
+        PhasePlanPhase::Phase6,
+        "gate:state-space-search",
+        "checks.crucible.phase6.stateSpaceSearch",
+        "authenticated frontier expansion",
+        false,
+        false,
+    ),
+    catalog_gate(
         PhasePlanPhase::Phase7,
         "gate:perf-bench",
         "checks.crucible.phase7.gates.perfBench",
@@ -729,7 +745,7 @@ pub const PHASE_GATE_ORDER: &[PhaseGateOccurrence] = &[
         "checks.crucible.phase7.gates.e2eDeterminism",
         "final acceptance",
         false,
-        true,
+        false,
     ),
     catalog_gate(
         PhasePlanPhase::Phase7,
@@ -746,6 +762,14 @@ pub const PHASE_GATE_ORDER: &[PhaseGateOccurrence] = &[
         "coverage ratchet",
         false,
         false,
+    ),
+    catalog_gate(
+        PhasePlanPhase::Phase7,
+        "gate:signal-fault-system",
+        "checks.crucible.phase7.gates.signalFaultSystem",
+        "complete signal-driven production fault system",
+        false,
+        true,
     ),
 ];
 
@@ -770,7 +794,7 @@ pub fn phase_plan_invariant_failures(
 ) -> Vec<PhasePlanInvariantFailure> {
     let mut failures = Vec::new();
     let mut seen_attr_paths = BTreeSet::new();
-    let mut has_terminal_e2e = false;
+    let mut has_terminal_signal_fault_system = false;
     let mut last_phase = None;
     for occurrence in plan {
         if let Some(previous) = last_phase
@@ -811,9 +835,9 @@ pub fn phase_plan_invariant_failures(
         if occurrence.terminal_acceptance {
             if occurrence.phase == PhasePlanPhase::Phase7
                 && occurrence.kind == PhaseGateKind::CatalogGate
-                && occurrence.gate_name == "gate:e2e-determinism"
+                && occurrence.gate_name == "gate:signal-fault-system"
             {
-                has_terminal_e2e = true;
+                has_terminal_signal_fault_system = true;
             } else {
                 failures.push(failure_for(
                     PhasePlanInvariantFailureKind::InvalidTerminalAcceptanceGate,
@@ -841,11 +865,11 @@ pub fn phase_plan_invariant_failures(
         }
     }
 
-    if !has_terminal_e2e {
+    if !has_terminal_signal_fault_system {
         failures.push(PhasePlanInvariantFailure {
-            kind: PhasePlanInvariantFailureKind::MissingTerminalE2eDeterminism,
+            kind: PhasePlanInvariantFailureKind::MissingTerminalSignalFaultSystem,
             phase: Some(PhasePlanPhase::Phase7),
-            gate_name: Some("gate:e2e-determinism"),
+            gate_name: Some("gate:signal-fault-system"),
             attr_path: None,
         });
     }

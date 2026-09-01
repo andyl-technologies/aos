@@ -11,12 +11,12 @@ use std::time::Duration;
 
 use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
-    QMP_CAPABILITIES_COMMAND, QMP_CHARDEV_ADD_COMMAND, QMP_COMMAND_TIMEOUT, QMP_DEVICE_ADD_COMMAND,
-    QMP_GREETING_TIMEOUT, QMP_QUERY_CPUS_FAST_COMMAND, QMP_QUERY_JOBS_COMMAND,
-    QMP_QUERY_STATUS_COMMAND, QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_LOAD_COMMAND,
-    QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QemuSavevmCompletenessPolicy,
-    QmpClient, QmpCommandKind, QmpError, QmpGreeting, QmpIoTimeoutPolicy, QmpJobPollPolicy,
-    QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
+    QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT,
+    QMP_QUERY_CPUS_FAST_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND,
+    QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND,
+    QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QemuExactSnapshotPolicy, QmpClient,
+    QmpCommandKind, QmpError, QmpGreeting, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind,
+    QmpSnapshotTag, QmpTimeoutStream,
 };
 use serde_json::Value;
 
@@ -270,6 +270,7 @@ fn savevm_uses_snapshot_save_with_checkpoint_derived_tag() -> Result<(), Box<dyn
         r#"{"return":{}}"#,
         r#"{"return":{}}"#,
         r#"{"return":[{"id":"crucible-save-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
+        r#"{"return":{}}"#,
     ]);
     let audit = stream.audit_handle();
     let mut client = QmpClient::connect(stream)?;
@@ -315,6 +316,7 @@ fn loadvm_and_quit_are_typed_qmp_commands() -> Result<(), Box<dyn Error>> {
         r#"{"return":{}}"#,
         r#"{"return":[{"id":"crucible-load-crucible-cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","status":"concluded"}]}"#,
         r#"{"return":{}}"#,
+        r#"{"return":{}}"#,
     ]);
     let audit = stream.audit_handle();
     let mut client = QmpClient::connect(stream)?;
@@ -344,80 +346,68 @@ fn loadvm_and_quit_are_typed_qmp_commands() -> Result<(), Box<dyn Error>> {
         Some(QMP_QUERY_JOBS_COMMAND)
     );
     assert_eq!(
-        execute_name(json_line(&lines, 3)),
+        execute_name(json_line(&lines, 4)),
         Some(QMP_QUIT_COMMAND_NAME)
     );
     Ok(())
 }
 
 #[test]
-fn debug_guest_activation_is_a_fixed_typed_qmp_command() -> Result<(), Box<dyn Error>> {
+fn snapshot_delete_uses_the_same_tag_and_vmstate_device() -> Result<(), Box<dyn Error>> {
     let stream = scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":[{"id":"crucible-delete-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
+        r#"{"return":{}}"#,
     ]);
     let audit = stream.audit_handle();
-    let mut client = QmpClient::connect(stream)?.with_predeclared_debug_guest_endpoint();
+    let mut client = QmpClient::connect(stream)?;
+    let tag = QmpSnapshotTag::from_checkpoint_content_address(content_hash_with_byte(0xab));
 
     assert_eq!(
-        client.prepare_debug_guest()?.command,
-        QmpCommandKind::AddDebugGuestPort
-    );
-    assert_eq!(
-        client.prepare_debug_guest()?.command,
-        QmpCommandKind::AddDebugGuestPort
+        client.delete_snapshot(&tag)?.command,
+        QmpCommandKind::DeleteSnapshot
     );
 
     drop(client);
     let audit = audit_snapshot(&audit);
     let lines = written_json_lines(&audit)?;
+    let request = json_line(&lines, 1);
+    assert_eq!(execute_name(request), Some(QMP_SNAPSHOT_DELETE_COMMAND));
     assert_eq!(
-        lines.len(),
-        1,
-        "activation emitted an unexpected QMP command"
+        request.pointer("/arguments/tag").and_then(Value::as_str),
+        Some(HASH_AB_TAG)
+    );
+    assert_eq!(
+        request
+            .pointer("/arguments/devices/0")
+            .and_then(Value::as_str),
+        Some(QMP_SNAPSHOT_VMSTATE_DEVICE)
+    );
+    assert!(request.pointer("/arguments/vmstate").is_none());
+    assert_eq!(
+        execute_name(json_line(&lines, 2)),
+        Some(QMP_QUERY_JOBS_COMMAND)
     );
     Ok(())
 }
 
 #[test]
-fn debug_guest_activation_retries_from_the_last_completed_stage() -> Result<(), Box<dyn Error>> {
+fn predeclared_debug_guest_activation_emits_no_qmp_mutation() -> Result<(), Box<dyn Error>> {
     let stream = scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
-        r#"{"return":{}}"#,
-        r#"{"error":{"class":"GenericError","desc":"controller unavailable"}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":{}}"#,
     ]);
     let audit = stream.audit_handle();
-    let mut client = QmpClient::connect(stream)?;
+    let client = QmpClient::connect(stream)?.with_predeclared_debug_guest_endpoint();
 
-    assert!(client.prepare_debug_guest().is_err());
-    assert_eq!(
-        client.prepare_debug_guest()?.command,
-        QmpCommandKind::AddDebugGuestPort
-    );
+    client.confirm_predeclared_debug_guest_endpoint()?;
 
     drop(client);
     let audit = audit_snapshot(&audit);
     let lines = written_json_lines(&audit)?;
-    assert_eq!(
-        execute_name(json_line(&lines, 1)),
-        Some(QMP_CHARDEV_ADD_COMMAND)
-    );
-    assert_eq!(
-        execute_name(json_line(&lines, 2)),
-        Some(QMP_DEVICE_ADD_COMMAND)
-    );
-    assert_eq!(
-        execute_name(json_line(&lines, 3)),
-        Some(QMP_DEVICE_ADD_COMMAND)
-    );
-    assert_eq!(
-        execute_name(json_line(&lines, 4)),
-        Some(QMP_DEVICE_ADD_COMMAND)
-    );
+    assert_eq!(lines.len(), 1, "activation emitted a QMP mutation");
     Ok(())
 }
 
@@ -429,6 +419,7 @@ fn qmp_client_skips_async_events_until_command_return() -> Result<(), Box<dyn Er
         r#"{"event":"STOP","timestamp":{"seconds":1,"microseconds":2}}"#,
         r#"{"return":{}}"#,
         r#"{"return":[{"id":"crucible-save-crucible-efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef","status":"concluded"}]}"#,
+        r#"{"return":{}}"#,
     ]))?;
     let tag = QmpSnapshotTag::from_checkpoint_content_address(content_hash_with_byte(0xef));
 
@@ -443,6 +434,7 @@ fn qmp_snapshot_job_error_is_typed_result_error() -> Result<(), Box<dyn Error>> 
         r#"{"return":{}}"#,
         r#"{"return":{}}"#,
         r#"{"return":[{"id":"crucible-save-crucible-efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef","status":"concluded","error":{"class":"GenericError","desc":"job failed"}}]}"#,
+        r#"{"return":{}}"#,
     ]))?;
     let tag = QmpSnapshotTag::from_checkpoint_content_address(content_hash_with_byte(0xef));
 
@@ -470,6 +462,7 @@ fn qmp_snapshot_job_polling_waits_until_concluded() -> Result<(), Box<dyn Error>
         r#"{"return":{}}"#,
         r#"{"return":[{"id":"crucible-save-crucible-efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef","status":"running"}]}"#,
         r#"{"return":[{"id":"crucible-save-crucible-efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef","status":"concluded"}]}"#,
+        r#"{"return":{}}"#,
     ]);
     let audit = stream.audit_handle();
     let mut client =
@@ -596,6 +589,10 @@ fn snapshot_tags_are_derived_from_checkpoint_content_hash() {
         QmpSnapshotTag::from_checkpoint(&checkpoint).as_str(),
         HASH_AB_TAG
     );
+}
+
+fn loadvm_probe_authorization() -> crucible_qemu::QemuLoadvmCommandAuthorization {
+    QemuExactSnapshotPolicy::production().authorize_loadvm_probe()
 }
 
 #[path = "qmp/support.rs"]

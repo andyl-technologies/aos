@@ -422,6 +422,7 @@
     "installCargoArtifacts"
     "cargoArtifactContract"
     "cargoNextest"
+    "cargoNextestOpenFilesLimit"
     "nextestFlags"
     "cargoFlags"
     "buildType"
@@ -880,6 +881,24 @@
         enablePlugins = true;
         applyCruciblePatches = false;
       };
+      # Focused compatibility gates build an explicitly selected tracked patch
+      # prefix. Keeping construction here preserves the same hermetic package
+      # dependency injection as the published full-series QEMU package.
+      qemuCrucibleNonDistributableTestPrefix = {
+        pname,
+        series,
+        testOnlyPostPatch ? null,
+      }:
+        callPackage ./emulation/qemu.nix {
+          inherit pname series testOnlyPostPatch;
+          enablePlugins = true;
+          applyCruciblePatches = true;
+          testOnlyNonDistributable = true;
+        };
+      crucibleQemuPluginFor = qemuPackage:
+        callPackage ./emulation/crucible-qemu-plugin.nix {
+          qemu-crucible = qemuPackage;
+        };
       crucible-controller = callPackage ./tools/crucible/crucible.nix {
         controllerOnly = true;
       };

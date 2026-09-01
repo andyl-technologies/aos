@@ -1,4 +1,5 @@
 diff --git a/accel/tcg/meson.build b/accel/tcg/meson.build
+index f7023978c..24e6a53ca 100644
 --- a/accel/tcg/meson.build
 +++ b/accel/tcg/meson.build
 @@ -30,6 +30,7 @@ system_ss.add(when: ['CONFIG_TCG'], if_true: files(
@@ -11,6 +12,7 @@ diff --git a/accel/tcg/meson.build b/accel/tcg/meson.build
  ))
 diff --git a/accel/tcg/tcg-accel-ops-preemption.c b/accel/tcg/tcg-accel-ops-preemption.c
 new file mode 100644
+index 000000000..b11739b59
 --- /dev/null
 +++ b/accel/tcg/tcg-accel-ops-preemption.c
 @@ -0,0 +1,170 @@
@@ -185,6 +187,7 @@ new file mode 100644
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index 5c70e042c..c792d98b9 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -41,6 +41,7 @@
@@ -258,6 +261,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
                  }
              } else if (cpu->stop) {
 diff --git a/hw/intc/apic.c b/hw/intc/apic.c
+index 4c16ae980..1284d02de 100644
 --- a/hw/intc/apic.c
 +++ b/hw/intc/apic.c
 @@ -28,6 +28,7 @@
@@ -313,6 +317,7 @@ diff --git a/hw/intc/apic.c b/hw/intc/apic.c
                               const uint32_t *deliver_bitmask,
                               uint8_t delivery_mode, uint8_t vector_num,
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index dcd51e30a..c0d54b2bf 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -960,6 +960,35 @@ void qemu_plugin_force_vcpu_exit(void);
@@ -352,6 +357,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
   * qemu_plugin_register_wake_fd() - register a scheduler wake fd
   * @fd: nonblocking eventfd or pipe descriptor owned by the plugin
 diff --git a/include/system/crucible-sim-ipi.h b/include/system/crucible-sim-ipi.h
+index 3f9d9e7ac..ce6c686a5 100644
 --- a/include/system/crucible-sim-ipi.h
 +++ b/include/system/crucible-sim-ipi.h
 @@ -2,5 +2,7 @@
@@ -364,6 +370,7 @@ diff --git a/include/system/crucible-sim-ipi.h b/include/system/crucible-sim-ipi
  #endif /* SYSTEM_CRUCIBLE_SIM_IPI_H */
 diff --git a/include/system/crucible-sim-preemption.h b/include/system/crucible-sim-preemption.h
 new file mode 100644
+index 000000000..769175164
 --- /dev/null
 +++ b/include/system/crucible-sim-preemption.h
 @@ -0,0 +1,22 @@
@@ -390,6 +397,7 @@ new file mode 100644
 +
 +#endif /* SYSTEM_CRUCIBLE_SIM_PREEMPTION_H */
 diff --git a/plugins/api-system.c b/plugins/api-system.c
+index c3d45be89..b577dc8ac 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -25,6 +25,7 @@

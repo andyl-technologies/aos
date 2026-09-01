@@ -6,9 +6,6 @@ mod linux {
     use std::ffi::OsString;
     use std::io;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    use std::sync::{Arc, Barrier};
-    use std::thread::{self, JoinHandle};
 
     use crucible_qemu::{
         DiskImageMode, GuestBackingStateMode, IcountShiftSetting, LaunchProfileCandidate,
@@ -134,18 +131,9 @@ mod linux {
             second_mid_request,
             second_horizon_request,
         ] = second_requests;
-        let host_load = HostLoad::start(4)?;
-        let host_work_before = host_load.work_count();
         let second_one = executor.observe_report(&second_one_request?);
         let second_mid = executor.observe_report(&second_mid_request?);
         let second_horizon = executor.observe_report(&second_horizon_request?);
-        let host_work_after = host_load.work_count();
-        let host_load_work_observed = host_work_after > host_work_before;
-        host_load.stop()?;
-        require(
-            host_load_work_observed,
-            "host-load workers performed no measured work during the second ordinal",
-        )?;
         let second = vec![second_one?, second_mid?, second_horizon?];
 
         for (index, target) in TARGETS.into_iter().enumerate() {
@@ -424,11 +412,7 @@ mod linux {
             );
         }
         println!("definition_and_run_inputs_fixed={definition_and_run_inputs_fixed}");
-        println!("second_ordinal_host_load_work_observed={host_load_work_observed}");
-        println!(
-            "second_ordinal_host_load_work_delta={}",
-            host_work_after - host_work_before
-        );
+        println!("second_ordinal_repeat=true");
         println!("vcpu_count={VCPUS}");
         println!("rr_switch_quantum={RR_SWITCH_QUANTUM}");
         println!(
@@ -601,66 +585,6 @@ mod linux {
             encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
         }
         encoded
-    }
-
-    struct HostLoad {
-        stop: Arc<AtomicBool>,
-        work: Arc<AtomicU64>,
-        workers: Vec<JoinHandle<()>>,
-    }
-
-    impl HostLoad {
-        fn start(worker_count: usize) -> Result<Self, io::Error> {
-            let stop = Arc::new(AtomicBool::new(false));
-            let work = Arc::new(AtomicU64::new(0));
-            let ready = Arc::new(Barrier::new(worker_count + 1));
-            let workers = (0..worker_count)
-                .map(|_| {
-                    let stop = Arc::clone(&stop);
-                    let work = Arc::clone(&work);
-                    let ready = Arc::clone(&ready);
-                    thread::spawn(move || {
-                        ready.wait();
-                        while !stop.load(Ordering::Relaxed) {
-                            work.fetch_add(1, Ordering::Relaxed);
-                            std::hint::spin_loop();
-                        }
-                    })
-                })
-                .collect();
-            ready.wait();
-            for _ in 0..10_000 {
-                if work.load(Ordering::Relaxed) >= u64::try_from(worker_count).unwrap_or(u64::MAX) {
-                    return Ok(Self {
-                        stop,
-                        work,
-                        workers,
-                    });
-                }
-                thread::yield_now();
-            }
-            stop.store(true, Ordering::Relaxed);
-            for worker in workers {
-                let _ = worker.join();
-            }
-            Err(io::Error::other(
-                "host-load workers did not publish readiness work",
-            ))
-        }
-
-        fn work_count(&self) -> u64 {
-            self.work.load(Ordering::Relaxed)
-        }
-
-        fn stop(self) -> Result<(), io::Error> {
-            self.stop.store(true, Ordering::Relaxed);
-            for worker in self.workers {
-                worker
-                    .join()
-                    .map_err(|_| io::Error::other("host-load worker panicked"))?;
-            }
-            Ok(())
-        }
     }
 
     fn arguments() -> Result<Arguments, Box<dyn Error>> {

@@ -18,8 +18,13 @@
   memoryMib ? 256,
   vcpuCount ? 4,
   detIpiProbe ? false,
+  # Some focused boot-prefix probes exercise deterministic INIT/SIPI delivery
+  # before Linux starts the secondary vCPU's normal RR execution. They still
+  # validate every exported cursor snapshot but leave the positive handoff
+  # proof to the canonical long-horizon S11 run.
+  requireRrSwitchEvents ? true,
   # This bounds host wall time only. The deterministic proof horizon remains
-  # the content-addressed stopAt node-icount under all host load conditions.
+  # the content-addressed stopAt node-icount under host preemption.
   runTimeoutSeconds ? 2400,
   # Drop-one probes need a successful derivation even when a full-minus-patch
   # QEMU produces a divergent trace. The canonical gate keeps this false.
@@ -29,6 +34,7 @@
   # without attempting this runtime discriminator.
   skipUnlessBuilt ? null,
 }: let
+  boundedSchedulerPreemptionCheck = import ./phase0-bounded-scheduler-preemption.nix {inherit pkgs lib;};
   workload = pkgs.mkDerivation {
     pname = "crucible-phase0-s11-workload";
     version = "0";
@@ -375,6 +381,9 @@ in
       ACCELERATOR = accelerator;
       RUN_TIMEOUT_SECONDS = builtins.toString runTimeoutSeconds;
       PAUSE_WAIT_SECONDS = builtins.toString (runTimeoutSeconds - 60);
+      BOUNDED_PREEMPTION_HARNESS = ./_bounded-scheduler-preemption.sh;
+      BOUNDED_PREEMPTION_TARGET_WRAPPER = ./_bounded-scheduler-preemption-target.sh;
+      BOUNDED_PREEMPTION_CHECK = boundedSchedulerPreemptionCheck;
       REQUIRE_GUEST_PASS =
         if requireGuestPass
         then "1"
@@ -414,12 +423,19 @@ in
         if lib.hasPrefix "sim," accelerator || accelerator == "sim"
         then "1"
         else "0";
+      REQUIRE_RR_SWITCH_EVENTS =
+        if
+          requireRrSwitchEvents
+          && (lib.hasPrefix "sim," accelerator || accelerator == "sim")
+        then "1"
+        else "0";
 
       phases = [
         {
           name = "run-s11-multi-vcpu-fingerprint";
           script = ''
             set -eu
+            grep -Fxq PASS "$BOUNDED_PREEMPTION_CHECK/result"
 
             unset LD_LIBRARY_PATH || true
 
@@ -435,15 +451,11 @@ in
               exit 0
             fi
 
-            active_qemu_pid=""
             active_timer_sink_pid=""
             active_hmp_client_pid=""
+            . "$BOUNDED_PREEMPTION_HARNESS"
             cleanup_active_qemu() {
-              if [ -n "$active_qemu_pid" ]; then
-                kill "$active_qemu_pid" 2>/dev/null || true
-                wait "$active_qemu_pid" 2>/dev/null || true
-                active_qemu_pid=""
-              fi
+              bounded_preemption_cleanup
               if [ -n "$active_hmp_client_pid" ]; then
                 kill "$active_hmp_client_pid" 2>/dev/null || true
                 wait "$active_hmp_client_pid" 2>/dev/null || true
@@ -455,6 +467,9 @@ in
                 active_timer_sink_pid=""
               fi
             }
+            trap 'cleanup_active_qemu' EXIT
+            trap 'cleanup_active_qemu; exit 143' TERM
+            trap 'cleanup_active_qemu; exit 130' INT
 
             fail() {
               cleanup_active_qemu
@@ -514,26 +529,6 @@ in
               [ "$digest" != "$zero_sha256" ] \
                 || fail "zero S11 provenance digest is not accepted"
             done
-
-            jitter_pids=""
-            start_jitter() {
-              i=0
-              while [ "$i" -lt 3 ]; do
-                yes > /dev/null &
-                jitter_pids="$jitter_pids $!"
-                i=$((i + 1))
-              done
-            }
-
-            stop_jitter() {
-              for pid in $jitter_pids; do
-                kill "$pid" 2>/dev/null || true
-              done
-              for pid in $jitter_pids; do
-                wait "$pid" 2>/dev/null || true
-              done
-              jitter_pids=""
-            }
 
             qmp_exchange() {
               socket="$1"
@@ -772,9 +767,15 @@ in
                 fail "guest $label launch is not diskless"
               fi
 
+              launch_timeout="$RUN_TIMEOUT_SECONDS"
+              if [ -z "$STOP_AT" ]; then
+                launch_timeout=600
+              fi
+              bounded_preemption_launch_qemu \
+                "$launch_timeout" "$TMPDIR/qemu-target-$label.pid" - "$QEMU" "$@" \
+                || fail "QEMU guest $label launch failed"
+
               if [ -n "$STOP_AT" ]; then
-                timeout "$RUN_TIMEOUT_SECONDS" "$@" &
-                active_qemu_pid="$!"
                 wait_for_socket "$qmp_socket" || fail "QMP socket did not appear for guest $label"
                 if [ "$REALTIME_DEADLINE_PROBE" -eq 1 ]; then
                   wait_for_socket "$hmp_socket" \
@@ -791,10 +792,26 @@ in
                     "$TMPDIR/qmp-cont-$label.json" \
                     || fail "failed to start realtime-deadline probe guest $label"
                 fi
+                if [ "$label" = b ]; then
+                  # S11 proves RR trace identity despite host scheduling. The
+                  # first cadence record establishes guest execution before
+                  # six finite pauses; the independent watchdog resumes QEMU.
+                  progress_needle="\"observed_icount\":$CADENCE"
+                  bounded_preemption_wait_for_guest_progress \
+                    "$trace_path" "$progress_needle" 12000 0.1 \
+                    || fail "QEMU guest $label made no pre-adversary trace progress"
+                  bounded_preemption_start \
+                    "$TMPDIR/preemption-$label.log" "$trace_path" "$progress_needle" \
+                    || fail "QEMU guest $label scheduler adversary did not start"
+                fi
                 wait_for_stop_at_pause "$qmp_socket" "$label" || fail "QEMU did not pause at stop_at for guest $label"
+                if [ "$label" = b ]; then
+                  bounded_preemption_finish "$TMPDIR/preemption-$label.log" \
+                    || fail "QEMU guest $label scheduler adversary was incomplete"
+                fi
                 qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-$label.json" || true
-                wait "$active_qemu_pid" || fail "QEMU guest $label exited unsuccessfully"
-                active_qemu_pid=""
+                bounded_preemption_wait_qemu \
+                  || fail "QEMU guest $label exited unsuccessfully"
                 if [ -n "$active_hmp_client_pid" ]; then
                   kill "$active_hmp_client_pid" 2>/dev/null || true
                   wait "$active_hmp_client_pid" 2>/dev/null || true
@@ -806,7 +823,19 @@ in
                   active_timer_sink_pid=""
                 fi
               else
-                timeout 600 "$@"
+                if [ "$label" = b ]; then
+                  progress_needle="\"observed_icount\":$CADENCE"
+                  bounded_preemption_wait_for_guest_progress \
+                    "$trace_path" "$progress_needle" 6000 0.1 \
+                    || fail "QEMU guest $label made no pre-adversary trace progress"
+                  bounded_preemption_start \
+                    "$TMPDIR/preemption-$label.log" "$trace_path" "$progress_needle" \
+                    || fail "QEMU guest $label scheduler adversary did not start"
+                  bounded_preemption_finish "$TMPDIR/preemption-$label.log" \
+                    || fail "QEMU guest $label scheduler adversary was incomplete"
+                fi
+                bounded_preemption_wait_qemu \
+                  || fail "QEMU guest $label exited unsuccessfully"
               fi
               cp "$trace_path" "$TMPDIR/trace-$label.jsonl"
               cp "$serial_path" "$TMPDIR/serial-$label.log"
@@ -816,9 +845,7 @@ in
             }
 
             run_one a
-            start_jitter
             run_one b
-            stop_jitter
 
             diagnose_trace_structure() {
               label="$1"
@@ -950,6 +977,7 @@ in
                 --argjson stop_at "$STOP_AT_VALUE" \
                 --argjson cadence "$CADENCE" \
                 --arg expect_rr_cursor "$EXPECT_RR_CURSOR" \
+                --arg require_rr_switch_events "$REQUIRE_RR_SWITCH_EVENTS" \
                 --arg sustain_workload "$SUSTAIN_WORKLOAD" \
                 --arg launch_definition_digest "$launch_definition_digest" \
                 --arg qemu_build_digest "$qemu_build_digest" \
@@ -1037,7 +1065,7 @@ in
                     end
                   )
                   and (
-                    if $expect_rr_cursor == "1" then
+                    if $require_rr_switch_events == "1" then
                       ($switches | length) > 0
                       and all($switches[]; (
                         .rr_switch_event > 0
@@ -1056,8 +1084,10 @@ in
                         and all(.per_vcpu_delta[]; . >= 0)
                         and any(.per_vcpu_delta[]; . > 0)
                       ))
-                    else
+                    elif $expect_rr_cursor != "1" then
                       ($switches | length) == 0
+                    else
+                      true
                     end
                   )
                 ' "$TMPDIR/trace-$label.jsonl" >/dev/null; then
@@ -1071,14 +1101,15 @@ in
             rr_switch_events_a=$(jq -s '[.[] | select(.kind == "rr_switch")] | length' "$TMPDIR/trace-a.jsonl")
             rr_switch_events_b=$(jq -s '[.[] | select(.kind == "rr_switch")] | length' "$TMPDIR/trace-b.jsonl")
             [ "$samples_a" -ge 4 ] || fail "expected at least 4 samples in run a"
-            if [ "$EXPECT_RR_CURSOR" -eq 1 ]; then
+            if [ "$REQUIRE_RR_SWITCH_EVENTS" -eq 1 ]; then
               [ "$rr_switch_events_a" -gt 0 ] || fail "expected RR switch events in run a"
-            else
+            elif [ "$EXPECT_RR_CURSOR" -eq 0 ]; then
               [ "$rr_switch_events_a" -eq 0 ] \
                 || fail "unexpected RR switch events under non-sim accelerator in run a"
             fi
 
             mkdir -p "$out"
+            cp "$TMPDIR/preemption-b.log" "$out/preemption-b.log"
             for label in a b; do
               jq -r '
                 select(.kind == "rr_switch")
@@ -1499,11 +1530,21 @@ in
               else
                 echo det_ipi_probe=disabled
               fi
-              echo host_adversary=jitter-load
+              echo host_adversary=bounded-scheduler-preemption
+              echo host_adversary_perturbations=6
+              echo host_adversary_configured_pause_milliseconds=15
+              echo host_adversary_configured_total_stopped_milliseconds=90
+              echo host_adversary_nominal_worker_wall_milliseconds=95
+              echo host_adversary_worker_wall_timeout_seconds=2
+              echo host_adversary_busy_workers=0
               echo authoritative_trace_scope="$authoritative_trace_scope"
               if [ "$EXPECT_RR_CURSOR" -eq 1 ]; then
                 echo rr_cursor_export=sim
-                echo rr_cursor_assertion=nonempty_valid_snapshot
+                if [ "$REQUIRE_RR_SWITCH_EVENTS" -eq 1 ]; then
+                  echo rr_cursor_assertion=nonempty_valid_snapshot_and_positive_handoff_trace
+                else
+                  echo rr_cursor_assertion=valid_boot_prefix_snapshot
+                fi
               else
                 echo rr_cursor_export=inert-non-sim
                 echo rr_cursor_assertion=inert_non_sim

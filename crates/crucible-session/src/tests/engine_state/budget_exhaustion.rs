@@ -22,38 +22,22 @@ fn control_replay_artifact_reproduces_interactive_scheduler_state() {
         panic!("first producer quantum should establish a control boundary: {error}");
     }
 
-    let fault_tag = FaultTag::from_name("control-replay-fault");
-    let fault = Fault::Node(crucible::NodeFault::Crash {
-        node: NodeId {
-            name: String::from("node-a"),
-        },
-        restart: crucible::RestartPolicy::StayDown,
-    });
-    if let Err(error) = interactive.apply_command(SessionCommand::Inject) {
-        panic!("producer legacy inject should apply at the current boundary: {error}");
-    }
-    let (inject_reply, inject_receiver) = CommandReply::channel();
-    if let Err(error) = interactive.apply_command(SessionCommand::InjectFault {
-        spec: FaultSpec::new(fault_tag.clone(), fault),
-        reply: inject_reply,
+    let (savepoint_reply, mut savepoint_receiver) = CommandReply::channel();
+    if let Err(error) = interactive.apply_command(SessionCommand::CreateSavepoint {
+        label: String::from("replay-boundary"),
+        reply: savepoint_reply,
     }) {
-        panic!("producer inject-fault should apply at the current boundary: {error}");
+        panic!("producer savepoint should apply at the current boundary: {error}");
     }
-    drop(inject_receiver);
+    let _savepoint = savepoint_receiver
+        .try_recv()
+        .unwrap_or_else(|error| panic!("savepoint reply should be available: {error}"))
+        .unwrap_or_else(|error| panic!("savepoint should succeed: {error}"));
     if let Err(error) = interactive.step_quantum() {
         panic!("second producer quantum should observe injected scheduler state: {error}");
     }
-
-    let (heal_reply, heal_receiver) = CommandReply::channel();
-    if let Err(error) = interactive.apply_command(SessionCommand::HealFault {
-        tag: fault_tag,
-        reply: heal_reply,
-    }) {
-        panic!("producer heal-fault should apply at the current boundary: {error}");
-    }
-    drop(heal_receiver);
     if let Err(error) = interactive.step_quantum() {
-        panic!("third producer quantum should observe healed scheduler state: {error}");
+        panic!("third producer quantum should preserve scheduler state: {error}");
     }
 
     let artifact = interactive.control_replay_artifact(initial);
@@ -75,21 +59,13 @@ fn control_replay_artifact_reproduces_interactive_scheduler_state() {
     assert_eq!(replay.frontier, artifact.final_snapshot.frontier);
     assert_eq!(replay.event_log_len, artifact.final_snapshot.event_log_len);
     assert_eq!(replay.quanta, artifact.final_snapshot.quanta);
-    assert_eq!(artifact.control_log.len(), 3);
+    assert_eq!(artifact.control_log.len(), 1);
     assert!(
         artifact
             .control_log
             .iter()
             .all(|entry| entry.frontier.ticks > 0 && entry.quanta > 0),
         "replay controls should be keyed by virtual-time boundaries"
-    );
-    assert_eq!(
-        artifact.control_log[0].quanta,
-        artifact.control_log[1].quanta
-    );
-    assert_ne!(
-        artifact.control_log[0].scheduler_batch, artifact.control_log[1].scheduler_batch,
-        "separate operator commands at the same boundary must remain separate scheduler batches"
     );
 }
 

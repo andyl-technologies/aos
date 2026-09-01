@@ -565,10 +565,7 @@ pub(super) fn entry_is_resolved_external_event(entry: &SchedulerEventLogEntry) -
     match entry.payload() {
         SchedulerEventLogPayload::ResolvedHappening(event) => matches!(
             &event.payload,
-            ScheduledEventPayload::BackendInput(_)
-                | ScheduledEventPayload::IoCompletion(_)
-                | ScheduledEventPayload::FaultActivation(_)
-                | ScheduledEventPayload::ProbabilisticFault(_)
+            ScheduledEventPayload::BackendInput(_) | ScheduledEventPayload::IoCompletion(_)
         ),
         SchedulerEventLogPayload::Observable(ObservableEventPayload::NetworkDelivered {
             ..

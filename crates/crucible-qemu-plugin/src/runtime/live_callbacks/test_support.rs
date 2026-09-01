@@ -18,3 +18,7 @@ pub(super) fn test_preemption_injector() -> crate::PluginPreemptionInjector {
 }
 
 pub(super) extern "C" fn test_force_vcpu_exit() {}
+
+pub(super) extern "C" fn test_request_vmstop() -> std::os::raw::c_int {
+    0
+}

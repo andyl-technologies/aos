@@ -1,8 +1,10 @@
 //! Engine-owned terminal outcomes and terminal checkpoint capture.
 
 use super::*;
+use crucible::CheckpointTerminalCause;
 
 /// Engine-owned reason for entering the terminal state.
+#[derive(Clone)]
 pub(super) enum TerminalCause {
     /// The assertion/trigger layer produced one or more property violations.
     Failed(Vec<String>),
@@ -16,12 +18,23 @@ pub(super) enum TerminalCause {
     OperatorStop,
 }
 
+impl TerminalCause {
+    fn checkpoint_cause(&self) -> CheckpointTerminalCause {
+        match self {
+            Self::Failed(violations) => CheckpointTerminalCause::Failed(violations.clone()),
+            Self::Passed => CheckpointTerminalCause::Passed,
+            Self::BudgetExhausted => CheckpointTerminalCause::BudgetExhausted,
+            Self::BackendCrash(detail) => CheckpointTerminalCause::BackendCrash(detail.clone()),
+            Self::OperatorStop => CheckpointTerminalCause::OperatorStop,
+        }
+    }
+}
+
 impl<L> Engine<L> {
     pub(crate) fn stop_after_budget_exhaustion(&mut self) -> Result<(), SessionError>
     where
         L: QuantumLoop,
     {
-        self.shutdown_quantum_loop()?;
         self.pending_control.clear();
         self.active_step = None;
         self.enter_stopped(TerminalCause::BudgetExhausted)
@@ -44,7 +57,13 @@ impl<L> Engine<L> {
         self.pending_control.clear();
         self.active_step = None;
         self.resolve_guest_introspection_for_terminal();
-        match self.save_current_checkpoint() {
+        let prepared = self
+            .quantum_loop
+            .prepare_terminal_checkpoint(CheckpointTerminalCause::BackendCrash(detail.clone()));
+        match prepared
+            .map_err(SessionError::from)
+            .and_then(|()| self.save_current_checkpoint())
+        {
             Ok(checkpoint) => self.terminal_savepoint = Some(checkpoint),
             Err(error) => {
                 detail.push_str("; terminal checkpoint failed: ");
@@ -65,6 +84,8 @@ impl<L> Engine<L> {
         L: QuantumLoop,
     {
         self.resolve_guest_introspection_for_terminal();
+        self.quantum_loop
+            .prepare_terminal_checkpoint(cause.checkpoint_cause())?;
         let outcome = match cause {
             TerminalCause::Failed(violations) => Outcome::Failed { violations },
             TerminalCause::Passed => Outcome::Passed,
@@ -72,7 +93,11 @@ impl<L> Engine<L> {
             TerminalCause::BackendCrash(detail) => Outcome::Crashed { detail },
             TerminalCause::OperatorStop => Outcome::Stopped,
         };
+        // A production checkpoint needs live, quiesced QEMU processes. Capture
+        // the resumable boundary before teardown; shutdown observations belong
+        // to the terminal session record, not to the resumable checkpoint.
         let checkpoint = self.save_current_checkpoint()?;
+        self.shutdown_quantum_loop()?;
         self.terminal_savepoint = Some(checkpoint);
         self.debug_attach = None;
         self.debug_branch_required = false;
@@ -81,9 +106,15 @@ impl<L> Engine<L> {
         Ok(())
     }
 
-    pub(super) fn save_current_checkpoint(&mut self) -> Result<Checkpoint, SessionError> {
+    pub(super) fn save_current_checkpoint(&mut self) -> Result<Checkpoint, SessionError>
+    where
+        L: QuantumLoop,
+    {
         let mut checkpoint = self.graph.save_checkpoint(&self.configuration)?;
         checkpoint.virtual_time = self.frontier;
+        if let Some(closure) = self.quantum_loop.capture_checkpoint(&self.configuration)? {
+            checkpoint = checkpoint.with_execution_closure(closure);
+        }
         Ok(checkpoint)
     }
 }
@@ -105,9 +136,7 @@ pub(super) fn breakpoint_terminal_verdict(action: &Action) -> (bool, Vec<String>
             violations.dedup();
             (passed, violations)
         }
-        Action::InjectFault { .. }
-        | Action::HealFault { .. }
-        | Action::ArmTimer { .. }
+        Action::ArmTimer { .. }
         | Action::CancelTimer { .. }
         | Action::StartNode { .. }
         | Action::StopNode { .. }

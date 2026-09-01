@@ -5,33 +5,28 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    BackendInput, ContentHash, Decision, EventEvaluationKind, EventKey, ExactLocalEvent, FaultId,
-    FaultRateBasisPoints, NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest,
-    RngStreamId, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerEventLogClass,
-    SchedulerEventLogPayload, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
-    SchedulerResolveFaultChoice, SchedulerScenarioNode, SchedulingNodeKind, Shift, SimDuration,
-    SimInstant, SingleScheduler, VirtualTime, check_scheduler_liveness,
+    BackendInput, ContentHash, Decision, EventEvaluationKind, EventKey, ExactLocalEvent,
+    NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest, ScheduledEvent,
+    ScheduledEventKey, ScheduledEventPayload, SchedulerEventLogClass, SchedulerEventLogPayload,
+    SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
+    SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler, VirtualTime,
+    check_scheduler_liveness,
 };
 
 #[test]
 fn emit_appends_resolved_happenings_before_decisions_with_dense_content_hashes() {
     let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
     let frame_producer = scheduler_node("producer", SchedulingNodeKind::Vm);
-    let fault_producer = scheduler_node("fault-link", SchedulingNodeKind::Network);
-    let stream = RngStreamId::for_link("fault-link/loss");
-    let fault = FaultId {
-        name: String::from("link-loss"),
-    };
+    let second_producer = scheduler_node("producer-b", SchedulingNodeKind::Vm);
     let frame = backend_event(4, &consumer, &frame_producer, 1, b"frame");
-    let probabilistic =
-        probabilistic_fault_event(4, &consumer, &fault_producer, 2, &fault, &stream, 0);
+    let second_frame = backend_event(4, &consumer, &second_producer, 2, b"second-frame");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "emit-step-entry-order",
         shift(0),
         8,
         SimInstant { nanos: 30 },
         vec![scenario_node("consumer", 0, finite_lookahead(12))],
-        vec![probabilistic.clone(), frame.clone()],
+        vec![second_frame.clone(), frame.clone()],
     );
     let mut scheduler = SingleScheduler::new(scenario.clone()).expect("scenario should build");
     let mut replay = SingleScheduler::new(scenario).expect("replay scenario should build");
@@ -52,12 +47,12 @@ fn emit_appends_resolved_happenings_before_decisions_with_dense_content_hashes()
     assert_eq!(outcome.frontier, VirtualTime { ticks: 4 });
     assert_eq!(
         outcome.resolved_events,
-        vec![probabilistic.clone(), frame.clone()]
+        vec![frame.clone(), second_frame.clone()]
     );
     assert_eq!(outcome.event_log_entries, replay_outcome.event_log_entries);
     assert_eq!(outcome.event_log_offset, replay_outcome.event_log_offset);
     assert!(outcome.event_log_offset.appended_segment.is_some());
-    assert_eq!(outcome.event_log_offset.events, 6);
+    assert_eq!(outcome.event_log_offset.events, 4);
     assert!(outcome.event_log_offset.bytes > 0);
     assert!(!outcome.event_log_segment_bytes.is_empty());
     assert_eq!(
@@ -86,7 +81,7 @@ fn emit_appends_resolved_happenings_before_decisions_with_dense_content_hashes()
         .iter()
         .map(|entry| entry.sequence())
         .collect::<Vec<_>>();
-    assert_eq!(sequences, vec![0, 1, 2, 3, 4, 5]);
+    assert_eq!(sequences, vec![0, 1, 2, 3]);
     assert!(
         outcome
             .event_log_entries
@@ -97,28 +92,19 @@ fn emit_appends_resolved_happenings_before_decisions_with_dense_content_hashes()
 
     assert!(matches!(
         outcome.event_log_entries[0].payload(),
-        SchedulerEventLogPayload::ResolvedHappening(event) if event == &probabilistic
+        SchedulerEventLogPayload::ResolvedHappening(event) if event == &frame
     ));
     assert!(matches!(
         outcome.event_log_entries[1].payload(),
-        SchedulerEventLogPayload::ResolvedHappening(event) if event == &frame
+        SchedulerEventLogPayload::ResolvedHappening(event) if event == &second_frame
     ));
     assert!(matches!(
         outcome.event_log_entries[2].payload(),
         SchedulerEventLogPayload::Decision(Decision::DeliveryOrder(order))
-            if order.order == vec![event_key(&probabilistic), event_key(&frame)]
+            if order.order == vec![event_key(&frame), event_key(&second_frame)]
     ));
     assert!(matches!(
         outcome.event_log_entries[3].payload(),
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(draw)) if draw.stream == stream
-    ));
-    assert!(matches!(
-        outcome.event_log_entries[4].payload(),
-        SchedulerEventLogPayload::Decision(Decision::FaultFires(recorded))
-            if recorded.fault == fault && !recorded.fired
-    ));
-    assert!(matches!(
-        outcome.event_log_entries[5].payload(),
         SchedulerEventLogPayload::EvaluationBoundary(
             crucible::SchedulerEvaluationBoundaryKind::Quantum
         )
@@ -267,33 +253,6 @@ fn backend_event(
         payload: ScheduledEventPayload::BackendInput(BackendInput {
             node: consumer.node.clone(),
             payload: payload.to_vec(),
-        }),
-    }
-}
-
-fn probabilistic_fault_event(
-    virtual_time: u64,
-    consumer: &SchedulerNodeId,
-    producer: &SchedulerNodeId,
-    sequence: u64,
-    fault: &FaultId,
-    stream: &RngStreamId,
-    rate_basis_points: u32,
-) -> ScheduledEvent {
-    ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime {
-                ticks: virtual_time,
-            },
-            consumer.clone(),
-            producer.clone(),
-            sequence,
-        ),
-        payload: ScheduledEventPayload::ProbabilisticFault(SchedulerResolveFaultChoice {
-            fault: fault.clone(),
-            stream: stream.clone(),
-            rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)
-                .expect("test rate should be valid"),
         }),
     }
 }

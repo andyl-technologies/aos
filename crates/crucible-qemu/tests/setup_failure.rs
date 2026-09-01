@@ -364,6 +364,7 @@ fn short_region_error() -> RegionSetupValidationError {
             icount_shift: 0,
             pause_requested: 0,
             shutdown_requested: 0,
+            fault_payload_arena_bytes: 0,
         },
         minimum_len - 1,
     ) {

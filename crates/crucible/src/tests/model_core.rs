@@ -148,132 +148,6 @@ fn time_vocabulary_rejects_invalid_shift_and_virtual_time_overflow() {
 }
 
 #[test]
-fn clock_skew_applies_fixed_point_drift_to_guest_reads_only() {
-    let scheduler_time = VirtualInstant { nanos: 100 };
-    let skew = NodeClockSkew {
-        offset: SimOffset { nanos: -10 },
-        drift_rate: drift_rate(3, 2),
-    };
-
-    assert_eq!(
-        skew.guest_visible_time(scheduler_time),
-        Ok(VirtualInstant { nanos: 140 })
-    );
-    assert_eq!(scheduler_time, VirtualInstant { nanos: 100 });
-    assert_eq!(
-        NodeClockSkew::PERFECT.guest_visible_time(scheduler_time),
-        Ok(scheduler_time)
-    );
-}
-
-#[test]
-fn clock_skew_uses_floor_rounding_without_floating_point() {
-    let skew = NodeClockSkew {
-        offset: SimOffset { nanos: 0 },
-        drift_rate: drift_rate(3, 2),
-    };
-
-    assert_eq!(
-        skew.guest_visible_time(VirtualInstant { nanos: 5 }),
-        Ok(VirtualInstant { nanos: 7 })
-    );
-    assert_eq!(
-        NodeClockSkew {
-            offset: SimOffset { nanos: -20 },
-            drift_rate: drift_rate(1, 3),
-        }
-        .guest_visible_time(VirtualInstant { nanos: 9 }),
-        Ok(VirtualInstant::EPOCH)
-    );
-}
-
-#[test]
-fn clock_skew_rejects_invalid_drift_rate_and_overflow() {
-    let invalid = ClockDriftRate {
-        numerator: 1,
-        denominator: 0,
-    };
-    let overflowing = ClockDriftRate {
-        numerator: u64::MAX,
-        denominator: 1,
-    };
-
-    assert_eq!(
-        ClockDriftRate::new(1, 0),
-        Err(TimeConversionError::InvalidDriftRate {
-            drift_rate: invalid,
-        })
-    );
-    assert_eq!(
-        invalid.apply_floor(VirtualInstant { nanos: 1 }),
-        Err(TimeConversionError::InvalidDriftRate {
-            drift_rate: invalid,
-        })
-    );
-    assert_eq!(
-        overflowing.apply_floor(VirtualInstant { nanos: 2 }),
-        Err(TimeConversionError::GuestVisibleTimeOverflow {
-            virtual_time: VirtualInstant { nanos: 2 },
-            drift_rate: overflowing,
-        })
-    );
-    assert_eq!(
-        NodeClockSkew {
-            offset: SimOffset { nanos: 1 },
-            drift_rate: ClockDriftRate::ONE,
-        }
-        .guest_visible_time(VirtualInstant { nanos: u64::MAX }),
-        Err(TimeConversionError::GuestVisibleTimeOffsetOverflow {
-            virtual_time: VirtualInstant { nanos: u64::MAX },
-            offset: SimOffset { nanos: 1 },
-        })
-    );
-    assert_eq!(
-        NodeClockSkew {
-            offset: SimOffset { nanos: 1 },
-            drift_rate: invalid,
-        }
-        .scenario_hash_material(),
-        Err(TimeConversionError::InvalidDriftRate {
-            drift_rate: invalid,
-        })
-    );
-}
-
-#[test]
-fn clock_skew_hash_material_omits_perfect_clock_and_records_overrides() {
-    let base = "scenario=clock-skew\nnode=a";
-    let perfect_material = material_with_skew(base, NodeClockSkew::default());
-    let explicit_perfect_material = material_with_skew(base, NodeClockSkew::PERFECT);
-    let equivalent_perfect_material = material_with_skew(
-        base,
-        NodeClockSkew {
-            offset: SimOffset { nanos: 0 },
-            drift_rate: drift_rate(2, 2),
-        },
-    );
-    let skewed = NodeClockSkew {
-        offset: SimOffset { nanos: 50 },
-        drift_rate: drift_rate(1001, 1000),
-    };
-    let skewed_material = material_with_skew(base, skewed);
-
-    assert_eq!(NodeClockSkew::PERFECT.scenario_hash_material(), Ok(None));
-    assert_eq!(perfect_material, base);
-    assert_eq!(explicit_perfect_material, base);
-    assert_eq!(equivalent_perfect_material, base);
-    assert!(skewed_material.contains("clock_skew_offset_ns=50"));
-    assert!(skewed_material.contains("clock_drift_rate=1001/1000"));
-    assert!(skewed_material.contains("clock_drift_rounding=floor"));
-    assert!(skewed_material.contains("clock_skew_applies_to=guest-visible-only"));
-    assert!(skewed_material.contains("clock_skew_scheduling_axis=unskewed-icount-derived"));
-    assert_ne!(
-        ScenarioDef::from_canonical_material("crucible.test.clock-skew", &perfect_material).id(),
-        ScenarioDef::from_canonical_material("crucible.test.clock-skew", &skewed_material).id(),
-    );
-}
-
-#[test]
 fn canonical_material_builds_stable_scenario_identity() {
     let first = ScenarioDef::from_canonical_material("crucible.test.scenario", "field=a\nvalue=1");
     let second = ScenarioDef::from_canonical_material("crucible.test.scenario", "field=a\nvalue=1");
@@ -285,465 +159,6 @@ fn canonical_material_builds_stable_scenario_identity() {
     assert_eq!(first, second);
     assert_ne!(first.id(), changed_material.id());
     assert_ne!(first.id(), changed_domain.id());
-}
-
-#[test]
-fn scenario_def_form_is_immutable_pure_four_tuple_value() {
-    let blob_ref = |label: &str| {
-        ContentAddressedBlobRef::from_hash(ContentHash::from_canonical_material(
-            "crucible.test.scenario-def-value.blob",
-            label,
-        ))
-    };
-    let world = world_from_nodes_and_links(
-        vec![
-            WorldNode {
-                kernel: Some(blob_ref("kernel-a")),
-                root_image: Some(blob_ref("root-a")),
-                initrd: Some(blob_ref("initrd-a")),
-                ..ready_node(
-                    "a",
-                    ReadyPoint::FixedIcount {
-                        icount: Icount { retired: 11 },
-                    },
-                )
-            },
-            ready_node(
-                "b",
-                ReadyPoint::FixedIcount {
-                    icount: Icount { retired: 13 },
-                },
-            ),
-        ],
-        vec![transport_link("a", "b", 10, 1, 0, Some(1_000_000))],
-    );
-    let plan = Plan::from_entries_for_world(
-        &world,
-        vec![
-            PlanEntry::Activate {
-                at: VirtualTime { ticks: 5 },
-                tag: tag("crash-b"),
-                fault: MembershipFault::Crash {
-                    node: node_id("b"),
-                    restart: RestartPolicy::StayDown,
-                },
-            },
-            PlanEntry::Heal {
-                at: VirtualTime { ticks: 9 },
-                tag: tag("crash-b"),
-            },
-        ],
-    )
-    .unwrap_or_else(|error| panic!("plan should be valid: {error}"));
-    let properties = Properties::from_assertions_for_world(
-        &world,
-        vec![assertion(
-            "a-alive",
-            "node a remains alive",
-            Property::Always {
-                predicate: named_predicate("node_alive", &["a"]),
-            },
-        )],
-    )
-    .unwrap_or_else(|error| panic!("properties should be valid: {error}"));
-    let seed = Seed::from_u64(0x0010_0001);
-    let form = ScenarioDefForm::from_components(&world, &plan, &properties, seed)
-        .unwrap_or_else(|error| panic!("scenario form should be valid: {error}"));
-    let scenario = form.scenario_def();
-
-    assert_eq!(form.world(), &world);
-    assert_eq!(form.plan(), &plan);
-    assert_eq!(form.properties(), &properties);
-    assert_eq!(form.seed(), seed);
-    assert_eq!(form.id(), scenario.id());
-    assert_eq!(scenario.seed(), seed);
-
-    for case in 0..8 {
-        let seed = Seed::from_u64(case);
-        let left = ScenarioDefForm::from_components(&world, &plan, &properties, seed)
-            .unwrap_or_else(|error| panic!("left scenario form should be valid: {error}"));
-        let right = ScenarioDefForm::from_components(&world, &plan, &properties, seed)
-            .unwrap_or_else(|error| panic!("right scenario form should be valid: {error}"));
-        assert_eq!(left, right);
-        assert_eq!(left.id(), right.id());
-        assert_eq!(left.scenario_def(), right.scenario_def());
-        assert_eq!(left.canonical_bytes(), right.canonical_bytes());
-    }
-
-    let original_id = form.id();
-    let changed_world = world_from_nodes_and_links(
-        vec![WorldNode {
-            kernel: Some(blob_ref("kernel-b")),
-            ..ready_node(
-                "a",
-                ReadyPoint::FixedIcount {
-                    icount: Icount { retired: 11 },
-                },
-            )
-        }],
-        Vec::new(),
-    );
-    let changed_plan = Plan::from_entries_for_world(
-        &world,
-        vec![PlanEntry::Activate {
-            at: VirtualTime { ticks: 5 },
-            tag: tag("isolate-a"),
-            fault: MembershipFault::Isolate { node: node_id("a") },
-        }],
-    )
-    .unwrap_or_else(|error| panic!("changed plan should be valid: {error}"));
-    let changed_properties = Properties::from_assertions_for_world(
-        &world,
-        vec![assertion(
-            "b-alive",
-            "node b remains alive",
-            Property::Always {
-                predicate: named_predicate("node_alive", &["b"]),
-            },
-        )],
-    )
-    .unwrap_or_else(|error| panic!("changed properties should be valid: {error}"));
-
-    assert_eq!(form.id(), original_id);
-    assert_eq!(form.world(), &world);
-    assert_ne!(
-        ScenarioDefForm::from_components(
-            &changed_world,
-            &Plan::empty(),
-            &Properties::empty(),
-            seed
-        )
-        .unwrap_or_else(|error| panic!("changed-world form should be valid: {error}"))
-        .id(),
-        original_id
-    );
-    assert_ne!(
-        ScenarioDefForm::from_components(&world, &changed_plan, &properties, seed)
-            .unwrap_or_else(|error| panic!("changed-plan form should be valid: {error}"))
-            .id(),
-        original_id
-    );
-    assert_ne!(
-        ScenarioDefForm::from_components(&world, &plan, &changed_properties, seed)
-            .unwrap_or_else(|error| panic!("changed-properties form should be valid: {error}"))
-            .id(),
-        original_id
-    );
-    assert_ne!(
-        ScenarioDefForm::from_components(&world, &plan, &properties, Seed::from_u64(2))
-            .unwrap_or_else(|error| panic!("changed-seed form should be valid: {error}"))
-            .id(),
-        original_id
-    );
-    assert!(matches!(
-        ContentAddressedBlobRef::parse("kernel", "/nix/store/not-a-content-ref"),
-        Err(EngineError::ScenarioImageReferenceNotContentAddressed { field, .. })
-            if field == "kernel"
-    ));
-}
-
-#[test]
-fn scenario_layers_stay_structurally_orthogonal() {
-    let partition_entry = PlanEntry::Activate {
-        at: VirtualTime { ticks: 7 },
-        tag: tag("split-a-b"),
-        fault: MembershipFault::Partition {
-            endpoint_a: node_id("a"),
-            endpoint_b: node_id("b"),
-            direction: PartitionDirection::Bidirectional,
-        },
-    };
-    let property_assertion = assertion(
-        "a-reachable",
-        "node a remains reachable",
-        Property::Always {
-            predicate: named_predicate("node_alive", &["a"]),
-        },
-    );
-    let world = world_from_nodes_and_links(
-        two_ready_nodes(),
-        vec![transport_link("a", "b", 10, 1, 0, Some(1_000_000))],
-    );
-    let plan = Plan::from_entries_for_world(&world, vec![partition_entry.clone()])
-        .unwrap_or_else(|error| panic!("plan should be valid: {error}"));
-    let properties =
-        Properties::from_assertions_for_world(&world, vec![property_assertion.clone()])
-            .unwrap_or_else(|error| panic!("properties should be valid: {error}"));
-    let seed = Seed::from_u64(0x0010_0002);
-    let form = ScenarioDefForm::from_components(&world, &plan, &properties, seed)
-        .unwrap_or_else(|error| panic!("scenario form should be valid: {error}"));
-    let built = ScenarioBuilder::new()
-        .node("a", NodeTemplate::fixed_icount(Icount { retired: 1 }))
-        .node("b", NodeTemplate::fixed_icount(Icount { retired: 2 }))
-        .link_with_transport(
-            "a",
-            "b",
-            SimDuration { nanos: 10 },
-            SimDuration { nanos: 1 },
-            LinkLossProbability::ZERO,
-            Some(1_000_000),
-        )
-        .plan_entry(partition_entry.clone())
-        .property(property_assertion.clone())
-        .seed(seed)
-        .build()
-        .unwrap_or_else(|error| panic!("builder scenario should be valid: {error}"));
-
-    assert_eq!(built, form.scenario_def());
-
-    let other_seed_form =
-        ScenarioDefForm::from_components(&world, &plan, &properties, Seed::from_u64(99))
-            .unwrap_or_else(|error| panic!("other-seed form should be valid: {error}"));
-    assert_eq!(other_seed_form.world().id(), form.world().id());
-    assert_eq!(
-        other_seed_form.plan().content_hash(),
-        form.plan().content_hash()
-    );
-    assert_eq!(
-        other_seed_form.properties().content_hash(),
-        form.properties().content_hash()
-    );
-    assert_ne!(other_seed_form.id(), form.id());
-
-    let changed_plan = Plan::from_entries_for_world(
-        &world,
-        vec![PlanEntry::Activate {
-            at: VirtualTime { ticks: 7 },
-            tag: tag("crash-b"),
-            fault: MembershipFault::Crash {
-                node: node_id("b"),
-                restart: RestartPolicy::StayDown,
-            },
-        }],
-    )
-    .unwrap_or_else(|error| panic!("changed plan should be valid: {error}"));
-    let changed_plan_form =
-        ScenarioDefForm::from_components(&world, &changed_plan, &properties, seed)
-            .unwrap_or_else(|error| panic!("changed-plan form should be valid: {error}"));
-    assert_eq!(changed_plan_form.world().id(), form.world().id());
-    assert_eq!(
-        changed_plan_form.properties().content_hash(),
-        form.properties().content_hash()
-    );
-    assert_ne!(
-        changed_plan_form.plan().content_hash(),
-        form.plan().content_hash()
-    );
-    assert_ne!(changed_plan_form.id(), form.id());
-
-    let changed_properties = Properties::from_assertions_for_world(
-        &world,
-        vec![assertion(
-            "b-reachable",
-            "node b remains reachable",
-            Property::Always {
-                predicate: named_predicate("node_alive", &["b"]),
-            },
-        )],
-    )
-    .unwrap_or_else(|error| panic!("changed properties should be valid: {error}"));
-    let changed_properties_form =
-        ScenarioDefForm::from_components(&world, &plan, &changed_properties, seed)
-            .unwrap_or_else(|error| panic!("changed-properties form should be valid: {error}"));
-    assert_eq!(changed_properties_form.world().id(), form.world().id());
-    assert_eq!(
-        changed_properties_form.plan().content_hash(),
-        form.plan().content_hash()
-    );
-    assert_ne!(
-        changed_properties_form.properties().content_hash(),
-        form.properties().content_hash()
-    );
-    assert_ne!(changed_properties_form.id(), form.id());
-
-    let toml = form
-        .to_canonical_toml()
-        .unwrap_or_else(|error| panic!("scenario form should serialize: {error}"));
-    assert!(toml.contains("[[world.link]]"));
-    assert!(toml.contains("[[plan.entry]]"));
-    assert!(toml.contains("[[properties.assertion]]"));
-    assert!(toml.contains("seed = \"0x"));
-    assert!(!toml.contains("boot_event"));
-    assert!(!toml.contains("entrypoint"));
-
-    let missing_link_fault = ScenarioBuilder::new()
-        .node("a", NodeTemplate::fixed_icount(Icount { retired: 1 }))
-        .node("b", NodeTemplate::fixed_icount(Icount { retired: 2 }))
-        .plan_entry(partition_entry)
-        .build();
-    assert!(matches!(
-        missing_link_fault,
-        Err(EngineError::PlanFaultUnknownLink { .. })
-    ));
-
-    let assertion_cannot_declare_node = ScenarioBuilder::new()
-        .node("a", NodeTemplate::fixed_icount(Icount { retired: 1 }))
-        .property(assertion(
-            "missing-node",
-            "properties cannot declare topology",
-            Property::Always {
-                predicate: named_predicate("node_alive", &["missing"]),
-            },
-        ))
-        .build();
-    assert!(matches!(
-        assertion_cannot_declare_node,
-        Err(EngineError::PropertyPredicateUnknownNode { .. })
-    ));
-
-    let link_cannot_declare_missing_node = ScenarioBuilder::new()
-        .node("a", NodeTemplate::fixed_icount(Icount { retired: 1 }))
-        .link("a", "missing")
-        .build();
-    assert!(matches!(
-        link_cannot_declare_missing_node,
-        Err(EngineError::WorldLinkUnknownNode { .. })
-    ));
-}
-
-#[test]
-fn spatial_components_have_independent_content_addresses_and_cross_reuse() {
-    let seed = Seed::from_u64(0x0010_0003);
-    let world = world_from_nodes_and_links(
-        two_ready_nodes(),
-        vec![transport_link("a", "b", 10, 1, 0, Some(1_000_000))],
-    );
-    let compatible_world = world_from_nodes_and_links(
-        vec![
-            ready_node(
-                "a",
-                ReadyPoint::FixedIcount {
-                    icount: Icount { retired: 11 },
-                },
-            ),
-            ready_node(
-                "b",
-                ReadyPoint::FixedIcount {
-                    icount: Icount { retired: 12 },
-                },
-            ),
-        ],
-        vec![transport_link("a", "b", 20, 2, 0, Some(2_000_000))],
-    );
-    let plan_entry = PlanEntry::Activate {
-        at: VirtualTime { ticks: 3 },
-        tag: tag("split-a-b"),
-        fault: MembershipFault::Partition {
-            endpoint_a: node_id("b"),
-            endpoint_b: node_id("a"),
-            direction: PartitionDirection::Bidirectional,
-        },
-    };
-    let plan = Plan::from_entries_for_world(&world, vec![plan_entry.clone()])
-        .unwrap_or_else(|error| panic!("plan should be valid: {error}"));
-    let plan_reused = Plan::from_entries_for_world(&compatible_world, plan.entries().to_vec())
-        .unwrap_or_else(|error| panic!("plan should reuse across compatible world: {error}"));
-    let properties = Properties::from_assertions_for_world(
-        &world,
-        vec![assertion(
-            "a-alive",
-            "node a remains alive",
-            Property::Always {
-                predicate: named_predicate("node_alive", &["a"]),
-            },
-        )],
-    )
-    .unwrap_or_else(|error| panic!("properties should be valid: {error}"));
-    let properties_reused =
-        Properties::from_assertions_for_world(&compatible_world, properties.assertions().to_vec())
-            .unwrap_or_else(|error| {
-                panic!("properties should reuse across compatible world: {error}")
-            });
-
-    let world_material = String::from_utf8(world.canonical_bytes())
-        .unwrap_or_else(|error| panic!("world material should be utf8: {error}"));
-    let plan_material = String::from_utf8(plan.canonical_bytes())
-        .unwrap_or_else(|error| panic!("plan material should be utf8: {error}"));
-    let properties_material = String::from_utf8(properties.canonical_bytes())
-        .unwrap_or_else(|error| panic!("properties material should be utf8: {error}"));
-    assert_eq!(
-        world.id(),
-        ContentHash::from_canonical_material("crucible.model.world.v1", &world_material)
-    );
-    assert_eq!(
-        plan.content_hash(),
-        ContentHash::from_canonical_material("crucible.model.plan.v1", &plan_material)
-    );
-    assert_eq!(
-        properties.content_hash(),
-        ContentHash::from_canonical_material("crucible.model.properties.v1", &properties_material)
-    );
-    assert_ne!(world.id(), compatible_world.id());
-    assert_eq!(plan.content_hash(), plan_reused.content_hash());
-    assert_eq!(properties.content_hash(), properties_reused.content_hash());
-
-    let form = ScenarioDefForm::from_components(&world, &plan, &properties, seed)
-        .unwrap_or_else(|error| panic!("scenario form should be valid: {error}"));
-    let reused_world_form = ScenarioDefForm::from_components(
-        &world,
-        &Plan::empty(),
-        &Properties::empty(),
-        Seed::from_u64(0x0010_0004),
-    )
-    .unwrap_or_else(|error| panic!("same-world scenario should be valid: {error}"));
-    assert_eq!(form.world().id(), reused_world_form.world().id());
-    assert_ne!(form.id(), reused_world_form.id());
-
-    let reused_plan_properties_form =
-        ScenarioDefForm::from_components(&compatible_world, &plan_reused, &properties_reused, seed)
-            .unwrap_or_else(|error| {
-                panic!("reused plan/properties scenario should be valid: {error}")
-            });
-    assert_ne!(form.world().id(), reused_plan_properties_form.world().id());
-    assert_eq!(
-        form.plan().content_hash(),
-        reused_plan_properties_form.plan().content_hash()
-    );
-    assert_eq!(
-        form.properties().content_hash(),
-        reused_plan_properties_form.properties().content_hash()
-    );
-    assert_ne!(form.id(), reused_plan_properties_form.id());
-
-    let changed_plan = Plan::from_entries_for_world(
-        &world,
-        vec![PlanEntry::Activate {
-            at: VirtualTime { ticks: 3 },
-            tag: tag("crash-b"),
-            fault: MembershipFault::Crash {
-                node: node_id("b"),
-                restart: RestartPolicy::StayDown,
-            },
-        }],
-    )
-    .unwrap_or_else(|error| panic!("changed plan should be valid: {error}"));
-    let changed_plan_form =
-        ScenarioDefForm::from_components(&world, &changed_plan, &properties, seed)
-            .unwrap_or_else(|error| panic!("changed-plan scenario should be valid: {error}"));
-    assert_eq!(form.world().id(), changed_plan_form.world().id());
-    assert_ne!(form.plan().content_hash(), changed_plan.content_hash());
-    assert_ne!(form.id(), changed_plan_form.id());
-
-    let changed_properties = Properties::from_assertions_for_world(
-        &world,
-        vec![assertion(
-            "b-alive",
-            "node b remains alive",
-            Property::Always {
-                predicate: named_predicate("node_alive", &["b"]),
-            },
-        )],
-    )
-    .unwrap_or_else(|error| panic!("changed properties should be valid: {error}"));
-    let changed_properties_form =
-        ScenarioDefForm::from_components(&world, &plan, &changed_properties, seed)
-            .unwrap_or_else(|error| panic!("changed-properties scenario should be valid: {error}"));
-    assert_eq!(form.world().id(), changed_properties_form.world().id());
-    assert_ne!(
-        form.properties().content_hash(),
-        changed_properties.content_hash()
-    );
-    assert_ne!(form.id(), changed_properties_form.id());
 }
 
 #[test]
@@ -804,7 +219,7 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
     assert_eq!(template_scenario, base_scenario);
     assert_eq!(
         base_world.id(),
-        ContentHash::from_canonical_material("crucible.model.world.v1", &material)
+        ContentHash::from_canonical_material("crucible.model.world.v4", &material)
     );
     assert_eq!(base_world.vm_nodes().len(), 1);
     assert_eq!(base_world.vm_nodes()[0].arch, VmArchitecture::Aarch64);
@@ -948,12 +363,13 @@ fn configuration_id_is_content_addressed_by_def_and_schedule() {
     };
     let changed_schedule = Configuration {
         def: scenario.clone(),
-        schedule: base_schedule.appended(Decision::FaultFires(FaultDecision {
-            at: VirtualTime { ticks: 1 },
-            fault: FaultId {
-                name: String::from("link-drop"),
+        schedule: base_schedule.appended(Decision::Override(OverrideDecision {
+            point: SchedulingPoint {
+                key: String::from("link-a-b/frame-1"),
             },
-            fired: true,
+            choice: ChoiceTag {
+                name: String::from("drop"),
+            },
         })),
     };
     let base = Configuration {
@@ -1032,12 +448,13 @@ fn reduce_is_pure_over_scenario_and_schedule() {
         stream: RngStreamId::for_node("node-a/faults"),
         value: 7,
     });
-    let second_decision = Decision::FaultFires(FaultDecision {
-        at: VirtualTime { ticks: 10 },
-        fault: FaultId {
-            name: String::from("link-drop"),
+    let second_decision = Decision::Override(OverrideDecision {
+        point: SchedulingPoint {
+            key: String::from("link-a-b/frame-10"),
         },
-        fired: true,
+        choice: ChoiceTag {
+            name: String::from("drop"),
+        },
     });
     let schedule = Schedule::empty()
         .appended(first_decision.clone())
@@ -1322,6 +739,39 @@ fn compact_checkpoint_decode_rejects_inconsistent_outer_shape() {
 }
 
 #[test]
+fn compact_checkpoint_round_trips_concrete_execution_closure() {
+    let config = Configuration::genesis(generated_scenario(88));
+    let closure = ContentHash::from_canonical_material(
+        "crucible.test.execution-closure",
+        "complete-production-state",
+    );
+    let checkpoint = fat_checkpoint_for(&config).with_execution_closure(closure);
+    let bytes = checkpoint.to_compact_binary();
+    let restored = Checkpoint::from_compact_binary(&bytes)
+        .unwrap_or_else(|error| panic!("checkpoint closure should decode: {error}"));
+    assert_eq!(restored, checkpoint);
+    assert_eq!(restored.execution_closure, Some(closure));
+}
+
+#[test]
+fn compact_scheduler_state_codec_round_trips_materialized_state() {
+    let config = Configuration::genesis(generated_scenario(89));
+    let state = fat_checkpoint_for(&config)
+        .state
+        .unwrap_or_else(|| panic!("fat checkpoint should contain state"))
+        .scheduler;
+    let bytes = state.to_compact_binary();
+    let restored = SchedulerState::from_compact_binary(&bytes)
+        .unwrap_or_else(|error| panic!("scheduler state should decode: {error}"));
+    assert_eq!(restored, state);
+    assert_eq!(restored.to_compact_binary(), bytes);
+
+    let mut trailing = bytes;
+    trailing.push(0);
+    assert!(SchedulerState::from_compact_binary(&trailing).is_err());
+}
+
+#[test]
 fn temporal_graph_materialized_cache_keeps_thin_checkpoint_source_of_truth() {
     let scenario = generated_scenario(76);
     let genesis = Configuration::genesis(scenario.clone());
@@ -1517,106 +967,6 @@ fn temporal_graph_materialization_policy_keeps_cold_or_over_budget_nodes_thin() 
     assert_eq!(interactive.kind, CheckpointKind::Fat);
     assert_eq!(graph.cached_snapshot(&over_budget), Some(&interactive));
     assert_eq!(graph.cached_snapshot_count(), 1);
-}
-
-#[test]
-fn temporal_graph_savevm_hedge_keeps_unreliable_device_checkpoint_thin() {
-    let scenario = generated_scenario(85);
-    let genesis = Configuration::genesis(scenario.clone());
-    let config = Configuration {
-        def: scenario.clone(),
-        schedule: generated_schedule(85, 2),
-    };
-    let device = device_id("block0");
-    let checkpoint = fat_checkpoint_with_device_overlay(&config, device.clone());
-    let hedge = SavevmCompletenessHedge::with_unreliable_devices([device.clone()]);
-    let mut hedged_graph = match TemporalGraph::empty()
-        .with_baked_genesis(&scenario, genesis_checkpoint_for(&genesis))
-    {
-        Ok(graph) => graph,
-        Err(error) => panic!("valid baked genesis should register: {error}"),
-    };
-
-    let allowed = match hedged_graph.cache_snapshot_with_savevm_hedge(
-        &config,
-        checkpoint.clone(),
-        &SavevmCompletenessHedge::verified(),
-    ) {
-        Ok(checkpoint) => checkpoint,
-        Err(error) => panic!("verified device snapshot should cache as fat: {error}"),
-    };
-    assert_eq!(hedged_graph.cached_snapshot(&config), Some(&allowed));
-
-    let thin =
-        match hedged_graph.cache_snapshot_with_savevm_hedge(&config, checkpoint.clone(), &hedge) {
-            Ok(checkpoint) => checkpoint,
-            Err(error) => panic!("unreliable device snapshot should fall back to thin: {error}"),
-        };
-    let runtime = match instantiate(&hedged_graph, &config) {
-        Ok(runtime) => runtime,
-        Err(error) => panic!("thin fallback should replay to the target: {error}"),
-    };
-
-    assert!(SavevmCompletenessHedge::verified().allows_checkpoint(&checkpoint));
-    assert!(!hedge.allows_checkpoint(&checkpoint));
-    assert!(hedge.unreliable_devices().contains(&device));
-    assert_eq!(allowed.kind, CheckpointKind::Fat);
-    assert_eq!(thin.kind, CheckpointKind::Thin);
-    assert!(thin.state.is_none());
-    assert!(hedged_graph.cached_snapshot(&config).is_none());
-    assert_eq!(hedged_graph.cached_snapshot_count(), 0);
-    assert_eq!(runtime.configuration, config.id());
-    assert_eq!(runtime.id, reduced_state_id(&config));
-}
-
-#[test]
-fn temporal_graph_savevm_full_s3_fallback_evicts_hot_checkpoint_to_thin() {
-    let scenario = generated_scenario(86);
-    let genesis = Configuration::genesis(scenario.clone());
-    let config = Configuration {
-        def: scenario.clone(),
-        schedule: generated_schedule(86, 2),
-    };
-    let mut graph = match TemporalGraph::empty()
-        .with_baked_genesis(&scenario, genesis_checkpoint_for(&genesis))
-    {
-        Ok(graph) => graph,
-        Err(error) => panic!("valid baked genesis should register: {error}"),
-    };
-    let fat = match graph.materialize_checkpoint(&config) {
-        Ok(checkpoint) => checkpoint,
-        Err(error) => panic!("checkpoint should materialize before fallback: {error}"),
-    };
-    let exact_runtime = match instantiate(&graph, &config) {
-        Ok(runtime) => runtime,
-        Err(error) => panic!("exact snapshot should instantiate before fallback: {error}"),
-    };
-    let hedge = SavevmCompletenessHedge::thin_replay_until_full_s3();
-    let policy = MaterializationPolicy::with_budget(8);
-
-    let thin = match graph.materialize_hot_checkpoint_with_savevm_hedge(
-        &config,
-        policy,
-        MaterializationTrigger::InteractiveTarget,
-        &hedge,
-    ) {
-        Ok(checkpoint) => checkpoint,
-        Err(error) => panic!("fallback should evict hot checkpoint to thin: {error}"),
-    };
-    let replay_runtime = match instantiate(&graph, &config) {
-        Ok(runtime) => runtime,
-        Err(error) => panic!("thin fallback should replay after eviction: {error}"),
-    };
-
-    assert!(!hedge.fat_snapshot_default());
-    assert!(hedge.unreliable_devices().is_empty());
-    assert_eq!(fat.kind, CheckpointKind::Fat);
-    assert_eq!(thin.id, fat.id);
-    assert_eq!(thin.kind, CheckpointKind::Thin);
-    assert!(thin.state.is_none());
-    assert!(graph.cached_snapshot(&config).is_none());
-    assert_eq!(graph.cached_snapshot_count(), 0);
-    assert_eq!(exact_runtime, replay_runtime);
 }
 
 #[test]
@@ -2285,51 +1635,6 @@ fn world_topology_hashes_nodes_and_links_canonically() {
 }
 
 #[test]
-fn live_network_override_coordinates_are_world_bounded() {
-    let world = world_from_nodes_and_links(
-        vec![
-            ready_node(
-                "a",
-                ReadyPoint::FixedIcount {
-                    icount: Icount { retired: 1 },
-                },
-            ),
-            ready_node(
-                "b",
-                ReadyPoint::FixedIcount {
-                    icount: Icount { retired: 2 },
-                },
-            ),
-        ],
-        vec![link("a", "b")],
-    );
-    let prefixes = live_world_network_override_point_prefixes(&world);
-    assert_eq!(prefixes.len(), 2);
-
-    let decision = OverrideDecision {
-        point: SchedulingPoint {
-            key: format!("{}42/7", prefixes[0]),
-        },
-        choice: ChoiceTag {
-            name: String::from("loss-fire"),
-        },
-    };
-    assert!(is_supported_live_world_network_override(&decision));
-    assert!(live_world_network_override_matches_world(&world, &decision));
-
-    let unknown_link = OverrideDecision {
-        point: SchedulingPoint {
-            key: String::from("live-world-network/not-a-link/a-to-b/42/7"),
-        },
-        choice: decision.choice.clone(),
-    };
-    assert!(!live_world_network_override_matches_world(
-        &world,
-        &unknown_link
-    ));
-}
-
-#[test]
 fn world_topology_rejects_invalid_links() {
     let nodes = vec![
         ready_node(
@@ -2558,7 +1863,7 @@ fn scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world
     assert!(material.contains("min_link_latency_ns=1"));
     assert_eq!(
         floor_world.id(),
-        ContentHash::from_canonical_material("crucible.model.world.v1", &material)
+        ContentHash::from_canonical_material("crucible.model.world.v4", &material)
     );
     assert_ne!(floor_world.id(), raised_latency_world.id());
     assert_ne!(
@@ -2680,229 +1985,3 @@ fn world_static_topology_link_rng_streams_are_collision_free() {
         ]
     );
 }
-
-#[test]
-fn membership_plan_faults_layer_over_static_world_topology() {
-    let world = world_from_nodes_and_links(
-        vec![
-            ready_node(
-                "a",
-                ReadyPoint::FixedIcount {
-                    icount: Icount { retired: 1 },
-                },
-            ),
-            ready_node(
-                "b",
-                ReadyPoint::FixedIcount {
-                    icount: Icount { retired: 2 },
-                },
-            ),
-            ready_node(
-                "c",
-                ReadyPoint::FixedIcount {
-                    icount: Icount { retired: 3 },
-                },
-            ),
-        ],
-        vec![link("a", "b"), link("b", "c")],
-    );
-    let topology = world.static_topology();
-    let plan = match Plan::from_entries_for_world(
-        &world,
-        vec![
-            PlanEntry::Activate {
-                at: VirtualTime { ticks: 0 },
-                tag: tag("joining-c"),
-                fault: MembershipFault::NotYetJoined { node: node_id("c") },
-            },
-            PlanEntry::Heal {
-                at: VirtualTime { ticks: 10 },
-                tag: tag("joining-c"),
-            },
-            PlanEntry::Activate {
-                at: VirtualTime { ticks: 20 },
-                tag: tag("crash-a"),
-                fault: MembershipFault::Crash {
-                    node: node_id("a"),
-                    restart: RestartPolicy::FromReadyPoint,
-                },
-            },
-            PlanEntry::Heal {
-                at: VirtualTime { ticks: 30 },
-                tag: tag("crash-a"),
-            },
-            PlanEntry::Activate {
-                at: VirtualTime { ticks: 40 },
-                tag: tag("split-ab"),
-                fault: MembershipFault::Partition {
-                    endpoint_a: node_id("a"),
-                    endpoint_b: node_id("b"),
-                    direction: PartitionDirection::Bidirectional,
-                },
-            },
-            PlanEntry::Activate {
-                at: VirtualTime { ticks: 50 },
-                tag: tag("isolate-b"),
-                fault: MembershipFault::Isolate { node: node_id("b") },
-            },
-        ],
-    ) {
-        Ok(plan) => plan,
-        Err(error) => panic!("membership plan should reference declared topology: {error}"),
-    };
-
-    assert_eq!(plan.entries().len(), 6);
-    assert_eq!(world.static_topology(), topology);
-    assert_eq!(
-        topology.participants,
-        vec![node_id("a"), node_id("b"), node_id("c")]
-    );
-    assert_eq!(topology.bake_nodes, topology.participants);
-    assert!(matches!(
-        &plan.entries()[0],
-        PlanEntry::Activate {
-            fault: MembershipFault::NotYetJoined { node },
-            ..
-        } if *node == node_id("c")
-    ));
-}
-
-#[test]
-fn membership_plan_rejects_dynamic_or_undeclared_topology_targets() {
-    let world = world_from_nodes_and_links(
-        vec![
-            ready_node(
-                "a",
-                ReadyPoint::FixedIcount {
-                    icount: Icount { retired: 1 },
-                },
-            ),
-            ready_node(
-                "b",
-                ReadyPoint::FixedIcount {
-                    icount: Icount { retired: 2 },
-                },
-            ),
-            ready_node(
-                "c",
-                ReadyPoint::FixedIcount {
-                    icount: Icount { retired: 3 },
-                },
-            ),
-        ],
-        vec![link("a", "b")],
-    );
-
-    let unknown_node = Plan::from_entries_for_world(
-        &world,
-        vec![PlanEntry::Activate {
-            at: VirtualTime { ticks: 0 },
-            tag: tag("crash-missing"),
-            fault: MembershipFault::Crash {
-                node: node_id("missing"),
-                restart: RestartPolicy::StayDown,
-            },
-        }],
-    );
-    let unknown_link = Plan::from_entries_for_world(
-        &world,
-        vec![PlanEntry::Activate {
-            at: VirtualTime { ticks: 0 },
-            tag: tag("split-ac"),
-            fault: MembershipFault::Partition {
-                endpoint_a: node_id("a"),
-                endpoint_b: node_id("c"),
-                direction: PartitionDirection::EndpointAToEndpointB,
-            },
-        }],
-    );
-    let unknown_heal = Plan::from_entries_for_world(
-        &world,
-        vec![PlanEntry::Heal {
-            at: VirtualTime { ticks: 0 },
-            tag: tag("missing"),
-        }],
-    );
-    let heal_before_activate = Plan::from_entries_for_world(
-        &world,
-        vec![
-            PlanEntry::Heal {
-                at: VirtualTime { ticks: 5 },
-                tag: tag("late-join"),
-            },
-            PlanEntry::Activate {
-                at: VirtualTime { ticks: 10 },
-                tag: tag("late-join"),
-                fault: MembershipFault::NotYetJoined { node: node_id("c") },
-            },
-        ],
-    );
-    let not_yet_joined_after_start = Plan::from_entries_for_world(
-        &world,
-        vec![PlanEntry::Activate {
-            at: VirtualTime { ticks: 10 },
-            tag: tag("late-hold"),
-            fault: MembershipFault::NotYetJoined { node: node_id("c") },
-        }],
-    );
-    let replaced_tag_heals_after_first_activation = Plan::from_entries_for_world(
-        &world,
-        vec![
-            PlanEntry::Activate {
-                at: VirtualTime { ticks: 10 },
-                tag: tag("replaceable"),
-                fault: MembershipFault::Crash {
-                    node: node_id("a"),
-                    restart: RestartPolicy::StayDown,
-                },
-            },
-            PlanEntry::Heal {
-                at: VirtualTime { ticks: 20 },
-                tag: tag("replaceable"),
-            },
-            PlanEntry::Activate {
-                at: VirtualTime { ticks: 30 },
-                tag: tag("replaceable"),
-                fault: MembershipFault::Crash {
-                    node: node_id("b"),
-                    restart: RestartPolicy::StayDown,
-                },
-            },
-        ],
-    );
-
-    assert!(matches!(
-        unknown_node,
-        Err(EngineError::PlanFaultUnknownNode { node }) if node == node_id("missing")
-    ));
-    assert!(matches!(
-        unknown_link,
-        Err(EngineError::PlanFaultUnknownLink {
-            endpoint_a,
-            endpoint_b,
-        }) if endpoint_a == node_id("a") && endpoint_b == node_id("c")
-    ));
-    assert!(matches!(
-        unknown_heal,
-        Err(EngineError::PlanHealUnknownTag { tag }) if tag == self::tag("missing")
-    ));
-    assert!(matches!(
-        heal_before_activate,
-        Err(EngineError::PlanHealBeforeActivate {
-            tag,
-            activate_at,
-            heal_at,
-        }) if tag == self::tag("late-join")
-            && activate_at.ticks == 10
-            && heal_at.ticks == 5
-    ));
-    assert!(matches!(
-        not_yet_joined_after_start,
-        Err(EngineError::PlanNotYetJoinedAfterStart { node, at })
-            if node == node_id("c") && at.ticks == 10
-    ));
-    assert!(replaced_tag_heals_after_first_activation.is_ok());
-}
-
-#[path = "model_core/plan_validation.rs"]
-mod plan_validation;

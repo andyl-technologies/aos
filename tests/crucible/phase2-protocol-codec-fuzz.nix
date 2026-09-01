@@ -5,11 +5,7 @@
   taskIds ? ["T-PROTO-10" "T-HARN-19"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
   codecFuzzLib = builtins.readFile ../../crates/crucible-protocol/src/codec_fuzz.rs;
@@ -174,11 +170,11 @@
     ++ failuresFor "crates/crucible-qemu-plugin/src/block_io.rs" pluginBlockIo [
       {
         label = "block request encoder public";
-        needle = "pub fn encode(&self, request_id: u32)";
+        needle = "pub fn encode(&self, identity: BlockRequestIdentity)";
       }
       {
         label = "block request decoder";
-        needle = "pub fn decode(payload: &[u8]) -> Result<(u32, Self), BlockWireError>";
+        needle = "pub fn decode(payload: &[u8]) -> Result<(BlockRequestIdentity, Self), BlockWireError>";
       }
       {
         label = "block operation typed rejection";

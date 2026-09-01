@@ -92,6 +92,7 @@ Resolve the immutable build outputs to their Nix store paths:
 ```sh
 crucible_kernel=$(readlink -f result-crucible-kernel/boot/vmlinuz-*)
 crucible_root=$(readlink -f result-crucible-nginx-curl/root.ext4)
+mkdir -p .crucible-run-state
 ```
 
 Run the canonical scenario through the packaged CLI and retain its canonical
@@ -100,6 +101,7 @@ event log:
 ```sh
 CRUCIBLE_KERNEL="$crucible_kernel" \
 CRUCIBLE_ROOT_IMAGE="$crucible_root" \
+CRUCIBLE_RUN_STATE_ROOT="$PWD/.crucible-run-state" \
 CRUCIBLE_KERNEL_CMDLINE="console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init" \
   ./result-crucible/bin/crucible \
   --seed 0x200 \
@@ -165,6 +167,7 @@ Run your variant with the same guest image, unmodified by the hypervisor:
 ```sh
 CRUCIBLE_KERNEL="$crucible_kernel" \
 CRUCIBLE_ROOT_IMAGE="$crucible_root" \
+CRUCIBLE_RUN_STATE_ROOT="$PWD/.crucible-run-state" \
 CRUCIBLE_KERNEL_CMDLINE="console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init" \
   ./result-crucible/bin/crucible \
   --seed 0x201 \

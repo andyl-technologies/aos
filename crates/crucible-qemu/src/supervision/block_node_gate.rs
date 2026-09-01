@@ -232,12 +232,14 @@ pub fn run_qemu_live_block_node_gate(
 
     let qmp_config = QemuQmpChannelConfig::new(GATE_QMP_SOCKET_FILE_NAME)
         .map_err(|source| QemuLiveBlockNodeGateError::QmpChannelConfig { source })?;
-    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT);
-    let command = QemuLaunchCommandBuilder::new(
+    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
+        .with_fault_target_node(GATE_NODE);
+    let command = QemuLaunchCommandBuilder::new_for_live_gate(
         profile,
         vm_launch_config(config),
         path_text(&config.qemu_executable),
         plugin,
+        crate::LivePluginGuestArchitecture::X86_64,
     )
     .with_qmp(qmp_config.clone())
     .build()
@@ -254,9 +256,13 @@ pub fn run_qemu_live_block_node_gate(
     .map_err(|source| QemuLiveBlockNodeGateError::Spawn { source })?;
     let (child, resources) = spawned.into_parts();
 
-    let setup =
-        complete_qemu_host_plugin_setup(resources.into_setup_resources(), region_config, GATE_SLOT)
-            .map_err(|source| QemuLiveBlockNodeGateError::HostSetup { source })?;
+    let setup = complete_qemu_host_plugin_setup(
+        resources.into_setup_resources(),
+        region_config,
+        GATE_SLOT,
+        command.fault_capability_requirement(),
+    )
+    .map_err(|source| QemuLiveBlockNodeGateError::HostSetup { source })?;
     if !setup.setup_ack().can_schedule() {
         return Err(QemuLiveBlockNodeGateError::SetupAckNotReady);
     }
@@ -306,7 +312,9 @@ pub fn run_qemu_live_block_node_gate(
         return classify(&diagnostics, BlockNodeOutcome::DeviceHorizonStall);
     };
 
-    let runtime = runtime.with_block_servicer(servicer, Arc::clone(&diagnostics));
+    let runtime = runtime
+        .with_block_servicer(servicer, Arc::clone(&diagnostics))
+        .map_err(|source| QemuLiveBlockNodeGateError::BlockServicer { source })?;
     let shmem_config = QemuQuantumShmemConfig::new(node_id(GATE_NODE), GATE_SLOT)
         .with_router(node_id(GATE_ROUTER), SLOT_NET_ROUTER as u32);
     let factory_runtime = QemuNodeFactoryRuntime::new(

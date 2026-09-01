@@ -20,7 +20,7 @@ in
       glib.tools
       qemu-crucible
     ];
-    runtimeDeps = [];
+    runtimeDeps = [glib];
     propagatedDeps = [];
 
     phases = [

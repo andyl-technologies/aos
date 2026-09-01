@@ -1,5 +1,8 @@
 //! Certification and deterministic-projection tests for the live 9p gate.
 
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used)]
+
 use super::super::ninep_io_servicer::QemuLive9pIoServiceStep;
 use super::*;
 use crucible_shmem::{KIND_VM, STATUS_RUNNING};
@@ -15,6 +18,11 @@ fn idle_snapshot(current_icount: u64, idle_wake_icount: u64) -> NodeSlotSnapshot
         kind: KIND_VM,
         device_io_active: 0,
         publish_gen: 0,
+        control_boundary_ack: 0,
+        logical_time_raw_icount: current_icount,
+        logical_time_restore_target: 0,
+        logical_time_restore_request: 0,
+        logical_time_restore_ack: 0,
     }
 }
 
@@ -51,7 +59,7 @@ fn certifying_outcome() -> NinepIoRunOutcome {
 fn certification_requires_forwarding_completion_and_progress() {
     let outcome = certifying_outcome();
     assert!(certify_run("reference", &outcome, false).is_ok());
-    assert!(certify_run("host-load", &outcome, true).is_ok());
+    assert!(certify_run("scheduler-preemption", &outcome, true).is_ok());
 
     let mut quiescent = certifying_outcome();
     quiescent.advance = NinepIoAdvanceOutcome::QuiescentThroughCeiling {
@@ -59,7 +67,7 @@ fn certification_requires_forwarding_completion_and_progress() {
         idle_wake_icount: 101,
     };
     quiescent.diagnostics.last_current_icount = 99;
-    assert!(certify_run("host-load", &quiescent, true).is_ok());
+    assert!(certify_run("scheduler-preemption", &quiescent, true).is_ok());
 
     let mut missing_forward = certifying_outcome();
     missing_forward.diagnostics.frames_processed = 0;
@@ -91,12 +99,12 @@ fn certification_requires_forwarding_completion_and_progress() {
 }
 
 #[test]
-fn host_load_certification_requires_the_wall_delay() {
+fn scheduler_preemption_certification_requires_the_wall_delay() {
     let mut outcome = certifying_outcome();
     outcome.response_delay_applied = false;
     assert!(certify_run("repeat", &outcome, false).is_ok());
     assert!(matches!(
-        certify_run("host-load", &outcome, true),
+        certify_run("scheduler-preemption", &outcome, true),
         Err(QemuLive9pIoGateError::CertificationFailed { .. })
     ));
 }
@@ -166,4 +174,16 @@ fn ceiling_closure_accepts_only_drained_idle_wakes_beyond_the_boundary() {
         completed_ceiling_outcome(&idle_snapshot(99, 101), &delivered, 100),
         None
     );
+}
+
+#[test]
+fn tcg_control_requires_an_exact_guest_mount_success_record() {
+    let directory = tempfile::tempdir().expect("create console fixture directory");
+    let console = directory.path().join("guest-console.log");
+
+    fs::write(&console, "booting\r\nCRUCIBLE_9P_MOUNT_OK\r\n").expect("write success fixture");
+    assert!(control_console_shows_mount_success(&console));
+
+    fs::write(&console, "CRUCIBLE_9P_MOUNT_OKAY\n").expect("write near-match fixture");
+    assert!(!control_console_shows_mount_success(&console));
 }

@@ -25,7 +25,7 @@ and [`12-qemu-plugin.md`](12-qemu-plugin.md); virtual time in
 ## 4.1 What "hermetic instruction-level determinism" means
 
 Two systems that merely agree on which messages were delivered, in what order,
-are *behaviorally equivalent at the network policy* but may have taken wildly
+are *behaviorally equivalent at the network boundary* but may have taken wildly
 different interior paths to get there — different interrupt-handler entry points,
 different scheduler decisions inside the guest, different memory contents at a
 crash point. That is not enough to (a) reproduce an interior bug, (b) fork a run
@@ -79,7 +79,7 @@ execution fingerprint (4.8), a panic backtrace — is also bit-identical.
   (bit-identical `S` and `T`), not merely *same-delivered-message-sequence*.
   Message-sequence determinism is a strictly weaker property that this contract
   implies but is not implied by; the harness MUST verify the interior, not only
-  the network policy. *Gate:* `gate:single-vm-fingerprint`. *Spec:* §4.1,
+  the network boundary. *Gate:* `gate:single-vm-fingerprint`. *Spec:* §4.1,
   §4.8.
 
 - **[DET-3]** Per-VM determinism MUST be achieved by *eliminating nondeterminism
@@ -728,13 +728,12 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   wire `gate:replay-oracle` to enforce [INV-2] continuously (fat ≡ thin;
   materialize ≡ re-reduce). — satisfies [DET-28], [DET-41], [INV-2]; spec §4.8,
   §4.11.
-- [x] **T-DET-19** Run the snapshot/restore-completeness spike: the S3 rerun
-  verifies QMP `snapshot-save`/`snapshot-load` for diskless and CPU-timer
-  windows under plugin time control, and it exercises a marked block pending-I/O
-  negative control whose restored suffix diverges from replay. The recorded
-  outcome keeps `full_fat_checkpoint_complete=false` and the thin/replay
-  realization as the default until a future S3 rerun proves fat snapshots across
-  the full surface. — satisfies [DET-32], [DET-18] (E20); spec §4.9.
+- [x] **T-DET-19** Implement and continuously gate complete exact snapshots:
+  QMP `snapshot-save`/`snapshot-load` captures QEMU VMState while Crucible captures
+  the identity-bound Apache-side host-I/O continuation. Partial capture is deleted,
+  mismatched pairs are rejected before launch, block reset continuation is migrated,
+  and the replay oracle admits only bit-identical restored runtimes. — satisfies
+  [DET-32], [DET-18] (E20); spec §4.9.
 - [x] **T-DET-20** Implement `gate:divergence-bisect`: on any fingerprint or
   Schedule mismatch, localize to the first differing decision and the first
   differing instruction; never tolerate or retry. — satisfies [DET-30],
@@ -752,14 +751,14 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   Completed by `checks.crucible.phase2.gates.anyGuest`: the gate boots a generic
   AOS Linux kernel/initramfs fixture under diskless and guest-visible CoW-block
   launch profiles twice with the black-box QEMU trace plugin, compares the
-  diskless cadence fingerprint streams byte-for-byte through the host QMP-quit
-  window after a generic serial completion marker, structurally validates both
-  CoW traces while writing a deterministic marker through `/dev/vda`, verifies
-  the copied base image hash is unchanged after overlay-backed runs, rejects any
-  required in-guest Crucible agent, and consumes the separate white-box doorbell
-  off/on contract proving black-box operation remains functional when that
-  optional host/plugin channel is enabled but unused. This completion does not
-  claim live any-guest white-box-on QEMU fingerprint equivalence.
+  diskless and CoW-block cadence fingerprint streams byte-for-byte through the
+  host QMP-quit window after a generic serial completion marker, writes a
+  deterministic marker through `/dev/vda`, verifies the copied base image hash
+  is unchanged after overlay-backed runs, rejects any required in-guest
+  Crucible agent, and consumes the separate white-box doorbell off/on contract
+  proving black-box operation remains functional when that optional host/plugin
+  channel is enabled but unused. This completion does not claim live any-guest
+  white-box-on QEMU fingerprint equivalence.
 - [x] **T-DET-23** Implement `gate:qemu-inert`: prove every patch is inert out of
   sim mode (production QEMU behaviorally identical to upstream) and effective in
   sim mode, with a per-patch micro-test. — satisfies [DET-36], [DET-37], routes
@@ -768,7 +767,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     `checks.crucible.phase2.gates.patchMicrotests`. The former compares the
     unpatched pinned QEMU with patched sim-off QEMU over raw boot serial,
     device-I/O execution output, QMP, migration, and snapshot/restore surfaces;
-    the latter gives every one of the 40 carried patches prefix provenance and
+    the latter gives every one of the 86 carried patches prefix provenance and
     exactly one live drop-one attribution. The aggregate rejects composition and
     structural fallback classifications. The async virtio-rng delivery-timing
     residual is closed structurally by `phase2-qemu-rng-delivery-inert.nix`,
@@ -864,7 +863,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   - Live per-vCPU uniformity evidence is provided by
     `checks.crucible.phase2.qemuLivePluginFingerprintSmp` (frozen `-smp 4` pin,
     corroborated at `-smp 2`): every vCPU's register-file digest is sampled and is
-    byte-identical across two runs (the second under host CPU load) plus a restart
+    byte-identical across two runs (the second under bounded scheduler preemption) plus a restart
     probe, so the uniform `-cpu` pin and node-icount-derived per-vCPU TSC/RNG
     (E23) produce a deterministic, uniform per-vCPU architectural state.
     Deterministic secondary-vCPU SIPI/INIT bringup with no runtime hotplug (E24)
@@ -877,7 +876,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     used by the plugin planner, and commands delivery to the other vCPU through
     the ABI-v5 mailbox and `qemu_plugin_inject_preemption`. The exact delivery,
     mailbox acknowledgement, terminal fingerprint, and host-observable schedule
-    repeat byte-identically under host CPU load and match `SimDouble`.
+    repeat byte-identically under bounded scheduler preemption and match `SimDouble`.
 - [x] **T-DET-31** Implement app-requested randomness served from the single
   seeded decision source: white-box opt-in (16), per-`(node, stream-name)`
   name-hash fork, each draw a recorded `Decision` delivered under the injection
