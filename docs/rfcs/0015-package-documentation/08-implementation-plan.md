@@ -29,6 +29,10 @@ one coordinated cutover.
       initial design ceiling is 4 MiB per uncompressed document NAR.
 - [x] Add a repository policy that new package option reference content is
       authored in Nix data while transitional Markdown remains readable.
+- [x] Close the runnable-service inventory: every package carrying a systemd
+      unit must expose a typed package contract, every managed package must be
+      present in the documentation catalog, and reviewed on-demand engines and
+      test fixtures must have an explicit non-service disposition.
 
 **Done when:** fixtures and the checked schema can represent every interface in
 the current package-guide inventory without executing Nix in a consumer.
@@ -54,6 +58,13 @@ the current package-guide inventory without executing Nix in a consumer.
       Git/channel pointer movement.
 - [x] Generate documents for all configurable packages and summary/runtime docs
       for ordinary packages.
+- [x] Extract system/image-owned service documentation from the exact evaluated
+      base-library Nix object, bind its NAR hash into the documentation identity,
+      and publish named entries such as `aos-hub` without creating a competing
+      package configuration owner.
+- [x] Reject publication and repository checks when any public configuration
+      option lacks a human-authored description; validate summaries and
+      structured operational sections for every configurable service.
 - [x] Add deterministic-build, tamper, partial-publication, safe-default, and
       prose-versus-semantic-change tests.
 
@@ -135,6 +146,9 @@ contract in `04-web-experience.md` and does not fork documentation semantics.
       compatibility/deprecation window.
 - [x] Prove offline installed documentation after all registry/network/cache
       authoring inputs are removed.
+- [x] Exercise standalone containerd and kubelet through the public supplemental
+      module workflow: diff, dry-run, apply, health/CRI use, invalid replacement,
+      valid replacement, retained reboot, disable, and rollback.
 
 **Done when:** an operator can inspect the exact active or rolled-back package
 offline through terminal, man, JSON, or the local browser.

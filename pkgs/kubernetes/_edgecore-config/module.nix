@@ -114,14 +114,17 @@ in {
       caCertificate = mkOption {
         type = secretRef "Opaque CloudHub CA certificate reference.";
         default = {};
+        description = "Opaque credential reference for the CloudHub certificate authority certificate.";
       };
       clientCertificate = mkOption {
         type = secretRef "Opaque EdgeCore client certificate reference.";
         default = {};
+        description = "Opaque credential reference for this edge node's CloudHub client certificate.";
       };
       clientPrivateKey = mkOption {
         type = secretRef "Opaque EdgeCore client private-key reference.";
         default = {};
+        description = "Opaque credential reference for this edge node's CloudHub client private key.";
       };
     };
   };

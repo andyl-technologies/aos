@@ -103,15 +103,13 @@ in {
         message = "kubelet.clusterDns must contain at least one address";
       }
     ];
-    kubelet.config.runtime = {
-      KUBELET_ENABLED = cfg.enable;
-      KUBELET_NODE_NAME = cfg.nodeName;
-      KUBELET_POD_SANDBOX_IMAGE = cfg.podSandboxImage;
-    };
-    kubelet.credentials = kubeconfigRef;
-    environment.etc."aos/packages/kubelet/config.json" = {
-      mode = "0444";
-      text = builtins.toJSON {
+    kubelet.config = {
+      runtime = {
+        KUBELET_ENABLED = cfg.enable;
+        KUBELET_NODE_NAME = cfg.nodeName;
+        KUBELET_POD_SANDBOX_IMAGE = cfg.podSandboxImage;
+      };
+      config = {
         apiVersion = "kubelet.config.k8s.io/v1beta1";
         kind = "KubeletConfiguration";
         inherit (cfg) address cgroupDriver clusterDomain failSwapOn maxPods registerNode staticPodPath;
@@ -126,5 +124,6 @@ in {
         authorization.mode = "Webhook";
       };
     };
+    kubelet.credentials = kubeconfigRef;
   };
 }

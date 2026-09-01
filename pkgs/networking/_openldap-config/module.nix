@@ -44,14 +44,17 @@ in {
     listenUrls = mkOption {
       type = types.nonEmptyListOf (types.strMatching "(ldap|ldaps|ldapi)://[^[:space:]]*");
       default = ["ldap://127.0.0.1:389/"];
+      description = "LDAP, LDAPS, or local-domain listener URLs passed to slapd.";
     };
     suffix = mkOption {
       type = types.strMatching "[A-Za-z][^[:cntrl:]]*";
       default = "dc=example,dc=org";
+      description = "Distinguished-name suffix served by the primary directory database.";
     };
     rootDn = mkOption {
       type = types.strMatching "[A-Za-z][^[:cntrl:]]*";
       default = "cn=admin,dc=example,dc=org";
+      description = "Directory administrator distinguished name for the primary database.";
     };
     rootPassword = mkOption {
       type = secretRef;
@@ -61,27 +64,33 @@ in {
     database.maxBytes = mkOption {
       type = positiveInt;
       default = 1073741824;
+      description = "Maximum LMDB database size in bytes.";
     };
     tls = {
       enable = mkOption {
         type = types.bool;
         default = false;
+        description = "Enable TLS configuration and permit LDAPS listeners.";
       };
       certificate = mkOption {
         type = secretRef;
         default = {};
+        description = "Opaque credential reference for the LDAP server certificate.";
       };
       privateKey = mkOption {
         type = secretRef;
         default = {};
+        description = "Opaque credential reference for the LDAP server private key.";
       };
       trustedCa = mkOption {
         type = secretRef;
         default = {};
+        description = "Opaque credential reference for the trusted client certificate authority bundle.";
       };
       verifyClient = mkOption {
         type = types.enum ["never" "allow" "try" "demand"];
         default = "demand";
+        description = "Client-certificate verification policy applied to TLS sessions.";
       };
     };
   };
