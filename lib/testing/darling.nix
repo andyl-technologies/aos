@@ -83,6 +83,12 @@
       })
       checkedCases;
     serializedCasesJson = builtins.toJSON serializedCases;
+    runnerCases =
+      lib.concatMapStrings
+      (testCase: ''
+        run_case ${lib.escapeShellArgs ([testCase.name testCase.target] ++ testCase.args)}
+      '')
+      serializedCases;
     artifactGraphs =
       lib.concatMap (testCase: [
         "artifact-${testCase.name}-closure"
@@ -193,6 +199,8 @@
         RESULT_DIR = DARLING_STATE + "/result"
         RUNTIME_LOG = RESULT_DIR + "/runtime.log"
         CASES_DONE = RESULT_DIR + "/cases.done"
+        PREFIX_READY = RESULT_DIR + "/prefix.ready"
+        CLOSURE_READY = RESULT_DIR + "/closure.ready"
         PAYLOAD = "/run/aos-darling-payload"
         PAYLOAD_DEVICE = "/dev/disk/by-id/virtio-darling-payload"
         CASES = json.loads(${builtins.toJSON serializedCasesJson})
@@ -268,19 +276,21 @@
         # channels, then request shutdown after the full suite.
         runner = (
             'set -u; darling="$1"; warmup="$2"; result_dir="$3"; '
-            'runtime_log="$4"; cases_done="$5"; shift 5; '
+            'runtime_log="$4"; cases_done="$5"; prefix_ready="$6"; '
+            'closure_ready="$7"; shift 7; '
             '"$darling" exec "$warmup" >>"$runtime_log" 2>&1 || true; '
-            'while [ "$#" -gt 0 ]; do '
-            'case_name="$1"; argument_count="$2"; target="$3"; shift 3; '
-            'arguments=(); argument_index=0; '
-            'while [ "$argument_index" -lt "$argument_count" ]; do '
-            'arguments+=("$1"); shift; argument_index=$((argument_index + 1)); done; '
+            'printf "ready\\n" >"$prefix_ready"; '
+            'while [ ! -f "$closure_ready" ]; do '
+            '${pkgs.coreutils}/bin/sleep 0.1; done; '
+            'run_case() { case_name="$1"; target="$2"; shift 2; '
             'stdout="$result_dir/$case_name.stdout"; '
             'stderr="$result_dir/$case_name.stderr"; '
             'status_file="$result_dir/$case_name.status"; status=0; '
-            '"$darling" exec "$target" "''${arguments[@]}" '
+            '"$darling" exec "$target" "$@" '
             '>"$stdout" 2>"$stderr" || status=$?; '
-            'printf "%s\\n" "$status" >"$status_file"; done; '
+            'printf "%s\\n" "$status" >"$status_file"; }; '
+            + ${builtins.toJSON runnerCases}
+            +
             'printf "done\\n" >"$cases_done"; '
             '"$darling" shutdown >>"$runtime_log" 2>&1 || true'
         )
@@ -290,12 +300,9 @@
             RESULT_DIR,
             RUNTIME_LOG,
             CASES_DONE,
+            PREFIX_READY,
+            CLOSURE_READY,
         ]
-        for case in CASES:
-            runner_arguments.extend(
-                [case["name"], str(len(case["args"])), case["target"]]
-                + case["args"]
-            )
 
         command = shlex.join(
             [
@@ -316,6 +323,41 @@
             + runner_arguments
         )
         darwin.succeed(command)
+        darwin.wait_until_succeeds(
+            "test -f " + shlex.quote(PREFIX_READY), timeout=30
+        )
+        # Explicit programs enter Darling through /Volumes/SystemRoot, but
+        # Mach-O load commands remain rooted at /nix/store inside the Darling
+        # prefix. Publish the same immutable payload closure at that namespace
+        # boundary after the prefix overlay exists. This preserves the exact
+        # install names under test instead of masking closure defects with
+        # DYLD_LIBRARY_PATH.
+        darwin.succeed(
+            r"""
+            set -eu
+            init_pid=$(${pkgs.coreutils}/bin/cat /run/aos-darling-state/prefix/.init.pid)
+            test -n "$init_pid"
+            ${pkgs.util-linux}/bin/nsenter -t "$init_pid" -m -- \
+              ${pkgs.bash}/bin/bash -c '
+                set -eu
+                prefix=$1
+                payload=$2
+                ${pkgs.coreutils}/bin/mkdir -p "$prefix/nix/store"
+                for source in "$payload"/nix/store/*; do
+                  name=''${source##*/}
+                  target="$prefix/nix/store/$name"
+                  if [ -e "$target" ]; then
+                    echo "Darling closure target already exists: $target" >&2
+                    exit 1
+                  fi
+                  ${pkgs.coreutils}/bin/mkdir "$target"
+                  ${pkgs.util-linux}/bin/mount --bind "$source" "$target"
+                  ${pkgs.util-linux}/bin/mount -o remount,bind,ro "$target"
+                done
+              ' aos-darling-closure "/run/aos-darling-state/prefix" "/run/aos-darling-payload"
+            ${pkgs.coreutils}/bin/touch /run/aos-darling-state/result/closure.ready
+            """
+        )
         darwin.wait_until_succeeds(
             "test -f " + shlex.quote(CASES_DONE),
             timeout=${toString runtimeTimeout},
