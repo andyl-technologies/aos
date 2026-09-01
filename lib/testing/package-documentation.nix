@@ -231,6 +231,13 @@ in
                 jq -e --arg description ${lib.escapeShellArg package.meta.description} '
                   (.documentation.summary == $description)
                   and (.documentation.sections | type == "object" and length > 0)
+                  and ([
+                    .documentation.sections[]
+                    | ..
+                    | objects
+                    | select(.kind? == "note")
+                    | (.blocks | type == "array")
+                  ] | all)
                 ' ${package.config}/config-meta.json >/dev/null
               '')
               configurablePackages}
