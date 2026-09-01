@@ -1,14 +1,10 @@
-schema = "crucible.scenario-family.v1"
+schema = "crucible.scenario-family.v2"
 topology_shapes = ["ring"]
 
 [seed_space]
 kind = "generated"
 meta_seed = "0x42"
 count = 1
-
-[fault_density]
-min_millionths = 0
-max_millionths = 0
 
 [topology_size]
 min = 1

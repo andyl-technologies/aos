@@ -1,0 +1,409 @@
+diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+index 7a657fff1..263674246 100644
+--- a/accel/tcg/icount-common.c
++++ b/accel/tcg/icount-common.c
+@@ -89,20 +89,143 @@ uint64_t icount_crucible_rr_switch_quantum(void)
+     return crucible_rr_switch_quantum;
+ }
+ 
+-uint64_t icount_crucible_rr_cursor_position(CPUState *cpu)
++uint64_t icount_crucible_rr_current_vcpu(void)
+ {
+-    uint64_t rr_switch_quantum = icount_crucible_rr_switch_quantum();
++    if (!timers_state.crucible_rr_cursor_valid) {
++        return UINT64_MAX;
++    }
++    return timers_state.crucible_rr_current_vcpu;
++}
++
++uint64_t icount_crucible_rr_cursor_position(void)
++{
++    if (!timers_state.crucible_rr_cursor_valid) {
++        return 0;
++    }
++    return timers_state.crucible_rr_cursor_position;
++}
++
++uint64_t icount_crucible_rr_cursor_position_observed(CPUState *cpu)
++{
++    uint64_t quantum = icount_crucible_rr_switch_quantum();
++    uint64_t position;
+     int64_t executed;
+ 
+-    if (!cpu || rr_switch_quantum == 0) {
++    if (!cpu || quantum == 0 ||
++        !timers_state.crucible_rr_cursor_valid ||
++        timers_state.crucible_rr_current_vcpu != cpu->cpu_index) {
+         return 0;
+     }
+ 
++    position = timers_state.crucible_rr_cursor_position;
++    if (position >= quantum) {
++        return quantum;
++    }
++
++    /*
++     * The serialized cursor advances when a translation block returns to the
++     * scheduler. Plugin callbacks run inside that block, so include its
++     * retired prefix when reporting the live instruction coordinate. The
++     * terminal value is observable until the scheduler commits the handoff;
++     * only the serialized checkpoint state remains strictly below quantum.
++     */
+     executed = icount_get_executed(cpu);
+     if (executed < 0) {
+         return 0;
+     }
+-    return MIN((uint64_t)executed, rr_switch_quantum);
++    if ((uint64_t)executed >= quantum - position) {
++        return quantum;
++    }
++    return position + (uint64_t)executed;
++}
++
++static CPUState *icount_crucible_rr_next_runnable(CPUState *selected)
++{
++    CPUState *candidate = CPU_NEXT(selected);
++
++    if (!candidate) {
++        candidate = first_cpu;
++    }
++    while (candidate && candidate != selected) {
++        if (cpu_can_run(candidate) &&
++            (!candidate->halted || cpu_has_work(candidate))) {
++            return candidate;
++        }
++        candidate = CPU_NEXT(candidate);
++        if (!candidate) {
++            candidate = first_cpu;
++        }
++    }
++    return NULL;
++}
++
++CPUState *icount_crucible_rr_select_cpu(CPUState *suggested)
++{
++    CPUState *selected;
++    CPUState *runnable;
++
++    if (!suggested || icount_crucible_rr_switch_quantum() == 0) {
++        return suggested;
++    }
++    if (timers_state.crucible_rr_selection_pending) {
++        selected = qemu_get_cpu(timers_state.crucible_rr_current_vcpu);
++        g_assert(selected);
++        /* A zero-instruction boundary must not consume the selection. */
++        if ((!cpu_can_run(selected) ||
++             (selected->halted && !cpu_has_work(selected))) &&
++            (runnable = icount_crucible_rr_next_runnable(selected))) {
++            timers_state.crucible_rr_current_vcpu = runnable->cpu_index;
++            timers_state.crucible_rr_cursor_position = 0;
++            timers_state.crucible_rr_selection_pending = false;
++            return runnable;
++        }
++        return selected;
++    }
++    if (!timers_state.crucible_rr_cursor_valid ||
++        timers_state.crucible_rr_current_vcpu != suggested->cpu_index) {
++        timers_state.crucible_rr_current_vcpu = suggested->cpu_index;
++        timers_state.crucible_rr_cursor_position = 0;
++        timers_state.crucible_rr_cursor_valid = true;
++    }
++    return suggested;
++}
++
++static void icount_crucible_rr_account(CPUState *cpu, uint64_t executed)
++{
++    uint64_t quantum = icount_crucible_rr_switch_quantum();
++    uint64_t remaining;
++    CPUState *next;
++
++    if (!cpu || quantum == 0 || executed == 0) {
++        return;
++    }
++    if (!timers_state.crucible_rr_cursor_valid ||
++        timers_state.crucible_rr_current_vcpu != cpu->cpu_index) {
++        timers_state.crucible_rr_current_vcpu = cpu->cpu_index;
++        timers_state.crucible_rr_cursor_position = 0;
++        timers_state.crucible_rr_cursor_valid = true;
++    }
++    timers_state.crucible_rr_selection_pending = false;
++    remaining = quantum - timers_state.crucible_rr_cursor_position;
++    if (executed > remaining) {
++        error_report("crucible RR cursor overrun: executed=%" PRIu64
++                     " remaining=%" PRIu64,
++                     executed, remaining);
++        abort();
++    }
++    timers_state.crucible_rr_cursor_position += executed;
++    if (timers_state.crucible_rr_cursor_position != quantum) {
++        return;
++    }
++
++    next = CPU_NEXT(cpu);
++    if (!next) {
++        next = first_cpu;
++    }
++    g_assert(next);
++    timers_state.crucible_rr_current_vcpu = next->cpu_index;
++    timers_state.crucible_rr_cursor_position = 0;
++    timers_state.crucible_rr_selection_pending = true;
+ }
+ 
+ /*
+@@ -115,6 +238,9 @@ static void icount_update_locked(CPUState *cpu)
+     int64_t executed = icount_get_executed(cpu);
+     cpu->icount_budget -= executed;
+ 
++    g_assert(executed >= 0);
++    icount_crucible_rr_account(cpu, executed);
++
+     qatomic_set_i64(&timers_state.qemu_icount,
+                     timers_state.qemu_icount + executed);
+ }
+diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
+index 0277dda5e..cc96b8a7b 100644
+--- a/accel/tcg/tcg-accel-ops-icount.c
++++ b/accel/tcg/tcg-accel-ops-icount.c
+@@ -104,17 +104,21 @@ int64_t icount_percpu_budget(int cpu_count)
+ {
+     int64_t limit = icount_get_limit();
+     uint64_t rr_switch_quantum = icount_crucible_rr_switch_quantum();
++    uint64_t rr_cursor_position = icount_crucible_rr_cursor_position();
+     int64_t timeslice;
+ 
+     if (rr_switch_quantum != 0) {
++        uint64_t remaining = rr_switch_quantum - rr_cursor_position;
++
++        g_assert(rr_cursor_position < rr_switch_quantum);
+         if (limit <= 0) {
+             icount_handle_deadline();
+             limit = icount_get_limit();
+         }
+         if (limit <= 0) {
+-            return (int64_t)rr_switch_quantum;
++            return (int64_t)remaining;
+         }
+-        return MIN(limit, (int64_t)rr_switch_quantum);
++        return MIN(limit, (int64_t)remaining);
+     }
+ 
+     timeslice = limit / cpu_count;
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index a47e73e93..acd85e050 100644
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -797,6 +797,7 @@ static void *rr_cpu_thread_fn(void *arg)
+             cpu = first_cpu;
+         }
+         cpu = rr_crucible_sim_loop_cpu(cpu);
++        cpu = icount_crucible_rr_select_cpu(cpu);
+         if (rr_crucible_sim_mode() && cpu && cpu->exit_request &&
+             cpu_work_list_empty(cpu) && !cpu->stop && !cpu->unplug &&
+             cpu_can_run(cpu) &&
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index e904e6d70..13569f0ce 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -2124,9 +2124,10 @@ struct qemu_plugin_rr_cursor {
+  * qemu_plugin_rr_cursor() - read the current round-robin cursor
+  * @out: plugin-owned cursor output
+  *
+- * Returns 0 on success and nonzero if no valid vCPU is current, no pinned
+- * rr_switch_quantum is active, or the cursor is not inside that quantum. The
+- * read is side-effect-free with respect to guest state.
++ * Returns 0 on success. It returns nonzero if the caller is not executing in
++ * the active serialized RR owner context, if no pinned rr_switch_quantum is
++ * active, or if the cursor is not inside that quantum. The read is
++ * side-effect-free with respect to guest state.
+  */
+ QEMU_PLUGIN_API
+ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out);
+@@ -2134,7 +2135,9 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out);
+ /**
+  * qemu_plugin_crucible_rr_current_vcpu() - return the current RR vCPU index
+  *
+- * Returns UINT64_MAX when no vCPU is current.
++ * Returns the serialized RR owner only while that owner is the current vCPU.
++ * Returns UINT64_MAX outside active deterministic vCPU execution or when the
++ * current CPU and serialized ownership disagree.
+  *
+  * This AOS Crucible extension is available only in system emulation.
+  */
+@@ -2145,7 +2148,10 @@ uint64_t qemu_plugin_crucible_rr_current_vcpu(void);
+  * qemu_plugin_crucible_rr_cursor_position() - return position in RR quantum
+  *
+  * Returns the retired-instruction offset within the current pinned
+- * rr_switch_quantum budget, or 0 when the quantum is not pinned.
++ * rr_switch_quantum budget. Returns 0 when the quantum is not pinned, no vCPU
++ * is current, or the current CPU and serialized ownership disagree. An
++ * after-instruction callback for the final instruction in a slice observes the
++ * terminal position equal to rr_switch_quantum before scheduler handoff.
+  *
+  * This AOS Crucible extension is available only in system emulation.
+  */
+diff --git a/include/system/cpu-timers-internal.h b/include/system/cpu-timers-internal.h
+index 94bb7394c..2f5f47f5a 100644
+--- a/include/system/cpu-timers-internal.h
++++ b/include/system/cpu-timers-internal.h
+@@ -55,6 +55,12 @@ typedef struct TimersState {
+     /* Only written by TCG thread */
+     int64_t qemu_icount;
+ 
++    /* Crucible sim-mode RR cursor, serialized with the icount clock. */
++    uint64_t crucible_rr_current_vcpu;
++    uint64_t crucible_rr_cursor_position;
++    bool crucible_rr_cursor_valid;
++    bool crucible_rr_selection_pending;
++
+     /* for adjusting icount */
+     QEMUTimer *icount_rt_timer;
+     QEMUTimer *icount_vm_timer;
+diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
+index fe2bc7c3c..3cbfd5c37 100644
+--- a/include/system/cpu-timers.h
++++ b/include/system/cpu-timers.h
+@@ -79,7 +79,10 @@ bool icount_configure(QemuOpts *opts, Error **errp);
+ int64_t icount_round(int64_t count);
+ 
+ uint64_t icount_crucible_rr_switch_quantum(void);
+-uint64_t icount_crucible_rr_cursor_position(CPUState *cpu);
++uint64_t icount_crucible_rr_current_vcpu(void);
++uint64_t icount_crucible_rr_cursor_position(void);
++uint64_t icount_crucible_rr_cursor_position_observed(CPUState *cpu);
++CPUState *icount_crucible_rr_select_cpu(CPUState *suggested);
+ 
+ /* if the CPUs are idle, start accounting real time to virtual clock. */
+ void icount_start_warp_timer(void);
+diff --git a/plugins/api.c b/plugins/api.c
+index a8d454964..746476382 100644
+--- a/plugins/api.c
++++ b/plugins/api.c
+@@ -684,12 +684,15 @@ int qemu_plugin_read_vcpu_regs(unsigned int vcpu_index,
+ 
+ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
+ {
+-    uint64_t current_vcpu = qemu_plugin_crucible_rr_current_vcpu();
+-    uint64_t cursor_position = qemu_plugin_crucible_rr_cursor_position();
+-    uint64_t rr_switch_quantum = qemu_plugin_crucible_rr_switch_quantum();
++    CPUState *cpu = current_cpu;
++    uint64_t current_vcpu = icount_crucible_rr_current_vcpu();
++    uint64_t cursor_position =
++        icount_crucible_rr_cursor_position_observed(cpu);
++    uint64_t rr_switch_quantum = icount_crucible_rr_switch_quantum();
+     int num_vcpus = qemu_plugin_num_vcpus();
+ 
+-    if (!out || current_vcpu == UINT64_MAX || num_vcpus <= 0 ||
++    if (!out || !cpu || current_vcpu == UINT64_MAX ||
++        cpu->cpu_index != current_vcpu || num_vcpus <= 0 ||
+         current_vcpu >= (uint64_t)num_vcpus || rr_switch_quantum == 0 ||
+         cursor_position >= rr_switch_quantum) {
+         return -1;
+@@ -703,16 +706,18 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
+ 
+ uint64_t qemu_plugin_crucible_rr_current_vcpu(void)
+ {
+-    if (!current_cpu) {
++    CPUState *cpu = current_cpu;
++    uint64_t owner = icount_crucible_rr_current_vcpu();
++
++    if (!cpu || owner == UINT64_MAX || cpu->cpu_index != owner) {
+         return UINT64_MAX;
+     }
+-
+-    return (uint64_t)current_cpu->cpu_index;
++    return owner;
+ }
+ 
+ uint64_t qemu_plugin_crucible_rr_cursor_position(void)
+ {
+-    return icount_crucible_rr_cursor_position(current_cpu);
++    return icount_crucible_rr_cursor_position_observed(current_cpu);
+ }
+ 
+ uint64_t qemu_plugin_crucible_rr_switch_quantum(void)
+diff --git a/plugins/crucible-fault-vcpu-service.c b/plugins/crucible-fault-vcpu-service.c
+index ca55e1aee..64834d322 100644
+--- a/plugins/crucible-fault-vcpu-service.c
++++ b/plugins/crucible-fault-vcpu-service.c
+@@ -576,7 +576,7 @@ static void crucible_vcpu_state_event(
+     }
+ 
+     if (qemu_plugin_rr_cursor(&rr) != 0) {
+-        rr.current_vcpu = qemu_plugin_crucible_rr_current_vcpu();
++        rr.current_vcpu = icount_crucible_rr_current_vcpu();
+         rr.cursor_position = qemu_plugin_crucible_rr_cursor_position();
+         rr.rr_switch_quantum = icount_crucible_rr_switch_quantum();
+     }
+@@ -651,7 +651,7 @@ static void crucible_vcpu_window_event(CPUState *cpu,
+         abort();
+     }
+     if (qemu_plugin_rr_cursor(&rr) != 0) {
+-        rr.current_vcpu = qemu_plugin_crucible_rr_current_vcpu();
++        rr.current_vcpu = icount_crucible_rr_current_vcpu();
+         rr.cursor_position = qemu_plugin_crucible_rr_cursor_position();
+         rr.rr_switch_quantum = icount_crucible_rr_switch_quantum();
+     }
+diff --git a/system/cpu-timers.c b/system/cpu-timers.c
+index 91fa99975..166600d1d 100644
+--- a/system/cpu-timers.c
++++ b/system/cpu-timers.c
+@@ -196,17 +196,38 @@ static const VMStateDescription icount_vmstate_shift = {
+     }
+ };
+ 
++static int crucible_rr_cursor_state_post_load(void *opaque, int version_id)
++{
++    TimersState *state = opaque;
++    uint64_t quantum = icount_crucible_rr_switch_quantum();
++
++    if (quantum == 0) {
++        return 0;
++    }
++    if (!state->crucible_rr_cursor_valid ||
++        state->crucible_rr_cursor_position >= quantum ||
++        !qemu_get_cpu(state->crucible_rr_current_vcpu)) {
++        return -EINVAL;
++    }
++    state->crucible_rr_selection_pending = true;
++    return 0;
++}
++
+ /*
+  * This is a subsection for icount migration.
+  */
+ static const VMStateDescription icount_vmstate_timers = {
+     .name = "timer/icount",
+-    .version_id = 1,
+-    .minimum_version_id = 1,
++    .version_id = 2,
++    .minimum_version_id = 2,
+     .needed = icount_state_needed,
++    .post_load = crucible_rr_cursor_state_post_load,
+     .fields = (const VMStateField[]) {
+         VMSTATE_INT64(qemu_icount_bias, TimersState),
+         VMSTATE_INT64(qemu_icount, TimersState),
++        VMSTATE_UINT64(crucible_rr_current_vcpu, TimersState),
++        VMSTATE_UINT64(crucible_rr_cursor_position, TimersState),
++        VMSTATE_BOOL(crucible_rr_cursor_valid, TimersState),
+         VMSTATE_END_OF_LIST()
+     },
+     .subsections = (const VMStateDescription * const []) {
+diff --git a/tests/tcg/plugins/crucible-register.c b/tests/tcg/plugins/crucible-register.c
+index 062b5aa73..160c386d6 100644
+--- a/tests/tcg/plugins/crucible-register.c
++++ b/tests/tcg/plugins/crucible-register.c
+@@ -929,6 +929,14 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
+         }
+         test_terminal_cursor_required = true;
+     }
++    {
++        struct qemu_plugin_rr_cursor rr = { 0 };
++
++        if (qemu_plugin_rr_cursor(&rr) == 0 ||
++            qemu_plugin_crucible_rr_current_vcpu() != UINT64_MAX) {
++            test_fail("the RR cursor reported an owner outside a vCPU callback");
++        }
++    }
+     capability_count = qemu_plugin_crucible_fault_capabilities(
+         &capability, 1);
+     if (capability_count < 4) {

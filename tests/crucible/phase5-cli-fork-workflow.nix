@@ -7,18 +7,17 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
   cliFork = builtins.readFile ../../crates/crucible-cli/src/cli/resume_fork.rs;
   apiLifecycle = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle.rs;
-  apiRuntime = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/runtime.rs;
+  apiRuntime =
+    builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/runtime.rs
+    + builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop.rs
+    + builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/restart_ownership.rs;
   qemuLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch/plugin_config.rs;
   qemuNodeLaunch = builtins.readFile ../../crates/crucible-qemu/src/supervision/node_step_gate/support.rs;
   pluginRuntime = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_whitebox/app_random.rs;
@@ -74,7 +73,7 @@
       }
       {
         label = "phase5 CLI fork seed progress";
-        needle = "explicit post-fork `--seed` execution in\n  the local double by deriving the child's post-fork decision stream";
+        needle = "explicit post-fork\n  `--seed` execution in\n  the local double by deriving the child's post-fork decision stream";
       }
       {
         label = "phase5 CLI fork artifact progress";
@@ -187,16 +186,8 @@
         needle = "fork-artifact";
       }
       {
-        label = "fork override virtual-time test";
-        needle = "child-override-virtual";
-      }
-      {
-        label = "fork override stopped test";
-        needle = "child-override-stopped";
-      }
-      {
-        label = "fork override interactive test";
-        needle = "child-override-interactive";
+        label = "test double cannot certify override consumption";
+        needle = "test double must not certify exact override consumption";
       }
       {
         label = "fork help test";
@@ -240,17 +231,17 @@
       }
       {
         label = "production lifecycle wires app-random";
-        needle = ".with_app_random(production_app_random_launch_config(";
+        needle = "launch = launch.with_app_random(app_random);";
       }
     ]
     ++ failuresFor "crates/crucible-api/src/vm_lifecycle/runtime.rs" apiRuntime [
       {
-        label = "production relaunch gates app-random on whitebox opt-in";
-        needle = "if white_box_enabled";
+        label = "production relaunch preowns authenticated launch configuration";
+        needle = "fn prepare_terminal_lifecycle_ownership(";
       }
       {
-        label = "production relaunch carries app-random cursors";
-        needle = ".with_app_random(self.app_random_continuation_config(node)?)";
+        label = "production relaunch binds the app-random continuation";
+        needle = "bind_successor_app_random(launch.clone(), successor_app_random)";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/launch/plugin_config.rs" qemuLaunch [

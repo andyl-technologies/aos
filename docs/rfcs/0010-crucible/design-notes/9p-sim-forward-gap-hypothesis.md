@@ -17,7 +17,7 @@ plain TCG 9p, and sim-without-icount 9p retain their prior dispatch behavior.
 The exact-source `checks.crucible.phase2.qemu9pSyncKick` microtest proves that
 scope. `checks.crucible.phase2.qemuLive9pIo` then proves a real Linux
 `Tversion` crosses `SLOT_9P_IO`, completes with the same 821-icount modeled
-latency under host load and a 100 ms response-publication delay, releases the
+latency under bounded scheduler preemption and a 100 ms response-publication delay, releases the
 device hold, and lets the guest reach its scheduler ceiling. All temporary
 diagnostic logging was removed.
 

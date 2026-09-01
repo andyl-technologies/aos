@@ -2,7 +2,9 @@
 
 use super::*;
 /// Terminal kind for one host-side assertion outcome.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum HostAssertionOutcomeKind {
     /// The assertion completed with its safety-style obligation intact.
     Passed,
@@ -23,7 +25,9 @@ pub enum HostAssertionOutcomeKind {
 }
 
 /// Assertion quantifier or marker flavor attached to outcomes and violations.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum AssertionQuantifierKind {
     /// Host-side invariant over every evaluated point.
     Always,
@@ -46,7 +50,9 @@ pub enum AssertionQuantifierKind {
 }
 
 /// Lifecycle state of one declared property during deterministic evaluation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum PropertyLifecycleState {
     /// The property is registered but has not yet been evaluated.
     Declared,
@@ -89,7 +95,7 @@ pub struct HostAssertionOutcome {
     evidence: Option<HostAssertionViolationEvidence>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(super) struct HostAssertionViolationEvidence {
     pub(super) at_icount: Option<Icount>,
     pub(super) node: Option<NodeId>,
@@ -1001,6 +1007,217 @@ pub struct HostAssertionEvaluator {
     last_prefix: Option<ConditionEventLogPrefix>,
 }
 
+const HOST_ASSERTION_CHECKPOINT_MAGIC: &[u8] = b"crucible.host-assertion-continuation.v1\0";
+const HOST_ASSERTION_CHECKPOINT_MAX_BYTES: usize = 268_435_456;
+
+/// Process-independent continuation of the streaming host assertion evaluator.
+#[derive(Clone, Debug)]
+pub struct HostAssertionEvaluatorCheckpoint {
+    wire: HostAssertionEvaluatorWire,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostAssertionEvaluatorWire {
+    states: Vec<HostAssertionStateWire>,
+    guest_marker_states: Vec<GuestMarkerAssertionState>,
+    once_latches: Vec<Vec<u8>>,
+    terminal_quiescence: Option<SchedulerQuiescence>,
+    last_prefix: Option<EventLogOffset>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostAssertionStateWire {
+    assertion: AssertionId,
+    lifecycle: PropertyLifecycleState,
+    terminal: Option<HostAssertionTerminal>,
+    evaluated: bool,
+    eventually_triggered: bool,
+    eventually_satisfied_at: Option<VirtualTime>,
+    pending_eventually: Vec<EventuallyObligation>,
+    proximity: Option<HostAssertionProximityMinimum>,
+}
+
+impl HostAssertionEvaluator {
+    /// Captures every mutable assertion-evaluation field at the current prefix.
+    #[must_use]
+    pub fn checkpoint(&self) -> HostAssertionEvaluatorCheckpoint {
+        HostAssertionEvaluatorCheckpoint {
+            wire: HostAssertionEvaluatorWire {
+                states: self
+                    .states
+                    .iter()
+                    .map(|state| HostAssertionStateWire {
+                        assertion: state.assertion.id.clone(),
+                        lifecycle: state.lifecycle,
+                        terminal: state.terminal.clone(),
+                        evaluated: state.evaluated,
+                        eventually_triggered: state.eventually_triggered,
+                        eventually_satisfied_at: state.eventually_satisfied_at,
+                        pending_eventually: state.pending_eventually.clone(),
+                        proximity: state.proximity.clone(),
+                    })
+                    .collect(),
+                guest_marker_states: self.guest_marker_states.clone(),
+                once_latches: self
+                    .once_latches
+                    .iter()
+                    .map(Predicate::to_compact_binary)
+                    .collect(),
+                terminal_quiescence: self.terminal_quiescence.clone(),
+                last_prefix: self
+                    .last_prefix
+                    .as_ref()
+                    .map(ConditionEventLogPrefix::event_log_offset),
+            },
+        }
+    }
+}
+
+impl HostAssertionEvaluatorCheckpoint {
+    /// Encodes the complete assertion continuation canonically.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HostAssertionCheckpointError`] when the checkpoint is malformed
+    /// or exceeds its hard encoded-size ceiling.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, HostAssertionCheckpointError> {
+        validate_host_assertion_wire(&self.wire)?;
+        let mut payload = Vec::new();
+        ciborium::ser::into_writer(&self.wire, &mut payload)
+            .map_err(|_| HostAssertionCheckpointError::Malformed)?;
+        if payload.len() > HOST_ASSERTION_CHECKPOINT_MAX_BYTES {
+            return Err(HostAssertionCheckpointError::Limit);
+        }
+        let mut bytes = Vec::with_capacity(HOST_ASSERTION_CHECKPOINT_MAGIC.len() + payload.len());
+        bytes.extend_from_slice(HOST_ASSERTION_CHECKPOINT_MAGIC);
+        bytes.extend_from_slice(&payload);
+        Ok(bytes)
+    }
+
+    /// Decodes and validates one canonical assertion continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HostAssertionCheckpointError`] for unsupported, malformed,
+    /// noncanonical, or over-limit input.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, HostAssertionCheckpointError> {
+        let payload = bytes
+            .strip_prefix(HOST_ASSERTION_CHECKPOINT_MAGIC)
+            .ok_or(HostAssertionCheckpointError::Version)?;
+        if payload.len() > HOST_ASSERTION_CHECKPOINT_MAX_BYTES {
+            return Err(HostAssertionCheckpointError::Limit);
+        }
+        let wire: HostAssertionEvaluatorWire = ciborium::de::from_reader(payload)
+            .map_err(|_| HostAssertionCheckpointError::Malformed)?;
+        let checkpoint = Self { wire };
+        if checkpoint.canonical_bytes()?.as_slice() != bytes {
+            return Err(HostAssertionCheckpointError::Noncanonical);
+        }
+        Ok(checkpoint)
+    }
+
+    /// Restores this continuation into an evaluator built from the same properties.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HostAssertionCheckpointError`] when assertion identities or the
+    /// current event-log prefix do not match the checkpoint.
+    pub fn restore_into(
+        &self,
+        evaluator: &mut HostAssertionEvaluator,
+        current_prefix: &ConditionEventLogPrefix,
+    ) -> Result<(), HostAssertionCheckpointError> {
+        validate_host_assertion_wire(&self.wire)?;
+        if self.wire.states.len() != evaluator.states.len()
+            || self
+                .wire
+                .states
+                .iter()
+                .zip(&evaluator.states)
+                .any(|(wire, state)| wire.assertion != state.assertion.id)
+            || self.wire.last_prefix.is_some()
+                && self.wire.last_prefix != Some(current_prefix.event_log_offset())
+        {
+            return Err(HostAssertionCheckpointError::Binding);
+        }
+        let once_latches = self
+            .wire
+            .once_latches
+            .iter()
+            .map(|bytes| Predicate::from_compact_binary(bytes))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| HostAssertionCheckpointError::Malformed)?;
+        let mut staged = evaluator.clone();
+        for (state, wire) in staged.states.iter_mut().zip(&self.wire.states) {
+            state.lifecycle = wire.lifecycle;
+            state.terminal = wire.terminal.clone();
+            state.evaluated = wire.evaluated;
+            state.eventually_triggered = wire.eventually_triggered;
+            state.eventually_satisfied_at = wire.eventually_satisfied_at;
+            state.pending_eventually = wire.pending_eventually.clone();
+            state.proximity = wire.proximity.clone();
+        }
+        staged.guest_marker_states = self.wire.guest_marker_states.clone();
+        staged.once_latches = once_latches;
+        staged.terminal_quiescence = self.wire.terminal_quiescence.clone();
+        staged.last_prefix = self.wire.last_prefix.map(|_| current_prefix.clone());
+        *evaluator = staged;
+        Ok(())
+    }
+}
+
+fn validate_host_assertion_wire(
+    wire: &HostAssertionEvaluatorWire,
+) -> Result<(), HostAssertionCheckpointError> {
+    if !wire
+        .states
+        .windows(2)
+        .all(|pair| pair[0].assertion < pair[1].assertion)
+        || !wire
+            .guest_marker_states
+            .windows(2)
+            .all(|pair| pair[0].id < pair[1].id)
+    {
+        return Err(HostAssertionCheckpointError::Noncanonical);
+    }
+    for predicate in &wire.once_latches {
+        Predicate::from_compact_binary(predicate)
+            .map_err(|_| HostAssertionCheckpointError::Malformed)?;
+    }
+    Ok(())
+}
+
+/// Error returned by host-assertion continuation encoding and restore.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostAssertionCheckpointError {
+    /// The envelope semantic version is unsupported.
+    Version,
+    /// The payload is malformed.
+    Malformed,
+    /// The payload is valid but not canonical.
+    Noncanonical,
+    /// The payload exceeds its hard bound.
+    Limit,
+    /// The continuation does not bind to the admitted properties or log prefix.
+    Binding,
+}
+
+impl fmt::Display for HostAssertionCheckpointError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Version => formatter.write_str("unsupported host-assertion checkpoint version"),
+            Self::Malformed => formatter.write_str("malformed host-assertion checkpoint"),
+            Self::Noncanonical => formatter.write_str("noncanonical host-assertion checkpoint"),
+            Self::Limit => formatter.write_str("host-assertion checkpoint exceeds its size limit"),
+            Self::Binding => formatter.write_str("host-assertion checkpoint binding mismatch"),
+        }
+    }
+}
+
+impl Error for HostAssertionCheckpointError {}
+
 impl HostAssertionEvaluator {
     /// Builds an evaluator for the assertions in canonical property order.
     #[must_use]
@@ -1267,7 +1484,7 @@ pub(super) struct HostAssertionState {
     proximity: Option<HostAssertionProximityMinimum>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct GuestMarkerAssertionState {
     pub(super) id: AssertionId,
     pub(super) lifecycle: PropertyLifecycleState,
@@ -1453,7 +1670,7 @@ impl HostAssertionState {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct HostAssertionTerminal {
     kind: HostAssertionOutcomeKind,
     lifecycle: PropertyLifecycleState,
@@ -1462,7 +1679,7 @@ pub(super) struct HostAssertionTerminal {
     evidence: Option<HostAssertionViolationEvidence>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct HostAssertionProximityMinimum {
     distance: u128,
     at: VirtualTime,
@@ -1488,7 +1705,7 @@ impl HostAssertionProximityMinimum {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct EventuallyObligation {
     triggered_at: VirtualTime,
     deadline: VirtualTime,

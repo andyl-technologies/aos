@@ -1,22 +1,35 @@
 //! Canonical hashing for execution-model identities.
 
 use super::{
-    ActiveFaultTable, ActiveNetworkEdgeDirection, CombinedBlockFaults, CombinedDuplicateFault,
-    CombinedFaults, CombinedIoCorruptionFault, CombinedNetworkCorruptionFault,
-    CombinedNetworkFaults, CombinedNinePFaults, CombinedNodeFaults, CombinedPartitionFault,
-    Configuration, ContentHash, ControlFaultAction, Decision, DecisionRngState, DeviceOverlayDelta,
-    DeviceRngState, EventLogOffset, EventSequenceState, FaultState, Icount, IoFailureMode,
-    NetworkCorruptionFault, NodeBlobRef, NodeId, PendingFrame, PreemptionKind, RestartPolicy,
+    Configuration, ContentHash, Decision, DecisionRngState, DeviceOverlayDelta, DeviceRngState,
+    EventLogOffset, EventSequenceState, Icount, NodeBlobRef, NodeId, PendingFrame, PreemptionKind,
     RngStreamId, RngStreamPosition, ScenarioDef, Schedule, SchedulerNodeId, SchedulerState,
     SchedulingNodeKind, TimerRegistry, TimerState, VirtualTime, VmSnapshotRef,
 };
 use std::collections::BTreeMap;
 
 pub(super) fn content_hash_from_canonical_material(domain: &str, material: &str) -> ContentHash {
+    content_hash_from_canonical_material_bytes(domain, material.as_bytes())
+}
+
+pub(super) fn content_hash_from_canonical_material_bytes(
+    domain: &str,
+    material: &[u8],
+) -> ContentHash {
     let mut hasher = MaterialHasher::new();
     hasher.write_bytes(b"crucible.content-hash.v1");
     hasher.write_bytes(domain.as_bytes());
-    hasher.write_bytes(material.as_bytes());
+    hasher.write_bytes(material);
+    ContentHash {
+        bytes: hasher.finish(),
+    }
+}
+
+pub(super) fn content_hash_from_canonical_hex_bytes(domain: &str, bytes: &[u8]) -> ContentHash {
+    let mut hasher = MaterialHasher::new();
+    hasher.write_bytes(b"crucible.content-hash.v1");
+    hasher.write_bytes(domain.as_bytes());
+    hasher.write_hex_bytes(bytes);
     ContentHash {
         bytes: hasher.finish(),
     }
@@ -92,55 +105,29 @@ fn write_decision(hasher: &mut MaterialHasher, decision: &Decision) {
                 hasher.write_u64(key.sequence);
             }
         }
-        Decision::FaultFires(fault) => {
-            hasher.write_u64(1);
-            write_virtual_time(hasher, fault.at);
-            hasher.write_bytes(fault.fault.name.as_bytes());
-            hasher.write_bool(fault.fired);
-        }
         Decision::RngDraw(draw) => {
-            hasher.write_u64(2);
+            hasher.write_u64(1);
             write_rng_stream_id(hasher, &draw.stream);
             hasher.write_u64(draw.value);
         }
         Decision::Override(override_decision) => {
-            hasher.write_u64(3);
+            hasher.write_u64(2);
             hasher.write_bytes(override_decision.point.key.as_bytes());
             hasher.write_bytes(override_decision.choice.name.as_bytes());
         }
         Decision::Preemption(preemption) => {
-            hasher.write_u64(4);
+            hasher.write_u64(3);
             hasher.write_bytes(preemption.node.name.as_bytes());
             write_icount(hasher, preemption.at);
             write_preemption_kind(hasher, &preemption.kind);
         }
         Decision::AppRandom(random) => {
-            hasher.write_u64(5);
+            hasher.write_u64(4);
             hasher.write_bytes(random.node.name.as_bytes());
             write_rng_stream_id(hasher, &random.stream);
             hasher.write_u64(random.request_id);
             hasher.write_u64(u64::from(random.width));
             hasher.write_u64(random.value);
-        }
-        Decision::ControlFault(control) => {
-            hasher.write_u64(6);
-            write_virtual_time(hasher, control.at);
-            hasher.write_u64(control.sequence);
-            write_control_fault_action(hasher, &control.action);
-        }
-    }
-}
-
-fn write_control_fault_action(hasher: &mut MaterialHasher, action: &ControlFaultAction) {
-    match action {
-        ControlFaultAction::Inject { tag, fault } => {
-            hasher.write_u64(0);
-            hasher.write_bytes(tag.name.as_bytes());
-            hasher.write_bytes(fault.canonical_material().as_bytes());
-        }
-        ControlFaultAction::Heal { tag } => {
-            hasher.write_u64(1);
-            hasher.write_bytes(tag.name.as_bytes());
         }
     }
 }
@@ -230,17 +217,6 @@ fn write_scheduler_state(hasher: &mut MaterialHasher, state: &SchedulerState) {
         write_scheduler_topology_change(hasher, change);
     }
     write_timer_registry(hasher, &state.timers);
-    hasher.write_u64(state.active_faults.len() as u64);
-    for (fault, state) in &state.active_faults {
-        hasher.write_bytes(fault.name.as_bytes());
-        write_fault_state(hasher, state);
-    }
-    hasher.write_u64(state.active_fault_tags.len() as u64);
-    for (tag, fault) in &state.active_fault_tags {
-        hasher.write_bytes(tag.name.as_bytes());
-        hasher.write_bytes(super::membership_fault_material(fault).as_bytes());
-    }
-    write_active_fault_table(hasher, &state.active_fault_table);
     hasher.write_u64(state.pending_device_decisions.len() as u64);
     for decision in &state.pending_device_decisions {
         write_decision(hasher, decision);
@@ -271,8 +247,8 @@ fn write_scheduler_topology_change(
 
     hasher.write_u64(change.sequence);
     hasher.write_u64(match change.trigger {
-        SchedulerTopologyChangeTrigger::FaultActivation => 0,
-        SchedulerTopologyChangeTrigger::Heal => 1,
+        SchedulerTopologyChangeTrigger::EdgeRemoval => 0,
+        SchedulerTopologyChangeTrigger::EdgeRestore => 1,
         SchedulerTopologyChangeTrigger::LatencyChange => 2,
     });
     match change.activation_time {
@@ -315,236 +291,6 @@ fn write_scheduler_topology_change(
     }
 }
 
-fn write_active_fault_table(hasher: &mut MaterialHasher, table: &ActiveFaultTable) {
-    write_combined_faults(hasher, &table.combined);
-    hasher.write_u64(table.network_edges.len() as u64);
-    for (key, faults) in &table.network_edges {
-        hasher.write_bytes(key.link.name.as_bytes());
-        write_active_network_edge_direction(hasher, key.direction);
-        write_combined_network_faults(hasher, faults);
-    }
-    hasher.write_u64(table.legacy_membership.len() as u64);
-    for (tag, fault) in &table.legacy_membership {
-        hasher.write_bytes(tag.name.as_bytes());
-        hasher.write_bytes(super::membership_fault_material(fault).as_bytes());
-    }
-}
-
-fn write_active_network_edge_direction(
-    hasher: &mut MaterialHasher,
-    direction: ActiveNetworkEdgeDirection,
-) {
-    hasher.write_u64(match direction {
-        ActiveNetworkEdgeDirection::EndpointAToEndpointB => 0,
-        ActiveNetworkEdgeDirection::EndpointBToEndpointA => 1,
-    });
-}
-
-fn write_combined_faults(hasher: &mut MaterialHasher, table: &CombinedFaults) {
-    hasher.write_u64(table.network.len() as u64);
-    for (link, faults) in &table.network {
-        hasher.write_bytes(link.name.as_bytes());
-        write_combined_network_faults(hasher, faults);
-    }
-    hasher.write_u64(table.node.len() as u64);
-    for (node, faults) in &table.node {
-        write_node_id(hasher, node);
-        write_combined_node_faults(hasher, faults);
-    }
-    hasher.write_u64(table.block.len() as u64);
-    for (device, faults) in &table.block {
-        hasher.write_bytes(device.name.as_bytes());
-        write_combined_block_faults(hasher, faults);
-    }
-    hasher.write_u64(table.ninep.len() as u64);
-    for (device, faults) in &table.ninep {
-        hasher.write_bytes(device.name.as_bytes());
-        write_combined_ninep_faults(hasher, faults);
-    }
-}
-
-fn write_combined_network_faults(hasher: &mut MaterialHasher, faults: &CombinedNetworkFaults) {
-    write_optional_partition_fault(hasher, faults.partition);
-    write_rate_list(hasher, &faults.loss_rates);
-    hasher.write_u64(faults.latency.nanos());
-    write_optional_duration(hasher, faults.reorder_window);
-    write_optional_duplicate_fault(hasher, faults.duplicate);
-    write_optional_network_corruption_fault(hasher, faults.corruption.as_ref());
-    write_bandwidth_limits(hasher, &faults.bandwidth_limits);
-}
-
-fn write_combined_node_faults(hasher: &mut MaterialHasher, faults: &CombinedNodeFaults) {
-    write_optional_restart_policy(hasher, faults.crash_restart);
-    match faults.slow_factor {
-        Some(factor) => {
-            hasher.write_bool(true);
-            hasher.write_u64(u64::from(factor.basis_points()));
-        }
-        None => hasher.write_bool(false),
-    }
-    hasher.write_i64(faults.clock_skew.nanos);
-}
-
-fn write_combined_block_faults(hasher: &mut MaterialHasher, faults: &CombinedBlockFaults) {
-    hasher.write_u64(faults.latency_extra.nanos());
-    hasher.write_u64(faults.latency_jitter.nanos());
-    write_rate_list(hasher, &faults.failure_rates);
-    write_optional_io_failure_mode(hasher, faults.failure_mode);
-    write_optional_duration(hasher, faults.reorder_window);
-    write_optional_duplicate_fault(hasher, faults.duplicate);
-    write_optional_io_corruption_fault(hasher, faults.corruption);
-    write_bandwidth_limits(hasher, &faults.bandwidth_limits);
-}
-
-fn write_combined_ninep_faults(hasher: &mut MaterialHasher, faults: &CombinedNinePFaults) {
-    hasher.write_u64(faults.latency_extra.nanos());
-    hasher.write_u64(faults.latency_jitter.nanos());
-    hasher.write_u64(faults.failures.len() as u64);
-    for failure in &faults.failures {
-        hasher.write_u64(u64::from(failure.rate.basis_points()));
-        hasher.write_i64(i64::from(failure.errno.code()));
-    }
-    write_optional_duration(hasher, faults.reorder_window);
-    write_optional_duplicate_fault(hasher, faults.duplicate);
-    write_optional_io_corruption_fault(hasher, faults.corruption);
-    write_bandwidth_limits(hasher, &faults.bandwidth_limits);
-}
-
-fn write_optional_partition_fault(
-    hasher: &mut MaterialHasher,
-    fault: Option<CombinedPartitionFault>,
-) {
-    match fault {
-        Some(fault) => {
-            hasher.write_bool(true);
-            hasher.write_bool(fault.endpoint_a_to_endpoint_b);
-            hasher.write_bool(fault.endpoint_b_to_endpoint_a);
-        }
-        None => hasher.write_bool(false),
-    }
-}
-
-fn write_rate_list(hasher: &mut MaterialHasher, rates: &[super::FaultRateBasisPoints]) {
-    hasher.write_u64(rates.len() as u64);
-    for rate in rates {
-        hasher.write_u64(u64::from(rate.basis_points()));
-    }
-}
-
-fn write_optional_duration(hasher: &mut MaterialHasher, duration: Option<super::FaultDuration>) {
-    match duration {
-        Some(duration) => {
-            hasher.write_bool(true);
-            hasher.write_u64(duration.nanos());
-        }
-        None => hasher.write_bool(false),
-    }
-}
-
-fn write_optional_duplicate_fault(
-    hasher: &mut MaterialHasher,
-    fault: Option<CombinedDuplicateFault>,
-) {
-    match fault {
-        Some(fault) => {
-            hasher.write_bool(true);
-            hasher.write_u64(u64::from(fault.rate.basis_points()));
-            hasher.write_u64(fault.gap.nanos());
-        }
-        None => hasher.write_bool(false),
-    }
-}
-
-fn write_optional_network_corruption_fault(
-    hasher: &mut MaterialHasher,
-    fault: Option<&CombinedNetworkCorruptionFault>,
-) {
-    match fault {
-        Some(fault) => {
-            hasher.write_bool(true);
-            hasher.write_u64(u64::from(fault.rate.basis_points()));
-            hasher.write_u64(fault.strategies.len() as u64);
-            for strategy in &fault.strategies {
-                write_network_corruption_strategy(hasher, strategy);
-            }
-        }
-        None => hasher.write_bool(false),
-    }
-}
-
-fn write_network_corruption_strategy(
-    hasher: &mut MaterialHasher,
-    strategy: &NetworkCorruptionFault,
-) {
-    match strategy {
-        NetworkCorruptionFault::BitFlip { rate, max_bits } => {
-            hasher.write_u64(0);
-            hasher.write_u64(u64::from(rate.basis_points()));
-            hasher.write_u64(u64::from(*max_bits));
-        }
-        NetworkCorruptionFault::FieldMutation { rate } => {
-            hasher.write_u64(1);
-            hasher.write_u64(u64::from(rate.basis_points()));
-        }
-        NetworkCorruptionFault::Truncation { rate, max_bytes } => {
-            hasher.write_u64(2);
-            hasher.write_u64(u64::from(rate.basis_points()));
-            hasher.write_u64(*max_bytes);
-        }
-    }
-}
-
-fn write_optional_restart_policy(hasher: &mut MaterialHasher, restart: Option<RestartPolicy>) {
-    match restart {
-        Some(restart) => {
-            hasher.write_bool(true);
-            hasher.write_u64(match restart {
-                RestartPolicy::FromReadyPoint => 0,
-                RestartPolicy::FromLastCheckpoint => 1,
-                RestartPolicy::StayDown => 2,
-            });
-        }
-        None => hasher.write_bool(false),
-    }
-}
-
-fn write_optional_io_failure_mode(hasher: &mut MaterialHasher, mode: Option<IoFailureMode>) {
-    match mode {
-        Some(mode) => {
-            hasher.write_bool(true);
-            hasher.write_u64(match mode {
-                IoFailureMode::ErrorStatus => 0,
-                IoFailureMode::Drop => 1,
-            });
-        }
-        None => hasher.write_bool(false),
-    }
-}
-
-fn write_optional_io_corruption_fault(
-    hasher: &mut MaterialHasher,
-    fault: Option<CombinedIoCorruptionFault>,
-) {
-    match fault {
-        Some(fault) => {
-            hasher.write_bool(true);
-            hasher.write_u64(u64::from(fault.rate.basis_points()));
-            hasher.write_u64(u64::from(fault.bit_flips));
-        }
-        None => hasher.write_bool(false),
-    }
-}
-
-fn write_bandwidth_limits(
-    hasher: &mut MaterialHasher,
-    limits: &[super::FaultBandwidthBitsPerSecond],
-) {
-    hasher.write_u64(limits.len() as u64);
-    for limit in limits {
-        hasher.write_u64(limit.bits_per_second());
-    }
-}
-
 fn write_pending_frame(hasher: &mut MaterialHasher, frame: &PendingFrame) {
     write_node_id(hasher, &frame.source);
     hasher.write_u64(frame.sequence);
@@ -574,17 +320,6 @@ fn write_timer_state(hasher: &mut MaterialHasher, state: &TimerState) {
     write_virtual_time(hasher, state.armed_at);
     write_virtual_time(hasher, state.fire_at);
     write_icount(hasher, state.fire_icount);
-}
-
-fn write_fault_state(hasher: &mut MaterialHasher, state: &FaultState) {
-    write_virtual_time(hasher, state.active_since);
-    match state.heal_at {
-        Some(heal_at) => {
-            hasher.write_bool(true);
-            write_virtual_time(hasher, heal_at);
-        }
-        None => hasher.write_bool(false),
-    }
 }
 
 fn write_decision_rng_state(hasher: &mut MaterialHasher, state: &DecisionRngState) {
@@ -712,6 +447,32 @@ impl MaterialHasher {
         self.bytes_written = self.bytes_written.wrapping_add(bytes.len() as u64);
     }
 
+    fn write_hex_bytes(&mut self, bytes: &[u8]) {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+
+        let encoded_length = (bytes.len() as u64).wrapping_mul(2);
+        self.write_u64(encoded_length);
+
+        let mut word = [0; 8];
+        let mut word_length = 0;
+        for byte in bytes {
+            for nibble in [byte >> 4, byte & 0x0f] {
+                word[word_length] = HEX[usize::from(nibble)];
+                word_length += 1;
+                if word_length == word.len() {
+                    self.mix_word(u64::from_le_bytes(word));
+                    word = [0; 8];
+                    word_length = 0;
+                }
+            }
+        }
+        if word_length != 0 {
+            self.mix_word(u64::from_le_bytes(word));
+        }
+
+        self.bytes_written = self.bytes_written.wrapping_add(encoded_length);
+    }
+
     fn finish(&self) -> [u8; 32] {
         let mut lanes = self.lanes;
         for (index, lane) in lanes.iter_mut().enumerate() {
@@ -729,10 +490,6 @@ impl MaterialHasher {
     fn write_u64(&mut self, value: u64) {
         self.mix_word(value);
         self.bytes_written = self.bytes_written.wrapping_add(8);
-    }
-
-    fn write_i64(&mut self, value: i64) {
-        self.write_u64(value as u64);
     }
 
     fn write_bool(&mut self, value: bool) {
@@ -758,4 +515,31 @@ fn finalize_hash_word(mut word: u64) -> u64 {
     word ^= word >> 27;
     word = word.wrapping_mul(0x94d0_49bb_1331_11eb);
     word ^ (word >> 31)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hexadecimal_byte_hash_matches_legacy_material_string() {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        for bytes in [
+            Vec::new(),
+            vec![0],
+            vec![0xab, 0xcd, 0xef],
+            (0_u8..=31).collect(),
+        ] {
+            let mut encoded = String::with_capacity(bytes.len() * 2);
+            for byte in &bytes {
+                encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+                encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+            }
+
+            assert_eq!(
+                content_hash_from_canonical_hex_bytes("crucible.test.hex-stream.v1", &bytes),
+                content_hash_from_canonical_material("crucible.test.hex-stream.v1", &encoded)
+            );
+        }
+    }
 }

@@ -228,6 +228,52 @@ pub(crate) fn fallible_helper() -> Result<(), ()> {
     Ok(())
 }
 "#;
+    let documented_errors_across_lint_marker = r#"
+//! synthetic module
+
+/// Performs one fallible operation.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
+// crucible-lint: allow clippy::needless_pass_by_value -- synthetic rationale.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "synthetic public contract"
+)]
+pub fn documented(value: String) -> Result<(), ()> {
+    let _ = value;
+    Ok(())
+}
+"#;
+    let callback_result_is_not_function_result = r#"
+//! synthetic module
+
+/// Installs a fallible callback.
+#[must_use]
+pub fn install(factory: impl Fn() -> Result<(), ()>) -> Self {
+    let _ = factory;
+    Self
+}
+"#;
+    let slice_before_result_function = r#"
+//! synthetic module
+
+/// Returns borrowed values.
+#[must_use]
+pub fn values(&self) -> &[FaultResultSlotV1] {
+    &self.values
+}
+
+/// Performs one fallible operation.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
+pub fn fallible() -> Result<(), ()> {
+    Ok(())
+}
+"#;
     let non_ascii_comment = r#"
 //! synthetic module
 
@@ -404,6 +450,28 @@ struct Cli {}
     );
     assert_not_contains(
         &rustdoc_bar_failures(crate_private_missing_errors, "synthetic.rs", false, None),
+        "missing `# Errors`",
+    );
+    assert_not_contains(
+        &rustdoc_bar_failures(
+            documented_errors_across_lint_marker,
+            "synthetic.rs",
+            false,
+            None,
+        ),
+        "missing `# Errors`",
+    );
+    assert_not_contains(
+        &rustdoc_bar_failures(
+            callback_result_is_not_function_result,
+            "synthetic.rs",
+            false,
+            None,
+        ),
+        "missing `# Errors`",
+    );
+    assert_not_contains(
+        &rustdoc_bar_failures(slice_before_result_function, "synthetic.rs", false, None),
         "missing `# Errors`",
     );
     assert_contains(

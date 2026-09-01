@@ -229,7 +229,7 @@ in
             definition=crucible-execution-fingerprint-v1
             cadence=periodic-4096-icount-plus-event-boundaries
             period_icount=4096
-            event_boundaries=horizon-advance,frame-delivery,fault-activation
+            event_boundaries=horizon-advance,frame-delivery,signal-effect-boundary
             memory_scope=full-guest-memory
             register_digest_algorithm=host-observed-architectural-register-digest-v1
             memory_digest_algorithm=host-observed-full-guest-memory-digest-v1

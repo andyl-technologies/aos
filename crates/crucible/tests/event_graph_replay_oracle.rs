@@ -7,14 +7,13 @@
 use crucible::{
     Action, AssertionDef, AssertionId, AssertionPhase, AssertionRunVerdict, ChoiceTag, CodePoint,
     ConditionLeaf, ConditionLeafOracle, ContentHash, Decision, EventGraph, EventGraphState,
-    EventId, FaultTag, FramePredicate, Icount, LinkDef, LinkId, MembershipFault, NodeId,
-    NodeLifecycle, NodeTemplate, ObservableEvent, ObservableEventPayload, OverrideDecision,
-    PartitionDirection, Plan, Predicate, Properties, Property, ReadyPoint, RegexProgram,
-    ReproductionArtifact, ReproductionReplay, ScenarioDefForm, Schedule,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
-    SchedulerLivenessScenario, SchedulingPoint, Seed, Shift, SimDuration, SimInstant,
-    SingleScheduler, TimerId, TriggerActionApplication, TriggerActionState, VirtualTime,
-    VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    EventId, FramePredicate, Icount, LinkDef, LinkId, LogLevel, NodeId, NodeLifecycle,
+    NodeTemplate, ObservableEvent, ObservableEventPayload, OverrideDecision, Plan, Predicate,
+    Properties, Property, ReadyPoint, RegexProgram, ReproductionArtifact, ReproductionReplay,
+    ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, SchedulerLivenessScenario, SchedulingPoint, Seed, Shift, SimDuration,
+    SimInstant, SingleScheduler, TimerId, TriggerActionApplication, TriggerActionState,
+    VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 
 fn assertion(name: &str) -> AssertionId {
@@ -35,18 +34,14 @@ fn node(name: &str) -> NodeId {
     }
 }
 
-fn tag(name: &str) -> FaultTag {
-    FaultTag::from_name(name)
-}
-
 fn timer(name: &str) -> TimerId {
     TimerId {
         name: name.to_string(),
     }
 }
 
-fn link(name: &str) -> LinkId {
-    LinkId::from_name(name)
+fn link(left: &str, right: &str) -> LinkId {
+    LinkId::for_endpoints(&node(left), &node(right))
 }
 
 fn time(ticks: u64) -> VirtualTime {
@@ -101,14 +96,6 @@ fn scenario(name: &str, world: &World) -> SchedulerLivenessScenario {
     .with_trigger_world(world)
 }
 
-fn split_fault() -> MembershipFault {
-    MembershipFault::Partition {
-        endpoint_a: node("db-0"),
-        endpoint_b: node("db-1"),
-        direction: PartitionDirection::Bidirectional,
-    }
-}
-
 fn readiness_condition() -> Predicate {
     Predicate::all_of(vec![
         Predicate::console_match(
@@ -145,12 +132,12 @@ fn graph(world: &World) -> EventGraph {
         .event(event("wait-ready"))
         .when(readiness_condition())
         .action(Action::group(vec![
-            Action::inject_fault(tag("split"), split_fault()),
-            Action::arm_timer(timer("heal-after"), duration(30)),
+            Action::log(LogLevel::Info, "recovery timer armed"),
+            Action::arm_timer(timer("recovery-after"), duration(30)),
         ]))
-        .event(event("heal"))
-        .when(Predicate::timer(timer("heal-after")))
-        .action(Action::heal_fault(tag("split")))
+        .event(event("timer-observed"))
+        .when(Predicate::timer(timer("recovery-after")))
+        .action(Action::log(LogLevel::Info, "recovery timer observed"))
         .event(event("fail-on-property-violation"))
         .when(Predicate::assertion_state(
             assertion("cluster-safe"),
@@ -161,7 +148,7 @@ fn graph(world: &World) -> EventGraph {
         .when(Predicate::all_of(vec![
             Predicate::assertion_state(assertion("cluster-safe"), AssertionPhase::Satisfied),
             Predicate::network_match(
-                Some(link("db-0--db-1")),
+                Some(link("db-0", "db-1")),
                 FramePredicate::contains(b"raft:converged".to_vec()),
             ),
             Predicate::node_state(node("db-0"), NodeLifecycle::Started),
@@ -206,7 +193,7 @@ fn convergence_observations() -> Vec<ObservableEvent> {
         ),
         ObservableEvent::network_delivered(
             time(50),
-            Some(link("db-0--db-1")),
+            Some(link("db-0", "db-1")),
             b"raft:converged:term=7".to_vec(),
         ),
         ObservableEvent::node_state(time(50), node("db-0"), NodeLifecycle::Started),
@@ -606,11 +593,7 @@ fn replay_event_graph_artifact(artifact: &EventGraphReplayArtifact) -> EventGrap
         artifact.reproduction.schedule().content_hash()
     );
 
-    let graph = scenario_form
-        .plan()
-        .event_graph()
-        .expect("plan should carry the event graph under replay")
-        .clone();
+    let graph = scenario_form.plan().event_graph().clone();
     let mut scheduler =
         SingleScheduler::new(scenario("event-graph-replay-oracle", scenario_form.world()))
             .expect("scheduler builds");
@@ -643,9 +626,32 @@ fn replay_event_graph_artifact(artifact: &EventGraphReplayArtifact) -> EventGrap
     }
 
     let trigger_firings = trigger_firing_records(&trigger_log);
+    assert!(
+        !trigger_log
+            .iter()
+            .any(|entry| entry.event_payload().kind() == "condition_evaluated"),
+        "condition truth must be rederived rather than logged as condition_evaluated",
+    );
+    for entry in trigger_log
+        .iter()
+        .filter(|entry| entry.event_payload().kind() == "trigger_fired")
+    {
+        assert!(
+            matches!(entry.payload(), SchedulerEventLogPayload::TriggerFired(_)),
+            "trigger firing must not be recorded as a Decision",
+        );
+        assert!(
+            entry.event_payload().string("condition").is_some(),
+            "trigger firing must retain its canonical condition summary",
+        );
+    }
     assert_eq!(
         fired_event_names_from_records(&trigger_firings),
-        vec!["wait-ready", "heal", "pass-on-black-box-convergence"]
+        vec![
+            "wait-ready",
+            "timer-observed",
+            "pass-on-black-box-convergence",
+        ]
     );
 
     let assertion_verdict = AssertionRunVerdict::passed();
@@ -726,53 +732,5 @@ fn event_graph_replay_oracle_rederives_identical_firings_actions_and_verdict() {
     );
 }
 
-#[test]
-fn event_graph_replay_oracle_rejects_condition_script_schedule_drift() {
-    let mut artifact = EventGraphReplayArtifact::capture_converged();
-    assert!(artifact.condition_script_matches_recorded_schedule());
-
-    artifact.condition_script = vec![ReplayStep::Observations(readiness_observations())];
-
-    assert!(!artifact.condition_script_matches_recorded_schedule());
-    assert_ne!(
-        condition_script_hash(&artifact.condition_script),
-        artifact.condition_script_hash
-    );
-}
-
-#[test]
-fn event_graph_replay_oracle_localizes_first_differing_firing() {
-    let artifact = EventGraphReplayArtifact::capture_converged();
-    let online = replay_event_graph_artifact(&artifact);
-    let mut corrupt_recorded_firings = online.trigger_firings.clone();
-    corrupt_recorded_firings[2] = TriggerFiringRecord {
-        event: event_id("fail-on-property-violation"),
-        at: time(50),
-        action: Action::fail("cluster-safe assertion violated"),
-    };
-
-    let mismatch = check_event_graph_replay_oracle(&artifact, &corrupt_recorded_firings)
-        .expect_err("corrupt recorded trigger firing should diverge from replay");
-    let divergence = mismatch.divergence;
-
-    assert_eq!(divergence.index, 2);
-    assert_eq!(
-        divergence
-            .expected
-            .as_ref()
-            .map(|firing| firing.event.clone()),
-        Some(event_id("fail-on-property-violation"))
-    );
-    assert_eq!(
-        divergence
-            .actual
-            .as_ref()
-            .map(|firing| firing.event.clone()),
-        Some(event_id("pass-on-black-box-convergence"))
-    );
-    assert_eq!(
-        &corrupt_recorded_firings[..divergence.index],
-        &online.trigger_firings[..divergence.index],
-        "replay oracle must preserve the identical prefix before reporting divergence"
-    );
-}
+#[path = "event_graph_replay_oracle/divergence_tests.rs"]
+mod divergence_tests;

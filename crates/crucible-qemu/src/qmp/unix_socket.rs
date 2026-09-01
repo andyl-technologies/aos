@@ -14,7 +14,7 @@ impl QmpClient<UnixStream> {
     /// Returns [`QmpError`] when the Unix socket cannot be opened, when the QMP
     /// greeting cannot be read or decoded, or when capability negotiation fails.
     pub fn connect_unix_socket(path: impl AsRef<Path>) -> Result<Self, QmpError> {
-        let stream = UnixStream::connect(path)
+        let stream = crate::unix_socket_path::connect(path.as_ref())
             .map_err(|source| QmpError::from_io("connect QMP Unix socket", source))?;
         Self::connect(stream)
     }
@@ -31,7 +31,7 @@ impl QmpClient<UnixStream> {
         job_poll_policy: QmpJobPollPolicy,
         io_timeout_policy: QmpIoTimeoutPolicy,
     ) -> Result<Self, QmpError> {
-        let stream = UnixStream::connect(path)
+        let stream = crate::unix_socket_path::connect(path.as_ref())
             .map_err(|source| QmpError::from_io("connect QMP Unix socket", source))?;
         Self::connect_with_policies(stream, job_poll_policy, io_timeout_policy)
     }

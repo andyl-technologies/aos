@@ -8,10 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 
 use crucible::{
-    Checkpoint, CheckpointKind, ChoiceTag, Configuration, ContentHash, ControlFaultAction,
-    ControlFaultDecision, Decision, DeliveryOrderDecision, EngineError, EventKey, FaultDecision,
-    FaultId, FaultState, FaultTag, FrontierReductionPolicy, GenesisCheckpoint, Icount,
-    MaterializationPolicy, MaterializationTrigger, MaterializedState, NodeId, NodeTemplate,
+    Checkpoint, CheckpointKind, ChoiceTag, Configuration, ContentHash, Decision,
+    DeliveryOrderDecision, EngineError, EventKey, FrontierReductionPolicy, GenesisCheckpoint,
+    Icount, MaterializationPolicy, MaterializationTrigger, MaterializedState, NodeId, NodeTemplate,
     OverrideDecision, PendingFrame, ReadyPoint, RngDecision, RngStreamId, SchedulerNodeId,
     SchedulerState, SchedulingNodeKind, SchedulingPoint, SearchFrontierChoices, TemporalGraph,
     VirtualTime, WhiteBoxPolicy, World, WorldNode, bake, instantiate, try_step,
@@ -55,16 +54,12 @@ fn gate_state_space_search_expands_genuine_decisions_and_dedups_by_content_addre
             .iter()
             .all(|child| !child.already_recorded)
     );
-    assert!(search.frontier_report.explored.iter().all(|child| matches!(
-        child.decision,
-        Decision::FaultFires(_) | Decision::RngDraw(_) | Decision::Override(_)
-    )));
     assert!(
         search
             .frontier_report
             .explored
             .iter()
-            .any(|child| matches!(child.decision, Decision::FaultFires(_)))
+            .all(|child| matches!(child.decision, Decision::RngDraw(_) | Decision::Override(_)))
     );
     assert!(
         search
@@ -161,7 +156,7 @@ fn gate_state_space_search_derives_choices_from_materialized_scheduler_state()
             .frontier_report
             .explored
             .iter()
-            .filter(|child| matches!(child.decision, Decision::FaultFires(_)))
+            .filter(|child| matches!(child.decision, Decision::RngDraw(_)))
             .count(),
         2
     );
@@ -178,7 +173,7 @@ fn gate_state_space_search_materializes_captured_frontier_under_budget()
     let baked = bake_with_search_frontier_choices(
         &world,
         vec![
-            fault_decision("frontier-budget/a", false),
+            rng_decision("frontier-budget/a", 0),
             rng_decision("frontier-budget/b", 2),
             override_decision("frontier-budget/c", "alternate"),
         ],
@@ -229,7 +224,7 @@ fn gate_state_space_search_realizes_frontier_from_cached_ancestor_without_stale_
     let baked = bake_with_search_frontier_choices(&world, vec![rng_decision("stale-ancestor", 1)])?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
     let base = try_step(&genesis, rng_decision("cached-ancestor/base", 1))?;
-    let frontier = try_step(&base, fault_decision("cached-ancestor/frontier", true))?;
+    let frontier = try_step(&base, rng_decision("cached-ancestor/frontier", 1))?;
     let base_snapshot = graph.materialize_checkpoint(&base)?;
     let expected_frontier_runtime = instantiate(&graph, &frontier)?;
 
@@ -353,18 +348,9 @@ fn scheduler_state_with_captured_frontier_choices(label: &str) -> SchedulerState
             pending_frame("peer-b", 1, 21, label),
         ],
     )]);
-    scheduler.active_faults = BTreeMap::from([(
-        FaultId {
-            name: format!("{label}/active-fault"),
-        },
-        FaultState {
-            active_since: time(22),
-            heal_at: None,
-        },
-    )]);
     scheduler.search_frontier = SearchFrontierChoices::from_decisions([
-        fault_decision(format!("{label}/captured-fault"), false),
-        fault_decision(format!("{label}/captured-fault"), true),
+        rng_decision(format!("{label}/captured-signal-choice"), 0),
+        rng_decision(format!("{label}/captured-signal-choice"), 1),
     ]);
     scheduler
 }
@@ -386,13 +372,13 @@ fn pending_frame(source: &str, sequence: u64, delivery_icount: u64, label: &str)
 fn captured_frontier_decisions(label: &str) -> Vec<Decision> {
     let mut decisions = genuine_frontier_decisions(label);
     decisions.push(non_genuine_delivery_decision(label, 13, 0));
-    decisions.push(control_fault_decision(label));
+    decisions.push(non_genuine_delivery_decision(label, 14, 1));
     decisions
 }
 
 fn genuine_frontier_decisions(label: &str) -> Vec<Decision> {
     vec![
-        fault_decision(format!("{label}/packet-loss"), true),
+        rng_decision(format!("{label}/packet-loss"), 1),
         rng_decision(format!("{label}/decision-rng"), 0xa5a5_5a5a),
         override_decision(format!("{label}/scheduler-point"), "non-default-choice"),
     ]
@@ -402,26 +388,6 @@ fn non_genuine_delivery_decision(label: &str, ticks: u64, sequence: u64) -> Deci
     Decision::DeliveryOrder(DeliveryOrderDecision {
         at: time(ticks),
         order: vec![event_key(label, ticks, sequence)],
-    })
-}
-
-fn control_fault_decision(label: &str) -> Decision {
-    Decision::ControlFault(ControlFaultDecision {
-        at: time(14),
-        sequence: 0,
-        action: ControlFaultAction::Heal {
-            tag: FaultTag {
-                name: format!("{label}/control-fault"),
-            },
-        },
-    })
-}
-
-fn fault_decision(fault: impl Into<String>, fired: bool) -> Decision {
-    Decision::FaultFires(FaultDecision {
-        at: time(12),
-        fault: FaultId { name: fault.into() },
-        fired,
     })
 }
 

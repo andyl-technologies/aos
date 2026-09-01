@@ -1,8 +1,8 @@
 {pkgs}:
-# A diskless Linux initramfs whose PID 1 emits one raw Ethernet probe, blocks
-# until the Crucible router reply arrives, then emits an acknowledgement. The
-# guest creates all application traffic; the host gate only routes the
-# guest-originated frame and schedules its deterministic response.
+# A diskless Linux initramfs whose PID 1 exchanges a raw Ethernet probe,
+# acknowledgement, and checkpoint-continuation stream. The guest creates all
+# application traffic; the host gate only routes guest-originated frames and
+# schedules deterministic responses.
 pkgs.mkDerivation {
   pname = "crucible-live-network-io-initramfs";
   version = "0";
@@ -35,11 +35,17 @@ pkgs.mkDerivation {
         #define PAYLOAD_OFFSET 14
         #define CRUCIBLE_ETHERTYPE 0x88b5
 
-        static const uint8_t guest_mac[6] =
-          {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
         static const uint8_t probe_payload[] = "crucible-network-probe-v1";
         static const uint8_t reply_payload[] = "crucible-network-reply-v1";
         static const uint8_t ack_payload[] = "crucible-network-ack-v1";
+        static const uint8_t backpressure_payload[] =
+          "crucible-network-backpressure-v1";
+        static const uint8_t backpressure_ack_payload[] =
+          "crucible-network-backpressure-ack-v1";
+        static const uint8_t checkpoint_payload[] =
+          "crucible-network-checkpoint-v1";
+        static const uint8_t continuation_payload[] =
+          "crucible-network-continuation-v1";
 
         static void park_forever(void) {
           const struct timespec interval = {0, 20000000};
@@ -57,6 +63,44 @@ pkgs.mkDerivation {
           }
           request.ifr_flags |= IFF_UP;
           return ioctl(fd, SIOCSIFFLAGS, &request);
+        }
+
+        static int read_guest_mac_and_stagger_tx(int fd, const char *name,
+                                                 uint8_t guest_mac[6]) {
+          struct ifreq request;
+          memset(&request, 0, sizeof(request));
+          strncpy(request.ifr_name, name, IFNAMSIZ - 1);
+          if (ioctl(fd, SIOCGIFHWADDR, &request) != 0) {
+            return -1;
+          }
+          memcpy(guest_mac, request.ifr_hwaddr.sa_data, 6);
+
+          /*
+           * Multi-guest certification assigns stable node-derived MACs. A
+           * bounded instruction-count stagger keeps independent boot probes
+           * in one canonical order across fresh QEMU process launches. The
+           * ordinary single-guest fixture MAC has its high bit clear.
+           */
+          if (((uint8_t)request.ifr_hwaddr.sa_data[0] & 0x80) != 0) {
+            for (volatile uint64_t remaining = 25000000;
+                 remaining > 0; --remaining) {
+            }
+          }
+          return 0;
+        }
+
+        static int payload_matches(const uint8_t *frame, ssize_t received,
+                                   const uint8_t *payload, size_t payload_len) {
+          return received >= PAYLOAD_OFFSET + (ssize_t)payload_len &&
+                 memcmp(frame + PAYLOAD_OFFSET, payload, payload_len) == 0;
+        }
+
+        static int addresses_match(const uint8_t *frame, ssize_t received,
+                                   const uint8_t destination[6],
+                                   const uint8_t source[6]) {
+          return received >= PAYLOAD_OFFSET &&
+                 memcmp(frame, destination, 6) == 0 &&
+                 memcmp(frame + 6, source, 6) == 0;
         }
 
         static void build_frame(uint8_t frame[FRAME_LEN],
@@ -87,7 +131,28 @@ pkgs.mkDerivation {
 
         int main(void) {
           int fd = socket(AF_PACKET, SOCK_RAW, htons(CRUCIBLE_ETHERTYPE));
-          if (fd < 0 || bring_up(fd, "eth0") != 0) {
+          if (fd < 0) {
+            park_forever();
+          }
+
+          struct sockaddr_ll address;
+          memset(&address, 0, sizeof(address));
+          address.sll_family = AF_PACKET;
+          address.sll_protocol = htons(CRUCIBLE_ETHERTYPE);
+          address.sll_ifindex = 0;
+          if (bind(fd, (struct sockaddr *)&address, sizeof(address)) != 0) {
+            park_forever();
+          }
+
+          /*
+           * Bind the certifying packet socket to the EtherType on all
+           * interfaces before IFF_UP enables the virtio receive queue. Linux
+           * permits ifindex zero for packet-socket binding even while eth0 is
+           * down. Once QEMU can accept the host's exact retained retry,
+           * userspace already owns the protocol, so the kernel cannot discard
+           * the canary in the interval between IFF_UP and a device bind.
+           */
+          if (bring_up(fd, "eth0") != 0) {
             park_forever();
           }
 
@@ -97,13 +162,8 @@ pkgs.mkDerivation {
           if (ioctl(fd, SIOCGIFINDEX, &index_request) != 0) {
             park_forever();
           }
-
-          struct sockaddr_ll address;
-          memset(&address, 0, sizeof(address));
-          address.sll_family = AF_PACKET;
-          address.sll_protocol = htons(CRUCIBLE_ETHERTYPE);
-          address.sll_ifindex = index_request.ifr_ifindex;
-          if (bind(fd, (struct sockaddr *)&address, sizeof(address)) != 0) {
+          uint8_t guest_mac[6];
+          if (read_guest_mac_and_stagger_tx(fd, "eth0", guest_mac) != 0) {
             park_forever();
           }
 
@@ -118,25 +178,82 @@ pkgs.mkDerivation {
           }
 
           for (;;) {
-            ssize_t received = recv(fd, frame, sizeof(frame), 0);
-            if (received < PAYLOAD_OFFSET + (ssize_t)(sizeof(reply_payload) - 1)) {
-              continue;
-            }
-            if (frame[12] != 0x88 || frame[13] != 0xb5 ||
-                memcmp(frame + PAYLOAD_OFFSET, reply_payload,
-                       sizeof(reply_payload) - 1) != 0) {
+            struct sockaddr_ll incoming;
+            socklen_t incoming_len = sizeof(incoming);
+            memset(&incoming, 0, sizeof(incoming));
+            ssize_t received = recvfrom(fd, frame, sizeof(frame), 0,
+                                        (struct sockaddr *)&incoming,
+                                        &incoming_len);
+            if (received < PAYLOAD_OFFSET || frame[12] != 0x88 ||
+                frame[13] != 0xb5 ||
+                incoming.sll_ifindex != index_request.ifr_ifindex ||
+                incoming.sll_pkttype == PACKET_OUTGOING) {
               continue;
             }
 
+            const uint8_t *response_payload = 0;
+            size_t response_payload_len = 0;
+            unsigned int response_count = 1;
+            uint8_t response_destination[6];
+            memcpy(response_destination, broadcast, 6);
             const uint8_t router_mac[6] =
               {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
-            build_frame(frame, router_mac, guest_mac, ack_payload,
-                        sizeof(ack_payload) - 1);
-            if (send_frame(fd, index_request.ifr_ifindex, frame) !=
-                (ssize_t)sizeof(frame)) {
-              park_forever();
+            if (payload_matches(frame, received, reply_payload,
+                                sizeof(reply_payload) - 1) &&
+                addresses_match(frame, received, guest_mac, router_mac)) {
+              /*
+               * This is the certifying ACK branch. It is reachable only for
+               * a router-originated frame addressed to this exact NIC, so a
+               * reflected guest probe or a misrouted frame cannot satisfy the
+               * host's reply-receipt evidence.
+               */
+              response_payload = ack_payload;
+              response_payload_len = sizeof(ack_payload) - 1;
+              memcpy(response_destination, router_mac, 6);
+            } else if (payload_matches(frame, received, backpressure_payload,
+                                       sizeof(backpressure_payload) - 1) &&
+                       addresses_match(frame, received, broadcast,
+                                       router_mac)) {
+              response_payload = backpressure_ack_payload;
+              response_payload_len = sizeof(backpressure_ack_payload) - 1;
+              memcpy(response_destination, router_mac, 6);
+            } else if (payload_matches(frame, received, probe_payload,
+                                       sizeof(probe_payload) - 1) &&
+                       memcmp(frame, broadcast, 6) == 0 &&
+                       memcmp(frame + 6, guest_mac, 6) != 0) {
+              /* The two-VM world gate acknowledges only a peer's probe. */
+              response_payload = ack_payload;
+              response_payload_len = sizeof(ack_payload) - 1;
+              memcpy(response_destination, frame + 6, 6);
+            } else if (payload_matches(frame, received, ack_payload,
+                                       sizeof(ack_payload) - 1)) {
+              response_payload = checkpoint_payload;
+              response_payload_len = sizeof(checkpoint_payload) - 1;
+              response_count = 4;
+              memcpy(response_destination, frame + 6, 6);
+            } else if (payload_matches(frame, received, checkpoint_payload,
+                                       sizeof(checkpoint_payload) - 1)) {
+              response_payload = continuation_payload;
+              response_payload_len = sizeof(continuation_payload) - 1;
+              memcpy(response_destination, frame + 6, 6);
+            } else if (payload_matches(frame, received, continuation_payload,
+                                       sizeof(continuation_payload) - 1)) {
+              response_payload = checkpoint_payload;
+              response_payload_len = sizeof(checkpoint_payload) - 1;
+              memcpy(response_destination, frame + 6, 6);
+            } else {
+              continue;
             }
-            park_forever();
+
+            build_frame(frame, response_destination, guest_mac,
+                        response_payload, response_payload_len);
+            for (unsigned int response = 0; response < response_count;
+                 ++response) {
+              if (send_frame(fd, index_request.ifr_ifindex, frame) !=
+                  (ssize_t)sizeof(frame)) {
+                park_forever();
+              }
+            }
           }
         }
         INIT_C
@@ -164,6 +281,10 @@ pkgs.mkDerivation {
         guest_traffic_origin=guest-only
         guest_protocol=ethertype-88b5
         guest_interface=virtio-net-eth0
+        guest_receive_filter=eth0-non-outgoing
+        guest_reply_ack_binding=exact-router-source-and-guest-destination
+        guest_self_probe_acknowledgement=forbidden
+        multi_guest_tx_order=deterministic-node-mac-stagger
         EVIDENCE
       '';
     }

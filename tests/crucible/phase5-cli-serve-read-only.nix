@@ -7,16 +7,15 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
-  apiServer = builtins.readFile ../../crates/crucible-api/src/server.rs;
+  apiServer = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/src/server.rs;
+  };
   cliMain = import ./_cli-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -86,7 +85,7 @@
       }
       {
         label = "serve uses mode-aware daemon";
-        needle = "serve_lifecycle_http2_with_mode_until_shutdown(";
+        needle = "serve_lifecycle_http2_mtls_with_mode_until_shutdown(";
       }
       {
         label = "serve help advertises read-only";

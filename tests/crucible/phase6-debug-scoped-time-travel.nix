@@ -6,11 +6,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   debugDoc = builtins.readFile ../../docs/rfcs/0010-crucible/36-time-travel-debugging.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
@@ -111,12 +107,12 @@
         needle = "pub fn debug_apply_checkpoint_cadence";
       }
       {
-        label = "S3 thin default constructor";
-        needle = "thin_replay_until_full_s3";
+        label = "explicit thin-only cache policy";
+        needle = "pub fn thin_only() -> Self";
       }
       {
-        label = "savevm hedge integration";
-        needle = "materialize_checkpoint_with_savevm_hedge";
+        label = "ordinary materialization integration";
+        needle = "materialize_hot_checkpoint";
       }
       {
         label = "performance-only proof";
@@ -160,7 +156,7 @@
       }
       {
         label = "checkpoint stride test";
-        needle = "debug_checkpoint_stride_is_performance_only_and_defaults_to_thin_replay";
+        needle = "debug_checkpoint_stride_is_performance_only_under_explicit_cache_policy";
       }
       {
         label = "per-node request use";
@@ -183,8 +179,8 @@
         needle = "DebugWholeWorldTarget::event_sequence";
       }
       {
-        label = "thin default assertion";
-        needle = "defaults_to_thin_replay_until_full_s3";
+        label = "explicit thin policy assertion";
+        needle = "kept_all_thin";
       }
       {
         label = "eviction-safe assertion";
@@ -297,7 +293,7 @@ in
             gate=gate:debug-scoped-time-travel
             per_node=icount-scoped-other-nodes-untouched
             whole_world=prefix-fork-minus-divergence
-            checkpoint_stride=performance-only-thin-default
+            checkpoint_stride=performance-only-explicit-cache-policy
             RESULT
           '';
         }

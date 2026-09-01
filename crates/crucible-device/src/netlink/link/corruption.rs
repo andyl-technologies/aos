@@ -3,11 +3,6 @@
 use super::*;
 
 pub(super) fn corrupt_link_payload(faults: &LinkFaults, payload: &mut Vec<u8>, bit_draws: &[u64]) {
-    if faults.corruption_strategies.is_empty() {
-        corrupt_payload(payload, bit_draws, faults.corrupt_bit_flips);
-        return;
-    }
-
     let mut draw_offset = 0usize;
     for strategy in &faults.corruption_strategies {
         match *strategy {

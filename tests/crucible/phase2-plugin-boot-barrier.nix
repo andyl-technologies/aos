@@ -6,11 +6,7 @@
   openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginBootBarrier = builtins.readFile ../../crates/crucible-qemu-plugin/src/boot_barrier.rs;
@@ -18,8 +14,10 @@
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   shmem =
     import ./_crucible-shmem-source.nix {inherit lib;}
-    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
-    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/futex.rs;
+    + import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+    };
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -65,7 +63,7 @@
       }
       {
         label = "no wall-clock sleep wording";
-        needle = "never a fixed wall-clock sleep";
+        needle = "wall-clock sleep used as the gate";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [

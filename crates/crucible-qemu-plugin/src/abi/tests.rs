@@ -53,7 +53,7 @@ fn plugin_argv(args: &[&str]) -> (Vec<CString>, Vec<*mut c_char>) {
 fn valid_plugin_argv() -> (Vec<CString>, Vec<*mut c_char>) {
     plugin_argv(&[
         "simfd=3",
-        "slot=0",
+        "slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576",
         "shmemfd=4",
         "wakefd=5",
         "whitebox=off",
@@ -79,7 +79,7 @@ fn parse_install_plugin_args_for_test(
 fn abi_install_parses_qemu_plugin_argv_before_runtime_activation() {
     let (_strings, mut split_argv) = plugin_argv(&[
         "simfd=3",
-        "slot=2",
+        "slot=2,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576",
         "shmemfd=4",
         "wakefd=5",
         "whitebox=off",
@@ -103,7 +103,7 @@ fn abi_install_parses_qemu_plugin_argv_before_runtime_activation() {
     assert!(args.coverage().is_on());
 
     let (_strings, mut single_argv) = plugin_argv(&[
-        "simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,coverage=off",
+        "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,shmemfd=4,wakefd=5,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,coverage=off",
     ]);
     let args = parse_install_plugin_args_for_test(1, single_argv.as_mut_ptr())
         .unwrap_or_else(|error| panic!("single QEMU argv should parse: {error}"));

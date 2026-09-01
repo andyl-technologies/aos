@@ -6,21 +6,23 @@
 
 use crucible_shmem::{
     FrameEntry, FutexWait, FutexWakeResult, KIND_VM, NODE_SLOT_ALIGN,
-    NODE_SLOT_CURRENT_ICOUNT_OFFSET, NODE_SLOT_CURRENT_NS_OFFSET,
-    NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET, NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, NODE_SLOT_KIND_OFFSET,
-    NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET, NODE_SLOT_PUBLISH_GEN_OFFSET, NODE_SLOT_SIZE,
-    NODE_SLOT_STATUS_OFFSET, NODE_SLOT_WAKE_SIGNAL_OFFSET, NodeSlot, NodeSlotError,
-    PendingInputPublication, RegionAllocation, RegionAllocationAccessError, RegionConfig,
-    RingHeader, SLOT_BLK_IO, SLOT_NET_ROUTER, STATUS_IDLE, STATUS_RUNNING,
-    SchedulerWakePublicationError, SpscRingError, WakeAction, authorize_advance_ceiling,
-    icount_to_virtual_ns,
+    NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET, NODE_SLOT_CURRENT_ICOUNT_OFFSET,
+    NODE_SLOT_CURRENT_NS_OFFSET, NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET,
+    NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, NODE_SLOT_KIND_OFFSET, NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET,
+    NODE_SLOT_PUBLISH_GEN_OFFSET, NODE_SLOT_SIZE, NODE_SLOT_STATUS_OFFSET,
+    NODE_SLOT_WAKE_SIGNAL_OFFSET, NodeSlot, NodeSlotError, PendingInputPublication,
+    RegionAllocation, RegionAllocationAccessError, RegionConfig, RingHeader, SLOT_BLK_IO,
+    SLOT_NET_ROUTER, STATUS_IDLE, STATUS_RUNNING, SchedulerWakePublicationError, SpscRingError,
+    WakeAction, authorize_advance_ceiling, icount_to_virtual_ns,
 };
 
 const SHMEM_SOURCE: &str = concat!(
     include_str!("../src/lib.rs"),
     include_str!("../src/shmem/region.rs"),
+    include_str!("../src/shmem/region/allocation_scheduler.rs"),
     include_str!("../src/shmem/ring_coverage.rs"),
     include_str!("../src/shmem/frame_node.rs"),
+    include_str!("../src/shmem/frame_node/runtime.rs"),
     include_str!("../src/shmem/delivery_errors.rs"),
 );
 
@@ -45,6 +47,7 @@ fn node_slot_layout_matches_wire_contract() {
     assert_eq!(NODE_SLOT_KIND_OFFSET, 37);
     assert_eq!(NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET, 38);
     assert_eq!(NODE_SLOT_PUBLISH_GEN_OFFSET, 40);
+    assert_eq!(NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET, 44);
 }
 
 #[test]
@@ -302,7 +305,7 @@ fn scheduler_wake_publication_source_orders_inbox_before_ceiling_before_wake() {
         source,
         &[
             "self.validate_scheduler_ceiling(ceiling)?;",
-            "preflight_ring_enqueue_capacity(inbox, inbox_entries, pending_inputs.len())",
+            "crate::region::helpers::preflight_ring_enqueue_capacity(",
             ".enqueue(inbox_entries, frame)",
             "let wake = self.publish_prevalidated_scheduler_ceiling(ceiling)?;",
         ],
@@ -351,6 +354,61 @@ fn mark_running_participates_in_publish_generation() {
 }
 
 #[test]
+fn control_boundary_request_release_acknowledges_publication() {
+    let slot = NodeSlot::new(KIND_VM);
+    slot.publish_idle(0, 10, 0)
+        .unwrap_or_else(|error| panic!("future idle deadline should publish: {error}"));
+    let before = slot.snapshot();
+
+    let request = slot
+        .request_control_boundary()
+        .unwrap_or_else(|error| panic!("control boundary request should publish: {error}"));
+
+    let requested = slot.snapshot();
+    assert_eq!(before.control_boundary_ack, 1);
+    assert_eq!(request, 2);
+    assert_eq!(requested.control_boundary_ack, request);
+    assert!(slot.control_boundary_is_requested());
+    assert_eq!(requested.publish_gen, before.publish_gen);
+    assert_eq!(requested.current_icount, before.current_icount);
+    assert_eq!(requested.status, before.status);
+
+    slot.publish_control_boundary(0, 0, 0)
+        .unwrap_or_else(|error| panic!("control boundary should publish: {error}"));
+    assert_eq!(slot.acknowledge_control_boundary(), 3);
+    let published = slot.snapshot();
+    assert_eq!(published.control_boundary_ack, request + 1);
+    assert!(!slot.control_boundary_is_requested());
+    assert_eq!(published.status, STATUS_IDLE);
+    assert_eq!(published.idle_wake_icount, before.idle_wake_icount);
+
+    slot.publish_scheduler_ceiling(ceiling(0, 1))
+        .unwrap_or_else(|error| panic!("running ceiling should publish: {error}"));
+    slot.mark_running();
+    let running_before = slot.snapshot();
+    let running_request = slot
+        .request_control_boundary()
+        .unwrap_or_else(|error| panic!("running control boundary should publish: {error}"));
+    slot.publish_control_boundary(0, 0, 0)
+        .unwrap_or_else(|error| panic!("running control boundary should publish: {error}"));
+    assert_eq!(slot.acknowledge_control_boundary(), running_request + 1);
+    assert_eq!(slot.snapshot().status, running_before.status);
+
+    slot.publish_scheduler_ceiling(ceiling(0, 0))
+        .unwrap_or_else(|error| panic!("fenced ceiling should publish: {error}"));
+    slot.mark_running();
+    let fenced_request = slot
+        .request_control_boundary()
+        .unwrap_or_else(|error| panic!("fenced control boundary should publish: {error}"));
+    slot.publish_control_boundary(0, 0, 0)
+        .unwrap_or_else(|error| panic!("fenced control boundary should publish: {error}"));
+    assert_eq!(slot.acknowledge_control_boundary(), fenced_request + 1);
+    let fenced = slot.snapshot();
+    assert_eq!(fenced.status, STATUS_IDLE);
+    assert_eq!(fenced.idle_wake_icount, fenced.current_icount);
+}
+
+#[test]
 fn node_cannot_self_extend_past_published_ceiling() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = ceiling(0, 9);
@@ -371,6 +429,30 @@ fn node_cannot_self_extend_past_published_ceiling() {
             max_advance_icount: 9,
         })
     );
+}
+
+#[test]
+fn external_restore_ceiling_does_not_wake_or_rewind_the_slot() {
+    let slot = NodeSlot::new(KIND_VM);
+    assert!(slot.publish_scheduler_ceiling(ceiling(0, 10)).is_ok());
+    assert!(slot.publish_reached_icount(10, 0).is_ok());
+    let before = slot.snapshot();
+
+    assert_eq!(slot.arm_external_state_restore_ceiling(37), Ok(()));
+    let armed = slot.snapshot();
+    assert_eq!(armed.current_icount, 10);
+    assert_eq!(armed.max_advance_icount, 37);
+    assert_eq!(armed.wake_signal, before.wake_signal);
+    assert_eq!(armed.publish_gen, before.publish_gen);
+
+    assert_eq!(
+        slot.arm_external_state_restore_ceiling(9),
+        Err(NodeSlotError::CeilingBeforePublishedCurrent {
+            current_icount: 10,
+            max_advance_icount: 9,
+        })
+    );
+    assert_eq!(slot.snapshot(), armed);
 }
 
 #[test]
@@ -498,155 +580,7 @@ fn off_linux_futex_syscalls_compile_to_noops() {
     assert_eq!(wait, crucible_shmem::FutexWaitOutcome::Noop);
 }
 
-fn wake_action(previous: u32, new: u32, waiters_woken: u32) -> WakeAction {
-    WakeAction::Wake {
-        previous,
-        new,
-        futex: FutexWakeResult {
-            waiters_woken,
-            futex_private: false,
-        },
-    }
-}
+#[path = "advance_ceiling_handoff/support.rs"]
+mod support;
 
-#[cfg(target_os = "linux")]
-fn assert_linux_trigger_wakes_parked_waiter<E>(
-    mut trigger: impl FnMut(&NodeSlot) -> Result<WakeAction, E>,
-) where
-    E: std::fmt::Display,
-{
-    let slot = Arc::new(NodeSlot::new(KIND_VM));
-    let waiter_slot = Arc::clone(&slot);
-    let (ready_tx, ready_rx) = mpsc::channel();
-    let waiter = thread::spawn(move || {
-        let _ = ready_tx.send(linux_thread_id());
-        waiter_slot.futex_wait_word_nonprivate(0)
-    });
-
-    let waiter_tid = match ready_rx.recv_timeout(Duration::from_secs(1)) {
-        Ok(tid) => tid,
-        Err(error) => panic!("waiter did not reach futex wait setup: {error}"),
-    };
-    wait_until_linux_task_sleeps_in_futex(waiter_tid);
-
-    let action = match trigger(&slot) {
-        Ok(action) => action,
-        Err(error) => panic!("wake trigger failed: {error}"),
-    };
-    assert_eq!(action, wake_action(0, 1, 1));
-
-    let outcome = match waiter.join() {
-        Ok(Ok(outcome)) => outcome,
-        Ok(Err(error)) => panic!("waiter futex wait failed: {error}"),
-        Err(payload) => std::panic::resume_unwind(payload),
-    };
-    assert_eq!(outcome, crucible_shmem::FutexWaitOutcome::Woken);
-}
-
-#[cfg(target_os = "linux")]
-fn linux_thread_id() -> u32 {
-    let task_link = match fs::read_link("/proc/thread-self") {
-        Ok(path) => path,
-        Err(error) => panic!("failed to read /proc/thread-self: {error}"),
-    };
-    let task_name = match task_link.file_name().and_then(|name| name.to_str()) {
-        Some(name) => name,
-        None => panic!("/proc/thread-self target has no UTF-8 task id: {task_link:?}"),
-    };
-    match task_name.parse() {
-        Ok(tid) => tid,
-        Err(error) => panic!("failed to parse Linux task id {task_name:?}: {error}"),
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn wait_until_linux_task_sleeps_in_futex(tid: u32) {
-    for _ in 0..100_000 {
-        if linux_task_wait_channel_contains_futex(tid) || linux_task_is_sleeping(tid) {
-            return;
-        }
-        thread::yield_now();
-    }
-
-    panic!("Linux task {tid} did not enter a futex sleep");
-}
-
-#[cfg(target_os = "linux")]
-fn linux_task_wait_channel_contains_futex(tid: u32) -> bool {
-    let path = format!("/proc/self/task/{tid}/wchan");
-    fs::read_to_string(path).is_ok_and(|wait_channel| wait_channel.contains("futex"))
-}
-
-#[cfg(target_os = "linux")]
-fn linux_task_is_sleeping(tid: u32) -> bool {
-    let path = format!("/proc/self/task/{tid}/status");
-    let Ok(status) = fs::read_to_string(path) else {
-        return false;
-    };
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix("State:"))
-        .is_some_and(|state| state.contains("sleeping") || state.contains("disk sleep"))
-}
-
-fn ceiling(current_icount: u64, max_advance_icount: u64) -> crucible_shmem::AdvanceCeiling {
-    match authorize_advance_ceiling(current_icount, max_advance_icount, None) {
-        Ok(ceiling) => ceiling,
-        Err(error) => panic!("advance ceiling should be valid: {error}"),
-    }
-}
-
-fn region(vm_node_count: u32, queue_capacity: u32) -> RegionAllocation {
-    match RegionAllocation::new_model(RegionConfig::new(vm_node_count, queue_capacity, 0)) {
-        Ok(region) => region,
-        Err(error) => panic!("region fixture should build: {error}"),
-    }
-}
-
-fn frame(delivery_icount: u64, src_node: u32, seq: u32, payload: &[u8]) -> FrameEntry {
-    match FrameEntry::new(delivery_icount, src_node, seq, payload) {
-        Ok(frame) => frame,
-        Err(error) => panic!("frame fixture should build: {error}"),
-    }
-}
-
-fn frame_entries(capacity: usize) -> Vec<FrameEntry> {
-    vec![frame(0, 0, 0, b""); capacity]
-}
-
-fn assert_source_order(source: &str, needles: &[&str], context: &str) {
-    let mut offset = 0;
-    for needle in needles {
-        let remaining = &source[offset..];
-        let Some(relative) = remaining.find(needle) else {
-            panic!("{context}: missing `{needle}` after byte offset {offset}");
-        };
-        offset += relative + needle.len();
-    }
-}
-
-fn function_source(signature: &str) -> &str {
-    let Some(start) = SHMEM_SOURCE.find(signature) else {
-        panic!("missing source signature `{signature}`");
-    };
-    let after_signature = &SHMEM_SOURCE[start..];
-    let Some(open_relative) = after_signature.find('{') else {
-        panic!("missing body for source signature `{signature}`");
-    };
-    let open = start + open_relative;
-    let mut depth = 0_i32;
-    for (relative, ch) in SHMEM_SOURCE[open..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return &SHMEM_SOURCE[start..open + relative + ch.len_utf8()];
-                }
-            }
-            _ => {}
-        }
-    }
-
-    panic!("unterminated source body for `{signature}`");
-}
+use support::*;

@@ -2,6 +2,8 @@
 
 use super::*;
 
+#[path = "tests/content_hash.rs"]
+mod content_hash;
 #[path = "tests/model_core.rs"]
 mod model_core;
 #[path = "tests/world_validation.rs"]

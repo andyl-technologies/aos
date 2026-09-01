@@ -36,6 +36,7 @@ static uint64_t target_tb_index;
 static uint64_t target_tb_insns;
 static bool target_selected;
 static bool stop_requested;
+static bool stop_pending;
 static bool deadline_api_available;
 
 static bool
@@ -205,11 +206,32 @@ maybe_select_dynamic_target(const struct traced_insn *insn)
 static void
 request_pause(const struct traced_insn *insn)
 {
-  stop_requested = true;
+  stop_pending = true;
   request_retired = retired_total;
   request_vaddr = insn->vaddr;
   record_pause_request(insn);
-  qemu_plugin_crucible_pause_vm();
+}
+
+static uint64_t
+next_pause_boundary(void *userdata)
+{
+  (void)userdata;
+  return stop_pending ? qemu_plugin_icount_raw() : UINT64_MAX;
+}
+
+static void
+on_pause_boundary(uint64_t current_icount, void *userdata)
+{
+  (void)current_icount;
+  (void)userdata;
+
+  if (!stop_pending || stop_requested) {
+    return;
+  }
+  stop_requested = true;
+  if (qemu_plugin_request_vmstop() != 0) {
+    qemu_plugin_request_shutdown(1);
+  }
 }
 
 static void
@@ -224,7 +246,7 @@ on_insn(unsigned int vcpu_index, void *userdata)
     maybe_select_dynamic_target(insn);
   }
 
-  if (target_selected && !stop_requested && retired_total >= selected_target) {
+  if (target_selected && !stop_pending && retired_total >= selected_target) {
     request_pause(insn);
   }
 }
@@ -330,6 +352,8 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
   select_fixed_target();
 
   qemu_plugin_register_vcpu_tb_trans_cb(id, on_tb_translate);
+  qemu_plugin_register_sim_shmem_observer_cb(
+      on_pause_boundary, next_pause_boundary, NULL);
   qemu_plugin_register_atexit_cb(id, on_plugin_exit, NULL);
   return 0;
 }

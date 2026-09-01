@@ -42,7 +42,7 @@ pub(super) fn reap_child(child: &mut QemuNodeChild, timeout: Duration) -> bool {
     false
 }
 
-/// Requires the load run to reproduce the reference run's block observations.
+/// Requires the scheduler-preempted run to reproduce the reference observations.
 pub(super) fn assert_runs_match(
     reference: &BlockIoRunOutcome,
     second: &BlockIoRunOutcome,

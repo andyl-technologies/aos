@@ -7,11 +7,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   pluginDoc = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
@@ -78,10 +74,16 @@
     inherit lib;
     entry = ../../crates/crucible-qemu/src/mapped_quantum.rs;
   };
-  qemuNode = import ./_rust-module-source.nix {
-    inherit lib;
-    entry = ../../crates/crucible-qemu/src/node.rs;
-  };
+  qemuNode = builtins.concatStringsSep "\n" [
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/src/node.rs;
+    })
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/src/node_tests.rs;
+    })
+  ];
   qemuAsyncDriver = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-qemu/src/async_driver.rs;
@@ -469,6 +471,18 @@
         needle = "completed_icount != config.horizon_icount";
       }
       {
+        label = "production fingerprint sampler enabled";
+        needle = ".with_fingerprint(QemuLaunchPluginSwitch::On)";
+      }
+      {
+        label = "exact control-boundary fingerprint publication";
+        needle = ".publish_current_execution_fingerprint(config.completion_timeout)";
+      }
+      {
+        label = "bounded fingerprint digest publication wait";
+        needle = "publish_and_wait_for_execution_fingerprint(";
+      }
+      {
         label = "busy-boundary mapped shared shutdown trigger";
         needle = ".request_plugin_shutdown()";
       }
@@ -529,8 +543,12 @@
     ]
     ++ failuresFor "pkgs/emulation/crucible-qemu-trace-plugin.c" qemuTracePlugin [
       {
-        label = "per-instruction register trajectory begins after guest entry";
-        needle = "post_boundary_samples && required_pc_seen";
+        label = "per-instruction trajectory defers register capture to exact boundary";
+        needle = "Ordinary instruction callbacks do not own QEMU's exact serialized";
+      }
+      {
+        label = "per-instruction trajectory carries no unowned register sample";
+        needle = "const struct register_digest_summary register_digests = {0};";
       }
       {
         label = "cryptographic execution trajectory chain";
@@ -1094,7 +1112,7 @@ in
             loaded_qemu_guest=uninstrumented-standalone-multiboot-elf
             loaded_qemu_fingerprint_equivalence=coverage-off-equals-coverage-on
             loaded_qemu_independent_fingerprint=instruction-stream,all-vcpu-registers,rr-cursor,ram,device-io
-            loaded_qemu_trajectory_fingerprint=guest-per-instruction-register-memory-io-plus-post-boundary-state
+            loaded_qemu_trajectory_fingerprint=guest-per-instruction-memory-io-plus-exact-boundary-register-state
             host_observation_handoff=abi-v2-per-vm-spsc-to-unified-event-log
             registration=opt-in
             fingerprint_effect=none

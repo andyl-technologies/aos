@@ -1,6 +1,7 @@
 //! Explorer-selected scheduler branch admission and replay choices.
 
 use super::*;
+use crate::model::{BindingSearchChoice, FaultCoordinate};
 
 impl SingleScheduler {
     /// Returns the seed that owns every future authoritative decision stream.
@@ -26,7 +27,7 @@ impl SingleScheduler {
     /// Returns [`SchedulerError::BoundaryViolation`] when explorer-selected
     /// branch choices or uncommitted World-network decisions are pending.
     pub fn reseed_future_decisions(&mut self, seed: Seed) -> Result<(), SchedulerError> {
-        if !self.branch_fault_choices.is_empty() || !self.branch_network_choices.is_empty() {
+        if !self.branch_network_choices.is_empty() {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
                     "cannot re-seed while explicit scheduler branch choices are pending",
@@ -43,73 +44,13 @@ impl SingleScheduler {
         for position in self.world_network_rng_positions.values_mut() {
             *position = 0;
         }
-        for sub_nodes in self.device_sub_nodes.values_mut() {
-            for sub_node in sub_nodes {
-                sub_node.reseed_future_decisions(seed);
-            }
-        }
         Ok(())
     }
 
-    /// Installs explorer-selected probabilistic fault outcomes for exact RESOLVE points.
-    ///
-    /// Decisions must be supplied as adjacent `RngDraw`, `FaultFires` pairs.
-    /// Each pair is consumed only when the authoritative scheduler reaches the
-    /// matching fault, virtual time, and RNG stream.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError::BoundaryViolation`] when the decision sequence
-    /// is not made exclusively of adjacent RNG/fault pairs or contains a
-    /// duplicate fault resolution point.
-    pub fn install_branch_fault_choices(
-        &mut self,
-        decisions: Vec<Decision>,
-    ) -> Result<(), SchedulerError> {
-        let mut chunks = decisions.chunks_exact(2);
-        let mut choices = Vec::new();
-        for pair in &mut chunks {
-            let (Decision::RngDraw(draw), Decision::FaultFires(fault)) = (&pair[0], &pair[1])
-            else {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: String::from(
-                        "branch fault choices must be adjacent RngDraw/FaultFires pairs",
-                    ),
-                });
-            };
-            if choices.iter().any(
-                |(existing_draw, existing_fault): &(RngDecision, FaultDecision)| {
-                    existing_draw.stream == draw.stream
-                        && existing_fault.at == fault.at
-                        && existing_fault.fault == fault.fault
-                },
-            ) {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "duplicate branch fault choice for {} at {}",
-                        fault.fault.name, fault.at.ticks
-                    ),
-                });
-            }
-            choices.push((draw.clone(), fault.clone()));
-        }
-        if !chunks.remainder().is_empty() {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "branch fault choices must contain complete RngDraw/FaultFires pairs",
-                ),
-            });
-        }
-        self.branch_fault_choices = choices;
-        Ok(())
-    }
-
-    /// Returns the number of installed branch fault choices not yet resolved.
+    /// Returns the number of installed branch effect choices not yet resolved.
     #[must_use]
-    pub fn pending_branch_fault_choice_count(&self) -> usize {
-        self.branch_fault_choices
-            .len()
-            .saturating_add(self.branch_network_choices.len())
+    pub fn pending_branch_effect_choice_count(&self) -> usize {
+        self.branch_network_choices.len()
     }
 
     /// Installs explorer-selected World-network outcomes for exact frame emissions.
@@ -127,7 +68,9 @@ impl SingleScheduler {
         choices: Vec<OverrideDecision>,
     ) -> Result<(), SchedulerError> {
         for choice in &choices {
-            if !super::is_supported_live_world_network_override(choice) {
+            if !choice.point.key.starts_with("live-world-network/")
+                || !liveness::is_live_network_branch_choice_name(&choice.choice.name)
+            {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
                         "unsupported live World-network branch choice `{}` at `{}`",
@@ -152,10 +95,76 @@ impl SingleScheduler {
         Ok(())
     }
 
-    /// Returns probabilistic RESOLVE frontiers captured in execution order.
+    /// Returns live World-network frontiers captured in execution order.
     #[must_use]
     pub fn search_frontiers(&self) -> &[SearchRuntimeFrontier] {
         &self.search_frontiers
+    }
+
+    /// Records finite signal-fault choices at their pre-evaluation boundary.
+    ///
+    /// Each binding choice remains a separate frontier because its candidate
+    /// digest and one-shot identity have independent locked-replay semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when a choice has no
+    /// candidates or the supplied configuration is not the current parent.
+    pub fn record_signal_fault_search_frontiers(
+        &mut self,
+        parent: &Configuration,
+        at: VirtualTime,
+        choices: &[BindingSearchChoice],
+    ) -> Result<(), SchedulerError> {
+        if parent != &self.configuration {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "signal-fault search frontier does not match the scheduler parent",
+                ),
+            });
+        }
+        for choice in choices.iter().filter(|choice| !choice.overridden) {
+            let decisions = choice
+                .override_decisions(parent.id())
+                .into_iter()
+                .map(Decision::Override)
+                .collect::<Vec<_>>();
+            if decisions.is_empty() {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from("signal-fault search choice has no finite candidates"),
+                });
+            }
+            self.search_frontiers.push(SearchRuntimeFrontier {
+                configuration: parent.clone(),
+                at,
+                choices: SearchFrontierChoices::from_decisions(decisions),
+            });
+        }
+        Ok(())
+    }
+
+    /// Records signal-fault choices whose owning device committed after the
+    /// boundary evaluator ran.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] under the same conditions
+    /// as [`Self::record_signal_fault_search_frontiers`].
+    pub fn record_pending_signal_fault_search_frontiers(
+        &mut self,
+        choices: Vec<(FaultCoordinate, Vec<BindingSearchChoice>)>,
+    ) -> Result<(), SchedulerError> {
+        let parent = self.configuration.clone();
+        for (coordinate, choices) in choices {
+            self.record_signal_fault_search_frontiers(
+                &parent,
+                VirtualTime {
+                    ticks: coordinate.virtual_nanos,
+                },
+                &choices,
+            )?;
+        }
+        Ok(())
     }
 
     /// Appends explorer-selected override decisions at the current boundary.
@@ -195,58 +204,6 @@ impl SingleScheduler {
         Ok((configuration, append))
     }
 
-    pub(super) fn apply_branch_fault_choices(
-        &mut self,
-        resolved_events: &[ScheduledEvent],
-        decisions: &mut [Decision],
-    ) -> Result<(), SchedulerError> {
-        if self.branch_fault_choices.is_empty() {
-            return Ok(());
-        }
-        let mut decision_offset = 0;
-        for event in ordered_scheduled_events(resolved_events) {
-            let ScheduledEventPayload::ProbabilisticFault(choice) = &event.payload else {
-                continue;
-            };
-            let Some(default_pair) = decisions.get(decision_offset..decision_offset + 2) else {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: String::from(
-                        "probabilistic RESOLVE did not produce one RNG/fault decision pair",
-                    ),
-                });
-            };
-            if !matches!(
-                default_pair,
-                [Decision::RngDraw(_), Decision::FaultFires(_)]
-            ) {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: String::from(
-                        "probabilistic RESOLVE decision pair has an unexpected shape",
-                    ),
-                });
-            }
-            if let Some(index) = self.branch_fault_choices.iter().position(|(draw, fault)| {
-                draw.stream == choice.stream
-                    && fault.at == event.key.virtual_time()
-                    && fault.fault == choice.fault
-            }) {
-                let (draw, fault) = self.branch_fault_choices.remove(index);
-                if choice.rate.fires_on_draw(draw.value) != fault.fired {
-                    return Err(SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "branch fault choice for {} at {} is inconsistent with its RNG draw",
-                            fault.fault.name, fault.at.ticks
-                        ),
-                    });
-                }
-                decisions[decision_offset] = Decision::RngDraw(draw);
-                decisions[decision_offset + 1] = Decision::FaultFires(fault);
-            }
-            decision_offset += 2;
-        }
-        Ok(())
-    }
-
     pub(super) fn emit_quantum_decisions(
         &mut self,
         resolved_events: &[ScheduledEvent],
@@ -269,43 +226,6 @@ impl SingleScheduler {
                     .collect(),
             });
             decisions.push(decision);
-            let branch_configuration = self.step_quantum(&decisions);
-            let choices = search_frontier_choices_from_scheduled_events(
-                branch_configuration.clone(),
-                resolved_events,
-            );
-            if !choices.is_empty() {
-                self.search_frontiers.push(SearchRuntimeFrontier {
-                    configuration: branch_configuration,
-                    at: VirtualTime { ticks: at.nanos },
-                    choices,
-                });
-            }
-            let mut probabilistic = resolve_probabilistic_decisions_from_seed(
-                self.configuration.clone(),
-                resolved_events,
-                self.decision_seed,
-                &self.decision_rng_cursor,
-            );
-            self.apply_branch_fault_choices(resolved_events, &mut probabilistic.decisions)?;
-            for decision in &probabilistic.decisions {
-                if let Decision::RngDraw(draw) = decision {
-                    self.advance_decision_rng_cursor_for(draw.stream.clone());
-                }
-            }
-            decisions.extend(probabilistic.decisions);
-        }
-        for event in ordered_scheduled_events(resolved_events) {
-            let ScheduledEventPayload::Control(operation) = &event.payload else {
-                continue;
-            };
-            if let Some(action) = control_fault_action_for_operation(operation) {
-                decisions.push(Decision::ControlFault(ControlFaultDecision {
-                    at: event.key.virtual_time(),
-                    sequence: operation.sequence,
-                    action,
-                }));
-            }
         }
         let network_decisions = std::mem::take(&mut self.world_network_decisions);
         for decision in &network_decisions {
@@ -315,10 +235,8 @@ impl SingleScheduler {
         }
         decisions.extend(network_decisions);
 
-        // Device I/O completions drew their fault decisions (RngDraw + FaultFires)
-        // at COMPUTE and buffered them; they are appended on the LIVE RESOLVE path
-        // in delivery order ([SCHED-30]). Each device RngDraw advances the owning
-        // stream's decision-RNG cursor exactly as a probabilistic RESOLVE draw does.
+        // Device I/O completions may carry deterministic raw draws. Each draw
+        // advances the owning stream cursor when it becomes visible.
         for decision in device_decisions {
             if let Decision::RngDraw(draw) = decision {
                 self.advance_decision_rng_cursor_for(draw.stream.clone());

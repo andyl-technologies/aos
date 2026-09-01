@@ -272,7 +272,7 @@ pub const API_METHOD_MAPPINGS: [ApiMethodMapping; 9] = [
 ];
 
 /// API command mapping table covering the complete session command vocabulary.
-pub const API_COMMAND_MAPPINGS: [ApiCommandMapping; 25] = [
+pub const API_COMMAND_MAPPINGS: [ApiCommandMapping; 21] = [
     ApiCommandMapping {
         command_name: "start",
         command_kind: SessionCommandKind::Start,
@@ -314,18 +314,6 @@ pub const API_COMMAND_MAPPINGS: [ApiCommandMapping; 25] = [
         command_kind: SessionCommandKind::ExhaustBudget,
     },
     ApiCommandMapping {
-        command_name: "inject",
-        command_kind: SessionCommandKind::Inject,
-    },
-    ApiCommandMapping {
-        command_name: "inject-fault",
-        command_kind: SessionCommandKind::InjectFault,
-    },
-    ApiCommandMapping {
-        command_name: "heal-fault",
-        command_kind: SessionCommandKind::HealFault,
-    },
-    ApiCommandMapping {
         command_name: "set-breakpoint",
         command_kind: SessionCommandKind::SetBreakpoint,
     },
@@ -344,10 +332,6 @@ pub const API_COMMAND_MAPPINGS: [ApiCommandMapping; 25] = [
     ApiCommandMapping {
         command_name: "query",
         command_kind: SessionCommandKind::Query,
-    },
-    ApiCommandMapping {
-        command_name: "snapshot",
-        command_kind: SessionCommandKind::Snapshot,
     },
     ApiCommandMapping {
         command_name: "attach-gdb",

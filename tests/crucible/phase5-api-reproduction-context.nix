@@ -6,11 +6,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
@@ -185,22 +181,12 @@
         needle = "RPC GetReproduction stale epoch should be typed";
       }
       {
-        label = "RPC fault reproduction payload coverage";
-        needle = "RPC fault reproduction should decode";
-      }
-      {
         label = "RPC command payload wire encoder";
         needle = "command_payload_material_wire";
       }
       {
         label = "HTTP/2 GetReproduction handler";
         needle = "handle_get_reproduction";
-      }
-    ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" session [
-      {
-        label = "at-sequence regression test";
-        needle = "boundary_control_at_sequence_is_before_scheduler_control_events";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

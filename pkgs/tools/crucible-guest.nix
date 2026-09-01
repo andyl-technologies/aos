@@ -5,13 +5,14 @@
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoDeps,
+  fetchCargoVendor,
   patchelf,
 }: let
   version = "0.1.0";
   src = import ./crucible/_source.nix {inherit lib;};
-  cargoDeps = fetchCargoDeps {
+  cargoDeps = fetchCargoVendor {
     inherit src;
+    name = "crucible-guest-vendor-${version}";
     sourceRoot = "source/crates";
     hash = import ./crucible/_cargo-deps-hash.nix;
   };
@@ -110,7 +111,7 @@ in
       cat > "$out/nix-support/crucible-guest-build-info" <<INFO
       package=crucible-guest
       build_system=mkCargoPackage
-      cargo_deps=fetchCargoDeps
+      cargo_deps=fetchCargoVendor
       cargo_package=crucible-guest
       cargo_binary=crucible-guest
       rustflags=-C target-feature=+crt-static

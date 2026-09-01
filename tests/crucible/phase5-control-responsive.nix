@@ -6,11 +6,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
   apiControl = builtins.readFile ../../crates/crucible-api/src/control_responsive.rs;
@@ -70,16 +66,8 @@
         needle = "ControlOperationKind::Pause";
       }
       {
-        label = "snapshot coverage";
-        needle = "ControlOperationKind::Snapshot";
-      }
-      {
         label = "fork coverage";
         needle = "ControlOperationKind::Fork";
-      }
-      {
-        label = "inject coverage";
-        needle = "ControlOperationKind::Inject";
       }
       {
         label = "query coverage";
@@ -110,16 +98,8 @@
         needle = "issue_against_running_session";
       }
       {
-        label = "snapshot command mapping";
-        needle = "ControlOperationKind::Snapshot => SessionCommand::Snapshot";
-      }
-      {
         label = "fork command mapping";
         needle = "ControlOperationKind::Fork => SessionCommand::fork_current()";
-      }
-      {
-        label = "inject command mapping";
-        needle = "ControlOperationKind::Inject => SessionCommand::Inject";
       }
       {
         label = "query command mapping";
@@ -174,8 +154,8 @@
         needle = "observed_control_operations";
       }
       {
-        label = "API asserts delivered scheduler control";
-        needle = "SchedulerControlOperationKind::Snapshot";
+        label = "API asserts delivered scheduler query";
+        needle = "SchedulerControlOperationKind::Query";
       }
       {
         label = "required rejection fails";
@@ -261,15 +241,11 @@
       }
       {
         label = "session snapshot command";
-        needle = "SessionCommand::Snapshot";
+        needle = "SessionCommand::query_snapshot()";
       }
       {
         label = "session fork command";
         needle = "SessionCommand::fork_current()";
-      }
-      {
-        label = "session inject command";
-        needle = "SessionCommand::Inject";
       }
       {
         label = "session query command";

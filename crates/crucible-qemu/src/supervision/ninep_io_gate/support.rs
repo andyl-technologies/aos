@@ -1,9 +1,6 @@
 //! Deterministic projections and runtime support for the live 9p-I/O gate.
 
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
 use std::time::Duration;
 
 use crucible::{
@@ -11,9 +8,9 @@ use crucible::{
 };
 
 use super::{
-    DRIVE_POLL_INTERVAL, GATE_DOMAIN, GATE_NODE, HOST_LOAD_WORKERS, NinepIoDiagnosticsSnapshot,
-    QemuLive9pIoGateConfig,
+    DRIVE_POLL_INTERVAL, GATE_DOMAIN, GATE_NODE, NinepIoDiagnosticsSnapshot, QemuLive9pIoGateConfig,
 };
+pub(super) use crate::supervision::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
 use crate::{CrucibleShmem9pDevice, QemuLaunchArtifact, QemuVmLaunchConfig};
 
 /// The determinism-relevant device subset of a run's 9p observations.
@@ -78,46 +75,6 @@ pub(super) fn node_id(name: &str) -> NodeId {
 
 pub(super) fn path_text(path: &Path) -> String {
     path.to_string_lossy().into_owned()
-}
-
-/// A background host-CPU load generator that stresses scheduling around a run.
-pub(super) struct HostLoad {
-    stop: Arc<AtomicBool>,
-    workers: Vec<thread::JoinHandle<()>>,
-}
-
-impl HostLoad {
-    pub(super) fn start_if(enabled: bool) -> Option<Self> {
-        if !enabled {
-            return None;
-        }
-        let stop = Arc::new(AtomicBool::new(false));
-        let mut workers = Vec::with_capacity(HOST_LOAD_WORKERS);
-        for _ in 0..HOST_LOAD_WORKERS {
-            let stop = Arc::clone(&stop);
-            workers.push(thread::spawn(move || {
-                let mut accumulator: u64 = 0;
-                while !stop.load(Ordering::Relaxed) {
-                    for value in 0..4096_u64 {
-                        accumulator = accumulator
-                            .wrapping_mul(6_364_136_223_846_793_005)
-                            .wrapping_add(value);
-                    }
-                    std::hint::black_box(accumulator);
-                }
-            }));
-        }
-        Some(Self { stop, workers })
-    }
-}
-
-impl Drop for HostLoad {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        for worker in self.workers.drain(..) {
-            let _ = worker.join();
-        }
-    }
 }
 
 /// Authorizes the single node's 9p-I/O traffic.

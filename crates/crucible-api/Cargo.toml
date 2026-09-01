@@ -10,14 +10,19 @@ workspace = true
 
 [dependencies]
 axum = { workspace = true }
+blake3 = { workspace = true }
 bytes = { workspace = true }
+ciborium = { workspace = true }
 crucible = { path = "../crucible" }
+crucible-device = { path = "../crucible-device" }
 crucible-protocol = { path = "../crucible-protocol" }
 crucible-qemu = { path = "../crucible-qemu" }
 crucible-session = { path = "../crucible-session" }
 futures-util = { workspace = true }
 hyper-util = { workspace = true }
 reqwest = { workspace = true, features = ["http2"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 rustls-pki-types = { workspace = true }
@@ -32,3 +37,4 @@ uuid = { workspace = true }
 crucible = { path = "../crucible", features = ["test-double", "test-support"] }
 crucible-qemu = { path = "../crucible-qemu" }
 crucible-session = { path = "../crucible-session", features = ["test-support"] }
+crucible-shmem = { path = "../crucible-shmem" }

@@ -1,0 +1,296 @@
+diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+index 819a46860..94bae0426 100644
+--- a/include/qemu/plugin.h
++++ b/include/qemu/plugin.h
+@@ -197,6 +197,7 @@ bool qemu_plugin_crucible_vmstop_admission_pending(void);
+ void qemu_plugin_crucible_vmstop_request_stopped(int flush_status);
+ int qemu_plugin_crucible_vmstop_flush_status(void);
+ void qemu_plugin_crucible_vmstop_request_complete(void);
++int qemu_plugin_crucible_lifecycle_complete_terminal_exit(void);
+ 
+ extern qemu_plugin_crucible_ipi_delivery_cb_t
+     qemu_plugin_crucible_ipi_delivery_cb;
+@@ -378,6 +379,11 @@ static inline int qemu_plugin_crucible_vmstop_flush_status(void)
+ static inline void qemu_plugin_crucible_vmstop_request_complete(void)
+ { }
+ 
++static inline int qemu_plugin_crucible_lifecycle_complete_terminal_exit(void)
++{
++    return 0;
++}
++
+ static inline void qemu_plugin_crucible_maybe_fire_ipi_delivery_cb(
+     uint64_t event_id, uint64_t delivery_icount, unsigned int src_vcpu,
+     unsigned int dst_vcpu, unsigned int delivery_mode, unsigned int vector)
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 094f118ac..2502ceec6 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -79,6 +79,7 @@ void qmp_cont(Error **errp)
+     BlockJob *job;
+     Error *local_err = NULL;
+     int flush_status;
++    int lifecycle_exit;
+ 
+     if (qemu_plugin_crucible_vmstop_admission_pending()) {
+         error_setg(errp, "VM stop admission has not reached paused state");
+@@ -90,6 +91,10 @@ void qmp_cont(Error **errp)
+                          "VM stop failed to flush devices");
+         return;
+     }
++    lifecycle_exit = qemu_plugin_crucible_lifecycle_complete_terminal_exit();
++    if (lifecycle_exit > 0) {
++        return;
++    }
+ 
+     /* if there is a dump in background, we should wait until the dump
+      * finished */
+diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
+index 310a425f7..58cd2d292 100644
+--- a/plugins/crucible-fault-lifecycle.c
++++ b/plugins/crucible-fault-lifecycle.c
+@@ -28,7 +28,12 @@
+ #include "system/cpu-timers.h"
+ #include "system/runstate.h"
+ 
+-#define CRUCIBLE_LIFECYCLE_EVIDENCE_BYTES 288
++#define CRUCIBLE_LIFECYCLE_EVIDENCE_BYTES 304
++#define CRUCIBLE_LIFECYCLE_TERMINAL_CAUSE_DIRECT 1
++#define CRUCIBLE_LIFECYCLE_TERMINAL_CAUSE_READY_EXHAUSTED 2
++#define CRUCIBLE_LIFECYCLE_TERMINAL_CAUSE_FAIL_CLOSED 3
++#define CRUCIBLE_LIFECYCLE_TERMINAL_PREEXIT_VALID (1U << 0)
++#define CRUCIBLE_LIFECYCLE_TERMINAL_EXIT_REQUIRED (1U << 1)
+ #define CRUCIBLE_LIFECYCLE_EXIT_CRASH 70
+ #define CRUCIBLE_LIFECYCLE_EXIT_POWER_OFF 71
+ #define CRUCIBLE_LIFECYCLE_EXIT_PERMANENT_FAILURE 72
+@@ -108,6 +113,8 @@ static bool crucible_lifecycle_node_hung;
+ static GArray *crucible_lifecycle_vcpu_hung;
+ static GPtrArray *crucible_lifecycle_hangs;
+ static uint64_t crucible_lifecycle_next_watchdog_ns = UINT64_MAX;
++static uint32_t crucible_lifecycle_terminal_transition;
++static bool crucible_lifecycle_terminal_exit_requested;
+ 
+ static bool crucible_lifecycle_mode(void)
+ {
+@@ -115,6 +122,39 @@ static bool crucible_lifecycle_mode(void)
+            icount_enabled() == ICOUNT_PRECISE;
+ }
+ 
++static int crucible_lifecycle_terminal_exit_code(uint32_t transition)
++{
++    switch (transition) {
++    case CRUCIBLE_LIFECYCLE_CRASH:
++        return CRUCIBLE_LIFECYCLE_EXIT_CRASH;
++    case CRUCIBLE_LIFECYCLE_POWER_OFF:
++        return CRUCIBLE_LIFECYCLE_EXIT_POWER_OFF;
++    case CRUCIBLE_LIFECYCLE_PERMANENT_FAILURE:
++        return CRUCIBLE_LIFECYCLE_EXIT_PERMANENT_FAILURE;
++    default:
++        return 0;
++    }
++}
++
++int qemu_plugin_crucible_lifecycle_complete_terminal_exit(void)
++{
++    int exit_code;
++
++    if (!crucible_lifecycle_mode() ||
++        crucible_lifecycle_terminal_transition == 0) {
++        return 0;
++    }
++    exit_code = crucible_lifecycle_terminal_exit_code(
++        crucible_lifecycle_terminal_transition);
++    if (exit_code == 0 || crucible_lifecycle_terminal_exit_requested) {
++        return 0;
++    }
++    crucible_lifecycle_terminal_exit_requested = true;
++    qemu_system_shutdown_request_with_code(
++        SHUTDOWN_CAUSE_HOST_ERROR, exit_code);
++    return exit_code;
++}
++
+ static bool crucible_lifecycle_field(
+     const QemuCrucibleFaultRule *rule, uint16_t tag, uint16_t type,
+     const uint8_t **data, uint32_t *length)
+@@ -507,7 +547,8 @@ static int crucible_lifecycle_execute(
+     int64_t virtual_after;
+     bool reset_transition;
+ 
+-    if (!crucible_lifecycle_snapshot(before_hash, &ram_bytes,
++    if (crucible_lifecycle_terminal_transition != 0 ||
++        !crucible_lifecycle_snapshot(before_hash, &ram_bytes,
+                                       &device_bytes)) {
+         return -EINVAL;
+     }
+@@ -543,7 +584,7 @@ static int crucible_lifecycle_execute(
+     crucible_lifecycle_evidence_begin(
+         bytes, rule, transition, downtime, volatile_policy, device_policy,
+         observed_icount, virtual_before, ram_bytes, device_bytes);
+-    stw_le_p(bytes + 8, 3);
++    stw_le_p(bytes + 8, 4);
+     stl_le_p(bytes + 192, plan->boot_policy);
+     stl_le_p(bytes + 196, 1);
+     stl_le_p(bytes + 200, plan->maximum_attempts);
+@@ -597,56 +638,71 @@ static int crucible_lifecycle_execute(
+             terminal_material, sizeof(terminal_material), after_hash);
+         memcpy(bytes + 256, current_hash, sizeof(current_hash));
+     }
++    stl_le_p(bytes + 288, transition);
++    stl_le_p(bytes + 292, CRUCIBLE_LIFECYCLE_TERMINAL_CAUSE_DIRECT);
++    stl_le_p(bytes + 296,
++             CRUCIBLE_LIFECYCLE_TERMINAL_PREEXIT_VALID |
++             CRUCIBLE_LIFECYCLE_TERMINAL_EXIT_REQUIRED);
+     stq_le_p(bytes + 112, ram_bytes);
+     stq_le_p(bytes + 120, device_bytes);
+     memcpy(bytes + 128, before_hash, 32);
+     memcpy(bytes + 160, after_hash, 32);
+     g_byte_array_append(evidence, bytes, sizeof(bytes));
+     *outcome = CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED;
+-    switch (transition) {
+-    case CRUCIBLE_LIFECYCLE_CRASH:
+-        qemu_system_shutdown_request_with_code(
+-            SHUTDOWN_CAUSE_HOST_ERROR, CRUCIBLE_LIFECYCLE_EXIT_CRASH);
+-        break;
+-    case CRUCIBLE_LIFECYCLE_POWER_OFF:
+-        qemu_system_shutdown_request_with_code(
+-            SHUTDOWN_CAUSE_HOST_ERROR, CRUCIBLE_LIFECYCLE_EXIT_POWER_OFF);
+-        break;
+-    case CRUCIBLE_LIFECYCLE_PERMANENT_FAILURE:
+-        qemu_system_shutdown_request_with_code(
+-            SHUTDOWN_CAUSE_HOST_ERROR,
+-            CRUCIBLE_LIFECYCLE_EXIT_PERMANENT_FAILURE);
+-        break;
+-    default:
++    if (crucible_lifecycle_terminal_exit_code(transition) == 0) {
+         return -EINVAL;
+     }
++    crucible_lifecycle_terminal_transition = transition;
++    crucible_lifecycle_terminal_exit_requested = false;
+     return 0;
+ }
+ 
+ static void crucible_lifecycle_pending_fail_closed(
+     CrucibleLifecyclePendingReset *pending)
+ {
+-    uint8_t opportunity_hash[32], after_hash[32];
++    uint8_t opportunity_hash[32], after_hash[32], current_hash[32];
++    uint8_t terminal_material[48] = { 0 };
++    uint64_t ram_bytes, device_bytes;
++    uint32_t flags = CRUCIBLE_LIFECYCLE_TERMINAL_EXIT_REQUIRED;
+ 
+     memcpy(after_hash, pending->before_hash, sizeof(after_hash));
++    if (crucible_lifecycle_snapshot(
++            current_hash, &ram_bytes, &device_bytes)) {
++        memcpy(terminal_material, "CRUCTRM1", 8);
++        stl_le_p(terminal_material + 8,
++                 CRUCIBLE_LIFECYCLE_PERMANENT_FAILURE);
++        memcpy(terminal_material + 16, current_hash, 32);
++        crucible_lifecycle_sha256(
++            terminal_material, sizeof(terminal_material), after_hash);
++        stq_le_p(pending->evidence + 112, ram_bytes);
++        stq_le_p(pending->evidence + 120, device_bytes);
++        memcpy(pending->evidence + 256, current_hash, 32);
++        flags |= CRUCIBLE_LIFECYCLE_TERMINAL_PREEXIT_VALID;
++    }
++    memcpy(pending->evidence + 128, pending->before_hash, 32);
++    memcpy(pending->evidence + 160, after_hash, 32);
++    stl_le_p(pending->evidence + 288,
++             CRUCIBLE_LIFECYCLE_PERMANENT_FAILURE);
++    stl_le_p(pending->evidence + 292,
++             CRUCIBLE_LIFECYCLE_TERMINAL_CAUSE_FAIL_CLOSED);
++    stl_le_p(pending->evidence + 296, flags);
+     crucible_lifecycle_sha256(
+         pending->evidence, sizeof(pending->evidence), opportunity_hash);
++    qemu_crucible_fault_event_reservation_consume(
++        pending->reservation);
++    qemu_crucible_fault_rule_event(
++        pending->rule, CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR,
++        pending->observed_icount, opportunity_hash,
++        pending->before_hash, after_hash,
++        pending->evidence, sizeof(pending->evidence));
+     if (pending->complete_deferred) {
+         qemu_crucible_fault_fail_deferred(
+             pending->rule, pending->observed_icount,
+             pending->before_hash);
+-    } else {
+-        qemu_crucible_fault_event_reservation_consume(
+-            pending->reservation);
+-        qemu_crucible_fault_rule_event(
+-            pending->rule, CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR,
+-            pending->observed_icount, opportunity_hash,
+-            pending->before_hash, after_hash,
+-            pending->evidence, sizeof(pending->evidence));
+     }
+-    qemu_system_shutdown_request_with_code(
+-        SHUTDOWN_CAUSE_HOST_ERROR,
+-        CRUCIBLE_LIFECYCLE_EXIT_PERMANENT_FAILURE);
++    crucible_lifecycle_terminal_transition =
++        CRUCIBLE_LIFECYCLE_PERMANENT_FAILURE;
++    crucible_lifecycle_terminal_exit_requested = false;
+     crucible_lifecycle_pending_clear(pending);
+ }
+ 
+@@ -655,8 +711,11 @@ static bool crucible_lifecycle_pending_complete(
+ {
+     uint8_t after_hash[32], opportunity_hash[32];
+     uint64_t ram_bytes, device_bytes;
++    uint32_t transition;
+ 
+-    if (!crucible_lifecycle_snapshot(after_hash, &ram_bytes, &device_bytes)) {
++    if (!crucible_lifecycle_u32(
++            pending->rule, CRUCIBLE_NODE_FAULT_FIELD_P1, &transition) ||
++        !crucible_lifecycle_snapshot(after_hash, &ram_bytes, &device_bytes)) {
+         crucible_lifecycle_pending_fail_closed(pending);
+         return false;
+     }
+@@ -664,6 +723,7 @@ static bool crucible_lifecycle_pending_complete(
+     stq_le_p(pending->evidence + 120, device_bytes);
+     memcpy(pending->evidence + 128, pending->before_hash, 32);
+     memcpy(pending->evidence + 160, after_hash, 32);
++    stl_le_p(pending->evidence + 288, transition);
+     crucible_lifecycle_sha256(pending->evidence,
+                               sizeof(pending->evidence), opportunity_hash);
+     qemu_crucible_fault_event_reservation_consume(pending->reservation);
+@@ -1353,6 +1413,12 @@ static void crucible_lifecycle_watchdog_boundary(
+                     material, sizeof(material), terminal_hash);
+                 memcpy(pending->evidence + 256,
+                        current_hash, sizeof(current_hash));
++                stl_le_p(pending->evidence + 288, transition);
++                stl_le_p(pending->evidence + 292,
++                         CRUCIBLE_LIFECYCLE_TERMINAL_CAUSE_READY_EXHAUSTED);
++                stl_le_p(pending->evidence + 296,
++                         CRUCIBLE_LIFECYCLE_TERMINAL_PREEXIT_VALID |
++                         CRUCIBLE_LIFECYCLE_TERMINAL_EXIT_REQUIRED);
+                 stl_le_p(pending->evidence + 196, pending->attempt);
+                 stl_le_p(pending->evidence + 204, transition);
+                 stq_le_p(pending->evidence + 112, ram_bytes);
+@@ -1381,25 +1447,12 @@ static void crucible_lifecycle_watchdog_boundary(
+                             terminal_hash);
+                     }
+                 }
+-                switch (transition) {
+-                case CRUCIBLE_LIFECYCLE_CRASH:
+-                    qemu_system_shutdown_request_with_code(
+-                        SHUTDOWN_CAUSE_HOST_ERROR,
+-                        CRUCIBLE_LIFECYCLE_EXIT_CRASH);
+-                    break;
+-                case CRUCIBLE_LIFECYCLE_POWER_OFF:
+-                    qemu_system_shutdown_request_with_code(
+-                        SHUTDOWN_CAUSE_HOST_ERROR,
+-                        CRUCIBLE_LIFECYCLE_EXIT_POWER_OFF);
+-                    break;
+-                case CRUCIBLE_LIFECYCLE_PERMANENT_FAILURE:
+-                    qemu_system_shutdown_request_with_code(
+-                        SHUTDOWN_CAUSE_HOST_ERROR,
+-                        CRUCIBLE_LIFECYCLE_EXIT_PERMANENT_FAILURE);
+-                    break;
+-                default:
++                if (crucible_lifecycle_terminal_exit_code(transition) == 0 ||
++                    crucible_lifecycle_terminal_transition != 0) {
+                     abort();
+                 }
++                crucible_lifecycle_terminal_transition = transition;
++                crucible_lifecycle_terminal_exit_requested = false;
+                 crucible_lifecycle_pending_clear(pending);
+             }
+         }

@@ -79,7 +79,7 @@ fn GlobalCacheInventory(client: ApiClient) -> impl IntoView {
     let inventory = LocalResource::new(move || {
         let client = client.clone();
         async move {
-            client
+            let caches = client
                 .collect_pages::<_, aos_proto_types::ListBinaryCachesResponse, _, _, _>(
                     aos_proto_types::BINARY_CACHE_SERVICE_LIST_BINARY_CACHES_PATH,
                     |page_token| aos_proto_types::ListBinaryCachesRequest {
@@ -89,7 +89,23 @@ fn GlobalCacheInventory(client: ApiClient) -> impl IntoView {
                     },
                     |response| (response.caches, response.next_page_token),
                 )
-                .await
+                .await?;
+            let registries = client
+                .collect_pages::<_, aos_proto_types::ListRegistriesResponse, _, _, _>(
+                    aos_proto_types::REGISTRY_SERVICE_LIST_REGISTRIES_PATH,
+                    |page_token| aos_proto_types::ListRegistriesRequest {
+                        page_size: 250,
+                        page_token,
+                    },
+                    |response| (response.registries, response.next_page_token),
+                )
+                .await?;
+            let registry_stacks = registries
+                .into_iter()
+                .filter(|registry| !registry.consumer_cache_stack.is_empty())
+                .collect::<Vec<_>>();
+
+            Ok::<_, crate::transport::TransportError>((caches, registry_stacks))
         }
     });
 
@@ -107,11 +123,13 @@ fn GlobalCacheInventory(client: ApiClient) -> impl IntoView {
             <Suspense fallback=move || view! { <p class="loading-row">"Loading caches…"</p> }>
                 {move || Suspend::new(async move {
                     match inventory.await.as_ref() {
-                        Ok(caches) if caches.is_empty() => view! {
-                            <p class="muted">"No visible binary caches."</p>
+                        Ok((caches, registry_stacks)) if caches.is_empty() && registry_stacks.is_empty() => view! {
+                            <p class="muted">"No standalone binary caches or registry cache stacks are visible."</p>
                         }.into_any(),
-                        Ok(caches) => view! {
-                            <div class="resource-grid">
+                        Ok((caches, registry_stacks)) => view! {
+                            <div class="workflow-stack">
+                                {(!caches.is_empty()).then(|| view! {
+                                    <div><h3>"Standalone binary caches"</h3><div class="resource-grid">
                                 {caches.iter().cloned().map(|cache| {
                                     let href = cache_path(&cache.slug);
                                     view! {
@@ -125,7 +143,16 @@ fn GlobalCacheInventory(client: ApiClient) -> impl IntoView {
                                             <span class="card-arrow">"→"</span>
                                         </a>
                                     }
-                                }).collect_view()}
+                                }).collect_view()}</div></div>
+                                })}
+                                {(!registry_stacks.is_empty()).then(|| view! {
+                                    <div><h3>"Registry cache stacks"</h3><p class="muted">"Signed consumer cache configuration committed by each registry."</p><div class="resource-grid">
+                                    {registry_stacks.iter().cloned().map(|registry| {
+                                        let href = format!("/{}/-/settings/caches", registry.slug);
+                                        let endpoint_count = registry.consumer_cache_stack.len();
+                                        view! { <a class="resource-card" href=href><div><span class="resource-kind">"registry cache stack"</span><h3>{registry.name}</h3><code>{registry.slug}</code><p class="resource-metric">{format!("{endpoint_count} configured cache entries")}</p></div><span class="card-arrow">"→"</span></a> }
+                                    }).collect_view()}</div></div>
+                                })}
                             </div>
                         }.into_any(),
                         Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),

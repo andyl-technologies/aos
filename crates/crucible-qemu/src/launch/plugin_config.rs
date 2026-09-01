@@ -2,6 +2,30 @@
 
 use super::*;
 
+const PLUGIN_ARG_SIMFD: &str = "simfd";
+const PLUGIN_ARG_SLOT: &str = "slot";
+const PLUGIN_ARG_FAULT_NODE_HASH: &str = "fault_node_hash";
+const PLUGIN_ARG_PROCESS_GENERATION: &str = "process_generation";
+const PLUGIN_ARG_NETWORK_TX_NEXT_SEQ: &str = "network_tx_next_seq";
+const PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_EPOCHS: &str = "storage_completed_history_epochs";
+const PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_GAPS: &str = "storage_completed_history_gaps";
+const PLUGIN_ARG_SHMEMFD: &str = "shmemfd";
+const PLUGIN_ARG_WAKEFD: &str = "wakefd";
+const PLUGIN_ARG_WHITEBOX: &str = "whitebox";
+const PLUGIN_ARG_WHITEBOX_SETUP: &str = "whitebox_setup";
+const PLUGIN_ARG_APP_RANDOM_SEED: &str = "app_random_seed";
+const PLUGIN_ARG_APP_RANDOM_CAP: &str = "app_random_cap";
+const PLUGIN_ARG_APP_RANDOM_NODE: &str = "app_random_node";
+const PLUGIN_ARG_APP_RANDOM_BRANCH_SEED: &str = "app_random_branch_seed";
+const PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER: &str = "app_random_branch_after";
+const PLUGIN_ARG_APP_RANDOM_DRAW_OFFSET: &str = "app_random_draw_offset";
+const PLUGIN_ARG_APP_RANDOM_POSITIONS: &str = "app_random_positions";
+const PLUGIN_ARG_COVERAGE: &str = "coverage";
+const PLUGIN_ARG_FINGERPRINT: &str = "fingerprint";
+const PLUGIN_ARG_FINGERPRINT_ORACLE: &str = "fingerprint_oracle";
+const PLUGIN_ARG_STATE_DUMP_TARGET: &str = "state_dump_target";
+const PLUGIN_ARG_STATE_DUMP_PATH: &str = "state_dump_path";
+
 /// Plugin descriptors inherited at fixed child fd numbers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QemuLaunchInheritedFds {
@@ -141,6 +165,11 @@ impl fmt::Display for QemuLaunchPluginSwitch {
 pub struct QemuLaunchPluginConfig {
     plugin_path: String,
     slot: u32,
+    fault_node_hash: [u8; 32],
+    process_generation: u64,
+    network_tx_next_seq: u32,
+    storage_completed_history_epochs: u64,
+    storage_completed_history_gaps: u64,
     whitebox: QemuLaunchPluginSwitch,
     whitebox_setup: Option<QemuWhiteboxSetupValidation>,
     app_random: Option<QemuLaunchAppRandomConfig>,
@@ -154,9 +183,16 @@ impl QemuLaunchPluginConfig {
     /// Builds the required plugin launch config.
     #[must_use]
     pub fn new(plugin_path: impl Into<String>, slot: u32) -> Self {
+        let standalone_identity = format!("standalone-vm-slot-{slot}");
+        let resource_limits = crucible::model::FaultResourceLimits::default();
         Self {
             plugin_path: plugin_path.into(),
             slot,
+            fault_node_hash: qemu_fault_target_hash(&standalone_identity),
+            process_generation: 1,
+            network_tx_next_seq: 0,
+            storage_completed_history_epochs: resource_limits.storage_completed_history_epochs,
+            storage_completed_history_gaps: resource_limits.storage_completed_history_gaps,
             whitebox: QemuLaunchPluginSwitch::Off,
             whitebox_setup: None,
             app_random: None,
@@ -165,6 +201,65 @@ impl QemuLaunchPluginConfig {
             fingerprint_oracle: QemuLaunchPluginSwitch::Off,
             state_dump: None,
         }
+    }
+
+    /// Returns a config bound to the canonical scenario node identity.
+    #[must_use]
+    pub fn with_fault_target_node(mut self, node_name: &str) -> Self {
+        self.fault_node_hash = qemu_fault_target_hash(node_name);
+        self
+    }
+
+    /// Returns the exact hash authenticated by the plugin fault bridge.
+    #[must_use]
+    pub const fn fault_node_hash(&self) -> [u8; 32] {
+        self.fault_node_hash
+    }
+
+    /// Returns a config bound to one nonzero host-supervised process generation.
+    #[must_use]
+    pub const fn with_process_generation(mut self, process_generation: u64) -> Self {
+        self.process_generation = process_generation;
+        self
+    }
+
+    /// Returns the generation provisioned before this process accepts faults.
+    #[must_use]
+    pub const fn process_generation(&self) -> u64 {
+        self.process_generation
+    }
+
+    /// Returns a config continuing the plugin-owned network TX sequence.
+    #[must_use]
+    pub const fn with_network_tx_next_sequence(mut self, next_sequence: u32) -> Self {
+        self.network_tx_next_seq = next_sequence;
+        self
+    }
+
+    /// Returns the next plugin-owned network TX sequence.
+    #[must_use]
+    pub const fn network_tx_next_sequence(&self) -> u32 {
+        self.network_tx_next_seq
+    }
+
+    /// Returns a config carrying the authored completed block-history limits.
+    #[must_use]
+    pub const fn with_storage_completed_history_limits(mut self, epochs: u64, gaps: u64) -> Self {
+        self.storage_completed_history_epochs = epochs;
+        self.storage_completed_history_gaps = gaps;
+        self
+    }
+
+    /// Returns the authored completed block-history epoch limit.
+    #[must_use]
+    pub const fn storage_completed_history_epochs(&self) -> u64 {
+        self.storage_completed_history_epochs
+    }
+
+    /// Returns the authored completed block-history gap limit.
+    #[must_use]
+    pub const fn storage_completed_history_gaps(&self) -> u64 {
+        self.storage_completed_history_gaps
     }
 
     /// Returns a config with the white-box hook switch set.
@@ -284,6 +379,26 @@ impl QemuLaunchPluginConfig {
         let mut args = vec![
             format!("{PLUGIN_ARG_SIMFD}={FIXED_PLUGIN_SIM_FD}"),
             format!("{PLUGIN_ARG_SLOT}={}", self.slot),
+            format!(
+                "{PLUGIN_ARG_FAULT_NODE_HASH}={}",
+                lowercase_hex(&self.fault_node_hash)
+            ),
+            format!(
+                "{PLUGIN_ARG_PROCESS_GENERATION}={}",
+                self.process_generation
+            ),
+            format!(
+                "{PLUGIN_ARG_NETWORK_TX_NEXT_SEQ}={}",
+                self.network_tx_next_seq
+            ),
+            format!(
+                "{PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_EPOCHS}={}",
+                self.storage_completed_history_epochs
+            ),
+            format!(
+                "{PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_GAPS}={}",
+                self.storage_completed_history_gaps
+            ),
             format!("{PLUGIN_ARG_SHMEMFD}={FIXED_PLUGIN_SHMEM_FD}"),
             format!("{PLUGIN_ARG_WAKEFD}={FIXED_PLUGIN_WAKE_FD}"),
             format!("{PLUGIN_ARG_WHITEBOX}={}", self.whitebox),
@@ -366,6 +481,20 @@ impl QemuLaunchPluginConfig {
         validate_fd(PLUGIN_ARG_SIMFD, FIXED_PLUGIN_SIM_FD)?;
         validate_fd(PLUGIN_ARG_SHMEMFD, FIXED_PLUGIN_SHMEM_FD)?;
         validate_fd(PLUGIN_ARG_WAKEFD, FIXED_PLUGIN_WAKE_FD)?;
+        if self.process_generation == 0 {
+            return Err(QemuLaunchCommandError::ZeroProcessGeneration);
+        }
+        let hard = crucible::model::FaultResourceLimits::compiled_maximum();
+        validate_plugin_resource_limit(
+            PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_EPOCHS,
+            self.storage_completed_history_epochs,
+            hard.storage_completed_history_epochs,
+        )?;
+        validate_plugin_resource_limit(
+            PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_GAPS,
+            self.storage_completed_history_gaps,
+            hard.storage_completed_history_gaps,
+        )?;
         match (self.whitebox, self.whitebox_setup.as_ref()) {
             (QemuLaunchPluginSwitch::Off, None) | (QemuLaunchPluginSwitch::On, Some(_)) => {}
             (QemuLaunchPluginSwitch::On, None) => {
@@ -420,6 +549,32 @@ impl QemuLaunchPluginConfig {
     }
 }
 
+fn validate_plugin_resource_limit(
+    field: &'static str,
+    configured: u64,
+    hard: u64,
+) -> Result<(), QemuLaunchCommandError> {
+    if configured != 0 && configured <= hard {
+        Ok(())
+    } else {
+        Err(QemuLaunchCommandError::InvalidPluginResourceLimit {
+            field,
+            configured,
+            hard,
+        })
+    }
+}
+
+fn lowercase_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        encoded.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    encoded
+}
+
 fn encode_stream_positions(positions: &BTreeMap<String, u64>) -> String {
     positions
         .iter()
@@ -439,53 +594,5 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn complete_scenario_seed_controls_the_plugin_decision_root() {
-        let mut first = [0_u8; 32];
-        first[..8].copy_from_slice(&11_u64.to_le_bytes());
-        let mut second = first;
-        second[31] = 1;
-
-        let first = QemuLaunchAppRandomConfig::from_seed(Seed::from_bytes(first), 8, "a");
-        let second = QemuLaunchAppRandomConfig::from_seed(Seed::from_bytes(second), 8, "a");
-
-        assert_eq!(first.scenario_seed, second.scenario_seed);
-        assert_ne!(first.authoritative_seed(), second.authoritative_seed());
-        assert_ne!(first.decision_rng_root_seed, second.decision_rng_root_seed);
-    }
-
-    #[test]
-    fn app_random_branch_and_continuation_arguments_are_canonical() {
-        let positions = BTreeMap::from([
-            (String::from("app-random/node:1:a/stream:4:beta"), 1),
-            (String::from("app-random/node:1:a/stream:5:alpha"), 2),
-        ]);
-        let app_random = QemuLaunchAppRandomConfig::new(11, 8, "a")
-            .with_branch_reseed(29, 3)
-            .with_continuation(3, positions.clone());
-        assert_eq!(app_random.branch_seed(), Some(Seed::from_u64(29)));
-        let arguments = QemuLaunchPluginConfig::new("/nix/store/plugin.so", 0)
-            .with_whitebox(QemuLaunchPluginSwitch::On)
-            .with_app_random(app_random)
-            .plugin_args_raw();
-
-        assert!(arguments.contains(&format!(
-            "app_random_branch_seed={}",
-            Seed::from_u64(29).decision_rng_root_seed()
-        )));
-        assert!(arguments.contains("app_random_branch_after=3"));
-        assert!(arguments.contains("app_random_draw_offset=3"));
-        assert!(arguments.contains(&format!(
-            "app_random_positions={}",
-            encode_stream_positions(&positions)
-        )));
-        assert_eq!(
-            encode_stream_positions(&positions),
-            "6170702d72616e646f6d2f6e6f64653a313a612f73747265616d3a343a62657461:1;\
-             6170702d72616e646f6d2f6e6f64653a313a612f73747265616d3a353a616c706861:2"
-        );
-    }
-}
+#[path = "plugin_config/tests.rs"]
+mod tests;

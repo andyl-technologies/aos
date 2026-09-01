@@ -15,6 +15,9 @@ use crucible_qemu::{
     QemuLaunchPluginConfig, QemuVmLaunchConfig,
 };
 
+#[path = "support/mod.rs"]
+mod support;
+
 fn default_profile() -> DeterministicLaunchProfile {
     DeterministicLaunchProfile::conservative_default()
         .unwrap_or_else(|error| panic!("default deterministic launch profile failed: {error}"))
@@ -25,6 +28,7 @@ fn default_plugin_config() -> QemuLaunchPluginConfig {
         "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
         0,
     )
+    .with_fault_target_node("vm-a")
 }
 
 fn default_vm_config() -> QemuVmLaunchConfig {
@@ -58,6 +62,7 @@ fn debug_gdbstub_launch_does_not_expose_guest_activation_device() {
         default_vm_config(),
         default_qemu_binary(),
         default_plugin_config(),
+        support::x86_fault_requirement("vm-a", "qemu64-x86_64-cpu"),
     )
     .with_gdbstub(gdbstub.clone())
     .build()
@@ -70,7 +75,9 @@ fn debug_gdbstub_launch_does_not_expose_guest_activation_device() {
             .any(|window| { window == ["-gdb", "tcp:127.0.0.1:9001",] })
     );
     assert!(command.args().windows(2).any(|window| {
-        window[0] == "-plugin" && window[1].contains("simfd=3,slot=0,shmemfd=4,wakefd=5")
+        window[0] == "-plugin"
+            && window[1].contains("simfd=3,slot=0,fault_node_hash=")
+            && window[1].contains(",shmemfd=4,wakefd=5")
     }));
     assert!(!command.args().iter().any(|argument| {
         argument.contains("crucible-debug-activation")
@@ -104,6 +111,7 @@ fn debug_guest_activation_endpoint_is_fixed_and_inert() {
         default_vm_config(),
         default_qemu_binary(),
         default_plugin_config(),
+        support::x86_fault_requirement("vm-a", "qemu64-x86_64-cpu"),
     )
     .with_debug_guest_activation_endpoint()
     .build()

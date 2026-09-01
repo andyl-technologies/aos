@@ -2,124 +2,9 @@
 
 use super::*;
 
-/// A handle to an immutable scenario definition.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ScenarioDef {
-    /// The content address of the scenario definition.
-    pub(super) id: ContentHash,
-    /// The root entropy carried by this scenario definition.
-    pub(super) seed: Seed,
-    /// The maximum number of app-random decisions admitted for one run.
-    pub(super) app_random_draw_cap: u64,
-}
+mod definition;
 
-impl ScenarioDef {
-    /// Returns the content address of this scenario definition.
-    #[must_use]
-    pub fn id(&self) -> ContentHash {
-        self.id
-    }
-
-    /// Returns the root entropy carried by this scenario definition.
-    #[must_use]
-    pub fn seed(&self) -> Seed {
-        self.seed
-    }
-
-    /// Returns the configured app-random draw cap for this scenario.
-    #[must_use]
-    pub fn app_random_draw_cap(&self) -> u64 {
-        self.app_random_draw_cap
-    }
-
-    /// Rebuilds a scenario definition handle from trusted content-addressed identity fields.
-    ///
-    /// This is a transport and artifact decoding helper for cases that already
-    /// received a validated scenario definition elsewhere and only need to
-    /// rehydrate the identity-bearing execution handle. Scenario authors should
-    /// use [`ScenarioDefForm`] or the builder APIs instead so component hashes
-    /// are derived from canonical scenario content.
-    #[must_use]
-    pub const fn from_trusted_identity(
-        id: ContentHash,
-        seed: Seed,
-        app_random_draw_cap: u64,
-    ) -> Self {
-        Self {
-            id,
-            seed,
-            app_random_draw_cap,
-        }
-    }
-
-    /// Builds a scenario definition from canonical material.
-    ///
-    /// This helper is the engine-side content-addressing entry point for
-    /// backend-produced canonical material.
-    #[must_use]
-    pub fn from_canonical_material(domain: &str, material: &str) -> Self {
-        Self::from_canonical_material_with_seed(domain, material, Seed::default())
-    }
-
-    /// Builds a scenario definition from canonical material and root seed.
-    ///
-    /// This helper is the compatibility entry point for backend-produced
-    /// canonical material when the caller also has the scenario seed component.
-    /// The seed is included in the returned content address so it cannot drift
-    /// from scenario identity.
-    #[must_use]
-    pub fn from_canonical_material_with_seed(domain: &str, material: &str, seed: Seed) -> Self {
-        Self::from_canonical_material_with_seed_and_app_random_draw_cap(
-            domain,
-            material,
-            seed,
-            DEFAULT_APP_RANDOM_DRAW_CAP,
-        )
-    }
-
-    /// Builds a scenario definition from canonical material, root seed, and
-    /// app-random draw cap.
-    ///
-    /// The cap is included in the returned content address so app-random policy
-    /// cannot drift from scenario identity.
-    #[must_use]
-    pub fn from_canonical_material_with_seed_and_app_random_draw_cap(
-        domain: &str,
-        material: &str,
-        seed: Seed,
-        app_random_draw_cap: u64,
-    ) -> Self {
-        let material = format!(
-            "{material}\n{}\n{}",
-            seed_material(seed),
-            app_random_draw_cap_material(app_random_draw_cap)
-        );
-        Self {
-            id: ContentHash::from_canonical_material(domain, &material),
-            seed,
-            app_random_draw_cap,
-        }
-    }
-
-    /// Builds an opaque scenario definition from already-addressed components.
-    ///
-    /// This is the compatibility path for API adapters that receive an inline
-    /// scenario handle over a transport before the full scenario form lands on
-    /// the wire. Callers are responsible for supplying the content address that
-    /// corresponds to the seed and app-random policy.
-    #[must_use]
-    pub fn from_content_hash_seed_and_app_random_draw_cap(
-        id: ContentHash,
-        seed: Seed,
-        app_random_draw_cap: u64,
-    ) -> Self {
-        Self {
-            id,
-            seed,
-            app_random_draw_cap,
-        }
-    }
-}
+pub use definition::ScenarioDef;
 
 impl World {
     /// Builds an opaque world handle from an already-computed content address.
@@ -133,6 +18,9 @@ impl World {
             topology_nodes: Vec::new(),
             nodes: Vec::new(),
             links: Vec::new(),
+            fault_topology: WorldFaultTopology::default(),
+            fault_topology_id: ContentHash::default(),
+            fault_topology_wire: Vec::new(),
         }
     }
 
@@ -181,6 +69,9 @@ impl World {
             topology_nodes,
             nodes,
             links,
+            fault_topology: WorldFaultTopology::default(),
+            fault_topology_id: ContentHash::default(),
+            fault_topology_wire: Vec::new(),
         })
     }
 
@@ -236,6 +127,36 @@ impl World {
     #[must_use]
     pub fn links(&self) -> &[LinkDef] {
         &self.links
+    }
+
+    /// Returns the immutable hardware and link registry used by fault selectors.
+    #[must_use]
+    pub const fn fault_topology(&self) -> &WorldFaultTopology {
+        &self.fault_topology
+    }
+
+    /// Attaches and content-addresses the complete executable fault topology.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorldFaultTopologyError`] when a declaration is malformed,
+    /// references an absent world object, exceeds a hard bound, or cannot be
+    /// encoded into canonical identity material.
+    pub fn with_fault_topology(
+        mut self,
+        topology: WorldFaultTopology,
+    ) -> Result<Self, WorldFaultTopologyError> {
+        let topology = topology.admit(&self)?;
+        let (topology_id, topology_wire) = if topology.is_empty() {
+            (ContentHash::default(), Vec::new())
+        } else {
+            (topology.content_hash()?, topology.canonical_bytes()?)
+        };
+        self.fault_topology = topology;
+        self.fault_topology_id = topology_id;
+        self.fault_topology_wire = topology_wire;
+        self.id = canonical_world_identity(&self);
+        Ok(self)
     }
 
     /// Returns the workload config-tree exports declared by world nodes.
@@ -346,14 +267,20 @@ impl World {
         validate_world_nodes(&nodes)?;
         validate_world_node_defs(&topology_nodes)?;
         validate_world_links_for_node_defs(&topology_nodes, &links)?;
+        let fault_topology_id = ContentHash::default();
+        let material = format!(
+            "{}\nfault-topology={}",
+            world_material(&topology_nodes, &links),
+            fault_topology_id.to_hex()
+        );
         Ok(Self {
-            id: ContentHash::from_canonical_material(
-                world_identity_domain(&topology_nodes),
-                &world_material(&topology_nodes, &links),
-            ),
+            id: ContentHash::from_canonical_material("crucible.model.world.v4", &material),
             topology_nodes,
             nodes,
             links,
+            fault_topology: WorldFaultTopology::default(),
+            fault_topology_id,
+            fault_topology_wire: Vec::new(),
         })
     }
 
@@ -451,12 +378,8 @@ impl World {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::PlanFaultUnknownNode`],
-    /// [`EngineError::PlanFaultUnknownLink`],
-    /// [`EngineError::PlanHealUnknownTag`],
-    /// [`EngineError::PlanHealBeforeActivate`], or
-    /// [`EngineError::PlanNotYetJoinedAfterStart`] when `plan` cannot be
-    /// layered over this world's static topology.
+    /// Returns [`EngineError`] when the plan's events, predicates, signal
+    /// bindings, or resolved targets are incompatible with this World.
     pub fn scenario_def_with_plan(&self, plan: &Plan) -> Result<ScenarioDef, EngineError> {
         plan.validate_for_world(self)?;
         Ok(self.scenario_def_from_components(plan, &Properties::empty(), Seed::default()))
@@ -497,16 +420,8 @@ impl World {
         properties: &Properties,
     ) -> Result<ScenarioDef, EngineError> {
         let properties = resolve_properties_dsl_for_context(self, plan, properties)?;
-        match plan.event_graph() {
-            Some(_) => {
-                properties.validate_for_world(self)?;
-                plan.validate_for_world_with_properties(self, &properties)?;
-            }
-            None => {
-                plan.validate_for_world(self)?;
-                properties.validate_for_world(self)?;
-            }
-        }
+        properties.validate_for_world(self)?;
+        plan.validate_for_world_with_properties(self, &properties)?;
         Ok(self.scenario_def_from_components(plan, &properties, Seed::default()))
     }
 
@@ -549,16 +464,8 @@ impl World {
         seed: Seed,
     ) -> Result<ScenarioDef, EngineError> {
         let properties = resolve_properties_dsl_for_context(self, plan, properties)?;
-        match plan.event_graph() {
-            Some(_) => {
-                properties.validate_for_world(self)?;
-                plan.validate_for_world_with_properties(self, &properties)?;
-            }
-            None => {
-                plan.validate_for_world(self)?;
-                properties.validate_for_world(self)?;
-            }
-        }
+        properties.validate_for_world(self)?;
+        plan.validate_for_world_with_properties(self, &properties)?;
         Ok(self.scenario_def_from_components(plan, &properties, seed))
     }
 
@@ -595,6 +502,7 @@ impl World {
     /// mismatch, or a world validation error for invalid topology, launch fields,
     /// ready points, or workload scenario-parameter delivery.
     pub fn from_canonical_toml(input: &str) -> Result<Self, EngineError> {
+        validate_scenario_toml_size(input)?;
         validate_no_host_path_image_refs_in_toml(input)?;
         let toml = toml::from_str::<WorldToml>(input).map_err(|source| {
             scenario_serialization_error(format!("parse world TOML: {source}"))
@@ -605,14 +513,8 @@ impl World {
     /// Serializes this world component as compact binary.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        let includes_io_nodes = self.io_nodes().next().is_some();
-        let magic = if includes_io_nodes {
-            WORLD_BINARY_MAGIC_V2
-        } else {
-            WORLD_BINARY_MAGIC_V1
-        };
-        let mut writer = ScenarioBinaryWriter::new(magic);
-        write_world_binary(self, &mut writer, includes_io_nodes);
+        let mut writer = ScenarioBinaryWriter::new(WORLD_BINARY_MAGIC_V4);
+        write_world_binary(self, &mut writer);
         writer.finish()
     }
 
@@ -624,12 +526,8 @@ impl World {
     /// or an id mismatch, or a world validation error for invalid topology,
     /// launch fields, ready points, or workload scenario-parameter delivery.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let (mut reader, includes_io_nodes) = scenario_binary_reader_for_versions(
-            bytes,
-            WORLD_BINARY_MAGIC_V1,
-            WORLD_BINARY_MAGIC_V2,
-        )?;
-        let world = read_world_binary(&mut reader, includes_io_nodes)?;
+        let mut reader = ScenarioBinaryReader::new(bytes, WORLD_BINARY_MAGIC_V4)?;
+        let world = read_world_binary(&mut reader)?;
         reader.finish()?;
         Ok(world)
     }
@@ -637,11 +535,13 @@ impl World {
     /// Returns the canonical bytes used to compute this world's content address.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        world_material(
+        let mut material = world_material(
             &canonical_world_node_defs(&self.topology_nodes),
             &canonical_world_links(&self.links),
-        )
-        .into_bytes()
+        );
+        material.push_str("\nfault-topology=");
+        material.push_str(&self.fault_topology_id.to_hex());
+        material.into_bytes()
     }
 
     fn scenario_def_from_components(

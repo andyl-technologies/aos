@@ -6,11 +6,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   gateControlResponsive = builtins.readFile ../../crates/crucible-session/tests/gate_control_responsive.rs;
@@ -57,7 +53,7 @@
       }
       {
         label = "immediate scheduler control application";
-        needle = "fn apply_control_operation_at_boundary";
+        needle = "fn apply_control_operations_at_boundary";
       }
       {
         label = "deterministic frontier field";
@@ -72,24 +68,12 @@
         needle = "running_boundary_commands_record_deterministic_control_log";
       }
       {
-        label = "legacy inject boundary control coverage";
-        needle = "SessionCommand::Inject";
-      }
-      {
-        label = "heal fault boundary control coverage";
-        needle = "ControlOperationKind::HealFault";
-      }
-      {
         label = "fork local boundary coverage";
         needle = "SessionCommandKind::Fork";
       }
       {
         label = "scheduler control delivery coverage";
         needle = "recorded_control_batches";
-      }
-      {
-        label = "stop after scheduler control regression";
-        needle = "stop_after_scheduler_control_does_not_drop_logged_effect";
       }
       {
         label = "pause stop boundary test";
@@ -204,7 +188,7 @@ in
             tasks=${taskList}
             component=crucible-session
             boundary_control_log=frontier-quanta
-            scheduler_control=legacy-inject-inject-fault-heal-fault
+            scheduler_control=typed-boundary-operations
             stopped_drain=read-only-plus-fork
             pause_stop=boundary-no-extra-quantum
             stop=shutdown

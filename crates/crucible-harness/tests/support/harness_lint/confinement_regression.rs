@@ -158,7 +158,9 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
         "public export from nondeterministic boundary source",
     ) {
         failures.push(
-            "harness-lint confinement regression failed to reject exported host values".to_string(),
+            format!(
+                "harness-lint confinement regression failed to reject exported host values: {public_export_findings:?}"
+            ),
         );
     }
 

@@ -6,7 +6,7 @@
 //! how many block requests were serviced, the device completion horizon for the
 //! first request, and the guest slot's published device-I/O state. The guest must
 //! advance through that completion and reach its scheduler ceiling. The run
-//! repeats under host load and the two runs' block observations must match.
+//! repeats under bounded scheduler preemption and the two runs' block observations must match.
 //!
 //! Positional arguments: `QEMU PLUGIN KERNEL FIRMWARE RUN_DIRECTORY [INITRD]`.
 //! Tuning is read from the environment:
@@ -15,7 +15,8 @@
 //! CRUCIBLE_BLOCK_IO_DEVICE_SIZE     crucible-shmem device length in bytes
 //! CRUCIBLE_BLOCK_IO_BUSY_CEILING    icount the single advance drives toward
 //! CRUCIBLE_BLOCK_IO_TIMEOUT_SECS    per-advance host wait bound (seconds)
-//! CRUCIBLE_BLOCK_IO_SECOND_RUN_LOAD "0" disables second-run host load
+//! CRUCIBLE_BLOCK_IO_SECOND_RUN_SCHEDULER_PREEMPTION "0" disables second-run bounded scheduler preemption
+//! CRUCIBLE_BLOCK_IO_RESET_PROBE     "1" runs the live reset/errno/IRQ gate
 //! GUEST_KERNEL_APPEND                explicit guest kernel command line
 //! ```
 
@@ -66,7 +67,11 @@ fn run() -> Result<(), String> {
             "CRUCIBLE_BLOCK_IO_TIMEOUT_SECS",
             120,
         )?))
-        .with_second_run_host_load(env_flag("CRUCIBLE_BLOCK_IO_SECOND_RUN_LOAD", true)?);
+        .with_second_run_scheduler_preemption(env_flag(
+            "CRUCIBLE_BLOCK_IO_SECOND_RUN_SCHEDULER_PREEMPTION",
+            true,
+        )?)
+        .with_transport_reset_probe(env_flag("CRUCIBLE_BLOCK_IO_RESET_PROBE", false)?);
     if let Some(size) = env_opt_u64("CRUCIBLE_BLOCK_IO_DEVICE_SIZE")? {
         config = config.with_device_size_bytes(size);
     }
@@ -144,10 +149,21 @@ fn run() -> Result<(), String> {
     }
     println!("orderly_child_exit={}", report.orderly_child_exit);
     println!(
-        "deterministic_under_host_load={}",
-        report.deterministic_under_host_load
+        "deterministic_under_scheduler_preemption={}",
+        report.deterministic_under_scheduler_preemption
     );
-    println!("host_load_applied={}", report.host_load_applied);
+    println!(
+        "scheduler_preemption_applied={}",
+        report.scheduler_preemption_applied
+    );
+    println!(
+        "host_adversary={}",
+        if report.scheduler_preemption_applied {
+            "bounded-scheduler-preemption"
+        } else {
+            "none"
+        }
+    );
     println!(
         "delayed_response_applied={}",
         report.delayed_response_applied
@@ -162,6 +178,12 @@ fn run() -> Result<(), String> {
         "canonical_logs_identical={}",
         report.canonical_logs_identical
     );
+    if let Some(errno) = report.transport_reset_guest_errno {
+        println!("transport_reset_guest_errno={errno}");
+    }
+    if let Some(delta) = report.transport_reset_config_interrupt_delta {
+        println!("transport_reset_config_interrupt_delta={delta}");
+    }
     Ok(())
 }
 

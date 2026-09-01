@@ -406,9 +406,9 @@ are omitted in rendered origins. An HTTPS DNS endpoint requires SNI and Host to
 agree; an HTTPS IP endpoint requires a matching IP subject alternative name.
 The network-boundary component distinguishes repeated private addresses in
 different VPN/VPC realms. An endpoint owner explicitly grants the consumer
-scopes that may attach routes; instance-default access is eagerly materialized
-as exact organization grants without pretending those organizations own the
-DNS name. Origin/realm identity is immutable. Ingress and listener changes
+scopes that may attach routes; organization creation never inherits endpoint
+access or pretends the organization owns the DNS name. Origin/realm identity is
+immutable. Ingress and listener changes
 create a new endpoint generation, while an origin or realm change creates a
 replacement endpoint and an impact-planned route/gateway move.
 

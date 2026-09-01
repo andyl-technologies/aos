@@ -1,0 +1,62 @@
+//! Explicit production effect registrations, independent of vocabulary growth.
+
+use super::EffectKind;
+
+// This list is deliberately independent of `EffectKind::all()`: vocabulary
+// growth must fail `require_complete` until an implementation is registered.
+pub(super) const PRODUCTION_NETWORK_EFFECTS: &[EffectKind] = &[
+    EffectKind::NetworkAvailability,
+    EffectKind::NetworkFlap,
+    EffectKind::NetworkNegotiatedMode,
+    EffectKind::NetworkProfileDelta,
+    EffectKind::NetworkPropagationDelay,
+    EffectKind::NetworkAccessDelay,
+    EffectKind::NetworkJitter,
+    EffectKind::NetworkServiceCurve,
+    EffectKind::NetworkTokenBucket,
+    EffectKind::NetworkQueuePolicy,
+    EffectKind::NetworkFrameLoss,
+    EffectKind::NetworkBurstErrorState,
+    EffectKind::NetworkDuplicate,
+    EffectKind::NetworkReorder,
+    EffectKind::NetworkPayloadTransform,
+    EffectKind::NetworkDetectedFrameError,
+    EffectKind::NetworkMtu,
+    EffectKind::NetworkPauseBackpressure,
+    EffectKind::NetworkRecipientSubset,
+    EffectKind::NetworkForwarderLifecycle,
+    EffectKind::NetworkForwardingMutation,
+    EffectKind::NetworkRouteTransition,
+    EffectKind::NetworkControlPlaneService,
+    EffectKind::NetworkFirewallDisposition,
+    EffectKind::NetworkConnectionState,
+    EffectKind::NetworkSharedMedium,
+    EffectKind::NetworkRfChannel,
+    EffectKind::NetworkAssociation,
+    EffectKind::NetworkControlResultTransform,
+    EffectKind::NetworkContact,
+    EffectKind::NetworkCustodyQueue,
+];
+
+pub(super) const PRODUCTION_STORAGE_EFFECTS: &[EffectKind] = &[
+    EffectKind::StorageAvailability,
+    EffectKind::StorageReportedCapacity,
+    EffectKind::StorageLatency,
+    EffectKind::StorageService,
+    EffectKind::StorageOperationFailure,
+    EffectKind::StorageStallTimeout,
+    EffectKind::StorageCompletionReorder,
+    EffectKind::StorageDuplicateCompletion,
+    EffectKind::StorageReadTransform,
+    EffectKind::StorageWriteDisposition,
+    EffectKind::StoragePersistenceOrder,
+    EffectKind::StorageVolatileCache,
+    EffectKind::StorageVolatileCacheLoss,
+    EffectKind::StorageFlushDisposition,
+    EffectKind::StorageMediaRange,
+    EffectKind::StorageFlashState,
+    EffectKind::StorageControllerLifecycle,
+    EffectKind::StorageArrayState,
+    EffectKind::NinePResult,
+    EffectKind::NinePVisibility,
+];

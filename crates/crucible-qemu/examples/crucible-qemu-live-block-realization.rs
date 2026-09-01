@@ -1,7 +1,7 @@
 //! Runs the live crucible-shmem block-driver realization gate.
 //!
 //! Boots the patched QEMU binary with a crucible-shmem virtio-blk device
-//! attached through the legacy `-drive driver=crucible-shmem` interface and the
+//! attached through the typed `-blockdev driver=crucible-shmem` interface and the
 //! CPU frozen at reset, negotiates QMP, and asserts the VM reached the
 //! `prelaunch` run state. Prints machine-checkable evidence the phase2 gate
 //! asserts: reaching prelaunch proves the crucible-shmem block driver is
@@ -65,7 +65,7 @@ fn run() -> Result<(), String> {
     println!("PASS");
     println!("gate=gate:block-realization");
     println!("block_driver=crucible-shmem");
-    println!("open_interface=drive-driver-legacy");
+    println!("open_interface=blockdev-qapi");
     println!("driver_opened={}", report.driver_opened);
     println!("run_state={}", report.run_state);
     println!("orderly_child_exit={}", report.orderly_child_exit);

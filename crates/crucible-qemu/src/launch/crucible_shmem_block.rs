@@ -5,19 +5,17 @@
 //! backend is the host I/O sub-node that services the `SLOT_BLK_IO`
 //! shared-memory rings; the guest reaches it as an ordinary virtio-blk disk.
 //!
-//! The driver is opened through the legacy `-drive driver=<name>` interface,
-//! which resolves the driver by name against QEMU's runtime-registered block
-//! driver list. That path deliberately does not require a `BlockdevDriver` QAPI
-//! enum entry, so the carried QEMU patch series needs no schema change to make
-//! the device openable. The modern `-blockdev driver=crucible-shmem` spelling
-//! would require such an enum entry and is intentionally not used here.
+//! The driver is opened through QEMU's typed `-blockdev` interface. The carried
+//! QEMU patch declares the backend in `BlockdevDriver` and gives it a closed
+//! `BlockdevOptionsCrucibleShmem` schema, so unsupported or misspelled options
+//! fail before the guest starts.
 //!
 //! Argv layout (emitted only when a device is attached; a launch without one is
 //! byte-identical to a launch that never knew about this type):
 //!
 //! ```text
-//! -drive driver=crucible-shmem,if=none,id=<drive_id>,size=<size_bytes>
-//! -device virtio-blk-pci,drive=<drive_id>,id=<device_id>,ioeventfd=off
+//! -blockdev driver=crucible-shmem,node-name=<block_node_name>,size=<size_bytes>
+//! -device virtio-blk-pci,drive=<block_node_name>,id=<device_id>,ioeventfd=off
 //! ```
 //!
 //! The per-device `ioeventfd=off` is determinism-load-bearing: it makes the
@@ -35,8 +33,8 @@ const CRUCIBLE_SHMEM_BLOCK_SECTOR_BYTES: u64 = 512;
 /// guards against accidental unit typos rather than any storage limit.
 const CRUCIBLE_SHMEM_BLOCK_MAX_BYTES: u64 = 1 << 40;
 
-/// Default `-drive` identifier bound to the crucible-shmem block backend.
-pub const DEFAULT_CRUCIBLE_SHMEM_DRIVE_ID: &str = "crucible-blk0";
+/// Default block graph node name bound to the crucible-shmem backend.
+pub const DEFAULT_CRUCIBLE_SHMEM_BLOCK_NODE_NAME: &str = "crucible-blk0";
 
 /// Default `-device` identifier for the attached virtio-blk front-end.
 pub const DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID: &str = "crucible-blk-device0";
@@ -49,8 +47,8 @@ pub const DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID: &str = "crucible-blk-device0";
 /// identity like every other launch input.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CrucibleShmemBlockDevice {
-    /// `-drive` identifier bound to the crucible-shmem backend.
-    drive_id: String,
+    /// Block graph node name bound to the crucible-shmem backend.
+    block_node_name: String,
     /// `-device` identifier for the virtio-blk front-end.
     device_id: String,
     /// Fixed device length in bytes, a whole multiple of the sector size.
@@ -65,16 +63,20 @@ impl CrucibleShmemBlockDevice {
     #[must_use]
     pub fn new(size_bytes: u64) -> Self {
         Self {
-            drive_id: DEFAULT_CRUCIBLE_SHMEM_DRIVE_ID.to_owned(),
+            block_node_name: DEFAULT_CRUCIBLE_SHMEM_BLOCK_NODE_NAME.to_owned(),
             device_id: DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID.to_owned(),
             size_bytes,
         }
     }
 
-    /// Returns the device with explicit `-drive` and `-device` identifiers.
+    /// Returns the device with explicit block-node and `-device` identifiers.
     #[must_use]
-    pub fn with_ids(mut self, drive_id: impl Into<String>, device_id: impl Into<String>) -> Self {
-        self.drive_id = drive_id.into();
+    pub fn with_ids(
+        mut self,
+        block_node_name: impl Into<String>,
+        device_id: impl Into<String>,
+    ) -> Self {
+        self.block_node_name = block_node_name.into();
         self.device_id = device_id.into();
         self
     }
@@ -85,10 +87,10 @@ impl CrucibleShmemBlockDevice {
         self.size_bytes
     }
 
-    /// Returns the `-drive` identifier bound to the crucible-shmem backend.
+    /// Returns the block graph node name bound to the crucible-shmem backend.
     #[must_use]
-    pub fn drive_id(&self) -> &str {
-        &self.drive_id
+    pub fn block_node_name(&self) -> &str {
+        &self.block_node_name
     }
 
     /// Returns the `-device` identifier for the virtio-blk front-end.
@@ -97,24 +99,27 @@ impl CrucibleShmemBlockDevice {
         &self.device_id
     }
 
-    /// Appends the `-drive`/`-device` argument pair for this device.
+    /// Appends the typed `-blockdev`/`-device` argument pair for this device.
     pub(crate) fn append_qemu_args(&self, args: &mut Vec<String>) {
-        args.push("-drive".to_owned());
+        args.push("-blockdev".to_owned());
         args.push(format!(
-            "driver=crucible-shmem,if=none,id={},size={}",
-            self.drive_id, self.size_bytes
+            "driver=crucible-shmem,node-name={},size={}",
+            self.block_node_name, self.size_bytes
         ));
         args.push("-device".to_owned());
         args.push(format!(
             "virtio-blk-pci,drive={},id={},ioeventfd=off",
-            self.drive_id, self.device_id
+            self.block_node_name, self.device_id
         ));
     }
 
     /// Appends canonical launch-identity lines describing this device.
     pub(super) fn append_hash_material(&self, lines: &mut Vec<String>) {
         lines.push("crucible_shmem_block=present".to_owned());
-        lines.push(format!("crucible_shmem_block_drive_id={}", self.drive_id));
+        lines.push(format!(
+            "crucible_shmem_block_node_name={}",
+            self.block_node_name
+        ));
         lines.push(format!("crucible_shmem_block_device_id={}", self.device_id));
         lines.push(format!(
             "crucible_shmem_block_size_bytes={}",
@@ -134,7 +139,7 @@ impl CrucibleShmemBlockDevice {
     /// is zero, not a whole multiple of the sector size, or above the modeled
     /// maximum.
     pub(crate) fn validate(&self) -> Result<(), QemuLaunchCommandError> {
-        validate_option_token("crucible_shmem_block_drive_id", &self.drive_id)?;
+        validate_option_token("crucible_shmem_block_node_name", &self.block_node_name)?;
         validate_option_token("crucible_shmem_block_device_id", &self.device_id)?;
         if self.size_bytes == 0
             || !self
@@ -173,21 +178,24 @@ mod tests {
     #[test]
     fn default_ids_apply() {
         let device = CrucibleShmemBlockDevice::new(ONE_MIB);
-        assert_eq!(device.drive_id(), DEFAULT_CRUCIBLE_SHMEM_DRIVE_ID);
+        assert_eq!(
+            device.block_node_name(),
+            DEFAULT_CRUCIBLE_SHMEM_BLOCK_NODE_NAME
+        );
         assert_eq!(device.device_id(), DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID);
         assert_eq!(device.size_bytes(), ONE_MIB);
     }
 
     #[test]
-    fn args_use_legacy_drive_driver_path() {
+    fn args_use_typed_blockdev_path() {
         let device = CrucibleShmemBlockDevice::new(ONE_MIB);
         let mut args = Vec::new();
         device.append_qemu_args(&mut args);
         assert_eq!(
             args,
             vec![
-                "-drive".to_owned(),
-                "driver=crucible-shmem,if=none,id=crucible-blk0,size=1048576".to_owned(),
+                "-blockdev".to_owned(),
+                "driver=crucible-shmem,node-name=crucible-blk0,size=1048576".to_owned(),
                 "-device".to_owned(),
                 "virtio-blk-pci,drive=crucible-blk0,id=crucible-blk-device0,ioeventfd=off"
                     .to_owned(),
@@ -204,7 +212,7 @@ mod tests {
             lines,
             vec![
                 "crucible_shmem_block=present".to_owned(),
-                "crucible_shmem_block_drive_id=blk-a".to_owned(),
+                "crucible_shmem_block_node_name=blk-a".to_owned(),
                 "crucible_shmem_block_device_id=blk-a-device".to_owned(),
                 "crucible_shmem_block_size_bytes=1048576".to_owned(),
                 "crucible_shmem_block_ioeventfd=off".to_owned(),
@@ -253,7 +261,7 @@ mod tests {
                 .with_ids("bad,id", DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID)
                 .validate(),
             Err(QemuLaunchCommandError::InvalidLaunchText {
-                field: "crucible_shmem_block_drive_id"
+                field: "crucible_shmem_block_node_name"
             })
         ));
     }
@@ -262,7 +270,7 @@ mod tests {
     fn validate_rejects_equals_in_device_id() {
         assert!(matches!(
             CrucibleShmemBlockDevice::new(ONE_MIB)
-                .with_ids(DEFAULT_CRUCIBLE_SHMEM_DRIVE_ID, "bad=id")
+                .with_ids(DEFAULT_CRUCIBLE_SHMEM_BLOCK_NODE_NAME, "bad=id")
                 .validate(),
             Err(QemuLaunchCommandError::InvalidLaunchText {
                 field: "crucible_shmem_block_device_id"

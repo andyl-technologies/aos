@@ -9,12 +9,26 @@
 #include <sys/types.h>
 
 #include "qemu/notify.h"
+#include "system/runstate.h"
+
+#ifdef CRUCIBLE_DEVICE_WAIT_VMSTOP
+#define EXPECTED_VM_STOP_CALLS_AFTER_NULL_CPU 3u
+#else
+#define EXPECTED_VM_STOP_CALLS_AFTER_NULL_CPU 1u
+#endif
 
 typedef struct CPUState CPUState;
 typedef struct NetClientState NetClientState;
 typedef struct AioContext AioContext;
 typedef void IOHandler(void *opaque);
 typedef bool AioPollFn(void *opaque);
+typedef void (*qemu_plugin_vcpu_idle_resume_cb_t)(unsigned int vcpu_index,
+                                                  uint64_t icount,
+                                                  void *userdata);
+typedef void (*qemu_plugin_crucible_ipi_delivery_cb_t)(
+    uint64_t event_id, uint64_t delivery_icount, unsigned int src_vcpu,
+    unsigned int dst_vcpu, unsigned int delivery_mode, unsigned int vector,
+    void *userdata);
 #define CRUCIBLE_IOHANDLER_DEFINED 1
 
 struct AioContext {
@@ -69,9 +83,16 @@ static unsigned int wake_notifier_read_call;
 static int wake_notifier_last_event = -1;
 static unsigned int shutdown_request_calls;
 static int shutdown_request_reason = -1;
+static unsigned int vm_stop_calls;
+static unsigned int direct_vm_stop_calls;
+static unsigned int vmstop_prepare_calls;
+static unsigned int cpu_stop_current_calls;
+static RunState vm_stop_state;
+static int vm_stop_status;
 static unsigned int tcg_callback_count;
 static unsigned int tcg_callback_vcpu = UINT32_MAX;
 static uint64_t tcg_callback_icount;
+static int control_boundary_vmstop_status;
 
 const char *
 current_accel_name(void)
@@ -89,6 +110,13 @@ AioContext *
 qemu_get_aio_context(void)
 {
   return &main_aio_context;
+}
+
+void
+aio_bh_schedule_oneshot(AioContext *ctx, void (*cb)(void *opaque), void *opaque)
+{
+  (void)ctx;
+  cb(opaque);
 }
 
 void
@@ -181,6 +209,34 @@ qemu_system_shutdown_request(int reason)
 {
   shutdown_request_calls++;
   shutdown_request_reason = reason;
+}
+
+int
+vm_stop(RunState state)
+{
+  vm_stop_calls++;
+  direct_vm_stop_calls++;
+  vm_stop_state = state;
+  return vm_stop_status;
+}
+
+void
+qemu_system_vmstop_request_prepare(void)
+{
+  vmstop_prepare_calls++;
+}
+
+void
+qemu_system_vmstop_request(RunState state)
+{
+  vm_stop_calls++;
+  vm_stop_state = state;
+}
+
+void
+cpu_stop_current(void)
+{
+  cpu_stop_current_calls++;
 }
 
 void
@@ -553,6 +609,143 @@ test_single_threaded_rr_mode_discriminator_fixture(void)
   return 0;
 }
 
+static void
+request_vmstop_from_control_boundary(unsigned int vcpu_index,
+                                     uint64_t current_icount, void *userdata)
+{
+  (void)vcpu_index;
+  (void)current_icount;
+  (void)userdata;
+  control_boundary_vmstop_status = qemu_plugin_request_vmstop();
+}
+
+static int
+test_vmstop_requires_exact_single_threaded_sim_boundary(void)
+{
+  vm_stop_calls = 0;
+  direct_vm_stop_calls = 0;
+  vmstop_prepare_calls = 0;
+  cpu_stop_current_calls = 0;
+  vm_stop_state = RUN_STATE__MAX;
+  vm_stop_status = 0;
+  current_cpu = &fake_cpu;
+  use_icount = ICOUNT_PRECISE;
+  active_accel_name = "sim";
+  mttcg_enabled = false;
+
+  if (qemu_plugin_request_vmstop() != -EPERM || vm_stop_calls != 0) {
+    fprintf(stderr, "VM stop accepted outside an RR-owned exact callback\n");
+    return 1;
+  }
+
+  qemu_plugin_crucible_exact_boundary_enter();
+  if (qemu_plugin_request_vmstop() != 0 || vm_stop_calls != 1 ||
+      vm_stop_state != RUN_STATE_PAUSED ||
+      !qemu_plugin_crucible_vmstop_pending()) {
+    fprintf(stderr, "exact sim boundary did not request native VM stop\n");
+    return 1;
+  }
+#ifdef CRUCIBLE_DEVICE_WAIT_VMSTOP
+  if (direct_vm_stop_calls != 0 || vmstop_prepare_calls != 1 ||
+      cpu_stop_current_calls != 1) {
+    fprintf(stderr, "exact sim boundary did not use nonblocking VM stop\n");
+    return 1;
+  }
+#else
+  if (direct_vm_stop_calls != 1 || vmstop_prepare_calls != 0 ||
+      cpu_stop_current_calls != 0) {
+    fprintf(stderr, "baseline VM stop did not use the vCPU stop path\n");
+    return 1;
+  }
+#endif
+  if (qemu_plugin_request_vmstop() != -EALREADY || vm_stop_calls != 1) {
+    fprintf(stderr, "duplicate VM stop admission was not rejected\n");
+    return 1;
+  }
+  if (!qemu_plugin_crucible_vmstop_admission_pending()) {
+    fprintf(stderr, "VM stop admission state was not retained\n");
+    return 1;
+  }
+  qemu_plugin_crucible_vmstop_request_complete();
+  if (!qemu_plugin_crucible_vmstop_pending()) {
+    fprintf(stderr, "premature resume cleared an unconsumed VM stop\n");
+    return 1;
+  }
+  qemu_plugin_crucible_vmstop_request_stopped(-EIO);
+  if (qemu_plugin_crucible_vmstop_admission_pending() ||
+      !qemu_plugin_crucible_vmstop_pending() ||
+      qemu_plugin_crucible_vmstop_flush_status() != -EIO) {
+    fprintf(stderr, "consumed VM stop did not enter the stopped state\n");
+    return 1;
+  }
+  qemu_plugin_crucible_vmstop_request_complete();
+  if (qemu_plugin_crucible_vmstop_pending() ||
+      qemu_plugin_crucible_vmstop_flush_status() != 0) {
+    fprintf(stderr, "completed stop/resume cycle retained the VM stop fence\n");
+    return 1;
+  }
+
+  current_cpu = NULL;
+#ifdef CRUCIBLE_DEVICE_WAIT_VMSTOP
+  control_boundary_vmstop_status = -EINPROGRESS;
+  qemu_plugin_register_control_boundary_cb(
+      request_vmstop_from_control_boundary, NULL);
+  qemu_plugin_fire_control_boundary_cb(&fake_cpu);
+  if (control_boundary_vmstop_status != 0 || vm_stop_calls != 2 ||
+      direct_vm_stop_calls != 1 || vmstop_prepare_calls != 1 ||
+      cpu_stop_current_calls != 1) {
+    fprintf(stderr, "drained control boundary did not stop synchronously\n");
+    return 1;
+  }
+  qemu_plugin_crucible_vmstop_request_stopped(0);
+  qemu_plugin_crucible_vmstop_request_complete();
+
+  if (qemu_plugin_request_vmstop() != 0 || vm_stop_calls != 3 ||
+      direct_vm_stop_calls != 1 || vmstop_prepare_calls != 2 ||
+      cpu_stop_current_calls != 2) {
+    fprintf(stderr, "exact VM stop without a current vCPU was not admitted\n");
+    return 1;
+  }
+  qemu_plugin_crucible_vmstop_request_stopped(0);
+  qemu_plugin_crucible_vmstop_request_complete();
+#else
+  if (qemu_plugin_request_vmstop() == 0 || vm_stop_calls != 1) {
+    fprintf(stderr, "VM stop accepted without a current vCPU\n");
+    return 1;
+  }
+#endif
+  current_cpu = &fake_cpu;
+  use_icount = ICOUNT_DISABLED;
+  if (qemu_plugin_request_vmstop() == 0 ||
+      vm_stop_calls != EXPECTED_VM_STOP_CALLS_AFTER_NULL_CPU) {
+    fprintf(stderr, "VM stop accepted without precise icount\n");
+    return 1;
+  }
+  use_icount = ICOUNT_PRECISE;
+  mttcg_enabled = true;
+  if (qemu_plugin_request_vmstop() == 0 ||
+      vm_stop_calls != EXPECTED_VM_STOP_CALLS_AFTER_NULL_CPU) {
+    fprintf(stderr, "VM stop accepted under MTTCG\n");
+    return 1;
+  }
+  mttcg_enabled = false;
+  active_accel_name = "tcg";
+  if (qemu_plugin_request_vmstop() == 0 ||
+      vm_stop_calls != EXPECTED_VM_STOP_CALLS_AFTER_NULL_CPU) {
+    fprintf(stderr, "VM stop accepted outside the sim accelerator\n");
+    return 1;
+  }
+
+  active_accel_name = "sim";
+  qemu_plugin_crucible_exact_boundary_leave();
+  if (qemu_plugin_request_vmstop() != -EPERM ||
+      vm_stop_calls != EXPECTED_VM_STOP_CALLS_AFTER_NULL_CPU) {
+    fprintf(stderr, "instruction-style callback context was not rejected\n");
+    return 1;
+  }
+  return 0;
+}
+
 static int
 test_tcg_exec_callback_fires_after_raw_icount_update(void)
 {
@@ -596,6 +789,7 @@ main(void)
       test_wake_fd_integrates_with_main_loop() != 0 ||
       test_plugin_shutdown_selects_clean_and_fail_loud_causes() != 0 ||
       test_single_threaded_rr_mode_discriminator_fixture() != 0 ||
+      test_vmstop_requires_exact_single_threaded_sim_boundary() != 0 ||
       test_tcg_exec_callback_fires_after_raw_icount_update() != 0) {
     return 1;
   }
@@ -613,6 +807,16 @@ main(void)
   puts("first_exit_phase_normalized=true");
   puts("single_threaded_rr_symbol=qemu_plugin_crucible_single_threaded_rr");
   puts("single_threaded_rr_mode_discriminator_fixture_exercised=true");
+  puts("request_vmstop_symbol=qemu_plugin_request_vmstop");
+  puts("request_vmstop_native_pause_admission=true");
+  puts("request_vmstop_rejects_nonexact_modes=true");
+  puts("request_vmstop_rejects_unsafe_callback_context=true");
+#ifdef CRUCIBLE_DEVICE_WAIT_VMSTOP
+  puts("request_vmstop_accepts_nonvcpu_exact_callback=true");
+  puts("request_vmstop_control_boundary_synchronous=true");
+#endif
+  puts("request_vmstop_rejects_duplicate_admission=true");
+  puts("request_vmstop_preserves_async_flush_failure=true");
   puts("wake_fd_registration_symbol=qemu_plugin_register_wake_fd");
   puts("wake_fd_registered=true");
   puts("wake_fd_single_owner=true");

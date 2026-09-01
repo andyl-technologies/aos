@@ -5,14 +5,12 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    Action, AppRandomDecision, BackendInput, ConditionEvaluationError, ConditionEvaluationPass,
-    ConditionLeaf, ConditionLeafOracle, ContentHash, ControlFaultAction, ControlFaultDecision,
-    Decision, DeliveryOrderDecision, EventKey, Fault, FaultDecision, FaultId, FaultRateBasisPoints,
-    FaultTag, Icount, IrqVector, MembershipFault, NodeFault, NodeId, ObservableEvent,
-    ObservedFaultFact, ObservedOrderingFact, OverrideDecision, PreemptionDecision, PreemptionKind,
-    RestartPolicy, RngDecision, RngStreamId, ScheduledEvent, ScheduledEventKey,
-    ScheduledEventPayload, SchedulerEvaluationBoundaryKind, SchedulerEventLogPayload,
-    SchedulerNodeId, SchedulerResolveFaultChoice, SchedulingNodeKind, VcpuId, VirtualTime,
+    AppRandomDecision, BackendInput, ConditionEvaluationError, ConditionEvaluationPass,
+    ConditionLeaf, ConditionLeafOracle, ContentHash, Decision, DeliveryOrderDecision, EventKey,
+    Icount, IrqVector, NodeId, ObservableEvent, ObservedOrderingFact, OverrideDecision,
+    PreemptionDecision, PreemptionKind, RngDecision, RngStreamId, ScheduledEvent,
+    ScheduledEventKey, ScheduledEventPayload, SchedulerEvaluationBoundaryKind,
+    SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind, VcpuId, VirtualTime,
 };
 
 #[test]
@@ -27,8 +25,6 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
             payload: b"frame".to_vec(),
         }),
     };
-    let fault = fault_id("drop-request");
-
     let prefix = crucible::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
         observation_entry(0, &console),
         payload_entry(
@@ -87,16 +83,7 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
                 value: 0x1234_5678,
             })),
         ),
-        payload_entry(
-            7,
-            time(6),
-            SchedulerEventLogPayload::Decision(Decision::FaultFires(FaultDecision {
-                at: time(6),
-                fault: fault.clone(),
-                fired: true,
-            })),
-        ),
-        boundary_entry(8, time(6)),
+        boundary_entry(7, time(6)),
     ])
     .expect("checked prefix should materialize observed state");
     let state = prefix.observed_state();
@@ -119,20 +106,9 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
             },
         ]
     );
-    assert_eq!(
-        state.fault_facts(),
-        &[ObservedFaultFact::ProbabilisticOutcome {
-            sequence: 7,
-            at: time(6),
-            fault,
-            fired: true,
-        }]
-    );
     assert_eq!(prefix.ordering_facts(), state.ordering_facts());
-    assert_eq!(prefix.fault_facts(), state.fault_facts());
     let expected_observable_events = state.observable_events().to_vec();
     let expected_ordering_facts = state.ordering_facts().to_vec();
-    let expected_fault_facts = state.fault_facts().to_vec();
 
     let pass = ConditionEvaluationPass::from_log_prefix(prefix, NoLeaves);
     assert_eq!(
@@ -142,145 +118,6 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
     assert_eq!(
         pass.observed_state().ordering_facts(),
         expected_ordering_facts.as_slice()
-    );
-    assert_eq!(
-        pass.observed_state().fault_facts(),
-        expected_fault_facts.as_slice()
-    );
-}
-
-#[test]
-fn observed_state_materializes_fault_activation_and_heal_facts() {
-    let scheduled_fault = fault_id("scheduled-partition");
-    let probabilistic_fault = fault_id("maybe-drop");
-    let control_tag = tag("control-crash");
-    let trigger_tag = tag("trigger-crash");
-    let controlled_fault = Fault::Node(NodeFault::Crash {
-        node: node("db-0"),
-        restart: RestartPolicy::StayDown,
-    });
-    let trigger_fault = MembershipFault::Crash {
-        node: node("db-0"),
-        restart: RestartPolicy::FromReadyPoint,
-    };
-
-    let prefix = crucible::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
-        payload_entry(
-            0,
-            time(8),
-            SchedulerEventLogPayload::ResolvedHappening(ScheduledEvent {
-                key: scheduled_event_key(8, "db-0", "control", 0),
-                payload: ScheduledEventPayload::FaultActivation(scheduled_fault.clone()),
-            }),
-        ),
-        payload_entry(
-            1,
-            time(8),
-            SchedulerEventLogPayload::ResolvedHappening(ScheduledEvent {
-                key: scheduled_event_key(8, "db-0", "control", 1),
-                payload: ScheduledEventPayload::ProbabilisticFault(SchedulerResolveFaultChoice {
-                    fault: probabilistic_fault.clone(),
-                    stream: RngStreamId::from_name("fault-stream"),
-                    rate: FaultRateBasisPoints::from_basis_points(250)
-                        .expect("test rate should be in range"),
-                }),
-            }),
-        ),
-        payload_entry(
-            2,
-            time(8),
-            SchedulerEventLogPayload::Decision(Decision::ControlFault(ControlFaultDecision {
-                at: time(8),
-                sequence: 11,
-                action: ControlFaultAction::Inject {
-                    tag: control_tag.clone(),
-                    fault: controlled_fault.clone(),
-                },
-            })),
-        ),
-        payload_entry(
-            3,
-            time(8),
-            SchedulerEventLogPayload::Decision(Decision::ControlFault(ControlFaultDecision {
-                at: time(8),
-                sequence: 12,
-                action: ControlFaultAction::Heal {
-                    tag: control_tag.clone(),
-                },
-            })),
-        ),
-        payload_entry(
-            4,
-            time(8),
-            SchedulerEventLogPayload::TriggerActionApplied(crucible::TriggerActionApplication {
-                sequence: 21,
-                event: crucible::EventId::from_name("trigger-inject"),
-                at: time(8),
-                path: vec![0],
-                action: Action::InjectFault {
-                    tag: trigger_tag.clone(),
-                    fault: trigger_fault.clone(),
-                },
-            }),
-        ),
-        payload_entry(
-            5,
-            time(8),
-            SchedulerEventLogPayload::TriggerActionApplied(crucible::TriggerActionApplication {
-                sequence: 22,
-                event: crucible::EventId::from_name("trigger-heal"),
-                at: time(8),
-                path: vec![1],
-                action: Action::HealFault {
-                    tag: trigger_tag.clone(),
-                },
-            }),
-        ),
-    ])
-    .expect("checked prefix should materialize fault facts");
-
-    assert_eq!(
-        prefix.observed_state().fault_facts(),
-        &[
-            ObservedFaultFact::ScheduledActivation {
-                sequence: 0,
-                at: time(8),
-                fault: scheduled_fault,
-            },
-            ObservedFaultFact::ScheduledProbabilisticChoice {
-                sequence: 1,
-                at: time(8),
-                fault: probabilistic_fault,
-            },
-            ObservedFaultFact::ControlInjected {
-                sequence: 2,
-                at: time(8),
-                control_sequence: 11,
-                tag: control_tag.clone(),
-                fault: controlled_fault,
-            },
-            ObservedFaultFact::ControlHealed {
-                sequence: 3,
-                at: time(8),
-                control_sequence: 12,
-                tag: control_tag,
-            },
-            ObservedFaultFact::TriggerInjected {
-                sequence: 4,
-                at: time(8),
-                trigger_sequence: 21,
-                event: crucible::EventId::from_name("trigger-inject"),
-                tag: trigger_tag.clone(),
-                fault: trigger_fault,
-            },
-            ObservedFaultFact::TriggerHealed {
-                sequence: 5,
-                at: time(8),
-                trigger_sequence: 22,
-                event: crucible::EventId::from_name("trigger-heal"),
-                tag: trigger_tag,
-            },
-        ]
     );
 }
 
@@ -419,16 +256,6 @@ fn node(name: &str) -> NodeId {
     NodeId {
         name: name.to_owned(),
     }
-}
-
-fn fault_id(name: &str) -> FaultId {
-    FaultId {
-        name: name.to_owned(),
-    }
-}
-
-fn tag(name: &str) -> FaultTag {
-    FaultTag::from_name(name)
 }
 
 fn time(ticks: u64) -> VirtualTime {

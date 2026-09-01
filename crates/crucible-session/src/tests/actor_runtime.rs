@@ -765,7 +765,7 @@ pub(super) async fn session_actor_command_driven_step_acknowledges_preexisting_r
     let (sender, receiver) = mpsc::channel(4);
     let mut actor = SessionActor::new(engine, receiver);
 
-    if let Err(error) = sender.send(SessionCommand::Snapshot).await {
+    if let Err(error) = sender.send(SessionCommand::query_snapshot()).await {
         panic!("snapshot should enqueue: {error}");
     }
     if let Err(error) = actor.run_once().await {
@@ -822,7 +822,7 @@ pub(super) async fn session_actor_paused_step_acknowledges_preexisting_running_c
     let (sender, receiver) = mpsc::channel(4);
     let mut actor = SessionActor::new(engine, receiver);
 
-    if let Err(error) = sender.send(SessionCommand::Snapshot).await {
+    if let Err(error) = sender.send(SessionCommand::query_snapshot()).await {
         panic!("snapshot should enqueue: {error}");
     }
     if let Err(error) = actor.run_once().await {
@@ -1348,6 +1348,63 @@ pub(super) fn engine_rejects_non_dense_final_shutdown_entries() {
     );
 }
 
+#[test]
+pub(super) fn engine_captures_terminal_checkpoint_before_shutdown() {
+    let scenario = generated_scenario(226);
+    let config = Configuration::genesis(scenario.clone());
+    let graph = graph_with_baked_genesis(&scenario);
+    let operations = Arc::new(Mutex::new(Vec::new()));
+    let loop_impl = CaptureBeforeShutdownLoop {
+        operations: Arc::clone(&operations),
+    };
+    let mut engine = Engine::new(config, graph, loop_impl);
+
+    engine
+        .apply_command(SessionCommand::Stop)
+        .expect("terminal stop should capture and shut down");
+
+    let observed = operations.lock().expect("operation log lock").clone();
+    assert_eq!(observed, vec!["capture", "shutdown"]);
+}
+
+pub(super) struct CaptureBeforeShutdownLoop {
+    operations: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl QuantumLoop for CaptureBeforeShutdownLoop {
+    fn drive_quantum(
+        &mut self,
+        _request: QuantumRequest,
+    ) -> Result<QuantumOutcome, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("terminal-order test must not drive a quantum"),
+        })
+    }
+
+    fn capture_checkpoint(
+        &mut self,
+        _configuration: &Configuration,
+    ) -> Result<Option<ContentHash>, SchedulerError> {
+        self.operations
+            .lock()
+            .map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("terminal-order operation log lock is poisoned"),
+            })?
+            .push("capture");
+        Ok(Some(ContentHash::from_bytes(b"terminal-order-checkpoint")))
+    }
+
+    fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        self.operations
+            .lock()
+            .map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("terminal-order operation log lock is poisoned"),
+            })?
+            .push("shutdown");
+        Ok(Vec::new())
+    }
+}
+
 pub(super) struct NonDenseShutdownLoop;
 
 impl QuantumLoop for NonDenseShutdownLoop {
@@ -1555,7 +1612,6 @@ impl QuantumLoop for CountingLoop {
 pub(super) struct RecordingLoop {
     quanta: u64,
     control_batches: Arc<Mutex<Vec<Vec<ControlOperationKind>>>>,
-    shutdowns: Option<Arc<AtomicU64>>,
 }
 
 impl RecordingLoop {
@@ -1563,18 +1619,6 @@ impl RecordingLoop {
         Self {
             quanta: 0,
             control_batches,
-            shutdowns: None,
-        }
-    }
-
-    pub(super) fn with_shutdown(
-        control_batches: Arc<Mutex<Vec<Vec<ControlOperationKind>>>>,
-        shutdowns: Arc<AtomicU64>,
-    ) -> Self {
-        Self {
-            quanta: 0,
-            control_batches,
-            shutdowns: Some(shutdowns),
         }
     }
 }
@@ -1622,47 +1666,11 @@ impl QuantumLoop for RecordingLoop {
         }
         Ok(Vec::new())
     }
-
-    fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
-        if let Some(shutdowns) = &self.shutdowns {
-            shutdowns.fetch_add(1, Ordering::SeqCst);
-        }
-        Ok(Vec::new())
-    }
-}
-
-pub(super) struct ControlEventLoop;
-
-impl QuantumLoop for ControlEventLoop {
-    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
-        Ok(QuantumOutcome {
-            configuration: request.configuration,
-            frontier: VirtualTime::default(),
-            advanced_node: None,
-            resolved_events: Vec::new(),
-            decisions: Vec::new(),
-            event_log_entries: Vec::new(),
-            event_log_segment_bytes: Vec::new(),
-            event_log_segment_text: String::new(),
-            event_log_segment_hash: None,
-            event_log_offset: crucible::EventLogOffset::default(),
-            scheduler_quiescence: None,
-        })
-    }
-
-    fn apply_control_at_boundary(
-        &mut self,
-        _control: Vec<ControlOperation>,
-    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
-        Ok(vec![test_event_log_entry(0)])
-    }
 }
 
 #[derive(Default)]
 pub(super) struct ControlSensitiveLoop {
     quanta: u64,
-    active_faults: std::collections::BTreeSet<FaultTag>,
-    legacy_injects: u64,
     control_batches: u64,
 }
 
@@ -1674,15 +1682,6 @@ impl ControlSensitiveLoop {
         self.control_batches = self.control_batches.saturating_add(1);
         for control in controls {
             match &control.kind {
-                ControlOperationKind::Inject => {
-                    self.legacy_injects = self.legacy_injects.saturating_add(1);
-                }
-                ControlOperationKind::InjectFault { tag, .. } => {
-                    self.active_faults.insert(tag.clone());
-                }
-                ControlOperationKind::HealFault { tag } => {
-                    self.active_faults.remove(tag);
-                }
                 ControlOperationKind::Pause
                 | ControlOperationKind::Resume
                 | ControlOperationKind::Step
@@ -1695,8 +1694,6 @@ impl ControlSensitiveLoop {
 
     fn decision_seed(&self) -> u64 {
         self.quanta
-            .saturating_add((self.active_faults.len() as u64).saturating_mul(1_000))
-            .saturating_add(self.legacy_injects.saturating_mul(10_000))
             .saturating_add(self.control_batches.saturating_mul(100_000))
     }
 }

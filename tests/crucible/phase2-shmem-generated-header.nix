@@ -5,11 +5,7 @@
   taskIds ? ["T-SHM-3"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   headerGenerator = builtins.readFile ../../crates/crucible-shmem/src/abi_header.rs;
@@ -102,6 +98,10 @@
       {
         label = "ring header offset static assert";
         needle = "offsetof(crucible_shmem_ring_header, write_idx) == CRUCIBLE_SHMEM_RING_HEADER_WRITE_IDX_OFFSET";
+      }
+      {
+        label = "frame entry delivery-state offset static assert";
+        needle = "offsetof(crucible_shmem_frame_entry, delivery_state) == CRUCIBLE_SHMEM_FRAME_ENTRY_DELIVERY_STATE_OFFSET";
       }
       {
         label = "frame entry offset static assert";

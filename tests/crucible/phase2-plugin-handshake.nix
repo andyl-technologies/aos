@@ -6,11 +6,7 @@
   openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginArgs = builtins.readFile ../../crates/crucible-qemu-plugin/src/args.rs;
@@ -77,7 +73,7 @@
     ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmem [
       {
         label = "shmem ABI version constant";
-        needle = "pub const ABI_VERSION: u32 = 6;";
+        needle = "pub const ABI_VERSION: u32 = 17;";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/args.rs" pluginArgs [

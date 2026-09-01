@@ -1061,7 +1061,10 @@ genuinely unresolved and is tracked as a spike in
   run and records `production_aarch64_doorbell_trap_implemented=true`,
   `aarch64_whitebox_supported=true`, and `fallback_adopted=none`.
   `checks.crucible.phase0.aarch64S1S6` boots the same seeded AArch64 guest twice
-  under different host load, compares its exact-icount extended fingerprints,
+  with six configured 15 ms scheduler preemptions applied directly to QEMU in
+  the second run after a live kernel progress marker and under a two-second
+  resume watchdog, compares its exact-icount
+  extended fingerprints,
   and records `aarch64_s1_complete=true`, `aarch64_s6_complete=true`,
   `randomized_kernel_offset_reproducible=true`,
   `randomized_pie_aslr_layout_reproducible=true`, and
@@ -1116,7 +1119,8 @@ genuinely unresolved and is tracked as a spike in
   default-only deterministic interleaving. The modeled S13 overhead sweep found
   4096 to be the smallest candidate above its provisional throughput floor, and
   S11 then validated that quantum across two 4-billion-instruction sim-mode
-  runs with a real four-vCPU contended workload under host jitter.
+  runs with a real four-vCPU contended workload under bounded scheduler
+  preemption.
 - **Resolution:** S12/S13 now compose the modeled known-race discrimination
   witness with exact live QEMU commanded-preemption application across the full
   quantum sweep. D-36 promotes `4096` into the final shipped default.
@@ -1378,7 +1382,7 @@ becomes a new `Decided` entry referencing the one it supersedes).
   against the `980` floor. At every candidate, the modeled known two-vCPU race
   remained discriminating and the corresponding production loaded-QEMU gate
   applied exact acknowledged vCPU-switch and interrupt commands twice, including
-  a host-load run, with matching execution fingerprints and SimDouble schedule.
+  a scheduler-preemption run, with matching execution fingerprints and SimDouble schedule.
   Since race yield tied across all five candidates, `4096` is the smallest value
   meeting the throughput floor. The separate four-vCPU S11 run also reproduces
   at `4096` through its 4-billion-instruction horizon.
@@ -1516,7 +1520,8 @@ register.
   - **Result:** `scenario=stock-linux-diskless-initramfs-workload`,
     `boot_medium=initramfs`, `block_devices=0`, `vcpus=1`,
     `cadence=100000000`, `horizon_icount=3600000000`,
-    `host_adversary=jitter-load`, `stop_request=plugin-requested-icount-pause`,
+    `host_adversary=bounded-scheduler-preemption`,
+    `stop_request=plugin-requested-icount-pause`,
     `extended_fingerprint_match=true`,
     `aggregate_icount_stream_match=true`,
     `cadence_fingerprint_match=true`,
@@ -1558,7 +1563,9 @@ register.
     launched twice with `-smp 1`, `-accel sim,thread=single`,
     `-icount shift=0,sleep=off,align=off`, no block devices, fixed RTC, fixed
     seed material through `fw_cfg`, `virtio-rng`, and conservative boot entropy
-    controls. The second run adds scheduling jitter/load. The proof compares the
+    controls. The second run applies six configured 15 ms SIGSTOP/SIGCONT
+    preemptions to QEMU itself after the first positive trace coordinate and
+    under a two-second resume watchdog. The proof compares the
     aggregate instruction stream, one nonempty vCPU register hash, RAM hash, and
     IO-event multiset digest at each cadence point including the requested
     `3600000000` horizon. It also compares the stable projection of the
@@ -1583,16 +1590,17 @@ register.
   - **Result:** `target_guest=stock_linux_initramfs`,
     `qemu_accel=sim_tcg_thread_single`, `icount=shift0_sleep_off_align_off`,
     `workload_block_reads=32`, `workload_9p_reads=32`,
-    `block_outstanding_wait_source=qemu_block_read_throttle_iops_20`,
+    `block_completion_mode=bounded_inline_or_hlt_idle`,
     `ninep_outstanding_wait_source=qemu_9p_read_throttle_iops_20`,
-    `idle_threshold_ppm=900000`, `block_idle_fraction_requirement=ge_900000`,
-    `block_busy_poll_fraction_requirement=le_100000`,
-    `block_idled_operations=31..32`, `block_busy_polled_operations=0..1`,
-    `block_idle_fraction_ppm=968750..1000000`,
+    `idle_threshold_ppm=900000`, `block_inline_instruction_requirement=le_40000`,
+    `block_idled_operations+block_inline_operations=32`,
+    `block_busy_polled_operations=0`,
     `block_operations_with_io_events=32`, `block_operations_without_io_events=0`,
+    `block_inline_max_instructions=33022`,
     `block_busy_poll_instruction_distribution=empty`,
-    `block_hlt_observed=true`, `block_io_events_observed_per_operation=true`,
-    `block_idle_threshold_met=true`,
+    `block_hlt_required=false_but_permitted`,
+    `block_io_events_observed_per_operation=true`,
+    `block_inline_completion_bounded=true`,
     `ninep_idle_fraction_requirement=ge_900000`,
     `ninep_busy_poll_fraction_requirement=le_100000`,
     `ninep_idled_operations=32`, `ninep_busy_polled_operations=0`,
@@ -1602,20 +1610,23 @@ register.
     `ninep_hlt_observed=true`, `ninep_io_events_observed_per_operation=true`,
     `ninep_idle_threshold_met=true`, `fallback_adopted=false`,
     `correctness_dependency=none_busy_poll_remains_bit_correct`,
-    `busy_poll_mitigation_decision=not_needed_for_measured_delayed_sync_read_path`,
+    `busy_poll_mitigation_decision=not_needed_for_measured_inline_block_and_delayed_9p_paths`,
     `s2_complete=true`.
   - **Scope:** validates the Phase-0 S2 measurement path for one stock Linux
-    kernel plus initramfs under TCG/icount with QEMU-throttled virtio-block and
-    QEMU-throttled virtio-9p reads. The throttles create an outstanding device
-    completion interval, the guest workload completes all 64 reads and prints
+    kernel plus initramfs under TCG/icount with deterministic-inline
+    virtio-block and QEMU-throttled virtio-9p reads. The 9p throttle creates an
+    outstanding device completion interval; the block path must complete within
+    a fixed 40,000-instruction bound or is classified as busy polling. The guest
+    workload completes all 64 reads and prints
     `TEST_RESULT:PASS`, and the plugin verifies every bracketed operation
     included device I/O events before the idle/busy classification is accepted.
-  - **Fallback:** none adopted for the measured delayed synchronous read path;
+  - **Fallback:** none adopted for the measured bounded-inline block and delayed
+    synchronous 9p paths;
     the exactness-preserving busy-poll fast-forward of [IO-30] remains the
     specified fallback if a future target path commonly busy-polls.
 
 - **RISK-8 / RISK-9 / T-RISK-4 — S3 savevm/loadvm completeness fallback**
-  - **Status:** PASS WITH FALLBACK; the thin/replay checkpoint realization is
+  - **Status:** HISTORICAL SPIKE, SUPERSEDED; the thin/replay checkpoint realization was
     adopted as the Phase-0 default, so unverified fat snapshots are not used.
   - **Check:** `checks.crucible.phase0.s3SavevmLoadvm`.
   - **Result:** `qmp_snapshot_save_available=true`,
@@ -1628,22 +1639,24 @@ register.
     `snapshot_point_0=diskless_boot_window`,
     `snapshot_point_1=cpu_timer_window`,
     `snapshot_point_2=block_pending_io`,
-    `snapshot_icount=100000008`,
-    `cpu_timer_snapshot_icount=150000010`,
-    `mid_io_snapshot_icount=6211647588`,
-    `mid_io_active_medium=block`, `mid_io_pause_io_events=1`,
-    `mid_io_pause_hlt_events=1`, `mid_io_guest_block_direct=true`,
+    `snapshot_icount=110601147`,
+    `cpu_timer_snapshot_icount=165526548`,
+    `mid_io_snapshot_icount=5789834836`,
+    `mid_io_active_medium=block`, `mid_io_pause_medium=block`,
+    `mid_io_pause_io_events=1`, `mid_io_operation_io_events=1`,
+    `mid_io_pause_hlt_events=0`, `mid_io_operation_hlt_events=0`,
+    `mid_io_guest_block_direct=true`,
     `suffix_segment_icount=50000000`,
-    `suffix_logical_horizon=150000008`,
+    `suffix_logical_horizon=160601147`,
     `all_suffix_fingerprints_match=false`,
     `boot_window_suffix_fingerprint_match=true`,
     `cpu_timer_suffix_fingerprint_match=true`,
     `mid_io_suffix_fingerprint_match=false`,
     `suffix_fingerprint_match=true`,
-    `suffix_stream_hash=bdb7658e9d86101e`, `register_hash_match=true`,
-    `suffix_register_hash=75b96364eff3a764`, `ram_hash_match=true`,
-    `suffix_ram_hash=78d57d4a3984e159`, `suffix_ram_bytes=1074274304`,
-    `suffix_state_hash=53227fe12f11d54a`,
+    `suffix_stream_hash=e2630ef2353d1e30`, `register_hash_match=true`,
+    `suffix_register_hash=a2571e16a6d8d547`, `ram_hash_match=true`,
+    `suffix_ram_hash=cb1af0eb48c320c9`, `suffix_ram_bytes=1074274304`,
+    `suffix_state_hash=f6350011aedebc94`,
     `device_event_hash_match=false`,
     `current_vmstate_snapshot_smoke=true`,
     `current_vmstate_snapshot_scope=diskless_and_cpu_timer_single_vcpu_qemu_vmstate_plus_block_pending_negative_control`,
@@ -1670,12 +1683,14 @@ register.
     pending-I/O snapshot as a negative control and records the restored suffix
     divergence, so it deliberately does not claim the full S3 pass criterion for
     fat checkpoints.
-  - **Fallback:** adopted. `instantiate` and the temporal graph default to thin
-    checkpoint realization by replay from genesis or a verified ancestor; the
-    fat-snapshot `loadvm` branch remains disabled until a later S3 rerun proves
-    the complete replay-oracle surface. This retires RISK-9 for the default
-    realization discipline and mitigates RISK-8 by non-use of unverified fat
-    snapshots.
+  - **Current decision:** no fallback. `QemuNode::capture_exact_snapshot`
+    captures the Apache-side host-I/O continuation and QEMU VMState as one
+    identity-bound pair, removes only QEMU artifacts known to have been created
+    by a transaction that later fails, preserves pre-existing artifacts after
+    ambiguous or duplicate saves, and rejects incomplete or mismatched pairs
+    before publishing a child.
+    `QemuExactSnapshotPolicy` additionally requires replay-oracle admission.
+    The Phase-0 result fields above remain solely as historical evidence.
 
 - **RISK-12 / T-RISK-5 — S5 guest virtual-memory payload reads**
   - **Status:** PASS; the virtual pointer+length payload form is retained for
@@ -1717,7 +1732,8 @@ register.
   - **Result:** `scenario=stock-linux-diskless-initramfs-kaslr-aslr`,
     `boot_medium=initramfs`, `block_devices=0`, `vcpus=1`,
     `cadence=200000000`, `horizon_icount=3400000000`,
-    `host_adversary=jitter-load`, `qemu_internal_seed=0x0010c006`,
+    `host_adversary=bounded-scheduler-preemption`,
+    `qemu_internal_seed=0x0010c006`,
     `guest_entropy_seed=fw_cfg_and_deterministic_virtio_rng`,
     `control_cmdline_has_nokaslr_norandmaps=true`,
     `randomized_cmdline_has_nokaslr_norandmaps=false`,
@@ -1762,7 +1778,7 @@ register.
     userspace ASLR is enabled through `/proc/sys/kernel/randomize_va_space`,
     reads a nonzero kernel text base from `/proc/kallsyms`, samples user address
     bases, and compares two randomized extended fingerprints plus explicit base
-    reports under host jitter. The proof uses QMP only to stop at a fixed icount
+    reports under bounded scheduler preemption. The proof uses QMP only to stop at a fixed icount
     after the guest reports PASS; it does not flip the global launch default.
   - **Delivery-icount seal:** reproducibility here required sealing the *icount*
     at which the seeded virtio-rng entropy is delivered, not only its bytes. The
@@ -2138,7 +2154,7 @@ register.
     `rr_switch_quantum=4096`, `cadence=100000000`,
     `horizon_icount=4000000000`, `periodic_samples_expected=40`,
     `periodic_samples_observed=40`, `samples=41`,
-    `rr_switch_events=389751`, `workload_affinity_active=true`,
+    `rr_switch_events=731765`, `workload_affinity_active=true`,
     `workload_affinity_vcpus=0,1,2,3`, `sustained_workload_active=true`,
     `extended_fingerprint_match=true`, `aggregate_icount_stream_match=true`,
     `rr_switch_trace_match=true`, `per_vcpu_delta_trace_match=true`,
@@ -2157,7 +2173,9 @@ register.
     SMP pthread spinlock workload across four guest vCPUs. The extended samples
     compare the aggregate instruction stream, per-vCPU register hashes, RAM
     hash, RR cursor, RR quantum, and final horizon fingerprint across an
-    identical run and a host-jitter run. The check asserts every sampled vCPU
+    clean run and a run with six configured 15 ms preemptions of QEMU itself
+    after the first positive trace coordinate and under a two-second resume
+    watchdog. The check asserts every sampled vCPU
     has a nonempty register descriptor set and zero register-read failures.
     Memory/device-event callbacks are disabled in this diskless proof; full
     device-event hashing remains later §4.6 gate work. The check scans the
@@ -2182,7 +2200,7 @@ register.
     `vcpu_switch_injection_tested=checks.crucible.phase2.qemuPreemptionInject`,
     `interrupt_timing_injection_tested=checks.crucible.phase2.qemuPreemptionInject`,
     `commanded_preemption_choices_tested=2`,
-    `commanded_preemption_reproducible=production_loaded_qemu_host_load_repeat`,
+    `commanded_preemption_reproducible=production_loaded_qemu_scheduler_preemption_repeat`,
     `commanded_preemption_discriminating=model_race_plus_live_command_application`,
     `known_race_manifested_under_one_choice=modeled`,
     `known_race_absent_under_another_choice=modeled`,
@@ -2195,7 +2213,7 @@ register.
     `s11_result_status=PASS`, `s11_rr_switch_quantum=4096`,
     `s11_horizon_icount=4000000000`, `s11_extended_fingerprint_match=true`,
     `live_preemption_rr_switch_quantum=4096`,
-    `live_preemption_deterministic_under_host_load=true`,
+    `live_preemption_deterministic_under_scheduler_preemption=true`,
     `live_preemption_sim_double_schedule_matches=true`,
     `decision_preemption_exploration_enabled=true`, `fallback_adopted=none`,
     `s12_complete=true`.
@@ -2204,7 +2222,7 @@ register.
     `qemu_plugin_inject_preemption`, the Rust plugin resolves the capability, and
     `checks.crucible.phase2.qemuPreemptionInject` covers command validation and
     `gate:single-vm-fingerprint` covers acknowledged vCPU-switch and interrupt
-    application at fixed icounts under differing host load. It
+    application at fixed icounts with and without bounded scheduler preemption. It
     requires green S1 and S11 decision-register entries as
     default-determinism prerequisites; both are green. It also witnesses that
     commanded preemption **discriminates a known race at the deterministic model
@@ -2302,7 +2320,8 @@ register.
   backed by the AOS-built `qemu-system-aarch64` target and green
   `checks.crucible.phase0.s10Aarch64Doorbell` activation gate. The live
   `checks.crucible.phase0.aarch64S1S6` gate closes the AArch64 S1 fingerprint
-  and S6 KASLR/ASLR legs across repeated seeded boots under host load. riscv64
+  and S6 KASLR/ASLR legs across repeated seeded boots under bounded scheduler
+  preemption. riscv64
   is judged feasible-but-deferred (assessment only).
 - [x] **T-D-2** Run the remote-checkpoint-store spike: confirm the local
   content-addressed store's interface is backend-pluggable and decide whether the
@@ -2337,8 +2356,8 @@ register.
   [D-36]: the known-race model witness
   `crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`
   is composed with exact production loaded-QEMU vCPU-switch and interrupt
-  application at every candidate quantum. All five candidates reproduce under
-  host load and preserve race yield, while `4096` is the smallest candidate over
+  application at every candidate quantum. All five candidates reproduce with
+  bounded scheduler preemption and preserve race yield, while `4096` is the smallest candidate over
   the throughput floor and is independently S11-green with four vCPUs.
   `checks.crucible.phase0.s13RrSwitchQuantumFallback` reports
   `race_yield_tested=true`, `d25_status=resolved_rr_switch_quantum_4096`, and

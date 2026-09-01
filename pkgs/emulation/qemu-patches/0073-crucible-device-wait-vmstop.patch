@@ -1,0 +1,397 @@
+diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
+index 157a65596..501f55f6c 100644
+--- a/block/crucible-shmem.c
++++ b/block/crucible-shmem.c
+@@ -24,6 +24,7 @@
+ #include "block/block-io.h"
+ #include "block/block_int.h"
+ #include "qemu/qemu-plugin.h"
++#include "qemu/plugin.h"
+ 
+ #define CRUCIBLE_SHMEM_OPT_SIZE BLOCK_OPT_SIZE
+ #define CRUCIBLE_SHMEM_DEFAULT_SIZE (1ULL << 30)
+@@ -482,8 +483,10 @@ crucible_shmem_poll_until_ready(BlockDriverState *bs, uint64_t epoch,
+         if (!crucible_blk_callbacks_ready()) {
+             return -ENODEV;
+         }
++        qemu_plugin_crucible_exact_boundary_enter();
+         ret = crucible_blk_poll_cb(epoch, request_id, data, capacity,
+                                    crucible_blk_userdata);
++        qemu_plugin_crucible_exact_boundary_leave();
+         if (ret != QEMU_PLUGIN_BLK_POLL_PENDING) {
+             /*
+              * A single wake may publish a primary completion followed by an
+diff --git a/hw/9pfs/virtio-9p-device.c b/hw/9pfs/virtio-9p-device.c
+index 6ab1622ce..d58bf5d4b 100644
+--- a/hw/9pfs/virtio-9p-device.c
++++ b/hw/9pfs/virtio-9p-device.c
+@@ -27,6 +27,7 @@
+ #include "qemu/iov.h"
+ #include "qemu/module.h"
+ #include "qemu/qemu-plugin.h"
++#include "qemu/plugin.h"
+ #include "system/crucible-plugin-wake.h"
+ #include "system/runstate.h"
+ #include "system/qtest.h"
+@@ -78,7 +79,9 @@ static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq);
+ static void crucible_9p_finish_burst(V9fsVirtioState *v)
+ {
+     if (v->crucible_9p_burst_active && !v->crucible_9p_pending_pdu) {
++        qemu_plugin_crucible_exact_boundary_enter();
+         crucible_9p_burst_done_cb(crucible_9p_userdata);
++        qemu_plugin_crucible_exact_boundary_leave();
+         v->crucible_9p_burst_active = false;
+     }
+ }
+@@ -150,8 +153,10 @@ static int virtio_9p_poll_crucible(V9fsVirtioState *v,
+         return -EIO;
+     }
+ 
++    qemu_plugin_crucible_exact_boundary_enter();
+     poll_ret = crucible_9p_poll_cb(request_id, response, response_capacity,
+                                    crucible_9p_userdata);
++    qemu_plugin_crucible_exact_boundary_leave();
+     if (poll_ret == QEMU_PLUGIN_9P_POLL_PENDING) {
+         return CRUCIBLE_9P_FORWARD_PENDING;
+     }
+diff --git a/hw/virtio/virtio-crucible-accelerator.c b/hw/virtio/virtio-crucible-accelerator.c
+index 49756ef03..d74054192 100644
+--- a/hw/virtio/virtio-crucible-accelerator.c
++++ b/hw/virtio/virtio-crucible-accelerator.c
+@@ -14,6 +14,7 @@
+ #include "qemu/module.h"
+ #include "qemu/crucible-fault.h"
+ #include "qemu/qemu-plugin.h"
++#include "qemu/plugin.h"
+ #include "hw/virtio/virtio-crucible-accelerator.h"
+ #include "migration/qemu-file-types.h"
+ #include "migration/qemu-file.h"
+@@ -71,6 +72,18 @@ static bool accelerator_callbacks_ready(void)
+            accelerator_cancel_cb;
+ }
+ 
++static int64_t accelerator_poll_exact(uint64_t sequence, uint16_t *status,
++                                      uint8_t *output, size_t output_capacity)
++{
++    int64_t result;
++
++    qemu_plugin_crucible_exact_boundary_enter();
++    result = accelerator_poll_cb(sequence, status, output, output_capacity,
++                                 accelerator_userdata);
++    qemu_plugin_crucible_exact_boundary_leave();
++    return result;
++}
++
+ static bool accelerator_job_valid(const VirtIOCrucibleAcceleratorJob *job,
+                                   size_t out_bytes, size_t in_bytes)
+ {
+@@ -189,15 +202,13 @@ static void accelerator_poll(VirtIOCrucibleAccelerator *dev)
+     uint16_t discarded_status = 0;
+ 
+     /* Sequence zero drains host acknowledgements for cancelled requests. */
+-    accelerator_poll_cb(0, &discarded_status, output, sizeof(output),
+-                        accelerator_userdata);
++    accelerator_poll_exact(0, &discarded_status, output, sizeof(output));
+ 
+     QTAILQ_FOREACH_SAFE(request, &dev->pending, link, next) {
+         uint16_t status = 0;
+-        int64_t len = accelerator_poll_cb(
+-            le64_to_cpu(request->job.sequence), &status,
+-            output, sizeof(output),
+-            accelerator_userdata);
++        int64_t len = accelerator_poll_exact(
++            le64_to_cpu(request->job.sequence), &status, output,
++            sizeof(output));
+ 
+         if (len == QEMU_PLUGIN_ACCELERATOR_POLL_PENDING) {
+             accelerator_wait_cb(le64_to_cpu(request->job.sequence),
+diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+index b9d0c5a72..952a779b0 100644
+--- a/include/qemu/plugin.h
++++ b/include/qemu/plugin.h
+@@ -189,6 +189,9 @@ extern qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_vcpu_idle_resume_resume_cb;
+ extern void *qemu_plugin_vcpu_idle_resume_userdata;
+ void qemu_plugin_fire_vcpu_idle_cb(CPUState *cpu);
+ void qemu_plugin_fire_vcpu_resume_cb(CPUState *cpu);
++extern qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_control_boundary_cb;
++extern void *qemu_plugin_control_boundary_userdata;
++void qemu_plugin_fire_control_boundary_cb(CPUState *cpu);
+ 
+ void qemu_plugin_crucible_exact_boundary_enter(void);
+ void qemu_plugin_crucible_exact_boundary_leave(void);
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index d2e89855f..0db640157 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1082,15 +1082,16 @@ void qemu_plugin_force_vcpu_exit(void);
+ /**
+  * qemu_plugin_request_vmstop() - stop the VM from an exact plugin boundary
+  *
+- * Admits QEMU's native RUN_STATE_PAUSED transition from an RR-owned
+- * post-tcg_cpu_exec, sim-dispatch, sim-observer, vCPU idle/resume, or budget
+- * callback.  The RR-global fence prevents every vCPU from dispatching until
+- * the main loop consumes the stop.  Instruction, memory, syscall, and other
+- * callbacks outside those exact boundaries are rejected.
++ * Admits QEMU's native RUN_STATE_PAUSED transition from an RR-owned exact
++ * callback.  A drained main-loop control wake stops synchronously before
++ * another TCG slice can dispatch.  Device-completion and vCPU callbacks queue
++ * the transition behind the RR-global dispatch fence so they cannot recurse
++ * into their own drain path.  Instruction, memory, syscall, and other callbacks
++ * outside exact scopes are rejected.
+  *
+  * Returns: 0 when admitted, -EPERM outside an exact single-threaded sim RR
+  * boundary, or -EALREADY while a prior request awaits stop/resume completion.
+- * The caller must use QMP stop/query-status as the asynchronous completion
++ * The caller must use QMP stop/query-status as the authoritative completion
+  * channel; stop also reports a retained block flush failure from the request.
+  */
+ QEMU_PLUGIN_API
+@@ -1190,6 +1191,21 @@ void qemu_plugin_register_vcpu_idle_resume_cb(qemu_plugin_vcpu_idle_resume_cb_t
+                                               qemu_plugin_vcpu_idle_resume_cb_t resume_cb,
+                                               void *userdata);
+ 
++/**
++ * qemu_plugin_register_control_boundary_cb() - register a control wake hook
++ * @cb: callback fired at drained host-control boundaries
++ * @userdata: opaque pointer passed to the callback
++ *
++ * The callback runs inside Crucible's exact-boundary scope after an idle time
++ * advance has committed or after the registered wake fd has been drained while
++ * no idle advance is pending.  It does not imply a vCPU halt/resume transition.
++ * The callback may therefore acknowledge pause or shutdown without executing a
++ * guest instruction or changing vCPU halt tracking.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_register_control_boundary_cb(
++    qemu_plugin_vcpu_idle_resume_cb_t cb, void *userdata);
++
+ /**
+  * qemu_plugin_register_sim_shmem_dispatch_cb() - register sim shmem clock hooks
+  * @publish_icount_cb: callback that publishes the current raw icount
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+index f3b6a53bc..cecbf9cc4 100644
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -15,6 +15,7 @@
+ #include "qemu/error-report.h"
+ #include "qemu/accel.h"
+ #include "hw/core/cpu.h"
++#include "system/cpus.h"
+ #include "system/runstate.h"
+ #include "system/crucible-plugin-wake.h"
+ #include "net/net.h"
+@@ -122,16 +123,23 @@ qemu_plugin_tcg_exec_cb_t qemu_plugin_tcg_exec_cb;
+ void *qemu_plugin_tcg_exec_userdata;
+ qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_vcpu_idle_resume_idle_cb;
+ qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_vcpu_idle_resume_resume_cb;
++qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_control_boundary_cb;
++void *qemu_plugin_control_boundary_userdata;
+ void *qemu_plugin_vcpu_idle_resume_userdata;
+ qemu_plugin_crucible_ipi_delivery_cb_t qemu_plugin_crucible_ipi_delivery_cb;
+ void *qemu_plugin_crucible_ipi_delivery_userdata;
+ 
+ static void qemu_plugin_time_advance_barrier_bh(void *opaque);
+ static void qemu_plugin_time_advance_complete_bh(void *opaque);
++static void qemu_plugin_control_boundary_barrier_bh(void *opaque);
++static void qemu_plugin_control_boundary_complete_bh(void *opaque);
++static void qemu_plugin_schedule_control_boundary(void);
+ 
+ #define QEMU_PLUGIN_TIME_ADVANCE_RESERVED 1
+ #define QEMU_PLUGIN_TIME_ADVANCE_ARMED 2
+ 
++static int qemu_plugin_control_boundary_scheduled;
++
+ bool qemu_plugin_has_time_control(void)
+ {
+     return has_control;
+@@ -244,11 +252,58 @@ static void qemu_plugin_time_advance_complete_bh(void *opaque)
+      */
+     notifier_list_notify(&qemu_plugin_wake_notifiers,
+                          (void *)(intptr_t)QEMU_PLUGIN_WAKE_EVENT_DRAINED);
++    qemu_plugin_schedule_control_boundary();
+     if (first_cpu) {
+         qemu_cpu_kick(first_cpu);
+     }
+ }
+ 
++static void qemu_plugin_control_boundary_complete_bh(void *opaque)
++{
++    (void)opaque;
++
++    /*
++     * A control wake can arrive while an idle-time advance is between its
++     * QEMU clock mutation and plugin commit.  Keep yielding through the same
++     * two-pass barrier until that commit clears the RR fence; acknowledging
++     * earlier would expose a raw clock with a stale logical-time offset.
++     */
++    if (qatomic_load_acquire(&qemu_plugin_time_advance_pending)) {
++        /*
++         * One-shot BHs are inserted at the head of the AioContext queue, so a
++         * self-rescheduling waiter would starve the time-advance completion.
++         * Relinquish the coalescing token instead; that completion is already
++         * queued and schedules a fresh control boundary after its commit.
++         */
++        qatomic_store_release(&qemu_plugin_control_boundary_scheduled, 0);
++        return;
++    }
++
++    qatomic_store_release(&qemu_plugin_control_boundary_scheduled, 0);
++    qemu_plugin_fire_control_boundary_cb(first_cpu);
++}
++
++static void qemu_plugin_control_boundary_barrier_bh(void *opaque)
++{
++    (void)opaque;
++    /*
++     * Wake notifiers can schedule device-coroutine bottom halves. Complete
++     * the control boundary on the following main-loop pass so every bottom
++     * half captured by the wake is visible before the plugin acknowledges it.
++     */
++    aio_bh_schedule_oneshot(qemu_get_aio_context(),
++                            qemu_plugin_control_boundary_complete_bh, NULL);
++}
++
++static void qemu_plugin_schedule_control_boundary(void)
++{
++    if (qatomic_cmpxchg(&qemu_plugin_control_boundary_scheduled, 0, 1) != 0) {
++        return;
++    }
++    aio_bh_schedule_oneshot(qemu_get_aio_context(),
++                            qemu_plugin_control_boundary_barrier_bh, NULL);
++}
++
+ int qemu_plugin_advance_time_ns(int64_t new_time)
+ {
+     if (new_time < 0) {
+@@ -336,6 +391,7 @@ void qemu_plugin_force_vcpu_exit(void)
+ }
+ 
+ static __thread unsigned int qemu_plugin_crucible_exact_boundary_depth;
++static __thread unsigned int qemu_plugin_crucible_control_boundary_depth;
+ static int qemu_plugin_crucible_vmstop_state;
+ static int qemu_plugin_crucible_vmstop_flush_result;
+ 
+@@ -345,10 +401,8 @@ enum {
+     QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED,
+ };
+ 
+-int qemu_plugin_crucible_vmstop_admit_internal(void)
++static int qemu_plugin_crucible_vmstop_begin(void)
+ {
+-    int status;
+-
+     if (icount_enabled() != ICOUNT_PRECISE ||
+         !qemu_plugin_crucible_single_threaded_rr()) {
+         return -EPERM;
+@@ -362,13 +416,49 @@ int qemu_plugin_crucible_vmstop_admit_internal(void)
+         return -EALREADY;
+     }
+ 
++    return 0;
++}
++
++int qemu_plugin_crucible_vmstop_admit_internal(void)
++{
++    int status = qemu_plugin_crucible_vmstop_begin();
++
++    if (status != 0) {
++        return status;
++    }
++
+     /*
+-     * vCPU-thread vm_stop() admits an asynchronous main-loop transition and
+-     * therefore returns zero after queueing it.  QMP query-status is the
+-     * completion channel; this return value reports admission only.
++     * Always queue the runstate transition for the main loop.  Exact device
++     * completion callbacks may run without current_cpu even though they are
++     * inside the deterministic sim dispatch boundary; vm_stop() would perform
++     * a synchronous drain there and deadlock against the callback being
++     * completed.  The request pair is the asynchronous half of vm_stop(), and
++     * cpu_stop_current() preserves its vCPU-exit behavior when current_cpu is
++     * available.  QMP query-status remains the completion channel.
+      */
+-    status = vm_stop(RUN_STATE_PAUSED);
++    qemu_system_vmstop_request_prepare();
++    qemu_system_vmstop_request(RUN_STATE_PAUSED);
++    cpu_stop_current();
++    return 0;
++}
++
++static int qemu_plugin_crucible_vmstop_at_control_boundary(void)
++{
++    int status = qemu_plugin_crucible_vmstop_begin();
+ 
++    if (status != 0) {
++        return status;
++    }
++
++    /*
++     * A drained control wake runs directly from the main-loop event handler,
++     * outside every device coroutine.  Stop synchronously here so QEMU cannot
++     * dispatch another TCG slice between the plugin's exact publication and
++     * RUN_STATE_PAUSED.  Device-completion callbacks use the asynchronous path
++     * above because a synchronous block drain would recurse into their own
++     * in-flight coroutine.
++     */
++    status = vm_stop(RUN_STATE_PAUSED);
+     if (status != 0) {
+         qatomic_set(&qemu_plugin_crucible_vmstop_state,
+                     QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE);
+@@ -378,9 +468,12 @@ int qemu_plugin_crucible_vmstop_admit_internal(void)
+ 
+ int qemu_plugin_request_vmstop(void)
+ {
+-    if (!current_cpu || qemu_plugin_crucible_exact_boundary_depth == 0) {
++    if (qemu_plugin_crucible_exact_boundary_depth == 0) {
+         return -EPERM;
+     }
++    if (qemu_plugin_crucible_control_boundary_depth > 0) {
++        return qemu_plugin_crucible_vmstop_at_control_boundary();
++    }
+     return qemu_plugin_crucible_vmstop_admit_internal();
+ }
+ 
+@@ -496,6 +589,14 @@ static void qemu_plugin_wake_fd_read(void *opaque)
+                                      (void *)(intptr_t)QEMU_PLUGIN_WAKE_EVENT_DRAINED);
+             }
+             if (drained && first_cpu) {
++                /*
++                 * A drained scheduler wake requests an exact control boundary.
++                 * The coalesced two-pass callback waits for an overlapping
++                 * idle-time commit instead of dropping the request.  Keep this
++                 * distinct from vCPU resume: waking the main loop does not
++                 * change halt state.
++                 */
++                qemu_plugin_schedule_control_boundary();
+                 qemu_cpu_kick(first_cpu);
+             }
+             return;
+@@ -601,6 +702,28 @@ void qemu_plugin_fire_vcpu_resume_cb(CPUState *cpu)
+     }
+ }
+ 
++void qemu_plugin_register_control_boundary_cb(
++    qemu_plugin_vcpu_idle_resume_cb_t cb, void *userdata)
++{
++    qemu_plugin_control_boundary_userdata = userdata;
++    qemu_plugin_control_boundary_cb = cb;
++}
++
++void qemu_plugin_fire_control_boundary_cb(CPUState *cpu)
++{
++    qemu_plugin_vcpu_idle_resume_cb_t cb = qemu_plugin_control_boundary_cb;
++
++    if (cb && cpu) {
++        g_assert(qemu_plugin_crucible_control_boundary_depth < UINT_MAX);
++        qemu_plugin_crucible_control_boundary_depth++;
++        qemu_plugin_crucible_exact_boundary_enter();
++        cb(cpu->cpu_index, qemu_plugin_icount_raw(),
++           qemu_plugin_control_boundary_userdata);
++        qemu_plugin_crucible_exact_boundary_leave();
++        qemu_plugin_crucible_control_boundary_depth--;
++    }
++}
++
+ void qemu_plugin_crucible_register_ipi_delivery_cb(
+     qemu_plugin_crucible_ipi_delivery_cb_t cb,
+     void *userdata)

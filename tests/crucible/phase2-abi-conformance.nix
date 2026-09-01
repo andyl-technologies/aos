@@ -6,11 +6,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   harnessLib = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
   gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
@@ -21,9 +17,11 @@
   protocolGateTest = builtins.readFile ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
   protocolGoldenTest = builtins.readFile ../../crates/crucible-protocol/tests/golden_vectors.rs;
   pluginGateTest = builtins.readFile ../../crates/crucible-qemu-plugin/tests/gate_abi_conformance.rs;
+  guestGateTest = builtins.readFile ../../crates/crucible-guest/tests/gate_abi_conformance.rs;
   engineGateTest = builtins.readFile ../../crates/crucible/tests/gate_abi_conformance.rs;
   apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
   apiRpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
+  apiRpcGolden = builtins.readFile ../../crates/crucible-api/src/rpc_abi/golden.rs;
   apiGateTest = builtins.readFile ../../crates/crucible-api/tests/gate_abi_conformance.rs;
   harnessSpec = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   apiSpec = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
@@ -78,6 +76,15 @@
         needle = ''
           gate: "gate:abi-conformance",
                   package: "crucible-qemu-plugin",
+                  test_target: "gate_abi_conformance",
+                  required_features: &[],
+                  placeholder: false,'';
+      }
+      {
+        label = "guest ABI target implemented";
+        needle = ''
+          gate: "gate:abi-conformance",
+                  package: "crucible-guest",
                   test_target: "gate_abi_conformance",
                   required_features: &[],
                   placeholder: false,'';
@@ -178,8 +185,18 @@
         needle = "run-qemu-plugin-io-wire-fuzz";
       }
       {
-        label = "plugin owner executes I/O wire unit target";
-        needle = "run_plugin_io_wire_fuzz_unit_target(&root)?";
+        label = "plugin owner binds I/O wire unit target to executable gate";
+        needle = "assert_plugin_io_wire_fuzz_unit_target_is_gate_wired(&canonical_gate)";
+      }
+    ]
+    ++ failuresFor "crates/crucible-guest/tests/gate_abi_conformance.rs" guestGateTest [
+      {
+        label = "guest command ABI owner";
+        needle = "guest_cli_verbs_encode_shared_marker_payloads";
+      }
+      {
+        label = "guest architecture ABI owner";
+        needle = "guest_emitter_uses_single_source_doorbell_abi_table";
       }
     ]
     ++ failuresFor "crates/crucible/tests/gate_abi_conformance.rs" engineGateTest [
@@ -210,14 +227,14 @@
         needle = "GOLDEN_RPC_VECTORS";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/rpc_abi.rs" apiRpcAbi [
+    ++ failuresFor "crates/crucible-api/src/rpc_abi module tree" (apiRpcAbi + apiRpcGolden) [
       {
         label = "explicit major version";
         needle = "pub const RPC_PROTOCOL_MAJOR: u16 = 5;";
       }
       {
         label = "explicit minor version";
-        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 0;";
+        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 1;";
       }
       {
         label = "explicit patch version";
@@ -301,7 +318,7 @@
       }
       {
         label = "event vector";
-        needle = "name: \"event-fault-activated\"";
+        needle = "name: \"event-effect-applied\"";
       }
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_abi_conformance.rs" apiGateTest [
@@ -353,6 +370,7 @@ in
 
       buildDeps =
         [
+          pkgs.grep
           pkgs.rust
           pkgs.sed
         ]
@@ -391,6 +409,41 @@ in
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
               cd source
             fi
+
+            # Cargo treats a filter that selects zero tests as success. Each
+            # ABI owner is therefore listed first, with both its exact current
+            # cardinality and one canonical owner test checked before execution.
+            require_test_set() {
+              expected_count="$1"
+              label="$2"
+              exact_test="$3"
+              shift 3
+
+              list_file="$TMPDIR/abi-conformance-$label-tests.list"
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                "$@" \
+                -- --list > "$list_file"
+
+              actual_count=$(grep -c ': test$' "$list_file" || :)
+              if [ "$actual_count" -ne "$expected_count" ]; then
+                echo "$label registered $actual_count ABI tests; expected $expected_count" >&2
+                cat "$list_file" >&2
+                exit 1
+              fi
+              if ! grep -Fxq "$exact_test: test" "$list_file"; then
+                echo "$label did not register canonical ABI test $exact_test" >&2
+                cat "$list_file" >&2
+                exit 1
+              fi
+            }
+
+            require_test_set 4 harness \
+              gate_abi_conformance_is_implemented_in_catalog_and_targets \
+              -p crucible-harness --test gate_abi_conformance
             cargo test \
               --frozen \
               --offline \
@@ -399,6 +452,9 @@ in
               -p crucible-harness \
               --test gate_abi_conformance \
               -- --test-threads=1
+            require_test_set 5 shmem \
+              gate_cases::gate_abi_conformance_checks_generated_header_and_golden_vectors \
+              -p crucible-shmem --test gate_abi_conformance
             cargo test \
               --frozen \
               --offline \
@@ -407,6 +463,9 @@ in
               -p crucible-shmem \
               --test gate_abi_conformance \
               -- --test-threads=1
+            require_test_set 11 protocol \
+              protocol_abi_conformance_runs_named_checks \
+              -p crucible-protocol --test gate_abi_conformance
             cargo test \
               --frozen \
               --offline \
@@ -415,6 +474,9 @@ in
               -p crucible-protocol \
               --test gate_abi_conformance \
               -- --test-threads=1
+            require_test_set 7 protocol-golden \
+              golden_vectors_match_canonical_codec_bytes \
+              -p crucible-protocol --test golden_vectors
             cargo test \
               --frozen \
               --offline \
@@ -423,6 +485,20 @@ in
               -p crucible-protocol \
               --test golden_vectors \
               -- --test-threads=1
+            require_test_set 3 protocol-doorbell \
+              doorbell_abi::tests::doorbell_abi_vectors_cover_x86_64_and_aarch64 \
+              -p crucible-protocol doorbell_abi
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-protocol \
+              doorbell_abi \
+              -- --test-threads=1
+            require_test_set 6 api \
+              rpc_abi_conformance_runs_named_checks \
+              -p crucible-api --test gate_abi_conformance
             cargo test \
               --frozen \
               --offline \
@@ -431,6 +507,31 @@ in
               -p crucible-api \
               --test gate_abi_conformance \
               -- --test-threads=1
+            require_test_set 8 plugin-io-wire \
+              io_wire_fuzz::tests::io_wire_regression_corpus_exercises_block_and_9p_wire_cases \
+              -p crucible-qemu-plugin --lib io_wire_fuzz
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu-plugin \
+              --lib io_wire_fuzz \
+              -- --test-threads=1
+            require_test_set 39 plugin-doorbell \
+              whitebox_doorbell::tests::whitebox_registration_off_mode_installs_no_trap_and_preserves_black_box \
+              -p crucible-qemu-plugin --lib whitebox_doorbell
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu-plugin \
+              --lib whitebox_doorbell \
+              -- --test-threads=1
+            require_test_set 2 plugin-owner \
+              gate_abi_conformance_covers_plugin_io_wire_fuzzing \
+              -p crucible-qemu-plugin --test gate_abi_conformance
             cargo test \
               --frozen \
               --offline \
@@ -439,6 +540,20 @@ in
               -p crucible-qemu-plugin \
               --test gate_abi_conformance \
               -- --test-threads=1
+            require_test_set 5 guest \
+              guest_cli_verbs_encode_shared_marker_payloads \
+              -p crucible-guest --test gate_abi_conformance
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-guest \
+              --test gate_abi_conformance \
+              -- --test-threads=1
+            require_test_set 2 engine \
+              gate_abi_conformance_engine_aggregates_boundary_abi_owners \
+              -p crucible --features test-double --test gate_abi_conformance
             cargo test \
               --frozen \
               --offline \
@@ -462,9 +577,13 @@ in
             gate=gate:abi-conformance
             shmem_vectors=generated-header,layout-fixture,spsc-structure-aware,spsc-snapshot-byte-codec
             protocol_vectors=hello,hello-ack,setup-payload,setup-ack,quit
-            rpc_vectors=hello-request,hello-response,attached,send-request,send-response,event-fault-activated
+            rpc_vectors=hello-request,hello-response,attached,send-request,send-response,event-effect-applied
             plugin_io_wire_fuzz=phase2-protocol-codec-fuzz-run-qemu-plugin-io-wire-fuzz
+            plugin_io_wire_fuzz_executed=true
+            doorbell_abi_unit_targets_executed=true
+            guest_abi_target_executed=true
             engine_abi_aggregate=true
+            zero_test_guards=exact-count-and-canonical-owner
             version_bump_rule=shmem+protocol+rpc-golden-corpora
             rpc_major_mismatch_rejection=true
             reference_client_scope=implemented-T-API-13

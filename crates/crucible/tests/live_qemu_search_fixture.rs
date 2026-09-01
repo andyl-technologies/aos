@@ -71,3 +71,19 @@ fn live_qemu_search_fixture_is_canonical() -> Result<(), EngineError> {
     assert!(canonical.contains("loss_millionths = 250000"));
     Ok(())
 }
+
+#[test]
+fn nginx_fixture_is_canonical() -> Result<(), EngineError> {
+    let text = include_str!("../../../tests/crucible/fixtures/nginx-curl-http-200.scenario.toml");
+    let scenario = ScenarioDefForm::from_canonical_toml(text)?;
+    assert_eq!(scenario.to_canonical_toml()?, text);
+    Ok(())
+}
+
+#[test]
+fn happy_path_fixture_is_canonical() -> Result<(), EngineError> {
+    let text = include_str!("../../../tests/crucible/fixtures/happy-path.scenario.toml");
+    let scenario = ScenarioDefForm::from_canonical_toml(text)?;
+    assert_eq!(scenario.to_canonical_toml()?, text);
+    Ok(())
+}
