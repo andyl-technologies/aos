@@ -32,6 +32,28 @@
     builtins.filter
     (name: serviceCatalog.services.${name}.ownership == "package")
     serviceNames;
+  managedPackageNames = lib.sort builtins.lessThan (lib.unique (
+    builtins.filter
+    (name: let
+      value = builtins.tryEval pkgs.${name};
+    in
+      value.success
+      && builtins.isAttrs value.value
+      && (value.value ? config || value.value ? expose))
+    (builtins.attrNames pkgs)
+  ));
+  catalogedManagedNames = lib.sort builtins.lessThan (packageServiceNames ++ serviceCatalog.fixtures);
+  unmanagedPackages = builtins.filter (name: !builtins.elem name catalogedManagedNames) managedPackageNames;
+  staleCatalogPackages = builtins.filter (name: !builtins.elem name managedPackageNames) catalogedManagedNames;
+  invalidNonServices = builtins.filter (name: let
+    value = pkgs.${name} or null;
+  in
+    value
+    == null
+    || !builtins.isString serviceCatalog.nonServices.${name}
+    || serviceCatalog.nonServices.${name} == ""
+    || value ? config
+    || value ? expose) (builtins.attrNames serviceCatalog.nonServices);
   configurablePackages =
     builtins.map
     (name:
@@ -75,6 +97,10 @@ in
     ''
   else if serviceCatalog.schema != "aos.service-documentation/v1"
   then throw "unsupported service documentation catalog schema"
+  else if unmanagedPackages != [] || staleCatalogPackages != []
+  then throw "managed package service inventory drift (unmanaged: ${builtins.concatStringsSep ", " unmanagedPackages}; stale: ${builtins.concatStringsSep ", " staleCatalogPackages})"
+  else if invalidNonServices != []
+  then throw "on-demand package dispositions are missing, stale, or unexpectedly managed: ${builtins.concatStringsSep ", " invalidNonServices}"
   else if undocumentedSystemServices != []
   then throw "system service documentation is missing typed options, descriptions, or units: ${builtins.concatStringsSep ", " undocumentedSystemServices}"
   else
