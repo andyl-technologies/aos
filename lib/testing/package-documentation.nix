@@ -116,6 +116,12 @@
           (builtins.filter
             (option: !(builtins.match "_module(\\..*)?" option.pathStr != null))
             optionSurface));
+        authoredContributable = builtins.sort builtins.lessThan (builtins.concatMap
+          (owned: builtins.map (path: "''${owned.root}.''${path}") owned.contributable)
+          metadata.owns_roots);
+        evaluatedContributable = builtins.sort builtins.lessThan (builtins.map
+          (option: option.pathStr)
+          (builtins.filter (option: option.contributable) optionSurface));
         undocumented = builtins.map
           (option: option.pathStr)
           (builtins.filter (option: option.description == "") publicOptions);
@@ -126,6 +132,8 @@
           throw "package '${name}' has undocumented public configuration options: ''${builtins.concatStringsSep ", " undocumented}"
         else if declaredOptions != evaluatedOptions then
           throw "package '${name}' declaration claims do not exactly match its evaluated options: declared=''${builtins.toJSON declaredOptions}, evaluated=''${builtins.toJSON evaluatedOptions}"
+        else if authoredContributable != evaluatedContributable then
+          throw "package '${name}' contributable claims do not exactly match its evaluated option surface: authored=''${builtins.toJSON authoredContributable}, evaluated=''${builtins.toJSON evaluatedContributable}"
         else
           ${builtins.toJSON name}
     '';
@@ -201,6 +209,22 @@ in
         {
           name = "check";
           script = ''
+            # Restricted documentation evaluations use only the explicit
+            # authenticated -I bindings below. An empty NIX_PATH also keeps
+            # Nix from probing the daemon's global profile hierarchy inside
+            # the sandbox.
+            export NIX_PATH=
+            export NIX_PROFILES=
+            export NIX_STATE_DIR="$TMPDIR/nix-state"
+            export NIX_LOG_DIR="$TMPDIR/nix-log"
+            export NIX_CONF_DIR="$TMPDIR/nix-conf"
+            export NIX_USER_PROFILE_DIR="$TMPDIR/nix-profiles"
+            mkdir -p \
+              "$NIX_STATE_DIR" \
+              "$NIX_LOG_DIR" \
+              "$NIX_CONF_DIR" \
+              "$NIX_USER_PROFILE_DIR"
+
             ${lib.concatMapStringsSep "\n" (package: ''
                 jq -e --arg description ${lib.escapeShellArg package.meta.description} '
                   (.documentation.summary == $description)

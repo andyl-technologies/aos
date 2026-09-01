@@ -3025,7 +3025,7 @@ fn derive_config_option_declarations(
       name = {};
       configRoot = <aos-publish-config-module>;
       module = <aos-publish-config-module/module.nix>;
-      outputs = {{ self = {}; dependencies = {{ {} }}; }};
+      outputs = {{ self = builtins.toString <aos-publish-runtime-output>; dependencies = {{ {} }}; }};
       authorization = {{ owns = [ {owns} ]; contributes = {{ {contributes} }}; }};
     }} ];
     inherit (base) lib;
@@ -3037,14 +3037,13 @@ in builtins.map (decl: {{
 }})
   (base.lib.optionSurface evaluated)"#,
         nix_publish_string(package_name),
-        nix_publish_string(runtime_output),
         dependency_outputs
             .iter()
-            .map(|(name, path)| {
+            .enumerate()
+            .map(|(index, (name, _path))| {
                 format!(
-                    "{} = {};",
+                    "{} = builtins.toString <aos-publish-config-dependency-{index}>;",
                     nix_publish_string(name),
-                    nix_publish_string(path)
                 )
             })
             .collect::<Vec<_>>()
@@ -3052,6 +3051,7 @@ in builtins.map (decl: {{
     );
     let base_search_path = format!("aos-publish-base-lib={base_lib_path}");
     let module_search_path = format!("aos-publish-config-module={config_output}");
+    let runtime_search_path = format!("aos-publish-runtime-output={runtime_output}");
     let evaluator = std::env::var_os("PATH")
         .and_then(|path| {
             std::env::split_paths(&path)
@@ -3061,26 +3061,31 @@ in builtins.map (decl: {{
         .context("cannot find nix-instantiate in the AOS command path")?;
     let mut command = Command::new(evaluator);
     command.env_clear();
+    command.args([
+        "--store",
+        "dummy://",
+        "--eval",
+        "--strict",
+        "--json",
+        "--option",
+        "restrict-eval",
+        "true",
+        "--option",
+        "allow-import-from-derivation",
+        "false",
+        "-I",
+        &base_search_path,
+        "-I",
+        &module_search_path,
+        "-I",
+        &runtime_search_path,
+    ]);
+    for (index, path) in dependency_outputs.values().enumerate() {
+        let search_path = format!("aos-publish-config-dependency-{index}={path}");
+        command.args(["-I", &search_path]);
+    }
     let output = command
-        .args([
-            "--store",
-            "dummy://",
-            "--eval",
-            "--strict",
-            "--json",
-            "--option",
-            "restrict-eval",
-            "true",
-            "--option",
-            "allow-import-from-derivation",
-            "false",
-            "-I",
-            &base_search_path,
-            "-I",
-            &module_search_path,
-            "--expr",
-            &expression,
-        ])
+        .args(["--expr", &expression])
         .output()
         .with_context(|| {
             format!("running options-only config-module eval for package '{package_name}'")
