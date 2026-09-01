@@ -63,11 +63,6 @@ in {
       default = true;
       description = "Refuse to start when swap is enabled on the host.";
     };
-    podSandboxImage = mkOption {
-      type = types.strMatching "[^[:space:]]+";
-      default = "registry.k8s.io/pause:3.10";
-      description = "OCI image used for each pod sandbox.";
-    };
     registerNode = mkOption {
       type = types.bool;
       default = true;
@@ -107,7 +102,6 @@ in {
       runtime = {
         KUBELET_ENABLED = cfg.enable;
         KUBELET_NODE_NAME = cfg.nodeName;
-        KUBELET_POD_SANDBOX_IMAGE = cfg.podSandboxImage;
       };
       config = {
         apiVersion = "kubelet.config.k8s.io/v1beta1";

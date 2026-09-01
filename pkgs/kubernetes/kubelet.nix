@@ -12,7 +12,6 @@
       --config=/etc/aos/packages/kubelet/config.json
       --root-dir=/var/lib/kubelet
       --hostname-override="$KUBELET_NODE_NAME"
-      --pod-infra-container-image="$KUBELET_POD_SANDBOX_IMAGE"
     )
     if [ -e /run/credentials/kubelet.service/kubeconfig ]; then
       args+=(--kubeconfig=/run/credentials/kubelet.service/kubeconfig)
@@ -65,7 +64,6 @@ in
             required = [
               "KUBELET_ENABLED"
               "KUBELET_NODE_NAME"
-              "KUBELET_POD_SANDBOX_IMAGE"
             ];
             units = ["kubelet.service"];
             reload = "restart";
@@ -164,7 +162,6 @@ in
         "kubelet.kubeconfig"
         "kubelet.maxPods"
         "kubelet.nodeName"
-        "kubelet.podSandboxImage"
         "kubelet.registerNode"
         "kubelet.runtimeEndpoint"
         "kubelet.staticPodPath"
