@@ -55,13 +55,13 @@ use super::provenance;
 use super::registry::{RegistrySet, keys, store_path_hash};
 use super::remove::retained_installed_indexes;
 use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_multiple};
-use super::store::{closure_paths, create_gc_roots, filter_missing, import_nar};
+use super::store::{closure_paths, create_gc_roots, filter_missing};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{
     ApmMeta, InstalledMeta, PackageMeta, package_requires_provenance,
     validate_attestation_provenance_ref, validate_registry_name,
 };
-use super::verify::{verify_downloads, verify_nar_hash};
+use super::verify::verify_downloads;
 use aos_core::error::AosError;
 use aos_core::nar::info as narinfo;
 use aos_core::output::{OutputMode, Printer};
@@ -467,11 +467,12 @@ async fn run_inner(
         // Import NARs into the store.
         printer.step(5, 7, "Importing packages...");
         for result in &results {
-            import_nar(
+            crate::store::import_nar_with_compression(
                 &result.local_path,
                 &result.store_path,
                 &result.references,
                 result.deriver.as_deref(),
+                &result.compression,
             )
             .await
             .with_context(|| format!("importing {}", result.store_path))?;
@@ -585,6 +586,7 @@ async fn run_inner(
                     expose: meta.expose.clone(),
                     expose_artifact: meta.expose_artifact.clone(),
                     config_module: meta.config_module.clone(),
+                    documentation: meta.documentation.clone(),
                     permissions: meta.permissions.clone(),
                     bpf_lsm: meta.bpf_lsm.clone(),
                     attestation: meta.attestation.clone(),
@@ -749,6 +751,19 @@ fn collect_expose_artifacts(
     let mut seen = HashMap::<String, usize>::new();
 
     for closure in closures {
+        for package in &closure.closure {
+            if let Some(documentation) = &package.documentation {
+                push_secondary_artifact(
+                    &mut artifacts,
+                    &mut seen,
+                    &closure.registry_name,
+                    &documentation.store_path,
+                    &documentation.nar_hash,
+                    true,
+                    true,
+                )?;
+            }
+        }
         let Some(expose) = closure.root.expose.as_ref() else {
             continue;
         };
@@ -796,7 +811,7 @@ fn push_secondary_artifact(
         let previous = &artifacts[previous_index];
         if previous.nar_hash != nar_hash {
             anyhow::bail!(
-                "secondary expose store path '{}' has conflicting signed NAR hashes",
+                "secondary artifact store path '{}' has conflicting signed NAR hashes",
                 store_path
             );
         }
@@ -804,7 +819,7 @@ fn push_secondary_artifact(
             || previous.requires_empty_references != requires_empty_references
         {
             anyhow::bail!(
-                "secondary expose store path '{}' is declared with incompatible roles",
+                "secondary artifact store path '{}' is declared with incompatible roles",
                 store_path
             );
         }
@@ -836,12 +851,16 @@ fn verify_secondary_artifact_downloads(
         };
         if artifact.requires_empty_references && !result.references.is_empty() {
             anyhow::bail!(
-                "expose image '{}' has runtime references but signed image metadata covers only the image NAR",
+                "secondary artifact '{}' must have an empty reference set",
                 result.store_path
             );
         }
-        verify_nar_hash(&result.local_path, &artifact.nar_hash)
-            .with_context(|| format!("verifying signed NAR for {}", result.store_path))?;
+        crate::verify::verify_nar_hash_with_compression(
+            &result.local_path,
+            &artifact.nar_hash,
+            &result.compression,
+        )
+        .with_context(|| format!("verifying signed NAR for {}", result.store_path))?;
     }
 
     Ok(())
@@ -1547,11 +1566,14 @@ fn obsolete_installed_hashes(
         if !apm.source_drv.is_empty() {
             hashes.insert(store_path_hash(&apm.source_drv).to_string());
         }
+        if let Some(documentation) = &apm.documentation {
+            hashes.insert(store_path_hash(&documentation.store_path).to_string());
+        }
     }
     hashes
 }
 
-/// Copy the `usr/` and `src/` GC-root symlinks from one generation to
+/// Copy the `usr/`, `src/`, and `docs/` GC-root symlinks from one generation to
 /// another, skipping the hashes in `skip_hashes` (replaced packages) and
 /// never overwriting links already present in the destination.
 pub(crate) fn copy_roots_except_hashes(
@@ -1561,48 +1583,27 @@ pub(crate) fn copy_roots_except_hashes(
 ) -> Result<()> {
     use std::os::unix::fs::symlink;
 
-    // Copy usr/ roots.
-    let from_usr = from.path.join("usr");
-    let to_usr = to.path.join("usr");
-    std::fs::create_dir_all(&to_usr).with_context(|| format!("creating {}", to_usr.display()))?;
+    for directory in ["usr", "src", "docs"] {
+        let source = from.path.join(directory);
+        let destination = to.path.join(directory);
+        std::fs::create_dir_all(&destination)
+            .with_context(|| format!("creating {}", destination.display()))?;
 
-    if from_usr.is_dir() {
-        for entry in std::fs::read_dir(&from_usr)? {
-            let entry = entry?;
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if skip_hashes.contains(name_str.as_ref()) {
-                continue;
-            }
-            let target = std::fs::read_link(entry.path())?;
-            let dest = to_usr.join(&name);
-            if !dest.symlink_metadata().is_ok() {
-                symlink(&target, &dest).with_context(|| {
-                    format!("copying root {} -> {}", dest.display(), target.display())
-                })?;
-            }
-        }
-    }
-
-    // Copy src/ roots.
-    let from_src = from.path.join("src");
-    let to_src = to.path.join("src");
-    std::fs::create_dir_all(&to_src).with_context(|| format!("creating {}", to_src.display()))?;
-
-    if from_src.is_dir() {
-        for entry in std::fs::read_dir(&from_src)? {
-            let entry = entry?;
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if skip_hashes.contains(name_str.as_ref()) {
-                continue;
-            }
-            let target = std::fs::read_link(entry.path())?;
-            let dest = to_src.join(&name);
-            if !dest.symlink_metadata().is_ok() {
-                symlink(&target, &dest).with_context(|| {
-                    format!("copying root {} -> {}", dest.display(), target.display())
-                })?;
+        if source.is_dir() {
+            for entry in std::fs::read_dir(&source)? {
+                let entry = entry?;
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if skip_hashes.contains(name_str.as_ref()) {
+                    continue;
+                }
+                let target = std::fs::read_link(entry.path())?;
+                let dest = destination.join(&name);
+                if !dest.symlink_metadata().is_ok() {
+                    symlink(&target, &dest).with_context(|| {
+                        format!("copying root {} -> {}", dest.display(), target.display())
+                    })?;
+                }
             }
         }
     }
@@ -1967,6 +1968,7 @@ mod tests {
             expose: None,
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: Default::default(),
             bpf_lsm: None,
             attestation: Default::default(),
@@ -2057,6 +2059,7 @@ mod tests {
                 expose: None,
                 expose_artifact: None,
                 config_module: None,
+                documentation: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -2568,6 +2571,7 @@ mod tests {
             local_path: std::path::PathBuf::from("/does/not/exist"),
             download_hash: "sha256:download".to_string(),
             nar_hash: "sha256:image".to_string(),
+            compression: "zstd".to_string(),
             references: vec!["/var/lib/store/ref-dep".to_string()],
             deriver: None,
         };
@@ -2582,7 +2586,7 @@ mod tests {
         let err = verify_secondary_artifact_downloads(&[result], &[artifact])
             .expect_err("referenced expose image should be rejected");
 
-        assert!(err.to_string().contains("runtime references"));
+        assert!(err.to_string().contains("empty reference set"));
     }
 
     fn package_toml(name: &str, version: &str, store_path: &str) -> String {

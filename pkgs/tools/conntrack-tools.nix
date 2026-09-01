@@ -113,8 +113,15 @@ in
         "conntrackd.logConnections"
         "conntrackd.mode"
         "conntrackd.netlinkBufferSize"
+        "conntrackd.netlinkBufferSizeMaxGrowth"
         "conntrackd.pollSeconds"
-        "conntrackd.sync"
+        "conntrackd.sync.ackWindowSize"
+        "conntrackd.sync.checksum"
+        "conntrackd.sync.interface"
+        "conntrackd.sync.localAddress"
+        "conntrackd.sync.peerAddress"
+        "conntrackd.sync.port"
+        "conntrackd.sync.resendQueueSize"
       ];
       ownsRoots = [
         {
@@ -128,6 +135,17 @@ in
         units = [];
         users = [];
         groups = [];
+      };
+      documentation = {
+        summary = "conntrack-tools — connection tracking userspace tools for netfilter";
+        sections = {
+          modes = lib.aosDoc.section "Operation modes" [
+            (lib.aosDoc.paragraph "Choose a local statistics/cache mode or declare a complete synchronization channel. Buffer, hash, polling, and connection logging controls are validated before reload.")
+          ];
+          lifecycle = lib.aosDoc.section "Runtime lifecycle" [
+            (lib.aosDoc.paragraph "conntrackd reloads a validated configuration in place while its socket and log paths remain systemd-managed.")
+          ];
+        };
       };
     };
 

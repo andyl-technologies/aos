@@ -434,7 +434,8 @@ async fn registry_home_carries_setup_snippets_and_fingerprints() {
         "{body}"
     );
     assert!(body.contains("trustKeys"), "{body}");
-    // The canonical facade is also the advertised binary-cache endpoint.
+    // The canonical anonymous delivery facade is also the advertised
+    // binary-cache endpoint; the cache remains an implementation behind it.
     assert!(
         body.contains("substituters = http://127.0.0.1:8420/demo"),
         "{body}"

@@ -317,6 +317,19 @@ service PackageService {
   rpc GetPackage(GetPackageRequest) returns (GetPackageResponse);
 }
 
+// Authenticated package documentation and tooling schema. Canonical document
+// bytes remain sourced from the signed Nix object; search rows are disposable
+// projections rebuilt by registry indexing.
+service DocumentationService {
+  rpc GetPackageDocumentation(GetPackageDocumentationRequest) returns (GetPackageDocumentationResponse);
+  rpc SearchPackageDocumentation(SearchPackageDocumentationRequest) returns (SearchPackageDocumentationResponse);
+  rpc ListPackageOptions(ListPackageOptionsRequest) returns (ListPackageOptionsResponse);
+  rpc GetPackageOption(GetPackageOptionRequest) returns (GetPackageOptionResponse);
+  rpc ComparePackageDocumentation(ComparePackageDocumentationRequest) returns (ComparePackageDocumentationResponse);
+  rpc GetDocumentationArtifact(GetDocumentationArtifactRequest) returns (GetPackageDocumentationResponse);
+  rpc GetPackageDocumentationSchema(GetPackageDocumentationSchemaRequest) returns (GetPackageDocumentationSchemaResponse);
+}
+
 service ChannelService {
   rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse);
   rpc GetChannel(GetChannelRequest) returns (GetChannelResponse);
@@ -443,6 +456,130 @@ message GetPackageRequest {
 
 message GetPackageResponse {
   Package package = 1;
+}
+
+message GetPackageDocumentationRequest {
+  string registry = 1;
+  string package = 2;
+  string version = 3;
+  string platform = 4;
+}
+
+message PackageDocumentationIdentity {
+  string registry_commit = 1;
+  string package = 2;
+  string version = 3;
+  string platform = 4;
+  string format = 5;
+  string store_path = 6;
+  string nar_hash = 7;
+  uint64 nar_size = 8;
+  string document_sha256 = 9;
+  uint64 document_size = 10;
+  string semantic_schema_sha256 = 11;
+}
+
+message GetPackageDocumentationResponse {
+  PackageDocumentationIdentity identity = 1;
+  bytes canonical_json = 2;
+  string etag = 3;
+}
+
+message SearchPackageDocumentationRequest {
+  string registry = 1;
+  string query = 2;
+  string kind = 3;
+  uint32 page_size = 4;
+  string page_token = 5;
+}
+
+message PackageDocumentationSearchResult {
+  string package = 1;
+  string version = 2;
+  string platform = 3;
+  string kind = 4;
+  string key = 5;
+  string title = 6;
+  string summary = 7;
+  uint64 score = 8;
+}
+
+message SearchPackageDocumentationResponse {
+  repeated PackageDocumentationSearchResult results = 1;
+  string next_page_token = 2;
+}
+
+message DocumentationPathSegment {
+  oneof segment {
+    string literal = 1;
+    string wildcard = 2;
+  }
+}
+
+message ListPackageOptionsRequest {
+  string registry = 1;
+  string package = 2;
+  string version = 3;
+  string platform = 4;
+  string prefix = 5;
+  string owner = 6;
+  string type = 7;
+  optional bool contributable = 8;
+  uint32 page_size = 9;
+  string page_token = 10;
+}
+
+message PackageOptionView {
+  PackageDocumentationIdentity identity = 1;
+  repeated DocumentationPathSegment path = 2;
+  string display_path = 3;
+  string type = 4;
+  string owner_package = 5;
+  string owner_root = 6;
+  bool contributable = 7;
+  bytes canonical_option_json = 8;
+}
+
+message ListPackageOptionsResponse {
+  repeated PackageOptionView options = 1;
+  string next_page_token = 2;
+}
+
+message GetPackageOptionRequest {
+  string registry = 1;
+  string package = 2;
+  string version = 3;
+  string platform = 4;
+  repeated DocumentationPathSegment path = 5;
+}
+
+message GetPackageOptionResponse { PackageOptionView option = 1; }
+
+message ComparePackageDocumentationRequest {
+  string registry = 1;
+  string package = 2;
+  string from_version = 3;
+  string to_version = 4;
+  string platform = 5;
+}
+
+message ComparePackageDocumentationResponse {
+  PackageDocumentationIdentity from = 1;
+  PackageDocumentationIdentity to = 2;
+  bytes canonical_comparison_json = 3;
+}
+
+message GetDocumentationArtifactRequest {
+  string registry = 1;
+  string document_sha256 = 2;
+}
+
+message GetPackageDocumentationSchemaRequest {}
+
+message GetPackageDocumentationSchemaResponse {
+  string schema = 1;
+  string media_type = 2;
+  bytes json_schema = 3;
 }
 
 message ListChannelsRequest {

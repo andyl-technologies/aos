@@ -199,6 +199,8 @@
         options.nginx.enable = lib.mkOption {
           type = lib.types.bool;
           default = false;
+          description = "Whether to enable nginx.";
+          example = true;
         };
         options.nginx.virtualHosts = lib.mkOption {
           type = lib.types.attrsOf (lib.types.submodule {
@@ -222,6 +224,25 @@
   f3bValueUnperturbed = f3bEval.config.nginx.enable == true;
   f3bBoolTypeSig =
     (builtins.head (builtins.filter (d: d.pathStr == "nginx.enable") f3bEval._optionDecls)).typeSig;
+  f3bEnableDocumentation =
+    builtins.head (builtins.filter (d: d.pathStr == "nginx.enable") f3bEval._optionDecls);
+  f3bDocumentationIsStructured =
+    f3bEnableDocumentation.type
+    == {kind = "bool";}
+    && f3bEnableDocumentation.description == "Whether to enable nginx."
+    && f3bEnableDocumentation.default
+    == {
+      kind = "literal";
+      value = false;
+    }
+    && f3bEnableDocumentation.example
+    == {
+      kind = "literal";
+      value = true;
+    }
+    && f3bEnableDocumentation.visibility == "public"
+    && !f3bEnableDocumentation.readOnly
+    && !f3bEnableDocumentation.contributable;
 
   packageDiagnosticsEval = lib.evalModules {
     modules = [
@@ -1228,8 +1249,8 @@
         message = "pathInStore validation";
       }
       {
-        ok = f3bSurfaceIsVirtualHosts && f3bValueUnperturbed && f3bBoolTypeSig == "boolean";
-        message = "contributable typed surface";
+        ok = f3bSurfaceIsVirtualHosts && f3bValueUnperturbed && f3bBoolTypeSig == "boolean" && f3bDocumentationIsStructured;
+        message = "contributable typed documentation surface";
       }
       {
         ok = packageEngineDiagnosticsAccepted;

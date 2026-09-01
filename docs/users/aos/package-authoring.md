@@ -278,6 +278,65 @@ The renderer creates a package target named:
 aos-pkg-<package-name>.target
 ```
 
+## Author generated package documentation
+
+Configuration reference belongs beside the package's Nix interface. Add a
+structured `documentation` value to `configModule`; do not create a per-package
+Markdown option guide:
+
+```nix
+configModule = {
+  module = ./_acme-health-agent-config/module.nix;
+  documentation = {
+    summary = "Health reporting, listener policy, and reload behavior.";
+    sections.quickstart = {
+      title = "Quick start";
+      blocks = [
+        {
+          kind = "paragraph";
+          spans = [
+            {
+              kind = "text";
+              text = "Enable the agent and select its reporting interval.";
+            }
+          ];
+        }
+        {
+          kind = "code";
+          language = "nix";
+          text = ''
+            {
+              acmeHealthAgent.enable = true;
+              acmeHealthAgent.interval = "60s";
+            }
+          '';
+        }
+      ];
+    };
+  };
+};
+```
+
+The restricted publisher evaluation mechanically extracts option paths, types,
+defaults, examples, ownership and contribution rules. It cross-checks any
+package-authored option enrichment against that declared interface, combines it
+with expose metadata for services, listeners, credentials, paths and
+capabilities, and emits canonical `aos.package-documentation/v1` JSON. Structured
+prose supports paragraphs, lists, notes and code blocks; raw Markdown, HTML and
+external includes are intentionally not representable.
+
+Publication stores the canonical JSON as a reference-free Nix store object and
+binds its NAR and semantic identities into signed package metadata. A prose-only
+change updates documentation without changing runtime measurement, while an
+option or runtime-interface change updates the semantic schema digest. Verify
+the package's generated interface and publication contract with:
+
+```sh
+nix-build -A checks.package-documentation --no-out-link
+nix-build -A checks.package-expose --no-out-link
+apr verify --registry <name>
+```
+
 Activating `acme-health-agent` enables
 `aos-pkg-acme-health-agent.target`, which owns the service unit above. Units
 marked `onlyManualStart = true` are installed but are not pulled into that

@@ -201,6 +201,20 @@ in
           contributable = [];
         }
       ];
+      documentation = {
+        summary = "containerd — industry-standard container runtime";
+        sections = {
+          enablement = lib.aosDoc.section "Standalone runtime" [
+            (lib.aosDoc.paragraph "Installing containerd is inert. Enable this package only for a standalone host runtime; k3s consumes containerd binaries as subordinate payloads and does not enable this service.")
+          ];
+          isolation = lib.aosDoc.section "Privilege and state" [
+            (lib.aosDoc.paragraph "This is an explicit root-equivalent workload with kernel, cgroup, state, runtime, and socket access. Durable state uses /var/lib/containerd and volatile state uses /run/containerd.")
+          ];
+          registries = lib.aosDoc.section "Registry configuration" [
+            (lib.aosDoc.paragraph "Provision hosts.toml beneath registryConfigPath using host policy. Registry passwords must use an external credential helper or platform-managed file, never runtime Nix values.")
+          ];
+        };
+      };
     };
 
     phases = [

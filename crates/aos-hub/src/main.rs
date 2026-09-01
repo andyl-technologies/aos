@@ -417,6 +417,19 @@ async fn main() -> Result<()> {
                 .context("reading bound listen address")?;
             let external_url = external_url.unwrap_or_else(|| format!("http://{listen_addr}"));
             let db = Arc::new(Database::open(&root.join("hub.db")).await?);
+            let storage_root = root.join("storage");
+            std::fs::create_dir_all(&storage_root).with_context(|| {
+                format!(
+                    "creating native Hub storage root {}",
+                    storage_root.display()
+                )
+            })?;
+            let storage_root_text = storage_root
+                .to_str()
+                .context("native Hub storage root is not valid UTF-8")?;
+            db.ensure_instance_default_binding("local_fs", Some(storage_root_text), None)
+                .await
+                .context("provisioning native Hub instance-default binding")?;
             let image_snapshots = aos_hub::image_snapshot::ImageSnapshotStore::open(&root)?;
             image_snapshots.load_tracked(&db).await?;
             let route_reservation_keys_path = route_reservation_keys_file

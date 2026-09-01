@@ -86,9 +86,9 @@
     '';
   };
   contract = assert rendered.runtime.CONTAINERD_ENABLED == "true";
-  assert rendered.containerd.grpc.address == "/run/containerd/contract.sock";
-  assert rendered.containerd.metrics.address == "127.0.0.1:11338";
-  assert rendered.containerd.plugins."io.containerd.cri.v1.images".snapshotter == "native";
+  assert rendered.config.grpc.address == "/run/containerd/contract.sock";
+  assert rendered.config.metrics.address == "127.0.0.1:11338";
+  assert rendered.config.plugins."io.containerd.cri.v1.images".snapshotter == "native";
   assert !(builtins.all (entry: entry.assertion) invalid.config.assertions); true;
 in
   pkgs.runCommand "containers-containerd-config-module-contract" {} ''

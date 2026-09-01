@@ -69,24 +69,12 @@ multicall binary, so `aos package` is equivalent to `apm` and
 
 - [Package an application for AOS](package-authoring.md) follows a service from
   its derivation through image inclusion, registry publication, and upgrade.
-- [Configure nginx](nginx.md) covers typed virtual hosts, composable upstreams,
-  reload behavior, and TLS credential references.
-- [Configure Envoy](envoy.md) covers typed listeners, clusters, routes, xDS,
-  validation, firewall policy, and credential references.
-- [Configure k3s](k3s.md) covers worker, control-plane, and combined roles plus
-  CNI/CSI composition and token references.
-- [Configure Cilium](cilium.md) covers its authenticated CNI and Kubernetes
-  resource contribution.
-- [Configure Longhorn](longhorn.md) covers its authenticated CSI and
-  Kubernetes resource contribution.
-- Package-owned service guides cover the
-  [registry server](registry-server.md), [containerd](containerd.md),
-  [etcd](etcd.md), [PostgreSQL](postgresql.md), [MariaDB](mariadb.md),
-  [Garage](garage.md), [OpenLDAP](openldap.md),
-  [Kerberos KDC](krb5-kdc.md), [conntrackd](conntrackd.md), and
-  [rsync daemon](rsyncd.md).
-- KubeEdge operators can configure [CloudCore](cloudcore.md) and
-  [EdgeCore](edgecore.md) through their package-owned typed interfaces.
+- Package and service configuration is generated from each package's Nix
+  interface and signed runtime contract. Use `apm docs`, `apm options`, the
+  offline `apm docs serve` browser, or the package documentation workspace in
+  AOS Hub. The generated reference covers nginx, Envoy, k3s and add-ons,
+  registry services, containerd, databases and storage, identity services,
+  network daemons, and KubeEdge without maintaining a second Markdown schema.
 - [Deploy AOS in production](deployment.md) covers golden-image qualification,
   platform import, bare metal, and fleet promotion.
 - [Maintain the source tree](../../maintainers/) covers Nix builds, image

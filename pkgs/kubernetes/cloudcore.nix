@@ -124,6 +124,17 @@ in
         users = [];
         groups = [];
       };
+      documentation = {
+        summary = "CloudCore — KubeEdge cloud-side component";
+        sections = {
+          deployment = lib.aosDoc.section "Cloud deployment" [
+            (lib.aosDoc.paragraph "CloudCore connects KubeEdge nodes to an existing Kubernetes control plane. Configure stable advertised addresses and explicitly enable only the HTTPS and WebSocket listeners the fleet needs.")
+          ];
+          credentials = lib.aosDoc.section "Trust material" [
+            (lib.aosDoc.paragraph "CA and server keys and certificates are opaque references delivered as systemd credentials; Kubernetes access uses the configured kubeconfig host path.")
+          ];
+        };
+      };
     };
 
     phases = [

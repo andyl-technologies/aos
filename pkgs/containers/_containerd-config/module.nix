@@ -86,7 +86,7 @@ in {
         if cfg.enable
         then "true"
         else "false";
-      containerd = {
+      config = {
         version = 3;
         root = cfg.root;
         state = cfg.state;
