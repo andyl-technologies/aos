@@ -190,7 +190,9 @@ in
             (lib.aosDoc.paragraph "The optional kubeconfig is an opaque credential reference delivered only to kubelet. Static-pod-only deployments may leave it unset and disable node registration.")
           ];
           privilege = lib.aosDoc.section "Host authority" [
-            (lib.aosDoc.note "security" "Kubelet is root-equivalent: it controls containers, cgroups, mounts, devices, and host networking. Install and enable it only on nodes dedicated to this trust boundary.")
+            (lib.aosDoc.note "security" [
+              (lib.aosDoc.paragraph "Kubelet is root-equivalent: it controls containers, cgroups, mounts, devices, and host networking. Install and enable it only on nodes dedicated to this trust boundary.")
+            ])
           ];
         };
       };
