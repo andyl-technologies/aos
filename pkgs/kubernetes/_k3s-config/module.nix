@@ -257,16 +257,19 @@ in {
       cni = mkOption {
         type = types.attrsOf cniIntegrationType;
         default = {};
+        contributable = true;
         description = "Named, package-contributable CNI integration requirements.";
       };
       csi = mkOption {
         type = types.attrsOf csiIntegrationType;
         default = {};
+        contributable = true;
         description = "Named, package-contributable CSI integration requirements.";
       };
       resources = mkOption {
         type = types.attrsOf resourceType;
         default = {};
+        contributable = true;
         description = "Named, package-contributable Kubernetes YAML bundles reconciled by server roles.";
       };
     };
