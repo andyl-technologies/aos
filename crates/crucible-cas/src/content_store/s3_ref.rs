@@ -915,6 +915,11 @@ fn new_inventory_instance() -> Result<[u8; 32], StoreError> {
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- unit fixtures use panic shortcuts for exact failure localization.
+    #![allow(clippy::expect_used)]
+    // crucible-lint: allow rust-allow -- fixture storage shapes mirror the provider state they validate.
+    #![allow(clippy::type_complexity)]
+
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::mpsc;
     use std::thread;

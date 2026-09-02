@@ -20,9 +20,6 @@ use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 
-#[cfg(feature = "cas")]
-use crucible_cas::content_store::{StoreError, StorePhysicalQuotaBinder, StorePhysicalQuotaGuard};
-#[cfg(feature = "cas")]
 use rustix::fs::open;
 use rustix::fs::{FileType, Mode, OFlags, RawDir, fstat, fstatfs, fsync, openat};
 use rustix::ioctl::{Getter, Setter, ioctl, opcode};
@@ -195,6 +192,11 @@ impl LinuxProjectQuotaReservation {
     ///
     /// The descriptor is lent only for descriptor-relative preparation. It
     /// does not grant quota release or project-ID reuse.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxProjectQuotaError`] when release has already consumed
+    /// the pinned directory authority.
     pub fn directory(&self) -> Result<&OwnedFd, LinuxProjectQuotaError> {
         self.directory
             .as_ref()
@@ -325,23 +327,9 @@ pub fn validate_project_quota_root(
     Ok(())
 }
 
-/// Safe binder for an operator-installed ext4 project quota on a CAS leaf.
-#[cfg(feature = "cas")]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct LinuxProjectQuotaBinder;
-
-#[cfg(feature = "cas")]
-impl LinuxProjectQuotaBinder {
-    /// Constructs the stateless Linux project-quota binder.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self
-    }
-}
-
-#[cfg(feature = "cas")]
+/// Pinned authority for one operator-installed ext4 project quota.
 #[derive(Debug)]
-struct BoundLinuxProjectQuota {
+pub struct LinuxProjectQuotaBinding {
     directory: OwnedFd,
     path: PathBuf,
     device: u64,
@@ -350,88 +338,89 @@ struct BoundLinuxProjectQuota {
     limits: LinuxProjectQuotaLimits,
 }
 
-#[cfg(feature = "cas")]
-impl StorePhysicalQuotaBinder for LinuxProjectQuotaBinder {
-    fn bind(
-        &self,
+impl LinuxProjectQuotaBinding {
+    /// Pins and verifies one already configured project-quota directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxProjectQuotaError`] when the project identifier or
+    /// limits are unsupported, the directory cannot be pinned, or its exact
+    /// filesystem, assignment, limits, or current usage fail verification.
+    pub fn bind_existing(
         root: &Path,
         project_id: u32,
         maximum_physical_bytes: u64,
         maximum_inodes: u64,
-    ) -> Result<std::sync::Arc<dyn StorePhysicalQuotaGuard>, StoreError> {
+    ) -> Result<Self, LinuxProjectQuotaError> {
         if !project_id_is_supported(project_id) {
-            return Err(StoreError::Quota);
+            return Err(LinuxProjectQuotaError::InvalidProjectId);
         }
-        let limits = LinuxProjectQuotaLimits::new(maximum_physical_bytes, maximum_inodes)
-            .map_err(project_quota_store_error)?;
+        let limits = LinuxProjectQuotaLimits::new(maximum_physical_bytes, maximum_inodes)?;
         let directory = open(
             root,
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
             Mode::empty(),
         )
-        .map_err(|source| StoreError::Io {
+        .map_err(|source| LinuxProjectQuotaError::Io {
             operation: "open-physical-quota-root",
             path: root.to_owned(),
             source: source.into(),
         })?;
-        validate_ext4_filesystem(&directory, &directory, root)
-            .map_err(project_quota_store_error)?;
-        project_quota_info(&directory, root).map_err(project_quota_store_error)?;
-        verify_assigned_project(&directory, root, project_id).map_err(project_quota_store_error)?;
-        verify_project_quota(&directory, root, project_id, limits)
-            .map_err(project_quota_store_error)?;
-        verify_project_usage_within_limit(&directory, root, project_id, limits)
-            .map_err(project_quota_store_error)?;
-        let identity = fstat(&directory).map_err(|source| StoreError::Io {
+        validate_ext4_filesystem(&directory, &directory, root)?;
+        project_quota_info(&directory, root)?;
+        verify_assigned_project(&directory, root, project_id)?;
+        verify_project_quota(&directory, root, project_id, limits)?;
+        verify_project_usage_within_limit(&directory, root, project_id, limits)?;
+        let identity = fstat(&directory).map_err(|source| LinuxProjectQuotaError::Io {
             operation: "identify-physical-quota-root",
             path: root.to_owned(),
             source: source.into(),
         })?;
-        Ok(std::sync::Arc::new(BoundLinuxProjectQuota {
+        Ok(Self {
             directory,
             path: root.to_owned(),
             device: identity.st_dev,
             inode: identity.st_ino,
             project_id,
             limits,
-        }))
+        })
     }
-}
 
-#[cfg(feature = "cas")]
-impl StorePhysicalQuotaGuard for BoundLinuxProjectQuota {
-    fn verify(&self) -> Result<(), StoreError> {
+    /// Reauthenticates the pinned directory and its installed quota.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxProjectQuotaError`] when the named directory no longer
+    /// matches the pin or its assignment, limits, or usage changed.
+    pub fn verify(&self) -> Result<(), LinuxProjectQuotaError> {
         let current = open(
             &self.path,
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
             Mode::empty(),
         )
-        .map_err(|source| StoreError::Io {
+        .map_err(|source| LinuxProjectQuotaError::Io {
             operation: "reopen-physical-quota-root",
             path: self.path.clone(),
             source: source.into(),
         })?;
-        let current_identity = fstat(&current).map_err(|source| StoreError::Io {
+        let current_identity = fstat(&current).map_err(|source| LinuxProjectQuotaError::Io {
             operation: "reauthenticate-physical-quota-root",
             path: self.path.clone(),
             source: source.into(),
         })?;
         if current_identity.st_dev != self.device || current_identity.st_ino != self.inode {
-            return Err(StoreError::Quota);
+            return Err(LinuxProjectQuotaError::FilesystemIdentity {
+                path: self.path.clone(),
+            });
         }
 
-        validate_ext4_filesystem(&self.directory, &self.directory, &self.path)
-            .map_err(project_quota_store_error)?;
-        verify_assigned_project(&self.directory, &self.path, self.project_id)
-            .map_err(project_quota_store_error)?;
-        verify_project_quota(&self.directory, &self.path, self.project_id, self.limits)
-            .map_err(project_quota_store_error)?;
+        validate_ext4_filesystem(&self.directory, &self.directory, &self.path)?;
+        verify_assigned_project(&self.directory, &self.path, self.project_id)?;
+        verify_project_quota(&self.directory, &self.path, self.project_id, self.limits)?;
         verify_project_usage_within_limit(&self.directory, &self.path, self.project_id, self.limits)
-            .map_err(project_quota_store_error)
     }
 }
 
-#[cfg(feature = "cas")]
 fn verify_assigned_project(
     directory: &OwnedFd,
     path: &Path,
@@ -445,22 +434,6 @@ fn verify_assigned_project(
         });
     }
     Ok(())
-}
-
-#[cfg(feature = "cas")]
-fn project_quota_store_error(error: LinuxProjectQuotaError) -> StoreError {
-    match error {
-        LinuxProjectQuotaError::Io {
-            operation,
-            path,
-            source,
-        } => StoreError::Io {
-            operation,
-            path,
-            source,
-        },
-        _ => StoreError::Quota,
-    }
 }
 
 impl Drop for LinuxProjectQuotaReservation {

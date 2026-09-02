@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  bash,
   python3,
 }: let
   version = "1.10.1";
@@ -18,7 +19,10 @@ in
     };
 
     buildDeps = [python3];
-    runtimeDeps = [python3];
+    runtimeDeps = [
+      bash
+      python3
+    ];
     propagatedDeps = [];
 
     phases = [
@@ -54,7 +58,7 @@ in
 
                   # Create wrapper script that invokes meson via python3
                   cat > $out/bin/meson << EOF
-          #!/bin/sh
+          #!${bash}/bin/bash
           PYTHONPATH=$out/lib/python3/site-packages exec ${python3}/bin/python3 -m mesonbuild.mesonmain "\$@"
           EOF
                   chmod +x $out/bin/meson

@@ -8,12 +8,7 @@ publish = false
 [lints]
 workspace = true
 
-[features]
-default = ["cas"]
-cas = ["dep:crucible-cas"]
-
 [dependencies]
-crucible-cas = { workspace = true, optional = true }
 libc = { workspace = true }
 rustix = { workspace = true }
 thiserror = { workspace = true }

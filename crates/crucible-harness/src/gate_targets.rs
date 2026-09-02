@@ -156,6 +156,13 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         placeholder: false,
     },
     GateTargetSpec {
+        gate: "gate:typed-choice",
+        package: "crucible-campaign",
+        test_target: "gate_typed_choice",
+        required_features: &[],
+        placeholder: false,
+    },
+    GateTargetSpec {
         gate: "gate:replay-oracle",
         package: "crucible",
         test_target: "gate_replay_oracle",

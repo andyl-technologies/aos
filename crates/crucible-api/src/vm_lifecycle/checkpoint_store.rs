@@ -1904,6 +1904,7 @@ fn encode_manifest(manifest: &ClosureManifest) -> Result<Vec<u8>, SchedulerError
     Ok(bytes)
 }
 
+// crucible-lint: allow stringly-error -- the private shape validator returns bounded diagnostics that the typed checkpoint-store boundary immediately wraps.
 fn validate_dense_artifact_shape(artifact: &ArtifactManifest) -> Result<(), String> {
     if artifact.sparse || !artifact.extents.is_empty() {
         return Err(String::from(

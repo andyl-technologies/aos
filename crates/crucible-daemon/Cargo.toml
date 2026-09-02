@@ -14,9 +14,11 @@ crucible = { path = "../crucible" }
 crucible-api = { path = "../crucible-api" }
 crucible-campaign = { path = "../crucible-campaign" }
 crucible-cas = { workspace = true }
+crucible-linux-resource = { workspace = true }
 crucible-protocol = { path = "../crucible-protocol" }
 crucible-qemu = { path = "../crucible-qemu" }
 crucible-shmem = { path = "../crucible-shmem" }
+crucible-s3-store = { workspace = true }
 rustix = { workspace = true, features = ["event", "net", "time"] }
 serde = { workspace = true }
 thiserror = { workspace = true }

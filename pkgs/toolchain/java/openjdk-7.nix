@@ -2,6 +2,9 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
+  buildPackages,
   gnumake,
   autoconf,
   bash,
@@ -15,6 +18,7 @@
   sed,
   pkg-config,
   zlib,
+  krb5,
   alsa-lib,
   binutils,
   cups,
@@ -30,8 +34,68 @@
   ant-bootstrap,
   fastjar,
   libxslt,
+  java-native-foundation,
   bootstrapTools,
 }: let
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  buildTools =
+    if isDarwinCross
+    then buildPackages
+    else {
+      inherit
+        gnumake
+        autoconf
+        bash
+        which
+        zip
+        unzip
+        cpio
+        gawk
+        coreutils
+        grep
+        sed
+        pkg-config
+        binutils
+        file
+        perl
+        jamvm-2_0
+        ecj-bootstrap
+        classpath-0_99
+        gjavah
+        ant-bootstrap
+        fastjar
+        libxslt
+        ;
+    };
+  alsaForBuild =
+    if isDarwinCross
+    then buildPackages.alsa-lib
+    else alsa-lib;
+  xorgStubsForBuild =
+    if isDarwinCross
+    then buildPackages.xorg-stubs
+    else xorg-stubs;
+  configurePlatformFlags =
+    if isDarwinCross
+    then ''      --build=${stdenv.buildPlatform.config} \
+                  --host=${stdenv.hostPlatform.config} \
+    ''
+    else "";
+  # HotSpot's ADLC executes during the build even for a Darwin target. Keep its
+  # Linux source configuration and GCC-only flags paired with the native CC.
+  bootstrapCc =
+    if isDarwinCross
+    then "$TOOLS/native-cc"
+    else "$(which gcc)";
+  bootstrapCxx =
+    if isDarwinCross
+    then "$TOOLS/native-c++"
+    else "$(which g++)";
+  bootstrapCcAlias =
+    if isDarwinCross
+    then "$TOOLS/native-cc"
+    else "$(which cc)";
+  jnfFrameworks = "${java-native-foundation}/Library/Frameworks";
   icedteaVersion = "2.6.13";
 
   # IcedTea 2.6.13 — build harness for OpenJDK 7
@@ -85,38 +149,51 @@ in
 
     src = icedteaSrc;
 
-    buildDeps = [
-      gnumake
-      autoconf
-      bash
-      which
-      zip
-      unzip
-      gawk
-      coreutils
-      grep
-      sed
-      pkg-config
-      binutils
-      cpio
-      file
-      perl
-      xorg-stubs
-      jamvm-2_0
-      ecj-bootstrap
-      classpath-0_99
-      gjavah
-      ant-bootstrap
-      fastjar
-      libxslt
-    ];
-    runtimeDeps = [
-      zlib
-      alsa-lib
-      fontconfig
-      freetype
-      cups
-    ];
+    buildDeps =
+      [
+        buildTools.gnumake
+        buildTools.autoconf
+        buildTools.bash
+        buildTools.which
+        buildTools.zip
+        buildTools.unzip
+        buildTools.gawk
+        buildTools.coreutils
+        buildTools.grep
+        buildTools.sed
+        buildTools.pkg-config
+        buildTools.binutils
+        buildTools.cpio
+        buildTools.file
+        buildTools.perl
+        xorg-stubs
+        buildTools.jamvm-2_0
+        buildTools.ecj-bootstrap
+        buildTools.classpath-0_99
+        buildTools.gjavah
+        buildTools.ant-bootstrap
+        buildTools.fastjar
+        buildTools.libxslt
+      ]
+      ++ lib.optionals isDarwinCross [
+        alsaForBuild
+        buildTools.freetype
+        buildTools.openjdk-7
+        xorgStubsForBuild
+        buildTools.zlib
+      ];
+    runtimeDeps =
+      [zlib]
+      ++ lib.optionals (!isDarwinCross) [alsa-lib]
+      ++ lib.optionals isDarwinCross [
+        java-native-foundation
+        krb5
+      ]
+      ++ [
+        fontconfig
+        freetype
+        cups
+      ];
     propagatedDeps = [];
 
     phases = [
@@ -245,9 +322,9 @@ in
             exec $JAMVM "$@"
           fi
           JAVAEOF
-                  sed -i "s|JAMVM_PLACEHOLDER|${jamvm-2_0}/bin/jamvm|" $FAKE_JDK/bin/java
-                  sed -i "s|UNZIP_PLACEHOLDER|${unzip}/bin/unzip|" $FAKE_JDK/bin/java
-                  sed -i "s|GJAVAH_PLACEHOLDER|${gjavah}/bin/gjavah|" $FAKE_JDK/bin/java
+                  sed -i "s|JAMVM_PLACEHOLDER|${buildTools.jamvm-2_0}/bin/jamvm|" $FAKE_JDK/bin/java
+                  sed -i "s|UNZIP_PLACEHOLDER|${buildTools.unzip}/bin/unzip|" $FAKE_JDK/bin/java
+                  sed -i "s|GJAVAH_PLACEHOLDER|${buildTools.gjavah}/bin/gjavah|" $FAKE_JDK/bin/java
                   chmod +x $FAKE_JDK/bin/java
                   # Create a javac wrapper that pre-creates output directories
                   # before calling ECJ. JamVM's File.mkdirs() creates intermediate
@@ -356,14 +433,14 @@ in
             done
           fi
 
-          exec ${ecj-bootstrap}/bin/ecj \$FILTERED_ARGS
+          exec ${buildTools.ecj-bootstrap}/bin/ecj \$FILTERED_ARGS
           JAVACEOF
                   chmod +x $FAKE_JDK/bin/javac
-                  ln -sf ${gjavah}/bin/gjavah $FAKE_JDK/bin/javah
-                  ln -sf ${fastjar}/bin/fastjar $FAKE_JDK/bin/jar
-                  ln -sf ${jamvm-2_0}/include/jni.h $FAKE_JDK/include/jni.h
+                  ln -sf ${buildTools.gjavah}/bin/gjavah $FAKE_JDK/bin/javah
+                  ln -sf ${buildTools.fastjar}/bin/fastjar $FAKE_JDK/bin/jar
+                  ln -sf ${buildTools.jamvm-2_0}/include/jni.h $FAKE_JDK/include/jni.h
                   # Create rt.jar from classpath glibj.zip
-                  ln -sf ${classpath-0_99}/share/classpath/glibj.zip $FAKE_JDK/jre/lib/rt.jar
+                  ln -sf ${buildTools.classpath-0_99}/share/classpath/glibj.zip $FAKE_JDK/jre/lib/rt.jar
 
                   # Add rmic dummy to fake JDK (configure checks $JDK_HOME/bin/rmic)
                   printf '#!/bin/sh\nexit 0\n' > $FAKE_JDK/bin/rmic
@@ -376,7 +453,7 @@ in
                   # rmic/native2ascii (IcedTea bootstrap builds its own from OpenJDK source)
                   mkdir -p dummy-bin
                   printf '#!/bin/sh\nexit 1\n' > dummy-bin/wget
-                  ln -sf ${libxslt}/bin/xsltproc dummy-bin/xsltproc
+                  ln -sf ${buildTools.libxslt}/bin/xsltproc dummy-bin/xsltproc
                   printf '#!/bin/sh\nexit 0\n' > dummy-bin/rmic
                   printf '#!/bin/sh\ncat "$@" 2>/dev/null\n' > dummy-bin/native2ascii
                   printf '#!/bin/sh\ncase "$1" in _NPROCESSORS_ONLN) echo %s;; *) echo 1;; esac\n' \
@@ -395,16 +472,16 @@ in
                   # IcedTea's configure and Makefiles reference /usr/bin/* and /bin/*
                   for f in $(find . -name '*.in' -o -name '*.sh' -o -name 'Makefile*' -o -name 'configure*' 2>/dev/null); do
                     sed -i \
-                      -e "s|/usr/bin/echo|${coreutils}/bin/echo|g" \
-                      -e "s|/bin/echo|${coreutils}/bin/echo|g" \
-                      -e "s|/usr/bin/find|${coreutils}/bin/find|g" \
-                      -e "s|/usr/bin/grep|${grep}/bin/grep|g" \
-                      -e "s|/bin/grep|${grep}/bin/grep|g" \
-                      -e "s|/usr/bin/sed|${sed}/bin/sed|g" \
-                      -e "s|/bin/sed|${sed}/bin/sed|g" \
+                      -e "s|/usr/bin/echo|${buildTools.coreutils}/bin/echo|g" \
+                      -e "s|/bin/echo|${buildTools.coreutils}/bin/echo|g" \
+                      -e "s|/usr/bin/find|${buildTools.coreutils}/bin/find|g" \
+                      -e "s|/usr/bin/grep|${buildTools.grep}/bin/grep|g" \
+                      -e "s|/bin/grep|${buildTools.grep}/bin/grep|g" \
+                      -e "s|/usr/bin/sed|${buildTools.sed}/bin/sed|g" \
+                      -e "s|/bin/sed|${buildTools.sed}/bin/sed|g" \
                       -e "s|/usr/bin/cpio|cpio|g" \
-                      -e "s|/usr/bin/file|${file}/bin/file|g" \
-                      -e "s|/usr/bin/readelf|${binutils}/bin/readelf|g" \
+                      -e "s|/usr/bin/file|${buildTools.file}/bin/file|g" \
+                      -e "s|/usr/bin/readelf|${buildTools.binutils}/bin/readelf|g" \
                       "$f" 2>/dev/null || true
                   done
         '';
@@ -439,18 +516,18 @@ in
           export XINERAMA_LIBS="-L${xorg-stubs}/lib -lXinerama"
           export XTST_CFLAGS="-I${xorg-stubs}/include"
           export XTST_LIBS="-L${xorg-stubs}/lib -lXtst"
-          export ALSA_CFLAGS="-I${alsa-lib}/include"
-          export ALSA_LIBS="-L${alsa-lib}/lib -lasound"
+          export ALSA_CFLAGS="-I${alsaForBuild}/include"
+          export ALSA_LIBS="-L${alsaForBuild}/lib -lasound"
 
           $CONFIG_SHELL configure \
-            --prefix=$out \
+            ${configurePlatformFlags}--prefix=$out \
             --with-jdk-home=$PWD/fake-jdk \
-            --with-ecj-jar=${ecj-bootstrap}/lib/ecj.jar \
+            --with-ecj-jar=${buildTools.ecj-bootstrap}/lib/ecj.jar \
             --with-javac=$PWD/fake-jdk/bin/javac \
-            --with-ant-home=${ant-bootstrap} \
-            --with-jar=${fastjar}/bin/fastjar \
+            --with-ant-home=${buildTools.ant-bootstrap} \
+            --with-jar=${buildTools.fastjar}/bin/fastjar \
             --with-java=$PWD/fake-jdk/bin/java \
-            --with-javah=${gjavah}/bin/gjavah \
+            --with-javah=${buildTools.gjavah}/bin/gjavah \
             --disable-docs \
             --disable-downloading \
             --disable-tests \
@@ -479,7 +556,7 @@ in
             --disable-system-cups \
             --disable-compile-against-syscalls \
             --with-cups=${cups} \
-            --with-alsa=${alsa-lib} \
+            --with-alsa=${alsaForBuild} \
             --x-includes=${xorg-stubs}/include \
             --x-libraries=${xorg-stubs}/lib \
             --with-parallel-jobs=$NIX_BUILD_CORES
@@ -506,7 +583,57 @@ in
                   export ALT_FREETYPE_LIB_PATH="${freetype}/lib"
 
                   # First extract, patch, and clone the source for bootstrap
-                  make stamps/patch-boot.stamp
+                  ${
+            if isDarwinCross
+            then ''
+              # The crypto-policy gate must inspect the generated Darwin
+              # policy jars, but its Java VM executes on the Linux builder.
+              # Run the unchanged test class with the native JDK while
+              # directing java.home at the completed target image, so the
+              # target policy remains the exact subject of the check.
+              for crypto_makefile in Makefile.am Makefile.in Makefile; do
+                test "$(grep -Fc \
+                  '$(BUILD_SDK_DIR)/bin/java -cp $(CRYPTO_CHECK_BUILD_DIR) TestCryptoLevel ; \' \
+                  "$crypto_makefile")" = 1
+                sed -i \
+                  's|$(BUILD_SDK_DIR)/bin/java -cp|${buildTools.openjdk-7}/bin/java -Djava.home=$(BUILD_SDK_DIR)/jre -cp|' \
+                  "$crypto_makefile"
+                test "$(grep -Fc \
+                  '${buildTools.openjdk-7}/bin/java -Djava.home=$(BUILD_SDK_DIR)/jre -cp $(CRYPTO_CHECK_BUILD_DIR) TestCryptoLevel ; \' \
+                  "$crypto_makefile")" = 1
+
+                # A CDS archive embeds VM/compiler ABI metadata. A Linux VM
+                # cannot safely generate one for the Darwin target, while
+                # the built VM retains CDS support and may generate it when
+                # installed in a writable target image.
+                test "$(grep -Fc \
+                  '$(BUILD_SDK_DIR)/bin/java -Xshare:dump ; \' \
+                  "$crypto_makefile")" = 1
+                sed -i \
+                  's|$(BUILD_SDK_DIR)/bin/java -Xshare:dump|: "Darwin cross omits target-only CDS archive generation"|' \
+                  "$crypto_makefile"
+                test "$(grep -Fc \
+                  ': "Darwin cross omits target-only CDS archive generation" ; \' \
+                  "$crypto_makefile")" = 1
+              done
+
+              make stamps/patch-boot.stamp
+
+              # This configure-time sanity check is compiled and executed by the
+              # build harness. Keep the check, but build it for Linux with the
+              # native FreeType instead of trying to execute its Darwin result.
+              for freetype_check_makefile in \
+                openjdk/jdk/make/tools/freetypecheck/Makefile \
+                openjdk-boot/jdk/make/tools/freetypecheck/Makefile; do
+                test -f "$freetype_check_makefile"
+                test "$(grep -Ec '^[[:blank:]]+[$][(]CC[)] [$][(]FT_OPTIONS[)] [$][(]CC_PROGRAM_OUTPUT_FLAG[)][$]@ freetypecheck[.]c [$][(]FT_LD_OPTIONS[)]$' "$freetype_check_makefile")" = 1
+                sed -i \
+                  's|^[[:blank:]]*$(CC) $(FT_OPTIONS) $(CC_PROGRAM_OUTPUT_FLAG)$@ freetypecheck.c $(FT_LD_OPTIONS)$|\t${buildTools.coreutils}/bin/env -u AOS_CROSS_COMPILING -u AOS_HARDENING_ENABLE -u AOS_TARGET_ARCH -u AOS_TARGET_PLATFORM -u C_INCLUDE_PATH -u CPLUS_INCLUDE_PATH -u LIBRARY_PATH -u MACOSX_DEPLOYMENT_TARGET -u NIX_CFLAGS_COMPILE -u NIX_CFLAGS_LINK -u NIX_LDFLAGS -u SDKROOT ${buildTools.cc}/bin/cc -I${buildTools.freetype}/include/freetype2 -I${buildTools.freetype}/include -DREQUIRED_FREETYPE_VERSION=$(REQUIRED_FREETYPE_VERSION) -o $@ freetypecheck.c -L${buildTools.freetype}/lib -Wl,-rpath,${buildTools.freetype}/lib -lfreetype -L${buildTools.zlib}/lib -Wl,-rpath,${buildTools.zlib}/lib -lz|' \
+                  "$freetype_check_makefile"
+              done
+            ''
+            else "make stamps/patch-boot.stamp"
+          }
 
                   # Pre-create output directories in lib/rt/ to work around JamVM
                   # File.mkdirs() bug (creates files instead of directories)
@@ -537,56 +664,56 @@ in
                       find "$dir" -name '*.gmk' -o -name 'Makefile' -o -name '*.make' -o -name '*.sh' 2>/dev/null | while read f; do
                         sed -i \
                           -e 's/-Werror//g' \
-                          -e "s|/bin/mkdir|${coreutils}/bin/mkdir|g" \
-                          -e "s|/usr/bin/mkdir|${coreutils}/bin/mkdir|g" \
-                          -e "s|/bin/cat|${coreutils}/bin/cat|g" \
-                          -e "s|/bin/cp |${coreutils}/bin/cp |g" \
-                          -e "s|/bin/mv |${coreutils}/bin/mv |g" \
-                          -e "s|/bin/rm |${coreutils}/bin/rm |g" \
-                          -e "s|/bin/ln |${coreutils}/bin/ln |g" \
-                          -e "s|/bin/chmod|${coreutils}/bin/chmod|g" \
-                          -e "s|/bin/ls |${coreutils}/bin/ls |g" \
-                          -e "s|/bin/pwd|${coreutils}/bin/pwd|g" \
-                          -e "s|/usr/bin/pwd|${coreutils}/bin/pwd|g" \
-                          -e "s|/bin/date|${coreutils}/bin/date|g" \
-                          -e "s|/usr/bin/tr|${coreutils}/bin/tr|g" \
-                          -e "s|/bin/tr |${coreutils}/bin/tr |g" \
-                          -e "s|/usr/bin/wc|${coreutils}/bin/wc|g" \
-                          -e "s|/usr/bin/sort|${coreutils}/bin/sort|g" \
-                          -e "s|/usr/bin/cut|${coreutils}/bin/cut|g" \
-                          -e "s|/usr/bin/head|${coreutils}/bin/head|g" \
-                          -e "s|/usr/bin/tail|${coreutils}/bin/tail|g" \
-                          -e "s|/usr/bin/uniq|${coreutils}/bin/uniq|g" \
-                          -e "s|/usr/bin/touch|${coreutils}/bin/touch|g" \
-                          -e "s|/usr/bin/basename|${coreutils}/bin/basename|g" \
-                          -e "s|/usr/bin/dirname|${coreutils}/bin/dirname|g" \
-                          -e "s|/usr/bin/uname|${coreutils}/bin/uname|g" \
-                          -e "s|/bin/echo|${coreutils}/bin/echo|g" \
-                          -e "s|/usr/bin/echo|${coreutils}/bin/echo|g" \
-                          -e "s|/bin/true|${coreutils}/bin/true|g" \
-                          -e "s|/bin/false|${coreutils}/bin/false|g" \
-                          -e "s|/usr/bin/test|${coreutils}/bin/test|g" \
-                          -e "s|/usr/bin/expr|${coreutils}/bin/expr|g" \
-                          -e "s|/usr/bin/env|${coreutils}/bin/env|g" \
-                          -e "s|/usr/bin/id|${coreutils}/bin/id|g" \
-                          -e "s|/bin/grep|${grep}/bin/grep|g" \
-                          -e "s|/usr/bin/grep|${grep}/bin/grep|g" \
-                          -e "s|/bin/egrep|${grep}/bin/egrep|g" \
-                          -e "s|/usr/bin/egrep|${grep}/bin/egrep|g" \
-                          -e "s|/bin/fgrep|${grep}/bin/fgrep|g" \
-                          -e "s|/usr/bin/fgrep|${grep}/bin/fgrep|g" \
-                          -e "s|/bin/sed|${sed}/bin/sed|g" \
-                          -e "s|/usr/bin/sed|${sed}/bin/sed|g" \
-                          -e "s|/usr/bin/gawk|${gawk}/bin/gawk|g" \
-                          -e "s|/usr/bin/awk|${gawk}/bin/gawk|g" \
-                          -e "s|/bin/awk|${gawk}/bin/gawk|g" \
+                          -e "s|/bin/mkdir|${buildTools.coreutils}/bin/mkdir|g" \
+                          -e "s|/usr/bin/mkdir|${buildTools.coreutils}/bin/mkdir|g" \
+                          -e "s|/bin/cat|${buildTools.coreutils}/bin/cat|g" \
+                          -e "s|/bin/cp |${buildTools.coreutils}/bin/cp |g" \
+                          -e "s|/bin/mv |${buildTools.coreutils}/bin/mv |g" \
+                          -e "s|/bin/rm |${buildTools.coreutils}/bin/rm |g" \
+                          -e "s|/bin/ln |${buildTools.coreutils}/bin/ln |g" \
+                          -e "s|/bin/chmod|${buildTools.coreutils}/bin/chmod|g" \
+                          -e "s|/bin/ls |${buildTools.coreutils}/bin/ls |g" \
+                          -e "s|/bin/pwd|${buildTools.coreutils}/bin/pwd|g" \
+                          -e "s|/usr/bin/pwd|${buildTools.coreutils}/bin/pwd|g" \
+                          -e "s|/bin/date|${buildTools.coreutils}/bin/date|g" \
+                          -e "s|/usr/bin/tr|${buildTools.coreutils}/bin/tr|g" \
+                          -e "s|/bin/tr |${buildTools.coreutils}/bin/tr |g" \
+                          -e "s|/usr/bin/wc|${buildTools.coreutils}/bin/wc|g" \
+                          -e "s|/usr/bin/sort|${buildTools.coreutils}/bin/sort|g" \
+                          -e "s|/usr/bin/cut|${buildTools.coreutils}/bin/cut|g" \
+                          -e "s|/usr/bin/head|${buildTools.coreutils}/bin/head|g" \
+                          -e "s|/usr/bin/tail|${buildTools.coreutils}/bin/tail|g" \
+                          -e "s|/usr/bin/uniq|${buildTools.coreutils}/bin/uniq|g" \
+                          -e "s|/usr/bin/touch|${buildTools.coreutils}/bin/touch|g" \
+                          -e "s|/usr/bin/basename|${buildTools.coreutils}/bin/basename|g" \
+                          -e "s|/usr/bin/dirname|${buildTools.coreutils}/bin/dirname|g" \
+                          -e "s|/usr/bin/uname|${buildTools.coreutils}/bin/uname|g" \
+                          -e "s|/bin/echo|${buildTools.coreutils}/bin/echo|g" \
+                          -e "s|/usr/bin/echo|${buildTools.coreutils}/bin/echo|g" \
+                          -e "s|/bin/true|${buildTools.coreutils}/bin/true|g" \
+                          -e "s|/bin/false|${buildTools.coreutils}/bin/false|g" \
+                          -e "s|/usr/bin/test|${buildTools.coreutils}/bin/test|g" \
+                          -e "s|/usr/bin/expr|${buildTools.coreutils}/bin/expr|g" \
+                          -e "s|/usr/bin/env|${buildTools.coreutils}/bin/env|g" \
+                          -e "s|/usr/bin/id|${buildTools.coreutils}/bin/id|g" \
+                          -e "s|/bin/grep|${buildTools.grep}/bin/grep|g" \
+                          -e "s|/usr/bin/grep|${buildTools.grep}/bin/grep|g" \
+                          -e "s|/bin/egrep|${buildTools.grep}/bin/egrep|g" \
+                          -e "s|/usr/bin/egrep|${buildTools.grep}/bin/egrep|g" \
+                          -e "s|/bin/fgrep|${buildTools.grep}/bin/fgrep|g" \
+                          -e "s|/usr/bin/fgrep|${buildTools.grep}/bin/fgrep|g" \
+                          -e "s|/bin/sed|${buildTools.sed}/bin/sed|g" \
+                          -e "s|/usr/bin/sed|${buildTools.sed}/bin/sed|g" \
+                          -e "s|/usr/bin/gawk|${buildTools.gawk}/bin/gawk|g" \
+                          -e "s|/usr/bin/awk|${buildTools.gawk}/bin/gawk|g" \
+                          -e "s|/bin/awk|${buildTools.gawk}/bin/gawk|g" \
                           -e "s|/usr/bin/find|$(which find)|g" \
                           -e "s|/usr/bin/xargs|$(which xargs)|g" \
-                          -e "s|/usr/bin/cpio|${cpio}/bin/cpio|g" \
-                          -e "s|/usr/bin/file|${file}/bin/file|g" \
-                          -e "s|/usr/bin/readelf|${binutils}/bin/readelf|g" \
-                          -e "s|/usr/bin/zip|${zip}/bin/zip|g" \
-                          -e "s|/usr/bin/unzip|${unzip}/bin/unzip|g" \
+                          -e "s|/usr/bin/cpio|${buildTools.cpio}/bin/cpio|g" \
+                          -e "s|/usr/bin/file|${buildTools.file}/bin/file|g" \
+                          -e "s|/usr/bin/readelf|${buildTools.binutils}/bin/readelf|g" \
+                          -e "s|/usr/bin/zip|${buildTools.zip}/bin/zip|g" \
+                          -e "s|/usr/bin/unzip|${buildTools.unzip}/bin/unzip|g" \
                           "$f" 2>/dev/null || true
                       done
                       # Fix sys/sysctl.h includes (removed in modern glibc)
@@ -596,13 +723,13 @@ in
                       # Fix hardcoded /bin/echo in Defs-utils.gmk
                       find "$dir" -name 'Defs-utils.gmk' 2>/dev/null | while read f; do
                         sed -i \
-                          -e "s|ECHO           = /bin/echo|ECHO           = ${coreutils}/bin/echo|g" \
-                          -e "s|ECHO           = /usr/bin/echo|ECHO           = ${coreutils}/bin/echo|g" \
+                          -e "s|ECHO           = /bin/echo|ECHO           = ${buildTools.coreutils}/bin/echo|g" \
+                          -e "s|ECHO           = /usr/bin/echo|ECHO           = ${buildTools.coreutils}/bin/echo|g" \
                           "$f" 2>/dev/null || true
                       done
                       # Fix hardcoded NAWK = /usr/bin/gawk
                       find "$dir" -name 'Defs-utils.gmk' 2>/dev/null | while read f; do
-                        sed -i "s|NAWK           = \$(USRBIN_PATH)gawk|NAWK           = ${gawk}/bin/gawk|g" "$f" 2>/dev/null || true
+                        sed -i "s|NAWK           = \$(USRBIN_PATH)gawk|NAWK           = ${buildTools.gawk}/bin/gawk|g" "$f" 2>/dev/null || true
                       done
                       # Create empty build.properties (GNU Classpath's Property class
                       # throws FileNotFoundException instead of silently skipping)
@@ -694,7 +821,799 @@ in
                         sed -i 's|$(ANT_JAVA_HOME) $(ANT_OPTS) $(ANT) -version >> $@|echo "ant version skipped" >> $@|' "$f" 2>/dev/null || true
                       done
                     fi
-                  done
+                  done${
+            if isDarwinCross
+            then ''
+
+                                                  # openjdk-boot is a Linux BuildJDK. Its launchers and headless
+                                          # native libraries must use the native X11 publication, while
+                                          # the final openjdk tree keeps the Darwin target stubs above.
+                                          boot_defs=openjdk-boot/jdk/make/common/Defs-linux.gmk
+                                          test -f "$boot_defs"
+                                          {
+                                            echo 'OPENWIN_HOME = ${xorgStubsForBuild}'
+                                            echo 'override OPENWIN_LIB = ${xorgStubsForBuild}/lib'
+                                          } >> "$boot_defs"
+
+                                          # HotSpot otherwise selects its makefile from the Linux builder's
+                                          # uname. Select the pinned BSD/Darwin port only for the final
+                                          # target VM; openjdk-boot remains the native Linux BuildJDK.
+                                          target_hotspot_rules=openjdk/make/hotspot-rules.gmk
+                                          test -f "$target_hotspot_rules"
+                                          test "$(grep -Fxc \
+                                            'HOTSPOT_BUILD_ARGUMENTS += BUILD_FLAVOR=$(BUILD_FLAVOR)' \
+                                            "$target_hotspot_rules")" = 1
+                                          sed -i \
+                                            '/^HOTSPOT_BUILD_ARGUMENTS += BUILD_FLAVOR=/a HOTSPOT_BUILD_ARGUMENTS += OS=bsd' \
+                                            "$target_hotspot_rules"
+                                          sed -i \
+                                            '/^HOTSPOT_BUILD_ARGUMENTS += OS=bsd/a HOTSPOT_BUILD_ARGUMENTS += OS_VENDOR=Darwin' \
+                                            "$target_hotspot_rules"
+
+                                          # The Darwin serviceability agent is a real
+                                          # JavaNativeFoundation consumer. Build and link it against the
+                                          # pinned source-built framework and retain an image-relative
+                                          # runtime path to the framework bundled below.
+                                          mkdir -p openjdk-target-java-headers/JavaVM
+                                          ln -s ../openjdk/jdk/src/share/javavm/export/jni.h \
+                                            openjdk-target-java-headers/jni.h
+                                          ln -s ../openjdk/jdk/src/macosx/javavm/export/jni_md.h \
+                                            openjdk-target-java-headers/jni_md.h
+                                          ln -s ../jni.h openjdk-target-java-headers/JavaVM/jni.h
+                                          ln -s ../jni_md.h openjdk-target-java-headers/JavaVM/jni_md.h
+                                          target_saproc_make=openjdk/hotspot/make/bsd/makefiles/saproc.make
+                                          test -f "$target_saproc_make"
+                                          test "$(grep -Fxc \
+                                            '    SALIBS = -g -framework Foundation -F/System/Library/Frameworks/JavaVM.framework/Frameworks -framework JavaNativeFoundation -framework Security -framework CoreFoundation' \
+                                            "$target_saproc_make")" = 1
+                                          sed -i \
+                                            's|^    SALIBS = -g |    SALIBS = -I$(GAMMADIR)/../../openjdk-target-java-headers -F${jnfFrameworks} -Wl,-rpath,@loader_path/.. -g |' \
+                                            "$target_saproc_make"
+
+                                          # The ordinary osxapp library is also a complete
+                                          # JavaNativeFoundation consumer. Its legacy makefile assumes
+                                          # Xcode's ambient framework search path for both headers and
+                                          # the final link; publish the source-built target framework
+                                          # explicitly instead.
+                                          target_jdk_osxapp_make=openjdk/jdk/make/sun/osxapp/Makefile
+                                          test -f "$target_jdk_osxapp_make"
+                                          test "$(grep -Ec \
+                                            '^[[:space:]]+-framework JavaNativeFoundation \\$' \
+                                            "$target_jdk_osxapp_make")" = 1
+                                          test "$(grep -Fxc 'CPPFLAGS += \' \
+                                            "$target_jdk_osxapp_make")" = 1
+                                          # ExceptionHandling was an ambient, link-only Xcode
+                                          # dependency: none of the four pinned osxapp translation units
+                                          # includes or references its API, and it is no longer a public
+                                          # framework. Keep every active framework while dropping only
+                                          # that unused legacy load command.
+                                          test "$(grep -Ec \
+                                            '^[[:space:]]+-framework ExceptionHandling \\$' \
+                                            "$target_jdk_osxapp_make")" = 1
+                                          sed -i \
+                                            -e '/^CPPFLAGS += \\$/a\        -F${jnfFrameworks} \\' \
+                                            -e '/^[[:space:]]*-framework JavaNativeFoundation \\$/i\	-F${jnfFrameworks} \\' \
+                                            -e '/^[[:space:]]*-framework ExceptionHandling \\$/d' \
+                                            "$target_jdk_osxapp_make"
+                                          test "$(grep -Fxc \
+                                            '        -F${jnfFrameworks} \' \
+                                            "$target_jdk_osxapp_make")" = 1
+                                          test "$(grep -Ec \
+                                            '^[[:space:]]+-F${jnfFrameworks} \\$' \
+                                            "$target_jdk_osxapp_make")" = 2
+                                          test "$(grep -Fc 'ExceptionHandling' \
+                                            "$target_jdk_osxapp_make")" = 0
+
+                                          # libawt is a separate JavaNativeFoundation consumer. Its
+                                          # framework list likewise assumes Xcode's ambient search path,
+                                          # so publish the same source-built target framework to its final
+                                          # link without changing the ordinary native build.
+                                          target_jdk_awt_make=openjdk/jdk/make/sun/awt/Makefile
+                                          test -f "$target_jdk_awt_make"
+                                          test "$(grep -Ec \
+                                            '^[[:space:]]+-framework JavaNativeFoundation \\$' \
+                                            "$target_jdk_awt_make")" = 1
+                                          test "$(grep -Fc '${jnfFrameworks}' \
+                                            "$target_jdk_awt_make")" = 0
+                                          sed -i \
+                                            '/^[[:space:]]*-framework JavaNativeFoundation \\$/i\    -F${jnfFrameworks} \\' \
+                                            "$target_jdk_awt_make"
+                                          test "$(grep -Fxc \
+                                            '    -F${jnfFrameworks} \' \
+                                            "$target_jdk_awt_make")" = 1
+
+                                          # The macOS lightweight AWT owns the Cocoa peer and must not
+                                          # compile the Solaris X11 peer classes selected through the
+                                          # broad sun/awt source root. Its native library is another real
+                                          # JavaNativeFoundation consumer, installed one directory below
+                                          # the bundled framework. Keep the complete Cocoa implementation,
+                                          # prune only the foreign X11 package, and publish the framework
+                                          # search path plus image-relative runtime path explicitly.
+                                          target_jdk_lwawt_make=openjdk/jdk/make/sun/lwawt/Makefile
+                                          test -f "$target_jdk_lwawt_make"
+                                          test "$(grep -Fxc \
+                                            'AUTO_FILES_JAVA_DIRS = sun/awt sun/font sun/lwawt sun/lwawt/macosx sun/java2d sun/java2d/opengl com/apple/eawt' \
+                                            "$target_jdk_lwawt_make")" = 1
+                                          test "$(grep -Ec \
+                                            '^[[:space:]]+-framework JavaNativeFoundation \\$' \
+                                            "$target_jdk_lwawt_make")" = 1
+                                          test "$(grep -Ec \
+                                            '^[[:space:]]+-framework ExceptionHandling \\$' \
+                                            "$target_jdk_lwawt_make")" = 1
+                                          test "$(grep -Fc '${jnfFrameworks}' \
+                                            "$target_jdk_lwawt_make")" = 0
+                                          sed -i \
+                                            -e '/^AUTO_FILES_JAVA_DIRS = /a AUTO_JAVA_PRUNE += X11' \
+                                            -e '/^CPPFLAGS += \\$/a\        -F${jnfFrameworks} \\' \
+                                            -e '/^[[:space:]]*-framework JavaNativeFoundation \\$/i\        -F${jnfFrameworks} -Wl,-rpath,@loader_path/.. \\' \
+                                            -e '/^[[:space:]]*-framework ExceptionHandling \\$/d' \
+                                            "$target_jdk_lwawt_make"
+                                          test "$(grep -Fxc 'AUTO_JAVA_PRUNE += X11' \
+                                            "$target_jdk_lwawt_make")" = 1
+                                          test "$(grep -Fc '${jnfFrameworks}' \
+                                            "$target_jdk_lwawt_make")" = 2
+                                          test "$(grep -Fc 'ExceptionHandling' \
+                                            "$target_jdk_lwawt_make")" = 0
+
+                                          # CGraphicsDevice consumes the public IOGraphics pixel-format
+                                          # constants, but the pinned source relied on an old umbrella
+                                          # header to publish them indirectly. Include their canonical
+                                          # owning header explicitly for the target translation unit.
+                                          target_jdk_graphics_device=openjdk/jdk/src/macosx/native/sun/awt/CGraphicsDevice.m
+                                          test "$(grep -Fxc '#import "LWCToolkit.h"' \
+                                            "$target_jdk_graphics_device")" = 1
+                                          test "$(grep -Fxc '#include <IOKit/graphics/IOGraphicsTypes.h>' \
+                                            "$target_jdk_graphics_device")" = 0
+                                          sed -i \
+                                            's@^#import "LWCToolkit.h"$@#import "LWCToolkit.h"\n#include <IOKit/graphics/IOGraphicsTypes.h>@' \
+                                            "$target_jdk_graphics_device"
+
+                                          # GNU javah omits private static-final fields from generated JNI
+                                          # headers, while the pinned Cocoa event bridge shares their exact
+                                          # Java values with native code. Restore only those generated names
+                                          # in the native target source; the Java API and notification paths
+                                          # remain unchanged.
+                                          target_jdk_app_delegate=openjdk/jdk/src/macosx/native/sun/awt/ApplicationDelegate.m
+                                          target_jdk_app_events=openjdk/jdk/src/macosx/classes/com/apple/eawt/_AppEventHandler.java
+                                          for constant_value in \
+                                            'NOTIFY_ABOUT 1' \
+                                            'NOTIFY_PREFS 2' \
+                                            'NOTIFY_OPEN_APP 3' \
+                                            'NOTIFY_REOPEN_APP 4' \
+                                            'NOTIFY_QUIT 5' \
+                                            'NOTIFY_SHUTDOWN 6' \
+                                            'NOTIFY_ACTIVE_APP_GAINED 7' \
+                                            'NOTIFY_ACTIVE_APP_LOST 8' \
+                                            'NOTIFY_APP_HIDDEN 9' \
+                                            'NOTIFY_APP_SHOWN 10' \
+                                            'NOTIFY_USER_SESSION_ACTIVE 11' \
+                                            'NOTIFY_USER_SESSION_INACTIVE 12' \
+                                            'NOTIFY_SCREEN_SLEEP 13' \
+                                            'NOTIFY_SCREEN_WAKE 14' \
+                                            'NOTIFY_SYSTEM_SLEEP 15' \
+                                            'NOTIFY_SYSTEM_WAKE 16' \
+                                            'REGISTER_USER_SESSION 1' \
+                                            'REGISTER_SCREEN_SLEEP 2' \
+                                            'REGISTER_SYSTEM_SLEEP 3'; do
+                                            constant="''${constant_value% *}"
+                                            value="''${constant_value#* }"
+                                            test "$(grep -Fxc \
+                                              "    private static final int $constant = $value;" \
+                                              "$target_jdk_app_events")" = 1
+                                          done
+                                          target_jdk_menu_events=openjdk/jdk/src/macosx/classes/com/apple/eawt/_AppMenuBarHandler.java
+                                          for constant_value in 'MENU_ABOUT 1' 'MENU_PREFS 2'; do
+                                            constant="''${constant_value% *}"
+                                            value="''${constant_value#* }"
+                                            test "$(grep -Fxc \
+                                              "    private static final int $constant = $value;" \
+                                              "$target_jdk_menu_events")" = 1
+                                          done
+                                          test "$(grep -Fxc '#import "com_apple_eawt__AppEventHandler.h"' \
+                                            "$target_jdk_app_delegate")" = 1
+                                          test "$(grep -Fc \
+                                            'com_apple_eawt__AppEventHandler_NOTIFY_ABOUT' \
+                                            "$target_jdk_app_delegate")" = 1
+                                          sed -i \
+                                            '/^#import "com_apple_eawt__AppEventHandler.h"$/a\
+              #ifndef com_apple_eawt__AppEventHandler_NOTIFY_ABOUT\
+              #define com_apple_eawt__AppEventHandler_NOTIFY_ABOUT 1L\
+              #define com_apple_eawt__AppEventHandler_NOTIFY_PREFS 2L\
+              #define com_apple_eawt__AppEventHandler_NOTIFY_OPEN_APP 3L\
+              #define com_apple_eawt__AppEventHandler_NOTIFY_REOPEN_APP 4L\
+              #define com_apple_eawt__AppEventHandler_NOTIFY_QUIT 5L\
+              #define com_apple_eawt__AppEventHandler_NOTIFY_SHUTDOWN 6L\
+              #define com_apple_eawt__AppEventHandler_NOTIFY_ACTIVE_APP_GAINED 7L\
+              #define com_apple_eawt__AppEventHandler_NOTIFY_ACTIVE_APP_LOST 8L\
+              #define com_apple_eawt__AppEventHandler_NOTIFY_APP_HIDDEN 9L\
+              #define com_apple_eawt__AppEventHandler_NOTIFY_APP_SHOWN 10L\
+              #define com_apple_eawt__AppEventHandler_NOTIFY_USER_SESSION_ACTIVE 11L\
+              #define com_apple_eawt__AppEventHandler_NOTIFY_USER_SESSION_INACTIVE 12L\
+              #define com_apple_eawt__AppEventHandler_NOTIFY_SCREEN_SLEEP 13L\
+              #define com_apple_eawt__AppEventHandler_NOTIFY_SCREEN_WAKE 14L\
+              #define com_apple_eawt__AppEventHandler_NOTIFY_SYSTEM_SLEEP 15L\
+              #define com_apple_eawt__AppEventHandler_NOTIFY_SYSTEM_WAKE 16L\
+              #define com_apple_eawt__AppEventHandler_REGISTER_USER_SESSION 1L\
+              #define com_apple_eawt__AppEventHandler_REGISTER_SCREEN_SLEEP 2L\
+              #define com_apple_eawt__AppEventHandler_REGISTER_SYSTEM_SLEEP 3L\
+              #define com_apple_eawt__AppMenuBarHandler_MENU_ABOUT 1L\
+              #define com_apple_eawt__AppMenuBarHandler_MENU_PREFS 2L\
+              #endif' \
+                                            "$target_jdk_app_delegate"
+                                          test "$(grep -Fc \
+                                            '#define com_apple_eawt__AppEventHandler_NOTIFY_ABOUT 1L' \
+                                            "$target_jdk_app_delegate")" = 1
+                                          test "$(grep -Fc \
+                                            '#define com_apple_eawt__AppEventHandler_REGISTER_SYSTEM_SLEEP 3L' \
+                                            "$target_jdk_app_delegate")" = 1
+                                          test "$(grep -Fc \
+                                            '#define com_apple_eawt__AppMenuBarHandler_MENU_PREFS 2L' \
+                                            "$target_jdk_app_delegate")" = 1
+
+                                          # Backport JDK-8257148 for the supported Darwin baseline.
+                                          # Press-and-hold is always available after Snow Leopard and the
+                                          # obsolete grow-box implementation is never selected, so retain
+                                          # those exact outcomes without the removed JRSCopyOSVersion API.
+                                          target_jdk_awt_view=openjdk/jdk/src/macosx/native/sun/awt/AWTView.m
+                                          test "$(grep -Fxc '#import "OSVersion.h"' \
+                                            "$target_jdk_awt_view")" = 1
+                                          test "$(grep -Fc \
+                                            '    shouldUsePressAndHold = !isSnowLeopardOrLower();' \
+                                            "$target_jdk_awt_view")" = 1
+                                          sed -i \
+                                            -e '/#import "OSVersion.h"/d' \
+                                            -e '/static BOOL shouldUsePressAndHold()/,/^}/c\static BOOL shouldUsePressAndHold() {\n    return YES;\n}' \
+                                            "$target_jdk_awt_view"
+                                          test "$(sed -n \
+                                            '/static BOOL shouldUsePressAndHold()/,/^}/p' \
+                                            "$target_jdk_awt_view" | grep -Fc '    return YES;')" = 1
+                                          ! grep -Fq 'isSnowLeopardOrLower' "$target_jdk_awt_view"
+
+                                          target_jdk_awt_window=openjdk/jdk/src/macosx/native/sun/awt/AWTWindow.m
+                                          test "$(grep -Fxc '#import "OSVersion.h"' \
+                                            "$target_jdk_awt_window")" = 1
+                                          test "$(grep -Fxc \
+                                            '    return isSnowLeopardOrLower() && IS(self.styleBits, RESIZABLE);' \
+                                            "$target_jdk_awt_window")" = 1
+                                          sed -i \
+                                            -e '/#import "OSVersion.h"/d' \
+                                            -e 's/    return isSnowLeopardOrLower() && IS(self.styleBits, RESIZABLE);/    return NO;/' \
+                                            "$target_jdk_awt_window"
+                                          test "$(sed -n \
+                                            '/- (BOOL) shouldShowGrowBox {/,/^}/p' \
+                                            "$target_jdk_awt_window" | grep -Fxc '    return NO;')" = 1
+                                          ! grep -Fq 'isSnowLeopardOrLower' "$target_jdk_awt_window"
+
+                                          target_jdk_lwawt_sources=openjdk/jdk/make/sun/lwawt/FILES_c_macosx.gmk
+                                          test "$(grep -Ec '^[[:space:]]+OSVersion[.]m \\' \
+                                            "$target_jdk_lwawt_sources")" = 1
+                                          sed -i '/^[[:space:]]*OSVersion[.]m \\/d' \
+                                            "$target_jdk_lwawt_sources"
+                                          ! grep -Fq 'OSVersion.m' "$target_jdk_lwawt_sources"
+                                          rm -f \
+                                            openjdk/jdk/src/macosx/native/sun/awt/OSVersion.h \
+                                            openjdk/jdk/src/macosx/native/sun/awt/OSVersion.m
+
+                                          # Later pinned JDK sources publish the JNI utility declaration
+                                          # consumed by CRobot and use the already-global mouse coordinates
+                                          # directly. Backport those source fixes without changing Robot's
+                                          # button, keyboard, wheel, or screen-capture paths.
+                                          target_jdk_robot=openjdk/jdk/src/macosx/native/sun/awt/CRobot.m
+                                          test "$(grep -Fxc \
+                                            '#import <JavaNativeFoundation/JavaNativeFoundation.h>' \
+                                            "$target_jdk_robot")" = 1
+                                          test "$(grep -Fc '#import "jni_util.h"' \
+                                            "$target_jdk_robot")" = 0
+                                          sed -i \
+                                            '/#import <JavaNativeFoundation\/JavaNativeFoundation.h>/i\#import "jni_util.h"\n' \
+                                            "$target_jdk_robot"
+                                          test "$(grep -Fxc '#import "jni_util.h"' \
+                                            "$target_jdk_robot")" = 1
+                                          test "$(grep -Fxc \
+                                            '    point.x = mouseLastX + globalDeviceBounds.origin.x;' \
+                                            "$target_jdk_robot")" = 1
+                                          test "$(grep -Fxc \
+                                            '    point.y = mouseLastY + globalDeviceBounds.origin.y;' \
+                                            "$target_jdk_robot")" = 1
+                                          sed -i \
+                                            -e 's/    point.x = mouseLastX + globalDeviceBounds.origin.x;/    point.x = mouseLastX;/' \
+                                            -e 's/    point.y = mouseLastY + globalDeviceBounds.origin.y;/    point.y = mouseLastY;/' \
+                                            "$target_jdk_robot"
+                                          ! grep -Fq 'globalDeviceBounds' "$target_jdk_robot"
+
+                                          # JMX generates portable RMI stub bytecode after the target
+                                          # launcher has already been linked. The pinned makefile selects
+                                          # that new launcher unless CROSS_COMPILE_ARCH is set, but this
+                                          # Canadian build selects Darwin through the package stdenv and
+                                          # leaves the legacy variable empty. Run the Java generator with
+                                          # the Linux BuildJDK while retaining the target classes and
+                                          # generated sources unchanged.
+                                          target_jdk_jmx=openjdk/jdk/make/com/sun/jmx/Makefile
+                                          test "$(grep -Fxc \
+                                            'RMIC_JAVA = $(OUTPUTDIR)/bin/java' \
+                                            "$target_jdk_jmx")" = 1
+                                          test "$(grep -Fxc \
+                                            'RMIC_JAVA = $(BOOT_JAVA_CMD)' \
+                                            "$target_jdk_jmx")" = 0
+                                          sed -i \
+                                            's|^RMIC_JAVA = $(OUTPUTDIR)/bin/java$|RMIC_JAVA = $(BOOT_JAVA_CMD)|' \
+                                            "$target_jdk_jmx"
+                                          test "$(grep -Fxc \
+                                            'RMIC_JAVA = $(BOOT_JAVA_CMD)' \
+                                            "$target_jdk_jmx")" = 1
+
+                                          # The com.apple.osx JNI library is another direct
+                                          # JavaNativeFoundation consumer. Its pinned makefile
+                                          # names the framework for the final link but assumes
+                                          # Xcode supplies the framework search path to both
+                                          # compilation and linking. Publish the source-built
+                                          # target framework explicitly instead.
+                                          target_jdk_apple_osx_make=openjdk/jdk/make/com/apple/osx/Makefile
+                                          test -f "$target_jdk_apple_osx_make"
+                                          test "$(grep -Fxc 'CPPFLAGS += \' \
+                                            "$target_jdk_apple_osx_make")" = 1
+                                          test "$(grep -Ec \
+                                            '^[[:space:]]+-framework JavaNativeFoundation \\$' \
+                                            "$target_jdk_apple_osx_make")" = 1
+                                          test "$(grep -Fc '${jnfFrameworks}' \
+                                            "$target_jdk_apple_osx_make")" = 0
+                                          sed -i \
+                                            -e '/^CPPFLAGS += \\$/a\        -F${jnfFrameworks} \\' \
+                                            -e '/^[[:space:]]*-framework JavaNativeFoundation \\$/i\    -F${jnfFrameworks} \\' \
+                                            "$target_jdk_apple_osx_make"
+                                          test "$(grep -Fc '${jnfFrameworks}' \
+                                            "$target_jdk_apple_osx_make")" = 2
+
+                                          # The companion osxui library has the same legacy
+                                          # ambient-Xcode assumption for its eight Cocoa/JRSUI
+                                          # translation units and final framework link.
+                                          target_jdk_apple_osxui_make=openjdk/jdk/make/com/apple/osxui/Makefile
+                                          test -f "$target_jdk_apple_osxui_make"
+                                          test "$(grep -Fxc 'CPPFLAGS += \' \
+                                            "$target_jdk_apple_osxui_make")" = 1
+                                          test "$(grep -Ec \
+                                            '^[[:space:]]+-framework JavaNativeFoundation \\$' \
+                                            "$target_jdk_apple_osxui_make")" = 1
+                                          test "$(grep -Fc '${jnfFrameworks}' \
+                                            "$target_jdk_apple_osxui_make")" = 0
+                                          sed -i \
+                                            -e '/^CPPFLAGS += \\$/a\        -F${jnfFrameworks} \\' \
+                                            -e '/^[[:space:]]*-framework JavaNativeFoundation \\$/i\    -F${jnfFrameworks} \\' \
+                                            "$target_jdk_apple_osxui_make"
+                                          test "$(grep -Fc '${jnfFrameworks}' \
+                                            "$target_jdk_apple_osxui_make")" = 2
+
+                                          # AppleScriptEngine is the remaining pinned Apple
+                                          # JNI library which imports JavaNativeFoundation.
+                                          # Publish the same source-built target framework to
+                                          # both its Objective-C compile and final link.
+                                          target_jdk_applescript_make=openjdk/jdk/make/apple/applescript/Makefile
+                                          test -f "$target_jdk_applescript_make"
+                                          test "$(grep -Fxc 'CPPFLAGS += \' \
+                                            "$target_jdk_applescript_make")" = 1
+                                          test "$(grep -Ec \
+                                            '^[[:space:]]+-framework JavaNativeFoundation$' \
+                                            "$target_jdk_applescript_make")" = 1
+                                          test "$(grep -Fc '${jnfFrameworks}' \
+                                            "$target_jdk_applescript_make")" = 0
+                                          sed -i \
+                                            -e '/^CPPFLAGS += \\$/a\        -F${jnfFrameworks} \\' \
+                                            -e '/^[[:space:]]*-framework JavaNativeFoundation$/i\    -F${jnfFrameworks} \\' \
+                                            "$target_jdk_applescript_make"
+                                          test "$(grep -Fc '${jnfFrameworks}' \
+                                            "$target_jdk_applescript_make")" = 2
+
+                                          # SetFile only records the Finder bundle bit in
+                                          # HFS metadata. Nix store objects cannot retain that
+                                          # metadata, while the bundle directories, launchers,
+                                          # and Info.plist files are all produced normally.
+                                          # Avoid executing the undeclared Xcode host utility
+                                          # in the Canadian build without changing bundle
+                                          # contents.
+                                          target_jdk_release_macosx=openjdk/jdk/make/common/Release-macosx.gmk
+                                          test -f "$target_jdk_release_macosx"
+                                          test "$(grep -Ec \
+                                            '^[[:space:]]*/usr/bin/SetFile -a B \$\((JRE|JDK|JDK_SERVER)_BUNDLE_DIR\)/\.\./$' \
+                                            "$target_jdk_release_macosx")" = 3
+                                          sed -i \
+                                            's|^[[:space:]]*/usr/bin/SetFile -a B \(.*\)$|\t$(TRUE) # HFS Finder bundle metadata is not representable in the Nix store|' \
+                                            "$target_jdk_release_macosx"
+                                          test "$(grep -Ec \
+                                            '^[[:space:]]+\$\(TRUE\) # HFS Finder bundle metadata is not representable in the Nix store$' \
+                                            "$target_jdk_release_macosx")" = 3
+
+                                          # Later OpenJDK corrected the Keychain import's format
+                                          # variable to match SecKeychainItemImport and restored
+                                          # the cleanup label used by the password conversion
+                                          # failure path. Backport those source fixes verbatim;
+                                          # the import formats and keychain behavior are unchanged.
+                                          target_jdk_keystore=openjdk/jdk/src/macosx/native/apple/security/KeystoreImpl.m
+                                          test "$(grep -Fxc \
+                                            '    SecExternalItemType dataType = (isCertificate == JNI_TRUE ? kSecFormatX509Cert : kSecFormatWrappedPKCS8);' \
+                                            "$target_jdk_keystore")" = 1
+                                          test "$(grep -Fxc \
+                                            '    err = SecKeychainItemImport(cfDataToImport, NULL, &dataType, NULL,' \
+                                            "$target_jdk_keystore")" = 1
+                                          test "$(grep -Fxc 'errOut:' \
+                                            "$target_jdk_keystore")" = 3
+                                          sed -i \
+                                            -e 's/SecExternalItemType dataType =/SecExternalFormat dataFormat =/' \
+                                            -e 's/SecKeychainItemImport(cfDataToImport, NULL, &dataType, NULL,/SecKeychainItemImport(cfDataToImport, NULL, \&dataFormat, NULL,/' \
+                                            -e '/^    (\*env)->ReleaseByteArrayElements(env, rawDataObj, rawData, JNI_ABORT);$/i\errOut:' \
+                                            "$target_jdk_keystore"
+                                          test "$(grep -Fxc \
+                                            '    SecExternalFormat dataFormat = (isCertificate == JNI_TRUE ? kSecFormatX509Cert : kSecFormatWrappedPKCS8);' \
+                                            "$target_jdk_keystore")" = 1
+                                          test "$(grep -Fxc \
+                                            '    err = SecKeychainItemImport(cfDataToImport, NULL, &dataFormat, NULL,' \
+                                            "$target_jdk_keystore")" = 1
+                                          test "$(grep -Fxc 'errOut:' \
+                                            "$target_jdk_keystore")" = 4
+
+                                          # fView is stored as NSView for the common accessibility base,
+                                          # but this path sends AWTView-specific JNI selectors. Make that
+                                          # established runtime contract explicit for modern Clang.
+                                          target_jdk_accessibility=openjdk/jdk/src/macosx/native/sun/awt/JavaComponentAccessibility.m
+                                          test "$(grep -Fc 'AWTView *view = fView;' \
+                                            "$target_jdk_accessibility")" = 1
+                                          sed -i \
+                                            's/AWTView \*view = fView;/AWTView *view = (AWTView *)fView;/' \
+                                            "$target_jdk_accessibility"
+                                          test "$(grep -Fc 'AWTView *view = (AWTView *)fView;' \
+                                            "$target_jdk_accessibility")" = 1
+
+                                          # Platform.gmk otherwise runs Darwin discovery programs on the
+                                          # Linux builder after SYSTEM_UNAME selects the target sources.
+                                          # Publish deterministic target-baseline values; the Linux boot
+                                          # build never enters this branch.
+                                          target_jdk_platform=openjdk/jdk/make/common/shared/Platform.gmk
+                                          test -f "$target_jdk_platform"
+                                          test "$(grep -Fc \
+                                            'GB_OF_MEMORY := $(shell system_profiler SPHardwareDataType' \
+                                            "$target_jdk_platform")" = 1
+                                          test "$(grep -Fc \
+                                            '  MB_OF_MEMORY := $(shell expr' \
+                                            "$target_jdk_platform")" = 1
+                                          test "$(grep -Fxc '  OS_VERSION := $(shell uname -r)' "$target_jdk_platform")" = 1
+                                          sed -i \
+                                            -e 's|^  GB_OF_MEMORY := .*|  GB_OF_MEMORY := 4|' \
+                                            -e 's|^  MB_OF_MEMORY := .*|  MB_OF_MEMORY := 4096|' \
+                                            -e 's|^  OS_VERSION := $(shell uname -r)$|  OS_VERSION := 20.0.0|' \
+                                            "$target_jdk_platform"
+
+                                          # The pinned LLVM compiler configuration creates archives by
+                                          # driving ld -r through the compiler, including a 32+64-bit
+                                          # universal request. Current ld64 does not implement relocatable
+                                          # links. Use the target archiver to retain the ordinary static
+                                          # fdlibm archive selected by the x86_64-only platform build.
+                                          target_jdk_llvm=openjdk/jdk/make/common/shared/Compiler-llvm.gmk
+                                          test -f "$target_jdk_llvm"
+                                          test "$(grep -Fxc '  AR = $(CC)' "$target_jdk_llvm")" = 1
+                                          test "$(grep -Fxc \
+                                            '  ARFLAGS = -nostdlib -r -arch i386 -arch x86_64 -o' \
+                                            "$target_jdk_llvm")" = 1
+                                          sed -i \
+                                            -e 's|^  AR = $(CC)$|  AR = ${stdenv.cc}/bin/ar|' \
+                                            -e 's|^  ARFLAGS = -nostdlib -r -arch i386 -arch x86_64 -o$|  ARFLAGS = rcs|' \
+                                            "$target_jdk_llvm"
+
+                                          # The pinned JDK uses a tentative definition of parentPathv in
+                                          # childproc.h, included by both childproc.c and UNIXProcess_md.c.
+                                          # Match the common-symbol semantics of its contemporary Apple
+                                          # compiler for target C only; modern Clang otherwise rejects the
+                                          # duplicate while linking libjava.dylib.
+                                          target_jdk_defs=openjdk/jdk/make/common/Defs-macosx.gmk
+                                          test -f "$target_jdk_defs"
+                                          test "$(grep -Fxc '  CFLAGS_COMMON   = -fno-strict-aliasing' \
+                                            "$target_jdk_defs")" = 1
+                                          sed -i \
+                                            's|^  CFLAGS_COMMON   = -fno-strict-aliasing$|  CFLAGS_COMMON   = -fno-strict-aliasing -fcommon|' \
+                                            "$target_jdk_defs"
+
+                                          # The macOS JLI makefile lists the shared Solaris launcher
+                                          # implementation but only searches the share and macOS source
+                                          # directories. Retain the intended common launcher by adding its
+                                          # already-declared Solaris source directory to the C vpath.
+                                          target_jdk_jli=openjdk/jdk/make/java/jli/Makefile
+                                          test "$(grep -Fxc \
+                                            'vpath %.c $(LAUNCHER_SHARE_SRC) $(LAUNCHER_PLATFORM_SRC)' \
+                                            "$target_jdk_jli")" = 1
+                                          sed -i \
+                                            's|^vpath %.c $(LAUNCHER_SHARE_SRC) $(LAUNCHER_PLATFORM_SRC)$|vpath %.c $(LAUNCHER_SHARE_SRC) $(LAUNCHER_PLATFORM_SRC) $(LAUNCHER_SOLARIS_PLATFORM_SRC)|' \
+                                            "$target_jdk_jli"
+
+                                          # TARGET_OS_MAC also identifies Darwin in current Apple headers,
+                                          # but this bundled zlib branch describes classic Mac OS and
+                                          # replaces the real fdopen declaration with a NULL macro. Keep
+                                          # that compatibility branch for its historical targets only;
+                                          # Darwin uses the following __APPLE__ configuration.
+                                          target_jdk_zutil=openjdk/jdk/src/share/native/java/util/zip/zlib/zutil.h
+                                          test "$(grep -Fxc \
+                                            '#if defined(MACOS) || defined(TARGET_OS_MAC)' \
+                                            "$target_jdk_zutil")" = 1
+                                          sed -i \
+                                            's@^#if defined(MACOS) || defined(TARGET_OS_MAC)$@#if (defined(MACOS) || defined(TARGET_OS_MAC)) \&\& !defined(__APPLE__)@' \
+                                            "$target_jdk_zutil"
+
+                                          # The shared bootstrap compatibility pass removes sys/sysctl.h
+                                          # for modern Linux, where that header no longer exists. The
+                                          # final Darwin networking and management implementations call
+                                          # sysctl/sysctlbyname, use Darwin's socket limit constants, and
+                                          # use xsw_usage, so restore the canonical target declaration
+                                          # without changing the Linux BuildJDK source tree.
+                                          target_jdk_portconfig=openjdk/jdk/src/solaris/native/sun/net/portconfig.c
+                                          test "$(grep -Fxc \
+                                            '/* removed: sys/sysctl.h */' \
+                                            "$target_jdk_portconfig")" = 1
+                                          sed -i \
+                                            's@^/\* removed: sys/sysctl.h \*/$@#include <sys/sysctl.h>@' \
+                                            "$target_jdk_portconfig"
+
+                                          target_jdk_net_util=openjdk/jdk/src/solaris/native/java/net/net_util_md.c
+                                          test "$(grep -Fxc \
+                                            '/* removed: sys/sysctl.h */' \
+                                            "$target_jdk_net_util")" = 1
+                                          sed -i \
+                                            's@^/\* removed: sys/sysctl.h \*/$@#include <sys/sysctl.h>@' \
+                                            "$target_jdk_net_util"
+
+                                          target_jdk_management=openjdk/jdk/src/solaris/native/com/sun/management/UnixOperatingSystem_md.c
+                                          test "$(grep -Fxc \
+                                            '/* removed: sys/sysctl.h */' \
+                                            "$target_jdk_management")" = 1
+                                          sed -i \
+                                            's@^/\* removed: sys/sysctl.h \*/$@#include <sys/sysctl.h>@' \
+                                            "$target_jdk_management"
+
+                                          # The pinned macOS management implementation calls the public
+                                          # JVM_ActiveProcessorCount interface but omits the JDK's jvm.h.
+                                          # Include its canonical declaration rather than relying on the
+                                          # implicit-function behavior of the contemporary Apple compiler.
+                                          target_jdk_macos_management=openjdk/jdk/src/solaris/native/com/sun/management/MacosxOperatingSystem.c
+                                          test "$(grep -Fxc \
+                                            '#include "com_sun_management_UnixOperatingSystem.h"' \
+                                            "$target_jdk_macos_management")" = 1
+                                          test "$(grep -Fxc '#include "jvm.h"' \
+                                            "$target_jdk_macos_management")" = 0
+                                          sed -i \
+                                            's@^#include "com_sun_management_UnixOperatingSystem.h"$@#include "com_sun_management_UnixOperatingSystem.h"\n#include "jvm.h"@' \
+                                            "$target_jdk_macos_management"
+
+                                          # Apple OpenJDK selected its native credential-cache bridge
+                                          # through the legacy Kerberos umbrella and framework. The
+                                          # source uses the public MIT krb5 and com_err APIs, so retain
+                                          # the complete bridge against the AOS target implementation.
+                                          target_jdk_native_ccache=openjdk/jdk/src/share/native/sun/security/krb5/nativeccache.c
+                                          test "$(grep -Fc '#import <Kerberos/Kerberos.h>' \
+                                            "$target_jdk_native_ccache")" -eq 1
+                                          sed -i \
+                                            's|#import <Kerberos/Kerberos.h>|#include <krb5.h>\n#include <com_err.h>\n#include <string.h>|' \
+                                            "$target_jdk_native_ccache"
+                                          test "$(grep -Fc '#include <krb5.h>' \
+                                            "$target_jdk_native_ccache")" -eq 1
+                                          test "$(grep -Fc '#include <com_err.h>' \
+                                            "$target_jdk_native_ccache")" -eq 1
+                                          test "$(grep -Fc '#include <string.h>' \
+                                            "$target_jdk_native_ccache")" -eq 1
+
+                                          target_jdk_krb5_make=openjdk/jdk/make/sun/security/krb5/Makefile
+                                          test "$(grep -Fxc 'LIBRARY = osxkrb5' \
+                                            "$target_jdk_krb5_make")" -eq 1
+                                          test "$(grep -Fxc '  OTHER_LDLIBS = -framework Kerberos' \
+                                            "$target_jdk_krb5_make")" -eq 1
+                                          sed -i \
+                                            -e '/^LIBRARY = osxkrb5$/a OTHER_INCLUDES += -I${krb5}/include' \
+                                            -e 's|^  OTHER_LDLIBS = -framework Kerberos$|  OTHER_LDLIBS = -L${krb5}/lib -lkrb5 -lk5crypto -lcom_err|' \
+                                            "$target_jdk_krb5_make"
+                                          test "$(grep -Fxc 'OTHER_INCLUDES += -I${krb5}/include' \
+                                            "$target_jdk_krb5_make")" -eq 1
+                                          test "$(grep -Fxc \
+                                            '  OTHER_LDLIBS = -L${krb5}/lib -lkrb5 -lk5crypto -lcom_err' \
+                                            "$target_jdk_krb5_make")" -eq 1
+
+                                          # This source predates Apple's AudioComponent API names used by
+                                          # later OpenJDK releases. Backport the source-equivalent API
+                                          # transition so the complete CoreAudio backend remains enabled
+                                          # against the canonical public AudioUnit interface.
+                                          target_jdk_macos_pcm=openjdk/jdk/src/macosx/native/com/sun/media/sound/PLATFORM_API_MacOSX_PCM.cpp
+                                          test "$(grep -Fc 'CloseComponent(' \
+                                            "$target_jdk_macos_pcm")" = 3
+                                          test "$(grep -Fxc '    ComponentDescription desc;' \
+                                            "$target_jdk_macos_pcm")" = 1
+                                          test "$(grep -Fxc '    Component comp = FindNextComponent(NULL, &desc);' \
+                                            "$target_jdk_macos_pcm")" = 1
+                                          test "$(grep -Fxc '    err = OpenAComponent(comp, &unit);' \
+                                            "$target_jdk_macos_pcm")" = 1
+                                          sed -i \
+                                            -e 's/CloseComponent(/AudioComponentInstanceDispose(/g' \
+                                            -e 's/^    ComponentDescription desc;$/    AudioComponentDescription desc;/' \
+                                            -e 's/^    Component comp = FindNextComponent(NULL, &desc);$/    AudioComponent comp = AudioComponentFindNext(NULL, \&desc);/' \
+                                            -e 's/^    err = OpenAComponent(comp, &unit);$/    err = AudioComponentInstanceNew(comp, \&unit);/' \
+                                            "$target_jdk_macos_pcm"
+
+                                          # AudioObjectPropertyElement is unsigned in the public CoreAudio
+                                          # ABI. Backport the explicit conversion used by later OpenJDK
+                                          # releases so modern C++ narrowing checks preserve this per-channel
+                                          # control path rather than rejecting its aggregate initializer.
+                                          target_jdk_macos_ports=openjdk/jdk/src/macosx/native/com/sun/media/sound/PLATFORM_API_MacOSX_Ports.cpp
+                                          test "$(grep -Fxc \
+                                            '                const AudioObjectPropertyAddress address = {kAudioObjectPropertyElementName, port->scope, ch};' \
+                                            "$target_jdk_macos_ports")" = 1
+                                          sed -i \
+                                            's/{kAudioObjectPropertyElementName, port->scope, ch};/{kAudioObjectPropertyElementName, port->scope, (unsigned)ch};/' \
+                                            "$target_jdk_macos_ports"
+
+                                          # PlatformMidi allocates its queue with malloc/free but the
+                                          # pinned shared source omits their standard declaration. Add it
+                                          # only to the Darwin target tree; openjdk-boot remains the exact
+                                          # native source and already compiles under its legacy C mode.
+                                          target_jdk_platform_midi=openjdk/jdk/src/share/native/com/sun/media/sound/PlatformMidi.c
+                                          test "$(grep -Fxc '#include "PlatformMidi.h"' \
+                                            "$target_jdk_platform_midi")" = 1
+                                          test "$(grep -Fxc '#include <stdlib.h>' \
+                                            "$target_jdk_platform_midi")" = 0
+                                          sed -i \
+                                            's@^#include "PlatformMidi.h"$@#include "PlatformMidi.h"\n#include <stdlib.h>@' \
+                                            "$target_jdk_platform_midi"
+
+                                          # REFLECT_VOID_FUNCTION's generated functions are declared
+                                          # void, but its companion function-pointer typedef omitted the
+                                          # return type and relied on pre-C99 implicit int. Preserve the
+                                          # plugin entry points with their intended ABI under modern Clang.
+                                          target_jdk_awt_loader=openjdk/jdk/src/solaris/native/sun/awt/awt_LoadLibrary.c
+                                          test "$(grep -Fxc \
+                                            'typedef name##_type arglist;                                            \' \
+                                            "$target_jdk_awt_loader")" = 1
+                                          sed -i \
+                                            's/^typedef name##_type arglist;/typedef void name##_type arglist;/' \
+                                            "$target_jdk_awt_loader"
+                                          test "$(grep -Fxc \
+                                            'typedef void name##_type arglist;                                            \' \
+                                            "$target_jdk_awt_loader")" = 1
+
+                                          # Two generated Java sources record target socket and filesystem
+                                          # constants, but their C generators must execute on the Linux
+                                          # builder. Preprocess them with the Darwin compiler so every
+                                          # constant comes from the target SDK, then compile the expanded
+                                          # C with the sanitized native compiler. Disabling Clang-only
+                                          # annotation probes keeps the preprocessed translation unit
+                                          # consumable by the native GCC without changing target values.
+                                          target_jdk_nio=openjdk/jdk/make/java/nio/Makefile
+                                          test -f "$target_jdk_nio"
+                                          test "$(grep -Fc \
+                                            '($(CD) $(TEMPDIR); $(NIO_CC) $(CPPFLAGS) $(LDDFLAGS) \' \
+                                            "$target_jdk_nio")" = 1
+                                          test "$(grep -Fc \
+                                            '$(NIO_CC) $(CPPFLAGS) -o $@ $(GENUC_SRC)' \
+                                            "$target_jdk_nio")" = 1
+                                          sed -i \
+                                            -e '1005c\
+                            __AOS_NIO_RECIPE__$(CC) $(CPPFLAGS) $(NIO_TARGET_CPPFLAGS) -E -o $@.i $(GENUC_SRC)\
+                            __AOS_NIO_RECIPE__$(NIO_NATIVE_CC) $@.i -o $@' \
+                                            -e '969,970c\
+                            __AOS_NIO_RECIPE__($(CD) $(TEMPDIR); $(CC) $(CPPFLAGS) $(NIO_TARGET_CPPFLAGS) -E \\\
+                            __AOS_NIO_RECIPE__   -o genSocketOptionRegistry.i $(GENSOR_SRC) && \\\
+                            __AOS_NIO_RECIPE__   $(NIO_NATIVE_CC) genSocketOptionRegistry.i \\\
+                            __AOS_NIO_RECIPE__   -o genSocketOptionRegistry$(EXE_SUFFIX))' \
+                                            -e '965a\
+                            NIO_NATIVE_CC = __AOS_NIO_NATIVE_CC__\
+                            NIO_TARGET_CPPFLAGS = -Wno-builtin-macro-redefined -include __AOS_NIO_MACROS__' \
+                                            "$target_jdk_nio"
+                                          target_jdk_nio_macros=$PWD/openjdk/jdk/make/java/nio/aos-cross-generator.h
+                                          printf '%s\n' \
+                                            '#undef __has_feature' \
+                                            '#define __has_feature(x) 0' \
+                                            '#undef __has_attribute' \
+                                            '#define __has_attribute(x) 0' \
+                                            '#undef __has_builtin' \
+                                            '#define __has_builtin(x) 0' \
+                                            > "$target_jdk_nio_macros"
+                                          sed -i \
+                                            -e "s|__AOS_NIO_NATIVE_CC__|$PWD/openjdk-tools/native-cc|" \
+                                            -e "s|__AOS_NIO_MACROS__|$target_jdk_nio_macros|" \
+                                            "$target_jdk_nio"
+                                          test "$(grep -c '__AOS_NIO_RECIPE__' \
+                                            "$target_jdk_nio")" = 6
+                                          sed -i \
+                                            's/^[[:blank:]]*__AOS_NIO_RECIPE__/\t/' \
+                                            "$target_jdk_nio"
+                                          ! grep -Eq '__AOS_NIO_(NATIVE_CC|MACROS)__' "$target_jdk_nio"
+                                          ! grep -Fq '__AOS_NIO_RECIPE__' "$target_jdk_nio"
+                                          test "$(grep -Fc \
+                                            '$(NIO_NATIVE_CC) genSocketOptionRegistry.i' \
+                                            "$target_jdk_nio")" = 1
+                                          test "$(grep -Fc \
+                                            '$(NIO_NATIVE_CC) $@.i -o $@' \
+                                            "$target_jdk_nio")" = 1
+
+                                          # The pinned macOS timezone implementation stores its GMT sign
+                                          # in a char but accidentally assigns string literals. Older
+                                          # Apple compilers accepted that invalid conversion; preserve the
+                                          # intended formatting with ordinary character constants.
+                                          target_jdk_timezone=openjdk/jdk/src/solaris/native/java/util/TimeZone_md.c
+                                          test "$(grep -Fxc '        sign = "+";' "$target_jdk_timezone")" = 1
+                                          test "$(grep -Fxc '        sign = "-";' "$target_jdk_timezone")" = 1
+                                          sed -i \
+                                            -e "s|^        sign = \"+\";$|        sign = '+';|" \
+                                            -e "s|^        sign = \"-\";$|        sign = '-';|" \
+                                            "$target_jdk_timezone"
+
+                                          # The pinned BSD port adds GCC's -fpch-deps to the ordinary
+                                          # dependency flags. Clang supports the retained -MMD/-MP/-MF
+                                          # dependency generation, but rejects that GCC-only PCH option.
+                                          target_hotspot_gcc_make=openjdk/hotspot/make/bsd/makefiles/gcc.make
+                                          test -f "$target_hotspot_gcc_make"
+                                          test "$(grep -Fxc \
+                                            'DEPFLAGS = -fpch-deps -MMD -MP -MF $(DEP_DIR)/$(@:%=%.d)' \
+                                            "$target_hotspot_gcc_make")" = 1
+                                          sed -i \
+                                            's|^DEPFLAGS = -fpch-deps -MMD -MP -MF |DEPFLAGS = -MMD -MP -MF |' \
+                                            "$target_hotspot_gcc_make"
+
+                                          # HotSpot 24 predates C++11. Select its intended dialect and the
+                                          # XSI context API it consumes on the C++ compile path only. The
+                                          # launcher compiles C while reusing CXXFLAGS, so changing that
+                                          # variable would incorrectly pass a C++ dialect to Clang C.
+                                          target_hotspot_rules_make=openjdk/hotspot/make/bsd/makefiles/rules.make
+                                          test -f "$target_hotspot_rules_make"
+                                          test "$(grep -Fxc \
+                                            'CXX_COMPILE      = $(CXX) $(CXXFLAGS) $(CFLAGS)' \
+                                            "$target_hotspot_rules_make")" = 1
+                                          sed -i \
+                                            's|^CXX_COMPILE      = $(CXX) $(CXXFLAGS) $(CFLAGS)$|CXX_COMPILE      = $(CXX) -std=gnu++98 -D_XOPEN_SOURCE $(CXXFLAGS) $(CFLAGS)|' \
+                                            "$target_hotspot_rules_make"
+
+                                          # Modern Clang correctly rejects left-shifting a negative value
+                                          # in an enum constant. Preserve the all-ones masks by making the
+                                          # two pinned constant expressions explicitly unsigned.
+                                          target_hotspot_cache=openjdk/hotspot/src/share/vm/oops/cpCacheOop.hpp
+                                          test "$(grep -Fxc \
+                                            '    option_bits_mask           = ~(((-1) << tos_state_shift) | (field_index_mask | parameter_size_mask))' \
+                                            "$target_hotspot_cache")" = 1
+                                          sed -i \
+                                            's|~(((-1) << tos_state_shift)|~(((-1u) << tos_state_shift)|' \
+                                            "$target_hotspot_cache"
+
+                                          target_hotspot_dependencies=openjdk/hotspot/src/share/vm/code/dependencies.hpp
+                                          test "$(grep -Fxc \
+                                            '    all_types           = ((1 << TYPE_LIMIT) - 1) & ((-1) << FIRST_TYPE),' \
+                                            "$target_hotspot_dependencies")" = 1
+                                          sed -i \
+                                            's|& ((-1) << FIRST_TYPE)|\& ((-1u) << FIRST_TYPE)|' \
+                                            "$target_hotspot_dependencies"
+
+                                          # This port's JNI visibility test predates Clang, which reports
+                                          # GCC 4.2 compatibility macros even though it supports the
+                                          # visibility attribute used by HotSpot's exported JNI entry
+                                          # points. Recognize Clang explicitly so libjvm exports the
+                                          # invocation API consumed by the real gamma launcher.
+                                          target_hotspot_jni=openjdk/hotspot/src/cpu/x86/vm/jni_x86.h
+                                          test "$(grep -Fxc \
+                                            '#if defined(__GNUC__) && (__GNUC__ > 4) || (__GNUC__ == 4) && (__GNUC_MINOR__ > 2)' \
+                                            "$target_hotspot_jni")" = 1
+                                          sed -i \
+                                            's@^#if defined(__GNUC__) && (__GNUC__ > 4) || (__GNUC__ == 4) && (__GNUC_MINOR__ > 2)$@#if defined(__clang__) || (defined(__GNUC__) \&\& ((__GNUC__ > 4) || ((__GNUC__ == 4) \&\& (__GNUC_MINOR__ > 2))))@' \
+                                            "$target_hotspot_jni"
+
+                                          # The macOS universal-image rules assume a brace-expanding
+                                          # shell, while AOS intentionally executes package phases and
+                                          # recursive make recipes with POSIX dash. Spell out both source
+                                          # architectures so the built x86_64 SA library and the other
+                                          # exported HotSpot artifacts are actually consolidated.
+                                          target_hotspot_universal=openjdk/hotspot/make/bsd/makefiles/universal.gmk
+                                          test "$(grep -Ec '\{[^}]+,[^}]+\}' "$target_hotspot_universal")" = 8
+                                          sed -i \
+                                            -e 's|$(EXPORT_PATH)/jre/lib/{i386,amd64}|$(EXPORT_PATH)/jre/lib/i386 $(EXPORT_PATH)/jre/lib/amd64|g' \
+                                            -e 's|$(EXPORT_JRE_LIB_DIR)/{i386,amd64}/$(subst $(EXPORT_JRE_LIB_DIR)/,,$@)|$(EXPORT_JRE_LIB_DIR)/i386/$(subst $(EXPORT_JRE_LIB_DIR)/,,$@) $(EXPORT_JRE_LIB_DIR)/amd64/$(subst $(EXPORT_JRE_LIB_DIR)/,,$@)|g' \
+                                            -e 's|$(JDK_IMAGE_DIR)/jre/lib/{i386,amd64}|$(JDK_IMAGE_DIR)/jre/lib/i386 $(JDK_IMAGE_DIR)/jre/lib/amd64|g' \
+                                            -e 's|$(JDK_IMAGE_DIR)/jre/lib/{client,server}/libjsig.$(LIBRARY_SUFFIX)|$(JDK_IMAGE_DIR)/jre/lib/client/libjsig.$(LIBRARY_SUFFIX) $(JDK_IMAGE_DIR)/jre/lib/server/libjsig.$(LIBRARY_SUFFIX)|g' \
+                                            -e 's|$(JDK_IMAGE_DIR)$(COPY_SUBDIR)/jre/lib/{i386,amd64}|$(JDK_IMAGE_DIR)$(COPY_SUBDIR)/jre/lib/i386 $(JDK_IMAGE_DIR)$(COPY_SUBDIR)/jre/lib/amd64|g' \
+                                            -e 's|$(JDK_IMAGE_DIR)$(COPY_SUBDIR)/jre/lib/{client,server}/libjsig.$(LIBRARY_SUFFIX)|$(JDK_IMAGE_DIR)$(COPY_SUBDIR)/jre/lib/client/libjsig.$(LIBRARY_SUFFIX) $(JDK_IMAGE_DIR)$(COPY_SUBDIR)/jre/lib/server/libjsig.$(LIBRARY_SUFFIX)|g' \
+                                            "$target_hotspot_universal"
+                                          test "$(grep -Ec '\{[^}]+,[^}]+\}' "$target_hotspot_universal")" = 0
+            ''
+            else ""
+          }
 
                   # Pre-create output directories that OpenJDK Makefiles check for
                   mkdir -p openjdk.build-boot openjdk.build
@@ -788,26 +1707,102 @@ in
                   for cmd in basename cat chmod cp cut date df dirname du echo env expr false \
                              head id ln ls mkdir mv printf pwd rm rmdir sort tail tee \
                              touch tr true uname uniq wc; do
-                    ln -sf ${coreutils}/bin/$cmd $TOOLS/$cmd 2>/dev/null || true
+                    ln -sf ${buildTools.coreutils}/bin/$cmd $TOOLS/$cmd 2>/dev/null || true
                   done
-                  ln -sf ${grep}/bin/grep $TOOLS/grep
-                  ln -sf ${grep}/bin/egrep $TOOLS/egrep
-                  ln -sf ${grep}/bin/fgrep $TOOLS/fgrep
-                  ln -sf ${sed}/bin/sed $TOOLS/sed
-                  ln -sf ${gawk}/bin/gawk $TOOLS/gawk
-                  ln -sf ${gawk}/bin/awk $TOOLS/awk
+                  ln -sf ${buildTools.grep}/bin/grep $TOOLS/grep
+                  ln -sf ${buildTools.grep}/bin/egrep $TOOLS/egrep
+                  ln -sf ${buildTools.grep}/bin/fgrep $TOOLS/fgrep
+                  ln -sf ${buildTools.sed}/bin/sed $TOOLS/sed
+                  ln -sf ${buildTools.gawk}/bin/gawk $TOOLS/gawk
+                  ln -sf ${buildTools.gawk}/bin/awk $TOOLS/awk
                   ln -sf $TOOLS/gawk $TOOLS/nawk
                   ln -sf $(which tar) $TOOLS/tar
-                  ln -sf ${cpio}/bin/cpio $TOOLS/cpio
-                  ln -sf ${file}/bin/file $TOOLS/file
-                  ln -sf ${binutils}/bin/readelf $TOOLS/readelf
-                  ln -sf ${which}/bin/which $TOOLS/which
-                  ln -sf ${zip}/bin/zip $TOOLS/zip
-                  ln -sf ${unzip}/bin/unzip $TOOLS/unzip
+                  ln -sf ${buildTools.cpio}/bin/cpio $TOOLS/cpio
+                  ln -sf ${buildTools.file}/bin/file $TOOLS/file
+                  ln -sf ${buildTools.binutils}/bin/readelf $TOOLS/readelf
+                  ln -sf ${buildTools.which}/bin/which $TOOLS/which
+                  ln -sf ${buildTools.zip}/bin/zip $TOOLS/zip
+                  ln -sf ${buildTools.unzip}/bin/unzip $TOOLS/unzip
                   ln -sf $CONFIG_SHELL $TOOLS/bash
                   ln -sf $CONFIG_SHELL $TOOLS/sh
-                  ln -sf ${perl}/bin/perl $TOOLS/perl
-                  # find, xargs from PATH (bootstrapTools)
+                  ln -sf ${buildTools.perl}/bin/perl $TOOLS/perl
+                  ${
+            if isDarwinCross
+            then ''
+              # IcedTea's first HotSpot is a Linux BuildJDK. Its ADLC sources
+              # deliberately use the Linux/GCC flag set, so sanitize the final
+              # Darwin derivation environment before invoking the native GCC.
+              cat > $TOOLS/native-cc << 'NATIVECCEOF'
+              #!${buildTools.bash}/bin/bash
+              exec ${buildTools.coreutils}/bin/env \
+                -u AOS_CROSS_COMPILING \
+                -u AOS_HARDENING_ENABLE \
+                -u AOS_TARGET_ARCH \
+                -u AOS_TARGET_PLATFORM \
+                -u C_INCLUDE_PATH \
+                -u CPLUS_INCLUDE_PATH \
+                -u LIBRARY_PATH \
+                -u MACOSX_DEPLOYMENT_TARGET \
+                -u NIX_CFLAGS_COMPILE \
+                -u NIX_CFLAGS_LINK \
+                -u NIX_LDFLAGS \
+                -u SDKROOT \
+                ${buildTools.cc}/bin/cc \
+                  -isystem ${alsaForBuild}/include \
+                  -L${alsaForBuild}/lib \
+                  "$@"
+              NATIVECCEOF
+              cat > $TOOLS/native-c++ << 'NATIVECXXEOF'
+              #!${buildTools.bash}/bin/bash
+              exec ${buildTools.coreutils}/bin/env \
+                -u AOS_CROSS_COMPILING \
+                -u AOS_HARDENING_ENABLE \
+                -u AOS_TARGET_ARCH \
+                -u AOS_TARGET_PLATFORM \
+                -u C_INCLUDE_PATH \
+                -u CPLUS_INCLUDE_PATH \
+                -u LIBRARY_PATH \
+                -u MACOSX_DEPLOYMENT_TARGET \
+                -u NIX_CFLAGS_COMPILE \
+                -u NIX_CFLAGS_LINK \
+                -u NIX_LDFLAGS \
+                -u SDKROOT \
+                ${buildTools.cc}/bin/c++ \
+                  -isystem ${alsaForBuild}/include \
+                  -L${alsaForBuild}/lib \
+                  "$@"
+              NATIVECXXEOF
+              chmod +x $TOOLS/native-cc $TOOLS/native-c++
+
+              # Both HotSpot builds compile and execute ADLC on Linux. Publish
+              # the native compilers through the upstream HOSTCC/HOSTCXX role;
+              # the ordinary CC/CXX values remain the Darwin target compilers.
+              host_env_anchor='ICEDTEA_ENV = ALT_JDK_IMPORT_PATH="$(BOOT_DIR)" ANT="$(ANT)" \'
+              test "$(grep -Fxc "$host_env_anchor" Makefile)" = 1
+              sed -i "/^ICEDTEA_ENV = ALT_JDK_IMPORT_PATH=/a\\
+              \tSYSTEM_UNAME=\"Darwin\" HOSTCC=\"$TOOLS/native-cc\" HOSTCXX=\"$TOOLS/native-c++\" \\\\" Makefile
+              test "$(grep -Fc \
+                "SYSTEM_UNAME=\"Darwin\" HOSTCC=\"$TOOLS/native-cc\" HOSTCXX=\"$TOOLS/native-c++\"" \
+                Makefile)" = 1
+
+              # ICEDTEA_ENV also carries the target CC/CXX and FreeType needed
+              # by the final Darwin image. Override only the boot environment,
+              # after that common environment, for the Linux BuildJDK.
+              boot_env_anchor='ICEDTEA_ENV_BOOT = $(ICEDTEA_ENV) \'
+              test "$(grep -Fxc "$boot_env_anchor" Makefile)" = 1
+              sed -i "/^ICEDTEA_ENV_BOOT = \$(ICEDTEA_ENV) \\\\/a\\
+              \tSYSTEM_UNAME=\"Linux\" CC=\"$TOOLS/native-cc\" CXX=\"$TOOLS/native-c++\" ALT_FREETYPE_HEADERS_PATH=\"${buildTools.freetype}/include\" ALT_FREETYPE_LIB_PATH=\"${buildTools.freetype}/lib\" FT2_CFLAGS=\"-I${buildTools.freetype}/include/freetype2 -I${buildTools.freetype}/include\" FT2_LIBS=\"-L${buildTools.freetype}/lib -lfreetype\" \\\\" Makefile
+              test "$(grep -Fc \
+                "SYSTEM_UNAME=\"Linux\" CC=\"$TOOLS/native-cc\" CXX=\"$TOOLS/native-c++\"" \
+                Makefile)" = 1
+
+              # The Darwin JDK's binary verification invokes otool directly.
+              # Publish the native LLVM implementation for inspecting target
+              # Mach-O files rather than silently skipping those checks.
+              ln -sf ${buildTools.llvm}/bin/llvm-otool $TOOLS/otool
+            ''
+            else ""
+          }# find, xargs from PATH (bootstrapTools)
                   ln -sf $(which find) $TOOLS/find
                   ln -sf $(which xargs) $TOOLS/xargs
                   # ldd — create a wrapper that uses the bootstrap dynamic linker
@@ -824,16 +1819,16 @@ in
                   # source code has many of them. The IcedTea Makefile passes CC from configure
                   # to the inner build (full Nix store path), so the $TOOLS wrapper alone can't
                   # intercept. We create the wrapper but also need source-level patches.
-                  ln -sf $(which gcc) $TOOLS/gcc
-                  ln -sf $(which g++) $TOOLS/g++
-                  ln -sf $(which cc) $TOOLS/cc
-                  ln -sf ${binutils}/bin/ld $TOOLS/ld
-                  ln -sf ${binutils}/bin/ar $TOOLS/ar
-                  ln -sf ${binutils}/bin/as $TOOLS/as
-                  ln -sf ${binutils}/bin/nm $TOOLS/nm
-                  ln -sf ${binutils}/bin/strip $TOOLS/strip
-                  ln -sf ${binutils}/bin/objcopy $TOOLS/objcopy
-                  ln -sf ${binutils}/bin/objdump $TOOLS/objdump
+                  ln -sf ${bootstrapCc} $TOOLS/gcc
+                  ln -sf ${bootstrapCxx} $TOOLS/g++
+                  ln -sf ${bootstrapCcAlias} $TOOLS/cc
+                  ln -sf ${buildTools.binutils}/bin/ld $TOOLS/ld
+                  ln -sf ${buildTools.binutils}/bin/ar $TOOLS/ar
+                  ln -sf ${buildTools.binutils}/bin/as $TOOLS/as
+                  ln -sf ${buildTools.binutils}/bin/nm $TOOLS/nm
+                  ln -sf ${buildTools.binutils}/bin/strip $TOOLS/strip
+                  ln -sf ${buildTools.binutils}/bin/objcopy $TOOLS/objcopy
+                  ln -sf ${buildTools.binutils}/bin/objdump $TOOLS/objdump
 
                   # Create helper script for copying .properties-template files
                   # (replaces ant's <copy> task which is broken under JamVM/GNU Classpath)
@@ -854,7 +1849,7 @@ in
 
                   # Also symlink dummy tools
                   # Use real xsltproc (HotSpot needs it for JVMTI code generation)
-                  ln -sf ${libxslt}/bin/xsltproc $TOOLS/xsltproc
+                  ln -sf ${buildTools.libxslt}/bin/xsltproc $TOOLS/xsltproc
                   for cmd in hostname free logname getconf rmic native2ascii wget; do
                     ln -sf $PWD/dummy-bin/$cmd $TOOLS/$cmd 2>/dev/null || true
                   done
@@ -1051,7 +2046,7 @@ in
           ANTEOF
                   # Add Nix-interpolated paths for JAR creation
                   cat >> $TOOLS/ant << JAREOF
-          JAR="${fastjar}/bin/fastjar"
+          JAR="${buildTools.fastjar}/bin/fastjar"
           JAREOF
                   cat >> $TOOLS/ant << 'ANTEOF2'
 
@@ -1122,11 +2117,11 @@ in
                   chmod +x $TOOLS/ant
 
                   # Add bootstrap JDK tools
-                  ln -sf ${jamvm-2_0}/bin/jamvm $TOOLS/java
+                  ln -sf ${buildTools.jamvm-2_0}/bin/jamvm $TOOLS/java
                   # Use our javac wrapper (from fake-jdk) that pre-creates directories
                   ln -sf $PWD/fake-jdk/bin/javac $TOOLS/javac
-                  ln -sf ${gjavah}/bin/gjavah $TOOLS/javah
-                  ln -sf ${fastjar}/bin/fastjar $TOOLS/jar
+                  ln -sf ${buildTools.gjavah}/bin/gjavah $TOOLS/javah
+                  ln -sf ${buildTools.fastjar}/bin/fastjar $TOOLS/jar
 
                   export ALT_UNIXCOMMAND_PATH=$TOOLS/
                   export ALT_USRBIN_PATH=$TOOLS/
@@ -1193,33 +2188,36 @@ in
           done
           exec GJAVAH_REAL "$@"
           GJAVAHEOF
-                  sed -i "s|GJAVAH_REAL|${gjavah}/bin/gjavah|g" $TOOLS/gjavah-wrapper
+                  sed -i "s|GJAVAH_REAL|${buildTools.gjavah}/bin/gjavah|g" $TOOLS/gjavah-wrapper
                   chmod +x $TOOLS/gjavah-wrapper
 
                   # Build up to and including boot JDK + stage2 bootstrap setup.
                   # IcedTea 2.6 drives the same boot javac outputs from several
                   # recursive make branches. Parallel execution can corrupt
                   # javac 7's shared class-writing state and abort in
-                  # ClassWriter.writePool, so keep this legacy bootstrap serial.
+                  # ClassWriter.writePool or leave an enum class without its
+                  # synthetic values() method. The configured PARALLEL_JOBS is
+                  # propagated independently to recursive OpenJDK builds, so
+                  # both that knob and the outer make jobserver must be serial.
                   # JAVAH_CMD is passed on the make command line to override the
                   # OpenJDK build system's computed value. JAVAH_CMD is NOT defined
                   # in source .gmk files — it's generated at build time from BOOTDIR
                   # and other variables. The computed value uses `java -jar javah.jar`
                   # which crashes with NPE under JamVM. Make command-line variables
                   # override all makefile-level assignments including computed ones.
-                  make stamps/bootstrap-directory-symlink-stage2.stamp \
+                  make -j1 PARALLEL_JOBS=1 \
+                    stamps/bootstrap-directory-symlink-stage2.stamp \
                     ALT_UNIXCOMMAND_PATH=$TOOLS/ \
                     ALT_USRBIN_PATH=$TOOLS/ \
                     ALT_DEVTOOLS_PATH=$TOOLS/ \
                     ALT_COMPILER_PATH=$TOOLS/ \
-                    ALSA_INCLUDE=${alsa-lib}/include/alsa/version.h \
-                    ALSA_LIBRARY=${alsa-lib}/lib/libasound.so \
+                    ALSA_INCLUDE=${alsaForBuild}/include/alsa/version.h \
+                    ALSA_LIBRARY=${alsaForBuild}/lib/libasound.so \
                     ANT=$TOOLS/ant \
                     DISABLE_NIMBUS=true \
                     SKIP_FASTDEBUG_BUILD=true \
                     SKIP_DEBUG_BUILD=true \
-                    "JAVAH_CMD=$TOOLS/gjavah-wrapper -bootclasspath \$(CLASSBINDIR):\$(BOOTDIR)/jre/lib/rt.jar" \
-                    -j1
+                    "JAVAH_CMD=$TOOLS/gjavah-wrapper -bootclasspath \$(CLASSBINDIR):\$(BOOTDIR)/jre/lib/rt.jar"
 
                   # Nimbus L&F is disabled via DISABLE_NIMBUS make variable (see below)
                   # because boot JDK lacks JAXB classes for the Nimbus source generator.
@@ -1246,13 +2244,13 @@ in
                     if [ -f "$jarfile" ]; then
                       echo "Pre-importing $component classes from boot build..."
                       mkdir -p openjdk.build/classes
-                      (cd openjdk.build/classes && ${fastjar}/bin/fastjar xf "../../$jarfile") || true
+                      (cd openjdk.build/classes && ${buildTools.fastjar}/bin/fastjar xf "../../$jarfile") || true
                     fi
                   done
                   # Also import langtools classes (javac, javah, javadoc, javap tools)
                   if [ -f "openjdk.build-boot/langtools/dist/lib/classes.jar" ]; then
                     echo "Pre-importing langtools classes from boot build..."
-                    (cd openjdk.build/classes && ${fastjar}/bin/fastjar xf "../../openjdk.build-boot/langtools/dist/lib/classes.jar") || true
+                    (cd openjdk.build/classes && ${buildTools.fastjar}/bin/fastjar xf "../../openjdk.build-boot/langtools/dist/lib/classes.jar") || true
                   fi
 
                   # Continue the full build (make skips already-completed targets)
@@ -1261,8 +2259,8 @@ in
                     ALT_USRBIN_PATH=$TOOLS/ \
                     ALT_DEVTOOLS_PATH=$TOOLS/ \
                     ALT_COMPILER_PATH=$TOOLS/ \
-                    ALSA_INCLUDE=${alsa-lib}/include/alsa/version.h \
-                    ALSA_LIBRARY=${alsa-lib}/lib/libasound.so \
+                    ALSA_INCLUDE=${alsaForBuild}/include/alsa/version.h \
+                    ALSA_LIBRARY=${alsaForBuild}/lib/libasound.so \
                     ANT=$TOOLS/ant \
                     DISABLE_NIMBUS=true \
                     SKIP_FASTDEBUG_BUILD=true \
@@ -1272,52 +2270,90 @@ in
       }
       {
         name = "install";
-        script = ''
-          mkdir -p $out
-          # IcedTea produces the JDK image in openjdk.build/
-          if [ -d openjdk.build/j2sdk-image ]; then
-            cp -a openjdk.build/j2sdk-image/* $out/
-          elif [ -d openjdk.build/images/j2sdk-image ]; then
-            cp -a openjdk.build/images/j2sdk-image/* $out/
-          fi
-
-          # Remove empty ct.sym — ct.sym generation was skipped due to missing
-          # ASM classes. Without ct.sym, javac uses rt.jar directly for symbol
-          # resolution, which is correct for same-version compilation.
-          rm -f $out/lib/ct.sym
-
-          # Patch ELF binaries with correct dynamic linker and rpath
-          # CONFIG_SHELL (bash) is statically linked, so patchelf --print-interpreter
-          # fails on it. Read the dynamic linker from the cc-wrapper metadata instead.
-          INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
-          BT_LIB=$(dirname "$INTERP")
-
-          # Find libstdc++ directory (nested under lib/gcc/...)
-          STDCXX_FILE=$(find "$BT_LIB" -name 'libstdc++.so.6' -not -name '*.py' 2>/dev/null | head -1)
-          STDCXX_DIR=""
-          if [ -n "$STDCXX_FILE" ]; then
-            STDCXX_DIR=$(dirname "$STDCXX_FILE")
-          fi
-          RPATH="$out/lib:$out/lib/amd64:$out/lib/amd64/jli:$out/jre/lib/amd64:$out/jre/lib/amd64/jli:$out/jre/lib/amd64/server:$BT_LIB"
-          if [ -n "$STDCXX_DIR" ]; then
-            RPATH="$RPATH:$STDCXX_DIR"
-          fi
-
-          for f in $out/bin/* $out/jre/bin/*; do
-            if [ -f "$f" ] && [ ! -L "$f" ]; then
-              patchelf --set-interpreter "$INTERP" \
-                       --set-rpath "$RPATH" \
-                       "$f" 2>/dev/null || true
+        script =
+          if isDarwinCross
+          then ''
+            mkdir -p $out
+            # IcedTea produces the JDK image in openjdk.build/
+            if [ -d openjdk.build/j2sdk-image ]; then
+              cp -a openjdk.build/j2sdk-image/* $out/
+            elif [ -d openjdk.build/images/j2sdk-image ]; then
+              cp -a openjdk.build/images/j2sdk-image/* $out/
             fi
-          done
 
-          find $out -name '*.so' -o -name '*.so.*' | while read f; do
-            if [ -f "$f" ] && [ ! -L "$f" ]; then
-              patchelf --set-rpath "$RPATH" \
-                       "$f" 2>/dev/null || true
+            # ct.sym generation is skipped by this legacy bootstrap on both
+            # platforms. Darwin binaries are already emitted as Mach-O and
+            # must not be passed to the Linux ELF patching path below.
+            rm -f $out/lib/ct.sym
+
+            cp -a \
+              ${java-native-foundation}/Library/Frameworks/JavaNativeFoundation.framework \
+              "$out/jre/lib/"
+            mkdir -p "$out/share/licenses"
+            cp -a \
+              ${java-native-foundation}/share/licenses/java-native-foundation \
+              "$out/share/licenses/"
+            test "$(find "$out/share/licenses/java-native-foundation/source-notices" \
+              -type f | wc -l)" -eq 31
+
+            bundledJnf="$out/jre/lib/JavaNativeFoundation.framework/Versions/A/JavaNativeFoundation"
+            test -f "$bundledJnf"
+            chmod u+w "$(dirname "$bundledJnf")" "$bundledJnf"
+            ${buildTools.llvm}/bin/llvm-install-name-tool \
+              -delete_rpath ${java-native-foundation}/lib \
+              -add_rpath @loader_path/../../../amd64/server \
+              "$bundledJnf"
+            ${buildTools.llvm}/bin/llvm-otool -l "$bundledJnf" \
+              | grep -q '@loader_path/../../../amd64/server'
+            ! ${buildTools.llvm}/bin/llvm-otool -l "$bundledJnf" \
+              | grep -Fq '${java-native-foundation}/lib'
+          ''
+          else ''
+            mkdir -p $out
+            # IcedTea produces the JDK image in openjdk.build/
+            if [ -d openjdk.build/j2sdk-image ]; then
+              cp -a openjdk.build/j2sdk-image/* $out/
+            elif [ -d openjdk.build/images/j2sdk-image ]; then
+              cp -a openjdk.build/images/j2sdk-image/* $out/
             fi
-          done
-        '';
+
+            # Remove empty ct.sym — ct.sym generation was skipped due to missing
+            # ASM classes. Without ct.sym, javac uses rt.jar directly for symbol
+            # resolution, which is correct for same-version compilation.
+            rm -f $out/lib/ct.sym
+
+            # Patch ELF binaries with correct dynamic linker and rpath
+            # CONFIG_SHELL (bash) is statically linked, so patchelf --print-interpreter
+            # fails on it. Read the dynamic linker from the cc-wrapper metadata instead.
+            INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
+            BT_LIB=$(dirname "$INTERP")
+
+            # Find libstdc++ directory (nested under lib/gcc/...)
+            STDCXX_FILE=$(find "$BT_LIB" -name 'libstdc++.so.6' -not -name '*.py' 2>/dev/null | head -1)
+            STDCXX_DIR=""
+            if [ -n "$STDCXX_FILE" ]; then
+              STDCXX_DIR=$(dirname "$STDCXX_FILE")
+            fi
+            RPATH="$out/lib:$out/lib/amd64:$out/lib/amd64/jli:$out/jre/lib/amd64:$out/jre/lib/amd64/jli:$out/jre/lib/amd64/server:$BT_LIB"
+            if [ -n "$STDCXX_DIR" ]; then
+              RPATH="$RPATH:$STDCXX_DIR"
+            fi
+
+            for f in $out/bin/* $out/jre/bin/*; do
+              if [ -f "$f" ] && [ ! -L "$f" ]; then
+                patchelf --set-interpreter "$INTERP" \
+                         --set-rpath "$RPATH" \
+                         "$f" 2>/dev/null || true
+              fi
+            done
+
+            find $out -name '*.so' -o -name '*.so.*' | while read f; do
+              if [ -f "$f" ] && [ ! -L "$f" ]; then
+                patchelf --set-rpath "$RPATH" \
+                         "$f" 2>/dev/null || true
+              fi
+            done
+          '';
       }
     ];
 

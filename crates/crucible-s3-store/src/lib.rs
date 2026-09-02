@@ -1,10 +1,16 @@
 //! AWS SDK transport for Crucible's S3-compatible immutable-store leaf.
 //!
+//! Spec index: RFC-0017 file 06.
+//!
 //! [`AwsSdkS3Client`] owns a bounded command queue and a dedicated Tokio
 //! runtime. This keeps the synchronous, streaming `crucible-cas` contract free
 //! of credential and runtime policy while reusing one configured SDK client.
 //! Callers must invoke the synchronous CAS surface from their admitted blocking
 //! worker pool rather than an async reactor thread.
+//!
+//! Module map: the crate root owns the bounded synchronous command facade and
+//! AWS SDK worker; the private `deadline` module owns absolute
+//! operation-deadline accounting.
 
 #![forbid(unsafe_code)]
 
@@ -1641,6 +1647,11 @@ where
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow clippy-disallowed-method -- timeout tests measure bounded host responsiveness and never feed elapsed time into modeled state.
+    #![allow(clippy::disallowed_methods)]
+    // crucible-lint: allow panic-shortcut -- unit fixtures use panic shortcuts for exact failure localization.
+    #![allow(clippy::expect_used)]
+
     use super::*;
     use std::time::Instant;
 

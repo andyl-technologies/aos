@@ -3,6 +3,8 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  bash,
+  stdenv,
 }: let
   version = "4.0.44";
 in
@@ -19,7 +21,10 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [];
+    runtimeDeps =
+      if stdenv.hostPlatform.isDarwin
+      then [bash]
+      else [];
     propagatedDeps = [];
 
     phases = [
@@ -34,6 +39,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --without-x
         '';
@@ -46,9 +52,18 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            make install
+            for script in amuFormat.sh mcheck mcomp mxtar tgz uz; do
+              [ -f "$out/bin/$script" ] || continue
+              sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/$script"
+            done
+          ''
+          else ''
+            make install
+          '';
       }
     ];
 

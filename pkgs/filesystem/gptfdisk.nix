@@ -10,6 +10,7 @@
   popt,
   ncurses,
   util-linux,
+  stdenv,
 }: let
   version = "1.0.10";
 in
@@ -28,11 +29,16 @@ in
     # gptfdisk dlopens uuid (libuuid from util-linux), parses
     # options via popt, and uses ncurses for the interactive cgdisk
     # variant. Keep all three in runtimeDeps.
-    runtimeDeps = [
-      popt
-      ncurses
-      util-linux
-    ];
+    runtimeDeps =
+      [
+        popt
+        ncurses
+      ]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then []
+        else [util-linux]
+      );
 
     phases = [
       {
@@ -48,7 +54,22 @@ in
         # ccWrapper already injects -isystem/-L/-Wl,-rpath flags for
         # the runtime deps, so `make` links correctly without hints.
         script = ''
-          make -j$NIX_BUILD_CORES CC="$CC" CXX="$CXX"
+          make -j$NIX_BUILD_CORES \
+            CC="$CC" \
+            CXX="$CXX" \
+            ${
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              TARGET=macos \
+              FATBINFLAGS= \
+              THINBINFLAGS= \
+              CXXFLAGS="''${CXXFLAGS:-} -O2 -Wall -D_FILE_OFFSET_BITS=64 -stdlib=libc++" \
+              LDLIBS= \
+              SGDISK_LDLIBS=-lpopt \
+              CGDISK_LDLIBS=-lncursesw
+            ''
+            else ""
+          }
         '';
       }
       {

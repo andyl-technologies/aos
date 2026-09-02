@@ -131,6 +131,9 @@ pub fn package_page(
         detail,
         closure,
         &setup,
+        None,
+        None,
+        false,
         started,
         &current_session_indicator(),
     )
@@ -221,6 +224,8 @@ pub fn releases_page(
         registry,
         status,
         releases,
+        &[],
+        &[],
         page_number,
         started,
         &current_session_indicator(),

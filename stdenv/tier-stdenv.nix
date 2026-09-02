@@ -109,6 +109,8 @@
       // {
         buildDeps = (args.buildDeps or []) ++ [ccWrapper] ++ initialPath;
         system = args.system or system;
+        hostPlatform = args.hostPlatform or hostPlatform;
+        targetPlatform = args.targetPlatform or targetPlatform;
         shell = args.shell or shellPath;
         storeDir = args.storeDir or storeDir;
         stdenv = stdenvDrv;

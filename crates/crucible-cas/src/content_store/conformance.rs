@@ -5,6 +5,8 @@
 //! panic on a semantic mismatch; callers must give them fresh, exclusively
 //! owned namespaces created for conformance testing.
 
+#![cfg(any(test, feature = "test-support"))]
+// crucible-lint: allow panic-shortcut -- semantic conformance fixtures fail loudly at the exact violated store invariant.
 #![allow(clippy::expect_used)]
 
 use std::collections::BTreeMap;

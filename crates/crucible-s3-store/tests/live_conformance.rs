@@ -1,5 +1,6 @@
 //! Environment-gated conformance against an actual S3-compatible service.
 
+// crucible-lint: allow panic-shortcut -- environment-gated conformance fixtures fail loudly at the exact violated S3 invariant.
 #![allow(clippy::expect_used)]
 
 use std::env;

@@ -109,6 +109,7 @@ in
         export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
         export PATH="${path}"
         export CONFIG_SHELL="${prev.bash}/bin/bash"
+        export SHELL="$CONFIG_SHELL"
 
         cd "$TMPDIR"
         mkdir ${sourceDir} && (cd ${src} && ${prev.tar}/bin/tar cf - .) | (cd ${sourceDir} && ${prev.tar}/bin/tar xf -)
@@ -123,12 +124,12 @@ in
         ${spec.preConfigure or ""}
 
         ${configureEnvText} \
-        "$TMPDIR/${sourceDir}/configure" \
+        "$CONFIG_SHELL" "$TMPDIR/${sourceDir}/configure" \
           ${configureArgsText}
 
-        make -j"$NIX_BUILD_CORES" ${makeFlags} ${autotoolsVars}
+        make -j"$NIX_BUILD_CORES" SHELL="$CONFIG_SHELL" ${makeFlags} ${autotoolsVars}
         ${spec.postBuild or ""}
-        make install ${installFlags} ${autotoolsVars}
+        make install SHELL="$CONFIG_SHELL" ${installFlags} ${autotoolsVars}
 
         ${optionalString copyLinuxHeaders ''
           cp ${linuxHeadersCpFlags} "${linuxHeadersSource}/linux" "${linuxHeadersDest}/" 2>/dev/null || true

@@ -9,6 +9,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  stdenv,
 }: let
   version = "2026b";
 in
@@ -48,9 +49,28 @@ in
       }
       {
         name = "build";
-        script = ''
-          make -j$NIX_BUILD_CORES zic
-        '';
+        script =
+          if stdenv.isCross
+          then ''
+            # zic compiles the architecture-independent zone database and is
+            # executed during install. Keep this build-machine generator away
+            # from the target SDK and cross hardening/linker flags.
+            native_cc="$BUILD_CC"
+            mkdir -p .aos-build-tools
+            cat > .aos-build-tools/cc <<EOF
+            #!$CONFIG_SHELL
+            unset AOS_HARDENING_ENABLE AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+            unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH
+            unset MACOSX_DEPLOYMENT_TARGET NIX_CFLAGS_COMPILE NIX_LDFLAGS SDKROOT
+            exec "$native_cc" "\$@"
+            EOF
+            chmod +x .aos-build-tools/cc
+
+            make -j$NIX_BUILD_CORES CC="$PWD/.aos-build-tools/cc" zic
+          ''
+          else ''
+            make -j$NIX_BUILD_CORES zic
+          '';
       }
       {
         name = "install";

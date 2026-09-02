@@ -176,6 +176,11 @@ impl QemuNode {
         terminal_lifecycle_stop: bool,
     ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
         self.validate_exact_snapshot_boundary(node, &checkpoint)?;
+        if !self.pending_priming_observations.is_empty() {
+            return Err(QemuNodeError::checkpoint(
+                "checkpoint requested before setup-time observations reached the scheduler event log",
+            ));
+        }
         if terminal_lifecycle_stop {
             // A terminal QEMU mutation installs its RR stop fence before its
             // typed result becomes visible to the host. Requesting a second

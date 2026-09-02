@@ -2,12 +2,14 @@
 {
   mkDerivation,
   fetchurl,
+  buildPackages,
   openjdk-17,
-  ant,
-  bash,
 }: let
   version = "1.7.4";
   jdk = openjdk-17;
+  buildJdk = buildPackages.openjdk-17;
+  buildAnt = buildPackages.ant;
+  buildBash = buildPackages.bash;
 in
   mkDerivation {
     pname = "tla-plus";
@@ -21,9 +23,9 @@ in
     };
 
     buildDeps = [
-      jdk
-      ant
-      bash
+      buildJdk
+      buildAnt
+      buildBash
     ];
     runtimeDeps = [jdk];
 
@@ -38,8 +40,8 @@ in
       {
         name = "build";
         script = ''
-          export JAVA_HOME="${jdk}"
-          export PATH="${jdk}/bin:${ant}/bin:$PATH"
+          export JAVA_HOME="${buildJdk}"
+          export PATH="${buildJdk}/bin:${buildAnt}/bin:$PATH"
 
           cd tlatools/org.lamport.tlatools
 

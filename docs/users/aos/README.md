@@ -69,6 +69,12 @@ multicall binary, so `aos package` is equivalent to `apm` and
 
 - [Package an application for AOS](package-authoring.md) follows a service from
   its derivation through image inclusion, registry publication, and upgrade.
+- Package and service configuration is generated from each package's Nix
+  interface and signed runtime contract. Use `apm docs`, `apm options`, the
+  offline `apm docs serve` browser, or the package documentation workspace in
+  AOS Hub. The generated reference covers nginx, Envoy, k3s and add-ons,
+  registry services, containerd, databases and storage, identity services,
+  network daemons, and KubeEdge without maintaining a second Markdown schema.
 - [Deploy AOS in production](deployment.md) covers golden-image qualification,
   platform import, bare metal, and fleet promotion.
 - [Maintain the source tree](../../maintainers/) covers Nix builds, image

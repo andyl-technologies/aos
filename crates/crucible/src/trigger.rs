@@ -49,6 +49,7 @@ mod evidence;
 mod guest_assertion_declarations;
 mod guest_assertion_observation;
 mod observability;
+mod observation_time;
 
 pub use assertions::*;
 pub(crate) use conditions::guest_assertion_marker_from_whitebox_body;

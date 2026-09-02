@@ -4,6 +4,8 @@
   fetchurl,
   gnumake,
   m4,
+  bash,
+  stdenv,
 }: let
   version = "3.8.2";
 in
@@ -24,7 +26,10 @@ in
       gnumake
       m4
     ];
-    runtimeDeps = [];
+    runtimeDeps =
+      if stdenv.hostPlatform.isDarwin
+      then [bash]
+      else [];
     propagatedDeps = [m4];
 
     phases = [
@@ -39,6 +44,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --disable-nls
         '';
@@ -51,9 +57,15 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            make install
+            sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/yacc"
+          ''
+          else ''
+            make install
+          '';
       }
     ];
 

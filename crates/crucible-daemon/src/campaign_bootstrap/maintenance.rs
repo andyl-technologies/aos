@@ -389,6 +389,7 @@ fn run_maintenance_pass(
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- unit fixtures use panic shortcuts for exact failure localization.
     #![allow(clippy::expect_used)]
 
     use std::collections::{BTreeMap, BTreeSet};

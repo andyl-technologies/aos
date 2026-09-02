@@ -1745,6 +1745,12 @@ fn build_production_vm_lifecycle_loop_with_restore(
     mut restore_checkpoint: Option<ProductionVmExactCheckpointSet>,
     mut node_launcher: Box<dyn ProductionVmNodeLauncher>,
 ) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
+    if !cfg!(target_os = "linux") {
+        return Err(loop_factory_error(
+            "production local-QEMU lifecycle requires a Linux host",
+        ));
+    }
+
     if config.branch.is_some()
         && config
             .signal_fault_replay

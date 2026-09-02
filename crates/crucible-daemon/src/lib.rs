@@ -1,6 +1,6 @@
 //! `crucible-daemon` owns the long-lived host process.
 //!
-//! Spec index: RFC-0010 files 20, 21; RFC-0016 file 04a.
+//! Spec index: RFC-0010 files 20, 21; RFC-0017 file 04a.
 //!
 //! This L4 crate will host sessions and serve the API over a transport as
 //! specified by its indexed RFC-0010 files. It may later contain host-facing
@@ -24,6 +24,10 @@
 //! [`campaign_policy`] owns its immutable Unix identity and operation grants;
 //! [`campaign_retention`] composes snapshot-bound semantic pins with durable
 //! executor publication roots for local garbage-collection inventory;
+//! [`campaign_store_quota`] adapts pinned Linux project quotas to the CAS
+//! store graph without introducing a storage dependency into the kernel layer;
+//! [`campaign_store_composition`] exposes the bounded concrete store
+//! capabilities accepted by local operator tooling;
 //! [`control_responsiveness`] forwards
 //! daemon-routed acknowledgement evidence to the API's quantum-counted
 //! control-responsive contract; [`executor_loopback`] provides the strict
@@ -80,6 +84,8 @@ pub mod campaign_retention;
 pub mod campaign_runtime;
 pub mod campaign_runtime_control;
 pub mod campaign_server;
+pub mod campaign_store_composition;
+pub mod campaign_store_quota;
 pub mod control_responsiveness;
 pub mod crucible_artifact;
 pub mod crucible_execution;
@@ -190,6 +196,7 @@ pub use campaign_server::{
     CampaignLoopbackServerShutdown, MAX_CAMPAIGN_LISTENER_WORKERS,
     MAX_CAMPAIGN_PENDING_CONNECTIONS,
 };
+pub use campaign_store_quota::LinuxProjectQuotaBinder;
 pub use control_responsiveness::{
     DAEMON_CONTROL_RESPONSIVE_QUANTUM_BOUND, DaemonControlResponsiveRoute,
     validate_daemon_control_responsiveness,

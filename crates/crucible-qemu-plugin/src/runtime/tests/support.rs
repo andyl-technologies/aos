@@ -470,9 +470,11 @@ pub(super) fn invoke_hot_fork_barrier(
     if callback == 0 {
         return Err(-1);
     }
-    // SAFETY: the registration stub stored this exact callback function type.
-    let callback =
-        unsafe { std::mem::transmute::<usize, crate::QemuPluginHotForkBarrierCbFn>(callback) };
+    let callback = {
+        // SAFETY: the registration stub stored this exact callback function
+        // type.
+        unsafe { std::mem::transmute::<usize, crate::QemuPluginHotForkBarrierCbFn>(callback) }
+    };
     let userdata = HOT_FORK_BARRIER_USERDATA.load(Ordering::SeqCst) as *mut std::ffi::c_void;
     let mut status = crate::QemuPluginHotForkBarrierStatus::default();
     let result = callback(action, std::ptr::from_mut(&mut status), userdata);
@@ -487,9 +489,11 @@ pub(super) fn invoke_hot_fork_child_runtime(
     if callback == 0 {
         return Err(-1);
     }
-    // SAFETY: the registration stub stored this exact callback function type.
-    let callback =
-        unsafe { std::mem::transmute::<usize, crate::QemuPluginHotForkChildRuntimeCbFn>(callback) };
+    let callback = {
+        // SAFETY: the registration stub stored this exact callback function
+        // type.
+        unsafe { std::mem::transmute::<usize, crate::QemuPluginHotForkChildRuntimeCbFn>(callback) }
+    };
     let userdata = HOT_FORK_CHILD_USERDATA.load(Ordering::SeqCst) as *mut std::ffi::c_void;
     let plan = plan.map_or(std::ptr::null(), std::ptr::from_ref);
     let mut status = crate::QemuPluginHotForkChildStatus::default();

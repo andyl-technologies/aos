@@ -295,8 +295,40 @@ pub struct UnitMap {
 /// The computed reconciliation plan. Action lists are disjoint; `blanket_targets`
 /// is an annotation (a subset of `to_restart`/`to_reload`) naming the units that
 /// reconcile only because one of their `X-Reload-Triggers` paths changed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServiceRootBarrier {
+    /// Owning package target stopped while the old helper is still loaded.
+    pub target: String,
+    /// Signed external capability sockets that can activate live workloads.
+    pub live_external_activation_sources: BTreeSet<String>,
+    /// Live socket, timer, and path units that can reactivate root workloads.
+    pub live_activation_sources: BTreeSet<String>,
+    /// Live workloads authenticated by both sides of the helper dependency.
+    pub live_members: BTreeSet<String>,
+    /// Live generated package side effects stopped after overlay cleanup.
+    pub live_side_effects: BTreeSet<String>,
+    /// Other live package-owned `PartOf=` members stopped before the target.
+    pub live_remaining_members: BTreeSet<String>,
+    /// Signed external capability sockets retained by the candidate.
+    pub candidate_external_activation_sources: BTreeSet<String>,
+    /// Candidate `PartOf=` members started with the owning target.
+    pub candidate_members: BTreeSet<String>,
+    /// Whether the owning target remains present in the candidate.
+    pub candidate_target_present: bool,
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct UnitDiff {
+    /// Authenticated generated roots helpers and their target membership.
+    pub service_root_barriers: BTreeMap<String, ServiceRootBarrier>,
+    /// Stops that must complete successfully before the generation can swap.
+    pub required_stops: BTreeSet<String>,
+    /// Old helpers that must be started successfully immediately before stop.
+    pub required_pre_stop_starts: BTreeSet<String>,
+    /// Routed sources quiesced under the old unit definitions.
+    pub quiesced_external_activation_sources: BTreeSet<String>,
+    /// Retained routed sockets quiesced by a barrier and restored post-swap.
+    pub restore_external_activation_sources: BTreeSet<String>,
     /// Present live, gone in candidate → stop (minus `X-StopOnRemoval=false`).
     pub to_stop: Vec<String>,
     /// Absent live, present in candidate → start (minus `X-OnlyManualStart=true`).
@@ -316,6 +348,158 @@ pub struct UnitDiff {
     /// Non-fatal advisories (e.g. `reloadIfChanged` on a unit with no
     /// `ExecReload=`, which falls back to restart).
     pub warnings: Vec<String>,
+}
+
+impl UnitDiff {
+    /// Restricts routed-source restoration to sources that were active before
+    /// the barrier while retaining required stops to close activation races.
+    pub fn retain_active_external_activation_sources(&mut self, active: &BTreeSet<String>) {
+        let routed = self
+            .service_root_barriers
+            .values()
+            .flat_map(|barrier| barrier.live_external_activation_sources.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        let inactive = routed.difference(active).cloned().collect::<BTreeSet<_>>();
+
+        self.to_start.retain(|unit| !inactive.contains(unit));
+        self.quiesced_external_activation_sources
+            .retain(|unit| !inactive.contains(unit));
+        self.restore_external_activation_sources
+            .retain(|unit| !inactive.contains(unit));
+    }
+
+    /// Replaces affected service-root member actions with an ordered, required
+    /// old-member, old-helper, and owning-target stop barrier.
+    pub fn normalize_service_root_lifecycle(&mut self) {
+        let affected_helpers = self
+            .to_restart
+            .iter()
+            .chain(&self.to_stop)
+            .filter(|unit| self.service_root_barriers.contains_key(*unit))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+
+        for helper in affected_helpers {
+            let barrier = self.service_root_barriers[&helper].clone();
+            let retained_external_sources = barrier
+                .live_external_activation_sources
+                .intersection(&barrier.candidate_external_activation_sources)
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            let candidate_suppressed_members = barrier
+                .candidate_members
+                .iter()
+                .filter(|name| !name.ends_with(".slice"))
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            let members = barrier
+                .live_external_activation_sources
+                .union(&barrier.live_activation_sources)
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .union(&barrier.live_members)
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .union(&barrier.live_side_effects)
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .union(&barrier.live_remaining_members)
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .union(&candidate_suppressed_members)
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .union(&retained_external_sources)
+                .cloned()
+                .chain([helper.clone(), barrier.target.clone()])
+                .collect::<BTreeSet<_>>();
+            let already_required = self.required_stops.clone();
+            self.to_stop
+                .retain(|unit| !members.contains(unit) || already_required.contains(unit));
+            self.to_restart.retain(|unit| !members.contains(unit));
+            self.to_reload.retain(|unit| !members.contains(unit));
+            self.to_start.retain(|unit| !members.contains(unit));
+            self.install_only.retain(|unit| !members.contains(unit));
+            self.blanket_targets.retain(|unit| !members.contains(unit));
+
+            // Drain signed routed provider sockets before package-local
+            // activation sources so neither can reactivate a workload.
+            for source in &barrier.live_external_activation_sources {
+                if !self.to_stop.contains(source) {
+                    self.to_stop.push(source.clone());
+                }
+                self.required_stops.insert(source.clone());
+                self.quiesced_external_activation_sources
+                    .insert(source.clone());
+            }
+
+            // Drain activation sources before workloads so none can be
+            // reactivated while the old overlay is being dismantled.
+            for source in &barrier.live_activation_sources {
+                self.to_stop.push(source.clone());
+                self.required_stops.insert(source.clone());
+            }
+
+            for member in barrier
+                .live_members
+                .iter()
+                .filter(|member| *member != &helper && *member != &barrier.target)
+            {
+                self.to_stop.push(member.clone());
+                self.required_stops.insert(member.clone());
+            }
+
+            // The helper is now independent of propagation, so this job result
+            // is the authoritative old-overlay cleanup outcome. Starting it
+            // first re-adopts an exact stale mount after interrupted retries
+            // and fails closed on a conflicting mount identity.
+            self.to_stop.push(helper.clone());
+            self.required_stops.insert(helper.clone());
+            self.required_pre_stop_starts.insert(helper);
+
+            // Keep confinement active until workloads and their overlay have
+            // terminated, then await each old side effect before unit swap.
+            for side_effect in &barrier.live_side_effects {
+                self.to_stop.push(side_effect.clone());
+                self.required_stops.insert(side_effect.clone());
+            }
+
+            for member in &barrier.live_remaining_members {
+                self.to_stop.push(member.clone());
+                self.required_stops.insert(member.clone());
+            }
+
+            self.to_stop.push(barrier.target.clone());
+            self.required_stops.insert(barrier.target.clone());
+
+            if barrier.candidate_target_present && !self.to_start.contains(&barrier.target) {
+                self.to_start.push(barrier.target);
+            }
+            for source in &retained_external_sources {
+                if !self.to_start.contains(source) {
+                    self.to_start.push(source.clone());
+                }
+                self.restore_external_activation_sources
+                    .insert(source.clone());
+            }
+        }
+    }
+}
+
+/// Returns the package target owning a generated service-root preparation unit.
+///
+/// The expose renderer reserves this exact name. Keeping the derivation here
+/// lets both generation activation and attached-unit reconciliation establish
+/// the same pre-reload stop barrier while the old strict cleanup command is
+/// still loaded.
+pub(crate) fn service_root_target(unit: &str) -> Option<String> {
+    let package = unit
+        .strip_prefix("aos-pkg-")?
+        .strip_suffix("-service-roots.service")?;
+    if package.is_empty() {
+        return None;
+    }
+    Some(format!("aos-pkg-{package}.target"))
 }
 
 // ---------------------------------------------------------------------------
@@ -673,6 +857,8 @@ pub fn compute_diff(live_etc_root: &Path, candidate_etc_root: &Path) -> UnitDiff
 
     let mut diff = UnitDiff::default();
 
+    diff.service_root_barriers = build_service_root_barriers(&live, &candidate);
+
     let names: BTreeSet<&String> = live.units.keys().chain(candidate.units.keys()).collect();
 
     for name in names {
@@ -701,6 +887,261 @@ pub fn compute_diff(live_etc_root: &Path, candidate_etc_root: &Path) -> UnitDiff
     order_sockets_first(&mut diff.to_start);
 
     diff
+}
+
+fn build_service_root_barriers(
+    live: &UnitMap,
+    candidate: &UnitMap,
+) -> BTreeMap<String, ServiceRootBarrier> {
+    let helper_names = live
+        .units
+        .keys()
+        .chain(candidate.units.keys())
+        .filter(|name| service_root_target(name).is_some())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+
+    helper_names
+        .into_iter()
+        .filter_map(|helper| {
+            let target = service_root_target(&helper)?;
+            let live_helper = live.units.get(&helper).filter(|unit| unit.is_present());
+            let candidate_helper = candidate
+                .units
+                .get(&helper)
+                .filter(|unit| unit.is_present());
+            let helper_is_bound = live_helper
+                .into_iter()
+                .chain(candidate_helper)
+                .all(|unit| unit_section_words(unit, "PartOf") == BTreeSet::from([target.clone()]));
+            if !helper_is_bound || (live_helper.is_none() && candidate_helper.is_none()) {
+                return None;
+            }
+
+            let barrier = ServiceRootBarrier {
+                live_members: service_root_workloads(live, &target, &helper),
+                live_external_activation_sources: BTreeSet::new(),
+                live_activation_sources: BTreeSet::new(),
+                live_side_effects: generated_side_effects(live, &target, &helper),
+                live_remaining_members: BTreeSet::new(),
+                candidate_external_activation_sources: BTreeSet::new(),
+                candidate_members: target_part_of_members(candidate, &target),
+                candidate_target_present: candidate
+                    .units
+                    .get(&target)
+                    .is_some_and(LogicalUnit::is_present),
+                target,
+            };
+            Some((helper, barrier))
+        })
+        .map(|(helper, mut barrier)| {
+            barrier.live_activation_sources = activation_sources(live, &barrier.target);
+            barrier.live_external_activation_sources =
+                routed_activation_sources(live, &barrier.target, &barrier.live_members);
+            barrier.candidate_external_activation_sources = barrier
+                .live_external_activation_sources
+                .iter()
+                .filter(|source| {
+                    candidate
+                        .units
+                        .get(*source)
+                        .is_some_and(LogicalUnit::is_present)
+                })
+                .cloned()
+                .collect();
+            barrier.live_remaining_members = remaining_part_of_members(
+                live,
+                &barrier.target,
+                &helper,
+                &barrier.live_activation_sources,
+                &barrier.live_members,
+                &barrier.live_side_effects,
+            );
+            (helper, barrier)
+        })
+        .collect()
+}
+
+fn target_part_of_members(units: &UnitMap, target: &str) -> BTreeSet<String> {
+    units
+        .units
+        .iter()
+        .filter(|(name, unit)| {
+            unit.is_present()
+                && *name != target
+                && unit_section_words(unit, "PartOf").contains(target)
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+fn service_root_workloads(units: &UnitMap, target: &str, helper: &str) -> BTreeSet<String> {
+    let before = units
+        .units
+        .get(helper)
+        .filter(|unit| unit.is_present())
+        .map(|unit| unit_section_words(unit, "Before"))
+        .unwrap_or_default();
+
+    before
+        .into_iter()
+        .filter(|name| name.ends_with(".service"))
+        .filter(|name| {
+            units.units.get(name).is_some_and(|unit| {
+                unit.is_present()
+                    && unit_section_words(unit, "PartOf").contains(target)
+                    && unit_section_words(unit, "Requires").contains(helper)
+                    && unit_section_words(unit, "After").contains(helper)
+            })
+        })
+        .collect()
+}
+
+fn activation_sources(units: &UnitMap, target: &str) -> BTreeSet<String> {
+    target_part_of_members(units, target)
+        .into_iter()
+        .filter(|name| {
+            name.ends_with(".socket")
+                || name.ends_with(".timer")
+                || name.ends_with(".path")
+                || name.ends_with(".automount")
+        })
+        .collect()
+}
+
+fn remaining_part_of_members(
+    units: &UnitMap,
+    target: &str,
+    helper: &str,
+    activation_sources: &BTreeSet<String>,
+    workloads: &BTreeSet<String>,
+    side_effects: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    target_part_of_members(units, target)
+        .into_iter()
+        .filter(|name| name != helper && !name.ends_with(".slice"))
+        .filter(|name| !activation_sources.contains(name))
+        .filter(|name| !workloads.contains(name))
+        .filter(|name| !side_effects.contains(name))
+        .collect()
+}
+
+fn routed_activation_sources(
+    units: &UnitMap,
+    target: &str,
+    workloads: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    units
+        .units
+        .iter()
+        .filter(|(name, unit)| {
+            unit.is_present()
+                && name.ends_with(".socket")
+                && !unit_section_words(unit, "PartOf").contains(target)
+        })
+        .filter_map(|(name, unit)| {
+            let routed = trusted_routed_service(unit)?;
+            (workloads.contains(&routed)
+                && activated_service(name, unit).as_deref() == Some(routed.as_str()))
+            .then(|| name.clone())
+        })
+        .collect()
+}
+
+fn trusted_routed_service(unit: &LogicalUnit) -> Option<String> {
+    let route = unit.drop_ins.iter().find(|file| {
+        file.path.file_name().and_then(|name| name.to_str())
+            == Some("50-aos-capability-routes.conf")
+    })?;
+    let values = route.parsed.sections.get("Socket")?.get("Service")?;
+    if values.len() != 1 {
+        return None;
+    }
+    let mut words = values[0].split_ascii_whitespace();
+    let service = words.next()?;
+    words.next().is_none().then(|| service.to_string())
+}
+
+fn activated_service(name: &str, unit: &LogicalUnit) -> Option<String> {
+    let (suffix, section, key) = [
+        (".socket", "Socket", "Service"),
+        (".timer", "Timer", "Unit"),
+        (".path", "Path", "Unit"),
+    ]
+    .into_iter()
+    .find(|(suffix, _, _)| name.ends_with(suffix))?;
+    match effective_section_values(unit, section, key)
+        .into_iter()
+        .last()
+    {
+        Some(value) => {
+            let mut words = value.split_ascii_whitespace();
+            let service = words.next()?;
+            words.next().is_none().then(|| service.to_string())
+        }
+        None => name
+            .strip_suffix(suffix)
+            .map(|stem| format!("{stem}.service")),
+    }
+}
+
+fn generated_side_effects(units: &UnitMap, target: &str, helper: &str) -> BTreeSet<String> {
+    let Some(prefix) = helper.strip_suffix("-service-roots.service") else {
+        return BTreeSet::new();
+    };
+    [
+        "host-paths",
+        "modules",
+        "sysctl",
+        "firewall",
+        "netns",
+        "mac",
+        "ebpf",
+    ]
+    .into_iter()
+    .map(|suffix| format!("{prefix}-{suffix}.service"))
+    .filter(|name| {
+        units.units.get(name).is_some_and(|unit| {
+            unit.is_present() && unit_section_words(unit, "PartOf").contains(target)
+        })
+    })
+    .collect()
+}
+
+fn unit_section_words(unit: &LogicalUnit, key: &str) -> BTreeSet<String> {
+    section_words(unit, "Unit", key)
+}
+
+fn section_words(unit: &LogicalUnit, section: &str, key: &str) -> BTreeSet<String> {
+    effective_section_values(unit, section, key)
+        .into_iter()
+        .flat_map(|value| {
+            value
+                .split_ascii_whitespace()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn effective_section_values(unit: &LogicalUnit, section: &str, key: &str) -> Vec<String> {
+    let mut effective = Vec::new();
+    for file in unit.primary.iter().chain(&unit.drop_ins) {
+        let Some(values) = file
+            .parsed
+            .sections
+            .get(section)
+            .and_then(|keys| keys.get(key))
+        else {
+            continue;
+        };
+        if values.is_empty() {
+            effective.clear();
+        } else {
+            effective.extend(values.iter().cloned());
+        }
+    }
+    effective
 }
 
 /// Route a unit present live but gone in the candidate: stop it, unless it
@@ -1000,6 +1441,268 @@ mod tests {
         let diff = compute_diff(live.path(), cand.path());
         assert_eq!(diff.to_start, vec!["new.service"]);
         assert!(diff.to_stop.is_empty() && diff.to_restart.is_empty());
+    }
+
+    #[test]
+    fn generated_service_root_name_maps_to_owning_target() {
+        assert_eq!(
+            service_root_target("aos-pkg-libc++=debug-service-roots.service"),
+            Some("aos-pkg-libc++=debug.target".to_string())
+        );
+        assert_eq!(service_root_target("web.service"), None);
+        assert_eq!(service_root_target("aos-pkg--service-roots.service"), None);
+    }
+
+    #[test]
+    fn diff_carries_bound_root_target_members_across_socket_only_transition() {
+        let live = TempDir::new().unwrap();
+        let candidate = TempDir::new().unwrap();
+        let live_units = units_dir(live.path());
+        let candidate_units = units_dir(candidate.path());
+        let helper = "aos-pkg-web-service-roots.service";
+
+        write(
+            &live_units,
+            helper,
+            "[Unit]\nPartOf=aos-pkg-web.target\nBefore=web.service\n[Service]\nType=oneshot\n",
+        );
+        write(
+            &live_units,
+            "aos-pkg-web.target",
+            "[Unit]\nWants=aos-pkg-web.slice web.socket web.service aos-pkg-web-mac.service provider.socket\n",
+        );
+        write(
+            &live_units,
+            "web.service",
+            "[Unit]\nPartOf=aos-pkg-web.target maintenance.target\nRequires=aos-pkg-web-service-roots.service\nAfter=aos-pkg-web-service-roots.service\n[Service]\nExecStart=/bin/old\n",
+        );
+        write(
+            &live_units,
+            "web.socket",
+            "[Unit]\nPartOf=aos-pkg-web.target\n[Socket]\nListenStream=8080\n",
+        );
+        write(
+            &live_units,
+            "aos-pkg-web-mac.service",
+            "[Unit]\nPartOf=aos-pkg-web.target\nBefore=web.service\n[Service]\nType=oneshot\n",
+        );
+        write(&live_units, "aos-pkg-web.slice", "[Slice]\nCPUWeight=100\n");
+        write(
+            &live_units,
+            "data.automount",
+            "[Unit]\nPartOf=aos-pkg-web.target\n[Automount]\nWhere=/data\n",
+        );
+        write(
+            &live_units,
+            "data.mount",
+            "[Unit]\nPartOf=aos-pkg-web.target\n[Mount]\nWhere=/data\nWhat=/dev/null\n",
+        );
+        write(
+            &live_units,
+            "maintenance.timer",
+            "[Unit]\nPartOf=aos-pkg-web.target\n[Timer]\nOnActiveSec=1h\n",
+        );
+        write(
+            &live_units,
+            "provider.socket",
+            "[Socket]\nListenStream=9090\n",
+        );
+        write(
+            &live_units,
+            "provider.socket.d/50-aos-capability-routes.conf",
+            "[Socket]\nService=web.service\n",
+        );
+        write(
+            &candidate_units,
+            "aos-pkg-web.target",
+            "[Unit]\nWants=aos-pkg-web.slice web.socket aos-pkg-web-mac.service\n",
+        );
+        write(
+            &candidate_units,
+            "web.socket",
+            "[Unit]\nPartOf=aos-pkg-web.target\n[Socket]\nListenStream=8080\n",
+        );
+        write(
+            &candidate_units,
+            "aos-pkg-web.slice",
+            "[Slice]\nCPUWeight=100\n",
+        );
+        write(
+            &candidate_units,
+            "provider.socket",
+            "[Socket]\nListenStream=9090\n",
+        );
+        write(
+            &candidate_units,
+            "aos-pkg-web-mac.service",
+            "[Unit]\nDescription=updated policy\nPartOf=aos-pkg-web.target\n[Service]\nType=oneshot\n",
+        );
+
+        let mut diff = compute_diff(live.path(), candidate.path());
+        let barrier = &diff.service_root_barriers[helper];
+
+        assert_eq!(barrier.target, "aos-pkg-web.target");
+        assert!(barrier.live_members.contains("web.service"));
+        assert_eq!(
+            barrier.live_activation_sources,
+            BTreeSet::from([
+                "data.automount".to_string(),
+                "maintenance.timer".to_string(),
+                "web.socket".to_string(),
+            ])
+        );
+        assert_eq!(
+            barrier.live_external_activation_sources,
+            BTreeSet::from(["provider.socket".to_string()])
+        );
+        assert_eq!(
+            barrier.candidate_external_activation_sources,
+            BTreeSet::from(["provider.socket".to_string()])
+        );
+        assert_eq!(
+            barrier.live_side_effects,
+            BTreeSet::from(["aos-pkg-web-mac.service".to_string()])
+        );
+        assert_eq!(
+            barrier.live_remaining_members,
+            BTreeSet::from(["data.mount".to_string()])
+        );
+        assert!(!barrier.live_members.contains("provider.socket"));
+        assert!(!barrier.live_members.contains("aos-pkg-web.slice"));
+        assert!(barrier.candidate_members.contains("web.socket"));
+        assert!(barrier.candidate_target_present);
+        assert!(diff.to_stop.contains(&helper.to_string()));
+
+        diff.normalize_service_root_lifecycle();
+        assert_eq!(
+            diff.to_stop,
+            vec![
+                "provider.socket",
+                "data.automount",
+                "maintenance.timer",
+                "web.socket",
+                "web.service",
+                "aos-pkg-web-service-roots.service",
+                "aos-pkg-web-mac.service",
+                "data.mount",
+                "aos-pkg-web.target",
+            ]
+        );
+        assert!(!diff.to_stop.contains(&"aos-pkg-web.slice".to_string()));
+        assert_eq!(
+            diff.required_pre_stop_starts,
+            BTreeSet::from([helper.to_string()])
+        );
+        assert_eq!(diff.to_start, vec!["aos-pkg-web.target", "provider.socket"]);
+        assert_eq!(
+            diff.restore_external_activation_sources,
+            BTreeSet::from(["provider.socket".to_string()])
+        );
+        assert!(diff.to_restart.is_empty());
+
+        std::fs::remove_file(candidate_units.join("provider.socket")).unwrap();
+        let mut removed_provider = compute_diff(live.path(), candidate.path());
+        removed_provider.normalize_service_root_lifecycle();
+        assert!(
+            removed_provider
+                .restore_external_activation_sources
+                .is_empty()
+        );
+        assert!(
+            !removed_provider
+                .to_start
+                .contains(&"provider.socket".to_string())
+        );
+    }
+
+    #[test]
+    fn root_upgrade_quiesces_and_restores_only_signed_routed_workload_socket() {
+        let live = TempDir::new().unwrap();
+        let candidate = TempDir::new().unwrap();
+        let live_units = units_dir(live.path());
+        let candidate_units = units_dir(candidate.path());
+        let helper = "aos-pkg-web-service-roots.service";
+
+        for (units, command) in [(&live_units, "/old"), (&candidate_units, "/new")] {
+            write(
+                units,
+                helper,
+                &format!(
+                    "[Unit]\nPartOf=aos-pkg-web.target\nBefore=web.service\n[Service]\nType=oneshot\nExecStart={command}\n"
+                ),
+            );
+            write(
+                units,
+                "aos-pkg-web.target",
+                "[Unit]\nWants=web.service provider.socket\n",
+            );
+            write(
+                units,
+                "web.service",
+                &format!(
+                    "[Unit]\nPartOf=aos-pkg-web.target\nRequires=aos-pkg-web-service-roots.service\nAfter=aos-pkg-web-service-roots.service\n[Service]\nExecStart={command}\n"
+                ),
+            );
+            write(units, "provider.socket", "[Socket]\nListenStream=9090\n");
+            write(
+                units,
+                "provider.socket.d/50-aos-capability-routes.conf",
+                "[Socket]\nService=web.service\n",
+            );
+            write(units, "shared.socket", "[Socket]\nListenStream=9091\n");
+            write(
+                units,
+                "shared.socket.d/50-aos-capability-routes.conf",
+                "[Socket]\nService=other.service\n",
+            );
+        }
+        write(
+            &candidate_units,
+            "provider.socket.d/50-aos-capability-routes.conf",
+            "[Socket]\nService=other.service\n",
+        );
+
+        let mut diff = compute_diff(live.path(), candidate.path());
+        diff.normalize_service_root_lifecycle();
+
+        assert_eq!(
+            diff.to_stop,
+            vec![
+                "provider.socket",
+                "web.service",
+                helper,
+                "aos-pkg-web.target",
+            ]
+        );
+        assert_eq!(diff.to_start, vec!["aos-pkg-web.target", "provider.socket"]);
+        assert_eq!(
+            diff.restore_external_activation_sources,
+            BTreeSet::from(["provider.socket".to_string()])
+        );
+        assert!(!diff.to_stop.contains(&"shared.socket".to_string()));
+        assert!(!diff.to_start.contains(&"shared.socket".to_string()));
+
+        diff.retain_active_external_activation_sources(&BTreeSet::new());
+        assert!(diff.to_stop.contains(&"provider.socket".to_string()));
+        assert!(diff.required_stops.contains("provider.socket"));
+        assert!(!diff.to_start.contains(&"provider.socket".to_string()));
+        assert!(diff.quiesced_external_activation_sources.is_empty());
+        assert!(diff.restore_external_activation_sources.is_empty());
+    }
+
+    #[test]
+    fn diff_does_not_authorize_foreign_root_target_binding() {
+        let live = TempDir::new().unwrap();
+        let candidate = TempDir::new().unwrap();
+        write(
+            &units_dir(live.path()),
+            "aos-pkg-victim-service-roots.service",
+            "[Unit]\nPartOf=aos-pkg-attacker.target\n[Service]\nType=oneshot\n",
+        );
+
+        let diff = compute_diff(live.path(), candidate.path());
+
+        assert!(diff.service_root_barriers.is_empty());
     }
 
     #[test]

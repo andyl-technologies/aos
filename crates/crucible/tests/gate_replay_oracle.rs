@@ -1244,7 +1244,7 @@ fn simdouble_replay_build_identity() -> ReplayOracleBuildIdentity {
             "crucible-hash:9aa30c89f10ee512ab3ec9fb12f9b22a95d6d2859f7b1e9581678a113d0fbcf3",
         ),
         shmem_abi_version: crucible_shmem::ABI_VERSION.to_string(),
-        guest_host_protocol_version: String::from("1"),
+        guest_host_protocol_version: crucible_protocol::CONTROL_PROTOCOL_VERSION.to_string(),
         rpc_abi_version: String::from("5.1.0"),
         rpc_abi_build: String::from("crucible-rpc-abi-v5"),
         plugin_abi: String::from("simdouble-mock-plugin-abi"),

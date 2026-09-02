@@ -19,8 +19,8 @@
 
   packageNameRegex = "[A-Za-z0-9][A-Za-z0-9+._=-]*";
   packageNameType = lib.types.strMatching packageNameRegex;
-  credentialNameRegex = "[A-Za-z0-9_.-]+";
-  credentialNameType = lib.types.strMatching credentialNameRegex;
+  credentialNameRegex = lib.serviceTypes.credentialNameRegex;
+  credentialNameType = lib.serviceTypes.credentialName;
   desiredConfigType = lib.types.attrsOf (lib.types.attrsOf (lib.types.attrsOf toml.type));
   secretRefType = lib.types.submodule ({name, ...}: {
     config._module.strict = true;
@@ -47,7 +47,7 @@
         description = "Service units that consume the credential.";
       };
       ref = lib.mkOption {
-        type = lib.types.strMatching "(tpm2-credstore|desired-toml|system-credential)(:[A-Za-z0-9_.-]+)?";
+        type = lib.serviceTypes.secretReference;
         description = "The opaque credential resolver reference.";
       };
     };

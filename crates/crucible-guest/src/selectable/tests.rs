@@ -2,10 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use crucible_campaign::{
-    AlternativeId, CampaignHash, ChoiceDomain, ChoiceValue, DiscreteAlternative, DiscreteDomain,
+use crucible_campaign as campaign;
+use crucible_protocol::{
+    AlternativeId, ChoiceDomain, ChoiceValue, DiscreteAlternative, DiscreteDomain,
+    SELECTABLE_DIGEST_BYTES, SelectableMessageKind, SelectionReplyStatus,
 };
-use crucible_protocol::{SELECTABLE_DIGEST_BYTES, SelectableMessageKind, SelectionReplyStatus};
 
 use super::*;
 
@@ -56,12 +57,51 @@ fn request(sequence: u64) -> Result<SelectionRequest, SelectableProtocolError> {
 }
 
 fn recovery_domain() -> ChoiceDomain {
-    let fast = AlternativeId::from_hash(CampaignHash::from_bytes([1; 32]));
-    let safe = AlternativeId::from_hash(CampaignHash::from_bytes([2; 32]));
+    let fast = AlternativeId::from_bytes([1; 32]);
+    let safe = AlternativeId::from_bytes([2; 32]);
     let mut alternatives = BTreeMap::new();
     alternatives.insert(fast, must(DiscreteAlternative::new(fast, "fast", None)));
     alternatives.insert(safe, must(DiscreteAlternative::new(safe, "safe", None)));
     ChoiceDomain::Discrete(must(DiscreteDomain::new(1, alternatives)))
+}
+
+#[test]
+fn l1_choice_codec_matches_the_campaign_semantic_codec() {
+    let protocol_domain = recovery_domain();
+    let campaign_fast =
+        campaign::AlternativeId::from_hash(campaign::CampaignHash::from_bytes([1; 32]));
+    let campaign_safe =
+        campaign::AlternativeId::from_hash(campaign::CampaignHash::from_bytes([2; 32]));
+    let mut campaign_alternatives = BTreeMap::new();
+    campaign_alternatives.insert(
+        campaign_fast,
+        must(campaign::DiscreteAlternative::new(
+            campaign_fast,
+            "fast",
+            None,
+        )),
+    );
+    campaign_alternatives.insert(
+        campaign_safe,
+        must(campaign::DiscreteAlternative::new(
+            campaign_safe,
+            "safe",
+            None,
+        )),
+    );
+    let campaign_domain = campaign::ChoiceDomain::Discrete(must(campaign::DiscreteDomain::new(
+        1,
+        campaign_alternatives,
+    )));
+
+    assert_eq!(
+        protocol_domain.canonical_bytes(),
+        campaign_domain.canonical_bytes()
+    );
+    assert_eq!(
+        ChoiceValue::Discrete(AlternativeId::from_bytes([1; 32])).canonical_bytes(),
+        campaign::ChoiceValue::Discrete(campaign_fast).canonical_bytes(),
+    );
 }
 
 #[test]
@@ -177,8 +217,7 @@ fn typed_helpers_reject_mutation_stale_reply_and_uncleared_tail() -> Result<(), 
 #[test]
 fn product_registration_uses_the_shared_typed_domain_codec() -> Result<(), GuestSelectableError> {
     let domain = recovery_domain();
-    let default =
-        ChoiceValue::Discrete(AlternativeId::from_hash(CampaignHash::from_bytes([2; 32])));
+    let default = ChoiceValue::Discrete(AlternativeId::from_bytes([2; 32]));
     let registration = build_selectable_registration(
         1,
         "network.recovery-policy",
@@ -189,8 +228,7 @@ fn product_registration_uses_the_shared_typed_domain_codec() -> Result<(), Guest
     assert_eq!(registration.domain(), domain.canonical_bytes());
     assert_eq!(registration.default_value(), default.canonical_bytes());
 
-    let foreign =
-        ChoiceValue::Discrete(AlternativeId::from_hash(CampaignHash::from_bytes([9; 32])));
+    let foreign = ChoiceValue::Discrete(AlternativeId::from_bytes([9; 32]));
     assert_eq!(
         build_selectable_registration(2, "network.recovery-policy", &domain, &foreign, Vec::new()),
         Err(GuestSelectableError::DefaultOutsideDomain)
@@ -202,8 +240,7 @@ fn product_registration_uses_the_shared_typed_domain_codec() -> Result<(), Guest
 fn product_request_decodes_and_revalidates_the_selected_value() -> Result<(), GuestSelectableError>
 {
     let domain = recovery_domain();
-    let selected =
-        ChoiceValue::Discrete(AlternativeId::from_hash(CampaignHash::from_bytes([1; 32])));
+    let selected = ChoiceValue::Discrete(AlternativeId::from_bytes([1; 32]));
     let request = request(71)?;
     let reply = SelectionReply::selected(
         71,
@@ -221,8 +258,7 @@ fn product_request_decodes_and_revalidates_the_selected_value() -> Result<(), Gu
     )?;
     assert_eq!(outcome.value(), &selected);
 
-    let foreign =
-        ChoiceValue::Discrete(AlternativeId::from_hash(CampaignHash::from_bytes([9; 32])));
+    let foreign = ChoiceValue::Discrete(AlternativeId::from_bytes([9; 32]));
     let reply = SelectionReply::selected(
         71,
         [3; SELECTABLE_DIGEST_BYTES],

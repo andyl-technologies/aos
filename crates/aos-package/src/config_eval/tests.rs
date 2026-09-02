@@ -187,6 +187,7 @@ fn owner_module(root: &str, contributable: &[&str], abi: ModuleAbiCompat) -> Con
         requires: vec![],
         owns_roots,
         contributes: vec![],
+        artifacts: Default::default(),
         provides_capabilities: vec![],
     }
 }
@@ -265,6 +266,7 @@ fn signed_release_identity_flows_from_resolver_members_into_manifest_input() {
 fn inputs(seed: Vec<WorkingSetMember>, abi: u32, cap: Option<u32>) -> FixpointInputs {
     FixpointInputs {
         host_nix: PathBuf::from("/run/aos-eval/host.nix"),
+        runtime_modules: Vec::new(),
         base_lib: PathBuf::from("/nix/store/hash-aos-base-lib"),
         facts_json: None,
         seed_set: seed,
@@ -1240,6 +1242,9 @@ fn signed_host_nix_policy_fails_closed_with_no_anchors() {
     std::fs::write(&graph, b"stale graph").unwrap();
     let cmd = EvalCommand {
         host_nix,
+        runtime_modules: Vec::new(),
+        runtime_module_root: None,
+        expected_current_generation: None,
         base_lib: tmp.path().join("base-lib"),
         facts_json: None,
         desired: None,
@@ -1248,6 +1253,7 @@ fn signed_host_nix_policy_fails_closed_with_no_anchors() {
         eval_root: tmp.path().to_path_buf(),
         verbose: 0,
         trusted_config_keys_dirs: Vec::new(),
+        retained_host_inputs: None,
         require_signed_host_nix: true,
         image_default_host: false,
     };
@@ -1268,6 +1274,9 @@ fn platform_host_nix_policy_needs_no_image_baked_key() {
     std::fs::write(&host_nix, b"{ }").unwrap();
     let cmd = EvalCommand {
         host_nix,
+        runtime_modules: Vec::new(),
+        runtime_module_root: None,
+        expected_current_generation: None,
         base_lib: tmp.path().join("base-lib"),
         facts_json: None,
         desired: None,
@@ -1276,6 +1285,7 @@ fn platform_host_nix_policy_needs_no_image_baked_key() {
         eval_root: tmp.path().to_path_buf(),
         verbose: 0,
         trusted_config_keys_dirs: Vec::new(),
+        retained_host_inputs: None,
         require_signed_host_nix: false,
         image_default_host: false,
     };
@@ -1291,6 +1301,9 @@ fn host_package_selection_rejects_a_mutable_input_path() {
     std::fs::write(&host_nix, b"{ aos.apm.desiredPackages = []; }\n").unwrap();
     let cmd = EvalCommand {
         host_nix,
+        runtime_modules: Vec::new(),
+        runtime_module_root: None,
+        expected_current_generation: None,
         base_lib: PathBuf::from("/nix/store/hash-aos-base-lib"),
         facts_json: None,
         desired: None,
@@ -1299,6 +1312,7 @@ fn host_package_selection_rejects_a_mutable_input_path() {
         eval_root: tmp.path().join("eval"),
         verbose: 0,
         trusted_config_keys_dirs: Vec::new(),
+        retained_host_inputs: None,
         require_signed_host_nix: false,
         image_default_host: false,
     };
@@ -1318,6 +1332,9 @@ fn image_default_host_accepts_only_the_empty_module_without_operator_keys() {
     std::fs::write(&host_nix, b"{}\n").unwrap();
     let mut cmd = EvalCommand {
         host_nix: host_nix.clone(),
+        runtime_modules: Vec::new(),
+        runtime_module_root: None,
+        expected_current_generation: None,
         base_lib: tmp.path().join("base-lib"),
         facts_json: None,
         desired: None,
@@ -1326,6 +1343,7 @@ fn image_default_host_accepts_only_the_empty_module_without_operator_keys() {
         eval_root: tmp.path().to_path_buf(),
         verbose: 0,
         trusted_config_keys_dirs: Vec::new(),
+        retained_host_inputs: None,
         require_signed_host_nix: true,
         image_default_host: true,
     };
@@ -1376,6 +1394,60 @@ fn retained_manifest_abi_bands_gate_cross_abi_rollback() {
         working[0].authorization,
         super::PackageAuthorization::default()
     );
+}
+
+#[test]
+fn cross_abi_replay_uses_exact_retained_runtime_entrypoints() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("runtime-modules");
+    std::fs::create_dir_all(root.join("nested")).unwrap();
+    std::fs::write(root.join("20-services.nix"), b"{}\n").unwrap();
+    std::fs::write(root.join("nested/10-packages.nix"), b"{}\n").unwrap();
+    std::fs::write(root.join("_helper.nix"), b"{}\n").unwrap();
+
+    let expected_hash = format!("sha256:{}", "a".repeat(64));
+    let mut source: materialize::ConfigManifest = serde_json::from_str(include_str!(
+        "../../tests/fixtures/config_manifest/manifest.json"
+    ))
+    .unwrap();
+    source.inputs.runtime_modules = Some(materialize::RuntimeModulesInput {
+        schema: "aos.runtime-module-set/v1".to_string(),
+        trust_mode: "local-root".to_string(),
+        store_path: root.to_string_lossy().into_owned(),
+        nar_hash: expected_hash.clone(),
+        entrypoints: vec![
+            "20-services.nix".to_string(),
+            "nested/10-packages.nix".to_string(),
+        ],
+        signer_key: None,
+    });
+
+    let replayed = super::retained_runtime_modules_with(&source, |observed| {
+        assert_eq!(observed, root);
+        Ok(expected_hash.clone())
+    })
+    .unwrap();
+    assert_eq!(
+        replayed,
+        vec![
+            root.join("20-services.nix"),
+            root.join("nested/10-packages.nix"),
+        ]
+    );
+    assert!(!replayed.contains(&root.join("_helper.nix")));
+
+    let error =
+        super::retained_runtime_modules_with(&source, |_| Ok(format!("sha256:{}", "b".repeat(64))))
+            .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("does not match manifest NAR hash")
+    );
+
+    std::fs::remove_file(root.join("nested/10-packages.nix")).unwrap();
+    let error = super::retained_runtime_modules_with(&source, |_| Ok(expected_hash)).unwrap_err();
+    assert!(error.to_string().contains("entrypoint is absent"));
 }
 
 fn retained_identity_inputs(

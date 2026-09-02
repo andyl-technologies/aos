@@ -248,6 +248,7 @@ impl S3BlobBackend {
     ///
     /// Returns [`StoreError`] when ordinary configuration, endpoint binding,
     /// or process-wide administrative namespace admission fails.
+    // crucible-lint: allow rust-allow -- the constructor keeps every independently authenticated S3 namespace and bound explicit.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_admin(
         name: impl Into<String>,
@@ -514,6 +515,9 @@ fn new_inventory_instance() -> Result<[u8; 32], StoreError> {
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- unit fixtures use panic shortcuts for exact failure localization.
+    #![allow(clippy::expect_used)]
+
     use super::*;
 
     #[test]

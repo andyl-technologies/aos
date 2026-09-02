@@ -26,7 +26,18 @@ pub(super) fn InfrastructureWorkflow(route: ConsoleRoute, client: ApiClient) -> 
                 client=client
                 owner_scope_key="instance".to_string()
                 organization_slug=None
+                include_granted=false
                 creation_only=false
+            />
+        }
+        .into_any(),
+        (ConsoleScope::Instance, "storage-new") => view! {
+            <Bindings
+                client=client
+                owner_scope_key="instance".to_string()
+                organization_slug=None
+                include_granted=false
+                creation_only=true
             />
         }
         .into_any(),
@@ -75,6 +86,7 @@ fn OrganizationBindings(
                                 client=client
                                 owner_scope_key=owner_scope_key.clone()
                                 organization_slug=Some(organization)
+                                include_granted=true
                                 creation_only=creation_only
                             />
                         }
@@ -92,6 +104,7 @@ fn Bindings(
     client: ApiClient,
     owner_scope_key: String,
     organization_slug: Option<String>,
+    include_granted: bool,
     creation_only: bool,
 ) -> impl IntoView {
     let can_create = client.allows("binding.manage");
@@ -108,6 +121,7 @@ fn Bindings(
                         owner_scope_key: owner_scope_key.clone(),
                         page_size: 100,
                         page_token,
+                        include_granted,
                     },
                     |response| (response.bindings, response.next_page_token),
                 )
@@ -115,6 +129,7 @@ fn Bindings(
         }
     });
     let inventory_view_client = client.clone();
+    let binding_card_scope = owner_scope_key.clone();
 
     view! {
         <div class="workflow-stack">
@@ -127,19 +142,23 @@ fn Bindings(
                             <HelpTooltip term="Bindings" summary="Bindings name provider storage and its capability or credential lifecycle. Placements decide which surfaces use each binding."/>
                         </div>
                     </div>
-                    {organization_slug.as_ref().filter(|_| can_create).map(|slug| view! { <a class="button" href=format!("/-/org/{slug}/bindings/new")>"Create binding"</a> })}
+                    {can_create.then(|| organization_slug.as_ref().map_or_else(
+                        || "/-/instance/bindings/new".to_string(),
+                        |slug| format!("/-/org/{slug}/bindings/new"),
+                    )).map(|href| view! { <a class="button" href=href>"Create binding"</a> })}
                 </div>
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading bindings…"</p> }>
                     {move || {
                         let client = inventory_view_client.clone();
                         let organization_slug = organization_slug.clone();
+                        let consumer_scope_key = binding_card_scope.clone();
                         Suspend::new(async move {
                             match inventory.await.as_ref() {
                                 Ok(bindings) if bindings.is_empty() => view! { <p class="muted">"No bindings in this scope."</p> }.into_any(),
                                 Ok(bindings) => view! {
                                     <div class="binding-list">
                                         {bindings.iter().cloned().map(|binding| view! {
-                                            <BindingCard client=client.clone() binding=binding organization_slug=organization_slug.clone()/>
+                                            <BindingCard client=client.clone() binding=binding organization_slug=organization_slug.clone() consumer_scope_key=consumer_scope_key.clone()/>
                                         }).collect_view()}
                                     </div>
                                 }.into_any(),
@@ -156,6 +175,7 @@ fn Bindings(
 
 #[component]
 fn BindingCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
+    let stable_id = RwSignal::new(String::new());
     let name = RwSignal::new(String::new());
     let kind = RwSignal::new("s3".to_string());
     let root = RwSignal::new(String::new());
@@ -166,7 +186,7 @@ fn BindingCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
     let endpoint_port = RwSignal::new("443".to_string());
     let region = RwSignal::new("auto".to_string());
     let access = RwSignal::new("private".to_string());
-    let deployment_binding = RwSignal::new(String::new());
+    let deployment_binding = RwSignal::new("REGISTRY_BUCKET".to_string());
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
@@ -196,7 +216,7 @@ fn BindingCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
         let client = plan_client.clone();
         let idempotency_key = idempotency_key("storage-binding-create");
         let request = aos_proto_types::PlanBindingMutationRequest {
-            stable_id: String::new(),
+            stable_id: stable_id.get_untracked().trim().to_string(),
             owner_scope_key: plan_scope.clone(),
             spec: Some(aos_proto_types::BindingSpec {
                 name: name.get_untracked().trim().to_string(),
@@ -251,13 +271,14 @@ fn BindingCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
         <section class="panel editor-panel">
             <h2>"Create binding"</h2>
             <form class="editor-form" on:submit=on_plan>
+                <label><span>"Stable ID"</span><input required placeholder="binding:primary" prop:value=move || stable_id.get() on:input=move |event| stable_id.set(event_target_value(&event))/></label>
                 <label><span>"Name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label>
                 <label><span>"Provider"</span><select prop:value=move || kind.get() on:change=move |event| kind.set(event_target_value(&event))>
                     <option value="s3">"S3-compatible"</option><option value="r2">"Cloudflare R2 API"</option><option value="deployment-r2">"Worker R2 binding"</option><option value="local-fs">"Local filesystem"</option>
                 </select></label>
                 {move || match kind.get().as_str() {
                     "local-fs" => view! { <label class="full-field"><span>"Root path"</span><input required placeholder="/var/lib/aos-hub/storage" prop:value=move || root.get() on:input=move |event| root.set(event_target_value(&event))/></label> }.into_any(),
-                    "deployment-r2" => view! { <label class="full-field"><span>"Worker R2 binding name"</span><input required placeholder="STORAGE" prop:value=move || deployment_binding.get() on:input=move |event| deployment_binding.set(event_target_value(&event))/></label> }.into_any(),
+                    "deployment-r2" => view! { <label class="full-field"><span>"Worker R2 runtime attachment"</span><input required readonly aria-readonly="true" prop:value=move || deployment_binding.get()/></label> }.into_any(),
                     _ => view! {
                         <label><span>"Bucket"</span><input required prop:value=move || bucket.get() on:input=move |event| bucket.set(event_target_value(&event))/></label>
                         <label><span>"Object prefix"</span><input prop:value=move || prefix.get() on:input=move |event| prefix.set(event_target_value(&event))/></label>
@@ -268,7 +289,7 @@ fn BindingCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
                         <label><span>"Object access"</span><select prop:value=move || access.get() on:change=move |event| access.set(event_target_value(&event))><option value="private">"Private objects"</option><option value="public">"Public objects"</option></select></label>
                     }.into_any(),
                 }}
-                <div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div>
+                <div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Create binding"</button></div>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
@@ -281,6 +302,7 @@ fn BindingCard(
     client: ApiClient,
     binding: aos_proto_types::Binding,
     organization_slug: Option<String>,
+    consumer_scope_key: String,
 ) -> impl IntoView {
     let health = binding.health.clone().unwrap_or_default();
     let capabilities = binding.capabilities.clone().unwrap_or_default();
@@ -295,11 +317,12 @@ fn BindingCard(
         .as_ref()
         .and_then(storage_provider_details)
         .unwrap_or_default();
+    let owned = binding.owner_scope_key == consumer_scope_key;
 
     view! {
         <details class="binding-card">
             <summary>
-                <div><span class="resource-kind">{provider}</span><h3>{binding.spec.as_ref().map(|spec| spec.name.clone()).unwrap_or_default()}</h3><code>{binding.stable_id.clone()}</code></div>
+                <div><span class="resource-kind">{if owned { provider } else { "granted" }}</span><h3>{binding.spec.as_ref().map(|spec| spec.name.clone()).unwrap_or_default()}</h3><code>{binding.stable_id.clone()}</code></div>
                 <div class="binding-summary-state"><StatusBadge state=health.state.clone() positive=health.state == "healthy"/><span>{if capabilities.writes_supported { "read/write" } else { "read only" }}</span></div>
             </summary>
             <div class="binding-details">
@@ -313,15 +336,17 @@ fn BindingCard(
                     <div><span>"Conditional writes"</span><strong>{yes_no(capabilities.conditional_writes_supported)}</strong></div>
                 </div>
                 {(!health.error.is_empty()).then(|| view! { <InlineError detail=health.error/> })}
-                <div class="subworkflow-grid">
-                    <div class="subworkflow-stack">
-                        <StorageWriteRevisions client=client.clone() binding=binding.clone() organization_slug=organization_slug/>
-                        <StorageCredentialEditor client=client.clone() binding=binding.clone()/>
-                        <StorageCredentialValidation client=client.clone() binding=binding.clone()/>
+                {owned.then(|| view! {
+                    <div class="subworkflow-grid">
+                        <div class="subworkflow-stack">
+                            <StorageWriteRevisions client=client.clone() binding=binding.clone() organization_slug=organization_slug/>
+                            <StorageCredentialEditor client=client.clone() binding=binding.clone()/>
+                            <StorageCredentialValidation client=client.clone() binding=binding.clone()/>
+                        </div>
+                        <StorageGrantEditor client=client.clone() binding=binding.clone()/>
                     </div>
-                    <StorageGrantEditor client=client.clone() binding=binding.clone()/>
-                </div>
-                <BindingDelete client=client binding=binding/>
+                    <BindingDelete client=client binding=binding/>
+                })}
             </div>
         </details>
     }
@@ -350,7 +375,7 @@ fn storage_provider_details(
         // Calling it a deployment bucket prevents operators from mistaking it
         // for the Worker's JavaScript binding identifier.
         Provider::DeploymentR2(provider) => {
-            vec![("Deployment bucket", provider.bucket_binding.clone())]
+            vec![("Runtime attachment", provider.bucket_binding.clone())]
         }
     };
     Some(details)
@@ -505,7 +530,7 @@ fn StorageCredentialEditor(client: ApiClient, binding: aos_proto_types::Binding)
                 <label><span>"Secret version reference"</span><input required autocomplete="off" prop:value=move || secret_ref.get() on:input=move |event| secret_ref.set(event_target_value(&event))/></label>
                 <label><span>"Resolved-value SHA-256"</span><input required minlength="64" maxlength="64" autocomplete="off" prop:value=move || fingerprint.get() on:input=move |event| fingerprint.set(event_target_value(&event))/></label>
                 <label><span>"Current generation (0 to set first)"</span><input type="number" min="0" prop:value=move || generation.get() on:input=move |event| generation.set(event_target_value(&event))/></label>
-                <button class="secondary-button" type="submit" disabled=move || busy.get()>"Review credential change"</button>
+                <button class="secondary-button" type="submit" disabled=move || busy.get()>"Change credentials"</button>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|(reviewed, _)| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
@@ -591,7 +616,7 @@ fn StorageCredentialValidation(
                 <label><span>"Purpose"</span><input required prop:value=move || purpose.get() on:input=move |event| purpose.set(event_target_value(&event))/></label>
                 <label><span>"Credential generation"</span><input required type="number" min="1" prop:value=move || generation.get() on:input=move |event| generation.set(event_target_value(&event))/></label>
                 <label><span>"Credential resource version"</span><input required prop:value=move || credential_version.get() on:input=move |event| credential_version.set(event_target_value(&event))/></label>
-                <button class="secondary-button" type="submit" disabled=move || busy.get()>"Review validation"</button>
+                <button class="secondary-button" type="submit" disabled=move || busy.get()>"Validate"</button>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
@@ -662,7 +687,7 @@ fn StorageGrantEditor(client: ApiClient, binding: aos_proto_types::Binding) -> i
             busy.set(false);
         });
     });
-    view! { <section class="subworkflow"><h4>"Consumer scopes"</h4><p>"Grant explicit use without changing ownership."</p><div class="compact-list">{binding.grants.into_iter().filter(|grant| grant.state == "active").map(|grant| view! { <StorageGrantRow client=grant_client.clone() grant=grant/> }).collect_view()}</div><form class="stacked-form" on:submit=on_plan><label><span>"Consumer scope key"</span><input required placeholder="org:acme or registry:acme/main" prop:value=move || consumer_scope.get() on:input=move |event| consumer_scope.set(event_target_value(&event))/></label><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review grant"</button></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="subworkflow"><h4>"Consumer scopes"</h4><p>"Grant explicit use without changing ownership."</p><div class="compact-list">{binding.grants.into_iter().filter(|grant| grant.state == "active").map(|grant| view! { <StorageGrantRow client=grant_client.clone() grant=grant/> }).collect_view()}</div><form class="stacked-form" on:submit=on_plan><label><span>"Consumer scope key"</span><input required placeholder="org:acme or registry:acme/main" prop:value=move || consumer_scope.get() on:input=move |event| consumer_scope.set(event_target_value(&event))/></label><button class="secondary-button" type="submit" disabled=move || busy.get()>"Grant"</button></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 #[component]
@@ -722,7 +747,7 @@ fn StorageGrantRow(client: ApiClient, grant: aos_proto_types::ConsumerScopeGrant
             busy.set(false);
         });
     });
-    view! { <div class="compact-list-row"><div><code>{grant.consumer_scope_key}</code><span>{format!("{} · {} live pins", grant.grant_kind, grant.live_pin_count)}</span></div><button class="table-action" type="button" disabled=move || busy.get() on:click=on_plan>"Review revoke"</button></div>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })} }
+    view! { <div class="compact-list-row"><div><code>{grant.consumer_scope_key}</code><span>{format!("{} · {} live pins", grant.grant_kind, grant.live_pin_count)}</span></div><button class="table-action" type="button" disabled=move || busy.get() on:click=on_plan>"Revoke"</button></div>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })} }
 }
 
 #[component]
@@ -779,7 +804,7 @@ fn BindingDelete(client: ApiClient, binding: aos_proto_types::Binding) -> impl I
             busy.set(false);
         });
     });
-    view! { <section class="subworkflow danger-subworkflow"><h4>"Delete binding"</h4><p>"Deletion is blocked by placements, gateways, defaults, grants, or write-authority evidence."</p><button class="danger-button" type="button" disabled=move || busy.get() on:click=on_plan>"Review deletion"</button>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="subworkflow danger-subworkflow"><h4>"Delete binding"</h4><p>"Deletion is blocked by placements, gateways, defaults, grants, or write-authority evidence."</p><button class="danger-button" type="button" disabled=move || busy.get() on:click=on_plan>"Delete"</button>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 #[component]
@@ -844,6 +869,7 @@ async fn load_topology_defaults(
                 owner_scope_key: binding_scope.clone(),
                 page_size: 100,
                 page_token,
+                include_granted: true,
             },
             |response| (response.bindings, response.next_page_token),
         )
@@ -869,6 +895,7 @@ async fn load_topology_defaults(
                 owner_scope_key: owner_scope_key.clone(),
                 page_size: 100,
                 page_token,
+                include_granted: true,
             },
             |response| (response.endpoints, response.next_page_token),
         )
@@ -1033,7 +1060,7 @@ fn TopologyDefaultsForm(
             busy.set(false);
         });
     });
-    view! { <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Defaults for new plans"</p><h2>"Topology defaults"</h2><p>"These values seed future editors. They never migrate live placements or routes."</p></div></div><form class="editor-form" on:submit=on_plan><label><span>"Binding"</span><select prop:value=move || binding.get() on:change=move |event| binding.set(event_target_value(&event))><option value="">"No default"</option>{choices.bindings.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{binding_option_label(choice)}</option> }).collect_view()}</select></label><label><span>"Domain"</span><select prop:value=move || domain.get() on:change=move |event| domain.set(event_target_value(&event))><option value="">"No default"</option>{choices.domains.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{choice.hostname.clone()}</option> }).collect_view()}</select></label><label><span>"Endpoint"</span><select prop:value=move || endpoint.get() on:change=on_endpoint_change><option value="">"No default"</option>{endpoint_choices.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{endpoint_option_label(choice)}</option> }).collect_view()}</select></label><label><span>"Endpoint generation"</span><input readonly aria-readonly="true" prop:value=move || endpoint_generation.get()/></label><label><span>"Gateway"</span><select prop:value=move || gateway.get() on:change=on_gateway_change><option value="">"No default"</option>{gateway_choices.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{gateway_option_label(choice)}</option> }).collect_view()}</select></label><label><span>"Gateway generation"</span><input readonly aria-readonly="true" prop:value=move || gateway_generation.get()/></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review defaults"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Base configuration"</p><h2>"Topology defaults"</h2><p>"Bootstrap writes this ordinary editable configuration once. Changes here become the defaults for future plans without rewriting live placements or routes."</p></div></div><form class="editor-form" on:submit=on_plan><label><span>"Binding"</span><select prop:value=move || binding.get() on:change=move |event| binding.set(event_target_value(&event))><option value="">"No default"</option>{choices.bindings.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{binding_option_label(choice)}</option> }).collect_view()}</select></label><label><span>"Domain"</span><select prop:value=move || domain.get() on:change=move |event| domain.set(event_target_value(&event))><option value="">"No default"</option>{choices.domains.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{choice.hostname.clone()}</option> }).collect_view()}</select></label><label><span>"Endpoint"</span><select prop:value=move || endpoint.get() on:change=on_endpoint_change><option value="">"No default"</option>{endpoint_choices.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{endpoint_option_label(choice)}</option> }).collect_view()}</select></label><label><span>"Endpoint generation"</span><input readonly aria-readonly="true" prop:value=move || endpoint_generation.get()/></label><label><span>"Gateway"</span><select prop:value=move || gateway.get() on:change=on_gateway_change><option value="">"No default"</option>{gateway_choices.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{gateway_option_label(choice)}</option> }).collect_view()}</select></label><label><span>"Gateway generation"</span><input readonly aria-readonly="true" prop:value=move || gateway_generation.get()/></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Save defaults"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1146,21 +1173,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn deployment_binding_displays_physical_bucket() {
+    fn deployment_binding_displays_runtime_attachment() {
         let spec = aos_proto_types::BindingSpec {
             name: "default".to_string(),
             provider: Some(aos_proto_types::binding_spec::Provider::DeploymentR2(
                 aos_proto_types::DeploymentR2StorageProvider {
-                    bucket_binding: "aos-hub-staging-surfaces".to_string(),
+                    bucket_binding: "REGISTRY_BUCKET".to_string(),
                 },
             )),
         };
         assert_eq!(
             storage_provider_details(&spec),
-            Some(vec![(
-                "Deployment bucket",
-                "aos-hub-staging-surfaces".to_string()
-            )])
+            Some(vec![("Runtime attachment", "REGISTRY_BUCKET".to_string())])
         );
     }
 }

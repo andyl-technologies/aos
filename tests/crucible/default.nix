@@ -481,6 +481,17 @@ in rec {
           phase1.gates.divergenceBisect
         ];
       };
+      typedChoice = greenBeforeAdvance {
+        attrPath = "checks.crucible.phase2.gates.typedChoice";
+        # lint needle: typedChoice = import ./phase2-typed-choice.nix
+        gate = import ./phase2-typed-choice.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase2.gates.typedChoice";
+          taskIds = ["T-CAM-2.1" "T-CAM-2.2" "T-CAM-2.4" "T-CAM-2.5" "T-CAM-2.7"];
+          dependencies = [abiConformance.rawGate];
+        };
+        dependencies = [abiConformance];
+      };
       layer1Injection = greenBeforeAdvance {
         attrPath = "checks.crucible.phase2.gates.layer1Injection";
         # lint needle: layer1Injection = import ./phase1-layer1-injection.nix
@@ -488,9 +499,9 @@ in rec {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase2.gates.layer1Injection";
           taskIds = ["T-HARN-8" "T-DET-11" "T-DET-12" "T-DET-13" "T-DET-14"];
-          dependencies = [abiConformance.rawGate];
+          dependencies = [typedChoice.rawGate];
         };
-        dependencies = [abiConformance];
+        dependencies = [typedChoice];
       };
       patchMicrotests = greenBeforeAdvance {
         attrPath = "checks.crucible.phase2.gates.patchMicrotests";

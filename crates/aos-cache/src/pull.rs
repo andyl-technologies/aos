@@ -51,6 +51,7 @@ pub async fn run_pull(
     file: Option<&str>,
     attr: Option<&str>,
     expr: Option<&str>,
+    target: Option<&str>,
     jobs: usize,
     max_bandwidth: Option<&str>,
     dry_run: bool,
@@ -67,7 +68,7 @@ pub async fn run_pull(
 
     // 1. Resolve installables to store paths.
     printer.info("Resolving installables...");
-    let store_paths = resolve_installables(&nix, installables, file, attr, expr)?;
+    let store_paths = resolve_installables(&nix, installables, file, attr, expr, target)?;
 
     // 2. Enumerate closure.
     printer.info("Enumerating closure...");

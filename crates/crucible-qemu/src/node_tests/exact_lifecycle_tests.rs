@@ -275,6 +275,25 @@ fn qemu_node_appends_quantum_coverage_to_the_unified_event_log() -> Result<(), B
 }
 
 #[test]
+fn qemu_node_preserves_priming_coverage_for_the_authoritative_drain() -> Result<(), Box<dyn Error>>
+{
+    let log = shared_log();
+    let event = ObservableEvent::coverage_block(Icount { retired: 7 }, node_id("vm-a"), 0x4010, 4);
+    let ready_boundary = VirtualTime { ticks: 19 };
+    let mut node =
+        scripted_node_with_options(log, ScriptedNodeOptions::default(), std::iter::empty())?
+            .with_priming_observable_events(vec![event.clone()], ready_boundary);
+
+    let observations = SimulationBackend::drain_observable_events(&mut node)?;
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0].at(), ready_boundary);
+    assert_eq!(observations[0].payload(), event.payload());
+    assert!(SimulationBackend::drain_observable_events(&mut node)?.is_empty());
+    SimulationBackend::shutdown(&mut node)?;
+    Ok(())
+}
+
+#[test]
 fn qemu_node_rejects_a_coverage_quantum_without_an_event_log() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
     let event = ObservableEvent::coverage_block(Icount { retired: 17 }, node_id("vm-a"), 0x4010, 4);

@@ -20,6 +20,8 @@
   readline,
   libburn,
   libisofs,
+  bash,
+  stdenv,
 }: let
   version = "1.5.6";
 in
@@ -35,14 +37,19 @@ in
     };
 
     buildDeps = [gnumake pkg-config];
-    runtimeDeps = [
-      zlib
-      acl
-      attr
-      readline
-      libburn
-      libisofs
-    ];
+    runtimeDeps =
+      [zlib]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then []
+        else [acl attr]
+      )
+      ++ [readline libburn libisofs]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [bash]
+        else []
+      );
     propagatedDeps = [];
 
     phases = [
@@ -57,6 +64,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --disable-libjte \
             --disable-libcdio \
@@ -72,9 +80,15 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-        '';
+        script =
+          if stdenv.hostPlatform.isDarwin
+          then ''
+            make install
+            sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/xorriso-dd-target"
+          ''
+          else ''
+            make install
+          '';
       }
     ];
 

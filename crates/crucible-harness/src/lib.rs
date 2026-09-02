@@ -210,6 +210,12 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         status: GateStatus::Implemented,
     },
     GateSpec {
+        name: "gate:typed-choice",
+        phase: GatePhase::Phase2,
+        owner: "crucible-campaign",
+        status: GateStatus::Implemented,
+    },
+    GateSpec {
         name: "gate:patch-microtests",
         phase: GatePhase::Phase2,
         owner: "crucible-qemu-plugin",

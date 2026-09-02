@@ -78,7 +78,26 @@ impl NixRunner {
     /// Returns [`AosError::NixBuild`] if `nix-build` exits non-zero, or
     /// another error if it cannot be spawned or prints no output.
     pub fn build(&self, attr: &str, out_link: Option<&str>) -> Result<PathBuf> {
-        self.build_inner(attr, out_link, None)
+        self.build_inner(attr, out_link, None, None)
+    }
+
+    /// Runs `nix-build` for a cross-compilation target.
+    ///
+    /// The target is passed to the repository's top-level expression as
+    /// `--argstr crossSystem <target>`. The target uses a Nix system name such
+    /// as `x86_64-darwin` or `aarch64-darwin`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixBuild`] if `nix-build` exits non-zero, or
+    /// another error if it cannot be spawned or prints no output.
+    pub fn build_for_target(
+        &self,
+        attr: &str,
+        out_link: Option<&str>,
+        target: &str,
+    ) -> Result<PathBuf> {
+        self.build_inner(attr, out_link, None, Some(target))
     }
 
     /// Like [`build`](Self::build) but also passes `--max-jobs <n>` to
@@ -95,7 +114,7 @@ impl NixRunner {
         out_link: Option<&str>,
         max_jobs: usize,
     ) -> Result<PathBuf> {
-        self.build_inner(attr, out_link, Some(max_jobs))
+        self.build_inner(attr, out_link, Some(max_jobs), None)
     }
 
     fn build_inner(
@@ -103,12 +122,14 @@ impl NixRunner {
         attr: &str,
         out_link: Option<&str>,
         max_jobs: Option<usize>,
+        cross_system: Option<&str>,
     ) -> Result<PathBuf> {
         let mut args: Vec<String> = vec![
             self.default_nix().to_string_lossy().to_string(),
             "-A".to_string(),
             attr.to_string(),
         ];
+        add_cross_system_arg(&mut args, cross_system);
 
         if let Some(link) = out_link {
             args.push("-o".to_string());
@@ -184,6 +205,44 @@ impl NixRunner {
             .collect();
 
         Ok(paths)
+    }
+
+    /// Builds the repository's filtered package roots for a target platform.
+    ///
+    /// This evaluates `pkgs.targetPackagesFor target`, whose package-support
+    /// policy excludes packages that cannot produce artifacts for the chosen
+    /// platform. It therefore does not accidentally build the native package
+    /// set or unsupported Linux-only roots during `aos build --all --target`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `target` is not a safe Nix system name, if
+    /// evaluation fails, or if `nix-build` cannot be spawned or exits
+    /// non-zero.
+    pub fn build_target_packages(&self, target: &str) -> Result<Vec<PathBuf>> {
+        if !target_platform_name_is_safe(target) {
+            anyhow::bail!("invalid target platform '{target}'");
+        }
+
+        let expression = target_packages_expression();
+        let arguments = vec![
+            "-E".to_string(),
+            expression.to_string(),
+            "--argstr".to_string(),
+            "defaultNix".to_string(),
+            self.default_nix().to_string_lossy().to_string(),
+            "--argstr".to_string(),
+            "target".to_string(),
+            target.to_string(),
+            "--no-out-link".to_string(),
+        ];
+
+        let output = self.run_nix("nix-build", &arguments)?;
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| PathBuf::from(line.trim()))
+            .collect())
     }
 
     /// Evaluates an attribute of `default.nix` to JSON via
@@ -287,11 +346,28 @@ impl NixRunner {
     /// another error if `nix-instantiate` cannot be spawned or prints
     /// no output.
     pub fn instantiate(&self, attr: &str) -> Result<PathBuf> {
-        let args: Vec<String> = vec![
+        self.instantiate_inner(attr, None)
+    }
+
+    /// Instantiates a derivation for a cross-compilation target.
+    ///
+    /// The target is passed as the top-level `crossSystem` string argument.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixBuild`] if instantiation fails, or another
+    /// error if `nix-instantiate` cannot be spawned or prints no output.
+    pub fn instantiate_for_target(&self, attr: &str, target: &str) -> Result<PathBuf> {
+        self.instantiate_inner(attr, Some(target))
+    }
+
+    fn instantiate_inner(&self, attr: &str, cross_system: Option<&str>) -> Result<PathBuf> {
+        let mut args: Vec<String> = vec![
             self.default_nix().to_string_lossy().to_string(),
             "-A".to_string(),
             attr.to_string(),
         ];
+        add_cross_system_arg(&mut args, cross_system);
 
         let output = self.run_nix("nix-instantiate", &args)?;
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -534,4 +610,71 @@ fn which(binary: &str) -> Result<PathBuf, ()> {
         }
     }
     Err(())
+}
+
+/// Appends the top-level cross-compilation argument when a target was chosen.
+fn add_cross_system_arg(args: &mut Vec<String>, cross_system: Option<&str>) {
+    if let Some(target) = cross_system {
+        args.extend([
+            "--argstr".to_string(),
+            "crossSystem".to_string(),
+            target.to_string(),
+        ]);
+    }
+}
+
+/// Returns whether a target can be embedded in the generated Nix expression.
+fn target_platform_name_is_safe(target: &str) -> bool {
+    !target.is_empty()
+        && target
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+}
+
+/// Returns the Nix function used to select platform-supported target roots.
+fn target_packages_expression() -> &'static str {
+    "{ defaultNix, target }: let aos = import (builtins.toPath defaultNix) { crossSystem = target; }; in builtins.attrValues (aos.pkgs.targetPackagesFor target)"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{add_cross_system_arg, target_packages_expression};
+
+    #[test]
+    fn cross_system_argument_uses_canonical_nix_spelling() {
+        let mut arguments = vec!["default.nix".to_string()];
+
+        add_cross_system_arg(&mut arguments, Some("aarch64-darwin"));
+
+        assert_eq!(
+            arguments,
+            ["default.nix", "--argstr", "crossSystem", "aarch64-darwin"]
+        );
+    }
+
+    #[test]
+    fn native_evaluation_adds_no_cross_system_argument() {
+        let mut arguments = vec!["default.nix".to_string()];
+
+        add_cross_system_arg(&mut arguments, None);
+
+        assert_eq!(arguments, ["default.nix"]);
+    }
+
+    #[test]
+    fn target_package_build_rejects_expression_characters() {
+        assert!(super::target_platform_name_is_safe("aarch64-darwin"));
+        assert!(!super::target_platform_name_is_safe(
+            "aarch64-darwin\"; abort"
+        ));
+    }
+
+    #[test]
+    fn target_package_build_selects_filtered_cross_roots() {
+        let expression = target_packages_expression();
+
+        assert!(expression.contains("{ crossSystem = target; }"));
+        assert!(expression.contains("aos.pkgs.targetPackagesFor target"));
+        assert!(!expression.contains("builtins.attrValues aos.pkgs"));
+    }
 }

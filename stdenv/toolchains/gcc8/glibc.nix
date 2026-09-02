@@ -51,6 +51,15 @@ import ../lib/mk-glibc.nix {
     # Patch plural.y: replace bison 2.7+ directive with 2.4 equivalent.
     ${prev.sed}/bin/sed -i 's/%define api.pure full/%pure-parser/' intl/plural.y
 
+    # librtld.mk maps archive members back to the subdirectory stamp that
+    # owns them.  Enumerate those generated stamps with the declared findutils
+    # instead of delegating discovery to the recipe shell's glob state.
+    ${prev.sed}/bin/sed -i \
+      's|$(common-objpfx)\*/stamp\.os|`find $(common-objpfx) -mindepth 2 -maxdepth 2 -type f -name stamp.os -print`|' \
+      elf/Makefile
+    test "$(grep -Fc '`find $(common-objpfx) -mindepth 2 -maxdepth 2 -type f -name stamp.os -print`' elf/Makefile)" -eq 1
+    ! grep -F '$(common-objpfx)*/stamp.os' elf/Makefile
+
     # Touch gperf inputs first, then outputs, so make doesn't regenerate them.
     find . -type f -name '*.gperf' -exec touch {} + 2>/dev/null || true
     sleep 1

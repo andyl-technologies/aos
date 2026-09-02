@@ -296,6 +296,11 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "gate_campaign_continuity"
             ),
             (
+                "gate:typed-choice",
+                "crucible-campaign",
+                "gate_typed_choice"
+            ),
+            (
                 "gate:signal-fault-system",
                 "crucible",
                 "gate_signal_fault_system"

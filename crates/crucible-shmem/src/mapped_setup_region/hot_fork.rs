@@ -258,11 +258,13 @@ impl MappedSetupRegion {
         } else {
             (libc::MADV_DONTFORK, "MADV_DONTFORK")
         };
-        // SAFETY: `base_ptr` and `len` identify the live mapping owned by this
-        // value. `madvise` changes only kernel inheritance metadata; it neither
-        // transfers ownership nor permits access outside the mapped range.
-        let status =
-            unsafe { libc::madvise(self.base_ptr().cast::<libc::c_void>(), self.len, advice) };
+        let status = {
+            // SAFETY: `base_ptr` and `len` identify the live mapping owned by
+            // this value. `madvise` changes only kernel inheritance metadata;
+            // it neither transfers ownership nor permits access outside the
+            // mapped range.
+            unsafe { libc::madvise(self.base_ptr().cast::<libc::c_void>(), self.len, advice) }
+        };
         if status != 0 {
             return Err(HotForkMappingDispositionError::Madvise {
                 operation,
@@ -338,12 +340,13 @@ impl MappedSetupRegion {
             bytes
                 .try_reserve_exact(length)
                 .map_err(|_error| HotForkRingImageError::AllocationFailed { len: length })?;
-            // SAFETY: the validated range is inside the live mapping. Both
-            // endpoints of every included ring are held and drained, so no
-            // conforming producer or consumer can mutate these queue-backed
-            // bytes until release. The copy completes before that release.
-            let source =
-                unsafe { core::slice::from_raw_parts(self.base_ptr().add(local_offset), length) };
+            let source = {
+                // SAFETY: the validated range is inside the live mapping. Both
+                // endpoints of every included ring are held and drained, so no
+                // conforming producer or consumer can mutate these queue-backed
+                // bytes until release. The copy completes before that release.
+                unsafe { core::slice::from_raw_parts(self.base_ptr().add(local_offset), length) }
+            };
             bytes.extend_from_slice(source);
             retained.push(HotForkRingImageSegment { offset, bytes });
         }

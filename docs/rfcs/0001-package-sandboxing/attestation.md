@@ -39,10 +39,14 @@ Compromising one must not collapse the others.
 
 ## Artifact 2 — runtime integrity: dm-verity package roots
 
-[container-model.md](container-model.md) makes the package root a store path
-consumed via `RootDirectory=`. That is content-addressed but **not runtime-
-verified**: `/nix/store` is an ordinary writable filesystem, and Nix has no
-fs-verity/dm-verity over it (upstream issue open since 2021). Under the
+[container-model.md](container-model.md) keeps the non-verity package payload
+as an immutable, content-addressed store path and uses it as the authenticated
+lower layer of a per-service volatile overlay `RootDirectory=`. Distinct
+upper/work/merged directories under `/run` absorb systemd-created mount points;
+they do not replace the payload NAR digest as the package identity. The payload
+is content-addressed but **not runtime-verified**: `/nix/store` is an ordinary
+writable filesystem, and Nix has no fs-verity/dm-verity over it (upstream issue
+open since 2021). Under the
 [budget mandate](implementation-plan.md#budget-mandate) the verity path is
 **in scope, not deferred**.
 

@@ -619,6 +619,7 @@ impl S3BlobBackend {
         )
     }
 
+    // crucible-lint: allow rust-allow -- the internal constructor keeps every independently authenticated S3 namespace and bound explicit.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new_inner(
         name: impl Into<String>,
@@ -1012,6 +1013,11 @@ pub(super) fn validate_configuration(
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- unit fixtures use panic shortcuts for exact failure localization.
+    #![allow(clippy::expect_used)]
+    // crucible-lint: allow rust-allow -- fixture storage shapes mirror the provider state they validate.
+    #![allow(clippy::type_complexity)]
+
     use std::collections::BTreeMap;
     use std::io::Cursor;
     use std::sync::Mutex;
@@ -1281,10 +1287,7 @@ mod tests {
             let uploads = matching
                 .into_iter()
                 .map(|(key, upload)| {
-                    Ok(StoreS3MultipartUploadRecord::new(
-                        key,
-                        StoreS3MultipartUpload::new(upload)?,
-                    )?)
+                    StoreS3MultipartUploadRecord::new(key, StoreS3MultipartUpload::new(upload)?)
                 })
                 .collect::<Result<Vec<_>, StoreError>>()?;
             StoreS3MultipartListPage::new(uploads, next, after, maximum_items)

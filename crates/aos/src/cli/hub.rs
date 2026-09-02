@@ -180,6 +180,11 @@ pub enum HubCmd {
         #[command(subcommand)]
         command: HubRegistryCmd,
     },
+    /// Browse canonical package documentation through the Hub API
+    Docs {
+        #[command(subcommand)]
+        command: HubDocumentationCmd,
+    },
     /// Manage binary-cache definitions, retention, population, and garbage collection
     Cache {
         #[command(subcommand)]
@@ -239,6 +244,96 @@ pub enum HubCmd {
     Operation {
         #[command(subcommand)]
         command: HubOperationCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubDocumentationCmd {
+    /// Search package documentation
+    Search {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        query: String,
+        #[arg(long)]
+        registry: String,
+        #[arg(long)]
+        kind: Option<String>,
+        #[command(flatten)]
+        pagination: HubPaginationArgs,
+    },
+    /// Fetch one exact package documentation object
+    Package {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        package: String,
+        #[arg(long)]
+        registry: String,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long)]
+        platform: Option<String>,
+    },
+    /// List or select an exact typed option
+    Option {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        package: String,
+        #[arg(long)]
+        registry: String,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long)]
+        platform: Option<String>,
+        #[arg(long)]
+        prefix: Option<String>,
+        #[arg(long)]
+        owner: Option<String>,
+        #[arg(long = "type")]
+        option_type: Option<String>,
+        #[arg(long)]
+        contributable: Option<bool>,
+        #[command(flatten)]
+        pagination: HubPaginationArgs,
+    },
+    /// Compare two package documentation versions
+    Compare {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        package: String,
+        #[arg(long)]
+        registry: String,
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        platform: String,
+    },
+    /// Verify and write one exact canonical documentation object
+    Fetch {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        package: String,
+        #[arg(long)]
+        registry: String,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long)]
+        platform: Option<String>,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Print the canonical browser URL for one package
+    Open {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        package: String,
+        #[arg(long)]
+        registry: String,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long)]
+        platform: Option<String>,
     },
 }
 
@@ -805,10 +900,13 @@ pub enum HubBindingCmd {
         /// Organization slug; omit for instance-owned bindings
         #[arg(long)]
         org: Option<String>,
+        /// Include bindings explicitly granted to the selected scope
+        #[arg(long)]
+        include_granted: bool,
         #[command(flatten)]
         pagination: HubPaginationArgs,
     },
-    /// Create a binding under an org (needs registry.configure)
+    /// Create an instance or organization binding
     Create {
         /// Hub base URL; defaults to the active profile
         #[arg(long, env = "AOS_HUB")]
@@ -816,9 +914,9 @@ pub enum HubBindingCmd {
         /// Hub access JWT; defaults to AOS_TOKEN or the matching active profile
         #[arg(long, env = "AOS_TOKEN")]
         token: Option<String>,
-        /// Org slug
+        /// Org slug; omit for an instance binding
         #[arg(long)]
-        org: String,
+        org: Option<String>,
         /// Binding name
         #[arg(long)]
         name: String,
@@ -846,7 +944,7 @@ pub enum HubBindingCmd {
         /// Access mode for s3/r2: private (default) or public
         #[arg(long, value_parser = ["public", "private"])]
         access: Option<String>,
-        /// Cloudflare Worker R2 binding name for deployment-r2
+        /// Cloudflare Worker R2 attachment (REGISTRY_BUCKET) for deployment-r2
         #[arg(long)]
         bucket_binding: Option<String>,
         #[command(flatten)]
@@ -1110,6 +1208,9 @@ pub enum HubNetworkPolicyCmd {
         access: HubAccessArgs,
         #[arg(long)]
         org: Option<String>,
+        /// Include network policies explicitly granted to the selected scope
+        #[arg(long)]
+        include_granted: bool,
         #[command(flatten)]
         pagination: HubPaginationArgs,
     },
@@ -1270,6 +1371,9 @@ pub enum HubEndpointCmd {
         access: HubAccessArgs,
         #[arg(long)]
         org: Option<String>,
+        /// Include endpoints explicitly granted to the selected scope
+        #[arg(long)]
+        include_granted: bool,
         #[command(flatten)]
         pagination: HubPaginationArgs,
     },
@@ -1404,12 +1508,13 @@ pub enum HubEndpointCmd {
 
 #[derive(Subcommand)]
 pub enum HubGatewayCmd {
-    /// List gateways for a binding
+    /// List visible gateways, optionally filtered by binding
     List {
         #[command(flatten)]
         access: HubAccessArgs,
+        /// Restrict results to an instance or organization binding reference
         #[arg(long)]
-        binding: String,
+        binding: Option<String>,
         #[command(flatten)]
         pagination: HubPaginationArgs,
     },
@@ -3122,8 +3227,6 @@ mod tests {
             "list",
             "--hub",
             "https://aos.example",
-            "--org",
-            "andyl",
         ])
         .unwrap();
         assert!(matches!(
@@ -3158,8 +3261,6 @@ mod tests {
             "create",
             "--hub",
             "https://aos.example",
-            "--org",
-            "andyl",
             "--name",
             "worker-objects",
             "--stable-id",
@@ -3167,7 +3268,7 @@ mod tests {
             "--kind",
             "deployment-r2",
             "--bucket-binding",
-            "STORAGE",
+            "REGISTRY_BUCKET",
         ])
         .unwrap();
         assert!(matches!(
@@ -3177,10 +3278,11 @@ mod tests {
                     command: HubBindingCmd::Create {
                         stable_id: Some(ref stable_id),
                         bucket_binding: Some(ref binding),
+                        org: None,
                         ..
                     }
                 }
-            } if stable_id == "storage-binding:worker-objects" && binding == "STORAGE"
+            } if stable_id == "storage-binding:worker-objects" && binding == "REGISTRY_BUCKET"
         ));
     }
 
@@ -3204,23 +3306,29 @@ mod tests {
             }
         ));
 
-        assert!(
-            parse_cli([
-                "aos",
-                "hub",
-                "binding",
-                "create",
-                "--hub",
-                "https://aos.example",
-                "--name",
-                "native-storage",
-                "--kind",
-                "local-fs",
-                "--root",
-                "/var/lib/aos-hub/storage",
-            ])
-            .is_err()
-        );
+        let create = parse_cli([
+            "aos",
+            "hub",
+            "binding",
+            "create",
+            "--hub",
+            "https://aos.example",
+            "--name",
+            "native-storage",
+            "--kind",
+            "local-fs",
+            "--root",
+            "/var/lib/aos-hub/storage",
+        ])
+        .unwrap();
+        assert!(matches!(
+            create.command,
+            Commands::Hub {
+                command: HubCmd::Binding {
+                    command: HubBindingCmd::Create { org: None, .. }
+                }
+            }
+        ));
     }
 
     #[test]

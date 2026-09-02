@@ -5,9 +5,9 @@
 //! Test setup injects one authenticated orphan placement to model crash debris;
 //! the public plan/apply commands must reclaim it without breaking restart.
 
+#![cfg(target_os = "linux")]
 // crucible-lint: allow clippy-disallowed-method -- this process boundary test intentionally exercises host process methods.
 // crucible-lint: allow panic-shortcut -- assertions localize failures in a single hermetic operator flight.
-#![cfg(target_os = "linux")]
 #![allow(clippy::disallowed_methods, clippy::expect_used, clippy::unwrap_used)]
 
 use std::error::Error;
