@@ -49,7 +49,7 @@
 //!   restrict the full manifest to the packages that materialized, close under
 //!   the config graph, re-hash into a content-addressed generation, record the
 //!   drop-set.
-//! - [`subverbs`] — the `apm fetch <pkg>` / `apm render-one <pkg>` handlers that
+//! - [`subverbs`] — the package-runtime `fetch` / `render-one` handlers that
 //!   back the template `ExecStart=`s (build-spec §4).
 
 pub mod reproject;

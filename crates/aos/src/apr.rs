@@ -1,12 +1,7 @@
-//! `apr` is the registry-operation entry point for the AOS multicall CLI.
+//! `apr` is the AOS registry-authoring command-line tool.
 
-mod cli;
-mod commands;
-mod entry;
-mod logging;
-
-/// Process entry point for the `apr` binary alias.
+/// Runs the `apr` CLI.
 #[tokio::main]
 async fn main() {
-    entry::main().await;
+    aos::entry::apr_main().await;
 }
