@@ -3724,6 +3724,7 @@ fn scan_config_module_interface(
         if relative == Path::new("config-meta.json")
             || relative == Path::new("expose-config.json")
             || relative == Path::new("generated/expose-config.json")
+            || relative == Path::new(TARGET_PLATFORM_RELATIVE_PATH)
         {
             continue;
         }
@@ -17472,6 +17473,27 @@ mod tests {
         fs::write(tmp.path().join("authored.json"), "{}\n").expect("write unauthorized helper");
         let error = scan_config_module_interface(tmp.path(), "web", &[], &[])
             .expect_err("reject unauthorized non-Nix helper");
+        assert!(error.to_string().contains("non-Nix helper"), "{error:#}");
+    }
+
+    #[test]
+    fn config_interface_scan_accepts_only_the_canonical_target_platform_marker() {
+        let tmp = TempDir::new().expect("temporary config module");
+        fs::create_dir(tmp.path().join("nix-support")).expect("create nix-support directory");
+        fs::write(tmp.path().join("module.nix"), "{ ... }: {}\n").expect("write module");
+        fs::write(
+            tmp.path().join(TARGET_PLATFORM_RELATIVE_PATH),
+            "x86_64-linux\n",
+        )
+        .expect("write target platform marker");
+
+        scan_config_module_interface(tmp.path(), "web", &[], &[])
+            .expect("scan canonical target platform metadata");
+
+        fs::write(tmp.path().join("nix-support/helper"), "not Nix\n")
+            .expect("write unauthorized nix-support helper");
+        let error = scan_config_module_interface(tmp.path(), "web", &[], &[])
+            .expect_err("reject neighboring nix-support helper");
         assert!(error.to_string().contains("non-Nix helper"), "{error:#}");
     }
 
