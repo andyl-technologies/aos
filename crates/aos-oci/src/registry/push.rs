@@ -164,8 +164,8 @@ pub(super) async fn run_release_graph(
     );
 
     // Verify the complete signed graph before the first network effect. The
-    // root index lives at index.json; every other object is content-addressed
-    // below blobs/sha256.
+    // OCI layout index binds the signed root descriptor; every release object,
+    // including that root index, is content-addressed below blobs/sha256.
     let graph = ReleaseGraph::collect(&options.source, release)?;
     let scope = reference.scope("pull,push");
     let state_directory = open_private_state_directory(&options.state_directory, reference)?;
@@ -217,6 +217,13 @@ struct ReleaseGraph {
 
 impl ReleaseGraph {
     fn collect(root: &Path, release: &ContainerRelease) -> Result<Self> {
+        let layout_index = read_root_file(root, "index.json")?;
+        let layout_index =
+            ImageIndex::from_json(&layout_index).context("validating release layout index")?;
+        ensure!(
+            layout_index.manifests == vec![release.oci.index.clone()],
+            "release layout index does not contain the exact signed root descriptor"
+        );
         let roots = [
             &release.oci.index,
             &release.nix.closure,
@@ -321,19 +328,7 @@ impl ReleaseGraphCollector<'_> {
     }
 
     fn read_document(&self, descriptor: &Descriptor) -> Result<Vec<u8>> {
-        if descriptor.digest != self.release.oci.index.digest {
-            return read_verified_blob(self.root, descriptor);
-        }
-        let bytes = read_root_file(self.root, "index.json")?;
-        ensure!(
-            u64::try_from(bytes.len()).context("root index size conversion")? == descriptor.size,
-            "root index size does not match the signed release descriptor"
-        );
-        ensure!(
-            Sha256Digest::digest(&bytes) == descriptor.digest,
-            "root index digest does not match the signed release descriptor"
-        );
-        Ok(bytes)
+        read_verified_blob(self.root, descriptor)
     }
 }
 

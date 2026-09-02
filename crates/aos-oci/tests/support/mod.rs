@@ -141,6 +141,27 @@ pub fn add_signed_release_graph(fixture: &Fixture) -> ContainerRelease {
         artifact_type: None,
         platform: None,
     };
+    fs::write(
+        fixture
+            .root()
+            .join("blobs/sha256")
+            .join(index.digest.encoded()),
+        &fixture.index,
+    )
+    .expect("release root index blob");
+    let layout_index = ImageIndex {
+        schema_version: 2,
+        media_type: Some(MediaType::OciImageIndex),
+        artifact_type: None,
+        manifests: vec![index.clone()],
+        subject: None,
+        annotations: Annotations::new(),
+    };
+    fs::write(
+        fixture.root().join("index.json"),
+        to_canonical_json(&layout_index).expect("canonical release layout index"),
+    )
+    .expect("release layout index");
     let artifact = |role: &str, artifact_type: MediaType| {
         let payload_value = if artifact_type == MediaType::AosNixClosure {
             let uncompressed = layer_tar();
@@ -272,13 +293,28 @@ pub fn write_publication_inputs(inputs: &Path, layout: &Path, input: &ContainerS
     fs::create_dir(inputs).expect("inputs");
     copy_tree(layout, &inputs.join("oci-layout"));
     copy_tree(layout, &inputs.join("evidence-layout"));
+    let layout_index = ImageIndex {
+        schema_version: 2,
+        media_type: Some(MediaType::OciImageIndex),
+        artifact_type: None,
+        manifests: vec![input.oci.index.clone()],
+        subject: None,
+        annotations: Annotations::new(),
+    };
+    let layout_index = to_canonical_json(&layout_index).expect("canonical layout index");
     for name in ["oci-layout", "evidence-layout"] {
+        fs::write(inputs.join(name).join("index.json"), &layout_index).expect("write layout index");
         fs::write(
             inputs
                 .join(name)
                 .join("blobs/sha256")
                 .join(input.oci.index.digest.encoded()),
-            fs::read(layout.join("index.json")).expect("read root index"),
+            fs::read(
+                layout
+                    .join("blobs/sha256")
+                    .join(input.oci.index.digest.encoded()),
+            )
+            .expect("read signed root index"),
         )
         .expect("write root index blob");
     }
