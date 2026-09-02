@@ -13,7 +13,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use aos_oci::{PlatformSelector, verify_layout, write_oci_archive};
-use aos_oci_types::{MediaType, Sha256Digest, to_canonical_json};
+use aos_oci_types::{
+    CONTAINER_DSSE_SIGNATURE_NAMESPACE, ContainerRelease, MediaType, Sha256Digest,
+    to_canonical_json,
+};
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
@@ -22,6 +25,7 @@ use axum::http::header::{
 };
 use axum::http::{HeaderMap, Method, Request, Response, StatusCode, Uri};
 use axum::routing::any;
+use ed25519_dalek::SigningKey;
 use serde_json::Value;
 use tokio::net::TcpListener;
 
@@ -61,6 +65,104 @@ impl Drop for TestRegistry {
     fn drop(&mut self) {
         self.task.abort();
     }
+}
+
+#[test]
+fn process_external_signing_never_passes_private_material_to_aos() {
+    let fixture = oci_support::fixture();
+    let unsigned = oci_support::add_signed_release_graph(&fixture);
+    let input = oci_support::publication_signature_input(&unsigned);
+    let workspace = tempfile::tempdir().expect("external-signing workspace");
+    let home = workspace.path().join("home");
+    fs::create_dir(&home).expect("external-signing home");
+    let inputs = workspace.path().join("publication-inputs");
+    oci_support::write_publication_inputs(&inputs, fixture.root(), &input);
+
+    let prepared = workspace.path().join("container-signature.pae");
+    let prepare = run_aos(
+        workspace.path(),
+        &home,
+        &[
+            "--json",
+            "--progress",
+            "off",
+            "--color",
+            "never",
+            "container",
+            "prepare-signature",
+            inputs.to_str().expect("inputs path"),
+            "--output",
+            prepared.to_str().expect("prepared path"),
+        ],
+    );
+    let prepare = successful_json("prepare-signature", &prepare);
+    assert_eq!(prepare["operation"], "prepare-signature");
+    assert_eq!(prepare["namespace"], CONTAINER_DSSE_SIGNATURE_NAMESPACE);
+
+    let signing_key = SigningKey::from_bytes(&[61_u8; 32]);
+    let signer = aos_registry_surface::sshsig::trusted_key_line(
+        "qualification",
+        &signing_key.verifying_key(),
+    );
+    let signature = aos_registry_surface::sshsig::sign_armored_namespace(
+        &fs::read(&prepared).expect("prepared PAE"),
+        &signing_key,
+        CONTAINER_DSSE_SIGNATURE_NAMESPACE,
+    );
+    let signature_path = workspace.path().join("container-signature.pae.sig");
+    fs::write(&signature_path, signature).expect("external signature");
+
+    let bundle = workspace.path().join("final-bundle");
+    let finalize = run_aos(
+        workspace.path(),
+        &home,
+        &[
+            "--json",
+            "--progress",
+            "off",
+            "--color",
+            "never",
+            "container",
+            "finalize-signature",
+            inputs.to_str().expect("inputs path"),
+            "--signer",
+            &signer,
+            "--signature",
+            signature_path.to_str().expect("signature path"),
+            "--output",
+            bundle.to_str().expect("bundle path"),
+        ],
+    );
+    let finalize = successful_json("finalize-signature", &finalize);
+    assert_eq!(finalize["operation"], "finalize-signature");
+    assert_eq!(finalize["verification"], "verified-external-sshsig");
+    assert!(bundle.join("layout/oci-layout").is_file());
+    assert!(bundle.join("image.oci.tar").is_file());
+    let release = ContainerRelease::from_canonical_json(
+        &fs::read(bundle.join("container-release.json")).expect("final release"),
+    )
+    .expect("canonical final release");
+    input
+        .validate_final_release(&release)
+        .expect("final release input binding");
+
+    let no_clobber = run_aos(
+        workspace.path(),
+        &home,
+        &[
+            "--json",
+            "container",
+            "finalize-signature",
+            inputs.to_str().expect("inputs path"),
+            "--signer",
+            &signer,
+            "--signature",
+            signature_path.to_str().expect("signature path"),
+            "--output",
+            bundle.to_str().expect("bundle path"),
+        ],
+    );
+    assert!(!no_clobber.status.success());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -7,6 +7,7 @@
   pkg-config,
   libbpf,
   json-c,
+  buildPackages,
 }: let
   targetArchBySystem = {
     "x86_64-linux" = "x86";
@@ -42,7 +43,7 @@ in
           mkdir -p $out/bin $out/lib/bpf
           cp ${bpfSource} aos-ebpf-net-policy.bpf.c
 
-          ${llvm}/bin/clang -target bpf -O2 -g \
+          ${buildPackages.llvm}/bin/clang -target bpf -O2 -g \
             -D__TARGET_ARCH_${targetArch} \
             -I${linux-headers}/include \
             -I${libbpf}/include \
@@ -54,7 +55,7 @@ in
           # DWARF that embeds the kernel-headers include path, pinning
           # linux-headers into the runtime closure. Strip DWARF debug sections;
           # .BTF (not a debug section) is retained, so CO-RE still works.
-          ${llvm}/bin/llvm-strip -g $out/lib/bpf/aos-ebpf-net-policy.bpf.o
+          ${buildPackages.llvm}/bin/llvm-strip -g $out/lib/bpf/aos-ebpf-net-policy.bpf.o
 
           $CC -O2 -Wall -Wextra -Werror \
             -I${linux-headers}/include \

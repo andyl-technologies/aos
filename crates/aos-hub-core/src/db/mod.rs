@@ -27437,10 +27437,10 @@ source_nar_hash = ""
     }
 
     #[test]
-    fn oci_phase5_v21_migration_upgrades_v20_and_backfills_contextual_media() {
-        const OCI_UPLOAD_PUBLICATION_INDEX: usize = 20;
+    fn oci_phase5_v23_migration_upgrades_v22_and_backfills_contextual_media() {
+        const OCI_UPLOAD_PUBLICATION_INDEX: usize = 22;
 
-        assert_eq!(MIGRATIONS.len(), 24, "reviewed schema version changed");
+        assert_eq!(MIGRATIONS.len(), 26, "reviewed schema version changed");
         let connection = Connection::open_in_memory().unwrap();
         for migration in &MIGRATIONS[..OCI_UPLOAD_PUBLICATION_INDEX] {
             connection.execute_batch(migration).unwrap();
@@ -27524,8 +27524,8 @@ source_nar_hash = ""
     }
 
     #[test]
-    fn oci_phase5_v21_migration_refuses_unknown_placeholder_state() {
-        const OCI_UPLOAD_PUBLICATION_INDEX: usize = 20;
+    fn oci_phase5_v23_migration_refuses_unknown_placeholder_state() {
+        const OCI_UPLOAD_PUBLICATION_INDEX: usize = 22;
 
         let connection = Connection::open_in_memory().unwrap();
         for migration in &MIGRATIONS[..OCI_UPLOAD_PUBLICATION_INDEX] {
@@ -27669,8 +27669,8 @@ source_nar_hash = ""
     }
 
     #[test]
-    fn oci_admin_v22_upgrade_backfills_policy_and_queues_exact_byte_reconciliation() {
-        const OCI_ADMIN_INDEX: usize = 21;
+    fn oci_admin_v24_upgrade_backfills_policy_and_queues_exact_byte_reconciliation() {
+        const OCI_ADMIN_INDEX: usize = 23;
 
         let connection = Connection::open_in_memory().unwrap();
         for migration in &MIGRATIONS[..OCI_ADMIN_INDEX] {
@@ -27710,8 +27710,8 @@ source_nar_hash = ""
     }
 
     #[test]
-    fn oci_admin_v22_upgrade_fails_closed_and_rolls_back_out_of_range_history() {
-        const OCI_ADMIN_INDEX: usize = 21;
+    fn oci_admin_v24_upgrade_fails_closed_and_rolls_back_out_of_range_history() {
+        const OCI_ADMIN_INDEX: usize = 23;
 
         let connection = Connection::open_in_memory().unwrap();
         for migration in &MIGRATIONS[..OCI_ADMIN_INDEX] {
@@ -27739,8 +27739,8 @@ source_nar_hash = ""
     }
 
     #[tokio::test]
-    async fn oci_admin_v22_concurrent_start_and_reopen_apply_once() {
-        const OCI_ADMIN_INDEX: usize = 21;
+    async fn oci_admin_v24_concurrent_start_and_reopen_apply_once() {
+        const OCI_ADMIN_INDEX: usize = 23;
 
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("v21-concurrent.db");
@@ -27752,7 +27752,7 @@ source_nar_hash = ""
         connection
             .execute_batch(
                 "CREATE TABLE schema_version(version INTEGER NOT NULL);
-                 INSERT INTO schema_version(version) VALUES(21);",
+                 INSERT INTO schema_version(version) VALUES(23);",
             )
             .unwrap();
         drop(connection);
@@ -27769,7 +27769,7 @@ source_nar_hash = ""
             .unwrap()
             .get(0)
             .unwrap();
-        assert_eq!(version, 24);
+        assert_eq!(version, 26);
     }
 
     #[test]
@@ -28144,7 +28144,7 @@ source_nar_hash = ""
 
     #[test]
     fn mysql_phase5_multiline_add_columns_are_replay_safe() {
-        const OCI_UPLOAD_PUBLICATION_INDEX: usize = 20;
+        const OCI_UPLOAD_PUBLICATION_INDEX: usize = 22;
         let phase5 = MIGRATIONS[OCI_UPLOAD_PUBLICATION_INDEX];
         let add_columns: Vec<_> = crate::backend::split_statements(phase5)
             .into_iter()

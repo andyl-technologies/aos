@@ -1274,7 +1274,6 @@ async fn provision_worker(
     cfg.observability = !args.no_observability;
     cfg.head_sampling_rate = args.head_sampling_rate;
     cfg.logpush = args.logpush;
-    cfg.default_public_delivery_url = args.default_public_delivery_url.clone();
     cfg.container_rollout = aos_hub_core::container_rollout::ContainerRollout {
         pull: args.oci_pull_enabled,
         push: args.oci_push_enabled,

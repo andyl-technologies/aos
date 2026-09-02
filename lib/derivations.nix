@@ -972,7 +972,7 @@
     # Named outputs are fresh derivation attrsets. Preserve the package-level
     # dependency and execution contract when consumers select one directly.
     outputMetadata = {
-      inherit meta version propagatedDeps;
+      inherit meta version runtimeDeps propagatedDeps;
       pname = effectivePname;
       platforms = derivationPlatforms;
       constraints = {

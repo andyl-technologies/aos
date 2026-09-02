@@ -539,6 +539,21 @@ production-image and VM end-to-end work remains in Phase 8.
 
 ## Phase 8: Native and VM end-to-end qualification
 
+Slice-C evidence on 2026-08-29: a versioned 29-case OCI protocol transcript is
+shared by native Hub and the deployable workerd/SQLite injected-provider
+fixture. Native execution covers public/private Distribution delivery,
+Basic-to-bearer exchange, uploads, tags, digests, referrers, and the
+ContainerService publication/administration/GC read-plan surface. The Worker
+fixture preserves the open-source workerd R2 boundary and requires physical GC
+to remain blocker-gated. Its signed system-image qualification uploads the NAR
+closure through `BinaryCacheService`, publishes a real provider inventory, and
+uses the packaged `aos` to list, download, verify, extract, and byte-compare the
+public image. Private-key-free `prepare-signature` and
+`finalize-signature` porcelain now verifies an external SSHSIG over exact DSSE
+PAE bytes and atomically emits the complete signed publication bundle. These
+focused results do not by themselves complete the native runtime, VM, Docker,
+or full-gate checklists below.
+
 ### Native Hub
 
 - [ ] Launch the AOS-built native Hub with local database and object storage.

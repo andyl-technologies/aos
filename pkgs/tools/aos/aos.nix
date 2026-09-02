@@ -37,29 +37,30 @@
   buildPackages,
 }: let
   version = "0.1.0";
+  isCross = stdenv.isCross;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   buildPerl =
-    if isDarwinCross
+    if isCross
     then buildPackages.perl
     else perl;
   buildPkgConfig =
-    if isDarwinCross
+    if isCross
     then buildPackages.pkg-config
     else pkg-config;
   buildProtobuf =
-    if isDarwinCross
+    if isCross
     then buildPackages.protobuf
     else protobuf;
   buildCmake =
-    if isDarwinCross
+    if isCross
     then buildPackages.cmake
     else cmake;
   buildGitMinimal =
-    if isDarwinCross
+    if isCross
     then buildPackages.git-minimal
     else git-minimal;
   buildOpenSsh =
-    if isDarwinCross
+    if isCross
     then buildPackages.openssh
     else openssh;
   repoRoot = ../../..;

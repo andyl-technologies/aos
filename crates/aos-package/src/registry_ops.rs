@@ -56,15 +56,15 @@ use anyhow::{Context, Result, bail};
 use aos_cache::AuthOptions;
 use aos_core::nar::info as narinfo;
 use aos_core::nix::aos_nix_env;
-use aos_oci_types::{
-    CONTAINER_RELEASE_SIDECAR_PATH, ContainerRelease, ContainerSignatureInput,
-    limits::MAX_JSON_BYTES,
-};
 use aos_doc_model::{
     ActivationEffect, ActivationKind, ConfinementSummary, CredentialContract, DOCUMENT_FORMAT,
     DOCUMENT_SCHEMA, DocumentationIdentity, DocumentedPackage, DocumentedValue, OptionDocument,
     OptionOwner, OptionType, PackageDocumentation, PathSegment, ProseBlock, RuntimeCapability,
     RuntimeConfigArtifact, RuntimeListener, RuntimeSurface, RuntimeUnit, Section, Visibility,
+};
+use aos_oci_types::{
+    CONTAINER_RELEASE_SIDECAR_PATH, ContainerRelease, ContainerSignatureInput,
+    limits::MAX_JSON_BYTES,
 };
 use clap::ValueEnum as _;
 use regex::Regex;

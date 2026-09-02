@@ -123,6 +123,15 @@ pub async fn run(command: &ContainerCommand, printer: &Printer) -> Result<()> {
             )
             .await
         }
+        ContainerCommand::PrepareSignature { inputs, output } => {
+            prepare_signature(inputs, output, printer)
+        }
+        ContainerCommand::FinalizeSignature {
+            inputs,
+            signer,
+            signature,
+            output,
+        } => finalize_signature(inputs, signer, signature, output, printer),
         ContainerCommand::Publish {
             name,
             reference,
@@ -163,6 +172,63 @@ pub async fn run(command: &ContainerCommand, printer: &Printer) -> Result<()> {
             .await
         }
     }
+}
+
+fn prepare_signature(inputs: &Path, output: &Path, printer: &Printer) -> Result<()> {
+    let pae = aos_oci::write_container_signature_pae(inputs, output)?;
+    let response = json!({
+        "schema": OUTPUT_SCHEMA,
+        "operation": "prepare-signature",
+        "inputs": inputs,
+        "output": output,
+        "namespace": aos_oci_types::CONTAINER_DSSE_SIGNATURE_NAMESPACE,
+        "byte_size": pae.len(),
+        "sha256": Sha256Digest::digest(&pae),
+    });
+    if !printer.json_if_active(&response) {
+        printer.success(&format!(
+            "Prepared {} externally signable bytes at {}",
+            pae.len(),
+            output.display()
+        ));
+        printer.kv(
+            "SSHSIG namespace",
+            aos_oci_types::CONTAINER_DSSE_SIGNATURE_NAMESPACE,
+        );
+    }
+    Ok(())
+}
+
+fn finalize_signature(
+    inputs: &Path,
+    signer: &str,
+    signature: &Path,
+    output: &Path,
+    printer: &Printer,
+) -> Result<()> {
+    let finalized = aos_oci::finalize_container_publication(inputs, signer, signature, output)?;
+    let response = json!({
+        "schema": OUTPUT_SCHEMA,
+        "operation": "finalize-signature",
+        "bundle": finalized.bundle,
+        "layout": finalized.layout,
+        "archive": finalized.archive,
+        "release": finalized.release,
+        "signature_input": finalized.signature_input,
+        "release_identity": finalized.declaration.identity.release,
+        "index_digest": finalized.declaration.oci.index.digest,
+        "verification": "verified-external-sshsig",
+    });
+    if !printer.json_if_active(&response) {
+        printer.success(&format!(
+            "Verified external SSHSIG and finalized {}",
+            output.display()
+        ));
+        printer.kv("Layout", &finalized.layout.display().to_string());
+        printer.kv("Archive", &finalized.archive.display().to_string());
+        printer.kv("Release", &finalized.release.display().to_string());
+    }
+    Ok(())
 }
 
 fn list(printer: &Printer) -> Result<()> {

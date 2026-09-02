@@ -10223,6 +10223,13 @@ impl Database {
     /// Returns an error when fixture insertion fails.
     #[cfg(any(test, feature = "do-e2e-test-support"))]
     pub async fn install_do_e2e_topology_fixture(&self) -> Result<()> {
+        if let Some(cache) = self.binary_cache_by_slug("flat-cache").await? {
+            if self.cache_gc_topology_state(cache.id).await?.is_some() {
+                return Ok(());
+            }
+            bail!("disposable flat-cache fixture has incomplete GC topology");
+        }
+
         self.install_write_failure_test_tickets().await?;
         self.backend
             .checked_batch(&[
@@ -10313,6 +10320,12 @@ impl Database {
                     "INSERT INTO cache_gc_state
                      (cache_id, epoch, epoch_owner_token, inventory_generation)
                      VALUES (2, 0, 'bootstrap', 1)",
+                    vec![],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO cache_gc_heads (cache_id, resource_version, updated_at)
+                     VALUES (2, 1, 1)",
                     vec![],
                 )
                 .expecting(1),
@@ -10757,12 +10770,35 @@ mod tests {
     async fn do_e2e_fixture_has_distinct_flat_and_nested_surface_identities() {
         let db = Database::open_in_memory().await.unwrap();
         db.install_do_e2e_topology_fixture().await.unwrap();
+        db.install_do_e2e_topology_fixture().await.unwrap();
 
-        assert!(db
+        let flat_cache = db
             .binary_cache_by_slug("flat-cache")
             .await
             .unwrap()
-            .is_some());
+            .unwrap();
+        let flat_topology = db
+            .cache_gc_topology_state(flat_cache.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(flat_topology.cache_id, flat_cache.id);
+        assert_eq!(flat_topology.epoch, 0);
+        assert_eq!(flat_topology.inventory_generation, 1);
+        let head = db
+            .backend
+            .query_opt(
+                "SELECT resource_version, updated_at FROM cache_gc_heads
+                 WHERE cache_id = ?1",
+                &vals![flat_cache.id],
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let head_resource_version: i64 = head.get(0).unwrap();
+        let head_updated_at: i64 = head.get(1).unwrap();
+        assert_eq!(head_resource_version, 1);
+        assert_eq!(head_updated_at, 1);
         assert!(db
             .binary_cache_by_slug("failure/cache")
             .await

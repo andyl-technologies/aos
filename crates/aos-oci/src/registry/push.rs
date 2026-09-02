@@ -31,12 +31,12 @@ use crate::reference::RegistryReference;
 
 const CHECKPOINT_SCHEMA: &str = "aos.oci.upload-checkpoint/v1";
 const UPLOAD_STATE_SCHEMA: &str = "aos.oci.upload-state/v1";
-const UPLOAD_CANCELLATION_RETRY_DELAYS: [Duration; 4] = [
-    Duration::from_millis(20),
-    Duration::from_millis(50),
-    Duration::from_millis(100),
-    Duration::from_millis(200),
-];
+// A cancelled upload PATCH can remain in the registry's transaction queue
+// while a saturated server drains unrelated work. Keep the cleanup bounded,
+// but allow enough time for that transaction to release its upload lease.
+const UPLOAD_CANCELLATION_RETRY_WINDOW: Duration = Duration::from_secs(16);
+const UPLOAD_CANCELLATION_INITIAL_RETRY_DELAY: Duration = Duration::from_millis(20);
+const UPLOAD_CANCELLATION_MAX_RETRY_DELAY: Duration = Duration::from_secs(1);
 static CHECKPOINT_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(super) async fn run(
@@ -921,18 +921,25 @@ async fn cancel_upload(
     scope: &str,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    let mut retry_delays = UPLOAD_CANCELLATION_RETRY_DELAYS.into_iter();
+    let deadline = tokio::time::Instant::now() + UPLOAD_CANCELLATION_RETRY_WINDOW;
+    let mut retry_delay = UPLOAD_CANCELLATION_INITIAL_RETRY_DELAY;
+    let headers = HeaderMap::new();
     loop {
-        let response = client
-            .send(
-                Method::DELETE,
-                location.clone(),
-                scope,
-                &HeaderMap::new(),
-                None,
-                cancellation,
-            )
-            .await?;
+        let response = tokio::select! {
+            () = cancellation.cancelled() => bail!("OCI transfer cancelled"),
+            response = tokio::time::timeout_at(
+                deadline,
+                client.send(
+                    Method::DELETE,
+                    location.clone(),
+                    scope,
+                    &headers,
+                    None,
+                    cancellation,
+                ),
+            ) => response
+                .context("upload cancellation retry window elapsed")??,
+        };
         if response.status() != StatusCode::SERVICE_UNAVAILABLE {
             return check_response(
                 &response,
@@ -945,16 +952,23 @@ async fn cancel_upload(
             );
         }
 
-        let Some(delay) = retry_delays.next() else {
-            return check_response(&response, &[], "upload cancellation");
-        };
         // A cancelled PATCH future can leave its server-side transaction in
-        // flight. DELETE is idempotent, so briefly retry the resulting 503
-        // without discarding the checkpoint that makes later cleanup safe.
+        // flight. DELETE is idempotent, so retry the resulting 503 within one
+        // explicit window without discarding the checkpoint that makes later
+        // cleanup safe.
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        ensure!(
+            !remaining.is_zero(),
+            "upload cancellation retry window elapsed after HTTP 503 Service Unavailable"
+        );
+        let delay = retry_delay.min(remaining);
         tokio::select! {
             () = cancellation.cancelled() => bail!("OCI transfer cancelled"),
             () = tokio::time::sleep(delay) => {}
         }
+        retry_delay = retry_delay
+            .saturating_mul(2)
+            .min(UPLOAD_CANCELLATION_MAX_RETRY_DELAY);
     }
 }
 

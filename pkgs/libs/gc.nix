@@ -4,9 +4,12 @@
   fetchurl,
   gnumake,
   stdenv,
+  lib,
+  libatomic_ops,
 }: let
   version = "8.2.12";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  needsExternalAtomicOps = stdenv.isCross && stdenv.hostPlatform.isLinux;
 in
   mkDerivation {
     pname = "gc";
@@ -20,7 +23,7 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [];
+    runtimeDeps = lib.optional needsExternalAtomicOps libatomic_ops;
     propagatedDeps = [];
 
     # The upstream compiler-intrinsics probe is an AC_RUN_IFELSE and is

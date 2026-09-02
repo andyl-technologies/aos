@@ -35,19 +35,19 @@
   version = series.qemuVersion;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   buildPython =
-    if isDarwinCross
+    if stdenv.isCross
     then buildPackages.python3
     else python3;
   buildMeson =
-    if isDarwinCross
+    if stdenv.isCross
     then buildPackages.meson
     else meson;
   buildSetuptools =
-    if isDarwinCross
+    if stdenv.isCross
     then buildPackages.setuptools
     else setuptools;
   buildDistlib =
-    if isDarwinCross
+    if stdenv.isCross
     then buildPackages.distlib
     else distlib;
   darwinSigner =
@@ -135,6 +135,13 @@
       then [
         "--disable-kvm"
         "--enable-hvf"
+        "--cross-prefix="
+        "--host-cc=$PWD/.aos-build-tools/cc-for-build"
+        "--cpu=${stdenv.hostPlatform.constraints.cpu}"
+      ]
+      else if stdenv.isCross
+      then [
+        "--enable-kvm"
         "--cross-prefix="
         "--host-cc=$PWD/.aos-build-tools/cc-for-build"
         "--cpu=${stdenv.hostPlatform.constraints.cpu}"
@@ -287,19 +294,20 @@ in
       };
 
       buildDeps =
-        if isDarwinCross
-        then [
-          buildPackages.gnumake
-          buildPackages.pkg-config
-          buildMeson
-          buildPackages.ninja
-          buildPython
-          buildSetuptools
-          buildDistlib
-          buildPackages.glib.tools
-          buildPackages.dtc
-          darwinSigner
-        ]
+        if stdenv.isCross
+        then
+          [
+            buildPackages.gnumake
+            buildPackages.pkg-config
+            buildMeson
+            buildPackages.ninja
+            buildPython
+            buildSetuptools
+            buildDistlib
+            buildPackages.glib.tools
+            buildPackages.dtc
+          ]
+          ++ lib.optional isDarwinCross darwinSigner
         else [
           gnumake
           pkg-config
@@ -389,11 +397,11 @@ in
           name = "configure";
           script = ''
             ${
-              if isDarwinCross
+              if stdenv.isCross
               then ''
-                # QEMU's host compiler builds Linux executables that run during
-                # the cross build. Isolate it from the Darwin SDK and target-only
-                # hardening inherited by the target compiler environment.
+                # QEMU's host compiler builds executables that run on the
+                # x86_64 build platform. Isolate it from target headers and
+                # hardening inherited by the cross compiler environment.
                 native_cc="${buildPackages.cc}/bin/cc"
                 mkdir -p .aos-build-tools
                 cat > .aos-build-tools/cc-for-build <<EOF
@@ -409,15 +417,15 @@ in
             }
             export PYTHONPATH="${buildMeson}/lib/python3/site-packages:${buildDistlib}/lib/python3.14/site-packages:${buildSetuptools}/lib/python3.14/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
             ${
-              if isDarwinCross
+              if stdenv.isCross
               then ''
                 export PYTHON=${buildPython}/bin/python3
                 export PKG_CONFIG=${buildPackages.pkg-config}/bin/pkg-config
                 export PKG_CONFIG_PATH="${glib.dev}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
                 export C_INCLUDE_PATH="${glib.dev}/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
-                # GLib keeps its unversioned Darwin linker-name symlinks in the
-                # development output. They resolve to the runtime output, so the
-                # installed QEMU closure still retains only the actual library.
+                # GLib keeps its unversioned linker-name symlinks in the
+                # development output. They resolve to the runtime output, so
+                # the installed QEMU closure retains only the actual library.
                 export LDFLAGS="''${LDFLAGS:-} -L${glib.dev}/lib"
               ''
               else ""

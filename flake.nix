@@ -39,6 +39,31 @@
 
     aosFor = system: import ./. {inherit system;};
 
+    productionContainer = _: let
+      # The bootstrap ladder starts on x86_64 and performs its reviewed
+      # x86_64→aarch64 transition at gcc4_8_cross. Post-cross target tools run
+      # through the build host's configured QEMU binfmt handler while Nix keeps
+      # scheduling the derivations on x86_64.
+      coordinatorSystem = "x86_64-linux";
+      coordinator = aosFor coordinatorSystem;
+      platformBuilds = [
+        coordinator.containerImages.aos
+        (import ./. {
+          system = coordinatorSystem;
+          crossSystem = "aarch64-linux";
+        }).containerImages.aos
+      ];
+      oci = import ./lib/build/oci {
+        inherit (coordinator) lib;
+        inherit (coordinator.pkgs) mkDerivation coreutils findutils gzip jq tar;
+      };
+    in
+      import ./lib/containers/multi-platform.nix {
+        inherit (coordinator) lib pkgs;
+        inherit oci platformBuilds;
+        name = "aos";
+      };
+
     # Flatten systems into flake packages:
     #   server-image-raw, server-image-qcow2, edge-image-raw, etc.
     # Auto-enumerates both system names and image formats.
@@ -83,7 +108,7 @@
         })
         p.packageNames);
 
-    containerPackages = system: aos:
+    containerPackages = system: aos: production:
       builtins.listToAttrs (
         builtins.concatMap (
           name: let
@@ -104,11 +129,23 @@
             }
             {
               name = "container-${name}-index";
+              value = production.ociIndex;
+            }
+            {
+              name = "container-${name}-platform-index";
               value = container.ociIndex;
             }
             {
               name = "container-${name}-evidence";
-              value = container.evidence;
+              value = production.evidence;
+            }
+            {
+              name = "container-${name}-publication-inputs";
+              value = production.publicationInputs;
+            }
+            {
+              name = "container-${name}-qualification";
+              value = production.check;
             }
           ]
         ) (builtins.attrNames aos.containerImages)
@@ -119,8 +156,9 @@
     packages = genAttrs systems (
       system: let
         aos = aosFor system;
+        production = productionContainer system;
         individualPackages = pkgPackages aos;
-        containers = containerPackages system aos;
+        containers = containerPackages system aos production;
         allPackages = aos.pkgs.mkDerivation {
           pname = "aos-all-packages";
           version = "0";
@@ -227,7 +265,11 @@
 
     checks = genAttrs systems (
       system: let
-        aos = aosFor system;
+        production = productionContainer system;
+        aos = import ./. {
+          inherit system;
+          containerPublicationInputsOverride = production.publicationInputs;
+        };
       in
         {
           aos = aos.pkgs.aos;
@@ -257,6 +299,10 @@
           rust-crucible-guest = aos.checks.rust.crucible-guest;
         }
         // flattenAttrs "build" aos.checks.build
+        // flattenAttrs "container" aos.checks.container
+        // {
+          container-multi-platform = production.check;
+        }
         # Per-system module checks: server-boot-basics, edge-boot-basics, etc.
         // flattenAttrs "server" aos.systems.server.checks
         // flattenAttrs "edge" aos.systems.edge.checks

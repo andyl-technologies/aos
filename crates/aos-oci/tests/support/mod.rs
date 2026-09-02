@@ -8,12 +8,13 @@ use std::io::Write as _;
 use std::path::Path;
 
 use aos_oci_types::{
-    Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, ContainerEvidenceMappingQualification,
+    Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE,
+    CONTAINER_SIGNATURE_INPUT_SCHEMA, ContainerEvidenceMappingQualification,
     ContainerEvidenceQualification, ContainerEvidenceQualificationCheck, ContainerNixProvenance,
     ContainerOciRelease, ContainerRelease, ContainerReleaseEvidence, ContainerReleaseIdentity,
-    Descriptor, HistoryEntry, ImageConfig, ImageIndex, ImageManifest, ImageRuntimeConfig,
-    MediaType, NixDefinitionIdentity, NixOutputIdentity, Platform, RootFs, RootFsType,
-    Sha256Digest, to_canonical_json,
+    ContainerSignatureInput, ContainerSignatureInputEvidence, Descriptor, HistoryEntry,
+    ImageConfig, ImageIndex, ImageManifest, ImageRuntimeConfig, MediaType, NixDefinitionIdentity,
+    NixOutputIdentity, Platform, RootFs, RootFsType, Sha256Digest, to_canonical_json,
 };
 use flate2::Compression;
 use flate2::write::GzEncoder;
@@ -248,6 +249,103 @@ pub fn add_signed_release_graph(fixture: &Fixture) -> ContainerRelease {
             provenance: artifact("provenance", MediaType::InTotoJson),
             signature: artifact("signature", MediaType::DsseEnvelope),
         },
+    }
+}
+
+pub fn publication_signature_input(release: &ContainerRelease) -> ContainerSignatureInput {
+    ContainerSignatureInput {
+        schema: CONTAINER_SIGNATURE_INPUT_SCHEMA.to_string(),
+        identity: release.identity.clone(),
+        oci: release.oci.clone(),
+        nix: release.nix.clone(),
+        evidence: ContainerSignatureInputEvidence {
+            sbom: release.evidence.sbom.clone(),
+            source: release.evidence.source.clone(),
+            license: release.evidence.license.clone(),
+            provenance: release.evidence.provenance.clone(),
+        },
+        qualification: release.qualification.clone(),
+    }
+}
+
+pub fn write_publication_inputs(inputs: &Path, layout: &Path, input: &ContainerSignatureInput) {
+    fs::create_dir(inputs).expect("inputs");
+    copy_tree(layout, &inputs.join("oci-layout"));
+    copy_tree(layout, &inputs.join("evidence-layout"));
+    for name in ["oci-layout", "evidence-layout"] {
+        fs::write(
+            inputs
+                .join(name)
+                .join("blobs/sha256")
+                .join(input.oci.index.digest.encoded()),
+            fs::read(layout.join("index.json")).expect("read root index"),
+        )
+        .expect("write root index blob");
+    }
+    let input_bytes = to_canonical_json(input).expect("canonical input");
+    fs::write(inputs.join("signature-input.json"), &input_bytes).expect("signature input");
+
+    let unsigned = serde_json::to_value(input).expect("unsigned value");
+    let mut unsigned = unsigned.as_object().expect("unsigned object").clone();
+    unsigned.remove("schema");
+    let signing_request = serde_json::json!({
+        "schema": "aos.container.signing-request/v1",
+        "input": {
+            "mediaType": CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE,
+            "digest": Sha256Digest::digest(&input_bytes),
+            "size": input_bytes.len(),
+        },
+        "requiredOutput": {
+            "payloadMediaType": "application/vnd.dsse.envelope.v1+json",
+            "artifactManifestMediaType": "application/vnd.oci.image.manifest.v1+json",
+            "artifactSubject": input.oci.index,
+            "finalSidecarPath": "containers/v1/index.json",
+            "finalSidecarMediaType": "application/vnd.aos.container-release.v1+json",
+        },
+        "constraints": {
+            "exactInputBytesRequired": true,
+            "privateMaterialPermittedInNixBuild": false,
+            "finalizerMustRejectUnqualifiedInput": true,
+            "finalizerMustVerifyEnvelope": true,
+            "finalizerMustAddSignatureReferrerDescriptor": true,
+            "releaseSurfaceMustSignFinalSidecar": true,
+        },
+        "qualified": true,
+        "unsignedRelease": unsigned,
+    });
+    fs::write(
+        inputs.join("signing-request.json"),
+        to_canonical_json(&signing_request).expect("signing request"),
+    )
+    .expect("write signing request");
+    let roots = serde_json::json!({
+        "schema": "aos.container.publication-roots/v1",
+        "image": input.oci.index,
+        "referrers": [
+            input.nix.closure,
+            input.evidence.sbom,
+            input.evidence.source,
+            input.evidence.license,
+            input.evidence.provenance,
+        ],
+    });
+    fs::write(
+        inputs.join("publication-roots.json"),
+        to_canonical_json(&roots).expect("publication roots"),
+    )
+    .expect("write publication roots");
+}
+
+fn copy_tree(source: &Path, destination: &Path) {
+    fs::create_dir(destination).expect("copy directory");
+    for entry in fs::read_dir(source).expect("read copy source") {
+        let entry = entry.expect("copy entry");
+        let target = destination.join(entry.file_name());
+        if entry.file_type().expect("entry type").is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).expect("copy file");
+        }
     }
 }
 

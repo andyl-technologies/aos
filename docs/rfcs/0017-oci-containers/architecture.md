@@ -491,12 +491,25 @@ Generic clients may pull an unverified manual tag, but only AOS-aware
 publication creates verified release and channel associations.
 
 Signing and OCI transfer deliberately remain separate transactions. Nix emits
-the deterministic unsigned evidence graph and `signature-input.json`; it never
-receives a private key. After an external signer has produced the DSSE object,
-final layout, and canonical sidecar, the producer runs `aos container publish
+the deterministic unsigned `publicationInputs` graph and
+`signature-input.json`; it never receives a private key. The operator first
+runs `aos container prepare-signature publicationInputs --output
+container-signature.pae`, then signs only that exact file with SSHSIG namespace
+`aos-container-signature-dsse-v1`. `aos container finalize-signature
+publicationInputs --signer name:Ed25519:BASE64_SSH_KEY_BLOB --signature
+container-signature.pae.sig --output FINAL_BUNDLE` verifies the public identity,
+namespace, and exact PAE bytes before it writes anything. It validates the
+complete qualified graph and atomically installs a no-overwrite bundle with
+`layout/`, `image.oci.tar`, `container-release.json`, and
+`signature-input.json`. Neither AOS command accepts a private-key path or SSH
+agent.
+
+After the external signature has been verified and assembled, the producer
+runs `aos container publish
 --stage-only` to upload the complete immutable graph by digest without a tag or
 control-plane mutation. The paired `apr release --container-release
-containers/v1/index.json --container-signature-input signature-input.json`
+FINAL_BUNDLE/container-release.json --container-signature-input
+FINAL_BUNDLE/signature-input.json`
 arguments then validate their exact unsigned identity and qualification and
 commit the canonical sidecar under the release lock before creating the signed
 release tag. Resume proves the tagged commit contains the exact same sidecar.
@@ -504,8 +517,8 @@ Once the Hub indexer has authenticated it, rerunning `aos container publish`
 without `--stage-only` revalidates and idempotently uploads the graph before it
 invokes `ContainerService` Begin/Get/Commit. Only the control-plane commit
 advances the requested tag and marks the root verified. Neither command
-fabricates or signs DSSE bytes, and a generic Distribution push never becomes
-a verified root.
+fabricates a signature, and a generic Distribution push never becomes a
+verified root.
 
 ## Garbage collection
 

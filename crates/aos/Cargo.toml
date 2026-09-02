@@ -65,6 +65,7 @@ tempfile = { workspace = true }
 [dev-dependencies]
 aos-hub = { workspace = true }
 aos-hub-core = { workspace = true, features = ["test-fixtures"] }
+aos-registry-surface = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
 uuid = { workspace = true }
