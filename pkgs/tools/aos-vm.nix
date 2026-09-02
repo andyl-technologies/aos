@@ -15,7 +15,7 @@ mkDerivation {
   version = aos.version;
   src = null;
 
-  runtimeDeps = [aos edk2 gptfdisk qemu];
+  runtimeDeps = [aos aos.apr edk2 gptfdisk qemu];
 
   # This package copies the base CLI launcher so it can add the VM-specific
   # environment without another shell process. Preserve the launcher's
@@ -35,7 +35,7 @@ mkDerivation {
           -e '/^exec /i export AOS_SGDISK="${gptfdisk}/sbin/sgdisk"' \
           "${aos}/bin/aos" > "$out/bin/aos"
         chmod +x "$out/bin/aos"
-        ln -s "${aos}/bin/apr" "$out/bin/apr"
+        ln -s "${aos.apr}/bin/apr" "$out/bin/apr"
       '';
     }
   ];

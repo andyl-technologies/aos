@@ -112,8 +112,8 @@ in {
       import shlex
       import textwrap
 
-      APM = "${pkgs.aos}/bin/apm"
-      APR = "${pkgs.aos}/bin/apr"
+      APM = "${pkgs.aos.apm}/bin/apm"
+      APR = "${pkgs.aos.apr}/bin/apr"
       GIT = "${pkgs.git}/bin/git"
       JQ = "${pkgs.jq}/bin/jq"
       MOUNT = "${pkgs.util-linux}/bin/mount"

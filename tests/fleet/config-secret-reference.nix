@@ -70,7 +70,7 @@ in {
       import json
       import textwrap
 
-      APM = "${pkgs.aos}/bin/apm"
+      APM = "${pkgs.aos.apm}/bin/apm"
       JQ = "${pkgs.jq}/bin/jq"
       SOURCE = "/run/credstore/secret-reference-test/join-token"
       STATE = "/var/lib/aos-pkg-aos-secret-reference-test"
@@ -147,7 +147,7 @@ in {
           printf 'experimental-features = nix-command\nsandbox = false\nbuild-users-group =\n' \
             > "$NIX_CONF_DIR/nix.conf"
 
-          KEYGEN=$(${pkgs.aos}/bin/apr keys generate release \
+          KEYGEN=$(${pkgs.aos.apr}/bin/apr keys generate release \
             --registry secret-reference-test-reg 2>&1)
           printf '%s\n' "$KEYGEN"
           PUBKEY=
@@ -160,7 +160,7 @@ in {
           EOF
           test -n "$PUBKEY"
           KEY=$HOME/.config/apm/keys/secret-reference-test-reg-release.key
-          ${pkgs.aos}/bin/apr create secret-reference-test-reg \
+          ${pkgs.aos.apr}/bin/apr create secret-reference-test-reg \
             --trust-key "$PUBKEY" \
             --trust-key-id release \
             --key "$KEY"
@@ -175,7 +175,7 @@ in {
           release = "$KEY"
           EOF
 
-          ${pkgs.aos}/bin/apr publish '${pkgs.aos-secret-reference-test}' \
+          ${pkgs.aos.apr}/bin/apr publish '${pkgs.aos-secret-reference-test}' \
             --name aos-secret-reference-test \
             --version 1.0.0 \
             --description 'Secret reference fixture' \
@@ -187,17 +187,17 @@ in {
             --registry secret-reference-test-reg \
             --key-id release
           mkdir -p /var/lib/secret-reference-test-cache
-          ${pkgs.aos}/bin/apr release 1.0.0 \
+          ${pkgs.aos.apr}/bin/apr release 1.0.0 \
             --registry secret-reference-test-reg \
             --key-id release \
             --cache-url file:///var/lib/secret-reference-test-cache \
             --upload-url file:///var/lib/secret-reference-test-cache
-          HOME=/tmp USER=root ${pkgs.aos}/bin/apm registry --system add \
+          HOME=/tmp USER=root ${pkgs.aos.apm}/bin/apm registry --system add \
             "file://$REG_DIR" \
             --name secret-reference-test-reg \
             --version '=1.0.0' \
             --trust-key "$PUBKEY"
-          HOME=/tmp USER=root ${pkgs.aos}/bin/apm update \
+          HOME=/tmp USER=root ${pkgs.aos.apm}/bin/apm update \
             --system --registry secret-reference-test-reg
       """), timeout=1200)
 

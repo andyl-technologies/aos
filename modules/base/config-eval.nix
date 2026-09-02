@@ -145,7 +145,7 @@ in {
         ExecStartPre = "${pkgs.systemd}/lib/systemd/systemd-networkd-wait-online --any --timeout=110";
       };
       script = ''
-        ${pkgs.aos}/bin/apm update --system
+        ${pkgs.aos.apm}/bin/apm update --system
       '';
     };
 
@@ -586,7 +586,7 @@ in {
                   # the authority for an image transition after runtime config changes.
                   # Generation zero has no retained input and follows the normal
                   # provisioning path below on an image's initial seed boot.
-                  ${pkgs.aos}/bin/aos-package-runtime __eval-retained \
+                  ${pkgs.aos.packageRuntime}/bin/aos-package-runtime __eval-retained \
                     --out "${cfg.manifest}" \
                     --eval-root /run/aos-eval || exit 1
                   exit 0
@@ -646,7 +646,7 @@ in {
                 # Failure-safe: on any error the runtime evaluator writes no manifest and exits
                 # non-zero. Wants ordering keeps the boot reachable; downstream
                 # manifest guards make the attempted switch a no-op.
-                ${pkgs.aos}/bin/aos-package-runtime __eval \
+                ${pkgs.aos.packageRuntime}/bin/aos-package-runtime __eval \
                   --host-nix /run/aos-eval/host.nix \
                   --base-lib "${cfg.baseLib}" \
                   --module-abi "$module_abi" \
@@ -774,12 +774,12 @@ in {
             "$state")
           quote_dir="/var/lib/profiles/system/gen-$current/gen-attestation-quote"
           if [ -n "$expected_pcr11" ]; then
-            ${pkgs.aos}/bin/aos-package-runtime attest __verify-boot-commit \
+            ${pkgs.aos.packageRuntime}/bin/aos-package-runtime attest __verify-boot-commit \
               --generation-attestation "$attestation" \
               --quote-dir "$quote_dir" \
               --expected-pcr11 "$expected_pcr11"
           else
-            ${pkgs.aos}/bin/aos-package-runtime attest __verify-boot-commit \
+            ${pkgs.aos.packageRuntime}/bin/aos-package-runtime attest __verify-boot-commit \
               --generation-attestation "$attestation" \
               --quote-dir "$quote_dir"
           fi

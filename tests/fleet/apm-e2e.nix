@@ -383,7 +383,7 @@ in {
       # `USER=apmfleet` is likewise explicit so the profile path is
       # stable and can be asserted after install.
       client.succeed(
-          "HOME=/tmp USER=apmfleet ${pkgs.aos}/bin/apm registry add --no-verify git://server:9418/test-reg --name test-reg",
+          "HOME=/tmp USER=apmfleet ${pkgs.aos.apm}/bin/apm registry add --no-verify git://server:9418/test-reg --name test-reg",
           timeout=120,
       )
       # `apm update` walks `git fetch` + `git archive | tar -x` over
@@ -391,7 +391,7 @@ in {
       # 30s default agent timeout under host load (other VMs running,
       # cargo recompiles competing for CPU).
       client.succeed(
-          "HOME=/tmp USER=apmfleet ${pkgs.aos}/bin/apm update --registry test-reg",
+          "HOME=/tmp USER=apmfleet ${pkgs.aos.apm}/bin/apm update --registry test-reg",
           timeout=120,
       )
       # `extract_packages` strips the leading `packages/` and lands TOMLs
@@ -423,7 +423,7 @@ in {
       # down (each cross-VM round-trip is a flake surface under load).
       client.succeed(
           "mkdir -p ${serverStoreRoot}/store ${serverStoreRoot}/var/nix/db && "
-          "AOS_ROOT=${serverStoreRoot} HOME=/tmp USER=apmfleet ${pkgs.aos}/bin/apm install ${testPkg.name} --registry test-reg",
+          "AOS_ROOT=${serverStoreRoot} HOME=/tmp USER=apmfleet ${pkgs.aos.apm}/bin/apm install ${testPkg.name} --registry test-reg",
           timeout=240,
       )
       # Path was absent in step 2; its presence here proves the NAR
@@ -450,7 +450,7 @@ in {
 
       # ── 7. Idempotency: second sync exits clean ───────────────────
       client.succeed(
-          "HOME=/tmp USER=apmfleet ${pkgs.aos}/bin/apm update --registry test-reg",
+          "HOME=/tmp USER=apmfleet ${pkgs.aos.apm}/bin/apm update --registry test-reg",
           timeout=120,
       )
 
@@ -462,7 +462,7 @@ in {
       # so any future operator inspection sees a working server.
       server.succeed("systemctl stop aos-registry-server-gitd.service")
       client.fail(
-          "HOME=/tmp USER=apmfleet ${pkgs.aos}/bin/apm update --registry test-reg",
+          "HOME=/tmp USER=apmfleet ${pkgs.aos.apm}/bin/apm update --registry test-reg",
           timeout=120,
       )
       client.succeed("curl -sf http://server:15000/default/nix-cache-info")

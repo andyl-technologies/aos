@@ -208,8 +208,8 @@ in {
       import re
       import textwrap
 
-      APM = "${pkgs.aos}/bin/apm"
-      APR = "${pkgs.aos}/bin/apr"
+      APM = "${pkgs.aos.apm}/bin/apm"
+      APR = "${pkgs.aos.apr}/bin/apr"
       JQ = "${pkgs.jq}/bin/jq"
       CONFIG_STATE = "/var/lib/profiles/system/state.json"
       IMAGE_STATE = "/var/lib/profiles/image/state.json"
@@ -397,12 +397,12 @@ in {
 
           ${pkgs.nix}/bin/nix-store --check-validity '${abi2Top}'
           ${pkgs.nix}/bin/nix-store --check-validity '${abi2Image}'
-          KEYGEN=$(${pkgs.aos}/bin/apr keys generate release --registry sysreg 2>&1)
+          KEYGEN=$(${pkgs.aos.apr}/bin/apr keys generate release --registry sysreg 2>&1)
           printf '%s\n' "$KEYGEN"
           PUBKEY=$(printf '%s\n' "$KEYGEN" | awk '/Public key:/ {print $NF; exit}')
           test -n "$PUBKEY"
           KEY=$HOME/.config/apm/keys/sysreg-release.key
-          ${pkgs.aos}/bin/apr create sysreg \
+          ${pkgs.aos.apr}/bin/apr create sysreg \
             --trust-key "$PUBKEY" \
             --trust-key-id release \
             --key "$KEY"
@@ -424,7 +424,7 @@ in {
           test "$#" -eq 1
           ABI2_UKI="$1"
 
-          if ! ${pkgs.aos}/bin/apr --json publish '${abi2Top}' \
+          if ! ${pkgs.aos.apr}/bin/apr --json publish '${abi2Top}' \
             --name aos \
             --version 9999.0.0-generation-axes-abi2 \
             --description 'Two-axis ABI fixture' \
@@ -442,7 +442,7 @@ in {
             cat /tmp/publish.json >&2
             exit 1
           fi
-          ${pkgs.aos}/bin/apr publish '${abi1OnlyConfig}' \
+          ${pkgs.aos.apr}/bin/apr publish '${abi1OnlyConfig}' \
             --name generation-axes-abi1-config \
             --version 0 \
             --description 'ABI-1-only config module fixture' \

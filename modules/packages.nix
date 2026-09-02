@@ -287,7 +287,7 @@
       exposedBundledPackages);
 
   reconcileExposedUnits = pkgs.writeShellScriptBin "aos-reconcile-exposed-units" ''
-    exec ${pkgs.aos}/bin/aos-package-runtime _test-reconcile-exposed-units "$@"
+    exec ${pkgs.aos.packageRuntime}/bin/aos-package-runtime _test-reconcile-exposed-units "$@"
   '';
 in {
   options = {
