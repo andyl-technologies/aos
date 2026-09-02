@@ -230,7 +230,7 @@ in
             APM_SYSTEM_CONFIG_DIR="$config_root" \
             NIX_REMOTE="$store_uri" \
             NIX_CONF_DIR="$nix_conf" \
-            ${pkgs.aos}/bin/apm gc > "$work/positive-gc.log"
+            ${pkgs.aos.apm}/bin/apm gc > "$work/positive-gc.log"
 
           for retained in \
             "$config_output_store" \
@@ -275,7 +275,7 @@ in
             APM_SYSTEM_CONFIG_DIR="$config_root" \
             NIX_REMOTE="$store_uri" \
             NIX_CONF_DIR="$nix_conf" \
-            ${pkgs.aos}/bin/apm gc > "$work/negative-gc.log"
+            ${pkgs.aos.apm}/bin/apm gc > "$work/negative-gc.log"
 
           assert_valid "$config_output_store"
           for collected in \

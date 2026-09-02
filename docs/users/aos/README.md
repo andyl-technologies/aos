@@ -23,17 +23,24 @@ production deployments must supply their own trust material.
 | Runtime system packages | `apm install --system --from DESIRED.toml` | Machine-wide package generations under `/var/lib/profiles/system-packages` |
 | OS image | `apm upgrade --system` and `apm rollback --system --image` | A/B image generations under `/var/lib/profiles/image` |
 
-Three command names cover different jobs on an AOS system:
+Three command names cover different jobs in the AOS toolchain:
 
 | Command | Use it for |
 | --- | --- |
 | `apm` | Consuming packages and switching configuration or image generations |
-| `apr` | Creating, signing, and publishing package registries |
-| `aos` | Repository and AOS Hub tooling; most host package operations use `apm` |
+| `apr` | Creating, signing, and publishing package registries from a maintainer host |
+| `aos` | Repository and AOS Hub tooling from a development or operations host |
 
-All three names are installed in an AOS image. They are also links to one
-multicall binary, so `aos package` is equivalent to `apm` and
-`aos package registry` is equivalent to `apr`.
+All three are independent programs backed by shared Rust libraries. `aos` has
+no package-management subcommand, `apm` cannot publish registries, and `apr`
+cannot install packages. Private activation and evaluation operations run
+through `aos-package-runtime`; that executable is reserved for AOS services
+and is not an operator CLI.
+
+The base image installs `apm`, while AOS units reference the private runtime by
+an absolute store path. It does not put `aos` or `apr` on the image `PATH`.
+This keeps source construction, registry-authoring authority, package
+consumption, and on-host activation as distinct installed capabilities.
 
 ## Install and configure
 

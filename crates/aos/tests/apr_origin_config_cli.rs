@@ -981,29 +981,28 @@ fn run_aos_package_json(
     args: &[&str],
     action: &str,
 ) -> Result<Value> {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_aos"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_apm"));
     command
         .env("HOME", home)
         .env("APM_SYSTEM_CONFIG_DIR", system_dir)
-        .arg("package")
         .args(args);
     let output = command
         .output()
-        .with_context(|| format!("running aos package {action}"))?;
+        .with_context(|| format!("running apm {action}"))?;
     if !output.status.success() {
         bail!(
-            "aos package {action} failed:\nstdout:\n{}\nstderr:\n{}",
+            "apm {action} failed:\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
     }
     assert!(
         String::from_utf8_lossy(&output.stderr).is_empty(),
-        "JSON aos package {action} should keep stderr clean:\n{}",
+        "JSON apm {action} should keep stderr clean:\n{}",
         String::from_utf8_lossy(&output.stderr),
     );
     serde_json::from_slice(&output.stdout)
-        .with_context(|| format!("parsing aos package {action} JSON from stdout"))
+        .with_context(|| format!("parsing apm {action} JSON from stdout"))
 }
 
 /// Spawn `apr` against an isolated `HOME`, with a committer identity in the

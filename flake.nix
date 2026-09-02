@@ -108,6 +108,8 @@
         {
           default = aos.pkgs.aos;
           aos = aos.pkgs.aos;
+          apm = aos.pkgs.aos.apm;
+          apr = aos.pkgs.aos.apr;
           all = allPackages;
           crucible-nginx-curl-guest = import ./tests/crucible/_nginx-curl-http-200-guest.nix {
             pkgs = aos.pkgs;
@@ -120,8 +122,11 @@
     devShells = genAttrs systems (
       system: let
         aos = aosFor system;
+        aosCli = aos.pkgs.aos.overrideAttrs (_: {doCheck = false;});
         packages = [
-          (aos.pkgs.aos.overrideAttrs (_: {doCheck = false;}))
+          aosCli
+          aosCli.apm
+          aosCli.apr
           aos.pkgs.just
           aos.pkgs.rust
           aos.pkgs.rust.dev

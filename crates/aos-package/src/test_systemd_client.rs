@@ -1,4 +1,4 @@
-//! Handler for the hidden `apm _test-systemd-client` subcommand.
+//! Handler for the private `aos-package-runtime _test-systemd-client` command.
 //!
 //! A thin JSON wrapper over [`aos_systemd::SystemdClient`], used only by the
 //! fleet test `tests/fleet/apm-systemd-client.nix`. Not a stable interface —

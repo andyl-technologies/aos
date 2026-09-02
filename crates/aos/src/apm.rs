@@ -1,12 +1,7 @@
-//! `apm` is the package-management entry point for the AOS multicall CLI.
+//! `apm` is the AOS package-consumer command-line tool.
 
-mod cli;
-mod commands;
-mod entry;
-mod logging;
-
-/// Process entry point for the `apm` binary alias.
+/// Runs the `apm` CLI.
 #[tokio::main]
 async fn main() {
-    entry::main().await;
+    aos::entry::apm_main().await;
 }

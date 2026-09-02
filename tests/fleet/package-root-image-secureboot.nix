@@ -249,7 +249,7 @@ in {
 
       SB_GUID = "8be4df61-93ca-11d2-aa0d-00e098032b8c"
       DB_GUID = "d719b2cb-3d3a-4596-a3bc-dad00e67656f"
-      APM = "${pkgs.aos}/bin/apm"
+      APM = "${pkgs.aos.apm}/bin/apm"
       BASE64 = "${pkgs.coreutils}/bin/base64"
       JQ = "${pkgs.jq}/bin/jq"
       TPM2_CHECKQUOTE = "${pkgs.tpm2-tools}/bin/tpm2_checkquote"

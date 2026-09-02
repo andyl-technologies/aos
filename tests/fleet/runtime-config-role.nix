@@ -124,7 +124,7 @@ in
             }' > /run/aos-tmpfiles-fault.nix
         """)
         status, stdout, stderr = runtime.execute(
-            "${pkgs.aos}/bin/apm switch --from /run/aos-tmpfiles-fault.nix",
+            "${pkgs.aos.apm}/bin/apm switch --from /run/aos-tmpfiles-fault.nix",
             timeout=600,
         )
         # The ordering service accepts a committed degraded transaction so the

@@ -1,7 +1,7 @@
 ##! modules/base/apm.nix — Package manager in every base image
 ##!
-##! Ships `pkgs.aos` (the `aos`, `apm`, and `apr` binaries) on every
-##! AOS image, and pre-creates the apm config directory so first-use
+##! Ships the consumer-facing `apm` output on every AOS image and pre-creates
+##! its config directory so first-use
 ##! commands like `apm registry add` don't have to mkdir their parent
 ##! under a read-only /. Loaded unconditionally by
 ##! `modules/default.nix`.
@@ -296,11 +296,10 @@ in {
 
     aos.apm.installAtBoot.etc = installAtBootEtc;
 
-    # The only package on the system PATH is the aos/apm/apr CLI. Everything
-    # it shells out to (git-minimal, tar, nix, systemctl, …) rides in via its
-    # runtimeDeps and the hermetic wrapper in `pkgs/tools/aos/aos.nix`, so it
-    # need not be on PATH; all other tools are installed on demand with apm.
-    environment.systemPackages = [pkgs.aos];
+    # The consumer CLI is the only AOS command surface on the system PATH.
+    # Repository construction (`aos`) and registry authoring (`apr`) remain
+    # host tools; private activation helpers are referenced by absolute path.
+    environment.systemPackages = [pkgs.aos.apm];
 
     # install-at-boot's baked /etc (desired.toml + registry config) plus the
     # tmpfiles config. `apm registry add` writes
@@ -338,7 +337,7 @@ in {
         RemainAfterExit = true;
       };
       script = ''
-        ${pkgs.aos}/bin/.apm-unwrapped recover-credential-transactions
+        ${pkgs.aos.packageRuntime}/bin/.aos-package-runtime-unwrapped recover-credential-transactions
       '';
     };
 
@@ -394,7 +393,7 @@ in {
         fi
         ${pkgs.coreutils}/bin/rm -rf -- "$output_dir"
         ${pkgs.coreutils}/bin/rm -f -- "$quote_json" "$quote_json_tmp"
-        ${pkgs.aos}/bin/apm --json attest quote --nonce-file "$nonce_file" --output-dir "$output_dir" > "$quote_json_tmp"
+        ${pkgs.aos.apm}/bin/apm --json attest quote --nonce-file "$nonce_file" --output-dir "$output_dir" > "$quote_json_tmp"
         ${pkgs.coreutils}/bin/mv -f -- "$quote_json_tmp" "$quote_json"
       '';
     };
@@ -424,26 +423,19 @@ in {
         if [ -e /run/aos/manifest.json ]; then
           exit 0
         fi
-        AOS_EXPOSE_START_NO_WAIT=1 ${pkgs.aos}/bin/apm install --system --from /etc/aos/packages.d/desired.toml --yes
+        AOS_EXPOSE_START_NO_WAIT=1 ${pkgs.aos.apm}/bin/apm install --system --from /etc/aos/packages.d/desired.toml --yes
       '';
     };
 
     system.checks.apm = {
-      description = "apm/apr base-image smoke checks";
+      description = "apm base-image smoke checks";
       checks = [
         {
           name = "apm-help";
-          description = "apm --help exits 0 (argv[0] dispatch via the store-path bin)";
-          # Invoke via the absolute store path, not via /usr/bin/apm.
-          # The rootfs symlink-farm (lib/build/rootfs.nix:83-99) globs
-          # `${pkg}/bin/*` which omits dotfiles, so the
-          # `.apm-unwrapped` companion never appears next to the
-          # PATH-installed `apm` symlink — the wrapper's
-          # `exec "$(dirname "$0")/.apm-unwrapped"` then fails. Using
-          # the store path means `dirname "$0"` resolves to the bin
-          # dir that *does* contain the unwrapped binary.
+          description = "the independent apm parser exposes package-consumer help";
+          # Exercise the exact packaged wrapper installed into the image.
           script = ''
-            vm.succeed("${pkgs.aos}/bin/apm --help")
+            vm.succeed("${pkgs.aos.apm}/bin/apm --help")
           '';
         }
         {
@@ -452,14 +444,6 @@ in {
           script = ''
             vm.succeed("test -d /root/.config/apm/registries.d")
             vm.succeed("test -d /var/lib/apm/config/registries.d")
-          '';
-        }
-        {
-          name = "apr-runs";
-          description = "apr (registry surface, same binary) launches";
-          # See apm-version above for the absolute-path rationale.
-          script = ''
-            vm.succeed("${pkgs.aos}/bin/apr --help")
           '';
         }
       ];
