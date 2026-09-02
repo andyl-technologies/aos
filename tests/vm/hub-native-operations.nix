@@ -550,10 +550,19 @@ in
         --output /tmp/producer-web >/tmp/apr-web-generate.json
       test -s /tmp/producer-web/index.html
       test -s /tmp/producer-web/web/config.json
+      producer_cache=/tmp/producer-cache
+      if ! HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos.apr}/bin/apr --json cache generate \
+          --registry maintenance --output "$producer_cache" --no-commit \
+          >/tmp/apr-cache-generate.json 2>&1; then
+        ${pkgs.coreutils}/bin/cat /tmp/apr-cache-generate.json >&2
+        exit 1
+      fi
       producer_surface=/tmp/producer-surface
       HOME="$producer_home" PATH="$producer_path" \
         ${pkgs.aos.apr}/bin/apr --json origin upload \
-        --registry maintenance --upload-url "file://$producer_surface" \
+        --registry maintenance --cache-dir "$producer_cache" \
+        --upload-url "file://$producer_surface" \
         >/tmp/apr-origin-upload.json
       ${pkgs.coreutils}/bin/cat /tmp/apr-origin-upload.json
       test -s "$producer_surface/HEAD"
@@ -582,6 +591,12 @@ in
         index_attempt=$((index_attempt + 1))
         if test "$index_attempt" -ge 60; then
           echo 'registry did not finish indexing the uploaded publication' >&2
+          ${pkgs.coreutils}/bin/cat /tmp/registry-indexed.json >&2
+          exit 1
+        fi
+        if ${pkgs.jq}/bin/jq -e '.data.registry.index_state == "failed"' \
+          /tmp/registry-indexed.json >/dev/null; then
+          echo 'registry rejected the uploaded publication during indexing' >&2
           ${pkgs.coreutils}/bin/cat /tmp/registry-indexed.json >&2
           exit 1
         fi
