@@ -821,13 +821,13 @@ in
       )
       vm.succeed("grep -qw bpf /sys/kernel/security/lsm || { cat /sys/kernel/security/lsm || true; cat /proc/cmdline || true; exit 1; }")
       vm.succeed("test ! -e /sys/fs/bpf/aos/lsm/aos-lsm-task-audit-aos_lsm_file_mprotect")
-      vm.succeed("${pkgs.aos}/bin/apm _load-ebpf-lsm-policies --system >/tmp/aos-ebpf-lsm-load.log 2>&1 || { cat /sys/kernel/security/lsm || true; cat /proc/cmdline || true; cat /tmp/aos-ebpf-lsm-load.log; exit 1; }")
+      vm.succeed("${pkgs.aos.packageRuntime}/bin/aos-package-runtime _load-ebpf-lsm-policies --system >/tmp/aos-ebpf-lsm-load.log 2>&1 || { cat /sys/kernel/security/lsm || true; cat /proc/cmdline || true; cat /tmp/aos-ebpf-lsm-load.log; exit 1; }")
       vm.succeed("grep -q 'loaded policy aos-lsm-task-audit' /tmp/aos-ebpf-lsm-load.log")
       vm.succeed("test -e /sys/fs/bpf/aos/lsm/aos-lsm-task-audit-aos_lsm_file_mprotect")
-      vm.succeed("${pkgs.aos}/bin/apm _load-ebpf-lsm-policies --system >/tmp/aos-ebpf-lsm-load-again.log 2>&1")
+      vm.succeed("${pkgs.aos.packageRuntime}/bin/aos-package-runtime _load-ebpf-lsm-policies --system >/tmp/aos-ebpf-lsm-load-again.log 2>&1")
       vm.succeed("grep -q 'already pinned' /tmp/aos-ebpf-lsm-load-again.log")
 
-      vm.succeed("${pkgs.aos}/bin/apm _test-reconcile-exposed-units --system")
+      vm.succeed("${pkgs.aos.packageRuntime}/bin/aos-package-runtime _test-reconcile-exposed-units --system")
       vm.succeed("systemctl cat expose-lifecycle-private.service | grep -F '# /etc/systemd/system.attached/expose-lifecycle-private.service'")
       vm.succeed("systemctl cat expose-lifecycle-consumer.service | grep -F '# /etc/systemd/system.attached/expose-lifecycle-consumer.service'")
       vm.succeed("systemctl cat expose-lifecycle-provider.socket | grep -F '# /etc/systemd/system.attached/expose-lifecycle-provider.socket'")
@@ -895,7 +895,7 @@ in
       vm.succeed("rm /var/lib/profiles/system-packages/meta/${storePathHash upgradePackageV1}.json")
       vm.succeed("ln -s ${upgradePackageV2} /var/lib/profiles/system-packages/gen-1/usr/${storePathHash upgradePackageV2}")
       vm.succeed("cp /var/lib/profiles/system-packages/upgrade-v2.json /var/lib/profiles/system-packages/meta/${storePathHash upgradePackageV2}.json")
-      vm.succeed("${pkgs.aos}/bin/apm _test-reconcile-exposed-units --system")
+      vm.succeed("${pkgs.aos.packageRuntime}/bin/aos-package-runtime _test-reconcile-exposed-units --system")
       assert "upgrade-v2" == vm.succeed(
           "cat /var/lib/aos-pkg-expose-lifecycle-upgrade/result"
       ).strip()
@@ -907,7 +907,7 @@ in
       vm.succeed("rm /var/lib/profiles/system-packages/meta/${storePathHash upgradePackageV2}.json")
       vm.succeed("ln -s ${upgradePackageV1} /var/lib/profiles/system-packages/gen-1/usr/${storePathHash upgradePackageV1}")
       vm.succeed("cp /var/lib/profiles/system-packages/upgrade-v1.json /var/lib/profiles/system-packages/meta/${storePathHash upgradePackageV1}.json")
-      vm.succeed("${pkgs.aos}/bin/apm _test-reconcile-exposed-units --system")
+      vm.succeed("${pkgs.aos.packageRuntime}/bin/aos-package-runtime _test-reconcile-exposed-units --system")
       assert "upgrade-v1" == vm.succeed(
           "cat /var/lib/aos-pkg-expose-lifecycle-upgrade/result"
       ).strip()

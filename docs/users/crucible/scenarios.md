@@ -66,7 +66,10 @@ Use the Rust model API when a scenario is generated, composed from templates,
 or checked into a Rust test. Construct a `World`, `Plan`, and `Properties`, then
 pass them to `ScenarioDefForm::from_components`. Its `to_canonical_toml` method
 produces the exchange form accepted by the CLI. The
-[Nginx/Curl tutorial](quickstart.md) provides a complete generator.
+[Nginx/Curl tutorial](quickstart.md) provides a complete fault-free generator.
+For signal-driven experiments, [Authoring fault scenarios](authoring.md) covers
+the additional `WorldFaultTopology`, `SignalProgram`, `FaultBinding`, target
+resolution, and artifact-store steps.
 
 `ScenarioBuilder` is useful when code only needs an immutable `ScenarioDef`
 identity. Its `build` method does not retain the full form needed for TOML

@@ -65,38 +65,23 @@
     else openssh;
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
-  # Every external tool the aos/apm/apr binaries shell out to by bare name
-  # (resolved via $PATH). The wrappers below set PATH to exactly this, so the
-  # binaries are hermetic — their behavior never depends on the caller's
-  # environment. The caller's original PATH is stashed in AOS_HOST_PATH first:
-  # user-supplied commands (e.g. `apr keys register --key-command`, which
-  # typically invokes a host secret manager) run with that PATH restored, while
-  # every internal shell-out keeps the hermetic one. Registry, pack, object-store,
-  # and SSH-signing operations no longer shell out to git/gpg/ssh-keygen — they
-  # run in-process via libgit2 and the ssh-key crate (see the `registry::repo`,
-  # `registry::porcelain`, and `security` modules) — so git-minimal, gnupg, and
-  # openssh are gone from the runtime closure. Tools:
-  #   nix           nix / nix-store: cache and store operations
-  #   systemd       systemctl and systemd-measure; systemctl also captures
-  #                 failed-unit diagnostics after activation reconciliation
-  #   openssl       X.509 and detached recovery-bundle signature verification
-  #   sbsigntools   sbverify for image signature verification
-  #   zstd          pack-delta compression and store decompression
-  #   util-linux    mount: scoped EFI System Partition remount transactions
-  #   which         check_command_exists() preflight in the drain/sysroot path
-  #   bash          wrapper interpreter; avoids relying on /bin/sh on the host
-  # These are declared as runtimeDeps below (not just buildDeps) so the
-  # scrubPhase keeps their store-path references in the wrappers and pulls them
-  # into the runtime closure; without that, nuke-refs would rewrite these paths
-  # to placeholders and the wrappers would point at nonexistent stores.
-  portableRuntimeTools = [bash nix sbsigntools mtools qemu-img tpm2-tools zstd which];
-  runtimeTools =
-    portableRuntimeTools
+  # The four executables share Rust libraries and one Cargo build, but their
+  # installed outputs are separate security and portability boundaries. Each
+  # wrapper below refers only to the tools its command surface is allowed to
+  # invoke. Nix therefore computes a distinct runtime closure for every output.
+  # The caller's PATH is retained solely for explicit user-supplied commands;
+  # internal subprocesses always use the corresponding hermetic PATH.
+  aosRuntimeTools = [bash nix qemu-img zstd];
+  aprRuntimeTools = [bash nix openssl sbsigntools mtools qemu-img zstd];
+  apmPortableRuntimeTools = [bash nix openssl sbsigntools mtools qemu-img tpm2-tools zstd which];
+  apmRuntimeTools =
+    apmPortableRuntimeTools
     ++ lib.optionals (!isDarwinCross) [systemd util-linux];
-  runtimeBinPath = lib.concatStringsSep ":" (
-    [(lib.makeBinPath runtimeTools)]
-    ++ lib.optionals (!isDarwinCross) ["${systemd}/lib/systemd"]
-  );
+  runtimeBinPath = tools:
+    lib.concatStringsSep ":" (
+      [(lib.makeBinPath tools)]
+      ++ lib.optionals (!isDarwinCross && builtins.elem systemd tools) ["${systemd}/lib/systemd"]
+    );
   linuxRuntimeDeps = [
     aos-landlock
     aos-service-root
@@ -189,6 +174,8 @@ in
     pname = "aos";
     inherit version src;
 
+    outputs = ["out" "apm" "apr" "packageRuntime"];
+
     cargoFlags = "-p aos";
 
     inherit cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
@@ -215,8 +202,17 @@ in
       ++ lib.optionals isDarwinCross [buildPackages.aos];
     runtimeDeps =
       [openssl zlib]
-      ++ runtimeTools
+      ++ aosRuntimeTools
+      ++ aprRuntimeTools
+      ++ apmRuntimeTools
       ++ lib.optionals (!isDarwinCross) linuxRuntimeDeps;
+
+    # mkDerivation normally constructs one RPATH from every runtimeDep. That
+    # is correct for a single-output package, but would make each executable
+    # retain the union of all four command closures here. The Rust programs
+    # dynamically link only these shared libraries; command-specific tools are
+    # referenced exclusively by the corresponding installed wrapper.
+    NIX_LDFLAGS = "-Wl,-rpath,${openssl}/lib -Wl,-rpath,${zlib}/lib";
 
     preBuild = ''
       # Keep the integration-test executable below the bounded verifier-
@@ -278,23 +274,44 @@ in
     # preserving full coverage without weakening the release security posture.
     checkType = "debug";
 
-    # Each of aos/apm/apr is the same binary, dispatched by argv[0]. We install
-    # a thin wrapper per name that sets the hermetic runtime PATH and execs the
-    # real binary via an `.<name>-unwrapped` entry (a symlink for apm/apr) so
-    # argv[0] still selects the right personality. The wrapper execs an absolute
-    # store path baked in at build time — deriving it with `dirname` would
-    # require coreutils on PATH, defeating the point of the minimal PATH above.
+    # Install each Cargo binary into its own output behind a thin wrapper. The
+    # programs have independent parsers and entry points; none derives
+    # authority or command shape from argv[0]. The wrapper execs an absolute
+    # store path baked in at build time -- deriving it with dirname would
+    # require coreutils on PATH and enlarge the runtime contract.
     postInstall = ''
-          mv $out/bin/aos $out/bin/.aos-unwrapped
-          rm -f $out/bin/apr
-          ln -s .aos-unwrapped $out/bin/.apm-unwrapped
-          ln -s .aos-unwrapped $out/bin/.apr-unwrapped
+          install_cli() {
+            name=$1
+            destination=$2
+            tool_path=$3
+            include_linux_environment=$4
 
-          for name in aos apm apr; do
-            cat > $out/bin/$name << 'WRAPPER'
+            mkdir -p "$destination/bin"
+            mv "$out/bin/$name" "$destination/bin/.$name-unwrapped"
+            {
+              cat << 'WRAPPER_HEADER'
       #!${bash}/bin/bash
       export AOS_HOST_PATH="''${AOS_HOST_PATH-$PATH}"
+      WRAPPER_HEADER
+              if [ "$include_linux_environment" = 1 ]; then
+                cat << 'LINUX_ENVIRONMENT'
       ${lib.optionalString (!isDarwinCross) linuxToolEnvironment}
+      LINUX_ENVIRONMENT
+              fi
+              case "$name" in
+                aos)
+                  cat << 'AOS_ENVIRONMENT'
+      export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
+      AOS_ENVIRONMENT
+                  ;;
+                apr)
+                  cat << 'APR_ENVIRONMENT'
+      export AOS_MCOPY="${mtools}/bin/mcopy"
+      export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
+      APR_ENVIRONMENT
+                  ;;
+                apm|aos-package-runtime)
+                  cat << 'APM_ENVIRONMENT'
       export AOS_MCOPY="${mtools}/bin/mcopy"
       export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
       export AOS_TPM2_CREATEEK="${tpm2-tools}/bin/tpm2_createek"
@@ -304,14 +321,60 @@ in
       export AOS_TPM2_PCRREAD="${tpm2-tools}/bin/tpm2_pcrread"
       export AOS_TPM2_CHECKQUOTE="${tpm2-tools}/bin/tpm2_checkquote"
       export AOS_TPM2_FLUSHCONTEXT="${tpm2-tools}/bin/tpm2_flushcontext"
-      export PATH="@PATH@"
-      exec "@SELF@" "$@"
-      WRAPPER
-            sed -i \
-              -e "s|@PATH@|${runtimeBinPath}|" \
-              -e "s|@SELF@|$out/bin/.$name-unwrapped|" \
-              $out/bin/$name
-            chmod +x $out/bin/$name
+      APM_ENVIRONMENT
+                  ;;
+              esac
+              printf '%s\n' \
+                "export PATH=\"$tool_path\"" \
+                "exec \"$destination/bin/.$name-unwrapped\" \"\$@\""
+            } > "$destination/bin/$name"
+            chmod +x "$destination/bin/$name"
+          }
+
+          install_cli aos "$out" ${lib.escapeShellArg (runtimeBinPath aosRuntimeTools)} 0
+          install_cli apm "$apm" ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 1
+          install_cli apr "$apr" ${lib.escapeShellArg (runtimeBinPath aprRuntimeTools)} 0
+          install_cli aos-package-runtime "$packageRuntime" ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 1
+
+          # Cargo links the binaries before they are distributed among the
+          # named outputs, so its default install-prefix RPATH names $out/lib.
+          # No output ships Rust shared libraries. Remove that nonexistent
+          # entry so apm/apr/runtime do not retain the aos output itself.
+          if [ -z "''${AOS_CROSS_COMPILING:-}" ]; then
+            for binary in \
+              "$apm/bin/.apm-unwrapped" \
+              "$apr/bin/.apr-unwrapped" \
+              "$packageRuntime/bin/.aos-package-runtime-unwrapped"; do
+              rpath=$(patchelf --print-rpath "$binary")
+              rpath=$(printf '%s' "$rpath" | sed \
+                -e "s|$out/lib:||g" \
+                -e "s|:$out/lib||g" \
+                -e "s|^$out/lib$||")
+              patchelf --set-rpath "$rpath" "$binary"
+              if grep -aFq "$out" "$binary"; then
+                echo "$binary retains the aos output" >&2
+                exit 1
+              fi
+            done
+          fi
+
+          reject_output_reference() {
+            output=$1
+            dependency=$2
+            if grep -R -aFq "$dependency" "$output"; then
+              echo "$output unexpectedly references $dependency" >&2
+              exit 1
+            fi
+          }
+          for dependency in \
+            ${sbsigntools} ${mtools} ${tpm2-tools} ${which} \
+            ${lib.optionalString (!isDarwinCross) "${systemd} ${util-linux} ${builtins.concatStringsSep " " (map toString linuxRuntimeDeps)}"}; do
+            reject_output_reference "$out" "$dependency"
+          done
+          for dependency in \
+            ${tpm2-tools} ${which} \
+            ${lib.optionalString (!isDarwinCross) "${systemd} ${util-linux} ${builtins.concatStringsSep " " (map toString linuxRuntimeDeps)}"}; do
+            reject_output_reference "$apr" "$dependency"
           done
 
           # Exercise the installed wrapper, not the pre-install Cargo binary.
@@ -338,9 +401,32 @@ in
       testing,
       self,
       pkgs,
-    }:
+    }: let
+      # The integration suite predates the split outputs and intentionally
+      # exercises interactions among all four programs. Assemble a test-only
+      # facade without reintroducing aliases in any shipped output.
+      cliSuite = pkgs.mkDerivation {
+        pname = "aos-cli-integration-suite";
+        version = "${version}";
+        src = null;
+        runtimeDeps = [self self.apm self.apr self.packageRuntime];
+        phases = [
+          {
+            name = "install";
+            script = ''
+              mkdir -p "$out/bin"
+              ln -s ${self}/bin/aos "$out/bin/aos"
+              ln -s ${self.apm}/bin/apm "$out/bin/apm"
+              ln -s ${self.apr}/bin/apr "$out/bin/apr"
+              ln -s ${self.packageRuntime}/bin/aos-package-runtime "$out/bin/aos-package-runtime"
+            '';
+          }
+        ];
+      };
+    in
       import ./_tests.nix {
-        inherit testing self pkgs;
+        inherit testing pkgs;
+        self = cliSuite;
       };
 
     meta = {

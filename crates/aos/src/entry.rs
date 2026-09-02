@@ -1,22 +1,78 @@
-//! Shared process entrypoint for the AOS multicall binaries.
+//! Process entry points shared by the AOS command-line programs.
 
-use std::ffi::OsStr;
 use std::process;
+use std::{ffi::OsStr, ffi::OsString, io::Write};
 
 use anyhow::{Result, bail};
 use clap::Parser;
 
-use crate::cli::{Cli, Commands};
+use crate::cli::{ApmCli, AprCli, Cli, ColorChoice, Commands, ProgressChoice};
 use crate::commands;
 use aos_core::error::AosError;
 use aos_core::nix::NixRunner;
 use aos_core::output::{Printer, ProgressMode};
 
-/// Installs process hooks, parses the multicall command line, and exits.
-pub(crate) async fn main() {
+/// Parses and runs the `aos` repository and system-development CLI.
+pub async fn aos_main() {
+    install_panic_hook("aos");
+    let cli = Cli::parse();
+    let printer = printer(cli.verbose, cli.quiet, cli.json, cli.progress, cli.color);
+    exit_with_result(run(&cli, &printer).await, &printer);
+}
+
+/// Parses and runs the `apm` package-consumer CLI.
+pub async fn apm_main() {
+    install_panic_hook("apm");
+    let args = std::env::args_os().collect::<Vec<_>>();
+    if internal_package_command(&args).is_some() {
+        exit_surface_error("apm", "internal package runtime command");
+    }
+    let cli = ApmCli::parse_from(args);
+    let printer = printer(cli.verbose, cli.quiet, cli.json, cli.progress, cli.color);
+    exit_with_result(
+        aos_package::run(&cli.command, cli.dry_run, cli.yes, &printer).await,
+        &printer,
+    );
+}
+
+/// Parses and runs the private on-host package lifecycle helper.
+pub async fn package_runtime_main() {
+    install_panic_hook("aos-package-runtime");
+    let mut args = std::env::args_os().collect::<Vec<_>>();
+    if internal_package_command(&args).is_none() {
+        exit_surface_error("aos-package-runtime", "public package-consumer command");
+    }
+    if let Some(program) = args.first_mut() {
+        *program = OsString::from("apm");
+    }
+
+    let cli = ApmCli::parse_from(args);
+    if !cli.command.is_runtime_internal() {
+        exit_surface_error("aos-package-runtime", "public package-consumer command");
+    }
+    let printer = printer(cli.verbose, cli.quiet, cli.json, cli.progress, cli.color);
+    exit_with_result(
+        aos_package::run(&cli.command, cli.dry_run, cli.yes, &printer).await,
+        &printer,
+    );
+}
+
+/// Parses and runs the `apr` registry-authoring CLI.
+pub async fn apr_main() {
+    install_panic_hook("apr");
+    let cli = AprCli::parse();
+    let printer = printer(cli.verbose, cli.quiet, cli.json, cli.progress, cli.color);
+    exit_with_result(
+        aos_package::run_apr(&cli.command, cli.system, cli.dry_run, &printer).await,
+        &printer,
+    );
+}
+
+/// Installs a concise process panic hook for a public CLI name.
+fn install_panic_hook(program: &'static str) {
     // Set up a human-friendly panic handler that suppresses the default
     // backtrace noise and instead prints a short, actionable message.
-    std::panic::set_hook(Box::new(|info| {
+    std::panic::set_hook(Box::new(move |info| {
         let message = if let Some(msg) = info.payload().downcast_ref::<&str>() {
             (*msg).to_string()
         } else if let Some(msg) = info.payload().downcast_ref::<String>() {
@@ -30,38 +86,82 @@ pub(crate) async fn main() {
             .map(|loc| format!(" ({}:{})", loc.file(), loc.line()))
             .unwrap_or_default();
 
-        eprintln!("aos: internal error: {message}{location}");
+        eprintln!("{program}: internal error: {message}{location}");
         eprintln!("This is a bug. Please report it.");
     }));
+}
 
-    // Detect argv[0]:
-    // - "apm" -> implicitly prepend "package"
-    // - "apr" -> implicitly prepend "package registry"
-    let cli = {
-        // Normalisation (strip leading '.' and trailing '-unwrapped') lives in
-        // `aos_core::invocation` so that hint messages can derive the same name.
-        let bin_name = aos_core::invocation::binary_name();
+/// Returns the private runtime command name present in an argument vector.
+fn internal_package_command(arguments: &[OsString]) -> Option<&str> {
+    const COMMANDS: &[&str] = &[
+        "activate-pre-etc-swap",
+        "activate-post-etc-swap",
+        "activate-restore-routed-sources",
+        "recover-credential-transactions",
+        "_test-systemd-client",
+        "_test-reconcile-exposed-units",
+        "_test-verify-package-attestation",
+        "_test-produce-package-attestation-quote",
+        "__verify-boot-commit",
+        "_load-ebpf-lsm-policies",
+        "__eval",
+        "__eval-retained",
+        "__materialize",
+        "__activate-config",
+        "fetch",
+        "render-one",
+        "__graph-compile",
+    ];
 
-        if bin_name == "apr" {
-            let mut args: Vec<String> = std::env::args().collect();
-            args.insert(1, "package".to_string());
-            args.insert(2, "registry".to_string());
-            Cli::parse_from(args)
-        } else if bin_name == "apm" {
-            let mut args: Vec<String> = std::env::args().collect();
-            args.insert(1, "package".to_string());
-            Cli::parse_from(args)
-        } else {
-            Cli::parse()
-        }
-    };
+    arguments.iter().find_map(|argument| {
+        let argument = argument.to_str()?;
+        COMMANDS.contains(&argument).then_some(argument)
+    })
+}
 
-    let exit_code = match run(&cli).await {
+/// Reports a command-surface violation with clap's user-error exit status.
+fn exit_surface_error(program: &str, rejected: &str) -> ! {
+    let _ = writeln!(
+        std::io::stderr(),
+        "error: {program} does not accept {rejected}"
+    );
+    process::exit(2);
+}
+
+/// Terminates with the exit status represented by a command result.
+fn exit_with_result(result: Result<()>, printer: &Printer) -> ! {
+    let exit_code = match result {
         Ok(()) => 0,
-        Err(err) => handle_error(&cli, err),
+        Err(err) => handle_error(printer, err),
     };
 
     process::exit(exit_code);
+}
+
+/// Constructs a printer and applies the shared color/progress policy.
+fn printer(
+    verbose: u8,
+    quiet: bool,
+    json: bool,
+    progress: ProgressChoice,
+    color: ColorChoice,
+) -> Printer {
+    match color {
+        ColorChoice::Auto if std::env::var_os("NO_COLOR").is_some() => {
+            console::set_colors_enabled_stderr(false);
+        }
+        ColorChoice::Auto => {}
+        ColorChoice::Always => console::set_colors_enabled_stderr(true),
+        ColorChoice::Never => console::set_colors_enabled_stderr(false),
+    }
+    let progress_mode = match progress {
+        ProgressChoice::Auto => ProgressMode::Auto,
+        ProgressChoice::Tty => ProgressMode::Tty,
+        ProgressChoice::Plain => ProgressMode::Plain,
+        ProgressChoice::Off => ProgressMode::Off,
+    };
+
+    Printer::new(verbose, quiet, json).with_progress_mode(progress_mode)
 }
 
 /// Dispatch the parsed CLI to the matching command implementation.
@@ -70,25 +170,8 @@ pub(crate) async fn main() {
 /// `package`, `cache`) are handled before the [`NixRunner`] is constructed, so
 /// they work even when `nix` is absent or the working directory is not a repo
 /// root.
-async fn run(cli: &Cli) -> Result<()> {
+async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
     validate_container_runtime(&cli.command)?;
-
-    match cli.color {
-        crate::cli::ColorChoice::Auto if std::env::var_os("NO_COLOR").is_some() => {
-            console::set_colors_enabled_stderr(false);
-        }
-        crate::cli::ColorChoice::Auto => {}
-        crate::cli::ColorChoice::Always => console::set_colors_enabled_stderr(true),
-        crate::cli::ColorChoice::Never => console::set_colors_enabled_stderr(false),
-    }
-    let progress_mode = match cli.progress {
-        crate::cli::ProgressChoice::Auto => ProgressMode::Auto,
-        crate::cli::ProgressChoice::Tty => ProgressMode::Tty,
-        crate::cli::ProgressChoice::Plain => ProgressMode::Plain,
-        crate::cli::ProgressChoice::Off => ProgressMode::Off,
-    };
-    let printer = Printer::new(cli.verbose, cli.quiet, cli.json).with_progress_mode(progress_mode);
-
     // Shell completions can be generated without a Nix installation or
     // project root, so handle them before constructing the NixRunner.
     if let Commands::Completions { shell } = &cli.command {
@@ -98,18 +181,13 @@ async fn run(cli: &Cli) -> Result<()> {
 
     // The server command doesn't need NixRunner, handle it before construction.
     if let Commands::Serve { config } = &cli.command {
-        return commands::serve::run(&printer, config).await;
+        return commands::serve::run(printer, config).await;
     }
 
     // Token management connects to the bootstrap socket -- no NixRunner needed.
     if let Commands::Token { command } = &cli.command {
         let socket_path = aos_server::aos_root().join("run/bootstrap.sock");
-        return commands::token::run(&printer, command, &socket_path).await;
-    }
-
-    // Package management (apm) has its own infrastructure -- no NixRunner needed.
-    if let Commands::Package(args) = &cli.command {
-        return commands::package::run(args, &printer).await;
+        return commands::token::run(printer, command, &socket_path).await;
     }
 
     if let Commands::LanguageServer { system, documents } = &cli.command {
@@ -122,7 +200,7 @@ async fn run(cli: &Cli) -> Result<()> {
             },
             false,
             false,
-            &printer,
+            printer,
         )
         .await;
     }
@@ -173,14 +251,14 @@ async fn run(cli: &Cli) -> Result<()> {
             &aos_package::PackageCommand::Docs { command },
             false,
             false,
-            &printer,
+            printer,
         )
         .await;
     }
 
     // Cache commands use NixCli (classic nix commands), not NixRunner.
     if let Commands::Cache { command } = &cli.command {
-        return commands::cache::run(&printer, command).await;
+        return commands::cache::run(printer, command).await;
     }
 
     // The metadata agent does not need a repository or NixRunner.
@@ -190,23 +268,23 @@ async fn run(cli: &Cli) -> Result<()> {
 
     // Hub commands talk to the public API and do not need NixRunner.
     if let Commands::Hub { command } = &cli.command {
-        return commands::hub::run(&printer, command).await;
+        return commands::hub::run(printer, command).await;
     }
 
     // Signed image discovery and downloads use only the Hub API.
     if let Commands::Image { command } = &cli.command {
-        return commands::image::run(command, &printer).await;
+        return commands::image::run(command, printer).await;
     }
 
     // Container transfers and local inspection are daemon-free. The handler
     // constructs Nix lazily only for definition list/show/build operations.
     if let Commands::Container { command } = &cli.command {
-        return commands::container::run(command, &printer).await;
+        return commands::container::run(command, printer).await;
     }
 
     // Local VM runs use downloaded artifacts and host-side QEMU tools.
     if let Commands::Vm { command } = &cli.command {
-        return commands::vm::run(command, &printer);
+        return commands::vm::run(command, printer);
     }
 
     let nix = NixRunner::new(cli.verbose, cli.quiet)?;
@@ -223,7 +301,7 @@ async fn run(cli: &Cli) -> Result<()> {
             if let Some(url) = remote {
                 return commands::build::run_remote(
                     &nix,
-                    &printer,
+                    printer,
                     package.as_deref(),
                     target.as_deref(),
                     url,
@@ -232,14 +310,14 @@ async fn run(cli: &Cli) -> Result<()> {
                 )
                 .await;
             }
-            commands::build::run(&nix, &printer, package.as_deref(), *all, target.as_deref())
+            commands::build::run(&nix, printer, package.as_deref(), *all, target.as_deref())
         }
-        Commands::System { command } => commands::system::run(&nix, &printer, command),
-        Commands::Show { package } => commands::show::run(&nix, &printer, package),
-        Commands::Graph { package, dot } => commands::graph::run(&nix, &printer, package, *dot),
-        Commands::Lint { package } => commands::lint::run(&nix, &printer, package.as_deref()),
-        Commands::Test { command, jobs } => commands::test::run(&nix, &printer, command, *jobs),
-        Commands::Repl => commands::repl::run(&nix, &printer),
+        Commands::System { command } => commands::system::run(&nix, printer, command),
+        Commands::Show { package } => commands::show::run(&nix, printer, package),
+        Commands::Graph { package, dot } => commands::graph::run(&nix, printer, package, *dot),
+        Commands::Lint { package } => commands::lint::run(&nix, printer, package.as_deref()),
+        Commands::Test { command, jobs } => commands::test::run(&nix, printer, command, *jobs),
+        Commands::Repl => commands::repl::run(&nix, printer),
         Commands::Gc {
             list_generations,
             remote,
@@ -252,7 +330,7 @@ async fn run(cli: &Cli) -> Result<()> {
         } => {
             commands::gc::run(
                 &nix,
-                &printer,
+                printer,
                 *list_generations,
                 remote.as_deref(),
                 view.as_deref(),
@@ -267,13 +345,13 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::WhyDepends {
             package,
             dependency,
-        } => commands::why_depends::run(&nix, &printer, package, dependency),
-        Commands::Profile { command } => commands::profile::run(&nix, &printer, command),
+        } => commands::why_depends::run(&nix, printer, package, dependency),
+        Commands::Profile { command } => commands::profile::run(&nix, printer, command),
         Commands::Describe { package } => {
             if let Some(package) = package {
-                commands::show::run(&nix, &printer, package)
+                commands::show::run(&nix, printer, package)
             } else {
-                commands::describe::run(&nix, &printer)
+                commands::describe::run(&nix, printer)
             }
         }
         Commands::Prefetch {
@@ -285,7 +363,7 @@ async fn run(cli: &Cli) -> Result<()> {
             min_speed,
         } => commands::prefetch::run(
             &nix,
-            &printer,
+            printer,
             package,
             *all,
             *update,
@@ -293,7 +371,7 @@ async fn run(cli: &Cli) -> Result<()> {
             *connect_timeout,
             *min_speed,
         ),
-        Commands::Fmt { check, files } => commands::fmt::run(&nix, &printer, *check, files),
+        Commands::Fmt { check, files } => commands::fmt::run(&nix, printer, *check, files),
         Commands::Doc {
             source,
             path,
@@ -301,14 +379,13 @@ async fn run(cli: &Cli) -> Result<()> {
             list,
             rebuild,
             ..
-        } => aos_doc::run(&nix, &printer, source, path, search, list, *rebuild).await,
+        } => aos_doc::run(&nix, printer, source, path, search, list, *rebuild).await,
         // These commands are handled in the early-return block above (before
         // NixRunner construction) and will never reach this match arm. The
         // arms exist only to satisfy exhaustiveness checking.
         Commands::Completions { .. } => unreachable!(),
         Commands::Serve { .. } => unreachable!(),
         Commands::Token { .. } => unreachable!(),
-        Commands::Package { .. } => unreachable!(),
         Commands::Cache { .. } => unreachable!(),
         Commands::Metadata { .. } => unreachable!(),
         Commands::Hub { .. } => unreachable!(),
@@ -321,21 +398,19 @@ async fn run(cli: &Cli) -> Result<()> {
 
 /// Rejects entrypoints that necessarily operate on host boot or device state.
 ///
-/// Package-manager activation paths are guarded within `aos-package`, where
-/// their complete command shape is available. This top-level guard owns only
-/// commands outside that package boundary: the QEMU lifecycle and the boot
-/// metadata agent. Repository builds and signed image downloads remain valid
-/// container workflows.
+/// Package-manager and registry-authoring paths are guarded within
+/// `aos-package`, where their complete command shapes are available. This
+/// top-level guard owns the repository CLI: the QEMU lifecycle and boot
+/// metadata agent are rejected, while portable builds, signed image downloads,
+/// and container publication remain available.
 fn validate_container_runtime(command: &Commands) -> Result<()> {
     let runtime = std::env::var_os("AOS_RUNTIME");
     validate_runtime(command, runtime.as_deref())?;
 
-    // Package commands synchronize inside `aos-package`, after its complete
-    // command shape has been classified. Every other admitted container
-    // command waits here so `docker exec aos ...` cannot race PID-1 setup.
-    if runtime.as_deref() == Some(OsStr::new("container"))
-        && !matches!(command, Commands::Package { .. })
-    {
+    // The independent apm/apr processes synchronize inside `aos-package`.
+    // Every admitted repository command waits here so `docker exec aos ...`
+    // cannot race PID-1 setup.
+    if runtime.as_deref() == Some(OsStr::new("container")) {
         aos_core::container_runtime::synchronize()?;
     }
 
@@ -358,9 +433,7 @@ fn validate_runtime(command: &Commands, runtime: Option<&OsStr>) -> Result<()> {
 
 /// Maps an `anyhow::Error` to an appropriate exit code while printing a
 /// user-facing message.
-fn handle_error(cli: &Cli, err: anyhow::Error) -> i32 {
-    let printer = Printer::new(cli.verbose, cli.quiet, cli.json);
-
+fn handle_error(printer: &Printer, err: anyhow::Error) -> i32 {
     // Walk the error chain looking for a typed AosError so we can pick the
     // right exit code.
     if let Some(aos_err) = err.downcast_ref::<AosError>() {

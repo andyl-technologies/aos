@@ -6,7 +6,7 @@ same catalog, signature, release, and binary-cache paths used by a hosted
 registry without requiring a server.
 
 You need Nix with flakes enabled, Git with SHA-256 repository support, and an
-incremental build of the `apr` and `apm` multicall names:
+incremental builds of the independent `apr` and `apm` programs:
 
 ```sh
 nix develop -c cargo build --manifest-path crates/Cargo.toml --bin apr --bin apm

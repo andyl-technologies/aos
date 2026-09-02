@@ -1533,29 +1533,28 @@ fn run_aos_package_json_with_env(
     action: &str,
 ) -> Result<Value> {
     let nix_tools = nix_tool_path()?;
-    let output = Command::new(env!("CARGO_BIN_EXE_aos"))
+    let output = Command::new(env!("CARGO_BIN_EXE_apm"))
         .env("HOME", home)
         .envs(nix_command_env(aos_root))
         .env("AOS_PROFILE_ROOT", profile_root)
         .env("PATH", &nix_tools.path)
-        .arg("package")
         .args(args)
         .output()
-        .with_context(|| format!("running aos package {action}"))?;
+        .with_context(|| format!("running apm {action}"))?;
     if !output.status.success() {
         bail!(
-            "aos package {action} failed:\nstdout:\n{}\nstderr:\n{}",
+            "apm {action} failed:\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
     }
     assert!(
         String::from_utf8_lossy(&output.stderr).is_empty(),
-        "JSON aos package {action} should keep stderr clean:\n{}",
+        "JSON apm {action} should keep stderr clean:\n{}",
         String::from_utf8_lossy(&output.stderr),
     );
     serde_json::from_slice(&output.stdout)
-        .with_context(|| format!("parsing aos package {action} JSON from stdout"))
+        .with_context(|| format!("parsing apm {action} JSON from stdout"))
 }
 
 fn configure_fixture_git_identity(registry: &Path) -> Result<()> {

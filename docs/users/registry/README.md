@@ -43,7 +43,7 @@ AOS Hub operators should also read [Operate AOS Hub](../aos-hub/).
 
 ## Command map
 
-`aos`, `apm`, and `apr` are names for the same multicall binary:
+The command-line programs have separate parsers and responsibilities:
 
 | Command | Job |
 | --- | --- |

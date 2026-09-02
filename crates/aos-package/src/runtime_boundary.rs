@@ -8,13 +8,13 @@
 
 use std::ffi::OsStr;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use crate::{
-    AttestCommand, BranchCommand, CacheCommand, ChangeCommand, ChannelCommand, CredentialCommand,
-    DocumentationCacheCommand, DocumentationCommand, KeysCommand, OptionsCommand, OriginCommand,
-    PackageCommand, RegistryCommand, RuntimeConfigCommand, SbCertsCommand, StoreCommand,
-    TrustCommand,
+    ApmRegistryCommand, AttestCommand, BranchCommand, CacheCommand, ChangeCommand, ChannelCommand,
+    CredentialCommand, DocumentationCacheCommand, DocumentationCommand, KeysCommand,
+    OptionsCommand, OriginCommand, PackageCommand, RegistryCommand, RuntimeConfigCommand,
+    SbCertsCommand, StoreCommand, TrustCommand,
 };
 
 const RUNTIME_ENV: &str = "AOS_RUNTIME";
@@ -53,6 +53,16 @@ impl RuntimeBoundary {
         }
         Ok(())
     }
+
+    fn validate_registry(self, command: &RegistryCommand, system: bool) -> Result<()> {
+        if self.container && system {
+            bail!(CONTAINER_HOST_OPERATION_ERROR);
+        }
+        if self.read_only && !registry_is_read_only(command) {
+            bail!(READ_ONLY_MUTATION_ERROR);
+        }
+        Ok(())
+    }
 }
 
 /// Checks the process runtime markers against one parsed package command.
@@ -74,6 +84,24 @@ pub(crate) fn validate(command: &PackageCommand) -> Result<()> {
         boundary.read_only |= state.is_read_only();
     }
     boundary.validate(command)
+}
+
+/// Checks runtime markers for one parsed registry-authoring command.
+///
+/// # Errors
+///
+/// Returns an error when container mode selects system registry state or when
+/// read-only container mode prohibits the requested authoring mutation.
+pub(crate) fn validate_registry(command: &RegistryCommand, system: bool) -> Result<()> {
+    let mut boundary = RuntimeBoundary::from_env();
+    if boundary.container && system {
+        bail!(CONTAINER_HOST_OPERATION_ERROR);
+    }
+
+    if let Some(state) = aos_core::container_runtime::synchronize()? {
+        boundary.read_only |= state.is_read_only();
+    }
+    boundary.validate_registry(command, system)
 }
 
 /// Returns whether a command requires AOS host facilities unavailable in OCI.
@@ -192,7 +220,7 @@ fn is_read_only(command: &PackageCommand) -> bool {
                 | AttestCommand::VerifyBootCommit { .. }
         ),
         PackageCommand::Credential(CredentialCommand::Encrypt { output, .. }) => output.is_none(),
-        PackageCommand::Registry { command, .. } => registry_is_read_only(command),
+        PackageCommand::Registry { command, .. } => apm_registry_is_read_only(command),
         PackageCommand::Install { .. }
         | PackageCommand::Remove { .. }
         | PackageCommand::Autoremove
@@ -270,6 +298,16 @@ fn runtime_config_is_read_only(command: &RuntimeConfigCommand) -> bool {
         RuntimeConfigCommand::Status { .. }
             | RuntimeConfigCommand::List { .. }
             | RuntimeConfigCommand::Diff { .. }
+    )
+}
+
+fn apm_registry_is_read_only(command: &ApmRegistryCommand) -> bool {
+    matches!(
+        command,
+        ApmRegistryCommand::List
+            | ApmRegistryCommand::Trust {
+                command: TrustCommand::List { .. },
+            }
     )
 }
 
@@ -378,9 +416,21 @@ mod tests {
         command: PackageCommand,
     }
 
+    #[derive(Parser)]
+    struct TestRegistryCli {
+        #[command(subcommand)]
+        command: RegistryCommand,
+    }
+
     fn command(arguments: &[&str]) -> PackageCommand {
         TestCli::try_parse_from(std::iter::once("apm").chain(arguments.iter().copied()))
             .expect("test command parses")
+            .command
+    }
+
+    fn registry_command(arguments: &[&str]) -> RegistryCommand {
+        TestRegistryCli::try_parse_from(std::iter::once("apr").chain(arguments.iter().copied()))
+            .expect("test registry command parses")
             .command
     }
 
@@ -484,14 +534,43 @@ mod tests {
             &["schema"][..],
             &["rollback", "--list"][..],
             &["registry", "list"][..],
-            &["registry", "verify"][..],
-            &["registry", "branch", "list"][..],
-            &["registry", "cache", "gc", "--dry-run"][..],
         ] {
             boundary
                 .validate(&command(arguments))
                 .expect("query remains admitted");
         }
+    }
+
+    #[test]
+    fn read_only_container_classifies_registry_authoring_commands() {
+        let boundary = RuntimeBoundary {
+            container: true,
+            read_only: true,
+        };
+
+        for arguments in [
+            &["list"][..],
+            &["verify"][..],
+            &["branch", "list"][..],
+            &["cache", "gc", "--dry-run"][..],
+        ] {
+            boundary
+                .validate_registry(&registry_command(arguments), false)
+                .expect("registry query remains admitted");
+        }
+
+        let error = boundary
+            .validate_registry(&registry_command(&["create", "example"]), false)
+            .expect_err("registry mutation is rejected");
+        assert_eq!(error.to_string(), READ_ONLY_MUTATION_ERROR);
+
+        let error = RuntimeBoundary {
+            container: true,
+            read_only: false,
+        }
+        .validate_registry(&registry_command(&["list"]), true)
+        .expect_err("system registry state is rejected");
+        assert_eq!(error.to_string(), CONTAINER_HOST_OPERATION_ERROR);
     }
 
     #[test]
