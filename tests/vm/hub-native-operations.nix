@@ -458,7 +458,7 @@ in
       reviewed instance-default-grant binding grant instance-default \
         --consumer-scope "$operations_org_scope" \
         >/tmp/instance-default-grant.json
-      ${pkgs.aos}/bin/aos --json hub binding list --org operations \
+      ${pkgs.aos}/bin/aos --json hub binding list --org operations --include-granted \
         --hub "$hub_url" --token "$token" >/tmp/operations-bindings.json
       ${pkgs.jq}/bin/jq -e \
         '.data.bindings | any(.stable_id == "instance-default" and .health.state == "valid")' \
