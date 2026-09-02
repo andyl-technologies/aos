@@ -62,7 +62,7 @@ terminal conditions, and exit codes are cataloged in
 | VM nodes and logical links | `World`, `WorldNode`, `LinkDef` | Packaged and public API | [Scenarios](scenarios.md#world), [Reference](reference.md#worldnode-vm-fields) |
 | Block and 9p I/O sub-nodes | `WorldIoNode` | Public API and certified live adapter | [Scenarios](scenarios.md), [Storage and hardware faults](storage-node-faults.md) |
 | Fault-addressable topology | `WorldFaultTopology` | Public API and certified adapters | [Fault topology reference](topology.md), [Authoring](authoring.md#2-declare-fault-addressable-topology) |
-| Signal-driven plan | `FaultSignalPlan`, `SignalProgram`, `FaultBinding` | Public API and certified adapters | [Signal-driven faults](signal-driven-faults.md), [Authoring](authoring.md) |
+| Signal-driven plan | `FaultSignalPlan`, `SignalProgram`, `FaultBinding` | Public API and certified adapters | [Signal programs](signals.md), [Fault bindings](bindings.md), [Signal-driven faults](signal-driven-faults.md), [Authoring](authoring.md) |
 | Event/control graph | `Plan` event graph | Packaged and public API | [Scenarios](scenarios.md#plan), [Reference](reference.md#planevent-fields-and-actions) |
 | Temporal properties | `Properties`, `Property`, `Predicate` | Packaged and public API | [Scenarios](scenarios.md#properties), [Reference](reference.md#properties-and-predicates) |
 | Deterministic seed and keyed choices | `Seed`, RNG stream identities | Packaged and public API | [Scenarios](scenarios.md#seed), [Running Crucible](running.md#seed-resolution) |
