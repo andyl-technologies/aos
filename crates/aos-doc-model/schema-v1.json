@@ -1,0 +1,326 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aos.dev/schemas/package-documentation/v1.json",
+  "title": "AOS package documentation v1",
+  "description": "Closed, evaluator-free package option and runtime reference. Semantic validation additionally enforces canonical ordering, digest binding, size limits, safe source paths, and absence of Nix store references.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "package", "identity", "runtime"],
+  "properties": {
+    "schema": {"const": "aos.package-documentation/v1"},
+    "package": {"$ref": "#/$defs/package"},
+    "identity": {"$ref": "#/$defs/identity"},
+    "sections": {"type": "array", "items": {"$ref": "#/$defs/section"}, "maxItems": 256},
+    "options": {"type": "array", "items": {"$ref": "#/$defs/option"}, "maxItems": 16384},
+    "runtime": {"$ref": "#/$defs/runtime"}
+  },
+  "$defs": {
+    "token": {"type": "string", "minLength": 1, "maxLength": 255},
+    "text": {"type": "string", "maxLength": 262144},
+    "digest": {"type": "string", "pattern": "^sha256[:-][A-Za-z0-9+/=_-]+$"},
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "platform", "summary", "license"],
+      "properties": {
+        "name": {"$ref": "#/$defs/token"},
+        "version": {"$ref": "#/$defs/token"},
+        "platform": {"$ref": "#/$defs/token"},
+        "summary": {"$ref": "#/$defs/text"},
+        "homepage": {"type": "string", "pattern": "^https://", "maxLength": 262144},
+        "license": {"$ref": "#/$defs/text"}
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["semantic_schema_sha256", "runtime_nar_hash", "source_nar_hash"],
+      "properties": {
+        "semantic_schema_sha256": {"$ref": "#/$defs/digest"},
+        "runtime_nar_hash": {"$ref": "#/$defs/digest"},
+        "config_module_nar_hash": {"$ref": "#/$defs/digest"},
+        "system_module_nar_hash": {"$ref": "#/$defs/digest"},
+        "expose_artifact_nar_hash": {"$ref": "#/$defs/digest"},
+        "source_nar_hash": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "pathSegment": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {"kind": {"const": "literal"}, "value": {"$ref": "#/$defs/token"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "name"],
+          "properties": {"kind": {"const": "wildcard"}, "name": {"$ref": "#/$defs/token"}}
+        }
+      ]
+    },
+    "linkTarget": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "package"],
+          "properties": {"kind": {"const": "package"}, "package": {"$ref": "#/$defs/token"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "path"],
+          "properties": {"kind": {"const": "option"}, "path": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/pathSegment"}}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "id"],
+          "properties": {"kind": {"const": "section"}, "id": {"$ref": "#/$defs/token"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "path"],
+          "properties": {"kind": {"const": "source"}, "path": {"$ref": "#/$defs/text"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "url"],
+          "properties": {"kind": {"const": "https"}, "url": {"type": "string", "pattern": "^https://", "maxLength": 262144}}
+        }
+      ]
+    },
+    "span": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "text"],
+          "properties": {"kind": {"const": "text"}, "text": {"$ref": "#/$defs/text"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "text"],
+          "properties": {"kind": {"const": "code"}, "text": {"$ref": "#/$defs/text"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "label", "target"],
+          "properties": {"kind": {"const": "link"}, "label": {"$ref": "#/$defs/text"}, "target": {"$ref": "#/$defs/linkTarget"}}
+        }
+      ]
+    },
+    "block": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "spans"],
+          "properties": {"kind": {"const": "paragraph"}, "spans": {"type": "array", "items": {"$ref": "#/$defs/span"}}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "ordered", "items"],
+          "properties": {
+            "kind": {"const": "list"}, "ordered": {"type": "boolean"},
+            "items": {"type": "array", "items": {"type": "array", "items": {"$ref": "#/$defs/block"}}}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "language", "text"],
+          "properties": {"kind": {"const": "code"}, "language": {"$ref": "#/$defs/token"}, "text": {"$ref": "#/$defs/text"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "severity", "blocks"],
+          "properties": {
+            "kind": {"const": "note"}, "severity": {"enum": ["info", "warning", "security"]},
+            "blocks": {"type": "array", "items": {"$ref": "#/$defs/block"}}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "entries"],
+          "properties": {"kind": {"const": "definitions"}, "entries": {"type": "array", "items": {"$ref": "#/$defs/definitionEntry"}}}
+        }
+      ]
+    },
+    "definitionEntry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["term", "body"],
+      "properties": {"term": {"$ref": "#/$defs/text"}, "body": {"type": "array", "items": {"$ref": "#/$defs/block"}}}
+    },
+    "section": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "title", "blocks"],
+      "properties": {"id": {"$ref": "#/$defs/token"}, "title": {"$ref": "#/$defs/text"}, "blocks": {"type": "array", "items": {"$ref": "#/$defs/block"}}}
+    },
+    "optionType": {
+      "oneOf": [
+        {"$ref": "#/$defs/scalarBool"},
+        {"$ref": "#/$defs/signedInteger"},
+        {"$ref": "#/$defs/unsignedInteger"},
+        {"$ref": "#/$defs/stringType"},
+        {"$ref": "#/$defs/scalarPort"},
+        {"$ref": "#/$defs/scalarPath"},
+        {"$ref": "#/$defs/scalarDuration"},
+        {"$ref": "#/$defs/scalarCidr"},
+        {"$ref": "#/$defs/scalarOpaqueReference"},
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "values"],
+          "properties": {"kind": {"const": "enum"}, "values": {"type": "array", "items": {"$ref": "#/$defs/enumValue"}}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "element"],
+          "properties": {"kind": {"const": "list"}, "element": {"$ref": "#/$defs/optionType"}, "unique": {"type": "boolean"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "element"],
+          "properties": {"kind": {"const": "set"}, "element": {"$ref": "#/$defs/optionType"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "value", "placeholder"],
+          "properties": {"kind": {"const": "attrs-of"}, "value": {"$ref": "#/$defs/optionType"}, "placeholder": {"$ref": "#/$defs/token"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "fields"],
+          "properties": {"kind": {"const": "submodule"}, "fields": {"type": "object", "additionalProperties": {"$ref": "#/$defs/optionType"}}, "open": {"type": "boolean"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {"kind": {"const": "nullable"}, "value": {"$ref": "#/$defs/optionType"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "alternatives"],
+          "properties": {"kind": {"const": "one-of"}, "alternatives": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/optionType"}}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "signature"],
+          "properties": {"kind": {"const": "opaque"}, "signature": {"$ref": "#/$defs/text"}}
+        }
+      ]
+    },
+    "scalarBool": {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "bool"}}},
+    "signedInteger": {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "integer"}, "min": {"type": "integer"}, "max": {"type": "integer"}}},
+    "unsignedInteger": {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "unsigned"}, "min": {"type": "integer", "minimum": 0}, "max": {"type": "integer", "minimum": 0}}},
+    "stringType": {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "string"}, "pattern": {"type": "string"}, "max_length": {"type": "integer", "minimum": 0}}},
+    "scalarPort": {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "port"}}},
+    "scalarPath": {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "path"}}},
+    "scalarDuration": {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "duration"}}},
+    "scalarCidr": {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "cidr"}}},
+    "scalarOpaqueReference": {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "opaque-reference"}}},
+    "enumValue": {
+      "type": "object", "additionalProperties": false,
+      "required": ["value"],
+      "properties": {"value": {"$ref": "#/$defs/text"}, "description": {"type": "array", "items": {"$ref": "#/$defs/block"}}}
+    },
+    "documentedValue": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {"kind": {"const": "literal"}, "value": {}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "text"],
+          "properties": {"kind": {"const": "text"}, "text": {"$ref": "#/$defs/text"}}
+        }
+      ]
+    },
+    "activation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["none", "reevaluate", "reload", "restart", "recreate", "reboot", "package-operation"]},
+        "units": {"type": "array", "items": {"$ref": "#/$defs/token"}}
+      }
+    },
+    "owner": {
+      "type": "object", "additionalProperties": false,
+      "required": ["package", "root"],
+      "properties": {"package": {"$ref": "#/$defs/token"}, "root": {"$ref": "#/$defs/token"}, "interface_abi": {"type": "integer", "minimum": 0, "maximum": 4294967295}}
+    },
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path"],
+      "properties": {"path": {"$ref": "#/$defs/text"}, "attribute": {"$ref": "#/$defs/text"}, "line": {"type": "integer", "minimum": 1, "maximum": 4294967295}}
+    },
+    "option": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "display_path", "type", "type_signature", "description", "visibility", "owner"],
+      "properties": {
+        "path": {"type": "array", "items": {"$ref": "#/$defs/pathSegment"}, "minItems": 1},
+        "display_path": {"$ref": "#/$defs/text"},
+        "type": {"$ref": "#/$defs/optionType"},
+        "type_signature": {"$ref": "#/$defs/text"},
+        "description": {"type": "array", "items": {"$ref": "#/$defs/block"}},
+        "default": {"$ref": "#/$defs/documentedValue"},
+        "example": {"$ref": "#/$defs/documentedValue"},
+        "visibility": {"enum": ["public", "internal", "hidden"]},
+        "read_only": {"type": "boolean"},
+        "deprecated": {"$ref": "#/$defs/text"},
+        "replacement": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/pathSegment"}},
+        "owner": {"$ref": "#/$defs/owner"},
+        "contributable": {"type": "boolean"},
+        "activation": {"$ref": "#/$defs/activation"},
+        "source": {"$ref": "#/$defs/source"}
+      }
+    },
+    "runtimeUnit": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "kind"],
+      "properties": {"name": {"$ref": "#/$defs/token"}, "kind": {"$ref": "#/$defs/token"}, "summary": {"$ref": "#/$defs/text"}, "requires": {"type": "array", "items": {"$ref": "#/$defs/token"}}}
+    },
+    "runtimeListener": {
+      "type": "object", "additionalProperties": false,
+      "required": ["unit", "protocol", "network_mode"],
+      "properties": {"unit": {"$ref": "#/$defs/token"}, "protocol": {"$ref": "#/$defs/token"}, "port": {"type": "integer", "minimum": 0, "maximum": 65535}, "network_mode": {"$ref": "#/$defs/token"}}
+    },
+    "managedPath": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "purpose", "writable"],
+      "properties": {"path": {"$ref": "#/$defs/text"}, "purpose": {"$ref": "#/$defs/token"}, "writable": {"type": "boolean"}}
+    },
+    "configArtifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "destination", "format"],
+      "properties": {"name": {"$ref": "#/$defs/token"}, "destination": {"$ref": "#/$defs/text"}, "format": {"$ref": "#/$defs/token"}, "activation": {"$ref": "#/$defs/activation"}}
+    },
+    "credential": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "purpose", "destination", "accepted_kinds", "required", "mode"],
+      "properties": {
+        "name": {"$ref": "#/$defs/token"}, "purpose": {"$ref": "#/$defs/text"}, "destination": {"$ref": "#/$defs/text"},
+        "accepted_kinds": {"type": "array", "items": {"$ref": "#/$defs/token"}}, "required": {"type": "boolean"},
+        "mode": {"type": "integer", "minimum": 0, "maximum": 4294967295}, "activation": {"$ref": "#/$defs/activation"}
+      }
+    },
+    "capability": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "direction"],
+      "properties": {"name": {"$ref": "#/$defs/token"}, "direction": {"enum": ["provides", "uses"]}}
+    },
+    "confinement": {
+      "type": "object", "additionalProperties": false,
+      "required": ["class", "network", "private_root"],
+      "properties": {"class": {"$ref": "#/$defs/token"}, "network": {"$ref": "#/$defs/token"}, "private_root": {"type": "boolean"}}
+    },
+    "runtime": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "units": {"type": "array", "maxItems": 8192, "items": {"$ref": "#/$defs/runtimeUnit"}},
+        "listeners": {"type": "array", "maxItems": 8192, "items": {"$ref": "#/$defs/runtimeListener"}},
+        "managed_paths": {"type": "array", "maxItems": 8192, "items": {"$ref": "#/$defs/managedPath"}},
+        "config_artifacts": {"type": "array", "maxItems": 8192, "items": {"$ref": "#/$defs/configArtifact"}},
+        "credentials": {"type": "array", "maxItems": 8192, "items": {"$ref": "#/$defs/credential"}},
+        "capabilities": {"type": "array", "maxItems": 8192, "items": {"$ref": "#/$defs/capability"}},
+        "confinement": {"$ref": "#/$defs/confinement"}
+      }
+    }
+  }
+}

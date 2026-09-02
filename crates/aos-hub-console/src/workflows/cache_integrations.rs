@@ -93,7 +93,7 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
             <RegistryImages client=client registry_id=path.clone()/>
         }
         .into_any(),
-        (ConsoleScope::Registry { path }, page @ ("packages" | "channels")) => view! {
+        (ConsoleScope::Registry { path }, page @ ("packages" | "docs" | "channels")) => view! {
             <RegistryCatalog client=client registry_id=path.clone() page=page/>
         }
         .into_any(),

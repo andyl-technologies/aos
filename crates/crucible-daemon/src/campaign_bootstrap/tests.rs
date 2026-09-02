@@ -1485,7 +1485,11 @@ fn managed_store_maintenance_flushes_write_back_and_stops_promptly() {
         .expect("bind maintained write-back service");
     let destination = DirectoryBlobBackend::new("maintained-check", destination_root);
     let mut transferred = false;
-    for _ in 0..200 {
+    // The hermetic controller suite intentionally runs hundreds of tests in
+    // parallel. Give the independently scheduled maintenance worker enough
+    // wall-clock headroom to receive a timeslice without weakening the
+    // separately bounded shutdown assertion below.
+    for _ in 0..2_000 {
         if destination
             .contains(id)
             .expect("inspect maintained destination")

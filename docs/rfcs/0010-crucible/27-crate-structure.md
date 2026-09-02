@@ -27,7 +27,7 @@ that crate.
 
 ## 1. The crate map (L0–L4)
 
-Crucible is **sixteen runtime crates** plus the test-only `crucible-harness`
+Crucible is **eighteen runtime crates** plus the test-only `crucible-harness`
 package in the AOS Rust workspace, partitioned into five Crucible layers. The
 `CRATE-*` "exactly" and "only" requirements in this file are scoped to the
 Crucible package set, not to the pre-existing `aos-*` packages that share the
@@ -45,17 +45,21 @@ split.)
     crucible-api       versioned programmatic surface (session lifecycle, query)
     crucible-daemon    long-lived host process hosting sessions over the API
     crucible-cli       the `crucible` binary; thin client over crucible-api
+    crucible-s3-store  bounded AWS SDK adapter for campaign object storage
 
   L3  ENGINE
     crucible           scenario model, the single scheduler, faults, assertions,
                        temporal graph, event log; the pure reduction
     crucible-cas       standalone content-addressed store, fleet store, and
                        campaign-continuity substrate
+    crucible-campaign  portable campaign model, repository, and service contracts
 
   L2  QEMU INTEGRATION
     crucible-qemu        host-side launch/control of QEMU; concrete VM driver
     crucible-qemu-plugin in-VM cdylib (-plugin); owns virtual-time control + hooks
     crucible-guest       OPTIONAL in-guest white-box agent (doorbell client)
+    crucible-debug-gateway mediated debugger transport without scheduler authority
+    crucible-linux-resource pinned Linux quota/cgroup resource capabilities
 
   L1  CO-SIM TRANSPORT
     crucible-shmem     the public #[repr(C)] shared-memory process protocol
@@ -80,12 +84,16 @@ One-line responsibilities:
 | L2 | `crucible-qemu` | Host-side QEMU process launch/control and the concrete VM driver wrapped by higher layers. |
 | L2 | `crucible-qemu-plugin` | The in-VM `cdylib` loaded via `-plugin`; owns virtual-time control (`qemu_plugin_request_time_control`) and the device/channel callbacks. |
 | L2 | `crucible-guest` | OPTIONAL in-guest agent for white-box markers via the doorbell; never required for any core capability (`G-3`). |
+| L2 | `crucible-debug-gateway` | Mediated debugger transport and capability checks without scheduler or campaign authority. |
+| L2 | `crucible-linux-resource` | Pinned Linux kernel resource capabilities shared by host-side QEMU and daemon composition. |
 | L3 | `crucible` | The engine: scenario model, the single authoritative scheduler, fault injection, assertion evaluation, temporal graph, event log — the pure `reduce`. |
 | L3 | `crucible-cas` | The standalone content-addressed store, fleet-visible DAG store, and campaign-continuity substrate. |
+| L3 | `crucible-campaign` | RFC-0017's portable campaign model, authenticated repository, and component-message contracts. |
 | L4 | `crucible-session` | The session actor: owns one live `RuntimeState`, drives the engine quantum loop, services control messages at quantum boundaries. |
 | L4 | `crucible-api` | The versioned programmatic API surface (session lifecycle, stepping, event-log query, temporal-graph ops). |
 | L4 | `crucible-daemon` | The long-lived host process that hosts sessions and serves the API over a transport. |
 | L4 | `crucible-cli` | The `crucible` binary: a thin client over `crucible-api`; scenario authoring, run, reproduce, query. |
+| L4 | `crucible-s3-store` | The bounded AWS SDK implementation of campaign object-store capabilities. |
 
 ### The dependency graph (acyclic; lower layers never depend on higher)
 
@@ -133,7 +141,7 @@ trait and QEMU realization flow, but no in-VM crate may do so and no other
 upward edge is allowed. The layer lint encodes this named exception.
 
 - **[CRATE-1]** The AOS Rust workspace's Crucible package set MUST contain
-  exactly the sixteen runtime crates above, partitioned into the five layers
+  exactly the eighteen runtime crates above, partitioned into the five layers
   L0–L4 as listed. Pre-existing non-Crucible `aos-*` workspace members are outside
   this count. *Gate:* `gate:harness-lint` (workspace-shape lint). *Spec:* §1.
 - **[CRATE-2]** Each crate MUST depend only on crates in its own layer or a lower
@@ -173,28 +181,35 @@ discipline of [`28-engineering-standards.md`](28-engineering-standards.md).
 | `crucible-device` | **SAFE** | Pure I/O-sub-node models over owned buffers / CoW page maps. |
 | `crucible-qemu` | **UNSAFE** | Host-side process control may touch FFI for QMP/monitor and shared-memory file descriptors; reads raw VM memory via the plugin transport. |
 | `crucible-qemu-plugin` | **UNSAFE** | The `cdylib` is the QEMU TCG plugin C ABI: `extern "C"` entry points, raw QEMU/guest memory, time-control FFI. |
+| `crucible-debug-gateway` | **SAFE** | Mediated debugger protocol and process orchestration use safe owned capabilities. |
 | `crucible-guest` | **UNSAFE** | The in-guest agent issues the trapped doorbell instruction and touches the shmem ABI directly; bare-metal/no-std-ish concerns. |
+| `crucible-linux-resource` | **UNSAFE** | Narrow raw Linux quota/cgroup syscall wrappers validate pinned kernel-resource identities. |
 | `crucible` | **SAFE** `#![forbid(unsafe_code)]` | The engine is a pure reduction; it must be a clean island. All unsafe is *below* it behind traits. |
 | `crucible-cas` | **SAFE** | Content-addressed store and fleet/campaign data structures; no raw memory or FFI. |
+| `crucible-campaign` | **SAFE** | Portable canonical campaign state and authenticated repository logic. |
 | `crucible-session` | **SAFE** | Actor over channels; no raw memory. |
 | `crucible-api` | **SAFE** | Versioned API types + dispatch. |
 | `crucible-daemon` | **SAFE** | Host process; transport via safe libraries. |
 | `crucible-cli` | **SAFE** | Thin client. |
+| `crucible-s3-store` | **SAFE** | Bounded SDK adapter over owned buffers and async operations. |
 
-So: **five UNSAFE crates** (`crucible-shmem`, `crucible-protocol`,
-`crucible-qemu`, `crucible-qemu-plugin`, `crucible-guest`) — exactly the crates
+So: **six UNSAFE crates** (`crucible-shmem`, `crucible-protocol`,
+`crucible-qemu`, `crucible-qemu-plugin`, `crucible-guest`,
+`crucible-linux-resource`) — exactly the crates
 that touch raw QEMU/guest memory, the mmap/atomics ABI, Unix descriptor
-handover, or FFI — and **eleven SAFE crates**,
+handover, kernel resource syscalls, or FFI — and **twelve SAFE crates**,
 including the entire engine and the entire control plane. The unsafe surface is
 small, named, and confined to L1/L2.
 
 - **[CRATE-4]** Every SAFE crate (`crucible-sim`, `crucible-assert`,
-  `crucible-device`, `crucible`, `crucible-cas`, `crucible-session`, `crucible-api`,
-  `crucible-daemon`, `crucible-cli`) MUST carry
+  `crucible-device`, `crucible-debug-gateway`, `crucible`, `crucible-cas`,
+  `crucible-campaign`, `crucible-session`, `crucible-api`, `crucible-daemon`,
+  `crucible-cli`, `crucible-s3-store`) MUST carry
   `#![forbid(unsafe_code)]` at its crate root. A CI lint asserts the attribute is
   present. *Gate:* `gate:harness-lint`. *Spec:* §2.
 - **[CRATE-5]** Every UNSAFE crate (`crucible-shmem`, `crucible-protocol`,
-  `crucible-qemu`, `crucible-qemu-plugin`, `crucible-guest`) MUST carry
+  `crucible-qemu`, `crucible-qemu-plugin`, `crucible-guest`,
+  `crucible-linux-resource`) MUST carry
   `#![deny(unsafe_op_in_unsafe_fn)]` at its crate root, and every `unsafe` block
   MUST be preceded by a `// SAFETY:` comment stating the upheld invariant. There
   MUST be no sixth UNSAFE crate: any new use of `unsafe` outside these five is a
@@ -310,7 +325,7 @@ behind the same trait (§4, `CRATE-7`). This is the load-bearing boundary: it is
 `gate:layer0-determinism` and the engine-level gates can run with no QEMU
 present.
 
-**`crucible-campaign`** owns RFC-0016's portable, content-addressed campaign
+**`crucible-campaign`** owns RFC-0017's portable, content-addressed campaign
 model, component-message contracts, authenticated repository, and deterministic
 planning semantics. It depends on the L3 content store but contains no live
 process handles or QEMU-private state. The L4 daemon composes it with local
@@ -337,11 +352,14 @@ re-implement it).
 ([`21-api.md`](21-api.md), `G-8`): session lifecycle, stepping modes, the
 event-log query interface, and temporal-graph operations, with an explicit
 version field and conformance vectors. *Not in it:* any policy or scheduling; it
-is the contract between client and daemon.
+is the contract between client and daemon. Its lifecycle adapter may implement
+and drive the public L3 `QuantumLoop` boundary, including the deterministic
+quiescent test loop and production lifecycle wrapper, but it does not own or
+reimplement scheduler ordering policy.
 
 **`crucible-daemon`** owns the **long-lived host process** that hosts sessions,
 serves `crucible-api` over a transport, and composes host-side executor workers
-that drive the L3 `QuantumLoop` boundary without owning scheduler policy. RFC-0016
+that drive the L3 `QuantumLoop` boundary without owning scheduler policy. RFC-0017
 adds the campaign coordinator and local executor composition to this crate. *Not
 in it:* the API *definition* (that's `crucible-api`), canonical campaign state
 (that's `crucible-campaign`), scheduler algorithms, or the CLI.
@@ -357,7 +375,7 @@ client; it owns no algorithms.
   host crates and drive the public L3 `QuantumLoop` boundary for an admitted
   attempt, but MUST NOT reimplement scheduler policy or call private reduction
   internals. *Gate:* `gate:control-responsive`. *Satisfies* `INV-8`, `ARCH-9`.
-  *Spec:* §3 and RFC-0016 file 04a.
+  *Spec:* §3 and RFC-0017 file 04a.
 
 ## 4. Feature flags — the backend trait and the in-process double
 
@@ -521,14 +539,19 @@ members = [
   # L2
   "crates/crucible-qemu",
   "crates/crucible-qemu-plugin",
+  "crates/crucible-debug-gateway",
   "crates/crucible-guest",
+  "crates/crucible-linux-resource",
   # L3
   "crates/crucible",
+  "crates/crucible-cas",
+  "crates/crucible-campaign",
   # L4
   "crates/crucible-session",
   "crates/crucible-api",
   "crates/crucible-daemon",
   "crates/crucible-cli",
+  "crates/crucible-s3-store",
   # test-only harness (not a layer; spans crates)
   "crates/crucible-harness",
 ]
@@ -562,7 +585,7 @@ name = "crucible-fleet-store"
 path = "src/bin/crucible-fleet-store.rs"
 ```
 
-There is a **seventeenth, test-only crate**, `crucible-harness` (not part of the
+There is a **nineteenth, test-only crate**, `crucible-harness` (not part of the
 L0–L4 layering and not shipped), that hosts the cross-crate determinism gates of
 [`24`](24-determinism-harness-testing.md): the execution-fingerprint comparator,
 the divergence bisector, the replay-oracle checker, the ABI golden-vector runner,
@@ -583,6 +606,7 @@ enters a release build.
 | `gate:single-vm-fingerprint` | `crucible-qemu` + `crucible-qemu-plugin` `tests/` | one-VM fingerprint match |
 | `gate:layer1-injection` | `crucible-device` + `crucible-protocol` `tests/` | injection-icount purity |
 | `gate:abi-conformance` | `crucible-harness` golden vectors over `crucible-shmem`/`crucible-protocol`/`crucible-api` plus `crucible-qemu-plugin`/`crucible-guest` ABI tests | frozen golden vectors |
+| `gate:typed-choice` | `crucible-campaign` `tests/gate_typed_choice.rs` plus the Phase-2 guest/protocol selectable suites | canonical typed domains, exact branch selection, and negative replay checks |
 | `gate:license-boundary` | `crucible-harness` dependency/license/protocol/package checks | Always; every boundary change and release construction |
 | `gate:replay-oracle` | `crucible` `tests/` (`--features test-double`) | fat-hash == thin-hash |
 | `gate:content-address` | `crucible` + `crucible-sim` `tests/` | hash equality/collision |
@@ -647,12 +671,12 @@ primitives.
 > wiring so every later subsystem lands in a fixed frame.
 
 - [x] **T-CRATE-1** Create the Crucible package-set skeleton in the AOS Cargo
-  virtual workspace with the sixteen L0–L4 crates plus the test-only
+  virtual workspace with the eighteen L0–L4 crates plus the test-only
   `crucible-harness`, each as an empty, compiling crate carrying its `//!` crate
   doc naming its owning RFC file(s). — satisfies [CRATE-1], [CRATE-13],
   [CRATE-14]; spec §1, §6, §7.
 - [x] **T-CRATE-2** Apply the crate-level safe/unsafe fence: `#![forbid(unsafe_code)]`
-  on the eleven SAFE crates, `#![deny(unsafe_op_in_unsafe_fn)]` on the five UNSAFE
+  on the twelve SAFE crates, `#![deny(unsafe_op_in_unsafe_fn)]` on the six UNSAFE
   crates, with a CI lint asserting the attribute on every crate root. — satisfies
   [CRATE-4], [CRATE-5]; spec §2.
 - [x] **T-CRATE-3** Implement the layer-dependency + acyclicity lint that reads
@@ -685,7 +709,7 @@ primitives.
   execution through the API/session/campaign/daemon composition, while
   `crucible-daemon` may drive only the public L3 quantum-loop boundary and never
   owns scheduler policy or private reduction internals. — satisfies [CRATE-8];
-  spec §3 and RFC-0016 file 04a.
+  spec §3 and RFC-0017 file 04a.
 - [x] **T-CRATE-10** Configure crate artifact types: `crucible-qemu-plugin` as the
   sole `cdylib`, `crucible-cli` as `[[bin]] name = "crucible"`, `crucible-cas` as
   `[[bin]] name = "crucible-fleet-store"`, and the rest as libs. — satisfies

@@ -131,6 +131,14 @@ in
                 meson = null;
                 ninja = null;
                 python3 = "/aos-python3";
+                stdenv = {
+                  isCross = false;
+                  hostPlatform = {
+                    isDarwin = false;
+                    constraints.cpu = "x86_64";
+                  };
+                };
+                buildPackages = {};
                 setuptools = null;
                 distlib = null;
                 glib = null;

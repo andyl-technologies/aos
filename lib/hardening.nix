@@ -47,6 +47,10 @@ let
   # tokens everywhere, but are filtered out of the effective set on platforms
   # that cannot use them. The predicate receives an mkPlatform record.
   platformTokens = {
+    # Clang accepts the option spelling for non-Linux targets but ignores it;
+    # keeping it out of Darwin cross builds avoids turning that diagnostic
+    # into a configure failure under packages that probe with -Werror.
+    stackclashprotection = p: p.isLinux;
     shadowstack = p: p.isx86_64;
     pacret = p: p.isAarch64;
   };

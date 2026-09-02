@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  stdenv,
 }: let
   version = "4.2";
 in
@@ -16,6 +17,11 @@ in
       ];
       hash = "sha256-ZJJu6/kAktyiGxQlmlMBt7mOexlD6KIBx9cmCEgJtSc=";
     };
+
+    patches =
+      if stdenv.hostPlatform.isDarwin
+      then [./dosfstools-patches/0001-limit-sysmacros-to-linux.patch]
+      else [];
 
     buildDeps = [gnumake];
     runtimeDeps = [];
@@ -33,6 +39,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --enable-compat-symlinks
         '';

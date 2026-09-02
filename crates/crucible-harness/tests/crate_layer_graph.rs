@@ -66,6 +66,11 @@ const RUNTIME_SPECS: &[LayerSpec] = &[
         in_vm: true,
     },
     LayerSpec {
+        package: "crucible-linux-resource",
+        layer: 2,
+        in_vm: false,
+    },
+    LayerSpec {
         package: "crucible",
         layer: 3,
         in_vm: false,
@@ -78,11 +83,6 @@ const RUNTIME_SPECS: &[LayerSpec] = &[
     LayerSpec {
         package: "crucible-campaign",
         layer: 3,
-        in_vm: false,
-    },
-    LayerSpec {
-        package: "crucible-linux-resource",
-        layer: 4,
         in_vm: false,
     },
     LayerSpec {

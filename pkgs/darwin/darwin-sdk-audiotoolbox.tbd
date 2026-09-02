@@ -1,0 +1,23 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ x86_64-macos, arm64-macos ]
+install-name: '/System/Library/Frameworks/AudioToolbox.framework/Versions/A/AudioToolbox'
+current-version: 1000.0.0
+exports:
+  - targets: [ x86_64-macos, arm64-macos ]
+    symbols:
+      - _AudioComponentFindNext
+      - _AudioComponentInstanceDispose
+      - _AudioComponentInstanceNew
+      - _AudioConverterDispose
+      - _AudioConverterFillComplexBuffer
+      - _AudioConverterGetProperty
+      - _AudioConverterNew
+      - _AudioConverterReset
+      - _AudioOutputUnitStart
+      - _AudioOutputUnitStop
+      - _AudioUnitGetProperty
+      - _AudioUnitInitialize
+      - _AudioUnitRender
+      - _AudioUnitSetProperty
+...

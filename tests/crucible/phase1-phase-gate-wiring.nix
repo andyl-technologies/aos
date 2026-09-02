@@ -76,6 +76,11 @@
     }
     {
       phase = "phase2";
+      attr = "typedChoice";
+      gate = "gate:typed-choice";
+    }
+    {
+      phase = "phase2";
       attr = "layer1Injection";
       gate = "gate:layer1-injection";
     }

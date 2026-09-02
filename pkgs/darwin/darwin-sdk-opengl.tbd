@@ -1,0 +1,24 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ x86_64-macos, arm64-macos ]
+install-name: '/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL'
+current-version: 17.0.0
+compatibility-version: 1.0.0
+exports:
+  - targets: [ x86_64-macos, arm64-macos ]
+    symbols:
+      - _CGLCreateContext
+      - _CGLRetainPixelFormat
+      - _CGLSetCurrentContext
+      - _glBegin
+      - _glBindTexture
+      - _glClear
+      - _glClearColor
+      - _glDisable
+      - _glEnable
+      - _glEnd
+      - _glTexCoord2f
+      - _glTexEnvf
+      - _glVertex2f
+      - _glViewport
+...

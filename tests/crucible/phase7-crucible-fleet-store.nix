@@ -137,7 +137,7 @@
       }
       {
         label = "explicit AOS grep dependency";
-        needle = "buildDeps = [grep];";
+        needle = "[buildPackages.grep]";
       }
       {
         label = "source build marker";

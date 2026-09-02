@@ -101,6 +101,15 @@ struct CacheEntry {
     info: CachePathInfo,
     /// Byte-verified staged NAR, absent when this entry must be compressed.
     reusable: Option<ReusableNar>,
+    /// Transport compression selected for this exact store object.
+    compression: NarCompression,
+}
+
+/// Direct package roots plus the subset whose cache NAR must stay uncompressed.
+#[derive(Default)]
+struct CacheRootInventory {
+    roots: BTreeSet<String>,
+    uncompressed: BTreeSet<String>,
 }
 
 /// Identity captured while validating a staged compressed NAR for reuse.
@@ -152,7 +161,8 @@ pub async fn generate_static_cache(
     no_skip: bool,
     printer: &Printer,
 ) -> Result<StaticCacheReport> {
-    let roots = collect_static_cache_roots(registry_dir)?;
+    let inventory = collect_static_cache_root_inventory(registry_dir)?;
+    let roots = inventory.roots.into_iter().collect::<Vec<_>>();
     if roots.is_empty() {
         bail!("registry contains no store paths to cache");
     }
@@ -223,14 +233,23 @@ pub async fn generate_static_cache(
     let mut entries = Vec::with_capacity(infos.len());
     let mut pending_bytes = 0u64;
     for info in infos {
+        let compression = if inventory.uncompressed.contains(&info.path) {
+            NarCompression::None
+        } else {
+            NarCompression::Zstd
+        };
         let reusable = (!no_skip)
-            .then(|| reusable_nar(output_dir.as_path(), &info))
+            .then(|| reusable_nar(output_dir.as_path(), &info, compression))
             .transpose()?
             .flatten();
         if reusable.is_none() {
             pending_bytes += info.nar_size;
         }
-        entries.push(CacheEntry { info, reusable });
+        entries.push(CacheEntry {
+            info,
+            reusable,
+            compression,
+        });
     }
 
     // The fair share is one core's slice of the pending work. A NAR larger
@@ -428,7 +447,11 @@ fn gather_path_info(path: &str, store_graph: &StoreMap) -> Result<CachePathInfo>
 }
 
 /// Returns a verified staged NAR identity when the local pair is complete.
-fn reusable_nar(output_dir: &Path, info: &CachePathInfo) -> Result<Option<ReusableNar>> {
+fn reusable_nar(
+    output_dir: &Path,
+    info: &CachePathInfo,
+    compression: NarCompression,
+) -> Result<Option<ReusableNar>> {
     let narinfo_path = output_dir.join(format!("{}.narinfo", store_hash(&info.path)));
     let Ok(text) = std::fs::read_to_string(&narinfo_path) else {
         return Ok(None);
@@ -439,7 +462,7 @@ fn reusable_nar(output_dir: &Path, info: &CachePathInfo) -> Result<Option<Reusab
     if existing.nar_hash != info.nar_hash {
         return Ok(None);
     }
-    if existing.compression != NarCompression::Zstd.name() {
+    if existing.compression != compression.name() {
         return Ok(None);
     }
     let Some(file_hash) = existing.file_hash.as_deref() else {
@@ -448,7 +471,7 @@ fn reusable_nar(output_dir: &Path, info: &CachePathInfo) -> Result<Option<Reusab
     let Some(file_size) = existing.file_size else {
         return Ok(None);
     };
-    let Ok(expected_url) = nar_url(&info.path, file_hash, NarCompression::Zstd) else {
+    let Ok(expected_url) = nar_url(&info.path, file_hash, compression) else {
         return Ok(None);
     };
     if existing.url != expected_url {
@@ -469,7 +492,8 @@ fn reusable_nar(output_dir: &Path, info: &CachePathInfo) -> Result<Option<Reusab
     if actual_size != file_size || canonical_sha256_hex(&actual_hash)? != declared_hash {
         return Ok(None);
     }
-    if !nar_payload_matches(&nar_path, &info.nar_hash, info.nar_size).unwrap_or(false) {
+    if !nar_payload_matches(&nar_path, &info.nar_hash, info.nar_size, compression).unwrap_or(false)
+    {
         return Ok(None);
     }
     Ok(Some(ReusableNar {
@@ -493,15 +517,23 @@ fn write_cache_entry(
     let previous_nar_path = staged_nar_path(output_dir, info);
     let (file_hash, file_size, nar_path) = if let Some(reusable) = &entry.reusable {
         let nar_path = output_dir.join("nar").join(&reusable.name);
-        let (file_hash, file_size) = reuse_file_digest(output_dir, info, &nar_path, reusable)?;
+        let (file_hash, file_size) =
+            reuse_file_digest(output_dir, info, &nar_path, reusable, entry.compression)?;
         (file_hash, file_size, nar_path)
     } else {
-        let pending_path = output_dir
-            .join("nar")
-            .join(format!(".{}.nar.zst.pending", store_hash(&info.path)));
-        let (file_hash, file_size) =
-            compress_nar_to_file(&info.path, &pending_path, NAR_ZSTD_LEVEL, threads)?;
-        let url = nar_url(&info.path, &file_hash, NarCompression::Zstd)?;
+        let pending_path = output_dir.join("nar").join(format!(
+            ".{}.{}.pending",
+            store_hash(&info.path),
+            entry.compression.extension()
+        ));
+        let (file_hash, file_size) = match entry.compression {
+            NarCompression::None => dump_nar_to_file(&info.path, &pending_path)?,
+            NarCompression::Zstd => {
+                compress_nar_to_file(&info.path, &pending_path, NAR_ZSTD_LEVEL, threads)?
+            }
+            NarCompression::Xz => bail!("static cache generation does not select xz"),
+        };
+        let url = nar_url(&info.path, &file_hash, entry.compression)?;
         let nar_name = url
             .strip_prefix("nar/")
             .context("generated NAR URL does not use the nar/ prefix")?;
@@ -526,7 +558,7 @@ fn write_cache_entry(
             signatures: &[],
             file_hash: &file_hash,
             file_size,
-            compression: NarCompression::Zstd,
+            compression: entry.compression,
         },
         store_dir,
         signer,
@@ -555,11 +587,13 @@ fn staged_nar_path(output_dir: &Path, info: &CachePathInfo) -> Option<PathBuf> {
     let narinfo_path = output_dir.join(format!("{}.narinfo", store_hash(&info.path)));
     let text = std::fs::read_to_string(narinfo_path).ok()?;
     let existing = aos_core::nar::info::parse(&text).ok()?;
-    if existing.compression != NarCompression::Zstd.name() {
-        return None;
-    }
+    let compression = match existing.compression.as_str() {
+        "none" => NarCompression::None,
+        "zstd" => NarCompression::Zstd,
+        _ => return None,
+    };
     let file_hash = existing.file_hash.as_deref()?;
-    let expected_url = nar_url(&info.path, file_hash, NarCompression::Zstd).ok()?;
+    let expected_url = nar_url(&info.path, file_hash, compression).ok()?;
     if existing.url != expected_url {
         return None;
     }
@@ -581,6 +615,7 @@ fn reuse_file_digest(
     info: &CachePathInfo,
     nar_path: &Path,
     reusable: &ReusableNar,
+    compression: NarCompression,
 ) -> Result<(String, u64)> {
     let hash = store_hash(&info.path);
     let narinfo_path = output_dir.join(format!("{hash}.narinfo"));
@@ -588,7 +623,7 @@ fn reuse_file_digest(
         .with_context(|| format!("reading reused narinfo {}", narinfo_path.display()))?;
     let existing = aos_core::nar::info::parse(&text)
         .with_context(|| format!("parsing reused narinfo {}", narinfo_path.display()))?;
-    if existing.nar_hash != info.nar_hash || existing.compression != NarCompression::Zstd.name() {
+    if existing.nar_hash != info.nar_hash || existing.compression != compression.name() {
         bail!("reused NAR metadata changed while generating {}", info.path);
     }
     let declared_hash = existing
@@ -597,7 +632,7 @@ fn reuse_file_digest(
     let declared_size = existing
         .file_size
         .context("reused narinfo has no FileSize")?;
-    let expected_url = nar_url(&info.path, &declared_hash, NarCompression::Zstd)?;
+    let expected_url = nar_url(&info.path, &declared_hash, compression)?;
     if existing.url != expected_url
         || expected_url.strip_prefix("nar/") != Some(reusable.name.as_str())
         || existing.file_size != Some(reusable.file_size)
@@ -617,11 +652,22 @@ fn reuse_file_digest(
 }
 
 /// Verifies that zstd bytes decode to the declared uncompressed NAR identity.
-fn nar_payload_matches(nar_path: &Path, expected_hash: &str, expected_size: u64) -> Result<bool> {
+fn nar_payload_matches(
+    nar_path: &Path,
+    expected_hash: &str,
+    expected_size: u64,
+    compression: NarCompression,
+) -> Result<bool> {
     let file = File::open(nar_path).with_context(|| format!("reading {}", nar_path.display()))?;
-    let decoder = zstd::stream::read::Decoder::new(file)
-        .with_context(|| format!("decoding {} as zstd", nar_path.display()))?;
-    let mut bounded = decoder.take(expected_size.saturating_add(1));
+    let reader: Box<dyn Read> = match compression {
+        NarCompression::None => Box::new(file),
+        NarCompression::Zstd => Box::new(
+            zstd::stream::read::Decoder::new(file)
+                .with_context(|| format!("decoding {} as zstd", nar_path.display()))?,
+        ),
+        NarCompression::Xz => bail!("static cache verification does not accept xz"),
+    };
+    let mut bounded = reader.take(expected_size.saturating_add(1));
     let mut hasher = HashingWriter::new(io::sink());
     io::copy(&mut bounded, &mut hasher)
         .with_context(|| format!("verifying NAR payload {}", nar_path.display()))?;
@@ -773,16 +819,18 @@ fn referenced_nar_files(
             .with_context(|| format!("reading {}", narinfo_path.display()))?;
         let info = aos_core::nar::info::parse(&text)
             .with_context(|| format!("parsing {}", narinfo_path.display()))?;
-        if info.compression != NarCompression::Zstd.name() {
-            bail!(
-                "staged narinfo {} does not declare zstd compression",
+        let compression = match info.compression.as_str() {
+            "none" => NarCompression::None,
+            "zstd" => NarCompression::Zstd,
+            other => bail!(
+                "staged narinfo {} declares unsupported compression {other}",
                 narinfo_path.display()
-            );
-        }
+            ),
+        };
         let file_hash = info.file_hash.as_deref().with_context(|| {
             format!("staged narinfo {} has no FileHash", narinfo_path.display())
         })?;
-        let expected_url = nar_url(&info.store_path, file_hash, NarCompression::Zstd)?;
+        let expected_url = nar_url(&info.store_path, file_hash, compression)?;
         if info.url != expected_url {
             bail!(
                 "staged narinfo {} has non-canonical URL {}",
@@ -1040,14 +1088,22 @@ pub fn registry_has_store_roots(registry_dir: &Path) -> Result<bool> {
 ///
 /// Returns an error when package metadata cannot be read or parsed.
 pub fn collect_static_cache_roots(registry_dir: &Path) -> Result<Vec<String>> {
+    Ok(collect_static_cache_root_inventory(registry_dir)?
+        .roots
+        .into_iter()
+        .collect())
+}
+
+/// Collects cache roots and the documentation roots requiring plain NAR transport.
+fn collect_static_cache_root_inventory(registry_dir: &Path) -> Result<CacheRootInventory> {
     let packages = registry_dir.join("packages");
     if !packages.exists() {
-        return Ok(Vec::new());
+        return Ok(CacheRootInventory::default());
     }
-    let mut roots = BTreeSet::new();
-    collect_store_paths_from_dir(&packages, &mut roots)?;
+    let mut inventory = CacheRootInventory::default();
+    collect_store_paths_from_dir(&packages, &mut inventory)?;
 
-    Ok(roots.into_iter().collect())
+    Ok(inventory)
 }
 
 /// Collect the sorted closure of the selected root store paths.
@@ -1125,12 +1181,12 @@ fn collect_store_path_closure(store_path: &str, paths: &mut BTreeSet<String>) ->
 
 /// Recursively scan a packages directory for TOML files and harvest their
 /// store paths.
-fn collect_store_paths_from_dir(dir: &Path, paths: &mut BTreeSet<String>) -> Result<()> {
+fn collect_store_paths_from_dir(dir: &Path, inventory: &mut CacheRootInventory) -> Result<()> {
     for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            collect_store_paths_from_dir(&path, paths)?;
+            collect_store_paths_from_dir(&path, inventory)?;
             continue;
         }
         if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
@@ -1140,13 +1196,13 @@ fn collect_store_paths_from_dir(dir: &Path, paths: &mut BTreeSet<String>) -> Res
             .with_context(|| format!("reading {}", path.display()))?;
         let value: TomlValue =
             toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
-        collect_store_paths_from_package(&value, paths);
+        collect_store_paths_from_package(&value, inventory);
     }
     Ok(())
 }
 
 /// Harvest every cacheable store root from one parsed package TOML document.
-fn collect_store_paths_from_package(value: &TomlValue, paths: &mut BTreeSet<String>) {
+fn collect_store_paths_from_package(value: &TomlValue, inventory: &mut CacheRootInventory) {
     let Some(versions) = value.get("versions").and_then(TomlValue::as_array) else {
         return;
     };
@@ -1156,17 +1212,17 @@ fn collect_store_paths_from_package(value: &TomlValue, paths: &mut BTreeSet<Stri
         };
         for platform in platforms.values() {
             if let Some(path) = platform.get("store_path").and_then(TomlValue::as_str) {
-                paths.insert(path.to_string());
+                inventory.roots.insert(path.to_string());
             }
             if let Some(path) = platform.get("source_drv").and_then(TomlValue::as_str)
                 && !path.is_empty()
             {
-                paths.insert(path.to_string());
+                inventory.roots.insert(path.to_string());
             }
             if let Some(images) = platform.get("images").and_then(TomlValue::as_array) {
                 for image in images {
                     if let Some(path) = image.get("store_path").and_then(TomlValue::as_str) {
-                        paths.insert(path.to_string());
+                        inventory.roots.insert(path.to_string());
                     }
                     if let Some(path) = image
                         .get("delivery")
@@ -1175,7 +1231,7 @@ fn collect_store_paths_from_package(value: &TomlValue, paths: &mut BTreeSet<Stri
                         .and_then(TomlValue::as_str)
                         .filter(|path| !path.is_empty())
                     {
-                        paths.insert(path.to_string());
+                        inventory.roots.insert(path.to_string());
                     }
                     if let Some(path) = image
                         .get("delivery")
@@ -1184,7 +1240,7 @@ fn collect_store_paths_from_package(value: &TomlValue, paths: &mut BTreeSet<Stri
                         .and_then(TomlValue::as_str)
                         .filter(|path| !path.is_empty())
                     {
-                        paths.insert(path.to_string());
+                        inventory.roots.insert(path.to_string());
                     }
                 }
             }
@@ -1195,9 +1251,22 @@ fn collect_store_paths_from_package(value: &TomlValue, paths: &mut BTreeSet<Stri
                         .and_then(|metadata| metadata.get("store_path"))
                         .and_then(TomlValue::as_str)
                     {
-                        paths.insert(path.to_string());
+                        inventory.roots.insert(path.to_string());
                     }
                 }
+            }
+            if let Some(expose_artifact) = platform.get("expose_artifact")
+                && let Some(path) = expose_artifact
+                    .get("store_path")
+                    .and_then(TomlValue::as_str)
+            {
+                inventory.roots.insert(path.to_string());
+            }
+            if let Some(documentation) = platform.get("documentation")
+                && let Some(path) = documentation.get("store_path").and_then(TomlValue::as_str)
+            {
+                inventory.roots.insert(path.to_string());
+                inventory.uncompressed.insert(path.to_string());
             }
         }
     }
@@ -1397,6 +1466,48 @@ fn compress_nar_to_file(
     Ok(digest)
 }
 
+/// Streams an uncompressed NAR into the cache while hashing the exact bytes.
+fn dump_nar_to_file(store_path: &str, dest: &Path) -> Result<(String, u64)> {
+    let mut tmp = dest.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+
+    let mut child = Command::new("nix-store")
+        .envs(aos_nix_env())
+        .args(["--dump", store_path])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("spawning nix-store --dump {store_path}"))?;
+    let mut dump_stdout = child
+        .stdout
+        .take()
+        .context("nix-store --dump produced no stdout")?;
+
+    let file = File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+    let mut writer = HashingWriter::new(BufWriter::new(file));
+    let copy_result = io::copy(&mut dump_stdout, &mut writer).context("copying plain NAR stream");
+    let digest = copy_result.and_then(|_| writer.finish().context("flushing plain NAR"));
+
+    let status = child.wait().context("waiting for nix-store --dump")?;
+    if !status.success() {
+        let mut stderr = String::new();
+        if let Some(mut handle) = child.stderr.take() {
+            let _ = handle.read_to_string(&mut stderr);
+        }
+        let _ = std::fs::remove_file(&tmp);
+        bail!(
+            "nix-store --dump failed for {store_path}: {}",
+            stderr.trim()
+        );
+    }
+
+    let digest = digest?;
+    std::fs::rename(&tmp, dest)
+        .with_context(|| format!("renaming {} -> {}", tmp.display(), dest.display()))?;
+    Ok(digest)
+}
+
 /// A [`Write`] wrapper that forwards bytes to an inner writer while hashing
 /// them (SHA-256) and counting them. Used to compute a compressed NAR's
 /// `FileHash`/`FileSize` as it streams to disk.
@@ -1471,14 +1582,18 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            reusable_nar(output.path(), &info)
+            reusable_nar(output.path(), &info, NarCompression::Zstd)
                 .unwrap()
                 .map(|nar| nar.name),
             expected.strip_prefix("nar/").map(str::to_string),
         );
 
         std::fs::write(output.path().join(&expected), b"PAYLOAD").unwrap();
-        assert!(reusable_nar(output.path(), &info).unwrap().is_none());
+        assert!(
+            reusable_nar(output.path(), &info, NarCompression::Zstd)
+                .unwrap()
+                .is_none()
+        );
         std::fs::write(output.path().join(&expected), &compressed).unwrap();
         std::fs::write(
             output.path().join("abc123.narinfo"),
@@ -1488,7 +1603,11 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(reusable_nar(output.path(), &info).unwrap().is_none());
+        assert!(
+            reusable_nar(output.path(), &info, NarCompression::Zstd)
+                .unwrap()
+                .is_none()
+        );
 
         let legacy = format!("nar/{}-legacy.nar.zst", store_hash(&info.path));
         std::fs::write(
@@ -1499,7 +1618,11 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(reusable_nar(output.path(), &info).unwrap().is_none());
+        assert!(
+            reusable_nar(output.path(), &info, NarCompression::Zstd)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -1536,7 +1659,7 @@ mod tests {
 
     #[test]
     fn collect_store_paths_reads_all_package_outputs() {
-        let mut paths = BTreeSet::new();
+        let mut inventory = CacheRootInventory::default();
         let value: TomlValue = toml::from_str(
             r#"
 [package]
@@ -1576,14 +1699,30 @@ store_path = "/nix/store/lib111-config-base-lib"
 nar_hash = "sha256:base-lib"
 nar_size = 4
 references = []
+
+[versions.platforms.x86_64-linux.expose_artifact]
+store_path = "/nix/store/expose111-kernel-expose"
+nar_hash = "sha256:expose"
+nar_size = 5
+
+[versions.platforms.x86_64-linux.documentation]
+format = "aos.package-documentation/v1+json"
+store_path = "/nix/store/docs111-kernel-docs.json"
+nar_hash = "sha256:docs"
+nar_size = 6
+document_sha256 = "sha256:document"
+document_size = 5
+semantic_schema_sha256 = "sha256:semantic"
 "#,
         )
         .unwrap();
-        collect_store_paths_from_package(&value, &mut paths);
+        collect_store_paths_from_package(&value, &mut inventory);
         assert_eq!(
-            paths.into_iter().collect::<Vec<_>>(),
+            inventory.roots.into_iter().collect::<Vec<_>>(),
             vec![
                 "/nix/store/cfg111-kernel-config".to_string(),
+                "/nix/store/docs111-kernel-docs.json".to_string(),
+                "/nix/store/expose111-kernel-expose".to_string(),
                 "/nix/store/img111-system-image".to_string(),
                 "/nix/store/info111-system-image-info".to_string(),
                 "/nix/store/lib111-config-base-lib".to_string(),
@@ -1591,6 +1730,10 @@ references = []
                 "/nix/store/root111-kernel".to_string(),
                 "/nix/store/src111-kernel-source".to_string(),
             ]
+        );
+        assert_eq!(
+            inventory.uncompressed,
+            BTreeSet::from(["/nix/store/docs111-kernel-docs.json".to_string()])
         );
     }
 

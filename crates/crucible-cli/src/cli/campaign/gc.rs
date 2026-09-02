@@ -4,7 +4,7 @@ use super::*;
 
 use std::path::{Component, Path};
 
-use crucible_cas::content_store::{
+use crucible_daemon::campaign_store_composition::{
     BackendCapabilities, ContentId, ImmutableBlobBackend, StoreGraph, StoreNodeKind,
 };
 use crucible_daemon::{
@@ -645,6 +645,7 @@ fn maintenance_error(message: impl Into<String>) -> CliError {
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- unit fixtures use panic shortcuts for exact failure localization.
     #![allow(clippy::expect_used)]
 
     use std::collections::BTreeSet;

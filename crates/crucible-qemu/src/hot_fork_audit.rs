@@ -190,6 +190,7 @@ pub(crate) struct QemuHotForkQmpInventory {
 }
 
 impl QemuHotForkQmpInventory {
+    // crucible-lint: allow rust-allow -- the constructor preserves the one-to-one order of the exact QMP resource inventories.
     #[allow(
         clippy::too_many_arguments,
         reason = "the constructor preserves the one-to-one order of the eleven exact QMP inventories"
@@ -1252,6 +1253,7 @@ fn proc_io(operation: &'static str, path: &Path, source: io::Error) -> QemuHotFo
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- unit fixtures use panic shortcuts for exact failure localization.
     #![allow(clippy::expect_used)]
 
     use std::fs;

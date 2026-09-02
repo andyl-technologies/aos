@@ -9,6 +9,7 @@
   zlib,
   python3,
   libssh2,
+  stdenv,
 }: let
   version = "1.9.2";
 in
@@ -46,23 +47,49 @@ in
       }
       {
         name = "configure";
-        script = ''
-          # Fix xdiff include priority: glibc has a deprecated regexp.h that
-          # shadows libgit2's src/util/regexp.h when -isystem is used.
-          # Change SYSTEM to regular includes so libgit2 headers win.
-          sed -i 's/target_include_directories(xdiff SYSTEM PRIVATE/target_include_directories(xdiff PRIVATE/' deps/xdiff/CMakeLists.txt
-          cmake -S . -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=$out \
-            -DCMAKE_INSTALL_LIBDIR=lib \
-            -DBUILD_TESTS=OFF \
-            -DUSE_SSH=ON \
-            -DCMAKE_PREFIX_PATH=${libssh2} \
-            -DUSE_HTTPS=OpenSSL \
-            -DOPENSSL_ROOT_DIR=${openssl} \
-            -DZLIB_LIBRARY=${zlib}/lib/libz.so \
-            -DZLIB_INCLUDE_DIR=${zlib}/include
-        '';
+        script =
+          if stdenv.isCross && stdenv.hostPlatform.isDarwin
+          then ''
+            export CFLAGS="$CFLAGS \
+              -ffile-prefix-map=$PWD=. \
+              -fdebug-prefix-map=$PWD=."
+
+            # Fix xdiff include priority: glibc has a deprecated regexp.h that
+            # shadows libgit2's src/util/regexp.h when -isystem is used.
+            # Change SYSTEM to regular includes so libgit2 headers win.
+            sed -i 's/target_include_directories(xdiff SYSTEM PRIVATE/target_include_directories(xdiff PRIVATE/' deps/xdiff/CMakeLists.txt
+            cmake -S . -B build -G Ninja \
+              $cmakeFlags \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX=$out \
+              -DCMAKE_INSTALL_LIBDIR=lib \
+              -DBUILD_TESTS=OFF \
+              -DUSE_SSH=ON \
+              -DCMAKE_PREFIX_PATH=${libssh2} \
+              -DUSE_HTTPS=OpenSSL \
+              -DOPENSSL_ROOT_DIR=${openssl} \
+              -DZLIB_LIBRARY=${zlib}/lib/libz.${stdenv.hostPlatform.sharedLibraryExtension} \
+              -DZLIB_INCLUDE_DIR=${zlib}/include \
+              -DNEED_LIBRT=OFF
+          ''
+          else ''
+            # Fix xdiff include priority: glibc has a deprecated regexp.h that
+            # shadows libgit2's src/util/regexp.h when -isystem is used.
+            # Change SYSTEM to regular includes so libgit2 headers win.
+            sed -i 's/target_include_directories(xdiff SYSTEM PRIVATE/target_include_directories(xdiff PRIVATE/' deps/xdiff/CMakeLists.txt
+            cmake -S . -B build -G Ninja \
+              $cmakeFlags \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX=$out \
+              -DCMAKE_INSTALL_LIBDIR=lib \
+              -DBUILD_TESTS=OFF \
+              -DUSE_SSH=ON \
+              -DCMAKE_PREFIX_PATH=${libssh2} \
+              -DUSE_HTTPS=OpenSSL \
+              -DOPENSSL_ROOT_DIR=${openssl} \
+              -DZLIB_LIBRARY=${zlib}/lib/libz.${stdenv.hostPlatform.sharedLibraryExtension} \
+              -DZLIB_INCLUDE_DIR=${zlib}/include
+          '';
       }
       {
         name = "build";

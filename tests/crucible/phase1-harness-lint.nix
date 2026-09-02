@@ -786,7 +786,7 @@
     direct ++ target;
 
   boundaryManifestFailuresFor = workspaceDeps: package: manifest:
-    if builtins.elem package ["crucible-cli" "crucible-qemu"]
+    if builtins.elem package ["crucible-cli" "crucible-daemon" "crucible-qemu"]
     then []
     else
       lib.concatMap (
@@ -1320,7 +1320,7 @@
         }
       '')
     ];
-    directManifestFindings = boundaryManifestFailuresFor {} "crucible-daemon" {
+    directManifestFindings = boundaryManifestFailuresFor {} "crucible-debug-gateway" {
       dependencies.engine = {
         package = "crucible";
       };
@@ -1330,7 +1330,7 @@
         engine = {
           package = "crucible";
         };
-      } "crucible-daemon" {
+      } "crucible-debug-gateway" {
         dependencies.engine = {
           workspace = true;
         };

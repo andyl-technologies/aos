@@ -6,7 +6,7 @@
 //! QEMU-private state, storage paths, and runtime closures are deliberately not
 //! representable here.
 //!
-//! Spec index: RFC-0016 files 01, 02, 04a, 06, 09.
+//! Spec index: RFC-0017 files 01, 02, 04a, 06, 09.
 //!
 //! Module map: `artifact`, `choice`, `model`, and `objective` own the portable
 //! campaign vocabulary; `campaign_service`, `execution`, and `planner_service`

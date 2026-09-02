@@ -22,6 +22,10 @@ use aos_core::nix::NixCli;
 ///    as-is; see `is_direct_store_path` below) or a bare package name
 ///    built as `pkgs.<name>` from `file`.
 ///
+/// When `target` is present, file/attribute builds receive it as the
+/// top-level `crossSystem` string argument. Raw expressions must carry their
+/// own import arguments and therefore cannot be combined with `target`.
+///
 /// # Errors
 ///
 /// Returns an error if a build or instantiation fails, or if no
@@ -32,9 +36,15 @@ pub fn resolve_installables(
     file: Option<&str>,
     attr: Option<&str>,
     expr: Option<&str>,
+    target: Option<&str>,
 ) -> Result<Vec<String>> {
     // Raw expression.
     if let Some(expr) = expr {
+        if target.is_some() {
+            anyhow::bail!(
+                "--target cannot be combined with --expr; pass crossSystem in the expression"
+            );
+        }
         let drv = nix.instantiate_expr(expr)?;
         let path = nix.realise(&drv.to_string_lossy())?;
         return Ok(vec![path]);
@@ -43,7 +53,10 @@ pub fn resolve_installables(
     // Explicit -A attr.
     if let Some(attr) = attr {
         let file_path = Path::new(file.unwrap_or("./default.nix"));
-        let path = nix.build(file_path, attr)?;
+        let path = match target {
+            Some(target) => nix.build_for_target(file_path, attr, target)?,
+            None => nix.build(file_path, attr)?,
+        };
         return Ok(vec![path.to_string_lossy().to_string()]);
     }
 
@@ -58,7 +71,10 @@ pub fn resolve_installables(
 
         // Bare name -> pkgs.<name> (AOS convention).
         let attr = format!("pkgs.{installable}");
-        let path = nix.build(file_path, &attr)?;
+        let path = match target {
+            Some(target) => nix.build_for_target(file_path, &attr, target)?,
+            None => nix.build(file_path, &attr)?,
+        };
         paths.push(path.to_string_lossy().to_string());
     }
 

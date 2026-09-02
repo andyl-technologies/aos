@@ -73,11 +73,10 @@ if [ -n "${stdenv:-}" ] && [ -f "$stdenv/setup-vars.sh" ]; then
   source "$stdenv/setup-vars.sh"
 fi
 
-# Create every declared output directory. Nix exports $outputs as a
-# space-separated list of output names ("out" for single-output drvs,
-# "out tools" etc. for multi-output) and each name as a separate env
-# variable holding its store path.
-for o in ${outputs:-out}; do
+# Create every declared output directory. Structured derivations expose
+# `outputs` as an associative array; the generated phase driver normalizes
+# both representations into AOS_OUTPUT_NAMES before sourcing this file.
+for o in ${AOS_OUTPUT_NAMES:-${outputs:-out}}; do
   eval "p=\"\${$o:-}\""
   [ -n "$p" ] && mkdir -p "$p"
 done

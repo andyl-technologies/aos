@@ -29,6 +29,7 @@ pub struct QmpHotForkChildQmpState {
 
 impl QmpHotForkChildQmpState {
     #[cfg(test)]
+    // crucible-lint: allow rust-allow -- the fixture constructor binds every exact child-QMP generation and resource basis independently.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn one_template_staged(
         generation: u64,

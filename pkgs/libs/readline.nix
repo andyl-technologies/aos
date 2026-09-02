@@ -4,6 +4,7 @@
   fetchurl,
   gnumake,
   ncurses,
+  stdenv,
 }: let
   version = "8.3";
 in
@@ -34,7 +35,19 @@ in
       {
         name = "configure";
         script = ''
+          ${
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              # Mach-O debug symbols retain compilation and object paths even
+              # after stripping. Remap the sandbox prefix at compile time so
+              # cached libraries contain no ephemeral /build references.
+              export CFLAGS="''${CFLAGS:-} -ffile-prefix-map=$PWD=. -fdebug-prefix-map=$PWD=. -fdebug-compilation-dir=."
+            ''
+            else ""
+          }
+
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --enable-shared \
             --disable-static \

@@ -42,6 +42,7 @@
     maxClosureMiB = cfg.budgets.maxRuntimeClosureMiB;
     maxDevelopmentPayloadMiB = cfg.budgets.maxDevelopmentPayloadMiB;
     allowTestArtifacts = cfg.allowTestArtifacts;
+    testArtifactRoots = cfg.testArtifactRoots;
   };
 
   rawImage = buildImage {
@@ -69,7 +70,7 @@
     pkgs.mkDerivation {
       name = "aos-image-${config.aos.system.name}-${format}";
       src = null;
-      buildDeps = [pkgs.qemu pkgs.coreutils pkgs.jq pkgs.zstd];
+      buildDeps = [pkgs.qemu pkgs.coreutils pkgs.jq pkgs.openssl pkgs.zstd];
       IMAGE_FORMAT = format;
       IMAGE_FILENAME = "aos-${config.aos.system.name}.${format}";
       IMAGE_MEDIA_TYPE = mediaType;
@@ -119,6 +120,57 @@
                | .compatibleTargets = $compatibleTargets
                | .virtualSizeBytes = $expectedVirtualSize' \
               ${rawImage}/image-info.json > $out/image-info.json
+
+            ${lib.optionalString config.aos.boot.recovery.enable ''
+              for component in \
+                root.img root.verity root.roothash root.roothash.p7s \
+                uki-a.efi uki-b.efi \
+                recovery-a.efi recovery-b.efi \
+                recovery-a.conf recovery-b.conf; do
+                cp "${rawImage}/$component" "$out/$component"
+              done
+
+              component() {
+                id=$1
+                path=$2
+                size=$(stat -c %s "$out/$path")
+                digest=$(sha256sum "$out/$path" | cut -d ' ' -f1)
+                ${pkgs.jq}/bin/jq -n \
+                  --arg id "$id" --arg path "$path" \
+                  --argjson byteSize "$size" --arg sha256 "$digest" \
+                  '{id: $id, path: $path, byte_size: $byteSize, sha256: $sha256}'
+              }
+              components=$(
+                {
+                  component root-image root.img
+                  component root-verity root.verity
+                  component root-hash root.roothash
+                  component normal-uki-a uki-a.efi
+                  component normal-uki-b uki-b.efi
+                  component recovery-uki-a recovery-a.efi
+                  component recovery-uki-b recovery-b.efi
+                  component recovery-entry-a recovery-a.conf
+                  component recovery-entry-b recovery-b.conf
+                  component image-metadata image-info.json
+                } | ${pkgs.jq}/bin/jq -s .
+              )
+              ${pkgs.jq}/bin/jq -S -n \
+                --arg schema aos.recovery-bundle/v1 \
+                --arg release ${lib.escapeShellArg config.aos.system.version} \
+                --arg architecture ${lib.escapeShellArg lib.platform.constraints.cpu} \
+                --arg platform ${lib.escapeShellArg lib.system} \
+                --argjson module_abi ${toString config.aos.system.moduleAbi} \
+                --argjson recovery_abi ${toString config.aos.boot.recovery.abi} \
+                --argjson components "$components" \
+                '{schema: $schema, release: $release, architecture: $architecture,
+                  platform: $platform, module_abi: $module_abi,
+                  recovery_abi: $recovery_abi, components: $components}' \
+                > "$out/recovery-bundle.json"
+              ${pkgs.openssl}/bin/openssl dgst -sha256 \
+                -sign ${config.aos.boot.secureBoot.dbKey} \
+                -out "$out/recovery-bundle.json.sig" \
+                "$out/recovery-bundle.json"
+            ''}
           '';
         }
       ];
@@ -244,6 +296,17 @@ in {
       '';
     };
 
+    testArtifactRoots = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = [];
+      internal = true;
+      description = ''
+        Explicit package closures permitted to contain otherwise forbidden
+        runtime artifacts in an image with allowTestArtifacts enabled. The
+        artifacts remain included in all closure and development-size budgets.
+      '';
+    };
+
     budgets = {
       maxRootMiB = positiveMiB 512 "Maximum immutable root payload size.";
       maxVerityMiB = positiveMiB 16 "Maximum dm-verity tree size and capacity of each A/B hash partition.";
@@ -314,6 +377,10 @@ in {
 
   config = lib.mkIf cfg.enable {
     assertions = [
+      {
+        assertion = cfg.allowTestArtifacts || cfg.testArtifactRoots == [];
+        message = "aos.image.testArtifactRoots requires aos.image.allowTestArtifacts = true";
+      }
       {
         assertion = cfg.budgets.maxEspMiB >= 2 * cfg.budgets.maxUkiMiB + 32;
         message = "aos.image.budgets.maxEspMiB must hold two maximum-sized UKIs plus 32 MiB of bootloader and FAT headroom";

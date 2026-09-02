@@ -199,6 +199,8 @@
         options.nginx.enable = lib.mkOption {
           type = lib.types.bool;
           default = false;
+          description = "Whether to enable nginx.";
+          example = true;
         };
         options.nginx.virtualHosts = lib.mkOption {
           type = lib.types.attrsOf (lib.types.submodule {
@@ -222,6 +224,25 @@
   f3bValueUnperturbed = f3bEval.config.nginx.enable == true;
   f3bBoolTypeSig =
     (builtins.head (builtins.filter (d: d.pathStr == "nginx.enable") f3bEval._optionDecls)).typeSig;
+  f3bEnableDocumentation =
+    builtins.head (builtins.filter (d: d.pathStr == "nginx.enable") f3bEval._optionDecls);
+  f3bDocumentationIsStructured =
+    f3bEnableDocumentation.type
+    == {kind = "bool";}
+    && f3bEnableDocumentation.description == "Whether to enable nginx."
+    && f3bEnableDocumentation.default
+    == {
+      kind = "literal";
+      value = false;
+    }
+    && f3bEnableDocumentation.example
+    == {
+      kind = "literal";
+      value = true;
+    }
+    && f3bEnableDocumentation.visibility == "public"
+    && !f3bEnableDocumentation.readOnly
+    && !f3bEnableDocumentation.contributable;
 
   packageDiagnosticsEval = lib.evalModules {
     modules = [
@@ -773,6 +794,196 @@
     .artifacts
     .priority
     == "package";
+  runtimeDirectGetsOperatorPriority =
+    (lib.evalModules {
+      modules = [
+        ({lib, ...}: {
+          options.artifacts = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = {};
+          };
+        })
+      ];
+      packageModules = [(packageRecord {config.artifacts.priority = "package";})];
+      runtimeModules = [{config.artifacts.priority = "runtime";}];
+      inherit lib;
+    })
+    .config
+    .artifacts
+    .priority
+    == "runtime";
+  runtimeNestedMatchesOperator = let
+    operatorValue =
+      (lib.evalModules {
+        modules = [nestedDecl];
+        operatorModules = [{config.tree.main.nested.left = "nested operator";}];
+        inherit lib;
+      })
+      .config
+      .tree
+      .main
+      .nested
+      .left;
+    runtimeValue =
+      (lib.evalModules {
+        modules = [nestedDecl];
+        runtimeModules = [{config.tree.main.nested.left = "nested operator";}];
+        inherit lib;
+      })
+      .config
+      .tree
+      .main
+      .nested
+      .left;
+  in
+    runtimeValue == operatorValue && runtimeValue == "nested operator";
+  runtimeOwnershipMatchesMergePriority =
+    (lib.evalModules {
+      modules = [
+        ({lib, ...}: {
+          options.artifacts = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = {};
+          };
+          options.observed = lib.mkOption {type = lib.types.str;};
+        })
+        ({provenance, ...}: {config.observed = provenance.ownerOfAttr ["artifacts"] "priority";})
+      ];
+      packageModules = [(packageRecord {config.artifacts.priority = lib.mkOverride 80 "package";})];
+      runtimeModules = [{config.artifacts.priority = "runtime";}];
+      inherit lib;
+    })
+    .config
+    .observed
+    == "@host";
+  runtimeImportKeepsNormalPriority =
+    (lib.evalModules {
+      modules = [
+        ({lib, ...}: {
+          options.artifacts = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = {};
+          };
+        })
+      ];
+      packageModules = [(packageRecord {config.artifacts.priority = lib.mkOverride 80 "package";})];
+      runtimeModules = [{imports = [{config.artifacts.priority = "runtime import";}];}];
+      inherit lib;
+    })
+    .config
+    .artifacts
+    .priority
+    == "package";
+  runtimeNestedImportKeepsNormalPriority =
+    (lib.evalModules {
+      modules = [nestedDecl];
+      packageModules = [(packageRecord {config.tree.main.nested.left = lib.mkOverride 80 "package";})];
+      runtimeModules = [{imports = [{config.tree.main.nested.left = "runtime import";}];}];
+      inherit lib;
+    })
+    .config
+    .tree
+    .main
+    .nested
+    .left
+    == "package";
+  runtimeProvisioningRejected =
+    !(builtins.tryEval ((lib.evalModules {
+        modules = [
+          ({lib, ...}: {
+            options.aos.provisioning.test = lib.mkOption {type = lib.types.str;};
+          })
+        ];
+        runtimeModules = [{config.aos.provisioning.test = "forbidden";}];
+        inherit lib;
+      })
+      .config
+      .aos
+      .provisioning
+      .test))
+    .success;
+  runtimeUnknownOptionRejected =
+    !(builtins.tryEval ((lib.evalModules {
+        modules = [
+          ({lib, ...}: {
+            options.known = lib.mkOption {type = lib.types.bool;};
+          })
+        ];
+        runtimeModules = [
+          {
+            config = {
+              known = true;
+              unknown.value = true;
+            };
+          }
+        ];
+        inherit lib;
+      })
+      .config
+      .known))
+    .success;
+  runtimeImportedUnknownOptionRejected =
+    !(builtins.tryEval ((lib.evalModules {
+        modules = [
+          ({lib, ...}: {
+            options.known = lib.mkOption {type = lib.types.bool;};
+          })
+        ];
+        runtimeModules = [
+          {
+            imports = [
+              {
+                config = {
+                  known = true;
+                  unknown.value = true;
+                };
+              }
+            ];
+          }
+        ];
+        inherit lib;
+      })
+      .config
+      .known))
+    .success;
+  runtimeUnknownOptionDeferredForSelection =
+    (lib.evalModules {
+      modules = [../../modules/base/host-selection.nix];
+      runtimeModules = [
+        {
+          config = {
+            aos.apm.desiredPackages = ["nginx"];
+            environment.etc."runtime-selection/deferred.conf".mode = "0644";
+          };
+        }
+      ];
+      enforceRuntimeDeclarations = false;
+      inherit lib;
+    })
+    .config
+    .aos
+    .apm
+    .desiredPackages
+    == ["nginx"];
+  hostUnknownOptionRemainsLazy =
+    (lib.evalModules {
+      modules = [
+        ({lib, ...}: {
+          options.known = lib.mkOption {type = lib.types.bool;};
+        })
+      ];
+      operatorModules = [
+        {
+          config = {
+            known = true;
+            unknown.value = true;
+          };
+        }
+      ];
+      inherit lib;
+    })
+    .config
+    .known;
 
   # --- types.uniqEnum (owned shared scalar) ---------------------------
   uniqEnumAgrees =
@@ -1038,8 +1249,8 @@
         message = "pathInStore validation";
       }
       {
-        ok = f3bSurfaceIsVirtualHosts && f3bValueUnperturbed && f3bBoolTypeSig == "boolean";
-        message = "contributable typed surface";
+        ok = f3bSurfaceIsVirtualHosts && f3bValueUnperturbed && f3bBoolTypeSig == "boolean" && f3bDocumentationIsStructured;
+        message = "contributable typed documentation surface";
       }
       {
         ok = packageEngineDiagnosticsAccepted;
@@ -1096,6 +1307,10 @@
       {
         ok = hostImportedOwner && hostImportedNestedValue && hostImportKeepsNormalPriority;
         message = "host import ownership and priority";
+      }
+      {
+        ok = runtimeDirectGetsOperatorPriority && runtimeNestedMatchesOperator && runtimeOwnershipMatchesMergePriority && runtimeImportKeepsNormalPriority && runtimeNestedImportKeepsNormalPriority && runtimeProvisioningRejected && runtimeUnknownOptionRejected && runtimeImportedUnknownOptionRejected && runtimeUnknownOptionDeferredForSelection && hostUnknownOptionRemainsLazy;
+        message = "runtime module priority, declared surface, and provisioning confinement";
       }
       {
         ok = uniqEnumAgrees && uniqEnumRejectsConflict && uniqEnumRejectsBadValue;

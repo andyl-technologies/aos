@@ -82,6 +82,19 @@ in
             printf '%s%s\n' "$aos_root" "$logical"
           }
 
+          locked_input() {
+            physical="$1"
+            logical="''${physical#"$aos_root"}"
+            test "$logical" != "$physical" \
+              || fail "evaluator input is outside the isolated store: $physical"
+            nar_hash=$(nix_store --query --hash "$logical")
+            sri_hash=$(env NIX_CONF_DIR="$nix_conf" \
+              ${pkgs.nix}/bin/nix hash convert \
+                --hash-algo sha256 --to sri "$nar_hash")
+            printf '(builtins.fetchTree { type = "path"; path = "%s"; narHash = "%s"; }).outPath' \
+              "$physical" "$sri_hash"
+          }
+
           root_path() {
             target="$1"
             directory="$2"
@@ -118,11 +131,14 @@ in
             # renders host-facts.nix. Embed the same authenticated bytes here
             # as a Nix string before fromJSON.
             facts_json=$(${pkgs.jq}/bin/jq -Rs . "$facts_store")
+            base_expr=$(locked_input "$base_lib")
+            host_expr=$(locked_input "$host_store")
+            config_module_expr=$(locked_input "$config_module_store")
             cat > "$destination" <<ENTRY
           let
-            baseLib = import $base_lib;
-            host = import $host_store;
-            configModule = import $config_module_store;
+            baseLib = import $base_expr;
+            host = import $host_expr;
+            configModule = import $config_module_expr;
             facts = builtins.fromJSON $facts_json;
             evaluated = baseLib.evalRetained {
               inherit host configModule facts;
@@ -136,22 +152,20 @@ in
           eval_entry() {
             entry="$1"
             destination="$2"
+            env HOME="$home" XDG_CACHE_HOME="$cache" NIX_CONF_DIR="$nix_conf" \
             ${pkgs.nix}/bin/nix-instantiate \
-              --store dummy:// \
+              --store "$store_uri" \
+              --extra-experimental-features "nix-command flakes" \
               --eval \
               --strict \
               --json \
               --pure-eval \
               --option restrict-eval true \
               --option allow-import-from-derivation false \
-              -I "$entry" \
-              -I "$base_v1_store" \
-              -I "$base_v2_store" \
-              -I "$host_store" \
-              -I "$facts_store" \
-              -I "$config_module_store" \
-              "$entry" \
-              > "$destination"
+              --option allowed-uris "path:$store_dir/" \
+              - \
+              < "$entry" \
+              > "$destination" || return $?
           }
 
           nix_store --init
@@ -272,8 +286,15 @@ in
             "$base_v2_store"; do
             assert_collected "$collected"
           done
+          # A conditional command is immune to both errexit and the stdenv's
+          # ERR trap, so the expected evaluator rejection remains observable.
           if eval_entry "$work/abi-2-entry.nix" "$work/unrooted-eval.json" \
             > "$work/unrooted-eval.stdout" 2> "$work/unrooted-eval.stderr"; then
+            unrooted_status=0
+          else
+            unrooted_status=$?
+          fi
+          if [ "$unrooted_status" -eq 0 ]; then
             fail "cross-ABI re-evaluation succeeded after its inputs were collected"
           fi
           test ! -s "$work/unrooted-eval.json" \
