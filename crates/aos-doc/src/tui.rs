@@ -258,7 +258,7 @@ struct App {
     // Reference to entries
     entries: Vec<DocEntry>,
     // Language data (for content)
-    lang_content: Vec<(String, String, String)>, // (chapter, topic, body)
+    lang_content: Vec<(String, String, String, String)>, // (chapter, topic, summary, body)
 }
 
 impl App {
@@ -400,9 +400,9 @@ impl App {
             .and_then(|idx| self.entries.get(idx))
     }
 
-    /// Returns the `(chapter, topic, body)` to display on the Language tab.
+    /// Returns the `(chapter, topic, summary, body)` to display on the Language tab.
     /// Selecting a chapter shows its first topic's content.
-    fn selected_lang_content(&self) -> Option<&(String, String, String)> {
+    fn selected_lang_content(&self) -> Option<&(String, String, String, String)> {
         self.lang_tree.selected_node().and_then(|nid| {
             let node = &self.lang_tree.nodes[nid];
             if node.entry_idx.is_some() {
@@ -411,7 +411,7 @@ impl App {
                 let chapter_name = &self.lang_tree.nodes[parent_idx].label;
                 self.lang_content
                     .iter()
-                    .find(|(ch, tp, _)| ch == chapter_name && tp == &node.label)
+                    .find(|(ch, tp, _, _)| ch == chapter_name && tp == &node.label)
             } else if node.children.is_empty() {
                 None
             } else {
@@ -420,7 +420,7 @@ impl App {
                 let child_node = &self.lang_tree.nodes[first_child];
                 self.lang_content
                     .iter()
-                    .find(|(ch, tp, _)| ch == &node.label && tp == &child_node.label)
+                    .find(|(ch, tp, _, _)| ch == &node.label && tp == &child_node.label)
             }
         })
     }
@@ -451,8 +451,10 @@ fn build_language_tree(entries: &[DocEntry]) -> TreeState {
         for topic in chapter.topics {
             let topic_idx = nodes.len();
             // Find matching DocEntry if it exists.
-            let entry_idx = entries.iter().position(|e| {
-                e.category == DocCategory::LanguageRef && e.path.ends_with(topic.name)
+            let entry_idx = entries.iter().position(|entry| {
+                entry.category == DocCategory::LanguageRef
+                    && entry.section.as_deref() == Some(chapter.name)
+                    && entry.summary == topic.summary
             });
             nodes.push(TreeNode {
                 label: topic.name.to_string(),
@@ -469,8 +471,8 @@ fn build_language_tree(entries: &[DocEntry]) -> TreeState {
     TreeState::new(nodes)
 }
 
-/// Flattens the static language data into `(chapter, topic, body)` rows.
-fn build_language_content() -> Vec<(String, String, String)> {
+/// Flattens the static language data into `(chapter, topic, summary, body)` rows.
+fn build_language_content() -> Vec<(String, String, String, String)> {
     use crate::data::language::chapters;
     let mut content = Vec::new();
     for chapter in chapters() {
@@ -478,6 +480,7 @@ fn build_language_content() -> Vec<(String, String, String)> {
             content.push((
                 chapter.name.to_string(),
                 topic.name.to_string(),
+                topic.summary.to_string(),
                 topic.body.to_string(),
             ));
         }
@@ -994,7 +997,7 @@ fn draw_language_tab(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_stateful_widget(tree_list, chunks[0], &mut app.lang_tree.list_state);
 
     // Right: content.
-    let content = if let Some((chapter, topic, body)) = app.selected_lang_content() {
+    let content = if let Some((chapter, topic, summary, body)) = app.selected_lang_content() {
         let mut lines = vec![
             Line::from(Span::styled(
                 format!("{chapter} > {topic}"),
@@ -1002,6 +1005,8 @@ fn draw_language_tab(f: &mut Frame, app: &mut App, area: Rect) {
             )),
             Line::from(""),
         ];
+        lines.extend(render_markdown_lines(summary));
+        lines.push(Line::from(""));
         lines.extend(render_markdown_lines(body));
         Text::from(lines)
     } else {
@@ -1361,6 +1366,81 @@ fn draw_search_overlay(f: &mut Frame, app: &mut App, area: Rect) {
 // Detail rendering
 // ---------------------------------------------------------------------------
 
+/// Appends the summary and additional prose as formatted Markdown.
+fn append_description(lines: &mut Vec<Line<'static>>, entry: &DocEntry) {
+    if !entry.summary.is_empty() {
+        lines.extend(render_markdown_lines(&entry.summary));
+        lines.push(Line::from(""));
+    }
+
+    if !entry.body.is_empty() {
+        lines.extend(render_markdown_lines(&entry.body));
+        lines.push(Line::from(""));
+    }
+}
+
+/// Appends parsed parameters, examples, and cross-references once.
+fn append_structured_sections(lines: &mut Vec<Line<'static>>, entry: &DocEntry) {
+    if !entry.parameters.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Parameters:",
+            Style::default().bold(),
+        )));
+        for (name, description) in &entry.parameters {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {name}"),
+                    Style::default().fg(ratatui::style::Color::Yellow),
+                ),
+                Span::styled(format!(" - {description}"), Style::default()),
+            ]));
+        }
+        lines.push(Line::from(""));
+    }
+
+    if !entry.examples.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Examples:",
+            Style::default().bold(),
+        )));
+        for example in &entry.examples {
+            for line in example.lines() {
+                lines.push(Line::from(Span::styled(
+                    format!("  {line}"),
+                    Style::default().dim(),
+                )));
+            }
+            lines.push(Line::from(""));
+        }
+    }
+
+    if !entry.see_also.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "See also:",
+            Style::default().bold(),
+        )));
+        lines.push(Line::from(format!("  {}", entry.see_also.join(", "))));
+        lines.push(Line::from(""));
+    }
+}
+
+/// Appends version-introduction and deprecation metadata when present.
+fn append_lifecycle_metadata(lines: &mut Vec<Line<'static>>, entry: &DocEntry) {
+    let mut appended = false;
+    for (label, key) in [("Since", "since"), ("Deprecated", "deprecated")] {
+        if let Some(value) = entry.extra.get(key) {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{label}: "), Style::default().bold()),
+                Span::raw(value.clone()),
+            ]));
+            appended = true;
+        }
+    }
+    if appended {
+        lines.push(Line::from(""));
+    }
+}
+
 /// Renders a function/type entry as styled text: path, type signature,
 /// summary, body, parameters, examples, see-also, and source location.
 fn render_entry_detail(entry: &DocEntry) -> Text<'static> {
@@ -1383,60 +1463,9 @@ fn render_entry_detail(entry: &DocEntry) -> Text<'static> {
         lines.push(Line::from(""));
     }
 
-    // The body includes the summary as its first paragraph, so render only
-    // one source. Prefer the body because it preserves inline formatting.
-    if !entry.body.is_empty() {
-        lines.extend(render_markdown_lines(&entry.body));
-        lines.push(Line::from(""));
-    } else if !entry.summary.is_empty() {
-        lines.push(Line::from(entry.summary.clone()));
-        lines.push(Line::from(""));
-    }
-
-    // Parameters.
-    if !entry.parameters.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "Parameters:",
-            Style::default().bold(),
-        )));
-        for (name, desc) in &entry.parameters {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("  {name}"),
-                    Style::default().fg(ratatui::style::Color::Yellow),
-                ),
-                Span::styled(format!(" - {desc}"), Style::default()),
-            ]));
-        }
-        lines.push(Line::from(""));
-    }
-
-    // Examples.
-    if !entry.examples.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "Examples:",
-            Style::default().bold(),
-        )));
-        for example in &entry.examples {
-            for line in example.lines() {
-                lines.push(Line::from(Span::styled(
-                    format!("  {line}"),
-                    Style::default().dim(),
-                )));
-            }
-            lines.push(Line::from(""));
-        }
-    }
-
-    // See also.
-    if !entry.see_also.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "See also:",
-            Style::default().bold(),
-        )));
-        lines.push(Line::from(format!("  {}", entry.see_also.join(", "))));
-        lines.push(Line::from(""));
-    }
+    append_description(&mut lines, entry);
+    append_structured_sections(&mut lines, entry);
+    append_lifecycle_metadata(&mut lines, entry);
 
     // Source.
     if let Some(ref src) = entry.source_file {
@@ -1486,42 +1515,9 @@ fn render_option_detail(entry: &DocEntry) -> Text<'static> {
     }
     lines.push(Line::from(""));
 
-    // The body includes the summary as its first paragraph, so render only
-    // one source. Prefer the body because it preserves inline formatting.
-    if !entry.body.is_empty() {
-        lines.extend(render_markdown_lines(&entry.body));
-        lines.push(Line::from(""));
-    } else if !entry.summary.is_empty() {
-        lines.push(Line::from(entry.summary.clone()));
-        lines.push(Line::from(""));
-    }
-
-    // Examples.
-    if !entry.examples.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "Examples:",
-            Style::default().bold(),
-        )));
-        for example in &entry.examples {
-            for line in example.lines() {
-                lines.push(Line::from(Span::styled(
-                    format!("  {line}"),
-                    Style::default().dim(),
-                )));
-            }
-            lines.push(Line::from(""));
-        }
-    }
-
-    // See also.
-    if !entry.see_also.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "See also:",
-            Style::default().bold(),
-        )));
-        lines.push(Line::from(format!("  {}", entry.see_also.join(", "))));
-        lines.push(Line::from(""));
-    }
+    append_description(&mut lines, entry);
+    append_structured_sections(&mut lines, entry);
+    append_lifecycle_metadata(&mut lines, entry);
 
     // Declared in.
     if let Some(ref src) = entry.source_file {
@@ -1560,16 +1556,20 @@ fn render_package_detail(entry: &DocEntry) -> Text<'static> {
         ]));
     }
 
-    // The body includes the summary as its first paragraph, so render only
-    // one source. Prefer the body because it preserves inline formatting.
-    if !entry.body.is_empty() {
-        lines.push(Line::from(""));
-        lines.extend(render_markdown_lines(&entry.body));
-    } else if !entry.summary.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(entry.summary.clone()));
+    if let Some(ref signature) = entry.type_sig {
+        lines.push(Line::from(vec![
+            Span::styled("Type: ", Style::default().bold()),
+            Span::styled(
+                signature.clone(),
+                Style::default().fg(ratatui::style::Color::Green),
+            ),
+        ]));
     }
+
     lines.push(Line::from(""));
+    append_description(&mut lines, entry);
+    append_structured_sections(&mut lines, entry);
+    append_lifecycle_metadata(&mut lines, entry);
 
     // Build deps.
     if let Some(deps) = entry.extra.get("buildDeps") {
@@ -1730,26 +1730,29 @@ mod tests {
     use super::*;
 
     fn documented_entry(category: DocCategory) -> DocEntry {
+        let mut extra = BTreeMap::new();
+        extra.insert("since".to_string(), "1.0".to_string());
+        extra.insert("deprecated".to_string(), "Use replacement.".to_string());
+
         DocEntry {
             path: "test.entry".to_string(),
             category,
             summary: "Returns `value`.".to_string(),
-            body: "Returns `value`.\n\nMore detail.".to_string(),
-            type_sig: None,
+            body: "More detail.".to_string(),
+            type_sig: Some("value -> value".to_string()),
             default: None,
-            examples: Vec::new(),
-            see_also: Vec::new(),
-            parameters: Vec::new(),
+            examples: vec!["example value".to_string()],
+            see_also: vec!["replacement".to_string()],
+            parameters: vec![("value".to_string(), "The input.".to_string())],
             source_file: None,
             source_line: None,
             section: None,
-            extra: BTreeMap::new(),
+            extra,
         }
     }
 
-    fn assert_summary_rendered_once(text: &Text<'_>) {
-        let rendered_lines: Vec<String> = text
-            .lines
+    fn rendered_lines(text: &Text<'_>) -> Vec<String> {
+        text.lines
             .iter()
             .map(|line| {
                 line.spans
@@ -1757,7 +1760,11 @@ mod tests {
                     .map(|span| span.content.as_ref())
                     .collect()
             })
-            .collect();
+            .collect()
+    }
+
+    fn assert_entry_rendered_once(text: &Text<'_>) {
+        let rendered_lines = rendered_lines(text);
 
         assert_eq!(
             rendered_lines
@@ -1771,16 +1778,87 @@ mod tests {
                 span.content.as_ref() == "value" && span.style.fg == Some(Color::Yellow)
             })
         }));
+        assert_eq!(
+            rendered_lines
+                .iter()
+                .filter(|line| line.as_str() == "More detail.")
+                .count(),
+            1
+        );
+        for heading in ["Type:", "Parameters:", "Examples:", "See also:"] {
+            assert_eq!(
+                rendered_lines
+                    .iter()
+                    .filter(|line| line.starts_with(heading))
+                    .count(),
+                1,
+                "{heading} should be rendered once"
+            );
+        }
+        assert_eq!(
+            rendered_lines
+                .iter()
+                .filter(|line| line.starts_with("Since:"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            rendered_lines
+                .iter()
+                .filter(|line| line.starts_with("Deprecated:"))
+                .count(),
+            1
+        );
     }
 
     #[test]
-    fn detail_views_render_formatted_summaries_once() {
+    fn detail_views_render_every_section_once() {
         let function = documented_entry(DocCategory::Function);
         let option = documented_entry(DocCategory::ModuleOption);
         let package = documented_entry(DocCategory::Package);
 
-        assert_summary_rendered_once(&render_entry_detail(&function));
-        assert_summary_rendered_once(&render_option_detail(&option));
-        assert_summary_rendered_once(&render_package_detail(&package));
+        assert_entry_rendered_once(&render_entry_detail(&function));
+        assert_entry_rendered_once(&render_option_detail(&option));
+        assert_entry_rendered_once(&render_package_detail(&package));
+    }
+
+    #[test]
+    fn language_content_includes_summary_and_body() {
+        let content = build_language_content();
+        let (_, _, summary, body) = &content[0];
+
+        assert!(!summary.is_empty());
+        assert!(!body.is_empty());
+        assert_ne!(summary, body);
+    }
+
+    #[test]
+    fn language_tree_links_topics_to_their_entries() {
+        let chapter = &crate::data::language::chapters()[0];
+        let topic = &chapter.topics[0];
+        let entry = DocEntry {
+            path: "language.test.topic".to_string(),
+            category: DocCategory::LanguageRef,
+            summary: topic.summary.to_string(),
+            body: topic.body.to_string(),
+            type_sig: None,
+            default: None,
+            examples: Vec::new(),
+            see_also: Vec::new(),
+            parameters: Vec::new(),
+            source_file: None,
+            source_line: None,
+            section: Some(chapter.name.to_string()),
+            extra: BTreeMap::new(),
+        };
+
+        let tree = build_language_tree(&[entry]);
+        let topic_node = tree
+            .nodes
+            .iter()
+            .find(|node| node.label == topic.name)
+            .unwrap();
+
+        assert_eq!(topic_node.entry_idx, Some(0));
     }
 }

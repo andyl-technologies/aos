@@ -9,9 +9,15 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// Current schema version for serialized documentation indexes.
+pub const DOC_INDEX_SCHEMA_VERSION: u32 = 1;
+
 /// The complete documentation index, serialized to JSON for caching.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocIndex {
+    /// Cache schema version used to reject indexes with older body semantics.
+    #[serde(default)]
+    pub schema_version: u32,
     /// Unix timestamp when the index was built.
     pub built_at: u64,
     /// All documented entries.
@@ -33,7 +39,7 @@ pub struct DocEntry {
     pub category: DocCategory,
     /// First paragraph of the doc comment.
     pub summary: String,
-    /// Full markdown content of the doc comment.
+    /// Additional markdown prose after the summary, excluding structured sections.
     pub body: String,
     /// Type signature from `# Type` section or Nix evaluation.
     pub type_sig: Option<String>,
