@@ -26,7 +26,7 @@ use anyhow::Result;
 
 use crate::data::builtins as builtins_data;
 use crate::data::language as language_data;
-use crate::model::{DocCategory, DocEntry, DocIndex};
+use crate::model::{DOC_INDEX_SCHEMA_VERSION, DocCategory, DocEntry, DocIndex};
 use crate::nix_parser;
 use aos_core::nix::NixRunner;
 
@@ -80,7 +80,11 @@ pub fn build_index(root: &Path, nix: Option<&NixRunner>) -> Result<DocIndex> {
         .unwrap_or_default()
         .as_secs();
 
-    Ok(DocIndex { built_at, entries })
+    Ok(DocIndex {
+        schema_version: DOC_INDEX_SCHEMA_VERSION,
+        built_at,
+        entries,
+    })
 }
 
 /// Extracts function docs from `lib/*.nix` files into `functions.<file>.<name>`
@@ -430,7 +434,7 @@ fn walk_nix_files(dir: &Path, f: &mut dyn FnMut(&Path)) {
 /// Enriches module option entries with type and default metadata obtained
 /// by evaluating the Nix module system.
 ///
-/// Evaluates `system.options` and merges the resulting type names and
+/// Evaluates `systems.server.options` and merges the resulting type names and
 /// default values into the comment-parsed [`DocEntry`] records.  If
 /// evaluation fails (e.g. the user hasn't built yet), the entries are left
 /// unchanged.
@@ -448,7 +452,7 @@ fn enrich_options_from_eval(nix: &NixRunner, entries: &mut [DocEntry]) {
         r#"
         let
           aos = import {root}/default.nix {{}};
-          options = aos.system.options;
+          options = aos.systems.server.options;
           safeVal = v:
             if v == null then null
             else if builtins.isString v then v
