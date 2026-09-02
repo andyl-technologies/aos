@@ -600,7 +600,7 @@ in {
             --key-id initial
           {APR} publish {NGINX} --registry production \\
             --name nginx --version '${pkgs.nginx.version}' \\
-            --description 'Typed virtual hosts, upstreams, TLS credentials, validation, and reload behavior.' \\
+            --description 'nginx — high-performance HTTP and reverse proxy server' \\
             --license BSD-2-Clause --maintainer publisher@example.test \\
             --expose-manifest {shlex.quote(NGINX_EXPOSE + "/manifest.json")} \\
             --config-module {shlex.quote(NGINX_CONFIG)} \\
@@ -696,7 +696,7 @@ in {
       # a strong ETag that addresses the immutable documentation object.
       consumer.succeed(
           f"{CURL} -fsS '{REGISTRY}-/docs?q=&kind=' "
-          "| grep -q 'Typed virtual hosts'"
+          "| grep -q 'high-performance HTTP and reverse proxy server'"
       )
       consumer.succeed(
           f"{CURL} -fsS '{REGISTRY}-/docs?q=virtual' "
@@ -704,7 +704,7 @@ in {
       )
       consumer.succeed(
           f"{CURL} -fsS {REGISTRY}-/docs/nginx/${pkgs.nginx.version}/x86_64-linux "
-          "| grep -q 'Typed virtual hosts'"
+          "| grep -q 'high-performance HTTP and reverse proxy server'"
       )
       consumer.succeed(
           f"{CURL} -fsS '{REGISTRY}-/api/v1/packages/nginx/options?prefix=nginx.virtualHosts' "
@@ -715,7 +715,8 @@ in {
           {CURL} -fsS -D /tmp/nginx-doc.headers \
             -o /tmp/nginx-doc.json \
             '{REGISTRY}-/api/v1/packages/nginx/documentation'
-          grep -qi '^cache-control:.*immutable' /tmp/nginx-doc.headers
+          grep -qi '^cache-control:.*max-age=60.*must-revalidate' /tmp/nginx-doc.headers
+          ! grep -qi '^cache-control:.*immutable' /tmp/nginx-doc.headers
           etag=$(sed -n 's/^[Ee][Tt][Aa][Gg]:[[:space:]]*"\\([^"[:space:]]*\\)".*/\\1/p' \
             /tmp/nginx-doc.headers | tr -d '\\r')
           test -n "$etag"
@@ -769,7 +770,7 @@ in {
       """), timeout=600)
       documentation_commands = (
           ("show installed package documentation",
-           f"{APM} docs show nginx | grep -q 'Typed virtual hosts'"),
+           f"{APM} docs show nginx | grep -q 'high-performance HTTP and reverse proxy server'"),
           ("search installed options",
            f"{APM} options search virtual | grep -q 'nginx.virtualHosts'"),
           ("show one installed option",
@@ -863,7 +864,7 @@ in {
           set -eu
           export HOME=/tmp/consumer USER=consumer
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
-          {APM} docs show nginx | grep -q 'Typed virtual hosts'
+          {APM} docs show nginx | grep -q 'high-performance HTTP and reverse proxy server'
           {APM} options complete nginx.virtual | grep -q 'nginx.virtualHosts'
 
           {APM} docs serve --listen 127.0.0.1:18080 --once \
@@ -872,7 +873,7 @@ in {
           served=0
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
             if {CURL} -fsS http://127.0.0.1:18080/packages/nginx \
-              | grep -q 'Typed virtual hosts'; then
+              | grep -q 'high-performance HTTP and reverse proxy server'; then
               served=1
               break
             fi
