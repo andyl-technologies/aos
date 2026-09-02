@@ -51,6 +51,45 @@ and
 [`crucible-qemu-live-ninep-io.rs`](../../../crates/crucible-qemu/examples/crucible-qemu-live-ninep-io.rs)
 show the production protocol boundaries.
 
+## Complete storage and 9p effect contract
+
+All effects use semantic version `1`. **Storage targets** means block device,
+block range, controller, or array; narrower rows are explicit.
+
+| Effect | Targets; phases; lifetimes; composition | Capability | Complete top-level parameters |
+|---|---|---|---|
+| `storage.availability` | storage targets; `admit`; `persistent` or `state_machine`; `severity` | `storage.availability.v1` | availability `state`, admitted/queued-operation `reconnect_policy` |
+| `storage.reported_capacity` | storage targets; `produce`, `admit`; `persistent`; `composite` | `storage.capacity.v1` | positive `length_bytes`, beyond-boundary `shrink_policy` |
+| `storage.latency` | storage targets; `resolve`, `deliver`; `opportunity`; `checked_sum` | `storage.latency.v1` | nonempty `operations`, `extra_nanos`, maximum keyed `jitter_nanos` |
+| `storage.service` | storage targets; `queue`; `persistent` or `state_machine`; `minimum` | `storage.service.v1` | positive byte rate, optional positive IOPS, positive queue depth, service policy |
+| `storage.operation_failure` | storage targets; `resolve`, `persist`; `opportunity`; `severity` | `storage.failure.v1` | operations, probability, registered typed status/errno |
+| `storage.stall_timeout` | storage targets; `resolve`; `opportunity` or `state_machine`; `composite` | `storage.stall.v1` | positive stall duration, optional recovery event, typed timeout result |
+| `storage.completion_reorder` | storage targets; `deliver`; `opportunity`; `composite` | `storage.reorder.v1` | positive window, keyed selection |
+| `storage.duplicate_completion` | storage targets; `deliver`; `opportunity`; `checked_sum` | `storage.duplicate.v1` | bounded additional copies, gap, protocol duplicate policy |
+| `storage.read_transform` | storage targets; `resolve`; `opportunity`; `ordered_transform` | `storage.read-transform.v1` | typed bit/stale/misdirection `mutation` and selector |
+| `storage.write_disposition` | storage targets; `persist`; `opportunity`; `conflict` | `storage.write-disposition.v1` | applied/lost/torn/misdirected `disposition`, acknowledged status |
+| `storage.persistence_order` | storage targets; `persist`; `persistent` or `opportunity`; `composite` | `storage.persistence-order.v1` | ordering-group identity, registered delay/barrier rule |
+| `storage.volatile_cache` | block device/range; `persist`; `persistent`; `conflict` | `storage.volatile-cache.v1` | positive byte capacity, admission/eviction policy |
+| `storage.volatile_cache_loss` | block device/range; `boundary`; `impulse`; `ordered_transform` | `storage.volatile-cache-loss.v1` | deterministic eligible-entry selector, protection/loss kind |
+| `storage.flush_disposition` | storage targets; `persist`; `opportunity`; `severity` | `storage.flush.v1` | honest/error/lie/stall kind, typed status; stall-only duration and optional recovery event |
+| `storage.media_range` | storage targets; `resolve`, `persist`; `persistent` or `state_machine`; `ordered_transform` | `storage.media-range.v1` | byte range, media state, operations, optional access-count/time thresholds |
+| `storage.flash_state` | storage targets; `persist`; `persistent` or `state_machine`; `state_machine` | `storage.flash.v1` | positive erase-block/page sizes and endurance; retention, disturb, and program/erase rule IDs |
+| `storage.controller_lifecycle` | storage targets; `boundary`; `state_machine`; `severity` | `storage.controller.v1` | transition, complete transition policy, resulting namespace and path sets |
+| `storage.array_state` | storage targets; `resolve`, `persist`; `state_machine`; `composite` | `storage.array.v1` | layout, member/path state, selection, rebuild, consistency, and failure-result IDs |
+| `ninep.result` | 9p device; `resolve`; `opportunity`; `severity` | `ninep.result.v1` | operations, result kind; errno only for error, version only for stale, object only for misdirection |
+| `ninep.visibility` | 9p device; `persist`, `visibility`, `deliver`; `state_machine`; `composite` | `ninep.visibility.v1` | update ID, exactly one of delay/event, namespace/data visibility policy |
+
+Storage availability is `online`, `offline`, `read_only`, or `degraded`.
+Transition policies classify admitted and queued work rather than silently
+dropping it. Thresholded media and flash state retain counters in the
+checkpoint. All result/status IDs resolve through declared typed policy
+artifacts, so the guest protocol response is reproducible.
+
+Mandatory evidence covers service and queue ledgers, keyed decisions,
+before/after data digests, volatile and durable sequences/frontiers, selected
+cache entries, media thresholds/counters, controller namespace/path state,
+array selection/rebuild/durability, and 9p committed/visible frontiers.
+
 ## Node lifecycle and progress
 
 Use `node.lifecycle` for boot, crash, reset, power-cycle, stop, and recovery.
@@ -62,6 +101,44 @@ Lifecycle effects act on the complete production VM participant, not merely a
 host-side model flag. The adapter records generation changes and restores only
 the state the effect declares preserved. The production reference is
 [`crucible-qemu-live-node-lifecycle-fault.rs`](../../../crates/crucible-qemu/examples/crucible-qemu-live-node-lifecycle-fault.rs).
+
+## Complete node and hardware effect contract
+
+All effects use semantic version `1`. The target must also exist in
+`WorldNodeFaultCapabilities`; target kind alone is insufficient.
+
+| Effect | Targets; phases; lifetimes; composition | Capability | Complete top-level parameters |
+|---|---|---|---|
+| `node.lifecycle` | node; `boundary`; `impulse` or `state_machine`; `severity` | `qemu.node.lifecycle.v1` | transition, downtime, boot policy, volatile-state policy, device-state policy |
+| `node.hang` | node/vCPU/accelerator; `boundary`, `run`; `persistent`; `outage_or` | `qemu.node.hang.v1` | hang scope, recovery event, watchdog policy |
+| `cpu.service` | node/vCPU; `run`; `persistent` or `state_machine`; `minimum` | `qemu.cpu.service.v1` | vCPU set, exact capacity ratio, positive instruction quantum, service discipline |
+| `cpu.vcpu_state` | vCPU; `boundary`; `state_machine`; `severity` | `qemu.cpu.vcpu-state.v1` | online/offline/stalled state, optional recovery event where required |
+| `cpu.register_transform` | register; `before_instruction`, `after_instruction`, `boundary`; `persistent`, `opportunity`, or `impulse`; `ordered_transform` | `qemu.register.mutate.v1` | register ID, first bit, positive bit count, mutation, occurrence policy |
+| `cpu.instruction_transform` | vCPU; `before_instruction`, `after_instruction`; `opportunity`; `conflict` | `qemu.cpu.instruction-transform.v1` | architecture instruction selector, corruption/skip/replay mutation |
+| `cpu.exception` | vCPU; `before_instruction`, `after_instruction`, `boundary`; `impulse`; `severity` | `qemu.cpu.exception.v1` | architecture-specific exception payload |
+| `interrupt.disposition` | interrupt; `raise`, `route`, `interrupt_deliver`; `opportunity` or `state_machine`; `ordered_transform` | `qemu.interrupt.control.v1` | drop/delay/duplicate/replace mutation |
+| `interrupt.storm` | interrupt; `raise`; `state_machine`; `composite` | `qemu.interrupt.storm.v1` | source, vector, positive period, bounded burst/count, routing policy |
+| `memory.mutation` | memory range; `boundary`; `impulse`; `ordered_transform` | `qemu.memory.mutate.v1` | address space, byte range, mutation, atomicity policy |
+| `memory.access_transform` | memory range; `fetch`, `load`, `store`, `dma_read`, `dma_write`, `page_table_walk`; `persistent` or `opportunity`; `ordered_transform` | `qemu.memory.access-transform.v1` | range, access classes, optional DMA device, atomicity-violation flag, mutation, occurrence |
+| `memory.ecc_event` | memory range; `fetch`, `load`, `store`, `dma_read`, `dma_write`, `page_table_walk`, `boundary`; `impulse` or `opportunity`; `severity` | `qemu.memory.ecc-event.v1` | target vCPU, ECC kind, address, syndrome, bank/channel/rank, guest visibility |
+| `memory.region_state` | memory range; `fetch`, `load`, `store`, `dma_read`, `dma_write`, `page_table_walk`, `refresh`; `persistent` or `state_machine`; `ordered_transform` | `qemu.memory.region-state.v1` | range, failed/retention/rowhammer kind, process parameters |
+| `memory.service` | memory range; `fetch`, `load`, `store`, `dma_read`, `dma_write`, `page_table_walk`, `queue`; `persistent` or `state_machine`; `composite` | `qemu.memory.service.v1` | latency, optional byte/operation rates, sharing scope |
+| `clock.transform` | clock source; `clock_read`, `arm`, `fire`; `persistent` or `impulse`; `composite` | `qemu.clock.transform.v1` | source, offset/drift/jump/freeze/jitter/wander mutation, monotonicity, overdue-timer policy |
+| `clock.source_state` | clock source; `source_switch`, `synchronize`; `state_machine`; `conflict` | `qemu.clock.source-state.v1` | source set, transition, synchronization policy |
+| `accelerator.lifecycle` | accelerator; `boundary`, `submit`; `state_machine`; `severity` | `qemu.accelerator.lifecycle.v1` | device, transition, queue policy, memory policy |
+| `accelerator.result_transform` | accelerator; `execute`, `complete`; `opportunity`; `ordered_transform` | `qemu.accelerator.result-transform.v1` | job selector, result mutation |
+| `accelerator.memory_event` | accelerator; `accelerator_memory_access`, `boundary`; `opportunity` or `impulse`; `severity` | `qemu.accelerator.memory-event.v1` | range and allowed ECC kind, syndrome, or replacement bytes |
+| `accelerator.service` | accelerator; `execute`, `queue`; `persistent` or `state_machine`; `minimum` | `qemu.accelerator.service.v1` | exact capacity ratio, optional memory/job rates, thermal/power contract |
+
+The QEMU handshake proves each fine-grained capability and architecture
+manifest. Register evidence retains the manifest/model digests, resolved
+register, before/after values, side effects, instruction count, and execution
+fingerprint. Memory evidence retains translation, bytes, dirty tracking,
+access outcome, page-table walk and DRAM/ECC identity. Interrupts retain source,
+route, vector, original/final deliveries and acknowledgements. Clock evidence
+retains raw/transformed values and timer consequences. Accelerator evidence
+retains enumeration/run state, queue treatment, job/data digests, device-memory
+outcome, and service ledgers.
 
 ## CPU, interrupt, memory, and clock
 
