@@ -24,7 +24,25 @@
   testing,
   pkgs,
 }: let
-  aosPkg = pkgs.aos;
+  # These interaction tests need both public package surfaces. Keep their
+  # convenience layout local to the test suite; production outputs stay
+  # disjoint and never install compatibility aliases.
+  aosPkg = pkgs.mkDerivation {
+    pname = "aos-apm-apr-vm-test-suite";
+    version = pkgs.aos.version;
+    src = null;
+    runtimeDeps = [pkgs.aos.apm pkgs.aos.apr];
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/bin"
+          ln -s ${pkgs.aos.apm}/bin/apm "$out/bin/apm"
+          ln -s ${pkgs.aos.apr}/bin/apr "$out/bin/apr"
+        '';
+      }
+    ];
+  };
 
   registryTests = import ./registry.nix {inherit testing pkgs aosPkg;};
   registryValidationTests = import ./registry_validation.nix {inherit testing pkgs aosPkg;};

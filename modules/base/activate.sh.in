@@ -81,7 +81,7 @@ restore_routed_sources_from_plan() {
   if [ "${etc_swapped:-0}" = 1 ]; then
     restore_args+=(--candidate)
   fi
-  @apm@/bin/.apm-unwrapped activate-restore-routed-sources "${restore_args[@]}"
+  @apm@/bin/.aos-package-runtime-unwrapped activate-restore-routed-sources "${restore_args[@]}"
 }
 
 on_exit() {
@@ -155,7 +155,8 @@ upper_root=/run/etc/upper-${N}
 # Determine the config backend for this generation's per-host /etc.
 #
 # Per-host /etc comes from this generation's retained, content-addressed EROFS
-# lower. `apm __materialize` creates it atomically from the retained manifest
+# lower. `aos-package-runtime __materialize` creates it atomically from the
+# retained manifest
 # and validates it on every reuse. Legacy image generations without a retained
 # manifest remain an empty configuration lower.
 
@@ -240,7 +241,7 @@ STAGE="$STAGE_PREPARE"
 generation_dir="/var/lib/profiles/system/gen-${N}"
 generation_manifest="/var/lib/profiles/system/gen-${N}/manifest.json"
 if [ -f "$generation_manifest" ]; then
-  @apm@/bin/.apm-unwrapped __materialize \
+  @apm@/bin/.aos-package-runtime-unwrapped __materialize \
     --manifest "$generation_manifest" \
     --generation-dir "$generation_dir" \
     --mkfs-erofs @erofs-utils@/bin/mkfs.erofs \
@@ -292,7 +293,7 @@ workdir="$upper_root/work" \
 # immutable lower copy. Apply those deletions through the mounted overlay so
 # overlayfs records generation-local whiteouts in this generation's upper.
 if [ -f "$generation_manifest" ]; then
-  @apm@/bin/.apm-unwrapped __materialize \
+  @apm@/bin/.aos-package-runtime-unwrapped __materialize \
     --manifest "$generation_manifest" \
     --overlay-root "$tmpEtc"
 fi
@@ -310,18 +311,15 @@ if [ "${AOS_CREDENTIAL_BARRIER:-0}" = 1 ]; then
 fi
 
 # --- pre-swap reconcile ---
-# Hand off to apm before the swap: diff live /etc against the candidate, stop
-# old-definition units, and capture the post-swap plan path. The path is the
-# command's only stdout; diagnostics go to stderr via Printer.
+# Hand off to the package runtime before the swap: diff live /etc against the
+# candidate, stop old-definition units, and capture the post-swap plan path.
+# The path is the command's only stdout; diagnostics go to stderr via Printer.
 STAGE="$STAGE_PRESWAP"
 set +e
-# Invoke the UNWRAPPED binary directly, not @apm@/bin/apm. The `apm` wrapper
-# runs `exec "$(dirname "$0")/.apm-unwrapped"`, which needs `dirname` on PATH —
-# but this script runs with `PATH=` (empty), so the wrapper would die with
-# "dirname: command not found". The activate subcommands do pure filesystem +
-# D-Bus work and shell out to neither git nor nix-store, so they need none of
-# the git/nix PATH the wrapper sets up.
-plan=$(@apm@/bin/.apm-unwrapped activate-pre-etc-swap \
+# Invoke the unwrapped package runtime directly because this script deliberately
+# runs with `PATH=`. These activation operations use only filesystem and D-Bus
+# APIs and do not need the wrapper's hermetic tool path.
+plan=$(@apm@/bin/.aos-package-runtime-unwrapped activate-pre-etc-swap \
   --gen="$N" \
   --candidate-etc="$tmpEtc")
 pre_rc=$?
@@ -465,7 +463,7 @@ else
   set +e
   # The activation script otherwise keeps PATH empty. Supply only systemd's bin
   # directory so best-effort failed-unit diagnostics can invoke systemctl.
-  PATH=@systemd@/bin @apm@/bin/.apm-unwrapped activate-post-etc-swap --plan="$plan"
+  PATH=@systemd@/bin @apm@/bin/.aos-package-runtime-unwrapped activate-post-etc-swap --plan="$plan"
   post_rc=$?
   set -e
   if [ ! -e "$plan" ]; then

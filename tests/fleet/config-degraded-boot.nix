@@ -108,7 +108,7 @@ in {
       import time
       from pathlib import Path
 
-      APM = "${pkgs.aos}/bin/apm"
+      APM = "${pkgs.aos.apm}/bin/apm"
       JQ = "${pkgs.jq}/bin/jq"
 
 
@@ -180,7 +180,7 @@ in {
           printf 'experimental-features = nix-command\nsandbox = false\nbuild-users-group =\n' \
             > "$NIX_CONF_DIR/nix.conf"
 
-          KEYGEN=$(${pkgs.aos}/bin/apr keys generate release --registry config-degraded-reg 2>&1)
+          KEYGEN=$(${pkgs.aos.apr}/bin/apr keys generate release --registry config-degraded-reg 2>&1)
           printf '%s\n' "$KEYGEN"
           PUBKEY=
           while IFS= read -r line; do
@@ -192,7 +192,7 @@ in {
           EOF
           test -n "$PUBKEY"
           KEY=$HOME/.config/apm/keys/config-degraded-reg-release.key
-          ${pkgs.aos}/bin/apr create config-degraded-reg \
+          ${pkgs.aos.apr}/bin/apr create config-degraded-reg \
             --trust-key "$PUBKEY" \
             --trust-key-id release \
             --key "$KEY"
@@ -212,7 +212,7 @@ in {
             output=$2
             expose=$3
             config=$4
-            ${pkgs.aos}/bin/apr publish "$output" \
+            ${pkgs.aos.apr}/bin/apr publish "$output" \
               --name "$name" \
               --version 1.0.0 \
               --description 'Degraded activation fixture' \
@@ -238,17 +238,17 @@ in {
             '${pkgs.test-http-server.config}'
 
           mkdir -p /var/lib/config-degraded-cache
-          ${pkgs.aos}/bin/apr release 1.0.0 \
+          ${pkgs.aos.apr}/bin/apr release 1.0.0 \
             --registry config-degraded-reg \
             --key-id release \
             --cache-url file:///var/lib/config-degraded-cache \
             --upload-url file:///var/lib/config-degraded-cache
-          HOME=/tmp USER=root ${pkgs.aos}/bin/apm registry --system add \
+          HOME=/tmp USER=root ${pkgs.aos.apm}/bin/apm registry --system add \
             "file://$REG_DIR" \
             --name config-degraded-reg \
             --version '=1.0.0' \
             --trust-key "$PUBKEY"
-          HOME=/tmp USER=root ${pkgs.aos}/bin/apm update \
+          HOME=/tmp USER=root ${pkgs.aos.apm}/bin/apm update \
             --system --registry config-degraded-reg
       """), timeout=1200)
 
@@ -266,7 +266,7 @@ in {
             desired-config-test.config.env.TOKEN = "desired-token";
           }
           EOF
-          ${pkgs.aos}/bin/apm switch \
+          ${pkgs.aos.apm}/bin/apm switch \
             --from /run/config-degraded-host.nix \
             --eval-root /run/config-degraded-eval
       """), timeout=600)

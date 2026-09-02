@@ -62,8 +62,9 @@ an `active_when_true` mapping, a resolved target, and a persistent effect. This
 ensures static faults use the same admission, composition, checkpoint, and
 replay path as changing faults.
 
-The canonical plan contains these logical fields (generated content IDs are
-omitted here because the builder computes them):
+The canonical authoring projection contains these fields for the signal and
+mapping (generated IDs and the rest of the required binding are omitted because
+the builder computes them):
 
 ```toml
 [plan]
@@ -72,37 +73,35 @@ fault_signal_semantic_version = 2
 
 [[plan.signal]]
 id = "datacenter-link-down"
-semantic_version = 1
 domain = "virtual_time"
+exported = true
 value_type = "bool"
 unit = "dimensionless"
 scale_decimal_exponent = 0
-inputs = []
-
-[plan.signal.node]
 kind = "constant"
 value = true
 
 [[plan.fault_binding]]
 id = "datacenter-link-outage"
-semantic_version = 1
 signals = ["datacenter-link-down"]
-search_policy = { kind = "fixed" }
-
-[plan.fault_binding.sampling]
-kind = "at_boundary"
+sampling = "at_boundary"
+search = "fixed"
 
 [plan.fault_binding.mapping]
 kind = "active_when_true"
 invert = false
 ```
 
-The binding also needs a typed selector, phase set, observability policy, and an
-effect table. Generate the complete canonical TOML with `Plan::to_canonical_toml`
+This excerpt is intentionally not a complete parseable plan: the binding also
+needs a typed selector, phase set, observability policy, and effect table.
+Generate the complete canonical TOML with `Plan::to_canonical_toml`
 after constructing the binding; do not invent content hashes. The public
 constructors validate shape, lifetime, target, phase, and capability before a
 guest starts. See [`FaultBinding::new`](../../../crates/crucible/src/model/fault_signal/binding.rs)
 and [`Plan::to_canonical_toml`](../../../crates/crucible/src/model/plan_properties.rs).
+The complete construction sequence is in
+[Authoring fault scenarios](authoring.md); this fragment is intentionally only
+the signal side of that example.
 
 Use `pulse`, `step`, or `periodic_pulse` instead of `constant` when the same
 effect starts or stops at known coordinates. No separate heal operation exists:
@@ -123,6 +122,10 @@ names both the normalized artifact and the raw-provenance digest, plus:
 Raw CSV, JSONL, PCAP, and PCAPNG are import formats, not runtime inputs. The run
 only reads the admitted normalized artifact, so parsing libraries and host file
 ordering cannot change replay.
+
+See [Recorded signal inputs](recorded-signals.md) for the exact interchange
+contracts, normalization options, provenance rules, DAG-store workflow, and the
+current public-API-versus-CLI boundary.
 
 Use `bernoulli`, `uniform_integer`, `exponential_wait`, or `weibull_wait` for
 synthetic sporadic failures. Their choices are keyed by a stable opportunity,
@@ -159,7 +162,8 @@ derived channel values to:
   curves;
 - `network.association` for authentication, roaming, reconnect, handoff, and
   reselection;
-- `network.service` and `network.queue` for shared capacity and congestion; and
+- `network.service_curve`, `network.token_bucket`, and `network.queue_policy`
+  for shared capacity and congestion; and
 - `network.profile_delta` only for explicitly attributed residual latency,
   hazard, or technology metrics.
 
@@ -190,12 +194,17 @@ to every declared rack, conduit, chassis, provider, or availability-zone
 member. Route changes are explicit state transitions; packets already queued or
 in flight use the declared treatment rather than an implicit drop.
 
+See [Network faults](network-faults.md) for target and effect selection,
+directional outage semantics, assertions, and an implementation-backed route
+workflow.
+
 ### Satellite and disrupted links
 
 Declare contacts and a contact plan. Drive acquisition and handover with
 `network.contact`, range-dependent delay with `network.profile_delta`, rain or
 weather fade with `network.rf_channel`, and shared transponder capacity with
-`network.service`. Store-and-forward queues remain bounded and checkpointed
+`network.service_curve` or `network.token_bucket`. Store-and-forward queues
+remain bounded and checkpointed
 across contact loss. A missing or ambiguous capture-to-frame alignment is an
 admission error, not a best-effort match.
 
@@ -207,10 +216,10 @@ Storage effects attach to block devices, byte ranges, controllers, arrays, or
 | Intent | Effect family and phase |
 | --- | --- |
 | Reduce throughput or IOPS | `storage.service` at admission/queue/service |
-| Return latency, timeout, or errno | `storage.result` or `ninep.result` at resolve/deliver |
-| Lose, tear, reorder, or falsely acknowledge a write | `storage.persistence` at persist/flush |
-| Corrupt or return stale bytes | `storage.data_transform` at resolve/persist |
-| Model bad ranges, wear, retention, or program/erase failure | `storage.media_state` or `storage.flash_state` |
+| Return latency, timeout, or errno | `storage.latency`, `storage.stall_timeout`, `storage.operation_failure`, or `ninep.result` at the registry-approved phase |
+| Lose, tear, reorder, or falsely acknowledge a write | `storage.write_disposition`, `storage.persistence_order`, or `storage.flush_disposition` |
+| Corrupt or return stale bytes | `storage.read_transform` or `storage.write_disposition` |
+| Model bad ranges, wear, retention, or program/erase failure | `storage.media_range` or `storage.flash_state` |
 | Reset or disconnect a controller/path | `storage.controller_lifecycle` |
 | Degrade an array and add rebuild load | `storage.array_state` |
 | Delay committed 9p state becoming visible | `ninep.visibility` |
@@ -220,6 +229,9 @@ and unprotected entries. A lying flush, reordered persistence, torn sector, and
 completion error are distinct effects with distinct evidence. The live block
 and 9p adapters preserve their queues, durability frontier, bad ranges, wear,
 controller epochs, and array state in an exact checkpoint.
+
+See [Storage, node, and hardware faults](storage-node-faults.md) for the
+layer-by-layer selection guide and certified live examples.
 
 ## CPU, memory, interrupt, clock, and accelerator examples
 
