@@ -623,7 +623,7 @@ in
              refs_digest: $publication.refs_digest,
              default_commit: $publication.default_commit,
              parent_publication_id: $publication.publication_id,
-             objects: [($publication.objects[]
+             objects: [($publication.objects[] | select(.kind == "mutable_pointer")
                | {path, sha256, byte_size, kind, media_type})][0:1]}' \
         /tmp/publication-upload.json >/tmp/publication-abort-manifest.json
       hub_cli_into /tmp/publication-begin.json registry publish begin \
@@ -1423,13 +1423,21 @@ in
         --kind s3 --bucket operations-archive --prefix objects \
         --endpoint https://objects.example.test --region us-test-1 --access private \
         >/tmp/binding-create.json
-      hub_cli binding list --org operations --page-size 1 >/tmp/binding-list-org.json
+      echo '==> Confirm both organizations remain readable after binding creation'
+      hub_cli_into /tmp/binding-owner-org.json org show operations
+      hub_cli_into /tmp/binding-consumer-org.json org show analytics
+      echo '==> Resolve the organization binding through list and typed reference APIs'
+      hub_cli_into /tmp/binding-list-org.json binding list \
+        --org operations --page-size 1
       ${pkgs.jq}/bin/jq -e \
         '.data.bindings | length == 1 and .[0].spec.name == "archive"' \
-        /tmp/binding-list-org.json >/dev/null
+        /tmp/binding-list-org.json >/dev/null || {
+        ${pkgs.coreutils}/bin/cat /tmp/binding-list-org.json >&2
+        exit 1
+      }
       binding_id=$(${pkgs.jq}/bin/jq -er \
         '[.. | objects | .stable_id? // empty][0]' /tmp/binding-list-org.json)
-      hub_cli binding show operations:archive >/tmp/binding-show.json
+      hub_cli_into /tmp/binding-show.json binding show operations:archive
       reviewed binding-grant binding grant "$binding_id" \
         --consumer-scope "$consumer_org_scope" >/tmp/binding-grant.json
       reviewed binding-revoke binding revoke "$binding_id" \
