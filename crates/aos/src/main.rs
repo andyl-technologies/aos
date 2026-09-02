@@ -1,11 +1,5 @@
-//! `aos` — the command-line tool for working with the AOS repository.
-//!
-//! This binary is a *multicall* executable: behaviour depends on the name
-//! it is invoked as (`argv[0]`, normalised by `aos_core::invocation`):
-//!
-//! - `aos` — the full CLI, dispatching on the first argument.
-//! - `apm` — alias for `aos package ...` (the package manager).
-//! - `apr` — alias for `aos package registry ...` (registry operations).
+//! `aos` is the command-line tool for AOS repository and system-development
+//! workflows.
 //!
 //! # Subcommand families
 //!
@@ -21,8 +15,6 @@
 //! - **Client-side**: `cache` (binary cache push/pull/prefetch/list,
 //!   implemented in `aos-cache`) and the `--remote` modes of `build` and
 //!   `gc` (via `aos-remote`).
-//! - **Package management**: `package` / `apm` / `apr` (implemented in
-//!   `aos-package`).
 //! - **Misc**: `completions` (shell completion scripts).
 //!
 //! # Exit codes
@@ -31,15 +23,8 @@
 //! error; `3` Nix not found — see `handle_error` and
 //! `aos_core::error::AosError::exit_code`.
 
-mod cli;
-mod commands;
-mod entry;
-mod logging;
-
-/// Process entry point: installs the panic hook, applies the multicall
-/// `argv[0]` rewrite (`apm`/`apr`), parses the CLI, runs the selected
-/// command, and exits with the mapped exit code.
+/// Runs the `aos` CLI.
 #[tokio::main]
 async fn main() {
-    entry::main().await;
+    aos::entry::aos_main().await;
 }
