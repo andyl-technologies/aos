@@ -167,7 +167,7 @@ in
       unit=selinux-generated-expose.service
       deny=selinux-generated-expose-deny.service
 
-      AOS_EXPOSE_START_NO_WAIT=1 ${pkgs.aos}/bin/apm _test-reconcile-exposed-units --system
+      AOS_EXPOSE_START_NO_WAIT=1 ${pkgs.aos.packageRuntime}/bin/aos-package-runtime _test-reconcile-exposed-units --system
       test -L /etc/systemd/system.attached/$target
       test -L /etc/systemd/system.attached/$mac
       test -L /etc/systemd/system.attached/$unit

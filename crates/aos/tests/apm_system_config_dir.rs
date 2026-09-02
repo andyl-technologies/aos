@@ -763,7 +763,7 @@ fn system_config_dir_override_supports_apm_registry_lifecycle() -> Result<()> {
     let registries = run_aos_package(&home, &system_dir, &["registry", "list"])?;
     assert!(
         registries.contains("sysreg"),
-        "aos package registry list did not see the seeded system registry:\n{registries}"
+        "apm registry list did not see the seeded system registry:\n{registries}"
     );
 
     // disable/enable a seeded registry write a minimal overlay to the writable
@@ -930,10 +930,10 @@ fn relative_system_config_dir_override_is_ignored() -> Result<()> {
 
 fn run_aos_package(home: &Path, system_dir: &Path, args: &[&str]) -> Result<String> {
     let output = run_aos_package_output(home, system_dir, args)
-        .with_context(|| format!("running aos package {}", args.join(" ")))?;
+        .with_context(|| format!("running apm {}", args.join(" ")))?;
     if !output.status.success() {
         bail!(
-            "aos package {} failed:\nstdout:\n{}\nstderr:\n{}",
+            "apm {} failed:\nstdout:\n{}\nstderr:\n{}",
             args.join(" "),
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
@@ -953,10 +953,10 @@ fn run_aos_package_json(
     action: &str,
 ) -> Result<Value> {
     let output = run_aos_package_output(home, system_dir, args)
-        .with_context(|| format!("running aos package registry {action}"))?;
+        .with_context(|| format!("running apm registry {action}"))?;
     if !output.status.success() {
         bail!(
-            "aos package registry {action} failed:\nstdout:\n{}\nstderr:\n{}",
+            "apm registry {action} failed:\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
@@ -975,14 +975,20 @@ fn run_aos_package_output(
     system_dir: &Path,
     args: &[&str],
 ) -> Result<std::process::Output> {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_aos"));
+    let root = aos_root(system_dir);
+    fs::create_dir_all(root.join("etc"))?;
+    fs::write(
+        root.join("etc/os-release"),
+        "NAME=AOS test root\nID=aos\nAOS_MODULE_ABI=1\n",
+    )?;
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_apm"));
     command
         .env("HOME", home)
         .env("APM_SYSTEM_CONFIG_DIR", system_dir)
-        .env("AOS_ROOT", aos_root(system_dir));
-    command.arg("package");
+        .env("AOS_ROOT", root);
     command.args(args);
-    command.output().context("running aos package")
+    command.output().context("running apm")
 }
 
 /// Sandboxed `$AOS_ROOT` for a fixture, so the persistent `/var/lib/apm`

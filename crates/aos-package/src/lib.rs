@@ -60,6 +60,7 @@ pub mod documentation;
 mod documentation_lsp;
 pub mod download;
 pub(crate) mod ebpf_lsm;
+pub mod environment;
 pub(crate) mod exposed_units;
 /// Test-only helpers that shell out to the host `git` to set up fixtures; the
 /// production registry paths use libgit2 ([`registry::repo`],
@@ -189,7 +190,7 @@ pub const ENVIRONMENT_HELP: &str = "Environment:
                          state is written under <AOS_ROOT>/var/lib/apm, and
                          Nix commands use the AOS_ROOT-relative store.";
 
-/// Clap subcommand enum for `aos package` / `apm`.
+/// Package-consumer operations implemented for `apm`.
 #[derive(Subcommand)]
 pub enum PackageCommand {
     /// Install one or more packages
@@ -517,7 +518,7 @@ pub enum PackageCommand {
         system: bool,
         /// The registry operation to run
         #[command(subcommand)]
-        command: RegistryCommand,
+        command: ApmRegistryCommand,
     },
     /// Hidden: pre-/etc-swap daemon reconcile planning.
     ///
@@ -791,6 +792,7 @@ pub enum PackageCommand {
     /// resolved closure for `<pkg>` from `/run/aos/manifest.json`, realises it
     /// via the configured substituters, and writes `/run/aos/fetch/<pkg>.ok` on
     /// success. Idempotent; safe to run concurrently for distinct packages.
+    #[command(hide = true)]
     Fetch {
         /// Package whose closure to fetch
         package: String,
@@ -807,7 +809,7 @@ pub enum PackageCommand {
     /// the package's `config`/`credentials` blocks against its signed
     /// `expose.config` metadata, stages the artifacts (never touching live
     /// `/etc`), and writes `/run/aos/render/<pkg>.ok`. Exits 2 on a config error.
-    #[command(name = "render-one")]
+    #[command(name = "render-one", hide = true)]
     RenderOne {
         /// Package whose config to render
         package: String,
@@ -1145,7 +1147,7 @@ pub enum CredentialCommand {
     },
 }
 
-/// Operations for the hidden `apm _test-systemd-client` subcommand. Each maps
+/// Operations for the private package-runtime systemd test command. Each maps
 /// one-for-one onto a [`aos_systemd::SystemdClient`] method; the handler in
 /// [`test_systemd_client`] serialises the result to JSON on stdout.
 #[derive(Subcommand)]
@@ -1211,6 +1213,93 @@ pub enum TestSystemdClientOp {
 }
 
 impl PackageCommand {
+    /// Returns whether the command belongs to the private on-host runtime.
+    pub fn is_runtime_internal(&self) -> bool {
+        matches!(
+            self,
+            PackageCommand::ActivatePreEtcSwap { .. }
+                | PackageCommand::ActivatePostEtcSwap { .. }
+                | PackageCommand::ActivateRestoreRoutedSources { .. }
+                | PackageCommand::RecoverCredentialTransactions
+                | PackageCommand::TestSystemdClient { .. }
+                | PackageCommand::TestReconcileExposedUnits { .. }
+                | PackageCommand::TestVerifyPackageAttestation { .. }
+                | PackageCommand::TestProducePackageAttestationQuote { .. }
+                | PackageCommand::Attest {
+                    command: AttestCommand::VerifyBootCommit { .. },
+                }
+                | PackageCommand::LoadEbpfLsmPolicies { .. }
+                | PackageCommand::Eval { .. }
+                | PackageCommand::EvalRetained { .. }
+                | PackageCommand::Materialize { .. }
+                | PackageCommand::ActivateConfig { .. }
+                | PackageCommand::Fetch { .. }
+                | PackageCommand::RenderOne { .. }
+                | PackageCommand::GraphCompile { .. }
+        )
+    }
+
+    /// Returns the runtime environment the command must establish before I/O.
+    pub fn runtime_requirement(&self) -> environment::RuntimeRequirement {
+        use environment::RuntimeRequirement::{AosRoot, LiveAos, Portable};
+
+        if self.is_system() {
+            return AosRoot;
+        }
+
+        match self {
+            PackageCommand::ActivatePreEtcSwap { .. }
+            | PackageCommand::ActivatePostEtcSwap { .. }
+            | PackageCommand::ActivateRestoreRoutedSources { .. }
+            | PackageCommand::LoadEbpfLsmPolicies { .. }
+            | PackageCommand::EvalRetained { .. }
+            | PackageCommand::ActivateConfig { .. }
+            | PackageCommand::Fetch { .. }
+            | PackageCommand::RenderOne { .. }
+            | PackageCommand::GraphCompile { .. } => LiveAos,
+            PackageCommand::RecoverCredentialTransactions | PackageCommand::Switch { .. } => {
+                AosRoot
+            }
+            PackageCommand::Install { .. }
+            | PackageCommand::Remove { .. }
+            | PackageCommand::Autoremove
+            | PackageCommand::Reinstall { .. }
+            | PackageCommand::Update { .. }
+            | PackageCommand::Upgrade { .. }
+            | PackageCommand::FullUpgrade
+            | PackageCommand::Search { .. }
+            | PackageCommand::Show { .. }
+            | PackageCommand::Docs { .. }
+            | PackageCommand::Options { .. }
+            | PackageCommand::Schema { .. }
+            | PackageCommand::Info { .. }
+            | PackageCommand::List { .. }
+            | PackageCommand::Depends { .. }
+            | PackageCommand::Rdepends { .. }
+            | PackageCommand::Policy { .. }
+            | PackageCommand::Files { .. }
+            | PackageCommand::Attest { .. }
+            | PackageCommand::Hold { .. }
+            | PackageCommand::Unhold { .. }
+            | PackageCommand::Held { .. }
+            | PackageCommand::Orphans { .. }
+            | PackageCommand::Clean { .. }
+            | PackageCommand::Gc
+            | PackageCommand::Verify { .. }
+            | PackageCommand::Source { .. }
+            | PackageCommand::Rollback { .. }
+            | PackageCommand::Credential(..)
+            | PackageCommand::Registry { .. }
+            | PackageCommand::TestSystemdClient { .. }
+            | PackageCommand::TestReconcileExposedUnits { .. }
+            | PackageCommand::TestVerifyPackageAttestation { .. }
+            | PackageCommand::TestProducePackageAttestationQuote { .. }
+            | PackageCommand::Eval { .. }
+            | PackageCommand::Materialize { .. }
+            | PackageCommand::Config { .. } => Portable,
+        }
+    }
+
     /// Returns `true` when the user passed `--system` on a subcommand that
     /// supports it.
     ///
@@ -1374,7 +1463,76 @@ impl AttestEnrollmentMethod {
     }
 }
 
-/// Clap subcommand enum for `apm registry` / `apr`.
+/// Consumer registry configuration commands exposed by `apm registry`.
+#[derive(Subcommand)]
+pub enum ApmRegistryCommand {
+    /// List configured registries and priorities
+    List,
+    /// Add a registry and optionally synchronize it immediately
+    Add {
+        /// Registry URL
+        url: String,
+        /// Registry name (derived from URL if omitted)
+        #[arg(long)]
+        name: Option<String>,
+        /// Priority (higher = preferred)
+        #[arg(long, default_value = "500")]
+        priority: u32,
+        /// Pin to exact commit hash
+        #[arg(long, group = "tracking")]
+        commit: Option<String>,
+        /// Track a branch HEAD
+        #[arg(long, group = "tracking")]
+        branch: Option<String>,
+        /// Track a signed rollout channel
+        #[arg(long, group = "tracking")]
+        channel: Option<String>,
+        /// Pin to exact tag name
+        #[arg(long, group = "tracking")]
+        tag: Option<String>,
+        /// Select tags with a semantic-version constraint
+        #[arg(long, group = "tracking")]
+        version: Option<String>,
+        /// Pin an exact trusted registry signing key; repeat for rotations
+        #[arg(long = "trust-key", conflicts_with = "no_verify")]
+        trust_key: Vec<String>,
+        /// Disable signature verification for local development
+        #[arg(long = "no-verify")]
+        no_verify: bool,
+        /// Write configuration without cloning the registry
+        #[arg(long = "no-clone")]
+        no_clone: bool,
+    },
+    /// Remove a configured registry
+    Remove {
+        /// Registry name
+        name: String,
+        /// Keep the local checkout
+        #[arg(long)]
+        keep_local: bool,
+        /// Remove a checkout with unpublished or uncommitted authoring work
+        #[arg(long)]
+        force: bool,
+    },
+    /// Enable a configured registry
+    Enable {
+        /// Registry name
+        name: String,
+    },
+    /// Disable a configured registry without deleting it
+    Disable {
+        /// Registry name
+        name: String,
+    },
+    /// Manage trusted consumer keys
+    Trust {
+        /// Trust-store operation
+        #[command(subcommand)]
+        command: TrustCommand,
+    },
+}
+
+/// Registry workspace and authoring commands exposed by `apr`.
 #[derive(Subcommand)]
 pub enum RegistryCommand {
     // ----- Registry Lifecycle -----
@@ -3236,7 +3394,7 @@ fn exit_for_eval_failure(error: &anyhow::Error, verbose: u8) {
     std::process::exit(failure.exit_code());
 }
 
-/// Main entry point for `aos package` / `apm`.
+/// Main entry point for package-consumer and private runtime operations.
 ///
 /// Loads the [`config::ApmConfig`] for the scope implied by the command
 /// (`--system` selects [`ProfileScope::System`]) and dispatches to the
@@ -3258,6 +3416,8 @@ pub async fn run(
     yes: bool,
     printer: &Printer,
 ) -> Result<()> {
+    command.runtime_requirement().validate()?;
+
     // The hidden systemd-client test vehicle talks to systemd over D-Bus and
     // needs no apm config or profile. Dispatch it before `ApmConfig::load`
     // below so it works on a system with no apm state (mirrors how `main.rs`
@@ -3364,7 +3524,7 @@ pub async fn run(
         return result;
     }
 
-    // `apm __materialize`: apply a converged manifest's
+    // Apply a converged manifest through the private package runtime.
     // /etc tree into a per-generation lower. Called by `activate` on the new
     // path after the configuration fixpoint has converged.
     if let PackageCommand::Materialize {
@@ -3966,7 +4126,7 @@ pub async fn run(
             }
         }
         PackageCommand::Registry { command, .. } => {
-            run_registry(&config, command, dry_run, printer).await
+            run_apm_registry(&config, command, printer).await
         }
         PackageCommand::TestReconcileExposedUnits { .. } => {
             exposed_units::reconcile_system_profile(&config, printer).await
@@ -5024,7 +5184,84 @@ fn run_enroll_package_attestation_quote(
 // Registry subcommands
 // ---------------------------------------------------------------------------
 
-/// Dispatch an `apm registry` / `apr` subcommand to its handler.
+/// Dispatches an `apm registry` consumer command.
+async fn run_apm_registry(
+    config: &config::ApmConfig,
+    command: &ApmRegistryCommand,
+    printer: &Printer,
+) -> Result<()> {
+    match command {
+        ApmRegistryCommand::List => registry_list(config, printer).await,
+        ApmRegistryCommand::Add {
+            url,
+            name,
+            priority,
+            commit,
+            branch,
+            channel,
+            tag,
+            version,
+            trust_key,
+            no_verify,
+            no_clone,
+        } => {
+            registry_add(
+                config,
+                url,
+                name.as_deref(),
+                *priority,
+                commit.as_deref(),
+                branch.as_deref(),
+                channel.as_deref(),
+                tag.as_deref(),
+                version.as_deref(),
+                trust_key,
+                *no_verify,
+                !no_clone,
+                printer,
+            )
+            .await
+        }
+        ApmRegistryCommand::Remove {
+            name,
+            keep_local,
+            force,
+        } => registry_remove(config, name, *keep_local, *force, printer).await,
+        ApmRegistryCommand::Enable { name } => {
+            registry_set_enabled(config, name, true, printer).await
+        }
+        ApmRegistryCommand::Disable { name } => {
+            registry_set_enabled(config, name, false, printer).await
+        }
+        ApmRegistryCommand::Trust { command } => registry_ops::run_trust(config, command, printer),
+    }
+}
+
+/// Runs an `apr` registry workspace or authoring command.
+///
+/// # Errors
+///
+/// Returns an error when the selected AOS system root is invalid, registry
+/// configuration cannot be loaded, or the authoring operation fails.
+pub async fn run_apr(
+    command: &RegistryCommand,
+    system: bool,
+    dry_run: bool,
+    printer: &Printer,
+) -> Result<()> {
+    if system {
+        environment::RuntimeRequirement::AosRoot.validate()?;
+    }
+    let scope = if system {
+        ProfileScope::System
+    } else {
+        ProfileScope::User
+    };
+    let config = config::ApmConfig::load(scope)?;
+    run_registry(&config, command, dry_run, printer).await
+}
+
+/// Dispatch an `apr` subcommand to its handler.
 ///
 /// The consumer-facing lifecycle commands (`list`, `add`, `remove`) are
 /// implemented in this module; everything else delegates to [`registry_ops`].

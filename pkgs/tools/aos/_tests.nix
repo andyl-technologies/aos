@@ -2762,7 +2762,7 @@ in {
           --license MIT \
           --maintainer host-subtree@example.invalid \
           --registry host-subtree \
-          --message "publish hostsubtree via aos package registry" \
+          --message "publish hostsubtree via apr" \
           > "$work/aos-package-registry-publish-host-subtree.json"
         ${pkgs.jq}/bin/jq -e \
           --arg store "$install_leaf_store" \
@@ -2772,7 +2772,7 @@ in {
             and .version == "1.0.0"
             and .store_path == $store
             and .committed == true
-            and .commit_message == "publish hostsubtree via aos package registry"' \
+            and .commit_message == "publish hostsubtree via apr"' \
           "$work/aos-package-registry-publish-host-subtree.json" >/dev/null
         subtree_commit=$(git -C "$subtree_reg" rev-parse HEAD)
         run_clean ${self}/bin/aos --json package registry push \

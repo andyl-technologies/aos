@@ -3933,7 +3933,7 @@ async fn settle_auto_restarts(
 }
 
 // ---------------------------------------------------------------------------
-// Live daemon reconciliation (`apm activate-{pre,post}-etc-swap`)
+// Live daemon reconciliation (private package-runtime pre/post swap commands)
 // ---------------------------------------------------------------------------
 
 /// Exit codes for the hidden activation reconciler subcommands. The activate
@@ -3976,9 +3976,10 @@ struct Plan {
     warnings: Vec<String>,
 }
 
-/// `apm activate-pre-etc-swap` — compute the live-vs-candidate diff while the
-/// old `/etc` is still live, stop removed / stop-if-changed units under their
-/// old definitions, and print the post-swap plan path on stdout.
+/// Computes the live-vs-candidate diff before the `/etc` swap.
+///
+/// While the old `/etc` is still live, stops removed and changed units under
+/// their old definitions, and prints the post-swap plan path on stdout.
 ///
 /// Returns a process exit code rather than a `Result`: `0` on success
 /// (including `--dry-run`), `2` (`RECONCILE_CATASTROPHIC`) on any failure.
@@ -4082,8 +4083,9 @@ async fn activate_pre_etc_swap_inner(
     Ok(RECONCILE_OK)
 }
 
-/// `apm activate-post-etc-swap` — consume the plan after `/etc` has been
-/// swapped, reload systemd, apply reload/restart/start actions, and scan the
+/// Consumes the reconciliation plan after `/etc` has been swapped.
+///
+/// Reloads systemd, applies reload/restart/start actions, and scans the
 /// final failed-unit state.
 ///
 /// Returns a process exit code rather than a `Result`: `0` when every unit
