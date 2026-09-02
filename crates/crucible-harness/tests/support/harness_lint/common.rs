@@ -195,6 +195,15 @@ pub(super) fn is_test_only_source(package_dir: &Path, source: &Path) -> bool {
     })
 }
 
+pub(super) fn is_test_support_only_source(content: &str) -> bool {
+    content.lines().any(|line| {
+        matches!(
+            line.trim(),
+            "#![cfg(test)]" | "#![cfg(any(test, feature = \"test-support\"))]"
+        )
+    })
+}
+
 pub(super) fn cfg_test_line_ranges(content: &str) -> Vec<std::ops::RangeInclusive<usize>> {
     let scrubbed = scrub_comments_and_strings(content);
     let lines = scrubbed.lines().collect::<Vec<_>>();

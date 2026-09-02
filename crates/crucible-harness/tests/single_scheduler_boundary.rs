@@ -178,8 +178,12 @@ fn non_authority_scheduler_exports(root: &Path) -> Result<Vec<String>, Box<dyn E
         "crucible-device",
         "crucible-qemu",
         "crucible-qemu-plugin",
+        "crucible-debug-gateway",
         "crucible-guest",
-        "crucible-api",
+        "crucible-linux-resource",
+        "crucible-campaign",
+        "crucible-cas",
+        "crucible-s3-store",
         "crucible-cli",
     ] {
         findings.extend(package_source_scheduler_ownership_findings(root, package)?);
@@ -235,7 +239,7 @@ fn source_scheduler_ownership_findings(package: &str, source: &str) -> Vec<Strin
     }
     if source.contains(".drive_quantum(") || source.contains("QuantumLoop::drive_quantum") {
         findings.push(format!(
-            "{package} must not call `drive_quantum`; only crucible-session may drive the L3 boundary"
+            "{package} must not call `drive_quantum`; only the session, API lifecycle, or daemon execution authorities may drive the L3 boundary"
         ));
     }
     findings

@@ -6,12 +6,11 @@
 //! buffer with one exact sequence-bound reply and clears the unused tail.
 
 use crucible_protocol::{
-    SELECTION_REPLY_HEADER_BYTES, SelectableProtocolError, SelectableRegister, SelectionReply,
-    SelectionReplyStatus, SelectionRequest,
+    ChoiceCodecError, ChoiceDomain, ChoiceValue, SELECTION_REPLY_HEADER_BYTES,
+    SelectableProtocolError, SelectableRegister, SelectionReply, SelectionReplyStatus,
+    SelectionRequest,
 };
 use thiserror::Error;
-
-use crucible_campaign::{CampaignCodecError, ChoiceDomain, ChoiceValue};
 
 use crate::{DoorbellTransport, GuestEmitterError};
 
@@ -230,12 +229,12 @@ pub enum GuestSelectableError {
         #[from]
         source: SelectableProtocolError,
     },
-    /// Campaign choice-domain or selected-value decoding failed.
+    /// Typed choice-domain or selected-value decoding failed.
     #[error("guest selectable value failed canonical validation: {source}")]
     CampaignCodec {
         /// Underlying typed choice codec error.
         #[from]
-        source: CampaignCodecError,
+        source: ChoiceCodecError,
     },
     /// The architecture-specific doorbell transport failed.
     #[error("guest selectable transport failed: {0}")]

@@ -791,7 +791,7 @@ fn qemu_search_terminal_finding(
         crucible_session::EngineState::Stopped {
             outcome: crucible_session::Outcome::Failed { .. },
         } => {
-            let violation = qemu_property_violation_from_frames(
+            let violation = property_violation_from_frames(
                 scenario,
                 streamed_frames,
                 failure.reproduction_artifact.artifact.id(),

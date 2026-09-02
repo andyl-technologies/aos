@@ -629,7 +629,7 @@ in
           run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state::resource_limits::durable_run_state_owned_decode_is_canonical_and_escape_free
           run_exact_api_test \
-            vm_lifecycle::runtime::tests::durable_run_state_recovers_an_unfinished_run_before_reuse
+            vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_recovers_an_unfinished_run_before_reuse
           run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state_rejects_empty_active_transaction_phases
           run_exact_api_test \

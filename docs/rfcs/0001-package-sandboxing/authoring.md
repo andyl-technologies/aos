@@ -130,6 +130,13 @@ apm credential encrypt join-token ./join-token.plain \
 The command prints a Nix `expose.config.credentials` entry containing
 `encrypted = true` and the inline `ciphertext` value.
 
+A package that supports both credential-free and credential-using modes may
+set `optional = true` on a signed credential declaration. The static exposed
+unit then has no unconditional `LoadCredential*=` dependency. When evaluated
+package configuration supplies that credential's opaque reference, activation
+adds the binding for the declared units. Required credentials retain the
+default `optional = false` behavior.
+
 Install-at-boot desired files can also reference a system credential instead of
 embedding plaintext:
 

@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  stdenv,
+  buildPackages,
   gnumake,
   autoconf,
   bash,
@@ -19,12 +21,15 @@
   freetype,
   xorg-stubs,
   bootstrapTools,
+  krb5,
   openjdk-20,
 }: let
   mkOpenJDKBootstrap = import ./_openjdk-bootstrap.nix {
     inherit
       fetchurl
       mkDerivation
+      stdenv
+      buildPackages
       gnumake
       autoconf
       bash
@@ -42,6 +47,7 @@
       freetype
       xorg-stubs
       bootstrapTools
+      krb5
       ;
   };
 in

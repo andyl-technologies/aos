@@ -134,7 +134,7 @@
       }
       {
         label = "mock e2e guest-host ABI source";
-        needle = "guest_host_protocol_version: String::from(\"${guestHostProtocolVersion}\")";
+        needle = "guest_host_protocol_version: CANONICAL_GUEST_HOST_PROTOCOL_VERSION.to_string()";
       }
       {
         label = "mock e2e RPC ABI source";
@@ -184,7 +184,7 @@
       }
       {
         label = "replay-oracle guest-host ABI source";
-        needle = "guest_host_protocol_version: String::from(\"${guestHostProtocolVersion}\")";
+        needle = "guest_host_protocol_version: crate::e2e::CANONICAL_GUEST_HOST_PROTOCOL_VERSION";
       }
       {
         label = "replay-oracle RPC ABI source";
@@ -218,7 +218,7 @@
       }
       {
         label = "engine replay-oracle guest-host ABI source";
-        needle = "guest_host_protocol_version: String::from(\"${guestHostProtocolVersion}\")";
+        needle = "guest_host_protocol_version: crucible_protocol::CONTROL_PROTOCOL_VERSION.to_string()";
       }
       {
         label = "engine replay-oracle RPC ABI source";

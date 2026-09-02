@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  go,
+  buildPackages,
 }: let
   version = "1.17.3";
 in
@@ -17,7 +17,10 @@ in
       hash = "sha256-ea/dd7K5QGu2zdkMClmQ/f6UV8CIN69Finu3cXtY1WA=";
     };
 
-    buildDeps = [go];
+    # Use the Linux-hosted compiler when producing Darwin commands.  The
+    # target Go distribution is a Mach-O runtime artifact and cannot execute
+    # during this build.
+    buildDeps = [buildPackages.go];
     runtimeDeps = [];
 
     phases = [
@@ -36,6 +39,10 @@ in
           export CGO_ENABLED=0
           export GOPROXY=off
           export GOFLAGS="-trimpath -mod=vendor"
+          if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+            export GOOS="$AOS_GOOS"
+            export GOARCH="$AOS_GOARCH"
+          fi
           mkdir -p "$GOPATH" "$GOCACHE"
 
           go build -ldflags "-s -w \

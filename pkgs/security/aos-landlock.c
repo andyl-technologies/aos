@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -128,7 +129,8 @@ static void usage(FILE *stream)
     fprintf(stream,
         "usage: aos-landlock --print-abi\n"
         "       aos-landlock [--require-abi N] [--fs-ro PATH] [--fs-rw PATH] "
-        "[--tcp-bind PORT] [--tcp-connect PORT] -- COMMAND [ARG...]\n");
+        "[--network-unrestricted | --tcp-bind PORT | --tcp-connect PORT] "
+        "-- COMMAND [ARG...]\n");
 }
 
 static int parse_u32(const char *text, unsigned int *out)
@@ -276,6 +278,7 @@ static int add_path_rules(int ruleset_fd, const struct path_list *paths)
 
     for (i = 0; i < paths->len; i++) {
         int path_fd;
+        struct stat path_stat;
         struct landlock_path_beneath_attr rule = {
             .allowed_access = paths->items[i].access,
         };
@@ -285,6 +288,22 @@ static int add_path_rules(int ruleset_fd, const struct path_list *paths)
             fprintf(stderr, "aos-landlock: failed to open %s: %s\n",
                 paths->items[i].path, strerror(errno));
             return -1;
+        }
+
+        if (fstat(path_fd, &path_stat) != 0) {
+            fprintf(stderr, "aos-landlock: failed to stat %s: %s\n",
+                paths->items[i].path, strerror(errno));
+            close(path_fd);
+            return -1;
+        }
+
+        /* Landlock rejects directory-only access rights on non-directories.
+         * Keep exact file grants narrow instead of requiring callers to grant
+         * the containing directory. */
+        if (!S_ISDIR(path_stat.st_mode)) {
+            rule.allowed_access &= LANDLOCK_ACCESS_FS_EXECUTE
+                | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_READ_FILE
+                | LANDLOCK_ACCESS_FS_TRUNCATE;
         }
 
         rule.parent_fd = path_fd;
@@ -301,15 +320,13 @@ static int add_path_rules(int ruleset_fd, const struct path_list *paths)
     return 0;
 }
 
-static int apply_landlock(unsigned int require_abi, const struct port_list *bind_ports,
-    const struct port_list *connect_ports, const struct path_list *paths)
+static int apply_landlock(unsigned int require_abi, int restrict_network,
+    const struct port_list *bind_ports, const struct port_list *connect_ports,
+    const struct path_list *paths)
 {
     long abi;
     int ruleset_fd;
-    struct landlock_ruleset_attr ruleset = {
-        .handled_access_net = LANDLOCK_ACCESS_NET_BIND_TCP
-            | LANDLOCK_ACCESS_NET_CONNECT_TCP,
-    };
+    struct landlock_ruleset_attr ruleset = {0};
 
     abi = probe_landlock_abi();
     if (abi < 0) {
@@ -327,6 +344,10 @@ static int apply_landlock(unsigned int require_abi, const struct port_list *bind
     if (paths->len > 0) {
         ruleset.handled_access_fs = FS_READ_ACCESS | FS_WRITE_ACCESS;
     }
+    if (restrict_network) {
+        ruleset.handled_access_net = LANDLOCK_ACCESS_NET_BIND_TCP
+            | LANDLOCK_ACCESS_NET_CONNECT_TCP;
+    }
 
     ruleset_fd = (int)landlock_create_ruleset_raw(&ruleset, sizeof(ruleset), 0);
     if (ruleset_fd < 0) {
@@ -335,10 +356,13 @@ static int apply_landlock(unsigned int require_abi, const struct port_list *bind
         return -1;
     }
 
-    if (add_net_rules(ruleset_fd, bind_ports, LANDLOCK_ACCESS_NET_BIND_TCP) != 0
-        || add_net_rules(ruleset_fd, connect_ports,
-               LANDLOCK_ACCESS_NET_CONNECT_TCP)
-            != 0
+    if ((restrict_network
+            && (add_net_rules(ruleset_fd, bind_ports,
+                    LANDLOCK_ACCESS_NET_BIND_TCP)
+                    != 0
+                || add_net_rules(ruleset_fd, connect_ports,
+                       LANDLOCK_ACCESS_NET_CONNECT_TCP)
+                    != 0))
         || add_path_rules(ruleset_fd, paths)
             != 0) {
         close(ruleset_fd);
@@ -369,6 +393,8 @@ int main(int argc, char **argv)
     struct port_list connect_ports = {0};
     struct path_list paths = {0};
     unsigned int require_abi = 4;
+    int restrict_network = 1;
+    int network_unrestricted_seen = 0;
     int command_index = -1;
     int i;
 
@@ -414,6 +440,15 @@ int main(int argc, char **argv)
                 usage(stderr);
                 return 2;
             }
+        } else if (strcmp(argv[i], "--network-unrestricted") == 0) {
+            if (network_unrestricted_seen) {
+                fprintf(stderr,
+                    "aos-landlock: duplicate --network-unrestricted\n");
+                usage(stderr);
+                return 2;
+            }
+            network_unrestricted_seen = 1;
+            restrict_network = 0;
         } else if (strcmp(argv[i], "--tcp-bind") == 0) {
             if (++i >= argc || parse_port(argv[i], &port) != 0
                 || add_port(&bind_ports, port) != 0) {
@@ -441,7 +476,16 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    if (apply_landlock(require_abi, &bind_ports, &connect_ports, &paths) != 0) {
+    if (!restrict_network && (bind_ports.len != 0 || connect_ports.len != 0)) {
+        fprintf(stderr,
+            "aos-landlock: --network-unrestricted cannot be combined with TCP rules\n");
+        usage(stderr);
+        return 2;
+    }
+
+    if (apply_landlock(require_abi, restrict_network, &bind_ports, &connect_ports,
+            &paths)
+        != 0) {
         return 1;
     }
 

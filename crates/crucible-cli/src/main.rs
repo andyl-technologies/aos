@@ -1,7 +1,7 @@
 //! `crucible` is the CLI entry point for the Crucible control plane.
 //! Spec index: RFC-0010 files 23.
 //! This L4 binary crate remains a thin client over the control, session, and
-//! campaign-service APIs specified by RFC-0010 and RFC-0016.
+//! campaign-service APIs specified by RFC-0010 and RFC-0017.
 //!
 //! Module map: the binary root owns argument dispatch, while command modules
 //! remain transport clients over the session, API, and campaign-service crates.
@@ -133,6 +133,7 @@ const CANONICAL_GATE_NAMES: &[&str] = &[
     "gate:any-guest",
     "gate:qemu-inert",
     "gate:abi-conformance",
+    "gate:typed-choice",
     "gate:patch-microtests",
     "gate:adversarial-determinism",
     "gate:e2e-determinism",
@@ -481,7 +482,7 @@ struct CampaignFixtureArgs {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 enum CampaignFixtureCommand {
-    /// Generate the adaptive network-recovery campaign from RFC-0016.
+    /// Generate the adaptive network-recovery campaign from RFC-0017.
     WorkedNetwork(CampaignWorkedNetworkFixtureArgs),
 }
 

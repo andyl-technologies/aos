@@ -596,6 +596,7 @@ fn create_qmp_pair(
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- unit fixtures use panic shortcuts for exact failure localization.
     #![allow(clippy::expect_used)]
 
     use std::io::{BufRead, BufReader, Write};

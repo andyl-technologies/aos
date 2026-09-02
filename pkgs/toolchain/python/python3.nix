@@ -6,14 +6,20 @@
   patch,
   patchelf,
   pkg-config,
+  bzip2,
+  ncurses,
+  readline,
+  sqlite,
+  zstd,
   zlib,
   openssl,
   xz,
   libffi,
-  sqlite,
-  readline,
+  stdenv,
+  buildPackages,
 }: let
   version = "3.14.3";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 
   markupsafeSrc = fetchurl {
     urls = [
@@ -40,23 +46,39 @@ in
       hash = "sha256-qX1VSemtgf4XFZ7QLGh3StXSZscvjZoLWpw3H+hdkCs=";
     };
 
-    buildDeps = [
-      gnumake
-      pkg-config
-    ];
-    runtimeDeps = [
-      zlib
-      openssl
-      xz
-      # libffi is required for the _ctypes extension module — Python 3.13
-      # removed the bundled libffi and always uses the system one now.
-      # Without it `import ctypes` fails at runtime, breaking ukify and
-      # other systemd build-time scripts (elf2efi.py, generate-hwids-
-      # section.py) that need it.
-      libffi
-      sqlite
-      readline
-    ];
+    buildDeps =
+      [
+        gnumake
+        pkg-config
+      ]
+      ++ (
+        if isDarwinCross
+        then [buildPackages.python3]
+        else []
+      );
+    runtimeDeps =
+      [
+        zlib
+        openssl
+        xz
+        # libffi is required for the _ctypes extension module — Python 3.13
+        # removed the bundled libffi and always uses the system one now.
+        # Without it `import ctypes` fails at runtime, breaking ukify and
+        # other systemd build-time scripts (elf2efi.py, generate-hwids-
+        # section.py) that need it.
+        libffi
+        sqlite
+        readline
+      ]
+      ++ (
+        if isDarwinCross
+        then [
+          bzip2
+          ncurses
+          zstd
+        ]
+        else []
+      );
     propagatedDeps = [];
 
     # CPython models PyTupleObject's variable-length ob_item storage as a
@@ -71,12 +93,20 @@ in
     # Guard: scrubPhase's nuke-refs pass should keep these out of the
     # closure. Fails the build if a future regression re-introduces a
     # _sysconfigdata*.py(c) or Makefile reference to the build toolchain.
-    disallowedReferences = [
-      gnumake
-      pkg-config
-      patch
-      patchelf
-    ];
+    disallowedReferences =
+      if isDarwinCross
+      then [
+        buildPackages.gnumake
+        buildPackages.pkg-config
+        buildPackages.patch
+        buildPackages.patchelf
+      ]
+      else [
+        gnumake
+        pkg-config
+        patch
+        patchelf
+      ];
 
     phases = [
       {
@@ -89,27 +119,91 @@ in
       {
         name = "configure";
         script = ''
-          LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,$out/lib" \
-          ./configure \
+          ${
+            if isDarwinCross
+            then ''
+              # CPython maps the Darwin kernel release to its platform feature
+              # policy. Cross configure leaves the release empty, which makes
+              # it incorrectly define strict POSIX feature macros and hide
+              # Darwin APIs such as sendfile and getpagesize.
+              sed -i 's/^[[:space:]]*ac_sys_release=$/  ac_sys_release=20.0.0/' configure
+              # Configure finds the Darwin getaddrinfo declaration and link,
+              # then tries to execute its target-only behavioral probe on the
+              # Linux builder. Darwin's implementation is not the historical
+              # buggy glibc variant, so cache the target fact without dropping
+              # Python's IPv6 support.
+              export ac_cv_buggy_getaddrinfo=no
+              # Filesystem probes cannot run against the Darwin target from a
+              # Linux builder. Modern Darwin provides the Unix98 PTY master
+              # and does not use the legacy BSD /dev/ptc device.
+              export ac_cv_file__dev_ptmx=yes
+              export ac_cv_file__dev_ptc=no
+              # CPython's generic cross path deliberately assumes pthreads
+              # are unavailable unless a target program can be executed.
+              # Darwin provides pthreads directly from libSystem with no
+              # compiler or linker option, so preserve its native result.
+              export ac_cv_pthread_is_default=yes
+              export ac_cv_kthread=no
+              export ac_cv_pthread=no
+              # These are target-runtime probes. AOS libffi is newer than the
+              # first release with real complex support, and Darwin's pthread
+              # scope and tzset implementations satisfy CPython's native tests.
+              export ac_cv_ffi_complex_double_supported=yes
+              export ac_cv_pthread_system_supported=yes
+              export ac_cv_working_tzset=yes
+            ''
+            else ""
+          }
+          LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,$out/lib" ./configure \
+            $configureFlags \
             --prefix=$out \
             --enable-shared \
             --with-system-expat=no \
             --with-ensurepip=no \
             --without-static-libpython \
             --disable-test-modules \
-            --with-openssl=${openssl}
+            --with-openssl=${openssl} \
+            ${
+            if isDarwinCross
+            then ''--with-build-python=${buildPackages.python3}/bin/python3''
+            else ""
+          }
         '';
       }
       {
         name = "build";
         script = ''
-          make -j$NIX_BUILD_CORES
+          ${
+            if isDarwinCross
+            then ''
+              # Configure embeds _PYTHON_HOST_PLATFORM and target sysconfig
+              # paths in PYTHON_FOR_BUILD. Keep that complete command so
+              # native Python validates files without importing Darwin modules.
+              make -j$NIX_BUILD_CORES
+            ''
+            else "make -j$NIX_BUILD_CORES"
+          }
         '';
       }
       {
         name = "install";
         script = ''
-          make install
+          ${
+            if isDarwinCross
+            then ''
+              make install
+              # CPython records its configure directory in target sysconfig
+              # metadata. Downstream extension builds need the flags, not the
+              # ephemeral sandbox path from the Linux builder.
+              sed -i "s|$PWD|.|g" \
+                "$out/lib/python3.14/_sysconfig_vars__darwin_darwin.json" \
+                "$out/lib/python3.14/_sysconfigdata__darwin_darwin.py" \
+                "$out/lib/python3.14/config-3.14-darwin/Makefile"
+              find "$out/lib/python3.14/__pycache__" \
+                -name '_sysconfigdata__darwin_darwin.*.pyc' -delete
+            ''
+            else "make install"
+          }
           # Ensure 'python' symlink exists alongside 'python3'
           if [ ! -e $out/bin/python ]; then
             ln -sf python3 $out/bin/python

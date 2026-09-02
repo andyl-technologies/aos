@@ -29,6 +29,7 @@
   lib,
   mkDerivation,
   bash,
+  buildPackages,
 }: let
   # ---------------------------------------------------------------------------
   # runtimeShell — absolute path to the AOS-built bash binary.
@@ -39,6 +40,12 @@
   # hard-coding `/bin/sh` or `/bin/bash`, keeping generated shell artifacts
   # inside the hermetic store closure.
   runtimeShell = "${bash}/bin/bash";
+
+  # Cross outputs retain the target Bash shebang above, but syntax validation
+  # happens during the build and therefore must use a build-platform Bash.
+  # These paths are identical for native package sets, preserving derivation
+  # identity outside cross builds.
+  buildShell = "${buildPackages.bash}/bin/bash";
 
   # ---------------------------------------------------------------------------
   # writeTextFile — write a text file into a derivation output.
@@ -128,8 +135,9 @@
   # ---------------------------------------------------------------------------
   #
   # Wraps the text in a shebang pointing at the AOS-built bash, installs it
-  # as an executable at `$out/bin/<name>`, and runs `bash -n` on the result
-  # so syntactically broken scripts fail at build time rather than at boot.
+  # as an executable at `$out/bin/<name>`, and runs the build-platform
+  # `bash -n` on the result so syntactically broken scripts fail at build time
+  # rather than at boot.
   #
   # Sets `meta.mainProgram = name` so `lib.getExe result` resolves directly
   # to `$out/bin/<name>`. This is what lets the ported systemd-lib.makeJobScript
@@ -144,7 +152,7 @@
         ${text}
       '';
       checkPhase = ''
-        ${runtimeShell} -n "$target"
+        ${buildShell} -n "$target"
       '';
       meta = {
         mainProgram = name;

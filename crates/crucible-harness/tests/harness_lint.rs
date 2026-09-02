@@ -296,6 +296,9 @@ fn production_sources_follow_error_and_logging_conventions() -> Result<(), Box<d
                 continue;
             }
             let content = fs::read_to_string(&source)?;
+            if is_test_support_only_source(&content) {
+                continue;
+            }
             has_typed_error |= source_declares_typed_error(&content);
             findings.extend(error_logging_failures(
                 &source,

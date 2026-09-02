@@ -7,6 +7,7 @@
   patchelf,
   pkg-config,
   openssl,
+  buildPackages,
 }: let
   version = "1.8.0.3";
 in
@@ -28,10 +29,10 @@ in
     # Guard: keep the autotools build toolchain out of socat's
     # `-V`-baked PKG_CONFIG_PATH / CC strings.
     disallowedReferences = [
-      gnumake
-      pkg-config
-      patch
-      patchelf
+      buildPackages.gnumake
+      buildPackages.pkg-config
+      buildPackages.patch
+      buildPackages.patchelf
     ];
 
     phases = [
@@ -46,6 +47,7 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --enable-openssl \
             --with-openssl=${openssl}

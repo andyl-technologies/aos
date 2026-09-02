@@ -198,6 +198,7 @@ pub(super) fn sparse_artifact_identity(
     ))
 }
 
+// crucible-lint: allow stringly-error -- the private shape validator returns bounded diagnostics that its typed lifecycle or store boundary immediately wraps.
 pub(super) fn validate_sparse_artifact_shape(artifact: &ArtifactManifest) -> Result<(), String> {
     if !artifact.sparse || !artifact.chunks.is_empty() {
         return Err(String::from(

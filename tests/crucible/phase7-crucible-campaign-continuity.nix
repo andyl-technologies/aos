@@ -321,7 +321,7 @@
       }
       {
         label = "crucible-cas layer";
-        needle = "\"crucible\" | \"crucible-cas\" => Some(Layer::L3)";
+        needle = "\"crucible\" | \"crucible-cas\" | \"crucible-campaign\" => Some(Layer::L3)";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [

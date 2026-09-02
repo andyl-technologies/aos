@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  stdenv,
 }: let
   version = "3.0";
 in
@@ -57,6 +58,25 @@ in
           # without passing $CFLAGS, so inject -std=gnu89 into all of them.
           sed -i 's|\$CC \(.*\)-o conftest|\$CC -std=gnu89 \1-o conftest|g' unix/configure
           sed -i 's|\$CC -o conftest|\$CC -std=gnu89 -o conftest|g' unix/configure
+
+          ${
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              # Configure normally executes two target binaries to discover
+              # ABI properties. Darwin's 64-bit ABIs have 32-bit uid_t/gid_t
+              # and 64-bit off_t/stat sizes, so record those known answers
+              # without trying to run Mach-O programs on the Linux builder.
+              sed -i '/^echo Check size of UIDs and GIDs$/,/^echo Check for Large File Support$/ {
+                s|^  \./conftest$|  :|
+                s|^  r=\$?$|  r=1|
+              }' unix/configure
+              sed -i '/^echo Check for Large File Support$/,/^echo Check for wide char support$/ {
+                s|^  \./conftest$|  :|
+                s|^  r=\$?$|  r=3|
+              }' unix/configure
+            ''
+            else ""
+          }
         '';
       }
       {

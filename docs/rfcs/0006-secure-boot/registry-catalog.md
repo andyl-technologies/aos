@@ -35,7 +35,11 @@ to that TOML makes them tamper-evident as registry data for free.
 `crates/aos-package/src/types.rs`. The natural home is `SysrootImageEntry`
 (`:1267` — where a UKI/image already lives) for per-image facts, with a small
 addition on `PackageMeta` (`:447`) for the signer identity. New optional
-fields (optional so unsigned/legacy publishes still parse):
+fields (optional so unsigned/legacy publishes still parse). A registry that is
+ready to make signing mandatory sets `require_signed_ukis = true` in the
+authenticated `[registry]` table. That policy rejects unsigned or merely
+unverified direct-delivery images at publication, Hub indexing, and install
+time while leaving package-only releases unaffected:
 
 On `SysrootImageEntry` (per UKI/image):
 
@@ -118,6 +122,15 @@ The registry distributes the floor; it does not write firmware variables. A
 privileged local agent applies any actual `dbx`/SBAT firmware update, which
 must be KEK-signed ([`key-custody.md`](key-custody.md)) — again, the registry
 transports an offline-signed payload, it doesn't authorize it.
+
+The Secure Boot private key is never registry data. Production publishers must
+build unsigned artifacts, sign them in a separate key-custody boundary, and
+publish only after the committed certificate policy verifies the resulting
+UKIs. The current in-build signing module copies configured key material into
+the local Nix store; it is restricted to disposable test or staging identities
+on controlled builders and is not the production workflow. The test-only
+`server-secureboot` fixture embeds throwaway keys and is not a staging or
+production signing workflow.
 
 ## Trust-bootstrap symmetry
 

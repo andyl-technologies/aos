@@ -54,9 +54,9 @@ use crate::download::{
 };
 use crate::registry::store::NarBytes;
 use crate::registry::store_path_hash;
-use crate::store::{filter_missing, import_nar};
+use crate::store::filter_missing;
 use crate::types::{CredentialMeta, ProfileScope, validate_credential_name, validate_package_name};
-use crate::verify::{verify_download_hash, verify_nar_blessed};
+use crate::verify::verify_download_hash;
 
 /// Default root under which the per-package completion markers live.
 pub const MARKER_ROOT: &str = "/run/aos";
@@ -389,7 +389,12 @@ async fn fetch_inner(
             verify_download_hash(&download.local_path, &download.download_hash)
                 .with_context(|| format!("verifying compressed NAR for {}", download.store_path))?;
             let blessed = blessed_nars(pin, store_path_hash(&download.store_path))?;
-            verify_nar_blessed(&download.local_path, &blessed).with_context(|| {
+            crate::verify::verify_nar_blessed_with_compression(
+                &download.local_path,
+                &blessed,
+                &download.compression,
+            )
+            .with_context(|| {
                 format!(
                     "verifying {} against the manifest's authenticated runtime pin",
                     download.store_path
@@ -397,11 +402,12 @@ async fn fetch_inner(
             })?;
         }
         for download in &downloads {
-            import_nar(
+            crate::store::import_nar_with_compression(
                 &download.local_path,
                 &download.store_path,
                 &download.references,
                 download.deriver.as_deref(),
+                &download.compression,
             )
             .await
             .with_context(|| format!("importing pinned path {}", download.store_path))?;
@@ -1110,6 +1116,7 @@ mod subverb_tests {
             ciphertext: None,
             units: vec!["web.service".into()],
             encrypted: true,
+            optional: false,
         }];
         let handles = json!({
             "join-token": {"system-credential": "bootstrap-token"}

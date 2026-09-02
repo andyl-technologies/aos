@@ -19,8 +19,8 @@ seed = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 ```
 
 Version 6 adds the scenario-owned measurement-definition component specified
-by RFC-0016 §08.2-§08.3. Version 7 adds the scenario-owned selectable catalog
-and its declaration/request ceilings specified by RFC-0016 §02. Readers accept
+by RFC-0017 §08.2-§08.3. Version 7 adds the scenario-owned selectable catalog
+and its declaration/request ceilings specified by RFC-0017 §02. Readers accept
 version 5 only as the exact legacy form with empty measurement and selectable
 components, and version 6 only with an empty selectable component. New writes
 use version 7. A version-5 document that attempts to carry `[[measurement]]`,
@@ -37,7 +37,7 @@ ceilings. Each `[[selectable]]` entry contains one `canonical_hex` field holding
 the lowercase hexadecimal strict `SelectableDeclaration` v1 bytes. This
 normalized representation preserves the complete typed declaration and stable
 campaign identity without introducing a second scenario-only choice grammar;
-authoring tools may render the friendlier RFC-0016 §02.6 projection before
+authoring tools may render the friendlier RFC-0017 §02.6 projection before
 normalization.
 
 - All tables are closed. Unknown or duplicate keys, duplicate IDs, implicit

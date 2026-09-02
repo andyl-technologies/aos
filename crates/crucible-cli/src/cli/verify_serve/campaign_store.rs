@@ -13,15 +13,15 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use crucible_campaign::{CAMPAIGN_OBJECT_PROFILE_POLICY_V1, CampaignObjectProfiler};
-use crucible_cas::content_store::{
+use crucible_daemon::LinuxProjectQuotaBinder;
+use crucible_daemon::campaign_store_composition::{
     BlobInventoryRecord, ContentId, DirectoryRefBackend, DurabilityRequirement, ObjectKind,
-    S3RefBackend, StoreEncryptionKey, StoreEncryptionKeyId, StoreGraph, StoreGraphAdmin,
-    StoreGraphConfig, StoreGraphKeyring, StoreGraphNamespaceAuthorizers, StoreGraphObjectProfilers,
-    StoreGraphPhysicalQuotaBinders, StoreNamespaceAuthorizer, StoreNamespaceId,
-    StoreNamespaceOperation, StoreNodeId, StoreNodeSpec, StoreObjectProfilePolicyId,
-    StorePhysicalQuotaPolicyId,
+    S3RefBackend, StoreEncryptionKey, StoreEncryptionKeyId, StoreError, StoreGraph,
+    StoreGraphAdmin, StoreGraphConfig, StoreGraphKeyring, StoreGraphNamespaceAuthorizers,
+    StoreGraphObjectProfilers, StoreGraphPhysicalQuotaBinders, StoreNamespaceAuthorizer,
+    StoreNamespaceId, StoreNamespaceOperation, StoreNodeId, StoreNodeSpec,
+    StoreObjectProfilePolicyId, StorePhysicalQuotaPolicyId, StoreS3EndpointId,
 };
-use crucible_linux_resource::LinuxProjectQuotaBinder;
 use rustix::fs::{Mode, OFlags};
 use serde::Deserialize;
 
@@ -216,7 +216,7 @@ impl StoreNamespaceAuthorizer for StaticNamespaceAuthorizer {
         &self,
         operation: StoreNamespaceOperation,
         id: ContentId,
-    ) -> Result<(), crucible_cas::content_store::StoreError> {
+    ) -> Result<(), StoreError> {
         let operation = match operation {
             StoreNamespaceOperation::Contains => AuthoredNamespaceOperation::Contains,
             StoreNamespaceOperation::Read => AuthoredNamespaceOperation::Read,
@@ -225,7 +225,7 @@ impl StoreNamespaceAuthorizer for StaticNamespaceAuthorizer {
         if self.operations.contains(&operation) && self.object_kinds.contains(&id.kind()) {
             Ok(())
         } else {
-            Err(crucible_cas::content_store::StoreError::Unauthorized)
+            Err(StoreError::Unauthorized)
         }
     }
 }
@@ -342,17 +342,17 @@ fn verify_loaded_campaign_store_inventory(
                 .visit_inventory(&mut |record: BlobInventoryRecord| {
                     placements = placements.checked_add(1).ok_or_else(|| {
                         exceeded = true;
-                        crucible_cas::content_store::StoreError::Quota
+                        StoreError::Quota
                     })?;
                     logical_bytes = logical_bytes
                         .checked_add(record.logical_length())
                         .ok_or_else(|| {
                             exceeded = true;
-                            crucible_cas::content_store::StoreError::Quota
+                            StoreError::Quota
                         })?;
                     if placements > limits.placements || logical_bytes > limits.logical_bytes {
                         exceeded = true;
-                        return Err(crucible_cas::content_store::StoreError::Quota);
+                        return Err(StoreError::Quota);
                     }
                     records.push(record);
                     Ok(())
@@ -408,12 +408,10 @@ fn verify_loaded_campaign_store_inventory(
             let mut changed = false;
             fence
                 .visit_inventory(&mut |_record| {
-                    rechecked = rechecked
-                        .checked_add(1)
-                        .ok_or(crucible_cas::content_store::StoreError::Quota)?;
+                    rechecked = rechecked.checked_add(1).ok_or(StoreError::Quota)?;
                     if rechecked > first.objects() {
                         changed = true;
-                        return Err(crucible_cas::content_store::StoreError::Quota);
+                        return Err(StoreError::Quota);
                     }
                     Ok(())
                 })
@@ -792,10 +790,9 @@ impl AuthoredStoreNodeSpec {
                     multipart_part_bytes,
                 )?;
                 Ok(StoreNodeSpec::S3 {
-                    endpoint: crucible_cas::content_store::StoreS3EndpointId::new(endpoint)
-                        .map_err(|error| {
-                            campaign_store_error(format!("invalid S3 endpoint ID: {error}"))
-                        })?,
+                    endpoint: StoreS3EndpointId::new(endpoint).map_err(|error| {
+                        campaign_store_error(format!("invalid S3 endpoint ID: {error}"))
+                    })?,
                     bucket,
                     prefix,
                     maximum_logical_object_bytes,
@@ -1088,11 +1085,12 @@ fn campaign_store_error(detail: impl std::fmt::Display) -> CliError {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- unit fixtures use panic shortcuts for exact failure localization.
 #[allow(clippy::expect_used)]
 mod tests {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-    use crucible_cas::content_store::{BlobHandle, ImmutableBlobBackend};
+    use crucible_cas::content_store::{BlobHandle, ImmutableBlobBackend, StoreNodeKind};
     use tempfile::TempDir;
 
     use super::*;
@@ -1256,9 +1254,13 @@ path = "/definitely/missing/campaign-store-key.bin"
 
         let loaded =
             load_campaign_repository_graph(&deployment).expect("load strict S3 deployment");
-        assert!(loaded.graph.describe().iter().any(|node| {
-            node.kind == crucible_cas::content_store::StoreNodeKind::S3 && node.capabilities.durable
-        }));
+        assert!(
+            loaded
+                .graph
+                .describe()
+                .iter()
+                .any(|node| { node.kind == StoreNodeKind::S3 && node.capabilities.durable })
+        );
         assert_eq!(loaded.maintenance.physical().len(), 1);
         assert_eq!(loaded.maintenance.s3_multipart_cleanup().len(), 1);
         assert!(matches!(&loaded.refs, LoadedRefBackend::S3(_)));

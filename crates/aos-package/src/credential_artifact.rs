@@ -1999,6 +1999,7 @@ mod tests {
                                 ciphertext: None,
                                 units: vec!["web.service".into()],
                                 encrypted: false,
+                                optional: false,
                             },
                             CredentialMeta {
                                 name: "join-token".into(),
@@ -2006,6 +2007,7 @@ mod tests {
                                 ciphertext: None,
                                 units: vec!["web.service".into()],
                                 encrypted: true,
+                                optional: false,
                             },
                             CredentialMeta {
                                 name: "inline-secret".into(),
@@ -2013,6 +2015,7 @@ mod tests {
                                 ciphertext: Some("abcDEF0123+/=".into()),
                                 units: vec!["web.service".into()],
                                 encrypted: true,
+                                optional: false,
                             },
                             CredentialMeta {
                                 name: "vendor-secret".into(),
@@ -2020,6 +2023,7 @@ mod tests {
                                 ciphertext: None,
                                 units: vec!["web.service".into()],
                                 encrypted: true,
+                                optional: false,
                             },
                         ],
                     },
@@ -2028,6 +2032,7 @@ mod tests {
                 }),
                 expose_artifact: None,
                 config_module: None,
+                documentation: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -2061,6 +2066,7 @@ mod tests {
             expose,
             expose_artifact: None,
             config_module: None,
+            documentation: None,
             permissions: Default::default(),
             bpf_lsm: None,
             attestation: Default::default(),

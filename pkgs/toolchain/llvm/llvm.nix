@@ -8,6 +8,8 @@
   python3,
   zlib,
   bootstrapTools,
+  stdenv,
+  buildPackages,
 }:
 import ./llvm-22.nix {
   inherit
@@ -19,5 +21,7 @@ import ./llvm-22.nix {
     python3
     zlib
     bootstrapTools
+    stdenv
+    buildPackages
     ;
 }

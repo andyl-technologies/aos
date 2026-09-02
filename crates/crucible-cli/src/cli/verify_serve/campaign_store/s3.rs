@@ -12,11 +12,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aws_credential_types::Credentials;
 use aws_credential_types::provider::{ProvideCredentials, error::CredentialsError, future};
-use crucible_cas::content_store::{
-    S3RefBackend, StoreGraphS3Clients, StoreNodeId, StoreNodeSpec, StoreS3EndpointId,
-    StoreS3RefCapability,
+use crucible_daemon::campaign_store_composition::{
+    AwsSdkS3Client, AwsSdkS3ClientConfig, AwsSdkS3StrongCasClient, S3RefBackend,
+    StoreGraphS3Clients, StoreNodeId, StoreNodeSpec, StoreS3EndpointId, StoreS3RefCapability,
 };
-use crucible_s3_store::{AwsSdkS3Client, AwsSdkS3ClientConfig, AwsSdkS3StrongCasClient};
 use serde::Deserialize;
 use url::Url;
 use zeroize::{Zeroize, Zeroizing};

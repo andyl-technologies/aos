@@ -8,6 +8,8 @@
   pkg-config,
   linux-headers,
   libtirpc,
+  stdenv,
+  buildPackages,
 }: let
   version = "4.99.4";
 in
@@ -22,21 +24,29 @@ in
       hash = "sha256-DEROLavsFK0UbLt/W1K1q0l2coQC/zSNn+ztmtl0DGY=";
     };
 
-    buildDeps = [
-      gnumake
-      pkg-config
-      linux-headers
-    ];
-    runtimeDeps = [libtirpc];
+    buildDeps =
+      [
+        gnumake
+        pkg-config
+      ]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then []
+        else [linux-headers]
+      );
+    runtimeDeps =
+      if stdenv.hostPlatform.isDarwin
+      then []
+      else [libtirpc];
     propagatedDeps = [];
 
     # Guard: keep the autotools build toolchain out of lsof's
     # `-v`-baked PKG_CONFIG_PATH / CC strings.
     disallowedReferences = [
-      gnumake
-      pkg-config
-      patch
-      patchelf
+      buildPackages.gnumake
+      buildPackages.pkg-config
+      buildPackages.patch
+      buildPackages.patchelf
     ];
 
     phases = [
@@ -51,17 +61,22 @@ in
         name = "configure";
         script = ''
           ./configure \
+            $configureFlags \
             --prefix=$out \
             --disable-dependency-tracking \
-            --with-libtirpc
+            ${
+            if stdenv.hostPlatform.isDarwin
+            then ""
+            else "--with-libtirpc"
+          }
         '';
       }
       {
         name = "build";
         script = ''
-          cat > soelim-wrapper <<'SCRIPT'
-          #!/bin/sh
-          cat "$@"
+          cat > soelim-wrapper <<SCRIPT
+          #!$CONFIG_SHELL
+          cat "\$@"
           SCRIPT
           chmod +x soelim-wrapper
           PATH="$PWD:$PATH"

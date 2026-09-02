@@ -112,6 +112,10 @@
       type = boolean;
       default = false;
     };
+    optional = mkOption {
+      type = boolean;
+      default = false;
+    };
     encryptedFile = mkOption {
       type = nullable (oneOf (checked types.path) string);
       default = null;

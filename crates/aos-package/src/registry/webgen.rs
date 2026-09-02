@@ -94,7 +94,12 @@ use crate::types::PackageMeta;
 /// The committed package TOML carries one artifact block per platform; the
 /// web surface lists every platform a version was published for, so the
 /// generator parses the registry once per platform and merges the results.
-const SNAPSHOT_PLATFORMS: &[&str] = &["x86_64-linux", "aarch64-linux"];
+const SNAPSHOT_PLATFORMS: &[&str] = &[
+    "x86_64-linux",
+    "aarch64-linux",
+    "x86_64-darwin",
+    "aarch64-darwin",
+];
 
 /// Branding and wiring defaults for a generated web surface.
 ///
@@ -1038,6 +1043,27 @@ mod tests {
             .collect();
         assert!(names.contains(&"x86_64-linux"));
         assert!(names.contains(&"aarch64-linux"));
+    }
+
+    #[test]
+    fn package_json_includes_darwin_platforms() {
+        let darwin_toml = CURL_TOML
+            .replace("x86_64-linux", "x86_64-darwin")
+            .replace("aarch64-linux", "aarch64-darwin");
+        let reg = make_registry(REGISTRY_META, &[("curl", &darwin_toml)]);
+        let out = TempDir::new().unwrap();
+        generate_web_surface(reg.path(), out.path(), WebConfig::default()).unwrap();
+
+        let package: Value =
+            serde_json::from_str(&read(out.path(), "web/packages/curl.json")).unwrap();
+        let platforms = package["versions"][0]["platforms"].as_array().unwrap();
+        let names: Vec<&str> = platforms
+            .iter()
+            .map(|platform| platform["platform"].as_str().unwrap())
+            .collect();
+
+        assert!(names.contains(&"x86_64-darwin"));
+        assert!(names.contains(&"aarch64-darwin"));
     }
 
     #[test]

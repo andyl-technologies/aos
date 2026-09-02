@@ -613,6 +613,14 @@ pub const PHASE_GATE_ORDER: &[PhaseGateOccurrence] = &[
     ),
     catalog_gate(
         PhasePlanPhase::Phase2,
+        "gate:typed-choice",
+        "checks.crucible.phase2.gates.typedChoice",
+        "typed guest choice boundary",
+        false,
+        false,
+    ),
+    catalog_gate(
+        PhasePlanPhase::Phase2,
         "gate:layer1-injection",
         "checks.crucible.phase2.gates.layer1Injection",
         "L1 injection preflight before L2 gates",

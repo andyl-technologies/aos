@@ -13,6 +13,8 @@
 //! orchestration, setup descriptor passing, and control/data split contract.
 //! `app_random_branch_plan` owns the legacy sealed branch-plan body;
 //! `app_random_transport` owns the app-random observation transport;
+//! `choice` owns the portable typed choice values carried by selectable
+//! registration and reply bodies;
 //! `doorbell_abi` owns the shared white-box doorbell instruction ABI;
 //! `doorbell_frame` owns the shared white-box doorbell marker frame ABI; `doorbell_marker`
 //! owns the marker-kind vocabulary and body codecs; `selectable` owns the
@@ -42,6 +44,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 pub mod app_random_branch_plan;
 pub mod app_random_transport;
+mod choice;
 mod codec_fuzz;
 pub mod debug_gateway;
 mod doorbell_abi;
@@ -60,6 +63,10 @@ use std::io::{ErrorKind, Read, Write};
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
+pub use choice::{
+    AlternativeId, BooleanDomain, ChoiceCodecError, ChoiceDomain, ChoiceValue, DiscreteAlternative,
+    DiscreteDomain, ExactRational, IntegerDomain, IntegerRepresentation, IntegerValue,
+};
 pub use codec_fuzz::{
     CODEC_FUZZ_REGRESSION_CORPUS, ControlCodecFuzzCase, ControlCodecFuzzOutcome,
     run_control_codec_fuzz_target,

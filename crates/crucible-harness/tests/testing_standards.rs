@@ -42,6 +42,7 @@ enum TestShape {
     ObservedInjectionIcountVectors,
     FingerprintCompare,
     AbiGoldenVectors,
+    TypedChoiceConformance,
     QemuInertCompare,
     PatchMicrotests,
     ResponsivenessBound,
@@ -132,6 +133,13 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
             Layer::CrossCutting,
         ],
         shape: TestShape::AbiGoldenVectors,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:typed-choice",
+        owner_packages: &["crucible-campaign"],
+        layers: &[Layer::L3],
+        shape: TestShape::TypedChoiceConformance,
         backend: TestBackend::InProcess,
     },
     GateTestingStandard {
@@ -322,6 +330,10 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
     CrateTestingOwnership {
         package: "crucible-cas",
         gates: &["gate:campaign-continuity"],
+    },
+    CrateTestingOwnership {
+        package: "crucible-campaign",
+        gates: &["gate:typed-choice"],
     },
     CrateTestingOwnership {
         package: "crucible-session",

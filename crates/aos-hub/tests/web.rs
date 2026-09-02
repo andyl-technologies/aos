@@ -258,10 +258,20 @@ async fn channel_calculator_resolves_bucket() {
     let (status, _, body) = get(&app, "/demo/-/channels/stable?bucket=0a").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("0x0A"), "{body}");
-    assert!(body.contains("release <strong>1.0.0</strong>"), "{body}");
+    assert!(
+        body.contains(
+            "release <strong><a href=\"/demo/-/releases#release-1.0.0\">1.0.0</a></strong>"
+        ),
+        "{body}"
+    );
     assert!(body.contains("class=\"hit\""), "{body}");
     // The anti-rollback floor (recorded at index time) is shown.
-    assert!(body.contains("floor <strong>1.0.0</strong>"), "{body}");
+    assert!(
+        body.contains(
+            "floor <strong><a href=\"/demo/-/releases#release-1.0.0\">1.0.0</a></strong>"
+        ),
+        "{body}"
+    );
 }
 
 #[tokio::test]
@@ -424,9 +434,10 @@ async fn registry_home_carries_setup_snippets_and_fingerprints() {
         "{body}"
     );
     assert!(body.contains("trustKeys"), "{body}");
-    // substituters point at the advertised binary cache, not the registry URL.
+    // The canonical anonymous delivery facade is also the advertised
+    // binary-cache endpoint; the cache remains an implementation behind it.
     assert!(
-        body.contains("substituters = https://cache.example.com"),
+        body.contains("substituters = http://127.0.0.1:8420/demo"),
         "{body}"
     );
     assert!(body.contains("trusted-public-keys ="), "{body}");
@@ -445,7 +456,7 @@ async fn registry_home_carries_setup_snippets_and_fingerprints() {
         "{package}"
     );
     assert!(
-        package.contains("substituters = https://cache.example.com"),
+        package.contains("substituters = http://127.0.0.1:8420/demo"),
         "{package}"
     );
 }

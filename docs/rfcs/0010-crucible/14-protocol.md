@@ -241,7 +241,7 @@ reject a truncated region.
   UTF-8 canonical_stream_name`; draw indices are strictly increasing and a
   stream name is 1..=1,024 bytes in the canonical length-framed app-random
   syntax. Under negotiated v3, the third descriptor instead carries the
-  canonical `CRUCSUP1` version-1 composite defined by RFC-0016 §02.7: its exact
+  canonical `CRUCSUP1` version-1 composite defined by RFC-0017 §02.7: its exact
   length fields partition one canonical app-random plan and one canonical
   selectable catalog plan, its total length is at most 36 MiB plus 28 bytes,
   and no alternate or trailing encoding is accepted. A v2 peer MUST reject the

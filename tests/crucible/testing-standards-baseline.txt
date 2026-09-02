@@ -16,12 +16,17 @@ crucible-campaign	src/execution	retry	1
 crucible-campaign	src/execution/tests	retry	1
 crucible-campaign	src/repository/tests/execution	retry	1
 crucible-cas	src/content_store/directory	retry	1
+crucible-cas	src/content_store/compressed_directory	retry	1
+crucible-cas	src/content_store/encrypted_directory	retry	1
 crucible-cas	src/content_store/packed	retry	1
+crucible-cas	src/content_store/s3	retry	1
 crucible-cas	src/content_store/tests	thread::sleep	1
 crucible-cas	src/content_store	retry	1
 crucible-cli	src/cli/campaign	retry	1
 crucible-cli	src/cli/campaign/tests	retry	1
 crucible-cli	src/main	retry	1
+crucible-cli	tests/campaign_store_process	thread::sleep	1
+crucible-daemon	src/campaign_bootstrap/tests	thread::sleep	1
 crucible-daemon	src/campaign_server/tests	thread::sleep	1
 crucible-daemon	src/campaign_server	thread::sleep	1
 crucible-daemon	src/executor_loopback/tests	thread::sleep	1
@@ -77,6 +82,8 @@ crucible-qemu	src/node/tests/fault_command	retry	1
 crucible-qemu	src/node_factory	thread::sleep	1
 crucible-qemu	src/node_factory/tests	thread::sleep	1
 crucible-qemu	src/node_tests	retry	1
+crucible-qemu	src/node_tests	std::thread::sleep	1
+crucible-qemu	src/node_tests	thread::sleep	1
 crucible-qemu	src/node/tests/host_io_runtime	retry	1
 crucible-qemu	src/node_tests/fault_event_budget	retry	1
 crucible-qemu	src/node_tests/fingerprint	retry	1
@@ -123,6 +130,7 @@ crucible-qemu-plugin	src/block_io	retry	1
 crucible-qemu-plugin	src/runtime/live_callbacks/devices	retry	1
 crucible-qemu-plugin	src/runtime/live_callbacks/devices/tests	retry	1
 crucible-qemu-plugin	src/runtime/live_whitebox/guest_introspection	retry	1
+crucible-s3-store	src/lib	thread::sleep	1
 crucible-shmem	src/shmem/frame_node	retry	1
 crucible-shmem	src/shmem/frame_node/frame_entry	retry	1
 crucible	src/model/fault_signal/network_effect	retry	1
