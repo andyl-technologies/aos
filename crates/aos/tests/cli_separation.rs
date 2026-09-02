@@ -3,6 +3,7 @@
 use std::process::{Command, Output};
 
 use anyhow::{Context, Result, bail};
+use tempfile::tempdir;
 
 fn run(binary: &str, arguments: &[&str]) -> Result<Output> {
     Command::new(binary)
@@ -61,5 +62,23 @@ fn commands_do_not_cross_public_cli_boundaries() -> Result<()> {
         run(env!("CARGO_BIN_EXE_apr"), &["publish", "--help"])?,
         "apr publish --help",
     )?;
+    Ok(())
+}
+
+#[test]
+fn system_scope_rejects_an_unidentified_target_before_loading_state() -> Result<()> {
+    let root = tempdir()?;
+    let output = Command::new(env!("CARGO_BIN_EXE_apm"))
+        .args(["list", "--system"])
+        .env("AOS_ROOT", root.path())
+        .output()
+        .context("running apm against an unidentified root")?;
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("is not an AOS root"),
+        "unexpected system-target error: {stderr}"
+    );
     Ok(())
 }
