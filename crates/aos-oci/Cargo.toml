@@ -19,6 +19,7 @@ flate2 = { workspace = true }
 futures-util = { workspace = true }
 hex = { workspace = true }
 reqwest = { workspace = true }
+rustls-native-certs = { workspace = true }
 rustix = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

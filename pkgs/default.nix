@@ -547,6 +547,7 @@
     "cargoArtifactContract"
     "cargoNextest"
     "cargoNextestOpenFilesLimit"
+    "cargoNextestMaxTestThreads"
     "nextestFlags"
     "cargoFlags"
     "buildType"

@@ -266,18 +266,25 @@ fn validate_publication_inputs(inputs: &Path) -> Result<ValidatedInputs> {
         image_index == evidence_index,
         "publication image and evidence layouts contain different root indexes"
     );
-    signature_input
-        .oci
-        .index
-        .verify(&image_index)
-        .context("binding publication layouts to the signed root index")?;
+    ensure!(
+        read_root_file(&image_layout, "oci-layout")? == OCI_LAYOUT_MARKER,
+        "publication image layout marker is not canonical OCI 1.0"
+    );
     ensure!(
         read_root_file(&evidence_layout, "oci-layout")? == OCI_LAYOUT_MARKER,
         "publication evidence layout marker is not canonical OCI 1.0"
     );
 
-    let root_index =
-        ImageIndex::from_json(&image_index).context("validating publication root index")?;
+    let layout_index =
+        ImageIndex::from_json(&image_index).context("validating publication layout index")?;
+    ensure!(
+        layout_index.manifests == vec![signature_input.oci.index.clone()],
+        "publication layout index does not contain the exact signed root descriptor"
+    );
+    let root_index_bytes = read_verified_blob(&evidence_layout, &signature_input.oci.index)
+        .context("binding publication layouts to the signed root index")?;
+    let root_index = ImageIndex::from_json(&root_index_bytes)
+        .context("validating signed publication root index")?;
     ensure!(
         root_index.manifests == signature_input.oci.platform_manifests,
         "publication root index platform manifests differ from signature input"

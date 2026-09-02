@@ -121,9 +121,95 @@
       -----END PRIVATE KEY-----
     '';
   };
+  deliveryAttestationKey = pkgs.writeTextFile {
+    name = "hub-oci-delivery-attestation-key";
+    destination = "/value";
+    text = "hub-oci-qualification-delivery-attestation-key-v1";
+  };
+  deliveryAttestationSigner = pkgs.writeTextFile {
+    name = "hub-oci-delivery-attestation-signer";
+    destination = "/bin/hub-oci-delivery-attestation-signer";
+    executable = true;
+    text = ''
+      #!${pkgs.python3}/bin/python3
+      import base64
+      import hashlib
+      import hmac
+      import http.server
+      import json
+      import secrets
+      import sys
+      import time
+
+      with open(sys.argv[1], "rb") as key_file:
+          key = key_file.read()
+
+      class AttestationHandler(http.server.BaseHTTPRequestHandler):
+          protocol_version = "HTTP/1.1"
+
+          def do_GET(self):
+              method = self.headers.get("X-AOS-Original-Method", "")
+              authority = self.headers.get("X-AOS-Original-Authority", "")
+              path_and_query = self.headers.get("X-AOS-Original-URI", "")
+              if (
+                  method not in {"DELETE", "GET", "HEAD", "PATCH", "POST", "PUT"}
+                  or authority not in {"hub:8443", "192.168.50.11:8443"}
+                  or not path_and_query.startswith("/")
+                  or "\r" in path_and_query
+                  or "\n" in path_and_query
+              ):
+                  self.send_error(400)
+                  return
+
+              now = int(time.time())
+              assertion = {
+                  "version": 1,
+                  "issued_at": now,
+                  "expires_at": now + 15,
+                  "nonce": secrets.token_urlsafe(18),
+                  "route_id": "hub-oci-tls-edge",
+                  "route_configuration_digest": "0" * 64,
+                  "method": method,
+                  "authority": authority,
+                  "path_and_query": path_and_query,
+                  "transport": {"scheme": "https", "ingress_kind": "layer7"},
+                  "access": {"kind": "none"},
+              }
+              payload = json.dumps(
+                  assertion, separators=(",", ":"), sort_keys=True
+              ).encode()
+              encoded_payload = base64.urlsafe_b64encode(payload).rstrip(b"=")
+              signature = hmac.new(key, encoded_payload, hashlib.sha256).digest()
+              compact = (
+                  encoded_payload.decode()
+                  + "."
+                  + base64.urlsafe_b64encode(signature).rstrip(b"=").decode()
+              )
+
+              self.send_response(204)
+              self.send_header("X-AOS-Delivery-Attestation", compact)
+              self.send_header("Content-Length", "0")
+              self.end_headers()
+
+          def log_message(self, format, *args):
+              pass
+
+      server = http.server.ThreadingHTTPServer(
+          ("127.0.0.1", 18443), AttestationHandler
+      )
+      server.daemon_threads = True
+      server.serve_forever()
+    '';
+  };
   tlsSetup = pkgs.writeShellScriptBin "hub-oci-tls-setup" ''
     set -euo pipefail
-    install -d -m 0700 /run/aos-hub-tls
+    install -d -m 0750 -o root -g nginx /run/aos-hub-tls
+    install -d -m 0700 -o nginx -g nginx \
+      /run/aos-hub-tls/client-body \
+      /run/aos-hub-tls/proxy \
+      /run/aos-hub-tls/fastcgi \
+      /run/aos-hub-tls/uwsgi \
+      /run/aos-hub-tls/scgi
     install -m 0600 "$CREDENTIALS_DIRECTORY/ca-key" /run/aos-hub-tls/server.key
     ${pkgs.openssl}/bin/openssl req -new \
       -key /run/aos-hub-tls/server.key \
@@ -152,20 +238,45 @@
       error_log stderr info;
       events {}
       http {
-        access_log /dev/stdout;
+        access_log /run/aos-hub-tls/access.log;
         client_body_temp_path /run/aos-hub-tls/client-body;
         proxy_temp_path /run/aos-hub-tls/proxy;
+        fastcgi_temp_path /run/aos-hub-tls/fastcgi;
+        uwsgi_temp_path /run/aos-hub-tls/uwsgi;
+        scgi_temp_path /run/aos-hub-tls/scgi;
         client_max_body_size 2g;
         server {
           listen 8443 ssl;
           server_name hub 192.168.50.11;
           ssl_certificate /run/aos-hub-tls/server.crt;
           ssl_certificate_key /run/aos-hub-tls/server.key;
+
+          location = /_aos_ingress_attestation {
+            internal;
+            proxy_pass http://127.0.0.1:18443/sign;
+            proxy_pass_request_body off;
+            proxy_set_header Content-Length "";
+            proxy_set_header X-AOS-Original-Method $request_method;
+            proxy_set_header X-AOS-Original-Authority $http_host;
+            proxy_set_header X-AOS-Original-URI $request_uri;
+          }
+
+          # Health belongs to the native control origin. Keep the client-facing
+          # TLS check, but send the exact configured authority to Hub.
+          location = /healthz {
+            proxy_pass http://127.0.0.1:8420;
+            proxy_http_version 1.1;
+            proxy_set_header Host hub:8420;
+            proxy_set_header X-AOS-Delivery-Attestation "";
+          }
+
           location / {
+            auth_request /_aos_ingress_attestation;
+            auth_request_set $delivery_attestation $upstream_http_x_aos_delivery_attestation;
             proxy_pass http://127.0.0.1:8420;
             proxy_http_version 1.1;
             proxy_set_header Host $http_host;
-            proxy_set_header X-Forwarded-Proto https;
+            proxy_set_header X-AOS-Delivery-Attestation $delivery_attestation;
             proxy_request_buffering off;
             proxy_buffering off;
           }
@@ -217,6 +328,22 @@
   hubOciModule = {
     aos.firewall.allowedTCP = [8443];
     aos.security.pki.certificateFiles = ["${tlsCa}/ca.crt"];
+    aos.registry-hub.credentials.deliveryAttestationKey = "hub-oci-delivery-attestation-key";
+    environment.etc."tmpfiles.d/hub-oci-delivery-attestation.conf".text = ''
+      C /run/credentials/@system/hub-oci-delivery-attestation-key 0600 root root - ${deliveryAttestationKey}/value
+    '';
+    aos.users.users.nginx = {
+      uid = 803;
+      group = "nginx";
+      home = "/var/lib/nginx";
+      shell = "/sbin/nologin";
+      description = "Nginx TLS edge";
+      extraGroups = [];
+    };
+    aos.users.groups.nginx = {
+      gid = 803;
+      members = [];
+    };
     systemd.services.aos-hub.serviceConfig.Environment = [
       "HUB_OCI_PULL_ENABLED=true"
       "HUB_OCI_PUSH_ENABLED=true"
@@ -224,11 +351,33 @@
       "HUB_OCI_ADMINISTRATION_ENABLED=true"
       "HUB_OCI_GC_ENABLED=true"
     ];
+    systemd.services.aos-hub-oci-attestation = {
+      description = "Authenticated TLS transport evidence for native Hub";
+      wantedBy = ["multi-user.target"];
+      after = ["network.target"];
+      serviceConfig = {
+        Type = "simple";
+        LoadCredential = [
+          "delivery-attestation-key:${deliveryAttestationKey}/value"
+        ];
+        ExecStart =
+          "${deliveryAttestationSigner}/bin/hub-oci-delivery-attestation-signer"
+          + " /run/credentials/aos-hub-oci-attestation.service/delivery-attestation-key";
+        Restart = "on-failure";
+        User = "nginx";
+        Group = "nginx";
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        ProtectHome = true;
+        ProtectSystem = "strict";
+        RestrictAddressFamilies = ["AF_INET" "AF_UNIX"];
+      };
+    };
     systemd.services.aos-hub-oci-tls = {
       description = "TLS edge for native Hub OCI qualification";
       wantedBy = ["multi-user.target"];
-      after = ["aos-hub.service"];
-      requires = ["aos-hub.service"];
+      after = ["aos-hub.service" "aos-hub-oci-attestation.service"];
+      requires = ["aos-hub.service" "aos-hub-oci-attestation.service"];
       serviceConfig = {
         Type = "simple";
         LoadCredential = [
@@ -290,13 +439,16 @@ in {
 
     AOS = "${pkgs.aos}/bin/aos"
     APR = "${pkgs.aos}/bin/apr"
-    CURL = "${pkgs.curl}/bin/curl"
+    CURL = (
+        "${pkgs.curl}/bin/curl"
+        " --cacert /etc/ssl/certs/ca-certificates.crt"
+    )
     JQ = "${pkgs.jq}/bin/jq"
     MOUNT = "${pkgs.util-linux}/bin/mount"
     HUB = "http://hub:8420"
     OCI = "https://hub:8443"
     PRIVATE_OCI = "https://192.168.50.11:8443"
-    LAYOUT = "/run/aos-host-store/${baseNameOf productionLayout}"
+    LAYOUT = "/run/aos-host-store/${baseNameOf productionLayout}/layout"
     PUBLICATION_INPUTS = "/run/aos-host-store/${baseNameOf containerPublicationInputs}"
 
     def hub_command(subcommand, token, mutation=""):
@@ -368,11 +520,21 @@ in {
         machine.succeed("grep -q 'BEGIN CERTIFICATE' /etc/ssl/certs/ca-certificates.crt")
 
     hub.wait_for_unit("aos-hub.service", timeout=120)
-    hub.wait_for_unit("aos-hub-oci-tls.service", timeout=120)
+    try:
+        hub.wait_for_unit("aos-hub-oci-tls.service", timeout=120)
+    except Exception as error:
+        diagnostics = hub.succeed(textwrap.dedent("""
+            systemctl --no-pager --full status aos-hub-oci-tls.service || true
+            journalctl --no-pager -u aos-hub-oci-tls.service -n 100 || true
+        """))
+        raise AssertionError((error, diagnostics)) from error
     hub.wait_until_succeeds(f"{CURL} -fsS {HUB}/healthz", timeout=120)
     publisher.wait_until_succeeds(f"{CURL} -fsS {OCI}/healthz", timeout=120)
     consumer.succeed(f"{CURL} -fsS {OCI}/healthz")
-    consumer.fail(f"SSL_CERT_FILE=/dev/null {CURL} -fsS {OCI}/healthz")
+    consumer.fail(
+        "${pkgs.curl}/bin/curl --cacert /dev/null "
+        f"-fsS {OCI}/healthz"
+    )
 
     # Initialize the real packaged service as its service identity with its
     # sole SQLite writer stopped. No seed state or direct database edits exist.
@@ -387,7 +549,7 @@ in {
         install -d -o aos-hub -g aos-hub -m 0750 \
           /var/lib/aos-hub/storage/public \
           /var/lib/aos-hub/storage/private
-        systemctl start aos-hub.service
+        systemctl start aos-hub.service aos-hub-oci-tls.service
     """), timeout=180)
     hub.wait_until_succeeds(f"{CURL} -fsS {HUB}/healthz", timeout=120)
 
@@ -506,12 +668,23 @@ in {
         git config --global user.name 'OCI Qualification Publisher'
         git config --global user.email 'oci-publisher@example.test'
         key="$HOME/.config/apm/keys/containers-initial.key"
+        package_version=$(${pkgs.jq}/bin/jq -er \
+          .identity.packageVersion \
+          /var/tmp/container-final/container-release.json)
+        test "$package_version" = "${pkgs.aos.version}"
+        {APR} add "file://$HOME/.local/share/apm/registries/containers" \
+          --name containers --no-clone --trust-key {shlex.quote(public_trust)}
+        {APR} keys register initial --registry containers --key "$key"
         {APR} create containers --trust-key {shlex.quote(public_trust)} \
-          --trust-key-id initial --key "$key"
+          --trust-key-id initial --key-id initial
         {APR} release {shlex.quote(signed_release)} --registry containers \
           --container-release /var/tmp/container-final/container-release.json \
           --container-signature-input /var/tmp/container-final/signature-input.json \
-          --channel stable --init-channel --key "$key" \
+          --store-path ${pkgs.aos} --name aos --version "$package_version" \
+          --description 'AOS production command-line tools' \
+          --license Apache-2.0 --maintainer 'Andyl, Inc.' \
+          --channel stable --init-channel --key-id initial
+        {APR} origin upload --registry containers \
           --upload-url file:///var/tmp/container-publication-surface
         {APR} verify --registry containers
     """), timeout=900)
@@ -526,6 +699,26 @@ in {
         publisher.succeed(hub_command("org show acme", token))
     )["data"]["organization"]
     org_scope = org["stable_id"]
+    reviewed(
+        publisher,
+        "oci-public-network-grant",
+        "network-policy grant instance:public "
+        f"--consumer-scope {shlex.quote(org_scope)}",
+        token,
+    )
+    reviewed(
+        publisher,
+        "oci-instance-binding-grant",
+        "binding grant instance:default "
+        f"--consumer-scope {shlex.quote(org_scope)}",
+        token,
+    )
+    reviewed(
+        publisher,
+        "oci-public-domain-create",
+        "domain add hub --org acme",
+        token,
+    )
 
     reviewed_control(
         publisher,
@@ -696,7 +889,8 @@ in {
         )
 
     push = json.loads(publisher.succeed(
-        f"{AOS} --json --progress off --color never container push {LAYOUT} "
+        f"HOME=/var/lib/aos-oci-publisher {AOS} "
+        f"--json --progress off --color never container push {LAYOUT} "
         "hub:8443/aos:latest --hub https://hub:8443 "
         f"--token {shlex.quote(token)}",
         timeout=900,
@@ -706,7 +900,8 @@ in {
     assert root_digest.startswith("sha256:"), push
     assert manifest_digest.startswith("sha256:"), push
     shared_push = json.loads(publisher.succeed(
-        f"{AOS} --json --progress off --color never container push {LAYOUT} "
+        f"HOME=/var/lib/aos-oci-publisher {AOS} "
+        f"--json --progress off --color never container push {LAYOUT} "
         "hub:8443/shared:latest --mount-from aos --hub https://hub:8443 "
         f"--token {shlex.quote(token)}",
         timeout=900,
@@ -714,7 +909,8 @@ in {
     assert shared_push["index_digest"] == root_digest, shared_push
 
     private_push = json.loads(publisher.succeed(
-        f"{AOS} --json --progress off --color never container push {LAYOUT} "
+        f"HOME=/var/lib/aos-oci-publisher {AOS} "
+        f"--json --progress off --color never container push {LAYOUT} "
         "192.168.50.11:8443/aos:private --hub https://192.168.50.11:8443 "
         f"--token {shlex.quote(token)}",
         timeout=900,
@@ -723,7 +919,8 @@ in {
     assert signed_root == root_digest, (signed_root, root_digest)
 
     signed_publish = (
-        f"{AOS} --json --progress off --color never container publish aos "
+        f"HOME=/var/lib/aos-oci-publisher {AOS} "
+        "--json --progress off --color never container publish aos "
         "hub:8443/aos:stable "
         "--release /var/tmp/container-final/container-release.json "
         "--release-layout /var/tmp/container-final/layout "
@@ -748,6 +945,14 @@ in {
         timeout=900,
     ))["data"]
     assert indexed["state"] == "ready", indexed
+    publisher.wait_until_succeeds(
+        hub_command(
+            f"registry container provenance show acme/containers aos {signed_root} "
+            f"--release {shlex.quote(signed_release)}",
+            token,
+        ),
+        timeout=180,
+    )
     verified_publish = json.loads(publisher.succeed(
         signed_publish
         + f"--hub {HUB} --token {shlex.quote(token)} "
@@ -808,7 +1013,7 @@ in {
             -H 'Content-Type: application/octet-stream' \
             -H 'Authorization: Bearer {token}' \
             --data-binary @"$file" "$location"
-          case "$location" in *\?*) separator='&' ;; *) separator='?' ;; esac
+          case "$location" in *\\?*) separator='&' ;; *) separator='?' ;; esac
           {CURL} -fsS -o /dev/null -X PUT \
             -H 'Content-Length: 0' \
             -H 'Authorization: Bearer {token}' \

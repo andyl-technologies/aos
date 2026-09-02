@@ -187,7 +187,7 @@ impl RegistryClient {
             None => reference.default_origin()?,
         };
         validate_origin(&origin, reference.authority())?;
-        let http = reqwest::Client::builder()
+        let http = http_client_builder()
             .user_agent(concat!("aos-oci/", env!("CARGO_PKG_VERSION")))
             .redirect(Policy::none())
             .connect_timeout(Duration::from_secs(10))
@@ -694,7 +694,7 @@ async fn external_client(url: &Url, cancellation: &CancellationToken) -> Result<
 }
 
 fn build_http_client(resolution: Option<(&str, &[SocketAddr])>) -> Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder()
+    let mut builder = http_client_builder()
         .user_agent(concat!("aos-oci/", env!("CARGO_PKG_VERSION")))
         .redirect(Policy::none())
         .connect_timeout(Duration::from_secs(10))
@@ -703,6 +703,25 @@ fn build_http_client(resolution: Option<(&str, &[SocketAddr])>) -> Result<reqwes
         builder = builder.resolve_to_addrs(domain, addresses);
     }
     builder.build().context("building confined OCI HTTP client")
+}
+
+fn http_client_builder() -> reqwest::ClientBuilder {
+    let native_roots = rustls_native_certs::load_native_certs()
+        .certs
+        .into_iter()
+        .filter_map(|certificate| reqwest::Certificate::from_der(certificate.as_ref()).ok())
+        .collect::<Vec<_>>();
+    let mut builder = reqwest::Client::builder();
+    if !native_roots.is_empty() {
+        // AOS-managed trust is authoritative when the platform publishes it.
+        // Minimal environments without native roots retain reqwest's bundled
+        // WebPKI roots as a bootstrap fallback.
+        builder = builder.tls_built_in_root_certs(false);
+        for certificate in native_roots {
+            builder = builder.add_root_certificate(certificate);
+        }
+    }
+    builder
 }
 
 fn validate_remote_ip(address: IpAddr) -> Result<()> {
