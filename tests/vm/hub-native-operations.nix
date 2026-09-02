@@ -160,6 +160,19 @@ in
         ${pkgs.aos.packageRuntime}/bin/aos-package-runtime --json render-one example \
           --manifest /tmp/nonexistent-config-manifest.json \
           --marker-root /tmp/render-markers --staging-root /tmp/render-stage \
+          >/tmp/render-one-non-aos.json 2>&1; then
+        echo 'render-one unexpectedly accepted a non-AOS runtime' >&2
+        exit 1
+      fi
+      ${pkgs.jq}/bin/jq -e \
+        '.error | contains("the running system is not AOS")' \
+        /tmp/render-one-non-aos.json >/dev/null
+      mkdir -p /aos-toplevel
+      printf '%s\n' 'ID=aos' 'AOS_MODULE_ABI=2' >/aos-toplevel/os-release
+      if APM_SYSTEM_CONFIG_DIR=/tmp/apm-render-config \
+        ${pkgs.aos.packageRuntime}/bin/aos-package-runtime --json render-one example \
+          --manifest /tmp/nonexistent-config-manifest.json \
+          --marker-root /tmp/render-markers --staging-root /tmp/render-stage \
           >/tmp/render-one-missing.json 2>&1; then
         echo 'render-one unexpectedly accepted a missing eval manifest' >&2
         exit 1
