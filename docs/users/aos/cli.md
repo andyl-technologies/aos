@@ -4,8 +4,8 @@ This reference covers the repository and release-engineering command surface.
 Host users normally use [`apm`](packages.md) for package and generation
 operations and do not need a source checkout or Nix.
 
-The AOS package installs independent command-line programs with shared
-libraries and deliberately separate parsers.
+The source package builds independent command-line programs with shared
+libraries, deliberately separate parsers, and separate Nix outputs.
 
 | Command | Scope |
 | --- | --- |
@@ -18,13 +18,24 @@ There are no long-form aliases: `aos package` does not exist. Producer commands
 such as `publish` and `release` are not accepted below `apm registry`, and the
 private runtime rejects public package-manager commands.
 
-On AOS, all three commands are installed in the base system. From a repository
-checkout, run `aos` through the flake:
+The package-set mapping is explicit: `pkgs.aos` contains only `aos`,
+`pkgs.aos.apm` contains only `apm`, and `pkgs.aos.apr` contains only `apr`.
+`pkgs.aos.packageRuntime` is private and is referenced directly by AOS service
+units. The split outputs share one Cargo build but retain distinct runtime-tool
+closures.
+
+An AOS base image places only `apm` on the operator `PATH`; the repository and
+registry-authoring tools are host-side programs. From a repository checkout,
+run `aos` through the flake:
 
 ```sh
 nix run . -- describe
 nix run . -- test eval
 ```
+
+Build the public command outputs independently with `nix build .#aos`,
+`nix build .#apm`, or `nix build .#apr`. The development shell exposes all
+three names. The private runtime has no public flake package.
 
 The current repository CLI and bootable-image workflow is supported on
 `x86_64-linux`. Package and registry tools have a broader portability model:

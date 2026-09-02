@@ -61,7 +61,7 @@ in
           }
 
           echo "==> materializing the server configManifest" | tee "$out/result"
-          ${pkgs.aos}/bin/apm __materialize \
+          ${pkgs.aos.packageRuntime}/bin/aos-package-runtime __materialize \
             --manifest ${manifestFile} \
             --generation-dir "$generation" \
             --mkfs-erofs ${pkgs.erofs-utils}/bin/mkfs.erofs \
@@ -110,7 +110,7 @@ in
 
           # A byte-identical retry validates and reuses the immutable artifact.
           before="$(${pkgs.coreutils}/bin/sha256sum "$lower/etc.erofs")"
-          ${pkgs.aos}/bin/apm __materialize \
+          ${pkgs.aos.packageRuntime}/bin/aos-package-runtime __materialize \
             --manifest ${manifestFile} \
             --generation-dir "$generation" \
             --mkfs-erofs ${pkgs.erofs-utils}/bin/mkfs.erofs \
@@ -120,7 +120,7 @@ in
 
           # Tampering is detected before an existing generation can be reused.
           ${pkgs.coreutils}/bin/printf x >> "$lower/etc.erofs"
-          if ${pkgs.aos}/bin/apm __materialize \
+          if ${pkgs.aos.packageRuntime}/bin/aos-package-runtime __materialize \
             --manifest ${manifestFile} \
             --generation-dir "$generation" \
             --mkfs-erofs ${pkgs.erofs-utils}/bin/mkfs.erofs \

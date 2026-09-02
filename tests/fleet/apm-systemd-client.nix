@@ -53,7 +53,7 @@ in {
       import json
       import time
 
-      apm = "${pkgs.aos}/bin/aos-package-runtime _test-systemd-client"
+      apm = "${pkgs.aos.packageRuntime}/bin/aos-package-runtime _test-systemd-client"
 
       vm.wait_for_unit("aos-seed-baked-packages.service", timeout=120)
       vm.wait_until_succeeds(

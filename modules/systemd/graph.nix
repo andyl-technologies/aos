@@ -19,7 +19,7 @@
   ...
 }: let
   cfg = config.aos.config.unitGraph;
-  packageRuntime = "${pkgs.aos}/bin/aos-package-runtime";
+  packageRuntime = "${pkgs.aos.packageRuntime}/bin/aos-package-runtime";
   attestationQuoteArg =
     lib.optionalString config.aos.boot.secureBoot.measuredBoot.enable
     "--require-attestation-quote";

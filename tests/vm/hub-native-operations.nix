@@ -148,7 +148,7 @@ in
       printf '%s' 'production-bootstrap-secret' >/tmp/credential-plaintext
       mkdir -p /tmp/apm-author-home /tmp/apm-render-config
       if HOME=/tmp/apm-author-home \
-        ${pkgs.aos}/bin/apm --json credential encrypt bootstrap-token \
+        ${pkgs.aos.apm}/bin/apm --json credential encrypt bootstrap-token \
           /tmp/credential-plaintext --unit bootstrap.socket \
           >/tmp/credential-invalid-unit.json 2>&1; then
         echo 'credential encryption unexpectedly accepted a non-service unit' >&2
@@ -157,7 +157,7 @@ in
       ${pkgs.grep}/bin/grep -Eiq 'must be a service unit' \
         /tmp/credential-invalid-unit.json
       if APM_SYSTEM_CONFIG_DIR=/tmp/apm-render-config \
-        ${pkgs.aos}/bin/aos-package-runtime --json render-one example \
+        ${pkgs.aos.packageRuntime}/bin/aos-package-runtime --json render-one example \
           --manifest /tmp/nonexistent-config-manifest.json \
           --marker-root /tmp/render-markers --staging-root /tmp/render-stage \
           >/tmp/render-one-missing.json 2>&1; then
@@ -422,7 +422,7 @@ in
       HOME="$producer_home" ${pkgs.git}/bin/git config --global \
         user.email maintainer@example.test
       HOME="$producer_home" PATH="$producer_path" \
-        ${pkgs.aos}/bin/apr --json keys generate maintainer --registry maintenance \
+        ${pkgs.aos.apr}/bin/apr --json keys generate maintainer --registry maintenance \
         >/tmp/producer-key.json
       ${pkgs.coreutils}/bin/cat /tmp/producer-key.json
       producer_trust_key=$(${pkgs.jq}/bin/jq -er \
@@ -476,7 +476,7 @@ in
 
       echo '==> Publish a real APR-produced initial registry surface'
       HOME="$producer_home" PATH="$producer_path" \
-        ${pkgs.aos}/bin/apr create maintenance \
+        ${pkgs.aos.apr}/bin/apr create maintenance \
         --trust-key "$producer_trust_key" --trust-key-id maintainer \
         --key "$producer_key" >/tmp/apr-create.json
       producer_registry="$producer_home/.local/share/apm/registries/maintenance"
@@ -484,15 +484,15 @@ in
       test -s "$producer_registry/.git/HEAD"
       test -s "$producer_registry/.git/info/refs"
       HOME="$producer_home" PATH="$producer_path" \
-        ${pkgs.aos}/bin/apr --json add --no-verify \
+        ${pkgs.aos.apr}/bin/apr --json add --no-verify \
         "file://$producer_registry" --name maintenance --no-clone \
         >/tmp/apr-add-maintainer-config.json
       HOME="$producer_home" PATH="$producer_path" \
-        ${pkgs.aos}/bin/apr --json keys register maintainer \
+        ${pkgs.aos.apr}/bin/apr --json keys register maintainer \
         --key "$producer_key" --registry maintenance \
         >/tmp/apr-register-maintainer-key.json
       if ! HOME="$producer_home" PATH="$producer_path" \
-        ${pkgs.aos}/bin/apr --json publish ${pkgs.grep} \
+        ${pkgs.aos.apr}/bin/apr --json publish ${pkgs.grep} \
         --name qualification-grep --version 1.0.0 \
         --description 'Hermetic package used by native Hub qualification' \
         --license GPL-3.0-or-later \
@@ -504,20 +504,20 @@ in
       fi
       ${pkgs.coreutils}/bin/cat /tmp/apr-publish-package.json
       HOME="$producer_home" PATH="$producer_path" \
-        ${pkgs.aos}/bin/apr --json web generate --registry maintenance \
+        ${pkgs.aos.apr}/bin/apr --json web generate --registry maintenance \
         --output /tmp/producer-web >/tmp/apr-web-generate.json
       test -s /tmp/producer-web/index.html
       test -s /tmp/producer-web/web/config.json
       producer_surface=/tmp/producer-surface
       HOME="$producer_home" PATH="$producer_path" \
-        ${pkgs.aos}/bin/apr --json origin upload \
+        ${pkgs.aos.apr}/bin/apr --json origin upload \
         --registry maintenance --upload-url "file://$producer_surface" \
         >/tmp/apr-origin-upload.json
       ${pkgs.coreutils}/bin/cat /tmp/apr-origin-upload.json
       test -s "$producer_surface/HEAD"
       test -s "$producer_surface/info/refs"
       HOME="$producer_home" PATH="$producer_path" \
-        ${pkgs.aos}/bin/apr --json origin prepare-index-bundles \
+        ${pkgs.aos.apr}/bin/apr --json origin prepare-index-bundles \
         --surface-dir "$producer_surface" \
         >/tmp/apr-origin-index-bundles.json
       hub_cli_into /tmp/publication-upload.json registry publish upload \
@@ -686,7 +686,7 @@ in
 
       echo '==> Publish a producer-signed cache stack and draft structural edits'
       if ! HOME="$producer_home" PATH="$producer_path" \
-        ${pkgs.aos}/bin/apr --json cache generate --registry maintenance \
+        ${pkgs.aos.apr}/bin/apr --json cache generate --registry maintenance \
           --output /tmp/producer-cache-a \
           --cache-url https://cache-a.example.test --priority 100 \
           >/tmp/apr-cache-a.json 2>&1; then
@@ -694,7 +694,7 @@ in
         exit 1
       fi
       if ! HOME="$producer_home" PATH="$producer_path" \
-        ${pkgs.aos}/bin/apr --json cache generate --registry maintenance \
+        ${pkgs.aos.apr}/bin/apr --json cache generate --registry maintenance \
           --output /tmp/producer-cache-b \
           --cache-url https://cache-b.example.test --priority 90 \
           >/tmp/apr-cache-b.json 2>&1; then
@@ -708,7 +708,7 @@ in
         '.cache_pointer_updated == true and .committed == true' \
         /tmp/apr-cache-b.json >/dev/null
       HOME="$producer_home" PATH="$producer_path" \
-        ${pkgs.aos}/bin/apr --json origin upload \
+        ${pkgs.aos.apr}/bin/apr --json origin upload \
           --registry maintenance --upload-url "file://$producer_surface" \
           >/tmp/apr-origin-cache-stack-upload.json
       hub_cli_into /tmp/cache-stack-publication.json registry publish upload \

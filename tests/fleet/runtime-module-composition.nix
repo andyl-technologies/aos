@@ -87,8 +87,8 @@ in {
       import json
       import textwrap
 
-      APM = "${pkgs.aos}/bin/apm"
-      APR = "${pkgs.aos}/bin/apr"
+      APM = "${pkgs.aos.apm}/bin/apm"
+      APR = "${pkgs.aos.apr}/bin/apr"
       CURL = "${pkgs.curl}/bin/curl"
       JQ = "${pkgs.jq}/bin/jq"
       NIX_STORE = "${pkgs.nix}/bin/nix-store"

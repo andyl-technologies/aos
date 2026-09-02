@@ -211,7 +211,7 @@ in {
       JQ = "${pkgs.jq}/bin/jq"
       CMP = "${pkgs.diffutils}/bin/cmp"
       MEASURE = "${pkgs.systemd}/lib/systemd/systemd-measure"
-      APM = "${pkgs.aos}/bin/apm"
+      APM = "${pkgs.aos.apm}/bin/apm"
       TPM2_CHECKQUOTE = "${pkgs.tpm2-tools}/bin/tpm2_checkquote"
       TPM2_PCREXTEND = "${pkgs.tpm2-tools}/bin/tpm2_pcrextend"
       TPM2_PCRREAD = "${pkgs.tpm2-tools}/bin/tpm2_pcrread"
