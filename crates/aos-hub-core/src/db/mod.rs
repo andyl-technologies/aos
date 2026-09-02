@@ -538,6 +538,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("placement_policy_publication_history.sql"),
     EXPLICIT_TOPOLOGY_MIGRATION,
     include_str!("package_documentation.sql"),
+    include_str!("package_documentation_system_module.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -26607,6 +26608,51 @@ source_nar_hash = ""
             )
             .unwrap();
         assert_eq!(public_boundary, (1, "active".to_string()));
+    }
+
+    #[test]
+    fn package_documentation_system_module_identity_is_forward_migrated() {
+        let documentation_index = MIGRATIONS
+            .iter()
+            .position(|migration| migration.contains("CREATE TABLE package_documentation("))
+            .unwrap();
+        let system_module_index = MIGRATIONS
+            .iter()
+            .position(|migration| {
+                migration.contains("ADD COLUMN system_module_nar_hash KEYTEXT128")
+            })
+            .unwrap();
+        assert_eq!(system_module_index, documentation_index + 1);
+
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .unwrap();
+        for migration in &MIGRATIONS[..=documentation_index] {
+            connection.execute_batch(migration).unwrap();
+        }
+        let before: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('package_documentation')
+                 WHERE name = 'system_module_nar_hash'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, 0);
+
+        connection
+            .execute_batch(MIGRATIONS[system_module_index])
+            .unwrap();
+        let after: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('package_documentation')
+                 WHERE name = 'system_module_nar_hash'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(after, 1);
     }
 
     #[test]

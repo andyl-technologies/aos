@@ -33,7 +33,7 @@
 use anyhow::{bail, Context, Result};
 use aos_hub_core::auth::magic::Mailer;
 use aos_hub_core::auth::seal::{parse_key, AesGcmSealer, SecretSealer};
-use aos_hub_core::db::{Database, RegistryRecord};
+use aos_hub_core::db::{Database, RegistryRecord, SurfacePlacementRecord};
 use aos_hub_core::email::EmailContent;
 use aos_hub_core::fetch::SurfaceProvider as _;
 use aos_hub_core::reindex::Reindexer;
@@ -1228,24 +1228,30 @@ pub struct WorkerReindexer {
     db: Arc<Database>,
     secrets: Arc<dyn SecretVersionResolver>,
     egress: Arc<WorkerEgressClient>,
+    placement: SurfacePlacementRecord,
 }
 
 impl WorkerReindexer {
     /// Build a reindexer over the hub R2 bucket, the shared HubDb [`Database`], and
     /// the [`SecretVersionResolver`] used to resolve a registry's external storage
     /// binding (matching the surface provider the read path and Cron use).
+    /// `placement` is the exact reconciled reader bound into the surrounding
+    /// generation claim, so a topology change cannot make the build consume a
+    /// different source than its durable identity describes.
     #[must_use]
     pub fn new(
         bucket: Bucket,
         db: Arc<Database>,
         secrets: Arc<dyn SecretVersionResolver>,
         egress: Arc<WorkerEgressClient>,
+        placement: SurfacePlacementRecord,
     ) -> WorkerReindexer {
         WorkerReindexer {
             bucket,
             db,
             secrets,
             egress,
+            placement,
         }
     }
 }
@@ -1253,25 +1259,21 @@ impl WorkerReindexer {
 #[async_trait(?Send)]
 impl Reindexer for WorkerReindexer {
     async fn reindex(&self, registry: &RegistryRecord) -> Result<Option<String>> {
-        // Resolve the registry's surface exactly as the Cron indexer does — the
-        // hub R2 bucket by prefix, or its external S3/R2 binding — then run the
-        // shared single-registry index.
+        // Resolve the exact placement captured before the generation claim —
+        // the hub R2 bucket by prefix, or its external S3/R2 binding — then run
+        // the shared single-registry index.
         let provider = crate::surface::R2SurfaceProvider::new(
             self.bucket.clone(),
             Arc::clone(&self.db),
             Arc::clone(&self.secrets),
             Arc::clone(&self.egress),
         );
-        let placement = self
-            .db
-            .reconciled_surface_reader(aos_hub_core::db::SurfaceTarget::Registry(registry.id))
-            .await?;
-        let fetch = provider.placement_fetcher(&placement).await?;
+        let fetch = provider.placement_fetcher(&self.placement).await?;
         let outcome = aos_hub_core::indexer::index_and_record_from_placement(
             &self.db,
             fetch.as_ref(),
             registry,
-            Some(placement.id),
+            Some(self.placement.id),
         )
         .await?;
         // Return the indexed commit (when the run wasn't an empty/pending no-op)
