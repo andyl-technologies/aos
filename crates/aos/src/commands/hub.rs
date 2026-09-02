@@ -272,6 +272,16 @@ mod tests {
     }
 
     #[test]
+    fn generated_binding_ids_do_not_require_human_reference_resolution() {
+        assert!(!binding_reference_requires_resolution(
+            "storage-binding:0123456789abcdef0123456789abcdef"
+        ));
+        assert!(binding_reference_requires_resolution("operations:archive"));
+        assert!(binding_reference_requires_resolution("operations/archive"));
+        assert!(!binding_reference_requires_resolution("operator-chosen"));
+    }
+
+    #[test]
     fn documentation_browser_urls_preserve_registry_path_segments() {
         let url = documentation_browser_url(
             "https://hub.example.test",
@@ -4904,12 +4914,16 @@ fn parse_binding_ref(value: &str) -> Result<hub_types::BindingRef> {
     })
 }
 
+fn binding_reference_requires_resolution(reference: &str) -> bool {
+    !reference.starts_with("storage-binding:") && reference.contains([':', '/'])
+}
+
 async fn binding_grant_stable_id(
     client: &HubClient,
     reference: &str,
     mutation: &HubMutationArgs,
 ) -> Result<String> {
-    if mutation.plan_id.is_some() || (!reference.contains([':', '/'])) {
+    if mutation.plan_id.is_some() || !binding_reference_requires_resolution(reference) {
         return Ok(reference.to_string());
     }
     let response: hub_types::GetBindingResponse = client
