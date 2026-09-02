@@ -155,7 +155,10 @@ in
         exit 1
       fi
       ${pkgs.grep}/bin/grep -Eiq 'must be a service unit' \
-        /tmp/credential-invalid-unit.json
+        /tmp/credential-invalid-unit.json || {
+        ${pkgs.coreutils}/bin/cat /tmp/credential-invalid-unit.json >&2
+        exit 1
+      }
       echo '==> Rejected credential targeting a non-service unit'
       if LC_ALL=C APM_SYSTEM_CONFIG_DIR=/tmp/apm-render-config \
         ${pkgs.aos.packageRuntime}/bin/aos-package-runtime --json render-one example \
