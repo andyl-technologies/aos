@@ -3,7 +3,8 @@
 ##! Bakes the static surface of the on-host config unit graph into the image:
 ##! the `aos-pkg-fetch@.service` / `aos-pkg-install@.service` templates and the
 ##! `aos-fetch` / `aos-config-render` / `aos-config` targets. At runtime
-##! `aos-graph-compile.service` (`apm __graph-compile`) writes only the tiny
+##! `aos-graph-compile.service` (`aos-package-runtime __graph-compile`) writes
+##! only the tiny
 ##! per-instance dropins + `.wants/` symlinks under `/run/systemd/system`, then
 ##! `daemon-reload`s, awaits `aos-activate.service`, and publishes
 ##! `aos-config.target` (orchestration.md,
@@ -18,7 +19,7 @@
   ...
 }: let
   cfg = config.aos.config.unitGraph;
-  apm = "${pkgs.aos}/bin/apm";
+  packageRuntime = "${pkgs.aos.packageRuntime}/bin/aos-package-runtime";
   attestationQuoteArg =
     lib.optionalString config.aos.boot.secureBoot.measuredBoot.enable
     "--require-attestation-quote";
@@ -55,7 +56,7 @@ in {
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          ExecStart = "${apm} fetch %i";
+          ExecStart = "${packageRuntime} fetch %i";
           Restart = "on-failure";
           RestartSec = "5s";
           TimeoutStartSec = "180s";
@@ -78,7 +79,7 @@ in {
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          ExecStart = "${apm} render-one %i";
+          ExecStart = "${packageRuntime} render-one %i";
           TimeoutStartSec = "60s";
           PrivateTmp = true;
           ProtectSystem = "strict";
@@ -109,7 +110,7 @@ in {
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          ExecStart = "${apm} __graph-compile --manifest ${cfg.manifest} --graph ${cfg.graph}";
+          ExecStart = "${packageRuntime} __graph-compile --manifest ${cfg.manifest} --graph ${cfg.graph}";
           PrivateTmp = true;
           ProtectSystem = "strict";
           ProtectHome = true;
@@ -152,7 +153,7 @@ in {
         };
         script = ''
           set +e
-          ${apm} __activate-config \
+          ${packageRuntime} __activate-config \
             --manifest ${cfg.manifest} \
             --graph ${cfg.graph} \
             --module-abi ${toString config.aos.system.moduleAbi} ${attestationQuoteArg}

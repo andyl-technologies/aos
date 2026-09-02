@@ -1,14 +1,14 @@
-//! The `apm fetch <pkg>` / `apm render-one <pkg>` subverbs (build-spec §4).
+//! The private package-runtime `fetch` and `render-one` subverbs (build-spec §4).
 //!
 //! These two thin, per-package, idempotent verbs back the `ExecStart=`s of the
 //! `aos-pkg-fetch@.service` / `aos-pkg-install@.service` templates. They are the
 //! only new CLI surface the graph compiler adds.
 //!
-//! - **`apm fetch <pkg>`** materializes one package's NAR closure (the store
+//! - **`fetch <pkg>`** materializes one package's NAR closure (the store
 //!   paths the manifest pinned) into the local store via the configured
 //!   substituters, then writes the completion marker `/run/aos/fetch/<pkg>.ok`.
 //!   It does not switch generations, render config, or activate.
-//! - **`apm render-one <pkg>`** renders that package's config artifact(s) +
+//! - **`render-one <pkg>`** renders that package's config artifact(s) +
 //!   credential handles into the staging area against the signed `expose.config`
 //!   metadata, then writes `/run/aos/render/<pkg>.ok`. It does not touch live
 //!   `/etc` (the atomic commit is `aos-activate`'s job).
@@ -281,8 +281,9 @@ fn json_to_toml(v: &Value) -> Result<toml::Value> {
 // fetch
 // ---------------------------------------------------------------------------
 
-/// Run `apm fetch <pkg>`: materialize one package's pinned closure, then write
-/// the fetch marker. Returns the process exit code (build-spec §4.1).
+/// Runs package-runtime `fetch <pkg>` and writes the completion marker.
+///
+/// Returns the process exit code (build-spec §4.1).
 pub async fn run_fetch(
     config: &ApmConfig,
     package: &str,
@@ -556,9 +557,10 @@ fn validate_resolved_closure(
 // render-one
 // ---------------------------------------------------------------------------
 
-/// Run `apm render-one <pkg>`: render one package's config artifacts into the
-/// staging area, then write the render marker. Returns the process exit code
-/// (build-spec §4.2).
+/// Runs package-runtime `render-one <pkg>` and stages its configuration.
+///
+/// Writes the render marker and returns the process exit code (build-spec
+/// §4.2).
 pub async fn run_render_one(
     config: &ApmConfig,
     package: &str,
@@ -626,7 +628,7 @@ fn render_inner(
     let actual_marker = std::fs::read_to_string(fetch_marker(marker_root, package)).ok();
     if actual_marker.as_deref().map(str::trim_end) != Some(expected_marker.as_str()) {
         return Err(RenderError::Other(anyhow::anyhow!(
-            "current fetch marker for '{package}' is absent; run `apm fetch {package}` first"
+            "current fetch marker for '{package}' is absent; run the package runtime fetch first"
         )));
     }
 

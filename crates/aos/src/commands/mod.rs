@@ -22,7 +22,6 @@ pub mod hub_cutover_verify;
 pub mod image;
 pub mod lint;
 pub mod metadata;
-pub mod package;
 pub mod prefetch;
 pub mod profile;
 pub mod repl;

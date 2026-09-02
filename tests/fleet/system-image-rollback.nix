@@ -213,8 +213,8 @@ in {
       import shlex
       import textwrap
 
-      APM = "${pkgs.aos}/bin/apm"
-      APR = "${pkgs.aos}/bin/apr"
+      APM = "${pkgs.aos.apm}/bin/apm"
+      APR = "${pkgs.aos.apr}/bin/apr"
       SB_GUID = "8be4df61-93ca-11d2-aa0d-00e098032b8c"
       MOUNT = "${pkgs.util-linux}/bin/mount"
       BOOTCTL = "${pkgs.systemd}/bin/bootctl"
@@ -529,7 +529,7 @@ in {
           ${pkgs.nix}/bin/nix-store --check-validity '${candidateTop}'
           ${pkgs.nix}/bin/nix-store --check-validity '${candidateImage}'
 
-          ${pkgs.aos}/bin/apr create sysreg
+          ${pkgs.aos.apr}/bin/apr create sysreg
           REG_DIR=$HOME/.local/share/apm/registries/sysreg
           mkdir -p "$REG_DIR/sb-certs"
           cp ${pkgs.secure-boot-test-keys}/db.crt "$REG_DIR/sb-certs/db.pem"
@@ -542,7 +542,7 @@ in {
           test "$#" -eq 1
           CANDIDATE_UKI="$1"
 
-          if ! ${pkgs.aos}/bin/apr --json publish '${candidateTop}' \\
+          if ! ${pkgs.aos.apr}/bin/apr --json publish '${candidateTop}' \\
             --name aos \\
             --version 9999.0.0-image-rollback \\
             --description 'A/B lifecycle fixture' \\

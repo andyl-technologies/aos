@@ -1141,7 +1141,11 @@ unchanged), `crates/aos-package/src/{desired,config_artifact,install,exposed_uni
 
 Declared in a new `modules/systemd/graph.nix` (or extending `presets.nix`) using the typed unit/template options (`lib/modules/systemd/unit-options.nix:178,198` support templates). These five units are the **entire** static surface; nothing in this section is generated at runtime.
 
-All `ExecStart=` invoke the wrapped `${pkgs.aos}/bin/apm` (the subverbs shell out to `nix-store`/registry and need the wrapper's PATH; this is unlike `activate.sh.in`, which uses `.apm-unwrapped` only because it runs with `PATH=`).
+All `ExecStart=` invoke the wrapped
+`${pkgs.aos.packageRuntime}/bin/aos-package-runtime`; these operations are
+private service plumbing, not part of the public `apm` parser. The activation
+script invokes `.aos-package-runtime-unwrapped` under an explicitly constructed
+`PATH`.
 
 ### 1.1 `aos-pkg-fetch@.service` (template)
 

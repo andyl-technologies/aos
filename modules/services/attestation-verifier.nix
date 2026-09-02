@@ -141,7 +141,7 @@ in {
         ${quoteIdentityArgs}
         ${catalogArgs}
         ${baselineArg}
-        ${pkgs.aos}/bin/apm "$@" > "$result_tmp"
+        ${pkgs.aos.apm}/bin/apm "$@" > "$result_tmp"
         ${pkgs.coreutils}/bin/mv -f -- "$result_tmp" "$result_file"
       '';
     };

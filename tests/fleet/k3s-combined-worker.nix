@@ -61,7 +61,7 @@ in {
     import base64
     import shlex
 
-    APM = "${pkgs.aos}/bin/apm"
+    APM = "${pkgs.aos.apm}/bin/apm"
 
 
     def apply_k3s_module(machine, name, module):

@@ -321,7 +321,7 @@
     then throw "the signed registry snapshot refresh must precede host evaluation"
     else if
       !(containsStr
-        "${pkgs.aos}/bin/apm update --system"
+        "${pkgs.aos.apm}/bin/apm update --system"
         system.config.systemd.services.aos-registry-sync.script)
     then throw "the registry refresh must update the system-scope snapshot"
     else if
@@ -440,10 +440,10 @@
     then throw "the boot /etc lower must come from the image that actually booted"
     else if
       !(containsStr
-        ".apm-unwrapped __materialize"
+        ".aos-package-runtime-unwrapped __materialize"
         system.config.boot.initrd.systemd.services."aos-config-seed".script)
     then throw "the initrd must restore the committed non-base configuration lower before mounting /etc"
-    else if !(builtins.elem pkgs.aos system.config.aos.boot.initrd.extraPackages)
+    else if !(builtins.elem pkgs.aos.packageRuntime system.config.aos.boot.initrd.extraPackages)
     then throw "the initrd configuration backend must carry the AOS materializer closure explicitly"
     else if
       !(containsStr
@@ -505,10 +505,12 @@
     then throw "the stock system must restore its last fully evaluated host input"
     else if !(builtins.hasAttr "aos-host-config-cache" system.config.systemd.services)
     then throw "the stock system must cache fully evaluated host input"
-    else if system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
+    else if
+      system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
       ? ConditionPathExists
     then throw "metadata acquisition must run on provisioned boots"
-    else if system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
+    else if
+      system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
       ? ConditionPathExists
     then throw "the restricted storage projection must remain available as a post-commit advisory check"
     else if

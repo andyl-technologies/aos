@@ -74,8 +74,9 @@ new one — never a partition tag pointing at a commit whose objects are missing
 
 ## 2. CURRENT state — the `apr` producer surface
 
-**CURRENT.** `apr` is the same binary as `aos`/`apm`, dispatched on `argv[0]`;
-`apr …` expands to `package registry …`. All producer logic lives in
+**CURRENT.** `apr` is an independent registry-authoring executable with its own
+parser. It shares producer libraries with `apm` and `aos`, but neither expands
+nor dispatches through another command surface. All producer logic lives in
 [`crates/aos-package/src/registry_ops.rs`](../../crates/aos-package/src/registry_ops.rs).
 Today's tool operates on a *nested-TOML* registry (`packages/<x>/<name>.toml`)
 plus the `store/` realisation graph (RFC-0005). The sha256 object-store scaffolding, signed release tags,

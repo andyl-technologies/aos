@@ -63,7 +63,7 @@ in {
         Type = "oneshot";
         RemainAfterExit = true;
         ExecStartPre = "${prepareBpffs}/bin/aos-prepare-ebpf-lsm-bpffs";
-        ExecStart = "${pkgs.aos}/bin/apm _load-ebpf-lsm-policies --system";
+        ExecStart = "${pkgs.aos.packageRuntime}/bin/aos-package-runtime _load-ebpf-lsm-policies --system";
         CapabilityBoundingSet = "CAP_BPF CAP_SYS_ADMIN CAP_SYS_RESOURCE";
         AmbientCapabilities = "";
         LimitMEMLOCK = "infinity";

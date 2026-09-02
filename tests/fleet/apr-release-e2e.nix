@@ -164,12 +164,12 @@ in {
           # public half; `apr create --trust-key` then initialises the
           # registry (directory + git repo + keys.toml roster seeded with
           # that key) so the release below can be published and signed.
-          KEYGEN=$(${pkgs.aos}/bin/apr keys generate release --registry relreg 2>&1)
+          KEYGEN=$(${pkgs.aos.apr}/bin/apr keys generate release --registry relreg 2>&1)
           printf '%s\\n' "$KEYGEN"
           PUBKEY=$(printf '%s\\n' "$KEYGEN" | awk '/Public key:/ {{print $NF; exit}}')
           test -n "$PUBKEY"
           KEY=$HOME/.config/apm/keys/relreg-release.key
-          ${pkgs.aos}/bin/apr create relreg --trust-key "$PUBKEY" --key "$KEY"
+          ${pkgs.aos.apr}/bin/apr create relreg --trust-key "$PUBKEY" --key "$KEY"
           REG_DIR=$HOME/.local/share/apm/registries/relreg
           DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
           ORIGIN=/var/lib/aos-registry-server/registries/relreg
@@ -183,7 +183,7 @@ in {
           # apr writes its progress/success lines to stderr (stdout stays
           # reserved for machine data) and the driver's succeed() returns
           # stdout, so fold stderr into stdout (2>&1) for the asserts below.
-          ${pkgs.aos}/bin/apr release ${releaseTag} \\
+          ${pkgs.aos.apr}/bin/apr release ${releaseTag} \\
             --registry relreg \\
             --store-path ${storePath} \\
             --name ${pkg.name} \\
@@ -221,18 +221,18 @@ in {
 
       # ── 3. Consumer adds the registry and installs from the cache ──────
       client.succeed(
-          "HOME=/tmp USER=relfleet ${pkgs.aos}/bin/apm registry add "
+          "HOME=/tmp USER=relfleet ${pkgs.aos.apm}/bin/apm registry add "
           "--no-verify git://registry:9418/relreg --name relreg",
           timeout=120,
       )
       client.succeed(
-          "HOME=/tmp USER=relfleet ${pkgs.aos}/bin/apm update --registry relreg",
+          "HOME=/tmp USER=relfleet ${pkgs.aos.apm}/bin/apm update --registry relreg",
           timeout=120,
       )
       client.succeed(
           "mkdir -p ${serverStoreRoot}/store ${serverStoreRoot}/var/nix/db && "
           "AOS_ROOT=${serverStoreRoot} HOME=/tmp USER=relfleet "
-          "${pkgs.aos}/bin/apm install ${pkg.name} --registry relreg",
+          "${pkgs.aos.apm}/bin/apm install ${pkg.name} --registry relreg",
           timeout=240,
       )
       # The path was absent in step 1; its presence proves the NAR transferred
@@ -261,7 +261,7 @@ in {
           export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@test
           export NIX_CONF_DIR=/tmp/nix-conf
           KEY=$HOME/.config/apm/keys/relreg-release.key
-          ${pkgs.aos}/bin/apr release ${secondReleaseTag} \\
+          ${pkgs.aos.apr}/bin/apr release ${secondReleaseTag} \\
             --registry relreg \\
             --key "$KEY" \\
             --cache-url http://registry:8000/sysreg-cache \\

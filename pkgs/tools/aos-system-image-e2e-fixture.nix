@@ -225,7 +225,7 @@ in
     version = "0.1.0";
     src = null;
     runtimeDeps = [
-      aos
+      aos.apr
       bash
       coreutils
       git
@@ -259,7 +259,7 @@ in
           export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
           export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
 
-          keygen="$(${aos}/bin/apr keys generate release --registry image-e2e 2>&1)"
+          keygen="$(${aos.apr}/bin/apr keys generate release --registry image-e2e 2>&1)"
           public_key=""
           while IFS= read -r line; do
             case "$line" in
@@ -268,8 +268,8 @@ in
           done <<< "$keygen"
           test -n "$public_key"
           key="$HOME/.config/apm/keys/image-e2e-release.key"
-          ${aos}/bin/apr create image-e2e --trust-key "$public_key" --key "$key"
-          ${aos}/bin/apr release 2026.3.0 \
+          ${aos.apr}/bin/apr create image-e2e --trust-key "$public_key" --key "$key"
+          ${aos.apr}/bin/apr release 2026.3.0 \
             --registry image-e2e \
             --store-path '${sysroot}' \
             --source-drv '${sysroot}' \
