@@ -98,7 +98,7 @@ affected target.
 
 - a sampling rule;
 - a mapping such as `ActiveWhenTrue`, `ImpulseOnEvent`, or a numeric map;
-- an exact, fault-domain, or query selector;
+- an exact, target-set, fault-domain, or dynamic-path selector;
 - one or more legal `FaultPhase` opportunities;
 - an `EffectRequest` containing semantic version, lifetime, and typed effect;
 - search and observability policy; and

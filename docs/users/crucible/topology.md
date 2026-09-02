@@ -9,6 +9,38 @@ canonicalizes collections, derives eligible direct paths, resolves every
 reference, verifies geometry and capability contracts, and computes the world
 identity before a guest starts.
 
+## Canonical TOML locations
+
+Fault topology arrays are direct children of `[world]`; there is no
+`[world.fault_topology]` wrapper. Rust collection names are plural, while the
+canonical TOML array names are singular:
+
+| Rust collection | Canonical TOML row |
+|---|---|
+| `fault_domains` | `[[world.fault_domain]]` |
+| `network_interfaces` | `[[world.network_interface]]` |
+| `network_segments` | `[[world.network_segment]]` |
+| `network_media` | `[[world.network_medium]]` |
+| `network_forwarders` | `[[world.network_forwarder]]` |
+| `network_queues` | `[[world.network_queue]]` |
+| `network_paths` | `[[world.network_path]]` |
+| `network_attachments` | `[[world.network_attachment]]` |
+| `network_contact_plans` | `[[world.network_contact_plan]]` |
+| `network_policy_artifacts` | `[[world.network_policy_artifact]]` |
+| `mobile_endpoints` | `[[world.mobile_endpoint]]` |
+| `storage_devices` | `[[world.storage_device]]` |
+| `storage_controllers` | `[[world.storage_controller]]` |
+| `storage_arrays` | `[[world.storage_array]]` |
+| `storage_policy_artifacts` | `[[world.storage_policy_artifact]]` |
+| `node_capabilities` | `[[world.node_fault_capabilities]]` |
+
+Nested structs serialize beneath the owning row using their field names. For
+example, controller `namespaces` and `paths`, array `members` and `paths`, and
+node register/memory/interrupt/clock/accelerator manifests remain nested arrays
+inside that direct World row. Generate them through
+`ScenarioDefForm::to_canonical_toml`; the model tables below define their exact
+fields and constraints.
+
 ## Authoring rules
 
 - IDs are stable scenario identities, not display labels. They must be unique
@@ -234,6 +266,33 @@ Every `WorldNetworkPolicyArtifact` contains a stable `id`,
 | `contact_plan` | Canonical finite intermittent-contact intervals. |
 | `recipient_membership` | Versioned multicast/broadcast candidate membership. |
 
+Nested network payloads use these complete shapes:
+
+| Kind | Payload |
+|---|---|
+| `integer_lookup` | input/output unit IDs, interpolation (`step`/`linear_ties_to_even`), outside behavior (`clamp`/`typed_error`), strictly ordered `{ input, output }` points |
+| `error_state_table` | distinct good/bad IDs, initial ID, exactly two `{ state, loss, corruption, corruption_transform? }` rows |
+| `queue_discipline` | `{ class, selector, priority, weight, quantum_bytes }` rows and optional complete RED min/max/probability/weight fields |
+| `byte_template` | bounded exact `bytes` |
+| `packet_selector` | conjunctive `{ offset_bytes, value, mask }` rows with equal value/mask lengths |
+| `packet_key` | strictly ordered, non-overlapping byte ranges |
+| `state_machine` | initial ID, finite states, exhaustive `{ from, event, to, delay_nanos, traffic_policy }` transitions |
+| `service_curve` | segments starting at zero with increasing `at_nanos` and positive `rate_bps` |
+| `medium_access` | arbitration, optional key/fixed slot/contention, positive duty-cycle ratio; contention contains collision, capture/transform conditionals, backoff slot/exponent and retry limit |
+| `rf_propagation` | path/antenna integer tables, positive spatial cell and fading bucket |
+| `rf_transfer` | ordered `{ minimum_sinr, rate_bps, loss, corruption, corruption_action, maximum_retries, retry_delay_nanos }` profiles |
+| `association` | hysteresis and trigger/scan/auth/interruption timing, queue/address preservation, `{ candidate, score }` rows |
+| `control_result` | schema ID and canonical encoded bytes |
+| `typed_response` | ordered ICMPv4/v6, TCP-reset, or opaque-Ethernet responses; header source addresses, hop limit, IPv4 ID, optional delay; unmatched `suppress`/`fail_closed` |
+| `overflow` | disposition `drop_newest`, `drop_oldest`, `typed_error`, or `timeout`, with exactly its conditional timeout/error reference |
+| `contact_plan` | ordered half-open intervals with contact/service resource/route cost/propagation, endpoints, beam/gateway, range, capacity profile, acquisition/teardown, confidence, provenance |
+| `recipient_membership` | nonempty canonical `{ member, joined_sequence }` rows |
+
+Medium arbitration is `fifo`, `strict_priority`, `can_dominant_bit`,
+`fixed_slots`, or `contention`; collision is `drop_all`, `capture`, or
+`undetected_transform`. RF corruption is `corrected`, `detected`, or
+`undetected { transform }`.
+
 Effects validate that a referenced artifact has the required class. Reusing an
 ID for a different class or semantic version is an admission error.
 
@@ -351,6 +410,35 @@ payload:
 | `nine_p_visibility` | Committed-versus-visible frontier policy. |
 | `nine_p_object` | Immutable 9p object version. |
 | `bytes` | Immutable retained byte content. |
+
+Nested storage policy payloads use these complete shapes:
+
+| Kind | Payload |
+|---|---|
+| `typed_result` | `block { result }` or `nine_p { errno }`; block result is success, offline, read-only, invalid-range, busy, timeout, medium/integrity/I/O error, no-space, not-found, or stale |
+| `service` | `fifo`, `strict_priority`, or `weighted_round_robin`; `{ class, operations, priority, weight }` rows; rebuild-sharing flag |
+| `path` | `active_passive`, `round_robin`, `least_outstanding`, or `stable_hash`; attempt bound, retry/probe delays, retry-result set |
+| `remote_protocol` | `nvme_tcp`, `iscsi`, or `nbd`; outstanding bound, command timeout, reconnect delay, preserve-order flag |
+| `cache` | eviction `fifo`, `lru`, or `writeback_sequence`; dirty eviction `persist` or `fail { result }`; power-loss protection |
+| `duplicate_completion` | `ignore`, `protocol_error { result }`, or `reset { transition_policy }` |
+| `controller_transition` | transition/failure result; unadmitted, queued, executing, resolved, undelivered treatment; controller/cache/history state; request-ID epoch; topology; recovery duration |
+| `persistence` | `preserve`, `reverse_ready`, `descending_range`, or `keyed_permutation`; delay and barrier-preservation flag |
+| `retention` | minimum/wear age, bit probability, maximum changed bits |
+| `read_disturb` | read threshold, neighbor pages, bit probability, maximum changed bits |
+| `program_erase` | program/erase/worn probabilities and partial-program/erase flags |
+| `array_selection` | `lowest_healthy`, `stable_hash`, or `least_loaded` |
+| `array_state` | canonical `{ member, online }` and `{ path, online }` rows |
+| `rebuild` | positive chunk bytes, queue depth, byte rate |
+| `array_consistency` | `require_quorum`, `degraded_commit`, or `atomic_stripe` |
+| `nine_p_visibility` | `global`, `per_session`, or `writer_immediate`; metadata/data atomicity, optional lag, retained-deletion flag |
+| `nine_p_object` | path, version, mode, bytes, deleted flag |
+| `bytes` | bounded exact bytes |
+
+Controller transitions distinguish new-request `reject`/`wait_for_recovery`;
+pending `fail`/retry-same-ID/retry-new-ID; resolved/undelivered completion,
+failure and retry (plus undelivered drop); state `preserve`/`lose`; request IDs
+`preserve_monotonic`/`new_epoch_from_zero`; and topology
+`preserve`/`reenumerate_declared`.
 
 Cross-artifact references are class-checked. For example, an array's rebuild
 reference cannot name a byte template, and a 9p stale-object result cannot name

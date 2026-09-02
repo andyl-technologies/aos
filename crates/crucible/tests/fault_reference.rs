@@ -14,6 +14,9 @@ const STORAGE_NODE_GUIDE: &str =
     include_str!("../../../docs/users/crucible/storage-node-faults.md");
 const SIGNAL_GUIDE: &str = include_str!("../../../docs/users/crucible/signals.md");
 const BINDING_GUIDE: &str = include_str!("../../../docs/users/crucible/bindings.md");
+const TOPOLOGY_GUIDE: &str = include_str!("../../../docs/users/crucible/topology.md");
+const SIGNAL_DRIVEN_GUIDE: &str =
+    include_str!("../../../docs/users/crucible/signal-driven-faults.md");
 
 const USER_GUIDES: &[&str] = &[
     "authoring.md",
@@ -244,6 +247,92 @@ fn task_guides_cover_signal_and_binding_vocabularies() {
             "composition algebra",
         );
     }
+}
+
+#[test]
+fn canonical_authoring_examples_use_the_flattened_wire_shape() {
+    for forbidden in [
+        "[plan.signal.node]",
+        "[plan.fault_binding.sampling]",
+        "semantic_version = 1\nsignals =",
+        "search_policy = { kind = \"fixed\" }",
+    ] {
+        assert!(
+            !SIGNAL_DRIVEN_GUIDE.contains(forbidden),
+            "signal authoring example must not use retired wire shape `{forbidden}`"
+        );
+    }
+    for required in [
+        "exported = true",
+        "kind = \"constant\"",
+        "sampling = \"at_boundary\"",
+        "search = \"fixed\"",
+    ] {
+        assert!(
+            SIGNAL_DRIVEN_GUIDE.contains(required),
+            "signal authoring example must use canonical wire field `{required}`"
+        );
+    }
+}
+
+#[test]
+fn topology_guide_names_every_canonical_world_array() {
+    for row in [
+        "fault_domain",
+        "network_interface",
+        "network_segment",
+        "network_medium",
+        "network_forwarder",
+        "network_queue",
+        "network_path",
+        "network_attachment",
+        "network_contact_plan",
+        "network_policy_artifact",
+        "mobile_endpoint",
+        "storage_device",
+        "storage_controller",
+        "storage_array",
+        "storage_policy_artifact",
+        "node_fault_capabilities",
+    ] {
+        assert!(
+            TOPOLOGY_GUIDE.contains(&format!("`[[world.{row}]]`")),
+            "topology guide must name canonical TOML row `[[world.{row}]]`"
+        );
+    }
+    assert!(!REFERENCE.contains("world.fault_topology.storage_array"));
+    assert!(REFERENCE.contains("`policy` reference"));
+}
+
+#[test]
+fn security_relevant_daemon_options_are_in_the_reference() {
+    for option in [
+        "--daemon-ca",
+        "--daemon-cert",
+        "--daemon-key",
+        "--production-qemu",
+        "--qemu-rendezvous-icount",
+        "--tls-cert",
+        "--tls-key",
+        "--client-ca",
+        "--trusted-unauthenticated-bind",
+        "--debug-role",
+    ] {
+        assert!(
+            REFERENCE.contains(option),
+            "reference must name daemon option `{option}`"
+        );
+    }
+}
+
+#[test]
+fn effect_parameter_rows_reject_known_nonexistent_fields() {
+    let custody_row = NETWORK_GUIDE
+        .lines()
+        .find(|line| line.starts_with("| `network.custody_queue` |"))
+        .unwrap_or_else(|| panic!("custody queue contract row must exist"));
+    assert!(!custody_row.contains("service policy"));
+    assert!(!custody_row.contains("queue depth"));
 }
 
 fn section(start: &str, end: &str) -> &'static str {

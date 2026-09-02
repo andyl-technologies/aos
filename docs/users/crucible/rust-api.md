@@ -118,8 +118,9 @@ attach modes, event classes, and open-set payload envelopes use closed versioned
 wire forms.
 
 `serve_lifecycle_http2*` exposes the daemon transport. The packaged `serve`
-command currently documents a cleartext trusted-network mode; mutual-TLS server
-and client configuration is available to direct API integrations. Neither mode
+command supports both mutual-TLS server/client configuration and an explicit
+trusted-network cleartext mode; direct integrations expose the same choices.
+Neither mode
 turns the daemon into a distributed scheduler, and remote command fidelity is
 limited as described in [Daemon operation](daemon.md).
 
@@ -178,4 +179,3 @@ source and provide the same store to the production lifecycle. See
 Implementation-backed examples are indexed in [Certification examples](examples.md).
 The two-VM network and shared-cause examples are the best starting points for a
 fresh direct integration.
-

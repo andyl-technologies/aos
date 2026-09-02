@@ -104,7 +104,7 @@ guest execution.
 | `network.association` | attachment only; `boundary`; `state_machine`; `conflict` | `network.association.v1` | complete association policy artifact |
 | `network.control_result_transform` | forwarder/path/attachment/contact; `resolve`; `opportunity`; `ordered_transform` | `network.control-result-transform.v1` | technology, nonempty operations, transform kind, result artifact only for bias/replace/error |
 | `network.contact` | all; `boundary`, `resolve`; `state_machine`; `outage_or` | `network.contact.v1` | interval artifact, range-delay lookup, beam set, gateway set |
-| `network.custody_queue` | all; `queue`; `persistent` or `state_machine`; `conflict` | `network.custody.v1` | positive byte/bundle capacity and expiry, custody policy, route/contact plan, priority, positive hop bound, queue depth, service policy |
+| `network.custody_queue` | all; `queue`; `persistent` or `state_machine`; `conflict` | `network.custody.v1` | positive byte/bundle capacity and expiry, custody policy, route/contact plan, priority, positive hop bound |
 
 ### Closed network parameter choices
 
@@ -130,6 +130,34 @@ guest execution.
 - Control-result transforms are drop, stale, bias, replace, or typed error.
   Every referenced policy/table is a declared, content-addressed topology
   artifact and is included in the replay closure.
+
+The complete nested network value vocabulary is:
+
+| Type/field | Accepted variants and variant fields |
+|---|---|
+| availability `state` | `up`, `down`, `receive_only`, `transmit_only` |
+| queued/in-flight policy | `preserve`, `reevaluate`, `drop`, `typed_error` |
+| bundle priority | `bulk`, `normal`, `expedited`, `critical` (highest) |
+| duplex / FEC | duplex `half`, `full`; FEC `none`, `reed_solomon`, `ldpc`, `convolutional` |
+| jitter distribution | `uniform`, `normal_lookup`, `exponential_lookup`; lookup variants require `distribution_lookup` |
+| service segment | `at_nanos`, positive `rate_bps`; first starts at zero and coordinates strictly increase |
+| queue discipline | `fifo`, `strict_priority`, `weighted_round_robin`, `deficit_round_robin`, `red` |
+| queue overflow | `tail_drop`, `head_drop`, `keyed_drop`, `typed_error`; only typed error carries the adjacent response artifact |
+| selection | `keyed_uniform`, `oldest`, `newest`, `canonical_order` |
+| explicit loss outcome | `preserve`, `drop` |
+| payload mutation | `bit_flip { offset_bytes, length_bytes, mask }`, `field_mutation { field, replacement }`, `truncate { length_bytes }`, `undetected_corruption { transform }` |
+| detected error | kind `crc`, `fcs`, `framing`, `fec_uncorrectable`; action `corrected`, `retry`, `drop`, `link_reset` with the action-specific top-level fields in the matrix |
+| MTU disposition | `drop`, `fragment`, `typed_error`; the only fragmentation protocol is `ethernet_ipv4` |
+| forwarder transition/state | transition `restart`, `reset`, `power_loss`; queue/table policy `preserve`, `clear`, `drain` |
+| forwarding mutation | `wrong_port { recipient }`, `flood { recipients }`, `blackhole`, `loop { next_hop, hop_limit }`, `stale_age { age_nanos, expiration_nanos, expired }` |
+| stale-entry disposition | `preserve`, `blackhole`, `flood { recipients }` |
+| firewall action | `accept`, `reject`, `drop`; rejection alone requires `typed_reject` |
+| connection kind | `nat`, `conntrack`, `load_balancer`, `tunnel`, `dns` |
+| connection overflow | `drop_newest`, `evict_oldest`, `keyed_eviction`, `typed_error { response }` |
+| control-result kind | `drop`, `stale`, `bias`, `replace`, `error`; bias/replace/error require the typed `result` artifact |
+
+All object IDs in this table resolve to the declared World topology. Object-ID
+fields never name host files or callbacks.
 
 ### Required replay evidence
 

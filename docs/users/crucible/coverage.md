@@ -48,7 +48,7 @@ still have narrower daemon or backend behavior, which its guide must state.
 | `fuzz` | Instantiate and explore a bounded scenario family. | [Exploration](exploration.md#coverage-guided-fuzzing), [Reference](reference.md#fuzz) | Packaged local campaigns exist; fleet campaign orchestration remains an API/certification surface. |
 | `triage` | Cluster, compare, and minimize retained findings. | [Exploration](exploration.md#findings-and-triage), [Reference](reference.md#triage) | Operates on signed findings ledgers, not arbitrary log files. |
 | `debug` | Inspect a retained or running execution. | [Debugging](debugging.md#debug-command), [Reference](reference.md#debug) | Some actions require a daemon session, debug gateway, guest agent, or explicit mutable fork. |
-| `serve` | Run the cleartext HTTP/2 lifecycle control plane. | [Daemon operation](daemon.md), [Reference](reference.md#serve) | Not a distributed scheduler and not equivalent to every local CLI workflow. |
+| `serve` | Run the mutual-TLS or explicitly trusted cleartext HTTP/2 lifecycle control plane. | [Daemon operation](daemon.md), [Reference](reference.md#serve) | Not a distributed scheduler and not equivalent to every local CLI workflow. |
 | `completions` | Emit an offline shell completion definition. | [Running Crucible](running.md#shell-completions), [Reference](reference.md#completions) | Reads only command schema and does not discover a backend. |
 
 Global options, environment variables, input resolution, output formats,
@@ -125,8 +125,9 @@ The closed signal registry currently contains:
 
 ## Binding and opportunity inventory
 
-Bindings cover boundary, coordinate, opportunity, and event sampling; typed
-mappings; exact/domain/query selectors; phase sets; impulse, persistent, and
+Bindings cover boundary, change, cadence, opportunity, and event sampling;
+typed mappings; exact, target-set, fault-domain, and dynamic-path selectors;
+phase sets; impulse, persistent, opportunity, and
 state-machine lifetimes; search policy; observability policy; and optional
 opportunity filters. The closed registries include every fault operation and
 target kind listed in the [reference](reference.md#fault-opportunity-operation-values).
@@ -152,9 +153,9 @@ There are 71 executable effect kinds:
 | Accelerator | 4 | Declared deterministic Crucible accelerator fault device. | [Storage and hardware faults](storage-node-faults.md) |
 
 The [exhaustive effect registry](reference.md#exhaustive-effect-registry)
-currently enforces one row for every effect. The expanded domain references
-will add every effect's complete parameters, legal tuple, composition,
-capability, evidence, continuation state, and authoring pattern.
+and domain guides document every effect's parameters, legal tuple, composition,
+capability, evidence, continuation state, and authoring pattern. Code-backed
+tests keep effect names and descriptor metadata synchronized.
 
 ## Assertions and evidence inventory
 
