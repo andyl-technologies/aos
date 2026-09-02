@@ -142,6 +142,10 @@ For deeper work:
   World/topology/signal/binding/property/artifact pipeline.
 - [Fault topology reference](topology.md) documents every fault-domain,
   network, storage, policy, and node-capability declaration.
+- [Signal programs](signals.md) documents all source, pure, and stateful signal
+  families, their typing rules, bounds, checkpoint state, and replay contract.
+- [Fault bindings](bindings.md) documents sampling, selectors, mappings,
+  opportunity filters, phases, lifetimes, composition, search, and evidence.
 - [Running Crucible](running.md) is the command reference for backend discovery,
   seeds, terminal conditions, output, and exit codes.
 - [CI](ci.md) shows a bounded, reproducible pipeline with retained failure

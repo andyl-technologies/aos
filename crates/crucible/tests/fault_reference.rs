@@ -15,6 +15,7 @@ const STORAGE_NODE_GUIDE: &str =
 
 const USER_GUIDES: &[&str] = &[
     "authoring.md",
+    "bindings.md",
     "ci.md",
     "coverage.md",
     "daemon.md",
@@ -30,6 +31,7 @@ const USER_GUIDES: &[&str] = &[
     "running.md",
     "scenarios.md",
     "signal-driven-faults.md",
+    "signals.md",
     "storage-node-faults.md",
     "support.md",
     "topology.md",
