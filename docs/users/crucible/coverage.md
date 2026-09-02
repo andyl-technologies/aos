@@ -64,8 +64,11 @@ terminal conditions, and exit codes are cataloged in
 | Fault-addressable topology | `WorldFaultTopology` | Public API and certified adapters | [Fault topology reference](topology.md), [Authoring](authoring.md#2-declare-fault-addressable-topology) |
 | Signal-driven plan | `FaultSignalPlan`, `SignalProgram`, `FaultBinding` | Public API and certified adapters | [Signal programs](signals.md), [Fault bindings](bindings.md), [Signal-driven faults](signal-driven-faults.md), [Authoring](authoring.md) |
 | Event/control graph | `Plan` event graph | Packaged and public API | [Scenarios](scenarios.md#plan), [Reference](reference.md#planevent-fields-and-actions) |
-| Temporal properties | `Properties`, `Property`, `Predicate` | Packaged and public API | [Scenarios](scenarios.md#properties), [Reference](reference.md#properties-and-predicates) |
+| Temporal properties | `Properties`, `Property`, `Predicate` | Packaged and public API | [Properties and evidence](properties-and-evidence.md), [Scenarios](scenarios.md#properties), [Reference](reference.md#properties-and-predicates) |
 | Deterministic seed and keyed choices | `Seed`, RNG stream identities | Packaged and public API | [Scenarios](scenarios.md#seed), [Running Crucible](running.md#seed-resolution) |
+
+Continuation and retained-output object types are mapped in
+[Stores, artifacts, checkpoints, and findings](artifacts.md).
 
 ## Fault-topology inventory
 
