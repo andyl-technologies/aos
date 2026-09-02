@@ -169,16 +169,17 @@ in
         /tmp/render-one-non-aos.json >/dev/null
       mkdir -p /aos-toplevel
       printf '%s\n' 'ID=aos' 'AOS_MODULE_ABI=2' >/aos-toplevel/os-release
-      if APM_SYSTEM_CONFIG_DIR=/tmp/apm-render-config \
+      if LC_ALL=C APM_SYSTEM_CONFIG_DIR=/tmp/apm-render-config \
         ${pkgs.aos.packageRuntime}/bin/aos-package-runtime --json render-one example \
           --manifest /tmp/nonexistent-config-manifest.json \
           --marker-root /tmp/render-markers --staging-root /tmp/render-stage \
-          >/tmp/render-one-missing.json 2>/tmp/render-one-missing.stderr; then
+          >/tmp/render-one-missing.stdout 2>/tmp/render-one-missing.json; then
         echo 'render-one unexpectedly accepted a missing eval manifest' >&2
         exit 1
       fi
       ${pkgs.jq}/bin/jq -e \
-        '.error | contains("reading manifest")' \
+        '.op == "render-one" and .package == "example"
+          and (.error | contains("reading manifest"))' \
         /tmp/render-one-missing.json >/dev/null
 
       echo '==> Schema is inspectable before instance creation'
