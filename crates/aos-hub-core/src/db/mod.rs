@@ -13986,7 +13986,7 @@ impl Database {
                     ))
             })
         });
-        results.truncate(limit.min(100));
+        results.truncate(limit.min(10_000));
         Ok(results)
     }
 
@@ -14008,7 +14008,8 @@ impl Database {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let limit = i64::try_from(limit.min(100)).context("documentation browse limit overflow")?;
+        let limit =
+            i64::try_from(limit.min(10_000)).context("documentation browse limit overflow")?;
         let rows = if let Some(kind) = kind.filter(|kind| *kind != "package") {
             self.backend
                 .query(
@@ -27194,7 +27195,7 @@ source_nar_hash = ""
         let release_manifest_digest = hex::encode(sha2::Sha256::digest(
             serde_json::to_vec(&release_snapshot_artifacts).unwrap(),
         ));
-        let documentation = IndexedPackageDocumentation {
+        let mut documentation = IndexedPackageDocumentation {
             package_name: "curl".into(),
             package_version: "8.5.0".into(),
             platform: "x86_64-linux".into(),
@@ -27221,6 +27222,15 @@ source_nar_hash = ""
                 ]),
             }],
         };
+        documentation
+            .search
+            .extend((0..150).map(|index| aos_doc_model::SearchDocument {
+                kind: "option".into(),
+                key: format!("curl.pagination{index:03}"),
+                title: format!("curl.pagination{index:03}"),
+                summary: "Pagination fixture".into(),
+                terms: std::collections::BTreeMap::from([("pagination".into(), 50)]),
+            }));
         let mut snapshot = IndexSnapshot {
             commit: "c".repeat(64),
             name: "demo".into(),
@@ -27277,6 +27287,12 @@ source_nar_hash = ""
         assert_eq!(search.len(), 1);
         assert_eq!(search[0].key, "curl.listenPort");
         assert_eq!(search[0].score, 180);
+        let paginated_search = db
+            .search_package_documentation(id, "pagination", Some("option"), 150)
+            .await
+            .unwrap();
+        assert_eq!(paginated_search.len(), 150);
+        assert_eq!(paginated_search[100].key, "curl.pagination100");
         let browse = db.browse_package_documentation(id, None, 10).await.unwrap();
         assert_eq!(browse.len(), 1);
         assert_eq!(browse[0].package_name, "curl");

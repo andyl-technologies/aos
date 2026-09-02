@@ -58,6 +58,8 @@ use crate::topology_probe::TopologyProbeScheduler;
 
 /// Default page size when a list request leaves `page_size` at zero.
 const DEFAULT_PAGE_SIZE: u32 = 500;
+/// Maximum bounded documentation projection considered by one search request.
+const MAX_DOCUMENTATION_RESULTS: usize = 10_000;
 /// Hard ceiling on page size.
 const MAX_PAGE_SIZE: u32 = 1000;
 
@@ -11394,9 +11396,6 @@ impl RpcService {
     ) -> Result<pb::SearchPackageDocumentationResponse, RpcError> {
         let registry = self.registry_or_not_found(&req.registry).await?;
         self.require_read(auth, &registry).await?;
-        if req.query.trim().is_empty() {
-            return Err(RpcError::invalid("documentation query must not be empty"));
-        }
         let kind = (!req.kind.is_empty()).then_some(req.kind.as_str());
         if kind.is_some_and(|kind| {
             !matches!(
@@ -11406,23 +11405,33 @@ impl RpcService {
         }) {
             return Err(RpcError::invalid("unsupported documentation result kind"));
         }
-        let results = self
-            .db
-            .search_package_documentation(registry.id, &req.query, kind, 100)
-            .await
-            .map_err(RpcError::internal)?
-            .into_iter()
-            .map(|result| pb::PackageDocumentationSearchResult {
-                package: result.package_name,
-                version: result.package_version,
-                platform: result.platform,
-                kind: result.kind,
-                key: result.key,
-                title: result.title,
-                summary: result.summary,
-                score: result.score,
-            })
-            .collect();
+        let results = if req.query.trim().is_empty() {
+            self.db
+                .browse_package_documentation(registry.id, kind, MAX_DOCUMENTATION_RESULTS)
+                .await
+        } else {
+            self.db
+                .search_package_documentation(
+                    registry.id,
+                    &req.query,
+                    kind,
+                    MAX_DOCUMENTATION_RESULTS,
+                )
+                .await
+        }
+        .map_err(RpcError::internal)?
+        .into_iter()
+        .map(|result| pb::PackageDocumentationSearchResult {
+            package: result.package_name,
+            version: result.package_version,
+            platform: result.platform,
+            kind: result.kind,
+            key: result.key,
+            title: result.title,
+            summary: result.summary,
+            score: result.score,
+        })
+        .collect();
         let (results, next_page_token) = paginate(results, req.page_size, &req.page_token)?;
         Ok(pb::SearchPackageDocumentationResponse {
             results,
