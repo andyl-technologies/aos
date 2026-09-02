@@ -21,6 +21,15 @@ from a derivation. Cross builds use separate package sets so native code
 generators and build tools come from the Linux build package set while headers,
 libraries and final programs come from the Darwin host package set.
 
+The flake publishes those host packages under `packages.x86_64-darwin` and
+`packages.aarch64-darwin`. It also publishes a native development shell for
+each target. A Darwin shell is a Darwin-system derivation whose builder and
+entire interactive tool set are Mach-O outputs from the target package set; it
+must never put the Linux cross compiler or `bootstrapTools` on the interactive
+`PATH`. Realizing its source graph requires the canonical `x86_64-linux`
+builder or a binary cache populated by that builder. Once entered, compilation
+executes on the Mac with the AOS-built Darwin Rust and Clang toolchains.
+
 ## Dependency waves
 
 | Wave | Scope | Required cross-build work |
@@ -69,6 +78,7 @@ Build the focused check after it is wired into the top-level check set:
 
 ```text
 nix-build -A checks.build.package-platform-support
+nix-build -A checks.build.darwin-host-surfaces
 ```
 
 Successful Linux-hosted builds prove that the target closure can be produced
@@ -85,10 +95,12 @@ nix-build -A checks.fleet.darling-x86-runtime-smoke --no-out-link
 `checks.fleet.darling-darwin-c-smoke` remains as a compatibility alias for the
 same derivation. The suite boots the production image with a test-only fleet
 agent, attaches an immutable payload containing Darling and the exact target
-closures, and runs each Mach-O program as an unprivileged user. The launcher is
-setuid only inside that disposable payload; its Nix store output remains
-ordinary mode `0555`. Target stdout and stderr are asserted separately from
-Darling, launchd, and darlingserver diagnostics.
+closures, and runs each Mach-O program as an unprivileged user. It launches the
+packaged `aos`, `apm`, and `apr` wrappers and uses the Darwin-hosted Rust and
+Clang programs to compile and execute fresh smoke programs inside the guest.
+The launcher is setuid only inside that disposable payload; its Nix store output
+remains ordinary mode `0555`. Target stdout and stderr are asserted separately
+from Darling, launchd, and darlingserver diagnostics.
 
 Darling is a compatibility smoke gate, not a macOS qualification environment.
 It currently covers x86_64 command-line runtimes and cannot establish Apple

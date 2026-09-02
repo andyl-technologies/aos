@@ -42,6 +42,16 @@
     flattenAttrs = prefix: attrs:
       builtins.listToAttrs (flattenAttrPairs prefix attrs);
 
+    withMainProgram = program: package:
+      package
+      // {
+        meta =
+          (package.meta or {})
+          // {
+            mainProgram = program;
+          };
+      };
+
     isDarwinSystem = system: builtins.elem system darwinSystems;
     aosFor = system:
       if isDarwinSystem system
@@ -123,10 +133,10 @@
       in
         (
           {
-            default = aos.pkgs.aos;
-            aos = aos.pkgs.aos;
-            apm = aos.pkgs.aos.apm;
-            apr = aos.pkgs.aos.apr;
+            default = withMainProgram "aos" aos.pkgs.aos;
+            aos = withMainProgram "aos" aos.pkgs.aos;
+            apm = withMainProgram "apm" aos.pkgs.aos.apm;
+            apr = withMainProgram "apr" aos.pkgs.aos.apr;
             all = allPackages;
           }
           // (

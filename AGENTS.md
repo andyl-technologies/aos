@@ -153,6 +153,13 @@ nix develop
 nix run . -- <subcommand>
 ```
 
+The flake exposes `aos`, `apm`, `apr`, the formatter, and the development shell
+for `x86_64-darwin` and `aarch64-darwin` as well as Linux. Darwin artifacts are
+hermetically cross-built by the canonical `x86_64-linux` builder; a macOS host
+must be able to substitute those outputs or dispatch their builds to an
+`x86_64-linux` remote builder. After realization, `nix develop` runs only the
+Darwin-hosted AOS toolchain, and incremental Cargo builds execute natively.
+
 ### Incremental builds
 
 `nix build` / `nix run` rebuild the whole `pkgs.aos` derivation hermetically and
@@ -171,7 +178,8 @@ crates/target/debug/aos <subcommand>
 ```
 
 - **Build through `nix develop -c`.** The dev shell points `openssl-sys` at the
-  AOS OpenSSL and bakes its `rpath` into the linked binary (via a per-target
+  AOS OpenSSL, selects the AOS Darwin SDK and compiler on macOS, and bakes the
+  required library paths into the linked binary (via a per-target
   `CARGO_TARGET_*_RUSTFLAGS`), so it runs with no `patchelf` or
   `LD_LIBRARY_PATH`. A cargo build in a bare shell produces a binary that can't
   find OpenSSL at load time.
