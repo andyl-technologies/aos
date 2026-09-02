@@ -157,7 +157,7 @@ in
       ${pkgs.grep}/bin/grep -Eiq 'must be a service unit' \
         /tmp/credential-invalid-unit.json
       if APM_SYSTEM_CONFIG_DIR=/tmp/apm-render-config \
-        ${pkgs.aos}/bin/apm --json render-one example \
+        ${pkgs.aos}/bin/aos-package-runtime --json render-one example \
           --manifest /tmp/nonexistent-config-manifest.json \
           --marker-root /tmp/render-markers --staging-root /tmp/render-stage \
           >/tmp/render-one-missing.json 2>&1; then

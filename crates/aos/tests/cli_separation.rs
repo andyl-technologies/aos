@@ -61,6 +61,19 @@ fn commands_do_not_cross_public_cli_boundaries() -> Result<()> {
         .status
         .success()
     );
+    assert!(
+        !run(env!("CARGO_BIN_EXE_apm"), &["__eval", "--help"])?
+            .status
+            .success()
+    );
+    assert!(
+        !run(
+            env!("CARGO_BIN_EXE_aos-package-runtime"),
+            &["install", "--help"]
+        )?
+        .status
+        .success()
+    );
 
     require_success(
         run(env!("CARGO_BIN_EXE_apm"), &["install", "--help"])?,
@@ -69,6 +82,13 @@ fn commands_do_not_cross_public_cli_boundaries() -> Result<()> {
     require_success(
         run(env!("CARGO_BIN_EXE_apr"), &["publish", "--help"])?,
         "apr publish --help",
+    )?;
+    require_success(
+        run(
+            env!("CARGO_BIN_EXE_aos-package-runtime"),
+            &["__eval", "--help"],
+        )?,
+        "aos-package-runtime __eval --help",
     )?;
     Ok(())
 }

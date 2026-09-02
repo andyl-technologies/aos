@@ -792,6 +792,7 @@ pub enum PackageCommand {
     /// resolved closure for `<pkg>` from `/run/aos/manifest.json`, realises it
     /// via the configured substituters, and writes `/run/aos/fetch/<pkg>.ok` on
     /// success. Idempotent; safe to run concurrently for distinct packages.
+    #[command(hide = true)]
     Fetch {
         /// Package whose closure to fetch
         package: String,
@@ -808,7 +809,7 @@ pub enum PackageCommand {
     /// the package's `config`/`credentials` blocks against its signed
     /// `expose.config` metadata, stages the artifacts (never touching live
     /// `/etc`), and writes `/run/aos/render/<pkg>.ok`. Exits 2 on a config error.
-    #[command(name = "render-one")]
+    #[command(name = "render-one", hide = true)]
     RenderOne {
         /// Package whose config to render
         package: String,
@@ -1211,6 +1212,32 @@ pub enum TestSystemdClientOp {
 }
 
 impl PackageCommand {
+    /// Returns whether the command belongs to the private on-host runtime.
+    pub fn is_runtime_internal(&self) -> bool {
+        matches!(
+            self,
+            PackageCommand::ActivatePreEtcSwap { .. }
+                | PackageCommand::ActivatePostEtcSwap { .. }
+                | PackageCommand::ActivateRestoreRoutedSources { .. }
+                | PackageCommand::RecoverCredentialTransactions
+                | PackageCommand::TestSystemdClient { .. }
+                | PackageCommand::TestReconcileExposedUnits { .. }
+                | PackageCommand::TestVerifyPackageAttestation { .. }
+                | PackageCommand::TestProducePackageAttestationQuote { .. }
+                | PackageCommand::Attest {
+                    command: AttestCommand::VerifyBootCommit { .. },
+                }
+                | PackageCommand::LoadEbpfLsmPolicies { .. }
+                | PackageCommand::Eval { .. }
+                | PackageCommand::EvalRetained { .. }
+                | PackageCommand::Materialize { .. }
+                | PackageCommand::ActivateConfig { .. }
+                | PackageCommand::Fetch { .. }
+                | PackageCommand::RenderOne { .. }
+                | PackageCommand::GraphCompile { .. }
+        )
+    }
+
     /// Returns the runtime environment the command must establish before I/O.
     pub fn runtime_requirement(&self) -> environment::RuntimeRequirement {
         use environment::RuntimeRequirement::{AosRoot, LiveAos, Portable};
@@ -1223,14 +1250,15 @@ impl PackageCommand {
             PackageCommand::ActivatePreEtcSwap { .. }
             | PackageCommand::ActivatePostEtcSwap { .. }
             | PackageCommand::ActivateRestoreRoutedSources { .. }
-            | PackageCommand::RecoverCredentialTransactions
             | PackageCommand::LoadEbpfLsmPolicies { .. }
             | PackageCommand::EvalRetained { .. }
             | PackageCommand::ActivateConfig { .. }
             | PackageCommand::Fetch { .. }
             | PackageCommand::RenderOne { .. }
             | PackageCommand::GraphCompile { .. } => LiveAos,
-            PackageCommand::Switch { .. } => AosRoot,
+            PackageCommand::RecoverCredentialTransactions | PackageCommand::Switch { .. } => {
+                AosRoot
+            }
             PackageCommand::Install { .. }
             | PackageCommand::Remove { .. }
             | PackageCommand::Autoremove

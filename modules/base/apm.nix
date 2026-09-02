@@ -338,7 +338,7 @@ in {
         RemainAfterExit = true;
       };
       script = ''
-        ${pkgs.aos}/bin/.apm-unwrapped recover-credential-transactions
+        ${pkgs.aos}/bin/.aos-package-runtime-unwrapped recover-credential-transactions
       '';
     };
 

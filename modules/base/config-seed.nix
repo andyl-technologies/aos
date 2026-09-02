@@ -40,7 +40,7 @@
         RemainAfterExit = true;
       };
       script = ''
-        AOS_ROOT=/sysroot ${pkgs.aos}/bin/.apm-unwrapped recover-credential-transactions
+        AOS_ROOT=/sysroot ${pkgs.aos}/bin/.aos-package-runtime-unwrapped recover-credential-transactions
       '';
     };
 
@@ -78,7 +78,7 @@
         manifest="$generation/manifest.json"
         ${pkgs.coreutils}/bin/mkdir -p "$lower"
         if [ -s "$manifest" ]; then
-          ${pkgs.aos}/bin/.apm-unwrapped __materialize \
+          ${pkgs.aos}/bin/.aos-package-runtime-unwrapped __materialize \
             --manifest "$manifest" \
             --generation-dir "$generation" \
             --mkfs-erofs ${pkgs.erofs-utils}/bin/mkfs.erofs \

@@ -8,8 +8,8 @@
 #
 # This test drives that gate directly. A predecessor of this file targeted the
 # old `run_service_diff` path with fabricated toplevels; the gate is now
-# exercised through `apm activate-pre-etc-swap` and
-# `apm activate-post-etc-swap` against a real live `/etc`.
+# exercised through the private package runtime's pre- and post-swap commands
+# against a real live `/etc`.
 #
 # Scenario: build a candidate `/etc` that is a faithful copy of the live one
 # (so the diff classifies nothing as removed — stopping live units would be
@@ -20,7 +20,7 @@
 #
 # Single machine (N=1) — the gate needs the real system D-Bus, which the
 # fleet harness's full systemd boot provides. apm is invoked by store path
-# (the rootfs symlink farm omits the `.apm-unwrapped` dotfile; see apm-e2e.nix).
+# (the rootfs symlink farm omits private unwrapped executables; see apm-e2e.nix).
 {
   pkgs,
   systems,
@@ -88,7 +88,7 @@
           "set -eu\n"
           "rm -f /run/apm-acttest/pre.out /run/apm-acttest/pre.err\n"
           "set +e\n"
-          "HOME=/tmp ${pkgs.aos}/bin/apm activate-pre-etc-swap "
+          "HOME=/tmp ${pkgs.aos}/bin/aos-package-runtime activate-pre-etc-swap "
           "--gen 99 --candidate-etc /run/apm-acttest/cand "
           "> /run/apm-acttest/pre.out 2> /run/apm-acttest/pre.err\n"
           "pre_rc=$?\n"
@@ -113,7 +113,7 @@
           "set -eu\n"
           f"plan={plan}\n"
           "set +e\n"
-          "HOME=/tmp ${pkgs.aos}/bin/apm activate-post-etc-swap --plan=\"$plan\" "
+          "HOME=/tmp ${pkgs.aos}/bin/aos-package-runtime activate-post-etc-swap --plan=\"$plan\" "
           "> /run/apm-acttest/post.out 2>&1\n"
           "post_rc=$?\n"
           "set -e\n"
