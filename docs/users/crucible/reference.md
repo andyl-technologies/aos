@@ -5,6 +5,10 @@ interface and canonical scenario TOML. Use the task-oriented guides for worked
 procedures and this page to look up exact option names, accepted values, defaults,
 required fields, and nested `kind` tables.
 
+Read [Support boundaries](support.md) before inferring packaged operator support
+from a schema or public Rust type. The [guide map](README.md#guide-map) routes
+from each workflow to this catalog.
+
 The Rust types and Clap declarations are the implementation source of truth.
 Unknown TOML fields and unknown closed-vocabulary values are rejected. Generate a
 scenario through the Rust builder and `to_canonical_toml` whenever possible; its
