@@ -288,9 +288,8 @@ fn print_entry_oneline(entry: &model::DocEntry) {
 
 /// Prints a full entry with all details (type, default, source, body).
 ///
-/// Structured fields (parameters, examples, see-also) are only printed
-/// separately when the body does not already contain the corresponding
-/// markdown sections, to avoid duplicating content the parser left in place.
+/// The summary, additional prose, and structured fields are printed from their
+/// distinct index fields so every section appears exactly once.
 fn print_entry_full(printer: &Printer, entry: &model::DocEntry) {
     printer.header(&entry.path);
     printer.kv("Category", &entry.category.to_string());
@@ -310,37 +309,32 @@ fn print_entry_full(printer: &Printer, entry: &model::DocEntry) {
     }
 
     printer.plain("");
-    // Print the body to stdout for piping.
-    if !entry.body.is_empty() {
-        println!("{}", entry.body);
-    } else {
+    if !entry.summary.is_empty() {
         println!("{}", entry.summary);
     }
-
-    // Only print structured fields if the body doesn't already contain them
-    // (they were parsed from the body's markdown sections).
-    let body_has_sections = entry.body.contains("# Parameters")
-        || entry.body.contains("# Examples")
-        || entry.body.contains("# See Also");
-
-    if !body_has_sections {
-        if !entry.parameters.is_empty() {
-            printer.plain("\nParameters:");
-            for (name, desc) in &entry.parameters {
-                println!("  {name} — {desc}");
-            }
+    if !entry.body.is_empty() {
+        if !entry.summary.is_empty() {
+            println!();
         }
+        println!("{}", entry.body);
+    }
 
-        if !entry.examples.is_empty() {
-            printer.plain("\nExamples:");
-            for ex in &entry.examples {
-                println!("  {ex}");
-            }
+    if !entry.parameters.is_empty() {
+        printer.plain("\nParameters:");
+        for (name, desc) in &entry.parameters {
+            println!("  {name} — {desc}");
         }
+    }
 
-        if !entry.see_also.is_empty() {
-            printer.kv("See Also", &entry.see_also.join(", "));
+    if !entry.examples.is_empty() {
+        printer.plain("\nExamples:");
+        for ex in &entry.examples {
+            println!("  {ex}");
         }
+    }
+
+    if !entry.see_also.is_empty() {
+        printer.kv("See Also", &entry.see_also.join(", "));
     }
 
     for (k, v) in &entry.extra {
