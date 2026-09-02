@@ -656,6 +656,7 @@ in {
           "and (.options | length > 10) "
           "and (.options | any(.display_path == \"aos.registry-hub.listen\")) "
           "and (.runtime.units | any(.name == \"aos-hub.service\")) "
+          "and (.runtime.units | all((.summary | type == \"string\") and (length > 0))) "
           "and (.identity.system_module_nar_hash | type == \"string\")'"
       )
       publisher.succeed(
@@ -687,7 +688,8 @@ in {
       )
       publisher.succeed(
           f"{JQ} -e '.schema == \"aos.package-documentation/v1\" "
-          "and .package.name == \"nginx\" and (.options | length > 0)' "
+          "and .package.name == \"nginx\" and (.options | length > 0) "
+          "and (.runtime.units | all((.summary | type == \"string\") and (length > 0)))' "
           "/var/tmp/nginx-documentation.json"
       )
 
