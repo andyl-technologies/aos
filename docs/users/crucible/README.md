@@ -130,6 +130,9 @@ runs that scenario on the live QEMU backend.
 
 For deeper work:
 
+- [Feature coverage](coverage.md) inventories every packaged command, model
+  surface, topology family, signal family, effect adapter, evidence path, and
+  continuation workflow.
 - [Support boundaries](support.md) distinguishes packaged operator features,
   public APIs, repository certification surfaces, model-only behavior, and
   deliberately rejected device concepts.
@@ -170,6 +173,7 @@ For deeper work:
 
 | Goal | Start here | Exhaustive details |
 |---|---|---|
+| Audit whether a feature is documented | [Feature coverage](coverage.md) | Implementation registry and coverage tests |
 | Decide whether a surface is operationally supported | [Support boundaries](support.md) | [Reference](reference.md) |
 | Build and run a first workload | [Nginx/Curl tutorial](quickstart.md) | [Running Crucible](running.md) |
 | Generate a signal-driven scenario | [Authoring fault scenarios](authoring.md) | [Signals and bindings](reference.md#plans-signals-bindings-and-faults) |

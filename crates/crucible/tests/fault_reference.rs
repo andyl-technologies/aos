@@ -16,6 +16,7 @@ const STORAGE_NODE_GUIDE: &str =
 const USER_GUIDES: &[&str] = &[
     "authoring.md",
     "ci.md",
+    "coverage.md",
     "daemon.md",
     "debugging.md",
     "examples.md",
