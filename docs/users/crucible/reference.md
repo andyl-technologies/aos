@@ -50,6 +50,9 @@ Global options may appear before or after the subcommand.
 | `--seed <u64\|hex>` | Unsigned decimal, `0x` hexadecimal, or canonical seed text; otherwise `CRUCIBLE_SEED`, then scenario seed | Override the root entropy. | [Seed resolution](running.md#seed-resolution) |
 | `--backend <auto\|qemu>` | `auto` (default), `qemu` | Select or discover the local backend. Production builds expose QEMU only. | [Backend discovery](running.md#backend-discovery) |
 | `--daemon <addr>` | Host/port or HTTP endpoint | Send a supported lifecycle operation to a daemon instead of running locally. | [Daemon operation](daemon.md) |
+| `--daemon-ca <path>` | Requires `--daemon` and the other client TLS paths | Authenticate an HTTPS daemon with this CA certificate. | [Daemon operation](daemon.md#connect-a-client) |
+| `--daemon-cert <path>` | Requires `--daemon` and the other client TLS paths | Present this client certificate chain to an HTTPS daemon. | [Daemon operation](daemon.md#connect-a-client) |
+| `--daemon-key <path>` | Requires `--daemon` and the other client TLS paths | Present this client private key to an HTTPS daemon. | [Daemon operation](daemon.md#connect-a-client) |
 | `--trusted-unauthenticated-daemon` | Required for cleartext daemon access | Explicitly acknowledge an unauthenticated endpoint on a trusted network. Conflicts with daemon mutual TLS. | [Daemon operation](daemon.md) |
 | `--qemu <path>` | Discovered when omitted | Override the packaged patched-QEMU executable. Must be paired with `--plugin`. | [Backend discovery](running.md#backend-discovery) |
 | `--plugin <path>` | Discovered when omitted | Override the matching QEMU plugin. Must be paired with `--qemu`. | [Backend discovery](running.md#backend-discovery) |
@@ -313,9 +316,16 @@ Debugger verbs:
 
 | Option | Required/default | Meaning |
 | --- | --- | --- |
-| `--listen <addr>` | Required | Bind the cleartext HTTP/2 lifecycle API. |
+| `--listen <addr>` | Required | Bind the HTTP/2 lifecycle API. TLS is selected by the server TLS options. |
 | `--max-sessions <n>` | Optional; must be greater than zero | Cap concurrent live sessions. |
+| `--production-qemu` | Off | Host inline scenarios with the packaged production QEMU lifecycle instead of the quiescent API-test loop. |
+| `--qemu-rendezvous-icount <n>` | Optional positive count; production QEMU only | Cap production-QEMU runs at this deterministic instruction-count rendezvous interval. |
 | `--read-only` | Off | Permit query/watch calls and reject mutations. |
+| `--tls-cert <path>` | Required with the other server TLS paths | Server certificate chain. |
+| `--tls-key <path>` | Required with the other server TLS paths | Server private key. |
+| `--client-ca <path>` | Required with the other server TLS paths | CA used to authenticate client certificates. |
+| `--trusted-unauthenticated-bind` | Required for cleartext | Explicitly trust an unauthenticated bind; conflicts with TLS. |
+| `--debug-role <sha256=capability,...>` | Repeatable; authenticated server | Map a client leaf-certificate fingerprint to `observe`, `control`, `mutate`, `shell`, and/or `admin`. |
 
 ### `completions`
 
@@ -596,9 +606,25 @@ Implementation sources:
 - [node, CPU, memory, interrupt, clock, and accelerator parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs)
 - [resource-limit registry](../../../crates/crucible/src/model/fault_signal/resource_limits.rs)
 
-### Storage-array declarations
+### Fault-topology canonical locations
 
-Every `[[world.fault_topology.storage_array]]` row is a complete logical-device
+Fault-topology arrays are direct children of `[world]`. The complete canonical
+row set is `[[world.fault_domain]]`, `[[world.network_interface]]`,
+`[[world.network_segment]]`, `[[world.network_medium]]`,
+`[[world.network_forwarder]]`, `[[world.network_queue]]`,
+`[[world.network_path]]`, `[[world.network_attachment]]`,
+`[[world.network_contact_plan]]`, `[[world.network_policy_artifact]]`,
+`[[world.mobile_endpoint]]`, `[[world.storage_device]]`,
+`[[world.storage_controller]]`, `[[world.storage_array]]`,
+`[[world.storage_policy_artifact]]`, and
+`[[world.node_fault_capabilities]]`. See the
+[fault topology reference](topology.md#canonical-toml-locations) for every
+top-level and nested field, closed policy payload, constraint, and continuation
+rule.
+
+#### Storage-array declarations
+
+Every `[[world.storage_array]]` row is a complete logical-device
 contract. All fields below are required; there are no inferred RAID defaults or
 legacy fallbacks.
 
@@ -612,7 +638,7 @@ legacy fallbacks.
 | `read_quorum` | Positive integer no greater than member count | Minimum online member paths before reads are admitted. |
 | `write_quorum` | Positive integer no greater than member count | Minimum online members before non-atomic writes are admitted. |
 | `members` | Canonical nonempty member table | Each row has unique `id`, unique block `device`, and contiguous `ordinal` beginning at zero. |
-| `paths` | Canonical path table | Each row has `id`, positive `queue_depth`, and a `path` policy reference. |
+| `paths` | Canonical path table | Each row has `id`, positive `queue_depth`, and a `policy` reference. |
 | `member_path_state` | `array_state` artifact ID | Complete baseline online state for every declared member and path. |
 | `selection_policy` | `array_selection` artifact ID | Baseline mirror read selection: lowest healthy, stable hash, or least loaded. |
 | `rebuild_service` | `rebuild` artifact ID | Baseline positive rebuild chunk, queue depth, and byte rate. |
@@ -665,13 +691,13 @@ one state transition; when it deactivates, the declaration baseline resumes.
 | Field | Required/default | Meaning |
 | --- | --- | --- |
 | `id` | Required | Stable signal identity. |
-| `semantic_version` | Required; only `1` | Evaluator semantic version. |
 | `domain` | Required | `virtual_time`, `node_counter`, `operation`, `spatial`, `event`, or `state`. |
+| `exported` | Required Boolean | Whether the node is available as a binding input. |
 | `value_type` | Required | `bool`, `i64`, `u64`, `ratio`, `duration_nanos`, `rate_per_second`, `probability_millionths`, `enum`, `event`, `vector2`, `vector3`, or `bytes`; parameterized types also carry their schema/scalar type. |
 | `unit` | Required | One unit from the table below. |
 | `scale_decimal_exponent` | Default `0`; `-18..=18` | Exact decimal scaling carried in signal shape. |
 | `inputs` | Empty unless required by an operator | IDs of upstream nodes; order is semantic for noncommutative operators. |
-| `node` | Required | Closed source, pure operator, or stateful operator specification. |
+| `kind` and kind-specific fields | Required | Flattened closed source, pure operator, or stateful operator specification. |
 
 Signal units are exhaustive:
 
@@ -805,14 +831,13 @@ Unknown variants or fields in any table are rejected.
 | Field | Required/default | Meaning |
 | --- | --- | --- |
 | `id` | Required | Stable binding identity. |
-| `semantic_version` | Required; only `1` | Binding semantic version. |
 | `signals` | Required nonempty list; `signal` alias only for one input | Canonical input signals. |
-| `sampling` | Required | `at_boundary`, `at_opportunity`, `at_change`, `cadence_nanos`, or `at_event` with its typed parent. |
+| `sampling` | Default `at_boundary` | String value `at_boundary`, `at_opportunity`, `at_change`, `cadence_nanos`, or `at_event`; the latter two use adjacent parameter fields. |
 | `mapping` | Required | Closed signal-to-effect transfer below. |
 | `selector` | Required | `exact`, `target_set`, `fault_domain`, or version-1 `dynamic_path`. |
 | `effect` | Required | One typed effect specification; `semantic_version=1`. |
 | `opportunity_filter` | Required when opportunity sampling cannot be inferred | Adapter, operation set, phase set, and optional target-kind constraints. |
-| `search_policy` | Required | Bounded search behavior below. |
+| `search` | Default `fixed` | String selecting bounded search behavior; non-fixed parameters use adjacent `[plan.fault_binding.search_policy]`. |
 
 | Mapping `kind` | Fields | Result |
 | --- | --- | --- |
@@ -998,7 +1023,7 @@ enforced by the [effect registry](../../../crates/crucible/src/model/fault_signa
 | `network.rf_channel` | Carrier/bandwidth, signal/noise/gain/attenuation/fading, SINR transfer, and retry outcomes. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
 | `network.association` | Candidate set, authentication, selection, hysteresis, timers, handoff, and traffic policy. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
 | `network.control_result_transform` | Technology operation plus drop, stale, bias, replace, or typed error result. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
-| `network.contact` | Contact plan, acquisition/teardown, range delay, beam/gateway, and service resource. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.contact` | Contact intervals, range delay, and beam/gateway candidates. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
 | `network.custody_queue` | Bundle/byte capacity, priority, expiry, route/contact plan, hop bound, and overflow. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
 | `storage.availability` | Online/offline/read-only/degraded state. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
 | `storage.reported_capacity` | Guest-visible length and affected-range policy. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |

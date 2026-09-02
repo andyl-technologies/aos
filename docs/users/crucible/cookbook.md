@@ -155,9 +155,9 @@ bounded modeled service and its progress survives checkpoints.
 ## Contact windows and custody
 
 For disrupted/delay-tolerant networks, declare contact intervals, range-delay
-lookup, beams/gateways, custody policy, capacity, expiry, route/contact plan,
-priority, hop limit, and service policy. Bind `network.contact` for availability
-and `network.custody_queue` for durable queue/routing state.
+lookup, beams/gateways, custody policy, byte/bundle capacity, expiry,
+route/contact plan, priority, and hop limit. Bind `network.contact` for
+availability and `network.custody_queue` for durable queue/routing state.
 
 Assert contact acquisition/teardown and custody transitions separately from
 eventual application delivery. Expiry, overflow, no-route, and timeout are
@@ -173,4 +173,3 @@ ordinary production backend, and triage/minimize equivalent failures.
 For handoff, provide scenario, seed, canonical trace, reproduction artifact,
 backend identity, and the property/message that failed. See
 [Stores and artifacts](artifacts.md) for the retention contract.
-

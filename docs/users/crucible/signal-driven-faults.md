@@ -62,8 +62,9 @@ an `active_when_true` mapping, a resolved target, and a persistent effect. This
 ensures static faults use the same admission, composition, checkpoint, and
 replay path as changing faults.
 
-The canonical plan contains these logical fields (generated content IDs are
-omitted here because the builder computes them):
+The canonical authoring projection contains these fields for the signal and
+mapping (generated IDs and the rest of the required binding are omitted because
+the builder computes them):
 
 ```toml
 [plan]
@@ -72,33 +73,28 @@ fault_signal_semantic_version = 2
 
 [[plan.signal]]
 id = "datacenter-link-down"
-semantic_version = 1
 domain = "virtual_time"
+exported = true
 value_type = "bool"
 unit = "dimensionless"
 scale_decimal_exponent = 0
-inputs = []
-
-[plan.signal.node]
 kind = "constant"
 value = true
 
 [[plan.fault_binding]]
 id = "datacenter-link-outage"
-semantic_version = 1
 signals = ["datacenter-link-down"]
-search_policy = { kind = "fixed" }
-
-[plan.fault_binding.sampling]
-kind = "at_boundary"
+sampling = "at_boundary"
+search = "fixed"
 
 [plan.fault_binding.mapping]
 kind = "active_when_true"
 invert = false
 ```
 
-The binding also needs a typed selector, phase set, observability policy, and an
-effect table. Generate the complete canonical TOML with `Plan::to_canonical_toml`
+This excerpt is intentionally not a complete parseable plan: the binding also
+needs a typed selector, phase set, observability policy, and effect table.
+Generate the complete canonical TOML with `Plan::to_canonical_toml`
 after constructing the binding; do not invent content hashes. The public
 constructors validate shape, lifetime, target, phase, and capability before a
 guest starts. See [`FaultBinding::new`](../../../crates/crucible/src/model/fault_signal/binding.rs)

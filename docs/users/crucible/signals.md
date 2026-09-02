@@ -17,13 +17,13 @@ Each `[[plan.signal]]` row declares:
 | Field | Contract |
 | --- | --- |
 | `id` | Unique stable identity used by downstream `inputs` and bindings. |
-| `semantic_version` | Must be `1`; it fixes evaluator and canonicalization semantics. |
 | `domain` | Coordinate on which the node changes: `virtual_time`, `node_counter`, `operation`, `spatial`, `event`, or `state`. |
+| `exported` | Whether a binding may consume this node. |
 | `value_type` | Exact shape, including enum schema, event payload, vector scalar, or byte schema where applicable. |
 | `unit` | Physical unit carried through validation and arithmetic. |
 | `scale_decimal_exponent` | Exact decimal scale in `-18..=18`; default `0`. |
 | `inputs` | Ordered upstream IDs. Ordering matters for subtraction, selection, and other noncommutative operators. |
-| `node` | One source, pure specification, or stateful specification. |
+| `kind` and kind-specific fields | One flattened source, pure specification, or stateful specification. |
 
 Admission rejects missing inputs, cycles, incompatible domains, shapes, units,
 or operator arity. Evaluation is integer/rational and explicit about rounding
@@ -158,8 +158,8 @@ Stateful nodes own checkpointed state and have explicit bounded work/history.
 | `finite_state_machine` | Closed states with event, guard, and timer transitions | Nonempty states, valid initial state, exhaustive transition policy, unmatched-event policy. |
 | `markov_chain` | Exact-probability state transitions | States, initial state, opportunity identity, rows summing exactly to the probability scale. |
 | `burst_process` | Correlated two-state good/bad process | Initial state, exact transition probabilities, opportunity identity. |
-| `counter` | Bounded typed-event count | Initial/min/max, overflow behavior, optional reset event. |
-| `queue_model` | Bounded backlog and service evolution | Capacity, service profile, overflow behavior, positive catch-up/work limits. |
+| `counter` | Bounded typed-event count | Initial value, maximum, overflow behavior, optional reset event. |
+| `queue_model` | Bounded backlog evolution | Positive capacity, discipline, and overflow behavior. |
 
 Finite-state timers use an explicit arm/cancel operation and are represented in
 checkpoint state. On restore, pending timers retain their declared deadlines and

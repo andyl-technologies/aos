@@ -90,6 +90,25 @@ before/after data digests, volatile and durable sequences/frontiers, selected
 cache entries, media thresholds/counters, controller namespace/path state,
 array selection/rebuild/durability, and 9p committed/visible frontiers.
 
+### Closed storage parameter choices
+
+| Type/field | Accepted variants and variant fields |
+|---|---|
+| availability | `online`, `offline`, `read_only`, `degraded` |
+| transition policy | `preserve`, `fail`, `drain`, `discard` |
+| selection | `keyed_uniform`, `canonical_first`, `canonical_last`, `all` |
+| read mutation | `bit_flip { range, mask }`, `stale { version }`, `misdirected { source_device, source_range }` |
+| write disposition | `apply`, `lost { selection }`, `torn { selection }`, `misdirected { destination_device, destination_range }` |
+| flush kind | `honest`, `error`, `lie`, `stall` |
+| media state | `bad`, `latent`, `poisoned`, `read_only` |
+| controller transition | `reset`, `reconnect`, `enumerate` |
+| volatile-cache loss kind | `power_loss`, `protection_failure` |
+| volatile-cache selector | `all`, `after_sequence { sequence }`, `range_intersection { range }`, `keyed_subset { count }` |
+| 9p result | `errno`, `stale`, `misdirected`, with exactly its matching top-level payload field |
+
+`ByteRange` uses a start and positive length. Masks/replacement bytes are
+canonical nonempty hexadecimal data where the selected variant requires them.
+
 ## Node lifecycle and progress
 
 Use `node.lifecycle` for boot, crash, reset, power-cycle, stop, and recovery.
@@ -139,6 +158,40 @@ route, vector, original/final deliveries and acknowledgements. Clock evidence
 retains raw/transformed values and timer consequences. Accelerator evidence
 retains enumeration/run state, queue treatment, job/data digests, device-memory
 outcome, and service ledgers.
+
+### Closed node and hardware parameter choices
+
+| Type/field | Accepted variants and variant fields |
+|---|---|
+| lifecycle transition | `boot`, `crash`, `reset`, `power_off`, `power_cycle`, `permanent_failure` |
+| state policy | `preserve`, `clear`, `device_reset` |
+| boot policy | `immediate`; or `require_ready { ready_marker, maximum_attempts, retry_delay_nanos, exhausted }` |
+| watchdog | `disabled`; or `transition_after { timeout_nanos, transition, downtime_nanos, boot_policy, volatile_state_policy, device_state_policy }` |
+| hang scope | `node`, `vcpus` with a nonempty vCPU list, or `device` with a declared ID |
+| occurrence | `every`; or `periodic { first, period, count }` using one-based match ordinals |
+| CPU service/state | discipline `work_conserving` or `strict_cap`; vCPU state `online`, `offline`, `stalled` |
+| register mutation | `bit_flip { mask }`, `stuck { mask, value }`, `replace { value }` |
+| instruction selector | PC start/positive length, optional exact bytes/opcode class/input-state SHA-256, occurrence |
+| instruction mutation | `result_corrupt { transform }`, `skip`, `replay { count }`; result transform names destination register and register mutation |
+| exception | architecture `x86_64` or `aarch64`, vector, syndrome, optional fault address, before/after flag, maskability, record |
+| exception record | `architecture_default`; `x86_machine_check { bank, status, global_status, address?, misc?, corrected }`; `aarch64_ras { esr, far?, disr?, asynchronous, corrected, fatal }` |
+| interrupt mutation | `drop`, `delay { delay_nanos }`, `duplicate { copies, gap_nanos }`, `replace { vector }` |
+| interrupt routing | nonempty target-vCPU list, priority, retain-pending flag |
+| boundary memory mutation | `bit_flip { mask }`, `replace { bytes }`; address space `guest_physical` or `guest_virtual`; atomicity is only `all_or_nothing` |
+| access classes | Boolean selectors for fetch, CPU load/store, DMA read/write, and page-table walk; at least one applies |
+| access mutation | `stuck { mask, value }`, `read_corrupt { mask }`, `lost_write`, `torn_write { selector }`, `poison { policy }` |
+| poison policy | `access_error`, `corrected { xor_mask }`, `exception { exception }` |
+| ECC | kind `corrected` or `uncorrectable`; visibility `telemetry_only`, `corrected_interrupt { vector }`, or `exception` with complete exception payload |
+| memory region | kind/process pair `failed { policy }`, `retention { interval_nanos, decay_mask }`, or `rowhammer { row_bytes, threshold, victim_distance, flip_mask }` |
+| memory sharing scope | `node`, `range`, `controller` with realized controller ID |
+| clock mutation | `offset { offset_nanos }`, `drift { ratio }`, `jump { delta_nanos }`, `freeze { value_nanos, release }`, `jitter { maximum_nanos, distribution_nanos }`, `wander { process }` |
+| clock policy | freeze release `resume_from_frozen` or `catch_up_jump`; monotonicity `allow_backward`, `clamp_monotonic`, `fault_on_backward`; overdue timer `fire_at_boundary`, `drop`, `reschedule_periodic` |
+| clock wander | positive update step, maximum offset/rate, nonempty ordered signed rate increments |
+| clock source transition | `healthy`, `degraded`, `failed { behavior }`, `fallback { source }`; failure behavior `stop` or `read_error` |
+| clock synchronization | `step`; or `slew { rate, threshold_nanos }` |
+| accelerator transition | `disappear`, `reset`, `reconnect` |
+| accelerator job/result | job kind, optional queue, occurrence; result byte offset, mask, value |
+| accelerator thermal/power | temperature in millikelvin and power in milliwatts |
 
 ## CPU, interrupt, memory, and clock
 
