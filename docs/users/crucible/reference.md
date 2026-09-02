@@ -847,6 +847,18 @@ Unknown variants or fields in any table are rejected.
 | `transition_declaration` | Required only by `state_transition` mapping | Versioned exhaustive transition-table declaration retained in the binding. |
 | `service_declaration` | Required only by `service_profile` mapping | Versioned named physical-input service-profile declaration retained in the binding. |
 
+`transition_declaration` has exact fields `id`, `semantic_version = 1`,
+`input`, `effect`, singular `transition = [{ request, transition }]`, and
+`default_transition`. The input is an event or enum value type; each request is
+a typed signal value and each transition is a registered adapter-transition ID.
+
+`service_declaration` has exact fields `id`, `semantic_version = 1`, `effect`,
+`inputs = [{ role, shape }]`, and `parameters`. A shape contains value type,
+unit, and decimal exponent. Parameters are `probability`, `duration_nanos`,
+`bits_per_second`, `bytes_per_second`, `operations_per_second`,
+`capacity_ratio`, `signed_offset`, or `unsigned_count` and must belong to the
+declared effect.
+
 | Mapping `kind` | Fields | Result |
 | --- | --- | --- |
 | `active_when_true` | `invert` | Persistent activation from Boolean input. |

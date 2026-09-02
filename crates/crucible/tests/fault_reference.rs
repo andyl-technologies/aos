@@ -284,6 +284,8 @@ fn signal_and_binding_reference_names_canonical_defaulted_fields() {
         "`observability` | Default policy",
         "`transition_declaration`",
         "`service_declaration`",
+        "`transition = [{ request, transition }]`",
+        "`inputs = [{ role, shape }]`",
     ] {
         assert!(
             REFERENCE.contains(field),

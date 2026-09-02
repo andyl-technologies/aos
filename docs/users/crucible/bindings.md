@@ -115,6 +115,28 @@ an adapter directly.
 | `state_transition` | Value selects a registered transition table entry | Table is declared, finite, and compatible. |
 | `service_profile` | Value selects a named physical-input service profile | Profile exists in the policy registry and matches the effect. |
 
+### Named mapping declarations
+
+`state_transition` carries one adjacent
+`[plan.fault_binding.transition_declaration]` with `id`,
+`semantic_version = 1`, event/enum `input` value type, owning `effect`,
+`default_transition`, and singular
+`transition = [{ request, transition }]` rows. Rows are canonicalized by typed
+request value; duplicate requests are rejected. The mapping's
+`transition_table` must equal the declaration `id`, every selected transition
+must be valid for the effect, and the default handles every request not listed.
+
+`service_profile` carries one adjacent
+`[plan.fault_binding.service_declaration]` with `id`,
+`semantic_version = 1`, owning `effect`, canonical
+`inputs = [{ role, shape }]`, and nonempty `parameters`. Each `shape` is the
+complete signal value type, unit, and decimal exponent for that physical role.
+Parameter values are from the closed dynamic-field vocabulary:
+`probability`, `duration_nanos`, `bits_per_second`, `bytes_per_second`,
+`operations_per_second`, `capacity_ratio`, `signed_offset`, and
+`unsigned_count`. Input count/order/shapes and every parameter's compatibility
+with the owning effect are checked at admission.
+
 Mapping declarations and candidate sets are capped at 4,096. Piecewise tables
 must cover their domain explicitly; out-of-range behavior is not inferred.
 Mapped parameters are validated again by the effect implementation before an
