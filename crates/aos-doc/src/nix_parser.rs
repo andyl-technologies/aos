@@ -30,7 +30,7 @@ pub struct ParsedFile {
 pub struct ModuleDoc {
     /// First paragraph of the module doc.
     pub summary: String,
-    /// Full markdown content of the module doc.
+    /// Additional markdown prose after the summary.
     pub body: String,
 }
 
@@ -41,7 +41,7 @@ pub struct ItemDoc {
     pub name: String,
     /// First paragraph of the doc block.
     pub summary: String,
-    /// Full markdown content.
+    /// Additional markdown prose after the summary, excluding structured sections.
     pub body: String,
     /// From `# Type` section.
     pub type_sig: Option<String>,
@@ -102,8 +102,8 @@ fn parse_module_doc(lines: &[&str]) -> Option<ModuleDoc> {
         return None;
     }
 
-    let body = doc_lines.join("\n");
-    let summary = extract_first_paragraph(&body);
+    let content = doc_lines.join("\n");
+    let (summary, body) = split_summary_and_body(&content);
     Some(ModuleDoc { summary, body })
 }
 
@@ -281,8 +281,9 @@ struct ParsedSections {
 /// Recognized headings: `# Type`, `# Parameters`, `# Examples`,
 /// `# See Also`, `# Since`, `# Deprecated`. Headings inside fenced code
 /// blocks are ignored. The text before the first heading is the main body,
-/// whose first paragraph becomes the summary; the returned `body` is the
-/// untrimmed original markdown including all sections.
+/// whose first paragraph becomes the summary. The returned `body` contains
+/// only subsequent main-body paragraphs; recognized sections are represented
+/// by their structured fields instead.
 fn parse_doc_sections(raw: &str) -> ParsedSections {
     let mut sections: Vec<(String, String)> = Vec::new();
     let mut current_heading: Option<String> = None;
@@ -329,7 +330,7 @@ fn parse_doc_sections(raw: &str) -> ParsedSections {
         .map(|(_, b)| b.clone())
         .unwrap_or_default();
 
-    let summary = extract_first_paragraph(&main_body);
+    let (summary, main_body) = split_summary_and_body(&main_body);
 
     let type_sig = find_section(&sections, "Type").and_then(|s| extract_backtick_content(&s));
     let parameters = find_section(&sections, "Parameters")
@@ -343,9 +344,7 @@ fn parse_doc_sections(raw: &str) -> ParsedSections {
         .unwrap_or_default();
     let since = find_section(&sections, "Since").map(|s| s.trim().to_string());
     let deprecated = find_section(&sections, "Deprecated").map(|s| s.trim().to_string());
-
-    // Reconstruct the full body including all sections.
-    let body = raw.trim().to_string();
+    let body = unstructured_body(&main_body, &sections);
 
     ParsedSections {
         summary,
@@ -357,6 +356,43 @@ fn parse_doc_sections(raw: &str) -> ParsedSections {
         since,
         deprecated,
     }
+}
+
+/// Combines additional main prose with headings that are not typed sections.
+fn unstructured_body(main_body: &str, sections: &[(String, String)]) -> String {
+    let mut parts = Vec::new();
+    if !main_body.is_empty() {
+        parts.push(main_body.to_string());
+    }
+
+    for (heading, content) in sections {
+        if heading.is_empty() || is_structured_heading(heading) {
+            continue;
+        }
+
+        let section = if content.is_empty() {
+            format!("# {heading}")
+        } else {
+            format!("# {heading}\n\n{content}")
+        };
+        parts.push(section);
+    }
+
+    parts.join("\n\n")
+}
+
+/// Returns whether a heading is represented by a structured item field.
+fn is_structured_heading(heading: &str) -> bool {
+    [
+        "Type",
+        "Parameters",
+        "Examples",
+        "See Also",
+        "Since",
+        "Deprecated",
+    ]
+    .iter()
+    .any(|name| heading.eq_ignore_ascii_case(name))
 }
 
 /// Finds a named section's content (heading match is case-insensitive).
@@ -384,6 +420,20 @@ fn extract_first_paragraph(text: &str) -> String {
         result.push_str(line.trim());
     }
     result
+}
+
+/// Splits markdown into a one-line summary and the remaining prose.
+fn split_summary_and_body(text: &str) -> (String, String) {
+    let trimmed = text.trim();
+    let summary = extract_first_paragraph(trimmed);
+    let lines: Vec<&str> = trimmed.lines().collect();
+    let body = lines
+        .iter()
+        .position(|line| line.trim().is_empty())
+        .map(|separator| lines[separator + 1..].join("\n").trim().to_string())
+        .unwrap_or_default();
+
+    (summary, body)
 }
 
 /// Extracts the type signature text from a `# Type` section.
@@ -523,7 +573,7 @@ mod tests {
         let parsed = parse_file(content);
         let module = parsed.module_doc.unwrap();
         assert_eq!(module.summary, "Module summary line.");
-        assert!(module.body.contains("More details here."));
+        assert_eq!(module.body, "More details here.");
     }
 
     #[test]
@@ -548,9 +598,40 @@ prepend = x: xs: [x] ++ xs;
         let item = &parsed.items[0];
         assert_eq!(item.name, "prepend");
         assert_eq!(item.summary, "Add an element to the front of a list.");
+        assert!(item.body.is_empty());
         assert_eq!(item.type_sig.as_deref(), Some("a -> [a] -> [a]"));
         assert_eq!(item.examples.len(), 1);
         assert!(item.examples[0].contains("prepend 1 [2 3]"));
+    }
+
+    #[test]
+    fn item_body_excludes_summary_and_structured_sections() {
+        let content = "\
+## Summary with `formatting`.
+##
+## Additional prose.
+##
+## # Notes
+##
+## Preserved custom section.
+##
+## # Examples
+##
+## ```nix
+## example
+## ```
+value = true;
+";
+        let parsed = parse_file(content);
+        let item = &parsed.items[0];
+
+        assert_eq!(item.summary, "Summary with `formatting`.");
+        assert_eq!(
+            item.body,
+            "Additional prose.\n\n# Notes\n\nPreserved custom section."
+        );
+        assert_eq!(item.examples, ["example"]);
+        assert!(!item.body.contains("# Examples"));
     }
 
     #[test]
