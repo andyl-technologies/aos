@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **155 patches**. This count is checked against
+The carried series contains **174 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -3131,6 +3131,31 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   private endpoint, invoke a fork, release guest input, or acknowledge
   readiness bit 7 or 8. Destructive reconstruction and `T-CAM-6.1` through
   `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-held-child-monitor-socket — replace the inherited child stream while held
+
+- **Patch:** `0177-crucible-hold-reconstructed-child-monitor-socket.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** a one-shot child-incarnation transition revalidates the exact
+  retained monitor-socket basis and the fresh nonblocking AF_UNIX stream's
+  Linux `SO_COOKIE` before mutation. It duplicates the fresh stream, destroys
+  the child's copied inherited channel and read/HUP sources, keeps the inherited
+  listener disabled, and installs the replacement without attaching input
+  sources or emitting an open event. The copied basis records inherited
+  disposition, exact replacement identity and generation, and the held-input
+  state. The source process and repeated attempts fail closed.
+- **Micro-test:** the QEMU Unix socket-server test rejects the destructive call
+  in the source process, applies it in a forked child, and proves the inherited
+  channel and sources are gone while the exact replacement remains connected
+  with input held. Patch regeneration and the Phase 6 live result bind the new
+  carried patch.
+- **Inertness:** no shipped command calls this child-only primitive yet. It does
+  not reset the QMP parser or capabilities, emit the greeting, rebuild the
+  dispatcher or monitor I/O thread, invoke the production fork coordinator,
+  release guest input, or acknowledge readiness bit 7 or 8. The remaining
+  monitor transaction and `T-CAM-6.1` through `T-CAM-6.3` stay incomplete.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

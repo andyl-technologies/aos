@@ -1,0 +1,361 @@
+diff --git a/chardev/char-socket.c b/chardev/char-socket.c
+index 725e699f0..7a25b2aea 100644
+--- a/chardev/char-socket.c
++++ b/chardev/char-socket.c
+@@ -53,6 +53,7 @@ static bool tcp_chr_hot_fork_child_profile(
+         s->is_listen && s->listener && s->ioc && s->sioc &&
+         s->ioc == QIO_CHANNEL(s->sioc) && chr->gsource && s->hup_source &&
+         s->crucible_hot_fork_connection_generation != 0 &&
++        s->crucible_hot_fork_connection_generation != UINT64_MAX &&
+         !s->tls_creds && !s->tls_authz && !s->is_telnet && !s->is_tn3270 &&
+         !s->is_websock && !s->telnet_source && !s->telnet_init &&
+         !s->reconnect_timer && s->reconnect_time_ms == 0 &&
+@@ -60,6 +61,33 @@ static bool tcp_chr_hot_fork_child_profile(
+         !s->write_msgfds && s->write_msgfds_num == 0 && s->registered_yank;
+ }
+ 
++static bool tcp_chr_hot_fork_child_basis_objects_match_locked(
++    const QemuChrSocketHotForkChildBasis *basis, Chardev *chardev,
++    CharBackend *frontend, GMainContext *context)
++{
++    SocketChardev *s = SOCKET_CHARDEV(chardev);
++
++    return tcp_chr_hot_fork_child_profile(s, frontend, context) &&
++        basis->chardev == chardev && basis->frontend == frontend &&
++        basis->address == s->addr && basis->ioc == s->ioc &&
++        basis->sioc == s->sioc && basis->listener == s->listener &&
++        basis->read_source == chardev->gsource &&
++        basis->hup_source == s->hup_source && basis->context == context &&
++        basis->connection_generation ==
++            s->crucible_hot_fork_connection_generation &&
++        !basis->attempted && !basis->inherited_disposed &&
++        !basis->replacement_attached && !basis->input_held;
++}
++
++static bool tcp_chr_hot_fork_child_basis_matches_locked(
++    const QemuChrSocketHotForkChildBasis *basis, Chardev *chardev,
++    CharBackend *frontend, GMainContext *context)
++{
++    return basis->source_pid == getpid() &&
++        tcp_chr_hot_fork_child_basis_objects_match_locked(
++            basis, chardev, frontend, context);
++}
++
+ int qemu_chr_socket_hot_fork_prepare_child_basis(
+     QemuChrSocketHotForkChildBasis *basis, Chardev *chardev,
+     CharBackend *frontend, GMainContext *context)
+@@ -88,6 +116,7 @@ int qemu_chr_socket_hot_fork_prepare_child_basis(
+         .read_source = chardev->gsource,
+         .hup_source = s->hup_source,
+         .context = context,
++        .source_pid = getpid(),
+         .connection_generation =
+             s->crucible_hot_fork_connection_generation,
+         .prepared = true,
+@@ -111,14 +140,8 @@ bool qemu_chr_socket_hot_fork_child_basis_matches(
+ 
+     s = SOCKET_CHARDEV(chardev);
+     qemu_mutex_lock(&chardev->chr_write_lock);
+-    matches = tcp_chr_hot_fork_child_profile(s, frontend, context) &&
+-        basis->chardev == chardev && basis->frontend == frontend &&
+-        basis->address == s->addr && basis->ioc == s->ioc &&
+-        basis->sioc == s->sioc && basis->listener == s->listener &&
+-        basis->read_source == chardev->gsource &&
+-        basis->hup_source == s->hup_source && basis->context == context &&
+-        basis->connection_generation ==
+-            s->crucible_hot_fork_connection_generation;
++    matches = tcp_chr_hot_fork_child_basis_matches_locked(
++        basis, chardev, frontend, context);
+     qemu_mutex_unlock(&chardev->chr_write_lock);
+     return matches;
+ }
+@@ -977,6 +1000,165 @@ static void tcp_chr_set_client_ioc_name(Chardev *chr,
+ 
+ }
+ 
++static int tcp_chr_hot_fork_validate_replacement_fd(
++    int fd, uint64_t expected_socket_cookie)
++{
++#if defined(SO_DOMAIN) && defined(SO_COOKIE)
++    int domain;
++    int type;
++    int flags;
++    uint64_t observed_socket_cookie;
++    socklen_t length;
++    char byte;
++    ssize_t peeked;
++
++    if (fd < 0 || expected_socket_cookie == 0) {
++        return -EINVAL;
++    }
++    length = sizeof(domain);
++    if (getsockopt(fd, SOL_SOCKET, SO_DOMAIN, &domain, &length) != 0) {
++        return -errno;
++    }
++    if (length != sizeof(domain) || domain != AF_UNIX) {
++        return -EPROTOTYPE;
++    }
++    length = sizeof(type);
++    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &length) != 0) {
++        return -errno;
++    }
++    if (length != sizeof(type) || type != SOCK_STREAM) {
++        return -EPROTOTYPE;
++    }
++    length = sizeof(observed_socket_cookie);
++    if (getsockopt(fd, SOL_SOCKET, SO_COOKIE, &observed_socket_cookie,
++                   &length) != 0) {
++        return -errno;
++    }
++    if (length != sizeof(observed_socket_cookie) ||
++        observed_socket_cookie != expected_socket_cookie) {
++        return -EKEYREJECTED;
++    }
++    flags = fcntl(fd, F_GETFL);
++    if (flags < 0) {
++        return -errno;
++    }
++    if ((flags & O_NONBLOCK) == 0) {
++        return -EINVAL;
++    }
++    do {
++        peeked = recv(fd, &byte, sizeof(byte), MSG_PEEK | MSG_DONTWAIT);
++    } while (peeked < 0 && errno == EINTR);
++    if (peeked >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
++        return -ENOTCONN;
++    }
++    return 0;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_chr_socket_hot_fork_reconstruct_child_held(
++    QemuChrSocketHotForkChildBasis *basis, int replacement_fd,
++    uint64_t expected_socket_cookie)
++{
++    Error *local_err = NULL;
++    QIOChannelSocket *replacement;
++    SocketChardev *s;
++    Chardev *chardev;
++    int replacement_flags;
++    int replacement_dup;
++    int result;
++
++    if (!basis || !basis->prepared || !basis->chardev ||
++        !basis->frontend || basis->source_pid <= 0) {
++        return -EINVAL;
++    }
++    if (basis->source_pid == getpid() || basis->attempted) {
++        return -EPERM;
++    }
++    result = tcp_chr_hot_fork_validate_replacement_fd(
++        replacement_fd, expected_socket_cookie);
++    if (result != 0) {
++        return result;
++    }
++    replacement_flags = fcntl(replacement_fd, F_GETFL);
++    if (replacement_flags < 0) {
++        return -errno;
++    }
++    replacement_dup = qemu_dup_flags(replacement_fd, replacement_flags);
++    if (replacement_dup < 0) {
++        return -errno;
++    }
++    replacement = qio_channel_socket_new_fd(replacement_dup, &local_err);
++    if (!replacement) {
++        result = local_err ? -EIO : -errno;
++        error_free(local_err);
++        close(replacement_dup);
++        return result;
++    }
++    if (qio_channel_set_blocking(
++            QIO_CHANNEL(replacement), false, &local_err) != 0) {
++        result = local_err ? -EIO : -errno;
++        error_free(local_err);
++        object_unref(OBJECT(replacement));
++        return result;
++    }
++
++    chardev = basis->chardev;
++    s = SOCKET_CHARDEV(chardev);
++    qemu_mutex_lock(&chardev->chr_write_lock);
++    if (basis->source_pid == getpid() || basis->attempted ||
++        !tcp_chr_hot_fork_child_basis_objects_match_locked(
++            basis, chardev, basis->frontend, basis->context)) {
++        result = -ESTALE;
++        goto out;
++    }
++    if (replacement_fd == s->sioc->fd) {
++        result = -EINVAL;
++        goto out;
++    }
++
++    basis->attempted = true;
++    tcp_chr_free_connection(chardev);
++    basis->inherited_disposed = true;
++
++    tcp_chr_change_state(s, TCP_CHARDEV_STATE_CONNECTING);
++    tcp_chr_set_client_ioc_name(chardev, replacement);
++    s->ioc = QIO_CHANNEL(replacement);
++    object_ref(OBJECT(replacement));
++    s->sioc = replacement;
++    object_ref(OBJECT(replacement));
++    if (s->do_nodelay) {
++        qio_channel_set_delay(s->ioc, false);
++    }
++    if (s->listener) {
++        qio_net_listener_set_client_func_full(
++            s->listener, NULL, NULL, NULL, chardev->gcontext);
++    }
++    if (s->registered_yank) {
++        yank_register_function(CHARDEV_YANK_INSTANCE(chardev->label),
++                               char_socket_yank_iochannel,
++                               QIO_CHANNEL(replacement));
++    }
++    tcp_chr_change_state(s, TCP_CHARDEV_STATE_CONNECTED);
++    s->crucible_hot_fork_connection_generation++;
++    g_free(chardev->filename);
++    chardev->filename = qemu_chr_compute_filename(s);
++
++    basis->replacement_ioc = s->ioc;
++    basis->replacement_sioc = s->sioc;
++    basis->replacement_socket_cookie = expected_socket_cookie;
++    basis->replacement_connection_generation =
++        s->crucible_hot_fork_connection_generation;
++    basis->replacement_attached = true;
++    basis->input_held = true;
++    result = 0;
++out:
++    qemu_mutex_unlock(&chardev->chr_write_lock);
++    object_unref(OBJECT(replacement));
++    return result;
++}
++
+ static int tcp_chr_new_client(Chardev *chr, QIOChannelSocket *sioc)
+ {
+     SocketChardev *s = SOCKET_CHARDEV(chr);
+diff --git a/include/chardev/char-socket.h b/include/chardev/char-socket.h
+index ca79366c0..2c1f981d8 100644
+--- a/include/chardev/char-socket.h
++++ b/include/chardev/char-socket.h
+@@ -93,8 +93,17 @@ typedef struct QemuChrSocketHotForkChildBasis {
+     GSource *read_source;
+     GSource *hup_source;
+     GMainContext *context;
++    pid_t source_pid;
+     uint64_t connection_generation;
++    QIOChannel *replacement_ioc;
++    QIOChannelSocket *replacement_sioc;
++    uint64_t replacement_socket_cookie;
++    uint64_t replacement_connection_generation;
+     bool prepared;
++    bool attempted;
++    bool inherited_disposed;
++    bool replacement_attached;
++    bool input_held;
+ } QemuChrSocketHotForkChildBasis;
+ 
+ /**
+@@ -130,6 +139,32 @@ bool qemu_chr_socket_hot_fork_child_basis_matches(
+     const QemuChrSocketHotForkChildBasis *basis, Chardev *chardev,
+     CharBackend *frontend, GMainContext *context);
+ 
++/**
++ * qemu_chr_socket_hot_fork_reconstruct_child_held() - replace child socket
++ * @basis: exact inherited socket basis prepared before fork
++ * @replacement_fd: retained branch-private connected AF_UNIX stream
++ * @expected_socket_cookie: exact nonzero Linux SO_COOKIE for @replacement_fd
++ *
++ * Consumes the copied basis only in a different process incarnation. The
++ * operation revalidates every inherited object and the replacement endpoint
++ * before mutation, then destroys the child's inherited read/HUP sources and
++ * connection and installs a duplicate of @replacement_fd without attaching
++ * input sources or emitting an open event. The listener remains disabled.
++ * Monitor parser reset, greeting, input release, and dispatcher reconstruction
++ * remain a later monitor-owned transaction.
++ *
++ * The transition is one-shot. Once destructive work begins, failure never
++ * makes the basis reusable.
++ *
++ * Returns: zero after exact held replacement, -EPERM in the source process or
++ * after an earlier attempt, -ESTALE if the inherited basis changed, -ENOTSUP
++ * when exact Linux socket authentication is unavailable, or another negative
++ * errno value for an invalid or unusable replacement.
++ */
++int qemu_chr_socket_hot_fork_reconstruct_child_held(
++    QemuChrSocketHotForkChildBasis *basis, int replacement_fd,
++    uint64_t expected_socket_cookie);
++
+ DECLARE_INSTANCE_CHECKER(SocketChardev, SOCKET_CHARDEV,
+                          TYPE_CHARDEV_SOCKET)
+ 
+diff --git a/tests/unit/test-char.c b/tests/unit/test-char.c
+index fb2b35d28..d5f5b48bc 100644
+--- a/tests/unit/test-char.c
++++ b/tests/unit/test-char.c
+@@ -1280,6 +1280,64 @@ static void char_socket_server_test(gconstpointer opaque)
+         changed_basis.connection_generation++;
+         g_assert_false(qemu_chr_socket_hot_fork_child_basis_matches(
+             &changed_basis, chr, &be, chr->gcontext));
++#if defined(SO_COOKIE)
++        if (!reconnected) {
++            QemuChrSocketHotForkChildBasis child_basis = hot_fork_basis;
++            SocketChardev *socket_chardev = SOCKET_CHARDEV(chr);
++            uint64_t replacement_cookie = 0;
++            socklen_t cookie_length = sizeof(replacement_cookie);
++            int replacement[2];
++            int status;
++            pid_t child;
++
++            g_assert_cmpint(socketpair(AF_UNIX,
++                                       SOCK_STREAM | SOCK_NONBLOCK |
++                                           SOCK_CLOEXEC,
++                                       0, replacement),
++                            ==, 0);
++            g_assert_cmpint(getsockopt(replacement[0], SOL_SOCKET, SO_COOKIE,
++                                       &replacement_cookie, &cookie_length),
++                            ==, 0);
++            g_assert_cmpuint(cookie_length, ==, sizeof(replacement_cookie));
++            g_assert_cmpuint(replacement_cookie, !=, 0);
++            g_assert_cmpint(qemu_chr_socket_hot_fork_reconstruct_child_held(
++                                &child_basis, replacement[0],
++                                replacement_cookie),
++                            ==, -EPERM);
++
++            child = fork();
++            g_assert_cmpint(child, >=, 0);
++            if (child == 0) {
++                bool exact;
++
++                exact = qemu_chr_socket_hot_fork_reconstruct_child_held(
++                            &child_basis, replacement[0], replacement_cookie) ==
++                        0 &&
++                    child_basis.attempted &&
++                    child_basis.inherited_disposed &&
++                    child_basis.replacement_attached &&
++                    child_basis.input_held &&
++                    child_basis.replacement_ioc == socket_chardev->ioc &&
++                    child_basis.replacement_sioc == socket_chardev->sioc &&
++                    child_basis.replacement_socket_cookie ==
++                        replacement_cookie &&
++                    child_basis.replacement_connection_generation ==
++                        socket_chardev
++                            ->crucible_hot_fork_connection_generation &&
++                    child_basis.ioc != socket_chardev->ioc &&
++                    child_basis.sioc != socket_chardev->sioc &&
++                    chr->gsource == NULL &&
++                    socket_chardev->hup_source == NULL &&
++                    socket_chardev->state == TCP_CHARDEV_STATE_CONNECTED;
++                _exit(exact ? EXIT_SUCCESS : EXIT_FAILURE);
++            }
++            g_assert_cmpint(waitpid(child, &status, 0), ==, child);
++            g_assert_true(WIFEXITED(status));
++            g_assert_cmpint(WEXITSTATUS(status), ==, EXIT_SUCCESS);
++            close(replacement[0]);
++            close(replacement[1]);
++        }
++#endif
+     } else {
+         g_assert_cmpint(qemu_chr_socket_hot_fork_prepare_child_basis(
+                             &hot_fork_basis, chr, &be, chr->gcontext),

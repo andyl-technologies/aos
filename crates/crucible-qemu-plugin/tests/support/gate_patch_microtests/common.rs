@@ -190,6 +190,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0174-crucible-bind-child-monitor-ownership-basis.patch",
     "0175-crucible-bind-child-monitor-chardev-disposition.patch",
     "0176-crucible-bind-child-monitor-socket-resources.patch",
+    "0177-crucible-hold-reconstructed-child-monitor-socket.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "2d5967ddc64e7bf3c7ff685c0e351e97329ad11e4c7bb573f096cb3c78136b8e";
+  patchBranchBundleSha256 = "b170d0aef4d0fdee514233c4df5097376ed263b81c43370dcfe9fefd0659025d";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "20423cdc8f95cf04373b09fbd9676f02e07978c1";
+  patchBranchHeadCommit = "36c58e588bca0a86f1947089d64e31b3e944f48d";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1695,6 +1695,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "child-QMP staging now retains the exact supported connected Unix-socket frontend, channel, listener, read and HUP sources, connection generation, and GMainContext beside the monitor basis, while rejecting TLS, telnet, WebSocket, reconnect, connect-task, and queued descriptor-transfer state; destructive monitor reconstruction, fork invocation, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0177-crucible-hold-reconstructed-child-monitor-socket.patch";
+      branchSubject = "crucible: hold reconstructed child monitor socket";
+      branchCommit = "36c58e588bca0a86f1947089d64e31b3e944f48d";
+      branchTree = "6386a995d748813e1e8cce341dba50a5f9e1bdbf";
+      catalogName = "crucible-hot-fork-held-child-monitor-socket";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "QEMU now provides a child-incarnation-only one-shot socket transition that revalidates the complete inherited monitor-socket basis and exact fresh Linux socket identity before mutation, disposes the copied inherited channel and event sources, installs a duplicated branch-private Unix stream, disables the inherited listener, and keeps all replacement input held without emitting an open event; monitor parser, capabilities, greeting, dispatcher and I/O-thread reconstruction, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
     }
   ];
   catalogOnlyCapabilities = [

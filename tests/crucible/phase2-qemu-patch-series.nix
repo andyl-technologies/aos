@@ -1231,6 +1231,13 @@
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "child-QMP staging now retains the exact supported connected Unix-socket frontend, channel, listener, read and HUP sources, connection generation, and GMainContext beside the monitor basis, while rejecting TLS, telnet, WebSocket, reconnect, connect-task, and queued descriptor-transfer state; destructive monitor reconstruction, fork invocation, guest admission, and readiness bits 7 and 8 remain open";
     }
+    {
+      file = "0177-crucible-hold-reconstructed-child-monitor-socket.patch";
+      catalogName = "crucible-hot-fork-held-child-monitor-socket";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "QEMU now provides a child-incarnation-only one-shot socket transition that revalidates the complete inherited monitor-socket basis and exact fresh Linux socket identity before mutation, disposes the copied inherited channel and event sources, installs a duplicated branch-private Unix stream, disables the inherited listener, and keeps all replacement input held without emitting an open event; monitor parser, capabilities, greeting, dispatcher and I/O-thread reconstruction, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

@@ -2234,6 +2234,21 @@ invalidates it. Only `monitor-socket-resources-bound` is public. This checkpoint
 does not remove inherited sources, disconnect the socket, reconstruct the
 monitor, invoke `fork(2)`, release input, or acknowledge readiness bit 7 or 8;
 those destructive operations remain the next increment.
+The next GPL-side checkpoint now provides the first child-only destructive
+primitive without making it reachable from a production command. A one-shot
+socket transition records the source process incarnation, revalidates the
+complete retained monitor/socket object basis and exact fresh Linux socket
+identity before mutation, then destroys the copied inherited connection and
+read/HUP sources, installs a duplicate of the branch-private Unix stream, and
+keeps that replacement connected with both listener acceptance and input
+dispatch held. Source-process use, changed bases, replacement aliases, stale
+socket identities, and repeated attempts fail closed. A forked QEMU unit test
+proves the parent remains unchanged and the child owns only the held replacement
+socket state. The concrete monitor transaction must still reset parser and
+capability state, rebuild the dispatcher and monitor I/O thread, emit exactly
+one greeting, release input only after the full child transaction commits, and
+compose that result with the QEMU-owned fork coordinator. Until then no command
+invokes the primitive and readiness bits 7 and 8 remain clear.
 These are executable T-CAM-6.1 audit prerequisites, not completion of the task:
 the internal registry identifies two non-coordinator subsystem owners but has
 no safe non-coordinator child disposition. The retained AIO/BH/timer and RCU
