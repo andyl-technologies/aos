@@ -3408,7 +3408,11 @@ fn publish_package_documentation(
         },
         sections,
         options,
-        runtime: documentation_runtime_surface(expose_manifest, system_documentation),
+        runtime: documentation_runtime_surface(
+            expose_manifest,
+            expose_artifact,
+            system_documentation,
+        )?,
     };
     document.identity.semantic_schema_sha256 = document
         .computed_semantic_schema_sha256()
@@ -3503,8 +3507,9 @@ fn documented_option_declarations(
 
 fn documentation_runtime_surface(
     manifest: Option<&PublishExposeManifest>,
+    expose_artifact: Option<&StorePathInfo>,
     system_documentation: Option<&PublishedSystemDocumentation>,
-) -> RuntimeSurface {
+) -> Result<RuntimeSurface> {
     let Some(manifest) = manifest else {
         let units = system_documentation
             .into_iter()
@@ -3519,11 +3524,13 @@ fn documentation_runtime_surface(
                 requires: Vec::new(),
             })
             .collect();
-        return RuntimeSurface {
+        return Ok(RuntimeSurface {
             units,
             ..RuntimeSurface::default()
-        };
+        });
     };
+    let expose_artifact =
+        expose_artifact.context("exposed package documentation has no expose artifact")?;
     let expose = &manifest.expose;
     let permissions = &manifest.permissions;
     let network = match permissions.network {
@@ -3534,16 +3541,18 @@ fn documentation_runtime_surface(
     let mut units = expose
         .units
         .iter()
-        .map(|name| RuntimeUnit {
-            name: name.clone(),
-            kind: name
-                .rsplit_once('.')
-                .map_or("unit", |(_, kind)| kind)
-                .to_string(),
-            summary: String::new(),
-            requires: Vec::new(),
+        .map(|name| {
+            Ok(RuntimeUnit {
+                name: name.clone(),
+                kind: name
+                    .rsplit_once('.')
+                    .map_or("unit", |(_, kind)| kind)
+                    .to_string(),
+                summary: exposed_unit_description(&expose_artifact.path, name)?,
+                requires: Vec::new(),
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     if !units.iter().any(|unit| unit.name == expose.target) {
         units.push(RuntimeUnit {
             name: expose.target.clone(),
@@ -3659,7 +3668,7 @@ fn documentation_runtime_surface(
         ConfinementClass::Unconfined => "unconfined",
     };
 
-    RuntimeSurface {
+    Ok(RuntimeSurface {
         units,
         listeners,
         managed_paths,
@@ -3671,7 +3680,55 @@ fn documentation_runtime_surface(
             network: network.to_string(),
             private_root: computed.class != ConfinementClass::Unconfined,
         }),
+    })
+}
+
+/// Extracts the human-facing unit description from an authenticated expose artifact.
+fn exposed_unit_description(expose_artifact: &str, unit: &str) -> Result<String> {
+    crate::types::validate_unit_name(unit)
+        .with_context(|| format!("validating documented runtime unit '{unit}'"))?;
+    let path = Path::new(expose_artifact).join("units").join(unit);
+    let metadata = fs::symlink_metadata(&path)
+        .with_context(|| format!("inspecting documented runtime unit {}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        bail!(
+            "documented runtime unit must be one regular file: {}",
+            path.display()
+        );
     }
+
+    const MAX_DOCUMENTED_UNIT_BYTES: u64 = 1024 * 1024;
+    let mut content = String::new();
+    fs::File::open(&path)?
+        .take(MAX_DOCUMENTED_UNIT_BYTES + 1)
+        .read_to_string(&mut content)
+        .with_context(|| format!("reading documented runtime unit {}", path.display()))?;
+    if content.len() as u64 > MAX_DOCUMENTED_UNIT_BYTES {
+        bail!(
+            "documented runtime unit exceeds {MAX_DOCUMENTED_UNIT_BYTES} bytes: {}",
+            path.display()
+        );
+    }
+
+    let mut in_unit_section = false;
+    let mut description = None;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            in_unit_section = line == "[Unit]";
+            continue;
+        }
+        if in_unit_section && let Some(value) = line.strip_prefix("Description=") {
+            let value = value.trim();
+            description = (!value.is_empty()).then(|| value.to_string());
+        }
+    }
+    description.with_context(|| {
+        format!(
+            "documented runtime unit '{}' has no non-empty [Unit] Description",
+            path.display()
+        )
+    })
 }
 
 fn nix_publish_string(value: &str) -> String {
@@ -16653,6 +16710,51 @@ mod tests {
 
         let nix_base32 = format!("sha256:{}", "0".repeat(52));
         assert_eq!(documentation_nar_identity(&nix_base32).unwrap(), expected);
+    }
+
+    #[test]
+    fn package_documentation_extracts_exposed_unit_descriptions() {
+        let expose = TempDir::new().unwrap();
+        fs::create_dir(expose.path().join("units")).unwrap();
+        fs::write(
+            expose.path().join("units/example.service"),
+            "[Unit]\nDescription=Example workload service\n\n[Service]\nExecStart=/bin/true\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            exposed_unit_description(expose.path().to_str().unwrap(), "example.service").unwrap(),
+            "Example workload service"
+        );
+    }
+
+    #[test]
+    fn package_documentation_rejects_undocumented_or_oversized_units() {
+        let expose = TempDir::new().unwrap();
+        fs::create_dir(expose.path().join("units")).unwrap();
+        fs::write(
+            expose.path().join("units/missing.service"),
+            "[Unit]\nAfter=network.target\n",
+        )
+        .unwrap();
+        assert!(
+            exposed_unit_description(expose.path().to_str().unwrap(), "missing.service")
+                .unwrap_err()
+                .to_string()
+                .contains("has no non-empty [Unit] Description")
+        );
+
+        fs::write(
+            expose.path().join("units/large.service"),
+            vec![b'x'; 1024 * 1024 + 1],
+        )
+        .unwrap();
+        assert!(
+            exposed_unit_description(expose.path().to_str().unwrap(), "large.service")
+                .unwrap_err()
+                .to_string()
+                .contains("exceeds 1048576 bytes")
+        );
     }
 
     #[test]
