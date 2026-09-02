@@ -153,9 +153,12 @@ There are 71 executable effect kinds:
 | Accelerator | 4 | Declared deterministic Crucible accelerator fault device. | [Storage and hardware faults](storage-node-faults.md) |
 
 The [exhaustive effect registry](reference.md#exhaustive-effect-registry)
-and domain guides document every effect's parameters, legal tuple, composition,
-capability, evidence, continuation state, and authoring pattern. Code-backed
-tests keep effect names and descriptor metadata synchronized.
+and domain guides document every effect's top-level parameter shape, nested
+closed variants, legal tuple, composition, capability, and family-level
+evidence/continuation behavior. The [cookbook](cookbook.md) supplies reusable
+authoring patterns. Code-backed tests synchronize effect names and descriptor
+metadata; they do not validate explanatory prose or replace implementation
+schema tests.
 
 ## Assertions and evidence inventory
 

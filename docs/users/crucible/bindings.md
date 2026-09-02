@@ -25,6 +25,8 @@ Each `[[plan.fault_binding]]` contains:
 | `opportunity_filter` | Required where opportunity sampling cannot be inferred; adapter, operations, phases, optional target kinds. |
 | `search` | Fixed policy or a finite, declared branch/mutation space. |
 | `observability` | Sample and mapped-value retention policy. |
+| `transition_declaration` | Required only for `state_transition`; the versioned exhaustive table carried by this binding. |
+| `service_declaration` | Required only for `service_profile`; the versioned named physical-input contract carried by this binding. |
 
 Admission validates all of these together. A mapping that produces a valid
 parameter type can still be rejected if its selected target, phase, lifetime,

@@ -18,12 +18,15 @@ Each `[[plan.signal]]` row declares:
 | --- | --- |
 | `id` | Unique stable identity used by downstream `inputs` and bindings. |
 | `domain` | Coordinate on which the node changes: `virtual_time`, `node_counter`, `operation`, `spatial`, `event`, or `state`. |
-| `exported` | Whether a binding may consume this node. |
+| `exported` | Whether a binding may consume this node; defaults to `true`. |
 | `value_type` | Exact shape, including enum schema, event payload, vector scalar, or byte schema where applicable. |
 | `unit` | Physical unit carried through validation and arithmetic. |
 | `scale_decimal_exponent` | Exact decimal scale in `-18..=18`; default `0`. |
 | `inputs` | Ordered upstream IDs. Ordering matters for subtraction, selection, and other noncommutative operators. |
 | `kind` and kind-specific fields | One flattened source, pure specification, or stateful specification. |
+
+Stateful rows also require positive `state_bytes`, their bounded checkpoint
+allocation. Source and pure rows do not accept it.
 
 Admission rejects missing inputs, cycles, incompatible domains, shapes, units,
 or operator arity. Evaluation is integer/rational and explicit about rounding
