@@ -250,7 +250,7 @@ fn task_guides_cover_signal_and_binding_vocabularies() {
 }
 
 #[test]
-fn canonical_authoring_examples_use_the_flattened_wire_shape() {
+fn authoring_excerpt_uses_the_flattened_wire_shape() {
     for forbidden in [
         "[plan.signal.node]",
         "[plan.fault_binding.sampling]",
@@ -271,6 +271,23 @@ fn canonical_authoring_examples_use_the_flattened_wire_shape() {
         assert!(
             SIGNAL_DRIVEN_GUIDE.contains(required),
             "signal authoring example must use canonical wire field `{required}`"
+        );
+    }
+}
+
+#[test]
+fn signal_and_binding_reference_names_canonical_defaulted_fields() {
+    for field in [
+        "`exported` | Default `true`",
+        "positive `state_bytes`",
+        "`phases` | Default: every phase",
+        "`observability` | Default policy",
+        "`transition_declaration`",
+        "`service_declaration`",
+    ] {
+        assert!(
+            REFERENCE.contains(field),
+            "reference must document canonical signal/binding field contract `{field}`"
         );
     }
 }
@@ -333,6 +350,24 @@ fn effect_parameter_rows_reject_known_nonexistent_fields() {
         .unwrap_or_else(|| panic!("custody queue contract row must exist"));
     assert!(!custody_row.contains("service policy"));
     assert!(!custody_row.contains("queue depth"));
+}
+
+#[test]
+fn topology_policy_tables_retain_exact_high_risk_field_names() {
+    for field in [
+        "`responses = [{ response, headers }]`",
+        "`source_ipv4?`",
+        "`ipv4_identification`",
+        "`completed_undelivered`",
+        "`preserve_order_across_reconnect`",
+        "`data_visibility_lag_nanos?`",
+        "`path`, `version`, `mode`, `data`, `deleted`",
+    ] {
+        assert!(
+            TOPOLOGY_GUIDE.contains(field),
+            "topology policy reference must retain exact field contract `{field}`"
+        );
+    }
 }
 
 fn section(start: &str, end: &str) -> &'static str {

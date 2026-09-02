@@ -266,32 +266,42 @@ Every `WorldNetworkPolicyArtifact` contains a stable `id`,
 | `contact_plan` | Canonical finite intermittent-contact intervals. |
 | `recipient_membership` | Versioned multicast/broadcast candidate membership. |
 
-Nested network payloads use these complete shapes:
+Nested network payloads use these exact field names and variants. Tuple-style
+payloads below are the value of `artifact.parameters`; struct variants place
+the named fields in that same table.
 
 | Kind | Payload |
 |---|---|
-| `integer_lookup` | input/output unit IDs, interpolation (`step`/`linear_ties_to_even`), outside behavior (`clamp`/`typed_error`), strictly ordered `{ input, output }` points |
-| `error_state_table` | distinct good/bad IDs, initial ID, exactly two `{ state, loss, corruption, corruption_transform? }` rows |
-| `queue_discipline` | `{ class, selector, priority, weight, quantum_bytes }` rows and optional complete RED min/max/probability/weight fields |
-| `byte_template` | bounded exact `bytes` |
-| `packet_selector` | conjunctive `{ offset_bytes, value, mask }` rows with equal value/mask lengths |
-| `packet_key` | strictly ordered, non-overlapping byte ranges |
-| `state_machine` | initial ID, finite states, exhaustive `{ from, event, to, delay_nanos, traffic_policy }` transitions |
-| `service_curve` | segments starting at zero with increasing `at_nanos` and positive `rate_bps` |
-| `medium_access` | arbitration, optional key/fixed slot/contention, positive duty-cycle ratio; contention contains collision, capture/transform conditionals, backoff slot/exponent and retry limit |
-| `rf_propagation` | path/antenna integer tables, positive spatial cell and fading bucket |
-| `rf_transfer` | ordered `{ minimum_sinr, rate_bps, loss, corruption, corruption_action, maximum_retries, retry_delay_nanos }` profiles |
-| `association` | hysteresis and trigger/scan/auth/interruption timing, queue/address preservation, `{ candidate, score }` rows |
-| `control_result` | schema ID and canonical encoded bytes |
-| `typed_response` | ordered ICMPv4/v6, TCP-reset, or opaque-Ethernet responses; header source addresses, hop limit, IPv4 ID, optional delay; unmatched `suppress`/`fail_closed` |
-| `overflow` | disposition `drop_newest`, `drop_oldest`, `typed_error`, or `timeout`, with exactly its conditional timeout/error reference |
-| `contact_plan` | ordered half-open intervals with contact/service resource/route cost/propagation, endpoints, beam/gateway, range, capacity profile, acquisition/teardown, confidence, provenance |
-| `recipient_membership` | nonempty canonical `{ member, joined_sequence }` rows |
+| `integer_lookup` | `input_unit`, `output_unit`, `interpolation`, `outside`, `points = [{ input, output }]` |
+| `error_state_table` | `good`, `bad`, `initial`, `states = [{ state, loss, corruption, corruption_transform? }]`; exactly two states |
+| `queue_discipline` | `classes = [{ class, selector, priority, weight, quantum_bytes }]`, `red_minimum_bytes?`, `red_maximum_bytes?`, `red_maximum_probability?`, `red_weight_numerator?`, `red_weight_denominator?` |
+| `byte_template` | `bytes` |
+| `packet_selector` | `matches = [{ offset_bytes, value, mask }]`; value/mask lengths agree |
+| `packet_key` | `ranges`; strictly ordered and non-overlapping |
+| `state_machine` | `initial`, `states`, `transitions = [{ from, event, to, delay_nanos, traffic_policy }]` |
+| `service_curve` | `segments = [{ at_nanos, rate_bps }]`; starts at zero, coordinates increase, rates are positive |
+| `medium_access` | `arbitration`, `arbitration_key?`, `fixed_slot_nanos?`, `contention?`, `duty_cycle_numerator`, `duty_cycle_denominator`; contention has `collision`, `capture_threshold_millionths?`, `undetected_transform?`, `backoff_slot_nanos`, `maximum_backoff_exponent`, `maximum_retries` |
+| `rf_propagation` | `path_gain_ratio`, `antenna_gain_ratio`, `spatial_cell_mm`, `fading_bucket_nanos`; both ratios are complete integer-lookup tables |
+| `rf_transfer` | `profiles = [{ minimum_sinr, rate_bps, loss, corruption, corruption_action, maximum_retries, retry_delay_nanos }]` |
+| `association` | `hysteresis`, `time_to_trigger_nanos`, `scan_interval_nanos`, `authentication_nanos`, `interruption_nanos`, `preserve_queued`, `preserve_address`, `candidates = [{ candidate, score }]` |
+| `control_result` | `schema`, `bytes` |
+| `typed_response` | `responses = [{ response, headers }]`, `unmatched`; headers contain `source_mac?`, `source_ipv4?`, `source_ipv6?`, `hop_limit`, `ipv4_identification`, `delay_nanos?` |
+| `overflow` | `disposition`, `timeout_nanos?`, `typed_error?`; optional fields must match `drop_newest`, `drop_oldest`, `typed_error`, or `timeout` |
+| `contact_plan` | `intervals = [{ contact, service_resource, route_cost, routing_propagation_nanos, start_nanos, end_nanos, source, destination, beam, gateway, minimum_range_mm, maximum_range_mm, capacity_profile, acquisition_nanos, teardown_nanos, confidence, provenance }]` |
+| `recipient_membership` | `members = [{ member, joined_sequence }]`; nonempty and canonical |
 
 Medium arbitration is `fifo`, `strict_priority`, `can_dominant_bit`,
 `fixed_slots`, or `contention`; collision is `drop_all`, `capture`, or
 `undetected_transform`. RF corruption is `corrected`, `detected`, or
 `undetected { transform }`.
+
+Each typed response's `response` is tagged by `kind`:
+`icmpv4_destination_unreachable` has `code` and `quote_payload_bytes`;
+`icmpv4_packet_too_big` has `quote_payload_bytes` and `next_hop_mtu`;
+`icmpv4_time_exceeded` and `icmpv6_destination_unreachable` have `code` and
+`quote_payload_bytes`; `icmpv6_packet_too_big` has `quote_payload_bytes` and
+`next_hop_mtu`; `tcp_reset` has no parameters; and `opaque_ethernet` has
+`bytes`.
 
 Effects validate that a referenced artifact has the required class. Reusing an
 ID for a different class or semantic version is an admission error.
@@ -411,28 +421,28 @@ payload:
 | `nine_p_object` | Immutable 9p object version. |
 | `bytes` | Immutable retained byte content. |
 
-Nested storage policy payloads use these complete shapes:
+Nested storage policy payloads use these exact field names and variants:
 
 | Kind | Payload |
 |---|---|
-| `typed_result` | `block { result }` or `nine_p { errno }`; block result is success, offline, read-only, invalid-range, busy, timeout, medium/integrity/I/O error, no-space, not-found, or stale |
-| `service` | `fifo`, `strict_priority`, or `weighted_round_robin`; `{ class, operations, priority, weight }` rows; rebuild-sharing flag |
-| `path` | `active_passive`, `round_robin`, `least_outstanding`, or `stable_hash`; attempt bound, retry/probe delays, retry-result set |
-| `remote_protocol` | `nvme_tcp`, `iscsi`, or `nbd`; outstanding bound, command timeout, reconnect delay, preserve-order flag |
-| `cache` | eviction `fifo`, `lru`, or `writeback_sequence`; dirty eviction `persist` or `fail { result }`; power-loss protection |
+| `typed_result` | internally tagged by `protocol`: `protocol = "block"` plus `result`, or `protocol = "nine_p"` plus positive `errno`; block result is `success`, `offline`, `read_only`, `invalid_range`, `busy`, `timeout`, `medium_error`, `integrity_error`, `io_error`, `no_space`, `not_found`, or `stale` |
+| `service` | `discipline`, `classes = [{ class, operations, priority, weight }]`, `rebuild_shares_service`; discipline is `fifo`, `strict_priority`, or `weighted_round_robin` |
+| `path` | `selection`, `maximum_attempts`, `retry_delay_nanos`, `recovery_probe_interval_nanos`, `retry_results`; selection is `active_passive`, `round_robin`, `least_outstanding`, or `stable_hash` |
+| `remote_protocol` | `transport`, `maximum_outstanding`, `command_timeout_nanos`, `reconnect_delay_nanos`, `preserve_order_across_reconnect`; transport is `nvme_tcp`, `iscsi`, or `nbd` |
+| `cache` | `eviction`, `dirty_eviction`, `power_loss_protected`; eviction is `fifo`, `lru`, or `writeback_sequence`; dirty eviction is `persist` or `fail { result }` |
 | `duplicate_completion` | `ignore`, `protocol_error { result }`, or `reset { transition_policy }` |
-| `controller_transition` | transition/failure result; unadmitted, queued, executing, resolved, undelivered treatment; controller/cache/history state; request-ID epoch; topology; recovery duration |
-| `persistence` | `preserve`, `reverse_ready`, `descending_range`, or `keyed_permutation`; delay and barrier-preservation flag |
-| `retention` | minimum/wear age, bit probability, maximum changed bits |
-| `read_disturb` | read threshold, neighbor pages, bit probability, maximum changed bits |
-| `program_erase` | program/erase/worn probabilities and partial-program/erase flags |
-| `array_selection` | `lowest_healthy`, `stable_hash`, or `least_loaded` |
-| `array_state` | canonical `{ member, online }` and `{ path, online }` rows |
-| `rebuild` | positive chunk bytes, queue depth, byte rate |
-| `array_consistency` | `require_quorum`, `degraded_commit`, or `atomic_stripe` |
-| `nine_p_visibility` | `global`, `per_session`, or `writer_immediate`; metadata/data atomicity, optional lag, retained-deletion flag |
-| `nine_p_object` | path, version, mode, bytes, deleted flag |
-| `bytes` | bounded exact bytes |
+| `controller_transition` | `transition`, `failure_result`, `unadmitted`, `queued`, `executing`, `resolved`, `completed_undelivered`, `controller_buffer`, `volatile_cache`, `request_ids`, `duplicate_history`, `topology`, `recovery_nanos` |
+| `persistence` | `ordering`, `delay_nanos`, `preserve_barriers`; ordering is `preserve`, `reverse_ready`, `descending_range`, or `keyed_permutation` |
+| `retention` | `minimum_age_nanos`, `wear_age_nanos`, `bit_probability`, `maximum_changed_bits` |
+| `read_disturb` | `read_threshold`, `neighbor_pages`, `bit_probability`, `maximum_changed_bits` |
+| `program_erase` | `program_probability`, `erase_probability`, `worn_probability`, `partial_program`, `partial_erase` |
+| `array_selection` | scalar `lowest_healthy`, `stable_hash`, or `least_loaded` |
+| `array_state` | `members = [{ member, online }]`, `paths = [{ path, online }]` |
+| `rebuild` | `chunk_bytes`, `queue_depth`, `bytes_per_second`; all positive |
+| `array_consistency` | scalar `require_quorum`, `degraded_commit`, or `atomic_stripe` |
+| `nine_p_visibility` | `scope`, `atomic_metadata_and_data`, `data_visibility_lag_nanos?`, `retain_deleted_objects`; scope is `global`, `per_session`, or `writer_immediate` |
+| `nine_p_object` | `path`, `version`, `mode`, `data`, `deleted` |
+| `bytes` | bounded exact `bytes` |
 
 Controller transitions distinguish new-request `reject`/`wait_for_recovery`;
 pending `fail`/retry-same-ID/retry-new-ID; resolved/undelivered completion,

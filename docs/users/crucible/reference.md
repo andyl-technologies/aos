@@ -692,12 +692,16 @@ one state transition; when it deactivates, the declaration baseline resumes.
 | --- | --- | --- |
 | `id` | Required | Stable signal identity. |
 | `domain` | Required | `virtual_time`, `node_counter`, `operation`, `spatial`, `event`, or `state`. |
-| `exported` | Required Boolean | Whether the node is available as a binding input. |
+| `exported` | Default `true` | Whether the node is available as a binding input. |
 | `value_type` | Required | `bool`, `i64`, `u64`, `ratio`, `duration_nanos`, `rate_per_second`, `probability_millionths`, `enum`, `event`, `vector2`, `vector3`, or `bytes`; parameterized types also carry their schema/scalar type. |
 | `unit` | Required | One unit from the table below. |
 | `scale_decimal_exponent` | Default `0`; `-18..=18` | Exact decimal scaling carried in signal shape. |
 | `inputs` | Empty unless required by an operator | IDs of upstream nodes; order is semantic for noncommutative operators. |
 | `kind` and kind-specific fields | Required | Flattened closed source, pure operator, or stateful operator specification. |
+
+Every stateful signal additionally requires positive `state_bytes`, the exact
+bounded checkpoint allocation for that node. Source and pure nodes reject that
+field.
 
 Signal units are exhaustive:
 
@@ -835,9 +839,13 @@ Unknown variants or fields in any table are rejected.
 | `sampling` | Default `at_boundary` | String value `at_boundary`, `at_opportunity`, `at_change`, `cadence_nanos`, or `at_event`; the latter two use adjacent parameter fields. |
 | `mapping` | Required | Closed signal-to-effect transfer below. |
 | `selector` | Required | `exact`, `target_set`, `fault_domain`, or version-1 `dynamic_path`. |
+| `phases` | Default: every phase in the effect descriptor | Nonempty exact application-phase set; canonical output always emits it. |
 | `effect` | Required | One typed effect specification; `semantic_version=1`. |
 | `opportunity_filter` | Required when opportunity sampling cannot be inferred | Adapter, operation set, phase set, and optional target-kind constraints. |
 | `search` | Default `fixed` | String selecting bounded search behavior; non-fixed parameters use adjacent `[plan.fault_binding.search_policy]`. |
+| `observability` | Default policy | Sample retention, inactive-opportunity retention, and mapped-value retention; canonical output always emits it. |
+| `transition_declaration` | Required only by `state_transition` mapping | Versioned exhaustive transition-table declaration retained in the binding. |
+| `service_declaration` | Required only by `service_profile` mapping | Versioned named physical-input service-profile declaration retained in the binding. |
 
 | Mapping `kind` | Fields | Result |
 | --- | --- | --- |
