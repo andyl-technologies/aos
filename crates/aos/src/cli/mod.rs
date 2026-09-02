@@ -21,7 +21,6 @@ mod gc;
 mod hub;
 mod hub_retained_control;
 mod image;
-mod package;
 mod prefetch;
 mod server;
 mod test;
@@ -31,7 +30,6 @@ pub use cache::*;
 pub use hub::*;
 pub use hub_retained_control::*;
 pub use image::*;
-pub use package::*;
 pub use server::*;
 pub use test::*;
 pub use vm::*;
@@ -69,6 +67,90 @@ pub enum ColorChoice {
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
+
+    /// Increase verbosity (-v, -vv, -vvv)
+    #[arg(short, long, action = ArgAction::Count, global = true)]
+    pub verbose: u8,
+
+    /// Suppress non-error output
+    #[arg(short, long, global = true)]
+    pub quiet: bool,
+
+    /// Output as JSON
+    #[arg(long, global = true)]
+    pub json: bool,
+
+    /// Control progress rendering.
+    #[arg(long, global = true, value_enum, default_value_t)]
+    pub progress: ProgressChoice,
+
+    /// Control terminal color output.
+    #[arg(long, global = true, value_enum, default_value_t)]
+    pub color: ColorChoice,
+}
+
+#[derive(Parser)]
+#[command(
+    name = "apm",
+    about = "Consume and manage AOS packages",
+    version,
+    after_long_help = aos_package::ENVIRONMENT_HELP
+)]
+pub struct ApmCli {
+    #[command(subcommand)]
+    pub command: aos_package::PackageCommand,
+
+    /// Show what would be done without doing it
+    #[arg(long, global = true)]
+    pub dry_run: bool,
+
+    /// Assume yes to all prompts
+    #[arg(short = 'y', long, global = true)]
+    pub yes: bool,
+
+    /// Increase verbosity (-v, -vv, -vvv)
+    #[arg(short, long, action = ArgAction::Count, global = true)]
+    pub verbose: u8,
+
+    /// Suppress non-error output
+    #[arg(short, long, global = true)]
+    pub quiet: bool,
+
+    /// Output as JSON
+    #[arg(long, global = true)]
+    pub json: bool,
+
+    /// Control progress rendering.
+    #[arg(long, global = true, value_enum, default_value_t)]
+    pub progress: ProgressChoice,
+
+    /// Control terminal color output.
+    #[arg(long, global = true, value_enum, default_value_t)]
+    pub color: ColorChoice,
+}
+
+#[derive(Parser)]
+#[command(
+    name = "apr",
+    about = "Author and publish AOS package registries",
+    version,
+    after_long_help = aos_package::ENVIRONMENT_HELP
+)]
+pub struct AprCli {
+    #[command(subcommand)]
+    pub command: aos_package::RegistryCommand,
+
+    /// Use system-wide registry configuration
+    #[arg(long, global = true)]
+    pub system: bool,
+
+    /// Show what would be done without doing it
+    #[arg(long, global = true)]
+    pub dry_run: bool,
+
+    /// Assume yes to all prompts
+    #[arg(short = 'y', long, global = true)]
+    pub yes: bool,
 
     /// Increase verbosity (-v, -vv, -vvv)
     #[arg(short, long, action = ArgAction::Count, global = true)]
@@ -239,8 +321,6 @@ pub enum Commands {
         #[command(subcommand)]
         command: MetadataCmd,
     },
-    /// Package manager (apm)
-    Package(PackageArgs),
     /// Binary cache client (push, pull, prefetch, list)
     Cache {
         #[command(subcommand)]

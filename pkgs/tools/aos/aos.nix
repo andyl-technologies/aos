@@ -271,19 +271,14 @@ in
     # preserving full coverage without weakening the release security posture.
     checkType = "debug";
 
-    # Each of aos/apm/apr is the same binary, dispatched by argv[0]. We install
-    # a thin wrapper per name that sets the hermetic runtime PATH and execs the
-    # real binary via an `.<name>-unwrapped` entry (a symlink for apm/apr) so
-    # argv[0] still selects the right personality. The wrapper execs an absolute
-    # store path baked in at build time — deriving it with `dirname` would
-    # require coreutils on PATH, defeating the point of the minimal PATH above.
+    # Install each Cargo binary behind a thin wrapper that supplies its exact
+    # hermetic runtime PATH. The programs have independent parsers and entry
+    # points; none derives authority or command shape from argv[0]. The wrapper
+    # execs an absolute store path baked in at build time -- deriving it with
+    # dirname would require coreutils on PATH and enlarge the runtime contract.
     postInstall = ''
-          mv $out/bin/aos $out/bin/.aos-unwrapped
-          rm -f $out/bin/apr
-          ln -s .aos-unwrapped $out/bin/.apm-unwrapped
-          ln -s .aos-unwrapped $out/bin/.apr-unwrapped
-
           for name in aos apm apr; do
+            mv $out/bin/$name $out/bin/.$name-unwrapped
             cat > $out/bin/$name << 'WRAPPER'
       #!${bash}/bin/bash
       export AOS_HOST_PATH="''${AOS_HOST_PATH-$PATH}"
