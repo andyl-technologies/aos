@@ -451,6 +451,18 @@ in
       ${pkgs.jq}/bin/jq -e \
         '.data.bindings | any(.stable_id == "instance-default" and .health.state == "valid")' \
         /tmp/bindings.json >/dev/null
+      ${pkgs.aos}/bin/aos --json hub org show operations \
+        --hub "$hub_url" --token "$token" >/tmp/operations-org-show.json
+      operations_org_scope=$(${pkgs.jq}/bin/jq -er \
+        .data.organization.stable_id /tmp/operations-org-show.json)
+      reviewed instance-default-grant binding grant instance-default \
+        --consumer-scope "$operations_org_scope" \
+        >/tmp/instance-default-grant.json
+      ${pkgs.aos}/bin/aos --json hub binding list --org operations \
+        --hub "$hub_url" --token "$token" >/tmp/operations-bindings.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data.bindings | any(.stable_id == "instance-default" and .health.state == "valid")' \
+        /tmp/operations-bindings.json >/dev/null
       reviewed placement-create placement add registry:operations/maintenance primary \
         --binding instance-default --prefix registries/maintenance \
         --kind complete --desired-state active --read enabled \
