@@ -75,6 +75,9 @@ pub(crate) fn anonymous_browse_route<'a>(
     if path == "/" {
         return Some(AnonymousBrowseRoute::Instance);
     }
+    if path == "/v2/" {
+        return None;
+    }
     browse_registry_slug(path).map(AnonymousBrowseRoute::Registry)
 }
 
@@ -623,6 +626,10 @@ mod tests {
                 false,
                 false,
             ),
+            None
+        );
+        assert_eq!(
+            anonymous_browse_route("GET", "/v2/", Some("*/*"), false, false),
             None
         );
     }

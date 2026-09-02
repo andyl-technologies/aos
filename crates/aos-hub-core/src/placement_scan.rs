@@ -979,6 +979,14 @@ mod tests {
             }))
         }
 
+        async fn placement_writer_at_revision(
+            &self,
+            placement: &SurfacePlacementRecord,
+            _revision: &crate::db::BindingWriteRevisionRecord,
+        ) -> Result<Box<dyn SurfaceWrite>> {
+            self.placement_writer(placement).await
+        }
+
         async fn placement_deleter(
             &self,
             placement: &SurfacePlacementRecord,

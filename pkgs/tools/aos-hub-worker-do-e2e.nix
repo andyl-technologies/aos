@@ -52,8 +52,10 @@
   dist = callPackage ./aos-hub-worker-dist.nix {cargoFeatures = "do-e2e";};
 
   egressFixture = ./aos-hub-direct-egress-fixture.mjs;
+  stateFixture = ./aos-hub-worker-state-fixture.mjs;
   removedManagementPaths = ../../crates/aos-hub/tests/fixtures/removed-management-paths-v1.json;
   removedManagementPosts = ../../crates/aos-hub/tests/fixtures/removed-management-posts-v1.json;
+  ociProtocolTranscript = ../../crates/aos-hub/tests/fixtures/oci-protocol-parity-v1.json;
 
   # The workerd config: a module worker (shim.mjs + index.wasm) with the six DO
   # classes, `enableSql = true` on the SQLite-backed `HubDb`, the direct-Fetch
@@ -69,10 +71,12 @@
       services = [
         (name = "main", worker = .mainWorker),
         (name = "egress-fixture", worker = .egressFixtureWorker),
+        (name = "state-fixture", worker = .stateFixtureWorker),
         (name = "do-disk", disk = (path = "do-storage", writable = true)),
       ],
       sockets = [
         (name = "http", address = "127.0.0.1:8799", http = (), service = "main"),
+        (name = "oci-private", address = "127.0.0.1:8800", http = (), service = "main"),
       ],
     );
 
@@ -84,6 +88,7 @@
       compatibilityDate = "2024-09-09",
       compatibilityFlags = ["nodejs_compat"],
       globalOutbound = "egress-fixture",
+      cacheApiOutbound = "state-fixture",
       durableObjectNamespaces = [
         (className = "HubDb", uniqueKey = "hubdb-key", enableSql = true),
         (className = "CoordinatorObject", uniqueKey = "coord-key"),
@@ -100,16 +105,29 @@
         (name = "HUB_TENANT_SHARDS", durableObjectNamespace = "HubTenantShard"),
         (name = "HUB_REGISTRY_SHARDS", durableObjectNamespace = "HubRegistryShard"),
         (name = "HUB_CACHE_SHARDS", durableObjectNamespace = "HubCacheShard"),
+        (name = "SESSIONS", kvNamespace = "state-fixture"),
         (name = "HUB_JWT_SECRET", text = "e2e-jwt-secret"),
         (name = "HUB_SEAL_KEY", text = "0000000000000000000000000000000000000000000000000000000000000000"),
         (name = "HUB_EXTERNAL_URL", text = "http://127.0.0.1:8799"),
         (name = "HUB_DEPLOYMENT_ID", text = "workerd-e2e-deployment"),
+        (name = "HUB_OCI_PULL_ENABLED", text = "true"),
+        (name = "HUB_OCI_PUSH_ENABLED", text = "true"),
+        (name = "HUB_OCI_VERIFIED_PUBLICATION_ENABLED", text = "true"),
+        (name = "HUB_OCI_ADMINISTRATION_ENABLED", text = "true"),
+        (name = "HUB_OCI_GC_ENABLED", text = "true"),
       ],
     );
 
     const egressFixtureWorker :Workerd.Worker = (
       modules = [
         (name = "fixture.mjs", esModule = embed "fixture.mjs"),
+      ],
+      compatibilityDate = "2024-09-09",
+    );
+
+    const stateFixtureWorker :Workerd.Worker = (
+      modules = [
+        (name = "state-fixture.mjs", esModule = embed "state-fixture.mjs"),
       ],
       compatibilityDate = "2024-09-09",
     );
@@ -120,6 +138,7 @@
     import fs from "node:fs";
     import path from "node:path";
     const BASE = "http://127.0.0.1:8799";
+    const PRIVATE_OCI_BASE = "http://127.0.0.1:8800";
 
     function humanSize(bytes) {
       const units = ["B", "KiB", "MiB", "GiB", "TiB"];
@@ -135,11 +154,10 @@
     if (!fixtureRoot) throw new Error("AOS_HUB_E2E_IMAGE_FIXTURE is required");
     const objects = {};
     function collect(directory, relative = "") {
-      // The image consumer fixture needs the signed registry object graph and
-      // exact disk-image objects, not the unrelated binary-cache NAR closure.
-      // Keeping those package NARs out of the injected DO-backed surface also
-      // respects Durable Object SQL's per-value limit.
-      if (relative === "nar") return;
+      // Current system-image delivery is store-backed: the signed registry
+      // graph names immutable store identities and this cache surface carries
+      // their NARs. The DO adapter chunks each object below SQLite's value
+      // bound, including the small qualification closure is safe.
       for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
         const child = path.join(directory, entry.name);
         const objectPath = relative ? `''${relative}/''${entry.name}` : entry.name;
@@ -191,9 +209,435 @@
       throw new Error(`R2 JS contract: ''${r2Contract.status} ''${await r2Contract.text()}`);
     }
     const bootstrapState = JSON.parse(last.body);
-    if (bootstrapState.gc_root_count !== 4) throw new Error("published images were not GC roots");
+    if (bootstrapState.gc_root_count !== 0) {
+      throw new Error("store-backed images entered the direct-object GC root set");
+    }
     const token = bootstrapState.token;
     const headers = { authorization: `Bearer ''${token}` };
+    // Store-backed system images are delivered by an advertised binary cache,
+    // not by an untracked read from their source registry placement. Admit the
+    // exact producer closure through the ordinary cache upload surface so this
+    // qualification covers catalog identity, quota accounting, and presence.
+    for (const objectPath of Object.keys(objects)
+      .filter((path) => path.endsWith(".narinfo") || path.startsWith("nar/"))
+      .sort()) {
+      const bytes = Buffer.from(objects[objectPath], "base64");
+      const uploadUrl = await createSingleUpload("flat-cache", objectPath, bytes.length);
+      const uploaded = await fetch(uploadUrl, { method: "PUT", headers, body: bytes });
+      if (uploaded.status !== 201) {
+        throw new Error(
+          `producer cache upload ''${objectPath}: ''${uploaded.status} ''${await uploaded.text()}`,
+        );
+      }
+    }
+    const imageInventory = await fetch(BASE + "/_e2e/rescan-image-cache", {
+      method: "POST",
+    });
+    if (imageInventory.status !== 200) {
+      throw new Error(
+        `producer cache inventory: ''${imageInventory.status} ''${await imageInventory.text()}`,
+      );
+    }
+    const protocolTranscript = JSON.parse(
+      fs.readFileSync("${ociProtocolTranscript}", "utf8"),
+    );
+    if (protocolTranscript.version !== 1 || !Array.isArray(protocolTranscript.cases)) {
+      throw new Error("OCI protocol transcript fixture has an unsupported shape");
+    }
+    const expectedTranscript = new Map(
+      protocolTranscript.cases.map((entry) => [entry.id, entry.status]),
+    );
+    const observedTranscript = new Set();
+    function transcriptStatus(id, response, detail = "") {
+      const expected = expectedTranscript.get(id);
+      if (expected === undefined) throw new Error("undeclared OCI transcript case: " + id);
+      if (response.status !== expected) {
+        throw new Error(
+          "OCI transcript " + id + ": expected " + expected + ", got "
+            + response.status + " " + detail,
+        );
+      }
+      observedTranscript.add(id);
+    }
+    async function sha256(bytes) {
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+      return "sha256:" + Array.from(digest, (byte) =>
+        byte.toString(16).padStart(2, "0")).join("");
+    }
+    async function exchangeOciToken(base, authorization, scope) {
+      const authority = new URL(base).host;
+      const query = new URLSearchParams({ service: authority, scope });
+      const response = await fetch(base + "/v2/token?" + query, {
+        headers: { authorization },
+      });
+      const text = await response.text();
+      return { response, text, value: text ? JSON.parse(text) : null };
+    }
+    async function beginBlob(base, ociToken, caseId = null) {
+      const response = await fetch(base + "/v2/aos/blobs/uploads/", {
+        method: "POST",
+        headers: { authorization: "Bearer " + ociToken },
+      });
+      const text = await response.text();
+      if (caseId) transcriptStatus(caseId, response, text);
+      else if (response.status !== 202) throw new Error("private upload begin: " + response.status + " " + text);
+      const location = response.headers.get("location");
+      if (!location) throw new Error("OCI upload begin omitted Location");
+      return new URL(location, base);
+    }
+    async function completeBlob(base, ociToken, bytes, beginCase = null, completeCase = null) {
+      const location = await beginBlob(base, ociToken, beginCase);
+      const digest = await sha256(bytes);
+      location.searchParams.set("digest", digest);
+      const response = await fetch(location, {
+        method: "PUT",
+        headers: {
+          authorization: "Bearer " + ociToken,
+          "content-type": "application/octet-stream",
+        },
+        body: bytes,
+      });
+      const text = await response.text();
+      if (completeCase) transcriptStatus(completeCase, response, text);
+      else if (response.status !== 201) throw new Error("private upload complete: " + response.status + " " + text);
+      return digest;
+    }
+    async function putOciManifest(base, ociToken, reference, document, caseId = null) {
+      const bytes = new TextEncoder().encode(JSON.stringify(document));
+      const digest = await sha256(bytes);
+      const response = await fetch(base + "/v2/aos/manifests/" + encodeURIComponent(reference), {
+        method: "PUT",
+        headers: {
+          authorization: "Bearer " + ociToken,
+          "content-type": "application/vnd.oci.image.manifest.v1+json",
+        },
+        body: bytes,
+      });
+      const text = await response.text();
+      if (caseId) transcriptStatus(caseId, response, text);
+      else if (response.status !== 201) throw new Error("private manifest put: " + response.status + " " + text);
+      return { digest, bytes };
+    }
+    async function containerRpc(method, request) {
+      const response = await fetch(BASE + "/aos.hub.v1.ContainerService/" + method, {
+        method: "POST",
+        headers: {
+          ...headers,
+          "content-type": "application/json",
+          "connect-protocol-version": "1",
+        },
+        body: JSON.stringify(request),
+      });
+      const text = await response.text();
+      return { response, text, value: text ? JSON.parse(text) : null };
+    }
+
+    const publicDiscovery = await fetch(BASE + "/v2/");
+    transcriptStatus("distribution.public.discovery", publicDiscovery, await publicDiscovery.text());
+    if (publicDiscovery.headers.get("docker-distribution-api-version") !== "registry/2.0") {
+      throw new Error("public discovery omitted the Distribution version");
+    }
+    const publicTokenResponse = await exchangeOciToken(
+      BASE,
+      "Bearer " + token,
+      "repository:aos:pull,push",
+    );
+    transcriptStatus(
+      "distribution.public.token",
+      publicTokenResponse.response,
+      publicTokenResponse.text,
+    );
+    const publicOciToken = publicTokenResponse.value?.token;
+    if (!publicOciToken || publicTokenResponse.value?.access_token !== publicOciToken) {
+      throw new Error("public OCI token response omitted aliases");
+    }
+
+    const layerBytes = new TextEncoder().encode("aos protocol parity layer\n");
+    const layerDigest = await sha256(layerBytes);
+    const configDocument = {
+      created: "1970-01-01T00:00:01Z",
+      architecture: "amd64",
+      os: "linux",
+      config: { Entrypoint: ["/bin/sh"], Cmd: ["-c", "echo aos-protocol-parity"] },
+      rootfs: { type: "layers", diff_ids: [layerDigest] },
+      history: [{ created_by: "aos protocol parity transcript" }],
+    };
+    const configBytes = new TextEncoder().encode(JSON.stringify(configDocument));
+    const configDigest = await sha256(configBytes);
+    await completeBlob(
+      BASE,
+      publicOciToken,
+      configBytes,
+      "distribution.public.upload-config-begin",
+      "distribution.public.upload-config-complete",
+    );
+    await completeBlob(
+      BASE,
+      publicOciToken,
+      layerBytes,
+      "distribution.public.upload-layer-begin",
+      "distribution.public.upload-layer-complete",
+    );
+    const manifestDocument = {
+      schemaVersion: 2,
+      mediaType: "application/vnd.oci.image.manifest.v1+json",
+      config: {
+        mediaType: "application/vnd.oci.image.config.v1+json",
+        digest: configDigest,
+        size: configBytes.length,
+      },
+      layers: [{
+        mediaType: "application/vnd.oci.image.layer.v1.tar",
+        digest: layerDigest,
+        size: layerBytes.length,
+      }],
+    };
+    const publicManifest = await putOciManifest(
+      BASE,
+      publicOciToken,
+      "latest",
+      manifestDocument,
+      "distribution.public.manifest-put",
+    );
+    const publicManifestByTag = await fetch(BASE + "/v2/aos/manifests/latest");
+    transcriptStatus(
+      "distribution.public.manifest-tag-get",
+      publicManifestByTag,
+      await publicManifestByTag.text(),
+    );
+    if (publicManifestByTag.headers.get("docker-content-digest") !== publicManifest.digest) {
+      throw new Error("public manifest tag resolved to the wrong digest");
+    }
+    const publicManifestHead = await fetch(
+      BASE + "/v2/aos/manifests/" + publicManifest.digest,
+      { method: "HEAD" },
+    );
+    transcriptStatus(
+      "distribution.public.manifest-digest-head",
+      publicManifestHead,
+      await publicManifestHead.text(),
+    );
+    const publicBlob = await fetch(BASE + "/v2/aos/blobs/" + layerDigest);
+    const publicBlobBytes = new Uint8Array(await publicBlob.arrayBuffer());
+    transcriptStatus("distribution.public.blob-get", publicBlob);
+    if (publicBlobBytes.length !== layerBytes.length
+        || !publicBlobBytes.every((byte, index) => byte === layerBytes[index])) {
+      throw new Error("public blob response changed bytes");
+    }
+    const publicTags = await fetch(BASE + "/v2/aos/tags/list");
+    const publicTagsText = await publicTags.text();
+    transcriptStatus("distribution.public.tags-list", publicTags, publicTagsText);
+    if (!JSON.parse(publicTagsText).tags?.includes("latest")) {
+      throw new Error("public tags response omitted latest");
+    }
+    const emptyBytes = new TextEncoder().encode("{}");
+    const emptyDigest = await completeBlob(BASE, publicOciToken, emptyBytes);
+    const sbomBytes = new TextEncoder().encode('{"spdxVersion":"SPDX-2.3"}');
+    const sbomDigest = await completeBlob(BASE, publicOciToken, sbomBytes);
+    const referrerDocument = {
+      schemaVersion: 2,
+      mediaType: "application/vnd.oci.image.manifest.v1+json",
+      artifactType: "application/spdx+json",
+      config: {
+        mediaType: "application/vnd.oci.empty.v1+json",
+        digest: emptyDigest,
+        size: emptyBytes.length,
+      },
+      layers: [{
+        mediaType: "application/spdx+json",
+        digest: sbomDigest,
+        size: sbomBytes.length,
+      }],
+      subject: {
+        mediaType: "application/vnd.oci.image.manifest.v1+json",
+        digest: publicManifest.digest,
+        size: publicManifest.bytes.length,
+      },
+    };
+    const referrer = await putOciManifest(
+      BASE,
+      publicOciToken,
+      "sbom",
+      referrerDocument,
+      "distribution.public.referrer-put",
+    );
+    const referrers = await fetch(BASE + "/v2/aos/referrers/" + publicManifest.digest);
+    const referrersText = await referrers.text();
+    transcriptStatus("distribution.public.referrers-list", referrers, referrersText);
+    if (!referrersText.includes(referrer.digest)) {
+      throw new Error("public referrers response omitted the artifact digest");
+    }
+
+    const privateDiscovery = await fetch(PRIVATE_OCI_BASE + "/v2/");
+    transcriptStatus("distribution.private.discovery", privateDiscovery, await privateDiscovery.text());
+    const privateAnonymous = await fetch(PRIVATE_OCI_BASE + "/v2/aos/manifests/latest");
+    transcriptStatus(
+      "distribution.private.manifest-anonymous",
+      privateAnonymous,
+      await privateAnonymous.text(),
+    );
+    if (!privateAnonymous.headers.get("www-authenticate")?.includes("127.0.0.1:8800/v2/token")) {
+      throw new Error("private challenge was not bound to its authority");
+    }
+    const basic = Buffer.from(
+      bootstrapState.docker_username + ":" + bootstrapState.docker_password,
+      "utf8",
+    ).toString("base64");
+    const privateTokenResponse = await exchangeOciToken(
+      PRIVATE_OCI_BASE,
+      "Basic " + basic,
+      "repository:aos:pull,push",
+    );
+    transcriptStatus(
+      "distribution.private.token-basic",
+      privateTokenResponse.response,
+      privateTokenResponse.text,
+    );
+    const privateOciToken = privateTokenResponse.value?.token;
+    if (!privateOciToken) throw new Error("private token exchange omitted token");
+    await completeBlob(PRIVATE_OCI_BASE, privateOciToken, configBytes);
+    await completeBlob(PRIVATE_OCI_BASE, privateOciToken, layerBytes);
+    await putOciManifest(
+      PRIVATE_OCI_BASE,
+      privateOciToken,
+      "latest",
+      manifestDocument,
+    );
+    const privateManifest = await fetch(PRIVATE_OCI_BASE + "/v2/aos/manifests/latest", {
+      headers: { authorization: "Bearer " + privateOciToken },
+    });
+    const privateManifestText = await privateManifest.text();
+    transcriptStatus(
+      "distribution.private.manifest-authenticated",
+      privateManifest,
+      privateManifestText,
+    );
+    if (privateManifest.headers.get("cache-control") !== "private, no-store") {
+      throw new Error("private manifest response was cacheable");
+    }
+
+    const repositories = await containerRpc("ListContainerRepositories", {
+      registry: bootstrapState.oci_public_registry,
+      pageSize: 20,
+    });
+    transcriptStatus("container.repositories-list", repositories.response, repositories.text);
+    if (!repositories.value?.repositories?.some((repository) => repository.repository === "aos")) {
+      throw new Error("ContainerService repository list omitted pushed repository");
+    }
+    const resolvedTag = await containerRpc("ResolveContainerTag", {
+      registry: bootstrapState.oci_public_registry,
+      repository: "aos",
+      tag: "latest",
+      operatingSystem: "linux",
+      architecture: "amd64",
+    });
+    transcriptStatus("container.tag-resolve", resolvedTag.response, resolvedTag.text);
+    if (resolvedTag.value?.tag?.digest !== publicManifest.digest) {
+      throw new Error("ContainerService resolved a different manifest digest");
+    }
+    const manifestRead = await containerRpc("GetContainerManifest", {
+      registry: bootstrapState.oci_public_registry,
+      repository: "aos",
+      digest: publicManifest.digest,
+    });
+    transcriptStatus("container.manifest-get", manifestRead.response, manifestRead.text);
+    if (manifestRead.value?.manifest?.digest !== publicManifest.digest) {
+      throw new Error("ContainerService manifest projection changed digest");
+    }
+    const referrerRead = await containerRpc("ListContainerReferrers", {
+      registry: bootstrapState.oci_public_registry,
+      repository: "aos",
+      subjectDigest: publicManifest.digest,
+      pageSize: 20,
+    });
+    transcriptStatus("container.referrers-list", referrerRead.response, referrerRead.text);
+    if (!referrerRead.value?.referrers?.some((entry) => entry.digest === referrer.digest)) {
+      throw new Error("ContainerService referrer projection omitted artifact");
+    }
+    const publications = await containerRpc("ListContainerPublications", {
+      registry: bootstrapState.oci_public_registry,
+      repository: "aos",
+      pageSize: 20,
+    });
+    transcriptStatus("container.publications-list", publications.response, publications.text);
+    const invalidPublication = await containerRpc("BeginContainerPublication", {
+      registry: bootstrapState.oci_public_registry,
+      repository: "aos",
+      containerReleaseJson: Buffer.from("{}").toString("base64"),
+      targetTag: "invalid-release",
+      idempotencyKey: "worker-parity-invalid-publication",
+      targetKind: "release",
+    });
+    transcriptStatus(
+      "container.publication-invalid-release",
+      invalidPublication.response,
+      invalidPublication.text,
+    );
+    const tagPlan = await containerRpc("PlanSetContainerTag", {
+      registry: bootstrapState.oci_public_registry,
+      repository: "aos",
+      tag: "promoted",
+      targetDigest: publicManifest.digest,
+      idempotencyKey: "worker-parity-tag-plan",
+    });
+    transcriptStatus("container.tag-plan", tagPlan.response, tagPlan.text);
+    const reviewedTagPlan = tagPlan.value?.plan;
+    if (!reviewedTagPlan?.planId || !reviewedTagPlan?.confirmationHash) {
+      throw new Error("ContainerService tag plan omitted review identity");
+    }
+    const tagApply = await containerRpc("SetContainerTag", {
+      planId: reviewedTagPlan.planId,
+      idempotencyKey: "worker-parity-tag-apply",
+      confirmationHash: reviewedTagPlan.confirmationHash,
+    });
+    transcriptStatus("container.tag-apply", tagApply.response, tagApply.text);
+    if (tagApply.value?.tag?.tag !== "promoted"
+        || tagApply.value?.tag?.digest !== publicManifest.digest) {
+      throw new Error("ContainerService tag apply returned the wrong pointer");
+    }
+    const retention = await containerRpc("GetContainerRetentionPolicy", {
+      registry: bootstrapState.oci_public_registry,
+    });
+    transcriptStatus("container.retention-get", retention.response, retention.text);
+    const policyVersion = retention.value?.policy?.resourceVersion ?? "0";
+    const gcPlan = await containerRpc("PlanRunContainerGc", {
+      registry: bootstrapState.oci_public_registry,
+      expectedResourceVersion: policyVersion,
+      idempotencyKey: "worker-parity-gc-plan",
+    });
+    transcriptStatus("container.gc-plan", gcPlan.response, gcPlan.text);
+    const gcRunId = gcPlan.value?.run?.runId;
+    if (!gcRunId || gcPlan.value?.run?.state !== "failed"
+        || !Array.isArray(gcPlan.value?.blockers)
+        || gcPlan.value.blockers.length === 0) {
+      throw new Error("injected-provider GC plan did not fail closed with blockers");
+    }
+    const gcStatus = await containerRpc("GetContainerGcRun", {
+      registry: bootstrapState.oci_public_registry,
+      runId: gcRunId,
+    });
+    transcriptStatus("container.gc-status", gcStatus.response, gcStatus.text);
+    if (gcStatus.value?.run?.runId !== gcRunId) {
+      throw new Error("ContainerService GC status lost durable run identity");
+    }
+    const gcBlockers = await containerRpc("ListContainerGcBlockers", {
+      registry: bootstrapState.oci_public_registry,
+      runId: gcRunId,
+    });
+    transcriptStatus("container.gc-blockers", gcBlockers.response, gcBlockers.text);
+    if (!Array.isArray(gcBlockers.value?.blockers) || gcBlockers.value.blockers.length === 0) {
+      throw new Error("ContainerService GC blocker list was empty");
+    }
+    const missingTranscript = [...expectedTranscript.keys()].filter(
+      (id) => !observedTranscript.has(id),
+    );
+    if (missingTranscript.length !== 0) {
+      throw new Error("unobserved OCI transcript cases: " + missingTranscript.join(", "));
+    }
+    console.log(
+      "aos-hub-worker OCI protocol transcript v1: PASS ("
+        + observedTranscript.size + " cases; injected SQLite provider, no R2 physical GC apply)",
+    );
     const removedManagementPaths = JSON.parse(
       fs.readFileSync("${removedManagementPaths}", "utf8"),
     );
@@ -245,7 +689,9 @@
     if (publicList.response.status !== 200
         || !publicList.text.includes("raw")
         || !publicList.text.includes("qcow2")
-        || !publicList.text.includes(bootstrapState.raw_key)
+        || publicList.text.includes('"downloadUrl"')
+        || publicList.text.includes('"objectKey"')
+        || !publicList.text.includes('"cacheUrls":["http://127.0.0.1:8799/flat-cache"]')
         || !publicList.text.includes('"releaseVerification":"verified"')
         || !publicList.text.includes('"bootVerification":"signed-unverified"')
         || !publicList.text.includes(rawSha256)) {
@@ -259,7 +705,10 @@
       package: "aos-system",
     });
     if (inspected.response.status !== 200
-        || !inspected.text.includes(bootstrapState.raw_key)
+        || inspected.text.includes('"downloadUrl"')
+        || inspected.text.includes('"objectKey"')
+        || !inspected.text.includes('"storePath":"/nix/store/')
+        || !inspected.text.includes('"narHash":"sha256:')
         || !inspected.text.includes("image-info.json")
         || !inspected.text.includes(rawSha256)) {
       throw new Error(`image inspect: ''${inspected.response.status} ''${inspected.text}`);
@@ -274,87 +723,11 @@
       throw new Error(`image resolve: ''${resolved.response.status} ''${resolved.text}`);
     }
 
-    const rawUrl = BASE + "/failure/images-public/" + bootstrapState.raw_key;
-    const rawDownload = await fetch(rawUrl);
-    const downloaded = new Uint8Array(await rawDownload.arrayBuffer());
-    if (rawDownload.status !== 200
-        || downloaded.length !== rawBytes.length
-        || !downloaded.every((byte, index) => byte === rawBytes[index])
-        || !rawDownload.headers.get("content-disposition")?.includes("aos-e2e.img.zst")
-        || !rawDownload.headers.get("cache-control")?.includes("immutable")
-        || rawDownload.headers.get("x-aos-sha256") !== rawSha256
-        || !rawDownload.headers.get("repr-digest")?.startsWith("sha-256=:")) {
-      throw new Error(`public raw download contract failed: ''${rawDownload.status}`);
-    }
-    const rawHead = await fetch(rawUrl, { method: "HEAD" });
-    if (rawHead.status !== 200
-        || Number(rawHead.headers.get("content-length")) !== rawBytes.length
-        || rawHead.headers.get("x-aos-sha256") !== rawSha256
-        || (await rawHead.arrayBuffer()).byteLength !== 0) {
-      throw new Error(`public raw HEAD contract failed: ''${rawHead.status}`);
-    }
-    const rawHeadRange = await fetch(rawUrl, {
-      method: "HEAD",
-      headers: { range: "bytes=4-11" },
-    });
-    if (rawHeadRange.status !== 200
-        || rawHeadRange.headers.has("content-range")
-        || Number(rawHeadRange.headers.get("content-length")) !== rawBytes.length) {
-      throw new Error(`public raw HEAD-with-Range contract failed: ''${rawHeadRange.status}`);
-    }
-    const rawEtag = rawDownload.headers.get("etag");
-    if (rawEtag === null) {
-      throw new Error("public raw response omitted ETag");
-    }
-    const notModified = await fetch(rawUrl, {
-      headers: { "if-none-match": rawEtag },
-    });
-    if (notModified.status !== 304
-        || (await notModified.arrayBuffer()).byteLength !== 0) {
-      throw new Error(`public raw If-None-Match contract failed: ''${notModified.status}`);
-    }
-    const preconditionFailed = await fetch(rawUrl, {
-      headers: { "if-match": '"different"' },
-    });
-    if (preconditionFailed.status !== 412
-        || (await preconditionFailed.arrayBuffer()).byteLength !== 0) {
-      throw new Error(`public raw If-Match contract failed: ''${preconditionFailed.status}`);
-    }
-    const rawRange = await fetch(rawUrl, { headers: { range: "bytes=4-11" } });
-    const ranged = new Uint8Array(await rawRange.arrayBuffer());
-    if (rawRange.status !== 206
-        || rawRange.headers.get("content-range") !== `bytes 4-11/''${rawBytes.length}`
-        || !ranged.every((byte, index) => byte === rawBytes[index + 4])) {
-      throw new Error(`public raw range contract failed: ''${rawRange.status}`);
-    }
-    const matchingIfRange = await fetch(rawUrl, {
-      headers: { range: "bytes=4-11", "if-range": rawEtag },
-    });
-    if (matchingIfRange.status !== 206
-        || matchingIfRange.headers.get("content-range") !== `bytes 4-11/''${rawBytes.length}`) {
-      throw new Error(`public raw matching If-Range failed: ''${matchingIfRange.status}`);
-    }
-    const staleIfRange = await fetch(rawUrl, {
-      headers: { range: "bytes=4-11", "if-range": '"different"' },
-    });
-    if (staleIfRange.status !== 200
-        || (await staleIfRange.arrayBuffer()).byteLength !== rawBytes.length) {
-      throw new Error(`public raw stale If-Range failed: ''${staleIfRange.status}`);
-    }
-    const unsatisfiedStart = rawBytes.length;
-    const unsatisfied = await fetch(rawUrl, {
-      headers: { range: `bytes=''${unsatisfiedStart}-` },
-    });
-    if (unsatisfied.status !== 416
-        || unsatisfied.headers.get("content-range") !== `bytes */''${rawBytes.length}`
-        || (await unsatisfied.arrayBuffer()).byteLength !== 0) {
-      throw new Error(`public raw 416 contract failed: ''${unsatisfied.status}`);
-    }
-
     const imagesPage = await fetch(BASE + "/failure/images-public/-/images");
     const imagesHtml = await imagesPage.text();
     if (imagesPage.status !== 200
-        || !imagesHtml.includes("Download")
+        || !imagesHtml.includes("CDN / CLI")
+        || !imagesHtml.includes("Delivered from the registry cache with aos image download")
         || !imagesHtml.includes("qcow2")
         || !imagesHtml.includes("2026.3.0")
         || !imagesHtml.includes("stable")
@@ -482,8 +855,8 @@
     );
     const privateImagesHtml = await privateImagesPage.text();
     if (privateImagesPage.status !== 200
-        || !privateImagesHtml.includes("Download")
-        || !privateImagesHtml.includes(bootstrapState.qcow2_key)) {
+        || !privateImagesHtml.includes("CDN / CLI")
+        || !privateImagesHtml.includes(qcow2Sha256)) {
       throw new Error(`private cookie Images page: ''${privateImagesPage.status} ''${privateImagesHtml}`);
     }
     const privateAnonymousApi = await imageRpc("ListImages", {
@@ -496,54 +869,17 @@
       slug: "failure/images-private",
       format: "qcow2",
     }, true);
-    if (privateApi.response.status !== 200 || !privateApi.text.includes(bootstrapState.qcow2_key)) {
+    if (privateApi.response.status !== 200
+        || !privateApi.text.includes(qcow2Sha256)
+        || privateApi.text.includes('"downloadUrl"')
+        || privateApi.text.includes('"objectKey"')
+        || !privateApi.text.includes('"storePath":"/nix/store/')
+        || privateApi.text.includes('"cacheUrls"')) {
       throw new Error(`private image API: ''${privateApi.response.status} ''${privateApi.text}`);
     }
     const privateUrl = privateApi.value?.images?.[0]?.downloadUrl;
-    if (typeof privateUrl !== "string"
-        || !privateUrl.startsWith(BASE + "/-/images/")
-        || !privateUrl.includes("/images/")) {
-      throw new Error(`private API did not return a same-origin control download URL: ''${privateUrl}`);
-    }
-    const privateAnonymous = await fetch(privateUrl);
-    if (privateAnonymous.status === 200
-        || privateAnonymous.headers.get("cache-control") !== "private, no-store"
-        || privateAnonymous.headers.get("vary") !== "Authorization, Cookie") {
-      throw new Error("private image anonymous denial was cacheable or successful");
-    }
-    const privateDownload = await fetch(privateUrl, { headers });
-    const downloadedQcow2 = new Uint8Array(await privateDownload.arrayBuffer());
-    if (privateDownload.status !== 200
-        || downloadedQcow2.length !== qcow2Bytes.length
-        || !downloadedQcow2.every((byte, index) => byte === qcow2Bytes[index])
-        || !privateDownload.headers.get("content-disposition")?.includes("aos-e2e.qcow2")
-        || privateDownload.headers.get("x-aos-sha256") !== qcow2Sha256
-        || privateDownload.headers.get("cache-control") !== "private, no-store"
-        || privateDownload.headers.get("vary") !== "Authorization, Cookie") {
-      throw new Error(`private image download contract: ''${privateDownload.status}`);
-    }
-    const privateRange = await fetch(privateUrl, { headers: { ...headers, range: "bytes=2-7" } });
-    const privateRangeBytes = new Uint8Array(await privateRange.arrayBuffer());
-    if (privateRange.status !== 206
-        || privateRange.headers.get("content-range") !== `bytes 2-7/''${qcow2Bytes.length}`
-        || !privateRangeBytes.every((byte, index) => byte === qcow2Bytes[index + 2])) {
-      throw new Error(`private range contract: ''${privateRange.status}`);
-    }
-    const privateHead = await fetch(privateUrl, { method: "HEAD", headers });
-    if (privateHead.status !== 200
-        || Number(privateHead.headers.get("content-length")) !== qcow2Bytes.length
-        || privateHead.headers.get("x-aos-sha256") !== qcow2Sha256
-        || (await privateHead.arrayBuffer()).byteLength !== 0) {
-      throw new Error(`private HEAD contract: ''${privateHead.status}`);
-    }
-    const cookieDownload = await fetch(privateUrl, { headers: cookieHeaders });
-    const cookieBytes = new Uint8Array(await cookieDownload.arrayBuffer());
-    if (cookieDownload.status !== 200
-        || cookieBytes.length !== qcow2Bytes.length
-        || !cookieBytes.every((byte, index) => byte === qcow2Bytes[index])
-        || cookieDownload.headers.get("cache-control") !== "private, no-store"
-        || cookieDownload.headers.get("vary") !== "Authorization, Cookie") {
-      throw new Error(`private cookie image download: ''${cookieDownload.status}`);
+    if (privateUrl !== undefined) {
+      throw new Error(`private store-backed image exposed a direct download URL: ''${privateUrl}`);
     }
 
     async function cacheRpc(method, body) {
@@ -707,7 +1043,7 @@ in
     version = "0.1.0";
 
     runtimeDeps = [dist aos nix nodejs workerd-source bash coreutils diffutils grep aos-system-image-e2e-fixture];
-    nukeRefsKeep = [workerCapnp driver egressFixture];
+    nukeRefsKeep = [workerCapnp driver egressFixture stateFixture];
 
     phases = [
       {
@@ -734,6 +1070,7 @@ in
           trap cleanup EXIT
           cp ${dist}/shim.mjs ${dist}/index.wasm "\$work/"
           cp ${egressFixture} "\$work/fixture.mjs"
+          cp ${stateFixture} "\$work/state-fixture.mjs"
           cp ${workerCapnp} "\$work/worker.capnp"
           cp ${driver} "\$work/driver.mjs"
           ${aos-system-image-e2e-fixture}/bin/aos-system-image-e2e-fixture "\$work/producer"

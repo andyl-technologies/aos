@@ -6,7 +6,7 @@
 
 mod common;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -49,6 +49,59 @@ use tokio_util::sync::CancellationToken;
 
 const TEST_JWT_SECRET: &[u8] = b"native-oci-distribution-test-secret";
 const OCI_JWS_HEADER: &[u8] = br#"{"alg":"HS256","typ":"application/vnd.aos.oci-token+jwt"}"#;
+const OCI_PROTOCOL_TRANSCRIPT: &str = include_str!("fixtures/oci-protocol-parity-v1.json");
+
+#[derive(serde::Deserialize)]
+struct ProtocolTranscript {
+    version: u32,
+    cases: Vec<ProtocolCase>,
+}
+
+#[derive(serde::Deserialize)]
+struct ProtocolCase {
+    id: String,
+    status: u16,
+}
+
+struct TranscriptAssertions {
+    expected: BTreeMap<String, u16>,
+    observed: BTreeSet<String>,
+}
+
+impl TranscriptAssertions {
+    fn v1() -> Self {
+        let transcript: ProtocolTranscript = serde_json::from_str(OCI_PROTOCOL_TRANSCRIPT).unwrap();
+        assert_eq!(transcript.version, 1);
+        Self {
+            expected: transcript
+                .cases
+                .into_iter()
+                .map(|case| (case.id, case.status))
+                .collect(),
+            observed: BTreeSet::new(),
+        }
+    }
+
+    fn status(&mut self, id: &str, status: StatusCode) {
+        assert_eq!(
+            self.expected.get(id).copied(),
+            Some(status.as_u16()),
+            "protocol transcript case {id} returned {status}"
+        );
+        assert!(
+            self.observed.insert(id.to_string()),
+            "duplicate transcript case {id}"
+        );
+    }
+
+    fn finish(self) {
+        assert_eq!(
+            self.observed,
+            self.expected.keys().cloned().collect(),
+            "native protocol transcript did not execute its complete case inventory"
+        );
+    }
+}
 
 #[derive(Clone)]
 struct GraphObject {
@@ -79,6 +132,8 @@ struct RunningRegistry {
     origin: String,
     image: ImageGraph,
     hub_bearer: Option<String>,
+    docker_username: String,
+    docker_password: String,
 }
 
 impl Drop for RunningRegistry {
@@ -628,30 +683,44 @@ async fn spawn_registry_with_rollout(
     .await;
 
     let keys = JwtKeys::from_secret(TEST_JWT_SECRET);
-    let hub_bearer = if visibility == "public" && access_policy_kind != "hub_auth" {
-        None
-    } else {
-        let user_id = db
-            .create_user("puller@oci.example", Some("OCI puller"))
-            .await
-            .unwrap();
-        db.grant_membership("user", user_id, &org.stable_id, "maintainer")
-            .await
-            .unwrap();
-        let scope = db.registry_authorization_scope(registry_id).await.unwrap();
-        Some(
-            keys.mint(
-                &TokenAuth {
-                    token_id: "native-oci-hub-token".to_string(),
-                    owner: Principal::user(user_id),
-                    scope: Scope::parse(&scope),
-                    permissions: vec![Permission::Read, Permission::Publish],
-                },
-                900,
-            )
-            .unwrap(),
+    let user_id = db
+        .create_user("puller@oci.example", Some("OCI puller"))
+        .await
+        .unwrap();
+    db.grant_membership("user", user_id, &org.stable_id, "owner")
+        .await
+        .unwrap();
+    let scope = db.registry_authorization_scope(registry_id).await.unwrap();
+    let (docker_username, docker_password) = db
+        .create_token(
+            Principal::user(user_id),
+            &scope,
+            &[
+                Permission::Read,
+                Permission::Publish,
+                Permission::RegistryConfigure,
+            ],
+            Some("native OCI qualification Docker credential"),
+            None,
         )
-    };
+        .await
+        .unwrap();
+    let hub_bearer = Some(
+        keys.mint(
+            &TokenAuth {
+                token_id: "native-oci-hub-token".to_string(),
+                owner: Principal::user(user_id),
+                scope: Scope::parse(&scope),
+                permissions: vec![
+                    Permission::Read,
+                    Permission::Publish,
+                    Permission::RegistryConfigure,
+                ],
+            },
+            900,
+        )
+        .unwrap(),
+    );
     let ratelimit = Arc::new(aos_hub::ratelimit::RateLimiter::new());
     let auth = Arc::new(AuthState {
         db: Arc::clone(&db),
@@ -703,6 +772,8 @@ async fn spawn_registry_with_rollout(
         origin,
         image,
         hub_bearer,
+        docker_username,
+        docker_password,
     }
 }
 
@@ -956,6 +1027,538 @@ async fn put_manifest_bytes(
         .send()
         .await
         .unwrap()
+}
+
+async fn transcript_upload_blob(
+    registry: &RunningRegistry,
+    token: &str,
+    bytes: &[u8],
+    begin_case: &str,
+    complete_case: &str,
+    transcript: &mut TranscriptAssertions,
+) -> Sha256Digest {
+    let begin = registry
+        .http
+        .post(format!("{}v2/aos/blobs/uploads/", registry.origin))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    transcript.status(begin_case, begin.status());
+    let location = resolved_location(registry, begin.headers()[LOCATION].to_str().unwrap());
+    let digest = Sha256Digest::digest(bytes);
+    let complete = registry
+        .http
+        .put(location)
+        .query(&[("digest", digest.to_string())])
+        .bearer_auth(token)
+        .header(CONTENT_TYPE, "application/octet-stream")
+        .body(bytes.to_vec())
+        .send()
+        .await
+        .unwrap();
+    transcript.status(complete_case, complete.status());
+    assert_eq!(
+        complete.headers()["docker-content-digest"],
+        digest.to_string()
+    );
+    digest
+}
+
+async fn container_rpc_json(
+    registry: &RunningRegistry,
+    method: &str,
+    request: serde_json::Value,
+) -> (StatusCode, serde_json::Value, String) {
+    let response = registry
+        .http
+        .post(format!(
+            "{}aos.hub.v1.ContainerService/{method}",
+            registry.origin
+        ))
+        .bearer_auth(registry.hub_bearer.as_deref().unwrap())
+        .header("connect-protocol-version", "1")
+        .header(CONTENT_TYPE, "application/json")
+        .json(&request)
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let text = response.text().await.unwrap();
+    let value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+    (status, value, text)
+}
+
+#[tokio::test]
+async fn native_oci_protocol_transcript_matches_worker_v1() {
+    let mut transcript = TranscriptAssertions::v1();
+    let public = spawn_registry("public", false, "public").await;
+    let private = spawn_registry("private", false, "hub_auth").await;
+
+    let discovery = public
+        .http
+        .get(format!("{}v2/", public.origin))
+        .send()
+        .await
+        .unwrap();
+    transcript.status("distribution.public.discovery", discovery.status());
+    assert_eq!(
+        discovery.headers()["docker-distribution-api-version"],
+        "registry/2.0"
+    );
+    let public_token_response = public
+        .http
+        .get(format!("{}v2/token", public.origin))
+        .query(&[
+            ("service", public.authority.as_str()),
+            ("scope", "repository:aos:pull,push"),
+        ])
+        .bearer_auth(public.hub_bearer.as_deref().unwrap())
+        .send()
+        .await
+        .unwrap();
+    transcript.status("distribution.public.token", public_token_response.status());
+    let public_token: serde_json::Value = public_token_response.json().await.unwrap();
+    let public_token = public_token["token"].as_str().unwrap().to_string();
+
+    let graph = image_graph("native-protocol-parity");
+    let config = graph
+        .objects
+        .iter()
+        .find(|object| object.descriptor.media_type == MediaType::OciImageConfig)
+        .unwrap();
+    let layer = graph
+        .objects
+        .iter()
+        .find(|object| object.descriptor.digest == graph.layer.digest)
+        .unwrap();
+    assert_eq!(
+        transcript_upload_blob(
+            &public,
+            &public_token,
+            &config.bytes,
+            "distribution.public.upload-config-begin",
+            "distribution.public.upload-config-complete",
+            &mut transcript,
+        )
+        .await,
+        config.descriptor.digest
+    );
+    assert_eq!(
+        transcript_upload_blob(
+            &public,
+            &public_token,
+            &layer.bytes,
+            "distribution.public.upload-layer-begin",
+            "distribution.public.upload-layer-complete",
+            &mut transcript,
+        )
+        .await,
+        layer.descriptor.digest
+    );
+    let manifest = graph
+        .objects
+        .iter()
+        .find(|object| object.descriptor.digest == graph.manifest.digest)
+        .unwrap();
+    let manifest_put = put_manifest_bytes(
+        &public,
+        &public_token,
+        "aos",
+        "parity",
+        MediaType::OciImageManifest,
+        &manifest.bytes,
+    )
+    .await;
+    transcript.status("distribution.public.manifest-put", manifest_put.status());
+    assert_eq!(
+        manifest_put.headers()["docker-content-digest"],
+        graph.manifest.digest.to_string()
+    );
+    let manifest_get = public
+        .http
+        .get(format!("{}v2/aos/manifests/parity", public.origin))
+        .send()
+        .await
+        .unwrap();
+    transcript.status(
+        "distribution.public.manifest-tag-get",
+        manifest_get.status(),
+    );
+    assert_eq!(
+        manifest_get.headers()["docker-content-digest"],
+        graph.manifest.digest.to_string()
+    );
+    let manifest_head = public
+        .http
+        .head(format!(
+            "{}v2/aos/manifests/{}",
+            public.origin, graph.manifest.digest
+        ))
+        .send()
+        .await
+        .unwrap();
+    transcript.status(
+        "distribution.public.manifest-digest-head",
+        manifest_head.status(),
+    );
+    let blob = public
+        .http
+        .get(format!(
+            "{}v2/aos/blobs/{}",
+            public.origin, graph.layer.digest
+        ))
+        .send()
+        .await
+        .unwrap();
+    transcript.status("distribution.public.blob-get", blob.status());
+    assert_eq!(blob.bytes().await.unwrap().as_ref(), layer.bytes);
+    let tags = public
+        .http
+        .get(format!("{}v2/aos/tags/list", public.origin))
+        .send()
+        .await
+        .unwrap();
+    transcript.status("distribution.public.tags-list", tags.status());
+    let tags: serde_json::Value = tags.json().await.unwrap();
+    assert!(tags["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tag| tag == "parity"));
+
+    let empty = b"{}";
+    let empty_digest = Sha256Digest::digest(empty);
+    let empty_start = public
+        .http
+        .post(format!("{}v2/aos/blobs/uploads/", public.origin))
+        .bearer_auth(&public_token)
+        .send()
+        .await
+        .unwrap();
+    let empty_location =
+        resolved_location(&public, empty_start.headers()[LOCATION].to_str().unwrap());
+    let empty_finish = public
+        .http
+        .put(empty_location)
+        .query(&[("digest", empty_digest.to_string())])
+        .bearer_auth(&public_token)
+        .body(empty.to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(empty_finish.status(), StatusCode::CREATED);
+    let empty_descriptor = descriptor(MediaType::OciEmptyJson, empty, None);
+    let sbom_payload = br#"{"spdxVersion":"SPDX-2.3"}"#;
+    let sbom_descriptor = descriptor(MediaType::SpdxJson, sbom_payload, None);
+    let sbom_start = public
+        .http
+        .post(format!("{}v2/aos/blobs/uploads/", public.origin))
+        .bearer_auth(&public_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(sbom_start.status(), StatusCode::ACCEPTED);
+    let sbom_location =
+        resolved_location(&public, sbom_start.headers()[LOCATION].to_str().unwrap());
+    let sbom_finish = public
+        .http
+        .put(sbom_location)
+        .query(&[("digest", sbom_descriptor.digest.to_string())])
+        .bearer_auth(&public_token)
+        .body(sbom_payload.to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(sbom_finish.status(), StatusCode::CREATED);
+    let referrer_manifest = ImageManifest {
+        schema_version: 2,
+        media_type: Some(MediaType::OciImageManifest),
+        artifact_type: Some(MediaType::SpdxJson),
+        config: empty_descriptor,
+        layers: vec![sbom_descriptor],
+        subject: Some(graph.manifest.clone()),
+        annotations: Annotations::new(),
+    };
+    let referrer_bytes = to_canonical_json(&referrer_manifest).unwrap();
+    let referrer_digest = Sha256Digest::digest(&referrer_bytes);
+    let referrer_put = put_manifest_bytes(
+        &public,
+        &public_token,
+        "aos",
+        "parity-sbom",
+        MediaType::OciImageManifest,
+        &referrer_bytes,
+    )
+    .await;
+    transcript.status("distribution.public.referrer-put", referrer_put.status());
+    let referrers = public
+        .http
+        .get(format!(
+            "{}v2/aos/referrers/{}",
+            public.origin, graph.manifest.digest
+        ))
+        .send()
+        .await
+        .unwrap();
+    transcript.status("distribution.public.referrers-list", referrers.status());
+    let referrers: serde_json::Value = referrers.json().await.unwrap();
+    assert!(referrers.to_string().contains(&referrer_digest.to_string()));
+
+    let private_discovery = private
+        .http
+        .get(format!("{}v2/", private.origin))
+        .send()
+        .await
+        .unwrap();
+    transcript.status("distribution.private.discovery", private_discovery.status());
+    let private_anonymous = private
+        .http
+        .get(format!("{}v2/aos/manifests/latest", private.origin))
+        .send()
+        .await
+        .unwrap();
+    transcript.status(
+        "distribution.private.manifest-anonymous",
+        private_anonymous.status(),
+    );
+    assert!(private_anonymous.headers()[WWW_AUTHENTICATE]
+        .to_str()
+        .unwrap()
+        .contains(&format!("{}/v2/token", private.authority)));
+    let private_token_response = private
+        .http
+        .get(format!("{}v2/token", private.origin))
+        .query(&[
+            ("service", private.authority.as_str()),
+            ("scope", "repository:aos:pull,push"),
+        ])
+        .basic_auth(&private.docker_username, Some(&private.docker_password))
+        .send()
+        .await
+        .unwrap();
+    transcript.status(
+        "distribution.private.token-basic",
+        private_token_response.status(),
+    );
+    let private_token: serde_json::Value = private_token_response.json().await.unwrap();
+    let private_manifest = private
+        .http
+        .get(format!("{}v2/aos/manifests/latest", private.origin))
+        .bearer_auth(private_token["token"].as_str().unwrap())
+        .send()
+        .await
+        .unwrap();
+    transcript.status(
+        "distribution.private.manifest-authenticated",
+        private_manifest.status(),
+    );
+    assert_eq!(
+        private_manifest.headers()[CACHE_CONTROL],
+        "private, no-store"
+    );
+
+    let public_slug = public
+        .db
+        .registry_by_id(public.registry_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .slug;
+    let (status, repositories, detail) = container_rpc_json(
+        &public,
+        "ListContainerRepositories",
+        serde_json::json!({"registry": public_slug, "pageSize": 20}),
+    )
+    .await;
+    transcript.status("container.repositories-list", status);
+    assert!(repositories.to_string().contains("aos"), "{detail}");
+    let (status, resolved, detail) = container_rpc_json(
+        &public,
+        "ResolveContainerTag",
+        serde_json::json!({
+            "registry": public_slug,
+            "repository": "aos",
+            "tag": "parity",
+            "operatingSystem": "linux",
+            "architecture": "amd64"
+        }),
+    )
+    .await;
+    transcript.status("container.tag-resolve", status);
+    assert_eq!(
+        resolved["tag"]["digest"],
+        graph.manifest.digest.to_string(),
+        "{detail}"
+    );
+    let (status, manifest_read, detail) = container_rpc_json(
+        &public,
+        "GetContainerManifest",
+        serde_json::json!({
+            "registry": public_slug,
+            "repository": "aos",
+            "digest": graph.manifest.digest
+        }),
+    )
+    .await;
+    transcript.status("container.manifest-get", status);
+    assert_eq!(
+        manifest_read["manifest"]["digest"],
+        graph.manifest.digest.to_string(),
+        "{detail}"
+    );
+    let (status, referrer_read, detail) = container_rpc_json(
+        &public,
+        "ListContainerReferrers",
+        serde_json::json!({
+            "registry": public_slug,
+            "repository": "aos",
+            "subjectDigest": graph.manifest.digest,
+            "pageSize": 20
+        }),
+    )
+    .await;
+    transcript.status("container.referrers-list", status);
+    assert!(
+        referrer_read
+            .to_string()
+            .contains(&referrer_digest.to_string()),
+        "{detail}"
+    );
+    let (status, _, _) = container_rpc_json(
+        &public,
+        "ListContainerPublications",
+        serde_json::json!({"registry": public_slug, "repository": "aos", "pageSize": 20}),
+    )
+    .await;
+    transcript.status("container.publications-list", status);
+    let (status, _, _) = container_rpc_json(
+        &public,
+        "BeginContainerPublication",
+        serde_json::json!({
+            "registry": public_slug,
+            "repository": "aos",
+            "containerReleaseJson": base64::engine::general_purpose::STANDARD.encode(b"{}"),
+            "targetTag": "invalid-release",
+            "idempotencyKey": "native-parity-invalid-publication",
+            "targetKind": "release"
+        }),
+    )
+    .await;
+    transcript.status("container.publication-invalid-release", status);
+    let (status, tag_plan, detail) = container_rpc_json(
+        &public,
+        "PlanSetContainerTag",
+        serde_json::json!({
+            "registry": public_slug,
+            "repository": "aos",
+            "tag": "promoted",
+            "targetDigest": graph.manifest.digest,
+            "idempotencyKey": "native-parity-tag-plan"
+        }),
+    )
+    .await;
+    transcript.status("container.tag-plan", status);
+    let plan = &tag_plan["plan"];
+    assert!(
+        plan["planId"].is_string() && plan["confirmationHash"].is_string(),
+        "{detail}"
+    );
+    let (status, tag, detail) = container_rpc_json(
+        &public,
+        "SetContainerTag",
+        serde_json::json!({
+            "planId": plan["planId"],
+            "idempotencyKey": "native-parity-tag-apply",
+            "confirmationHash": plan["confirmationHash"]
+        }),
+    )
+    .await;
+    transcript.status("container.tag-apply", status);
+    assert_eq!(tag["tag"]["tag"], "promoted", "{detail}");
+    let (status, retention, _) = container_rpc_json(
+        &public,
+        "GetContainerRetentionPolicy",
+        serde_json::json!({"registry": public_slug}),
+    )
+    .await;
+    transcript.status("container.retention-get", status);
+    let policy_version = retention["policy"]["resourceVersion"]
+        .as_str()
+        .unwrap_or("0");
+    let (status, gc_plan, detail) = container_rpc_json(
+        &public,
+        "PlanRunContainerGc",
+        serde_json::json!({
+            "registry": public_slug,
+            "expectedResourceVersion": policy_version,
+            "idempotencyKey": "native-parity-gc-plan"
+        }),
+    )
+    .await;
+    transcript.status("container.gc-plan", status);
+    let run_id = gc_plan["run"]["runId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("GC plan omitted run identity: {detail}"));
+    assert_eq!(gc_plan["run"]["state"], "failed", "{detail}");
+    assert!(
+        gc_plan["blockers"]
+            .as_array()
+            .is_some_and(|value| !value.is_empty()),
+        "{detail}"
+    );
+    let (status, gc_status, detail) = container_rpc_json(
+        &public,
+        "GetContainerGcRun",
+        serde_json::json!({"registry": public_slug, "runId": run_id}),
+    )
+    .await;
+    transcript.status("container.gc-status", status);
+    assert_eq!(gc_status["run"]["runId"], run_id, "{detail}");
+    let (status, blockers, detail) = container_rpc_json(
+        &public,
+        "ListContainerGcBlockers",
+        serde_json::json!({"registry": public_slug, "runId": run_id}),
+    )
+    .await;
+    transcript.status("container.gc-blockers", status);
+    assert!(
+        blockers["blockers"]
+            .as_array()
+            .is_some_and(|value| !value.is_empty()),
+        "{detail}"
+    );
+
+    transcript.finish();
+    let hold_seconds = std::env::var("AOS_OCI_TRANSCRIPT_HOLD_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or_default()
+        .min(1_800);
+    if hold_seconds > 0 {
+        let endpoints = serde_json::json!({
+            "public": {
+                "origin": public.origin,
+                "tag": format!("{}/aos:parity", public.authority),
+                "digest": format!("{}/aos@{}", public.authority, graph.manifest.digest),
+                "username": public.docker_username,
+                "password": public.docker_password,
+            },
+            "private": {
+                "origin": private.origin,
+                "tag": format!("{}/aos:latest", private.authority),
+                "digest": format!("{}/aos@{}", private.authority, private.image.root.digest),
+                "username": private.docker_username,
+                "password": private.docker_password,
+            },
+            "holdSeconds": hold_seconds,
+        });
+        println!("AOS_OCI_TRANSCRIPT_ENDPOINTS={endpoints}");
+        if let Ok(path) = std::env::var("AOS_OCI_TRANSCRIPT_ENDPOINTS_FILE") {
+            fs::write(path, to_canonical_json(&endpoints).unwrap()).unwrap();
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(hold_seconds)).await;
+    }
 }
 
 fn count_regular_files(path: &Path) -> usize {

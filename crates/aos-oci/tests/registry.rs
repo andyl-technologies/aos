@@ -36,7 +36,7 @@ struct RegistryState {
     interrupt_blob_once: AtomicBool,
     stall_blob_once: AtomicBool,
     fail_patch_once: AtomicBool,
-    fail_cancel_once: AtomicBool,
+    cancel_failures_remaining: AtomicU64,
     stall_patch_once: AtomicBool,
     invalid_ack_once: AtomicBool,
     delay_tag_once: AtomicBool,
@@ -861,8 +861,9 @@ async fn digest_delete_and_upload_cancellation_retries_transient_unavailability(
         .expect_err("interrupted upload fixture");
     registry
         .state
-        .fail_cancel_once
-        .store(true, Ordering::SeqCst);
+        .cancel_failures_remaining
+        .store(8, Ordering::SeqCst);
+    let cancellation_started = std::time::Instant::now();
     assert_eq!(
         client
             .cancel_uploads(
@@ -873,6 +874,10 @@ async fn digest_delete_and_upload_cancellation_retries_transient_unavailability(
             .await
             .expect("cancel upload"),
         1
+    );
+    assert!(
+        cancellation_started.elapsed() >= std::time::Duration::from_secs(2),
+        "fixture must exceed the former short cancellation retry budget"
     );
     assert_eq!(
         client
@@ -894,7 +899,7 @@ async fn digest_delete_and_upload_cancellation_retries_transient_unavailability(
             .iter()
             .filter(|event| event.starts_with("DELETE:/v2/aos/blobs/uploads/"))
             .count(),
-        2
+        9
     );
 
     client
@@ -923,6 +928,72 @@ async fn digest_delete_and_upload_cancellation_retries_transient_unavailability(
             .lock()
             .expect("manifests")
             .contains_key(&digest.to_string())
+    );
+}
+
+#[tokio::test]
+async fn upload_cancellation_stops_at_the_retry_deadline_and_preserves_its_checkpoint() {
+    let fixture = support::fixture();
+    let registry = spawn_registry(None, false, true, false).await;
+    let client = RegistryClient::new(&registry.reference, Some(&registry.origin), None)
+        .expect("registry client");
+    let state_directory = tempfile::tempdir().expect("upload state");
+    let upload_state = state_directory.path().join("uploads");
+    let options = PushOptions {
+        source: fixture.root().to_path_buf(),
+        platform: PlatformSelector::parse("linux/amd64").expect("platform"),
+        state_directory: upload_state.clone(),
+        chunk_bytes: 11,
+        cancellation: CancellationToken::new(),
+        events: None,
+    };
+    client
+        .push(&registry.reference, &options)
+        .await
+        .expect_err("interrupted upload fixture");
+    assert!(
+        fs::read_dir(&upload_state)
+            .expect("upload-state directory")
+            .any(|entry| entry
+                .expect("upload-state entry")
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "json")),
+        "interrupted upload must leave a durable checkpoint"
+    );
+
+    registry
+        .state
+        .cancel_failures_remaining
+        .store(u64::MAX, Ordering::SeqCst);
+    let cancellation_started = std::time::Instant::now();
+    let error = client
+        .cancel_uploads(
+            &registry.reference,
+            &upload_state,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect_err("persistent unavailability must stop at the retry deadline");
+    assert!(
+        error
+            .to_string()
+            .contains("upload cancellation retry window elapsed"),
+        "unexpected deadline error: {error:#}"
+    );
+    assert!(
+        cancellation_started.elapsed() >= std::time::Duration::from_secs(7),
+        "cancellation must retain the bounded retry opportunity"
+    );
+    assert!(
+        fs::read_dir(&upload_state)
+            .expect("upload-state directory after deadline")
+            .any(|entry| entry
+                .expect("upload-state entry after deadline")
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "json")),
+        "deadline failure must preserve the upload checkpoint"
     );
 }
 
@@ -1379,7 +1450,7 @@ async fn spawn_registry(
         interrupt_blob_once: AtomicBool::new(interrupt_blob_once),
         stall_blob_once: AtomicBool::new(false),
         fail_patch_once: AtomicBool::new(fail_patch_once),
-        fail_cancel_once: AtomicBool::new(false),
+        cancel_failures_remaining: AtomicU64::new(0),
         stall_patch_once: AtomicBool::new(false),
         invalid_ack_once: AtomicBool::new(false),
         delay_tag_once: AtomicBool::new(false),
@@ -1818,7 +1889,13 @@ async fn upload_response(
             .expect("final upload response");
     }
     if method == Method::DELETE {
-        if state.fail_cancel_once.swap(false, Ordering::SeqCst) {
+        if state
+            .cancel_failures_remaining
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
             return response(StatusCode::SERVICE_UNAVAILABLE, Body::empty());
         }
         state

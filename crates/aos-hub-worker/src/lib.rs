@@ -2637,6 +2637,9 @@ mod entry {
                     let body = req.bytes().await.unwrap_or_default();
                     return self.e2e_managed_registry_bootstrap(&body).await;
                 }
+                if req.method() == Method::Post && path == "/_e2e/rescan-image-cache" {
+                    return self.e2e_rescan_image_cache().await;
+                }
             }
             // Seal-gated control-plane (RFC-0004 ch.14 Phase E). Background
             // queue isolates use `/_internal/sql` for short database operations;
@@ -2829,6 +2832,35 @@ mod entry {
 
     #[cfg(feature = "do-e2e")]
     impl HubDb {
+        /// Publishes a complete inventory for the cache populated by the live driver.
+        async fn e2e_rescan_image_cache(&self) -> Result<Response> {
+            let db = aos_hub_core::db::Database::attach(Box::new(
+                crate::sqldobackend::SqlDoBackend::new(self.state.storage()),
+            ));
+            let cache = db
+                .binary_cache_by_slug("flat-cache")
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!("image cache inventory: {error:#}"))
+                })?
+                .ok_or_else(|| {
+                    worker::Error::RustError("image cache fixture is missing".to_string())
+                })?;
+            let provider =
+                crate::e2e_surface::DoE2eSurfaceProvider::new(self.state.storage().sql()).map_err(
+                    |error| worker::Error::RustError(format!("image cache provider: {error:#}")),
+                )?;
+            let stats = aos_hub_core::cache_scan::rescan_cache(&db, &provider, &cache)
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!("image cache rescan: {error:#}"))
+                })?;
+            Response::ok(format!(
+                "added={} removed={} unchanged={}",
+                stats.added, stats.removed, stats.unchanged
+            ))
+        }
+
         /// Installs the disposable topology and returns an authenticated token.
         ///
         /// # Errors
@@ -2851,6 +2883,31 @@ mod entry {
                 .map_err(|error| {
                     worker::Error::RustError(format!("topology fixture: {error:#}"))
                 })?;
+            // The signed system-image fixture advertises this cache to
+            // anonymous clients. Keep the topology fixture's write authority,
+            // but qualify the public read policy before its route snapshot is
+            // created below.
+            let image_cache = db
+                .binary_cache_by_slug("flat-cache")
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!("image cache fixture: {error:#}"))
+                })?
+                .ok_or_else(|| {
+                    worker::Error::RustError("image cache fixture is missing".to_string())
+                })?;
+            db.update_binary_cache(
+                image_cache.id,
+                &image_cache.name,
+                "public",
+                image_cache.priority,
+                &image_cache.compression,
+                image_cache.want_mass_query,
+            )
+            .await
+            .map_err(|error| {
+                worker::Error::RustError(format!("public image cache fixture: {error:#}"))
+            })?;
             for (surface, placement_id, slug) in [
                 (
                     aos_hub_core::db::SurfaceTarget::BinaryCache(2),
@@ -2879,11 +2936,26 @@ mod entry {
                         worker::Error::RustError(format!("fixture route: {error:#}"))
                     })?;
             }
+            for (registry_id, placement_id, port, access_policy_kind) in
+                [(2, 4, 8799, "public"), (1, 2, 8800, "hub_auth")]
+            {
+                crate::e2e_surface::configure_oci_route(
+                    &db,
+                    registry_id,
+                    placement_id,
+                    port,
+                    access_policy_kind,
+                )
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!("fixture OCI route: {error:#}"))
+                })?;
+            }
             let image_fixture = crate::e2e_surface::decode_producer_surface_fixture(
                 producer_surface,
             )
             .map_err(|error| worker::Error::RustError(format!("producer fixture: {error:#}")))?;
-            let image_fixture =
+            let _image_fixture =
                 crate::e2e_surface::DoE2eSurfaceProvider::new(self.state.storage().sql())
                     .map_err(|error| worker::Error::RustError(format!("image surface: {error:#}")))?
                     .install_signed_image_fixtures(&db, image_fixture)
@@ -2901,9 +2973,9 @@ mod entry {
                 .await
                 .map_err(|error| worker::Error::RustError(format!("image GC roots: {error:#}")))?
                 .len();
-            if gc_root_count != 4 {
+            if gc_root_count != 0 {
                 return Err(worker::Error::RustError(format!(
-                    "apr image publication produced {gc_root_count} GC roots, expected 4"
+                    "store-backed apr image publication produced {gc_root_count} direct-object GC roots"
                 )));
             }
             // Materialize topology setup events before installing the webhook.
@@ -2970,6 +3042,18 @@ mod entry {
             db.grant_membership("user", user_id, "instance", Role::Owner.as_str())
                 .await
                 .map_err(|error| worker::Error::RustError(format!("e2e grant: {error:#}")))?;
+            let (docker_username, docker_password) = db
+                .create_token(
+                    Principal::user(user_id),
+                    "instance",
+                    &[Permission::Read, Permission::Publish],
+                    Some("workerd OCI parity Docker credential"),
+                    None,
+                )
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!("e2e Docker credential: {error:#}"))
+                })?;
             let session = db
                 .create_session(user_id, 3_600, 0)
                 .await
@@ -2994,9 +3078,13 @@ mod entry {
             Response::from_json(&serde_json::json!({
                 "token": token,
                 "session": session,
-                "raw_key": image_fixture.raw_key,
-                "qcow2_key": image_fixture.qcow2_key,
                 "gc_root_count": gc_root_count,
+                "docker_username": docker_username,
+                "docker_password": docker_password,
+                "oci_public_base": "http://127.0.0.1:8799",
+                "oci_public_registry": "flat-registry",
+                "oci_private_base": "http://127.0.0.1:8800",
+                "oci_private_registry": "failure/registry",
             }))
         }
     }

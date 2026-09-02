@@ -22,8 +22,8 @@ use crate::db::{
 use crate::dialect::Dialect;
 
 #[test]
-fn v23_schema_contains_transactional_gc_evidence_and_fences() {
-    let migration = MIGRATIONS.get(22).expect("v23 migration is present");
+fn v25_schema_contains_transactional_gc_evidence_and_fences() {
+    let migration = MIGRATIONS.get(24).expect("v25 migration is present");
     for table in [
         "oci_provider_inventory_generations",
         "oci_provider_inventory_entries",
@@ -39,7 +39,7 @@ fn v23_schema_contains_transactional_gc_evidence_and_fences() {
     ] {
         assert!(
             migration.contains(&format!("CREATE TABLE {table}")),
-            "v23 omits {table}"
+            "v25 omits {table}"
         );
     }
     assert!(migration.contains("UNIQUE(placement_id, active_slot)"));
@@ -47,8 +47,8 @@ fn v23_schema_contains_transactional_gc_evidence_and_fences() {
 }
 
 #[test]
-fn v24_schema_contains_review_remediation_authorities() {
-    let migration = MIGRATIONS.get(23).expect("v24 migration is present");
+fn v26_schema_contains_review_remediation_authorities() {
+    let migration = MIGRATIONS.get(25).expect("v26 migration is present");
     for identity in [
         "unreferenced_since",
         "oci_registry_purge_fences",
@@ -57,30 +57,30 @@ fn v24_schema_contains_review_remediation_authorities() {
         "oci_untracked_repair_plans",
         "oci_untracked_repair_evidence",
     ] {
-        assert!(migration.contains(identity), "v24 omits {identity}");
+        assert!(migration.contains(identity), "v26 omits {identity}");
     }
 }
 
 #[test]
-fn v24_schema_statements_translate_for_postgres_and_mysql() {
-    let migration = MIGRATIONS.get(23).expect("v24 migration is present");
+fn v26_schema_statements_translate_for_postgres_and_mysql() {
+    let migration = MIGRATIONS.get(25).expect("v26 migration is present");
     for dialect in [Dialect::Postgres, Dialect::Mysql] {
         for sql in crate::backend::split_statements(migration) {
             dialect
                 .translate(&sql)
-                .unwrap_or_else(|error| panic!("{dialect:?} rejected v24 SQL: {error:#}"));
+                .unwrap_or_else(|error| panic!("{dialect:?} rejected v26 SQL: {error:#}"));
         }
     }
 }
 
 #[test]
-fn v23_schema_statements_translate_for_postgres_and_mysql() {
-    let migration = MIGRATIONS.get(22).expect("v23 migration is present");
+fn v25_schema_statements_translate_for_postgres_and_mysql() {
+    let migration = MIGRATIONS.get(24).expect("v25 migration is present");
     for statement in crate::backend::split_statements(migration) {
         for dialect in [Dialect::Postgres, Dialect::Mysql] {
             dialect
                 .translate(&statement)
-                .unwrap_or_else(|error| panic!("{dialect:?} rejected v23 SQL: {error:#}"));
+                .unwrap_or_else(|error| panic!("{dialect:?} rejected v25 SQL: {error:#}"));
         }
     }
 }
@@ -2085,17 +2085,17 @@ async fn snapshot_lease_acquisition_cannot_race_an_applying_candidate() {
 }
 
 #[tokio::test]
-async fn v23_concurrent_start_from_v22_applies_once_and_reopens() {
+async fn v25_concurrent_start_from_v24_applies_once_and_reopens() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("v22-to-v23.db");
+    let path = directory.path().join("v24-to-v25.db");
     let connection = rusqlite::Connection::open(&path).unwrap();
-    for migration in &MIGRATIONS[..22] {
+    for migration in &MIGRATIONS[..24] {
         connection.execute_batch(migration).unwrap();
     }
     connection
         .execute_batch(
             "CREATE TABLE schema_version(version INTEGER NOT NULL);
-             INSERT INTO schema_version(version) VALUES(22);",
+             INSERT INTO schema_version(version) VALUES(24);",
         )
         .unwrap();
     drop(connection);
@@ -2112,7 +2112,7 @@ async fn v23_concurrent_start_from_v22_applies_once_and_reopens() {
         .unwrap()
         .get(0)
         .unwrap();
-    assert_eq!(version, 24);
+    assert_eq!(version, 26);
 }
 
 #[tokio::test]

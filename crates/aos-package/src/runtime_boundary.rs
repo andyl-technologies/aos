@@ -8,11 +8,12 @@
 
 use std::ffi::OsStr;
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 
 use crate::{
     AttestCommand, BranchCommand, CacheCommand, ChangeCommand, ChannelCommand, CredentialCommand,
-    KeysCommand, OriginCommand, PackageCommand, RegistryCommand, SbCertsCommand, StoreCommand,
+    DocumentationCacheCommand, DocumentationCommand, KeysCommand, OptionsCommand, OriginCommand,
+    PackageCommand, RegistryCommand, RuntimeConfigCommand, SbCertsCommand, StoreCommand,
     TrustCommand,
 };
 
@@ -121,6 +122,9 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
             ..
         } => *system || *image || *kexec || *reboot || *live || *drain,
         PackageCommand::Registry { system, .. } => *system,
+        PackageCommand::Docs { command } => documentation_requires_host_runtime(command),
+        PackageCommand::Options { command } => options_require_host_runtime(command),
+        PackageCommand::Schema { system, .. } => *system,
         PackageCommand::Attest { command } => match command {
             AttestCommand::Quote { .. } | AttestCommand::VerifyBootCommit { .. } => true,
             AttestCommand::Verify { system, .. } | AttestCommand::Catalog { system, .. } => *system,
@@ -139,6 +143,7 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         | PackageCommand::Credential(_) => false,
         PackageCommand::ActivatePreEtcSwap { .. }
         | PackageCommand::ActivatePostEtcSwap { .. }
+        | PackageCommand::ActivateRestoreRoutedSources { .. }
         | PackageCommand::RecoverCredentialTransactions
         | PackageCommand::TestSystemdClient { .. }
         | PackageCommand::TestReconcileExposedUnits { .. }
@@ -149,6 +154,7 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         | PackageCommand::Materialize { .. }
         | PackageCommand::ActivateConfig { .. }
         | PackageCommand::Switch { .. }
+        | PackageCommand::Config { .. }
         | PackageCommand::Fetch { .. }
         | PackageCommand::RenderOne { .. }
         | PackageCommand::GraphCompile { .. } => true,
@@ -174,6 +180,9 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::Orphans { .. }
         | PackageCommand::Verify { .. }
         | PackageCommand::TestVerifyPackageAttestation { .. } => true,
+        PackageCommand::Docs { command } => documentation_is_read_only(command),
+        PackageCommand::Options { .. } | PackageCommand::Schema { .. } => true,
+        PackageCommand::Config { command } => runtime_config_is_read_only(command),
         PackageCommand::Source { fetch, verify, .. } => !*fetch && !*verify,
         PackageCommand::Rollback { list, .. } => *list,
         PackageCommand::Attest { command } => matches!(
@@ -197,6 +206,7 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::Gc
         | PackageCommand::ActivatePreEtcSwap { .. }
         | PackageCommand::ActivatePostEtcSwap { .. }
+        | PackageCommand::ActivateRestoreRoutedSources { .. }
         | PackageCommand::RecoverCredentialTransactions
         | PackageCommand::TestSystemdClient { .. }
         | PackageCommand::TestReconcileExposedUnits { .. }
@@ -211,6 +221,56 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::RenderOne { .. }
         | PackageCommand::GraphCompile { .. } => false,
     }
+}
+
+fn documentation_requires_host_runtime(command: &DocumentationCommand) -> bool {
+    match command {
+        DocumentationCommand::Search { system, .. }
+        | DocumentationCommand::Show { system, .. }
+        | DocumentationCommand::Man { system, .. }
+        | DocumentationCommand::Lsp { system, .. }
+        | DocumentationCommand::Serve { system, .. } => *system,
+        DocumentationCommand::Cache { command } => match command {
+            DocumentationCacheCommand::Status { system }
+            | DocumentationCacheCommand::Gc { system } => *system,
+        },
+        DocumentationCommand::Schema { .. } => false,
+    }
+}
+
+fn options_require_host_runtime(command: &OptionsCommand) -> bool {
+    match command {
+        OptionsCommand::Search { system, .. }
+        | OptionsCommand::Show { system, .. }
+        | OptionsCommand::Complete { system, .. } => *system,
+        OptionsCommand::Compare { .. } => false,
+    }
+}
+
+fn documentation_is_read_only(command: &DocumentationCommand) -> bool {
+    match command {
+        DocumentationCommand::Search { .. }
+        | DocumentationCommand::Schema { .. }
+        | DocumentationCommand::Lsp { .. }
+        | DocumentationCommand::Serve { .. }
+        | DocumentationCommand::Cache {
+            command: DocumentationCacheCommand::Status { .. },
+        } => true,
+        DocumentationCommand::Show { output, .. } => output.is_none(),
+        DocumentationCommand::Man { install, .. } => !*install,
+        DocumentationCommand::Cache {
+            command: DocumentationCacheCommand::Gc { .. },
+        } => false,
+    }
+}
+
+fn runtime_config_is_read_only(command: &RuntimeConfigCommand) -> bool {
+    matches!(
+        command,
+        RuntimeConfigCommand::Status { .. }
+            | RuntimeConfigCommand::List { .. }
+            | RuntimeConfigCommand::Diff { .. }
+    )
 }
 
 fn registry_is_read_only(command: &RegistryCommand) -> bool {
@@ -373,13 +433,18 @@ mod tests {
         boundary
             .validate(&command(&["registry", "list"]))
             .expect("user registry query remains supported");
+        boundary
+            .validate(&command(&["docs", "search", "hello"]))
+            .expect("user documentation query remains supported");
 
         for arguments in [
             &["list", "--system"][..],
+            &["docs", "search", "hello", "--system"][..],
             &["install", "hello", "--image", "raw"][..],
             &["attest", "quote", "--nonce", "00", "--output-dir", "/tmp/q"][..],
             &["_test-systemd-client", "is-active", "a.service"][..],
             &["activate-post-etc-swap", "--plan", "/tmp/plan"][..],
+            &["activate-restore-routed-sources", "--plan", "/tmp/plan"][..],
         ] {
             let error = boundary
                 .validate(&command(arguments))
@@ -400,6 +465,7 @@ mod tests {
             &["update"][..],
             &["gc"][..],
             &["source", "hello", "--fetch"][..],
+            &["docs", "man", "hello", "--install"][..],
             &["registry", "add", "https://example.invalid/repo.git"][..],
         ] {
             let error = boundary
@@ -413,6 +479,9 @@ mod tests {
             &["show", "hello"][..],
             &["list"][..],
             &["source", "hello"][..],
+            &["docs", "search", "hello"][..],
+            &["options", "show", "services.example.enable"][..],
+            &["schema"][..],
             &["rollback", "--list"][..],
             &["registry", "list"][..],
             &["registry", "verify"][..],

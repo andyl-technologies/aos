@@ -59,6 +59,7 @@ let
     "inih"
     "jansson"
     "json-c"
+    "libatomic_ops"
     "libffi"
     "libmpc"
     "libtool"

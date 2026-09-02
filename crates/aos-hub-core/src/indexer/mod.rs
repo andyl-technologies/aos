@@ -68,8 +68,8 @@ use sha2::{Digest, Sha256};
 use crate::db::{
     ChannelSummary, ContainerReleaseClosureMemberSnapshot, ContainerReleaseDescriptorRole,
     ContainerReleaseEvidenceSnapshot, ContainerReleaseLayerSnapshot, ContainerReleaseRootSnapshot,
-    Database, IndexOciRepositoryCatalog, IndexSnapshot, OciCatalogProjection,
-    OciImageConfigProjection, OciLayerProjection, IndexedPackageDocumentation, RegistryRecord,
+    Database, IndexOciRepositoryCatalog, IndexSnapshot, IndexedPackageDocumentation,
+    OciCatalogProjection, OciImageConfigProjection, OciLayerProjection, RegistryRecord,
     ReleaseArtifactSnapshot, ReleaseImageSnapshot, ReleaseRow, ReleaseSnapshotArtifact,
     VerifiedContainerReleaseDescriptor,
 };
@@ -521,6 +521,10 @@ async fn index_registry_inner(
         .as_ref()
         .is_some_and(|status| status.state == "fresh")
         && indexed_roster_matches(db, registry.id, &roster_rows).await?
+        // Signed container roots bind exact placement evidence. The reusable
+        // artifact projection does not rehydrate that evidence, so force the
+        // normal signed-release validation path for container registries.
+        && !db.has_container_release_catalog(registry.id).await?
     {
         reusable_release_snapshots(db, registry.id).await?
     } else {
@@ -1982,6 +1986,7 @@ async fn reusable_release_snapshots(
                     verified_tag_oid: snapshot.verified_tag_oid,
                     manifest_digest: snapshot.manifest_digest,
                     artifacts: snapshot.artifacts,
+                    container_release: None,
                 },
                 image,
             },
@@ -3525,6 +3530,7 @@ mod tests {
                     verified_tag_oid: release.tag_oid.clone(),
                     manifest_digest: manifest_digest.clone(),
                     artifacts: artifacts.clone(),
+                    container_release: None,
                 }],
                 refs_digest: Some("d".repeat(64)),
                 ..Default::default()

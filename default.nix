@@ -29,6 +29,7 @@
 {
   system ? builtins.currentSystem,
   crossSystem ? null,
+  containerPublicationInputsOverride ? null,
 }: let
   lib = import ./lib {
     inherit system;
@@ -76,8 +77,14 @@
         targetPlatform = hostPlatform;
       }
     else
-      import ./stdenv {
-        inherit buildPlatform hostPlatform;
+      import ./stdenv/linux-cross {
+        inherit
+          lib
+          buildStdenv
+          buildPackages
+          buildPlatform
+          hostPlatform
+          ;
         targetPlatform = hostPlatform;
       };
 
@@ -405,6 +412,12 @@
         inherit lib pkgs mkSystem;
         inherit (testing) dataUrl mkDarlingFleetSpec mkDarlingFleetSuite;
         systems = discoverSystems;
+        # Fleet checks consume the exact local-platform production subject and
+        # unsigned signing inputs without importing flake self recursively.
+        containerPublicationInputs =
+          if containerPublicationInputsOverride != null
+          then containerPublicationInputsOverride
+          else containerImages.aos.publicationInputs;
       };
       raw = specModule (
         lib.filterAttrs (name: _: builtins.hasAttr name (builtins.functionArgs specModule))
@@ -1168,6 +1181,9 @@ in {
       gcc-config-shell = import ./tests/build/mk-gcc-config-shell.nix {inherit pkgs lib;};
       hardening-probe = import ./tests/build/hardening-probe.nix {inherit pkgs lib;};
       kernel-config = import ./tests/build/kernel-config.nix {inherit pkgs lib;};
+      linux-cross-smoke = import ./tests/build/linux-cross-smoke.nix {
+        pkgs = buildPackages;
+      };
       package-platform-support = import ./tests/build/package-platform-support.nix {
         pkgs = buildPackages;
       };
@@ -1175,14 +1191,14 @@ in {
       systemd-verity = import ./lib/testing/systemd-verity.nix {inherit pkgs lib;};
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
     in {
-      inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix gcc-config-shell hardening-probe kernel-config package-platform-support package-root-image systemd-verity golden-image-budgets;
+      inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix gcc-config-shell hardening-probe kernel-config linux-cross-smoke package-platform-support package-root-image systemd-verity golden-image-budgets;
       # Single target that pulls in the whole build-check group.
       all = pkgs.mkDerivation {
         pname = "aos-build-checks-all";
         version = "0";
         src = null;
         buildDeps =
-          [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all gcc-config-shell kernel-config package-platform-support package-root-image systemd-verity]
+          [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all gcc-config-shell kernel-config linux-cross-smoke package-platform-support package-root-image systemd-verity]
           ++ builtins.attrValues hardening-probe
           ++ builtins.attrValues golden-image-budgets;
         phases = [
@@ -1228,7 +1244,7 @@ in {
     };
     k3s-config = import ./lib/testing/k3s-config.nix {inherit pkgs lib;};
     config-source-gc = import ./lib/testing/config-source-gc.nix {inherit pkgs lib;};
-    container = {
+    container = rec {
       phase0 = import ./tests/containers/phase0.nix {
         inherit pkgs lib;
         goldenRoots = discoverSystems.server.config.environment.systemPackages;
@@ -1271,6 +1287,19 @@ in {
         };
       };
       aos-runtime-closure = containerImages.aos.checks.runtimeAudit;
+      production-reproducibility = containerImages.aos.checks.reproducibility;
+      all = import ./tests/containers/default.nix {
+        inherit pkgs;
+        checks = [
+          phase0
+          eval
+          oci-builders
+          evidence
+          runtime
+          aos-runtime-closure
+          production-reproducibility
+        ];
+      };
     };
     config-materialize = import ./lib/testing/config-materialize.nix {inherit pkgs lib;};
     config-parity = import ./lib/testing/config-parity.nix {inherit pkgs lib;};

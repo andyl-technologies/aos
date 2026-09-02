@@ -299,15 +299,6 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
         cfg.container_rollout.administration,
         cfg.container_rollout.garbage_collection,
     ));
-    // Surface the default R2 bucket name so the console's instance-settings page
-    // can show where unbound registries/caches push (the R2 binding itself is
-    // opaque to the Worker runtime).
-    if !cfg.bucket.is_empty() {
-        vars.push_str(&format!(
-            "HUB_DEFAULT_BUCKET = {}\n",
-            toml_string(&cfg.bucket)
-        ));
-    }
     if let Some(relay) = &cfg.email_relay_url {
         vars.push_str(&format!("HUB_EMAIL_API_URL = {}\n", toml_string(relay)));
     }

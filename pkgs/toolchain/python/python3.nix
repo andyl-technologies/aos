@@ -52,7 +52,7 @@ in
         pkg-config
       ]
       ++ (
-        if isDarwinCross
+        if stdenv.isCross
         then [buildPackages.python3]
         else []
       );
@@ -94,7 +94,7 @@ in
     # closure. Fails the build if a future regression re-introduces a
     # _sysconfigdata*.py(c) or Makefile reference to the build toolchain.
     disallowedReferences =
-      if isDarwinCross
+      if stdenv.isCross
       then [
         buildPackages.gnumake
         buildPackages.pkg-config
@@ -120,6 +120,34 @@ in
         name = "configure";
         script = ''
           ${
+            if stdenv.isCross
+            then ''
+              # Configure finds the target getaddrinfo declaration and link,
+              # then cannot execute its behavioral probe from the build
+              # platform. The supported AOS Linux and Darwin targets do not
+              # have the historical buggy implementation, so preserve IPv6
+              # instead of treating cross execution failure as a target bug.
+              export ac_cv_buggy_getaddrinfo=no
+              # CPython's generic cross path cannot execute these target
+              # runtime probes. AOS Linux glibc and Darwin both provide
+              # pthreads without an extra compiler option, a conforming
+              # pthread scope implementation, working tzset semantics, and a
+              # libffi new enough for complex values.
+              export ac_cv_pthread_is_default=yes
+              export ac_cv_kthread=no
+              export ac_cv_pthread=no
+              export ac_cv_ffi_complex_double_supported=yes
+              export ac_cv_pthread_system_supported=yes
+              export ac_cv_working_tzset=yes
+              # Filesystem probes cannot inspect the target from the build
+              # platform. Both supported targets use the Unix98 PTY master
+              # and do not provide the legacy BSD /dev/ptc device.
+              export ac_cv_file__dev_ptmx=yes
+              export ac_cv_file__dev_ptc=no
+            ''
+            else ""
+          }
+          ${
             if isDarwinCross
             then ''
               # CPython maps the Darwin kernel release to its platform feature
@@ -127,30 +155,6 @@ in
               # it incorrectly define strict POSIX feature macros and hide
               # Darwin APIs such as sendfile and getpagesize.
               sed -i 's/^[[:space:]]*ac_sys_release=$/  ac_sys_release=20.0.0/' configure
-              # Configure finds the Darwin getaddrinfo declaration and link,
-              # then tries to execute its target-only behavioral probe on the
-              # Linux builder. Darwin's implementation is not the historical
-              # buggy glibc variant, so cache the target fact without dropping
-              # Python's IPv6 support.
-              export ac_cv_buggy_getaddrinfo=no
-              # Filesystem probes cannot run against the Darwin target from a
-              # Linux builder. Modern Darwin provides the Unix98 PTY master
-              # and does not use the legacy BSD /dev/ptc device.
-              export ac_cv_file__dev_ptmx=yes
-              export ac_cv_file__dev_ptc=no
-              # CPython's generic cross path deliberately assumes pthreads
-              # are unavailable unless a target program can be executed.
-              # Darwin provides pthreads directly from libSystem with no
-              # compiler or linker option, so preserve its native result.
-              export ac_cv_pthread_is_default=yes
-              export ac_cv_kthread=no
-              export ac_cv_pthread=no
-              # These are target-runtime probes. AOS libffi is newer than the
-              # first release with real complex support, and Darwin's pthread
-              # scope and tzset implementations satisfy CPython's native tests.
-              export ac_cv_ffi_complex_double_supported=yes
-              export ac_cv_pthread_system_supported=yes
-              export ac_cv_working_tzset=yes
             ''
             else ""
           }
@@ -164,7 +168,7 @@ in
             --disable-test-modules \
             --with-openssl=${openssl} \
             ${
-            if isDarwinCross
+            if stdenv.isCross
             then ''--with-build-python=${buildPackages.python3}/bin/python3''
             else ""
           }

@@ -120,6 +120,28 @@ pub enum ContainerCommand {
         #[arg(long, env = "AOS_TOKEN")]
         token: Option<String>,
     },
+    /// Emit the exact DSSE PAE bytes for an external signer
+    PrepareSignature {
+        /// Nix-generated publicationInputs directory
+        inputs: PathBuf,
+        /// Create the exact binary PAE payload at this path
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+    },
+    /// Verify an external SSHSIG and assemble the signed publication bundle
+    FinalizeSignature {
+        /// Original Nix-generated publicationInputs directory
+        inputs: PathBuf,
+        /// Exact AOS trust identity: name:Ed25519:base64-key-blob
+        #[arg(long)]
+        signer: String,
+        /// Armored SSHSIG over the exact prepared PAE bytes
+        #[arg(long)]
+        signature: PathBuf,
+        /// Atomically create the final bundle directory at this path
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+    },
     /// Finalize a complete graph from an indexed signed AOS release
     Publish {
         /// Container definition name
@@ -337,6 +359,55 @@ mod tests {
         assert_eq!(registry_token.as_deref(), Some("registry-secret"));
         assert_eq!(hub.as_deref(), Some("https://hub.example"));
         assert_eq!(token.as_deref(), Some("hub-secret"));
+    }
+
+    #[test]
+    fn parses_private_key_free_external_signing_leaves() {
+        let prepare = Cli::try_parse_from([
+            "aos",
+            "container",
+            "prepare-signature",
+            "/nix/store/publication-inputs",
+            "--output",
+            "/var/tmp/container.pae",
+        ])
+        .expect("container prepare-signature command");
+        assert!(matches!(
+            prepare.command,
+            Commands::Container {
+                command: ContainerCommand::PrepareSignature { .. }
+            }
+        ));
+
+        let finalize = Cli::try_parse_from([
+            "aos",
+            "container",
+            "finalize-signature",
+            "/nix/store/publication-inputs",
+            "--signer",
+            "release:Ed25519:AAAA",
+            "--signature",
+            "/var/tmp/container.pae.sig",
+            "--output",
+            "/var/tmp/final-container",
+        ])
+        .expect("container finalize-signature command");
+        let Commands::Container {
+            command:
+                ContainerCommand::FinalizeSignature {
+                    inputs,
+                    signer,
+                    signature,
+                    output,
+                },
+        } = finalize.command
+        else {
+            panic!("expected container finalize-signature command");
+        };
+        assert_eq!(inputs, PathBuf::from("/nix/store/publication-inputs"));
+        assert_eq!(signer, "release:Ed25519:AAAA");
+        assert_eq!(signature, PathBuf::from("/var/tmp/container.pae.sig"));
+        assert_eq!(output, PathBuf::from("/var/tmp/final-container"));
     }
 
     #[test]

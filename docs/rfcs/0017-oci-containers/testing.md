@@ -49,6 +49,59 @@ Build two synthetic manifests sharing a canonical layer and prove the shared
 blob digest is byte-identical while only the application delta, config, and
 manifest differ.
 
+The production coordinator is exposed as
+`packages.<system>.container-aos-index`. Unlike the system-local compatibility
+attribute `containerImages.aos.ociIndex`, that flake package always contains
+exactly `linux/amd64` and `linux/arm64`; evaluation never substitutes the local
+platform when one target cannot be built. The repository's toolchain performs
+the reviewed x86_64-to-aarch64 transition and schedules post-cross stages on an
+`x86_64-linux` builder, where target tools execute through the configured QEMU
+binfmt handler. Building `checks.<system>.container-multi-platform` therefore
+requires that handler (or an equivalent builder configuration); a declared
+`extra-platforms` value alone is not evidence that execution works. Flake
+evaluation and check discovery remain total without executing target binaries.
+
+Every production platform is assembled twice from equivalent inputs under
+independent derivation names. The qualification compares the OCI layout and
+archive, Docker archive, single-platform index, and evidence graph. The
+coordinator then independently recomposes and compares the two-platform index,
+combined evidence, and external-signing input bundle. The unsigned bundle is
+exposed as `packages.<system>.container-aos-publication-inputs` and contains:
+
+- `oci-layout/` and `image.oci.tar`, the exact coordinated image subject;
+- `evidence-layout/` and `evidence.oci.tar`, the unsigned OCI evidence graph;
+- `signature-input.json`, `signing-request.json`, and
+  `publication-roots.json`.
+
+It deliberately does not contain `container-release.json`. An external signer
+must add the DSSE object to a final layout and produce the canonical signed
+release sidecar. This keeps private material and claims of verified publication
+outside Nix while giving the signer and VM qualification exact production
+bytes. The focused evaluation surfaces are:
+
+```text
+nix eval path:.#packages.x86_64-linux.container-aos-index.drvPath --raw
+nix eval path:.#checks.x86_64-linux.container-multi-platform.drvPath --raw
+nix build path:.#checks.x86_64-linux.container-multi-platform --no-link -L
+```
+
+The private-key-free finalization sequence is:
+
+```text
+aos container prepare-signature PUBLICATION_INPUTS --output container-signature.pae
+ssh-keygen -Y sign -f EXTERNAL_KEY -n aos-container-signature-dsse-v1 container-signature.pae
+aos container finalize-signature PUBLICATION_INPUTS \
+  --signer 'NAME:Ed25519:BASE64_SSH_KEY_BLOB' \
+  --signature container-signature.pae.sig \
+  --output FINAL_BUNDLE
+```
+
+Only the external signer receives `EXTERNAL_KEY`. Finalization verifies the
+SSHSIG against the exact signer identity and PAE before creating staging state,
+validates the full graph, and uses a same-directory no-replace rename. Its fixed
+outputs are `FINAL_BUNDLE/layout`, `image.oci.tar`,
+`container-release.json`, and `signature-input.json`.
+
 ## Local runtime
 
 The hermetic runtime gate uses AOS-built containerd, runc, and nerdctl inside a
@@ -166,6 +219,31 @@ port, placement selection, and router. They cover:
 
 Every database migration and query is exercised by the existing SQLite,
 PostgreSQL, and MySQL dialect gate.
+
+Native and Worker qualification share
+`crates/aos-hub/tests/fixtures/oci-protocol-parity-v1.json`. The transcript
+covers Distribution discovery and token exchange, anonymous public and denied
+private reads, Basic-to-bearer private authentication, manifest/blob/tag and
+referrer reads, upload completion, and ContainerService repository, tag,
+manifest, publication, retention, and GC calls. The open-source workerd fixture
+uses SQLite plus its injected provider; it requires GC planning and blocker
+status to fail closed and deliberately does not claim R2 physical deletion.
+
+The native transcript has an opt-in bounded hold for manual Docker
+qualification. It writes machine-readable public/private tag and digest
+references plus Docker-compatible credentials while listening only on
+`127.0.0.1`:
+
+```text
+AOS_OCI_TRANSCRIPT_HOLD_SECONDS=900 \
+AOS_OCI_TRANSCRIPT_ENDPOINTS_FILE=/tmp/aos-oci-endpoints.json \
+nix develop -c cargo test --manifest-path crates/Cargo.toml \
+  -p aos-hub --test oci_distribution \
+  native_oci_protocol_transcript_matches_worker_v1 -- --exact --nocapture
+```
+
+The hold is zero by default and capped at 1,800 seconds. Hermetic tests never
+invoke a host Docker daemon.
 
 ## Hub Nix VM integration
 

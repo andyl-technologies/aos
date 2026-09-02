@@ -28,26 +28,12 @@
       }
       values).result;
 
-  closureLayers =
-    map
-    (layer:
-      oci.mkClosureLayer {
-        pname = "aos-container-${container.name}-layer-${layer.name}";
-        layerName = layer.name;
-        inherit (layer) roots subtractRoots;
-      })
-    container.layers;
-
   auditRoots = uniqueByPath (builtins.concatMap (layer: layer.roots) container.layers);
   runtimeAudit = import ../build/runtime-closure-audit.nix {
     inherit pkgs lib;
     name = "container-${container.name}";
     roots = auditRoots;
     inherit (container.budgets) maxClosureMiB maxDevelopmentPayloadMiB;
-  };
-  referenceGraph = oci.mkReferenceGraph {
-    pname = "aos-container-${container.name}-runtime-reference-graph";
-    rootPaths = auditRoots;
   };
   bakedRootInventory = pkgs.writeTextFile {
     name = "aos-container-${container.name}-baked-roots";
@@ -56,14 +42,6 @@
       + "\n";
     destination = "/baked-roots";
   };
-  facadeLayer = import ./facade-layer.nix {
-    inherit lib pkgs oci referenceGraph;
-    packageRoots = container.packageRoots;
-    explicit = container.filesystem.facade;
-    expectedCollisions = container.filesystem.allowedFacadeCollisions;
-    pname = "aos-container-${container.name}-golden-facade";
-  };
-
   configuredDirectoryPaths = map (directory: directory.path) container.filesystem.directories;
   standardDirectories =
     builtins.filter
@@ -221,117 +199,151 @@
       "dev.andyl.aos.module-abi" = toString systemIdentity.moduleAbi;
     };
 
-  metadataLayer = oci.mkRootMetadataLayer {
-    pname = "aos-container-${container.name}-root-metadata";
-    layerName = "root-metadata";
-    directories = standardDirectories ++ container.filesystem.directories;
-    files = [
-      {
-        path = "/etc/group";
-        mode = "0644";
-        text = "root:x:0:\n";
-      }
-      {
-        path = "/etc/nix/nix.conf";
-        mode = "0644";
-        text = ''
-          build-users-group =
-          experimental-features = nix-command
-          sandbox = false
-          substituters =
-        '';
-      }
-      {
-        path = "/etc/os-release";
-        mode = "0644";
-        text = osRelease;
-      }
-      {
-        path = "/etc/passwd";
-        mode = "0644";
-        text = "root:x:0:0:root:/root:/usr/bin/sh\n";
-      }
-      {
-        path = "/etc/shadow";
-        mode = "0600";
-        text = "root:!:1::::::\n";
-      }
-      {
-        path = "/aos-registration";
-        mode = "0444";
-        source = "${referenceGraph}/registration";
-      }
-      {
-        path = "/nix/var/nix/.aos-container-init.lock";
-        mode = "0600";
-        text = "";
-      }
-      {
-        path = "/usr/lib/aos-container/baked-roots";
-        mode = "0444";
-        source = "${bakedRootInventory}/baked-roots";
-      }
-      {
-        path = "/usr/lib/aos-container/store-paths";
-        mode = "0444";
-        source = "${referenceGraph}/store-paths";
-      }
-      {
-        path = "/usr/bin/aos-container-init";
-        mode = "0555";
-        source = "${initSource}/init";
-      }
-    ];
-    symlinks = compatibilitySymlinks;
-    storeLayers = closureLayers;
-  };
-
-  image = oci.mkImageLayout {
-    pname = "aos-container-${container.name}-${container.platform.architecture}";
-    layers = closureLayers ++ [facadeLayer metadataLayer];
-    inherit runtimeAudit;
-    platform = {
-      inherit (container.platform) os architecture;
-    };
-    referenceName = "${container.publication.repository}:latest";
-    annotations = releaseAnnotations;
-    indexAnnotations = releaseAnnotations;
-    config = {
-      entrypoint = container.runtime.entrypoint;
-      cmd = container.runtime.command;
-      env = container.runtime.environment;
-      user = container.runtime.user;
-      workingDir = container.runtime.workingDirectory;
-      stopSignal = container.runtime.stopSignal;
-      labels = releaseAnnotations;
-    };
-  };
-  dockerArchive = oci.mkDockerArchive {
-    pname = "aos-container-${container.name}-${container.platform.architecture}-docker";
-    inherit image;
-    references = ["${container.publication.repository}:latest"];
-  };
-  ociIndex = oci.mkMultiPlatformIndex {
-    pname = "aos-container-${container.name}-${container.platform.architecture}-index";
-    images = [image];
-    referenceName = "${container.publication.repository}:latest";
-    annotations = releaseAnnotations;
-  };
   packageEvidence = import ./package-evidence.nix {
     inherit lib pkgs;
     overrides = container.publication.evidenceOverrides;
   };
-  sourceGraph = oci.mkEvidenceSourceGraph {
-    pname = "aos-container-${container.name}-source-reference-graph";
-    inherit referenceGraph;
-    packageCatalog = packageEvidence.catalog;
-    candidateSources = packageEvidence.sourcePaths;
+
+  mkPlatformBuild = suffix: let
+    suffixPart =
+      if suffix == ""
+      then ""
+      else "-${suffix}";
+    closureLayers =
+      map
+      (layer:
+        oci.mkClosureLayer {
+          pname = "aos-container-${container.name}-layer-${layer.name}${suffixPart}";
+          layerName = layer.name;
+          inherit (layer) roots subtractRoots;
+        })
+      container.layers;
+    referenceGraph = oci.mkReferenceGraph {
+      pname = "aos-container-${container.name}-runtime-reference-graph${suffixPart}";
+      rootPaths = auditRoots;
+    };
+    facadeLayer = import ./facade-layer.nix {
+      inherit lib pkgs oci referenceGraph;
+      packageRoots = container.packageRoots;
+      explicit = container.filesystem.facade;
+      expectedCollisions = container.filesystem.allowedFacadeCollisions;
+      pname = "aos-container-${container.name}-golden-facade${suffixPart}";
+    };
+    metadataLayer = oci.mkRootMetadataLayer {
+      pname = "aos-container-${container.name}-root-metadata${suffixPart}";
+      layerName = "root-metadata";
+      directories = standardDirectories ++ container.filesystem.directories;
+      files = [
+        {
+          path = "/etc/group";
+          mode = "0644";
+          text = "root:x:0:\n";
+        }
+        {
+          path = "/etc/nix/nix.conf";
+          mode = "0644";
+          text = ''
+            build-users-group =
+            experimental-features = nix-command
+            sandbox = false
+            substituters =
+          '';
+        }
+        {
+          path = "/etc/os-release";
+          mode = "0644";
+          text = osRelease;
+        }
+        {
+          path = "/etc/passwd";
+          mode = "0644";
+          text = "root:x:0:0:root:/root:/usr/bin/sh\n";
+        }
+        {
+          path = "/etc/shadow";
+          mode = "0600";
+          text = "root:!:1::::::\n";
+        }
+        {
+          path = "/aos-registration";
+          mode = "0444";
+          source = "${referenceGraph}/registration";
+        }
+        {
+          path = "/nix/var/nix/.aos-container-init.lock";
+          mode = "0600";
+          text = "";
+        }
+        {
+          path = "/usr/lib/aos-container/baked-roots";
+          mode = "0444";
+          source = "${bakedRootInventory}/baked-roots";
+        }
+        {
+          path = "/usr/lib/aos-container/store-paths";
+          mode = "0444";
+          source = "${referenceGraph}/store-paths";
+        }
+        {
+          path = "/usr/bin/aos-container-init";
+          mode = "0555";
+          source = "${initSource}/init";
+        }
+      ];
+      symlinks = compatibilitySymlinks;
+      storeLayers = closureLayers;
+    };
+    image = oci.mkImageLayout {
+      pname = "aos-container-${container.name}-${container.platform.architecture}${suffixPart}";
+      layers = closureLayers ++ [facadeLayer metadataLayer];
+      inherit runtimeAudit;
+      platform = {
+        inherit (container.platform) os architecture;
+      };
+      referenceName = "${container.publication.repository}:latest";
+      annotations = releaseAnnotations;
+      indexAnnotations = releaseAnnotations;
+      config = {
+        entrypoint = container.runtime.entrypoint;
+        cmd = container.runtime.command;
+        env = container.runtime.environment;
+        user = container.runtime.user;
+        workingDir = container.runtime.workingDirectory;
+        stopSignal = container.runtime.stopSignal;
+        labels = releaseAnnotations;
+      };
+    };
+    dockerArchive = oci.mkDockerArchive {
+      pname = "aos-container-${container.name}-${container.platform.architecture}-docker${suffixPart}";
+      inherit image;
+      references = ["${container.publication.repository}:latest"];
+    };
+    ociIndex = oci.mkMultiPlatformIndex {
+      pname = "aos-container-${container.name}-${container.platform.architecture}-index${suffixPart}";
+      images = [image];
+      referenceName = "${container.publication.repository}:latest";
+      annotations = releaseAnnotations;
+    };
+    sourceGraph = oci.mkEvidenceSourceGraph {
+      pname = "aos-container-${container.name}-source-reference-graph${suffixPart}";
+      inherit referenceGraph;
+      packageCatalog = packageEvidence.catalog;
+      candidateSources = packageEvidence.sourcePaths;
+    };
+  in {
+    inherit closureLayers referenceGraph facadeLayer metadataLayer image dockerArchive ociIndex sourceGraph;
   };
-  mkEvidence = pname:
+  primary = mkPlatformBuild "";
+  repeat = mkPlatformBuild "repeat";
+
+  mkEvidence = {
+    pname,
+    platformBuild,
+  }:
     oci.mkEvidenceLayout {
       inherit pname;
-      image = ociIndex;
-      inherit referenceGraph sourceGraph closureLayers;
+      image = primary.ociIndex;
+      inherit (platformBuild) referenceGraph sourceGraph closureLayers;
       packageCatalog = packageEvidence.catalog;
       definitionAttribute = "containerImages.${container.name}";
       releaseIdentity = container.publication.releaseIdentity;
@@ -339,8 +351,94 @@
       packageVersion = pkgs.aos.version;
       imageName = container.name;
     };
-  evidence = mkEvidence "aos-container-${container.name}-evidence";
-  evidenceRepeat = mkEvidence "aos-container-${container.name}-evidence-repeat";
+  evidence = mkEvidence {
+    pname = "aos-container-${container.name}-evidence";
+    platformBuild = primary;
+  };
+  evidenceRepeat = mkEvidence {
+    pname = "aos-container-${container.name}-evidence-repeat";
+    platformBuild = repeat;
+  };
+  publicationInputs = import ./publication-inputs.nix {
+    inherit pkgs;
+    pname = "aos-container-${container.name}-${container.platform.architecture}-publication-inputs";
+    index = primary.ociIndex;
+    evidenceLayout = evidence;
+  };
+  publicationInputsRepeat = import ./publication-inputs.nix {
+    inherit pkgs;
+    pname = "aos-container-${container.name}-${container.platform.architecture}-publication-inputs-repeat";
+    index = repeat.ociIndex;
+    evidenceLayout = evidenceRepeat;
+  };
+  reproducibility = pkgs.mkDerivation {
+    pname = "aos-container-${container.name}-${container.platform.architecture}-reproducibility";
+    version = "1";
+    src = null;
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.diffutils
+      pkgs.jq
+      primary.image
+      repeat.image
+      primary.dockerArchive
+      repeat.dockerArchive
+      primary.ociIndex
+      repeat.ociIndex
+      evidence
+      evidenceRepeat
+      publicationInputs
+      publicationInputsRepeat
+    ];
+    outputChecks.out = {};
+    unsafeDiscardReferences.out = true;
+    phases = [
+      {
+        name = "qualify";
+        script = ''
+          set -eu
+          export LC_ALL=C
+          mkdir -p "$out"
+
+          diff -r ${primary.image} ${repeat.image}
+          cmp ${primary.image}/image.oci.tar ${repeat.image}/image.oci.tar
+          diff -r ${primary.dockerArchive} ${repeat.dockerArchive}
+          cmp ${primary.dockerArchive}/image.docker.tar ${repeat.dockerArchive}/image.docker.tar
+          diff -r ${primary.ociIndex} ${repeat.ociIndex}
+          cmp ${primary.ociIndex}/image.oci.tar ${repeat.ociIndex}/image.oci.tar
+          diff -r ${evidence} ${evidenceRepeat}
+          cmp ${evidence}/evidence.oci.tar ${evidenceRepeat}/evidence.oci.tar
+          diff -r ${publicationInputs} ${publicationInputsRepeat}
+
+          jq -S -n \
+            --arg schema 'aos.container.production-reproducibility/v1' \
+            --arg system ${lib.escapeShellArg container.platform.aosSystem} \
+            --arg architecture ${lib.escapeShellArg container.platform.architecture} \
+            --arg ociArchiveSha256 "$(sha256sum ${primary.image}/image.oci.tar | cut -d ' ' -f 1)" \
+            --arg dockerArchiveSha256 "$(sha256sum ${primary.dockerArchive}/image.docker.tar | cut -d ' ' -f 1)" \
+            --arg indexSha256 "$(sha256sum ${primary.ociIndex}/image-index.json | cut -d ' ' -f 1)" \
+            --arg evidenceArchiveSha256 "$(sha256sum ${evidence}/evidence.oci.tar | cut -d ' ' -f 1)" \
+            '{
+              schema: $schema,
+              platform: {aosSystem: $system, architecture: $architecture},
+              comparisons: {
+                ociLayoutAndArchive: true,
+                dockerArchive: true,
+                index: true,
+                evidence: true
+              },
+              sha256: {
+                ociArchive: $ociArchiveSha256,
+                dockerArchive: $dockerArchiveSha256,
+                index: $indexSha256,
+                evidenceArchive: $evidenceArchiveSha256
+              }
+            }' > "$out/evidence.json"
+        '';
+      }
+    ];
+    meta.description = "Independent production container byte reproducibility for ${container.platform.aosSystem}";
+  };
 
   metadataSpec = {
     schema = "aos.container.definition/v1";
@@ -387,12 +485,45 @@ in {
   config = container;
   definition = metadataSpec;
   platforms.${container.platform.aosSystem} = {
-    ociLayout = image;
-    ociArchive = image;
-    inherit dockerArchive metadata image evidence;
+    ociLayout = primary.image;
+    ociArchive = primary.image;
+    dockerArchive = primary.dockerArchive;
+    image = primary.image;
+    inherit metadata evidence;
+    inherit publicationInputs;
   };
-  inherit ociIndex evidence;
+  ociIndex = primary.ociIndex;
+  inherit evidence publicationInputs;
+  qualification = {
+    primaryImage = primary.image;
+    repeatImage = repeat.image;
+    primaryDockerArchive = primary.dockerArchive;
+    repeatDockerArchive = repeat.dockerArchive;
+    primaryIndex = primary.ociIndex;
+    repeatIndex = repeat.ociIndex;
+    inherit evidence evidenceRepeat publicationInputs publicationInputsRepeat reproducibility;
+    evidenceInputs = {
+      inherit auditRoots;
+      primaryClosureLayers = primary.closureLayers;
+      repeatClosureLayers = repeat.closureLayers;
+      packageCatalog = packageEvidence.catalog;
+      candidateSources = packageEvidence.sourcePaths;
+    };
+  };
+  coordination = {
+    inherit (container) name;
+    inherit (container.publication) repository releaseIdentity;
+    inherit (container.platform) aosSystem os architecture;
+    packageName = pkgs.aos.pname;
+    packageVersion = pkgs.aos.version;
+    definitionAttribute = "containerImages.${container.name}";
+    indexAnnotations = builtins.removeAttrs releaseAnnotations ["dev.andyl.aos.system"];
+  };
   checks = {
-    inherit runtimeAudit referenceGraph sourceGraph facadeLayer metadataLayer evidence evidenceRepeat;
+    inherit runtimeAudit evidence evidenceRepeat reproducibility;
+    referenceGraph = primary.referenceGraph;
+    sourceGraph = primary.sourceGraph;
+    facadeLayer = primary.facadeLayer;
+    metadataLayer = primary.metadataLayer;
   };
 }
