@@ -1,5 +1,14 @@
-{mkDerivation, fetchurl, m4, flex, bison, autoconf, automake, texinfo, gnumake}:
-let
+{
+  mkDerivation,
+  fetchurl,
+  m4,
+  flex,
+  bison,
+  autoconf,
+  automake,
+  texinfo,
+  gnumake,
+}: let
   version = "2.7.6";
 in
   mkDerivation {
