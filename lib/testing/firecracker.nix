@@ -153,6 +153,7 @@
     initScriptFile = pkgs.writeTextFile {
       name = "fc-init-${pname}";
       text = initScript;
+      destination = "/init";
       executable = true;
     };
   in
@@ -363,7 +364,7 @@
                         # Install the generated init script. It is materialized
                         # separately so large lifecycle tests never become one
                         # oversized argument to this derivation's builder.
-                        cp ${initScriptFile} rootfs/init
+                        cp ${initScriptFile}/init rootfs/init
 
                         # Calculate image size: use actual store closure size (not rootfs
                         # symlink tree), then add generous overhead for ext4 metadata.
