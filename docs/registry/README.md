@@ -172,8 +172,8 @@ surface without conflicting.
 | Term | Definition |
 |---|---|
 | **AOS** | ANDYL OS. The hermetic-from-source, Nix-based distribution this registry serves. |
-| **`apm`** | The package-management CLI front-end. The **same binary** as `aos`, dispatched by `argv[0]`: invoked as `apm …` it implicitly prepends `package …` (`crates/aos/src/main.rs:37`–`68`). |
-| **`apr`** | The AOS Package Registry CLI. The same binary again; invoked as `apr …` it implicitly prepends `package registry …` (`crates/aos/src/main.rs:56`–`61`). The `apr` bin alias is declared in `crates/aos/Cargo.toml` (`[[bin]] name = "apr"`). |
+| **`apm`** | The package-consumer CLI. It owns installation, profiles, queries, and consumer registry configuration through `apm registry`. |
+| **`apr`** | The AOS Package Registry authoring CLI. It owns registry workspaces, signing, package publication, releases, and uploads. |
 | **Registry (target)** | A **bare git repository in sha256 object format, served as static files over dumb HTTP**. The package metadata *is* the git tree content. |
 | **Channel** | A named release line (e.g. `stable`, `testing`), modeled as a git **branch** (`refs/heads/<channel>`) whose head is the rollout **frontier**, and as **256 signed partition tag objects** (`/channels/<name>/00..ff`) for rollout. |
 | **Partition / bucket** | One of exactly **256** channel partitions (`00`–`ff`). A consumer self-selects one bucket on first channel sync from a registry-local random salt, persists the bucket index, and reuses it thereafter. The publisher advances partitions independently to control rollout. |

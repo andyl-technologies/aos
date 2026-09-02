@@ -190,7 +190,7 @@ pub const ENVIRONMENT_HELP: &str = "Environment:
                          state is written under <AOS_ROOT>/var/lib/apm, and
                          Nix commands use the AOS_ROOT-relative store.";
 
-/// Clap subcommand enum for `aos package` / `apm`.
+/// Package-consumer operations implemented for `apm`.
 #[derive(Subcommand)]
 pub enum PackageCommand {
     /// Install one or more packages
@@ -1146,7 +1146,7 @@ pub enum CredentialCommand {
     },
 }
 
-/// Operations for the hidden `apm _test-systemd-client` subcommand. Each maps
+/// Operations for the private package-runtime systemd test command. Each maps
 /// one-for-one onto a [`aos_systemd::SystemdClient`] method; the handler in
 /// [`test_systemd_client`] serialises the result to JSON on stdout.
 #[derive(Subcommand)]
@@ -3393,7 +3393,7 @@ fn exit_for_eval_failure(error: &anyhow::Error, verbose: u8) {
     std::process::exit(failure.exit_code());
 }
 
-/// Main entry point for `aos package` / `apm`.
+/// Main entry point for package-consumer and private runtime operations.
 ///
 /// Loads the [`config::ApmConfig`] for the scope implied by the command
 /// (`--system` selects [`ProfileScope::System`]) and dispatches to the
@@ -3523,7 +3523,7 @@ pub async fn run(
         return result;
     }
 
-    // `apm __materialize`: apply a converged manifest's
+    // Apply a converged manifest through the private package runtime.
     // /etc tree into a per-generation lower. Called by `activate` on the new
     // path after the configuration fixpoint has converged.
     if let PackageCommand::Materialize {

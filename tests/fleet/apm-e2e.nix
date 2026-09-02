@@ -368,12 +368,7 @@ in {
       """), timeout=240)
 
       # ── 4. Client adds the registry and syncs ─────────────────────
-      # Invoke via the store path, not via /usr/bin/apm — the
-      # rootfs symlink farm omits dotfiles, so `.apm-unwrapped`
-      # isn't next to the PATH-installed `apm` and the wrapper's
-      # `dirname "$0"` resolution fails. Calling the store-path
-      # binary directly makes `dirname` resolve to the bin/ that
-      # contains both wrapper and `.apm-unwrapped`.
+      # Invoke the exact packaged wrapper used by the image.
       #
       # `HOME=/tmp` is set explicitly: the AOS rootfs ships `/` as
       # read-only, so the `modules/base/apm.nix` tmpfiles.d entries
