@@ -1204,6 +1204,18 @@ dispatch, and expose both backend disconnect and add-client operations. Only
 has the concrete endpoint operations required by a future child transition;
 it does not invoke either operation, reconstruct the monitor, fork, release
 input, or acknowledge proof bit 7 or 8.
+Version 22, resource-stage version 12, and child-QMP schema version 6 further
+retain the exact connected Unix-socket frontend, address, channel, socket,
+listener, read and HUP sources, `GMainContext`, and positive monotonic
+connection generation. Staging admits only the listening Unix profile and
+rejects TLS, telnet, TN3270, WebSocket, reconnect and connect-task state,
+queued descriptor transfer, replay mode, and non-GMainContext dispatch. The
+complete private basis is checked under the chardev write lock at commit and
+exact restage; disconnect or reconnect invalidates it. QAPI exposes only
+`monitor-socket-resources-bound`. This binds the resources a future child
+transition must consume without removing a source, disconnecting the socket,
+reconstructing the monitor, forking, releasing input, or acknowledging proof
+bit 7 or 8.
 The sealed QMP contribution now carries those exact template and child-QMP
 generations alongside its descriptor and socket identity. The immediate-child
 resource transaction requires both the plugin and QMP reinitializers to match

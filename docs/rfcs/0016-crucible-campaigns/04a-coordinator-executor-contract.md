@@ -2828,6 +2828,17 @@ disconnect and add-client operations. QAPI exposes only
 `monitor-disposition-bound`. This authenticates the concrete endpoint owner and
 operations that a future child transition must consume; it still does not call
 those operations or advance either readiness bit.
+Template contract version 22, resource-stage version 12, and child-QMP version
+6 additionally bind the exact supported connected Unix-socket backend:
+frontend, address, channel, socket, listener, read and HUP sources,
+`GMainContext`, and a positive monotonic connection generation. Staging rejects
+non-Unix and non-listening endpoints, TLS, telnet, TN3270, WebSocket, reconnect
+and connect-task state, queued descriptor transfers, replay mode, and
+non-GMainContext dispatch. Commit and restage compare that private basis under
+the chardev write lock, and disconnect or reconnect invalidates its generation.
+Only `monitor-socket-resources-bound` crosses QAPI. No source is removed and no
+socket, monitor, dispatcher, or private endpoint is reconstructed in this
+checkpoint; `fork(2)`, input release, and readiness bits 7 and 8 remain open.
 
 The driver owns selection application, stop-boundary execution, and candidate
 construction but never assignment or daemon-epoch identity. This adapter cannot

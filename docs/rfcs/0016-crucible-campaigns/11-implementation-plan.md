@@ -2220,6 +2220,18 @@ operations at commit and restage. Only `monitor-disposition-bound` is public.
 This closes the concrete endpoint-operation precondition but does not call
 either operation; destructive monitor reconstruction, `fork(2)`, input release,
 and readiness bits 7 and 8 remain open.
+Version 22 of the template report, version 12 of its resource stage, and version
+6 of the child-QMP report now bind the exact supported connected Unix-socket
+frontend, address, channel, socket, listener, read and HUP sources,
+`GMainContext`, and positive monotonic connection generation. Staging rejects
+non-Unix and non-listening endpoints, TLS, telnet, TN3270, WebSocket, reconnect
+and connect-task state, queued descriptor transfers, replay mode, and
+non-GMainContext dispatch. Commit and exact restage revalidate that complete
+private basis under the chardev write lock, while disconnect or reconnect
+invalidates it. Only `monitor-socket-resources-bound` is public. This checkpoint
+does not remove inherited sources, disconnect the socket, reconstruct the
+monitor, invoke `fork(2)`, release input, or acknowledge readiness bit 7 or 8;
+those destructive operations remain the next increment.
 These are executable T-CAM-6.1 audit prerequisites, not completion of the task:
 the internal registry identifies two non-coordinator subsystem owners but has
 no safe non-coordinator child disposition. The retained AIO/BH/timer and RCU

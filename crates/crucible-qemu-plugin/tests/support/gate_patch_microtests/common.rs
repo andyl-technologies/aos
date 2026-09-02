@@ -189,6 +189,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0173-crucible-bind-supported-child-qmp-profile.patch",
     "0174-crucible-bind-child-monitor-ownership-basis.patch",
     "0175-crucible-bind-child-monitor-chardev-disposition.patch",
+    "0176-crucible-bind-child-monitor-socket-resources.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each
