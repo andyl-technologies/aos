@@ -73,7 +73,7 @@ Crucible uses stable process classes so CI does not need to parse prose:
 | 5 | Invalid scenario, artifact, store object, or local I/O input. | Fail and repair or restore the input. |
 | 64 | Command-line usage error. | Fail and fix the invocation. |
 
-See [Running Crucible](running.md#exit-status) for command-specific detail.
+See [Running Crucible](running.md#exit-codes) for command-specific detail.
 
 ## Add a determinism gate
 

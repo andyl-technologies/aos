@@ -8,6 +8,31 @@ use crucible::model::{
 };
 
 const REFERENCE: &str = include_str!("../../../docs/users/crucible/reference.md");
+const GUIDE_INDEX: &str = include_str!("../../../docs/users/crucible/README.md");
+const NETWORK_GUIDE: &str = include_str!("../../../docs/users/crucible/network-faults.md");
+const STORAGE_NODE_GUIDE: &str =
+    include_str!("../../../docs/users/crucible/storage-node-faults.md");
+
+const USER_GUIDES: &[&str] = &[
+    "authoring.md",
+    "ci.md",
+    "daemon.md",
+    "debugging.md",
+    "examples.md",
+    "exploration.md",
+    "fault-model-migration.md",
+    "network-faults.md",
+    "quickstart.md",
+    "recorded-signals.md",
+    "reference.md",
+    "reproduction.md",
+    "running.md",
+    "scenarios.md",
+    "signal-driven-faults.md",
+    "storage-node-faults.md",
+    "support.md",
+    "troubleshooting.md",
+];
 
 #[test]
 fn every_executable_effect_has_exactly_one_reference_row() {
@@ -87,6 +112,32 @@ fn reference_tables_have_balanced_code_spans_and_columns() {
                 line_number + 1
             ),
         }
+    }
+}
+
+#[test]
+fn guide_index_links_every_user_guide() {
+    for guide in USER_GUIDES {
+        assert!(
+            GUIDE_INDEX.contains(&format!("]({guide})")),
+            "Crucible guide index must link `{guide}`"
+        );
+    }
+}
+
+#[test]
+fn domain_guides_name_every_executable_effect() {
+    for effect in EffectKind::all() {
+        let name = effect.as_str();
+        let guide = if name.starts_with("network.") {
+            NETWORK_GUIDE
+        } else {
+            STORAGE_NODE_GUIDE
+        };
+        assert!(
+            guide.contains(&format!("`{name}`")),
+            "task-oriented fault guide must name executable effect `{name}`"
+        );
     }
 }
 
