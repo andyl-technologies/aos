@@ -130,8 +130,31 @@ runs that scenario on the live QEMU backend.
 
 For deeper work:
 
+- [Feature coverage](coverage.md) inventories every packaged command, model
+  surface, topology family, signal family, effect adapter, evidence path, and
+  continuation workflow.
+- [Support boundaries](support.md) distinguishes packaged operator features,
+  public APIs, repository certification surfaces, model-only behavior, and
+  deliberately rejected device concepts.
 - [Scenarios](scenarios.md) explains scenario identity, authoring, and input
   resolution.
+- [Authoring fault scenarios](authoring.md) walks through the complete
+  World/topology/signal/binding/property/artifact pipeline.
+- [Fault topology reference](topology.md) documents every fault-domain,
+  network, storage, policy, and node-capability declaration.
+- [Signal programs](signals.md) documents all source, pure, and stateful signal
+  families, their typing rules, bounds, checkpoint state, and replay contract.
+- [Fault bindings](bindings.md) documents sampling, selectors, mappings,
+  opportunity filters, phases, lifetimes, composition, search, and evidence.
+- [Properties, observations, and verdicts](properties-and-evidence.md) explains
+  the complete assertion vocabulary and how effect evidence becomes a verdict.
+- [Stores and artifacts](artifacts.md) distinguishes scenarios, DAG objects,
+  checkpoints, handles, reproduction artifacts, findings, and reports.
+- [Fault experiment cookbook](cookbook.md) provides end-to-end patterns for
+  outages, hazards, congestion, corruption, power loss, recordings, hardware,
+  arrays, contacts, and bounded exploration.
+- [Rust integration API](rust-api.md) maps scenario generation, production
+  lifecycle, control clients, streaming, RPC, debug, and import surfaces.
 - [Running Crucible](running.md) is the command reference for backend discovery,
   seeds, terminal conditions, output, and exit codes.
 - [CI](ci.md) shows a bounded, reproducible pipeline with retained failure
@@ -140,6 +163,13 @@ For deeper work:
   schema.
 - [Signal-driven faults](signal-driven-faults.md) explains how to model static,
   recorded, spatial, sporadic, shared-cause, network, storage, and node faults.
+- [Network faults](network-faults.md) covers route topology, directional
+  outages, loss, delay, queues, forwarders, shared media, assertions, and
+  replay.
+- [Storage, node, and hardware faults](storage-node-faults.md) covers block,
+  9p, lifecycle, CPU, interrupt, memory, clock, and accelerator effects.
+- [Recorded signal inputs](recorded-signals.md) documents deterministic CSV,
+  JSONL, PCAP, and PCAPNG import, provenance, storage, and runtime attachment.
 - [Fault-model migration](fault-model-migration.md) explains the required
   one-way move to the signal-driven schema and why old plans are not translated.
 - [Reproduction and branching](reproduction.md) explains `verify`, artifacts,
@@ -152,8 +182,25 @@ For deeper work:
   interactive and debugger surfaces.
 - [Daemon operation](daemon.md) documents the remote control plane and its
   current fidelity limitation.
+- [Certification examples](examples.md) maps supported domains to executable
+  examples and named repository checks.
 - [Troubleshooting](troubleshooting.md) maps common failures to corrective
   action.
+
+## Feature coverage map
+
+| Goal | Start here | Exhaustive details |
+|---|---|---|
+| Audit whether a feature is documented | [Feature coverage](coverage.md) | Implementation registry and coverage tests |
+| Decide whether a surface is operationally supported | [Support boundaries](support.md) | [Reference](reference.md) |
+| Build and run a first workload | [Nginx/Curl tutorial](quickstart.md) | [Running Crucible](running.md) |
+| Generate a signal-driven scenario | [Authoring fault scenarios](authoring.md) | [Signals and bindings](reference.md#plans-signals-bindings-and-faults) |
+| Declare fault-addressable objects | [Fault topology reference](topology.md) | [Canonical scenario reference](reference.md#canonical-scenario-document) |
+| Simulate network failures | [Network faults](network-faults.md) | [Effect registry](reference.md#exhaustive-effect-registry) |
+| Simulate storage, VM, or hardware failures | [Storage, node, and hardware faults](storage-node-faults.md) | [Effect registry](reference.md#exhaustive-effect-registry) |
+| Use recorded physical or packet data | [Recorded signal inputs](recorded-signals.md) | [Trace API](../../../crates/crucible/src/model/fault_signal/trace_import.rs) |
+| Reproduce or explore a failure | [Reproduction and branching](reproduction.md), [Exploration](exploration.md) | [Command reference](reference.md#command-line-interface) |
+| Find a production-backed example | [Certification examples](examples.md) | Repository Nix checks and crate rustdoc |
 
 ## Stability and source of truth
 

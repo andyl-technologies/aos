@@ -181,9 +181,10 @@ crates/target/debug/aos <subcommand>
   into the `nix` / `git` subprocesses the CLI shells out to and breaks them by
   overriding their own newer OpenSSL. (Wrap the run in `nix develop -c …` only to
   make the CLI use the AOS-built `nix` / `git` instead of the host's.)
-- **Choose the tool by binary name.** The binary is *multicall* and dispatches on
-  `argv[0]`: `cargo build … --bin apr` / `--bin apm` yield correctly-named
-  binaries, and `crates/target/debug/apr …` behaves as `aos package registry …`.
+- **Choose the tool by binary name.** `aos`, `apm`, and `apr` are independent
+  entry points with disjoint parsers backed by shared Rust libraries. Build and
+  run the exact binary whose command surface you are testing; there is no
+  `aos package` compatibility path.
 - `crates/target/debug/` is independent of the flake-installed `aos`; `nix run`
   and any installed CLI keep the last packaged build until rebuilt.
 

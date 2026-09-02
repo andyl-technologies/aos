@@ -318,7 +318,7 @@ in {
           printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' \\
             > "$NIX_CONF_DIR/nix.conf"
 
-          ${pkgs.aos}/bin/apr create sysreg
+          ${pkgs.aos.apr}/bin/apr create sysreg
           REG_DIR=$HOME/.local/share/apm/registries/sysreg
           DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
           ORIGIN=/var/lib/aos-registry-server/registries/sysreg
@@ -326,7 +326,7 @@ in {
           git -C "$ORIGIN" symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
           git -C "$REG_DIR" remote add origin "$ORIGIN"
 
-          ${pkgs.aos}/bin/apr publish '${pkgs.bc}' \\
+          ${pkgs.aos.apr}/bin/apr publish '${pkgs.bc}' \\
             --name bc \\
             --version 1.0.0 \\
             --description 'install-from-image package fixture' \\
@@ -338,7 +338,7 @@ in {
           set -- '${server2Uki}'/*.efi
           test "$#" -eq 1
           CANDIDATE_UKI="$1"
-          ${pkgs.aos}/bin/apr --json publish '${server2Top}' \\
+          ${pkgs.aos.apr}/bin/apr --json publish '${server2Top}' \\
             --name aos \\
             --version test-2 \\
             --description 'install-from-image system fixture' \\
@@ -356,13 +356,13 @@ in {
           ${pkgs.jq}/bin/jq -r \\
             '.images[].ukis[].sb_signer_cert_sha256' \\
             /tmp/publish-system.json | sort -u | while IFS= read -r signer; do
-              ${pkgs.aos}/bin/apr sb-certs add "image-db-$index" \\
+              ${pkgs.aos.apr}/bin/apr sb-certs add "image-db-$index" \\
                 --cert-sha256 "$signer" --registry sysreg --no-commit
               index=$((index + 1))
             done
-          ${pkgs.aos}/bin/apr verify --registry sysreg
+          ${pkgs.aos.apr}/bin/apr verify --registry sysreg
 
-          ${pkgs.aos}/bin/apr cache generate \\
+          ${pkgs.aos.apr}/bin/apr cache generate \\
             --registry sysreg \\
             --output /var/lib/sysreg-cache \\
             --cache-url http://registry:8000/sysreg-cache \\
@@ -391,15 +391,15 @@ in {
 
       # ════ 3. UPDATE — registry add + metadata sync, pure porcelain ════
       target.succeed(
-          f"HOME=/tmp USER=root PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos}/bin/apm registry add --no-verify "
+          f"HOME=/tmp USER=root PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm registry add --no-verify "
           f"git://registry:9418/sysreg --name sysreg --branch {branch} 2>&1",
           timeout=120,
       )
       target.succeed(
-          "HOME=/tmp USER=root PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos}/bin/apm update 2>&1", timeout=120
+          "HOME=/tmp USER=root PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm update 2>&1", timeout=120
       )
       out = target.succeed(
-          "HOME=/tmp USER=root PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos}/bin/apm search bc 2>&1",
+          "HOME=/tmp USER=root PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm search bc 2>&1",
           timeout=60,
       )
       assert "bc" in out, f"apm search did not surface bc: {out!r}"
@@ -407,7 +407,7 @@ in {
       # ════ 4. INSTALL a package — closure must come off the wire ═══════
       target.fail("${pkgs.nix}/bin/nix-store --check-validity '${pkgs.bc}'")
       out = target.succeed(
-          "HOME=/tmp USER=root PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos}/bin/apm install bc "
+          "HOME=/tmp USER=root PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm install bc "
           "--registry sysreg --yes 2>&1",
           timeout=600,
       )
@@ -415,7 +415,7 @@ in {
           f"apm install did not download anything: {out!r}"
       )
       out = target.succeed(
-          "HOME=/tmp USER=root PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos}/bin/apm list --installed 2>&1"
+          "HOME=/tmp USER=root PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm list --installed 2>&1"
       )
       assert "bc" in out, f"bc missing from apm list: {out!r}"
       target.succeed(
@@ -447,7 +447,7 @@ in {
       """), timeout=120)
 
       out = target.succeed(
-          "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos}/bin/apm upgrade --system --dry-run 2>&1",
+          "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm upgrade --system --dry-run 2>&1",
           timeout=120,
       )
       assert "test-2" in out, f"dry-run did not surface test-2: {out!r}"
@@ -456,7 +456,7 @@ in {
       # into the inactive slot. Configuration remains on generation 1 until
       # the candidate boots and re-evaluates the retained host inputs.
       out = target.succeed(
-          "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos}/bin/apm upgrade --system --yes 2>&1",
+          "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm upgrade --system --yes 2>&1",
           timeout=1800,
       )
       print("=== apm upgrade --system output ===\n" + out)

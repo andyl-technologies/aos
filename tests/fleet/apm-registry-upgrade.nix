@@ -204,7 +204,7 @@ in {
 
           ${pkgs.nix}/bin/nix-store --check-validity '${server2Top}'
 
-          ${pkgs.aos}/bin/apr create sysreg
+          ${pkgs.aos.apr}/bin/apr create sysreg
           REG_DIR=$HOME/.local/share/apm/registries/sysreg
           DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
           ORIGIN=/var/lib/aos-registry-server/registries/sysreg
@@ -212,7 +212,7 @@ in {
           git -C "$ORIGIN" symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
           git -C "$REG_DIR" remote add origin "$ORIGIN"
 
-          ${pkgs.aos}/bin/apr publish '${server2Top}' \\
+          ${pkgs.aos.apr}/bin/apr publish '${server2Top}' \\
             --name aos \\
             --version test-2 \\
             --description 'registry upgrade fixture' \\
@@ -222,9 +222,9 @@ in {
             --no-ca \\
             --registry sysreg \\
             --no-commit
-          ${pkgs.aos}/bin/apr verify --registry sysreg
+          ${pkgs.aos.apr}/bin/apr verify --registry sysreg
 
-          ${pkgs.aos}/bin/apr cache generate \\
+          ${pkgs.aos.apr}/bin/apr cache generate \\
             --registry sysreg \\
             --output /var/lib/sysreg-cache \\
             --cache-url http://registry:8000/sysreg-cache \\
@@ -274,7 +274,7 @@ in {
 
       # -- 5. Dry-run surfaces the upgrade -------------------------------
       out = target.succeed(
-          "HOME=/tmp ${pkgs.aos}/bin/apm upgrade --system --dry-run 2>&1",
+          "HOME=/tmp ${pkgs.aos.apm}/bin/apm upgrade --system --dry-run 2>&1",
           timeout=120,
       )
       assert "test-2" in out, f"dry-run did not surface the test-2 target: {out!r}"
@@ -282,7 +282,7 @@ in {
 
       # -- 6. The upgrade: NARs come off the wire, then the live switch ---
       out = target.succeed(
-          "HOME=/tmp ${pkgs.aos}/bin/apm upgrade --system --yes 2>&1",
+          "HOME=/tmp ${pkgs.aos.apm}/bin/apm upgrade --system --yes 2>&1",
           timeout=900,
       )
       print("=== apm upgrade --system output ===\n" + out)
@@ -350,7 +350,7 @@ in {
 
       # -- 11. Rollback reverses the live switch -------------------------
       target.succeed(
-          "HOME=/tmp ${pkgs.aos}/bin/apm rollback --system --yes 2>&1",
+          "HOME=/tmp ${pkgs.aos.apm}/bin/apm rollback --system --yes 2>&1",
           timeout=300,
       )
       gen_rolled = target.succeed(

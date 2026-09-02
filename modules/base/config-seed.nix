@@ -22,7 +22,7 @@
     # Rendered unit scripts are also part of the initrd closure graph, but this
     # declaration makes the backend self-contained if unit materialization is
     # refactored independently of the initrd package set.
-    aos.boot.initrd.extraPackages = [pkgs.aos pkgs.erofs-utils];
+    aos.boot.initrd.extraPackages = [pkgs.aos.packageRuntime pkgs.erofs-utils];
 
     boot.initrd.systemd.services."aos-credential-recovery" = {
       description = "Recover interrupted AOS credential publication";
@@ -40,7 +40,7 @@
         RemainAfterExit = true;
       };
       script = ''
-        AOS_ROOT=/sysroot ${pkgs.aos}/bin/.apm-unwrapped recover-credential-transactions
+        AOS_ROOT=/sysroot ${pkgs.aos.packageRuntime}/bin/.aos-package-runtime-unwrapped recover-credential-transactions
       '';
     };
 
@@ -78,7 +78,7 @@
         manifest="$generation/manifest.json"
         ${pkgs.coreutils}/bin/mkdir -p "$lower"
         if [ -s "$manifest" ]; then
-          ${pkgs.aos}/bin/.apm-unwrapped __materialize \
+          ${pkgs.aos.packageRuntime}/bin/.aos-package-runtime-unwrapped __materialize \
             --manifest "$manifest" \
             --generation-dir "$generation" \
             --mkfs-erofs ${pkgs.erofs-utils}/bin/mkfs.erofs \
