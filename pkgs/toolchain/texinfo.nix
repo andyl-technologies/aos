@@ -78,12 +78,14 @@ in
       }
       {
         name = "configure";
-        script = darwinNativeCompilerSetup + ''
-          ./configure \
-            $configureFlags \
-            --prefix=$out \
-            --disable-nls
-        '';
+        script =
+          darwinNativeCompilerSetup
+          + ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --disable-nls
+          '';
       }
       {
         name = "build";
