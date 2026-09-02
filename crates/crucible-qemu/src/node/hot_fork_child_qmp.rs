@@ -155,6 +155,7 @@ impl QemuHotForkChildQmpHostEndpoint {
             && state.resource_plan_bound()
             && state.monitor_basis_bound()
             && state.monitor_disposition_bound()
+            && state.monitor_socket_resources_bound()
             && state.reinitializer_prepared()
             && state.reinitialized()
             && state.disposition_complete();
@@ -276,6 +277,7 @@ impl QemuHotForkChildQmpStage {
             && state.retained_descriptor().is_some()
             && state.monitor_basis_bound()
             && state.monitor_disposition_bound()
+            && state.monitor_socket_resources_bound()
             && state.reinitializer_prepared()
             && !state.reinitialized()
             && state.resource_plan_bound();
@@ -410,6 +412,7 @@ impl QemuNode {
             && qemu_state.retained_descriptor().is_some()
             && qemu_state.monitor_basis_bound()
             && qemu_state.monitor_disposition_bound()
+            && qemu_state.monitor_socket_resources_bound()
             && qemu_state.reinitializer_prepared()
             && !qemu_state.reinitialized()
             && !qemu_state.resource_plan_bound();
@@ -634,7 +637,7 @@ mod tests {
             assert!(request.contains("crucible-hot-fork-child-qmp"));
             let response = json!({
                 "return": {
-                    "schema-version": 5,
+                    "schema-version": 6,
                     "generation": qmp_generation,
                     "template-generation": template_generation,
                     "monitor-generation": monitor_generation,
@@ -646,6 +649,7 @@ mod tests {
                     "nonblocking-unix-stream": true,
                     "monitor-basis-bound": true,
                     "monitor-disposition-bound": true,
+                    "monitor-socket-resources-bound": true,
                     "reinitializer-prepared": true,
                     "reinitialized": disposition_complete,
                     "disposition-complete": disposition_complete,
