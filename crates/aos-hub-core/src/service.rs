@@ -1076,6 +1076,9 @@ fn package_documentation_identity(
         document_sha256: locator.artifact.document_sha256.clone(),
         document_size: locator.artifact.document_size,
         semantic_schema_sha256: locator.artifact.semantic_schema_sha256.clone(),
+        release: locator.release.clone().unwrap_or_default(),
+        verified_tag_oid: locator.verified_tag_oid.clone().unwrap_or_default(),
+        release_snapshot_id: locator.release_snapshot_id.clone().unwrap_or_default(),
     }
 }
 
