@@ -518,7 +518,7 @@ pub enum PackageCommand {
         system: bool,
         /// The registry operation to run
         #[command(subcommand)]
-        command: RegistryCommand,
+        command: ApmRegistryCommand,
     },
     /// Hidden: pre-/etc-swap daemon reconcile planning.
     ///
@@ -1434,7 +1434,76 @@ impl AttestEnrollmentMethod {
     }
 }
 
-/// Clap subcommand enum for `apm registry` / `apr`.
+/// Consumer registry configuration commands exposed by `apm registry`.
+#[derive(Subcommand)]
+pub enum ApmRegistryCommand {
+    /// List configured registries and priorities
+    List,
+    /// Add a registry and optionally synchronize it immediately
+    Add {
+        /// Registry URL
+        url: String,
+        /// Registry name (derived from URL if omitted)
+        #[arg(long)]
+        name: Option<String>,
+        /// Priority (higher = preferred)
+        #[arg(long, default_value = "500")]
+        priority: u32,
+        /// Pin to exact commit hash
+        #[arg(long, group = "tracking")]
+        commit: Option<String>,
+        /// Track a branch HEAD
+        #[arg(long, group = "tracking")]
+        branch: Option<String>,
+        /// Track a signed rollout channel
+        #[arg(long, group = "tracking")]
+        channel: Option<String>,
+        /// Pin to exact tag name
+        #[arg(long, group = "tracking")]
+        tag: Option<String>,
+        /// Select tags with a semantic-version constraint
+        #[arg(long, group = "tracking")]
+        version: Option<String>,
+        /// Pin an exact trusted registry signing key; repeat for rotations
+        #[arg(long = "trust-key", conflicts_with = "no_verify")]
+        trust_key: Vec<String>,
+        /// Disable signature verification for local development
+        #[arg(long = "no-verify")]
+        no_verify: bool,
+        /// Write configuration without cloning the registry
+        #[arg(long = "no-clone")]
+        no_clone: bool,
+    },
+    /// Remove a configured registry
+    Remove {
+        /// Registry name
+        name: String,
+        /// Keep the local checkout
+        #[arg(long)]
+        keep_local: bool,
+        /// Remove a checkout with unpublished or uncommitted authoring work
+        #[arg(long)]
+        force: bool,
+    },
+    /// Enable a configured registry
+    Enable {
+        /// Registry name
+        name: String,
+    },
+    /// Disable a configured registry without deleting it
+    Disable {
+        /// Registry name
+        name: String,
+    },
+    /// Manage trusted consumer keys
+    Trust {
+        /// Trust-store operation
+        #[command(subcommand)]
+        command: TrustCommand,
+    },
+}
+
+/// Registry workspace and authoring commands exposed by `apr`.
 #[derive(Subcommand)]
 pub enum RegistryCommand {
     // ----- Registry Lifecycle -----
@@ -4028,7 +4097,7 @@ pub async fn run(
             }
         }
         PackageCommand::Registry { command, .. } => {
-            run_registry(&config, command, dry_run, printer).await
+            run_apm_registry(&config, command, printer).await
         }
         PackageCommand::TestReconcileExposedUnits { .. } => {
             exposed_units::reconcile_system_profile(&config, printer).await
@@ -5086,7 +5155,84 @@ fn run_enroll_package_attestation_quote(
 // Registry subcommands
 // ---------------------------------------------------------------------------
 
-/// Dispatch an `apm registry` / `apr` subcommand to its handler.
+/// Dispatches an `apm registry` consumer command.
+async fn run_apm_registry(
+    config: &config::ApmConfig,
+    command: &ApmRegistryCommand,
+    printer: &Printer,
+) -> Result<()> {
+    match command {
+        ApmRegistryCommand::List => registry_list(config, printer).await,
+        ApmRegistryCommand::Add {
+            url,
+            name,
+            priority,
+            commit,
+            branch,
+            channel,
+            tag,
+            version,
+            trust_key,
+            no_verify,
+            no_clone,
+        } => {
+            registry_add(
+                config,
+                url,
+                name.as_deref(),
+                *priority,
+                commit.as_deref(),
+                branch.as_deref(),
+                channel.as_deref(),
+                tag.as_deref(),
+                version.as_deref(),
+                trust_key,
+                *no_verify,
+                !no_clone,
+                printer,
+            )
+            .await
+        }
+        ApmRegistryCommand::Remove {
+            name,
+            keep_local,
+            force,
+        } => registry_remove(config, name, *keep_local, *force, printer).await,
+        ApmRegistryCommand::Enable { name } => {
+            registry_set_enabled(config, name, true, printer).await
+        }
+        ApmRegistryCommand::Disable { name } => {
+            registry_set_enabled(config, name, false, printer).await
+        }
+        ApmRegistryCommand::Trust { command } => registry_ops::run_trust(config, command, printer),
+    }
+}
+
+/// Runs an `apr` registry workspace or authoring command.
+///
+/// # Errors
+///
+/// Returns an error when the selected AOS system root is invalid, registry
+/// configuration cannot be loaded, or the authoring operation fails.
+pub async fn run_apr(
+    command: &RegistryCommand,
+    system: bool,
+    dry_run: bool,
+    printer: &Printer,
+) -> Result<()> {
+    if system {
+        environment::RuntimeRequirement::AosRoot.validate()?;
+    }
+    let scope = if system {
+        ProfileScope::System
+    } else {
+        ProfileScope::User
+    };
+    let config = config::ApmConfig::load(scope)?;
+    run_registry(&config, command, dry_run, printer).await
+}
+
+/// Dispatch an `apr` subcommand to its handler.
 ///
 /// The consumer-facing lifecycle commands (`list`, `add`, `remove`) are
 /// implemented in this module; everything else delegates to [`registry_ops`].

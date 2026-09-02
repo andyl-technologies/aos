@@ -53,6 +53,14 @@ fn commands_do_not_cross_public_cli_boundaries() -> Result<()> {
             .status
             .success()
     );
+    assert!(
+        !run(
+            env!("CARGO_BIN_EXE_apm"),
+            &["registry", "publish", "--help"]
+        )?
+        .status
+        .success()
+    );
 
     require_success(
         run(env!("CARGO_BIN_EXE_apm"), &["install", "--help"])?,

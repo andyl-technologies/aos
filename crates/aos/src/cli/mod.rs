@@ -148,10 +148,6 @@ pub struct AprCli {
     #[arg(long, global = true)]
     pub dry_run: bool,
 
-    /// Assume yes to all prompts
-    #[arg(short = 'y', long, global = true)]
-    pub yes: bool,
-
     /// Increase verbosity (-v, -vv, -vvv)
     #[arg(short, long, action = ArgAction::Count, global = true)]
     pub verbose: u8,
