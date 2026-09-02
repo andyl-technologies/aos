@@ -60,6 +60,7 @@ pub mod documentation;
 mod documentation_lsp;
 pub mod download;
 pub(crate) mod ebpf_lsm;
+pub mod environment;
 pub(crate) mod exposed_units;
 /// Test-only helpers that shell out to the host `git` to set up fixtures; the
 /// production registry paths use libgit2 ([`registry::repo`],
@@ -1210,6 +1211,66 @@ pub enum TestSystemdClientOp {
 }
 
 impl PackageCommand {
+    /// Returns the runtime environment the command must establish before I/O.
+    pub fn runtime_requirement(&self) -> environment::RuntimeRequirement {
+        use environment::RuntimeRequirement::{AosRoot, LiveAos, Portable};
+
+        if self.is_system() {
+            return AosRoot;
+        }
+
+        match self {
+            PackageCommand::ActivatePreEtcSwap { .. }
+            | PackageCommand::ActivatePostEtcSwap { .. }
+            | PackageCommand::ActivateRestoreRoutedSources { .. }
+            | PackageCommand::RecoverCredentialTransactions
+            | PackageCommand::LoadEbpfLsmPolicies { .. }
+            | PackageCommand::EvalRetained { .. }
+            | PackageCommand::ActivateConfig { .. }
+            | PackageCommand::Fetch { .. }
+            | PackageCommand::RenderOne { .. }
+            | PackageCommand::GraphCompile { .. } => LiveAos,
+            PackageCommand::Switch { .. } => AosRoot,
+            PackageCommand::Install { .. }
+            | PackageCommand::Remove { .. }
+            | PackageCommand::Autoremove
+            | PackageCommand::Reinstall { .. }
+            | PackageCommand::Update { .. }
+            | PackageCommand::Upgrade { .. }
+            | PackageCommand::FullUpgrade
+            | PackageCommand::Search { .. }
+            | PackageCommand::Show { .. }
+            | PackageCommand::Docs { .. }
+            | PackageCommand::Options { .. }
+            | PackageCommand::Schema { .. }
+            | PackageCommand::Info { .. }
+            | PackageCommand::List { .. }
+            | PackageCommand::Depends { .. }
+            | PackageCommand::Rdepends { .. }
+            | PackageCommand::Policy { .. }
+            | PackageCommand::Files { .. }
+            | PackageCommand::Attest { .. }
+            | PackageCommand::Hold { .. }
+            | PackageCommand::Unhold { .. }
+            | PackageCommand::Held { .. }
+            | PackageCommand::Orphans { .. }
+            | PackageCommand::Clean { .. }
+            | PackageCommand::Gc
+            | PackageCommand::Verify { .. }
+            | PackageCommand::Source { .. }
+            | PackageCommand::Rollback { .. }
+            | PackageCommand::Credential(..)
+            | PackageCommand::Registry { .. }
+            | PackageCommand::TestSystemdClient { .. }
+            | PackageCommand::TestReconcileExposedUnits { .. }
+            | PackageCommand::TestVerifyPackageAttestation { .. }
+            | PackageCommand::TestProducePackageAttestationQuote { .. }
+            | PackageCommand::Eval { .. }
+            | PackageCommand::Materialize { .. }
+            | PackageCommand::Config { .. } => Portable,
+        }
+    }
+
     /// Returns `true` when the user passed `--system` on a subcommand that
     /// supports it.
     ///
@@ -3257,6 +3318,8 @@ pub async fn run(
     yes: bool,
     printer: &Printer,
 ) -> Result<()> {
+    command.runtime_requirement().validate()?;
+
     // The hidden systemd-client test vehicle talks to systemd over D-Bus and
     // needs no apm config or profile. Dispatch it before `ApmConfig::load`
     // below so it works on a system with no apm state (mirrors how `main.rs`
