@@ -34,7 +34,7 @@ in
     # mkDarlingFleetSuite bundles it and carries target closures on a separate
     # immutable disk, keeping the production image unchanged.
     system = darlingGuestSystem;
-    payloadSizeMiB = 4096;
+    payloadSizeMiB = 2048;
     runtimeTimeout = 240;
     cases = [
       {
