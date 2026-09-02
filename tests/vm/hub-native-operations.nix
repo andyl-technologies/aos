@@ -1534,6 +1534,10 @@ in
         >/tmp/network-policy-revoke.json
 
       echo '==> Exercise endpoint generation and grant lifecycle'
+      reviewed public-network-policy-grant network-policy grant instance:public \
+        --consumer-scope "$org_scope" >/tmp/public-network-policy-grant.json
+      public_network_policy_grant_version=$(resource_version \
+        /tmp/public-network-policy-grant.json)
       reviewed endpoint-add endpoint add http://127.0.0.1:18420 \
         --stable-id operations-endpoint --org operations --acknowledge-cleartext \
         --network-policy instance:public@1 --ingress hub \
@@ -1656,6 +1660,10 @@ in
       endpoint_remove_version=$(resource_version /tmp/endpoint-before-remove.json)
       reviewed endpoint-remove endpoint remove operations-endpoint \
         --if-version "$endpoint_remove_version" >/tmp/endpoint-remove.json
+      reviewed public-network-policy-revoke network-policy revoke instance:public \
+        --consumer-scope "$org_scope" \
+        --if-version "$public_network_policy_grant_version" \
+        >/tmp/public-network-policy-revoke.json
       hub_cli network-policy show operations-allowlist \
         >/tmp/network-policy-before-remove.json
       network_policy_remove_version=$(resource_version \
