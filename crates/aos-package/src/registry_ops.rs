@@ -3688,25 +3688,45 @@ fn exposed_unit_description(expose_artifact: &str, unit: &str) -> Result<String>
     crate::types::validate_unit_name(unit)
         .with_context(|| format!("validating documented runtime unit '{unit}'"))?;
     let path = Path::new(expose_artifact).join("units").join(unit);
-    let metadata = fs::symlink_metadata(&path)
+    let link_metadata = fs::symlink_metadata(&path)
         .with_context(|| format!("inspecting documented runtime unit {}", path.display()))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
+    let source = if link_metadata.file_type().is_symlink() {
+        let target = fs::read_link(&path)
+            .with_context(|| format!("resolving documented runtime unit {}", path.display()))?;
+        let expose_store_dir = store_dir_from_store_path(expose_artifact);
+        let target_store_path = target.parent().and_then(Path::to_str);
+        if target.file_name() != Some(std::ffi::OsStr::new(unit))
+            || expose_store_dir.is_none()
+            || target_store_path.and_then(store_dir_from_store_path) != expose_store_dir
+        {
+            bail!(
+                "documented runtime unit symlink must select the same unit from one direct store object: {}",
+                path.display()
+            );
+        }
+        target
+    } else {
+        path.clone()
+    };
+    let metadata = fs::metadata(&source)
+        .with_context(|| format!("inspecting documented runtime unit {}", source.display()))?;
+    if !metadata.is_file() {
         bail!(
             "documented runtime unit must be one regular file: {}",
-            path.display()
+            source.display()
         );
     }
 
     const MAX_DOCUMENTED_UNIT_BYTES: u64 = 1024 * 1024;
     let mut content = String::new();
-    fs::File::open(&path)?
+    fs::File::open(&source)?
         .take(MAX_DOCUMENTED_UNIT_BYTES + 1)
         .read_to_string(&mut content)
-        .with_context(|| format!("reading documented runtime unit {}", path.display()))?;
+        .with_context(|| format!("reading documented runtime unit {}", source.display()))?;
     if content.len() as u64 > MAX_DOCUMENTED_UNIT_BYTES {
         bail!(
             "documented runtime unit exceeds {MAX_DOCUMENTED_UNIT_BYTES} bytes: {}",
-            path.display()
+            source.display()
         );
     }
 
@@ -3726,7 +3746,7 @@ fn exposed_unit_description(expose_artifact: &str, unit: &str) -> Result<String>
     description.with_context(|| {
         format!(
             "documented runtime unit '{}' has no non-empty [Unit] Description",
-            path.display()
+            source.display()
         )
     })
 }
@@ -16725,6 +16745,36 @@ mod tests {
         assert_eq!(
             exposed_unit_description(expose.path().to_str().unwrap(), "example.service").unwrap(),
             "Example workload service"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn package_documentation_accepts_only_store_owned_unit_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = TempDir::new().unwrap();
+        let store = root.path().join("nix/store");
+        let expose = store.join("00000000000000000000000000000000-expose");
+        let unit_output = store.join("11111111111111111111111111111111-unit");
+        fs::create_dir_all(expose.join("units")).unwrap();
+        fs::create_dir_all(&unit_output).unwrap();
+        let unit = unit_output.join("example.service");
+        fs::write(&unit, "[Unit]\nDescription=Store-owned unit\n").unwrap();
+        symlink(&unit, expose.join("units/example.service")).unwrap();
+
+        assert_eq!(
+            exposed_unit_description(expose.to_str().unwrap(), "example.service").unwrap(),
+            "Store-owned unit"
+        );
+
+        fs::remove_file(expose.join("units/example.service")).unwrap();
+        symlink("/etc/passwd", expose.join("units/example.service")).unwrap();
+        assert!(
+            exposed_unit_description(expose.to_str().unwrap(), "example.service")
+                .unwrap_err()
+                .to_string()
+                .contains("same unit from one direct store object")
         );
     }
 
