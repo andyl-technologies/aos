@@ -574,10 +574,19 @@ in
       hub_cli_into /tmp/publication-show.json registry publish show "$publication_id"
       ${pkgs.jq}/bin/jq -e '.data.state == "ready"' \
         /tmp/publication-show.json >/dev/null
-      hub_cli_into /tmp/registry-indexed.json registry show \
-        operations/maintenance
-      ${pkgs.jq}/bin/jq -e '.data.registry.index_state == "fresh"' \
-        /tmp/registry-indexed.json >/dev/null
+      index_attempt=0
+      while ! hub_cli_into /tmp/registry-indexed.json registry show \
+        operations/maintenance \
+        || ! ${pkgs.jq}/bin/jq -e '.data.registry.index_state == "fresh"' \
+          /tmp/registry-indexed.json >/dev/null; do
+        index_attempt=$((index_attempt + 1))
+        if test "$index_attempt" -ge 60; then
+          echo 'registry did not finish indexing the uploaded publication' >&2
+          ${pkgs.coreutils}/bin/cat /tmp/registry-indexed.json >&2
+          exit 1
+        fi
+        ${pkgs.coreutils}/bin/sleep 1
+      done
       hub_cli_into /tmp/registry-packages-indexed.json registry package list \
         operations/maintenance
       ${pkgs.jq}/bin/jq -e \
