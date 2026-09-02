@@ -19,6 +19,7 @@ const USER_GUIDES: &[&str] = &[
     "bindings.md",
     "ci.md",
     "coverage.md",
+    "cookbook.md",
     "daemon.md",
     "debugging.md",
     "examples.md",
@@ -31,6 +32,7 @@ const USER_GUIDES: &[&str] = &[
     "reference.md",
     "reproduction.md",
     "running.md",
+    "rust-api.md",
     "scenarios.md",
     "signal-driven-faults.md",
     "signals.md",
@@ -161,7 +163,11 @@ fn effect_guide_matrices_match_executable_descriptors() {
             .lines()
             .filter(|line| line.starts_with(&row_prefix))
             .collect::<Vec<_>>();
-        assert_eq!(rows.len(), 1, "effect guide must have one contract row for `{name}`");
+        assert_eq!(
+            rows.len(),
+            1,
+            "effect guide must have one contract row for `{name}`"
+        );
 
         let row = rows[0];
         let descriptor = effect.descriptor();
