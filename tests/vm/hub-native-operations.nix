@@ -167,6 +167,7 @@ in
       ${pkgs.jq}/bin/jq -e \
         '.error | contains("the running system is not AOS")' \
         /tmp/render-one-non-aos.json >/dev/null
+      mount -o remount,rw /
       mkdir -p /aos-toplevel
       printf '%s\n' 'ID=aos' 'AOS_MODULE_ABI=2' >/aos-toplevel/os-release
       if LC_ALL=C APM_SYSTEM_CONFIG_DIR=/tmp/apm-render-config \
