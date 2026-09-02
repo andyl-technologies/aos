@@ -7,7 +7,7 @@ covers constants, time-varying waveforms, recorded measurements, spatial
 fields, stochastic processes, and checkpointed state machines.
 
 This guide explains how to choose and compose signals. The exact TOML field
-catalog remains in the [reference](reference.md#plan-signals-bindings-and-faults),
+catalog remains in the [reference](reference.md#plans-signals-bindings-and-faults),
 and [bindings](bindings.md) covers the cause-to-effect bridge.
 
 ## Evaluation model
@@ -45,7 +45,7 @@ Units prevent accidental comparisons such as time against temperature. The
 catalog includes dimensionless, virtual time, distance/area/velocity,
 orientation, temperature, electrical power and energy, RF quantities,
 frequency, rates, ratios, acceleration, and precipitation. See the
-[unit table](reference.md#plan-signals-bindings-and-faults) for canonical names.
+[unit table](reference.md#plans-signals-bindings-and-faults) for canonical names.
 Use `unit_convert` for an explicit compatible affine conversion.
 
 Every operation that can discard precision or exceed its representation names
@@ -143,7 +143,7 @@ hidden mutable state. The 36 operators are grouped below by authoring purpose.
 The wire specification kind is sometimes broader than the operator name:
 parameter-free operators use `simple`; multiplication/division use
 `ratio_arithmetic`; all three windows use `window`. Exact specification fields
-are in the [pure specification table](reference.md#plan-signals-bindings-and-faults).
+are in the [pure specification table](reference.md#plans-signals-bindings-and-faults).
 
 ## Stateful operators
 
@@ -196,4 +196,3 @@ binding's observability policy. Reproduction artifacts authenticate the
 transitive signal-object closure, including normalized traces, sampler tables,
 spatial data, and search mutations. Use [Reproduction](reproduction.md) to
 resume or replay and [Debugging](debugging.md) to inspect evaluation evidence.
-

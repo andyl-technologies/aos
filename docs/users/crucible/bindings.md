@@ -6,8 +6,8 @@ opportunities are eligible, how values become effect parameters, how concurrent
 effects compose, and what evidence is retained.
 
 Read [Signal programs](signals.md) first when designing causes. Use the
-[effect guides](README.md#effect-guides) to select an executable effect and the
-[reference](reference.md#plan-signals-bindings-and-faults) for exact TOML shapes.
+[guide map](README.md#guide-map) to select an executable effect and the
+[reference](reference.md#plans-signals-bindings-and-faults) for exact TOML shapes.
 
 ## Binding contract
 

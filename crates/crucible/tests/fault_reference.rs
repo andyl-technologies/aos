@@ -12,6 +12,8 @@ const GUIDE_INDEX: &str = include_str!("../../../docs/users/crucible/README.md")
 const NETWORK_GUIDE: &str = include_str!("../../../docs/users/crucible/network-faults.md");
 const STORAGE_NODE_GUIDE: &str =
     include_str!("../../../docs/users/crucible/storage-node-faults.md");
+const SIGNAL_GUIDE: &str = include_str!("../../../docs/users/crucible/signals.md");
+const BINDING_GUIDE: &str = include_str!("../../../docs/users/crucible/bindings.md");
 
 const USER_GUIDES: &[&str] = &[
     "authoring.md",
@@ -198,6 +200,52 @@ fn effect_guide_matrices_match_executable_descriptors() {
     }
 }
 
+#[test]
+fn task_guides_cover_signal_and_binding_vocabularies() {
+    for source in SignalSourceKind::all() {
+        assert_code_name(SIGNAL_GUIDE, source.as_str(), "signal source");
+    }
+    for operator in PureSignalOperator::all() {
+        assert_code_name(SIGNAL_GUIDE, operator.as_str(), "pure signal operator");
+    }
+    for operator in StatefulSignalOperator::all() {
+        assert_code_name(SIGNAL_GUIDE, operator.as_str(), "stateful signal operator");
+    }
+
+    for mapping in [
+        "active_when_true",
+        "active_when_equal",
+        "threshold",
+        "map_parameter",
+        "piecewise_parameter",
+        "hazard",
+        "impulse_on_event",
+        "state_transition",
+        "service_profile",
+    ] {
+        assert_code_name(BINDING_GUIDE, mapping, "binding mapping");
+    }
+
+    for effect in EffectKind::all() {
+        let descriptor = effect.descriptor();
+        for phase in descriptor.phases {
+            assert_code_name(BINDING_GUIDE, phase.as_str(), "fault phase");
+        }
+        for lifetime in descriptor.lifetimes {
+            assert_code_name(
+                BINDING_GUIDE,
+                &debug_variant_as_snake_case(lifetime),
+                "effect lifetime",
+            );
+        }
+        assert_code_name(
+            BINDING_GUIDE,
+            &debug_variant_as_snake_case(&descriptor.composition),
+            "composition algebra",
+        );
+    }
+}
+
 fn section(start: &str, end: &str) -> &'static str {
     REFERENCE
         .split_once(start)
@@ -256,6 +304,13 @@ fn markdown_table_columns(line: &str) -> usize {
         };
     }
     columns.saturating_sub(1)
+}
+
+fn assert_code_name(guide: &str, name: &str, vocabulary: &str) {
+    assert!(
+        guide.contains(&format!("`{name}`")),
+        "task guide must name {vocabulary} `{name}`"
+    );
 }
 
 fn debug_variant_as_snake_case(value: &impl std::fmt::Debug) -> String {
