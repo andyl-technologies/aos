@@ -55,7 +55,7 @@
     then "x86_64"
     else "aarch64";
   cargoDepsHash = import ./_cargo-deps-hash.nix;
-  liveDebuggerMatrixScript = ../../../examples/codex-skills/crucible-debugger/scripts/live-matrix.sh;
+  liveDebuggerMatrixScript = ./live-debugger-matrix.sh;
   src = import ./_source.nix {inherit lib;};
   cargoDeps = fetchCargoVendor {
     inherit src;

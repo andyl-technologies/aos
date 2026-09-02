@@ -8,10 +8,11 @@ The current CLI exposes both concepts, but its interactive and debugger syntax
 is still lower-level than the target design. Treat this page as an exact surface
 reference, not as a promise of a full debugger UI.
 
-Agents can follow the repository example skill at
-[`examples/codex-skills/crucible-debugger/SKILL.md`](../../../examples/codex-skills/crucible-debugger/SKILL.md).
-It treats the packaged CLI as the debugging tool, preserves causal evidence,
-and requires a non-canonical fork before fault injection or guest access.
+The recommended workflow treats the packaged CLI as the source of truth,
+preserves causal evidence, and requires a non-canonical fork before fault
+injection or guest access. The
+[failure investigation workflow](#failure-investigation-workflow) below is
+suitable for both operators and automated debugging tools.
 
 To run the complete production matrix manually and retain every command's
 evidence outside the Nix checks, use:
@@ -365,38 +366,54 @@ For example:
 Until these seams converge, use `verify --bisect`, `replay --check`, and explicit
 savepoints as the primary failure-analysis tools.
 
-## Agent-oriented failure exercise
+## Failure investigation workflow
 
-The repository includes a deliberately incorrect scenario at
-`.codex/skills/crucible-debugger/assets/inverted-crash-expectation.scenario.toml`
-and an agent workflow in `.codex/skills/crucible-debugger/`. The scenario starts
-the standard database cluster but asserts that `db-0` must remain crashed. It is an
-operator exercise, not a Nix check: the expected result is a retained failure
-artifact and the expected diagnosis is an inverted scenario assertion.
+Preserve the scenario, seed, trace, failure artifact, session identity, and
+every debugger response needed to explain a failure. Use the packaged
+`crucible`, QEMU, and plugin outputs together; substituting a model backend does
+not establish a live-QEMU result. Give each investigation a new artifact
+directory, prefer `--format json` for machine-readable evidence, and record the
+exact command and exit status for every run. Never overwrite an existing
+artifact or guest transcript.
 
-Run it with a fixed seed, finite budget, and failure retention:
+Before changing anything, run the scenario at least twice with the same seed
+and compare its terminal outcome, causal log, and fingerprint. When replay-byte
+validation matters, capture JSONL with `--trace ORIGINAL` and pass that trace
+directly to `replay ARTIFACT --check ORIGINAL`.
 
-```sh
-mkdir -p /tmp/crucible-debugger-artifacts
-./result/bin/crucible \
-  --seed 0xdeb6 \
-  --format table \
-  --artifact-dir /tmp/crucible-debugger-artifacts \
-  run .codex/skills/crucible-debugger/assets/inverted-crash-expectation.scenario.toml \
-  --until property \
-  --save-on fail \
-  --max-quanta 100
-```
+Inspect the canonical execution read-only first. Record the assertion state,
+scheduler frontier, event offset, landed runtime coordinate, per-node
+instruction counts, and fingerprints. Exercise `reverse-step`,
+`reverse-continue`, and `goto` deliberately. A successful reverse operation
+must land at a strictly earlier event/runtime tuple even when the configuration
+hash repeats. A history-floor error means that the requested history was not
+retained; it is not evidence of a match.
 
-An agent or operator should report the terminal outcome, violated assertion,
-seed, frontier, quanta, artifact path, and the evidence that distinguishes a
-scenario-authoring error from a guest crash. Local artifact `debug` commands
-exit `4` with `no debug operation was executed`; use a live production-daemon
-session for executed reverse operations or persistent GDB inspection. `--save-on`
-controls savepoint creation, while failed runs retain a reproduction artifact
-under every savepoint policy. Treat any confusing command, unexpected exit
-status, or successful response that did not execute work as a debugger usability
-finding.
+Create an explicit `fork-debug` branch before injecting a fault, advancing
+execution under operator control, or opening `exec`, PTY, or SSH guest channels.
+Preserve the branch identity and failure reason if guest-agent activation fails.
+Use bounded commands for probes, record a transcript when its bytes matter, and
+do not issue independent GDB run control while a guest channel owns the
+scheduler-mediated debug run.
+
+Diagnose from the earliest causal discrepancy:
+
+1. Locate the first assertion failure or divergence in the causal log.
+2. Rewind to the preceding event or quantum and inspect the landed coordinate.
+3. Compare the relevant registers, memory, device state, logs, and guest process
+   state.
+4. Fork and replay the smallest hypothesis-changing action, including a typed
+   fault when appropriate.
+5. Repeat from the same recorded coordinate and seed, rejecting explanations
+   that do not reproduce.
+
+The final report should include the terminal outcome, violated assertion, seed,
+frontier, quanta, artifact path, earliest causal discrepancy, supporting
+commands, and any debugger behavior that prevented a conclusion. Distinguish a
+product bug from a scenario-authoring error and report unsupported, timed-out,
+malformed, or architecture-specific behavior without silently changing the
+backend. Close guest channels, release the controller lease, and stop the live
+session when the investigation finishes.
 
 ## Remote GDB attachment
 
