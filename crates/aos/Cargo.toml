@@ -16,6 +16,10 @@ path = "src/apr.rs"
 name = "apm"
 path = "src/apm.rs"
 
+[[bin]]
+name = "aos-package-runtime"
+path = "src/package_runtime.rs"
+
 [dependencies]
 rustix = { workspace = true }
 aos-core = { workspace = true }

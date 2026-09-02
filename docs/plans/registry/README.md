@@ -428,9 +428,8 @@ object store carries everything else.
 Full definitions live in [design brief §1](./design-brief.md). The terms you need
 to read this plan:
 
-- **`apm` / `apr`** — the package-management CLI (`apm` ⇒ implicit `package`) and
-  the registry CLI (`apr` ⇒ implicit `package registry`); same binary, `argv[0]`
-  dispatch (`crates/aos/src/main.rs`).
+- **`apm` / `apr`** — independent package-consumer and registry-authoring CLIs
+  with disjoint parsers and shared implementation libraries.
 - **Registry (target)** — a bare git repo, **sha256** object format, served as
   static files over **dumb HTTP**. The package metadata *is* the git tree content.
 - **Channel** — a named release line (`stable`, `testing`); a git **branch**

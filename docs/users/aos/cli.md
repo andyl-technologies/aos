@@ -4,25 +4,53 @@ This reference covers the repository and release-engineering command surface.
 Host users normally use [`apm`](packages.md) for package and generation
 operations and do not need a source checkout or Nix.
 
-The AOS package installs one multicall binary under three names. The name used
-to invoke it selects the command surface.
+The source package builds independent command-line programs with shared
+libraries, deliberately separate parsers, and separate Nix outputs.
 
-| Command | Equivalent long form | Scope |
-| --- | --- | --- |
-| `aos` | — | Source tree, builds, checks, generated reference, Hub client |
-| `apm` | `aos package` | Package consumption and installed generations |
-| `apr` | `aos package registry` | Registry authoring and publication |
+| Command | Scope |
+| --- | --- |
+| `aos` | Source tree, builds, checks, generated reference, Hub client |
+| `apm` | Package consumption, consumer registry configuration, and installed generations |
+| `apr` | Registry workspaces, authoring, signing, and publication |
+| `aos-package-runtime` | Private AOS service, evaluation, and activation operations |
 
-On AOS, all three commands are installed in the base system. From a repository
-checkout, run `aos` through the flake:
+There are no long-form aliases: `aos package` does not exist. Producer commands
+such as `publish` and `release` are not accepted below `apm registry`, and the
+private runtime rejects public package-manager commands.
+
+The package-set mapping is explicit: `pkgs.aos` contains only `aos`,
+`pkgs.aos.apm` contains only `apm`, and `pkgs.aos.apr` contains only `apr`.
+`pkgs.aos.packageRuntime` is private and is referenced directly by AOS service
+units. The split outputs share one Cargo build but retain distinct runtime-tool
+closures.
+
+An AOS base image places only `apm` on the operator `PATH`; the repository and
+registry-authoring tools are host-side programs. From a repository checkout,
+run `aos` through the flake:
 
 ```sh
 nix run . -- describe
 nix run . -- test eval
 ```
 
+Build the public command outputs independently with `nix build .#aos`,
+`nix build .#apm`, or `nix build .#apr`. The development shell exposes all
+three names. The private runtime has no public flake package.
+
 The current repository CLI and bootable-image workflow is supported on
-`x86_64-linux`.
+`x86_64-linux`. Package and registry tools have a broader portability model:
+
+| Operation | Non-AOS Linux | Darwin | AOS |
+| --- | --- | --- | --- |
+| Registry search, inspection, and user configuration | Supported | Supported | Supported |
+| Registry authoring and publication | Supported when required local tools are present | Supported for Darwin package artifacts | Supported |
+| User-profile package operations | Supported for matching platform artifacts and a compatible local store | Supported for Darwin package artifacts and a compatible local store | Supported |
+| `apm ... --system` or `apr --system ...` | Only with an explicit validated `AOS_ROOT` | Only with an explicit validated `AOS_ROOT` | Supported |
+| Live activation, evaluation, and boot transitions | Unsupported | Unsupported | Private `aos-package-runtime` only |
+
+System scope fails closed before loading package state. The selected root must
+identify `ID=aos` and provide a numeric `AOS_MODULE_ABI`; live runtime commands
+also require the immutable `/aos-toplevel/os-release` identity.
 
 ## Work in a repository checkout
 
@@ -33,9 +61,10 @@ Most `aos` development commands need `nix-build` and an AOS source root with a
 2. the current directory and its parents;
 3. the binary directory and its parent.
 
-Package, cache, Hub, metadata, server, token, and completion commands dispatch
-before repository discovery and can run without a source checkout when their
-own inputs are available.
+Cache, Hub, metadata, server, token, and completion commands dispatch before
+repository discovery and can run without a source checkout when their own
+inputs are available. Package operations belong to `apm` and registry
+authoring belongs to `apr`; neither requires an AOS source checkout.
 
 ## Build and inspect source
 

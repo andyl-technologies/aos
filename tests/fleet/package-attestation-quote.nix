@@ -22,7 +22,7 @@
 
       nonce = "00112233445566778899aabbccddeeff"
       out_dir = "/tmp/aos-package-quote"
-      apm = "${pkgs.aos}/bin/apm"
+      apm = "${pkgs.aos.apm}/bin/apm"
       checkquote = "${pkgs.tpm2-tools}/bin/tpm2_checkquote"
       openssl = "${pkgs.openssl}/bin/openssl"
       startup = "${pkgs.tpm2-tools}/bin/tpm2_startup"

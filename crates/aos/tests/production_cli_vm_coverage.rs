@@ -8,9 +8,9 @@ use clap::{Command, CommandFactory};
 #[path = "../src/cli/mod.rs"]
 mod cli;
 
-use cli::Cli;
+use cli::{ApmCli, AprCli, Cli};
 
-fn cli_command() -> Command {
+fn aos_command() -> Command {
     std::thread::Builder::new()
         .name("production-cli-coverage-command".into())
         .stack_size(8 * 1024 * 1024)
@@ -18,6 +18,26 @@ fn cli_command() -> Command {
         .expect("CLI coverage command thread must start")
         .join()
         .expect("CLI coverage command thread must complete")
+}
+
+fn apm_command() -> Command {
+    std::thread::Builder::new()
+        .name("production-apm-coverage-command".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(ApmCli::command)
+        .expect("APM coverage command thread must start")
+        .join()
+        .expect("APM coverage command thread must complete")
+}
+
+fn apr_command() -> Command {
+    std::thread::Builder::new()
+        .name("production-apr-coverage-command".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(AprCli::command)
+        .expect("APR coverage command thread must start")
+        .join()
+        .expect("APR coverage command thread must complete")
 }
 
 fn command_at<'a>(root: &'a Command, path: &[&str]) -> &'a Command {
@@ -67,18 +87,17 @@ fn collect_nix_sources(directory: &Path, source: &mut String) {
 
 #[test]
 fn every_production_command_leaf_is_owned_by_an_executable_nix_test() {
-    let root = cli_command();
+    let root = aos_command();
+    let apm = apm_command();
+    let apr = apr_command();
     let mut leaves = Vec::new();
     collect_leaves(
         command_at(&root, &["hub"]),
         &mut vec!["aos".into(), "hub".into()],
         &mut leaves,
     );
-    collect_leaves(
-        command_at(&root, &["package"]),
-        &mut vec!["apm".into()],
-        &mut leaves,
-    );
+    collect_leaves(&apm, &mut vec!["apm".into()], &mut leaves);
+    collect_leaves(&apr, &mut vec!["apr".into()], &mut leaves);
     leaves.sort();
 
     let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -98,7 +117,8 @@ fn every_production_command_leaf_is_owned_by_an_executable_nix_test() {
                 .strip_prefix("aos hub ")
                 .or_else(|| leaf.strip_prefix("apm registry "))
                 .or_else(|| leaf.strip_prefix("apm "))
-                .expect("production leaf must have a known multicall prefix");
+                .or_else(|| leaf.strip_prefix("apr "))
+                .expect("production leaf must have a known CLI prefix");
             let reviewed_base = command.strip_suffix(" apply");
             !source.contains(command) && !reviewed_base.is_some_and(|base| source.contains(base))
         })

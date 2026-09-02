@@ -550,9 +550,9 @@ in {
     # `pkgs.runCommand` + `pkgs.sed` idiom. The body is kept in a
     # committed `.sh.in` file (not an inline Nix string) so the script's
     # shell `${N}` / `${prev_gen:-}` expansions don't collide with Nix's
-    # own `${…}` interpolation. `@apm@` resolves to `pkgs.aos` (the apm
-    # binary); this does not create a cycle since `pkgs.aos` is a Rust
-    # binary that does not depend on the toplevel.
+    # own `${…}` interpolation. `@apm@` resolves to the private package-runtime
+    # output; this does not create a cycle since it does not depend on the
+    # toplevel.
     # The activate script is an image-fixed artifact (it just
     # substitutes pkgs store paths into activate.sh.in). Reference the resolved
     # artifact; register the source guarded on frozenArtifacts so the stage-2
@@ -571,7 +571,7 @@ in {
             -e "s|@coreutils@|${pkgs.coreutils}|g" \
             -e "s|@util-linux@|${pkgs.util-linux}|g" \
             -e "s|@erofs-utils@|${pkgs.erofs-utils}|g" \
-            -e "s|@apm@|${pkgs.aos}|g" \
+            -e "s|@apm@|${pkgs.aos.packageRuntime}|g" \
             -e "s|@systemd@|${pkgs.systemd}|g" \
             ${./activate.sh.in} > "$out"
           chmod +x "$out"

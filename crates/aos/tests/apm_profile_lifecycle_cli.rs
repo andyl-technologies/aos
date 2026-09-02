@@ -1,7 +1,7 @@
 //! End-to-end CLI coverage for user profile lifecycle operations.
 //!
 //! The fixture starts from a profile that looks like a consumer has already
-//! installed packages from a registry, then drives ordinary `aos package`
+//! installed packages from a registry, then drives ordinary `apm`
 //! maintenance commands against that state.
 
 #![cfg(unix)]
@@ -692,11 +692,11 @@ exit 64
         let output = self
             .package_command(args)?
             .output()
-            .with_context(|| format!("running aos package {action}"))?;
+            .with_context(|| format!("running apm {action}"))?;
         if !output.status.success() {
             let nix_store_calls = fs::read_to_string(self.nix_store_stub_log()).unwrap_or_default();
             bail!(
-                "aos package {action} failed:\nstdout:\n{}\nstderr:\n{}\nnix-store calls:\n{}",
+                "apm {action} failed:\nstdout:\n{}\nstderr:\n{}\nnix-store calls:\n{}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr),
                 nix_store_calls,
@@ -704,15 +704,15 @@ exit 64
         }
         assert!(
             String::from_utf8_lossy(&output.stderr).is_empty(),
-            "JSON aos package {action} should keep stderr clean:\n{}",
+            "JSON apm {action} should keep stderr clean:\n{}",
             String::from_utf8_lossy(&output.stderr),
         );
         serde_json::from_slice(&output.stdout)
-            .with_context(|| format!("parsing aos package {action} JSON from stdout"))
+            .with_context(|| format!("parsing apm {action} JSON from stdout"))
     }
 
     fn package_command(&self, args: &[&str]) -> Result<Command> {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_aos"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_apm"));
         command
             .env("HOME", &self.home)
             .env("USER", "apmtest")
@@ -727,7 +727,6 @@ exit 64
                 self.nix_store_valid_paths(),
             )
             .env("PATH", path_with_prefix_first(&self.tools_dir)?)
-            .arg("package")
             .args(args);
         Ok(command)
     }

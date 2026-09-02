@@ -266,7 +266,7 @@ in {
       # available: aos 0.1.0 -> test-2"; both version strings are the
       # unambiguous signal the test-2 entry was recognised.
       out = target.succeed(
-          "HOME=/tmp ${pkgs.aos}/bin/apm upgrade --system --dry-run 2>&1",
+          "HOME=/tmp ${pkgs.aos.apm}/bin/apm upgrade --system --dry-run 2>&1",
           timeout=120,
       )
       assert "test-2" in out, f"dry-run did not surface the test-2 target: {out!r}"
@@ -274,7 +274,7 @@ in {
 
       # -- Real operation refuses the incomplete image before mutation --------
       target.succeed(
-          "if HOME=/tmp ${pkgs.aos}/bin/apm upgrade --system --yes "
+          "if HOME=/tmp ${pkgs.aos.apm}/bin/apm upgrade --system --yes "
           "> /tmp/apm-system-upgrade.out 2>&1; then exit 1; fi",
           timeout=300,
       )

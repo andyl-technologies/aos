@@ -76,12 +76,12 @@ in {
           # Generate the maintainer key, seed the roster with it under id
           # `release`, then record its private half in the publisher's
           # registries.d config so `--key-id release` resolves.
-          ${pkgs.aos}/bin/apr keys generate release --registry desired-reg \
+          ${pkgs.aos.apr}/bin/apr keys generate release --registry desired-reg \
             > /tmp/desired-keygen.out 2>&1
           cat /tmp/desired-keygen.out
           PUBKEY=$(awk '/Public key:/ {print $NF; exit}' /tmp/desired-keygen.out)
           KEY=$HOME/.config/apm/keys/desired-reg-release.key
-          ${pkgs.aos}/bin/apr create desired-reg \
+          ${pkgs.aos.apr}/bin/apr create desired-reg \
             --trust-key "$PUBKEY" \
             --trust-key-id release \
             --key "$KEY"
@@ -95,7 +95,7 @@ in {
           release = "$KEY"
           EOF
 
-          ${pkgs.aos}/bin/apr publish '${pkgs.desired-config-test}' \
+          ${pkgs.aos.apr}/bin/apr publish '${pkgs.desired-config-test}' \
             --name desired-config-test \
             --version 1.0.0 \
             --description 'desired sequencing fixture' \
@@ -140,7 +140,7 @@ in {
       )
 
       out = vm.succeed(
-          "HOME=/tmp/desired-run ${pkgs.aos}/bin/apm install --system "
+          "HOME=/tmp/desired-run ${pkgs.aos.apm}/bin/apm install --system "
           "--from /etc/aos/packages.d/desired.toml --yes 2>&1",
           timeout=240,
       )
