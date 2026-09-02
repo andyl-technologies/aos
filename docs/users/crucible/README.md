@@ -150,6 +150,11 @@ For deeper work:
   the complete assertion vocabulary and how effect evidence becomes a verdict.
 - [Stores and artifacts](artifacts.md) distinguishes scenarios, DAG objects,
   checkpoints, handles, reproduction artifacts, findings, and reports.
+- [Fault experiment cookbook](cookbook.md) provides end-to-end patterns for
+  outages, hazards, congestion, corruption, power loss, recordings, hardware,
+  arrays, contacts, and bounded exploration.
+- [Rust integration API](rust-api.md) maps scenario generation, production
+  lifecycle, control clients, streaming, RPC, debug, and import surfaces.
 - [Running Crucible](running.md) is the command reference for backend discovery,
   seeds, terminal conditions, output, and exit codes.
 - [CI](ci.md) shows a bounded, reproducible pipeline with retained failure

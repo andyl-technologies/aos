@@ -27,6 +27,8 @@ Complete user coverage requires all applicable columns below:
 
 The [canonical reference](reference.md) remains the exhaustive CLI and scenario
 exchange vocabulary. Task guides explain how those fields form an experiment.
+Cross-domain worked patterns are in the [fault experiment cookbook](cookbook.md),
+and programmatic surfaces are mapped in the [Rust integration API](rust-api.md).
 
 ## Packaged command inventory
 
