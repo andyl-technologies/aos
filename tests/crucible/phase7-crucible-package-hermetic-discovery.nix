@@ -7,7 +7,7 @@
   packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   cruciblePackageNix = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
-  liveDebuggerMatrix = builtins.readFile ../../examples/codex-skills/crucible-debugger/scripts/live-matrix.sh;
+  liveDebuggerMatrix = builtins.readFile ../../pkgs/tools/crucible/live-debugger-matrix.sh;
   cliHermeticDiscoveryCheck = builtins.readFile ./phase5-cli-hermetic-discovery.nix;
   workspaceBuildCheck = builtins.readFile ./phase1-aos-workspace-build.nix;
   cliMain = import ./_cli-source.nix {inherit lib;};
@@ -184,7 +184,7 @@
         needle = "cli_hermetic_qemu_discovery_fails_absent_or_mismatched_artifacts_with_exit_4";
       }
     ]
-    ++ failuresFor "examples/codex-skills/crucible-debugger/scripts/live-matrix.sh" liveDebuggerMatrix [
+    ++ failuresFor "pkgs/tools/crucible/live-debugger-matrix.sh" liveDebuggerMatrix [
       {
         label = "live fixture binds packaged boot assets";
         needle = ''"$CRUCIBLE_MATRIX_FIXTURE_GENERATOR"'';
@@ -230,7 +230,7 @@
         needle = ''--record-transcript $directory/ssh.crgt'';
       }
     ]
-    ++ forbiddenFor "examples/codex-skills/crucible-debugger/scripts/live-matrix.sh" liveDebuggerMatrix [
+    ++ forbiddenFor "pkgs/tools/crucible/live-debugger-matrix.sh" liveDebuggerMatrix [
       {
         label = "unbounded GDB error-packet match";
         needle = ''received: "E[0-9a-f]+"'';

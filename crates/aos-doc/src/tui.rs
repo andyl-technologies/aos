@@ -1383,15 +1383,13 @@ fn render_entry_detail(entry: &DocEntry) -> Text<'static> {
         lines.push(Line::from(""));
     }
 
-    // Summary.
-    if !entry.summary.is_empty() {
-        lines.push(Line::from(entry.summary.clone()));
-        lines.push(Line::from(""));
-    }
-
-    // Description (body).
-    if !entry.body.is_empty() && entry.body != entry.summary {
+    // The body includes the summary as its first paragraph, so render only
+    // one source. Prefer the body because it preserves inline formatting.
+    if !entry.body.is_empty() {
         lines.extend(render_markdown_lines(&entry.body));
+        lines.push(Line::from(""));
+    } else if !entry.summary.is_empty() {
+        lines.push(Line::from(entry.summary.clone()));
         lines.push(Line::from(""));
     }
 
@@ -1488,14 +1486,13 @@ fn render_option_detail(entry: &DocEntry) -> Text<'static> {
     }
     lines.push(Line::from(""));
 
-    // Description.
-    if !entry.summary.is_empty() {
-        lines.push(Line::from(entry.summary.clone()));
-        lines.push(Line::from(""));
-    }
-
-    if !entry.body.is_empty() && entry.body != entry.summary {
+    // The body includes the summary as its first paragraph, so render only
+    // one source. Prefer the body because it preserves inline formatting.
+    if !entry.body.is_empty() {
         lines.extend(render_markdown_lines(&entry.body));
+        lines.push(Line::from(""));
+    } else if !entry.summary.is_empty() {
+        lines.push(Line::from(entry.summary.clone()));
         lines.push(Line::from(""));
     }
 
@@ -1563,15 +1560,14 @@ fn render_package_detail(entry: &DocEntry) -> Text<'static> {
         ]));
     }
 
-    // Description.
-    if !entry.summary.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(entry.summary.clone()));
-    }
-
-    if !entry.body.is_empty() && entry.body != entry.summary {
+    // The body includes the summary as its first paragraph, so render only
+    // one source. Prefer the body because it preserves inline formatting.
+    if !entry.body.is_empty() {
         lines.push(Line::from(""));
         lines.extend(render_markdown_lines(&entry.body));
+    } else if !entry.summary.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(entry.summary.clone()));
     }
     lines.push(Line::from(""));
 
@@ -1723,4 +1719,68 @@ fn render_inline_code(text: &str) -> Vec<Span<'static>> {
     }
 
     spans
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use ratatui::style::Color;
+
+    use super::*;
+
+    fn documented_entry(category: DocCategory) -> DocEntry {
+        DocEntry {
+            path: "test.entry".to_string(),
+            category,
+            summary: "Returns `value`.".to_string(),
+            body: "Returns `value`.\n\nMore detail.".to_string(),
+            type_sig: None,
+            default: None,
+            examples: Vec::new(),
+            see_also: Vec::new(),
+            parameters: Vec::new(),
+            source_file: None,
+            source_line: None,
+            section: None,
+            extra: BTreeMap::new(),
+        }
+    }
+
+    fn assert_summary_rendered_once(text: &Text<'_>) {
+        let rendered_lines: Vec<String> = text
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+
+        assert_eq!(
+            rendered_lines
+                .iter()
+                .filter(|line| line.replace('`', "") == "Returns value.")
+                .count(),
+            1
+        );
+        assert!(text.lines.iter().any(|line| {
+            line.spans.iter().any(|span| {
+                span.content.as_ref() == "value" && span.style.fg == Some(Color::Yellow)
+            })
+        }));
+    }
+
+    #[test]
+    fn detail_views_render_formatted_summaries_once() {
+        let function = documented_entry(DocCategory::Function);
+        let option = documented_entry(DocCategory::ModuleOption);
+        let package = documented_entry(DocCategory::Package);
+
+        assert_summary_rendered_once(&render_entry_detail(&function));
+        assert_summary_rendered_once(&render_option_detail(&option));
+        assert_summary_rendered_once(&render_package_detail(&package));
+    }
 }
