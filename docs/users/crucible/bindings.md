@@ -20,9 +20,9 @@ Each `[[plan.fault_binding]]` contains:
 | `sampling` | Boundary, opportunity, change, cadence, or typed event sampling. |
 | `selector` | A finite, homogeneous target set resolved against the declared World. |
 | `mapping` | Closed typed transfer from signal inputs to effect parameters. |
-| `effect` | One effect kind, parameter payload, phase, and lifetime contract. |
+| `phases` | Nonempty set of exact adapter phases, also used by the opportunity filter. |
+| `effect` | One effect kind, semantic version, parameter payload, and lifetime. |
 | `opportunity_filter` | Required where opportunity sampling cannot be inferred; adapter, operations, phases, optional target kinds. |
-| `composition` | Effect-family algebra used when multiple active bindings overlap. |
 | `search` | Fixed policy or a finite, declared branch/mutation space. |
 | `observability` | Sample and mapped-value retention policy. |
 
@@ -103,13 +103,13 @@ an adapter directly.
 
 | Mapping kind | Input-to-output rule | Authoring constraints |
 | --- | --- | --- |
-| `direct` | One input is already the complete effect parameter value | Exact type, unit, and lifetime shape match. |
-| `boolean_gate` | Boolean selects inactive/active payload | Both payloads are complete and equal-shaped. |
-| `threshold` | Ordered input selects below/at-or-above payload | Threshold shares input shape and unit. |
-| `piecewise_constant` | Ordered breakpoints select a payload | Strict ordering and explicit before/after coverage. |
-| `piecewise_linear` | Ordered points interpolate numeric parameters | Exact rounding/overflow; bounded, compatible shapes. |
-| `enum_map` | Enum variant selects a payload | Exhaustive over the declared enum schema. |
-| `parameter_set` | Inputs fill named fields of a parameter record | Names and arity match the effect's closed schema. |
+| `active_when_true` | Boolean controls persistent activation, optionally inverted | Exactly one Boolean input; effect lifetime is `persistent`. |
+| `active_when_equal` | Enum activates for one declared variant | Exactly one compatible enum input; effect lifetime is `persistent`. |
+| `threshold` | Numeric comparison controls activation, with optional clear threshold and residence | Thresholds share input shape/unit; deadband direction must agree with comparison. |
+| `map_parameter` | One input fills one registered dynamic effect field | Field contract accepts the exact value shape. |
+| `piecewise_parameter` | Ordered points interpolate one dynamic field | Strictly increasing inputs, explicit rounding/overflow, compatible output shape. |
+| `hazard` | Probability is evaluated at each matching opportunity | Opportunity sampling and `opportunity` lifetime only. |
+| `impulse_on_event` | Each typed event produces one impulse | Event sampling and `impulse` lifetime only. |
 | `state_transition` | Value selects a registered transition table entry | Table is declared, finite, and compatible. |
 | `service_profile` | Value selects a named physical-input service profile | Profile exists in the policy registry and matches the effect. |
 
@@ -120,17 +120,17 @@ adapter command is emitted.
 
 ## Phases and lifetimes
 
-Phases locate an effect within a typed operation:
+Phases locate an effect within a typed adapter operation. The complete wire
+vocabulary is:
 
 | Phase | Meaning |
 | --- | --- |
-| `admit` | Before an operation is accepted. |
-| `resolve` | While a target, route, result, or physical outcome is resolved. |
-| `enqueue` | When work enters a modeled queue. |
-| `service` | While bounded work consumes a service resource. |
-| `deliver` | At completion or delivery to the consumer. |
-| `transition` | At a topology, device, or state transition. |
-| `observe` | At a read-only observation boundary. |
+| Common adapter | `produce`, `admit`, `queue`, `resolve`, `persist`, `visibility`, `deliver`, `transition`, `boundary`, `run` |
+| Instruction/register | `before_instruction`, `after_instruction`, `before_read`, `after_read`, `before_write`, `after_write` |
+| Memory | `fetch`, `load`, `store`, `dma_read`, `dma_write`, `page_table_walk`, `refresh` |
+| Interrupt | `raise`, `route`, `acknowledge`, `interrupt_deliver`, `return` |
+| Clock | `clock_read`, `arm`, `fire`, `synchronize`, `source_switch` |
+| Accelerator | `submit`, `execute`, `complete`, `accelerator_memory_access` |
 
 Not every adapter exposes every phase, and every effect descriptor lists its
 legal subset. Choosing an earlier phase can change whether in-flight work is
@@ -140,14 +140,14 @@ Lifetimes state how long mapped parameters remain active:
 
 | Lifetime | Behavior |
 | --- | --- |
-| `opportunity` | Applies only to the sampled operation. |
-| `until_change` | Persists until the binding maps a different value. |
-| `duration_nanos` | Persists for an exact positive virtual duration. |
-| `count` | Applies to a bounded number of matching opportunities. |
-| `state` | Persists as declared adapter state until a transition replaces it. |
+| `persistent` | Remains active until its binding deactivates it. |
+| `opportunity` | Is independently resolved for one opportunity. |
+| `impulse` | Mutates state once and cannot be healed by later deactivation. |
+| `state_machine` | Advances bounded adapter-owned state. |
 
 Deactivation restores the declared baseline or the composition result of other
-active bindings. Stateful effects and duration/count lifetimes are checkpointed.
+active bindings. Stateful effects and adapter-owned lifetime state are
+checkpointed.
 
 ## Composition
 
@@ -156,16 +156,16 @@ Crucible rejects ambiguous mixtures instead of relying on activation order.
 
 | Algebra | Combination rule | Common family |
 | --- | --- | --- |
-| `exclusive` | At most one active value | State machines and complete policy replacements. |
-| `latest_by_coordinate` | Greatest canonical activation coordinate wins | Versioned state transition. |
-| `minimum` | Smallest value wins | Capacity/rate ceilings. |
-| `maximum` | Largest value wins | Delay or severity floors. |
-| `sum_saturating` | Sum with declared saturation | Additive delays or load. |
-| `product_probability` | Independent probabilities combine exactly | Loss/failure probability. |
-| `boolean_any` | Active if any contributor is true | Gating or availability conditions. |
-| `ordered_pipeline` | Apply transformations in canonical binding order | Payload/result transformations. |
-| `set_union` | Canonical union of selections | Recipient or candidate sets. |
-| `service_intersection` | Most restrictive compatible service constraints | Rate/IOPS/token/queue service. |
+| `outage_or` | Any active outage makes the target unavailable | Availability and hang. |
+| `checked_sum` | Add in canonical binding order; overflow is an error | Delay and bounded duplicates. |
+| `minimum` | Least non-null cap wins; all limiters remain visible | Service constraints. |
+| `rational_product` | Multiply reduced ratios with checked intermediates | Capacity factors. |
+| `ordered_transform` | Apply in binding order and retain every intermediate digest | Payload/data/result transforms. |
+| `severity` | Select the greatest value in a closed precedence lattice | Failure dispositions and lifecycle. |
+| `state_machine` | Apply declared transition precedence | Stateful adapter transitions. |
+| `independent_hazards` | Evaluate every keyed hazard; any firing outcome applies | Independent loss/failure causes. |
+| `conflict` | Reject distinct simultaneous contributions | Complete policy replacement. |
+| `composite` | Use effect-specific component algebras | Structured multi-field effects. |
 
 Canonical order is based on stable identities and coordinates, never host thread
 timing. The effect registry is authoritative for which algebra an effect accepts.
@@ -212,7 +212,8 @@ Before running a campaign, verify:
    are intentional.
 3. Sampling uses the causal coordinate that should make replay identities stable.
 4. Opportunity adapter, operations, phases, and target kinds agree.
-5. Effect parameters, phase, lifetime, and composition are legal in the
+5. Effect parameters, phase, and lifetime are legal, and overlapping
+   contributions obey the registry-selected composition algebra in the
    [effect registry](reference.md#exhaustive-effect-registry).
 6. Required topology policy objects and packaged capabilities exist.
 7. Search candidates and all history/work limits are finite and campaign-sized.
@@ -220,4 +221,3 @@ Before running a campaign, verify:
 
 Admission and capability negotiation happen before guest execution. Unsupported
 or internally inconsistent bindings fail closed rather than becoming no-ops.
-
