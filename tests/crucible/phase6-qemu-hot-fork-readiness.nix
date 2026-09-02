@@ -1831,6 +1831,7 @@ in
           patch=0174-crucible-bind-child-monitor-ownership-basis.patch
           patch=0175-crucible-bind-child-monitor-chardev-disposition.patch
           patch=0176-crucible-bind-child-monitor-socket-resources.patch
+          patch=0177-crucible-hold-reconstructed-child-monitor-socket.patch
           plugin_endpoint_schema_version=4
           plugin_endpoint_source_descriptors_observed=true
           plugin_endpoint_replacement_plan_bound=false
