@@ -38,6 +38,8 @@ in
     memory = 2048;
     rootfsDeps = [
       pkgs.aos
+      pkgs.aos.apm
+      pkgs.aos.packageRuntime
       pkgs.aos-hub
       pkgs.coreutils
       pkgs.curl
