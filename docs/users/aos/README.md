@@ -31,9 +31,11 @@ Three command names cover different jobs on an AOS system:
 | `apr` | Creating, signing, and publishing package registries |
 | `aos` | Repository and AOS Hub tooling; most host package operations use `apm` |
 
-All three names are installed in an AOS image. They are also links to one
-multicall binary, so `aos package` is equivalent to `apm` and
-`aos package registry` is equivalent to `apr`.
+All three are independent programs backed by shared Rust libraries. `aos` has
+no package-management subcommand, `apm` cannot publish registries, and `apr`
+cannot install packages. Private activation and evaluation operations run
+through `aos-package-runtime`; that executable is reserved for AOS services
+and is not an operator CLI.
 
 ## Install and configure
 

@@ -433,15 +433,8 @@ in {
       checks = [
         {
           name = "apm-help";
-          description = "apm --help exits 0 (argv[0] dispatch via the store-path bin)";
-          # Invoke via the absolute store path, not via /usr/bin/apm.
-          # The rootfs symlink-farm (lib/build/rootfs.nix:83-99) globs
-          # `${pkg}/bin/*` which omits dotfiles, so the
-          # `.apm-unwrapped` companion never appears next to the
-          # PATH-installed `apm` symlink — the wrapper's
-          # `exec "$(dirname "$0")/.apm-unwrapped"` then fails. Using
-          # the store path means `dirname "$0"` resolves to the bin
-          # dir that *does* contain the unwrapped binary.
+          description = "the independent apm parser exposes package-consumer help";
+          # Exercise the exact packaged wrapper installed into the image.
           script = ''
             vm.succeed("${pkgs.aos}/bin/apm --help")
           '';

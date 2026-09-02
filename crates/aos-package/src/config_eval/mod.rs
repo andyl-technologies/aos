@@ -1119,7 +1119,7 @@ fn resolve_one<R: ConfigModuleResolver>(
 }
 
 // ---------------------------------------------------------------------------
-// CLI driver (`apm __eval` / `aos config eval`)
+// Private runtime driver (`aos-package-runtime __eval`)
 // ---------------------------------------------------------------------------
 
 /// Parameters for the on-host config-eval command.
@@ -1236,7 +1236,7 @@ fn enforce_host_nix_trust_policy(cmd: &EvalCommand) -> Result<()> {
 ///
 /// Returns an error when the desired file cannot be read or parsed, when the
 /// fixpoint reaches a terminal state, or when the manifest cannot be written.
-/// The caller (the hidden `apm __eval` subcommand) maps this to a non-zero exit;
+/// The private runtime caller maps this to a non-zero exit;
 /// the service treats it as best-effort.
 pub fn run_eval_command(cmd: &EvalCommand) -> Result<()> {
     run_eval_command_with_report(cmd).map(|_| ())
