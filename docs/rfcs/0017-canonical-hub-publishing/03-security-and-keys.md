@@ -54,6 +54,10 @@ documented RSA-2048/SHA-256 compatibility profile for UEFI keys. The choice is
 qualified on that hardware class and recorded in the release manifest. It is
 never silently weakened during signing.
 
+Every boot-signing request also binds the exact target platform, PE machine
+type, system variant, release, and unsigned artifact digest. A signature issued
+for one Linux architecture cannot satisfy the other architecture's manifest.
+
 No production release depends on a private key stored as an ordinary file on
 the maintainer host. Encrypted offline backups are exception copies under
 separate custody, not routine signing sources.

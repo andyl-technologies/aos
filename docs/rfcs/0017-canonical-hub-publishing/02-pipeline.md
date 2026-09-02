@@ -35,6 +35,12 @@ At minimum the bundle inventories:
   and incident/waiver references; and
 - the release-tool and Hub deployment ids used for every transition.
 
+It also carries the closed four-target package eligibility matrix and both
+Linux architecture image matrices defined by
+[`06-platform-matrix.md`](06-platform-matrix.md). Every planned cell is an
+artifact, an explicit policy-backed `not-applicable`, or an edge/RC-only
+`blocked` result. Stable-eligible bundles contain no blocked cell.
+
 The public portion is signed by the provenance/evidence key and published with
 the release. Secrets, personal data, provider account ids, internal host
 addresses, and raw logs remain in the restricted operator record; the public
@@ -92,6 +98,8 @@ All applicable repository checks run before finalization. The baseline includes:
 - secret scanning, source/license inventory, SBOM completeness, and
   vulnerability-policy evaluation against a pinned advisory snapshot;
 - every discovered image-budget check for a published system;
+- complete package/NAR/documentation checks for `x86_64-linux`,
+  `aarch64-linux`, `x86_64-darwin`, and `aarch64-darwin`;
 - `checks.fleet.apr-release-e2e` and the Hub/APM publication path;
 - install-from-image, Secure Boot, lockdown, measured-boot, registry Secure
   Boot catalog, signed package-root image, and image rollback checks for an
@@ -107,10 +115,11 @@ than relying on a stale hard-coded command list.
 
 External signing consumes only the frozen unsigned manifest and produces a new
 final manifest. The signer verifies the release id, source commit, artifact
-digests, key role, requested signature purpose, and operator approval before it
-uses a key.
+digests, exact target platform, PE machine type where applicable, key role,
+requested signature purpose, and operator approval before it uses a key.
 
-For an image-bearing release, finalization:
+For an image-bearing release, finalization performs these steps independently
+for each Linux architecture:
 
 1. Signs modules with the module key and verifies every signature against the
    certificate embedded in the kernel.
@@ -169,6 +178,11 @@ An image-bearing candidate passes:
 - the platform-specific canary appropriate to every advertised format; and
 - clean Hub logs, storage checks, ranged downloads, cache headers, and audit
   entries.
+
+Qualification runs both Linux image architectures and the native Darwin
+package gates required by [`06-platform-matrix.md`](06-platform-matrix.md).
+Cross-compilation and static inspection alone cannot qualify a Darwin cell for
+stable.
 
 A package-only candidate installs and activates each changed package in its
 supported system context, verifies package-root integrity and documentation,

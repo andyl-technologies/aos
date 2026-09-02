@@ -81,7 +81,8 @@ The operator opens one release session and records its id. Before mutation:
 6. Select an unused version according to
    [`01-release-model.md`](01-release-model.md).
 7. Generate a dry-run plan and inspect its artifact matrix, gates, key roles,
-   upload destinations, retention roots, and partition changes.
+   four target platforms, two Linux image architecture sets, upload
+   destinations, retention roots, and partition changes.
 8. Sign the plan with the release-evidence key. Any later input change creates
    a new plan generation and invalidates approvals on the old plan.
 
@@ -95,7 +96,8 @@ For each build:
 1. Capture the command, derivation, output paths, NAR hashes, source commit,
    start/finish time, and machine boot identity.
 2. Run the selected evaluation, formatting, Rust, package, documentation,
-   image, VM/fleet, license, ABI, and source-retention gates.
+   four-platform package, two-architecture image, VM/fleet, native Darwin,
+   license, ABI, and source-retention gates.
 3. Force the repeat realization required by the release class and compare the
    unsigned content graph.
 4. Verify all package and image metadata against the artifacts rather than the
