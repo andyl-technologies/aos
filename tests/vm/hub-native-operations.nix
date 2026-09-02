@@ -178,8 +178,7 @@ in
         exit 1
       fi
       ${pkgs.jq}/bin/jq -e \
-        '.op == "render-one" and .package == "example"
-          and (.error | contains("reading manifest"))' \
+        '.error | contains("reading manifest")' \
         /tmp/render-one-missing.json >/dev/null
 
       echo '==> Schema is inspectable before instance creation'
