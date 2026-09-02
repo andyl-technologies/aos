@@ -146,6 +146,10 @@ For deeper work:
   families, their typing rules, bounds, checkpoint state, and replay contract.
 - [Fault bindings](bindings.md) documents sampling, selectors, mappings,
   opportunity filters, phases, lifetimes, composition, search, and evidence.
+- [Properties, observations, and verdicts](properties-and-evidence.md) explains
+  the complete assertion vocabulary and how effect evidence becomes a verdict.
+- [Stores and artifacts](artifacts.md) distinguishes scenarios, DAG objects,
+  checkpoints, handles, reproduction artifacts, findings, and reports.
 - [Running Crucible](running.md) is the command reference for backend discovery,
   seeds, terminal conditions, output, and exit codes.
 - [CI](ci.md) shows a bounded, reproducible pipeline with retained failure

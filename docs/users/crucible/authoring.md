@@ -84,8 +84,8 @@ Choose the coordinate domain first:
 Sources include constants, steps, pulses, periodic signals, normalized traces,
 spatial fields, event sequences, and keyed stochastic processes. Pure
 operators transform values without memory; stateful operators carry declared,
-checkpointed state. The [reference](reference.md#plans-signals-bindings-and-faults) lists every
-source and operator.
+checkpointed state. [Signal programs](signals.md) explains every family and the
+[reference](reference.md#plans-signals-bindings-and-faults) lists exact fields.
 
 For a one-time outage, prefer an event or pulse. For a fault that stays active
 until a later transition, use a Boolean step/pulse with a persistent binding.
@@ -109,7 +109,8 @@ network outage sampled at a boundary is different from an impulse that drops
 one frame at admission. A storage completion error at resolve is different
 from persistence loss at flush.
 
-Use the effect selection tables in [Network faults](network-faults.md) and
+Use [Fault bindings](bindings.md) for the complete bridge contract, then the
+effect selection tables in [Network faults](network-faults.md) and
 [Storage, node, and hardware faults](storage-node-faults.md). The
 [reference effect registry](reference.md#exhaustive-effect-registry) gives the exact legal
 target kinds, phases, lifetimes, and operations for every effect.
@@ -144,7 +145,8 @@ guest or modeled topology must satisfy:
 
 Include a bounded terminal condition when running. A fault that successfully
 makes an application wait forever is otherwise indistinguishable from an
-unbounded test.
+unbounded test. See [Properties, observations, and verdicts](properties-and-evidence.md)
+for the full predicate and evidence model.
 
 ## 7. Serialize, inspect, and run
 
@@ -192,7 +194,8 @@ trace. There is currently no CLI command that imports raw CSV, JSONL, PCAP, or
 PCAPNG, and ordinary packaged `run`/`verify` do not attach `--store` as the
 lifecycle signal store. Trace-driven direct runs therefore use the Rust
 lifecycle API; bounded search and replay have their separately documented
-artifact-store paths.
+artifact-store paths. [Stores and artifacts](artifacts.md) defines each object
+and its retention/portability contract.
 
 ## Common admission failures
 
