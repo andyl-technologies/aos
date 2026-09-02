@@ -35,12 +35,8 @@ pub async fn apr_main() {
     install_panic_hook("apr");
     let cli = AprCli::parse();
     let printer = printer(cli.verbose, cli.quiet, cli.json, cli.progress, cli.color);
-    let command = aos_package::PackageCommand::Registry {
-        system: cli.system,
-        command: cli.command,
-    };
     exit_with_result(
-        aos_package::run(&command, cli.dry_run, cli.yes, &printer).await,
+        aos_package::run_apr(&cli.command, cli.system, cli.dry_run, &printer).await,
         &printer,
     );
 }
