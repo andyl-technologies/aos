@@ -7,7 +7,7 @@ use crate::qmp::{QmpCommandKind, QmpDescriptorName, QmpError};
 /// QMP command that retains or releases the branch-private child QMP stream.
 pub const QMP_HOT_FORK_CHILD_QMP_COMMAND: &str = "crucible-hot-fork-child-qmp";
 /// Version of the retained child-QMP endpoint contract.
-pub const QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION: u32 = 5;
+pub const QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION: u32 = 6;
 
 /// Exact QEMU-owned state for one retained branch-private child QMP stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,6 +21,7 @@ pub struct QmpHotForkChildQmpState {
     resource_plan_bound: bool,
     monitor_basis_bound: bool,
     monitor_disposition_bound: bool,
+    monitor_socket_resources_bound: bool,
     reinitializer_prepared: bool,
     reinitialized: bool,
     disposition_complete: bool,
@@ -49,6 +50,7 @@ impl QmpHotForkChildQmpState {
             resource_plan_bound,
             monitor_basis_bound: true,
             monitor_disposition_bound: true,
+            monitor_socket_resources_bound: true,
             reinitializer_prepared,
             reinitialized: false,
             disposition_complete: false,
@@ -126,6 +128,12 @@ impl QmpHotForkChildQmpState {
         self.monitor_disposition_bound
     }
 
+    /// Returns whether QEMU bound the exact inherited socket resources.
+    #[must_use]
+    pub const fn monitor_socket_resources_bound(&self) -> bool {
+        self.monitor_socket_resources_bound
+    }
+
     /// Returns whether the one-shot child-monitor adapter is exactly bound.
     #[must_use]
     pub const fn reinitializer_prepared(&self) -> bool {
@@ -165,6 +173,7 @@ pub(crate) fn parse_hot_fork_child_qmp_state(
         "nonblocking-unix-stream",
         "monitor-basis-bound",
         "monitor-disposition-bound",
+        "monitor-socket-resources-bound",
         "reinitializer-prepared",
         "reinitialized",
         "disposition-complete",
@@ -215,6 +224,7 @@ pub(crate) fn parse_hot_fork_child_qmp_state(
     let nonblocking_unix_stream = boolean("nonblocking-unix-stream")?;
     let monitor_basis_bound = boolean("monitor-basis-bound")?;
     let monitor_disposition_bound = boolean("monitor-disposition-bound")?;
+    let monitor_socket_resources_bound = boolean("monitor-socket-resources-bound")?;
     let reinitializer_prepared = boolean("reinitializer-prepared")?;
     let reinitialized = boolean("reinitialized")?;
     let disposition_complete = boolean("disposition-complete")?;
@@ -229,6 +239,7 @@ pub(crate) fn parse_hot_fork_child_qmp_state(
         && nonblocking_unix_stream
         && monitor_basis_bound
         && monitor_disposition_bound
+        && monitor_socket_resources_bound
         && reinitializer_prepared;
     let absent_shape = template_generation == 0
         && monitor_generation == 0
@@ -239,6 +250,7 @@ pub(crate) fn parse_hot_fork_child_qmp_state(
         && !nonblocking_unix_stream
         && !monitor_basis_bound
         && !monitor_disposition_bound
+        && !monitor_socket_resources_bound
         && !reinitializer_prepared;
     let valid = schema_version == u64::from(QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION)
         && staged == descriptor_name.is_some()
@@ -260,6 +272,7 @@ pub(crate) fn parse_hot_fork_child_qmp_state(
         resource_plan_bound,
         monitor_basis_bound,
         monitor_disposition_bound,
+        monitor_socket_resources_bound,
         reinitializer_prepared,
         reinitialized,
         disposition_complete,
@@ -275,7 +288,7 @@ mod tests {
     #[test]
     fn child_qmp_requires_one_unattached_nonblocking_retained_stream() {
         let staged = json!({
-            "schema-version": 5,
+            "schema-version": 6,
             "generation": 9,
             "template-generation": 3,
             "monitor-generation": 5,
@@ -287,6 +300,7 @@ mod tests {
             "nonblocking-unix-stream": true,
             "monitor-basis-bound": true,
             "monitor-disposition-bound": true,
+            "monitor-socket-resources-bound": true,
             "reinitializer-prepared": true,
             "reinitialized": false,
             "disposition-complete": false,
@@ -302,6 +316,7 @@ mod tests {
         assert!(parsed.resource_plan_bound());
         assert!(parsed.monitor_basis_bound());
         assert!(parsed.monitor_disposition_bound());
+        assert!(parsed.monitor_socket_resources_bound());
         assert!(parsed.reinitializer_prepared());
         assert!(!parsed.disposition_complete());
 
@@ -322,8 +337,12 @@ mod tests {
         wrong["monitor-basis-bound"] = json!(false);
         assert!(parse_hot_fork_child_qmp_state(&wrong).is_err());
 
-        let mut wrong = staged;
+        let mut wrong = staged.clone();
         wrong["monitor-disposition-bound"] = json!(false);
+        assert!(parse_hot_fork_child_qmp_state(&wrong).is_err());
+
+        let mut wrong = staged;
+        wrong["monitor-socket-resources-bound"] = json!(false);
         assert!(parse_hot_fork_child_qmp_state(&wrong).is_err());
     }
 }

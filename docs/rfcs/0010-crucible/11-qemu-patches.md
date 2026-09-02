@@ -3105,6 +3105,34 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   `T-CAM-6.3` remain incomplete.
 - **Risk:** F.
 
+### crucible-hot-fork-child-monitor-socket-resources — bind the supported socket backend
+
+- **Patch:** `0176-crucible-bind-child-monitor-socket-resources.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** the private child ownership basis now also retains the exact
+  connected Unix-socket frontend, address, channel, socket, listener, read and
+  HUP sources, `GMainContext`, and a positive monotonic connection generation.
+  Staging rejects non-Unix and non-listening endpoints, TLS, telnet, TN3270,
+  WebSocket, reconnect and connect-task state, queued descriptor transfers,
+  replay mode, and non-GMainContext dispatch. Commit and exact restage repeat
+  the complete comparison under the chardev write lock. A disconnect or
+  reconnect changes the generation and invalidates the retained basis.
+  Child-QMP contract version 6 exposes only
+  `monitor-socket-resources-bound`; resource-stage contract version 12 and
+  template transaction version 22 bind the stricter contribution.
+- **Micro-test:** the live Phase 6 report pins all three schema versions and the
+  initially absent socket-resource proof. The QEMU Unix socket-server unit
+  tests require an exact basis, reject a substituted frontend and generation,
+  invalidate it on disconnect and reconnect, and reject the TCP profile.
+- **Inertness:** this patch retains the exact resources that a future child
+  transition must consume. It does not disconnect the inherited socket, remove
+  sources, destroy the inherited monitor, build a child dispatcher, attach the
+  private endpoint, invoke a fork, release guest input, or acknowledge
+  readiness bit 7 or 8. Destructive reconstruction and `T-CAM-6.1` through
+  `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

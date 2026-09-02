@@ -775,6 +775,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0176-crucible-bind-child-monitor-socket-resources.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
