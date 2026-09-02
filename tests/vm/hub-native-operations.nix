@@ -39,6 +39,7 @@ in
     rootfsDeps = [
       pkgs.aos
       pkgs.aos.apm
+      pkgs.aos.apr
       pkgs.aos.packageRuntime
       pkgs.aos-hub
       pkgs.coreutils
