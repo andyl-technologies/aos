@@ -4796,13 +4796,17 @@ where
     {
         let entry = entry?;
         let file_type = entry.file_type()?;
+        let name = entry.file_name();
+        if name == std::ffi::OsStr::new("nix-support") {
+            validate_image_target_platform_metadata(&entry.path(), &file_type, platform)?;
+            continue;
+        }
         if file_type.is_symlink() || !file_type.is_file() {
             bail!(
                 "image output contains a symlink, directory, or special entry: {}",
                 entry.path().display()
             );
         }
-        let name = entry.file_name();
         let is_primary = name == std::ffi::OsStr::new("image-info.json")
             || name == std::ffi::OsStr::new(producer.filename.as_str());
         let is_auxiliary = name.to_str().is_some_and(|name| {
@@ -5094,6 +5098,63 @@ where
         root_range,
         virtual_size_bytes: producer.virtual_size_bytes,
     })
+}
+
+/// Validates the sole derivation metadata entry admitted beside image files.
+fn validate_image_target_platform_metadata(
+    support: &Path,
+    support_type: &fs::FileType,
+    platform: &str,
+) -> Result<()> {
+    if support_type.is_symlink() || !support_type.is_dir() {
+        bail!(
+            "image output target-platform metadata is not a real directory: {}",
+            support.display()
+        );
+    }
+
+    let mut entries = fs::read_dir(support)
+        .with_context(|| format!("enumerating image metadata {}", support.display()))?;
+    let marker = entries
+        .next()
+        .transpose()?
+        .context("image output nix-support directory is empty")?;
+    if entries.next().transpose()?.is_some()
+        || marker.file_name() != std::ffi::OsStr::new("aos-target-platform")
+    {
+        bail!(
+            "image output nix-support must contain only aos-target-platform: {}",
+            support.display()
+        );
+    }
+    let marker_type = marker.file_type()?;
+    if marker_type.is_symlink() || !marker_type.is_file() {
+        bail!(
+            "image output target-platform marker is not a regular file: {}",
+            marker.path().display()
+        );
+    }
+    const MAX_TARGET_PLATFORM_MARKER_BYTES: u64 = 128;
+    let mut stamped = String::new();
+    fs::File::open(marker.path())?
+        .take(MAX_TARGET_PLATFORM_MARKER_BYTES + 1)
+        .read_to_string(&mut stamped)
+        .with_context(|| {
+            format!(
+                "reading image target-platform marker {}",
+                marker.path().display()
+            )
+        })?;
+    if stamped.len() as u64 > MAX_TARGET_PLATFORM_MARKER_BYTES {
+        bail!("image output target-platform marker exceeds 128 bytes");
+    }
+    if stamped.trim() != platform {
+        bail!(
+            "image output target-platform marker '{}' disagrees with published platform '{platform}'",
+            stamped.trim()
+        );
+    }
+    Ok(())
 }
 
 fn validate_lower_sha256(value: &str, label: &str) -> Result<()> {
@@ -16959,6 +17020,54 @@ mod tests {
         public_info_file.read_to_string(&mut public_info).unwrap();
         assert!(!public_info.contains("ukiStorePath"));
         assert_eq!(image.image_info.identity.len, public_info.len() as u64);
+    }
+
+    #[test]
+    fn image_publisher_accepts_only_exact_target_platform_metadata() {
+        let accepted = TempDir::new().unwrap();
+        let store = write_direct_image_output(
+            accepted.path(),
+            "qcow2",
+            serde_json::json!(["qemu-kvm", "openstack"]),
+        );
+        let support = Path::new(&store.path).join("nix-support");
+        fs::create_dir(&support).unwrap();
+        fs::write(support.join("aos-target-platform"), "x86_64-linux\n").unwrap();
+        inspect_test_image("qcow2", store, "2026.08", "x86_64-linux").unwrap();
+
+        let wrong = TempDir::new().unwrap();
+        let store = write_direct_image_output(
+            wrong.path(),
+            "qcow2",
+            serde_json::json!(["qemu-kvm", "openstack"]),
+        );
+        let support = Path::new(&store.path).join("nix-support");
+        fs::create_dir(&support).unwrap();
+        fs::write(support.join("aos-target-platform"), "aarch64-linux\n").unwrap();
+        assert!(inspect_test_image("qcow2", store, "2026.08", "x86_64-linux").is_err());
+
+        let extra = TempDir::new().unwrap();
+        let store = write_direct_image_output(
+            extra.path(),
+            "qcow2",
+            serde_json::json!(["qemu-kvm", "openstack"]),
+        );
+        let support = Path::new(&store.path).join("nix-support");
+        fs::create_dir(&support).unwrap();
+        fs::write(support.join("aos-target-platform"), "x86_64-linux\n").unwrap();
+        fs::write(support.join("unexpected"), "metadata\n").unwrap();
+        assert!(inspect_test_image("qcow2", store, "2026.08", "x86_64-linux").is_err());
+
+        let oversized = TempDir::new().unwrap();
+        let store = write_direct_image_output(
+            oversized.path(),
+            "qcow2",
+            serde_json::json!(["qemu-kvm", "openstack"]),
+        );
+        let support = Path::new(&store.path).join("nix-support");
+        fs::create_dir(&support).unwrap();
+        fs::write(support.join("aos-target-platform"), "x".repeat(129)).unwrap();
+        assert!(inspect_test_image("qcow2", store, "2026.08", "x86_64-linux").is_err());
     }
 
     #[test]
