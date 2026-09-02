@@ -39,6 +39,11 @@ placement, and staging do not by themselves justify another registry. Package
 metadata already carries platform and system-image variants; the Hub already
 models multiple placements and routes; channels already carry stream selection.
 
+The complete package and image target contract is defined in
+[`06-platform-matrix.md`](06-platform-matrix.md). Architecture and operating
+system are signed platform dimensions within one release, not registries or
+channels.
+
 ## Channels
 
 ### `edge`
@@ -195,15 +200,15 @@ A change is image-affecting when it can alter any of:
 
 If classification is uncertain, the change is image-affecting.
 
-Every image-bearing candidate builds all four supported encodings from one
-signed logical disk: raw (`.img.zst`), QCOW2, VMDK, and dynamic VHD. All are
-uploaded to staging. After qualification, the exact encodings and recovery
-bundle are imported into production before the production `candidate` channel
-moves. Monthly `stable` rollout reuses those immutable production objects and
-does not upload, rebuild, or re-sign them. A format may be withheld only when
-its conversion or platform gate fails; the release then declares the reduced
-supported matrix and cannot silently publish a partial set under an existing
-version.
+Every image-bearing candidate builds all four supported encodings for each
+Linux architecture from one signed logical disk per architecture: raw
+(`.img.zst`), QCOW2, VMDK, and dynamic VHD. All are uploaded to staging. After
+qualification, the exact encodings and recovery bundles are imported into
+production before the production `candidate` channel moves. Monthly `stable`
+rollout reuses those immutable production objects and does not upload, rebuild,
+or re-sign them. A missing required architecture or format blocks a
+stable-eligible release; reduced support requires an explicit versioned policy
+change rather than a partial publication under an existing version.
 
 ## Hub environments and URLs
 

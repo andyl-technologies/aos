@@ -71,6 +71,11 @@ closed:
     system, documentation, source, and license object selected by a plan into
     one isolated registry transaction. A release cannot expose a partially
     updated catalog or require one `apr release` invocation per artifact.
+15. **Full platform matrix.** The planner and publisher must close every
+    eligible package cell for `x86_64-linux`, `aarch64-linux`,
+    `x86_64-darwin`, and `aarch64-darwin`; both Linux targets must publish the
+    complete image format and recovery matrix. Native Darwin qualification is
+    required before stable publication.
 
 ## Phase 1: Manifest and planner
 
@@ -89,11 +94,13 @@ Acceptance:
   wrong-deployment, stale-base, and digest-mismatch fixtures fail closed;
 - plans reject dirty/non-master source and unknown public state;
 - state transitions are monotonic and resumable only from matching evidence;
-- public evidence contains no secret or private operator data; and
+- public evidence contains no secret or private operator data;
 - the SBOM and vulnerability decision are bound to the same artifact digests
-  as the release manifest; and
+  as the release manifest;
 - multi-artifact plans produce one registry commit and one complete release
-  manifest, while any failed member leaves the public catalog unchanged.
+  manifest, while any failed member leaves the public catalog unchanged; and
+- target eligibility is derived from a fail-closed four-platform inventory,
+  with no implicit missing cell or platform-specific stable channel.
 
 ## Phase 2: Signer protocol
 
@@ -130,7 +137,9 @@ Acceptance:
 - production image evaluation contains no private key option value;
 - two unsigned builds match;
 - every signature and catalog fact is re-derived from finalized bytes;
-- all four formats reconstruct the same logical disk;
+- x86_64 and AArch64 Linux each produce raw, QCOW2, VMDK, VHD, normal/recovery
+  UKIs, and recovery bundles from one finalized logical disk per architecture;
+- all four formats reconstruct their architecture's declared logical disk;
 - Secure Boot, lockdown, measured boot, encrypted `/var`, dm-verity, A/B
   rollback, and offline recovery pass with production-like hardware tokens; and
 - a key, SBAT, PCR, slot, recovery, disk, converter, or metadata mismatch fails

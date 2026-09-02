@@ -1,8 +1,9 @@
 # RFC-0017: Canonical AOS Hub publishing
 
 - **Status:** Proposed (design-only). Production publication remains blocked on
-  the external-signing, role-separated TUF, promotion, and production-image
-  gates listed in [`05-implementation-plan.md`](05-implementation-plan.md).
+  the external-signing, role-separated TUF, promotion, production-image, and
+  full-platform-matrix gates listed in
+  [`05-implementation-plan.md`](05-implementation-plan.md).
 - **Date:** 2026-09-02.
 - **Audience:** AOS release maintainers; APM/APR, image, Secure Boot, AOS Hub,
   operations, and security implementers.
@@ -26,6 +27,11 @@ rollout rings within a channel, not additional channels or repositories.
 `aos.staging.andyl.org` and `aos.andyl.org` are isolated Hub deployments used to
 qualify and serve the same immutable release objects at different stages. They
 are not distinct AOS distributions.
+
+Every stable release closes one four-target package matrix:
+`x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, and `aarch64-darwin`. Both
+Linux targets also carry the complete system-image and recovery matrix. Darwin
+targets carry packages and their authenticated supporting artifacts only.
 
 The release flow is:
 
@@ -62,6 +68,8 @@ authority.
 | How many public registries? | One: `andyl/main`. Add another only for a different owner, trust root, legal/distribution policy, or intentionally independent dependency universe. |
 | What is the Debian analogue? | AOS channels correspond to Debian's maturity suites. APM registries are closer to independently trusted archives, not suites. |
 | Which channels? | `edge`, `candidate`, and `stable`; no `testing` registry and no environment-named registry. |
+| Which package targets? | `x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, and `aarch64-darwin`, subject to the fail-closed package eligibility inventory. |
+| Which targets receive images? | Both Linux architectures receive the complete raw/QCOW2/VMDK/VHD and recovery matrix. Darwin receives packages only. |
 | How often are registry releases cut? | `edge` on changed business days, `candidate` weekly, `stable` monthly, plus security releases. No release is cut only to satisfy freshness metadata. |
 | How often are images built? | For every candidate whose source or inputs can affect the image, and at least once for each monthly stable train. |
 | How often are images uploaded? | Every image-bearing candidate goes to staging, then its exact bytes go to production after qualification. Monthly stable rollout reuses those production objects; it does not upload or rebuild them. |
@@ -76,7 +84,7 @@ This RFC governs publication of:
 
 - registry package metadata and the complete realized Nix closure;
 - package documentation, source outputs, attestations, and license artifacts;
-- AOS system toplevels and raw, QCOW2, VMDK, and VHD image encodings;
+- AOS Linux system toplevels and raw, QCOW2, VMDK, and VHD image encodings;
 - normal and recovery UKIs, recovery bundles, image metadata, Secure Boot facts,
   SBAT generations, and expected PCR measurements;
 - immutable release manifests and operator evidence; and
@@ -125,6 +133,7 @@ and trust primitives but have their own owners, cadence, and authorization.
 | [`03-security-and-keys.md`](03-security-and-keys.md) | Threat model, role-separated keys, TUF, Secure Boot finalization, Hub security, and residual risk |
 | [`04-maintainer-host-runbook.md`](04-maintainer-host-runbook.md) | Manual maintainer-host procedure and records for routine, stable, emergency, and Hub application releases |
 | [`05-implementation-plan.md`](05-implementation-plan.md) | Current capabilities, production blockers, implementation phases, and acceptance criteria |
+| [`06-platform-matrix.md`](06-platform-matrix.md) | Four-target package completeness, Linux image matrix, Darwin qualification, and atomic promotion rules |
 
 ## Relationship to existing designs
 
