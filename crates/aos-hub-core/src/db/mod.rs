@@ -475,22 +475,27 @@ fn extend_release_documentation_inserts(
                         input.document_size, input.semantic_schema_sha256,
                         input.system_module_nar_hash, input.metadata_digest
                    FROM release_artifact_snapshots ras CROSS JOIN input
-                  WHERE ras.snapshot_id = ?1
+                 WHERE ras.snapshot_id = ?1
                     AND ras.state IN ('building', 'complete')
                  ON CONFLICT(snapshot_id, package_name, package_version, platform)
                  DO UPDATE SET
-                   release_id = excluded.release_id,
-                   registry_id = excluded.registry_id,
-                   store_hash = excluded.store_hash,
-                   format = excluded.format,
-                   store_path = excluded.store_path,
-                   nar_hash = excluded.nar_hash,
-                   nar_size = excluded.nar_size,
-                   document_sha256 = excluded.document_sha256,
-                   document_size = excluded.document_size,
-                   semantic_schema_sha256 = excluded.semantic_schema_sha256,
-                   system_module_nar_hash = excluded.system_module_nar_hash,
-                   metadata_digest = excluded.metadata_digest",
+                   metadata_digest = CASE
+                     WHEN release_package_documentation.release_id = excluded.release_id
+                      AND release_package_documentation.registry_id = excluded.registry_id
+                      AND release_package_documentation.store_hash = excluded.store_hash
+                      AND release_package_documentation.format = excluded.format
+                      AND release_package_documentation.store_path = excluded.store_path
+                      AND release_package_documentation.nar_hash = excluded.nar_hash
+                      AND release_package_documentation.nar_size = excluded.nar_size
+                      AND release_package_documentation.document_sha256 = excluded.document_sha256
+                      AND release_package_documentation.document_size = excluded.document_size
+                      AND release_package_documentation.semantic_schema_sha256 = excluded.semantic_schema_sha256
+                      AND COALESCE(release_package_documentation.system_module_nar_hash, '') =
+                          COALESCE(excluded.system_module_nar_hash, '')
+                      AND release_package_documentation.metadata_digest = excluded.metadata_digest
+                     THEN release_package_documentation.metadata_digest
+                     ELSE NULL
+                   END",
                 tuples.join(", ")
             ),
             params,
@@ -612,6 +617,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("package_documentation.sql"),
     include_str!("package_documentation_system_module.sql"),
     include_str!("release_package_documentation.sql"),
+    include_str!("release_documentation_projection_generation.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -4917,8 +4923,9 @@ impl Database {
         stmts.push(Statement::new(
             "INSERT INTO registry_index
              (registry_id, state, error, last_indexed_commit, name, description, readme,
-              indexed_at, refs_digest, cache_stack, generation, content_digest)
-             VALUES (?1, 'fresh', NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9)
+              indexed_at, refs_digest, cache_stack, generation, content_digest,
+              documentation_projection_generation)
+             VALUES (?1, 'fresh', NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, 1)
              ON CONFLICT(registry_id) DO UPDATE SET
                  state = 'fresh', error = NULL,
                  last_indexed_commit = excluded.last_indexed_commit,
@@ -4928,7 +4935,8 @@ impl Database {
                  refs_digest = excluded.refs_digest,
                  cache_stack = excluded.cache_stack,
                  generation = registry_index.generation + 1,
-                 content_digest = excluded.content_digest",
+                 content_digest = excluded.content_digest,
+                 documentation_projection_generation = 1",
             vals![
                 registry_id,
                 snapshot.commit,
@@ -5236,9 +5244,9 @@ impl Database {
                 "INSERT INTO registry_index
                      (registry_id, state, error, last_indexed_commit, name,
                       description, readme, indexed_at, refs_digest, cache_stack,
-                      generation, content_digest)
+                      generation, content_digest, documentation_projection_generation)
                      VALUES (?1, 'empty', NULL, NULL, NULL, NULL, NULL, ?2,
-                             NULL, NULL, ?3, ?4)",
+                             NULL, NULL, ?3, ?4, 1)",
                 vals![registry_id, unix_now(), next_generation, digest].to_vec(),
             ),
         ];
@@ -15418,6 +15426,20 @@ impl Database {
         &self,
         registry_id: i64,
     ) -> Result<bool> {
+        let generation = self
+            .backend
+            .query_opt(
+                "SELECT documentation_projection_generation
+                 FROM registry_index WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .await?
+            .map(|row| row.get::<i64>(0))
+            .transpose()?;
+        if generation != Some(1) {
+            return Ok(false);
+        }
+
         let incomplete = self
             .backend
             .query_opt(
@@ -15453,7 +15475,16 @@ impl Database {
                 &vals![registry_id],
             )
             .await?;
-        Ok(incomplete.is_none())
+        if incomplete.is_some() {
+            return Ok(false);
+        }
+
+        // The anti-join above proves every signed documentation artifact has
+        // a locator with the same immutable path identity. Reading the full
+        // projection additionally verifies every locator metadata digest.
+        self.list_release_package_documentation(registry_id)
+            .await?;
+        Ok(true)
     }
 
     /// Lists immutable documentation locators grouped by their exact release tag.
@@ -26980,8 +27011,15 @@ source_nar_hash = ""
                 migration.contains("CREATE TABLE release_package_documentation(")
             })
             .unwrap();
+        let projection_generation_index = MIGRATIONS
+            .iter()
+            .position(|migration| {
+                migration.contains("ADD COLUMN documentation_projection_generation")
+            })
+            .unwrap();
         assert_eq!(system_module_index, documentation_index + 1);
         assert_eq!(release_documentation_index, system_module_index + 1);
+        assert_eq!(projection_generation_index, release_documentation_index + 1);
 
         let connection = Connection::open_in_memory().unwrap();
         connection
@@ -27025,6 +27063,13 @@ source_nar_hash = ""
             )
             .unwrap();
         assert_eq!(release_table, 1);
+
+        connection
+            .execute_batch(MIGRATIONS[projection_generation_index])
+            .unwrap();
+        connection
+            .prepare("SELECT documentation_projection_generation FROM registry_index")
+            .unwrap();
     }
 
     #[test]
@@ -27664,6 +27709,45 @@ source_nar_hash = ""
             cache_stack: None,
         };
         db.apply_snapshot(id, &snapshot).await.unwrap();
+        let projection_generation: i64 = db
+            .backend
+            .query_opt(
+                "SELECT documentation_projection_generation
+                 FROM registry_index WHERE registry_id = ?1",
+                &vals![id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(projection_generation, 1);
+        db.backend
+            .execute(
+                "UPDATE registry_index SET documentation_projection_generation = 0
+                 WHERE registry_id = ?1",
+                &vals![id],
+            )
+            .await
+            .unwrap();
+        assert!(!db
+            .release_documentation_projection_complete(id)
+            .await
+            .unwrap());
+        db.backend
+            .execute(
+                "UPDATE registry_index SET documentation_projection_generation = 1
+                 WHERE registry_id = ?1",
+                &vals![id],
+            )
+            .await
+            .unwrap();
+
+        let mut conflicting_snapshot = snapshot.clone();
+        conflicting_snapshot.release_artifact_snapshots[0].documentation[0]
+            .artifact
+            .semantic_schema_sha256 = "f".repeat(64);
+        assert!(db.apply_snapshot(id, &conflicting_snapshot).await.is_err());
         db.backend
             .execute(
                 "INSERT INTO registry_catalog_artifacts
@@ -27675,6 +27759,26 @@ source_nar_hash = ""
             )
             .await
             .unwrap();
+        for artifact_kind in ["config", "evaluation_base_lib", "expose", "image"] {
+            db.backend
+                .execute(
+                    "INSERT INTO registry_catalog_artifacts
+                     (registry_id, source_revision, package_name, package_version,
+                      platform, artifact_kind, store_path, store_hash, metadata_digest)
+                     VALUES (?1, ?2, 'curl', '8.5.0', 'x86_64-linux', ?3,
+                             ?4, ?5, ?6)",
+                    &vals![
+                        id,
+                        snapshot.commit.clone(),
+                        artifact_kind,
+                        format!("/nix/store/{artifact_kind}-curl"),
+                        format!("{artifact_kind}-hash"),
+                        format!("{artifact_kind}-metadata")
+                    ],
+                )
+                .await
+                .unwrap();
+        }
         let current_artifacts = db
             .list_current_catalog_retention_artifacts(id)
             .await
@@ -27684,7 +27788,15 @@ source_nar_hash = ""
                 .iter()
                 .map(|artifact| artifact.artifact_kind.as_str())
                 .collect::<Vec<_>>(),
-            ["documentation", "output", "source_derivation"]
+            [
+                "config",
+                "documentation",
+                "evaluation_base_lib",
+                "expose",
+                "image",
+                "output",
+                "source_derivation"
+            ]
         );
         assert!(current_artifacts
             .iter()
@@ -27805,6 +27917,39 @@ source_nar_hash = ""
             .release_documentation_projection_complete(id)
             .await
             .unwrap());
+        let metadata_digest: String = db
+            .backend
+            .query_opt(
+                "SELECT metadata_digest FROM release_package_documentation
+                 WHERE registry_id = ?1",
+                &vals![id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        db.backend
+            .execute(
+                "UPDATE release_package_documentation
+                 SET metadata_digest = 'corrupt' WHERE registry_id = ?1",
+                &vals![id],
+            )
+            .await
+            .unwrap();
+        assert!(
+            db.release_documentation_projection_complete(id)
+                .await
+                .is_err()
+        );
+        db.backend
+            .execute(
+                "UPDATE release_package_documentation
+                 SET metadata_digest = ?2 WHERE registry_id = ?1",
+                &vals![id, metadata_digest],
+            )
+            .await
+            .unwrap();
         db.backend
             .execute(
                 "DELETE FROM release_package_documentation WHERE registry_id = ?1",
