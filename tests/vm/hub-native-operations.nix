@@ -156,6 +156,7 @@ in
       fi
       ${pkgs.grep}/bin/grep -Eiq 'must be a service unit' \
         /tmp/credential-invalid-unit.json
+      echo '==> Rejected credential targeting a non-service unit'
       if LC_ALL=C APM_SYSTEM_CONFIG_DIR=/tmp/apm-render-config \
         ${pkgs.aos.packageRuntime}/bin/aos-package-runtime --json render-one example \
           --manifest /tmp/nonexistent-config-manifest.json \
@@ -166,10 +167,15 @@ in
       fi
       ${pkgs.jq}/bin/jq -e \
         '.error | contains("the running system is not AOS")' \
-        /tmp/render-one-non-aos.json >/dev/null
+        /tmp/render-one-non-aos.json >/dev/null || {
+        ${pkgs.coreutils}/bin/cat /tmp/render-one-non-aos.json >&2
+        exit 1
+      }
+      echo '==> Rejected private runtime command outside AOS'
       mount -o remount,rw /
       mkdir -p /aos-toplevel
       printf '%s\n' 'ID=aos' 'AOS_MODULE_ABI=2' >/aos-toplevel/os-release
+      echo '==> Installed live AOS identity fixture'
       if LC_ALL=C APM_SYSTEM_CONFIG_DIR=/tmp/apm-render-config \
         ${pkgs.aos.packageRuntime}/bin/aos-package-runtime --json render-one example \
           --manifest /tmp/nonexistent-config-manifest.json \
@@ -181,7 +187,11 @@ in
       ${pkgs.jq}/bin/jq -e \
         '.op == "render-one" and .package == "example"
           and (.error | contains("reading manifest"))' \
-        /tmp/render-one-missing.json >/dev/null
+        /tmp/render-one-missing.json >/dev/null || {
+        ${pkgs.coreutils}/bin/cat /tmp/render-one-missing.json >&2
+        exit 1
+      }
+      echo '==> Rejected private runtime command without an evaluated manifest'
 
       echo '==> Schema is inspectable before instance creation'
       $hub_exec schema dump > /tmp/schema.json
