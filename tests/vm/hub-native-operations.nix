@@ -156,11 +156,11 @@ in
       fi
       ${pkgs.grep}/bin/grep -Eiq 'must be a service unit' \
         /tmp/credential-invalid-unit.json
-      if APM_SYSTEM_CONFIG_DIR=/tmp/apm-render-config \
+      if LC_ALL=C APM_SYSTEM_CONFIG_DIR=/tmp/apm-render-config \
         ${pkgs.aos.packageRuntime}/bin/aos-package-runtime --json render-one example \
           --manifest /tmp/nonexistent-config-manifest.json \
           --marker-root /tmp/render-markers --staging-root /tmp/render-stage \
-          >/tmp/render-one-non-aos.json 2>/tmp/render-one-non-aos.stderr; then
+          >/tmp/render-one-non-aos.json 2>&1; then
         echo 'render-one unexpectedly accepted a non-AOS runtime' >&2
         exit 1
       fi
@@ -173,7 +173,7 @@ in
         ${pkgs.aos.packageRuntime}/bin/aos-package-runtime --json render-one example \
           --manifest /tmp/nonexistent-config-manifest.json \
           --marker-root /tmp/render-markers --staging-root /tmp/render-stage \
-          >/tmp/render-one-missing.stdout 2>/tmp/render-one-missing.json; then
+          >/tmp/render-one-missing.json 2>&1; then
         echo 'render-one unexpectedly accepted a missing eval manifest' >&2
         exit 1
       fi
