@@ -65,6 +65,81 @@ search identity, and replay validation.
 Use the [effect registry](reference.md#exhaustive-effect-registry) for exact target kinds,
 phases, lifetimes, operations, and parameter definitions.
 
+## Complete network effect contract
+
+Every network effect uses semantic version `1`. In the matrix, **all** means
+all eight network target kinds listed above. The narrower target sets are
+spelled out. Capability names are negotiated with the production adapter before
+guest execution.
+
+| Effect | Targets; phases; lifetimes; composition | Capability | Complete top-level parameters |
+|---|---|---|---|
+| `network.availability` | all; `admit`, `resolve`; `persistent`; `outage_or` | `network.availability.v1` | `state`, `queued_policy`, `in_flight_policy` |
+| `network.flap` | all; `boundary`; `state_machine`; `state_machine` | `network.flap.v1` | positive `down_nanos`, `training_nanos`, `recovery_nanos` |
+| `network.negotiated_mode` | all; `boundary`; `state_machine`; `composite` | `network.negotiation.v1` | positive `rate_bps`, `duplex`, positive bounded `lanes`, `fec`, positive `training_nanos` |
+| `network.profile_delta` | all; `resolve`; `persistent`; `composite` | `network.profile.v1` | optional signed `latency_nanos`, positive `rate_cap_bps`, `loss_hazard`, `corruption_hazard`, `technology_metrics` |
+| `network.propagation_delay` | all; `resolve`; `persistent` or `opportunity`; `checked_sum` | `network.propagation.v1` | exactly one of positive `delay_nanos` and `distance_velocity_lookup` |
+| `network.access_delay` | all; `resolve`; `opportunity`; `checked_sum` | `network.access-delay.v1` | positive `delay_nanos`, typed `cause` ID |
+| `network.jitter` | all; `resolve`; `opportunity`; `checked_sum` | `network.jitter.v1` | positive `maximum_nanos`, integer `distribution`, required lookup for non-uniform distributions |
+| `network.service_curve` | all; `queue`; `persistent`; `minimum` | `network.service-curve.v1` | ordered non-overlapping positive-rate `segments` |
+| `network.token_bucket` | all; `queue`; `persistent` or `state_machine`; `minimum` | `network.token-bucket.v1` | positive `rate_bps`, positive `burst_bits`, `initial_bits <= burst_bits` |
+| `network.queue_policy` | all; `admit`, `queue`; `persistent` or `state_machine`; `conflict` | `network.queue.v1` | positive byte/frame capacity, `discipline`, optional discipline parameters, `overflow`, typed error only when required |
+| `network.frame_loss` | all; `resolve`, `deliver`; `opportunity`; `independent_hazards` | `network.frame-loss.v1` | exactly one of `probability` and explicit `outcome` |
+| `network.burst_error_state` | all; `resolve`; `state_machine`; `conflict` | `network.burst-errors.v1` | good-to-bad and bad-to-good probabilities, registered per-state parameter table |
+| `network.duplicate` | all; `deliver`; `opportunity`; `checked_sum` | `network.duplicate.v1` | probability, bounded additional `copies`, `gap_nanos` |
+| `network.reorder` | all; `deliver`; `opportunity`; `composite` | `network.reorder.v1` | positive `window_nanos`, deterministic `selection` |
+| `network.payload_transform` | all; `resolve`; `opportunity`; `ordered_transform` | `network.payload-transform.v1` | typed `mutation` including its selector |
+| `network.detected_frame_error` | all; `resolve`; `opportunity`; `severity` | `network.detected-error.v1` | error `kind`, receiver action; retry-only delay/limit/attempt/success fields; reset duration only for link reset |
+| `network.mtu` | all; `admit`; `persistent`; `composite` | `network.mtu.v1` | positive `mtu_bytes`, oversize disposition; protocol only for fragment; result artifact only for typed error |
+| `network.pause_backpressure` | all; `queue`; `persistent` or `state_machine`; `state_machine` | `network.backpressure.v1` | traffic `class`, optional positive pause duration (absent means until deactivation) |
+| `network.recipient_subset` | all; `deliver`; `opportunity`; `ordered_transform` | `network.recipient-subset.v1` | membership version; exactly one of explicit dropped members or keyed selection; retain count with selection |
+| `network.forwarder_lifecycle` | all; `boundary`; `impulse` or `state_machine`; `severity` | `network.forwarder-lifecycle.v1` | transition, positive downtime, queue and table retention policies |
+| `network.forwarding_mutation` | all; `resolve`; `persistent` or `impulse`; `ordered_transform` | `network.forwarding-mutation.v1` | typed lookup `selector`, mutation |
+| `network.route_transition` | all; `boundary`, `resolve`; `state_machine`; `state_machine` | `network.route-transition.v1` | old/new route IDs, convergence-event sequence, in-flight policy |
+| `network.control_plane_service` | forwarder/path/attachment/contact; `boundary`; `persistent` or `state_machine`; `minimum` | `network.control-plane.v1` | service curve, positive queue bound, overflow policy, positive work bits per event |
+| `network.firewall_disposition` | all; `admit`; `opportunity` or `state_machine`; `severity` | `network.firewall.v1` | action, rejection only when required, rule, state machine, exhaustive transition event |
+| `network.connection_state` | all; `resolve`; `state_machine`; `state_machine` | `network.connection-state.v1` | function kind, positive table bound, flow key, state machine, transition event, overflow behavior |
+| `network.shared_medium` | medium only; `admit`, `queue`, `resolve`; `persistent` or `state_machine`; `conflict` | `network.shared-medium.v1` | complete resource set, policy artifact, positive transmit power |
+| `network.rf_channel` | all; `resolve`; `persistent` or `opportunity`; `composite` | `network.rf-channel.v1` | positive carrier/bandwidth, transmit/noise power, propagation-field bundle, SINR transfer |
+| `network.association` | attachment only; `boundary`; `state_machine`; `conflict` | `network.association.v1` | complete association policy artifact |
+| `network.control_result_transform` | forwarder/path/attachment/contact; `resolve`; `opportunity`; `ordered_transform` | `network.control-result-transform.v1` | technology, nonempty operations, transform kind, result artifact only for bias/replace/error |
+| `network.contact` | all; `boundary`, `resolve`; `state_machine`; `outage_or` | `network.contact.v1` | interval artifact, range-delay lookup, beam set, gateway set |
+| `network.custody_queue` | all; `queue`; `persistent` or `state_machine`; `conflict` | `network.custody.v1` | positive byte/bundle capacity and expiry, custody policy, route/contact plan, priority, positive hop bound, queue depth, service policy |
+
+### Closed network parameter choices
+
+- Availability state is `up`, `down`, `receive_only`, or `transmit_only`.
+  Queued/in-flight policy is `preserve`, `reevaluate`, `drop`, or `typed_error`.
+- Duplex is `half` or `full`. FEC is `none`, `reed_solomon`, `ldpc`, or
+  `convolutional`.
+- Integer distributions are `uniform`, `normal_lookup`, or
+  `exponential_lookup`; lookup forms require their registered table and
+  non-uniform forms cannot depend on host floating point.
+- Queue discipline is FIFO, strict priority, weighted round robin, deficit
+  round robin, or RED. Overflow is tail drop, head drop, keyed drop, or a
+  registered typed error; required class/weight parameters
+  live in the referenced policy object.
+- Payload mutations are bit flip, typed field mutation, truncation, or
+  undetected corruption. Detected errors distinguish CRC, FCS, framing, and
+  FEC and select corrected, retry, drop, or link-reset behavior.
+- MTU oversize behavior is drop, fragment, or typed error. Fragmentation names
+  its parser/encoder protocol; arbitrary byte splitting is not admitted.
+- Forwarding mutation is wrong port, flood, blackhole, loop, or stale-age
+  behavior. Firewall action is accept, reject, or drop. Connection state is
+  scoped to NAT, conntrack, load-balancer, tunnel, or DNS behavior.
+- Control-result transforms are drop, stale, bias, replace, or typed error.
+  Every referenced policy/table is a declared, content-addressed topology
+  artifact and is included in the replay closure.
+
+### Required replay evidence
+
+The descriptor for every row also names mandatory evidence. Depending on the
+effect this includes old/new state, frame and draw identities, queue/service
+ledgers, contributor lists, before/after digests, retry state, route and
+convergence state, firewall/connection transitions, RF geometry and resolved
+profile, or contact/custody transitions. A backend capability acknowledgment
+without this evidence does not satisfy locked replay.
+
 ## Persistent outage versus one-frame loss
 
 A partition normally uses:

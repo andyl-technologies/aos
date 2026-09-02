@@ -145,6 +145,51 @@ fn domain_guides_name_every_executable_effect() {
     }
 }
 
+#[test]
+fn effect_guide_matrices_match_executable_descriptors() {
+    for effect in EffectKind::all() {
+        let name = effect.as_str();
+        let guide = if name.starts_with("network.") {
+            NETWORK_GUIDE
+        } else {
+            STORAGE_NODE_GUIDE
+        };
+        let row_prefix = format!("| `{name}` | ");
+        let rows = guide
+            .lines()
+            .filter(|line| line.starts_with(&row_prefix))
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 1, "effect guide must have one contract row for `{name}`");
+
+        let row = rows[0];
+        let descriptor = effect.descriptor();
+        assert!(
+            row.contains(&format!("`{}`", descriptor.capability)),
+            "contract row for `{name}` must name capability `{}`",
+            descriptor.capability
+        );
+        for phase in descriptor.phases {
+            assert!(
+                row.contains(&format!("`{}`", phase.as_str())),
+                "contract row for `{name}` must name phase `{}`",
+                phase.as_str()
+            );
+        }
+        for lifetime in descriptor.lifetimes {
+            let lifetime = debug_variant_as_snake_case(lifetime);
+            assert!(
+                row.contains(&format!("`{lifetime}`")),
+                "contract row for `{name}` must name lifetime `{lifetime}`"
+            );
+        }
+        let composition = debug_variant_as_snake_case(&descriptor.composition);
+        assert!(
+            row.contains(&format!("`{composition}`")),
+            "contract row for `{name}` must name composition `{composition}`"
+        );
+    }
+}
+
 fn section(start: &str, end: &str) -> &'static str {
     REFERENCE
         .split_once(start)
@@ -203,4 +248,20 @@ fn markdown_table_columns(line: &str) -> usize {
         };
     }
     columns.saturating_sub(1)
+}
+
+fn debug_variant_as_snake_case(value: &impl std::fmt::Debug) -> String {
+    let value = format!("{value:?}");
+    let mut result = String::with_capacity(value.len());
+    for (index, character) in value.chars().enumerate() {
+        if character.is_ascii_uppercase() {
+            if index > 0 {
+                result.push('_');
+            }
+            result.push(character.to_ascii_lowercase());
+        } else {
+            result.push(character);
+        }
+    }
+    result
 }
