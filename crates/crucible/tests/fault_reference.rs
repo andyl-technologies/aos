@@ -32,6 +32,7 @@ const USER_GUIDES: &[&str] = &[
     "signal-driven-faults.md",
     "storage-node-faults.md",
     "support.md",
+    "topology.md",
     "troubleshooting.md",
 ];
 

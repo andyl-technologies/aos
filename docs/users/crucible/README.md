@@ -140,6 +140,8 @@ For deeper work:
   resolution.
 - [Authoring fault scenarios](authoring.md) walks through the complete
   World/topology/signal/binding/property/artifact pipeline.
+- [Fault topology reference](topology.md) documents every fault-domain,
+  network, storage, policy, and node-capability declaration.
 - [Running Crucible](running.md) is the command reference for backend discovery,
   seeds, terminal conditions, output, and exit codes.
 - [CI](ci.md) shows a bounded, reproducible pipeline with retained failure
@@ -177,6 +179,7 @@ For deeper work:
 | Decide whether a surface is operationally supported | [Support boundaries](support.md) | [Reference](reference.md) |
 | Build and run a first workload | [Nginx/Curl tutorial](quickstart.md) | [Running Crucible](running.md) |
 | Generate a signal-driven scenario | [Authoring fault scenarios](authoring.md) | [Signals and bindings](reference.md#plans-signals-bindings-and-faults) |
+| Declare fault-addressable objects | [Fault topology reference](topology.md) | [Canonical scenario reference](reference.md#canonical-scenario-document) |
 | Simulate network failures | [Network faults](network-faults.md) | [Effect registry](reference.md#exhaustive-effect-registry) |
 | Simulate storage, VM, or hardware failures | [Storage, node, and hardware faults](storage-node-faults.md) | [Effect registry](reference.md#exhaustive-effect-registry) |
 | Use recorded physical or packet data | [Recorded signal inputs](recorded-signals.md) | [Trace API](../../../crates/crucible/src/model/fault_signal/trace_import.rs) |

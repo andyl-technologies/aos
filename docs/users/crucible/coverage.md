@@ -61,7 +61,7 @@ terminal conditions, and exit codes are cataloged in
 | Canonical TOML and derived content IDs | `ScenarioDefForm` and TOML model | Packaged and public API | [Scenarios](scenarios.md#authoring-surfaces), [Reference](reference.md#canonical-scenario-document) |
 | VM nodes and logical links | `World`, `WorldNode`, `LinkDef` | Packaged and public API | [Scenarios](scenarios.md#world), [Reference](reference.md#worldnode-vm-fields) |
 | Block and 9p I/O sub-nodes | `WorldIoNode` | Public API and certified live adapter | [Scenarios](scenarios.md), [Storage and hardware faults](storage-node-faults.md) |
-| Fault-addressable topology | `WorldFaultTopology` | Public API and certified adapters | [Authoring](authoring.md#2-declare-fault-addressable-topology), [Reference](reference.md) |
+| Fault-addressable topology | `WorldFaultTopology` | Public API and certified adapters | [Fault topology reference](topology.md), [Authoring](authoring.md#2-declare-fault-addressable-topology) |
 | Signal-driven plan | `FaultSignalPlan`, `SignalProgram`, `FaultBinding` | Public API and certified adapters | [Signal-driven faults](signal-driven-faults.md), [Authoring](authoring.md) |
 | Event/control graph | `Plan` event graph | Packaged and public API | [Scenarios](scenarios.md#plan), [Reference](reference.md#planevent-fields-and-actions) |
 | Temporal properties | `Properties`, `Property`, `Predicate` | Packaged and public API | [Scenarios](scenarios.md#properties), [Reference](reference.md#properties-and-predicates) |
@@ -91,10 +91,9 @@ must resolve within the same admitted world.
 | `storage_policy_artifacts` | Closed storage and 9p policy tables. | Public API; content-addressed validation. |
 | `node_capabilities` | Exact CPU, register, memory, interrupt, clock, error, and accelerator contracts. | Matched patched-QEMU capability adapters. |
 
-Detailed fields and cross-reference rules are owned by the topology reference
-planned from this inventory. Until that reference is complete, the public
-struct definitions remain supplementary implementation authority rather than a
-user-facing substitute.
+Detailed fields, variants, validation, and cross-reference rules are in the
+[fault topology reference](topology.md). Public struct definitions remain
+supplementary implementation authority rather than a user-facing substitute.
 
 ## Signal inventory
 
