@@ -1,6 +1,7 @@
 //! Process entry points shared by the AOS command-line programs.
 
 use std::process;
+use std::{ffi::OsString, io::Write};
 
 use anyhow::Result;
 use clap::Parser;
@@ -22,7 +23,33 @@ pub async fn aos_main() {
 /// Parses and runs the `apm` package-consumer CLI.
 pub async fn apm_main() {
     install_panic_hook("apm");
-    let cli = ApmCli::parse();
+    let args = std::env::args_os().collect::<Vec<_>>();
+    if internal_package_command(&args).is_some() {
+        exit_surface_error("apm", "internal package runtime command");
+    }
+    let cli = ApmCli::parse_from(args);
+    let printer = printer(cli.verbose, cli.quiet, cli.json, cli.progress, cli.color);
+    exit_with_result(
+        aos_package::run(&cli.command, cli.dry_run, cli.yes, &printer).await,
+        &printer,
+    );
+}
+
+/// Parses and runs the private on-host package lifecycle helper.
+pub async fn package_runtime_main() {
+    install_panic_hook("aos-package-runtime");
+    let mut args = std::env::args_os().collect::<Vec<_>>();
+    if internal_package_command(&args).is_none() {
+        exit_surface_error("aos-package-runtime", "public package-consumer command");
+    }
+    if let Some(program) = args.first_mut() {
+        *program = OsString::from("apm");
+    }
+
+    let cli = ApmCli::parse_from(args);
+    if !cli.command.is_runtime_internal() {
+        exit_surface_error("aos-package-runtime", "public package-consumer command");
+    }
     let printer = printer(cli.verbose, cli.quiet, cli.json, cli.progress, cli.color);
     exit_with_result(
         aos_package::run(&cli.command, cli.dry_run, cli.yes, &printer).await,
@@ -62,6 +89,43 @@ fn install_panic_hook(program: &'static str) {
         eprintln!("{program}: internal error: {message}{location}");
         eprintln!("This is a bug. Please report it.");
     }));
+}
+
+/// Returns the private runtime command name present in an argument vector.
+fn internal_package_command(arguments: &[OsString]) -> Option<&str> {
+    const COMMANDS: &[&str] = &[
+        "activate-pre-etc-swap",
+        "activate-post-etc-swap",
+        "activate-restore-routed-sources",
+        "recover-credential-transactions",
+        "_test-systemd-client",
+        "_test-reconcile-exposed-units",
+        "_test-verify-package-attestation",
+        "_test-produce-package-attestation-quote",
+        "__verify-boot-commit",
+        "_load-ebpf-lsm-policies",
+        "__eval",
+        "__eval-retained",
+        "__materialize",
+        "__activate-config",
+        "fetch",
+        "render-one",
+        "__graph-compile",
+    ];
+
+    arguments.iter().find_map(|argument| {
+        let argument = argument.to_str()?;
+        COMMANDS.contains(&argument).then_some(argument)
+    })
+}
+
+/// Reports a command-surface violation with clap's user-error exit status.
+fn exit_surface_error(program: &str, rejected: &str) -> ! {
+    let _ = writeln!(
+        std::io::stderr(),
+        "error: {program} does not accept {rejected}"
+    );
+    process::exit(2);
 }
 
 /// Terminates with the exit status represented by a command result.

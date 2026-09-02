@@ -9,16 +9,9 @@
 #
 # The machine activates the `apm-systemd-client-test` package, which ships
 # eight manual-start synthetic units. The test drives each `SystemdClient`
-# code path through the hidden `apm _test-systemd-client` subcommand and
-# parses its JSON on stdout.
-#
-# apm is invoked by **store path** (`${pkgs.aos}/bin/apm`), not via the
-# PATH-installed wrapper: the rootfs symlink farm omits the dotfile
-# `.apm-unwrapped`, so the wrapper's `dirname "$0"` resolution fails for
-# the PATH copy (diagnosed in `apm-e2e.nix`). The store-path binary
-# resolves `dirname` to the bin/ holding both wrapper and unwrapped
-# binary. No `HOME` is needed: the `_test-systemd-client` op
-# early-returns before `ApmConfig::load`, so it reads no apm state.
+# code path through the private `aos-package-runtime _test-systemd-client`
+# command and parses its JSON on stdout. No `HOME` is needed because the test
+# operation returns before loading package-manager configuration.
 {
   mkSystem,
   pkgs,
@@ -60,7 +53,7 @@ in {
       import json
       import time
 
-      apm = "${pkgs.aos}/bin/apm _test-systemd-client"
+      apm = "${pkgs.aos}/bin/aos-package-runtime _test-systemd-client"
 
       vm.wait_for_unit("aos-seed-baked-packages.service", timeout=120)
       vm.wait_until_succeeds(

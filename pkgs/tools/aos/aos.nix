@@ -277,7 +277,7 @@ in
     # execs an absolute store path baked in at build time -- deriving it with
     # dirname would require coreutils on PATH and enlarge the runtime contract.
     postInstall = ''
-          for name in aos apm apr; do
+          for name in aos apm apr aos-package-runtime; do
             mv $out/bin/$name $out/bin/.$name-unwrapped
             cat > $out/bin/$name << 'WRAPPER'
       #!${bash}/bin/bash
