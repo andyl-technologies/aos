@@ -33,7 +33,7 @@
       import base64
       import json
 
-      APM = "${pkgs.aos}/bin/apm"
+      APM = "${pkgs.aos.apm}/bin/apm"
       JQ = "${pkgs.jq}/bin/jq"
 
 

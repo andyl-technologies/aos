@@ -37,17 +37,13 @@ bundle/`creation_token` fallback in the active update path.
 
 ---
 
-## 2. CLI dispatch
+## 2. CLI boundaries
 
-One binary serves three entry points:
-
-| Invocation | Effective command |
-|---|---|
-| `apr ...` | `aos package registry ...` |
-| `apm ...` | `aos package ...` |
-| `aos package ...` | literal |
-
-The dispatch lives in `crates/aos/src/main.rs`. Registry producer commands are in
+Independent `apm` and `apr` parsers call shared library implementations.
+Consumer registry configuration is available below `apm registry`; producer
+operations are available only through `apr`. `aos` has no package subcommand,
+and private on-host lifecycle operations run through `aos-package-runtime`.
+Registry producer implementations are in
 `crates/aos-package/src/registry_ops.rs`.
 
 ---

@@ -102,7 +102,7 @@ in {
       import json
 
       JQ = "${pkgs.jq}/bin/jq"
-      APM = "${pkgs.aos}/bin/apm"
+      APM = "${pkgs.aos.apm}/bin/apm"
       CMP = "${pkgs.diffutils}/bin/cmp"
       GREP = "${pkgs.grep}/bin/grep"
 

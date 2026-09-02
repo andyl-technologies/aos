@@ -74,8 +74,9 @@ binary when the target directory lives elsewhere, for example on a constrained
 CI or agent filesystem.
 
 The development environment supplies the AOS-built dependencies and embeds the
-required OpenSSL runtime path. The CLI is multicall; use the correctly named
-`aos`, `apr`, or packaged `apm` entrypoint for the surface under test.
+required OpenSSL runtime path. Build and invoke the independent `aos`, `apm`,
+or `apr` program for the surface under test. On-host service commands belong to
+the private `aos-package-runtime` binary.
 
 ## Run checks
 

@@ -6,15 +6,16 @@
 //! (`<root>/.aos-doc-cache.json`); remote/flake sources cache under
 //! `~/.cache/aos/doc/` keyed by a source hash.
 //!
-//! Staleness is detected with a cheap mtime scan: the cache is invalid as
-//! soon as any `.nix` file under `lib/`, `modules/`, or `pkgs/` is newer
-//! than the index's `built_at` timestamp (see [`is_cache_valid`]).
+//! Staleness is detected by schema version and a cheap mtime scan: the cache
+//! is invalid when its schema is outdated or any `.nix` file under `lib/`,
+//! `modules/`, or `pkgs/` is newer than the index's `built_at` timestamp (see
+//! [`is_cache_valid`]).
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::model::DocIndex;
+use crate::model::{DOC_INDEX_SCHEMA_VERSION, DocIndex};
 
 /// Returns the cache file path for a local source root.
 ///
@@ -76,11 +77,16 @@ pub fn save_cache(cache_file: &Path, index: &DocIndex) -> Result<()> {
 
 /// Checks whether a cached index is still valid.
 ///
-/// The cache is considered stale if any `.nix` file under the root's
-/// `lib/`, `modules/`, or `pkgs/` directories has an mtime newer than the
-/// index's `built_at` timestamp. Directories that cannot be read are
-/// treated as unchanged, so I/O problems never force a rebuild loop.
+/// The cache is considered stale if its schema version is outdated or any
+/// `.nix` file under the root's `lib/`, `modules/`, or `pkgs/` directories has
+/// an mtime newer than the index's `built_at` timestamp. Directories that
+/// cannot be read are treated as unchanged, so I/O problems never force a
+/// rebuild loop.
 pub fn is_cache_valid(root: &Path, index: &DocIndex) -> bool {
+    if index.schema_version != DOC_INDEX_SCHEMA_VERSION {
+        return false;
+    }
+
     let built_at = index.built_at;
 
     for dir_name in &["lib", "modules", "pkgs"] {
@@ -152,6 +158,7 @@ mod tests {
         let cache_file = tmp.join("test-cache.json");
 
         let index = DocIndex {
+            schema_version: DOC_INDEX_SCHEMA_VERSION,
             built_at: 1700000000,
             entries: vec![],
         };
@@ -181,6 +188,7 @@ mod tests {
 
         // Index built in the far future should be valid.
         let future_index = DocIndex {
+            schema_version: DOC_INDEX_SCHEMA_VERSION,
             built_at: u64::MAX - 1,
             entries: vec![],
         };
@@ -188,12 +196,33 @@ mod tests {
 
         // Index built at epoch should be stale.
         let old_index = DocIndex {
+            schema_version: DOC_INDEX_SCHEMA_VERSION,
             built_at: 0,
             entries: vec![],
         };
         assert!(!is_cache_valid(&tmp, &old_index));
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn older_schema_is_stale() {
+        let index = DocIndex {
+            schema_version: DOC_INDEX_SCHEMA_VERSION - 1,
+            built_at: u64::MAX,
+            entries: vec![],
+        };
+
+        assert!(!is_cache_valid(Path::new("/tmp"), &index));
+    }
+
+    #[test]
+    fn cache_without_schema_deserializes_as_stale() {
+        let index: DocIndex =
+            serde_json::from_str(r#"{"built_at":18446744073709551615,"entries":[]}"#).unwrap();
+
+        assert_eq!(index.schema_version, 0);
+        assert!(!is_cache_valid(Path::new("/tmp"), &index));
     }
 
     #[test]

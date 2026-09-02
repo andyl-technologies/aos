@@ -235,7 +235,7 @@ in {
             /run/aos-host-store | grep -qw ro
           ! touch '${sbImageDisk}'/host-store-write-must-fail
 
-          ${pkgs.aos}/bin/apr create sysreg
+          ${pkgs.aos.apr}/bin/apr create sysreg
           REG_DIR=$HOME/.local/share/apm/registries/sysreg
           mkdir -p "$REG_DIR/sb-certs"
           cp ${pkgs.secure-boot-test-keys}/db.crt "$REG_DIR/sb-certs/db.pem"
@@ -250,7 +250,7 @@ in {
           # Publish the signed toplevel with its raw disk image. Its canonical
           # image-info.json binds the exact UKI used to derive SB facts.
           # Capture --json: it carries the derived facts verbatim.
-          if ! ${pkgs.aos}/bin/apr --json publish '${sbTop}' \\
+          if ! ${pkgs.aos.apr}/bin/apr --json publish '${sbTop}' \\
             --name aos \\
             --version test-sb-catalog \\
             --description 'secure-boot catalog fixture' \\
@@ -267,9 +267,9 @@ in {
             cat "$HOME/publish.json" >&2
             exit 1
           fi
-          ${pkgs.aos}/bin/apr verify --registry sysreg
+          ${pkgs.aos.apr}/bin/apr verify --registry sysreg
 
-          ${pkgs.aos}/bin/apr cache generate \\
+          ${pkgs.aos.apr}/bin/apr cache generate \\
             --registry sysreg \\
             --output /var/lib/sysreg-cache \\
             --cache-url http://registry:8000/sysreg-cache \\
@@ -282,7 +282,7 @@ in {
           # commit the publish + catalog and push so the origin is non-empty
           # before the consumer clones it.
           DECOY=0000000000000000000000000000000000000000000000000000000000000000
-          ${pkgs.aos}/bin/apr sb-certs add decoy \\
+          ${pkgs.aos.apr}/bin/apr sb-certs add decoy \\
             --cert-sha256 "$DECOY" --registry sysreg --no-commit
           git -C "$REG_DIR" add -A
           git -C "$REG_DIR" commit -m 'release: secure-boot catalog fixture'
@@ -295,7 +295,7 @@ in {
       branch = registry.succeed("cat /tmp/sysreg-branch").strip()
       initial_catalog = json.loads(
           registry.succeed(
-              "HOME=/var/lib/apr-operator ${pkgs.aos}/bin/apr "
+              "HOME=/var/lib/apr-operator ${pkgs.aos.apr}/bin/apr "
               "sb-certs list --registry sysreg --json"
           )
       )
@@ -416,7 +416,7 @@ in {
               timeout=120,
           )
 
-      APR = "${pkgs.aos}/bin/apr"
+      APR = "${pkgs.aos.apr}/bin/apr"
 
       # ════ 2. REFUSE — signer not in the active db-cert set ════════════
       # The catalog (published above) lists only a decoy cert, so it cannot
@@ -424,7 +424,7 @@ in {
       # refuses before creating a generation.
       out = target.fail(
           "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH "
-          "${pkgs.aos}/bin/apm upgrade --system --yes 2>&1",
+          "${pkgs.aos.apm}/bin/apm upgrade --system --yes 2>&1",
           timeout=1800,
       )
       print("=== refuse (unknown signer) ===\n" + out)
@@ -466,7 +466,7 @@ in {
       ], rotated_catalog
       out = target.fail(
           "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH "
-          "${pkgs.aos}/bin/apm upgrade --system --yes 2>&1",
+          "${pkgs.aos.apm}/bin/apm upgrade --system --yes 2>&1",
           timeout=600,
       )
       print("=== refuse (sbat floor) ===\n" + out)
@@ -488,7 +488,7 @@ in {
       )
       out = target.fail(
           "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH "
-          "${pkgs.aos}/bin/apm upgrade --system --yes 2>&1",
+          "${pkgs.aos.apm}/bin/apm upgrade --system --yes 2>&1",
           timeout=600,
       )
       print("=== accept catalog, reach unavailable ESP ===\n" + out)

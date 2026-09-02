@@ -180,14 +180,14 @@ in
           export AOS_NIX_EVAL_STORE="$eval_store"
           export NIX_REMOTE="$eval_store"
 
-          ${pkgs.aos}/bin/apm __eval \
+          ${pkgs.aos.packageRuntime}/bin/aos-package-runtime __eval \
             --host-nix ${hostFixture} \
             --base-lib ${baseLib} \
             --facts ${factsFixture} \
             --module-abi ${toString moduleAbi} \
             --out "$first_root/manifest.json" \
             --eval-root "$first_root"
-          ${pkgs.aos}/bin/apm __eval \
+          ${pkgs.aos.packageRuntime}/bin/aos-package-runtime __eval \
             --host-nix ${hostFixture} \
             --base-lib ${baseLib} \
             --facts ${factsFixture} \
