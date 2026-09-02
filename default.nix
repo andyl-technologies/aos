@@ -1101,6 +1101,9 @@ in {
       darwin-cross-smoke = import ./tests/build/darwin-cross-smoke.nix {
         pkgs = buildPackages;
       };
+      darwin-host-surfaces = import ./tests/build/darwin-host-surfaces.nix {
+        pkgs = buildPackages;
+      };
       darwin-language-toolchains = import ./tests/build/darwin-language-toolchains.nix {
         pkgs = buildPackages;
       };
@@ -1120,14 +1123,14 @@ in {
       systemd-verity = import ./lib/testing/systemd-verity.nix {inherit pkgs lib;};
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
     in {
-      inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix gcc-config-shell hardening-probe kernel-config package-platform-support package-root-image systemd-verity golden-image-budgets;
+      inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-host-surfaces darwin-interpreters darwin-language-toolchains darwin-package-matrix gcc-config-shell hardening-probe kernel-config package-platform-support package-root-image systemd-verity golden-image-budgets;
       # Single target that pulls in the whole build-check group.
       all = pkgs.mkDerivation {
         pname = "aos-build-checks-all";
         version = "0";
         src = null;
         buildDeps =
-          [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all gcc-config-shell kernel-config package-platform-support package-root-image systemd-verity]
+          [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-host-surfaces darwin-interpreters darwin-language-toolchains darwin-package-matrix.all gcc-config-shell kernel-config package-platform-support package-root-image systemd-verity]
           ++ builtins.attrValues hardening-probe
           ++ builtins.attrValues golden-image-budgets;
         phases = [
