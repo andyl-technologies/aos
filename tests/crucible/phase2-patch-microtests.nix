@@ -2801,6 +2801,30 @@
         '';
       };
     }
+    {
+      patch = "0177-crucible-hold-reconstructed-child-monitor-socket.patch";
+      check = certifyExactPatch {
+        patchName = "0177-crucible-hold-reconstructed-child-monitor-socket.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-held-child-monitor-socket";
+        liveEvidence = ''
+          grep -Fxq 'patch=0177-crucible-hold-reconstructed-child-monitor-socket.patch' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=22' "$live_result"
+          grep -Fxq 'template_resource_stage_schema_version=12' "$live_result"
+          grep -Fxq 'child_qmp_schema_version=6' "$live_result"
+          grep -Fq 'qemu_chr_socket_hot_fork_reconstruct_child_held' \
+            ${patchDir}/0177-crucible-hold-reconstructed-child-monitor-socket.patch
+          grep -Fq 'basis->source_pid == getpid()' \
+            ${patchDir}/0177-crucible-hold-reconstructed-child-monitor-socket.patch
+          grep -Fq 'basis->inherited_disposed = true' \
+            ${patchDir}/0177-crucible-hold-reconstructed-child-monitor-socket.patch
+          grep -Fq 'basis->input_held = true' \
+            ${patchDir}/0177-crucible-hold-reconstructed-child-monitor-socket.patch
+          grep -Fq 'child = fork()' \
+            ${patchDir}/0177-crucible-hold-reconstructed-child-monitor-socket.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

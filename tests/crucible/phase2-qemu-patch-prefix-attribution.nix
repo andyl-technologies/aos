@@ -779,6 +779,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0177-crucible-hold-reconstructed-child-monitor-socket.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
