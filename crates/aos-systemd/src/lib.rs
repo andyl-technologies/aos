@@ -11,6 +11,7 @@
 mod client;
 mod error;
 mod manager_proxy;
+mod sandbox;
 
 pub use client::{
     FailedUnit, FailedUnitsReport, JobOutcome, JobResult, RestartPolicy, SettleOutcome,
@@ -18,6 +19,10 @@ pub use client::{
 };
 pub use error::{Error, Result};
 pub use manager_proxy::ListUnitsEntry;
+pub use sandbox::{
+    CpuWeight, FreezerState, SandboxCgroupPath, SandboxDevice, SandboxResources, SandboxUnitName,
+    SandboxUnitObservation, SandboxUnitSpec,
+};
 
 // `unit_property` returns a `zbus::zvariant::OwnedValue` in its public
 // signature. Re-export it (and `Value`, needed to inspect the variant) so

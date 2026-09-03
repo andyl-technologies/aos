@@ -12,7 +12,13 @@
 //!   - `Subscribe` semantics (API-bus peers get no signals until subscribed)
 //!     (:1376-1410, `method_subscribe`)
 
-use zbus::zvariant::OwnedObjectPath;
+use zbus::zvariant::{OwnedObjectPath, OwnedValue};
+
+/// One name/value entry in systemd's transient-unit property array.
+pub(crate) type TransientProperty = (String, OwnedValue);
+
+/// One auxiliary unit passed alongside a transient unit.
+pub(crate) type AuxiliaryUnit = (String, Vec<TransientProperty>);
 
 /// `org.freedesktop.systemd1.Manager`.
 #[zbus::proxy(
@@ -36,6 +42,20 @@ pub trait Manager {
     fn restart_unit(&self, name: &str, mode: &str) -> zbus::Result<OwnedObjectPath>;
     /// Enqueue a reload job for `name`; returns the job object path.
     fn reload_unit(&self, name: &str, mode: &str) -> zbus::Result<OwnedObjectPath>;
+
+    /// Atomically load and enqueue a start job for a transient unit.
+    fn start_transient_unit(
+        &self,
+        name: &str,
+        mode: &str,
+        properties: &[TransientProperty],
+        auxiliary_units: &[AuxiliaryUnit],
+    ) -> zbus::Result<OwnedObjectPath>;
+
+    /// Freeze every process in a unit's cgroup subtree.
+    fn freeze_unit(&self, name: &str) -> zbus::Result<()>;
+    /// Thaw every process in a unit's cgroup subtree.
+    fn thaw_unit(&self, name: &str) -> zbus::Result<()>;
 
     /// `Manager.Reload()` — the D-Bus equivalent of `systemctl daemon-reload`.
     fn reload(&self) -> zbus::Result<()>;
@@ -111,6 +131,12 @@ pub trait Unit {
     /// Filesystem path of the unit's fragment (its main unit file).
     #[zbus(property)]
     fn fragment_path(&self) -> zbus::Result<String>;
+    /// Current cgroup freezer state (`running`, `freezing`, or `frozen`).
+    #[zbus(property)]
+    fn freezer_state(&self) -> zbus::Result<String>;
+    /// Per-activation identifier; all zeroes while no invocation exists.
+    #[zbus(property)]
+    fn invocation_id(&self) -> zbus::Result<Vec<u8>>;
 }
 
 /// `org.freedesktop.systemd1.Service` — per-path, for `.service` units only.
@@ -132,6 +158,12 @@ pub trait Service {
     /// this service since it was last reset.
     #[zbus(property)]
     fn n_restarts(&self) -> zbus::Result<u32>;
+    /// Current main PID, or zero when the service has none.
+    #[zbus(property)]
+    fn main_pid(&self) -> zbus::Result<u32>;
+    /// Unit cgroup path relative to the cgroup-v2 root.
+    #[zbus(property)]
+    fn control_group(&self) -> zbus::Result<String>;
 }
 
 /// One entry returned by `Manager.ListUnitsByPatterns` — D-Bus signature

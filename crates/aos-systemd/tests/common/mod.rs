@@ -14,7 +14,9 @@ use std::sync::{Arc, Mutex};
 
 use aos_systemd::SystemdClient;
 use zbus::object_server::SignalEmitter;
-use zbus::zvariant::OwnedObjectPath;
+use zbus::zvariant::{OwnedObjectPath, OwnedValue};
+
+type RecordedTransientRequest = (String, String, Vec<(String, String)>);
 
 /// Shared, cheaply-cloneable state the test inspects/controls.
 #[derive(Clone)]
@@ -36,6 +38,10 @@ pub struct FakeState {
     /// the bus-died-mid-flight path that restarting `dbus.service` triggers
     /// in production.
     pub suppress_emit: Arc<AtomicBool>,
+    /// Last transient unit request as `(name, mode, property signatures)`.
+    pub transient_request: Arc<Mutex<Option<RecordedTransientRequest>>>,
+    /// Unit name most recently resolved through `GetUnit`.
+    pub observed_unit: Arc<Mutex<String>>,
     job_counter: Arc<AtomicU32>,
 }
 
@@ -47,6 +53,8 @@ impl FakeState {
             unit_results: Arc::new(Mutex::new(BTreeMap::new())),
             subscribed: Arc::new(AtomicBool::new(false)),
             suppress_emit: Arc::new(AtomicBool::new(false)),
+            transient_request: Arc::new(Mutex::new(None)),
+            observed_unit: Arc::new(Mutex::new(String::new())),
             job_counter: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -108,6 +116,39 @@ impl FakeSystemd {
         self.submit(&emitter, name).await
     }
 
+    async fn start_transient_unit(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        name: &str,
+        mode: &str,
+        properties: Vec<(String, OwnedValue)>,
+        auxiliary_units: Vec<(String, Vec<(String, OwnedValue)>)>,
+    ) -> OwnedObjectPath {
+        self.record("start_transient_unit");
+        assert!(auxiliary_units.is_empty());
+        let signatures = properties
+            .iter()
+            .map(|(name, value)| (name.clone(), value.value_signature().to_string()))
+            .collect();
+        *self.state.transient_request.lock().unwrap() =
+            Some((name.to_string(), mode.to_string(), signatures));
+        self.submit(&emitter, name).await
+    }
+
+    async fn freeze_unit(&self, _name: &str) {
+        self.record("freeze_unit");
+    }
+
+    async fn thaw_unit(&self, _name: &str) {
+        self.record("thaw_unit");
+    }
+
+    async fn get_unit(&self, name: &str) -> OwnedObjectPath {
+        self.record("get_unit");
+        *self.state.observed_unit.lock().unwrap() = name.to_string();
+        OwnedObjectPath::try_from(UNIT_PATH).unwrap()
+    }
+
     async fn reload(&self) {
         self.record("reload");
     }
@@ -135,6 +176,54 @@ impl FakeSystemd {
 
     #[zbus(signal)]
     async fn reloading(emitter: &SignalEmitter<'_>, active: bool) -> zbus::Result<()>;
+}
+
+struct FakeUnit;
+
+#[zbus::interface(name = "org.freedesktop.systemd1.Unit")]
+impl FakeUnit {
+    #[zbus(property)]
+    fn active_state(&self) -> &str {
+        "active"
+    }
+
+    #[zbus(property)]
+    fn sub_state(&self) -> &str {
+        "running"
+    }
+
+    #[zbus(property)]
+    fn load_state(&self) -> &str {
+        "loaded"
+    }
+
+    #[zbus(property)]
+    fn freezer_state(&self) -> &str {
+        "frozen"
+    }
+
+    #[zbus(property)]
+    fn invocation_id(&self) -> Vec<u8> {
+        vec![9; 16]
+    }
+}
+
+struct FakeService {
+    state: FakeState,
+}
+
+#[zbus::interface(name = "org.freedesktop.systemd1.Service")]
+impl FakeService {
+    #[zbus(property)]
+    fn main_pid(&self) -> u32 {
+        4242
+    }
+
+    #[zbus(property)]
+    fn control_group(&self) -> String {
+        let name = self.state.observed_unit.lock().unwrap();
+        format!("/aos-sandboxes.slice/{name}")
+    }
 }
 
 impl FakeSystemd {
@@ -182,6 +271,7 @@ pub struct Harness {
 }
 
 const MANAGER_PATH: &str = "/org/freedesktop/systemd1";
+const UNIT_PATH: &str = "/org/freedesktop/systemd1/unit/aos_2dsandbox";
 
 impl Harness {
     pub async fn new() -> Self {
@@ -197,6 +287,15 @@ impl Harness {
             .unwrap()
             .p2p()
             .serve_at(MANAGER_PATH, fake)
+            .unwrap()
+            .serve_at(UNIT_PATH, FakeUnit)
+            .unwrap()
+            .serve_at(
+                UNIT_PATH,
+                FakeService {
+                    state: state.clone(),
+                },
+            )
             .unwrap();
         let client_builder = zbus::connection::Builder::unix_stream(client_sock).p2p();
 

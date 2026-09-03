@@ -171,8 +171,8 @@ struct JobRegistry {
 
 /// Typed async client for `org.freedesktop.systemd1`.
 pub struct SystemdClient {
-    conn: zbus::Connection,
-    manager: ManagerProxy<'static>,
+    pub(crate) conn: zbus::Connection,
+    pub(crate) manager: ManagerProxy<'static>,
     jobs: Arc<Mutex<JobRegistry>>,
     reloading: Arc<AtomicBool>,
     /// One tick per observed `JobRemoved`, regardless of whether a waiter was
@@ -373,7 +373,7 @@ impl SystemdClient {
     /// is no caller-side timeout — per switch-to-configuration-ng's contract,
     /// "this job is in flight; we wait for systemd's answer." Callers wanting
     /// an upper bound wrap this in `tokio::time::timeout` themselves.
-    async fn await_job(&self, path: OwnedObjectPath) -> Result<JobOutcome> {
+    pub(crate) async fn await_job(&self, path: OwnedObjectPath) -> Result<JobOutcome> {
         let path_key = path.as_str().to_owned();
         let rx = {
             let mut reg = self.jobs.lock().unwrap();

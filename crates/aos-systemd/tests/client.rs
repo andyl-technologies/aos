@@ -5,7 +5,7 @@ mod common;
 
 use std::time::Duration;
 
-use aos_systemd::{Error, JobResult};
+use aos_systemd::{Error, JobResult, SandboxResources, SandboxUnitName, SandboxUnitSpec};
 use common::Harness;
 
 /// Cap every client await so a logic bug surfaces as a fast failure rather
@@ -210,4 +210,68 @@ async fn reset_failed_calls_through() {
     let h = Harness::new().await;
     with_timeout(h.client.reset_failed()).await.unwrap();
     assert!(h.calls().contains(&"reset_failed".to_string()));
+}
+
+#[tokio::test]
+async fn transient_sandbox_uses_typed_exact_transport() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([0x42; 16]);
+    let resources = SandboxResources::new(512, 1024, 64, 100).unwrap();
+    let spec = SandboxUnitSpec::new(
+        name.clone(),
+        "/nix/store/test-systemd/bin/systemd-nspawn",
+        vec!["--settings=no".into(), "--boot".into()],
+        "/proc/123/fd/7",
+        resources,
+        Duration::from_secs(30),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+
+    let outcome = with_timeout(h.client.start_sandbox_unit(&spec))
+        .await
+        .unwrap();
+    assert_eq!(outcome.result, JobResult::Done);
+
+    let request = h.state.transient_request.lock().unwrap().clone().unwrap();
+    assert_eq!(request.0, name.as_str());
+    assert_eq!(request.1, "fail");
+    assert!(request.2.contains(&("ExecStart".into(), "a(sasb)".into())));
+    assert!(request.2.contains(&("BindsTo".into(), "as".into())));
+    assert!(request.2.contains(&("MemoryMax".into(), "t".into())));
+}
+
+#[tokio::test]
+async fn sandbox_freeze_and_thaw_use_manager_methods() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([7; 16]);
+    with_timeout(h.client.freeze_sandbox_unit(&name))
+        .await
+        .unwrap();
+    with_timeout(h.client.thaw_sandbox_unit(&name))
+        .await
+        .unwrap();
+
+    let calls = h.calls();
+    assert!(calls.contains(&"freeze_unit".to_string()));
+    assert!(calls.contains(&"thaw_unit".to_string()));
+}
+
+#[tokio::test]
+async fn sandbox_observation_reads_typed_live_properties() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([7; 16]);
+    let observation = with_timeout(h.client.observe_sandbox_unit(&name))
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(observation.active_state, "active");
+    assert_eq!(observation.sub_state, "running");
+    assert_eq!(observation.supervisor_pid.unwrap().get(), 4242);
+    assert_eq!(observation.invocation_id, Some([9; 16]));
+    assert_eq!(
+        observation.cgroup.unwrap().as_str(),
+        format!("/aos-sandboxes.slice/{}", name.as_str())
+    );
 }
