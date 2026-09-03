@@ -199,6 +199,12 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0183-crucible-reconstruct-child-thread-registry.patch",
     "0184-crucible-compose-rcu-fork-transaction.patch",
     "0185-crucible-bind-rcu-worker-fork-disposition.patch",
+    "0186-crucible-bind-monitor-iothread-fork-disposition.patch",
+    "0187-crucible-defer-rcu-worker-until-fd-disposition.patch",
+    "0188-crucible-borrow-retained-rcu-barrier-across-fork.patch",
+    "0189-crucible-retain-async-fork-barrier-through-child-release.patch",
+    "0190-crucible-release-child-async-barrier-before-qmp-start.patch",
+    "0191-crucible-coordinate-fork-on-main-loop.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **175 patches**. This count is checked against
+The carried series contains **180 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -3377,6 +3377,131 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Inertness:** no shipped command invokes this transaction or `fork(2)`.
   Raw or unregistered locks, AIO and other subsystem dispositions, production
   fork invocation, guest admission, and readiness bits 7 and 8 remain open.
+- **Risk:** F.
+
+### crucible-hot-fork-monitor-thread-disposition — bind the monitor IOThread disposition
+
+- **Patch:** `0186-crucible-bind-monitor-iothread-fork-disposition.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-22].
+- **Mechanism:** the monitor subsystem binds its exact internal QMP IOThread
+  from generic AIO ownership to `monitor-restart` after initialization. The
+  source registry transaction admits exactly one coordinator, one RCU worker,
+  and that monitor worker. Immediate-child registry reconstruction discards the
+  inherited monitor record; the already-bound child-QMP reinitializer starts
+  one replacement IOThread with the same disposition while replacement input
+  remains held. Every user-created or other IOThread retains the
+  `unclassified-aio` blocker disposition.
+- **Micro-test:** the real-fork runtime regression adds an RCU-registered
+  monitor worker to the exact source profile, proves that its inherited record
+  is absent from the immediate child, and proves the parent thread and RCU
+  inventories remain unchanged. Generic and unrelated AIO workers remain
+  negative controls. Strict patch certification pins the one-shot monitor
+  binding, schema-4 disposition, exact three-thread admission, and child
+  replacement classification. The live readiness gate requires exactly one
+  `IO mon_iothread` carrying `monitor-restart`.
+- **Inertness:** no shipped command invokes the runtime transaction or
+  `fork(2)`. Raw or unregistered locks, other AIO and remaining subsystem
+  dispositions, production fork invocation, guest admission, and readiness
+  bits 7 and 8 remain open.
+- **Risk:** F.
+
+### crucible-hot-fork-rcu-worker-ordering — defer child RCU worker startup
+
+- **Patch:** `0187-crucible-defer-rcu-worker-until-fd-disposition.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** child RCU reconstruction and child callback-worker startup are
+  now separate phases. The composed runtime reconstructs the child registry and
+  empty RCU queue while the exact descriptor-table transaction remains active,
+  applies every inherited descriptor disposition, and only then starts one
+  fresh callback worker. A child callback can therefore perform no work through
+  an inherited descriptor that has not yet been retained, replaced, or closed.
+- **Micro-test:** the real-fork runtime test proves the child has only its
+  coordinator during descriptor disposition and gains exactly one fresh RCU
+  worker afterward. Ordering and rollback failures remain fail closed. The
+  complete QEMU derivation runs the child-resource suite.
+- **Inertness:** no shipped command invokes the runtime transaction or
+  `fork(2)`. Parent-death containment, direct-child ownership, production fork
+  invocation, guest admission, and readiness bits 7 and 8 remain open.
+- **Risk:** F.
+
+### crucible-hot-fork-retained-rcu-barrier — retain template RCU exclusion
+
+- **Patch:** `0188-crucible-borrow-retained-rcu-barrier-across-fork.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** a retained RCU transaction binds the exact barrier generation,
+  process incarnation, and monitor-thread owner. Parent completion deliberately
+  preserves the barrier for reuse by the immutable template. The copied
+  immediate child alone may release that exact generation after descriptor
+  disposition and before its replacement callback worker starts.
+- **Micro-test:** the real-fork test places barrier ownership on a distinct
+  monitor thread, rejects foreign owners and generations, proves parent
+  retention, and proves the child releases only its copied barrier. The
+  complete QEMU derivation runs the child-resource suite.
+- **Inertness:** no production command begins the retained transaction or
+  invokes `fork(2)`. Parent-death containment, direct-child ownership, guest
+  admission, and readiness bits 7 and 8 remain open.
+- **Risk:** F.
+
+### crucible-hot-fork-retained-async-barrier — retain template async exclusion
+
+- **Patch:** `0189-crucible-retain-async-fork-barrier-through-child-release.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** the BH/timer/AIO/coroutine/GLib admission barrier now has an
+  exact retained transaction binding its generation and monitor-thread owner.
+  Parent completion leaves the reusable template barrier held. Only the copied
+  immediate child may release the exact retained generation.
+- **Micro-test:** a real-fork AIO regression proves the source barrier remains
+  held after parent completion, the child rejects wrong generations, and the
+  child releases only its copied generation. The complete QEMU derivation runs
+  the focused AIO barrier test.
+- **Inertness:** this patch supplies the exact transaction but does not yet
+  compose it with the child runtime or expose a production fork command.
+  Parent-death containment, guest admission, and readiness bits 7 and 8 remain
+  open.
+- **Risk:** F.
+
+### crucible-hot-fork-async-runtime-transaction — release child async exclusion before QMP
+
+- **Patch:** `0190-crucible-release-child-async-barrier-before-qmp-start.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** the retained runtime transaction binds both the exact RCU and
+  asynchronous-source barrier generations. The immediate child reconstructs
+  thread/RCU state with descriptor admission closed, commits descriptor
+  disposition, starts the replacement RCU worker, reconstructs plugin state,
+  and then releases its copied asynchronous barrier before child-QMP activation
+  can start the replacement monitor IOThread. The parent retains both barriers
+  for the immutable template.
+- **Micro-test:** the integrated real-fork test assigns both retained barriers
+  to the monitor owner, rejects mismatched generations, proves the parent keeps
+  both barriers, and proves the child releases asynchronous admission only at
+  the final pre-QMP phase. The complete QEMU derivation runs the child and AIO
+  suites.
+- **Inertness:** no public command invokes the runtime transaction. The patch
+  does not establish parent-death containment, return direct-child authority,
+  admit guest execution, or acknowledge readiness bit 7 or 8.
+- **Risk:** F.
+
+### crucible-hot-fork-main-loop-coordinator — execute fork on the QEMU main loop
+
+- **Patch:** `0191-crucible-coordinate-fork-on-main-loop.patch`.
+- **Enforces:** [HFORK-3], [HFORK-4], [HFORK-22].
+- **Mechanism:** a raw Linux event notifier is registered directly with the
+  system main-loop poll set, outside BH and AIO admission. One non-main-loop
+  owner can submit an immutable prepare/parent/child operation and wait for its
+  parent disposition. The source main-loop thread alone prepares and calls
+  `fork(2)`. The immediate child closes and disables the copied coordinator
+  notifier before its callback, while the parent returns the positive child PID
+  even if parent disposition fails so direct-child authority is not lost.
+- **Micro-test:** a real-fork unit test submits from a worker, services the raw
+  notifier on the main loop, proves prepare/parent run on that main thread,
+  proves the child callback runs as the single surviving thread, and reaps the
+  exact returned PID. Strict patch certification pins the raw-notifier bridge,
+  unit-test registration, and ownership-return contract.
+- **Inertness:** QEMU initializes the internal bridge, but no QAPI/QMP command
+  supplies an operation. The next production slice must compose parent-death
+  containment, exact runtime preparation, direct-child quarantine, and a
+  versioned command before guest admission or readiness bits 7 and 8.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

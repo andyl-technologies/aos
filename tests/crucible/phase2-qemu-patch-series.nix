@@ -1294,6 +1294,48 @@
       enforces = "HFORK-4,HFORK-22";
       capability = "the registered-thread transaction admits exactly one coordinator and one subsystem-owned RCU discard-and-restart worker, reports that worker as classified in thread-inventory schema 3, and rejects generic or AIO workers before fork; raw or unregistered locks, AIO reconstruction, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
     }
+    {
+      file = "0186-crucible-bind-monitor-iothread-fork-disposition.patch";
+      catalogName = "crucible-hot-fork-monitor-thread-disposition";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-22";
+      capability = "the monitor subsystem binds its exact internal IOThread to a discard-and-restart disposition, the registry transaction admits exactly coordinator, RCU, and monitor workers, and child QMP reconstruction starts the classified replacement while input remains held; user IOThreads, raw or unregistered locks, remaining subsystem dispositions, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0187-crucible-defer-rcu-worker-until-fd-disposition.patch";
+      catalogName = "crucible-hot-fork-rcu-worker-ordering";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "child RCU reconstruction no longer starts a callback worker while inherited descriptors remain undisposed, and the composed runtime starts the replacement only after descriptor disposition commits; production fork invocation, parent-death containment, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0188-crucible-borrow-retained-rcu-barrier-across-fork.patch";
+      catalogName = "crucible-hot-fork-retained-rcu-barrier";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "an exact retained RCU transaction binds generation and owner, keeps the reusable parent template barrier held, and lets only the copied immediate child release that generation after descriptor disposition; production fork invocation, parent-death containment, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0189-crucible-retain-async-fork-barrier-through-child-release.patch";
+      catalogName = "crucible-hot-fork-retained-async-barrier";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "an exact retained asynchronous-source transaction binds generation and owner, keeps the reusable parent template barrier held, and lets only the copied immediate child release that generation; production fork composition, parent-death containment, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0190-crucible-release-child-async-barrier-before-qmp-start.patch";
+      catalogName = "crucible-hot-fork-async-runtime-transaction";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "the complete runtime binds retained RCU and asynchronous-source generations, preserves both parent template barriers, reconstructs the child under closed admission, and releases the copied asynchronous barrier only before child-QMP activation; production fork invocation, parent-death containment, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0191-crucible-coordinate-fork-on-main-loop.patch";
+      catalogName = "crucible-hot-fork-main-loop-coordinator";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-22";
+      capability = "a raw notifier submits one exact operation from a non-main-loop owner, while the source main loop alone prepares, forks, and performs parent disposition and the immediate child disables the copied notifier before reconstruction; no public QMP command supplies the operation yet, and parent-death containment, quarantine, guest admission, and readiness bits 7 and 8 remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

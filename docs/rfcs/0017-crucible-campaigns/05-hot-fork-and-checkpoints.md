@@ -164,7 +164,7 @@ snapshot used to drive that future barrier:
 
 ```text
 CrucibleHotForkThreadInventory {
-    schema-version: u32 = 3,
+    schema-version: u32 = 4,
     generation: u64,
     complete: bool,
     overflowed: bool,
@@ -179,6 +179,7 @@ CrucibleHotForkThreadInventory {
                 coordinator |
                 unclassified |
                 rcu-restart |
+                monitor-restart |
                 unclassified-aio,
         },
     ],
@@ -198,17 +199,20 @@ return the same generation and body. Every thread created through
 through a cleanup handler. Threads created by linked libraries or raw pthread
 calls are not silently treated as QEMU-owned.
 
-Schema version 3 assigns the `call_rcu` worker to `rcu-restart` and every QEMU
-`IOThread` to `unclassified-aio` through calls made by the subsystem's own
-thread entry point, not by matching diagnostic names. The runtime transaction
-admits exactly one coordinator plus that one subsystem-owned RCU worker,
-discards the inherited worker in the child, and registers one fresh callback
-worker after RCU reconstruction. Generic and AIO workers remain fork blockers
-and are counted in `unclassified-threads`; neither this classification nor the
-transaction acknowledges readiness bit 8. Plain `unclassified` remains the
-fail-closed value for every other `qemu_thread_create()` caller. Earlier schema
-versions are rejected rather than silently interpreting their smaller
-disposition registry under version-3 semantics.
+Schema version 4 assigns the `call_rcu` worker to `rcu-restart`, the exact
+internal QMP IOThread to `monitor-restart`, and every other QEMU `IOThread` to
+`unclassified-aio` through calls made by the owning subsystems, not by matching
+diagnostic names. The runtime transaction admits exactly one coordinator, one
+RCU worker, and one monitor worker. It discards both inherited workers in the
+child, registers one fresh callback worker after RCU reconstruction, and leaves
+the already-bound child-QMP reinitializer to start the replacement monitor
+worker while input remains held. Generic and other AIO workers remain fork
+blockers and are counted in `unclassified-threads`; neither these
+classifications nor the transaction acknowledges readiness bit 8. Plain
+`unclassified` remains the fail-closed value for every other
+`qemu_thread_create()` caller. Earlier schema versions are rejected rather than
+silently interpreting their smaller disposition registry under version-4
+semantics.
 
 Patched QEMU also exposes the bounded observational RCU inventory used to
 define the next subsystem-owned barrier:
@@ -1277,22 +1281,44 @@ locks, choose every subsystem disposition, or invoke `fork(2)` from a
 production command. Those obligations remain part of the closed
 supported-profile registry, so readiness bit 8 stays clear.
 
-The fork runtime now composes that registry transaction inside an explicit RCU
-transaction. The outer transaction closes reader, callback, and reader-registry
-admission, requires the exact coordinator reader and complete callback state to
-be quiescent, and binds the process, thread, reader generation, and barrier
-generation. An inner-registry acquisition failure releases the RCU barrier.
-The parent releases the registry and then restores its unchanged RCU state. The
-immediate child first reconstructs the thread registry, then discards vanished
-reader records, rebinds the coordinator reader, resets the proven-empty callback
-queue and drain state, reopens admission, and starts one fresh `call_rcu` worker
-before returning. The registered-thread transaction admits exactly that
-two-thread source profile and rejects generic or AIO workers before fork. A
-real-fork regression requires exactly the coordinator and that new worker in
-both child inventories while leaving both parent inventories unchanged;
-active-reader and unsupported-worker regressions prove fail-closed rollback.
-The transaction remains unreachable from a production fork command and does
-not dispose raw or library-owned locks, so readiness bit 8 remains clear.
+The fork runtime now composes that registry transaction inside exact retained
+RCU and asynchronous-source transactions. The outer transactions close reader,
+callback, reader-registry, AIO, GLib, coroutine, bottom-half, and timer admission;
+require the exact coordinator reader and both complete callback states to be
+quiescent; and bind the process, monitor-thread owner, inventory generations,
+and barrier generations. An inner-registry acquisition failure releases the
+transaction reservations without changing either already-held template
+barrier. The parent releases the copied registry ownership but deliberately
+leaves both reusable template barriers held.
+
+The immediate child first reconstructs the thread and RCU registries, discards
+vanished reader records, rebinds the coordinator reader, and resets the
+proven-empty callback queue while inherited descriptor admission is still
+closed. It then commits the complete descriptor disposition and only afterward
+starts one fresh `call_rcu` worker. Plugin reconstruction follows, and a final
+runtime phase releases the child's copied asynchronous-source barrier before
+child-QMP activation starts the replacement monitor IOThread. The
+registered-thread transaction admits exactly the coordinator, RCU worker, and
+classified monitor worker, rejecting generic and other AIO workers before
+fork. A real-fork regression proves the phase ordering, both parent barrier
+retentions, child-only releases, and unchanged parent inventories;
+active-reader, wrong-generation, and unsupported-worker regressions prove
+fail-closed rollback. Raw and library-owned locks and the remaining subsystem
+dispositions still keep readiness bit 8 clear.
+
+QEMU also installs a Linux-only main-loop fork coordinator. A raw event notifier
+is polled outside the asynchronous-source admission barrier, allowing one OOB
+owner to submit an immutable prepare/parent/child operation while all covered
+BH and AIO work is parked. Preparation, `fork(2)`, and parent disposition run on
+the designated source main-loop thread. The immediate child closes and disables
+the copied notifier before its callback and before main-loop work resumes. A
+positive child PID is returned even when parent disposition fails, preserving
+the caller's direct-child ownership obligation. The child callback MUST arm
+parent-death containment and authenticate the immediate child before any
+reconstruction or externally visible action. A real-fork unit test proves the
+thread ownership and returned-PID contract. No public QAPI/QMP command supplies
+an operation yet, so the bridge alone does not admit a fork, guest work, or
+readiness bit 7 or 8.
 The version-3 child-QMP report now derives `disposition-complete` from that
 exact accepted one-shot status instead of hard-coding false. Prepared but
 unattempted, contradictory, failed, and reset adapters remain incomplete; the

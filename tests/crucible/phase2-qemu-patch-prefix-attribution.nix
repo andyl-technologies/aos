@@ -815,6 +815,30 @@
       kind = "recorded";
       symbols = [];
     };
+    "0186-crucible-bind-monitor-iothread-fork-disposition.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0187-crucible-defer-rcu-worker-until-fd-disposition.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0188-crucible-borrow-retained-rcu-barrier-across-fork.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0189-crucible-retain-async-fork-barrier-through-child-release.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0190-crucible-release-child-async-barrier-before-qmp-start.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0191-crucible-coordinate-fork-on-main-loop.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
