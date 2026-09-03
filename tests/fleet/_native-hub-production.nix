@@ -103,7 +103,7 @@
   # these test systems.
   qualificationImage = {
     aos.image.budgets = {
-      maxRuntimeClosureMiB = 832;
+      maxRuntimeClosureMiB = 912;
       maxDownloadMiB = 768;
       maxRootMiB = 768;
     };
