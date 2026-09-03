@@ -850,7 +850,8 @@ pub enum PackageCommand {
 pub enum DocumentationCommand {
     /// Search installed documentation or a Hub index
     Search {
-        /// Terms to search for
+        /// Terms to search for; omit to browse documented packages
+        #[arg(default_value = "")]
         query: String,
         /// Restrict results to package, option, service, credential, or capability
         #[arg(long)]

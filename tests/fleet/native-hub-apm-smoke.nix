@@ -49,6 +49,10 @@ in {
   # well over twenty minutes in that one production-sized transaction before
   # the reboot/rollback checks begin.
   timeout = 5400;
+  # All three production-sized images boot concurrently. On a contended KVM
+  # builder, their guest clocks can advance substantially slower than wall
+  # time during initrd repartitioning, so use the same allowance as reboots.
+  bootTimeout = 600;
 
   machines = {
     consumer = {
@@ -116,6 +120,7 @@ in {
           [
               "${pkgs.coreutils}/bin",
               "${pkgs.gawk}/bin",
+              "${pkgs.git}/bin",
               "${pkgs.grep}/bin",
               "${pkgs.sed}/bin",
           ]
@@ -135,6 +140,11 @@ in {
 
       for guest in (hub, publisher, consumer):
           add_operator_path(guest)
+
+      publisher.succeed("git --version")
+      publisher.succeed(f"{APR} --version")
+      consumer.succeed(f"{APM} --version")
+      consumer.succeed("tr --version")
 
 
       def hub_command(subcommand, token, mutation=""):
@@ -569,7 +579,7 @@ in {
 
       # Author and release a signed surface locally, then cross only the
       # managed-publication API into the Hub.
-      publication = publisher.succeed(textwrap.dedent(f"""
+      publication_status, publication, publication_stderr = publisher.execute(textwrap.dedent(f"""
           set -eu
           export HOME=/var/lib/aos-fleet-publisher USER=publisher
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
@@ -600,7 +610,7 @@ in {
             --key-id initial
           {APR} publish {NGINX} --registry production \\
             --name nginx --version '${pkgs.nginx.version}' \\
-            --description 'Typed virtual hosts, upstreams, TLS credentials, validation, and reload behavior.' \\
+            --description 'nginx — high-performance HTTP and reverse proxy server' \\
             --license BSD-2-Clause --maintainer publisher@example.test \\
             --expose-manifest {shlex.quote(NGINX_EXPOSE + "/manifest.json")} \\
             --config-module {shlex.quote(NGINX_CONFIG)} \\
@@ -623,6 +633,15 @@ in {
             --hub {HUB} --token {shlex.quote(token)} \\
             --root /var/tmp/aos-publication-v1
       """), timeout=900)
+      if publication_status != 0:
+          print("--- native Hub journal after publication failure ---")
+          print(hub.succeed(
+              "journalctl --no-pager -u aos-hub.service -n 200 2>&1 || true"
+          ))
+          raise Exception(
+              "initial registry publication failed "
+              f"(status={publication_status}): {publication}\n{publication_stderr}"
+          )
       publication_data = json.loads(publication)["data"]
       assert publication_data["state"] == "ready", publication_data
 
@@ -656,6 +675,7 @@ in {
           "and (.options | length > 10) "
           "and (.options | any(.display_path == \"aos.registry-hub.listen\")) "
           "and (.runtime.units | any(.name == \"aos-hub.service\")) "
+          "and (.runtime.units | all((.summary | type == \"string\") and (length > 0))) "
           "and (.identity.system_module_nar_hash | type == \"string\")'"
       )
       publisher.succeed(
@@ -687,7 +707,8 @@ in {
       )
       publisher.succeed(
           f"{JQ} -e '.schema == \"aos.package-documentation/v1\" "
-          "and .package.name == \"nginx\" and (.options | length > 0)' "
+          "and .package.name == \"nginx\" and (.options | length > 0) "
+          "and (.runtime.units | all((.summary | type == \"string\") and (length > 0)))' "
           "/var/tmp/nginx-documentation.json"
       )
 
@@ -696,7 +717,7 @@ in {
       # a strong ETag that addresses the immutable documentation object.
       consumer.succeed(
           f"{CURL} -fsS '{REGISTRY}-/docs?q=&kind=' "
-          "| grep -q 'Typed virtual hosts'"
+          "| grep -q 'high-performance HTTP and reverse proxy server'"
       )
       consumer.succeed(
           f"{CURL} -fsS '{REGISTRY}-/docs?q=virtual' "
@@ -704,7 +725,7 @@ in {
       )
       consumer.succeed(
           f"{CURL} -fsS {REGISTRY}-/docs/nginx/${pkgs.nginx.version}/x86_64-linux "
-          "| grep -q 'Typed virtual hosts'"
+          "| grep -q 'high-performance HTTP and reverse proxy server'"
       )
       consumer.succeed(
           f"{CURL} -fsS '{REGISTRY}-/api/v1/packages/nginx/options?prefix=nginx.virtualHosts' "
@@ -715,7 +736,8 @@ in {
           {CURL} -fsS -D /tmp/nginx-doc.headers \
             -o /tmp/nginx-doc.json \
             '{REGISTRY}-/api/v1/packages/nginx/documentation'
-          grep -qi '^cache-control:.*immutable' /tmp/nginx-doc.headers
+          grep -qi '^cache-control:.*max-age=60.*must-revalidate' /tmp/nginx-doc.headers
+          ! grep -qi '^cache-control:.*immutable' /tmp/nginx-doc.headers
           etag=$(sed -n 's/^[Ee][Tt][Aa][Gg]:[[:space:]]*"\\([^"[:space:]]*\\)".*/\\1/p' \
             /tmp/nginx-doc.headers | tr -d '\\r')
           test -n "$etag"
@@ -737,9 +759,9 @@ in {
 
       # Trust-on-first-use is never implicit. A syntactically valid but
       # unrelated key must fail closed before the normal user config is made.
-      wrong_trust = consumer.succeed(textwrap.dedent(f"""
+      wrong_trust = publisher.succeed(textwrap.dedent(f"""
           set -eu
-          export HOME=/tmp/wrong-trust USER=consumer
+          export HOME=/tmp/wrong-trust USER=publisher
           mkdir -p "$HOME"
           keygen=$({APR} keys generate wrong --registry production 2>&1)
           printf '%s\\n' "$keygen" | awk '/Public key:/ {{print $NF; exit}}'
@@ -769,7 +791,7 @@ in {
       """), timeout=600)
       documentation_commands = (
           ("show installed package documentation",
-           f"{APM} docs show nginx | grep -q 'Typed virtual hosts'"),
+           f"{APM} docs show nginx | grep -q 'high-performance HTTP and reverse proxy server'"),
           ("search installed options",
            f"{APM} options search virtual | grep -q 'nginx.virtualHosts'"),
           ("show one installed option",
@@ -863,7 +885,7 @@ in {
           set -eu
           export HOME=/tmp/consumer USER=consumer
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
-          {APM} docs show nginx | grep -q 'Typed virtual hosts'
+          {APM} docs show nginx | grep -q 'high-performance HTTP and reverse proxy server'
           {APM} options complete nginx.virtual | grep -q 'nginx.virtualHosts'
 
           {APM} docs serve --listen 127.0.0.1:18080 --once \
@@ -872,7 +894,7 @@ in {
           served=0
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
             if {CURL} -fsS http://127.0.0.1:18080/packages/nginx \
-              | grep -q 'Typed virtual hosts'; then
+              | grep -q 'high-performance HTTP and reverse proxy server'; then
               served=1
               break
             fi

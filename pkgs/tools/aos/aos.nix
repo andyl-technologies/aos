@@ -301,6 +301,10 @@ in
                   cat << 'APR_ENVIRONMENT'
       export AOS_MCOPY="${mtools}/bin/mcopy"
       export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
+      ${lib.optionalString (!isDarwinCross) ''
+        export AOS_CHECKMODULE="${checkpolicy}/bin/checkmodule"
+        export AOS_SEMODULE_PACKAGE="${semodule-utils}/bin/semodule_package"
+      ''}
       APR_ENVIRONMENT
                   ;;
                 apm|aos-package-runtime)
@@ -364,9 +368,13 @@ in
             ${lib.optionalString (!isDarwinCross) "${systemd} ${util-linux} ${builtins.concatStringsSep " " (map toString linuxRuntimeDeps)}"}; do
             reject_output_reference "$out" "$dependency"
           done
+          # APR validates package-owned SELinux modules at publication time,
+          # so its compiler and module packager are intentional APR runtime
+          # dependencies. The remaining host-enforcement helpers belong only
+          # to APM/runtime.
           for dependency in \
             ${tpm2-tools} ${which} \
-            ${lib.optionalString (!isDarwinCross) "${systemd} ${util-linux} ${builtins.concatStringsSep " " (map toString linuxRuntimeDeps)}"}; do
+            ${lib.optionalString (!isDarwinCross) "${systemd} ${util-linux} ${builtins.concatStringsSep " " (map toString (lib.subtractLists [checkpolicy semodule-utils] linuxRuntimeDeps))}"}; do
             reject_output_reference "$apr" "$dependency"
           done
 

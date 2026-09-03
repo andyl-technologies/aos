@@ -136,8 +136,8 @@
         needle = ''cargoTestFlags = "-p crucible-cas";'';
       }
       {
-        label = "explicit AOS grep dependency";
-        needle = "buildDeps = [grep];";
+        label = "explicit native AOS grep dependency";
+        needle = "[buildPackages.grep]";
       }
       {
         label = "source build marker";

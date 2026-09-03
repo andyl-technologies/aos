@@ -396,6 +396,9 @@ async fn index_registry_inner(
     let refs_digest_matches =
         db.refs_digest(registry.id).await?.as_deref() == Some(refs_digest.as_str());
     let has_images = db.has_system_image_catalog(registry.id).await?;
+    let release_documentation_complete = db
+        .release_documentation_projection_complete(registry.id)
+        .await?;
     if incremental_preconditions(
         status.as_ref().map(|status| status.state.as_str()),
         status
@@ -403,6 +406,7 @@ async fn index_registry_inner(
             .and_then(|status| status.last_indexed_commit.as_deref()),
         refs_digest_matches,
         has_images,
+        release_documentation_complete,
         &advertised_commit,
     ) {
         return index_incremental(db, fetch, registry, &refs, indexed_placement_id).await;
@@ -635,6 +639,7 @@ async fn index_registry_inner(
                 }
 
                 let artifacts = release_snapshot_artifacts(&release_tree.packages);
+                let documentation = release_snapshot_documentation(&release_tree.packages);
                 let manifest_digest = hex::encode(Sha256::digest(serde_json::to_vec(&artifacts)?));
                 let artifact_snapshot = ReleaseArtifactSnapshot {
                     release_tag: tag_name.clone(),
@@ -642,6 +647,7 @@ async fn index_registry_inner(
                     verified_tag_oid: tag_oid.to_hex(),
                     manifest_digest,
                     artifacts,
+                    documentation,
                 };
                 let release = ReleaseRow {
                     semver: tag_name.clone(),
@@ -803,12 +809,43 @@ fn incremental_preconditions(
     last_indexed_commit: Option<&str>,
     refs_digest_matches: bool,
     has_images: bool,
+    release_documentation_complete: bool,
     advertised_commit: &str,
 ) -> bool {
     state == Some("fresh")
         && last_indexed_commit == Some(advertised_commit)
         && refs_digest_matches
         && !has_images
+        && release_documentation_complete
+}
+
+fn release_snapshot_documentation(
+    packages: &[aos_registry_surface::manifest::PackageToml],
+) -> Vec<crate::db::ReleasePackageDocumentation> {
+    let mut documentation = Vec::new();
+    for package in packages {
+        for version in &package.versions {
+            for (platform, entry) in &version.platforms {
+                if let Some(artifact) = &entry.documentation {
+                    documentation.push(crate::db::ReleasePackageDocumentation {
+                        package_name: package.package.name.clone(),
+                        package_version: version.version.clone(),
+                        platform: platform.clone(),
+                        artifact: artifact.clone(),
+                    });
+                }
+            }
+        }
+    }
+    documentation.sort_by(|left, right| {
+        (&left.package_name, &left.package_version, &left.platform).cmp(&(
+            &right.package_name,
+            &right.package_version,
+            &right.platform,
+        ))
+    });
+    documentation.dedup();
+    documentation
 }
 
 fn release_snapshot_artifacts(
@@ -1131,6 +1168,17 @@ async fn reusable_release_snapshots(
         .into_iter()
         .map(|image| (image.release_tag.clone(), image))
         .collect::<BTreeMap<_, _>>();
+    if !db
+        .release_documentation_projection_complete(registry_id)
+        .await?
+    {
+        return Ok(BTreeMap::new());
+    }
+    let mut documentation = db
+        .list_release_package_documentation(registry_id)
+        .await?
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
 
     let mut reusable = BTreeMap::new();
     for snapshot in db.list_retention_release_snapshots(registry_id).await? {
@@ -1146,6 +1194,7 @@ async fn reusable_release_snapshots(
         }) {
             continue;
         }
+        let retained_documentation = documentation.remove(&snapshot.tag).unwrap_or_default();
 
         reusable.insert(
             snapshot.tag.clone(),
@@ -1157,6 +1206,7 @@ async fn reusable_release_snapshots(
                     verified_tag_oid: snapshot.verified_tag_oid,
                     manifest_digest: snapshot.manifest_digest,
                     artifacts: snapshot.artifacts,
+                    documentation: retained_documentation,
                 },
                 image,
             },
@@ -2470,12 +2520,22 @@ mod tests {
             Some(advertised.as_str()),
             true,
             false,
+            true,
             &advertised,
         ));
         assert!(!incremental_preconditions(
             Some("fresh"),
             Some(&"a".repeat(64)),
             true,
+            false,
+            true,
+            &advertised,
+        ));
+        assert!(!incremental_preconditions(
+            Some("fresh"),
+            Some(advertised.as_str()),
+            true,
+            false,
             false,
             &advertised,
         ));
@@ -2517,6 +2577,7 @@ mod tests {
                     verified_tag_oid: release.tag_oid.clone(),
                     manifest_digest: manifest_digest.clone(),
                     artifacts: artifacts.clone(),
+                    documentation: Vec::new(),
                 }],
                 refs_digest: Some("d".repeat(64)),
                 ..Default::default()
