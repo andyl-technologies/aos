@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "5bf3db23f286fcd1afaa6d3b196d98a1e12763fcd9ee503e633138362572080e";
+  patchBranchBundleSha256 = "61ec9d599aa413f58b31f62b4ed915fae47c7007c06f9c6f2a5695b31f9fb468";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "ffbba52a51805fee116051491768b325a38db768";
+  patchBranchHeadCommit = "812e87683a39db3485c3f4f153af09e0fa718744";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1715,6 +1715,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "a child-incarnation-only one-shot monitor transition now requires the exact supported monitor basis plus empty named-descriptor, global fdset, and output state, consumes the held socket replacement, destroys the inherited JSON parser, and resets capability negotiation without emitting a greeting or enabling input; dispatcher and I/O-thread reconstruction, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0179-crucible-rebuild-reconstructed-child-qmp-dispatcher.patch";
+      branchSubject = "crucible: rebuild reconstructed child QMP dispatcher";
+      branchCommit = "812e87683a39db3485c3f4f153af09e0fa718744";
+      branchTree = "9443261c00b9b722dab2cdd63e2f193a1935eac0";
+      catalogName = "crucible-hot-fork-held-child-qmp-dispatcher";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "the child-only held QMP transition now requires the exact inherited dispatcher to be idle, wakes it once to retire through QEMU's normal coroutine disposal path, and installs one fresh dispatcher while replacement input remains held; monitor I/O-thread reconstruction, greeting emission, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
     }
   ];
   catalogOnlyCapabilities = [

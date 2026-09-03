@@ -787,6 +787,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0179-crucible-rebuild-reconstructed-child-qmp-dispatcher.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

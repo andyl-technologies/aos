@@ -2840,6 +2840,15 @@ Only `monitor-socket-resources-bound` crosses QAPI. No source is removed and no
 socket, monitor, dispatcher, or private endpoint is reconstructed in this
 checkpoint; `fork(2)`, input release, and readiness bits 7 and 8 remain open.
 
+The subsequent private child transition consumes that exact held socket basis,
+replaces the inherited JSON parser, and resets capability negotiation. It now
+also requires the copied dispatcher to be idle, retires it by waking it once
+with dispatcher shutdown asserted, waits for its normal coroutine exit, and
+installs one fresh dispatcher before any replacement input is released. This
+does not yet reconstruct the inherited monitor I/O thread, emit the one child
+greeting, invoke `fork(2)`, admit guest work, or acknowledge readiness bit 7 or
+8.
+
 The driver owns selection application, stop-boundary execution, and candidate
 construction but never assignment or daemon-epoch identity. This adapter cannot
 report `hot-fork`; only the future QEMU-owned fork protocol may do so after its

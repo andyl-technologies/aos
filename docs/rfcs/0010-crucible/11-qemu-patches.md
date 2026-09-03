@@ -3184,6 +3184,30 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   and `T-CAM-6.1` through `T-CAM-6.3` stay incomplete.
 - **Risk:** F.
 
+### crucible-hot-fork-held-child-qmp-dispatcher — replace the inherited dispatcher while held
+
+- **Patch:** `0179-crucible-rebuild-reconstructed-child-qmp-dispatcher.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** after the exact child socket and QMP protocol reset succeeds,
+  the monitor requires the copied dispatcher to be the unchanged global
+  dispatcher and idle. It asserts dispatcher shutdown, wakes that coroutine
+  exactly once, waits for its normal exit and disposal, then installs one fresh
+  dispatcher on the child main-loop AIO context. The replacement frontend
+  remains held throughout, so neither dispatcher can admit input during the
+  transition.
+- **Micro-test:** strict patch certification pins exact inherited-pointer and
+  idle-state validation, shutdown-before-wake ordering, normal-exit waiting,
+  fresh coroutine construction, and the recorded rebuilt state. The complete
+  QEMU build proves the transition compiles and links in the system emulator;
+  patch regeneration and the Phase 6 live result bind the carried patch.
+- **Inertness:** no shipped command calls this child-only primitive. It does
+  not reconstruct the inherited monitor I/O thread, emit the QMP greeting,
+  release input, invoke the production fork coordinator, admit a guest, or
+  acknowledge readiness bit 7 or 8. The remaining monitor transaction and
+  `T-CAM-6.1` through `T-CAM-6.3` stay incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

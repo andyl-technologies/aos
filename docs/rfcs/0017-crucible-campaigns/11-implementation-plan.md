@@ -2256,9 +2256,12 @@ output, output watch, mux/reset state, queued request, or partial parser state
 before mutation.
 After attaching the held replacement stream, it destroys the inherited JSON
 parser, installs a fresh empty parser, and resets capability negotiation while
-leaving input held and emitting no greeting. The dispatcher and monitor I/O
-thread are still inherited rather than reconstructed, so no command invokes
-this partial transition and readiness bits 7 and 8 remain clear.
+leaving input held and emitting no greeting. A following child-only primitive
+requires the copied dispatcher to be idle, wakes it once with shutdown asserted
+so QEMU disposes it through the normal coroutine exit path, and installs one
+fresh dispatcher while input remains held. The monitor I/O thread is still
+inherited rather than reconstructed, so no command invokes this partial
+transition and readiness bits 7 and 8 remain clear.
 These are executable T-CAM-6.1 audit prerequisites, not completion of the task:
 the internal registry identifies two non-coordinator subsystem owners but has
 no safe non-coordinator child disposition. The retained AIO/BH/timer and RCU
