@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "676332ac4ee4e7579ef66c5ba5bcc0740f7acb15d4bda6bf77e5cde735715142";
+  patchBranchBundleSha256 = "b8df6c07e82ea707c18db1638cf2e66c8ab4e0462a461a1dd582b811d99b35d4";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "4e09e3136bd3b980b609bf779817e9a4fdb0e3c0";
+  patchBranchHeadCommit = "c6633e07ba6e20ffe8b66373f5701f8c9fe1cf2e";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1765,6 +1765,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-22";
       capability = "an explicit coordinator-owned pre-fork transaction now freezes the registered QEMU thread and QemuMutex registries, rejects in-flight thread starts and nonquiescent registered mutexes, leaves the parent registries unchanged, and reconstructs the immediate child registry around only the surviving coordinator; raw or unregistered locks, RCU composition, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0184-crucible-compose-rcu-fork-transaction.patch";
+      branchSubject = "crucible: compose RCU fork transaction";
+      branchCommit = "c6633e07ba6e20ffe8b66373f5701f8c9fe1cf2e";
+      branchTree = "70295b3fabaab18debb2cd55cc65d21a40d4e58e";
+      catalogName = "crucible-hot-fork-rcu-runtime-transaction";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "the coordinator now composes an explicit RCU reader/callback quiescence transaction outside the registered thread and QemuMutex transaction, preserves the parent RCU registry, reconstructs the immediate child around only the surviving coordinator, reopens admission, and starts one fresh child callback worker before returning; raw or unregistered locks, remaining subsystem dispositions, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
     }
   ];
   catalogOnlyCapabilities = [

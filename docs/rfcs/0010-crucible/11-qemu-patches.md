@@ -3320,10 +3320,43 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   and both test registrations.
 - **Inertness:** no shipped command begins this transaction or invokes
   `fork(2)`. It covers QEMU-created threads and registered QEMU mutexes only; it
-  does not inventory raw `pthread`/GLib locks, compose QEMU's RCU fork protocol,
-  complete every subsystem disposition, pair a host continuation, release guest
-  admission, or acknowledge readiness bit 7 or 8. `T-CAM-6.1` through
+  does not inventory raw `pthread`/GLib locks, complete every subsystem
+  disposition, pair a host continuation, release guest admission, or
+  acknowledge readiness bit 7 or 8. The next tracked patch composes the RCU
+  fork protocol around this transaction. `T-CAM-6.1` through
   `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-rcu-runtime-transaction — compose RCU and registry fork ownership
+
+- **Patch:** `0184-crucible-compose-rcu-fork-transaction.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** one linear runtime transaction first closes RCU reader,
+  callback, and reader-registry admission and requires the complete bounded RCU
+  inventory to be quiescent. It binds the exact inactive coordinator reader,
+  process, thread, reader generation, and barrier generation before acquiring
+  the thread and registered-`QemuMutex` transaction. Failure to acquire that
+  inner transaction rolls the RCU barrier back. The parent releases the inner
+  registry first and then restores the unchanged RCU generation. The immediate
+  child reconstructs the thread registry first, then makes every vanished RCU
+  reader unreachable, binds the surviving coordinator reader to the child
+  thread, resets the provably empty callback queue and drain state, releases
+  admission, and starts exactly one fresh detached callback worker before
+  returning. Generic RCU `pthread_atfork` handling is disabled only for the
+  lifetime of this explicit transaction and its prior nesting state is
+  preserved.
+- **Micro-test:** the real-fork child-runtime test holds both transactions,
+  proves the parent's RCU reader generation and count are unchanged, and
+  requires the child to contain exactly its coordinator plus the newly
+  registered `call_rcu` worker. A negative test begins under an active RCU read
+  section, requires rejection with the barrier fully released, then proves the
+  same transaction can be acquired and released normally. The complete QEMU
+  derivation runs all 19 child-resource tests.
+- **Inertness:** no shipped command invokes this transaction or `fork(2)`.
+  Raw and library-owned locks, remaining subsystem child dispositions, the
+  production fork coordinator, host-continuation pairing, guest admission, and
+  readiness bits 7 and 8 remain open. `T-CAM-6.1` through `T-CAM-6.3` remain
+  incomplete.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
