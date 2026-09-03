@@ -132,6 +132,9 @@ fn editable_path(kind: ContractKind, normalized: &[String]) -> Result<Vec<String
         {
             vec!["source".to_string(), "hash".to_string()]
         }
+        [artifacts, slot, hash] if artifacts == "artifacts" && hash == "hash" => {
+            vec![artifacts.clone(), slot.clone(), hash.clone()]
+        }
         _ => bail!("concise GitHub contract does not expose the planned semantic field"),
     };
     Ok(concise)
@@ -259,6 +262,7 @@ in upstream
   version = "1.0.0";
   upstreamId = "v1.0.0";
   source.hash = "sha256-old";
+  artifacts.cargoDeps.hash = "sha256-old-deps";
 }; in upstream"#;
         let updated = apply(
             source,
@@ -280,11 +284,17 @@ in upstream
                     "sha256-old",
                     "sha256-new",
                 ),
+                mutation(
+                    &["artifacts", "cargoDeps", "hash"],
+                    "sha256-old-deps",
+                    "sha256-new-deps",
+                ),
             ],
         )?;
         assert!(updated.contains("version = \"1.1.0\";"));
         assert!(updated.contains("upstreamId = \"v1.1.0\";"));
         assert!(updated.contains("source.hash = \"sha256-new\";"));
+        assert!(updated.contains("artifacts.cargoDeps.hash = \"sha256-new-deps\";"));
         Ok(())
     }
 }
