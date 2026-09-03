@@ -83,7 +83,7 @@ they gate any affected runtime backend.
 - [x] **SBX-BPROTO-01** Define bounded, fixed local host, storage, mount,
   network, guardian, and guest-agent protocol schemas (`SBX-CORE-08`;
   `af419c775`).
-- [ ] **SBX-BPROTO-02** Implement descriptor-role and peer-credential
+- [x] **SBX-BPROTO-02** Implement descriptor-role and peer-credential
   validation with malformed-message fuzz targets (`SBX-BPROTO-01`).
 - [ ] **SBX-BPROTO-03** Simulate multi-node assignment and ownership-lease
   fencing, including stale coordinator and partition cases (`SBX-CORE-03`).
@@ -296,3 +296,7 @@ completes. The Git history remains authoritative for code details.
 - `af419c775` — `SBX-BPROTO-01`: separately versioned, fixed-function local
   host, storage, mount, network, guardian, and guest-agent protocols with
   authenticated envelopes, assignment fences, opaque handles, and inventory.
+- `729195700` — `SBX-BPROTO-02`: bounded hostile-message decoding, kernel peer
+  credential and broker-audience binding, assignment-fence and closed
+  descriptor-role validation, and deterministic malformed-message fuzz entry
+  points across every privileged local request.
