@@ -51,8 +51,9 @@ they gate any affected runtime backend.
 - [x] **SBX-CORE-03** Implement desired and observed sandbox, operation,
   attachment, snapshot, and assignment state machines (`SBX-CORE-02`;
   `a33eac266`).
-- [ ] **SBX-CORE-04** Implement resource ceilings, reservations, aggregate
-  ancestry accounting, and overflow-safe admission math (`SBX-CORE-02`).
+- [x] **SBX-CORE-04** Implement resource ceilings, reservations, aggregate
+  ancestry accounting, and overflow-safe admission math (`SBX-CORE-02`;
+  `4c849dc51`).
 - [ ] **SBX-CORE-05** Implement capability verbs, selectors, attenuation,
   delegation depth, expiry, and deny-by-default evaluation (`SBX-CORE-02`).
 - [ ] **SBX-CORE-06** Implement complete sandbox spec, policy, ancestry,
@@ -243,3 +244,6 @@ completes. The Git history remains authoritative for code details.
 - `a33eac266` — `SBX-CORE-03`: closed resource transition graphs, irreversible
   desired deletion, terminal operation outcomes, and stale observation
   rejection by generation and sequence.
+- `4c849dc51` — `SBX-CORE-04`: explicit resource dimensions and ceilings,
+  checked reserve/commit/release accounting, isolated advisory capacity, and
+  atomic inclusive ancestry transactions.
