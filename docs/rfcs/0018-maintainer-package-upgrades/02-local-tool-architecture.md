@@ -85,9 +85,10 @@ contracts are strong enough.
 
 ## Command surface
 
-`aos maintain` with no subcommand renders a read-only home view from current
-inventory and cached observations. It does not refresh discovery or modify
-source. The complete interaction and rendering contract is defined in
+`aos maintain` with no subcommand renders a read-only home view from the latest
+cached inventory projection and observations. It does not evaluate Nix, refresh
+discovery, or modify source, and it labels stale evidence unknown. The complete
+interaction and rendering contract is defined in
 [`09-maintainer-interface.md`](09-maintainer-interface.md).
 
 ### Inventory and discovery
@@ -129,14 +130,17 @@ source. The complete interaction and rendering contract is defined in
 | `aos maintain evidence RUN` | Generate and verify the final local dossier |
 | `aos maintain prepare-pr RUN` | Render title/body/checklist without network mutation |
 | `aos maintain publish-pr RUN` | Explicitly push the branch and create/update its PR |
+| `aos maintain observe-pr RUN` | Explicitly refresh exact-head PR/check/review/authorization observations with read-only credentials |
 | `aos maintain abandon RUN` | Mark the run abandoned without deleting its evidence or worktree |
 | `aos maintain clean RUN` | Remove a completed/abandoned worktree after confirmation |
 | `aos maintain ui [RUN]` | Open the optional read-only full-screen cockpit when terminal capabilities permit |
 
-All commands produce one typed result. Human, plain, and stable `--json` output
-render that result; mutually exclusive `--jsonl` renders typed events and one
-mandatory terminal result event for long-running consumers. Human explanation
-and progress go to stderr while requested data and primary values go to stdout.
+Every dispatched maintenance command produces one typed result. Human, plain,
+and stable `--json` output render that result; mutually exclusive `--jsonl`
+renders typed durable/transient event envelopes and, on handled termination
+with writable stdout, one terminal result event. EOF without that event is
+indeterminate and reconciled from durable status. Human explanation and
+progress go to stderr while requested data and primary values go to stdout.
 Machine modes never prompt or emit terminal controls. Exit codes distinguish
 no-change, pending human action, test failure, upstream unknown, quarantine,
 stale plan, infrastructure failure, and invalid invocation.
@@ -250,6 +254,13 @@ Each journal record includes:
 - result/output digests and structured disposition;
 - wall-clock observation for explanation, never ordering authority.
 
+Only effect intents/results, state transitions, and decisions enter this
+run-global sequence and hash chain. Invocation-local progress counters,
+heartbeats, and spinner updates are bounded presentation events with a separate
+stream sequence; they may appear in JSONL but are not durable journal records.
+Subprocess logs are retained as bounded bytes plus durable digest/status
+metadata, not expanded into one journal record per output line.
+
 The local hash chain and durable index detect accidental corruption, unexpected
 truncation relative to the recorded tip, reordering, duplication, and unknown
 entries. They do not claim cryptographic immutability against the maintainer
@@ -343,8 +354,11 @@ retryable against the expected remote head.
 
 Local evidence records contributor authorization as `pending-remote`.
 `publish-pr` does not turn a local identity check into an authorization claim.
-A later explicit foreground status observation may record the repository's
-exact-head authorization/check/review result as `merge-eligible-observed`.
+`status` and `inspect` remain local cached reads. A later explicit
+`observe-pr RUN` may load a separately configured least-privilege read
+credential, query the repository's exact-head authorization/check/review
+results, record their provenance, and advance to `merge-eligible-observed` only
+when every required result is affirmative.
 
 The generated PR body contains campaign and unit/component current/target
 identities, upstream evidence, source/artifact changes, impact/risk,
