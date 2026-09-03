@@ -26,6 +26,12 @@ The repository already implements important parts of the design:
 These are necessary but do not make the current fixture workflow a production
 publisher.
 
+The concrete repository layout, public types, command surface, refactors,
+workstreams, pull request sequence, and incremental release milestones are in
+[`07-code-architecture-and-delivery-plan.md`](07-code-architecture-and-delivery-plan.md).
+This document remains the normative blocker and acceptance-gate list; the code
+architecture document defines how those gates are delivered.
+
 ## Production blockers
 
 Publication of an AOS production image is forbidden until all blockers are
@@ -76,6 +82,20 @@ closed:
     `x86_64-darwin`, and `aarch64-darwin`; both Linux targets must publish the
     complete image format and recovery matrix. Native Darwin qualification is
     required before stable publication.
+
+## Delivery discipline
+
+Implementation lands as independently reviewable changes following the PR
+sequence in
+[`07-code-architecture-and-delivery-plan.md`](07-code-architecture-and-delivery-plan.md).
+Each change includes its fail-closed schema or protocol behavior, malicious and
+failure-injection tests, documentation, and flake packaging where applicable.
+
+An incremental milestone may exercise only the authority it has implemented.
+In particular, the first staging edge milestone may carry explicit `blocked`
+cells, but it cannot publish to production or move a channel. A compatibility
+flag, manual checklist, or successful legacy `apr release` invocation does not
+close a production blocker.
 
 ## Phase 1: Manifest and planner
 

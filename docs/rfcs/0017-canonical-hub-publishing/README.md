@@ -134,6 +134,7 @@ and trust primitives but have their own owners, cadence, and authorization.
 | [`04-maintainer-host-runbook.md`](04-maintainer-host-runbook.md) | Manual maintainer-host procedure and records for routine, stable, emergency, and Hub application releases |
 | [`05-implementation-plan.md`](05-implementation-plan.md) | Current capabilities, production blockers, implementation phases, and acceptance criteria |
 | [`06-platform-matrix.md`](06-platform-matrix.md) | Four-target package completeness, Linux image matrix, Darwin qualification, and atomic promotion rules |
+| [`07-code-architecture-and-delivery-plan.md`](07-code-architecture-and-delivery-plan.md) | Concrete crates, schemas, commands, refactors, workstreams, pull request sequence, and release milestones |
 
 ## Relationship to existing designs
 
