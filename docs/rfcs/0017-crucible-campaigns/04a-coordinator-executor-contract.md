@@ -2294,6 +2294,20 @@ record, performs `waitpid`, and releases that record only after daemon
 reconciliation. The daemon MUST retain the pidfd identity, target cgroup owner,
 source child-status generation, and private child channels as one attempt
 authority; it MUST NOT synthesize `std::process::Child` from the numeric PID.
+The daemon reconciliation owner also binds the lineage-qualified `AttemptId`
+and process-local `ExecutionId`. It admits modeled execution only after the
+private child QMP endpoint authenticates the complete retained generation
+basis. Reconciliation is monotonic and performs at most one bounded operation
+per step: observe source-parent status, release child-private resources, prove
+the target cgroup empty, reconcile an authoritative observation/cancellation/
+terminal-failure outcome, release the exact source status, and finally release
+the QEMU-owned process-contract descriptors. An observation is invalid if the
+private child was never admitted. A backend error retains the current phase for
+exact retry; dropping any incomplete owner kills through the pidfd and transfers
+the target cgroup to quarantine. The executor reservation remains associated
+with this state until the semantic outcome is supplied. The worker-pool wiring
+that carries the linear reservation through this owner remains required before
+hot fork is advertised.
 
 Exactly one attempt-owned watcher blocks on the same sticky eventfd, and child
 contracts cannot be minted before that watcher is live. Terminal cancellation
@@ -2925,7 +2939,7 @@ callback worker before returning. Any pre-fork acquisition failure rolls the
 outer RCU barrier back.
 
 Template contract version 23 exposes the composed transaction through the
-public `crucible-hot-fork` QMP command. Its request binds the exact twelve
+public `crucible-hot-fork` QMP command. Its request binds the exact thirteen
 template, resource, process, runtime, descriptor, and monitor generations.
 QEMU revalidates that basis on the source main loop, forks once, preserves the
 parent template, and completes the supported descriptor, runtime, plugin, and
@@ -2949,9 +2963,12 @@ child-process authority, and the single branch-private QMP endpoint; the node
 cannot return success with only a PID. Explicit pre-fork rejection retains the
 reusable source owner, while an indeterminate exchange, a failed parent
 disposition, endpoint transfer failure, or process-retention failure
-quarantines the source. This contract deliberately has no production process
-owner yet: the forked child belongs to the template QEMU's process hierarchy,
-not the daemon's.
+quarantines the source. The Linux process facade now supplies the production
+pidfd/cgroup half without claiming direct-parent authority. The daemon
+reconciliation owner consumes the launch token without exposing a PID-only
+success state and retains the source, target, private QMP channel, exact
+attempt/execution basis, and semantic publication disposition through ordered
+cleanup. Concrete worker-pool and modeled-driver wiring remain open.
 
 The source QEMU now reserves the request's unique nonzero child-process
 generation in a fixed 4,096-record table before forking. The version-1

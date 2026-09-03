@@ -62,6 +62,8 @@
 //! campaign-attempt resource and cancellation contract, while its private
 //! guest-selectable boundary resolves paused ABI requests into scenario-bound
 //! campaign opportunities and replies;
+//! [`qemu_hot_fork_reconciliation`] retains one forked child's source-parent,
+//! target cgroup/pidfd, private-channel, accounting, and publication authority;
 //! [`qemu_resource_guard`] binds one indivisible host process/filesystem owner
 //! to signal-driven cancellation and exact quantum accounting;
 //! [`planner_loopback`] owns
@@ -115,6 +117,8 @@ pub mod qemu_campaign_lifecycle;
 pub mod qemu_campaign_resume;
 #[cfg(target_os = "linux")]
 pub mod qemu_exact_resume_executor;
+#[cfg(target_os = "linux")]
+pub mod qemu_hot_fork_reconciliation;
 pub mod qemu_lifecycle_launcher;
 pub mod qemu_resource_guard;
 pub mod repository_admission;
@@ -382,6 +386,16 @@ pub use qemu_campaign_resume::{
 };
 #[cfg(target_os = "linux")]
 pub use qemu_exact_resume_executor::QemuExactResumeLiveRealizationExecutor;
+#[cfg(target_os = "linux")]
+pub use qemu_hot_fork_reconciliation::{
+    LinuxQemuHotForkAttemptLaunchError, LinuxQemuHotForkReconciliationBackend,
+    LinuxQemuHotForkReconciliationError, QemuHotForkAttemptBasis, QemuHotForkAttemptReconciliation,
+    QemuHotForkAttemptReconciliationError, QemuHotForkChildDisposition,
+    QemuHotForkChildObservation, QemuHotForkChildObservationError,
+    QemuHotForkPublicationDisposition, QemuHotForkReconciliationBackend,
+    QemuHotForkReconciliationChildBasis, QemuHotForkReconciliationPhase,
+    QemuHotForkReconciliationStep,
+};
 pub use qemu_lifecycle_launcher::QemuAttemptProductionVmNodeLauncher;
 pub use qemu_resource_guard::{
     ComposedQemuAttemptResourceGuard, ComposedQemuAttemptResourceGuardFactory,
