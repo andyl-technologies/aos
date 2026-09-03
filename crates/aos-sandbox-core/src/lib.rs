@@ -25,8 +25,8 @@ pub use capability::{
 pub use identity::{
     AttachmentId, AttachmentSlotId, AuditId, CacheDomainId, CapabilityId, ExecutionId, ExportId,
     GrantId, IncarnationId, IssuerId, NetworkEndpointId, NodeId, OperationId, PrincipalId,
-    ProjectId, ResourceId, RevocationScopeId, SandboxId, SecretId, ServiceId, SnapshotId,
-    TrustScopeId, ViewId,
+    ProjectId, ResourceId, RestoreScopeId, RevocationScopeId, SandboxId, SecretId, ServiceId,
+    SnapshotId, TrustScopeId, ViewId,
 };
 pub use resources::{
     AccountingError, AncestryAdmissionError, ReservationClass, ResourceAccount, ResourceBudget,

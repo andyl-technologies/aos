@@ -5,6 +5,7 @@
 //! cannot mistake a convenient Serde representation for the signed wire form.
 
 pub mod policy;
+pub mod snapshot;
 pub mod spec;
 pub mod tree;
 pub mod view;
@@ -12,6 +13,10 @@ pub mod view;
 pub use policy::{
     ExplanationReason, ExplanationReasonCode, InvalidPolicyModel, Optimization, OptimizationKind,
     OptimizationProfile, Policy, PolicyViewAction, RevocationMode, RevocationPolicy,
+};
+pub use snapshot::{
+    AttachmentSnapshot, ExternalDependency, InvalidSnapshotModel, OpaqueVersion, QuiesceEvidence,
+    Receipt, RetentionClaim, Snapshot, SnapshotConsistency, SourceAssignment, StorageCheckpoint,
 };
 pub use spec::{
     IdentityProfile, InvalidSpecModel, Limit, LimitDimension, LimitValue, NetworkKind,

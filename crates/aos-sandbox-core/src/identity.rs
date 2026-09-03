@@ -212,6 +212,10 @@ define_identity!(
     TrustScopeId,
     "Identifies one portable signature trust and revocation scope."
 );
+define_identity!(
+    RestoreScopeId,
+    "Identifies the authorization scope required to restore an external dependency."
+);
 
 #[cfg(test)]
 mod tests {
