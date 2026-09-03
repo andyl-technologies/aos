@@ -120,6 +120,7 @@ in {
           [
               "${pkgs.coreutils}/bin",
               "${pkgs.gawk}/bin",
+              "${pkgs.git}/bin",
               "${pkgs.grep}/bin",
               "${pkgs.sed}/bin",
           ]
@@ -139,6 +140,8 @@ in {
 
       for guest in (hub, publisher, consumer):
           add_operator_path(guest)
+
+      publisher.succeed("git --version")
 
 
       def hub_command(subcommand, token, mutation=""):
