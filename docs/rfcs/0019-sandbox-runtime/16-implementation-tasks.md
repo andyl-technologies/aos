@@ -48,8 +48,9 @@ they gate any affected runtime backend.
 - [x] **SBX-CORE-02** Implement typed resource IDs, node IDs, generations,
   assignment epochs, revisions, and incarnations (`SBX-CORE-01`;
   `0ddad351c`).
-- [ ] **SBX-CORE-03** Implement desired and observed sandbox, operation,
-  attachment, snapshot, and assignment state machines (`SBX-CORE-02`).
+- [x] **SBX-CORE-03** Implement desired and observed sandbox, operation,
+  attachment, snapshot, and assignment state machines (`SBX-CORE-02`;
+  `a33eac266`).
 - [ ] **SBX-CORE-04** Implement resource ceilings, reservations, aggregate
   ancestry accounting, and overflow-safe admission math (`SBX-CORE-02`).
 - [ ] **SBX-CORE-05** Implement capability verbs, selectors, attenuation,
@@ -239,3 +240,6 @@ completes. The Git history remains authoritative for code details.
 
 - `0ddad351c` — `SBX-CORE-01`, `SBX-CORE-02`: portable crate, opaque
   identities, exact binary/human encodings, and monotonic fencing counters.
+- `a33eac266` — `SBX-CORE-03`: closed resource transition graphs, irreversible
+  desired deletion, terminal operation outcomes, and stale observation
+  rejection by generation and sequence.
