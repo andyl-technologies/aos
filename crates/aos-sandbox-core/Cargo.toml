@@ -5,6 +5,7 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
+hex.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 uuid.workspace = true

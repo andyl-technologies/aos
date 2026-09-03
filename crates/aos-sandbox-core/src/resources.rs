@@ -195,6 +195,14 @@ impl ResourceVector {
         }
         Ok(result)
     }
+
+    /// Reports whether every amount is at most the corresponding `ceiling`.
+    #[must_use]
+    pub fn is_within(self, ceiling: Self) -> bool {
+        ResourceDimension::ALL
+            .into_iter()
+            .all(|dimension| self.get(dimension) <= ceiling.get(dimension))
+    }
 }
 
 /// Defines one resolved hard ceiling without using numeric sentinels.

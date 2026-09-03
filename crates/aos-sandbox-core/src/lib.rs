@@ -9,14 +9,30 @@
 //! The [`identity`] module defines opaque 128-bit identifiers. The [`version`]
 //! module defines monotonic counters used to reject stale work.
 
+pub mod capability;
 pub mod identity;
 pub mod resources;
+pub mod selector;
 pub mod state;
 pub mod version;
 
+pub use capability::{
+    AttenuationError, AttenuationRequest, AuthorizationContext, AuthorizationError,
+    CapabilityDraft, CapabilityRecord, CapabilityValidationError, ChannelBinding, DelegationLimits,
+    Grant, InvalidGrant,
+};
 pub use identity::{
-    AttachmentId, ExecutionId, ExportId, IncarnationId, NodeId, OperationId, ProjectId, SandboxId,
-    SnapshotId, ViewId,
+    AttachmentId, AuditId, CapabilityId, ExecutionId, ExportId, GrantId, IncarnationId, NodeId,
+    OperationId, PrincipalId, ProjectId, ResourceId, RevocationScopeId, SandboxId, SnapshotId,
+    ViewId,
+};
+pub use resources::{
+    AccountingError, AncestryAdmissionError, ReservationClass, ResourceAccount, ResourceBudget,
+    ResourceCeilings, ResourceDimension, ResourceLimit, ResourceVector,
+};
+pub use selector::{
+    FeatureRef, MediaType, ObjectDescriptor, ObjectDigest, Operation, OperationSet, PathName,
+    RelativePath, ResourceKind, Selector,
 };
 pub use version::{
     AssignmentEpoch, DesiredGeneration, NamespaceGeneration, ObservationSequence, Revision,

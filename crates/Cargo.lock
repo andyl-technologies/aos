@@ -619,6 +619,7 @@ name = "aos-sandbox-core"
 version = "0.1.0"
 dependencies = [
  "ciborium",
+ "hex",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

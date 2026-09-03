@@ -175,6 +175,24 @@ define_identity!(
     "Identifies one attachment of a view to a consumer."
 );
 define_identity!(ExportId, "Identifies one named sandbox export.");
+define_identity!(
+    ResourceId,
+    "Identifies a resource selected by a capability grant."
+);
+define_identity!(GrantId, "Identifies one normalized capability grant.");
+define_identity!(
+    CapabilityId,
+    "Identifies one controller-resolved capability record."
+);
+define_identity!(
+    PrincipalId,
+    "Identifies an authenticated capability principal."
+);
+define_identity!(
+    RevocationScopeId,
+    "Identifies a capability revocation scope."
+);
+define_identity!(AuditId, "Identifies one durable authorization decision.");
 
 #[cfg(test)]
 mod tests {
