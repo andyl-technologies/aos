@@ -102,10 +102,6 @@
   # integrity and boot path while scoping the larger root artifact contract to
   # these test systems.
   qualificationImage = {
-    # The full Git fixture intentionally retains its optional Python-backed
-    # helpers. Production images and unrelated fleet systems use git-minimal;
-    # this qualification workload exercises the complete publisher surface.
-    aos.image.testArtifactRoots = [pkgs.git];
     aos.image.budgets = {
       maxRuntimeClosureMiB = 912;
       maxDownloadMiB = 816;
@@ -117,7 +113,6 @@
     environment.systemPackages = [
       pkgs.diffutils
       pkgs.gawk
-      pkgs.git
       pkgs.grep
       pkgs.sed
     ];
@@ -203,8 +198,13 @@
     ../../systems/server-test.nix
     qualificationImage
     {
+      # Publication exercises full Git, including its optional Python-backed
+      # helpers. Keep that payload on the publisher rather than inflating the
+      # Hub and consumer images, which need only server-test's git-minimal.
+      aos.image.testArtifactRoots = [pkgs.git];
       environment.systemPackages = [
         pkgs.aos
+        pkgs.git
         pkgs.nix
         pkgs.openssh
       ];
