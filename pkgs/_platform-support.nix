@@ -772,7 +772,7 @@ in rec {
         name = system;
         value = targetPackageNames system names;
       })
-      darwinSystems
+      canonicalSystems
     );
 
   selectTargetPackages = system: packages: names:
