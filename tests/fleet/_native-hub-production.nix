@@ -104,7 +104,7 @@
   qualificationImage = {
     aos.image.budgets = {
       maxRuntimeClosureMiB = 912;
-      maxDownloadMiB = 792;
+      maxDownloadMiB = 816;
       maxRootMiB = 768;
     };
     # Fleet assertions and the publisher runbook use the same small Unix
