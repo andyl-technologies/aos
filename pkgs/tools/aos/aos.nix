@@ -367,9 +367,12 @@ in
             ${lib.optionalString (!isDarwinCross) "${systemd} ${util-linux} ${builtins.concatStringsSep " " (map toString linuxRuntimeDeps)}"}; do
             reject_output_reference "$out" "$dependency"
           done
+          # APR validates package-owned SELinux modules at publication time,
+          # so checkpolicy is an intentional APR runtime dependency. The
+          # remaining host-enforcement helpers belong only to APM/runtime.
           for dependency in \
             ${tpm2-tools} ${which} \
-            ${lib.optionalString (!isDarwinCross) "${systemd} ${util-linux} ${builtins.concatStringsSep " " (map toString linuxRuntimeDeps)}"}; do
+            ${lib.optionalString (!isDarwinCross) "${systemd} ${util-linux} ${builtins.concatStringsSep " " (map toString (lib.remove checkpolicy linuxRuntimeDeps))}"}; do
             reject_output_reference "$apr" "$dependency"
           done
 
