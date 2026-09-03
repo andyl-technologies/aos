@@ -468,6 +468,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-maintain"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-contract",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "aos-net"
 version = "0.1.0"
 dependencies = [
