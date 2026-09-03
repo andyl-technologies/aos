@@ -62,7 +62,7 @@ pub async fn rebuild_erofs(
     layout: &ImageLayoutV1,
     maximum_bytes: u64,
 ) -> Result<()> {
-    normalize_tree_times(tree)?;
+    normalize_tree_times(tree, 1)?;
     if output.symlink_metadata().is_ok() {
         bail!("rebuilt EROFS output already exists");
     }
@@ -153,7 +153,7 @@ pub async fn rebuild_initrd(
     maximum_bytes: u64,
     scratch: &Path,
 ) -> Result<()> {
-    normalize_tree_times(tree)?;
+    normalize_tree_times(tree, 1)?;
     let list = scratch.join("initrd-file-list");
     write_sorted_file_list(tree, &list)?;
     let archive = scratch.join("initrd-rebuilt.cpio");
@@ -265,11 +265,16 @@ fn collect_entries(root: &Path, relative: &Path, entries: &mut Vec<PathBuf>) -> 
     Ok(())
 }
 
-fn normalize_tree_times(root: &Path) -> Result<()> {
+/// Sets every entry timestamp without following symbolic links.
+///
+/// # Errors
+///
+/// Returns an error when tree traversal or a no-follow timestamp update fails.
+pub fn normalize_tree_times(root: &Path, epoch_seconds: i64) -> Result<()> {
     let mut entries = vec![PathBuf::new()];
     collect_entries(root, Path::new(""), &mut entries)?;
     let epoch = Timespec {
-        tv_sec: 1,
+        tv_sec: epoch_seconds,
         tv_nsec: 0,
     };
     let timestamps = Timestamps {

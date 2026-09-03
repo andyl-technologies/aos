@@ -527,6 +527,10 @@
             --argjson moduleAbi ${toString system.config.aos.system.moduleAbi} \
             --argjson recoveryAbi ${toString recovery.abi} \
             --argjson sbatGeneration ${toString system.config.aos.system.stateVersion} \
+            --arg sbatComponent aos \
+            --arg sbatVendor "Andyl Inc." \
+            --arg sbatPackage aos \
+            --arg sbatUrl https://aos.dev \
             --arg secureBootRole ${lib.escapeShellArg sb.externalFinalization.secureBootRole} \
             --arg moduleRole ${lib.escapeShellArg sb.externalFinalization.moduleRole} \
             --arg pcrRole ${lib.escapeShellArg sb.externalFinalization.pcrRole} \
@@ -582,6 +586,7 @@
             '{schema_version:$schema, release:$release, platform:$platform,
               system_variant:$variant, kernel_release:$kernelRelease, module_abi:$moduleAbi,
               recovery_abi:$recoveryAbi, sbat_generation:$sbatGeneration,
+              sbat:{component:$sbatComponent,vendor:$sbatVendor,package:$sbatPackage,url:$sbatUrl},
               command_lines:{slot_a:$kernelParams,slot_b:$kernelParamsB,recovery:$recoveryCmdline},
               signer_roles:{secure_boot:$secureBootRole,module:$moduleRole,pcr:$pcrRole},
               layout:{sector_size:$sectorSize,alignment_sectors:$alignmentSectors,

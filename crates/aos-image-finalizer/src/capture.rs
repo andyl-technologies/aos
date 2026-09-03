@@ -34,6 +34,7 @@ struct AssemblyRecipeV1 {
     module_abi: u64,
     recovery_abi: u64,
     sbat_generation: u64,
+    sbat: crate::assembly::SbatPolicyV1,
     command_lines: CommandLines,
     signer_roles: SignerRoles,
     layout: ImageLayoutV1,
@@ -210,6 +211,7 @@ pub fn capture_unsigned_assembly(
         module_abi: recipe.module_abi,
         recovery_abi: recipe.recovery_abi,
         sbat_generation: recipe.sbat_generation,
+        sbat: recipe.sbat,
         command_lines: ImageCommandLinesV1 {
             slot_a: recipe.command_lines.slot_a,
             slot_b: recipe.command_lines.slot_b,
@@ -334,6 +336,7 @@ mod tests {
             "module_abi": 1,
             "recovery_abi": 1,
             "sbat_generation": 1,
+            "sbat":{"component":"aos","vendor":"Andyl Inc.","package":"aos","url":"https://aos.dev"},
             "command_lines": {"slot_a":"root=a","slot_b":"root=b","recovery":"recovery=1"},
             "signer_roles": {"secure_boot":"secure-boot-release","module":"module-release","pcr":"pcr-release"},
             "layout": {
