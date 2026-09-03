@@ -121,6 +121,7 @@
   consumerTools = {
     environment.systemPackages = [
       pkgs.aos
+      pkgs.aos.apm
       pkgs.nix
     ];
   };
@@ -204,6 +205,7 @@
       aos.image.testArtifactRoots = [pkgs.git];
       environment.systemPackages = [
         pkgs.aos
+        pkgs.aos.apr
         pkgs.git
         pkgs.nix
         pkgs.openssh
