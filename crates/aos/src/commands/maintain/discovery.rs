@@ -36,6 +36,7 @@ pub(super) async fn scan(
     envelope: &InventoryEnvelopeV1,
     store: &StateStore,
     offline: bool,
+    token_env: &str,
 ) -> Result<ScanOutcome> {
     let evaluated_at = super::state::now_unix()?;
     let envelope_digest =
@@ -53,6 +54,11 @@ pub(super) async fn scan(
         BTreeMap::new()
     };
     let mut warnings = Vec::new();
+    let github_token = if offline {
+        None
+    } else {
+        read_optional_token(token_env)?
+    };
     let mut repology_by_project: BTreeMap<String, UpstreamObservationV1> = BTreeMap::new();
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
@@ -89,6 +95,7 @@ pub(super) async fn scan(
                         tag_prefix,
                         &component.current.upstream_id,
                         evaluated_at,
+                        github_token.as_deref(),
                     )
                     .await
                     {
@@ -175,6 +182,7 @@ async fn github_tags(
     tag_prefix: &str,
     current_identity: &str,
     retrieved_at: u64,
+    token: Option<&str>,
 ) -> Result<UpstreamObservationV1> {
     validate_github_repository(repository)?;
     let mut candidates = Vec::new();
@@ -190,13 +198,14 @@ async fn github_tags(
         if first_url.is_none() {
             first_url = Some(url.clone());
         }
-        let response = client
+        let mut request = client
             .get(&url)
             .header(USER_AGENT, USER_AGENT_VALUE)
-            .header(ACCEPT, "application/vnd.github+json")
-            .send()
-            .await
-            .context("requesting GitHub tags")?;
+            .header(ACCEPT, "application/vnd.github+json");
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await.context("requesting GitHub tags")?;
         let status = response.status();
         let has_next = response
             .headers()
@@ -271,6 +280,32 @@ async fn github_tags(
     };
     observation.validate()?;
     Ok(observation)
+}
+
+fn read_optional_token(variable: &str) -> Result<Option<String>> {
+    if variable.is_empty()
+        || variable.len() > 128
+        || !variable
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        bail!("GitHub discovery token environment variable name is invalid");
+    }
+    let Some(value) = std::env::var_os(variable) else {
+        return Ok(None);
+    };
+    let value = value
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("GitHub discovery token is not UTF-8"))?;
+    if value.is_empty()
+        || value.len() > 4096
+        || value
+            .bytes()
+            .any(|byte| byte == 0 || byte.is_ascii_control())
+    {
+        bail!("GitHub discovery token is invalid");
+    }
+    Ok(Some(value))
 }
 
 async fn repology(
