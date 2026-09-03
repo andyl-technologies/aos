@@ -145,6 +145,17 @@
       sleep 0.5
       reboot -f
     '';
+
+    # Keep the generated init and its potentially large user test out of the
+    # rootfs builder's argv. Linux limits each individual exec argument to
+    # MAX_ARG_STRLEN, which realistic lifecycle tests can exceed even though
+    # the total environment remains below ARG_MAX.
+    initScriptFile = pkgs.writeTextFile {
+      name = "fc-init-${pname}";
+      text = initScript;
+      destination = "/init";
+      executable = true;
+    };
   in
     pkgs.mkDerivation {
       pname = "fc-rootfs-${pname}";
@@ -350,11 +361,10 @@
             nobody:x:65534:
             GROUP
 
-                        # Write the init script
-                        cat > rootfs/init << 'INITEOF'
-            ${initScript}
-            INITEOF
-                        chmod +x rootfs/init
+                        # Install the generated init script. It is materialized
+                        # separately so large lifecycle tests never become one
+                        # oversized argument to this derivation's builder.
+                        cp ${initScriptFile}/init rootfs/init
 
                         # Calculate image size: use actual store closure size (not rootfs
                         # symlink tree), then add generous overhead for ext4 metadata.
