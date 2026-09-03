@@ -518,6 +518,82 @@ where
         self.client.release_hot_fork_child_process(generation)
     }
 
+    /// Imports and stages one exact target-attempt process contract.
+    ///
+    /// Standard-QMP names are closed after QEMU has retained authenticated
+    /// duplicates; the one-shot stage remains until explicit release.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when either transfer, stage, or monitor
+    /// descriptor close fails.
+    #[cfg(target_os = "linux")]
+    pub fn install_hot_fork_child_process_contract(
+        &mut self,
+        cgroup_name: &QmpDescriptorName,
+        cgroup: BorrowedFd<'_>,
+        cancellation_name: &QmpDescriptorName,
+        cancellation: BorrowedFd<'_>,
+        identity: crate::QmpHotForkChildProcessContractIdentity,
+        template_generation: u64,
+    ) -> Result<crate::QmpHotForkChildProcessContractState, QemuNodeChannelError> {
+        self.client
+            .install_descriptor(cgroup_name, cgroup)
+            .map_err(QemuNodeChannelError::from)?;
+        self.client
+            .install_descriptor(cancellation_name, cancellation)
+            .map_err(QemuNodeChannelError::from)?;
+        let state = self
+            .client
+            .stage_hot_fork_child_process_contract(cgroup_name, cancellation_name, identity)
+            .map_err(QemuNodeChannelError::from)?;
+        if state.template_generation() != template_generation {
+            return Err(QemuNodeChannelError::new(
+                "install hot-fork child process contract",
+                "QEMU retained the process contract for another template",
+            ));
+        }
+        self.client
+            .close_descriptor(cancellation_name)
+            .map_err(QemuNodeChannelError::from)?;
+        self.client
+            .close_descriptor(cgroup_name)
+            .map_err(QemuNodeChannelError::from)?;
+        Ok(state)
+    }
+
+    /// Releases QEMU's exact retained target process contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the retained descriptor basis
+    /// differs or the QMP exchange fails.
+    #[cfg(target_os = "linux")]
+    pub fn release_hot_fork_child_process_contract(
+        &mut self,
+        cgroup_name: &QmpDescriptorName,
+        cancellation_name: &QmpDescriptorName,
+        identity: crate::QmpHotForkChildProcessContractIdentity,
+    ) -> Result<crate::QmpHotForkChildProcessContractState, QemuNodeChannelError> {
+        self.client
+            .release_hot_fork_child_process_contract(cgroup_name, cancellation_name, identity)
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Queries QEMU's target process-contract stage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O or strict response
+    /// validation fails.
+    pub fn query_hot_fork_child_process_contract(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildProcessContractState, QemuNodeChannelError> {
+        self.client
+            .query_hot_fork_child_process_contract()
+            .map_err(QemuNodeChannelError::from)
+    }
+
     /// Imports one held branch-private ring descriptor into the QEMU template.
     ///
     /// The caller retains its descriptor and mapping. This first imports a

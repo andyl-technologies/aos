@@ -3,7 +3,10 @@
 use serde_json::Value;
 use thiserror::Error;
 
-use super::{QmpHotForkChildQmpState, QmpHotForkTemplateOutcome, QmpHotForkTemplateState};
+use super::{
+    QmpHotForkChildProcessContractState, QmpHotForkChildQmpState, QmpHotForkTemplateOutcome,
+    QmpHotForkTemplateState,
+};
 use crate::qmp::{QmpCommandKind, QmpError};
 
 /// QMP command that forks one exact retained template.
@@ -20,6 +23,9 @@ pub enum QmpHotForkRequestError {
     /// The private child-QMP report does not belong to the prepared template.
     #[error("hot-fork child QMP state does not match the prepared template")]
     ChildQmpBasisMismatch,
+    /// The process contract is absent, consumed, or belongs to another template.
+    #[error("hot-fork child process contract does not match the prepared template")]
+    ChildProcessContractBasisMismatch,
 }
 
 /// Exact generation preconditions consumed by one retained-template fork.
@@ -37,6 +43,7 @@ pub struct QmpHotForkRequest {
     block_barrier_generation: u64,
     parent_process_generation: u64,
     child_process_generation: u64,
+    child_process_contract_generation: u64,
 }
 
 impl QmpHotForkRequest {
@@ -53,6 +60,7 @@ impl QmpHotForkRequest {
     pub fn from_prepared_template(
         template: &QmpHotForkTemplateState,
         child_qmp: &QmpHotForkChildQmpState,
+        child_process_contract: &QmpHotForkChildProcessContractState,
     ) -> Result<Self, QmpHotForkRequestError> {
         let stage = template.resource_stage();
         let prepared = template.outcome() == QmpHotForkTemplateOutcome::Prepared
@@ -80,6 +88,13 @@ impl QmpHotForkRequest {
         if !qmp_matches {
             return Err(QmpHotForkRequestError::ChildQmpBasisMismatch);
         }
+        let process_contract_matches = child_process_contract.staged()
+            && !child_process_contract.consumed()
+            && child_process_contract.generation() != 0
+            && child_process_contract.template_generation() == template.generation();
+        if !process_contract_matches {
+            return Err(QmpHotForkRequestError::ChildProcessContractBasisMismatch);
+        }
 
         Ok(Self {
             template_generation: template.generation(),
@@ -94,6 +109,7 @@ impl QmpHotForkRequest {
             block_barrier_generation: template.block_barrier().generation(),
             parent_process_generation: stage.parent_process_generation(),
             child_process_generation: stage.child_process_generation(),
+            child_process_contract_generation: child_process_contract.generation(),
         })
     }
 
@@ -113,6 +129,7 @@ impl QmpHotForkRequest {
         block_barrier_generation: u64,
         parent_process_generation: u64,
         child_process_generation: u64,
+        child_process_contract_generation: u64,
     ) -> Self {
         Self {
             template_generation,
@@ -127,6 +144,7 @@ impl QmpHotForkRequest {
             block_barrier_generation,
             parent_process_generation,
             child_process_generation,
+            child_process_contract_generation,
         }
     }
 
@@ -202,6 +220,12 @@ impl QmpHotForkRequest {
         self.child_process_generation
     }
 
+    /// Returns the exact one-shot target process-contract generation.
+    #[must_use]
+    pub const fn child_process_contract_generation(self) -> u64 {
+        self.child_process_contract_generation
+    }
+
     pub(crate) fn wire_value(self) -> Value {
         serde_json::json!({
             "template-generation": self.template_generation,
@@ -216,6 +240,7 @@ impl QmpHotForkRequest {
             "block-barrier-generation": self.block_barrier_generation,
             "parent-process-generation": self.parent_process_generation,
             "child-process-generation": self.child_process_generation,
+            "child-process-contract-generation": self.child_process_contract_generation,
         })
     }
 }
@@ -308,6 +333,7 @@ pub(crate) fn parse_hot_fork_state(
         "block-barrier-generation",
         "parent-process-generation",
         "child-process-generation",
+        "child-process-contract-generation",
     ];
     if object.len() != fields.len() || !fields.iter().all(|field| object.contains_key(*field)) {
         return Err(malformed());
@@ -345,6 +371,7 @@ pub(crate) fn parse_hot_fork_state(
         block_barrier_generation: unsigned("block-barrier-generation")?,
         parent_process_generation: unsigned("parent-process-generation")?,
         child_process_generation: unsigned("child-process-generation")?,
+        child_process_contract_generation: unsigned("child-process-contract-generation")?,
     };
     let outcome_valid = match outcome {
         QmpHotForkOutcome::Forked => parent_status == 0,
@@ -374,7 +401,7 @@ mod tests {
     use super::*;
 
     fn request() -> QmpHotForkRequest {
-        QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+        QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
     }
 
     #[test]
@@ -396,6 +423,7 @@ mod tests {
             "block-barrier-generation": 10,
             "parent-process-generation": 11,
             "child-process-generation": 12,
+            "child-process-contract-generation": 13,
         });
         let Ok(state) = parse_hot_fork_state(&response, request()) else {
             panic!("exact hot-fork response should parse");

@@ -1741,12 +1741,13 @@ fn sealed_hot_fork_node(script: DescriptorScript) -> Result<QemuNode, Box<dyn Er
     node.stage_hot_fork_child_diagnostics()?;
     node.stage_hot_fork_child_qmp()?;
     node.stage_hot_fork_plugin_endpoints()?;
+    node.install_test_hot_fork_child_process_contract_stage(13, 1)?;
     Ok(node)
 }
 
 #[cfg(target_os = "linux")]
 fn exact_hot_fork_request() -> crate::QmpHotForkRequest {
-    crate::QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+    crate::QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
 }
 
 #[test]

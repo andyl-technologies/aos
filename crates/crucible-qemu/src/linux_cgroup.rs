@@ -1282,6 +1282,11 @@ impl LinuxQemuCgroup {
             });
         }
         QemuChildProcessContract::new(
+            duplicate_fd(
+                self.control.directory.as_raw_fd(),
+                "duplicate QEMU cgroup directory for child contract",
+                &self.path,
+            )?,
             cgroup_procs,
             cancellation_event,
             self.limits.maximum_vcpus,

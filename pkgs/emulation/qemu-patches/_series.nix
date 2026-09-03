@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "49ae70532254007c77d59d2f44bd4c244aa2d46e578171f346d6f156ca1be9fc";
+  patchBranchBundleSha256 = "f9021132cd9dbc1c3993ee13eda7167467651b8fd97a314379c45fcc0141ef87";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "0cbc4f3d826066b5b753f641c47c691e6f9e404a";
+  patchBranchHeadCommit = "d112b2a75199d75a0dc992f9ae13c079d6518245";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1865,6 +1865,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4,HFORK-11,HFORK-22";
       capability = "the source QEMU reserves one of 4096 unique child-process generations before fork, performs at most one nonblocking waitpid operation for each query or release, retains exact exit or signal status after reap, and requires explicit release before reuse so PID recycling cannot change the record; branch cgroup/pidfd transfer, daemon reconciliation, private-channel admission, and the full production flight remain open";
+    }
+    {
+      file = "0194-crucible-contain-hot-fork-children-from-birth.patch";
+      branchSubject = "crucible: contain hot fork children from birth";
+      branchCommit = "d112b2a75199d75a0dc992f9ae13c079d6518245";
+      branchTree = "94715075175c61306eaea2d94b67913c5064e5a1";
+      catalogName = "crucible-hot-fork-child-process-contract";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-11,HFORK-22";
+      capability = "one generation-bound QMP transaction authenticates and retains a target cgroup-v2 directory, sticky nonblocking cancellation eventfd, and file-size ceiling; the main-loop coordinator creates the child with clone3(CLONE_INTO_CGROUP), and the child observes cancellation plus RLIMIT_FSIZE before runtime reconstruction, so no hot-fork instruction runs outside the target process contract; the Rust target owner then retains an exact pidfd and brackets bounded process-identity and cgroup-membership authentication with live-pidfd checks, while terminal source/target reconciliation, modeled guest admission, and the full production flight remain open";
     }
   ];
   catalogOnlyCapabilities = [

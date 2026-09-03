@@ -11,6 +11,9 @@ pub enum QmpError {
         /// Rejected byte length; invalid bytes are deliberately not retained.
         length: usize,
     },
+    /// A hot-fork process contract contains a zero or unbounded identity field.
+    #[error("invalid hot-fork child process contract identity")]
+    InvalidHotForkChildProcessContract,
     /// A descriptor-bearing send reported an impossible byte count.
     #[error("QMP descriptor transfer wrote {actual} bytes, expected 1..={expected_maximum}")]
     DescriptorTransferLength {

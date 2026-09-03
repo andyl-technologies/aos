@@ -2267,6 +2267,34 @@ directory namespace immutable after that check; the production quota/run-
 directory owner MUST exclude concurrent namespace mutators until QEMU has
 opened every relative artifact.
 
+Retained-template hot fork uses a distinct birth-time form of the same process
+contract because a post-`fork` write to `cgroup.procs` would leave an
+uncontained execution window. Before the fork request, the host imports the
+target attempt's pinned cgroup-directory descriptor and sticky cancellation
+eventfd through standard QMP descriptor transfer. QEMU authenticates the exact
+cgroup device/inode, eventfd identity, nonzero file-size ceiling, and retained
+template generation, then retains them as a one-shot process-contract
+generation. The fork request binds that thirteenth generation. On Linux the
+source main-loop coordinator MUST create the child with
+`clone3(CLONE_INTO_CGROUP)` against the retained directory, so its first
+instruction is charged to the target cgroup. Before descriptor-table or runtime
+reconstruction, the child MUST poll the non-consuming cancellation event and
+install the exact `RLIMIT_FSIZE`; cancellation or either failure exits without
+guest admission. A known fork outcome consumes the generation exactly once;
+the source closes its retained descriptor duplicates only through an exact
+release operation. An indeterminate exchange retains the complete source and
+stage for recovery.
+
+The daemon-side target owner opens a pidfd for the reported child and requires
+that pidfd to name the same live PID before and after deriving the
+PID/start-time/executable identity and performing the bounded target-cgroup
+membership proof. The pidfd is kill authority, not direct-child wait authority:
+the source QEMU remains the kernel parent, retains one bounded generation/status
+record, performs `waitpid`, and releases that record only after daemon
+reconciliation. The daemon MUST retain the pidfd identity, target cgroup owner,
+source child-status generation, and private child channels as one attempt
+authority; it MUST NOT synthesize `std::process::Child` from the numeric PID.
+
 Exactly one attempt-owned watcher blocks on the same sticky eventfd, and child
 contracts cannot be minted before that watcher is live. Terminal cancellation
 and ordinary finalization first make the event readable and then publish the
@@ -2303,6 +2331,11 @@ cgroup watcher covers every group member. Dropping an unfinished owner transfers
 its group, optional watcher, and retained children to the nondroppable worker.
 Startup, watcher, and removal failures return or retain their authority for
 retry, and an unrecoverable worker-start failure leaks it fail-closed.
+The public process-only facade also implements the hot-fork child-owner
+boundary. It admits at most one child, pins the reported live generation with a
+pidfd, performs the exact cgroup proof through the retained internal owner, and
+returns a linear identity/kill authority. Failure leaves group-wide kill and
+source-QEMU reap ownership intact for quarantine.
 
 The process-local cancellation incarnation supports lock-free boundary polling,
 a bounded blocking wait, and exactly one registered attempt-resource callback.
