@@ -1,6 +1,6 @@
 # RFC-0006: Full Secure Boot integration — sign, measure, attest
 
-- **Status:** Phases 1–4 implemented and CI-green (PR [#102](https://github.com/andyl-technologies/aos/pull/102)). Phase 3's TPM-sealed `/var` is verified end to end by `checks.fleet.measured-boot`, including unattended TPM2 unlock across a reboot. Phase 4's download-time catalog gate is verified end to end by `checks.fleet.registry-sb-catalog` (publish a signed UKI → refuse on unknown signer / SBAT floor → accept), which also cross-checks the recorded `expected_pcr11` against an independent `systemd-measure` recompute
+- **Status:** Phases 1–4 implemented and CI-green (PR [#102](https://github.com/andyl-technologies/aos/pull/102)). Phase 3's TPM-sealed `/var` is verified end to end by `checks.fleet.measured-boot`, including unattended TPM2 unlock across a reboot. Phase 4's download-time catalog gate is verified end to end by `checks.fleet.registry-sb-catalog` (publish a signed UKI → refuse on unknown signer / SBAT floor → accept), which also cross-checks the recorded `expected_pcr11` against an independent `systemd-measure` recompute. The “attestation inputs only” scope recorded by this RFC was subsequently extended by RFC-0001 package measurements and RFC-0011 generation attestation; current behavior is documented in [`docs/users/aos/security.md`](../../users/aos/security.md)
 - **Date:** 2026-06-13
 - **PR:** [#102](https://github.com/andyl-technologies/aos/pull/102)
 - **Audience:** anyone working on `pkgs/boot/`, `pkgs/system/systemd.nix`,
