@@ -17,6 +17,7 @@
 //! - [`request`] constrains signing requests supplied by the coordinator.
 //! - [`signer`] defines the effect boundary used by external key providers.
 //! - [`tools`] invokes only assembly-pinned executables with bounded evidence.
+//! - [`verity`] derives and independently verifies finalized dm-verity data.
 //! - [`result`] defines the complete two-slot, four-format finalized output.
 
 #![forbid(unsafe_code)]
@@ -31,3 +32,4 @@ pub mod request;
 pub mod result;
 pub mod signer;
 pub mod tools;
+pub mod verity;
