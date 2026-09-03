@@ -58,6 +58,12 @@ pub enum MaintainCommand {
     Evidence(MaintainRunIdentityArgs),
     /// Render reviewed pull-request title, body, and publication inputs offline
     PreparePr(MaintainRunIdentityArgs),
+    /// Publish only the exact final-gated branch and matching pull request
+    PublishPr(MaintainPublishPrArgs),
+    /// Refresh exact-head pull-request checks, reviews, and merge state
+    ObservePr(MaintainObservePrArgs),
+    /// Record the observed protected merge as ready for release consumption
+    Handoff(MaintainHandoffArgs),
 }
 
 #[derive(Args)]
@@ -171,6 +177,48 @@ pub struct MaintainInspectArgs {
 pub struct MaintainRunIdentityArgs {
     /// Exact or unambiguous local run identity
     pub run: String,
+}
+
+#[derive(Args)]
+pub struct MaintainPublishPrArgs {
+    /// Exact or unambiguous local run identity
+    pub run: String,
+
+    /// Expected source branch head, or `absent` for first publication
+    #[arg(long, value_name = "ABSENT_OR_COMMIT")]
+    pub expected_remote_head: String,
+
+    /// Confirm the complete publication request digest shown by the preview
+    #[arg(long, value_name = "DIGEST")]
+    pub confirm: Option<String>,
+
+    /// Environment variable holding a GitHub API token for this invocation
+    #[arg(long, default_value = "AOS_GITHUB_TOKEN", value_name = "NAME")]
+    pub token_env: String,
+}
+
+#[derive(Args)]
+pub struct MaintainObservePrArgs {
+    /// Exact or unambiguous local run identity
+    pub run: String,
+
+    /// Exact required contributor-authorization check context
+    #[arg(long, value_name = "NAME")]
+    pub authorization_check: String,
+
+    /// Environment variable holding a least-privilege GitHub read token
+    #[arg(long, default_value = "AOS_GITHUB_READ_TOKEN", value_name = "NAME")]
+    pub token_env: String,
+}
+
+#[derive(Args)]
+pub struct MaintainHandoffArgs {
+    /// Exact or unambiguous local run identity
+    pub run: String,
+
+    /// Confirm handoff with the exact observed protected merge commit
+    #[arg(long, value_name = "COMMIT")]
+    pub confirm: Option<String>,
 }
 
 #[derive(Args)]
@@ -332,6 +380,33 @@ mod tests {
                 "local",
                 "--adapter",
                 "/nix/store/adapter"
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn remote_effects_require_specific_confirmation_inputs() {
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "maintain",
+                "publish-pr",
+                "run-fixture",
+                "--expected-remote-head",
+                "absent"
+            ])
+            .is_ok()
+        );
+        assert!(Cli::try_parse_from(["aos", "maintain", "publish-pr", "run-fixture"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "maintain",
+                "observe-pr",
+                "run-fixture",
+                "--authorization-check",
+                "contributor-authorization"
             ])
             .is_ok()
         );

@@ -7,6 +7,7 @@ mod git;
 mod inventory;
 mod materialize;
 mod mutation;
+mod remote;
 mod repair;
 mod state;
 mod validation;
@@ -182,6 +183,9 @@ pub async fn run(cli: &Cli, args: &MaintainArgs) -> Result<CommandCompletion> {
         Some(MaintainCommand::Repair(command)) => repair_command(cli, args, command).await,
         Some(MaintainCommand::Evidence(command)) => evidence_command(args, command),
         Some(MaintainCommand::PreparePr(command)) => prepare_pr_command(args, command),
+        Some(MaintainCommand::PublishPr(command)) => publish_pr_command(args, command).await,
+        Some(MaintainCommand::ObservePr(command)) => observe_pr_command(args, command).await,
+        Some(MaintainCommand::Handoff(command)) => handoff_command(args, command),
     }
 }
 
@@ -577,7 +581,7 @@ fn prepare_pr_command(
     args: &MaintainArgs,
     command: &crate::cli::MaintainRunIdentityArgs,
 ) -> Result<CommandCompletion> {
-    let (store, _) = current_store(args)?;
+    let (store, coordinates) = current_store(args)?;
     let run = resolve_run(&store, &command.run)?;
     if run.state != aos_maintain::workflow::RunState::ReadyForPr {
         return run_view_completion(
@@ -590,6 +594,17 @@ fn prepare_pr_command(
             )),
         );
     }
+    let draft = pull_request_draft(&store, &coordinates, &run)?;
+    let mut completion = run_view_completion("prepare-pr", &store, run.clone(), None)?;
+    completion.result.data.pull_request = Some(draft);
+    CommandCompletion::new(completion.result)
+}
+
+fn pull_request_draft(
+    store: &state::StateStore,
+    coordinates: &inventory::RepositoryCoordinates,
+    run: &aos_maintain::run::PackageUpdateRunV1,
+) -> Result<PullRequestDraft> {
     let plan = store
         .read_plan(run.plan_id.as_str())?
         .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
@@ -603,17 +618,20 @@ fn prepare_pr_command(
         .candidate_commit
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("candidate commit is unavailable"))?;
+    let base_branch = remote::default_branch(coordinates)?;
     let title = format!(
         "pkg: update {} to {}",
         plan.unit_id, plan.target_package_version
     );
     let body = format!(
-        "## Package update\n\n- Unit: `{}`\n- Change: `{}` -> `{}`\n- Risk: `{}`\n- Sources: {} resolved and hashed\n- Quick gates: {}/{} passed\n- Final gates: {}/{} passed\n- Candidate commit: `{}`\n- Local evidence: `{}`\n\n## Review\n\n- [ ] Review the package and source changes\n- [ ] Confirm required package-owner or specialist review\n- [ ] Confirm remote contributor authorization and protected checks\n",
+        "## Package update\n\n- Unit: `{}`\n- Change: `{}` -> `{}`\n- Components: {}\n- Risk: `{}`\n- Sources: {} resolved and hashed\n- Deterministic attempts: 1\n- Accepted repair attempts: {}\n- Quick gates: {}/{} passed\n- Final gates: {}/{} passed\n- Candidate commit: `{}`\n- Local evidence: `{}`\n\n## Review\n\n- [ ] Review the package and source changes\n- [ ] Confirm required package-owner or specialist review\n- [ ] Confirm remote contributor authorization and protected checks\n",
         plan.unit_id,
         plan.current_package_version,
         plan.target_package_version,
+        plan.component_targets.len(),
         risk_name(plan.risk),
         evidence.materialization.sources.len(),
+        run.attempt,
         evidence.quick_gates.results.len(),
         evidence.quick_gates.results.len(),
         evidence.final_gates.results.len(),
@@ -621,16 +639,316 @@ fn prepare_pr_command(
         head.value,
         evidence_digest,
     );
-    let mut completion = run_view_completion("prepare-pr", &store, run.clone(), None)?;
-    completion.result.data.pull_request = Some(PullRequestDraft {
-        branch: run.branch,
-        base_branch: "master".to_string(),
+    Ok(PullRequestDraft {
+        branch: run.branch.clone(),
+        base_branch,
         title,
         body,
         head: head.value.clone(),
         evidence_digest,
+    })
+}
+
+fn parse_expected_remote_head(
+    run: &aos_maintain::run::PackageUpdateRunV1,
+    value: &str,
+) -> Result<Option<String>> {
+    if value == "absent" {
+        return Ok(None);
+    }
+    let object = aos_maintain::envelope::GitObjectId {
+        algorithm: run.base_commit.algorithm,
+        value: value.to_string(),
+    };
+    object.validate()?;
+    Ok(Some(object.value))
+}
+
+async fn publish_pr_command(
+    args: &MaintainArgs,
+    command: &crate::cli::MaintainPublishPrArgs,
+) -> Result<CommandCompletion> {
+    let (store, coordinates) = current_store(args)?;
+    let mut run = resolve_run(&store, &command.run)?;
+    if !matches!(
+        run.state,
+        aos_maintain::workflow::RunState::ReadyForPr
+            | aos_maintain::workflow::RunState::PrPublished
+            | aos_maintain::workflow::RunState::AwaitingRemoteAuthorization
+    ) {
+        return run_view_completion(
+            "publish-pr",
+            &store,
+            run,
+            Some((
+                CommandDisposition::ActionRequired,
+                "Only a final-evidenced candidate may be published",
+            )),
+        );
+    }
+    let draft = pull_request_draft(&store, &coordinates, &run)?;
+    if let Some(publication) = store.read_publication(run.run_id.as_str())? {
+        if publication.head.value != draft.head
+            || publication.branch != draft.branch
+            || publication.base_branch != draft.base_branch
+            || publication.evidence_digest != draft.evidence_digest
+        {
+            anyhow::bail!("retained publication disagrees with the current exact candidate");
+        }
+        advance_published_state(&store, &mut run)?;
+        let mut completion = run_view_completion("publish-pr", &store, run, None)?;
+        completion.result.data.pull_request = Some(draft);
+        completion.result.data.publication = Some(publication.clone());
+        completion.result.primary_values.push(PrimaryValue {
+            name: "pullRequestUrl".to_string(),
+            value: publication.pull_request_url,
+        });
+        return CommandCompletion::new(completion.result);
+    }
+    let expected = parse_expected_remote_head(&run, &command.expected_remote_head)?;
+    let request_digest = remote::publication_request_digest(
+        &coordinates,
+        &run,
+        &draft,
+        expected.as_deref(),
+        &command.token_env,
+    )?;
+    if command.confirm.as_deref() != Some(request_digest.to_string().as_str()) {
+        let mut completion = run_view_completion(
+            "publish-pr",
+            &store,
+            run.clone(),
+            Some((
+                CommandDisposition::ActionRequired,
+                "Review and confirm the exact remote branch and pull-request effect",
+            )),
+        )?;
+        completion.result.data.pull_request = Some(draft);
+        completion.result.primary_values.push(PrimaryValue {
+            name: "publicationRequestDigest".to_string(),
+            value: request_digest.to_string(),
+        });
+        completion.result.next_actions = vec![NextAction {
+            label: "Publish this exact branch and pull request".to_string(),
+            argv: vec![
+                "aos".to_string(),
+                "maintain".to_string(),
+                "publish-pr".to_string(),
+                run.run_id.to_string(),
+                "--expected-remote-head".to_string(),
+                command.expected_remote_head.clone(),
+                "--token-env".to_string(),
+                command.token_env.clone(),
+                "--confirm".to_string(),
+                request_digest.to_string(),
+            ],
+            reason: "the confirmation binds the remote, ref, expected prior head, candidate, evidence, and PR text".to_string(),
+            prerequisites: vec![
+                format!("load the GitHub API credential into {}", command.token_env),
+                "ensure configured Git push authentication is available".to_string(),
+            ],
+            effect_class: EffectClass::RemoteMutation,
+            bound_context: Some(request_digest.to_string()),
+        }];
+        return CommandCompletion::new(completion.result);
+    }
+
+    let publication = match remote::publish(
+        &coordinates,
+        &run,
+        &draft,
+        expected.as_deref(),
+        &command.token_env,
+    )
+    .await
+    {
+        Ok(publication) => publication,
+        Err(error) => {
+            return run_view_completion(
+                "publish-pr",
+                &store,
+                run,
+                Some((CommandDisposition::OperationFailed, &format!("{error:#}"))),
+            );
+        }
+    };
+    if store.read_publication(run.run_id.as_str())?.is_none() {
+        store.write_publication(&publication)?;
+    }
+    advance_published_state(&store, &mut run)?;
+    let mut completion = run_view_completion("publish-pr", &store, run, None)?;
+    completion.result.data.pull_request = Some(draft);
+    completion.result.data.publication = Some(publication.clone());
+    completion.result.primary_values.push(PrimaryValue {
+        name: "pullRequestUrl".to_string(),
+        value: publication.pull_request_url,
     });
     CommandCompletion::new(completion.result)
+}
+
+fn advance_published_state(
+    store: &state::StateStore,
+    run: &mut aos_maintain::run::PackageUpdateRunV1,
+) -> Result<()> {
+    if run.state == aos_maintain::workflow::RunState::ReadyForPr {
+        store.transition(
+            run,
+            aos_maintain::workflow::RunState::PrPublished,
+            aos_maintain::workflow::ActorClass::Maintainer,
+            state::now_unix()?,
+        )?;
+    }
+    if run.state == aos_maintain::workflow::RunState::PrPublished {
+        store.transition(
+            run,
+            aos_maintain::workflow::RunState::AwaitingRemoteAuthorization,
+            aos_maintain::workflow::ActorClass::Controller,
+            state::now_unix()?,
+        )?;
+    }
+    Ok(())
+}
+
+async fn observe_pr_command(
+    args: &MaintainArgs,
+    command: &crate::cli::MaintainObservePrArgs,
+) -> Result<CommandCompletion> {
+    let (store, _) = current_store(args)?;
+    let mut run = resolve_run(&store, &command.run)?;
+    if !matches!(
+        run.state,
+        aos_maintain::workflow::RunState::AwaitingRemoteAuthorization
+            | aos_maintain::workflow::RunState::MergeEligibleObserved
+            | aos_maintain::workflow::RunState::MergedObserved
+            | aos_maintain::workflow::RunState::ReleaseHandoff
+    ) {
+        return run_view_completion(
+            "observe-pr",
+            &store,
+            run,
+            Some((
+                CommandDisposition::ActionRequired,
+                "Publish the exact candidate before observing remote authorization",
+            )),
+        );
+    }
+    let publication = store
+        .read_publication(run.run_id.as_str())?
+        .ok_or_else(|| anyhow::anyhow!("run publication is unavailable"))?;
+    let observation = match remote::observe(
+        &publication,
+        &command.authorization_check,
+        &command.token_env,
+    )
+    .await
+    {
+        Ok(observation) => observation,
+        Err(error) => {
+            return run_view_completion(
+                "observe-pr",
+                &store,
+                run,
+                Some((CommandDisposition::OperationFailed, &format!("{error:#}"))),
+            );
+        }
+    };
+    store.write_remote_observation(&observation)?;
+    if run.state == aos_maintain::workflow::RunState::AwaitingRemoteAuthorization
+        && observation.is_merge_eligible()
+    {
+        store.transition(
+            &mut run,
+            aos_maintain::workflow::RunState::MergeEligibleObserved,
+            aos_maintain::workflow::ActorClass::RemoteObservation,
+            state::now_unix()?,
+        )?;
+    }
+    if run.state == aos_maintain::workflow::RunState::MergeEligibleObserved && observation.merged {
+        store.transition(
+            &mut run,
+            aos_maintain::workflow::RunState::MergedObserved,
+            aos_maintain::workflow::ActorClass::RemoteObservation,
+            state::now_unix()?,
+        )?;
+    }
+    let disposition = if observation.is_merge_eligible() || observation.merged {
+        None
+    } else {
+        Some((
+            CommandDisposition::ActionRequired,
+            "The exact head is still waiting for authorization, successful checks, and approval",
+        ))
+    };
+    let mut completion = run_view_completion("observe-pr", &store, run, disposition)?;
+    completion.result.data.publication = Some(publication);
+    completion.result.data.remote_observation = Some(observation);
+    CommandCompletion::new(completion.result)
+}
+
+fn handoff_command(
+    args: &MaintainArgs,
+    command: &crate::cli::MaintainHandoffArgs,
+) -> Result<CommandCompletion> {
+    let (store, _) = current_store(args)?;
+    let mut run = resolve_run(&store, &command.run)?;
+    if run.state == aos_maintain::workflow::RunState::ReleaseHandoff {
+        return run_view_completion("handoff", &store, run, None);
+    }
+    if run.state != aos_maintain::workflow::RunState::MergedObserved {
+        return run_view_completion(
+            "handoff",
+            &store,
+            run,
+            Some((
+                CommandDisposition::ActionRequired,
+                "A protected exact merge must be observed before release handoff",
+            )),
+        );
+    }
+    let observation = store
+        .read_remote_observation(run.run_id.as_str())?
+        .ok_or_else(|| anyhow::anyhow!("merged run has no remote observation"))?;
+    let merge_commit = observation
+        .merge_commit
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("merged observation has no merge commit"))?
+        .value
+        .clone();
+    if command.confirm.as_deref() != Some(merge_commit.as_str()) {
+        let mut completion = run_view_completion(
+            "handoff",
+            &store,
+            run.clone(),
+            Some((
+                CommandDisposition::ActionRequired,
+                "Confirm the exact observed protected merge commit for release handoff",
+            )),
+        )?;
+        completion.result.data.remote_observation = Some(observation);
+        completion.result.next_actions = vec![NextAction {
+            label: "Record release identity handoff".to_string(),
+            argv: vec![
+                "aos".to_string(),
+                "maintain".to_string(),
+                "handoff".to_string(),
+                run.run_id.to_string(),
+                "--confirm".to_string(),
+                merge_commit.clone(),
+            ],
+            reason: "this records identity for the independent release workflow; it does not publish artifacts".to_string(),
+            prerequisites: vec!["review the exact protected merge identity".to_string()],
+            effect_class: EffectClass::HumanDecision,
+            bound_context: Some(merge_commit),
+        }];
+        return CommandCompletion::new(completion.result);
+    }
+    store.transition(
+        &mut run,
+        aos_maintain::workflow::RunState::ReleaseHandoff,
+        aos_maintain::workflow::ActorClass::Maintainer,
+        state::now_unix()?,
+    )?;
+    run_view_completion("handoff", &store, run, None)
 }
 
 fn status_command(
@@ -1585,6 +1903,8 @@ fn run_view_completion(
         );
     }
     let evidence = store.read_evidence(run.run_id.as_str())?;
+    let publication = store.read_publication(run.run_id.as_str())?;
+    let remote_observation = store.read_remote_observation(run.run_id.as_str())?;
     let (disposition, diagnostics) = stopped.map_or(
         (CommandDisposition::Success, Vec::new()),
         |(disposition, summary)| {
@@ -1609,6 +1929,8 @@ fn run_view_completion(
             plan: Some(plan),
             run: Some(run.clone()),
             evidence,
+            publication,
+            remote_observation,
             ..CommandData::default()
         },
         primary_values: vec![PrimaryValue {
@@ -1671,6 +1993,12 @@ fn next_actions_for_run(run: &aos_maintain::run::PackageUpdateRunV1) -> Vec<Next
             vec!["prepare-pr", run.run_id.as_str()],
             "review title, body, branch, head, and evidence before publication",
             EffectClass::ReadOnly,
+        ),
+        RunState::MergedObserved => (
+            "Record release identity handoff",
+            vec!["handoff", run.run_id.as_str()],
+            "confirm the protected merge identity for independent release consumption",
+            EffectClass::HumanDecision,
         ),
         _ => return Vec::new(),
     };
@@ -1858,6 +2186,9 @@ fn command_name(args: &MaintainArgs) -> &'static str {
         Some(MaintainCommand::Repair(_)) => "repair",
         Some(MaintainCommand::Evidence(_)) => "evidence",
         Some(MaintainCommand::PreparePr(_)) => "prepare-pr",
+        Some(MaintainCommand::PublishPr(_)) => "publish-pr",
+        Some(MaintainCommand::ObservePr(_)) => "observe-pr",
+        Some(MaintainCommand::Handoff(_)) => "handoff",
     }
 }
 

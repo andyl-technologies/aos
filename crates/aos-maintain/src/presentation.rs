@@ -11,6 +11,7 @@ use crate::discovery::DiscoverySnapshotV1;
 use crate::envelope::InventoryEnvelopeV1;
 use crate::identity::RunId;
 use crate::plan::PackageUpdatePlanV1;
+use crate::remote::{PullRequestObservationV1, PullRequestPublicationV1};
 use crate::run::{PackageUpdateEvidenceV1, PackageUpdateRunV1, RepairAttemptV1};
 use crate::workflow::{DiscoveryDecision, GateOutcome, RunState, TaskStatus};
 
@@ -212,6 +213,12 @@ pub struct CommandData {
     /// Offline pull-request draft returned before any remote mutation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pull_request: Option<PullRequestDraft>,
+    /// Completed exact remote publication, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication: Option<PullRequestPublicationV1>,
+    /// Latest exact-head read-only pull-request observation, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_observation: Option<PullRequestObservationV1>,
 }
 
 /// Carries exact reviewed pull-request text and branch identities offline.
@@ -316,6 +323,12 @@ impl MaintainCommandResult {
         }
         if let Some(attempt) = &self.data.repair_attempt {
             attempt.validate()?;
+        }
+        if let Some(publication) = &self.data.publication {
+            publication.validate()?;
+        }
+        if let Some(observation) = &self.data.remote_observation {
+            observation.validate()?;
         }
         Ok(())
     }
