@@ -7,7 +7,7 @@ use crate::qmp::{QmpCommandKind, QmpDescriptorName, QmpError};
 /// QMP command that retains or releases the branch-private child QMP stream.
 pub const QMP_HOT_FORK_CHILD_QMP_COMMAND: &str = "crucible-hot-fork-child-qmp";
 /// Version of the retained child-QMP endpoint contract.
-pub const QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION: u32 = 7;
+pub const QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION: u32 = 8;
 
 /// Exact QEMU-owned state for one retained branch-private child QMP stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -253,11 +253,13 @@ pub(crate) fn parse_hot_fork_child_qmp_state(
         && !monitor_disposition_bound
         && !monitor_socket_resources_bound
         && !reinitializer_prepared;
+    let expected_readiness =
+        staged_shape && resource_plan_bound && reinitialized && disposition_complete;
     let valid = schema_version == u64::from(QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION)
         && staged == descriptor_name.is_some()
         && reinitialized == disposition_complete
         && (!reinitialized || (staged && resource_plan_bound))
-        && !readiness_proof_acknowledged
+        && readiness_proof_acknowledged == expected_readiness
         && if staged { staged_shape } else { absent_shape };
     if !valid {
         return Err(malformed());
@@ -289,7 +291,7 @@ mod tests {
     #[test]
     fn child_qmp_requires_one_unattached_nonblocking_retained_stream() {
         let staged = json!({
-            "schema-version": 7,
+            "schema-version": 8,
             "generation": 9,
             "template-generation": 3,
             "monitor-generation": 5,
@@ -324,6 +326,7 @@ mod tests {
         let mut child = staged.clone();
         child["reinitialized"] = json!(true);
         child["disposition-complete"] = json!(true);
+        child["readiness-proof-acknowledged"] = json!(true);
         let Ok(child) = parse_hot_fork_child_qmp_state(&child) else {
             panic!("complete child QMP state should parse");
         };
