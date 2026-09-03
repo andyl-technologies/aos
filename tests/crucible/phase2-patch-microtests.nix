@@ -2853,6 +2853,31 @@
         '';
       };
     }
+    {
+      patch = "0179-crucible-rebuild-reconstructed-child-qmp-dispatcher.patch";
+      check = certifyExactPatch {
+        patchName = "0179-crucible-rebuild-reconstructed-child-qmp-dispatcher.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-held-child-qmp-dispatcher";
+        liveEvidence = ''
+          grep -Fxq 'patch=0179-crucible-rebuild-reconstructed-child-qmp-dispatcher.patch' "$live_result"
+          grep -Fq 'monitor_qmp_hot_fork_rebuild_dispatcher_held' \
+            ${patchDir}/0179-crucible-rebuild-reconstructed-child-qmp-dispatcher.patch
+          grep -Fq 'qmp_dispatcher_co != inherited' \
+            ${patchDir}/0179-crucible-rebuild-reconstructed-child-qmp-dispatcher.patch
+          grep -Fq 'qatomic_read(&qmp_dispatcher_co_busy)' \
+            ${patchDir}/0179-crucible-rebuild-reconstructed-child-qmp-dispatcher.patch
+          grep -Fq 'qmp_dispatcher_co_shutdown = true' \
+            ${patchDir}/0179-crucible-rebuild-reconstructed-child-qmp-dispatcher.patch
+          grep -Fq 'AIO_WAIT_WHILE_UNLOCKED' \
+            ${patchDir}/0179-crucible-rebuild-reconstructed-child-qmp-dispatcher.patch
+          grep -Fq 'qemu_coroutine_create(monitor_qmp_dispatcher_co, NULL)' \
+            ${patchDir}/0179-crucible-rebuild-reconstructed-child-qmp-dispatcher.patch
+          grep -Fq 'basis->dispatcher_rebuilt = true' \
+            ${patchDir}/0179-crucible-rebuild-reconstructed-child-qmp-dispatcher.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

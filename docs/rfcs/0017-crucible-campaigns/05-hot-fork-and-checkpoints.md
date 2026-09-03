@@ -1225,9 +1225,13 @@ socket state, installs the
 held private stream, replaces the JSON parser with a fresh empty parser, and
 returns the monitor to capability negotiation with only the supported
 I/O-thread OOB capability offered. No greeting is emitted and no input source
-is attached. This transition remains unreachable from a production command;
-dispatcher and monitor-I/O-thread reconstruction, greeting emission, input
-release, fork coordination, and readiness bits 7 and 8 remain open.
+is attached. The next child-only step requires the copied dispatcher to be
+idle, wakes it once with shutdown set so it exits through QEMU's normal
+coroutine disposal path, and installs one fresh child dispatcher. Replacement
+input remains held across that transition. These operations remain unreachable
+from a production command; monitor-I/O-thread reconstruction, greeting
+emission, input release, fork coordination, and readiness bits 7 and 8 remain
+open.
 The sealed QMP contribution now carries those exact template and child-QMP
 generations alongside its descriptor and socket identity. The immediate-child
 resource transaction requires both the plugin and QMP reinitializers to match
