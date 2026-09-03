@@ -237,6 +237,7 @@ The top-level command surface is:
 | `aos release qualify` | Reads staged public bytes, runs planned platform gates, and records signed qualification. |
 | `aos release promote` | Imports the qualified bundle into production without build, conversion, metadata generation, or content signing. |
 | `aos release channel advance` | Performs one reviewed compare-and-swap partition transition after production read-back. |
+| `aos release channel complete` | Verifies the full signed rollout and threshold-approved retention/handoff evidence before closing the journal. |
 | `aos release timestamp refresh` | Refreshes only an already-authorized snapshot with the restricted timestamp role. |
 | `aos release status` | Reconciles the journal with immutable local and public state without mutation. |
 | `aos release verify` | Verifies plan, bundle, evidence, signatures, receipts, matrix completeness, and state transitions offline. |

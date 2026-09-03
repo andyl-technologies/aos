@@ -260,6 +260,8 @@ pub struct ReleasePromoteArgs {
 pub enum ReleaseChannelCommand {
     /// Compare-and-swap one planned channel partition range
     Advance(ReleaseChannelAdvanceArgs),
+    /// Verify rollout, retention, and operational handoff as complete
+    Complete(ReleaseChannelCompleteArgs),
 }
 
 #[derive(Args)]
@@ -317,6 +319,57 @@ pub struct ReleaseChannelAdvanceArgs {
     pub token: Option<String>,
 
     /// New channel evidence directory; existing paths are never replaced
+    #[arg(long)]
+    pub output: PathBuf,
+}
+
+#[derive(Args)]
+pub struct ReleaseChannelCompleteArgs {
+    /// Closed finalized bundle whose rollout is completing
+    #[arg(long)]
+    pub bundle: PathBuf,
+
+    /// Rolling append-only journal containing every channel operation
+    #[arg(long)]
+    pub journal: PathBuf,
+
+    /// Exact signed production publication receipt
+    #[arg(long)]
+    pub production_receipt: PathBuf,
+
+    /// Signed channel receipt; repeat for every planned range
+    #[arg(long = "channel-receipt", required = true)]
+    pub channel_receipts: Vec<PathBuf>,
+
+    /// Identical signed completion decision; repeat to satisfy its threshold
+    #[arg(long = "completion-receipt", required = true)]
+    pub completion_receipts: Vec<PathBuf>,
+
+    /// Trusted manifest key as KEY_ID=PATH; repeat to satisfy thresholds
+    #[arg(long = "trusted-key", value_name = "KEY_ID=PATH", required = true)]
+    pub trusted_keys: Vec<String>,
+
+    /// Independently trusted production Hub receipt key as KEY_ID=PATH
+    #[arg(
+        long = "production-receipt-key",
+        value_name = "KEY_ID=PATH",
+        required = true
+    )]
+    pub production_receipt_keys: Vec<String>,
+
+    /// Independently trusted channel receipt key as KEY_ID=PATH
+    #[arg(
+        long = "channel-receipt-key",
+        value_name = "KEY_ID=PATH",
+        required = true
+    )]
+    pub channel_receipt_keys: Vec<String>,
+
+    /// Release-evidence key as KEY_ID=PATH; repeat for the planned threshold
+    #[arg(long = "completion-key", value_name = "KEY_ID=PATH", required = true)]
+    pub completion_keys: Vec<String>,
+
+    /// New completion evidence directory; existing paths are never replaced
     #[arg(long)]
     pub output: PathBuf,
 }

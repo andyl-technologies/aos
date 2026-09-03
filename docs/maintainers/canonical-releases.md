@@ -26,15 +26,16 @@ The current implementation provides these fail-closed operations:
   writes a staging receipt plus successor journal;
 - `aos release timestamp refresh` renews only the short-lived pointer to an
   already root-authorized immutable snapshot, including recovery after expiry;
+- `aos release channel complete` proves every planned rollout operation and
+  current public partition, then requires threshold release-evidence approval
+  of retention and operational handoff before closing the journal; and
 - `aos release verify` checks a closed release bundle and optional journal
   offline against explicitly supplied public keys.
 
-Registry-to-bundle finalization, qualification, release-scoped Hub admission,
-production promotion, TUF freshness, and channel commands
-remain incomplete. The current staging command is therefore an M1 transport
-edge for non-production package bundles only; it is intentionally unreachable
-until another implementation has produced a valid `Finalized` journal entry.
-Production publication through this workflow remains forbidden.
+Registry-to-bundle finalization, qualification executor orchestration, and
+timestamp publication remain incomplete. Production publication through this
+workflow remains forbidden until those paths and the remaining RFC-0017 launch
+gates are complete.
 
 The canonical release image profile enables external Secure Boot, distinct
 module and PCR-policy roles, lockdown, measured boot, encrypted state,
@@ -326,6 +327,43 @@ signed channel receipt afterward, reads every selected public partition back,
 and appends a `Rolling` journal entry. Further planned ranges append
 `Rolling`-to-`Rolling` entries with their own generations and receipts; release
 completion is a separate retention and handoff decision.
+
+## Complete a rollout
+
+After every planned range has advanced, obtain identical completion decisions
+signed by exactly the `release-evidence` threshold frozen in the plan. Each
+canonical decision uses schema `aos.release.completion-receipt/v1` and binds the
+release, plan, manifest, production receipt, the sorted digest of every channel
+receipt, the frozen retention policy, affirmative corresponding-source
+retention, affirmative operational handoff, a public authority identity, and
+an RFC 3339 UTC completion time.
+
+Then recheck the complete public rollout and close the journal:
+
+```sh
+aos release channel complete \
+  --bundle release-bundle \
+  --journal release-edge-final/release-journal.jsonl \
+  --production-receipt release-promoted/production-receipt.json \
+  --channel-receipt release-edge-0-31/channel-receipt.json \
+  --channel-receipt release-edge-32-255/channel-receipt.json \
+  --completion-receipt approvals/completion-release-evidence-1.json \
+  --completion-receipt approvals/completion-release-evidence-2.json \
+  --trusted-key release-2026=/media/keys/release-2026.pub \
+  --production-receipt-key production-hub-2026=/media/keys/production-hub-2026.pub \
+  --channel-receipt-key channel-2026=/media/keys/channel-2026.pub \
+  --completion-key evidence-1=/media/keys/evidence-1.pub \
+  --completion-key evidence-2=/media/keys/evidence-2.pub \
+  --output release-complete
+```
+
+The command accepts no access token and performs no Hub mutation. It verifies
+one signed channel receipt for every exact plan intent, proves each receipt is
+already part of the rolling journal, rejects gaps in per-channel generations,
+checks the anonymous production receipt and all public partitions, and verifies
+that every completion signer approved identical bytes. The output retains all
+receipts and appends the sole `Rolling`-to-`Complete` transition without
+replacing an existing path.
 
 ## Verify a captured bundle offline
 

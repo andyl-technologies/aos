@@ -19,6 +19,8 @@ pub const PUBLICATION_RECEIPT_V1: &str = "aos.release.publication-receipt/v1";
 pub const SIGNED_RECEIPT_V1: &str = "aos.hub.signed-release-evidence/v1";
 /// Signature domain for canonical Hub evidence payloads.
 pub const RECEIPT_SIGNATURE_DOMAIN: &str = "aos.hub.release-evidence-signature/v1";
+/// Schema for the independently approved release-completion decision.
+pub const COMPLETION_RECEIPT_V1: &str = "aos.release.completion-receipt/v1";
 
 /// Canonical Ed25519 envelope for a release evidence payload.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -277,6 +279,71 @@ impl ChannelReceiptV1 {
     }
 }
 
+/// Retention and handoff decision required to complete a channel rollout.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompletionReceiptV1 {
+    /// Exact completion schema identifier.
+    pub schema_version: String,
+    /// Immutable release identity.
+    pub release_id: String,
+    /// Frozen release-plan identity.
+    pub plan_digest: Sha256Digest,
+    /// Final release-manifest identity.
+    pub manifest_digest: Sha256Digest,
+    /// Production publication receipt authorizing discovery.
+    pub production_receipt_digest: Sha256Digest,
+    /// Sorted identities of every planned channel operation receipt.
+    pub channel_receipt_digests: Vec<Sha256Digest>,
+    /// Versioned retention policy frozen in the plan.
+    pub retention_policy_id: String,
+    /// Exact frozen retention-policy digest.
+    pub retention_policy_digest: Sha256Digest,
+    /// Whether all required corresponding source remains retained.
+    pub corresponding_source_retained: bool,
+    /// Whether ownership, monitoring, and recovery handoff is complete.
+    pub operational_handoff_complete: bool,
+    /// Public release-evidence authority identity.
+    pub authority_id: String,
+    /// RFC 3339 UTC decision time.
+    pub completed_at: String,
+}
+
+impl CompletionReceiptV1 {
+    /// Validates the closed completion decision independently of a plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported schema, malformed identities,
+    /// missing or unordered channel evidence, a failed retention/handoff
+    /// decision, or a non-UTC completion time.
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != COMPLETION_RECEIPT_V1 {
+            bail!("unsupported release completion receipt schema");
+        }
+        require_identifier(&self.release_id, "completion release id")?;
+        require_identifier(&self.retention_policy_id, "completion retention policy id")?;
+        require_identifier(&self.authority_id, "completion authority id")?;
+        if self.channel_receipt_digests.is_empty()
+            || self
+                .channel_receipt_digests
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+        {
+            bail!("completion channel receipt digests must be nonempty, unique, and sorted");
+        }
+        if !self.corresponding_source_retained || !self.operational_handoff_complete {
+            bail!("release completion retention and handoff must both pass");
+        }
+        if !self.completed_at.ends_with('Z')
+            || humantime::parse_rfc3339(&self.completed_at).is_err()
+        {
+            bail!("release completion timestamp must be RFC 3339 UTC");
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,5 +380,33 @@ mod tests {
         changed["payload"]["last_partition"] = serde_json::json!(4);
         let changed = crate::canonical::to_vec(&changed).unwrap();
         assert!(verify_signed_receipt::<ChannelReceiptV1>(&changed, &keys).is_err());
+    }
+
+    #[test]
+    fn completion_receipt_requires_sorted_rollout_and_passing_handoff() {
+        let first = Sha256Digest::of_bytes("first");
+        let second = Sha256Digest::of_bytes("second");
+        let mut digests = vec![first, second];
+        digests.sort();
+        let mut receipt = CompletionReceiptV1 {
+            schema_version: COMPLETION_RECEIPT_V1.into(),
+            release_id: "release-2026-09".into(),
+            plan_digest: Sha256Digest::of_bytes("plan"),
+            manifest_digest: Sha256Digest::of_bytes("manifest"),
+            production_receipt_digest: Sha256Digest::of_bytes("production"),
+            channel_receipt_digests: digests,
+            retention_policy_id: "retention-v1".into(),
+            retention_policy_digest: Sha256Digest::of_bytes("retention"),
+            corresponding_source_retained: true,
+            operational_handoff_complete: true,
+            authority_id: "release-evidence".into(),
+            completed_at: "2026-09-03T00:00:00Z".into(),
+        };
+        assert!(receipt.validate().is_ok());
+        receipt.channel_receipt_digests.reverse();
+        assert!(receipt.validate().is_err());
+        receipt.channel_receipt_digests.sort();
+        receipt.operational_handoff_complete = false;
+        assert!(receipt.validate().is_err());
     }
 }
