@@ -4389,7 +4389,7 @@ fn run_verify_package_attestation(
             )?,
             rederived_manifest,
             quoted_generation_quote.as_ref().context(
-                "--generation-attestation requires --quote-dir; a bare PCR 15 value does not authenticate PCR 7/11 or the AK",
+                "--generation-attestation requires --quote-dir; a bare PCR 15 value does not authenticate PCR 7/11/12 or the AK",
             )?,
             &trust,
             &verified,
