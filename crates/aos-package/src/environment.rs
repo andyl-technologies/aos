@@ -7,10 +7,11 @@
 //! root must expose the immutable AOS identity at
 //! `/aos-toplevel/os-release`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::env;
+use std::ffi::OsString;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
@@ -65,11 +66,11 @@ fn selected_root() -> Result<PathBuf> {
 
 /// Validates the immutable identity of an AOS root.
 fn validate_aos_root(root: &Path, live_only: bool) -> Result<()> {
-    let immutable = root.join("aos-toplevel/os-release");
+    let immutable = rooted_path(root, Path::new("/aos-toplevel/os-release"))?;
     let identity = if immutable.is_file() {
-        immutable
+        immutable.clone()
     } else if !live_only {
-        let installed = root.join("etc/os-release");
+        let installed = rooted_path(root, Path::new("/etc/os-release"))?;
         if installed.is_file() {
             installed
         } else {
@@ -103,6 +104,75 @@ fn validate_aos_root(root: &Path, live_only: bool) -> Result<()> {
     Ok(())
 }
 
+/// Resolves a logical absolute path inside an AOS root.
+///
+/// Absolute symlink targets are interpreted relative to `root`, matching
+/// chroot semantics. This matters during initrd operation, where immutable AOS
+/// identities point into `/nix/store` while the target filesystem is mounted
+/// below `/sysroot`.
+fn rooted_path(root: &Path, logical: &Path) -> Result<PathBuf> {
+    const MAX_SYMLINKS: usize = 40;
+
+    let mut pending = logical_components(logical)?;
+    let mut resolved = PathBuf::new();
+    let mut followed = 0;
+
+    while let Some(component) = pending.pop_front() {
+        resolved.push(&component);
+        let candidate = root.join(&resolved);
+        let metadata = match fs::symlink_metadata(&candidate) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                resolved.extend(pending);
+                return Ok(root.join(resolved));
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("checking rooted AOS path {}", candidate.display()));
+            }
+        };
+        if !metadata.file_type().is_symlink() {
+            continue;
+        }
+
+        followed += 1;
+        if followed > MAX_SYMLINKS {
+            bail!("too many symlinks while resolving {}", logical.display());
+        }
+        resolved.pop();
+        let target = fs::read_link(&candidate)
+            .with_context(|| format!("reading rooted AOS symlink {}", candidate.display()))?;
+        let target = if target.is_absolute() {
+            target
+        } else {
+            resolved.join(target)
+        };
+        resolved.clear();
+        let mut target_components = logical_components(&target)?;
+        target_components.append(&mut pending);
+        pending = target_components;
+    }
+
+    Ok(root.join(resolved))
+}
+
+fn logical_components(path: &Path) -> Result<VecDeque<OsString>> {
+    let mut components = VecDeque::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) => bail!("unsupported rooted path prefix: {}", path.display()),
+            Component::RootDir | Component::CurDir => {}
+            Component::ParentDir => {
+                if components.pop_back().is_none() {
+                    bail!("rooted path escapes its AOS root: {}", path.display());
+                }
+            }
+            Component::Normal(value) => components.push_back(value.to_os_string()),
+        }
+    }
+    Ok(components)
+}
+
 /// Reads the fields required from an os-release identity document.
 fn parse_os_release(path: &Path) -> Result<BTreeMap<String, String>> {
     let contents = fs::read_to_string(path)
@@ -124,6 +194,7 @@ fn parse_os_release(path: &Path) -> Result<BTreeMap<String, String>> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::os::unix::fs::symlink;
 
     use tempfile::tempdir;
 
@@ -164,5 +235,24 @@ mod tests {
         .unwrap();
 
         assert!(validate_aos_root(root.path(), true).is_err());
+    }
+
+    #[test]
+    fn accepts_store_symlinks_rooted_below_an_initrd_mount() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("nix/store/aos-system")).unwrap();
+        fs::write(
+            root.path().join("nix/store/os-release"),
+            "ID=aos\nAOS_MODULE_ABI=7\n",
+        )
+        .unwrap();
+        symlink("/nix/store/aos-system", root.path().join("aos-toplevel")).unwrap();
+        symlink(
+            "/nix/store/os-release",
+            root.path().join("nix/store/aos-system/os-release"),
+        )
+        .unwrap();
+
+        validate_aos_root(root.path(), false).unwrap();
     }
 }

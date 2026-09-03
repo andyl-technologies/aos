@@ -491,6 +491,9 @@ message PackageDocumentationIdentity {
   string document_sha256 = 9;
   uint64 document_size = 10;
   string semantic_schema_sha256 = 11;
+  string release = 12;
+  string verified_tag_oid = 13;
+  string release_snapshot_id = 14;
 }
 
 message GetPackageDocumentationResponse {

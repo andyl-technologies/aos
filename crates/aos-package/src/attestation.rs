@@ -8,8 +8,8 @@
 //! evaluator consumed. This record closes that gap: it binds the five
 //! content-addressed eval inputs (base lib, evaluator, config modules,
 //! `host.nix`, instance facts) plus the F1 dm-verity roothash into a TPM2 quote
-//! over PCR 7, 11, and the application PCR 15, turning attestation into full
-//! re-derivation.
+//! over PCR 7, 11, 12, and the application PCR 15, turning attestation into
+//! full re-derivation.
 //!
 //! # On-disk format
 //!
@@ -372,9 +372,9 @@ pub fn attestation_content_hash(record: &GenAttestation) -> anyhow::Result<Strin
 /// Build and quote a [`GenAttestation`] from its inputs (build-spec §1.4).
 ///
 /// Assembles the record with an empty `quote`, computes [`record_hash`], drives
-/// `quoter` to extend PCR 15 and quote PCR {7, 11, 15} with `nonce`, then stores
-/// the hex-encoded quote blob. The host input must carry complete authorization
-/// evidence for its named policy.
+/// `quoter` to extend PCR 15 and quote PCR {7, 11, 12, 15} with `nonce`, then
+/// stores the hex-encoded quote blob. The host input must carry complete
+/// authorization evidence for its named policy.
 ///
 /// # Errors
 ///
@@ -1484,7 +1484,7 @@ mod tests {
 
     impl TpmQuoter for MockTpm {
         fn quote(&self, record_hash: &[u8], nonce: &[u8]) -> anyhow::Result<Vec<u8>> {
-            // The mock quote is just the three PCR values + nonce, JSON-encoded.
+            // The mock quote is just the four PCR values + nonce, JSON-encoded.
             let pcr15 = expected_app_pcr(&to_array(record_hash));
             let blob = serde_json::json!({
                 "pcr7": self.pcr7,
