@@ -122,6 +122,7 @@
     "aos-proto-types"
     "aos-registry-spa"
     "aos-registry-surface"
+    "aos-release"
     "aos-remote"
     "aos-server"
     "aos-systemd"

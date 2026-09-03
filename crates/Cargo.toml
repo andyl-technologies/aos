@@ -18,6 +18,7 @@ members = [
     "aos-hub-core",
     "aos-hub",
     "aos-registry-surface",
+    "aos-release",
     "aos-registry-spa",
     "aos-hub-worker",
     "aos-hub-console",
@@ -208,6 +209,7 @@ aos-hub-console-contract = { path = "aos-hub-console-contract" }
 aos-hub-core = { path = "aos-hub-core" }
 aos-hub = { path = "aos-hub" }
 aos-registry-surface = { path = "aos-registry-surface" }
+aos-release = { path = "aos-release" }
 aos-profile = { path = "aos-profile" }
 aos-systemd = { path = "aos-systemd" }
 
