@@ -97,8 +97,8 @@ they gate any affected runtime backend.
   compaction, and bounded corruption recovery (`SBX-JRN-01`; `addc42e92`).
 - [x] **SBX-CTRL-01** Implement the unprivileged single-node reconciler and
   effect ledger (`SBX-JRN-02`, `SBX-BPROTO-01`; `8eb2d4ee8`).
-- [ ] **SBX-CTRL-02** Add crash injection at every record/effect boundary and
-  prove convergence (`SBX-CTRL-01`).
+- [x] **SBX-CTRL-02** Add crash injection at every record/effect boundary and
+  prove convergence (`SBX-CTRL-01`; `ec3a23d4f`).
 - [ ] **SBX-SD-01** Extend `aos-systemd` with typed transient sandbox unit,
   cgroup, freeze/thaw, leader, and observation operations.
 - [ ] **SBX-LINUX-01** Add safe, owned pidfd, namespace FD, `openat2`, mount FD,
@@ -317,3 +317,6 @@ completes. The Git history remains authoritative for code details.
   and ordered-effect admission; durable pre-effect intent and receipts;
   restart observation of ambiguous effects; bounded retry/block evidence; and
   fair nonterminal operation scheduling over fixed effect domains.
+- `ec3a23d4f` — `SBX-CTRL-02`: exhaustive transaction-frame and durable-effect
+  restart matrices, including the external-apply-before-receipt ambiguity,
+  prove atomic recovery and convergence without duplicate effect application.
