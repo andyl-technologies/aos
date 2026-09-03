@@ -46,6 +46,7 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
     Arc::new(AppState {
         db,
         external_url: "http://127.0.0.1:8420".into(),
+        deployment_id: None,
         ratelimit: auth.ratelimit.clone(),
         trusted_proxy: false,
         auth,
@@ -60,6 +61,7 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         domain_probe_terminator: None,
         identity_domain_verifier: None,
         route_reservation_keyring: None,
+        release_evidence: None,
     })
 }
 

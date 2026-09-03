@@ -282,18 +282,8 @@ mod entry {
     const HUB_EXTERNAL_URL: &str = "HUB_EXTERNAL_URL";
     /// Immutable source/build identity used to attest the active deployment.
     const HUB_DEPLOYMENT_ID: &str = "HUB_DEPLOYMENT_ID";
-    /// Standard-base64 Ed25519 seed for environment receipt signing.
-    const HUB_RELEASE_RECEIPT_SIGNING_SEED: &str = "HUB_RELEASE_RECEIPT_SIGNING_SEED";
-    /// Stable public key id for environment receipts.
-    const HUB_RELEASE_RECEIPT_KEY_ID: &str = "HUB_RELEASE_RECEIPT_KEY_ID";
-    /// Standard-base64 Ed25519 seed for channel receipt signing.
-    const HUB_CHANNEL_RECEIPT_SIGNING_SEED: &str = "HUB_CHANNEL_RECEIPT_SIGNING_SEED";
-    /// Stable public key id for channel receipts.
-    const HUB_CHANNEL_RECEIPT_KEY_ID: &str = "HUB_CHANNEL_RECEIPT_KEY_ID";
-    /// JSON map of trusted Hub receipt key ids to standard-base64 public keys.
-    const HUB_RELEASE_PUBLICATION_KEYS: &str = "HUB_RELEASE_PUBLICATION_KEYS";
-    /// JSON map of qualification key ids to standard-base64 public keys.
-    const HUB_QUALIFICATION_KEYS: &str = "HUB_QUALIFICATION_KEYS";
+    /// Atomic JSON secret containing role-separated release evidence keys.
+    const HUB_RELEASE_EVIDENCE_CONFIG: &str = "HUB_RELEASE_EVIDENCE_CONFIG";
     /// Staged request-execution cutover: `off`, `read`, or `on`.
     const HUB_REQUEST_SHARDING: &str = "HUB_REQUEST_SHARDING";
     /// Non-cacheable endpoint exposing [`HUB_DEPLOYMENT_ID`].
@@ -651,53 +641,29 @@ mod entry {
         }
         let sealer = sealer_from_secret(&seal_secret)
             .map_err(|err| worker::Error::RustError(format!("seal key: {err:#}")))?;
-        let release_evidence = match (
-            env.secret(HUB_RELEASE_RECEIPT_SIGNING_SEED).ok(),
-            env.var(HUB_RELEASE_RECEIPT_KEY_ID).ok(),
-            env.secret(HUB_CHANNEL_RECEIPT_SIGNING_SEED).ok(),
-            env.var(HUB_CHANNEL_RECEIPT_KEY_ID).ok(),
-            env.secret(HUB_RELEASE_PUBLICATION_KEYS).ok(),
-            env.secret(HUB_QUALIFICATION_KEYS).ok(),
-        ) {
-            (Some(seed), Some(key_id), Some(channel_seed), Some(channel_key_id), Some(publication_keys), Some(qualification_keys)) => {
+        let release_evidence = match env.secret(HUB_RELEASE_EVIDENCE_CONFIG).ok() {
+            Some(config) => {
                 let deployment_id = env.var(HUB_DEPLOYMENT_ID).map_err(|_| {
                     worker::Error::RustError(format!(
                         "{HUB_DEPLOYMENT_ID} is required with release receipt signing"
                     ))
                 })?;
-                let publication_keys = serde_json::from_str(&publication_keys.to_string()).map_err(|error| {
-                    worker::Error::RustError(format!(
-                        "{HUB_RELEASE_PUBLICATION_KEYS} is invalid: {error}"
-                    ))
-                })?;
-                let qualification_keys = serde_json::from_str(&qualification_keys.to_string()).map_err(|error| {
-                    worker::Error::RustError(format!(
-                        "{HUB_QUALIFICATION_KEYS} is invalid: {error}"
-                    ))
-                })?;
                 Some(Arc::new(
-                    aos_hub_core::release_evidence::Ed25519ReleaseEvidenceAuthority::from_base64(
+                    aos_hub_core::release_evidence::Ed25519ReleaseEvidenceAuthority::from_json(
                         deployment_id.to_string(),
-                        key_id.to_string(),
-                        &seed.to_string(),
-                        channel_key_id.to_string(),
-                        &channel_seed.to_string(),
-                        publication_keys,
-                        qualification_keys,
+                        &config.to_string(),
                     )
                     .map_err(|error| {
                         worker::Error::RustError(format!(
                             "release evidence authority is invalid: {error:#}"
                         ))
                     })?,
-                ) as Arc<dyn aos_hub_core::release_evidence::ReleaseEvidenceAuthority>)
+                )
+                    as Arc<
+                        dyn aos_hub_core::release_evidence::ReleaseEvidenceAuthority,
+                    >)
             }
-            (None, None, None, None, None, None) => None,
-            _ => {
-                return Err(worker::Error::RustError(format!(
-                    "{HUB_RELEASE_RECEIPT_SIGNING_SEED}, {HUB_RELEASE_RECEIPT_KEY_ID}, {HUB_CHANNEL_RECEIPT_SIGNING_SEED}, {HUB_CHANNEL_RECEIPT_KEY_ID}, {HUB_RELEASE_PUBLICATION_KEYS}, and {HUB_QUALIFICATION_KEYS} must be configured together"
-                )))
-            }
+            None => None,
         };
         let secret_versions = crate::secretversions::from_env(env)?;
         let route_reservation_secret = env
