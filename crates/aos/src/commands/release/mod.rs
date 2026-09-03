@@ -8,6 +8,7 @@ mod capture;
 mod finalize_image;
 mod hub_transition;
 mod plan;
+mod promote;
 mod qualify;
 mod signer;
 mod stage;
@@ -45,6 +46,9 @@ pub fn run(command: &ReleaseCommand, nix: &NixRunner, printer: &Printer) -> Resu
         }
         ReleaseCommand::Qualify(_) => {
             anyhow::bail!("release qualify command must use the asynchronous dispatcher")
+        }
+        ReleaseCommand::Promote(_) => {
+            anyhow::bail!("release promote command must use the asynchronous dispatcher")
         }
         ReleaseCommand::Verify(args) => verify::run(args, printer),
     }
@@ -97,6 +101,19 @@ pub async fn qualify_offline(
     printer: &Printer,
 ) -> Result<()> {
     qualify::run(args, printer).await
+}
+
+/// Promotes one exact qualified release into the isolated production Hub.
+///
+/// # Errors
+///
+/// Returns an error when trust, continuity, upload, public read-back, Hub
+/// admission, signed receipt, or durable evidence persistence fails.
+pub async fn promote_offline(
+    args: &crate::cli::ReleasePromoteArgs,
+    printer: &Printer,
+) -> Result<()> {
+    promote::run(args, printer).await
 }
 
 /// Invokes an external signer without constructing a Nix environment.

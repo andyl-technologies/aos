@@ -268,6 +268,36 @@ staging and writes canonical receipt payloads plus a `Qualified` successor
 journal without replacing any existing path. The qualification authority has
 no Hub, registry, TUF, cache, channel, or boot-signing credential.
 
+## Promote exact bytes to production
+
+Use a production-only token and independently pinned keys for each evidence
+role:
+
+```sh
+aos release promote \
+  --bundle release-bundle \
+  --journal release-qualified/release-journal.jsonl \
+  --staging-receipt release-qualified/staging-receipt.json \
+  --qualification-receipt release-qualified/qualification-receipt.json \
+  --signed-qualification release-qualified/signed-qualification.json \
+  --trusted-key release-2026=/media/keys/release-2026.pub \
+  --staging-receipt-key staging-hub-2026=/media/keys/staging-hub-2026.pub \
+  --qualification-key qualifier-2026=/media/keys/qualifier-2026.pub \
+  --production-receipt-key production-hub-2026=/media/keys/production-hub-2026.pub \
+  --output release-promoted
+```
+
+Promotion re-verifies the complete local chain, confirms the production
+deployment identity before and after upload, and uploads the unchanged closed
+bundle into the isolated production registry. Every object is read back
+anonymously in full and with exact prefix and suffix byte ranges. Production
+then verifies and imports the signed staging and qualification envelopes,
+atomically binds them to its local publication, and returns an
+environment-signed production receipt. The command verifies that receipt with
+the production-only key, reads the exact envelope back through the anonymous
+API, and writes a `Promoted` successor journal without replacing existing
+evidence.
+
 ## Verify a captured bundle offline
 
 Copy the closed bundle, optional journal, and public verification keys to a
