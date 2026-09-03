@@ -282,6 +282,12 @@ mod entry {
     const HUB_EXTERNAL_URL: &str = "HUB_EXTERNAL_URL";
     /// Immutable source/build identity used to attest the active deployment.
     const HUB_DEPLOYMENT_ID: &str = "HUB_DEPLOYMENT_ID";
+    /// Standard-base64 Ed25519 seed for environment receipt signing.
+    const HUB_RELEASE_RECEIPT_SIGNING_SEED: &str = "HUB_RELEASE_RECEIPT_SIGNING_SEED";
+    /// Stable public key id for environment receipts.
+    const HUB_RELEASE_RECEIPT_KEY_ID: &str = "HUB_RELEASE_RECEIPT_KEY_ID";
+    /// JSON map of qualification key ids to standard-base64 public keys.
+    const HUB_QUALIFICATION_KEYS: &str = "HUB_QUALIFICATION_KEYS";
     /// Staged request-execution cutover: `off`, `read`, or `on`.
     const HUB_REQUEST_SHARDING: &str = "HUB_REQUEST_SHARDING";
     /// Non-cacheable endpoint exposing [`HUB_DEPLOYMENT_ID`].
@@ -639,6 +645,43 @@ mod entry {
         }
         let sealer = sealer_from_secret(&seal_secret)
             .map_err(|err| worker::Error::RustError(format!("seal key: {err:#}")))?;
+        let release_evidence = match (
+            env.secret(HUB_RELEASE_RECEIPT_SIGNING_SEED).ok(),
+            env.var(HUB_RELEASE_RECEIPT_KEY_ID).ok(),
+            env.secret(HUB_QUALIFICATION_KEYS).ok(),
+        ) {
+            (Some(seed), Some(key_id), Some(keys)) => {
+                let deployment_id = env.var(HUB_DEPLOYMENT_ID).map_err(|_| {
+                    worker::Error::RustError(format!(
+                        "{HUB_DEPLOYMENT_ID} is required with release receipt signing"
+                    ))
+                })?;
+                let keys = serde_json::from_str(&keys.to_string()).map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "{HUB_QUALIFICATION_KEYS} is invalid: {error}"
+                    ))
+                })?;
+                Some(Arc::new(
+                    aos_hub_core::release_evidence::Ed25519ReleaseEvidenceAuthority::from_base64(
+                        deployment_id.to_string(),
+                        key_id.to_string(),
+                        &seed.to_string(),
+                        keys,
+                    )
+                    .map_err(|error| {
+                        worker::Error::RustError(format!(
+                            "release evidence authority is invalid: {error:#}"
+                        ))
+                    })?,
+                ) as Arc<dyn aos_hub_core::release_evidence::ReleaseEvidenceAuthority>)
+            }
+            (None, None, None) => None,
+            _ => {
+                return Err(worker::Error::RustError(format!(
+                    "{HUB_RELEASE_RECEIPT_SIGNING_SEED}, {HUB_RELEASE_RECEIPT_KEY_ID}, and {HUB_QUALIFICATION_KEYS} must be configured together"
+                )))
+            }
+        };
         let secret_versions = crate::secretversions::from_env(env)?;
         let route_reservation_secret = env
             .secret(HUB_ROUTE_RESERVATION_KEYRING)
@@ -865,6 +908,9 @@ mod entry {
         .with_kv(Arc::new(crate::workerkv::WorkerKv::new(
             env.kv(crate::handlers::bindings::KV_SESSIONS)?,
         )));
+        if let Some(authority) = release_evidence {
+            service = service.with_release_evidence(authority);
+        }
         let service = Arc::new(service);
 
         // Seed the editable site chrome (title/banner/footer) from HubDb once per
