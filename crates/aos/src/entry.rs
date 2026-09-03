@@ -289,6 +289,12 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         return commands::release::status_offline(args, printer);
     }
     if let Commands::Release {
+        command: crate::cli::ReleaseCommand::ComposeSurface(args),
+    } = &cli.command
+    {
+        return commands::release::compose_surface_offline(args, printer);
+    }
+    if let Commands::Release {
         command: crate::cli::ReleaseCommand::Signer { command },
     } = &cli.command
     {

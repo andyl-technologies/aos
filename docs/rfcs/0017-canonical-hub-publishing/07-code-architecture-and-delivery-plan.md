@@ -237,6 +237,7 @@ The top-level command surface is:
 | `aos release plan` | Read-only evaluation; writes a new plan only to an explicitly named output. |
 | `aos release build` | Realizes the planned matrix twice as required and records build evidence. |
 | `aos release finalize` | Uses role-bound external signers, finalizes images and registry metadata, and emits the closed bundle. |
+| `aos release compose-surface` | Verifies and atomically composes the registry/cache base, delegated manifest target, immutable TUF set, and fresh timestamp. |
 | `aos release stage` | Uploads the exact bundle to the staging Hub and records its receipt. |
 | `aos release qualify-run` | Dispatches every planned gate to native Linux and Darwin adapters over exact public staging bytes and signs the aggregate result. |
 | `aos release qualify` | Admits a complete signed aggregate qualification to staging and advances the journal. |

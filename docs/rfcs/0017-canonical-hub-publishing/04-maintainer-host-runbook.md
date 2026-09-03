@@ -1,10 +1,10 @@
 # Maintainer-host publishing runbook
 
-This is the target operating procedure. Commands that implement the signed
-bundle state machine are intentionally not presented as available today. The
-current `apr release` and Secure Boot fixture path do not satisfy all of the
-production gates in this RFC. The transition to an executable runbook is part
-of [`05-implementation-plan.md`](05-implementation-plan.md).
+This is the operating procedure for the implemented `aos release` command
+family. Production publication remains prohibited until every launch gate in
+[`05-implementation-plan.md`](05-implementation-plan.md) has objective
+evidence and the rehearsals in this runbook have completed. The lower-level
+`apr release` and Secure Boot fixture paths do not satisfy those gates.
 
 ## One-time setup
 

@@ -157,6 +157,24 @@ pub(super) fn control_file(path: &Path, label: &str) -> Result<Vec<u8>> {
 /// Returns an error for links, aliases, special files, unstable input,
 /// reserved control paths, excessive depth/count, or destination collisions.
 pub(super) fn copy_payload_tree(source: &Path, destination: &Path) -> Result<Vec<CapturedFile>> {
+    copy_tree(source, destination, true)
+}
+
+/// Copies a publication surface without following links or accepting aliases.
+///
+/// # Errors
+///
+/// Returns an error for links, aliases, special files, unstable input,
+/// excessive depth/count, or destination collisions.
+pub(super) fn copy_surface_tree(source: &Path, destination: &Path) -> Result<Vec<CapturedFile>> {
+    copy_tree(source, destination, false)
+}
+
+fn copy_tree(
+    source: &Path,
+    destination: &Path,
+    reserve_release_controls: bool,
+) -> Result<Vec<CapturedFile>> {
     let root = open(
         source,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
@@ -172,7 +190,14 @@ pub(super) fn copy_payload_tree(source: &Path, destination: &Path) -> Result<Vec
     })?;
 
     let mut state = CaptureState::default();
-    copy_payload_directory(&root, "", 0, &mut state, destination)?;
+    copy_payload_directory(
+        &root,
+        "",
+        0,
+        &mut state,
+        destination,
+        reserve_release_controls,
+    )?;
     let reopened = open(
         source,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
@@ -190,6 +215,7 @@ fn copy_payload_directory(
     depth: usize,
     state: &mut CaptureState,
     destination: &Path,
+    reserve_release_controls: bool,
 ) -> Result<()> {
     if depth > MAX_DEPTH {
         bail!("release payload exceeds maximum depth of {MAX_DEPTH}");
@@ -217,16 +243,25 @@ fn copy_payload_directory(
         } else {
             format!("{relative}/{name}")
         };
-        if matches!(
-            child_path.as_str(),
-            "release-plan.json" | "release-manifest.json"
-        ) {
+        if reserve_release_controls
+            && matches!(
+                child_path.as_str(),
+                "release-plan.json" | "release-manifest.json"
+            )
+        {
             bail!("release payload uses reserved control path {child_path}");
         }
         let target = destination.join(&child_path);
         if metadata.is_dir() {
             fs::create_dir(&target)?;
-            copy_payload_directory(&child, &child_path, depth + 1, state, destination)?;
+            copy_payload_directory(
+                &child,
+                &child_path,
+                depth + 1,
+                state,
+                destination,
+                reserve_release_controls,
+            )?;
         } else if metadata.is_file() {
             copy_payload_regular(child, &child_path, &target, state)?;
         } else {
@@ -454,7 +489,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{bundle, copy_payload_tree};
+    use super::{bundle, copy_payload_tree, copy_surface_tree};
 
     fn control_files(root: &Path) -> Result<()> {
         fs::write(root.join("release-plan.json"), b"{}")?;
@@ -529,6 +564,22 @@ mod tests {
         fs::write(source.path().join("artifact"), b"payload")?;
         symlink("artifact", source.path().join("alias"))?;
         assert!(copy_payload_tree(source.path(), &parent.path().join("linked")).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn surface_copy_accepts_controls_but_still_rejects_links() -> Result<()> {
+        let source = tempdir()?;
+        let parent = tempdir()?;
+        fs::write(source.path().join("release-manifest.json"), b"{}")?;
+
+        let copied = parent.path().join("copied");
+        copy_surface_tree(source.path(), &copied)?;
+        assert_eq!(fs::read(copied.join("release-manifest.json"))?, b"{}");
+
+        fs::write(source.path().join("artifact"), b"payload")?;
+        symlink("artifact", source.path().join("alias"))?;
+        assert!(copy_surface_tree(source.path(), &parent.path().join("linked")).is_err());
         Ok(())
     }
 }
