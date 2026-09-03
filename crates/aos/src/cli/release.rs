@@ -28,6 +28,8 @@ pub enum ReleaseCommand {
     Stage(ReleaseStageArgs),
     /// Admit signed qualification of the exact staged public release
     Qualify(ReleaseQualifyArgs),
+    /// Import the exact qualified release into the canonical production Hub
+    Promote(ReleasePromoteArgs),
     /// Verify a captured release bundle using only public trust inputs
     Verify(ReleaseVerifyArgs),
 }
@@ -186,6 +188,65 @@ pub struct ReleaseQualifyArgs {
     pub token: Option<String>,
 
     /// New qualification evidence directory; existing paths are never replaced
+    #[arg(long)]
+    pub output: PathBuf,
+}
+
+#[derive(Args)]
+pub struct ReleasePromoteArgs {
+    /// Closed finalized bundle already qualified in staging
+    #[arg(long)]
+    pub bundle: PathBuf,
+
+    /// Qualified append-only journal
+    #[arg(long)]
+    pub journal: PathBuf,
+
+    /// Exact signed staging receipt
+    #[arg(long)]
+    pub staging_receipt: PathBuf,
+
+    /// Canonical qualification receipt payload
+    #[arg(long)]
+    pub qualification_receipt: PathBuf,
+
+    /// Exact signed qualification envelope
+    #[arg(long)]
+    pub signed_qualification: PathBuf,
+
+    /// Trusted manifest key as KEY_ID=PATH; repeat to satisfy thresholds
+    #[arg(long = "trusted-key", value_name = "KEY_ID=PATH", required = true)]
+    pub trusted_keys: Vec<String>,
+
+    /// Independently trusted staging Hub receipt key as KEY_ID=PATH
+    #[arg(
+        long = "staging-receipt-key",
+        value_name = "KEY_ID=PATH",
+        required = true
+    )]
+    pub staging_receipt_keys: Vec<String>,
+
+    /// Independently trusted qualification key as KEY_ID=PATH
+    #[arg(
+        long = "qualification-key",
+        value_name = "KEY_ID=PATH",
+        required = true
+    )]
+    pub qualification_keys: Vec<String>,
+
+    /// Independently trusted production Hub receipt key as KEY_ID=PATH
+    #[arg(
+        long = "production-receipt-key",
+        value_name = "KEY_ID=PATH",
+        required = true
+    )]
+    pub production_receipt_keys: Vec<String>,
+
+    /// Short-lived production-only Hub access token
+    #[arg(long, env = "AOS_TOKEN", hide_env_values = true)]
+    pub token: Option<String>,
+
+    /// New production evidence directory; existing paths are never replaced
     #[arg(long)]
     pub output: PathBuf,
 }
