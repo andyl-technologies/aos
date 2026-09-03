@@ -16,7 +16,7 @@ they gate any affected runtime backend.
   package and VM tests.
 - [ ] **SBX-P0-02** Enable and test FUSE passthrough and fs-verity kernel
   configuration on x86_64 and aarch64 (`SBX-P0-01`).
-- [ ] **SBX-P0-03** Check in architecture-neutral probes for pidfds,
+- [x] **SBX-P0-03** Check in architecture-neutral probes for pidfds,
   `openat2`, the new mount API, `statmount`, and `listmount`.
 - [ ] **SBX-P0-04** Resolve libseccomp syscall support and test the nspawn
   pre-PID1 argument-filter patch (`SBX-P0-01`, `SBX-P0-03`).
@@ -244,6 +244,10 @@ they gate any affected runtime backend.
 Add one line per pushed implementation commit, listing the task identifiers it
 completes. The Git history remains authoritative for code details.
 
+- `f48a7ad4e` — `SBX-P0-03`: hermetic architecture-neutral probes for the
+  pidfd family, `openat2`, `open_tree`, `open_tree_attr`, `move_mount`,
+  `fsopen`/`fsconfig`/`fsmount`/`fspick`, `mount_setattr`, `statmount`, and
+  `listmount`, with structured presence and errno reporting.
 - `0ddad351c` — `SBX-CORE-01`, `SBX-CORE-02`: portable crate, opaque
   identities, exact binary/human encodings, and monotonic fencing counters.
 - `a33eac266` — `SBX-CORE-03`: closed resource transition graphs, irreversible
