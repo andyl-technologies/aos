@@ -579,7 +579,7 @@ in {
 
       # Author and release a signed surface locally, then cross only the
       # managed-publication API into the Hub.
-      publication = publisher.succeed(textwrap.dedent(f"""
+      publication_status, publication, publication_stderr = publisher.execute(textwrap.dedent(f"""
           set -eu
           export HOME=/var/lib/aos-fleet-publisher USER=publisher
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
@@ -633,6 +633,15 @@ in {
             --hub {HUB} --token {shlex.quote(token)} \\
             --root /var/tmp/aos-publication-v1
       """), timeout=900)
+      if publication_status != 0:
+          print("--- native Hub journal after publication failure ---")
+          print(hub.succeed(
+              "journalctl --no-pager -u aos-hub.service -n 200 2>&1 || true"
+          ))
+          raise Exception(
+              "initial registry publication failed "
+              f"(status={publication_status}): {publication}\n{publication_stderr}"
+          )
       publication_data = json.loads(publication)["data"]
       assert publication_data["state"] == "ready", publication_data
 
