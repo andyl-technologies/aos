@@ -216,6 +216,7 @@ define_identity!(
     RestoreScopeId,
     "Identifies the authorization scope required to restore an external dependency."
 );
+define_identity!(LeaseId, "Identifies one time-bounded resource lease.");
 
 #[cfg(test)]
 mod tests {

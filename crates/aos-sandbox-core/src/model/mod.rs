@@ -4,6 +4,7 @@
 //! They intentionally do not define the canonical CBOR codec: [`crate`] users
 //! cannot mistake a convenient Serde representation for the signed wire form.
 
+pub mod domain;
 pub mod policy;
 pub mod snapshot;
 pub mod spec;
@@ -11,6 +12,10 @@ pub mod tree;
 pub mod trust;
 pub mod view;
 
+pub use domain::{
+    AttachmentConsistency, AttachmentIntent, AttachmentLease, InvalidDomainModel, MountAttributes,
+    PlacementAssignment, PlacementRequest, SandboxAncestry,
+};
 pub use policy::{
     ExplanationReason, ExplanationReasonCode, InvalidPolicyModel, Optimization, OptimizationKind,
     OptimizationProfile, Policy, PolicyViewAction, RevocationMode, RevocationPolicy,

@@ -24,7 +24,7 @@ pub use capability::{
 };
 pub use identity::{
     AttachmentId, AttachmentSlotId, AuditId, CacheDomainId, CapabilityId, ExecutionId, ExportId,
-    GrantId, IncarnationId, IssuerId, NetworkEndpointId, NodeId, OperationId, PrincipalId,
+    GrantId, IncarnationId, IssuerId, LeaseId, NetworkEndpointId, NodeId, OperationId, PrincipalId,
     ProjectId, ResourceId, RestoreScopeId, RevocationScopeId, SandboxId, SecretId, ServiceId,
     SnapshotId, TrustScopeId, ViewId,
 };
