@@ -10,6 +10,7 @@
 //! module defines monotonic counters used to reject stale work.
 
 pub mod capability;
+pub mod format;
 pub mod identity;
 pub mod model;
 pub mod resources;
@@ -22,6 +23,7 @@ pub use capability::{
     CapabilityDraft, CapabilityRecord, CapabilityValidationError, ChannelBinding, DelegationLimits,
     Grant, InvalidGrant,
 };
+pub use format::{CanonicalCborError, DecodeLimits, descriptor_for_bytes, validate_canonical_cbor};
 pub use identity::{
     AttachmentId, AttachmentSlotId, AuditId, CacheDomainId, CapabilityId, ExecutionId, ExportId,
     GrantId, IncarnationId, IssuerId, LeaseId, NetworkEndpointId, NodeId, OperationId, PrincipalId,

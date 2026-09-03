@@ -750,6 +750,30 @@ impl Delta {
             required_features,
         })
     }
+
+    /// Returns the exact base tree descriptor.
+    #[must_use]
+    pub const fn base(&self) -> &ObjectDescriptor {
+        &self.base
+    }
+
+    /// Returns the exact result tree descriptor.
+    #[must_use]
+    pub const fn result(&self) -> &ObjectDescriptor {
+        &self.result
+    }
+
+    /// Returns result-graph objects not reachable from the base.
+    #[must_use]
+    pub fn added_objects(&self) -> &[ObjectDescriptor] {
+        &self.added_objects
+    }
+
+    /// Returns the exact required feature set.
+    #[must_use]
+    pub fn required_features(&self) -> &[FeatureRef] {
+        &self.required_features
+    }
 }
 
 fn validate_set<T: Ord>(values: &[T]) -> Result<(), InvalidTreeModel> {

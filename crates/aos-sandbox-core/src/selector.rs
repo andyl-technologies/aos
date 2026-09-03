@@ -270,7 +270,7 @@ impl<'de> Deserialize<'de> for ObjectDigest {
 pub struct InvalidObjectDigest;
 
 /// Stores a syntactically valid portable object media type.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct MediaType(String);
 
@@ -331,12 +331,26 @@ impl From<MediaType> for String {
 pub struct InvalidMediaType;
 
 /// Identifies a stored portable object by type, digest, and exact byte size.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObjectDescriptor {
     media_type: MediaType,
     digest: ObjectDigest,
     encoded_size: u64,
+}
+
+impl Ord for ObjectDescriptor {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        canonical_text_cmp(self.media_type.as_str(), other.media_type.as_str())
+            .then_with(|| self.digest.cmp(&other.digest))
+            .then_with(|| self.encoded_size.cmp(&other.encoded_size))
+    }
+}
+
+impl PartialOrd for ObjectDescriptor {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl ObjectDescriptor {
@@ -370,11 +384,31 @@ impl ObjectDescriptor {
 }
 
 /// Identifies one versioned feature or presentation profile.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
 pub struct FeatureRef {
     namespace: String,
     major: u32,
     minor: u32,
+}
+
+impl Ord for FeatureRef {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        canonical_text_cmp(&self.namespace, &other.namespace)
+            .then_with(|| self.major.cmp(&other.major))
+            .then_with(|| self.minor.cmp(&other.minor))
+    }
+}
+
+impl PartialOrd for FeatureRef {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn canonical_text_cmp(left: &str, right: &str) -> std::cmp::Ordering {
+    left.len()
+        .cmp(&right.len())
+        .then_with(|| left.as_bytes().cmp(right.as_bytes()))
 }
 
 #[derive(Deserialize)]
