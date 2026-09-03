@@ -161,11 +161,18 @@ impl RpcService {
             .verify_qualification(&receipt, &req.signed_qualification_json)
             .await
             .map_err(failed_precondition)?;
+        let staging = self
+            .db
+            .release_bundle_publication(&req.bundle_digest, "staging")
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("staging release receipt"))?;
         self.db
             .record_release_qualification(
                 &NewReleaseQualification {
                     bundle_digest: req.bundle_digest.clone(),
                     staging_receipt_digest: req.staging_receipt_digest.clone(),
+                    staging_receipt_json: staging.receipt_json,
                     qualification_digest: req.qualification_digest.clone(),
                     receipt_json: req.signed_qualification_json,
                 },
@@ -193,18 +200,87 @@ impl RpcService {
         let (registry, bundle) = self
             .authorize_release(auth, &req.registry, &req.bundle_digest)
             .await?;
+        let authority = self.release_authority(&req.expected_deployment_id)?;
+        let staging_bytes = req.signed_staging_receipt_json.as_bytes();
+        let staging: PublicationReceiptV1 =
+            canonical::from_slice(staging_bytes, "staging receipt envelope")
+                .and_then(|envelope: aos_release::receipt::SignedReceiptEnvelopeV1| {
+                    canonical::from_slice(
+                        &canonical::to_vec(&envelope.payload)?,
+                        "staging receipt payload",
+                    )
+                })
+                .map_err(invalid)?;
+        staging.validate().map_err(invalid)?;
+        if staging.environment != HubEnvironment::Staging
+            || staging.deployment_id != bundle.staging_deployment_id
+            || staging.registry != registry.slug
+            || staging.release_id != bundle.release_id
+            || staging.manifest_digest.to_string() != bundle.manifest_digest
+            || staging.bundle_digest.to_string() != bundle.bundle_digest
+            || staging.staging_receipt_digest.is_some()
+            || Sha256Digest::of_bytes(staging_bytes).to_string() != req.staging_receipt_digest
+        {
+            return Err(RpcError::invalid(
+                "signed staging receipt does not match the release",
+            ));
+        }
+        authority
+            .verify_publication(&staging, &req.signed_staging_receipt_json)
+            .await
+            .map_err(failed_precondition)?;
+
+        let qualification_bytes = req.qualification_receipt_json.as_bytes();
+        let qualification: QualificationReceiptV1 =
+            canonical::from_slice(qualification_bytes, "qualification receipt").map_err(invalid)?;
+        qualification.validate().map_err(invalid)?;
+        if canonical::to_vec(&qualification).map_err(RpcError::internal)? != qualification_bytes
+            || qualification.staging_receipt_digest.to_string() != req.staging_receipt_digest
+            || qualification.manifest_digest.to_string() != bundle.manifest_digest
+            || Sha256Digest::of_bytes(req.signed_qualification_json.as_bytes()).to_string()
+                != req.qualification_digest
+        {
+            return Err(RpcError::invalid(
+                "qualification evidence does not match the release",
+            ));
+        }
+        authority
+            .verify_qualification(&qualification, &req.signed_qualification_json)
+            .await
+            .map_err(failed_precondition)?;
+        self.db
+            .import_release_qualification(
+                &NewReleaseQualification {
+                    bundle_digest: req.bundle_digest.clone(),
+                    staging_receipt_digest: req.staging_receipt_digest.clone(),
+                    staging_receipt_json: req.signed_staging_receipt_json.clone(),
+                    qualification_digest: req.qualification_digest.clone(),
+                    receipt_json: req.signed_qualification_json.clone(),
+                },
+                crate::clock::now_unix_secs(),
+            )
+            .await
+            .map_err(failed_precondition)?;
         if let Some(existing) = self
             .db
             .release_bundle_publication(&req.bundle_digest, "production")
             .await
             .map_err(RpcError::internal)?
         {
+            if existing.publication_id != req.publication_id
+                || existing.deployment_id != authority.deployment_id()
+                || existing.staging_receipt_digest.as_deref()
+                    != Some(req.staging_receipt_digest.as_str())
+            {
+                return Err(RpcError::FailedPrecondition(
+                    "production release retry conflicts with the committed publication".into(),
+                ));
+            }
             return Ok(receipt_message(
                 existing.receipt_digest,
                 existing.receipt_json,
             ));
         }
-        let authority = self.release_authority(&req.expected_deployment_id)?;
         let now = crate::clock::now_unix_secs();
         let receipt = PublicationReceiptV1 {
             schema_version: PUBLICATION_RECEIPT_V1.into(),

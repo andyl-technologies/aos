@@ -99,6 +99,8 @@ pub struct NewReleaseQualification {
     pub bundle_digest: String,
     /// Staging receipt whose public bytes were tested.
     pub staging_receipt_digest: String,
+    /// Canonical signed staging receipt imported across environments.
+    pub staging_receipt_json: String,
     /// SHA-256 identity of the canonical qualification receipt.
     pub qualification_digest: String,
     /// Canonical signed qualification receipt as UTF-8 JSON.
@@ -349,10 +351,10 @@ impl Database {
         self.backend
             .checked_batch(&[CheckedStatement::exact(
                 "INSERT INTO release_qualifications
-               (bundle_digest, staging_receipt_digest, qualification_digest,
-                receipt_json, qualified_at)
+               (bundle_digest, staging_receipt_digest, staging_receipt_json,
+                qualification_digest, receipt_json, qualified_at)
              SELECT publication.bundle_digest, publication.receipt_digest,
-                    ?3, ?4, ?5
+                    publication.receipt_json, ?3, ?4, ?5
                FROM release_bundle_publications publication
               WHERE publication.bundle_digest = ?1
                 AND publication.environment = 'staging'
@@ -360,6 +362,44 @@ impl Database {
                 vals![
                     input.bundle_digest,
                     input.staging_receipt_digest,
+                    input.qualification_digest,
+                    input.receipt_json,
+                    now
+                ],
+                1,
+            )])
+            .await
+    }
+
+    /// Imports already-verified staging and qualification evidence.
+    ///
+    /// Isolated production has no local staging publication. Its service layer
+    /// verifies both public envelopes before calling this operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed evidence, conflicting replay, a missing
+    /// bundle, or storage failure.
+    pub async fn import_release_qualification(
+        &self,
+        input: &NewReleaseQualification,
+        now: i64,
+    ) -> Result<()> {
+        validate_qualification(input)?;
+        if self.release_qualification_matches(input).await? {
+            return Ok(());
+        }
+        self.backend
+            .checked_batch(&[CheckedStatement::exact(
+                "INSERT INTO release_qualifications
+               (bundle_digest, staging_receipt_digest, staging_receipt_json,
+                qualification_digest, receipt_json, qualified_at)
+             SELECT bundle_digest, ?2, ?3, ?4, ?5, ?6
+               FROM release_bundles WHERE bundle_digest = ?1",
+                vals![
+                    input.bundle_digest,
+                    input.staging_receipt_digest,
+                    input.staging_receipt_json,
                     input.qualification_digest,
                     input.receipt_json,
                     now
@@ -454,13 +494,9 @@ impl Database {
                    JOIN registry_publications publication
                      ON publication.publication_id = ?4
                     AND publication.registry_id = bundle.registry_id
-                   JOIN release_bundle_publications staging
-                     ON staging.bundle_digest = bundle.bundle_digest
-                    AND staging.environment = 'staging'
-                    AND staging.receipt_digest = ?8
                    JOIN release_qualifications qualification
                      ON qualification.bundle_digest = bundle.bundle_digest
-                    AND qualification.staging_receipt_digest = staging.receipt_digest
+                    AND qualification.staging_receipt_digest = ?8
                     AND qualification.qualification_digest = ?10
                   WHERE bundle.bundle_digest = ?1 AND bundle.registry_id = ?2
                     AND publication.state = 'ready'
@@ -647,9 +683,10 @@ impl Database {
 
     async fn release_qualification_matches(&self, input: &NewReleaseQualification) -> Result<bool> {
         row_matches(&*self.backend,
-            "SELECT staging_receipt_digest, qualification_digest, receipt_json FROM release_qualifications WHERE bundle_digest = ?1",
+            "SELECT staging_receipt_digest, staging_receipt_json, qualification_digest, receipt_json FROM release_qualifications WHERE bundle_digest = ?1",
             vals![input.bundle_digest],
-            [&input.staging_receipt_digest, &input.qualification_digest, &input.receipt_json]).await
+            [&input.staging_receipt_digest, &input.staging_receipt_json,
+                &input.qualification_digest, &input.receipt_json]).await
     }
 
     async fn release_promotion_matches(&self, input: &NewReleasePromotion) -> Result<bool> {
@@ -768,7 +805,7 @@ fn validate_publication(input: &NewReleaseBundlePublication) -> Result<()> {
 }
 
 fn validate_qualification(input: &NewReleaseQualification) -> Result<()> {
-    if input.receipt_json.is_empty() {
+    if input.staging_receipt_json.is_empty() || input.receipt_json.is_empty() {
         bail!("release qualification receipt is empty");
     }
     validate_key_bytes(&input.bundle_digest, "release bundle digest", 128)?;
@@ -921,6 +958,7 @@ mod tests {
         let qualification = NewReleaseQualification {
             bundle_digest: bundle.bundle_digest.clone(),
             staging_receipt_digest: "3".repeat(64),
+            staging_receipt_json: "{\"environment\":\"staging\"}".into(),
             qualification_digest: "4".repeat(64),
             receipt_json: "{\"qualified\":true}".into(),
         };
@@ -972,6 +1010,134 @@ mod tests {
         let mut stale = edge.clone();
         stale.operation_digest = "8".repeat(64);
         assert!(db.advance_release_channel(&stale, 17).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn isolated_production_imports_evidence_without_a_staging_row() {
+        let staging_db = Database::open_in_memory().await.unwrap();
+        let staging_registry_id = staging_db
+            .register_registry("isolated-release", &[], false)
+            .await
+            .unwrap();
+        ready_publication(
+            &staging_db,
+            staging_registry_id,
+            "staging-source",
+            "staging-source-generation",
+            '1',
+            &"c".repeat(64),
+        )
+        .await;
+        let staging_bundle = bundle(staging_registry_id);
+        staging_db
+            .admit_release_bundle(&staging_bundle, "staging-source", 11)
+            .await
+            .unwrap();
+        ready_publication(
+            &staging_db,
+            staging_registry_id,
+            "staging-publication",
+            "staging-publication-generation",
+            '2',
+            &"d".repeat(64),
+        )
+        .await;
+        staging_db
+            .record_release_bundle_publication(
+                &NewReleaseBundlePublication {
+                    bundle_digest: staging_bundle.bundle_digest.clone(),
+                    registry_id: staging_registry_id,
+                    environment: "staging".into(),
+                    publication_id: "staging-publication".into(),
+                    deployment_id: "staging-deployment".into(),
+                    receipt_digest: "3".repeat(64),
+                    receipt_json: "{\"signed\":\"staging\"}".into(),
+                    staging_receipt_digest: None,
+                },
+                12,
+            )
+            .await
+            .unwrap();
+        let qualification = NewReleaseQualification {
+            bundle_digest: staging_bundle.bundle_digest.clone(),
+            staging_receipt_digest: "3".repeat(64),
+            staging_receipt_json: "{\"signed\":\"staging\"}".into(),
+            qualification_digest: "4".repeat(64),
+            receipt_json: "{\"signed\":\"qualification\"}".into(),
+        };
+        staging_db
+            .record_release_qualification(&qualification, 13)
+            .await
+            .unwrap();
+
+        let production_db = Database::open_in_memory().await.unwrap();
+        let production_registry_id = production_db
+            .register_registry("isolated-release", &[], false)
+            .await
+            .unwrap();
+        ready_publication(
+            &production_db,
+            production_registry_id,
+            "production-source",
+            "production-source-generation",
+            '1',
+            &"c".repeat(64),
+        )
+        .await;
+        let production_bundle = bundle(production_registry_id);
+        production_db
+            .admit_release_bundle(&production_bundle, "production-source", 14)
+            .await
+            .unwrap();
+        production_db
+            .import_release_qualification(&qualification, 15)
+            .await
+            .unwrap();
+        assert!(production_db
+            .release_bundle_publication(&production_bundle.bundle_digest, "staging")
+            .await
+            .unwrap()
+            .is_none());
+        ready_publication(
+            &production_db,
+            production_registry_id,
+            "production-publication",
+            "production-publication-generation",
+            '5',
+            &"e".repeat(64),
+        )
+        .await;
+        let publication = NewReleaseBundlePublication {
+            bundle_digest: production_bundle.bundle_digest.clone(),
+            registry_id: production_registry_id,
+            environment: "production".into(),
+            publication_id: "production-publication".into(),
+            deployment_id: "production-deployment".into(),
+            receipt_digest: "6".repeat(64),
+            receipt_json: "{\"signed\":\"production\"}".into(),
+            staging_receipt_digest: Some("3".repeat(64)),
+        };
+        let mut discontinuous = NewReleasePromotion {
+            bundle_digest: production_bundle.bundle_digest.clone(),
+            staging_receipt_digest: "8".repeat(64),
+            qualification_digest: "4".repeat(64),
+            production_receipt_digest: "6".repeat(64),
+        };
+        assert!(production_db
+            .promote_release_bundle(&publication, &discontinuous, 16)
+            .await
+            .is_err());
+        assert!(production_db
+            .release_bundle_publication(&production_bundle.bundle_digest, "production")
+            .await
+            .unwrap()
+            .is_none());
+
+        discontinuous.staging_receipt_digest = "3".repeat(64);
+        production_db
+            .promote_release_bundle(&publication, &discontinuous, 17)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

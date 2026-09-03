@@ -40,7 +40,8 @@ CREATE TABLE release_bundle_publications(
 
 CREATE TABLE release_qualifications(
   bundle_digest KEYTEXT128 PRIMARY KEY REFERENCES release_bundles(bundle_digest) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  staging_receipt_digest KEYTEXT128 NOT NULL REFERENCES release_bundle_publications(receipt_digest) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  staging_receipt_digest KEYTEXT128 NOT NULL,
+  staging_receipt_json TEXT NOT NULL,
   qualification_digest KEYTEXT128 NOT NULL UNIQUE,
   receipt_json TEXT NOT NULL,
   qualified_at INTEGER NOT NULL
@@ -48,7 +49,7 @@ CREATE TABLE release_qualifications(
 
 CREATE TABLE release_promotions(
   bundle_digest KEYTEXT128 PRIMARY KEY REFERENCES release_bundles(bundle_digest) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  staging_receipt_digest KEYTEXT128 NOT NULL REFERENCES release_bundle_publications(receipt_digest) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  staging_receipt_digest KEYTEXT128 NOT NULL,
   qualification_digest KEYTEXT128 NOT NULL REFERENCES release_qualifications(qualification_digest) ON DELETE RESTRICT ON UPDATE RESTRICT,
   production_receipt_digest KEYTEXT128 NOT NULL REFERENCES release_bundle_publications(receipt_digest) ON DELETE RESTRICT ON UPDATE RESTRICT,
   promoted_at INTEGER NOT NULL,
@@ -94,4 +95,3 @@ CREATE INDEX release_bundle_publications_registry_idx
   ON release_bundle_publications(registry_id, environment, committed_at);
 CREATE INDEX release_channel_operations_manifest_idx
   ON release_channel_operations(registry_id, manifest_digest);
-

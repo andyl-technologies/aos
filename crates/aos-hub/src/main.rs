@@ -68,6 +68,9 @@ enum Command {
         /// Owner-private file containing a standard-base64 Ed25519 signing seed.
         #[arg(long, env = "HUB_RELEASE_RECEIPT_KEY_FILE")]
         release_receipt_key_file: Option<PathBuf>,
+        /// Owner-private JSON map of trusted Hub receipt key ids to public keys.
+        #[arg(long, env = "HUB_RELEASE_PUBLICATION_KEYS_FILE")]
+        release_publication_keys_file: Option<PathBuf>,
         /// Owner-private JSON map of qualification key ids to base64 public keys.
         #[arg(long, env = "HUB_QUALIFICATION_KEYS_FILE")]
         qualification_keys_file: Option<PathBuf>,
@@ -412,6 +415,7 @@ async fn main() -> Result<()> {
             deployment_id,
             release_receipt_key_id,
             release_receipt_key_file,
+            release_publication_keys_file,
             qualification_keys_file,
             reindex_interval,
             jwt_secret_file,
@@ -504,28 +508,34 @@ async fn main() -> Result<()> {
                 deployment_id,
                 release_receipt_key_id,
                 release_receipt_key_file,
+                release_publication_keys_file,
                 qualification_keys_file,
             ) {
-                (Some(deployment_id), Some(key_id), Some(seed_path), Some(keys_path)) => {
+                (Some(deployment_id), Some(key_id), Some(seed_path), Some(publication_keys_path), Some(qualification_keys_path)) => {
                     let seed = std::fs::read_to_string(&seed_path)
                         .with_context(|| format!("reading release receipt key at {}", seed_path.display()))?;
-                    let keys_source = std::fs::read_to_string(&keys_path)
-                        .with_context(|| format!("reading qualification keys at {}", keys_path.display()))?;
-                    let keys = serde_json::from_str(&keys_source)
+                    let publication_keys_source = std::fs::read_to_string(&publication_keys_path)
+                        .with_context(|| format!("reading publication keys at {}", publication_keys_path.display()))?;
+                    let publication_keys = serde_json::from_str(&publication_keys_source)
+                        .context("parsing publication public-key map")?;
+                    let qualification_keys_source = std::fs::read_to_string(&qualification_keys_path)
+                        .with_context(|| format!("reading qualification keys at {}", qualification_keys_path.display()))?;
+                    let qualification_keys = serde_json::from_str(&qualification_keys_source)
                         .context("parsing qualification public-key map")?;
                     app_state.release_evidence = Some(Arc::new(
                         aos_hub_core::release_evidence::Ed25519ReleaseEvidenceAuthority::from_base64(
                             deployment_id,
                             key_id,
                             seed.trim(),
-                            keys,
+                            publication_keys,
+                            qualification_keys,
                         )
                         .context("configuring release evidence authority")?,
                     ));
                 }
-                (None, None, None, None) => {}
+                (None, None, None, None, None) => {}
                 _ => anyhow::bail!(
-                    "HUB_DEPLOYMENT_ID, HUB_RELEASE_RECEIPT_KEY_ID, HUB_RELEASE_RECEIPT_KEY_FILE, and HUB_QUALIFICATION_KEYS_FILE must be configured together"
+                    "HUB_DEPLOYMENT_ID, HUB_RELEASE_RECEIPT_KEY_ID, HUB_RELEASE_RECEIPT_KEY_FILE, HUB_RELEASE_PUBLICATION_KEYS_FILE, and HUB_QUALIFICATION_KEYS_FILE must be configured together"
                 ),
             }
             if let Some(path) = jwt_secret_file {
