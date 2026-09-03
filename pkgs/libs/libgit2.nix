@@ -1,7 +1,7 @@
 ##! libgit2 — C implementation of the Git core methods
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   gnumake,
   cmake,
   ninja,
@@ -11,18 +11,49 @@
   libssh2,
   stdenv,
 }: let
-  version = "1.9.2";
+  upstream = mkGithubUpstream {
+    unitId = "libgit2-1";
+    family = "libgit2";
+    stream = "1";
+    owner = "pkgs/libs/libgit2.nix";
+    version = "1.9.2";
+    upstreamId = "v1.9.2";
+    repository = "libgit2/libgit2";
+    tagPrefix = "v";
+    major = 1;
+    source = {
+      authority = "github.com";
+      path = [
+        "libgit2"
+        "libgit2"
+        "archive"
+        "refs"
+        "tags"
+        {
+          parts = [
+            {literal = "v";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.gz";}
+          ];
+        }
+      ];
+      hash = "sha256-bwl8gvwG7OT0BTn7F+nUG68aWi/CaxuFYtIbibw1X+Y=";
+    };
+    riskFloor = "high";
+  };
+  inherit (upstream) version;
 in
   mkDerivation {
     pname = "libgit2";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/libgit2/libgit2/archive/refs/tags/v${version}.tar.gz"
-      ];
-      hash = "sha256-bwl8gvwG7OT0BTn7F+nUG68aWi/CaxuFYtIbibw1X+Y=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [
       gnumake

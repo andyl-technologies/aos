@@ -1,23 +1,64 @@
 ##! gc — Boehm-Demers-Weiser conservative garbage collector
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   gnumake,
   stdenv,
 }: let
-  version = "8.2.12";
+  upstream = mkGithubUpstream {
+    unitId = "gc-8";
+    family = "gc";
+    stream = "8";
+    owner = "pkgs/libs/gc.nix";
+    version = "8.2.12";
+    upstreamId = "v8.2.12";
+    repository = "ivmai/bdwgc";
+    tagPrefix = "v";
+    major = 8;
+    source = {
+      authority = "github.com";
+      path = [
+        "ivmai"
+        "bdwgc"
+        "releases"
+        "download"
+        {
+          parts = [
+            {literal = "v";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+          ];
+        }
+        {
+          parts = [
+            {literal = "gc-";}
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.gz";}
+          ];
+        }
+      ];
+      hash = "sha256-QuUZStBqtv+4Bsg+uZwDRitJXZec2ngvPHLAivgzzU4=";
+    };
+    riskFloor = "normal";
+  };
+  inherit (upstream) version;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
     pname = "gc";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/ivmai/bdwgc/releases/download/v${version}/gc-${version}.tar.gz"
-      ];
-      hash = "sha256-QuUZStBqtv+4Bsg+uZwDRitJXZec2ngvPHLAivgzzU4=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [gnumake];
     runtimeDeps = [];

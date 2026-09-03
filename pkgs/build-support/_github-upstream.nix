@@ -64,15 +64,28 @@
       };
       sources.source = {
         fetcher = "fetchurl";
-        urlTemplates = [
-          {
-            scheme = "https";
-            inherit (source) authority path;
-          }
-        ];
+        urlTemplates =
+          source.urlTemplates
+          or [
+            {
+              scheme = "https";
+              inherit (source) authority path;
+            }
+          ];
         inherit (source) hash;
         hashMode = source.hashMode or "flat";
-        allowedRedirectHosts = source.allowedRedirectHosts or [source.authority];
+        allowedRedirectHosts =
+          source.allowedRedirectHosts
+          or (
+            if (builtins.head (source.urlTemplates or [{inherit (source) authority;}])).authority == "github.com"
+            then [
+              "codeload.github.com"
+              "github.com"
+              "objects.githubusercontent.com"
+              "release-assets.githubusercontent.com"
+            ]
+            else [source.authority]
+          );
       };
     };
     inherit policy;
