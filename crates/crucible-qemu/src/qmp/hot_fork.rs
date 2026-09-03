@@ -11,6 +11,7 @@ use super::{QmpCommandKind, QmpError};
 
 mod bh_timer_barrier;
 mod block_barrier;
+mod child_process;
 mod child_qmp;
 mod child_runtime;
 mod diagnostics;
@@ -32,6 +33,11 @@ pub use block_barrier::{
     QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES, QmpHotForkBlockBarrierState,
     QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,
     QmpHotForkBlockSnapshotRoot,
+};
+pub(crate) use child_process::{HotForkChildProcessAction, parse_hot_fork_child_process_state};
+pub use child_process::{
+    QMP_HOT_FORK_CHILD_PROCESS_COMMAND, QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION,
+    QmpHotForkChildProcessPhase, QmpHotForkChildProcessState,
 };
 pub(crate) use child_qmp::parse_hot_fork_child_qmp_state;
 pub use child_qmp::{

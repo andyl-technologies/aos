@@ -32,6 +32,19 @@ mod snapshot_tag;
 mod unix_socket;
 mod vmstate_control;
 
+use hot_fork::{
+    HotForkChildProcessAction, parse_hot_fork_aio_handler_inventory, parse_hot_fork_aio_inventory,
+    parse_hot_fork_bh_timer_barrier_state, parse_hot_fork_block_backend_inventory,
+    parse_hot_fork_block_barrier_state, parse_hot_fork_bottom_half_inventory,
+    parse_hot_fork_child_diagnostic_state, parse_hot_fork_child_process_state,
+    parse_hot_fork_child_qmp_state, parse_hot_fork_child_runtime_state,
+    parse_hot_fork_monitor_inventory, parse_hot_fork_mutex_inventory,
+    parse_hot_fork_plugin_barrier_state, parse_hot_fork_plugin_endpoint_state,
+    parse_hot_fork_plugin_resource_inventory, parse_hot_fork_private_ring_state,
+    parse_hot_fork_rcu_barrier_state, parse_hot_fork_rcu_inventory, parse_hot_fork_readiness,
+    parse_hot_fork_state, parse_hot_fork_template_state, parse_hot_fork_thread_inventory,
+    parse_hot_fork_timer_inventory,
+};
 pub use hot_fork::{
     QMP_HOT_FORK_AIO_HANDLER_INVENTORY_MAX, QMP_HOT_FORK_AIO_HANDLER_INVENTORY_SCHEMA_VERSION,
     QMP_HOT_FORK_AIO_INVENTORY_MAX, QMP_HOT_FORK_AIO_INVENTORY_SCHEMA_VERSION,
@@ -42,6 +55,7 @@ pub use hot_fork::{
     QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX, QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION,
     QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES, QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
     QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD,
+    QMP_HOT_FORK_CHILD_PROCESS_COMMAND, QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION,
     QMP_HOT_FORK_CHILD_QMP_COMMAND, QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION,
     QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION, QMP_HOT_FORK_COMMAND,
     QMP_HOT_FORK_MONITOR_INVENTORY_MAX, QMP_HOT_FORK_MONITOR_INVENTORY_SCHEMA_VERSION,
@@ -67,28 +81,17 @@ pub use hot_fork::{
     QmpHotForkBlockBackend, QmpHotForkBlockBackendInventory, QmpHotForkBlockBarrierState,
     QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,
     QmpHotForkBlockSnapshotRoot, QmpHotForkBottomHalf, QmpHotForkBottomHalfInventory,
-    QmpHotForkChildDiagnosticState, QmpHotForkChildQmpState, QmpHotForkChildRuntimePhase,
-    QmpHotForkChildRuntimeState, QmpHotForkMonitorInventory, QmpHotForkMutex,
-    QmpHotForkMutexInventory, QmpHotForkOutcome, QmpHotForkPluginBarrierState,
-    QmpHotForkPluginEndpointDescriptorPlan, QmpHotForkPluginEndpointIdentity,
-    QmpHotForkPluginEndpointState, QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState,
-    QmpHotForkProof, QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader,
-    QmpHotForkReadiness, QmpHotForkRequest, QmpHotForkRequestError, QmpHotForkState,
-    QmpHotForkTemplateOutcome, QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState,
-    QmpHotForkThread, QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer,
-    QmpHotForkTimerClock, QmpHotForkTimerInventory,
-};
-use hot_fork::{
-    parse_hot_fork_aio_handler_inventory, parse_hot_fork_aio_inventory,
-    parse_hot_fork_bh_timer_barrier_state, parse_hot_fork_block_backend_inventory,
-    parse_hot_fork_block_barrier_state, parse_hot_fork_bottom_half_inventory,
-    parse_hot_fork_child_diagnostic_state, parse_hot_fork_child_qmp_state,
-    parse_hot_fork_child_runtime_state, parse_hot_fork_monitor_inventory,
-    parse_hot_fork_mutex_inventory, parse_hot_fork_plugin_barrier_state,
-    parse_hot_fork_plugin_endpoint_state, parse_hot_fork_plugin_resource_inventory,
-    parse_hot_fork_private_ring_state, parse_hot_fork_rcu_barrier_state,
-    parse_hot_fork_rcu_inventory, parse_hot_fork_readiness, parse_hot_fork_state,
-    parse_hot_fork_template_state, parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
+    QmpHotForkChildDiagnosticState, QmpHotForkChildProcessPhase, QmpHotForkChildProcessState,
+    QmpHotForkChildQmpState, QmpHotForkChildRuntimePhase, QmpHotForkChildRuntimeState,
+    QmpHotForkMonitorInventory, QmpHotForkMutex, QmpHotForkMutexInventory, QmpHotForkOutcome,
+    QmpHotForkPluginBarrierState, QmpHotForkPluginEndpointDescriptorPlan,
+    QmpHotForkPluginEndpointIdentity, QmpHotForkPluginEndpointState,
+    QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState, QmpHotForkProof,
+    QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness,
+    QmpHotForkRequest, QmpHotForkRequestError, QmpHotForkState, QmpHotForkTemplateOutcome,
+    QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState, QmpHotForkThread,
+    QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer, QmpHotForkTimerClock,
+    QmpHotForkTimerInventory,
 };
 pub use snapshot_tag::QmpSnapshotTag;
 pub use vmstate_control::QemuQmpVmStateControlChannel;
@@ -1394,6 +1397,70 @@ where
         result
     }
 
+    /// Queries the source QEMU's retained wait status for one fork child.
+    ///
+    /// The exact child-process generation remains reserved while the child is
+    /// running and after QEMU reaps it. This query never releases that record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the generation is zero or unknown, the
+    /// exchange fails, or the response violates the exact generation and
+    /// retained-state contract. An explicit QMP command rejection leaves the
+    /// connection usable; any transport or response-contract failure poisons
+    /// it.
+    pub fn query_hot_fork_child_process(
+        &mut self,
+        generation: u64,
+    ) -> Result<QmpHotForkChildProcessState, QmpError> {
+        self.hot_fork_child_process(HotForkChildProcessAction::Query, generation)
+    }
+
+    /// Releases one reaped child-process record from the source QEMU.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] while the child is still running, when the
+    /// generation is zero or unknown, when the exchange fails, or when the
+    /// response violates the exact released-state contract. An explicit QMP
+    /// command rejection leaves the connection usable; any transport or
+    /// response-contract failure poisons it.
+    pub fn release_hot_fork_child_process(
+        &mut self,
+        generation: u64,
+    ) -> Result<QmpHotForkChildProcessState, QmpError> {
+        self.hot_fork_child_process(HotForkChildProcessAction::Release, generation)
+    }
+
+    fn hot_fork_child_process(
+        &mut self,
+        action: HotForkChildProcessAction,
+        generation: u64,
+    ) -> Result<QmpHotForkChildProcessState, QmpError> {
+        if generation == 0 {
+            return Err(QmpError::InvalidBound {
+                operation: "operate on QEMU hot-fork child process",
+            });
+        }
+        let result = self
+            .send_command_return(QmpCommand::HotForkChildProcess { action, generation })
+            .and_then(|response| {
+                parse_hot_fork_child_process_state(&response.value, generation, action)
+            });
+        let command_rejection = matches!(
+            &result,
+            Err(QmpError::Command {
+                command: QmpCommandKind::HotForkChildProcess,
+                ..
+            })
+        );
+        if result.is_err() && !command_rejection {
+            self.poisoned = true;
+            self.stream.get_mut().poison_qmp_stream();
+        }
+        result
+    }
+
     fn hot_fork_template(
         &mut self,
         action: HotForkTemplateAction,
@@ -2208,6 +2275,8 @@ pub enum QmpCommandKind {
     HotForkTemplate,
     /// QEMU-owned retained-template fork operation.
     HotFork,
+    /// Source-QEMU child-process status query or release.
+    HotForkChildProcess,
     /// QEMU-owned branch-private ring descriptor retention operation.
     HotForkPrivateRings,
     /// QEMU-owned branch-private plugin endpoint retention operation.
@@ -2266,6 +2335,7 @@ impl QmpCommandKind {
             Self::HotForkBlockBarrier => QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
             Self::HotForkTemplate => QMP_HOT_FORK_TEMPLATE_COMMAND,
             Self::HotFork => QMP_HOT_FORK_COMMAND,
+            Self::HotForkChildProcess => QMP_HOT_FORK_CHILD_PROCESS_COMMAND,
             Self::HotForkPrivateRings => QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
             Self::HotForkPluginEndpoints => QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND,
             Self::HotForkChildDiagnostics => QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
@@ -2508,6 +2578,10 @@ enum QmpCommand<'a> {
     HotFork {
         request: QmpHotForkRequest,
     },
+    HotForkChildProcess {
+        action: HotForkChildProcessAction,
+        generation: u64,
+    },
     HotForkPrivateRings {
         action: HotForkPrivateRingAction,
         name: Option<&'a QmpDescriptorName>,
@@ -2576,6 +2650,7 @@ impl QmpCommand<'_> {
             Self::HotForkBlockBarrier { .. } => QmpCommandKind::HotForkBlockBarrier,
             Self::HotForkTemplate { .. } => QmpCommandKind::HotForkTemplate,
             Self::HotFork { .. } => QmpCommandKind::HotFork,
+            Self::HotForkChildProcess { .. } => QmpCommandKind::HotForkChildProcess,
             Self::HotForkPrivateRings { .. } => QmpCommandKind::HotForkPrivateRings,
             Self::HotForkPluginEndpoints { .. } => QmpCommandKind::HotForkPluginEndpoints,
             Self::HotForkChildDiagnostics { .. } => QmpCommandKind::HotForkChildDiagnostics,
@@ -2721,6 +2796,13 @@ impl QmpCommand<'_> {
             Self::HotFork { request } => json!({
                 "exec-oob": QMP_HOT_FORK_COMMAND,
                 "arguments": request.wire_value(),
+            }),
+            Self::HotForkChildProcess { action, generation } => json!({
+                "exec-oob": QMP_HOT_FORK_CHILD_PROCESS_COMMAND,
+                "arguments": {
+                    "action": action.wire_name(),
+                    "generation": generation,
+                },
             }),
             Self::HotForkPrivateRings {
                 action,
@@ -2991,6 +3073,25 @@ mod tests {
         .to_string()
     }
 
+    fn hot_fork_child_process_response(
+        generation: u64,
+        phase: &str,
+        status: u8,
+        retained: bool,
+    ) -> String {
+        json!({
+            "return": {
+                "schema-version": 1,
+                "generation": generation,
+                "child-pid": 321,
+                "phase": phase,
+                "status": status,
+                "retained": retained,
+            }
+        })
+        .to_string()
+    }
+
     #[test]
     fn hot_fork_command_carries_every_exact_generation() {
         let request = hot_fork_request();
@@ -3012,6 +3113,20 @@ mod tests {
                     "block-barrier-generation": 10,
                     "parent-process-generation": 11,
                     "child-process-generation": 12,
+                },
+            })
+        );
+        assert_eq!(
+            QmpCommand::HotForkChildProcess {
+                action: HotForkChildProcessAction::Query,
+                generation: 12,
+            }
+            .request(),
+            json!({
+                "exec-oob": "crucible-hot-fork-child-process",
+                "arguments": {
+                    "action": "query",
+                    "generation": 12,
                 },
             })
         );
@@ -3075,6 +3190,72 @@ mod tests {
                 .expect("explicit pre-fork rejection should remain retryable")
                 .child_pid(),
             321
+        );
+    }
+
+    #[test]
+    fn hot_fork_child_status_is_exact_releasable_and_poisoned_on_mismatch() {
+        let running = hot_fork_child_process_response(12, "running", 0, true);
+        let released = hot_fork_child_process_response(12, "exited", 7, false);
+        let mut client = QmpClient::connect(ScriptedStream::new(&[
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            &running,
+            &released,
+        ]))
+        .expect("scripted QMP client should connect");
+        let observed = client
+            .query_hot_fork_child_process(12)
+            .expect("running child record should remain queryable");
+        assert_eq!(observed.child_process_id(), 321);
+        assert_eq!(observed.phase(), QmpHotForkChildProcessPhase::Running);
+        assert!(observed.retained());
+        let released = client
+            .release_hot_fork_child_process(12)
+            .expect("reaped child record should release exactly once");
+        assert_eq!(released.phase(), QmpHotForkChildProcessPhase::Exited);
+        assert_eq!(released.status(), 7);
+        assert!(!released.retained());
+
+        let running = hot_fork_child_process_response(12, "running", 0, true);
+        let mut client = QmpClient::connect(ScriptedStream::new(&[
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            r#"{"error":{"class":"GenericError","desc":"child is still running"}}"#,
+            &running,
+        ]))
+        .expect("scripted QMP client should connect");
+        assert!(matches!(
+            client.release_hot_fork_child_process(12),
+            Err(QmpError::Command {
+                command: QmpCommandKind::HotForkChildProcess,
+                ..
+            })
+        ));
+        assert!(
+            client
+                .query_hot_fork_child_process(12)
+                .expect("explicit running-child rejection should remain retryable")
+                .retained()
+        );
+
+        let mismatched = hot_fork_child_process_response(13, "running", 0, true);
+        let mut client = QmpClient::connect(ScriptedStream::new(&[
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            &mismatched,
+        ]))
+        .expect("scripted QMP client should connect");
+        assert!(matches!(
+            client.query_hot_fork_child_process(12),
+            Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotForkChildProcess,
+                ..
+            })
+        ));
+        assert_eq!(
+            client.query_hot_fork_child_process(12),
+            Err(QmpError::ConnectionPoisoned)
         );
     }
 }
