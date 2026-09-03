@@ -72,15 +72,17 @@ pub(super) fn commit_candidate(
         bail!("accepted candidate no longer matches the worktree");
     }
     if plan
-        .semantic_mutations
+        .units
         .iter()
+        .flat_map(|unit| unit.semantic_mutations.iter())
         .any(|mutation| mutation.owner.starts_with("pkgs/emulation/qemu"))
     {
         bail!("QEMU-side changes require a human-created legal-name DCO commit");
     }
     let owners = plan
-        .semantic_mutations
+        .units
         .iter()
+        .flat_map(|unit| unit.semantic_mutations.iter())
         .map(|mutation| mutation.owner.as_str())
         .collect::<std::collections::BTreeSet<_>>();
     let mut add = Command::new("git");
@@ -97,10 +99,19 @@ pub(super) fn commit_candidate(
     {
         bail!("Git could not stage the accepted candidate");
     }
-    let message = format!(
-        "pkg: update {} to {}",
-        plan.unit_id, plan.target_package_version
-    );
+    let message = if let Ok(unit) = plan.single_unit() {
+        format!(
+            "pkg: update {} to {}",
+            unit.unit_id, unit.target_package_version
+        )
+    } else {
+        format!(
+            "pkg: update {} cohort",
+            plan.cohort
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("campaign has no cohort identity"))?
+        )
+    };
     let status = Command::new("git")
         .arg("-C")
         .arg(root)

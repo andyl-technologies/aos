@@ -203,8 +203,23 @@ fn available_branch(
     plan: &PackageUpdatePlanV1,
     digest: Sha256Digest,
 ) -> Result<String> {
-    let unit = slug(plan.unit_id.as_str(), 48);
-    let target = slug(&plan.target_package_version, 48);
+    let (unit, target) = if let Ok(single) = plan.single_unit() {
+        (
+            slug(single.unit_id.as_str(), 48),
+            slug(&single.target_package_version, 48),
+        )
+    } else {
+        (
+            slug(
+                plan.cohort
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("campaign has no cohort identity"))?
+                    .as_str(),
+                48,
+            ),
+            "campaign".to_string(),
+        )
+    };
     let preferred = format!("dplecki/upgrade-{unit}-{target}");
     if !branch_exists(root, &preferred)? {
         return Ok(preferred);

@@ -312,7 +312,7 @@
   };
 in
   spec: let
-    checked = assertFields "contract" ["schema" "unitId" "family" "stream" "owner" "classification" "package" "components" "policy"] ["artifacts"] spec;
+    checked = assertFields "contract" ["schema" "unitId" "family" "stream" "owner" "classification" "package" "components" "policy"] ["artifacts" "cohort"] spec;
     schema = requireEnum "schema" ["aos.package-update/v1"] checked.schema;
     classification = requireEnum "classification" ["automatic" "assisted"] checked.classification;
     package = assertFields "package" ["currentVersion" "versionProjection"] [] checked.package;
@@ -336,6 +336,10 @@ in
       family = requireString "family" checked.family;
       stream = requireString "stream" checked.stream;
       owner = requireString "owner" checked.owner;
+      cohort =
+        if checked ? cohort
+        then requireString "cohort" checked.cohort
+        else null;
       package = {
         inherit currentVersion;
         versionProjection = {

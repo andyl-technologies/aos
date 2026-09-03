@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::PACKAGE_UPDATE_RUN_V1;
 use crate::envelope::GitObjectId;
-use crate::identity::{ArtifactSlotId, ComponentId, PlanId, RunId, SourceSlotId};
+use crate::identity::{ArtifactSlotId, ComponentId, PlanId, RunId, SourceSlotId, UnitId};
 use crate::workflow::{GateOutcome, RunState};
 
 /// Projects the current durable state of one local maintenance run.
@@ -105,6 +105,8 @@ impl PackageUpdateRunV1 {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct MaterializedSource {
+    /// Update unit owning the component and source slot.
+    pub unit_id: UnitId,
     /// Component owning the source slot.
     pub component: ComponentId,
     /// Stable source slot within the component.
@@ -127,6 +129,8 @@ pub struct MaterializedSource {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct MaterializedArtifact {
+    /// Update unit owning the generated artifact slot.
+    pub unit_id: UnitId,
     /// Stable artifact slot within the update unit.
     pub slot: ArtifactSlotId,
     /// Exact candidate derivation realized with the controller's fake hash.
@@ -187,15 +191,15 @@ impl MaterializationRecordV1 {
         if self.schema != crate::PACKAGE_UPDATE_MATERIALIZATION_V1 || self.attempt != 0 {
             bail!("unsupported deterministic materialization record");
         }
-        if self.sources.len() > 128
+        if self.sources.len() > 4096
             || self.changed_paths.is_empty()
-            || self.changed_paths.len() > 64
+            || self.changed_paths.len() > 4096
         {
             bail!("materialization evidence collection is empty or oversized");
         }
         let mut identities = std::collections::BTreeSet::new();
         for source in &self.sources {
-            if !identities.insert((&source.component, &source.slot))
+            if !identities.insert((&source.unit_id, &source.component, &source.slot))
                 || source.hash.len() > 128
                 || !source.hash.starts_with("sha256-")
                 || source.upstream_id.is_empty()
@@ -211,12 +215,12 @@ impl MaterializationRecordV1 {
                 bail!("materialized source identity is invalid or duplicated");
             }
         }
-        if self.artifacts.len() > 128 {
+        if self.artifacts.len() > 4096 {
             bail!("materialized artifact collection is oversized");
         }
         let mut artifact_slots = std::collections::BTreeSet::new();
         for artifact in &self.artifacts {
-            if !artifact_slots.insert(&artifact.slot)
+            if !artifact_slots.insert((&artifact.unit_id, &artifact.slot))
                 || !artifact.derivation.starts_with("/nix/store/")
                 || !artifact.derivation.ends_with(".drv")
                 || !artifact.expected_hash.starts_with("sha256-")

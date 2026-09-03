@@ -494,6 +494,7 @@ mod tests {
     fn unit(minimum_age_days: u32) -> Result<UpdateUnit> {
         let component_id = ComponentId::parse("main")?;
         Ok(UpdateUnit {
+            cohort: None,
             unit_id: UnitId::parse("zlib-1")?,
             family: FamilyId::parse("zlib")?,
             stream: "1".to_string(),
