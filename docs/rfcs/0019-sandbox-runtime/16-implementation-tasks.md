@@ -85,7 +85,7 @@ they gate any affected runtime backend.
   `af419c775`).
 - [x] **SBX-BPROTO-02** Implement descriptor-role and peer-credential
   validation with malformed-message fuzz targets (`SBX-BPROTO-01`).
-- [ ] **SBX-BPROTO-03** Simulate multi-node assignment and ownership-lease
+- [x] **SBX-BPROTO-03** Simulate multi-node assignment and ownership-lease
   fencing, including stale coordinator and partition cases (`SBX-CORE-03`).
 
 ## P2: durable control and privilege boundaries
@@ -300,3 +300,7 @@ completes. The Git history remains authoritative for code details.
   credential and broker-audience binding, assignment-fence and closed
   descriptor-role validation, and deterministic malformed-message fuzz entry
   points across every privileged local request.
+- `e82e16095` — `SBX-BPROTO-03`: durable assignment comparison, conservative
+  boot-bound ownership deadlines, exact renewal and stop-proof fencing, and
+  atomic shared-endpoint transfer simulations covering partitions, stale
+  coordinators, equivocation, reboot, and partial-transfer rollback.
