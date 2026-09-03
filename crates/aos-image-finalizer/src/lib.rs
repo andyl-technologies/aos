@@ -10,6 +10,8 @@
 //!
 //! - [`assembly`] defines the unsigned, public-only input closure.
 //! - [`capture`] captures a Nix assembly without following filesystem links.
+//! - [`filesystem`] reconstructs deterministic EROFS and initrd bytes.
+//! - [`finalize`] sequences effectful signing and reconstruction stages.
 //! - [`input`] revalidates captured files and tools at their point of use.
 //! - [`module_signature`] verifies the kernel's appended PKCS#7 format.
 //! - [`request`] constrains signing requests supplied by the coordinator.
@@ -21,6 +23,8 @@
 
 pub mod assembly;
 pub mod capture;
+pub mod filesystem;
+pub mod finalize;
 pub mod input;
 pub mod module_signature;
 pub mod request;

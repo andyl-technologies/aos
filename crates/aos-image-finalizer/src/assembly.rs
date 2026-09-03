@@ -7,7 +7,7 @@
 //!  "size_bytes":1,"sha256":"sha256:..."}]}
 //! ```
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, bail};
 use aos_release::artifact::{BundlePath, require_identifier, require_store_path};
@@ -82,6 +82,8 @@ pub struct AssemblyToolV1 {
     pub executable: String,
     /// NAR hash of the executable's owning output.
     pub owner_nar_hash: String,
+    /// Closed public process environment required by this AOS-built tool.
+    pub environment: BTreeMap<String, String>,
 }
 
 /// Complete public-only finalization input for one Linux architecture.
@@ -337,6 +339,21 @@ impl UnsignedImageAssemblyV1 {
                 || tool.owner_nar_hash.starts_with("sha256-"))
             {
                 bail!("assembly tool lacks a pinned owner NAR hash");
+            }
+            for (name, value) in &tool.environment {
+                match name.as_str() {
+                    "LD_LIBRARY_PATH" => {
+                        if value.split(':').any(|path| {
+                            !path.starts_with("/nix/store/")
+                                || path.contains('\n')
+                                || path.contains('\0')
+                        }) {
+                            bail!("assembly tool LD_LIBRARY_PATH must contain only store paths");
+                        }
+                    }
+                    "MTOOLS_SKIP_CHECK" if value == "1" => {}
+                    _ => bail!("assembly tool requests an unsupported environment setting"),
+                }
             }
         }
         self.validate_input_budgets()?;
