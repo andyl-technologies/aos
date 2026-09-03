@@ -67,7 +67,12 @@ pub(super) fn ensure(
         created_at_unix: now,
         updated_at_unix: now,
     };
-    store.initialize_run(&run, plan)?;
+    if !store.reserve_run(&run, plan)? {
+        let existing = store
+            .read_run(run.run_id.as_str())?
+            .ok_or_else(|| anyhow::anyhow!("reserved run disappeared"))?;
+        return reconcile(store, repository_root, plan, existing);
+    }
     store.transition(&mut run, RunState::Selected, ActorClass::Controller, now)?;
     store.transition(&mut run, RunState::Planned, ActorClass::Controller, now)?;
     reconcile(store, repository_root, plan, run)

@@ -192,6 +192,66 @@ impl StateStore {
         atomic_write(&directory, "run.json", run)
     }
 
+    /// Atomically reserves every unit in a new campaign run.
+    ///
+    /// Returns `false` when the exact deterministic run was already reserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when another nonterminal run owns any selected unit or
+    /// retained state conflicts with the deterministic run identity.
+    pub(super) fn reserve_run(
+        &self,
+        run: &PackageUpdateRunV1,
+        plan: &PackageUpdatePlanV1,
+    ) -> Result<bool> {
+        self.with_repository_lock(|| {
+            if let Some(existing) = self.read_run(run.run_id.as_str())? {
+                if existing.plan_digest != run.plan_digest
+                    || existing.plan_id != run.plan_id
+                    || existing.branch != run.branch
+                    || existing.worktree != run.worktree
+                    || existing.base_commit != run.base_commit
+                {
+                    bail!("deterministic run identity is already reserved with other state");
+                }
+                return Ok(false);
+            }
+            let selected = plan
+                .units
+                .iter()
+                .map(|unit| &unit.unit_id)
+                .collect::<std::collections::BTreeSet<_>>();
+            for active in self
+                .list_runs()?
+                .into_iter()
+                .filter(|candidate| !candidate.state.is_terminal())
+            {
+                let active_plan = self
+                    .read_plan(active.plan_id.as_str())?
+                    .ok_or_else(|| anyhow::anyhow!("active run plan is unavailable"))?;
+                if active_plan
+                    .units
+                    .iter()
+                    .any(|unit| selected.contains(&unit.unit_id))
+                {
+                    bail!(
+                        "update unit {} is already reserved by active run {}",
+                        active_plan
+                            .units
+                            .iter()
+                            .find(|unit| selected.contains(&unit.unit_id))
+                            .map(|unit| unit.unit_id.as_str())
+                            .unwrap_or("unknown"),
+                        active.run_id
+                    );
+                }
+            }
+            self.initialize_run(run, plan)?;
+            Ok(true)
+        })
+    }
+
     /// Writes the rebuildable run projection after validating it.
     pub(super) fn write_run(&self, run: &PackageUpdateRunV1) -> Result<()> {
         run.validate()?;
