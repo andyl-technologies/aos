@@ -301,6 +301,9 @@ in
                   cat << 'APR_ENVIRONMENT'
       export AOS_MCOPY="${mtools}/bin/mcopy"
       export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
+      ${lib.optionalString (!isDarwinCross) ''
+        export AOS_CHECKMODULE="${checkpolicy}/bin/checkmodule"
+      ''}
       APR_ENVIRONMENT
                   ;;
                 apm|aos-package-runtime)
