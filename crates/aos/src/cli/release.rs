@@ -23,6 +23,8 @@ pub enum ReleaseCommand {
     FinalizeRegistry(ReleaseFinalizeRegistryArgs),
     /// Close and threshold-sign one release bundle
     Finalize(ReleaseFinalizeArgs),
+    /// Generate and externally sign the complete static Nix cache
+    FinalizeCache(ReleaseFinalizeCacheArgs),
     /// Renew short-lived metadata without changing authorized content
     Timestamp {
         #[command(subcommand)]
@@ -404,6 +406,49 @@ pub struct ReleaseFinalizeArgs {
     pub recorded_at: String,
 
     /// New directory containing bundle and finalized journal
+    #[arg(long)]
+    pub output: PathBuf,
+}
+
+#[derive(Args)]
+pub struct ReleaseFinalizeCacheArgs {
+    /// Canonical release plan authorizing cache signing
+    #[arg(long)]
+    pub plan: PathBuf,
+
+    /// Validated build report for the exact package matrix
+    #[arg(long)]
+    pub build_report: PathBuf,
+
+    /// Finalized isolated registry directory
+    #[arg(long)]
+    pub registry: PathBuf,
+
+    /// Cache-role public Ed25519 key as KEY_ID=PATH
+    #[arg(long, value_name = "KEY_ID=PATH")]
+    pub cache_key: String,
+
+    /// Independently pinned provider identity for the cache key
+    #[arg(long)]
+    pub verification_identity: String,
+
+    /// Absolute path to the deployment-configured signer executable
+    #[arg(long)]
+    pub signer_executable: PathBuf,
+
+    /// Maximum duration of each signer operation in seconds
+    #[arg(long, default_value_t = 120)]
+    pub signer_timeout_seconds: u64,
+
+    /// Cache priority written into nix-cache-info
+    #[arg(long, default_value_t = 40)]
+    pub priority: u32,
+
+    /// Maximum parallel NAR compression jobs
+    #[arg(long)]
+    pub jobs: Option<usize>,
+
+    /// New externally signed static-cache directory
     #[arg(long)]
     pub output: PathBuf,
 }
@@ -919,6 +964,32 @@ mod tests {
                 "2026-09-03T12:00:00Z",
                 "--output",
                 "tuf",
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn cache_finalization_requires_external_key_and_provider_identity() {
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "release",
+                "finalize-cache",
+                "--plan",
+                "release-plan.json",
+                "--build-report",
+                "build-report.json",
+                "--registry",
+                "registry",
+                "--cache-key",
+                "cache-1=cache-1.pub",
+                "--verification-identity",
+                "provider-cache-slot",
+                "--signer-executable",
+                "/opt/aos/signer",
+                "--output",
+                "cache",
             ])
             .is_ok()
         );
