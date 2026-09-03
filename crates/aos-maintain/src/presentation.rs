@@ -6,6 +6,7 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::MAINTENANCE_CLI_V1;
+use crate::discovery::DiscoverySnapshotV1;
 use crate::envelope::InventoryEnvelopeV1;
 use crate::identity::RunId;
 use crate::workflow::{DiscoveryDecision, GateOutcome, RunState, TaskStatus};
@@ -44,12 +45,12 @@ impl CommandDisposition {
             Self::Success => 0,
             Self::NoChange => 10,
             Self::ActionRequired => 11,
-            Self::OperationFailed => 12,
-            Self::UpstreamUnknown => 13,
-            Self::Quarantined => 14,
-            Self::Stale => 15,
-            Self::InfrastructureUnavailable => 16,
-            Self::Interrupted => 17,
+            Self::OperationFailed => 1,
+            Self::InfrastructureUnavailable => 3,
+            Self::UpstreamUnknown => 12,
+            Self::Quarantined => 13,
+            Self::Stale => 14,
+            Self::Interrupted => 130,
             Self::InvalidInvocation => 2,
         }
     }
@@ -178,6 +179,9 @@ pub struct CommandData {
     /// Repository-bound inventory returned by the inventory command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inventory: Option<InventoryEnvelopeV1>,
+    /// Repository-bound discovery snapshot returned by scan and report commands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<DiscoverySnapshotV1>,
 }
 
 /// Contains the single terminal result returned by a maintenance command.

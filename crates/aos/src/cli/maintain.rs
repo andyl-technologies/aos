@@ -26,6 +26,12 @@ pub struct MaintainArgs {
 pub enum MaintainCommand {
     /// Evaluate and validate the repository-bound maintenance inventory
     Inventory(MaintainInventoryArgs),
+    /// Refresh bounded direct-upstream and advisory evidence
+    Scan(MaintainScanArgs),
+    /// Report cached package-update discovery as a maintainer inbox
+    Report(MaintainReportArgs),
+    /// Show concise cached maintenance and active-run state
+    Status(MaintainStatusArgs),
 }
 
 #[derive(Args)]
@@ -37,6 +43,42 @@ pub struct MaintainInventoryArgs {
     /// Evaluate one explicit Nix target platform
     #[arg(long, visible_alias = "system", value_name = "PLATFORM")]
     pub target: Option<String>,
+}
+
+#[derive(Args)]
+pub struct MaintainScanArgs {
+    /// Use only sufficiently fresh cached observations
+    #[arg(long)]
+    pub offline: bool,
+
+    /// Evaluate one explicit Nix target platform
+    #[arg(long, visible_alias = "system", value_name = "PLATFORM")]
+    pub target: Option<String>,
+}
+
+#[derive(Args)]
+pub struct MaintainReportArgs {
+    /// Show only units with a selectable newer release
+    #[arg(long)]
+    pub outdated: bool,
+
+    /// Show only units whose required upstream evidence is incomplete
+    #[arg(long)]
+    pub unknown: bool,
+
+    /// Restrict the report to one upstream family
+    #[arg(long, value_name = "FAMILY")]
+    pub family: Option<String>,
+}
+
+#[derive(Args)]
+pub struct MaintainStatusArgs {
+    /// Exact or unambiguous local run identity
+    pub run: Option<String>,
+
+    /// Show only nonterminal runs
+    #[arg(long)]
+    pub active: bool,
 }
 
 #[cfg(test)]
@@ -68,8 +110,8 @@ mod tests {
         assert_eq!(inventory.target.as_deref(), Some("aarch64-linux"));
     }
 
-    #[test]
-    fn accepts_both_machine_formats_for_typed_invocation_diagnostics() {
+    #[tokio::test]
+    async fn accepts_both_machine_formats_for_typed_invocation_diagnostics() {
         let cli = Cli::try_parse_from(["aos", "maintain", "--json", "--jsonl"])
             .expect("recognized maintenance invocations must reach typed diagnostics");
         let Commands::Maintain(args) = &cli.command else {
@@ -78,6 +120,7 @@ mod tests {
         assert!(cli.json, "global JSON flag should remain set");
         assert!(args.jsonl, "maintenance JSON Lines flag should remain set");
         let completion = crate::commands::maintain::run(&cli, args)
+            .await
             .expect("output-mode conflict should produce a valid completion");
 
         assert_eq!(

@@ -475,6 +475,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-contract",
+ "semver",
  "serde",
  "serde_json",
 ]
