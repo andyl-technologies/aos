@@ -11,7 +11,7 @@ use aos_release::signing::{
     verify_response_binding,
 };
 
-use crate::assembly::{AssemblyFileKind, UnsignedImageAssemblyV1};
+use crate::assembly::{AssemblyFileKind, ImageCommandLinesV1, UnsignedImageAssemblyV1};
 use crate::filesystem::{
     extract_erofs, extract_initrd, kernel_modules, rebuild_erofs, rebuild_initrd,
 };
@@ -20,6 +20,7 @@ use crate::module_signature::verify_signed_module;
 use crate::request::{ImageRequestAuthorizer, ImageSigningIntent, verify_intent};
 use crate::signer::ImageSigner;
 use crate::tools::PinnedTool;
+use crate::verity::{VerityOutputV1, bind_root_hash, build_verity};
 
 const TOOL_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const MODULE_SIGNATURE_OVERHEAD_BYTES: u64 = 4 * 1024 * 1024;
@@ -35,6 +36,10 @@ pub struct PreparedFilesystemsV1 {
     pub recovery_initrd_a: PathBuf,
     /// Deterministically rebuilt slot-B recovery initrd.
     pub recovery_initrd_b: PathBuf,
+    /// Deterministic verified dm-verity tree and root hash.
+    pub verity: VerityOutputV1,
+    /// Normal command lines rebound to the rebuilt root hash.
+    pub command_lines: ImageCommandLinesV1,
     /// Audited provider responses for every signed module instance.
     pub signing_operations: Vec<SignatureResponseV1>,
 }
@@ -68,11 +73,14 @@ pub async fn prepare_filesystems(
     let zstd_spec = verified_tool(assembly, "zstd", &mut resolve_owner_nar_hash)?;
     let cpio_spec = verified_tool(assembly, "cpio", &mut resolve_owner_nar_hash)?;
     let openssl_spec = verified_tool(assembly, "openssl", &mut resolve_owner_nar_hash)?;
+    let veritysetup_spec = verified_tool(assembly, "veritysetup", &mut resolve_owner_nar_hash)?;
 
     let fsck_erofs = PinnedTool::from_verified(fsck_erofs_spec, work.to_path_buf(), TOOL_TIMEOUT)?;
     let mkfs_erofs = PinnedTool::from_verified(mkfs_erofs_spec, work.to_path_buf(), TOOL_TIMEOUT)?;
     let zstd = PinnedTool::from_verified(zstd_spec, work.to_path_buf(), TOOL_TIMEOUT)?;
     let openssl = PinnedTool::from_verified(openssl_spec, work.to_path_buf(), TOOL_TIMEOUT)?;
+    let veritysetup =
+        PinnedTool::from_verified(veritysetup_spec, work.to_path_buf(), TOOL_TIMEOUT)?;
 
     let input = work.join("captured-inputs");
     let trees = work.join("trees");
@@ -183,6 +191,12 @@ pub async fn prepare_filesystems(
         mebibytes(assembly.budgets.root_mib)?,
     )
     .await?;
+    let verity = build_verity(&veritysetup, &root_filesystem, &output, &assembly.layout).await?;
+    let command_lines = ImageCommandLinesV1 {
+        slot_a: bind_root_hash(&assembly.command_lines.slot_a, &verity.root_hash)?,
+        slot_b: bind_root_hash(&assembly.command_lines.slot_b, &verity.root_hash)?,
+        recovery: assembly.command_lines.recovery.clone(),
+    };
     let initrd = output.join("initrd.img");
     let recovery_initrd_a = output.join("recovery-a.img");
     let recovery_initrd_b = output.join("recovery-b.img");
@@ -209,6 +223,8 @@ pub async fn prepare_filesystems(
         initrd,
         recovery_initrd_a,
         recovery_initrd_b,
+        verity,
+        command_lines,
         signing_operations,
     })
 }
