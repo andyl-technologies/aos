@@ -99,8 +99,8 @@ they gate any affected runtime backend.
   effect ledger (`SBX-JRN-02`, `SBX-BPROTO-01`; `8eb2d4ee8`).
 - [x] **SBX-CTRL-02** Add crash injection at every record/effect boundary and
   prove convergence (`SBX-CTRL-01`; `ec3a23d4f`).
-- [ ] **SBX-SD-01** Extend `aos-systemd` with typed transient sandbox unit,
-  cgroup, freeze/thaw, leader, and observation operations.
+- [x] **SBX-SD-01** Extend `aos-systemd` with typed transient sandbox unit,
+  cgroup, freeze/thaw, leader, and observation operations (`d1e40ea28`).
 - [ ] **SBX-LINUX-01** Add safe, owned pidfd, namespace FD, `openat2`, mount FD,
   idmap, `statmount`, and `listmount` wrappers (`SBX-P0-03`).
 - [ ] **SBX-HOST-01** Implement the root-only fixed host broker and one-shot
