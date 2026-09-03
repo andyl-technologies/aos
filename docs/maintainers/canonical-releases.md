@@ -66,6 +66,37 @@ root is not pre-labeled, so enabling the existing policy would overstate the
 MAC boundary. SELinux may enter the production profile only with labeled-root
 construction and an enforcing boot qualification gate.
 
+## Configure the designated maintainer machine
+
+Enable `aos.services.releaseCoordinator` only in the private machine
+configuration. Supply five hermetic wrapper programs: the manually started
+content-release driver, restricted TUF timestamp renewal, encrypted backup,
+clean-directory restore verification, and operator alert delivery. The public
+module deliberately contains no machine identity or deployment-specific path.
+
+The module creates distinct locked service accounts and state directories,
+loads each role's disjoint credentials with systemd's credential mechanism,
+and rejects credential sources in the Nix store. Content publication has no
+timer and begins only with an operator start of
+`aos-release-coordinator.service`; this is the no-CI control point. Timestamp
+renewal runs every 12 hours by default, backup runs daily, and an offline
+network-denied restore check runs weekly. Override calendars only if the TUF
+expiry and recovery objectives remain satisfied.
+
+Every failed release, timestamp, backup, or restore unit invokes the isolated
+alert service with only the failed unit name and alert-role credentials.
+The content-release, backup, and restore jobs share a nonblocking advisory lock;
+an overlap fails closed and alerts instead of taking an inconsistent snapshot.
+Timestamp renewal uses separate state, identity, policy, and credentials and
+does not acquire the content-state lock.
+
+Deployment wrapper programs receive no command-line secrets. They resolve
+credential names beneath `$CREDENTIALS_DIRECTORY`, write only beneath their
+assigned state/runtime directories, and exec the documented `aos release`
+commands. Keep staging and production upload credentials in different
+operator steps; do not place both in the manual service's credential set at
+the same time.
+
 ## Prepare a plan request
 
 Create a reviewed JSON object with schema
