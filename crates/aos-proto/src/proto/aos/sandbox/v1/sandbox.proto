@@ -373,6 +373,8 @@ message Event {
   Timestamp observed_at = 6;
   repeated Condition conditions = 7;
   repeated ObservationExtension extensions = 8;
+  bytes resume_cursor = 9;
+  bytes bootstrap_watermark = 10; // Present on snapshot-complete events.
 }
 
 message PageInfo {
