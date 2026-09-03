@@ -102,6 +102,7 @@ snapshot views or service protocols.
 - [Testing and performance gates](13-testing-and-performance.md)
 - [Implementation sequence and code ownership](14-implementation-plan.md)
 - [Decisions, alternatives, and open questions](15-decisions-and-open-questions.md)
+- [Implementation task ledger](16-implementation-tasks.md)
 
 ## Completion criteria
 
