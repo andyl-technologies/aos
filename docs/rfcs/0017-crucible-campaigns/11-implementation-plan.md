@@ -1721,7 +1721,12 @@ two-phase admission, retains the exact reader/admission/callback/drain state,
 and parks rejected entrants until release. The version-16 template coordinator
 holds this barrier with the plugin callback barrier and acknowledges readiness
 bit 4 only while the complete retained RCU state is quiescent. The RCU worker
-still needs an exact child disposition/reinitializer, so bit 8 remains clear.
+now has an exact child disposition/reinitializer composed with the registered
+thread and mutex transaction. The immediate child discards vanished reader
+records, retains only the rebound coordinator reader, and starts one fresh
+callback worker before returning. No production fork command consumes that
+transaction and raw/library lock disposition remains open, so bit 8 remains
+clear.
 QEMU now additionally owns a process-lifetime reversible asynchronous-source
 barrier. A race-closed two-phase admission gate covers AioContext polling and
 GLib dispatch, AioHandler lifecycle and callbacks, coroutine scheduling,
@@ -2286,9 +2291,11 @@ mutexes, leaves the parent registry unchanged at release, and reconstructs the
 immediate child around exactly the surviving coordinator. A real-fork
 regression and locked-mutex negative control cover those outcomes. The
 transaction remains unwired to a production fork command and deliberately does
-not claim raw `pthread`/GLib lock completeness, explicit RCU fork composition,
-or the remaining subsystem dispositions, so it cannot advance readiness bit 8
-by itself.
+not claim raw `pthread`/GLib lock completeness or the remaining subsystem
+dispositions. The following RCU transaction now closes reader/callback
+admission outside it, preserves the parent RCU registry, and reconstructs the
+immediate child around the coordinator plus one fresh callback worker. The
+composed transaction still cannot advance readiness bit 8 by itself.
 These are executable T-CAM-6.1 audit prerequisites, not completion of the task:
 the internal registry identifies two non-coordinator subsystem owners but has
 no safe non-coordinator child disposition. The retained AIO/BH/timer and RCU

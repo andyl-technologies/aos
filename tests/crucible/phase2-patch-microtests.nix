@@ -3001,6 +3001,33 @@
         '';
       };
     }
+    {
+      patch = "0184-crucible-compose-rcu-fork-transaction.patch";
+      check = certifyExactPatch {
+        patchName = "0184-crucible-compose-rcu-fork-transaction.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-rcu-runtime-transaction";
+        liveEvidence = ''
+          grep -Fxq 'patch=0184-crucible-compose-rcu-fork-transaction.patch' "$live_result"
+          grep -Fq 'qemu_rcu_hot_fork_begin_transaction' \
+            ${patchDir}/0184-crucible-compose-rcu-fork-transaction.patch
+          grep -Fq 'qemu_rcu_hot_fork_release_parent_transaction' \
+            ${patchDir}/0184-crucible-compose-rcu-fork-transaction.patch
+          grep -Fq 'qemu_rcu_hot_fork_reconstruct_child' \
+            ${patchDir}/0184-crucible-compose-rcu-fork-transaction.patch
+          grep -Fq 'qemu_crucible_hot_fork_begin_runtime_transaction' \
+            ${patchDir}/0184-crucible-compose-rcu-fork-transaction.patch
+          grep -Fq 'qemu_crucible_hot_fork_reconstruct_child_runtime' \
+            ${patchDir}/0184-crucible-compose-rcu-fork-transaction.patch
+          grep -Fq 'qemu_thread_create(&thread, "call_rcu", call_rcu_thread' \
+            ${patchDir}/0184-crucible-compose-rcu-fork-transaction.patch
+          grep -Fq '/crucible/hot-fork-child/active-rcu-reader' \
+            ${patchDir}/0184-crucible-compose-rcu-fork-transaction.patch
+          grep -Fq 'rcu_after.generation, ==, rcu_before.generation' \
+            ${patchDir}/0184-crucible-compose-rcu-fork-transaction.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

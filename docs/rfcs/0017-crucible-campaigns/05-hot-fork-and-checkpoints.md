@@ -1239,9 +1239,9 @@ event emits exactly one greeting before the child reports its complete resource
 state. Only after the complete child resource transaction commits may a
 distinct operation flush that greeting and attach one read source and one HUP
 source; it returns `-EAGAIN` without mutation while output remains buffered.
-These operations remain unreachable from a production command; global
-child-thread registry reconstruction, fork coordination, post-commit input
-release, guest admission, and readiness bits 7 and 8 remain open.
+These operations remain unreachable from a production command; fork
+coordination, post-commit input release, guest admission, and readiness bits 7
+and 8 remain open.
 The sealed QMP contribution now carries those exact template and child-QMP
 generations alongside its descriptor and socket identity. The immediate-child
 resource transaction requires both the plugin and QMP reinitializers to match
@@ -1270,9 +1270,24 @@ coordinator and advances its process-local generation before releasing the
 registry locks. A real-fork unit test proves the parent registry is unchanged,
 the child contains exactly that coordinator, and a locked registered mutex
 fails before fork. This transaction does not inventory raw `pthread` or GLib
-locks, compose QEMU's RCU fork protocol, choose every subsystem disposition, or
-invoke `fork(2)` from a production command. Those obligations remain part of
-the closed supported-profile registry, so readiness bit 8 stays clear.
+locks, choose every subsystem disposition, or invoke `fork(2)` from a
+production command. Those obligations remain part of the closed
+supported-profile registry, so readiness bit 8 stays clear.
+
+The fork runtime now composes that registry transaction inside an explicit RCU
+transaction. The outer transaction closes reader, callback, and reader-registry
+admission, requires the exact coordinator reader and complete callback state to
+be quiescent, and binds the process, thread, reader generation, and barrier
+generation. An inner-registry acquisition failure releases the RCU barrier.
+The parent releases the registry and then restores its unchanged RCU state. The
+immediate child first reconstructs the thread registry, then discards vanished
+reader records, rebinds the coordinator reader, resets the proven-empty callback
+queue and drain state, reopens admission, and starts one fresh `call_rcu` worker
+before returning. A real-fork regression requires exactly the coordinator and
+that new worker in both child inventories while leaving both parent inventories
+unchanged; an active-reader regression proves fail-closed rollback. The
+transaction remains unreachable from a production fork command and does not
+dispose raw or library-owned locks, so readiness bit 8 remains clear.
 The version-3 child-QMP report now derives `disposition-complete` from that
 exact accepted one-shot status instead of hard-coding false. Prepared but
 unattempted, contradictory, failed, and reset adapters remain incomplete; the

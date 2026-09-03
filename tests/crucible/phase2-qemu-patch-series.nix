@@ -1280,6 +1280,13 @@
       enforces = "HFORK-4,HFORK-22";
       capability = "an explicit coordinator-owned pre-fork transaction now freezes the registered QEMU thread and QemuMutex registries, rejects in-flight thread starts and nonquiescent registered mutexes, leaves the parent registries unchanged, and reconstructs the immediate child registry around only the surviving coordinator; raw or unregistered locks, RCU composition, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
     }
+    {
+      file = "0184-crucible-compose-rcu-fork-transaction.patch";
+      catalogName = "crucible-hot-fork-rcu-runtime-transaction";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "the coordinator now composes an explicit RCU reader/callback quiescence transaction outside the registered thread and QemuMutex transaction, preserves the parent RCU registry, reconstructs the immediate child around only the surviving coordinator, reopens admission, and starts one fresh child callback worker before returning; raw or unregistered locks, remaining subsystem dispositions, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

@@ -807,6 +807,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0184-crucible-compose-rcu-fork-transaction.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
