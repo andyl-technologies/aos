@@ -13,6 +13,12 @@ use crate::canonical;
 pub struct Sha256Digest([u8; 32]);
 
 impl Sha256Digest {
+    /// Constructs an identity from an already computed SHA-256 value.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
     /// Computes the identity of exact bytes.
     #[must_use]
     pub fn of_bytes(bytes: impl AsRef<[u8]>) -> Self {

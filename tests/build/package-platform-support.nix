@@ -72,6 +72,7 @@
   packageExpressions = discoverPackageExpressions ../../pkgs "";
   excludedResources = discoverExcludedResources ../../pkgs "" false;
   publicationMatrix = support.publicationMatrix packageNames;
+  releaseInventory = support.releaseInventory packageNames;
   x86Packages = publicationMatrix.x86_64-darwin;
   armPackages = publicationMatrix.aarch64-darwin;
   requiredDarwinTools = [
@@ -115,6 +116,13 @@
     meta = {license = "probe";};
   };
   linuxPackages = support.targetPackageNames "x86_64-linux" packageNames;
+  packageByName = name:
+    builtins.head (builtins.filter (package: package.name == name) releaseInventory.packages);
+  decisionFor = name: platform:
+    (builtins.head (
+      builtins.filter (cell: cell.platform == platform) (packageByName name).platforms
+    ))
+    .decision;
 in
   assert support.validate packageNames;
   assert support.validateHelpers helperFiles;
@@ -128,6 +136,18 @@ in
   assert selectionProbe == {rust = "included";};
   assert annotationProbe.meta.license == "probe";
   assert annotationProbe.meta.aos.platformSupport.disposition == "target";
+  assert releaseInventory.schema_version == "aos.release.package-inventory/v1";
+  assert releaseInventory.platforms == support.canonicalSystems;
+  assert builtins.all (
+    package: builtins.length package.platforms == 4
+  )
+  releaseInventory.packages;
+  assert (decisionFor "systemd" "x86_64-linux").state == "eligible";
+  assert (decisionFor "systemd" "aarch64-darwin").state == "not-applicable";
+  assert (decisionFor "darwin-runtimes" "aarch64-darwin").state == "eligible";
+  assert (decisionFor "darwin-runtimes" "x86_64-linux").state == "not-applicable";
+  assert (decisionFor "aos-hub-e2e" "x86_64-linux").state == "not-applicable";
+  assert (decisionFor "go-1_4" "aarch64-linux").state == "not-applicable";
     pkgs.mkDerivation {
       pname = "package-platform-support-check";
       version = "0";

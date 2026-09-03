@@ -22,8 +22,10 @@ use crate::state::{JournalEntryV1, ReleaseState};
 pub struct CapturedFile {
     /// Normalized path below the bundle root.
     pub path: BundlePath,
-    /// Exact immutable file bytes.
-    pub bytes: Vec<u8>,
+    /// Exact captured byte length.
+    pub size_bytes: u64,
+    /// SHA-256 computed while streaming the captured regular file.
+    pub sha256: Sha256Digest,
 }
 
 /// Successful verification counts for stable machine output.
@@ -46,6 +48,48 @@ pub struct VerificationSummary {
     pub evidence_count: usize,
     /// Number of distinct manifest signatures verified.
     pub signatures_verified: usize,
+}
+
+#[derive(Serialize)]
+struct BundleDigestInput<'a> {
+    manifest_envelope_digest: Sha256Digest,
+    files: Vec<BundleDigestFile<'a>>,
+}
+
+#[derive(Serialize)]
+struct BundleDigestFile<'a> {
+    path: &'a str,
+    size_bytes: u64,
+    sha256: Sha256Digest,
+}
+
+/// Computes the identity of exact manifest-envelope and captured payload bytes.
+///
+/// # Errors
+///
+/// Returns an error when captured paths are duplicated or the closed digest
+/// input cannot be represented as canonical JSON.
+pub fn bundle_digest(
+    manifest_envelope_bytes: &[u8],
+    files: &[CapturedFile],
+) -> Result<Sha256Digest> {
+    let mut ordered = files.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|file| file.path.as_str());
+    if ordered.windows(2).any(|pair| pair[0].path == pair[1].path) {
+        bail!("captured bundle contains a duplicate path");
+    }
+    let input = BundleDigestInput {
+        manifest_envelope_digest: Sha256Digest::of_bytes(manifest_envelope_bytes),
+        files: ordered
+            .into_iter()
+            .map(|file| BundleDigestFile {
+                path: file.path.as_str(),
+                size_bytes: file.size_bytes,
+                sha256: file.sha256,
+            })
+            .collect(),
+    };
+    Sha256Digest::of_canonical("aos.release.bundle/v1", &input)
 }
 
 /// Verifies canonical plan/envelope bytes, signatures, schema semantics, and
@@ -212,8 +256,7 @@ fn verify_file_closure(envelope: &ManifestEnvelopeV1, files: &[CapturedFile]) ->
         let artifact = expected
             .get(file.path.as_str())
             .ok_or_else(|| anyhow::anyhow!("extra bundle file {}", file.path))?;
-        let size = u64::try_from(file.bytes.len()).context("captured file length exceeds u64")?;
-        if artifact.size_bytes != size || artifact.sha256 != Sha256Digest::of_bytes(&file.bytes) {
+        if artifact.size_bytes != file.size_bytes || artifact.sha256 != file.sha256 {
             bail!("bundle file identity mismatch: {}", file.path);
         }
     }
@@ -241,8 +284,8 @@ mod tests {
         ManifestSignature, PackageResult, ReleaseManifestV1,
     };
     use crate::plan::{
-        PackagePlan, PlannedArtifactSet, PlatformCell, ReleaseClass, ReleasePlanV1,
-        RetentionPolicy, SourceIdentity,
+        PackagePlan, PlannedArtifact, PlannedArtifactSet, PlatformCell, ReleaseClass,
+        ReleasePlanV1, RetentionPolicy, SourceIdentity,
     };
     use crate::platform::{MatrixCell, Platform};
     use crate::signing::{
@@ -319,8 +362,25 @@ mod tests {
             },
             packages: vec![PackagePlan {
                 name: "example".to_owned(),
+                publication: Some(crate::inventory::PackagePublicationMetadata {
+                    version: "1.0.0".to_owned(),
+                    description: "Example package".to_owned(),
+                    homepage: None,
+                    license_expression: "Apache-2.0".to_owned(),
+                    maintainers: vec!["Example Maintainer".to_owned()],
+                }),
                 platforms: matrix(PlannedArtifactSet {
-                    artifact_ids: vec!["package/example/x86_64-linux".to_owned()],
+                    artifacts: vec![PlannedArtifact {
+                        id: "package/example/x86_64-linux".to_owned(),
+                        derivation: Some(
+                            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv".to_owned(),
+                        ),
+                        output: Some("out".to_owned()),
+                        store_path: Some(
+                            "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example".to_owned(),
+                        ),
+                        source_store_paths: vec![],
+                    }],
                 }),
             }],
             images: Vec::new(),
@@ -407,7 +467,7 @@ mod tests {
         let request = SigningRequestV1 {
             schema_version: "aos.release.signing-request/v1".to_owned(),
             request_id: "manifest-signature-1".to_owned(),
-            nonce: "0123456789abcdef".to_owned(),
+            nonce: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
             registry: plan.registry.clone(),
             release_id: plan.release_id.clone(),
             plan_digest: manifest.plan_digest,
@@ -417,8 +477,9 @@ mod tests {
             provider_revision: "provider-v1".to_owned(),
             algorithm: SignatureAlgorithm::Ed25519,
             operation: SigningOperation::SignPayload,
-            platform: None,
-            artifact_kind: Some("release-manifest".to_owned()),
+            context: crate::signing::SigningContext::Payload {
+                artifact_kind: "release-manifest".to_owned(),
+            },
             payload_digest: manifest_digest,
             approval_policy_digest: plan.restricted_operator_policy_digest,
         };
@@ -432,6 +493,9 @@ mod tests {
             provider_revision: request.provider_revision.clone(),
             algorithm: request.algorithm,
             provider_operation_id: "fixture-operation-1".to_owned(),
+            verification_identity: "fixture-release-key".to_owned(),
+            verification_material_digest: digest("fixture-public-key"),
+            output_digest: None,
             signature_base64: base64::engine::general_purpose::STANDARD
                 .encode(signature.to_bytes()),
         };
@@ -445,11 +509,13 @@ mod tests {
         let files = vec![
             CapturedFile {
                 path: BundlePath::parse("release-plan.json")?,
-                bytes: plan_bytes.clone(),
+                size_bytes: u64::try_from(plan_bytes.len())?,
+                sha256: Sha256Digest::of_bytes(&plan_bytes),
             },
             CapturedFile {
                 path: BundlePath::parse("packages/example.nar")?,
-                bytes: package_bytes,
+                size_bytes: u64::try_from(package_bytes.len())?,
+                sha256: Sha256Digest::of_bytes(&package_bytes),
             },
         ];
         let trusted_key = TrustedEd25519Key {
@@ -518,7 +584,8 @@ mod tests {
         let mut fixture = release_fixture()?;
         fixture.files.push(CapturedFile {
             path: BundlePath::parse("extra")?,
-            bytes: Vec::new(),
+            size_bytes: 0,
+            sha256: Sha256Digest::of_bytes([]),
         });
         assert!(
             verify_release(
@@ -531,7 +598,7 @@ mod tests {
         );
 
         fixture.files.pop();
-        fixture.files[1].bytes.push(0);
+        fixture.files[1].sha256 = Sha256Digest::of_bytes("changed");
         assert!(
             verify_release(
                 &fixture.plan,
