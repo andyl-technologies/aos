@@ -14,6 +14,7 @@ mod block_barrier;
 mod child_qmp;
 mod child_runtime;
 mod diagnostics;
+mod fork;
 mod plugin;
 mod plugin_endpoints;
 mod private_rings;
@@ -42,6 +43,11 @@ pub(crate) use diagnostics::parse_hot_fork_child_diagnostic_state;
 pub use diagnostics::{
     QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND, QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION,
     QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD, QmpHotForkChildDiagnosticState,
+};
+pub(crate) use fork::parse_hot_fork_state;
+pub use fork::{
+    QMP_HOT_FORK_COMMAND, QMP_HOT_FORK_SCHEMA_VERSION, QmpHotForkOutcome, QmpHotForkRequest,
+    QmpHotForkRequestError, QmpHotForkState,
 };
 pub use plugin::{QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory};
 pub(super) use plugin::{
@@ -133,6 +139,8 @@ pub const QMP_HOT_FORK_MONITOR_INVENTORY_SCHEMA_VERSION: u32 = 1;
 
 /// Complete proof bitmap required by the version-1 hot-fork contract.
 pub const QMP_HOT_FORK_REQUIRED_PROOFS: u64 = (1_u64 << 9) - 1;
+/// Proof bitmap retained by template preparation before child-only proofs run.
+pub const QMP_HOT_FORK_TEMPLATE_REQUIRED_PROOFS: u64 = (1_u64 << 7) - 1;
 /// Maximum active QEMU-created threads retained by one inventory response.
 pub const QMP_HOT_FORK_THREAD_INVENTORY_MAX: usize = 65_536;
 /// Maximum registered RCU readers retained by one inventory response.

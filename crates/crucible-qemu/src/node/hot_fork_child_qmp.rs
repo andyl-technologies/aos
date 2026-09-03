@@ -638,7 +638,7 @@ mod tests {
             assert!(request.contains("crucible-hot-fork-child-qmp"));
             let response = json!({
                 "return": {
-                    "schema-version": 7,
+                    "schema-version": 8,
                     "generation": qmp_generation,
                     "template-generation": template_generation,
                     "monitor-generation": monitor_generation,
@@ -654,7 +654,7 @@ mod tests {
                     "reinitializer-prepared": true,
                     "reinitialized": disposition_complete,
                     "disposition-complete": disposition_complete,
-                    "readiness-proof-acknowledged": false,
+                    "readiness-proof-acknowledged": disposition_complete,
                 }
             });
             writeln!(stream, "{response}").expect("write child QMP state response");
