@@ -298,6 +298,35 @@ the production-only key, reads the exact envelope back through the anonymous
 API, and writes a `Promoted` successor journal without replacing existing
 evidence.
 
+## Advance a planned channel range
+
+Advance only a partition range frozen in the release plan, using the exact
+generation observed by the operator:
+
+```sh
+aos release channel advance \
+  --bundle release-bundle \
+  --journal release-promoted/release-journal.jsonl \
+  --production-receipt release-promoted/production-receipt.json \
+  --channel edge \
+  --prior-generation 0 \
+  --first-partition 0 \
+  --last-partition 31 \
+  --trusted-key release-2026=/media/keys/release-2026.pub \
+  --production-receipt-key production-hub-2026=/media/keys/production-hub-2026.pub \
+  --channel-receipt-key channel-2026=/media/keys/channel-2026.pub \
+  --output release-edge-0-31
+```
+
+The Hub commits the generation evidence, channel frontier, and every selected
+partition in one transaction. A stale generation, missing promotion, altered
+public projection, or range outside the plan fails closed. The command verifies
+the production receipt through the anonymous API before mutation, verifies the
+signed channel receipt afterward, reads every selected public partition back,
+and appends a `Rolling` journal entry. Further planned ranges append
+`Rolling`-to-`Rolling` entries with their own generations and receipts; release
+completion is a separate retention and handoff decision.
+
 ## Verify a captured bundle offline
 
 Copy the closed bundle, optional journal, and public verification keys to a

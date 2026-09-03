@@ -83,8 +83,10 @@ pub trait ReleaseEvidenceAuthority: BackendBounds {
 /// signing oracle. Release-content and qualification keys remain public-only.
 pub struct Ed25519ReleaseEvidenceAuthority {
     deployment_id: String,
-    key_id: String,
-    signing_key: SigningKey,
+    publication_key_id: String,
+    publication_signing_key: SigningKey,
+    channel_key_id: String,
+    channel_signing_key: SigningKey,
     publication_keys: BTreeMap<String, [u8; 32]>,
     qualification_keys: BTreeMap<String, [u8; 32]>,
 }
@@ -99,18 +101,32 @@ impl Ed25519ReleaseEvidenceAuthority {
     /// material and identities are non-empty.
     pub fn from_base64(
         deployment_id: impl Into<String>,
-        key_id: impl Into<String>,
-        signing_seed_base64: &str,
+        publication_key_id: impl Into<String>,
+        publication_signing_seed_base64: &str,
+        channel_key_id: impl Into<String>,
+        channel_signing_seed_base64: &str,
         publication_keys_base64: BTreeMap<String, String>,
         qualification_keys_base64: BTreeMap<String, String>,
     ) -> Result<Self> {
         let deployment_id = deployment_id.into();
-        let key_id = key_id.into();
-        if deployment_id.is_empty() || key_id.is_empty() {
-            bail!("release evidence deployment and key identities are required");
+        let publication_key_id = publication_key_id.into();
+        let channel_key_id = channel_key_id.into();
+        if deployment_id.is_empty() || publication_key_id.is_empty() || channel_key_id.is_empty() {
+            bail!("release evidence deployment and role key identities are required");
         }
-        let seed = decode_key(signing_seed_base64, "release receipt signing seed")?;
-        let signing_key = SigningKey::from_bytes(&seed);
+        if publication_key_id == channel_key_id {
+            bail!("publication and channel receipt key identities must differ");
+        }
+        let publication_seed = decode_key(
+            publication_signing_seed_base64,
+            "publication receipt signing seed",
+        )?;
+        let publication_signing_key = SigningKey::from_bytes(&publication_seed);
+        let channel_seed = decode_key(channel_signing_seed_base64, "channel receipt signing seed")?;
+        let channel_signing_key = SigningKey::from_bytes(&channel_seed);
+        if publication_signing_key.verifying_key() == channel_signing_key.verifying_key() {
+            bail!("publication and channel receipt keys must use different material");
+        }
         let publication_keys = decode_public_keys(
             publication_keys_base64,
             "publication",
@@ -123,21 +139,28 @@ impl Ed25519ReleaseEvidenceAuthority {
         )?;
         Ok(Self {
             deployment_id,
-            key_id,
-            signing_key,
+            publication_key_id,
+            publication_signing_key,
+            channel_key_id,
+            channel_signing_key,
             publication_keys,
             qualification_keys,
         })
     }
 
-    fn issue<T: Serialize>(&self, payload: &T) -> Result<SignedReleaseEvidence> {
+    fn issue<T: Serialize>(
+        &self,
+        payload: &T,
+        key_id: &str,
+        signing_key: &SigningKey,
+    ) -> Result<SignedReleaseEvidence> {
         let payload_bytes = aos_release::canonical::to_vec(payload)?;
         let digest =
             aos_release::digest::Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, &payload_bytes);
-        let signature = self.signing_key.sign(digest.as_bytes());
+        let signature = signing_key.sign(digest.as_bytes());
         let envelope = SignedReceiptEnvelopeV1 {
             schema_version: SIGNED_RECEIPT_V1.into(),
-            key_id: self.key_id.clone(),
+            key_id: key_id.into(),
             payload: serde_json::from_slice(&payload_bytes)?,
             signature_base64: STANDARD.encode(signature.to_bytes()),
         };
@@ -161,7 +184,11 @@ impl ReleaseEvidenceAuthority for Ed25519ReleaseEvidenceAuthority {
         receipt: &PublicationReceiptV1,
     ) -> Result<SignedReleaseEvidence> {
         receipt.validate()?;
-        self.issue(receipt)
+        self.issue(
+            receipt,
+            &self.publication_key_id,
+            &self.publication_signing_key,
+        )
     }
 
     async fn verify_publication(
@@ -197,7 +224,7 @@ impl ReleaseEvidenceAuthority for Ed25519ReleaseEvidenceAuthority {
 
     async fn issue_channel(&self, receipt: &ChannelReceiptV1) -> Result<SignedReleaseEvidence> {
         receipt.validate()?;
-        self.issue(receipt)
+        self.issue(receipt, &self.channel_key_id, &self.channel_signing_key)
     }
 }
 
@@ -235,11 +262,14 @@ mod tests {
 
     fn authority() -> Ed25519ReleaseEvidenceAuthority {
         let seed = [7_u8; 32];
+        let channel_seed = [8_u8; 32];
         let public = SigningKey::from_bytes(&seed).verifying_key();
         Ed25519ReleaseEvidenceAuthority::from_base64(
             "staging-deployment",
             "hub-receipt",
             &STANDARD.encode(seed),
+            "channel-receipt",
+            &STANDARD.encode(channel_seed),
             BTreeMap::from([("hub-receipt".into(), STANDARD.encode(public.as_bytes()))]),
             BTreeMap::from([("qualifier".into(), STANDARD.encode(public.as_bytes()))]),
         )
@@ -280,7 +310,14 @@ mod tests {
     async fn publication_envelope_uses_only_publication_trust_roots() {
         let authority = authority();
         let receipt = publication();
-        let envelope = authority.issue(&receipt).unwrap().envelope_json;
+        let envelope = authority
+            .issue(
+                &receipt,
+                &authority.publication_key_id,
+                &authority.publication_signing_key,
+            )
+            .unwrap()
+            .envelope_json;
         authority
             .verify_publication(&receipt, &envelope)
             .await
@@ -290,8 +327,12 @@ mod tests {
         role_confused.key_id = "qualifier".into();
         let payload = aos_release::canonical::to_vec(&receipt).unwrap();
         let digest = Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, payload);
-        role_confused.signature_base64 =
-            STANDARD.encode(authority.signing_key.sign(digest.as_bytes()).to_bytes());
+        role_confused.signature_base64 = STANDARD.encode(
+            authority
+                .publication_signing_key
+                .sign(digest.as_bytes())
+                .to_bytes(),
+        );
         let role_confused =
             String::from_utf8(aos_release::canonical::to_vec(&role_confused).unwrap()).unwrap();
         assert!(authority
@@ -301,16 +342,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn channel_receipts_use_the_distinct_channel_key() {
+        let authority = authority();
+        let receipt = ChannelReceiptV1 {
+            schema_version: "aos.release.channel-receipt/v1".into(),
+            channel: "edge".into(),
+            first_partition: 0,
+            last_partition: 31,
+            prior_generation: 0,
+            new_generation: 1,
+            manifest_digest: Sha256Digest::of_bytes(b"manifest"),
+            production_receipt_digest: Sha256Digest::of_bytes(b"production"),
+            committed_at: "2026-03-01T00:00:00Z".into(),
+        };
+        let signed = authority.issue_channel(&receipt).await.unwrap();
+        let envelope: SignedReceiptEnvelopeV1 = serde_json::from_str(&signed.envelope_json).unwrap();
+        assert_eq!(envelope.key_id, "channel-receipt");
+        assert_ne!(envelope.key_id, authority.publication_key_id);
+    }
+
+    #[test]
+    fn authority_rejects_reused_publication_and_channel_material() {
+        let seed = STANDARD.encode([7_u8; 32]);
+        assert!(
+            Ed25519ReleaseEvidenceAuthority::from_base64(
+                "deployment",
+                "publication-key",
+                &seed,
+                "channel-key",
+                &seed,
+                BTreeMap::new(),
+                BTreeMap::new(),
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn qualification_envelope_is_canonical_and_signature_bound() {
         let authority = authority();
         let receipt = qualification();
-        let mut envelope: SignedReceiptEnvelopeV1 =
-            serde_json::from_str(&authority.issue(&receipt).unwrap().envelope_json).unwrap();
+        let mut envelope: SignedReceiptEnvelopeV1 = serde_json::from_str(
+            &authority
+                .issue(
+                    &receipt,
+                    &authority.publication_key_id,
+                    &authority.publication_signing_key,
+                )
+                .unwrap()
+                .envelope_json,
+        )
+        .unwrap();
         envelope.key_id = "qualifier".into();
         let payload = aos_release::canonical::to_vec(&receipt).unwrap();
         let digest = Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, payload);
-        envelope.signature_base64 =
-            STANDARD.encode(authority.signing_key.sign(digest.as_bytes()).to_bytes());
+        envelope.signature_base64 = STANDARD.encode(
+            authority
+                .publication_signing_key
+                .sign(digest.as_bytes())
+                .to_bytes(),
+        );
         let envelope =
             String::from_utf8(aos_release::canonical::to_vec(&envelope).unwrap()).unwrap();
 
