@@ -2697,6 +2697,41 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         "/aos.hub.v1.PublishService/AbortRegistryPublication",
         abort_registry_publication
     );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/BeginReleasePublication",
+        begin_release_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/CommitReleasePublication",
+        commit_release_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/RecordReleaseQualification",
+        record_release_qualification
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/PromoteReleasePublication",
+        promote_release_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/GetReleaseReceipt",
+        get_release_receipt
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/PublishReleaseTimestamp",
+        publish_release_timestamp
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/AdvanceReleaseChannel",
+        advance_release_channel
+    );
     r = r.route(
         "/aos.hub.v1.PublishService/UploadObject/{publication_id}/{object_id}",
         put(
