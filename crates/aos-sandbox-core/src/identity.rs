@@ -205,6 +205,10 @@ define_identity!(ServiceId, "Identifies one mediated external service.");
 define_identity!(SecretId, "Identifies one mediated secret resource.");
 define_identity!(IssuerId, "Identifies one secret or receipt issuer.");
 define_identity!(
+    CacheDomainId,
+    "Identifies one filesystem-cache disclosure and residency domain."
+);
+define_identity!(
     TrustScopeId,
     "Identifies one portable signature trust and revocation scope."
 );

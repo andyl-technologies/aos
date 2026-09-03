@@ -23,10 +23,10 @@ pub use capability::{
     Grant, InvalidGrant,
 };
 pub use identity::{
-    AttachmentId, AttachmentSlotId, AuditId, CapabilityId, ExecutionId, ExportId, GrantId,
-    IncarnationId, IssuerId, NetworkEndpointId, NodeId, OperationId, PrincipalId, ProjectId,
-    ResourceId, RevocationScopeId, SandboxId, SecretId, ServiceId, SnapshotId, TrustScopeId,
-    ViewId,
+    AttachmentId, AttachmentSlotId, AuditId, CacheDomainId, CapabilityId, ExecutionId, ExportId,
+    GrantId, IncarnationId, IssuerId, NetworkEndpointId, NodeId, OperationId, PrincipalId,
+    ProjectId, ResourceId, RevocationScopeId, SandboxId, SecretId, ServiceId, SnapshotId,
+    TrustScopeId, ViewId,
 };
 pub use resources::{
     AccountingError, AncestryAdmissionError, ReservationClass, ResourceAccount, ResourceBudget,
