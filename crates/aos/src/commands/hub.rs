@@ -9201,6 +9201,29 @@ pub(crate) async fn upload_registry_publication(
     root: &std::path::Path,
     printer: &Printer,
 ) -> Result<hub_types::RegistryPublication> {
+    upload_registry_publication_with_commit(access, registry, manifest, root, printer, true).await
+}
+
+/// Uploads one exact registry surface while leaving its mutable commit to a
+/// release-scoped compare-and-swap RPC.
+pub(crate) async fn prepare_registry_publication(
+    access: &HubAccessArgs,
+    registry: &str,
+    manifest: Option<&std::path::Path>,
+    root: &std::path::Path,
+    printer: &Printer,
+) -> Result<hub_types::RegistryPublication> {
+    upload_registry_publication_with_commit(access, registry, manifest, root, printer, false).await
+}
+
+async fn upload_registry_publication_with_commit(
+    access: &HubAccessArgs,
+    registry: &str,
+    manifest: Option<&std::path::Path>,
+    root: &std::path::Path,
+    printer: &Printer,
+    commit: bool,
+) -> Result<hub_types::RegistryPublication> {
     let mut pinned = match manifest {
         Some(manifest) => {
             let request = publication_manifest_request(manifest, registry)?;
@@ -9243,15 +9266,26 @@ pub(crate) async fn upload_registry_publication(
             "Uploading publication pointers",
         )
         .await?;
-        publication_client(access)
-            .await?
-            .call_topology(
-                HubTopologyMethod::CommitRegistryPublication,
-                &hub_types::CommitRegistryPublicationRequest {
-                    publication_id: publication_id.to_string(),
-                },
-            )
-            .await
+        let client = publication_client(access).await?;
+        if commit {
+            client
+                .call_topology(
+                    HubTopologyMethod::CommitRegistryPublication,
+                    &hub_types::CommitRegistryPublicationRequest {
+                        publication_id: publication_id.to_string(),
+                    },
+                )
+                .await
+        } else {
+            client
+                .call_topology(
+                    HubTopologyMethod::GetRegistryPublication,
+                    &hub_types::GetRegistryPublicationRequest {
+                        publication_id: publication_id.to_string(),
+                    },
+                )
+                .await
+        }
     }
     .await;
     result.with_context(|| {

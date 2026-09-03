@@ -26,16 +26,17 @@ The current implementation provides these fail-closed operations:
   writes a staging receipt plus successor journal;
 - `aos release timestamp refresh` renews only the short-lived pointer to an
   already root-authorized immutable snapshot, including recovery after expiry;
+- `aos release timestamp publish` reserves the exact next metadata generation,
+  commits its prepared Hub surface, and verifies the public bytes;
 - `aos release channel complete` proves every planned rollout operation and
   current public partition, then requires threshold release-evidence approval
   of retention and operational handoff before closing the journal; and
 - `aos release verify` checks a closed release bundle and optional journal
   offline against explicitly supplied public keys.
 
-Registry-to-bundle finalization, qualification executor orchestration, and
-timestamp publication remain incomplete. Production publication through this
-workflow remains forbidden until those paths and the remaining RFC-0017 launch
-gates are complete.
+Registry-to-bundle finalization and qualification executor orchestration remain
+incomplete. Production publication through this workflow remains forbidden
+until those paths and the remaining RFC-0017 launch gates are complete.
 
 The canonical release image profile enables external Secure Boot, distinct
 module and PCR-policy roles, lockdown, measured boot, encrypted state,
@@ -216,8 +217,32 @@ snapshot signature, root/plan timestamp policy equality, signer public key and
 provider identity, exact prior timestamp continuity, and the 48-hour maximum
 window. An expired prior timestamp remains cryptographically verifiable at its
 recorded issuance instant, so freshness can recover without resetting the
-monotonic version. Publishing the resulting mutable pointer is a separate Hub
-compare-and-swap operation.
+monotonic version. Publish the resulting pointer through its separate Hub
+compare-and-swap operation:
+
+```sh
+aos release timestamp publish \
+  --plan release-plan.json \
+  --root 12.root.json \
+  --snapshot 41.snapshot.json \
+  --timestamp timestamp.json.next \
+  --previous-version 86 \
+  --trusted-root-key root-1=/media/trust/root-1.pub \
+  --trusted-root-key root-2=/media/trust/root-2.pub \
+  --trusted-root-threshold 2 \
+  --registry-surface finalized-registry-surface \
+  --output timestamp-publication-87
+```
+
+The complete surface must contain the exact verified envelopes at
+`tuf/timestamp.json` and `tuf/41.snapshot.json`. The coordinator uploads the
+surface into an invisible preparing publication. The release-scoped Hub RPC
+atomically reserves the next timestamp version and exact object identities
+before it commits the mutable publication pointer. A lost response is retried
+with the same publication and evidence; a different request for the reserved
+version fails closed. The coordinator then performs full anonymous public
+read-back and preserves the timestamp plus publication evidence without
+replacing an existing output.
 
 ## Stage a finalized M1 bundle
 
