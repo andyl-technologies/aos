@@ -397,6 +397,9 @@ impl ReleasePlanV1 {
             bail!("stable and emergency releases require the Linux image matrix");
         }
 
+        if self.gates.is_empty() {
+            bail!("release plan must select at least one qualification gate");
+        }
         require_unique_by(&self.gates, |gate| &gate.policy_id, "gate policy")?;
         for gate in &self.gates {
             require_identifier(&gate.policy_id, "gate policy id")?;

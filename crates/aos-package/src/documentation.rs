@@ -483,18 +483,34 @@ fn local_search(
     kind: Option<&str>,
     limit: usize,
 ) -> Result<Vec<SearchResult>> {
+    search_loaded_documents(&load_installed_documents(scope)?, query, kind, limit)
+}
+
+fn search_loaded_documents(
+    documents: &[LoadedDocumentation],
+    query: &str,
+    kind: Option<&str>,
+    limit: usize,
+) -> Result<Vec<SearchResult>> {
     let query_terms = tokenize(query);
-    if query_terms.is_empty() {
-        bail!("documentation search query must contain a searchable term");
-    }
     let mut results = Vec::new();
-    for loaded in load_installed_documents(scope)? {
+    for loaded in documents {
         for row in loaded.document.search_documents() {
             if kind.is_some_and(|kind| row.kind != kind) {
                 continue;
             }
-            let score = score_search_row(&row, &query_terms);
-            if score == 0 {
+            if query_terms.is_empty()
+                && kind.is_none_or(|kind| kind == "package")
+                && row.kind != "package"
+            {
+                continue;
+            }
+            let score = if query_terms.is_empty() {
+                0
+            } else {
+                score_search_row(&row, &query_terms)
+            };
+            if !query_terms.is_empty() && score == 0 {
                 continue;
             }
             results.push(SearchResult {
@@ -1109,6 +1125,18 @@ mod tests {
             .unwrap();
         assert!(score_search_row(&row, &["enable".to_string()]) > 0);
         assert_eq!(score_search_row(&row, &["database".to_string()]), 0);
+
+        let loaded = LoadedDocumentation { document };
+        let browsed = search_loaded_documents(std::slice::from_ref(&loaded), "", None, 25)
+            .expect("empty documentation search browses packages");
+        assert_eq!(browsed.len(), 1);
+        assert_eq!(browsed[0].kind, "package");
+        assert_eq!(browsed[0].package, "nginx");
+
+        let options = search_loaded_documents(&[loaded], "", Some("option"), 25)
+            .expect("empty kind-filtered search browses that projection");
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0].key, "nginx.enable");
     }
 
     #[test]

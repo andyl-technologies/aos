@@ -282,6 +282,7 @@ mod tests {
     };
     use crate::canonical;
     use crate::digest::Sha256Digest;
+    use crate::evidence::{EvidenceRecord, GateRequirement, GateResult};
     use crate::manifest::{
         FinalArtifactSet, ImageResult, MANIFEST_DOMAIN, MANIFEST_ENVELOPE_V1, ManifestEnvelopeV1,
         ManifestSignature, PackageResult, ReleaseManifestV1,
@@ -452,7 +453,11 @@ mod tests {
                 system_variant: "server".to_owned(),
                 platforms: image_cells.clone(),
             }],
-            gates: Vec::new(),
+            gates: vec![GateRequirement {
+                policy_id: "full-matrix-qualification-v1".to_owned(),
+                policy_digest: digest("full-matrix-qualification-policy"),
+                required_for_stable: true,
+            }],
             staging_deployment_id: "hub-staging-v1".to_owned(),
             production_deployment_id: "hub-production-v1".to_owned(),
             signers: [
@@ -523,6 +528,15 @@ mod tests {
                 )?);
             }
         }
+        let (evidence_artifact, evidence_bytes) = artifact(
+            "evidence/full-matrix-qualification".to_owned(),
+            ArtifactKind::Evidence,
+            None,
+            None,
+            Vec::new(),
+        )?;
+        let evidence_report_digest = evidence_artifact.sha256;
+        payloads.push((evidence_artifact, evidence_bytes));
         let mut artifacts = vec![ArtifactRecord {
             id: "control/release-plan".to_owned(),
             kind: ArtifactKind::ReleasePlan,
@@ -582,7 +596,30 @@ mod tests {
                     .collect(),
             }],
             artifacts,
-            evidence: Vec::new(),
+            evidence: vec![EvidenceRecord {
+                id: "full-matrix-qualification".to_owned(),
+                policy_id: "full-matrix-qualification-v1".to_owned(),
+                policy_digest: digest("full-matrix-qualification-policy"),
+                platform: None,
+                subjects: Platform::ALL
+                    .into_iter()
+                    .map(package_id)
+                    .chain(
+                        Platform::LINUX
+                            .into_iter()
+                            .flat_map(image_ids)
+                            .map(|(id, _)| id),
+                    )
+                    .collect(),
+                result: GateResult::Passed,
+                report_digest: evidence_report_digest,
+                authority_id: "native-qualification-coordinator".to_owned(),
+                nonce: Some(
+                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+                ),
+                started_at: "2026-09-03T00:00:00Z".to_owned(),
+                finished_at: "2026-09-03T00:01:00Z".to_owned(),
+            }],
         };
         let manifest_digest = Sha256Digest::of_canonical(MANIFEST_DOMAIN, &manifest)?;
         let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
@@ -696,8 +733,19 @@ mod tests {
             &fixture.files,
             &[fixture.key],
         )?;
-        assert_eq!(summary.artifact_count, 29);
+        assert_eq!(summary.artifact_count, 30);
+        assert_eq!(summary.evidence_count, 1);
         assert_eq!(summary.signatures_verified, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn release_plan_rejects_an_empty_gate_set() -> anyhow::Result<()> {
+        let fixture = release_fixture()?;
+        let mut plan: ReleasePlanV1 = canonical::from_slice(&fixture.plan, "release plan")?;
+        plan.gates.clear();
+
+        assert!(plan.validate().is_err());
         Ok(())
     }
 
