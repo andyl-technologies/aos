@@ -9,12 +9,16 @@
 //! # Module map
 //!
 //! - [`assembly`] defines the unsigned, public-only input closure.
+//! - [`bundle`] seals image metadata and the signed recovery bundle.
 //! - [`capture`] captures a Nix assembly without following filesystem links.
 //! - [`filesystem`] reconstructs deterministic EROFS and initrd bytes.
+//! - [`disk`] constructs and verifies the canonical GPT/ESP layout.
 //! - [`finalize`] sequences effectful signing and reconstruction stages.
+//! - [`formats`] derives download encodings and proves round-trip identity.
 //! - [`input`] revalidates captured files and tools at their point of use.
 //! - [`module_signature`] verifies the kernel's appended PKCS#7 format.
 //! - [`pcr`] constructs and independently verifies signed PCR policy JSON.
+//! - [`pipeline`] produces the complete finalized image set in one operation.
 //! - [`request`] constrains signing requests supplied by the coordinator.
 //! - [`recovery`] binds normal slots into signed recovery initrds.
 //! - [`signer`] defines the effect boundary used by external key providers.
@@ -26,12 +30,16 @@
 #![forbid(unsafe_code)]
 
 pub mod assembly;
+pub mod bundle;
 pub mod capture;
+pub mod disk;
 pub mod filesystem;
 pub mod finalize;
+pub mod formats;
 pub mod input;
 pub mod module_signature;
 pub mod pcr;
+pub mod pipeline;
 pub mod recovery;
 pub mod request;
 pub mod result;

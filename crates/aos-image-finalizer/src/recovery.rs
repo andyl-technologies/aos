@@ -232,7 +232,7 @@ pub async fn finalize_recovery(
     })
 }
 
-async fn verify_manifest_signature(
+pub(crate) async fn verify_manifest_signature(
     manifest: &Path,
     signature: &Path,
     certificate: &Path,
