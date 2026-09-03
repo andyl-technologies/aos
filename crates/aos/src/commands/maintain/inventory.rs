@@ -1,5 +1,6 @@
 //! Nix evaluation and read-only repository binding for maintenance inventory.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Read as _;
 use std::path::{Component, Path};
@@ -14,6 +15,7 @@ use aos_maintain::envelope::{
     TargetEvaluation,
 };
 use aos_maintain::inventory::MaintenanceInventoryV1;
+use aos_maintain::inventory::{Classification, UpdateUnit};
 use sha2::{Digest as _, Sha256};
 use url::Url;
 
@@ -107,6 +109,149 @@ pub(super) fn evaluate(nix: &NixRunner, target: Option<&str>) -> Result<Inventor
     };
     envelope.validate()?;
     Ok(envelope)
+}
+
+/// Audits every schedulable member's direct fixed-output derivation inputs.
+///
+/// # Errors
+///
+/// Returns an error when package derivations cannot be evaluated or inspected,
+/// or when a reachable direct fixed-output input lacks exactly one declared
+/// source/artifact association.
+pub(super) fn audit_fixed_outputs(
+    nix: &NixRunner,
+    envelope: &InventoryEnvelopeV1,
+    target: Option<&str>,
+) -> Result<usize> {
+    let schedulable = envelope
+        .inventory
+        .units
+        .iter()
+        .filter(|unit| {
+            matches!(
+                unit.classification,
+                Classification::Automatic | Classification::Assisted
+            )
+        })
+        .collect::<Vec<_>>();
+    let members = schedulable
+        .iter()
+        .flat_map(|unit| unit.members.iter().map(ToString::to_string))
+        .collect::<BTreeSet<_>>();
+    let member_json = serde_json::to_string(&members)?;
+    let root_json = serde_json::to_string(&nix.root().join("default.nix"))?;
+    let arguments = if let Some(value) = target {
+        format!("{{ crossSystem = {}; }}", serde_json::to_string(value)?)
+    } else {
+        "{}".to_string()
+    };
+    let expression = format!(
+        "let root = import (builtins.toPath {root_json}) {arguments}; names = builtins.fromJSON {members_json}; in builtins.listToAttrs (map (name: {{ inherit name; value = (builtins.getAttr name root.pkgs).drvPath; }}) names)",
+        members_json = serde_json::to_string(&member_json)?,
+    );
+    let member_drvs: BTreeMap<String, String> =
+        serde_json::from_value(nix.eval_expr_json(&expression)?)
+            .context("decoding package derivation identities")?;
+
+    let roots = derivation_documents(member_drvs.values())?;
+    let mut direct_inputs = BTreeSet::new();
+    for member in &members {
+        let drv = member_drvs
+            .get(member)
+            .ok_or_else(|| anyhow::anyhow!("package derivation evaluation omitted {member}"))?;
+        direct_inputs.extend(direct_derivation_inputs(&roots, drv)?);
+    }
+    let inputs = derivation_documents(direct_inputs.iter())?;
+
+    let mut audited = 0_usize;
+    for unit in schedulable {
+        let declared = declared_fixed_outputs(unit);
+        for member in &unit.members {
+            let drv = member_drvs
+                .get(member.as_str())
+                .ok_or_else(|| anyhow::anyhow!("package derivation evaluation omitted {member}"))?;
+            let reachable = direct_derivation_inputs(&roots, drv)?
+                .into_iter()
+                .filter(|input| is_fixed_output(&inputs, input))
+                .collect::<BTreeSet<_>>();
+            if reachable != declared {
+                let undeclared = reachable.difference(&declared).cloned().collect::<Vec<_>>();
+                let unreachable = declared.difference(&reachable).cloned().collect::<Vec<_>>();
+                bail!(
+                    "unit {} member {member} fixed-output audit failed; undeclared={undeclared:?}, declared-but-unreachable={unreachable:?}",
+                    unit.unit_id
+                );
+            }
+            audited = audited.saturating_add(reachable.len());
+        }
+    }
+    Ok(audited)
+}
+
+fn declared_fixed_outputs(unit: &UpdateUnit) -> BTreeSet<String> {
+    let mut declared = unit
+        .components
+        .values()
+        .flat_map(|component| component.sources.values())
+        .map(|source| source.derivation.clone())
+        .collect::<BTreeSet<_>>();
+    declared.extend(
+        unit.artifacts
+            .values()
+            .map(|artifact| artifact.derivation.clone()),
+    );
+    declared
+}
+
+fn derivation_documents<'a>(
+    paths: impl IntoIterator<Item = &'a String>,
+) -> Result<serde_json::Value> {
+    let paths = paths.into_iter().collect::<Vec<_>>();
+    if paths.is_empty() {
+        return Ok(serde_json::json!({"derivations": {}}));
+    }
+    let output = Command::new("nix")
+        .args(["derivation", "show"])
+        .args(paths)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .context("inspecting package derivation inputs")?;
+    if !output.status.success() {
+        bail!(
+            "Nix could not inspect package derivations: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    serde_json::from_slice(&output.stdout).context("decoding Nix derivation inspection")
+}
+
+fn derivation<'a>(documents: &'a serde_json::Value, path: &str) -> Result<&'a serde_json::Value> {
+    let key = Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| anyhow::anyhow!("derivation identity is not a valid store path"))?;
+    documents
+        .get("derivations")
+        .and_then(|value| value.get(key))
+        .ok_or_else(|| anyhow::anyhow!("Nix omitted inspected derivation {path}"))
+}
+
+fn direct_derivation_inputs(documents: &serde_json::Value, path: &str) -> Result<BTreeSet<String>> {
+    let value = derivation(documents, path)?;
+    let drvs = value
+        .pointer("/inputs/drvs")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| anyhow::anyhow!("Nix derivation has no typed direct-input map"))?;
+    Ok(drvs.keys().map(|key| format!("/nix/store/{key}")).collect())
+}
+
+fn is_fixed_output(documents: &serde_json::Value, path: &str) -> bool {
+    derivation(documents, path)
+        .ok()
+        .and_then(|value| value.pointer("/env/outputHash"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|hash| !hash.is_empty())
 }
 
 /// Canonical paths and remote identity used to bind local maintenance state.
@@ -339,5 +484,34 @@ mod tests {
                 .expect("normal repository path should be accepted"),
             root.join("pkgs/zlib.nix")
         );
+    }
+
+    #[test]
+    fn parses_structured_nix_derivation_inputs_and_fixed_output_identity() -> Result<()> {
+        let documents = serde_json::json!({
+            "derivations": {
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-package.drv": {
+                    "inputs": {"drvs": {
+                        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-source.drv": {
+                            "dynamicOutputs": {}, "outputs": ["out"]
+                        }
+                    }},
+                    "env": {}
+                },
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-source.drv": {
+                    "inputs": {"drvs": {}},
+                    "env": {"outputHash": "sha256-value", "outputHashMode": "flat"}
+                }
+            }
+        });
+        let package = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-package.drv";
+        let source = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-source.drv";
+        assert_eq!(
+            direct_derivation_inputs(&documents, package)?,
+            BTreeSet::from([source.to_string()])
+        );
+        assert!(is_fixed_output(&documents, source));
+        assert!(!is_fixed_output(&documents, package));
+        Ok(())
     }
 }

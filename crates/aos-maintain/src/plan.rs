@@ -69,6 +69,8 @@ pub struct ArtifactIntent {
     pub inputs: Vec<ArtifactInput>,
     /// Exact old SRI hash required at mutation time.
     pub expected_hash: String,
+    /// Exact current artifact derivation replaced by materialization.
+    pub expected_derivation: String,
     /// Closed kind-specific builder parameters.
     pub materializer: ArtifactMaterializer,
     /// Complete generated repository output contract.
@@ -232,6 +234,8 @@ impl PackageUpdatePlanV1 {
             if !artifact_ids.insert(&artifact.slot)
                 || artifact.inputs.is_empty()
                 || !artifact.expected_hash.starts_with("sha256-")
+                || !artifact.expected_derivation.starts_with("/nix/store/")
+                || !artifact.expected_derivation.ends_with(".drv")
             {
                 bail!("plan contains an invalid or duplicate artifact intent");
             }
@@ -433,6 +437,7 @@ fn ordered_artifact_intents(unit: &crate::inventory::UpdateUnit) -> Result<Vec<A
             slot: id.clone(),
             inputs: artifact.inputs.clone(),
             expected_hash: artifact.hash.clone(),
+            expected_derivation: artifact.derivation.clone(),
             materializer: artifact.materializer.clone(),
             outputs: artifact.outputs.clone(),
         });

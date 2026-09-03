@@ -104,7 +104,10 @@
     version = upstream.version;
     src = null;
     inherit phases;
-    update = upstream.forPackage {member = "maintenance-fixture";};
+    update = upstream.forPackage {
+      member = "maintenance-fixture";
+      artifacts.goModules = upstream.components.main.sources.source;
+    };
   };
   invalidContract = builtins.tryEval (
     (pkgs.mkUpstream (canarySpec // {unknownField = true;})).version
@@ -118,8 +121,10 @@ in
   assert baseline.drvPath == annotated.drvPath;
   assert !(builtins.hasAttr "update" annotated);
   assert annotated.passthru.aos.maintenance.unitId == "maintenance-fixture-1";
+  assert annotated.passthru.aos.maintenance.artifacts.goModules.derivation == upstream.components.main.sources.source.drvPath;
   assert upstream.version == "1.2.3";
   assert upstream.artifacts.goModules.hash == "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=";
+  assert upstream.components.main.sources.source.passthru.aos.fixedOutput.kind == "url";
   assert builtins.head upstream.components.main.sources.source.urls == "https://example.invalid/maintenance-fixture-1.2.3.tar.xz";
   assert inventoryJson != "";
   assert builtins.all (
