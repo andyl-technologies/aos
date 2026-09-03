@@ -506,6 +506,7 @@ aos release qualify \
   --journal release-staging/release-journal.jsonl \
   --staging-receipt release-staging/staging-receipt.json \
   --signed-qualification qualification/signed-qualification.json \
+  --qualification-report qualification/qualification-report.json \
   --trusted-key release-2026=/media/keys/release-2026.pub \
   --hub-receipt-key staging-hub-2026=/media/keys/staging-hub-2026.pub \
   --qualification-key qualifier-2026=/media/keys/qualifier-2026.pub \
@@ -514,11 +515,13 @@ aos release qualify \
 
 The command re-verifies the closed bundle and staged journal, verifies the Hub
 and qualification signatures with separate trust roots, binds the
-qualification policy to the frozen release plan, and requires the receipt to
-name the exact staging and manifest digests. It then records the evidence in
-staging and writes canonical receipt payloads plus a `Qualified` successor
-journal without replacing any existing path. The qualification authority has
-no Hub, registry, TUF, cache, channel, or boot-signing credential.
+qualification policy to the frozen release plan, validates complete passing
+gate coverage for every artifact-bearing Linux and Darwin platform, and
+requires the receipt to bind the exact canonical aggregate report, staging
+receipt, and manifest. It then records the evidence in staging and writes the
+report, canonical receipt payloads, and a `Qualified` successor journal without
+replacing any existing path. The qualification authority has no Hub, registry,
+TUF, cache, channel, or boot-signing credential.
 
 ## Promote exact bytes to production
 
@@ -532,6 +535,7 @@ aos release promote \
   --staging-receipt release-qualified/staging-receipt.json \
   --qualification-receipt release-qualified/qualification-receipt.json \
   --signed-qualification release-qualified/signed-qualification.json \
+  --qualification-report release-qualified/qualification-report.json \
   --trusted-key release-2026=/media/keys/release-2026.pub \
   --staging-receipt-key staging-hub-2026=/media/keys/staging-hub-2026.pub \
   --qualification-key qualifier-2026=/media/keys/qualifier-2026.pub \

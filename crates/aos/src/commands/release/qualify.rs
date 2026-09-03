@@ -9,6 +9,8 @@ use anyhow::{Context as _, Result, bail};
 use aos_core::output::Printer;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
+use aos_release::evidence::QualificationReportV1;
+use aos_release::manifest::ManifestEnvelopeV1;
 use aos_release::receipt::{
     HubEnvironment, PublicationReceiptV1, QualificationReceiptV1, verify_signed_receipt_with_key,
 };
@@ -32,6 +34,8 @@ pub(super) async fn run(args: &ReleaseQualifyArgs, printer: &Printer) -> Result<
     )?;
     let plan: aos_release::plan::ReleasePlanV1 =
         canonical::from_slice(&captured.plan_bytes, "release plan")?;
+    let manifest: ManifestEnvelopeV1 =
+        canonical::from_slice(&captured.manifest_bytes, "release manifest")?;
     let bundle_digest =
         aos_release::verify::bundle_digest(&captured.manifest_bytes, &captured.files)?;
 
@@ -62,6 +66,20 @@ pub(super) async fn run(args: &ReleaseQualifyArgs, printer: &Printer) -> Result<
         bail!("staged journal does not contain the exact staging receipt");
     }
 
+    let report_bytes = capture::control_file(&args.qualification_report, "qualification report")?;
+    let report: QualificationReportV1 =
+        canonical::from_slice(&report_bytes, "qualification report")?;
+    if canonical::to_vec(&report)? != report_bytes {
+        bail!("qualification report is not canonical JSON");
+    }
+    report.validate(
+        &plan,
+        &manifest.payload,
+        staging_digest,
+        summary.manifest_digest,
+    )?;
+    let report_digest = Sha256Digest::of_bytes(&report_bytes);
+
     let qualification_bytes =
         capture::control_file(&args.signed_qualification, "signed qualification receipt")?;
     let qualification_digest = Sha256Digest::of_bytes(&qualification_bytes);
@@ -72,10 +90,9 @@ pub(super) async fn run(args: &ReleaseQualifyArgs, printer: &Printer) -> Result<
     if qualification_key_id != qualification.authority_id
         || qualification.staging_receipt_digest != staging_digest
         || qualification.manifest_digest != summary.manifest_digest
-        || !plan.gates.iter().any(|gate| {
-            gate.policy_id == qualification.policy_id
-                && gate.policy_digest == qualification.policy_digest
-        })
+        || qualification.policy_id != "full-release-qualification"
+        || qualification.policy_digest != plan.public_evidence_policy_digest
+        || qualification.report_digest != report_digest
     {
         bail!("qualification receipt does not match the release plan and staging receipt");
     }
@@ -119,6 +136,7 @@ pub(super) async fn run(args: &ReleaseQualifyArgs, printer: &Printer) -> Result<
         &staging_bytes,
         &qualification_bytes,
         &qualification_payload,
+        &report_bytes,
         &qualified_journal,
     )?;
 
@@ -202,6 +220,7 @@ fn persist(
     staging: &[u8],
     signed_qualification: &[u8],
     qualification: &[u8],
+    report: &[u8],
     journal: &[u8],
 ) -> Result<()> {
     if output.exists() {
@@ -221,6 +240,7 @@ fn persist(
         ("staging-receipt.json", staging),
         ("qualification-receipt.json", qualification),
         ("signed-qualification.json", signed_qualification),
+        ("qualification-report.json", report),
         ("release-journal.jsonl", journal),
     ] {
         let mut file = File::create(root.join(name))?;
@@ -247,8 +267,10 @@ mod tests {
     fn qualification_output_never_replaces_existing_evidence() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let output = temp.path().join("qualified");
-        persist(&output, b"stage", b"signed", b"payload", b"journal")?;
-        assert!(persist(&output, b"other", b"other", b"other", b"other").is_err());
+        persist(
+            &output, b"stage", b"signed", b"payload", b"report", b"journal",
+        )?;
+        assert!(persist(&output, b"other", b"other", b"other", b"other", b"other").is_err());
         assert_eq!(
             fs::read(output.join("signed-qualification.json"))?,
             b"signed"

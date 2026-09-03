@@ -498,6 +498,10 @@ pub struct ReleaseQualifyArgs {
     #[arg(long)]
     pub signed_qualification: PathBuf,
 
+    /// Canonical complete gate/platform qualification report
+    #[arg(long)]
+    pub qualification_report: PathBuf,
+
     /// Trusted manifest key as KEY_ID=PATH; repeat to satisfy thresholds
     #[arg(long = "trusted-key", value_name = "KEY_ID=PATH", required = true)]
     pub trusted_keys: Vec<String>,
@@ -544,6 +548,10 @@ pub struct ReleasePromoteArgs {
     /// Exact signed qualification envelope
     #[arg(long)]
     pub signed_qualification: PathBuf,
+
+    /// Canonical complete gate/platform qualification report
+    #[arg(long)]
+    pub qualification_report: PathBuf,
 
     /// Trusted manifest key as KEY_ID=PATH; repeat to satisfy thresholds
     #[arg(long = "trusted-key", value_name = "KEY_ID=PATH", required = true)]
