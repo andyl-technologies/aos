@@ -32,6 +32,8 @@ pub enum MaintainCommand {
     Report(MaintainReportArgs),
     /// Show concise cached maintenance and active-run state
     Status(MaintainStatusArgs),
+    /// Open the read-only interactive maintainer cockpit
+    Ui(MaintainUiArgs),
     /// Create an immutable update plan without modifying repository source
     Plan(MaintainPlanArgs),
     /// Execute an immutable plan in a managed isolated worktree
@@ -111,6 +113,12 @@ pub struct MaintainStatusArgs {
     /// Show only nonterminal runs
     #[arg(long)]
     pub active: bool,
+}
+
+#[derive(Args)]
+pub struct MaintainUiArgs {
+    /// Select one exact or unambiguous local run on entry
+    pub run: Option<String>,
 }
 
 #[derive(Args)]
