@@ -750,9 +750,9 @@ in {
 
       # Trust-on-first-use is never implicit. A syntactically valid but
       # unrelated key must fail closed before the normal user config is made.
-      wrong_trust = consumer.succeed(textwrap.dedent(f"""
+      wrong_trust = publisher.succeed(textwrap.dedent(f"""
           set -eu
-          export HOME=/tmp/wrong-trust USER=consumer
+          export HOME=/tmp/wrong-trust USER=publisher
           mkdir -p "$HOME"
           keygen=$({APR} keys generate wrong --registry production 2>&1)
           printf '%s\\n' "$keygen" | awk '/Public key:/ {{print $NF; exit}}'
