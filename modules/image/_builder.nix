@@ -537,11 +537,10 @@
             --arg ukify ${lib.escapeShellArg "${pkgs.systemd.tools}/bin/ukify"} \
             --arg measure ${lib.escapeShellArg "${pkgs.systemd}/lib/systemd/systemd-measure"} \
             --arg objcopy ${lib.escapeShellArg "${pkgs.binutils}/bin/objcopy"} \
-            --arg signFile ${lib.escapeShellArg "${system.config.system.build.kernel.dev}/lib/modules/${system.config.system.build.kernel.version}/build/scripts/sign-file"} \
             --arg mkfsErofs ${lib.escapeShellArg "${pkgs.erofs-utils}/bin/mkfs.erofs"} \
             --arg gccLib ${lib.escapeShellArg "${pkgs.gcc-libs}/lib"} \
             --arg fsckErofs ${lib.escapeShellArg "${pkgs.erofs-utils}/bin/fsck.erofs"} \
-            --arg veritysetup ${lib.escapeShellArg "${pkgs.cryptsetup}/bin/veritysetup"} \
+            --arg veritysetup ${lib.escapeShellArg "${pkgs.cryptsetup}/sbin/veritysetup"} \
             --arg qemuImg ${lib.escapeShellArg "${pkgs.qemu}/bin/qemu-img"} \
             --arg sfdisk ${lib.escapeShellArg "${pkgs.util-linux}/sbin/sfdisk"} \
             --arg mkfsVfat ${lib.escapeShellArg "${pkgs.dosfstools}/sbin/mkfs.vfat"} \
@@ -549,10 +548,8 @@
             --arg zstd ${lib.escapeShellArg "${pkgs.zstd}/bin/zstd"} \
             --arg cpio ${lib.escapeShellArg "${pkgs.cpio}/bin/cpio"} \
             --arg tar ${lib.escapeShellArg "${pkgs.tar}/bin/tar"} \
-            --arg find ${lib.escapeShellArg "${pkgs.findutils}/bin/find"} \
             --arg openssl ${lib.escapeShellArg "${pkgs.openssl}/bin/openssl"} \
             --arg sbverify ${lib.escapeShellArg "${pkgs.sbsigntools}/bin/sbverify"} \
-            --arg modinfo ${lib.escapeShellArg "${pkgs.kmod}/bin/modinfo"} \
             --arg diskGuid ${lib.escapeShellArg diskGuid} \
             --arg espGuid ${lib.escapeShellArg espGuid} \
             --arg rootGuid ${lib.escapeShellArg rootGuid} \
@@ -609,7 +606,6 @@
                 ukify:{executable:$ukify,environment:{}},
                 systemd_measure:{executable:$measure,environment:{}},
                 objcopy:{executable:$objcopy,environment:{}},
-                sign_file:{executable:$signFile,environment:{}},
                 mkfs_erofs:{executable:$mkfsErofs,environment:{LD_LIBRARY_PATH:$gccLib}},
                 fsck_erofs:{executable:$fsckErofs,environment:{}},
                 veritysetup:{executable:$veritysetup,environment:{}},
@@ -620,10 +616,8 @@
                 zstd:{executable:$zstd,environment:{}},
                 cpio:{executable:$cpio,environment:{}},
                 tar:{executable:$tar,environment:{}},
-                find:{executable:$find,environment:{}},
                 openssl:{executable:$openssl,environment:{}},
-                sbverify:{executable:$sbverify,environment:{}},
-                modinfo:{executable:$modinfo,environment:{}}}}' \
+                sbverify:{executable:$sbverify,environment:{}}}}' \
             > "$out/assembly-recipe.json.tmp"
           recipe_size=$(stat -c %s "$out/assembly-recipe.json.tmp")
           [ "$recipe_size" -gt 1 ]
