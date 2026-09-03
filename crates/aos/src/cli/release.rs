@@ -26,6 +26,8 @@ pub enum ReleaseCommand {
     },
     /// Upload an exact finalized bundle to the canonical staging Hub
     Stage(ReleaseStageArgs),
+    /// Admit signed qualification of the exact staged public release
+    Qualify(ReleaseQualifyArgs),
     /// Verify a captured release bundle using only public trust inputs
     Verify(ReleaseVerifyArgs),
 }
@@ -141,6 +143,49 @@ pub struct ReleaseStageArgs {
     pub token: Option<String>,
 
     /// New receipt-and-journal directory; existing paths are never replaced
+    #[arg(long)]
+    pub output: PathBuf,
+}
+
+#[derive(Args)]
+pub struct ReleaseQualifyArgs {
+    /// Closed finalized bundle whose staged bytes were qualified
+    #[arg(long)]
+    pub bundle: PathBuf,
+
+    /// Staged append-only journal
+    #[arg(long)]
+    pub journal: PathBuf,
+
+    /// Exact signed staging receipt returned by the Hub
+    #[arg(long)]
+    pub staging_receipt: PathBuf,
+
+    /// Signed qualification envelope returned by the qualification authority
+    #[arg(long)]
+    pub signed_qualification: PathBuf,
+
+    /// Trusted manifest key as KEY_ID=PATH; repeat to satisfy thresholds
+    #[arg(long = "trusted-key", value_name = "KEY_ID=PATH", required = true)]
+    pub trusted_keys: Vec<String>,
+
+    /// Independently trusted staging Hub receipt key as KEY_ID=PATH
+    #[arg(long = "hub-receipt-key", value_name = "KEY_ID=PATH", required = true)]
+    pub hub_receipt_keys: Vec<String>,
+
+    /// Independently trusted qualification key as KEY_ID=PATH
+    #[arg(
+        long = "qualification-key",
+        value_name = "KEY_ID=PATH",
+        required = true
+    )]
+    pub qualification_keys: Vec<String>,
+
+    /// Short-lived staging-only Hub access token
+    #[arg(long, env = "AOS_TOKEN", hide_env_values = true)]
+    pub token: Option<String>,
+
+    /// New qualification evidence directory; existing paths are never replaced
     #[arg(long)]
     pub output: PathBuf,
 }

@@ -242,6 +242,32 @@ environment-specific receipt key rather than a release-manifest key. The new
 directory contains `staging-receipt.json` and a successor
 `release-journal.jsonl`; existing paths are never replaced.
 
+## Admit signed qualification
+
+After the planned platform executors have tested the exact public staging
+objects and returned a signed aggregate qualification envelope, admit it to the
+staging Hub:
+
+```sh
+aos release qualify \
+  --bundle release-bundle \
+  --journal release-staging/release-journal.jsonl \
+  --staging-receipt release-staging/staging-receipt.json \
+  --signed-qualification qualification/signed-qualification.json \
+  --trusted-key release-2026=/media/keys/release-2026.pub \
+  --hub-receipt-key staging-hub-2026=/media/keys/staging-hub-2026.pub \
+  --qualification-key qualifier-2026=/media/keys/qualifier-2026.pub \
+  --output release-qualified
+```
+
+The command re-verifies the closed bundle and staged journal, verifies the Hub
+and qualification signatures with separate trust roots, binds the
+qualification policy to the frozen release plan, and requires the receipt to
+name the exact staging and manifest digests. It then records the evidence in
+staging and writes canonical receipt payloads plus a `Qualified` successor
+journal without replacing any existing path. The qualification authority has
+no Hub, registry, TUF, cache, channel, or boot-signing credential.
+
 ## Verify a captured bundle offline
 
 Copy the closed bundle, optional journal, and public verification keys to a
