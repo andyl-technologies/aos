@@ -15,7 +15,7 @@ use url::Url;
 use crate::PACKAGE_UPDATE_PLAN_V1;
 use crate::discovery::{DiscoverySnapshotV1, UnitDiscovery};
 use crate::envelope::{ControllerIdentity, GitObjectId, InventoryEnvelopeV1, RepositoryContent};
-use crate::identity::{ArtifactSlotId, ComponentId, PlanId, SourceSlotId, UnitId};
+use crate::identity::{ArtifactSlotId, CohortId, ComponentId, PlanId, SourceSlotId, UnitId};
 use crate::inventory::{
     ArtifactInput, ArtifactMaterializer, ArtifactOutput, ComponentVersion, HashMode,
     ProjectionField, RiskLevel, SourceFetcher, UrlPart, UrlScheme, UrlSegment, UrlTemplate,
@@ -108,24 +108,12 @@ pub struct GateSpec {
     pub target: Option<String>,
 }
 
-/// Freezes a single-unit package update before any worktree mutation.
+/// Freezes one unit's candidate vector and deterministic materialization scope.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct PackageUpdatePlanV1 {
-    /// Selects the exact closed plan schema.
-    pub schema: String,
-    /// Deterministic identifier derived from every selection input.
-    pub plan_id: PlanId,
-    /// Exact unit updated by this initial plan form.
+pub struct PackageUpdateUnitPlan {
+    /// Exact independently scheduled update-unit identity.
     pub unit_id: UnitId,
-    /// Exact clean base commit.
-    pub base_commit: GitObjectId,
-    /// Exact clean base tree.
-    pub base_tree: GitObjectId,
-    /// Repository-bound inventory envelope identity.
-    pub inventory_envelope_digest: Sha256Digest,
-    /// Immutable discovery snapshot identity.
-    pub discovery_snapshot_digest: Sha256Digest,
     /// Current package version visible to maintainers.
     pub current_package_version: String,
     /// Projected target package version.
@@ -139,11 +127,34 @@ pub struct PackageUpdatePlanV1 {
     /// Planned generated fixed-output artifacts in dependency order.
     #[serde(default)]
     pub artifacts: Vec<ArtifactIntent>,
+}
+
+/// Freezes a one- or multi-unit campaign before any worktree mutation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PackageUpdatePlanV1 {
+    /// Selects the exact closed plan schema.
+    pub schema: String,
+    /// Deterministic identifier derived from every selection input.
+    pub plan_id: PlanId,
+    /// Explicit inventory cohort for a multi-unit campaign.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cohort: Option<CohortId>,
+    /// Strictly ordered unit transactions in this atomic campaign.
+    pub units: Vec<PackageUpdateUnitPlan>,
+    /// Exact clean base commit.
+    pub base_commit: GitObjectId,
+    /// Exact clean base tree.
+    pub base_tree: GitObjectId,
+    /// Repository-bound inventory envelope identity.
+    pub inventory_envelope_digest: Sha256Digest,
+    /// Immutable discovery snapshot identity.
+    pub discovery_snapshot_digest: Sha256Digest,
     /// Fast deterministic checks required after every accepted attempt.
     pub quick_gates: Vec<GateSpec>,
     /// Complete repository checks required for the exact accepted commit.
     pub final_gates: Vec<GateSpec>,
-    /// Minimum deterministic risk class from package policy.
+    /// Highest deterministic risk class across campaign package policy.
     pub risk: RiskLevel,
     /// Controller executable and policy identity frozen by the plan.
     pub controller: ControllerIdentity,
@@ -170,84 +181,29 @@ impl PackageUpdatePlanV1 {
         if self.base_commit.algorithm != self.base_tree.algorithm {
             bail!("plan base commit and tree use different object formats");
         }
-        if self.component_targets.is_empty() || self.component_targets.len() > 64 {
-            bail!("plan component target vector is empty or oversized");
-        }
-        if self.current_package_version.is_empty()
-            || self.target_package_version.is_empty()
+        if self.units.is_empty()
+            || self.units.len() > 32
             || self.expires_at_unix <= self.created_at_unix
+            || (self.units.len() == 1 && self.cohort.is_some())
+            || (self.units.len() > 1 && self.cohort.is_none())
         {
             bail!("plan version or lifetime is invalid");
         }
         let mut fields = BTreeSet::new();
-        for mutation in &self.semantic_mutations {
-            validate_owner(&mutation.owner)?;
-            if mutation.field_path.is_empty()
-                || mutation.field_path.len() > 12
-                || mutation.expected == mutation.replacement
-                || !fields.insert((&mutation.owner, &mutation.field_path))
+        let mut unit_ids = BTreeSet::new();
+        let mut previous = None;
+        for unit in &self.units {
+            if !unit_ids.insert(&unit.unit_id)
+                || previous.is_some_and(|prior: &UnitId| prior >= &unit.unit_id)
+                || unit.component_targets.is_empty()
+                || unit.component_targets.len() > 64
+                || unit.current_package_version.is_empty()
+                || unit.target_package_version.is_empty()
             {
-                bail!("plan contains invalid or duplicate semantic mutation");
+                bail!("plan unit set or version vector is invalid");
             }
-        }
-        if self.sources.len() > 128 {
-            bail!("plan source set is oversized");
-        }
-        for source in &self.sources {
-            if source.urls.is_empty()
-                || source.urls.len() > 16
-                || source.upstream_id.is_empty()
-                || source.upstream_id.len() > 512
-            {
-                bail!("plan source URL set is empty or oversized");
-            }
-            for value in &source.urls {
-                let url = Url::parse(value).context("parsing planned source URL")?;
-                if url.scheme() != "https"
-                    || !url.username().is_empty()
-                    || url.password().is_some()
-                    || url.fragment().is_some()
-                {
-                    bail!("planned source URL is unsafe");
-                }
-            }
-            for host in &source.allowed_redirect_hosts {
-                if host.is_empty()
-                    || host.len() > 253
-                    || host.starts_with('.')
-                    || host.ends_with('.')
-                    || !host.bytes().all(|byte| {
-                        byte.is_ascii_lowercase()
-                            || byte.is_ascii_digit()
-                            || matches!(byte, b'-' | b'.')
-                    })
-                {
-                    bail!("planned redirect host is invalid");
-                }
-            }
-        }
-        if self.artifacts.len() > 128 {
-            bail!("plan artifact set is oversized");
-        }
-        let mut artifact_ids = BTreeSet::new();
-        for artifact in &self.artifacts {
-            if !artifact_ids.insert(&artifact.slot)
-                || artifact.inputs.is_empty()
-                || !artifact.expected_hash.starts_with("sha256-")
-                || !artifact.expected_derivation.starts_with("/nix/store/")
-                || !artifact.expected_derivation.ends_with(".drv")
-            {
-                bail!("plan contains an invalid or duplicate artifact intent");
-            }
-            for input in &artifact.inputs {
-                if let ArtifactInput::Artifact {
-                    artifact: dependency,
-                } = input
-                    && !artifact_ids.contains(dependency)
-                {
-                    bail!("plan artifacts are not ordered by their dependency graph");
-                }
-            }
+            previous = Some(&unit.unit_id);
+            validate_unit_plan(unit, &mut fields)?;
         }
         validate_gates(&self.quick_gates, "quick")?;
         validate_gates(&self.final_gates, "final")?;
@@ -265,6 +221,100 @@ impl PackageUpdatePlanV1 {
         }
         Ok(())
     }
+
+    /// Returns the only unit in a single-unit campaign.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the plan is an explicit multi-unit campaign.
+    pub fn single_unit(&self) -> Result<&PackageUpdateUnitPlan> {
+        if self.units.len() != 1 {
+            bail!("operation supports only a single-unit campaign");
+        }
+        self.units
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("plan has no units"))
+    }
+}
+
+fn validate_unit_plan(
+    unit: &PackageUpdateUnitPlan,
+    fields: &mut BTreeSet<(UnitId, String, Vec<String>)>,
+) -> Result<()> {
+    for mutation in &unit.semantic_mutations {
+        validate_owner(&mutation.owner)?;
+        if mutation.field_path.is_empty()
+            || mutation.field_path.len() > 12
+            || mutation.expected == mutation.replacement
+            || !fields.insert((
+                unit.unit_id.clone(),
+                mutation.owner.clone(),
+                mutation.field_path.clone(),
+            ))
+        {
+            bail!("plan contains invalid or duplicate semantic mutation");
+        }
+    }
+    if unit.sources.len() > 128 {
+        bail!("plan source set is oversized");
+    }
+    for source in &unit.sources {
+        if source.urls.is_empty()
+            || source.urls.len() > 16
+            || source.upstream_id.is_empty()
+            || source.upstream_id.len() > 512
+        {
+            bail!("plan source URL set is empty or oversized");
+        }
+        for value in &source.urls {
+            let url = Url::parse(value).context("parsing planned source URL")?;
+            if url.scheme() != "https"
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.fragment().is_some()
+            {
+                bail!("planned source URL is unsafe");
+            }
+        }
+        for host in &source.allowed_redirect_hosts {
+            if host.is_empty()
+                || host.len() > 253
+                || host.starts_with('.')
+                || host.ends_with('.')
+                || !host.bytes().all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || matches!(byte, b'-' | b'.')
+                })
+            {
+                bail!("planned redirect host is invalid");
+            }
+        }
+    }
+    if unit.artifacts.len() > 128 {
+        bail!("plan artifact set is oversized");
+    }
+    let mut artifact_ids = BTreeSet::new();
+    for artifact in &unit.artifacts {
+        if !artifact_ids.insert(&artifact.slot)
+            || artifact.inputs.is_empty()
+            || !artifact.expected_hash.starts_with("sha256-")
+            || !artifact.expected_derivation.starts_with("/nix/store/")
+            || !artifact.expected_derivation.ends_with(".drv")
+        {
+            bail!("plan contains an invalid or duplicate artifact intent");
+        }
+        for input in &artifact.inputs {
+            if let ArtifactInput::Artifact {
+                artifact: dependency,
+            } = input
+                && !artifact_ids.contains(dependency)
+            {
+                bail!("plan artifacts are not ordered by their dependency graph");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Creates one immutable plan from an update-available discovery result.
@@ -278,6 +328,28 @@ pub fn create_plan(
     envelope: &InventoryEnvelopeV1,
     snapshot: &DiscoverySnapshotV1,
     unit_id: &UnitId,
+    created_at_unix: u64,
+) -> Result<PackageUpdatePlanV1> {
+    create_campaign_plan(
+        envelope,
+        snapshot,
+        None,
+        std::slice::from_ref(unit_id),
+        created_at_unix,
+    )
+}
+
+/// Creates one immutable atomic campaign from explicitly associated units.
+///
+/// # Errors
+///
+/// Returns an error unless every selected unit belongs to the named cohort,
+/// has a complete selectable candidate, and can be projected deterministically.
+pub fn create_campaign_plan(
+    envelope: &InventoryEnvelopeV1,
+    snapshot: &DiscoverySnapshotV1,
+    cohort: Option<&CohortId>,
+    unit_ids: &[UnitId],
     created_at_unix: u64,
 ) -> Result<PackageUpdatePlanV1> {
     envelope.validate()?;
@@ -296,21 +368,89 @@ pub fn create_plan(
         RepositoryContent::Clean { commit, tree } => (commit.clone(), tree.clone()),
         RepositoryContent::Dirty { .. } => bail!("a dirty inventory cannot produce a write plan"),
     };
-    let unit = envelope
-        .inventory
-        .units
-        .iter()
-        .find(|unit| &unit.unit_id == unit_id)
-        .ok_or_else(|| anyhow::anyhow!("update unit is not present in inventory"))?;
-    let discovery = snapshot
-        .units
-        .iter()
-        .find(|unit| unit.unit_id == unit_id.as_str())
-        .ok_or_else(|| anyhow::anyhow!("update unit is not present in discovery snapshot"))?;
-    if discovery.decision != DiscoveryDecision::UpdateAvailable {
-        bail!("update unit does not have a selectable candidate");
+    if unit_ids.is_empty()
+        || (unit_ids.len() == 1 && cohort.is_some())
+        || (unit_ids.len() > 1 && cohort.is_none())
+    {
+        bail!("campaign selection does not match its cohort identity");
     }
+    let mut selected = unit_ids.to_vec();
+    selected.sort();
+    if selected.windows(2).any(|pair| pair[0] == pair[1]) {
+        bail!("campaign contains duplicate update units");
+    }
+    let mut units = Vec::with_capacity(selected.len());
+    let mut risks = Vec::with_capacity(selected.len());
+    let mut quick_gates = Vec::new();
+    let mut final_gates = Vec::new();
+    for unit_id in &selected {
+        let unit = envelope
+            .inventory
+            .units
+            .iter()
+            .find(|unit| &unit.unit_id == unit_id)
+            .ok_or_else(|| anyhow::anyhow!("update unit is not present in inventory"))?;
+        if unit.cohort.as_ref() != cohort {
+            bail!("selected update unit does not belong to the requested cohort");
+        }
+        let discovery = snapshot
+            .units
+            .iter()
+            .find(|unit| unit.unit_id == unit_id.as_str())
+            .ok_or_else(|| anyhow::anyhow!("update unit is not present in discovery snapshot"))?;
+        if discovery.decision != DiscoveryDecision::UpdateAvailable {
+            bail!("campaign unit does not have a selectable candidate");
+        }
+        units.push(create_unit_plan(unit, discovery)?);
+        risks.push(unit.policy.risk_floor);
+        let (quick, final_plan) = gate_plans(unit);
+        quick_gates.extend(quick);
+        final_gates.extend(final_plan);
+    }
+    deduplicate_gates(&mut quick_gates)?;
+    deduplicate_gates(&mut final_gates)?;
+    let risk = risks
+        .into_iter()
+        .max_by_key(|risk| risk_rank(*risk))
+        .ok_or_else(|| anyhow::anyhow!("campaign has no risk policy"))?;
+    let discovery_snapshot_digest =
+        Sha256Digest::of_canonical(crate::DISCOVERY_SNAPSHOT_V1, snapshot)?;
+    let seed = PlanSeed {
+        cohort,
+        units: &units,
+        base_commit: &base_commit,
+        base_tree: &base_tree,
+        inventory_envelope_digest,
+        discovery_snapshot_digest,
+        quick_gates: &quick_gates,
+        final_gates: &final_gates,
+    };
+    let plan_seed = Sha256Digest::of_canonical("aos.package-update-plan-seed/v1", &seed)?;
+    let plan_id = PlanId::parse(format!("plan-{}", &plan_seed.hex()[..24]))?;
+    let plan = PackageUpdatePlanV1 {
+        schema: PACKAGE_UPDATE_PLAN_V1.to_string(),
+        plan_id,
+        cohort: cohort.cloned(),
+        units,
+        base_commit,
+        base_tree,
+        inventory_envelope_digest,
+        discovery_snapshot_digest,
+        quick_gates,
+        final_gates,
+        risk,
+        controller: envelope.controller.clone(),
+        created_at_unix,
+        expires_at_unix: snapshot.evaluated_at_unix.saturating_add(24 * 60 * 60),
+    };
+    plan.validate()?;
+    Ok(plan)
+}
 
+fn create_unit_plan(
+    unit: &crate::inventory::UpdateUnit,
+    discovery: &UnitDiscovery,
+) -> Result<PackageUpdateUnitPlan> {
     let component_targets = component_targets(unit, discovery)?;
     let package = unit
         .package
@@ -370,44 +510,15 @@ pub fn create_plan(
     sources
         .sort_by(|left, right| (&left.component, &left.slot).cmp(&(&right.component, &right.slot)));
     let artifacts = ordered_artifact_intents(unit)?;
-    let discovery_snapshot_digest =
-        Sha256Digest::of_canonical(crate::DISCOVERY_SNAPSHOT_V1, snapshot)?;
-    let (quick_gates, final_gates) = gate_plans(unit);
-    let seed = PlanSeed {
-        unit_id,
-        base_commit: &base_commit,
-        base_tree: &base_tree,
-        inventory_envelope_digest,
-        discovery_snapshot_digest,
-        component_targets: &component_targets,
-        quick_gates: &quick_gates,
-        final_gates: &final_gates,
-    };
-    let plan_seed = Sha256Digest::of_canonical("aos.package-update-plan-seed/v1", &seed)?;
-    let plan_id = PlanId::parse(format!("plan-{}", &plan_seed.hex()[..24]))?;
-    let plan = PackageUpdatePlanV1 {
-        schema: PACKAGE_UPDATE_PLAN_V1.to_string(),
-        plan_id,
-        unit_id: unit_id.clone(),
-        base_commit,
-        base_tree,
-        inventory_envelope_digest,
-        discovery_snapshot_digest,
+    Ok(PackageUpdateUnitPlan {
+        unit_id: unit.unit_id.clone(),
         current_package_version: package.current_version.clone(),
         target_package_version,
         component_targets,
         semantic_mutations,
         sources,
         artifacts,
-        quick_gates,
-        final_gates,
-        risk: unit.policy.risk_floor,
-        controller: envelope.controller.clone(),
-        created_at_unix,
-        expires_at_unix: snapshot.evaluated_at_unix.saturating_add(24 * 60 * 60),
-    };
-    plan.validate()?;
-    Ok(plan)
+    })
 }
 
 fn ordered_artifact_intents(unit: &crate::inventory::UpdateUnit) -> Result<Vec<ArtifactIntent>> {
@@ -455,7 +566,7 @@ fn ordered_artifact_intents(unit: &crate::inventory::UpdateUnit) -> Result<Vec<A
 fn gate_plans(unit: &crate::inventory::UpdateUnit) -> (Vec<GateSpec>, Vec<GateSpec>) {
     let mut quick = vec![
         GateSpec {
-            id: "format-owner".to_string(),
+            id: format!("format-{}", unit.unit_id),
             kind: GateKind::Format,
             argv: vec![
                 "aos".to_string(),
@@ -506,6 +617,33 @@ fn gate_plans(unit: &crate::inventory::UpdateUnit) -> (Vec<GateSpec>, Vec<GateSp
     }
     final_gates.sort_by(|left, right| left.id.cmp(&right.id));
     (quick, final_gates)
+}
+
+fn deduplicate_gates(gates: &mut Vec<GateSpec>) -> Result<()> {
+    gates.sort_by(|left, right| left.id.cmp(&right.id));
+    let mut unique: Vec<GateSpec> = Vec::with_capacity(gates.len());
+    for gate in gates.drain(..) {
+        if let Some(previous) = unique.last() {
+            if previous.id == gate.id {
+                if previous != &gate {
+                    bail!("campaign assigns one gate identity to different commands");
+                }
+                continue;
+            }
+        }
+        unique.push(gate);
+    }
+    *gates = unique;
+    Ok(())
+}
+
+const fn risk_rank(risk: RiskLevel) -> u8 {
+    match risk {
+        RiskLevel::Low => 0,
+        RiskLevel::Normal => 1,
+        RiskLevel::High => 2,
+        RiskLevel::Critical => 3,
+    }
 }
 
 fn validate_gates(gates: &[GateSpec], label: &str) -> Result<()> {
@@ -665,12 +803,12 @@ fn validate_owner(owner: &str) -> Result<()> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PlanSeed<'a> {
-    unit_id: &'a UnitId,
+    cohort: Option<&'a CohortId>,
+    units: &'a [PackageUpdateUnitPlan],
     base_commit: &'a GitObjectId,
     base_tree: &'a GitObjectId,
     inventory_envelope_digest: Sha256Digest,
     discovery_snapshot_digest: Sha256Digest,
-    component_targets: &'a BTreeMap<ComponentId, ComponentVersion>,
     quick_gates: &'a [GateSpec],
     final_gates: &'a [GateSpec],
 }

@@ -244,6 +244,7 @@ mod tests {
         let inventory = MaintenanceInventoryV1 {
             schema: crate::MAINTENANCE_INVENTORY_V1.to_string(),
             units: vec![UpdateUnit {
+                cohort: None,
                 unit_id: UnitId::parse("local-fixture")?,
                 family: FamilyId::parse("local-fixture")?,
                 stream: "local".to_string(),

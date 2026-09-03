@@ -13,7 +13,9 @@ use aos_contract::Sha256Digest;
 use aos_core::nix::NixRunner;
 use aos_maintain::PACKAGE_UPDATE_MATERIALIZATION_V1;
 use aos_maintain::identity::ArtifactSlotId;
-use aos_maintain::plan::{ArtifactIntent, PackageUpdatePlanV1, SemanticMutation, SourceIntent};
+use aos_maintain::plan::{
+    ArtifactIntent, PackageUpdatePlanV1, PackageUpdateUnitPlan, SemanticMutation, SourceIntent,
+};
 use aos_maintain::run::{
     MaterializationRecordV1, MaterializedArtifact, MaterializedSource, PackageUpdateRunV1,
     SourceAssuranceOutcome,
@@ -75,35 +77,46 @@ pub(super) async fn execute(
         )?;
     }
 
-    let sources = resolve_sources(store, plan).await?;
-    let mut mutations = plan.semantic_mutations.clone();
-    for source in &sources {
-        let intent = plan
-            .sources
-            .iter()
-            .find(|intent| intent.component == source.component && intent.slot == source.slot)
-            .ok_or_else(|| anyhow::anyhow!("resolved source was not authorized by the plan"))?;
-        mutations.push(SemanticMutation {
-            owner: plan
-                .semantic_mutations
-                .first()
-                .map(|mutation| mutation.owner.clone())
-                .ok_or_else(|| anyhow::anyhow!("plan has no authored mutation owner"))?,
-            field_path: vec![
-                "components".to_string(),
-                source.component.to_string(),
-                "sources".to_string(),
-                source.slot.to_string(),
-                "hash".to_string(),
-            ],
-            expected: intent.expected_hash.clone(),
-            replacement: source.hash.clone(),
-        });
+    let mut sources = Vec::new();
+    let mut unit_mutations = Vec::with_capacity(plan.units.len());
+    for unit in &plan.units {
+        let resolved = resolve_sources(store, unit).await?;
+        let mut mutations = unit.semantic_mutations.clone();
+        for source in &resolved {
+            let intent = unit
+                .sources
+                .iter()
+                .find(|intent| intent.component == source.component && intent.slot == source.slot)
+                .ok_or_else(|| anyhow::anyhow!("resolved source was not authorized by the plan"))?;
+            mutations.push(SemanticMutation {
+                owner: mutation_owner(unit)?.to_string(),
+                field_path: vec![
+                    "components".to_string(),
+                    source.component.to_string(),
+                    "sources".to_string(),
+                    source.slot.to_string(),
+                    "hash".to_string(),
+                ],
+                expected: intent.expected_hash.clone(),
+                replacement: source.hash.clone(),
+            });
+        }
+        sources.extend(resolved);
+        unit_mutations.push((unit, mutations));
     }
+    let mutations = unit_mutations
+        .iter()
+        .flat_map(|(_, mutations)| mutations.iter().cloned())
+        .collect::<Vec<_>>();
     let originals = capture_owner_files(&root, &mutations)?;
     let materialized = (|| {
-        apply_mutations(&root, plan.unit_id.as_str(), &mutations)?;
-        let artifacts = resolve_artifacts(&root, plan, verbose, quiet)?;
+        for (unit, mutations) in &unit_mutations {
+            apply_mutations(&root, unit.unit_id.as_str(), mutations)?;
+        }
+        let mut artifacts = Vec::new();
+        for unit in &plan.units {
+            artifacts.extend(resolve_artifacts(&root, unit, verbose, quiet)?);
+        }
         verify_post_inventory(&root, plan, verbose, quiet)?;
         verify_post_artifacts(&root, plan, &artifacts, verbose, quiet)?;
         Ok::<_, anyhow::Error>(artifacts)
@@ -140,20 +153,20 @@ pub(super) async fn execute(
 
 fn resolve_artifacts(
     root: &Path,
-    plan: &PackageUpdatePlanV1,
+    unit: &PackageUpdateUnitPlan,
     verbose: u8,
     quiet: bool,
 ) -> Result<Vec<MaterializedArtifact>> {
-    let mut output = Vec::with_capacity(plan.artifacts.len());
-    for intent in &plan.artifacts {
+    let mut output = Vec::with_capacity(unit.artifacts.len());
+    for intent in &unit.artifacts {
         if !intent.outputs.is_empty() {
             bail!(
                 "artifact {} declares repository outputs unsupported by this controller",
                 intent.slot
             );
         }
-        apply_artifact_hash(root, plan, intent, &intent.expected_hash, FAKE_HASH)?;
-        let derivation = evaluated_artifact_derivation(root, plan, &intent.slot, verbose, quiet)?;
+        apply_artifact_hash(root, unit, intent, &intent.expected_hash, FAKE_HASH)?;
+        let derivation = evaluated_artifact_derivation(root, unit, &intent.slot, verbose, quiet)?;
         if derivation == intent.expected_derivation {
             bail!(
                 "artifact {} did not bind the updated source graph",
@@ -161,8 +174,9 @@ fn resolve_artifacts(
             );
         }
         let hash = realize_artifact(&derivation)?;
-        apply_artifact_hash(root, plan, intent, FAKE_HASH, &hash)?;
+        apply_artifact_hash(root, unit, intent, FAKE_HASH, &hash)?;
         output.push(MaterializedArtifact {
+            unit_id: unit.unit_id.clone(),
             slot: intent.slot.clone(),
             derivation,
             expected_hash: intent.expected_hash.clone(),
@@ -174,16 +188,16 @@ fn resolve_artifacts(
 
 fn apply_artifact_hash(
     root: &Path,
-    plan: &PackageUpdatePlanV1,
+    unit: &PackageUpdateUnitPlan,
     intent: &ArtifactIntent,
     expected: &str,
     replacement: &str,
 ) -> Result<()> {
     apply_mutations(
         root,
-        plan.unit_id.as_str(),
+        unit.unit_id.as_str(),
         &[SemanticMutation {
-            owner: mutation_owner(plan)?.to_string(),
+            owner: mutation_owner(unit)?.to_string(),
             field_path: vec![
                 "artifacts".to_string(),
                 intent.slot.to_string(),
@@ -197,7 +211,7 @@ fn apply_artifact_hash(
 
 fn evaluated_artifact_derivation(
     root: &Path,
-    plan: &PackageUpdatePlanV1,
+    unit_plan: &PackageUpdateUnitPlan,
     slot: &ArtifactSlotId,
     verbose: u8,
     quiet: bool,
@@ -208,7 +222,7 @@ fn evaluated_artifact_derivation(
         .inventory
         .units
         .iter()
-        .find(|unit| unit.unit_id == plan.unit_id)
+        .find(|unit| unit.unit_id == unit_plan.unit_id)
         .ok_or_else(|| anyhow::anyhow!("updated unit disappeared from inventory"))?;
     let member = unit
         .members
@@ -318,8 +332,8 @@ fn bounded_read(mut reader: impl std::io::Read) -> Result<(Vec<u8>, bool)> {
     Ok((retained, truncated))
 }
 
-fn mutation_owner(plan: &PackageUpdatePlanV1) -> Result<&str> {
-    let owners = plan
+fn mutation_owner(unit: &PackageUpdateUnitPlan) -> Result<&str> {
+    let owners = unit
         .semantic_mutations
         .iter()
         .map(|mutation| mutation.owner.as_str())
@@ -365,14 +379,14 @@ fn restore_owner_files(originals: &[(std::path::PathBuf, u32, Vec<u8>)]) -> Resu
 
 async fn resolve_sources(
     store: &StateStore,
-    plan: &PackageUpdatePlanV1,
+    unit: &PackageUpdateUnitPlan,
 ) -> Result<Vec<MaterializedSource>> {
-    let mut output = Vec::with_capacity(plan.sources.len());
-    for source in &plan.sources {
-        let materialized = resolve_source(source).await?;
+    let mut output = Vec::with_capacity(unit.sources.len());
+    for source in &unit.sources {
+        let materialized = resolve_source(&unit.unit_id, source).await?;
         let identity = format!(
             "{}\0{}\0{}\0{}",
-            plan.unit_id, source.component, source.slot, source.upstream_id
+            unit.unit_id, source.component, source.slot, source.upstream_id
         );
         store.record_source_identity(&identity, &materialized.hash)?;
         output.push(materialized);
@@ -380,12 +394,16 @@ async fn resolve_sources(
     Ok(output)
 }
 
-async fn resolve_source(intent: &SourceIntent) -> Result<MaterializedSource> {
+async fn resolve_source(
+    unit_id: &aos_maintain::identity::UnitId,
+    intent: &SourceIntent,
+) -> Result<MaterializedSource> {
     let mut last_error = None;
     for requested in &intent.urls {
         match hash_url(requested, &intent.allowed_redirect_hosts).await {
             Ok((hash, bytes, final_url)) => {
                 return Ok(MaterializedSource {
+                    unit_id: unit_id.clone(),
                     component: intent.component.clone(),
                     slot: intent.slot.clone(),
                     upstream_id: intent.upstream_id.clone(),
@@ -534,26 +552,30 @@ pub(super) fn verify_post_inventory(
 ) -> Result<()> {
     let runner = NixRunner::for_root(root, verbose, quiet)?;
     let envelope = inventory::evaluate(&runner, None)?;
-    let unit = envelope
-        .inventory
-        .units
-        .iter()
-        .find(|unit| unit.unit_id == plan.unit_id)
-        .ok_or_else(|| anyhow::anyhow!("updated unit disappeared from maintenance inventory"))?;
-    let package = unit
-        .package
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("updated package projection disappeared"))?;
-    if package.current_version != plan.target_package_version {
-        bail!("updated package version does not match the planned projection");
-    }
-    for (component_id, target) in &plan.component_targets {
-        let component = unit
-            .components
-            .get(component_id)
-            .ok_or_else(|| anyhow::anyhow!("updated component disappeared"))?;
-        if &component.current != target {
-            bail!("updated component vector does not match the plan");
+    for unit_plan in &plan.units {
+        let unit = envelope
+            .inventory
+            .units
+            .iter()
+            .find(|unit| unit.unit_id == unit_plan.unit_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!("updated unit disappeared from maintenance inventory")
+            })?;
+        let package = unit
+            .package
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("updated package projection disappeared"))?;
+        if package.current_version != unit_plan.target_package_version {
+            bail!("updated package version does not match the planned projection");
+        }
+        for (component_id, target) in &unit_plan.component_targets {
+            let component = unit
+                .components
+                .get(component_id)
+                .ok_or_else(|| anyhow::anyhow!("updated component disappeared"))?;
+            if &component.current != target {
+                bail!("updated component vector does not match the plan");
+            }
         }
     }
     Ok(())
@@ -568,16 +590,23 @@ fn verify_post_artifacts(
 ) -> Result<()> {
     let runner = NixRunner::for_root(root, verbose, quiet)?;
     let envelope = inventory::evaluate(&runner, None)?;
-    let unit = envelope
-        .inventory
+    let expected = plan
         .units
         .iter()
-        .find(|unit| unit.unit_id == plan.unit_id)
-        .ok_or_else(|| anyhow::anyhow!("updated unit disappeared from maintenance inventory"))?;
-    if materialized.len() != plan.artifacts.len() {
+        .map(|unit| unit.artifacts.len())
+        .sum::<usize>();
+    if materialized.len() != expected {
         bail!("materialized artifact set is incomplete");
     }
     for resolved in materialized {
+        let unit = envelope
+            .inventory
+            .units
+            .iter()
+            .find(|unit| unit.unit_id == resolved.unit_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!("updated unit disappeared from maintenance inventory")
+            })?;
         let artifact = unit
             .artifacts
             .get(&resolved.slot)
@@ -604,8 +633,9 @@ fn checked_patch(root: &Path, plan: &PackageUpdatePlanV1) -> Result<(Vec<u8>, Ve
         .map(|entry| String::from_utf8(entry.to_vec()).context("changed path is not UTF-8"))
         .collect::<Result<Vec<_>>>()?;
     let owners = plan
-        .semantic_mutations
+        .units
         .iter()
+        .flat_map(|unit| unit.semantic_mutations.iter())
         .map(|mutation| mutation.owner.clone())
         .collect::<BTreeSet<_>>();
     if changed_paths.iter().cloned().collect::<BTreeSet<_>>() != owners {

@@ -128,25 +128,44 @@ pub struct MaintainUiArgs {
 #[derive(Args)]
 pub struct MaintainPlanArgs {
     /// Exact update-unit identity
-    pub unit: String,
+    #[arg(required_unless_present = "campaign", conflicts_with = "campaign")]
+    pub unit: Option<String>,
+
+    /// Plan every update-ready unit in an explicit atomic cohort
+    #[arg(long, value_name = "COHORT", required_unless_present = "unit")]
+    pub campaign: Option<String>,
 
     /// Select an exact observed target for a one-component unit
-    #[arg(long, value_name = "VERSION")]
+    #[arg(
+        long,
+        value_name = "VERSION",
+        requires = "unit",
+        conflicts_with = "campaign"
+    )]
     pub target: Option<String>,
 
     /// Select the exact observed identity for every component as NAME=IDENTITY
-    #[arg(long, value_name = "NAME=IDENTITY", conflicts_with = "target")]
+    #[arg(
+        long,
+        value_name = "NAME=IDENTITY",
+        conflicts_with_all = ["target", "campaign"],
+        requires = "unit"
+    )]
     pub component: Vec<String>,
 }
 
 #[derive(Args)]
 pub struct MaintainRunArgs {
     /// Update unit to plan and execute
-    #[arg(required_unless_present = "plan", conflicts_with = "plan")]
+    #[arg(required_unless_present_any = ["plan", "campaign"], conflicts_with_all = ["plan", "campaign"])]
     pub unit: Option<String>,
 
+    /// Plan and execute every update-ready unit in an explicit atomic cohort
+    #[arg(long, value_name = "COHORT", required_unless_present_any = ["unit", "plan"], conflicts_with_all = ["unit", "plan"])]
+    pub campaign: Option<String>,
+
     /// Execute one exact previously created immutable plan
-    #[arg(long, value_name = "PLAN", required_unless_present = "unit")]
+    #[arg(long, value_name = "PLAN", required_unless_present_any = ["unit", "campaign"])]
     pub plan: Option<String>,
 
     /// Stop after reaching this durable boundary
@@ -374,10 +393,39 @@ mod tests {
             ])
             .is_ok()
         );
+        assert!(
+            Cli::try_parse_from(["aos", "maintain", "run", "--campaign", "llvm-suite"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "maintain",
+                "run",
+                "zlib-1",
+                "--campaign",
+                "llvm-suite",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
     fn plan_accepts_complete_component_selectors_and_diff_modes_conflict() {
+        assert!(
+            Cli::try_parse_from(["aos", "maintain", "plan", "--campaign", "llvm-suite"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "maintain",
+                "plan",
+                "--campaign",
+                "llvm-suite",
+                "--target",
+                "20.1.0",
+            ])
+            .is_err()
+        );
         assert!(
             Cli::try_parse_from([
                 "aos",

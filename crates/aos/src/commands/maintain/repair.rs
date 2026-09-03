@@ -204,6 +204,7 @@ fn build_task(
     run: &PackageUpdateRunV1,
     view: &Path,
 ) -> Result<AgentTaskV1> {
+    let unit_plan = plan.single_unit()?;
     let inventory = store
         .read_inventory()?
         .ok_or_else(|| anyhow::anyhow!("repair inventory is unavailable"))?;
@@ -211,7 +212,7 @@ fn build_task(
         .inventory
         .units
         .iter()
-        .find(|unit| unit.unit_id == plan.unit_id)
+        .find(|unit| unit.unit_id == unit_plan.unit_id)
         .ok_or_else(|| anyhow::anyhow!("repair unit disappeared from inventory"))?;
     let gates = store
         .read_gate_results(run.run_id.as_str(), "quick")?
@@ -233,6 +234,7 @@ fn build_task(
     };
     let log = store.read_gate_log(run.run_id.as_str(), "quick", &failed.gate_id)?;
     let owner = plan
+        .single_unit()?
         .semantic_mutations
         .first()
         .map(|mutation| mutation.owner.clone())
@@ -276,14 +278,14 @@ fn build_task(
             "aos.package-update-patch/v1",
             cumulative_patch(Path::new(&run.worktree))?,
         ),
-        unit_id: plan.unit_id.clone(),
+        unit_id: unit_plan.unit_id.clone(),
         family: unit.family.clone(),
         stream: unit.stream.clone(),
         members: unit.members.clone(),
         classification: unit.classification,
         lifecycle: unit.policy.lifecycle,
-        component_targets: plan.component_targets.clone(),
-        target_version: plan.target_package_version.clone(),
+        component_targets: unit_plan.component_targets.clone(),
+        target_version: unit_plan.target_package_version.clone(),
         risk: plan.risk,
         failure: RepairFailure {
             kind,

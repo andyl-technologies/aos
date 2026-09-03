@@ -656,16 +656,37 @@ fn pull_request_draft(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("candidate commit is unavailable"))?;
     let base_branch = remote::default_branch(coordinates)?;
-    let title = format!(
-        "pkg: update {} to {}",
-        plan.unit_id, plan.target_package_version
-    );
+    let changes = plan
+        .units
+        .iter()
+        .map(|unit| {
+            format!(
+                "- `{}`: `{}` -> `{}`",
+                unit.unit_id, unit.current_package_version, unit.target_package_version
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let title = if let Ok(unit) = plan.single_unit() {
+        format!(
+            "pkg: update {} to {}",
+            unit.unit_id, unit.target_package_version
+        )
+    } else {
+        format!(
+            "pkg: update {} cohort",
+            plan.cohort
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("campaign has no cohort identity"))?
+        )
+    };
     let body = format!(
-        "## Package update\n\n- Unit: `{}`\n- Change: `{}` -> `{}`\n- Components: {}\n- Risk: `{}`\n- Sources: {} resolved and hashed\n- Deterministic attempts: 1\n- Accepted repair attempts: {}\n- Quick gates: {}/{} passed\n- Final gates: {}/{} passed\n- Candidate commit: `{}`\n- Local evidence: `{}`\n\n## Review\n\n- [ ] Review the package and source changes\n- [ ] Confirm required package-owner or specialist review\n- [ ] Confirm remote contributor authorization and protected checks\n",
-        plan.unit_id,
-        plan.current_package_version,
-        plan.target_package_version,
-        plan.component_targets.len(),
+        "## Package update\n\n{changes}\n\n- Units: {}\n- Components: {}\n- Risk: `{}`\n- Sources: {} resolved and hashed\n- Deterministic attempts: 1\n- Accepted repair attempts: {}\n- Quick gates: {}/{} passed\n- Final gates: {}/{} passed\n- Candidate commit: `{}`\n- Local evidence: `{}`\n\n## Review\n\n- [ ] Review the package and source changes\n- [ ] Confirm required package-owner or specialist review\n- [ ] Confirm remote contributor authorization and protected checks\n",
+        plan.units.len(),
+        plan.units
+            .iter()
+            .map(|unit| unit.component_targets.len())
+            .sum::<usize>(),
         risk_name(plan.risk),
         evidence.materialization.sources.len(),
         run.attempt,
@@ -1074,6 +1095,7 @@ async fn resume_command(
         args,
         &crate::cli::MaintainRunArgs {
             unit: None,
+            campaign: None,
             plan: Some(run.plan_id.to_string()),
             until: command.until,
             worktree: Some(std::path::PathBuf::from(run.worktree)),
@@ -1511,27 +1533,52 @@ fn plan_command(
     let Some(mut snapshot) = store.read_discovery()? else {
         return missing_plan_input("discovery", CommandDisposition::UpstreamUnknown);
     };
-    let unit_id = match UnitId::parse(&command.unit) {
-        Ok(unit_id) => unit_id,
-        Err(error) => {
-            return completion(
-                "plan",
-                CommandDisposition::InvalidInvocation,
-                CommandData::default(),
-                vec![diagnostic(
-                    "maintain.invalid-unit",
-                    DiagnosticSeverity::Error,
-                    &error.to_string(),
-                )],
-                Vec::new(),
-                Vec::new(),
+    let cohort = match command
+        .campaign
+        .as_ref()
+        .map(|value| aos_maintain::identity::CohortId::parse(value))
+        .transpose()
+    {
+        Ok(cohort) => cohort,
+        Err(error) => return invalid_plan_selection("maintain.invalid-campaign", &error),
+    };
+    let unit_id = match command.unit.as_ref().map(UnitId::parse).transpose() {
+        Ok(unit) => unit,
+        Err(error) => return invalid_plan_selection("maintain.invalid-unit", &error),
+    };
+    let unit_ids = if let Some(cohort) = &cohort {
+        let units = envelope
+            .inventory
+            .units
+            .iter()
+            .filter(|unit| unit.cohort.as_ref() == Some(cohort))
+            .map(|unit| unit.unit_id.clone())
+            .collect::<Vec<_>>();
+        if units.len() < 2 {
+            return invalid_plan_selection(
+                "maintain.invalid-campaign",
+                &anyhow::anyhow!("campaign cohort is absent or does not contain multiple units"),
             );
         }
+        units
+    } else {
+        vec![
+            unit_id
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("plan requires a unit or campaign"))?,
+        ]
     };
     let now = state::now_unix()?;
     if let Some(target) = &command.target {
-        if let Err(error) = select_explicit_target(&envelope, &mut snapshot, &unit_id, target, now)
-        {
+        if let Err(error) = select_explicit_target(
+            &envelope,
+            &mut snapshot,
+            unit_id
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("target requires a unit"))?,
+            target,
+            now,
+        ) {
             return completion(
                 "plan",
                 CommandDisposition::InvalidInvocation,
@@ -1564,9 +1611,15 @@ fn plan_command(
                 );
             }
         };
-        if let Err(error) =
-            select_explicit_components(&envelope, &mut snapshot, &unit_id, &selections, now)
-        {
+        if let Err(error) = select_explicit_components(
+            &envelope,
+            &mut snapshot,
+            unit_id
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("components require a unit"))?,
+            &selections,
+            now,
+        ) {
             return completion(
                 "plan",
                 CommandDisposition::InvalidInvocation,
@@ -1581,39 +1634,47 @@ fn plan_command(
             );
         }
     }
-    let Some(discovered) = snapshot
-        .units
-        .iter()
-        .find(|unit| unit.unit_id == unit_id.as_str())
-    else {
-        return missing_plan_input("unit discovery", CommandDisposition::UpstreamUnknown);
-    };
-    match discovered.decision {
-        DiscoveryDecision::Current => {
-            return completion(
-                "plan",
-                CommandDisposition::NoChange,
-                CommandData::default(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            );
+    for selected in &unit_ids {
+        let Some(discovered) = snapshot
+            .units
+            .iter()
+            .find(|unit| unit.unit_id == selected.as_str())
+        else {
+            return missing_plan_input("unit discovery", CommandDisposition::UpstreamUnknown);
+        };
+        match discovered.decision {
+            DiscoveryDecision::Current => {
+                return completion(
+                    "plan",
+                    CommandDisposition::NoChange,
+                    CommandData::default(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                );
+            }
+            DiscoveryDecision::Unknown => {
+                return missing_plan_input(
+                    "complete upstream evidence",
+                    CommandDisposition::UpstreamUnknown,
+                );
+            }
+            DiscoveryDecision::Quarantined => {
+                return missing_plan_input(
+                    "unconflicted upstream evidence",
+                    CommandDisposition::Quarantined,
+                );
+            }
+            DiscoveryDecision::UpdateAvailable => {}
         }
-        DiscoveryDecision::Unknown => {
-            return missing_plan_input(
-                "complete upstream evidence",
-                CommandDisposition::UpstreamUnknown,
-            );
-        }
-        DiscoveryDecision::Quarantined => {
-            return missing_plan_input(
-                "unconflicted upstream evidence",
-                CommandDisposition::Quarantined,
-            );
-        }
-        DiscoveryDecision::UpdateAvailable => {}
     }
-    let plan = match aos_maintain::plan::create_plan(&envelope, &snapshot, &unit_id, now) {
+    let plan = match aos_maintain::plan::create_campaign_plan(
+        &envelope,
+        &snapshot,
+        cohort.as_ref(),
+        &unit_ids,
+        now,
+    ) {
         Ok(plan) => plan,
         Err(error) => {
             return completion(
@@ -1694,14 +1755,11 @@ async fn run_command(
             }
         }
     } else {
-        let unit = command
-            .unit
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("run requires a unit or plan"))?;
         let planned = plan_command(
             args,
             &crate::cli::MaintainPlanArgs {
-                unit: unit.clone(),
+                unit: command.unit.clone(),
+                campaign: command.campaign.clone(),
                 target: None,
                 component: Vec::new(),
             },
@@ -1720,6 +1778,16 @@ async fn run_command(
         .iter()
         .any(|run| run.plan_id == plan.plan_id);
     if now >= plan.expires_at_unix && !plan_has_run {
+        let mut argv = vec![
+            "aos".to_string(),
+            "maintain".to_string(),
+            "plan".to_string(),
+        ];
+        if let Some(cohort) = &plan.cohort {
+            argv.extend(["--campaign".to_string(), cohort.to_string()]);
+        } else if let Ok(unit) = plan.single_unit() {
+            argv.push(unit.unit_id.to_string());
+        }
         return completion(
             "run",
             CommandDisposition::Stale,
@@ -1732,12 +1800,7 @@ async fn run_command(
             Vec::new(),
             vec![NextAction {
                 label: "Create a fresh plan".to_string(),
-                argv: vec![
-                    "aos".to_string(),
-                    "maintain".to_string(),
-                    "plan".to_string(),
-                    plan.unit_id.to_string(),
-                ],
+                argv,
                 reason: "execution cannot extend or reinterpret an expired plan".to_string(),
                 prerequisites: vec!["fresh discovery evidence".to_string()],
                 effect_class: EffectClass::ReadOnly,
@@ -2123,6 +2186,21 @@ fn missing_object(command: &str, label: &str) -> Result<CommandCompletion> {
             "maintain.object-not-found",
             DiagnosticSeverity::Error,
             &format!("The requested {label} does not exist in this clone's state"),
+        )],
+        Vec::new(),
+        Vec::new(),
+    )
+}
+
+fn invalid_plan_selection(code: &str, error: &anyhow::Error) -> Result<CommandCompletion> {
+    completion(
+        "plan",
+        CommandDisposition::InvalidInvocation,
+        CommandData::default(),
+        vec![diagnostic(
+            code,
+            DiagnosticSeverity::Error,
+            &error.to_string(),
         )],
         Vec::new(),
         Vec::new(),
@@ -2536,22 +2614,36 @@ fn render_human(result: &MaintainCommandResult, screen_reader: bool, printer: &P
         printer.plain("");
         printer.header("Plan");
         printer.kv("ID", plan.plan_id.as_str());
+        if let Some(cohort) = &plan.cohort {
+            printer.kv("Campaign", cohort.as_str());
+        }
+        for unit in &plan.units {
+            printer.plain(&format!(
+                "{}  {} -> {}",
+                unit.unit_id,
+                escape_terminal(&unit.current_package_version, 256),
+                escape_terminal(&unit.target_package_version, 256)
+            ));
+        }
+        printer.kv("Units", &plan.units.len().to_string());
         printer.kv(
-            "Change",
-            &format!(
-                "{} -> {}",
-                escape_terminal(&plan.current_package_version, 256),
-                escape_terminal(&plan.target_package_version, 256)
-            ),
+            "Fields",
+            &plan
+                .units
+                .iter()
+                .map(|unit| unit.semantic_mutations.len())
+                .sum::<usize>()
+                .to_string(),
         );
-        let owner = plan
-            .semantic_mutations
-            .first()
-            .map(|mutation| mutation.owner.as_str())
-            .unwrap_or("unknown");
-        printer.kv("Owner", &escape_terminal(owner, 4096));
-        printer.kv("Fields", &plan.semantic_mutations.len().to_string());
-        printer.kv("Sources", &plan.sources.len().to_string());
+        printer.kv(
+            "Sources",
+            &plan
+                .units
+                .iter()
+                .map(|unit| unit.sources.len())
+                .sum::<usize>()
+                .to_string(),
+        );
         printer.kv("Quick gates", &plan.quick_gates.len().to_string());
         printer.kv("Final gates", &plan.final_gates.len().to_string());
         printer.kv("Risk", risk_name(plan.risk));

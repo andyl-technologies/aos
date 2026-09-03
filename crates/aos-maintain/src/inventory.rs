@@ -11,7 +11,9 @@ use aos_contract::limits::JsonLimits;
 use serde::{Deserialize, Serialize};
 
 use crate::MAINTENANCE_INVENTORY_V1;
-use crate::identity::{ArtifactSlotId, ComponentId, FamilyId, MemberId, SourceSlotId, UnitId};
+use crate::identity::{
+    ArtifactSlotId, CohortId, ComponentId, FamilyId, MemberId, SourceSlotId, UnitId,
+};
 
 /// Resource limits for one canonical maintenance inventory.
 pub const INVENTORY_LIMITS: JsonLimits = JsonLimits {
@@ -115,6 +117,21 @@ impl MaintenanceInventoryV1 {
                 }
             }
         }
+        let mut cohorts = BTreeMap::<&CohortId, Vec<&UpdateUnit>>::new();
+        for unit in &self.units {
+            if let Some(cohort) = &unit.cohort {
+                cohorts.entry(cohort).or_default().push(unit);
+            }
+        }
+        for (cohort, units) in cohorts {
+            if units.len() < 2 || units.len() > 32 {
+                bail!("cohort {cohort} must contain between 2 and 32 units");
+            }
+            let platforms = &units[0].platforms;
+            if units.iter().any(|unit| &unit.platforms != platforms) {
+                bail!("cohort {cohort} units must have identical platform sets");
+            }
+        }
         Ok(())
     }
 }
@@ -129,6 +146,9 @@ pub struct UpdateUnit {
     pub family: FamilyId,
     /// Maintained major, minor, LTS, channel, or VCS lineage.
     pub stream: String,
+    /// Explicit atomic campaign association; never inferred from family names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cohort: Option<CohortId>,
     /// Determines whether and how the controller may schedule the unit.
     pub classification: Classification,
     /// Maps component versions to the package version exposed by AOS.
@@ -1140,6 +1160,31 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("units fixture"))?[1] = second;
         assert!(
             MaintenanceInventoryV1::from_slice(&canonical::canonical_json(&inventory)?).is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cohorts_are_explicit_multi_unit_platform_compatible_sets() -> Result<()> {
+        let mut singleton = canary();
+        singleton["units"][0]["cohort"] = json!("zlib-suite");
+        assert!(
+            MaintenanceInventoryV1::from_slice(&canonical::canonical_json(&singleton)?).is_err()
+        );
+
+        let mut campaign = singleton;
+        let mut second = campaign["units"][0].clone();
+        second["unitId"] = json!("zlib-2");
+        second["stream"] = json!("2");
+        campaign["units"]
+            .as_array_mut()
+            .ok_or_else(|| anyhow::anyhow!("units fixture"))?
+            .push(second);
+        assert!(MaintenanceInventoryV1::from_slice(&canonical::canonical_json(&campaign)?).is_ok());
+
+        campaign["units"][1]["platforms"] = json!(["x86_64-linux"]);
+        assert!(
+            MaintenanceInventoryV1::from_slice(&canonical::canonical_json(&campaign)?).is_err()
         );
         Ok(())
     }
