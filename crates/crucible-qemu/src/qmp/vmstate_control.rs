@@ -13,10 +13,12 @@ use super::{
     QmpHotForkBlockBarrierState, QmpHotForkBlockSnapshotBinding, QmpHotForkBottomHalfInventory,
     QmpHotForkChildRuntimeState, QmpHotForkMonitorInventory, QmpHotForkMutexInventory,
     QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory, QmpHotForkRcuBarrierState,
-    QmpHotForkRcuInventory, QmpHotForkReadiness, QmpHotForkTemplateState,
-    QmpHotForkThreadInventory, QmpHotForkTimerInventory, QmpIoTimeoutPolicy, QmpJobPollPolicy,
-    QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
+    QmpHotForkRcuInventory, QmpHotForkReadiness, QmpHotForkRequest, QmpHotForkState,
+    QmpHotForkTemplateState, QmpHotForkThreadInventory, QmpHotForkTimerInventory,
+    QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
+#[cfg(target_os = "linux")]
+use crate::QemuHotForkCommandError;
 use crate::{
     QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
 };
@@ -452,6 +454,39 @@ where
         self.client
             .abort_hot_fork_template()
             .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Forks one exact prepared template with process-boundary error classification.
+    ///
+    /// An explicit QMP error for the hot-fork command is the protocol's only
+    /// proof that no child was created. Transport, framing, response, and echo
+    /// failures remain indeterminate; [`QmpClient`] has already poisoned the
+    /// connection before this method returns them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuHotForkCommandError::Rejected`] for an explicit pre-fork
+    /// command rejection and [`QemuHotForkCommandError::Indeterminate`] for
+    /// every other failure.
+    #[cfg(target_os = "linux")]
+    pub fn hot_fork(
+        &mut self,
+        request: QmpHotForkRequest,
+    ) -> Result<QmpHotForkState, QemuHotForkCommandError> {
+        match self.client.hot_fork(request) {
+            Ok(state) => Ok(state),
+            Err(
+                error @ QmpError::Command {
+                    command: super::QmpCommandKind::HotFork,
+                    ..
+                },
+            ) => Err(QemuHotForkCommandError::Rejected {
+                source: error.into(),
+            }),
+            Err(error) => Err(QemuHotForkCommandError::Indeterminate {
+                source: error.into(),
+            }),
+        }
     }
 
     /// Imports one held branch-private ring descriptor into the QEMU template.

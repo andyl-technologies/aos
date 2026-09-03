@@ -1359,6 +1359,26 @@ fork from a parent-disposition failure. That response is parent-only evidence:
 the host MUST retain direct-child authority and authenticate the private child
 channel before admitting the child.
 
+The Rust host boundary now makes that ordering linear. The node operation
+accepts an explicit child-process owner and returns a launch token only after
+that owner authenticates and retains the exact source PID, child PID, and
+twelve-generation request basis. The token jointly owns the process authority
+and the single branch-private QMP endpoint. Explicit command rejection leaves
+the source node and endpoint reusable; every indeterminate exchange,
+parent-disposition failure, missing endpoint, or process-retention failure
+quarantines the complete source node. A positive PID is never treated as a
+direct-child wait handle.
+
+This is an interface checkpoint, not the concrete daemon process owner. The
+forked process is a direct child of the template QEMU rather than of the daemon.
+Production composition therefore still requires parent-QEMU-owned `waitpid`
+and status reporting, a lifecycle-bound daemon cgroup/pidfd authority for the
+reported child generation, and an exact transfer into branch resource
+accounting before child admission. Until that composition exists, no
+implementation of the host owner may manufacture `std::process::Child`
+authority from the reported PID or advertise the returned launch token as a
+production campaign child.
+
 Child-QMP contract version 8 reports `readiness-acknowledged` only when the
 exact resource plan and descriptor disposition are committed, runtime and
 plugin reinitialization are complete, the greeting was sent, and replacement
@@ -1366,9 +1386,10 @@ input was released. Explicit QMP command rejection before the fork leaves the
 parent connection reusable. Any transport, framing, echo, or response failure
 is fork-indeterminate and MUST poison the parent connection and transfer the
 attempt to direct-child reconciliation. Daemon composition with the
-attempt-owned process guard, direct-child reaper, resource accounting, private
-channel authentication, and campaign observation remains required before this
-command may serve a production campaign flight.
+parent-owned reaper protocol, attempt-owned process guard, child-generation
+cgroup/pidfd authority, resource accounting, private channel authentication,
+and campaign observation remains required before this command may serve a
+production campaign flight.
 
 The version-3 child-QMP report first derived `disposition-complete` from that
 exact accepted one-shot status instead of hard-coding false. Prepared but
