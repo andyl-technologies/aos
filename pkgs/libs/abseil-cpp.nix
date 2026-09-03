@@ -1,23 +1,54 @@
 ##! abseil-cpp — Common C++ libraries used by Protocol Buffers
 {
   mkDerivation,
-  fetchurl,
+  mkGithubUpstream,
   cmake,
   gnumake,
   stdenv,
 }: let
-  version = "20230802.0";
+  upstream = mkGithubUpstream {
+    unitId = "abseil-cpp-20230802";
+    family = "abseil-cpp";
+    stream = "20230802";
+    owner = "pkgs/libs/abseil-cpp.nix";
+    classification = "assisted";
+    version = "20230802.0";
+    upstreamId = "20230802.0";
+    repository = "abseil/abseil-cpp";
+    major = 20230802;
+    versionScheme = "numeric";
+    riskFloor = "high";
+    source = {
+      authority = "github.com";
+      path = [
+        "abseil"
+        "abseil-cpp"
+        "archive"
+        "refs"
+        "tags"
+        {
+          parts = [
+            {
+              componentField = {
+                component = "main";
+                field = "comparisonVersion";
+              };
+            }
+            {literal = ".tar.gz";}
+          ];
+        }
+      ];
+      hash = "sha256-WdKXavnW7PABqBo1dJpuVRozW5SdNJGM+t4Hc3udk8U=";
+    };
+  };
+  inherit (upstream) version;
 in
   mkDerivation {
     pname = "abseil-cpp";
     inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/abseil/abseil-cpp/archive/refs/tags/${version}.tar.gz"
-      ];
-      hash = "sha256-WdKXavnW7PABqBo1dJpuVRozW5SdNJGM+t4Hc3udk8U=";
-    };
+    src = upstream.components.main.sources.source;
+    update = upstream.update;
 
     buildDeps = [
       cmake

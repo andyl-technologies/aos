@@ -105,6 +105,11 @@ in
   assert upstream.version == "1.2.3";
   assert builtins.head upstream.components.main.sources.source.urls == "https://example.invalid/maintenance-fixture-1.2.3.tar.xz";
   assert inventoryJson != "";
+  assert builtins.all (
+    name:
+      builtins.any (unit: builtins.elem name unit.members) pkgs.maintenanceInventory.units
+  )
+  pkgs.packageNames;
   assert zlibUnit.members == ["zlib"];
   assert zlibUnit.platforms == [pkgs.stdenv.hostPlatform.system];
     lib.throwIfNot
