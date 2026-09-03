@@ -339,8 +339,9 @@ identity to the run, and records that RFC-0017 can independently consume the
 protected commit.
 
 Local identity/signature checks are preflight only. After publication the run
-is `awaiting-remote-authorization`; a later foreground `status`/`inspect`
-observation can record the repository's fail-closed contributor-authorization,
-review, and other exact-head checks. Only then can it become
-`merge-eligible-observed`. The local tool never renders its preflight as an
-authoritative contributor-authorization success.
+is `awaiting-remote-authorization`; `status` and `inspect` render only the last
+recorded local projection. A later explicit `observe-pr RUN` can use the
+separate read-only remote-observation capability to record the repository's
+fail-closed contributor-authorization, review, and other exact-head checks.
+Only then can it become `merge-eligible-observed`. The local tool never renders
+its preflight as an authoritative contributor-authorization success.

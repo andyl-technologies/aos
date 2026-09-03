@@ -103,12 +103,15 @@
 46. The primary maintainer interface is a complete, responsive, line-oriented
     CLI that preserves scrollback. A read-only full-screen cockpit is optional
     and no operation depends on it.
-47. One typed event/view/result model feeds rich inline, plain, screen-reader,
-    JSON, JSONL, and optional cockpit renderers. Renderers and model output have
-    no workflow authority.
+47. Durable journal events and transient progress events are separate typed
+    contracts. One pure view/result model feeds rich inline, plain,
+    screen-reader, JSON, JSONL, and optional cockpit renderers. Renderers and
+    model output have no workflow authority.
 48. Human explanation and progress use stderr; requested data and primary
     values use stdout. `--json` is one final document; `--jsonl` is an explicit
-    event stream with a mandatory terminal result event.
+    event stream with a terminal result on handled termination while stdout is
+    writable. Missing terminal result means indeterminate and requires durable
+    status reconciliation.
 49. Machine output never prompts or emits terminal controls. Interactive
     prompts fail closed and bind the exact plan, tree, head, remote effect, and
     other displayed scope; there is no global approval flag.
@@ -120,8 +123,23 @@
     uses AOS-owned presentation types. Miette, Ratatui/Crossterm, and a prompt
     helper remain subordinate renderers behind those contracts.
 52. Every stopped state produces a typed disposition and one to three exact
-    legal next commands. First Ctrl-C checkpoints and reaps workers; uncertain
-    teardown remains interrupted/unknown rather than being reported successful.
+    legal next commands carrying required non-secret context selectors. First
+    Ctrl-C checkpoints and reaps workers; uncertain teardown remains
+    interrupted/unknown rather than being reported successful.
+53. Discovery decision, durable run state, gate outcome, command disposition,
+    and diagnostic severity are separate schema axes and are labeled as such in
+    ambiguous human views.
+54. Untrusted upstream/package/log/agent text is centrally escaped before any
+    human terminal rendering. Bounded pre-render bytes retained after credential
+    scrubbing remain restricted evidence and cannot emit terminal controls
+    through a log view.
+55. Non-interactive approvals are operation-specific and bind the exact plan,
+    recovery receipt, tree, or cleanup-manifest digest. Commit and PR publication
+    are interactive-only in v1.
+56. `status` and `inspect` are local cached reads. Remote PR/check/review/
+    authorization refresh is the explicit `observe-pr` command with a separate
+    least-privilege read credential; publication retains a separate write
+    credential.
 
 ## Rejected alternatives
 
@@ -285,8 +303,9 @@ own progress; conversation and model output are inspectable attempt evidence.
 ### Let each renderer infer its own state
 
 Rejected because table, progress, JSON, and TUI implementations would drift on
-status, safety, and next actions. They reduce the same typed events into the
-same pure view and differ only in presentation.
+status, safety, and next actions. They reduce the typed durable state and
+transient progress contracts into the same pure view and differ only in
+presentation.
 
 ### Add a broad non-interactive approval flag
 
@@ -367,9 +386,10 @@ eventually pushed, and publication cannot rewrite a tested head afterward.
 
 ### GitHub authentication surface
 
-Choose the local authentication mechanism for `publish-pr` that fits existing
-AOS dependencies and maintainer practice. The command must remain a one-shot
-publisher with sanitized Git configuration, disabled hooks, exact refspec,
+Choose separate local authentication mechanisms for read-only `observe-pr` and
+write-capable `publish-pr` that fit existing AOS dependencies and maintainer
+practice. The observer exposes no mutation. The publisher remains a one-shot
+operation with sanitized Git configuration, disabled hooks, exact refspec,
 expected remote head, and no merge/tag/release operation.
 
 ### Agent model adapter

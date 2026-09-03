@@ -97,9 +97,11 @@ needed; it does not silently reduce the plan.
 Authoritative contributor authorization is necessarily pending until the PR
 exists and the repository's fail-closed private-record check evaluates its exact
 head. It is not a local final gate and `ready-for-pr` does not imply it passed.
-After publication, a later foreground observation may record remote
+After publication, an explicit `aos maintain observe-pr RUN` may use its
+separate least-privilege read capability to record remote
 authorization/review/check state as `merge-eligible-observed`; uncertainty
-remains action-required.
+remains action-required. Ordinary `status` and `inspect` do not refresh remote
+state.
 
 If a repair follows final-test failure, it creates a new attempt/candidate
 commit. All commit-bound final results run again. If the maintainer rewrites

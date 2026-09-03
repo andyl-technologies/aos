@@ -145,15 +145,21 @@ mechanism. It runs after the patch is accepted and shows the exact tree and
 message. Agent, source, materialization, and test processes cannot reach the
 signing agent or device.
 
-### Remote Git and PR publication
+### Remote observation and PR publication
 
-Only `aos maintain publish-pr` reads or invokes remote Git/GitHub
-authentication. It has no path for merge, tag, release, package publication, or
-RFC-0017 signing credentials. Authentication values are never written to run
-state or passed to hooks, builds, tests, or the agent. The one-shot publisher
-uses an empty hooks path, sanitized Git configuration, exact remote/refspec,
-expected remote head, and explicit confirmation. Repository protected-branch
-rules remain the backstop when a maintainer credential itself has wider access.
+Only `aos maintain observe-pr` and `aos maintain publish-pr` read or invoke
+remote Git/GitHub authentication. `observe-pr` accepts a separately configured
+least-privilege read credential and can only retrieve exact-head PR,
+authorization, review, and check observations; it cannot write Git or GitHub
+state. `publish-pr` uses the explicitly selected write credential and has no
+path for merge, tag, release, package publication, or RFC-0017 signing
+credentials.
+
+Authentication values are never written to run state or passed to hooks,
+builds, tests, or the agent. The one-shot publisher uses an empty hooks path,
+sanitized Git configuration, exact remote/refspec, expected remote head, and
+explicit confirmation. Repository protected-branch rules remain the backstop
+when a maintainer credential itself has wider access.
 
 Maintainers should not run the main update loop from a shell that globally
 exports sensitive credentials. The tool strips a denylist and constructs an
@@ -318,9 +324,10 @@ Before `publish-pr`, verify as much as local state permits:
 These are identity/signature preconditions, not contributor authorization. The
 authoritative contributor-authorization check uses private records in the
 repository review path and cannot run locally. `publish-pr` records it as
-`pending-remote`; a later foreground observation may record its exact-head
-result, and indeterminate/unavailable remains action-required. Private employee
-or agreement records never enter the checkout or update evidence.
+`pending-remote`; a later explicit `observe-pr RUN` may record its exact-head
+result through the read-only observation capability, and
+indeterminate/unavailable remains action-required. Private employee or
+agreement records never enter the checkout or update evidence.
 
 QEMU-side work additionally requires the human legal-name DCO sign-off. The
 tool does not add it automatically. It pauses for the authorized human to
@@ -372,6 +379,8 @@ Before agent-assisted write mode is enabled, prove:
 - unavailable tests remain action-required;
 - commit/push use an empty hooks path, and `publish-pr` cannot force-push, tag,
   merge, release, or call publication commands;
+- `observe-pr` cannot mutate remote state, and untrusted remote fields cannot
+  emit terminal controls through any renderer;
 - contributor authorization and QEMU DCO requirements cannot be bypassed;
 - logs and final PR text contain no credentials, raw private prompts, or
   prohibited attribution.

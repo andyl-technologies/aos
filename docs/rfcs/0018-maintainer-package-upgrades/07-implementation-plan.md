@@ -34,8 +34,8 @@ existing `aos-release` byte fixtures. Add a thin `aos-maintain` crate with:
 - legal state transitions and invalidation rules;
 - typed stream selectors, candidate/package-version projections, source
   assurance outcomes, and risk interfaces;
-- typed maintenance events, command results, dispositions, diagnostics,
-  next actions, and pure presentation views;
+- separate durable journal and transient progress events, command results,
+  dispositions, diagnostics, next actions, and pure presentation views;
 - hostile, boundary, compatibility, and transition fixtures.
 
 Both crates perform no I/O and meet the repository Rust documentation standard.
@@ -69,6 +69,8 @@ environment; the existing package derivation identity remains explainable.
 Before generalizing the schemas, prove one complete local update path:
 
 - one direct primary adapter with coverage-through-current proof;
+- minimal repository-bound XDG inventory/observation cache, state permissions,
+  and single-provider request lease/budget primitives that later PRs generalize;
 - one component version-range selector and candidate projection;
 - bounded trusted source fetch, origin-integrity result, and source hash;
 - one comment-preserving literal expected-value edit;
@@ -85,6 +87,8 @@ Before generalizing the schemas, prove one complete local update path:
   views for those commands, with stable stdout/stderr and exit contracts;
 - centralized injectable terminal capabilities, graceful Ctrl-C checkpointing,
   one final result, and exact resume/inspection commands;
+- a non-exiting recognized-maintenance parse/dispatch path and typed
+  `CommandCompletion`; maintenance code emits no incremental `Printer` JSON;
 - one real package-update rehearsal in an unpublished disposable worktree,
   captured in the PR evidence but not committed as a package bump.
 
@@ -139,7 +143,9 @@ findings into fail-closed checks. Implement:
 - adaptive inbox, family, unknown, and quarantine reports at the specified
   terminal widths, with semantic JSON assertions and CLI golden fixtures.
 
-This PR remains read-only with respect to repository source and Git.
+This PR remains read-only with respect to repository source and Git. It
+generalizes and hardens the minimal XDG cache/lease primitives proven in PR 3
+rather than introducing an incompatible second storage path.
 
 **Exit:** a repository-wide scan is reproducible; truncated provider windows
 cannot yield `no-change`; concurrent majors report per stream; unavailable or
@@ -262,17 +268,24 @@ author/signature/attribution/base/head validation, exact refspec and expected
 remote head, explicit confirmation, authentication isolation, create/update-
 only matching PR behavior, and partial-failure reconciliation.
 
+Implement explicit `observe-pr` with a separately selected least-privilege read
+credential. `status` and `inspect` remain local/cached and never acquire remote
+authentication or perform an implicit refresh.
+
 Add exact-head commit and publication previews that leave any alternate screen,
-name remote effects and reversibility, bind confirmation to all displayed
-digests, and reject non-interactive ambiguity. There is no broad `--yes` path.
+name remote effects, irreversibility, and recovery, bind confirmation to all
+displayed digests, and reject non-interactive ambiguity. There is no broad
+`--yes` path.
 
 Local preflight records contributor authorization as `pending-remote`. A later
-foreground observation may record the repository's exact-head authorization,
+explicit `observe-pr RUN` may record the repository's exact-head authorization,
 review, and check results as `merge-eligible-observed`.
 
 **Exit:** a maintainer can publish a final-gated branch/PR explicitly; untrusted
 children and hooks never receive credentials; failure preserves local state;
-the command has no force-push/tag/merge/release/package-publication path.
+the command has no force-push/tag/merge/release/package-publication path;
+`observe-pr` can refresh exact-head remote evidence without gaining a write
+capability, while ordinary status/inspection remains local.
 
 ## PR 12: Complex expansion and RFC-0017 identity handoff
 
@@ -342,6 +355,7 @@ their automation at least as safe and understandable as manual maintenance.
 | Host limitations | Missing confinement, target, KVM, or test capability remains action-required |
 | Evidence | Complete bounded dossier, corruption-detecting journal, sanitized PR rendering, release boundary explicit |
 | Publication | Hook-free one-shot publisher; explicit maintainer confirmation; exact refspec/expected head; no force/merge/release |
+| Remote observation | Explicit `observe-pr`; least-privilege read credential; exact-head provenance; no mutation; local status never refreshes implicitly |
 | Legal | Local preflight distinguishes identity/signature from remote authorization; authorization remains fail-closed; QEMU DCO is never synthesized |
 | Maintainer UX | Rich inline, plain, screen-reader, JSON, and JSONL views reduce the same typed state; responsive/golden/interrupt/prompt tests pass; every pause has an exact next action; full-screen UI is optional |
 
