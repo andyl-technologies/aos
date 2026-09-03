@@ -551,6 +551,18 @@ impl StateStore {
         &self.root
     }
 
+    /// Creates and returns a protected scratch directory for one run phase.
+    pub(super) fn scratch_directory(&self, run_id: &str, phase: &str) -> Result<PathBuf> {
+        validate_state_name(run_id, "run")?;
+        validate_state_name(phase, "phase")?;
+        let scratch = self.run_directory(run_id)?.join("scratch").join(phase);
+        secure_directory(&scratch)?;
+        for child in ["home", "tmp", "cache"] {
+            secure_directory(&scratch.join(child))?;
+        }
+        Ok(scratch)
+    }
+
     fn run_directory(&self, run_id: &str) -> Result<PathBuf> {
         validate_state_name(run_id, "run")?;
         let directory = self.repository.join("runs").join(run_id);

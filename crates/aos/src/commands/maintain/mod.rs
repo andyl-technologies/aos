@@ -1,5 +1,6 @@
 //! Local foreground package-maintenance controller and process-boundary renderer.
 
+mod confinement;
 mod discovery;
 mod evidence;
 mod git;
