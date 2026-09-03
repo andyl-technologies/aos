@@ -32,5 +32,6 @@ topic files.
 | [0014](0014-signal-driven-fault-model/README.md) | 2026-08-18 | Signal-driven, cross-domain fault modeling for Crucible | Proposed; implementation in progress |
 | [0015](0015-hermetic-cargo-artifacts.md) | 2026-08-21 | Hermetic Cargo artifact graphs and parallel Rust testing | Implemented |
 | [0016](0016-package-documentation/README.md) | 2026-08-28 | Package documentation as authenticated Nix objects | Implemented and staged in PR #219 |
+| [0019](0019-sandbox-runtime/README.md) | 2026-09-03 | Generic sandboxes and filesystem views | Proposed (design-only) |
 
 Numbering is chronological by the date the design entered the tree.

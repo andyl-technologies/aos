@@ -1,0 +1,296 @@
+# Filesystem views, FUSE, and native realizers
+
+## Logical view model
+
+A filesystem view description answers five questions independently:
+
+1. Which source and immutable revision or live generation is visible?
+2. Which namespace entries and metadata are presented?
+3. What consistency and mutation model applies?
+4. Which authority and disclosure domain may consume physical backing?
+5. Which semantic and performance features are required?
+
+The description does not select a host mount path or prescribe FUSE. The node
+chooses a compatible realizer from observed capabilities. The chosen realizer
+and any degraded advisory features appear in status.
+
+A public attachment request resolves to this semantic tuple:
+
+```text
+consumer sandbox and incarnation
+expected sandbox and attachment generations
+source capability and view revision or live generation
+declared destination slot
+closed mount attributes
+lease identity and expiry
+```
+
+It never contains a host path, PID, namespace path, mount option string,
+mount ID, or file descriptor.
+
+## View modes
+
+| Mode | Source | Consumer writes | Typical realizer |
+| --- | --- | --- | --- |
+| Immutable | Fixed tree revision | Rejected | Native read-only mount or FUSE |
+| Live read-only | Mutable local export | Rejected | Native detached idmapped mount |
+| Live read-write | Mutable local export | Direct to source | Native mount; exceptional authority |
+| Private CoW | Immutable lower | Private delta | ZFS clone or one overlay layer |
+| Publishable staging | Immutable lower | Private transaction | Private dataset plus verified commit |
+| Service projection | Endpoint | Protocol-defined | Socket or endpoint attachment, not file permissions |
+
+Source mutability and view mutability are not synonyms. A private CoW view has
+an immutable source and a mutable namespace. A live read-only view has a
+mutable source but denies consumer mutation.
+
+## Native mount path
+
+Same-node live datasets and native snapshots use the Linux descriptor-based
+mount API:
+
+1. resolve an opaque broker source handle to a pinned source descriptor;
+2. resolve any allowed relative subpath with `openat2(2)` using beneath,
+   no-magic-link, and no-symlink constraints;
+3. clone an invisible mount with `open_tree_attr(2)`;
+4. apply the target user namespace idmap and `ro`, `nosuid`, `nodev`, and
+   optional `noexec` attributes before exposure;
+5. enter the pinned target mount namespace in a short-lived worker;
+6. pin the predeclared target slot by descriptor; and
+7. attach with `move_mount(2)`.
+
+`open_tree_attr(2)` is preferred on the AOS 6.18 kernel because it can clone and
+change or remove an existing idmap in one detached operation. See the
+[Linux man-pages description](https://man7.org/linux/man-pages/man2/open_tree_attr.2.html).
+
+The default clone is non-recursive. Recursive cloning imports every source
+submount and scales with mount topology rather than file count; it requires a
+separate authority and hard mount-count admission.
+
+Source subpaths resolve beneath catalog roots with
+`RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS` and normally
+`RESOLVE_NO_XDEV`. Destination slots live in a host-owned attachment-anchor
+filesystem. The host side remains writable only to the broker; an idmapped
+read-only view of the anchor is installed in the sandbox before the payload
+starts. The broker may create new bounded slot directories on the host side at
+runtime, and the shared underlying directory makes them visible without giving
+the sandbox create, rename, or replacement permission. Arbitrary workload
+paths are not attachment destinations. Friendly locations are immutable links
+or facades to these slots where the profile permits them.
+
+Pinning an `O_PATH` target is not enough because an attacker may have raced an
+old pathname before the anchor policy took effect. The worker verifies the
+slot's anchor mount ID, parent chain, inode identity, and non-writability before
+publication, then verifies the final mount unique ID at the authorized path.
+Any mismatch rolls back the staged generation and faults the sandbox; it does
+not attach at the descriptor's new name.
+
+Replacement prepares the new mount beneath the current mount and removes the
+old top under the sandbox mutation lock. On the AOS 6.18 path the worker uses
+`MOVE_MOUNT_BENEATH` and then detaches the former top; if the kernel cannot
+provide the required atomic replacement semantics, the node rejects that
+capability rather than accumulating an overmount stack. Existing descriptors
+and mappings may continue using the old mount. Replacement is an atomic
+namespace switch for new path resolution, not synchronous revocation.
+
+The operation is not `Ready` until `listmount`/`statmount` observation verifies
+the unique mount ID, root, attributes, and identity map at the target and a
+post-attach check confirms the sandbox incarnation and namespace generation.
+Mount, freeze, snapshot, stop, and namespace-replay operations serialize under
+one per-sandbox mutation lock.
+
+Attachment replacement has durable `Planned`, `Prepared`, `Published`,
+`Verified`, `Draining`, and `Reaped` observations. Before publication, the node
+persists the desired attachment generation and operation digest. Every staged
+mount has a broker record binding its unique ID to sandbox, incarnation,
+namespace, attachment, and view generations. After a crash, inventory
+identifies the old, new, and any intermediate mount by unique ID and the
+durable record; the reconciler finishes the desired publication or removes
+only a proven stale generation. It never infers stack order from path text or
+detaches an unowned mount.
+
+## Generic immutable tree
+
+The portable tree representation contains sorted directory entries and typed
+nodes. It deliberately specifies:
+
+- regular-file content descriptors and logical size;
+- directories and deterministic entry ordering;
+- symlink bytes and path-resolution policy;
+- executable and complete permission bits;
+- UID/GID under a declared portable identity model;
+- timestamps and their normalization rules;
+- xattrs and ACLs where the source supports them;
+- hard-link identity groups;
+- sparse extents and holes;
+- whiteouts or deletion markers only in delta formats; and
+- policy-gated treatment of devices, FIFOs, and sockets.
+
+Digest values are algorithm tagged and domain separated. The canonical tree
+commitment is independent of protobuf serialization order and independent of
+the runtime index encoding.
+
+All input is hostile even when its outer digest is trusted. Validation bounds
+node count, total name bytes, name and symlink length, depth, extent count,
+integer arithmetic, xattr count and size, hard-link groups, directory fanout,
+and total logical content. It rejects duplicate or unsorted entries, `.` and
+`..`, embedded separators in names, overlapping extents, traversal, cycles,
+unsupported node types, and inconsistent content sizes.
+
+Symlink bytes retain ordinary VFS meaning unless a view policy explicitly
+normalizes or rejects them. A symlink can therefore resolve outside the mounted
+subtree into another path in the consumer's own namespace. Inspection tools
+default to no-follow, and consumers needing a subtree-confining interface use
+descriptor-relative `openat2` resolution. FUSE alone cannot simultaneously
+preserve ordinary symlinks and promise that all consumer path traversal remains
+beneath the view root.
+
+## Node-local structural index
+
+Portable tree objects compile into a replaceable node-local index optimized for
+mmap and point lookup. The index is:
+
+- immutable after publication;
+- validated before mapping;
+- addressed by source tree commitment plus compiler ABI;
+- stored outside language-runtime heaps;
+- lazily paged by the kernel;
+- bounded in mapped virtual size and validated offsets; and
+- safe to delete while mapped, with the mapping remaining valid until the last
+  view releases it.
+
+FUSE inodes are instantiated only after kernel lookup and are removed or
+compacted after `FORGET`. The implementation must not create one heap object or
+protobuf object per path at mount time.
+
+The mmap format is a derived cache. It may change between releases and is never
+distributed as the canonical tree or included in signatures.
+
+## FUSE realization
+
+The immutable FUSE worker implements the smallest semantic surface required by
+the view:
+
+- lookup and forget;
+- getattr and optional xattr reads;
+- readdir, preferably `READDIRPLUS` where measured beneficial;
+- readlink;
+- open and release; and
+- non-passthrough read only as a bounded fallback when explicitly allowed.
+
+V1 uses one FUSE connection per attachment. A process may supervise several
+connections only after proving independent queue, memory, quota, abort, lease,
+and error attribution; connection sharing is not the optimization default.
+
+Node ID 1 is the root. Other 64-bit node IDs are stable within the immutable
+connection and are never reused until the connection is destroyed. The worker
+stores checked lookup/open reference counts keyed by the semantic identity
+(hard-link group or full path) and releases only after matching `FORGET` and
+handle close events. A remounted connection may assign new IDs.
+
+Per connection, separate hard admissions cover touched node records, lookup
+references, open files/directories, backing registrations, in-flight requests,
+kernel-advertised `max_background`, pending user queues, and worker heap/mmap
+budgets. Kernel dentry/inode residency is observed and bounded indirectly by
+connection lifetime and TTL policy; it is not mislabeled worker heap.
+
+When a touched-node or reference admission is exhausted, a new lookup returns
+`ENOMEM`, the attachment reports `ResourceExhausted`, and a required attachment
+loses `ViewsReady`; policy may freeze the consumer before controlled remount.
+The worker cannot evict a node while the kernel retains lookup references.
+`READDIRPLUS` is adaptive and disabled for adversarial or high-fanout
+directories when pre-instantiation would violate the touched-set budget.
+
+Immutable entries receive long positive and negative cache lifetimes. A view
+revision never mutates behind those cache entries. Updating an environment
+creates a new revision and attachment switch.
+
+Linux FUSE backing-file passthrough is required for executable package and
+large-file views unless a measured capability profile explicitly permits the
+slower read path. The worker obtains an authorized immutable backing handle;
+the privileged broker registers it with the FUSE connection using
+`FUSE_DEV_IOC_BACKING_OPEN`; and the open reply selects that backing ID. The
+kernel then performs supported read, splice, and mmap operations against the
+backing file. See the
+[kernel FUSE passthrough documentation](https://docs.kernel.org/filesystems/fuse/fuse-passthrough.html).
+
+Backing registration is per FUSE connection. Concurrent opens of one logical
+inode coordinate one registration and retain it until the final associated
+open releases. Userspace closes redundant descriptors promptly; it does not
+retain one ordinary FD per open after the kernel owns the backing reference.
+
+Before `FUSE_DEV_IOC_BACKING_OPEN`, the broker reserves one per-connection and
+node registration slot and persists a `Pending` record binding connection
+generation, attachment, logical inode, backing descriptor identity, and
+operation nonce. It records the returned backing ID before acknowledging the
+open. The final release consumes that ID exactly once through
+`FUSE_DEV_IOC_BACKING_CLOSE`, then releases the reservation. Crash in an
+ambiguous pending/close window, or loss of the authoritative
+connection-generation mapping, aborts and remounts that connection; the broker
+does not reconstruct ownership from cache paths or ordinary process FD tables.
+
+Shared page cache follows the backing filesystem inode. FUSE presentation
+inode numbers do not create sharing. Content that arrives in chunks or a
+compressed NAR is verified and assembled once into a stable immutable backing
+file before passthrough.
+
+## Identity presentation
+
+The native path uses idmapped mounts. The FUSE path must pass a kernel
+conformance spike before relying on idmapped FUSE mounts. Until the kernel and
+filesystem explicitly advertise the needed behavior, AOS creates separate
+FUSE presentation connections for incompatible sandbox identity maps while
+sharing the mapped structural index and immutable backing files within the
+authorized disclosure domain.
+
+The FUSE daemon returns the sandbox-visible metadata compiled for that
+presentation. Mount-level `nosuid` and `nodev` remain mandatory. Views
+containing executable package closures require explicit execute authority and
+an integrity-verified immutable revision.
+
+## Writable views
+
+FUSE does not implement general shared writes in v1. Private CoW views use one
+overlay layer over one immutable lower, or a native ZFS clone. Overlay chains
+are never constructed from logical ancestry depth.
+
+The writable upper is private and quota controlled. A shared cache file is
+never hard-linked into a writable upper where chmod, chown, truncate, xattr, or
+write operations could mutate the shared inode. Copy-up uses reflink or copy
+when safe; publishable outputs are re-opened without symlink traversal,
+validated, hashed, and promoted into an immutable store.
+
+Whiteouts, opaque directories, redirect metadata, and metacopy behavior are
+normalized into the portable delta schema before a snapshot is described as
+portable.
+
+## Live mutable sources
+
+A native local view provides kernel coherence for rename, unlink, mmap, locks,
+and metadata changes. A remote or synthesized live FUSE view would need a
+precise generation/event protocol, invalidation on every cached semantic,
+overflow recovery, lock ownership, and reconnect behavior. It is therefore
+outside v1.
+
+Remote inspection uses immutable revisions. A client may request a new
+snapshot and atomically switch to it, but AOS does not label that process as a
+coherent live filesystem.
+
+## Failure and revocation
+
+An unclean FUSE worker exit faults the connection and may surface `EIO`. The
+node daemon reports the affected attachments, optionally freezes their
+sandboxes, starts a new worker, and performs a controlled replacement. It does
+not claim transparent preservation of open file descriptors.
+
+Once the kernel has opened a passthrough backing file, later policy changes
+cannot synchronously invalidate every existing descriptor and mapping. A hard
+revocation stops the consuming sandbox. Passthrough is enabled only when the
+authorization is valid for at least the attachment lease.
+
+Namespace detach stops new path resolution but is not hard revocation. An
+exclusive writable export cannot be considered revoked until its consumers are
+stopped or every relevant open reference has been authoritatively drained.
+
+FUSE workers, their executables, indexes, cache roots, logs, and control sockets
+must never reside inside a filesystem they serve. Backing files on FUSE are
+rejected to prevent recursive stacks and deadlocks.
