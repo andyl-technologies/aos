@@ -7,7 +7,7 @@ use crate::qmp::{QmpCommandKind, QmpDescriptorName, QmpError};
 /// QMP command that retains or releases the branch-private child QMP stream.
 pub const QMP_HOT_FORK_CHILD_QMP_COMMAND: &str = "crucible-hot-fork-child-qmp";
 /// Version of the retained child-QMP endpoint contract.
-pub const QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION: u32 = 6;
+pub const QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION: u32 = 7;
 
 /// Exact QEMU-owned state for one retained branch-private child QMP stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn child_qmp_requires_one_unattached_nonblocking_retained_stream() {
         let staged = json!({
-            "schema-version": 6,
+            "schema-version": 7,
             "generation": 9,
             "template-generation": 3,
             "monitor-generation": 5,
