@@ -7,6 +7,7 @@ mod bootstrap;
 mod build;
 mod capture;
 mod channel;
+mod compose_surface;
 mod finalize;
 mod finalize_cache;
 mod finalize_image;
@@ -57,6 +58,9 @@ pub fn run(command: &ReleaseCommand, nix: &NixRunner, printer: &Printer) -> Resu
         ReleaseCommand::Tuf(_) => {
             anyhow::bail!("release TUF command must use the asynchronous offline dispatcher")
         }
+        ReleaseCommand::ComposeSurface(_) => {
+            anyhow::bail!("release surface composition must use the offline dispatcher")
+        }
         ReleaseCommand::Signer { .. } => {
             anyhow::bail!("release signer command must use the asynchronous offline dispatcher")
         }
@@ -102,6 +106,19 @@ pub async fn timestamp_offline(
 /// predecessor, or atomic-output failure.
 pub async fn tuf_offline(args: &crate::cli::ReleaseTufArgs, printer: &Printer) -> Result<()> {
     tuf::run(args, printer).await
+}
+
+/// Composes one verified immutable registry and TUF publication surface.
+///
+/// # Errors
+///
+/// Returns an error for bundle, root, metadata, freshness, source-tree, or
+/// atomic-output validation failure.
+pub fn compose_surface_offline(
+    args: &crate::cli::ReleaseComposeSurfaceArgs,
+    printer: &Printer,
+) -> Result<()> {
+    compose_surface::run(args, printer)
 }
 
 /// Finalizes one public Linux image assembly through configured signers.

@@ -414,8 +414,8 @@ no-replace atomic rename makes it visible.
 
 The delegated target names the exact signed `release-manifest.json` envelope by
 SHA-256 and byte length. The snapshot names exact versioned root, targets, and
-delegated envelopes. Install these files under the registry `tuf/` surface,
-then create the renewable timestamp pointer with the next command.
+delegated envelopes. Do not copy these files into a publication tree manually;
+the surface-composition command below verifies and installs them.
 
 ## Refresh TUF timestamp metadata
 
@@ -446,7 +446,36 @@ provider identity, exact prior timestamp continuity, and the 48-hour maximum
 window. An expired prior timestamp remains cryptographically verifiable at its
 recorded issuance instant, so freshness can recover without resetting the
 monotonic version. Publish the resulting pointer through its separate Hub
-compare-and-swap operation:
+compare-and-swap operation. First atomically compose it with the immutable
+registry/cache surface, full verified TUF set, and exact delegated manifest
+target:
+
+```sh
+aos release compose-surface \
+  --plan release-plan.json \
+  --bundle finalized/bundle \
+  --manifest-key release-1=/media/trust/release-1.pub \
+  --manifest-key release-2=/media/trust/release-2.pub \
+  --base-surface finalized-registry-surface \
+  --root finalized-tuf/12.root.json \
+  --targets finalized-tuf/43.targets.json \
+  --delegated finalized-tuf/19.stable.json \
+  --snapshot finalized-tuf/44.snapshot.json \
+  --timestamp timestamp.json.next \
+  --previous-timestamp-version 86 \
+  --trusted-root-key root-1=/media/trust/root-1.pub \
+  --trusted-root-key root-2=/media/trust/root-2.pub \
+  --trusted-root-threshold 2 \
+  --now 2026-09-03T12:05:00Z \
+  --output complete-registry-surface
+```
+
+Composition captures the base tree without following links, rejects aliases
+and special files, verifies the signed bundle and complete TUF chain, installs
+the exact manifest envelope at its delegated release path, retains identical
+historical immutable metadata, replaces the timestamp only inside a private
+temporary tree, fsyncs the result, and exposes it with a no-replace atomic
+rename. Then publish that closed surface:
 
 ```sh
 aos release timestamp publish \
@@ -458,7 +487,7 @@ aos release timestamp publish \
   --trusted-root-key root-1=/media/trust/root-1.pub \
   --trusted-root-key root-2=/media/trust/root-2.pub \
   --trusted-root-threshold 2 \
-  --registry-surface finalized-registry-surface \
+  --registry-surface complete-registry-surface \
   --output timestamp-publication-87
 ```
 

@@ -32,6 +32,8 @@ pub enum ReleaseCommand {
     },
     /// Construct immutable role-separated TUF repository metadata
     Tuf(ReleaseTufArgs),
+    /// Compose verified registry, release target, and TUF bytes atomically
+    ComposeSurface(ReleaseComposeSurfaceArgs),
     /// Upload an exact finalized bundle to the canonical staging Hub
     Stage(ReleaseStageArgs),
     /// Admit signed qualification of the exact staged public release
@@ -267,6 +269,69 @@ pub struct ReleaseTufArgs {
     pub now: String,
 
     /// New immutable TUF metadata directory
+    #[arg(long)]
+    pub output: PathBuf,
+}
+
+#[derive(Args)]
+pub struct ReleaseComposeSurfaceArgs {
+    /// Canonical release plan governing the publication surface
+    #[arg(long)]
+    pub plan: PathBuf,
+
+    /// Finalized release bundle whose manifest is the delegated TUF target
+    #[arg(long)]
+    pub bundle: PathBuf,
+
+    /// Manifest verification key as KEY_ID=PATH; repeat to threshold
+    #[arg(long = "manifest-key", value_name = "KEY_ID=PATH", required = true)]
+    pub manifest_keys: Vec<String>,
+
+    /// Existing immutable registry/cache publication surface
+    #[arg(long)]
+    pub base_surface: PathBuf,
+
+    /// Current signed TUF root envelope
+    #[arg(long)]
+    pub root: PathBuf,
+
+    /// Previous signed root when the current root is a rotation
+    #[arg(long)]
+    pub previous_root: Option<PathBuf>,
+
+    /// Signed top-level TUF targets envelope
+    #[arg(long)]
+    pub targets: PathBuf,
+
+    /// Signed release-class delegated targets envelope
+    #[arg(long)]
+    pub delegated: PathBuf,
+
+    /// Signed immutable TUF snapshot envelope
+    #[arg(long)]
+    pub snapshot: PathBuf,
+
+    /// Fresh signed TUF timestamp envelope
+    #[arg(long)]
+    pub timestamp: PathBuf,
+
+    /// Independently trusted root key as KEY_ID=PATH
+    #[arg(long = "trusted-root-key", value_name = "KEY_ID=PATH", required = true)]
+    pub trusted_root_keys: Vec<String>,
+
+    /// Required independently trusted root signature count
+    #[arg(long, default_value_t = 2)]
+    pub trusted_root_threshold: u16,
+
+    /// Prior timestamp version, or zero for the first timestamp
+    #[arg(long, default_value_t = 0)]
+    pub previous_timestamp_version: u64,
+
+    /// RFC 3339 UTC verification time
+    #[arg(long)]
+    pub now: String,
+
+    /// New complete publication surface; existing paths are never replaced
     #[arg(long)]
     pub output: PathBuf,
 }
@@ -1117,6 +1182,42 @@ mod tests {
                 "2026-09-03T12:00:00Z",
                 "--output",
                 "qualification",
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn surface_composition_requires_the_complete_tuf_set() {
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "release",
+                "compose-surface",
+                "--plan",
+                "release-plan.json",
+                "--bundle",
+                "bundle",
+                "--manifest-key",
+                "release=release.pub",
+                "--base-surface",
+                "registry-surface",
+                "--root",
+                "12.root.json",
+                "--targets",
+                "43.targets.json",
+                "--delegated",
+                "19.stable.json",
+                "--snapshot",
+                "44.snapshot.json",
+                "--timestamp",
+                "87.timestamp.json",
+                "--trusted-root-key",
+                "root-1=root-1.pub",
+                "--now",
+                "2026-09-03T12:00:00Z",
+                "--output",
+                "complete-surface",
             ])
             .is_ok()
         );
