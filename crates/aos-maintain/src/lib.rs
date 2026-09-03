@@ -7,6 +7,7 @@
 //!
 //! # Module map
 //!
+//! - [`agent`] defines the bounded provider-neutral repair boundary.
 //! - [`identity`] defines validated stable identifiers.
 //! - [`inventory`] defines the closed package-maintenance inventory.
 //! - [`envelope`] binds evaluated inventory to an exact local repository.
@@ -17,6 +18,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod agent;
 pub mod discovery;
 pub mod envelope;
 pub mod identity;
@@ -48,6 +50,10 @@ pub const PACKAGE_UPDATE_MATERIALIZATION_V1: &str = "aos.package-update-material
 pub const PACKAGE_UPDATE_GATE_RESULTS_V1: &str = "aos.package-update-gate-results/v1";
 /// Schema identity for the complete local candidate evidence dossier.
 pub const PACKAGE_UPDATE_EVIDENCE_V1: &str = "aos.package-update-evidence/v1";
+/// Schema identity for one bounded repair-agent request.
+pub const PACKAGE_UPDATE_AGENT_TASK_V1: &str = "aos.package-update-agent-task/v1";
+/// Schema identity for one bounded repair-agent response.
+pub const PACKAGE_UPDATE_AGENT_RESULT_V1: &str = "aos.package-update-agent-result/v1";
 
 /// Schema identifier for the first durable maintenance journal event.
 pub const MAINTENANCE_JOURNAL_EVENT_V1: &str = "aos.maintain.journal-event/v1";
