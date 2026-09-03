@@ -19,7 +19,7 @@ topic files.
 
 | RFC | Date | Title | Status |
 | --- | --- | --- | --- |
-| [0001](0001-package-sandboxing/README.md) | 2026-06-08 | AOS Package Sandboxing (`expose` manifests, per-unit sandboxing, preset enablement) | Proposed — phased plan in [`implementation-plan.md`](0001-package-sandboxing/implementation-plan.md) (14/19 decisions resolved; gated on the Decision 17 spike) |
+| [0001](0001-package-sandboxing/README.md) | 2026-06-08 | AOS Package Sandboxing (`expose` manifests, per-unit sandboxing, preset enablement) | Implemented for exposed APM service packages; stronger microVM isolation remains deferred |
 | [0003](0003-install-from-image.md) | 2026-06-12 | Installation from image (UEFI + Ignition first boot, CI-enforced) | Implemented (`checks.fleet.install-from-image`) |
 | [0004](0004-registry-hub/README.md) | 2026-06-12 | `aos-registry-hub` — a multi-tenant registry management WebUI | Implemented through managed caches and the unified native/Worker runtime; topology rewrite proposed in RFC-0012 |
 | [0005](0005-ca-trust-map.md) | 2026-06-12 | The `store/` realisation graph: content-addressed closure validation | Proposed |
