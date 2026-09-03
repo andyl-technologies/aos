@@ -38,6 +38,9 @@ in
     memory = 2048;
     rootfsDeps = [
       pkgs.aos
+      pkgs.aos.apm
+      pkgs.aos.apr
+      pkgs.aos.packageRuntime
       pkgs.aos-hub
       pkgs.coreutils
       pkgs.curl
@@ -155,8 +158,31 @@ in
         exit 1
       fi
       ${pkgs.grep}/bin/grep -Eiq 'must be a service unit' \
-        /tmp/credential-invalid-unit.json
-      if APM_SYSTEM_CONFIG_DIR=/tmp/apm-render-config \
+        /tmp/credential-invalid-unit.json || {
+        ${pkgs.coreutils}/bin/cat /tmp/credential-invalid-unit.json >&2
+        exit 1
+      }
+      echo '==> Rejected credential targeting a non-service unit'
+      if LC_ALL=C APM_SYSTEM_CONFIG_DIR=/tmp/apm-render-config \
+        ${pkgs.aos.packageRuntime}/bin/aos-package-runtime --json render-one example \
+          --manifest /tmp/nonexistent-config-manifest.json \
+          --marker-root /tmp/render-markers --staging-root /tmp/render-stage \
+          >/tmp/render-one-non-aos.json 2>&1; then
+        echo 'render-one unexpectedly accepted a non-AOS runtime' >&2
+        exit 1
+      fi
+      ${pkgs.jq}/bin/jq -e \
+        '.error | contains("the running system is not AOS")' \
+        /tmp/render-one-non-aos.json >/dev/null || {
+        ${pkgs.coreutils}/bin/cat /tmp/render-one-non-aos.json >&2
+        exit 1
+      }
+      echo '==> Rejected private runtime command outside AOS'
+      mount -o remount,rw /
+      mkdir -p /aos-toplevel
+      printf '%s\n' 'ID=aos' 'AOS_MODULE_ABI=2' >/aos-toplevel/os-release
+      echo '==> Installed live AOS identity fixture'
+      if LC_ALL=C APM_SYSTEM_CONFIG_DIR=/tmp/apm-render-config \
         ${pkgs.aos.packageRuntime}/bin/aos-package-runtime --json render-one example \
           --manifest /tmp/nonexistent-config-manifest.json \
           --marker-root /tmp/render-markers --staging-root /tmp/render-stage \
@@ -167,7 +193,11 @@ in
       ${pkgs.jq}/bin/jq -e \
         '.op == "render-one" and .package == "example"
           and (.error | contains("reading manifest"))' \
-        /tmp/render-one-missing.json >/dev/null
+        /tmp/render-one-missing.json >/dev/null || {
+        ${pkgs.coreutils}/bin/cat /tmp/render-one-missing.json >&2
+        exit 1
+      }
+      echo '==> Rejected private runtime command without an evaluated manifest'
 
       echo '==> Schema is inspectable before instance creation'
       $hub_exec schema dump > /tmp/schema.json
@@ -451,6 +481,18 @@ in
       ${pkgs.jq}/bin/jq -e \
         '.data.bindings | any(.stable_id == "instance-default" and .health.state == "valid")' \
         /tmp/bindings.json >/dev/null
+      ${pkgs.aos}/bin/aos --json hub org show operations \
+        --hub "$hub_url" --token "$token" >/tmp/operations-org-show.json
+      operations_org_scope=$(${pkgs.jq}/bin/jq -er \
+        .data.organization.stable_id /tmp/operations-org-show.json)
+      reviewed instance-default-grant binding grant instance-default \
+        --consumer-scope "$operations_org_scope" \
+        >/tmp/instance-default-grant.json
+      ${pkgs.aos}/bin/aos --json hub binding list --org operations --include-granted \
+        --hub "$hub_url" --token "$token" >/tmp/operations-bindings.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data.bindings | any(.stable_id == "instance-default" and .health.state == "valid")' \
+        /tmp/operations-bindings.json >/dev/null
       reviewed placement-create placement add registry:operations/maintenance primary \
         --binding instance-default --prefix registries/maintenance \
         --kind complete --desired-state active --read enabled \
@@ -508,10 +550,19 @@ in
         --output /tmp/producer-web >/tmp/apr-web-generate.json
       test -s /tmp/producer-web/index.html
       test -s /tmp/producer-web/web/config.json
+      producer_cache=/tmp/producer-cache
+      if ! HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos.apr}/bin/apr --json cache generate \
+          --registry maintenance --output "$producer_cache" --no-commit \
+          >/tmp/apr-cache-generate.json 2>&1; then
+        ${pkgs.coreutils}/bin/cat /tmp/apr-cache-generate.json >&2
+        exit 1
+      fi
       producer_surface=/tmp/producer-surface
       HOME="$producer_home" PATH="$producer_path" \
         ${pkgs.aos.apr}/bin/apr --json origin upload \
-        --registry maintenance --upload-url "file://$producer_surface" \
+        --registry maintenance --cache-dir "$producer_cache" \
+        --upload-url "file://$producer_surface" \
         >/tmp/apr-origin-upload.json
       ${pkgs.coreutils}/bin/cat /tmp/apr-origin-upload.json
       test -s "$producer_surface/HEAD"
@@ -532,10 +583,25 @@ in
       hub_cli_into /tmp/publication-show.json registry publish show "$publication_id"
       ${pkgs.jq}/bin/jq -e '.data.state == "ready"' \
         /tmp/publication-show.json >/dev/null
-      hub_cli_into /tmp/registry-indexed.json registry show \
-        operations/maintenance
-      ${pkgs.jq}/bin/jq -e '.data.registry.index_state == "fresh"' \
-        /tmp/registry-indexed.json >/dev/null
+      index_attempt=0
+      while ! hub_cli_into /tmp/registry-indexed.json registry show \
+        operations/maintenance \
+        || ! ${pkgs.jq}/bin/jq -e '.data.registry.index_state == "fresh"' \
+          /tmp/registry-indexed.json >/dev/null; do
+        index_attempt=$((index_attempt + 1))
+        if test "$index_attempt" -ge 60; then
+          echo 'registry did not finish indexing the uploaded publication' >&2
+          ${pkgs.coreutils}/bin/cat /tmp/registry-indexed.json >&2
+          exit 1
+        fi
+        if ${pkgs.jq}/bin/jq -e '.data.registry.index_state == "failed"' \
+          /tmp/registry-indexed.json >/dev/null; then
+          echo 'registry rejected the uploaded publication during indexing' >&2
+          ${pkgs.coreutils}/bin/cat /tmp/registry-indexed.json >&2
+          exit 1
+        fi
+        ${pkgs.coreutils}/bin/sleep 1
+      done
       hub_cli_into /tmp/registry-packages-indexed.json registry package list \
         operations/maintenance
       ${pkgs.jq}/bin/jq -e \
@@ -557,7 +623,7 @@ in
              refs_digest: $publication.refs_digest,
              default_commit: $publication.default_commit,
              parent_publication_id: $publication.publication_id,
-             objects: [($publication.objects[]
+             objects: [($publication.objects[] | select(.kind == "mutable_pointer")
                | {path, sha256, byte_size, kind, media_type})][0:1]}' \
         /tmp/publication-upload.json >/tmp/publication-abort-manifest.json
       hub_cli_into /tmp/publication-begin.json registry publish begin \
@@ -1357,13 +1423,21 @@ in
         --kind s3 --bucket operations-archive --prefix objects \
         --endpoint https://objects.example.test --region us-test-1 --access private \
         >/tmp/binding-create.json
-      hub_cli binding list --org operations --page-size 1 >/tmp/binding-list-org.json
+      echo '==> Confirm both organizations remain readable after binding creation'
+      hub_cli_into /tmp/binding-owner-org.json org show operations
+      hub_cli_into /tmp/binding-consumer-org.json org show analytics
+      echo '==> Resolve the organization binding through list and typed reference APIs'
+      hub_cli_into /tmp/binding-list-org.json binding list \
+        --org operations --page-size 1
       ${pkgs.jq}/bin/jq -e \
         '.data.bindings | length == 1 and .[0].spec.name == "archive"' \
-        /tmp/binding-list-org.json >/dev/null
+        /tmp/binding-list-org.json >/dev/null || {
+        ${pkgs.coreutils}/bin/cat /tmp/binding-list-org.json >&2
+        exit 1
+      }
       binding_id=$(${pkgs.jq}/bin/jq -er \
         '[.. | objects | .stable_id? // empty][0]' /tmp/binding-list-org.json)
-      hub_cli binding show operations:archive >/tmp/binding-show.json
+      hub_cli_into /tmp/binding-show.json binding show operations:archive
       reviewed binding-grant binding grant "$binding_id" \
         --consumer-scope "$consumer_org_scope" >/tmp/binding-grant.json
       reviewed binding-revoke binding revoke "$binding_id" \
@@ -1460,6 +1534,10 @@ in
         >/tmp/network-policy-revoke.json
 
       echo '==> Exercise endpoint generation and grant lifecycle'
+      reviewed public-network-policy-grant network-policy grant instance:public \
+        --consumer-scope "$org_scope" >/tmp/public-network-policy-grant.json
+      public_network_policy_grant_version=$(resource_version \
+        /tmp/public-network-policy-grant.json)
       reviewed endpoint-add endpoint add http://127.0.0.1:18420 \
         --stable-id operations-endpoint --org operations --acknowledge-cleartext \
         --network-policy instance:public@1 --ingress hub \
@@ -1582,6 +1660,10 @@ in
       endpoint_remove_version=$(resource_version /tmp/endpoint-before-remove.json)
       reviewed endpoint-remove endpoint remove operations-endpoint \
         --if-version "$endpoint_remove_version" >/tmp/endpoint-remove.json
+      reviewed public-network-policy-revoke network-policy revoke instance:public \
+        --consumer-scope "$org_scope" \
+        --if-version "$public_network_policy_grant_version" \
+        >/tmp/public-network-policy-revoke.json
       hub_cli network-policy show operations-allowlist \
         >/tmp/network-policy-before-remove.json
       network_policy_remove_version=$(resource_version \

@@ -237,6 +237,20 @@
       users = ["mariadb"];
       groups = ["mariadb"];
     };
+    documentation = {
+      summary = "MariaDB community relational database server";
+      sections = {
+        lifecycle = lib.aosDoc.section "Initialization and lifecycle" [
+          (lib.aosDoc.paragraph "Initial system tables are created before the daemon starts. Database state remains in /var/lib/aos-pkg-mariadb across package and configuration generations.")
+        ];
+        credentials = lib.aosDoc.section "Credentials" [
+          (lib.aosDoc.paragraph "TLS material and idempotent bootstrap SQL use opaque references. Volatile mode-0600 files are assembled immediately before startup and removed after readiness.")
+        ];
+        networking = lib.aosDoc.section "Network policy" [
+          (lib.aosDoc.paragraph "Keep the default loopback listener unless remote clients are required, and pair every non-loopback binding with an explicit AOS firewall rule.")
+        ];
+      };
+    };
   };
 
   # MariaDB exports six build-time generators for cross builds. Build that
