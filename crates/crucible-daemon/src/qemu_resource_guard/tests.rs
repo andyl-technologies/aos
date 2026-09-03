@@ -128,6 +128,17 @@ impl QemuAttemptHostResourceOwner for FakeHostOwner {
     }
 }
 
+impl QemuHotForkChildProcessOwner for FakeHostOwner {
+    type Authority = ();
+
+    fn retain_hot_fork_child(
+        &mut self,
+        _basis: QemuHotForkChildProcessBasis,
+    ) -> Result<Self::Authority, QemuNodeChannelError> {
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 struct FakeCancellationSignal {
     counters: Arc<HostCounters>,
@@ -166,6 +177,17 @@ fn factory(
         signal_panics: false,
         finish_error: false,
     })
+}
+
+#[test]
+fn composed_guard_retains_hot_fork_process_authority_without_splitting_host_resources() {
+    fn require_complete_owner<T>()
+    where
+        T: QemuAttemptResourceGuard + QemuHotForkChildProcessOwner<Authority = ()>,
+    {
+    }
+
+    require_complete_owner::<ComposedQemuAttemptResourceGuard<FakeHostOwner>>();
 }
 
 #[test]

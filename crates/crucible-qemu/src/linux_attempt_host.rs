@@ -24,8 +24,9 @@ use crate::linux_attempt_storage::{
     LinuxQemuAttemptStorageOwner,
 };
 use crate::{
-    QemuChildProcessContract, QemuLaunchResourceRequirements, QemuNodeChild,
-    QemuPreparedRunDirectory, QemuVmRealizationError,
+    LinuxQemuHotForkChildProcessAuthority, QemuChildProcessContract, QemuHotForkChildProcessBasis,
+    QemuHotForkChildProcessOwner, QemuLaunchResourceRequirements, QemuNodeChannelError,
+    QemuNodeChild, QemuPreparedRunDirectory, QemuVmRealizationError,
 };
 use crucible_linux_resource::LinuxProjectQuotaError;
 
@@ -434,6 +435,31 @@ impl LinuxQemuAttemptHostOwner {
             Err((_source, None)) => {}
         }
         self.terminal = true;
+    }
+}
+
+impl QemuHotForkChildProcessOwner for LinuxQemuAttemptHostOwner {
+    type Authority = LinuxQemuHotForkChildProcessAuthority;
+
+    fn retain_hot_fork_child(
+        &mut self,
+        basis: QemuHotForkChildProcessBasis,
+    ) -> Result<Self::Authority, QemuNodeChannelError> {
+        if self.terminal || self.storage.is_none() {
+            return Err(QemuNodeChannelError::new(
+                "retain forked child process",
+                "combined attempt host authority is terminal",
+            ));
+        }
+        self.process
+            .as_mut()
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "retain forked child process",
+                    "combined attempt host retains no process authority",
+                )
+            })?
+            .retain_hot_fork_child(basis)
     }
 }
 

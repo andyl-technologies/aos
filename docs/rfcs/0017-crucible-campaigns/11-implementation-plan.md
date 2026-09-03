@@ -2358,8 +2358,11 @@ proof with checks that the pidfd still names the same live generation.
 
 This is still an executable T-CAM-6.1 audit checkpoint rather than completion
 of T-CAM-6.2 or T-CAM-6.3. The daemon reconciliation owner now retains the
-target attempt owner, pidfd authority, source child-status record, private
-child QMP channel, and semantic publication outcome as one linear state. The
+complete target attempt guard, including its aggregate filesystem quota,
+sticky cancellation hook, quantum counter, pidfd authority, source child-status
+record, private child QMP channel, and semantic publication outcome as one
+linear state. A process-only cgroup owner no longer satisfies the launch type;
+modeled child work receives only a non-releasing operational boundary. The
 worker execution context now carries the exact lineage-qualified attempt and
 process-local execution incarnation without exposing either to modeled input.
 The fixed pool retains a successful model owner across candidate/checkpoint
@@ -2385,15 +2388,17 @@ measurements, and failure-injection audit remain open.
 The daemon now has the first linear source/target reconciliation owner. It
 consumes the successful launch token together with the exact lineage/attempt
 and process-local execution basis, authenticates the private child QMP endpoint,
-and retains the source template, target cgroup owner, pidfd, private channel,
-final diagnostics, and semantic publication disposition. One bounded step at a
+and retains the source template, complete target process/filesystem guard,
+pidfd, private channel, final diagnostics, and semantic publication disposition.
+One bounded step at a
 time observes the source-parent status, releases child-private resources,
 proves target cleanup, waits for an observation/cancellation/terminal-failure
 outcome, and only then releases the parent status record and QEMU-owned process
 contract. Failed steps preserve their phase for exact retry; incomplete drop
-kills through the pidfd and transfers the target owner to quarantine. Focused
-tests cover running-to-reaped ordering, publication gating, retry without guest
-rerun, foreign child status, unadmitted-result rejection, incomplete drop, and
+kills through the pidfd and transfers the indivisible target guard to
+quarantine. Focused tests cover running-to-reaped ordering, publication gating,
+retry without guest rerun, foreign child status, unadmitted-result rejection,
+incomplete drop, the composed guard's unsplittable hot-fork ownership bound, and
 the fixed worker's exact-runtime-basis plus repeated-disposition callback. The
 complete private plugin/host-I/O child channel set, concrete hot-fork runner,
 modeled QEMU driving, observation production, and a real fork flight remain

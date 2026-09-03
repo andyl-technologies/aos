@@ -17,7 +17,8 @@ use crucible_api::{LifecycleApiError, ProductionVmNodeGeneration, ProductionVmNo
 use crucible_campaign::AttemptResourceLimits;
 use crucible_qemu::{
     LinuxQemuAttemptCancellationSignal, LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory,
-    LinuxQemuAttemptHostOwner, QemuChildProcessContract, QemuLaunchResourceRequirements,
+    LinuxQemuAttemptHostOwner, QemuChildProcessContract, QemuHotForkChildProcessBasis,
+    QemuHotForkChildProcessOwner, QemuLaunchResourceRequirements, QemuNodeChannelError,
     QemuNodeChild, QemuPreparedRunDirectory, QemuVmRealizationError,
 };
 
@@ -328,6 +329,17 @@ impl QemuAttemptHostResourceOwner for LinuxQemuAttemptHostResourceOwner {
     }
 }
 
+impl QemuHotForkChildProcessOwner for LinuxQemuAttemptHostResourceOwner {
+    type Authority = crucible_qemu::LinuxQemuHotForkChildProcessAuthority;
+
+    fn retain_hot_fork_child(
+        &mut self,
+        basis: QemuHotForkChildProcessBasis,
+    ) -> Result<Self::Authority, QemuNodeChannelError> {
+        self.host.retain_hot_fork_child(basis)
+    }
+}
+
 /// Factory adding signal-driven cancellation and quantum accounting to a host owner.
 pub struct ComposedQemuAttemptResourceGuardFactory<H> {
     host: H,
@@ -556,6 +568,26 @@ where
 
     fn retain_failed_launch_child(&mut self, child: QemuNodeChild) {
         self.host.retain_failed_launch_child(child);
+    }
+}
+
+impl<H> QemuHotForkChildProcessOwner for ComposedQemuAttemptResourceGuard<H>
+where
+    H: QemuAttemptHostResourceOwner + QemuHotForkChildProcessOwner,
+{
+    type Authority = H::Authority;
+
+    fn retain_hot_fork_child(
+        &mut self,
+        basis: QemuHotForkChildProcessBasis,
+    ) -> Result<Self::Authority, QemuNodeChannelError> {
+        if self.terminal {
+            return Err(QemuNodeChannelError::new(
+                "retain forked child process",
+                "attempt resource guard is already terminal",
+            ));
+        }
+        self.host.retain_hot_fork_child(basis)
     }
 }
 
