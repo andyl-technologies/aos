@@ -20,6 +20,7 @@ promise.
 | DHCP and single-address static networking | Implemented | Verify the target interface name before deployment |
 | MTU, VLAN, and bond high-level options | Incomplete rendering | Supply and test complete networkd units if required |
 | APM machine-wide packages | Add/remove reconciliation implemented; upgrade and rollback incomplete | Use `apm install --system --from`; do not confuse sysroot upgrade/rollback with runtime-package operations |
+| Exposed APM service confinement | Implemented, early preview | Applies to services activated through `expose`; inspect signed permissions because broad grants can weaken or remove the boundary, and treat registry trust separately |
 | Stock unprivileged user package profile | Not provisioned | Do not assume user-scope package mutation is available on a stock host |
 | Configuration generation rollback | Implemented | Same-ABI rollback is direct; cross-ABI rollback re-evaluates retained inputs |
 | Durable image, kernel, and UKI upgrade | Early-preview A/B path implemented with boot counting and redundant ESP synchronization | Qualify inactive-slot staging, reboot, replica failover, and image/config generation binding on the target firmware |
