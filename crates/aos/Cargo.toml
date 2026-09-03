@@ -22,6 +22,7 @@ path = "src/package_runtime.rs"
 
 [dependencies]
 rustix = { workspace = true }
+aos-contract = { workspace = true }
 aos-core = { workspace = true }
 aos-net = { workspace = true }
 aos-server = { workspace = true }
@@ -30,6 +31,7 @@ aos-remote = { workspace = true }
 aos-doc = { workspace = true }
 aos-doc-model = { workspace = true }
 aos-package = { workspace = true }
+aos-maintain = { workspace = true }
 aos-release = { workspace = true }
 aos-image-finalizer = { workspace = true }
 aos-profile = { workspace = true }
