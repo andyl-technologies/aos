@@ -676,6 +676,44 @@ impl StateStore {
         })
     }
 
+    /// Pins an upstream identity to its first resolved byte hash.
+    ///
+    /// Re-observing the same unit/component/slot/upstream identity with a
+    /// different hash is a supply-chain conflict, never an ordinary update.
+    pub(super) fn record_source_identity(&self, identity: &str, hash: &str) -> Result<()> {
+        if identity.is_empty()
+            || identity.len() > 4096
+            || !hash.starts_with("sha256-")
+            || hash.len() > 128
+        {
+            bail!("source identity observation is invalid");
+        }
+        self.with_repository_lock(|| {
+            let path = self.repository.join("source-identities.json");
+            let mut values: BTreeMap<String, SourceIdentityRecord> =
+                read_optional(&path, "source identity index")?.unwrap_or_default();
+            let key = Sha256Digest::separated("aos.maintain.source-identity/v1", identity).hex();
+            match values.get(&key) {
+                Some(existing) if existing.identity != identity => {
+                    bail!("source identity index digest collision")
+                }
+                Some(existing) if existing.hash != hash => {
+                    bail!("the same upstream source identity resolved to different bytes")
+                }
+                Some(_) => return Ok(()),
+                None => {}
+            }
+            values.insert(
+                key,
+                SourceIdentityRecord {
+                    identity: identity.to_string(),
+                    hash: hash.to_string(),
+                },
+            );
+            atomic_write(&self.repository, "source-identities.json", &values)
+        })
+    }
+
     /// Claims one Repology request under the host-wide spacing and daily budget.
     pub(super) fn claim_repology_request(&self, now_unix: u64) -> Result<()> {
         self.with_provider_lock(|| {
@@ -813,6 +851,13 @@ struct RepologyBudget {
     requests: u64,
     last_request_unix: u64,
     retry_after_unix: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct SourceIdentityRecord {
+    identity: String,
+    hash: String,
 }
 
 /// Returns wall-clock Unix seconds for observational metadata only.
@@ -1032,6 +1077,26 @@ mod tests {
         store.claim_repology_request(100_000)?;
         assert!(store.claim_repology_request(100_000).is_err());
         store.claim_repology_request(100_001)?;
+        Ok(())
+    }
+
+    #[test]
+    fn source_identity_rejects_mutable_bytes() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let repository = temporary.path().join("repository");
+        secure_directory(&repository)?;
+        let store = StateStore {
+            root: temporary.path().to_path_buf(),
+            repository,
+        };
+
+        store.record_source_identity("unit\0main\0source\0v1", "sha256-first")?;
+        store.record_source_identity("unit\0main\0source\0v1", "sha256-first")?;
+        assert!(
+            store
+                .record_source_identity("unit\0main\0source\0v1", "sha256-second")
+                .is_err()
+        );
         Ok(())
     }
 }

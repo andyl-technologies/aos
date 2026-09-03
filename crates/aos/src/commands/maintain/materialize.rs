@@ -1,6 +1,6 @@
 //! Bounded source hashing and deterministic attempt-zero mutation.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
@@ -12,7 +12,9 @@ use aos_contract::Sha256Digest;
 use aos_core::nix::NixRunner;
 use aos_maintain::PACKAGE_UPDATE_MATERIALIZATION_V1;
 use aos_maintain::plan::{PackageUpdatePlanV1, SemanticMutation, SourceIntent};
-use aos_maintain::run::{MaterializationRecordV1, MaterializedSource, PackageUpdateRunV1};
+use aos_maintain::run::{
+    MaterializationRecordV1, MaterializedSource, PackageUpdateRunV1, SourceAssuranceOutcome,
+};
 use aos_maintain::workflow::{ActorClass, RunState};
 use base64::Engine as _;
 use futures_util::StreamExt as _;
@@ -68,7 +70,12 @@ pub(super) async fn execute(
         )?;
     }
 
-    let sources = resolve_sources(plan).await?;
+    if !plan.artifacts.is_empty() {
+        bail!(
+            "this controller build cannot execute generated artifact materializers; retain the unit as assisted/manual or install a controller with that exact typed materializer"
+        );
+    }
+    let sources = resolve_sources(store, plan).await?;
     let mut mutations = plan.semantic_mutations.clone();
     for source in &sources {
         let intent = plan
@@ -117,10 +124,19 @@ pub(super) async fn execute(
     Ok(record)
 }
 
-async fn resolve_sources(plan: &PackageUpdatePlanV1) -> Result<Vec<MaterializedSource>> {
+async fn resolve_sources(
+    store: &StateStore,
+    plan: &PackageUpdatePlanV1,
+) -> Result<Vec<MaterializedSource>> {
     let mut output = Vec::with_capacity(plan.sources.len());
     for source in &plan.sources {
-        output.push(resolve_source(source).await?);
+        let materialized = resolve_source(source).await?;
+        let identity = format!(
+            "{}\0{}\0{}\0{}",
+            plan.unit_id, source.component, source.slot, source.upstream_id
+        );
+        store.record_source_identity(&identity, &materialized.hash)?;
+        output.push(materialized);
     }
     Ok(output)
 }
@@ -133,10 +149,12 @@ async fn resolve_source(intent: &SourceIntent) -> Result<MaterializedSource> {
                 return Ok(MaterializedSource {
                     component: intent.component.clone(),
                     slot: intent.slot.clone(),
+                    upstream_id: intent.upstream_id.clone(),
                     requested_url: requested.clone(),
                     final_url,
                     hash,
                     bytes,
+                    assurance: SourceAssuranceOutcome::OriginIntegrity,
                 });
             }
             Err(error) => last_error = Some(error),
@@ -201,41 +219,71 @@ async fn hash_url(url: &str, redirect_hosts: &[String]) -> Result<(String, u64, 
 }
 
 fn apply_mutations(root: &Path, unit_id: &str, mutations: &[SemanticMutation]) -> Result<()> {
-    let owners = mutations
-        .iter()
-        .map(|mutation| mutation.owner.as_str())
-        .collect::<BTreeSet<_>>();
-    if owners.len() != 1 {
-        bail!("initial materializer supports exactly one declared owner file");
+    if mutations.is_empty() {
+        bail!("materialization has no semantic mutations");
     }
-    let owner = owners
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("materialization has no owner file"))?;
-    let path = root.join(owner);
-    let metadata = path
-        .symlink_metadata()
-        .context("inspecting package owner")?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
-        bail!("package owner is not a regular non-symlink file");
+
+    let mut by_owner = BTreeMap::<&str, Vec<SemanticMutation>>::new();
+    for mutation in mutations {
+        by_owner
+            .entry(mutation.owner.as_str())
+            .or_default()
+            .push(mutation.clone());
     }
-    let source = fs::read_to_string(&path).context("reading package owner")?;
-    let updated = mutation::apply(&source, unit_id, mutations)?;
+
+    // Compute and format every replacement before changing the worktree. This
+    // makes compare-and-swap and parse failures atomic across multi-file units.
+    let mut staged = Vec::with_capacity(by_owner.len());
+    for (owner, owner_mutations) in by_owner {
+        let path = root.join(owner);
+        let metadata = path
+            .symlink_metadata()
+            .with_context(|| format!("inspecting package owner {owner}"))?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            bail!("package owner {owner} is not a regular non-symlink file");
+        }
+        let original =
+            fs::read_to_string(&path).with_context(|| format!("reading package owner {owner}"))?;
+        let updated = mutation::apply(&original, unit_id, &owner_mutations)?;
+        let (status, formatted) = alejandra::format::in_memory(owner.to_string(), updated);
+        if let alejandra::format::Status::Error(error) = status {
+            bail!("formatting package owner {owner} failed: {error}")
+        }
+        staged.push((path, metadata.permissions().mode(), original, formatted));
+    }
+
+    let mut replaced = 0_usize;
+    for (path, mode, _, formatted) in &staged {
+        if let Err(error) = replace_file(path, *mode, formatted.as_bytes()) {
+            for (rollback_path, rollback_mode, original, _) in staged[..replaced].iter().rev() {
+                replace_file(rollback_path, *rollback_mode, original.as_bytes()).with_context(
+                    || format!("rolling back package owner {}", rollback_path.display()),
+                )?;
+            }
+            return Err(error)
+                .with_context(|| format!("replacing package owner {}", path.display()));
+        }
+        replaced += 1;
+    }
+    Ok(())
+}
+
+fn replace_file(path: &Path, mode: u32, contents: &[u8]) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("package owner has no parent"))?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     temporary
         .as_file_mut()
-        .set_permissions(fs::Permissions::from_mode(metadata.permissions().mode()))?;
-    temporary.write_all(updated.as_bytes())?;
+        .set_permissions(fs::Permissions::from_mode(mode))?;
+    temporary.write_all(contents)?;
     temporary.as_file_mut().sync_all()?;
-    temporary.persist(&path).map_err(|error| error.error)?;
-    match alejandra::format::in_fs(path.to_string_lossy().to_string(), true) {
-        alejandra::format::Status::Error(error) => {
-            bail!("formatting package owner failed: {error}")
-        }
-        alejandra::format::Status::Changed(_) => {}
-    }
+    temporary.persist(path).map_err(|error| error.error)?;
+    sync_directory(parent)
+}
+
+fn sync_directory(path: &Path) -> Result<()> {
+    fs::File::open(path)?.sync_all()?;
     Ok(())
 }
 

@@ -207,9 +207,97 @@
     };
     sourceDerivations = builtins.mapAttrs (_: value: value.derivation) sources;
   };
+
+  requireRelativePath = label: value:
+    if
+      builtins.isString value
+      && value != ""
+      && builtins.match "/.*" value == null
+      && builtins.match ".*/(\\.|\\.\\.)(/.*)?" value == null
+    then value
+    else throw "mkUpstream: ${label} must be a normalized relative path";
+
+  normalizeArtifactInput = components: artifacts: input: let
+    checked = assertFields "artifact input" ["kind"] ["component" "slot" "artifact"] input;
+    kind = requireEnum "artifact input kind" ["source" "artifact"] checked.kind;
+  in
+    if kind == "source"
+    then let
+      component = requireString "artifact input component" checked.component;
+      slot = requireString "artifact input source slot" checked.slot;
+    in
+      if !(builtins.hasAttr component components) || !(builtins.hasAttr slot components.${component}.sources)
+      then throw "mkUpstream: artifact input references an unknown source slot"
+      else {inherit kind component slot;}
+    else let
+      artifact = requireString "artifact input artifact" checked.artifact;
+    in
+      if !(builtins.hasAttr artifact artifacts)
+      then throw "mkUpstream: artifact input references an unknown artifact slot"
+      else {inherit kind artifact;};
+
+  normalizeMaterializer = materializer: let
+    kind = requireEnum "artifact materializer kind" ["cargo-deps" "cargo-vendor" "go-modules" "npm-deps" "bazel-deps"] materializer.kind;
+    common = {
+      inherit kind;
+      sourceRoot = requireRelativePath "artifact sourceRoot" materializer.sourceRoot;
+      builder = requireString "artifact builder identity" materializer.builder;
+    };
+  in
+    if builtins.elem kind ["cargo-deps" "cargo-vendor"]
+    then let
+      checked = assertFields "${kind} materializer" ["kind" "sourceRoot" "patches" "builder"] [] materializer;
+    in
+      common // {patches = builtins.map (requireRelativePath "artifact patch") checked.patches;}
+    else if kind == "go-modules"
+    then let
+      checked = assertFields "go-modules materializer" ["kind" "sourceRoot" "moduleRoots" "builder"] [] materializer;
+    in
+      common // {moduleRoots = requireSortedStrings "Go moduleRoots" checked.moduleRoots;}
+    else if kind == "npm-deps"
+    then let
+      checked = assertFields "npm-deps materializer" ["kind" "sourceRoot" "manifest" "lockfile" "lifecycleScripts" "builder"] [] materializer;
+    in
+      if checked.lifecycleScripts != false
+      then throw "mkUpstream: npm dependency acquisition cannot run lifecycle scripts"
+      else
+        common
+        // {
+          manifest = requireRelativePath "npm manifest" checked.manifest;
+          lockfile = requireRelativePath "npm lockfile" checked.lockfile;
+          lifecycleScripts = false;
+        }
+    else let
+      checked = assertFields "bazel-deps materializer" ["kind" "sourceRoot" "target" "flags" "patches" "builder"] [] materializer;
+    in
+      common
+      // {
+        target = requireString "Bazel target" checked.target;
+        flags = builtins.map (requireString "Bazel flag") checked.flags;
+        patches = builtins.map (requireRelativePath "artifact patch") checked.patches;
+      };
+
+  normalizeArtifactOutput = output: let
+    checked = assertFields "artifact output" ["path" "format" "expectedPreimage" "transformation"] [] output;
+  in {
+    path = requireRelativePath "artifact output path" checked.path;
+    format = requireEnum "artifact output format" ["json" "toml"] checked.format;
+    expectedPreimage = requireString "artifact output expectedPreimage" checked.expectedPreimage;
+    transformation = requireEnum "artifact output transformation" ["cargo-lock" "npm-lock"] checked.transformation;
+  };
+
+  normalizeArtifact = components: artifacts: artifactName: artifact: let
+    checked = assertFields "artifact '${artifactName}'" ["inputs" "hash" "materializer"] ["outputs"] artifact;
+    inputs = builtins.map (normalizeArtifactInput components artifacts) checked.inputs;
+  in {
+    inherit inputs;
+    hash = requireString "artifact hash" checked.hash;
+    materializer = normalizeMaterializer checked.materializer;
+    outputs = builtins.map normalizeArtifactOutput (checked.outputs or []);
+  };
 in
   spec: let
-    checked = assertFields "contract" ["schema" "unitId" "family" "stream" "owner" "classification" "package" "components" "policy"] [] spec;
+    checked = assertFields "contract" ["schema" "unitId" "family" "stream" "owner" "classification" "package" "components" "policy"] ["artifacts"] spec;
     schema = requireEnum "schema" ["aos.package-update/v1"] checked.schema;
     classification = requireEnum "classification" ["automatic" "assisted"] checked.classification;
     package = assertFields "package" ["currentVersion" "versionProjection"] [] checked.package;
@@ -217,6 +305,7 @@ in
     policy = assertFields "policy" ["lifecycle" "riskFloor"] ["successorUnit"] checked.policy;
     normalizedComponents = builtins.mapAttrs (normalizeComponent checked.components) checked.components;
     componentMetadata = builtins.mapAttrs (_: value: value.metadata) normalizedComponents;
+    normalizedArtifacts = builtins.mapAttrs (normalizeArtifact componentMetadata (checked.artifacts or {})) (checked.artifacts or {});
     projectedComponent = requireString "versionProjection.component" projection.component;
     projectedField = requireEnum "versionProjection.field" ["comparisonVersion" "upstreamId"] projection.field;
     projectedVersion =
@@ -241,6 +330,7 @@ in
         };
       };
       components = componentMetadata;
+      artifacts = normalizedArtifacts;
       policy =
         {
           lifecycle = requireEnum "policy.lifecycle" ["supported" "security-only" "frozen" "retiring"] policy.lifecycle;
@@ -256,6 +346,7 @@ in
     else {
       version = currentVersion;
       components = builtins.mapAttrs (_: value: {sources = value.sourceDerivations;}) normalizedComponents;
+      artifacts = builtins.mapAttrs (_: value: {inherit (value) hash;}) normalizedArtifacts;
       forPackage = memberSpec: let
         member =
           requireString "member"

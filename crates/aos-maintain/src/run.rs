@@ -109,6 +109,8 @@ pub struct MaterializedSource {
     pub component: ComponentId,
     /// Stable source slot within the component.
     pub slot: SourceSlotId,
+    /// Exact selected upstream identity whose bytes were resolved.
+    pub upstream_id: String,
     /// Planned URL that completed successfully after allowed redirects.
     pub requested_url: String,
     /// Final response URL retained for origin review.
@@ -117,6 +119,22 @@ pub struct MaterializedSource {
     pub hash: String,
     /// Complete response size.
     pub bytes: u64,
+    /// Assurance established independently of the content hash.
+    pub assurance: SourceAssuranceOutcome,
+}
+
+/// Records what the trusted resolver established about source authenticity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SourceAssuranceOutcome {
+    /// An allowlisted HTTPS origin and redirect policy protected acquisition.
+    OriginIntegrity,
+    /// A separately anchored checksum or signature authenticated the bytes.
+    VerifiedAuthentic,
+    /// Required assurance evidence was unavailable.
+    Unknown,
+    /// Presented assurance evidence failed verification.
+    Failed,
 }
 
 /// Captures deterministic attempt-zero outputs needed for reconciliation.
@@ -163,8 +181,15 @@ impl MaterializationRecordV1 {
             if !identities.insert((&source.component, &source.slot))
                 || source.hash.len() > 128
                 || !source.hash.starts_with("sha256-")
+                || source.upstream_id.is_empty()
+                || source.upstream_id.len() > 512
                 || source.requested_url.len() > 8192
                 || source.final_url.len() > 8192
+                || !matches!(
+                    source.assurance,
+                    SourceAssuranceOutcome::OriginIntegrity
+                        | SourceAssuranceOutcome::VerifiedAuthentic
+                )
             {
                 bail!("materialized source identity is invalid or duplicated");
             }

@@ -63,6 +63,22 @@
         allowedRedirectHosts = ["example.invalid"];
       };
     };
+    artifacts.goModules = {
+      inputs = [
+        {
+          kind = "source";
+          component = "main";
+          slot = "source";
+        }
+      ];
+      hash = "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=";
+      materializer = {
+        kind = "go-modules";
+        sourceRoot = ".";
+        moduleRoots = ["."];
+        builder = "fetchGoModules/v1";
+      };
+    };
     policy = {
       lifecycle = "supported";
       riskFloor = "low";
@@ -103,6 +119,7 @@ in
   assert !(builtins.hasAttr "update" annotated);
   assert annotated.passthru.aos.maintenance.unitId == "maintenance-fixture-1";
   assert upstream.version == "1.2.3";
+  assert upstream.artifacts.goModules.hash == "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=";
   assert builtins.head upstream.components.main.sources.source.urls == "https://example.invalid/maintenance-fixture-1.2.3.tar.xz";
   assert inventoryJson != "";
   assert builtins.all (
