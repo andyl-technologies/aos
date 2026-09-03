@@ -241,7 +241,7 @@ mod tests {
     use super::*;
     use crate::assembly::{
         EfiFilenamesV1, ImageBudgetsV1, ImageCommandLinesV1, ImageLayoutV1, ImageSignerRolesV1,
-        PartitionGuidsV1, PartitionTypeGuidsV1, UNSIGNED_IMAGE_ASSEMBLY_V1,
+        PartitionGuidsV1, PartitionTypeGuidsV1, SbatPolicyV1, UNSIGNED_IMAGE_ASSEMBLY_V1,
     };
 
     #[test]
@@ -268,6 +268,12 @@ mod tests {
             module_abi: 1,
             recovery_abi: 1,
             sbat_generation: 1,
+            sbat: SbatPolicyV1 {
+                component: "aos".to_owned(),
+                vendor: "Andyl Inc.".to_owned(),
+                package: "aos".to_owned(),
+                url: "https://aos.dev".to_owned(),
+            },
             command_lines: ImageCommandLinesV1 {
                 slot_a: "root=a".to_owned(),
                 slot_b: "root=b".to_owned(),

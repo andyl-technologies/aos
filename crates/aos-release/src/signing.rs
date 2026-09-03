@@ -60,6 +60,8 @@ pub enum SignerRole {
 pub enum SignatureAlgorithm {
     /// Ed25519 over a domain-separated request digest.
     Ed25519,
+    /// SHA-256 signature verified by independently pinned public-key material.
+    PublicKeySha256,
     /// Authenticode signing performed by an external provider.
     Authenticode,
     /// Linux kernel module signature performed by an external provider.
@@ -259,6 +261,10 @@ impl SigningRequestV1 {
         let operation_matches = matches!(
             (self.algorithm, self.operation),
             (SignatureAlgorithm::Ed25519, SigningOperation::SignPayload)
+                | (
+                    SignatureAlgorithm::PublicKeySha256,
+                    SigningOperation::SignPayload
+                )
                 | (SignatureAlgorithm::Ed25519, SigningOperation::SignPcrPolicy)
                 | (SignatureAlgorithm::Authenticode, SigningOperation::SignPe)
                 | (
@@ -626,6 +632,17 @@ mod tests {
         let mut confused = request();
         confused.algorithm = SignatureAlgorithm::Authenticode;
         assert!(confused.validate().is_err());
+    }
+
+    #[test]
+    fn public_key_payload_signatures_are_detached_operations() {
+        let mut request = request();
+        request.role = SignerRole::SecureBootDb;
+        request.algorithm = SignatureAlgorithm::PublicKeySha256;
+        request.context = SigningContext::Payload {
+            artifact_kind: "recovery-slot-manifest".to_owned(),
+        };
+        assert!(request.validate().is_ok());
     }
 
     #[test]

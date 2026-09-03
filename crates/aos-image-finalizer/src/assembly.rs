@@ -108,6 +108,8 @@ pub struct UnsignedImageAssemblyV1 {
     pub recovery_abi: u64,
     /// Monotonic SBAT generation.
     pub sbat_generation: u64,
+    /// Public SBAT component identity embedded in every finalized UKI.
+    pub sbat: SbatPolicyV1,
     /// Exact normal and recovery kernel command lines.
     pub command_lines: ImageCommandLinesV1,
     /// External role assigned to each image signing purpose.
@@ -144,6 +146,20 @@ pub struct ImageSignerRolesV1 {
     pub module: String,
     /// TPM PCR-policy signing role.
     pub pcr: String,
+}
+
+/// Stable public SBAT component identity.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SbatPolicyV1 {
+    /// Revocable component name.
+    pub component: String,
+    /// Human-readable vendor identity.
+    pub vendor: String,
+    /// Vendor package identity.
+    pub package: String,
+    /// Public security/update information URL.
+    pub url: String,
 }
 
 /// Deterministic GPT and EFI layout needed for final-byte construction.
@@ -279,6 +295,7 @@ impl UnsignedImageAssemblyV1 {
         {
             bail!("unsigned image assembly has an invalid version or monotonic generation");
         }
+        self.sbat.validate()?;
         for (value, label) in [
             (&self.command_lines.slot_a, "slot-A command line"),
             (&self.command_lines.slot_b, "slot-B command line"),
@@ -381,6 +398,22 @@ impl UnsignedImageAssemblyV1 {
                     file.id
                 );
             }
+        }
+        Ok(())
+    }
+}
+
+impl SbatPolicyV1 {
+    fn validate(&self) -> Result<()> {
+        require_identifier(&self.component, "SBAT component")?;
+        require_identifier(&self.package, "SBAT package")?;
+        for value in [&self.vendor, &self.url] {
+            if value.is_empty() || value.contains([',', '\n', '\r', '\0']) {
+                bail!("SBAT fields must be nonempty single CSV fields");
+            }
+        }
+        if !self.url.starts_with("https://") {
+            bail!("SBAT URL must use HTTPS");
         }
         Ok(())
     }

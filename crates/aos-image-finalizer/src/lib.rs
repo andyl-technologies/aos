@@ -14,9 +14,12 @@
 //! - [`finalize`] sequences effectful signing and reconstruction stages.
 //! - [`input`] revalidates captured files and tools at their point of use.
 //! - [`module_signature`] verifies the kernel's appended PKCS#7 format.
+//! - [`pcr`] constructs and independently verifies signed PCR policy JSON.
 //! - [`request`] constrains signing requests supplied by the coordinator.
+//! - [`recovery`] binds normal slots into signed recovery initrds.
 //! - [`signer`] defines the effect boundary used by external key providers.
 //! - [`tools`] invokes only assembly-pinned executables with bounded evidence.
+//! - [`uki`] assembles and verifies signed normal/recovery EFI artifacts.
 //! - [`verity`] derives and independently verifies finalized dm-verity data.
 //! - [`result`] defines the complete two-slot, four-format finalized output.
 
@@ -28,8 +31,11 @@ pub mod filesystem;
 pub mod finalize;
 pub mod input;
 pub mod module_signature;
+pub mod pcr;
+pub mod recovery;
 pub mod request;
 pub mod result;
 pub mod signer;
 pub mod tools;
+pub mod uki;
 pub mod verity;
