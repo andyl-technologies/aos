@@ -70,8 +70,8 @@ they gate any affected runtime backend.
   canonical bytes (`SBX-CORE-07`, `SBX-CORE-08`; `9b0864f03`).
 - [x] **SBX-CORE-10** Make all RFC golden vectors and negative decoder vectors
   executable tests (`SBX-CORE-07`, `SBX-CORE-09`; `8065b4eff`).
-- [ ] **SBX-CORE-11** Add state-machine, attenuation, accounting, canonicality,
-  and fencing property tests (`SBX-CORE-03`..`SBX-CORE-09`).
+- [x] **SBX-CORE-11** Add state-machine, attenuation, accounting, canonicality,
+  and fencing property tests (`SBX-CORE-03`..`SBX-CORE-09`; `c493178f5`).
 - [ ] **SBX-API-01** Add complete `aos.sandbox.v1` protobuf resource and error
   messages to `aos-proto` (`SBX-CORE-06`).
 - [ ] **SBX-API-02** Add create/get/list/update/delete, lifecycle, execution,
@@ -278,3 +278,6 @@ completes. The Git history remains authoritative for code details.
 - `8065b4eff` — `SBX-CORE-10`: executable raw-content, empty-directory,
   signature-statement, preimage, and signature vectors plus deterministic-CBOR
   rejection vectors and signed/unsigned integer extrema.
+- `c493178f5` — `SBX-CORE-11`: deterministic exhaustive operation-bitmap
+  attenuation, bounded-account admission/release, portable-mode canonicality,
+  terminal-state, and generation/sequence fencing properties.
