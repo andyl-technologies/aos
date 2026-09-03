@@ -19,6 +19,10 @@ The current implementation provides these fail-closed operations:
   plan, performs the complete external signing sequence, and emits one
   verified logical disk, four equivalent download formats, signed UKIs,
   metadata, and recovery bundle;
+- `aos release finalize-registry` binds a reviewed atomic registry transaction
+  to the validated build report, authors every package-platform entry in an
+  isolated clone, obtains externally backed provenance and Git SSHSIGs, and
+  creates the release's sole registry commit and annotated tag;
 - `aos release status` reconciles a captured journal without Nix or network;
 - `aos release stage` accepts only an already finalized signed bundle, pins the
   canonical staging deployment identity before and after upload, reuses the
@@ -36,7 +40,7 @@ The current implementation provides these fail-closed operations:
 - `aos release verify` checks a closed release bundle and optional journal
   offline against explicitly supplied public keys.
 
-Registry-to-bundle finalization and qualification executor orchestration remain
+Closed bundle finalization and qualification executor orchestration remain
 incomplete. Production publication through this workflow remains forbidden
 until those paths and the remaining RFC-0017 launch gates are complete.
 
@@ -190,6 +194,58 @@ or remove the private work path according to the restricted operator policy.
 
 Repeat for `x86_64-linux` and `aarch64-linux`. Darwin targets do not run this
 command because their release matrix contains packages only.
+
+## Finalize the isolated registry
+
+Prepare canonical `aos.registry-release-transaction/v1` JSON whose entries are
+strictly ordered by build artifact id and whose catalog, store-graph, and policy
+digests describe the complete intended result. The command independently
+checks every entry against `build-report.json`; a missing, extra, or changed
+package, version, target, or store path aborts before the output directory is
+installed.
+
+```sh
+aos release finalize-registry \
+  --plan release-plan.json \
+  --build-report release-build/evidence/build-report.json \
+  --transaction registry-transaction.json \
+  --source-registry /srv/aos-registry/authoring \
+  --output /var/lib/aos-release/2026.9.0/registry \
+  --result /var/lib/aos-release/2026.9.0/registry-result.json \
+  --signer-executable /opt/aos-signers/bin/provider-adapter \
+  --provenance-key provenance-2026=/media/trust/provenance-2026.pub \
+  --registry-key registry-2026=/media/trust/registry-2026.pub \
+  --provenance-verification-identity provider-provenance-slot \
+  --registry-verification-identity provider-registry-slot \
+  --git-name "AOS Release" \
+  --git-email release@aos.andyl.org \
+  --git-unix-seconds 1788436800 \
+  --git-offset-minutes 0
+```
+
+The two public key files contain exact `andyl/main:Ed25519:<base64>` trust
+lines. Their key ids and provider revisions must be the single-key,
+threshold-one Provenance and Registry requirements frozen in the plan. The
+single-signature DSSE and Git formats cannot honestly represent a larger
+threshold, so the command rejects one rather than counting repeated signatures
+outside the signed object.
+
+For provenance, the provider signs the exact DSSE PAE bytes in the
+`aos-package-provenance-dsse-v1` SSHSIG namespace. For the commit and tag it
+signs Git's exact unsigned object payload in the `git` namespace. The
+coordinator verifies request binding, public-material identity, provider
+identity, and the SSHSIG cryptographically before accepting each response. It
+also checks the provenance trust line against the active, non-revoked
+`keys.toml` entry before authoring.
+
+The source registry must be clean at the exact plan base and must not already
+contain the release tag. The output and result must not exist. Entries may
+write catalog, documentation, provenance, transparency, and store-graph files,
+but may not move a ref. Only after the full catalog, store graph, and expected
+surface digests pass does the transaction atomically install the isolated
+directory, create one signed commit and annotated tag, and generate its static
+origin surface. No authoring ref, Hub object, channel, or private key path is
+modified by this command.
 
 ## Refresh TUF timestamp metadata
 

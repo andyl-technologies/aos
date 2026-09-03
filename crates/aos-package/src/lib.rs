@@ -137,6 +137,8 @@ pub mod platform {
 pub mod policy;
 pub mod profile;
 pub(crate) mod provenance;
+#[doc(hidden)]
+pub use provenance::{DSSE_SIGNATURE_NAMESPACE, ProvenanceSignature, ProvenanceSigner};
 pub mod query;
 pub mod registry;
 pub mod registry_ops;

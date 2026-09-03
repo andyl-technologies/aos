@@ -20,6 +20,7 @@ use aos_release::signing::{
     SignatureResponseV1, SigningRequestV1, TrustedEd25519Key, verify_ed25519_response,
     verify_response_binding,
 };
+use base64::Engine as _;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::process::Command;
 
@@ -159,6 +160,57 @@ impl ExternalSigner {
         verify_ed25519_response(request, &response, trusted_key)?;
         verify_public_identity(&response, trusted_key, expected_verification_identity)?;
         Ok(response)
+    }
+
+    /// Requests and verifies one detached OpenSSH SSHSIG authorization.
+    ///
+    /// `trusted_key` is the exact `registry:Ed25519:<base64>` trust line
+    /// committed in the registry roster. The provider must report the SHA-256
+    /// identity of those exact UTF-8 bytes as its verification-material digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for request or provider-binding drift, transformed
+    /// output, malformed signature armor, verification-material mismatch, or
+    /// a signature that does not verify over `payload` in `namespace`.
+    pub(super) async fn sign_sshsig(
+        &self,
+        request: &SigningRequestV1,
+        payload: &[u8],
+        trusted_key: &str,
+        namespace: &str,
+        expected_verification_identity: &str,
+    ) -> Result<(SignatureResponseV1, String)> {
+        request.validate()?;
+        verify_payload_binding(request, payload)?;
+        let request_bytes = canonical::to_vec(request)?;
+        let (response_bytes, output) = self.invoke(&request_bytes, payload, 0).await?;
+        if !output.is_empty() {
+            bail!("detached SSHSIG signer returned transformed output bytes");
+        }
+        let response: SignatureResponseV1 =
+            canonical::from_slice(&response_bytes, "external SSHSIG response")?;
+        verify_response_binding(request, &response)?;
+        if response.verification_identity != expected_verification_identity {
+            bail!("external SSHSIG signer returned an unexpected verification identity");
+        }
+        if response.verification_material_digest != Sha256Digest::of_bytes(trusted_key.as_bytes()) {
+            bail!("external SSHSIG signer returned the wrong public verification material digest");
+        }
+        let signature_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&response.signature_base64)
+            .context("decoding external SSHSIG armor")?;
+        let signature = String::from_utf8(signature_bytes)
+            .context("external SSHSIG armor is not valid UTF-8")?;
+        if !aos_package::security::verify_payload_signature(
+            payload,
+            &signature,
+            trusted_key,
+            namespace,
+        )? {
+            bail!("external SSHSIG does not verify against the trusted roster key");
+        }
+        Ok((response, signature))
     }
 
     async fn invoke(

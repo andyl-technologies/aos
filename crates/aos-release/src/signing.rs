@@ -279,6 +279,10 @@ impl SigningRequestV1 {
                     SignatureAlgorithm::SshsigEd25519,
                     SigningOperation::SignGitObject
                 )
+                | (
+                    SignatureAlgorithm::SshsigEd25519,
+                    SigningOperation::SignPayload
+                )
         );
         if !operation_matches {
             bail!("signature algorithm is incompatible with the requested operation");
@@ -358,6 +362,11 @@ impl SigningContext {
         match (self, operation) {
             (Self::Payload { artifact_kind }, SigningOperation::SignPayload) => {
                 require_identifier(artifact_kind, "signing artifact kind")?;
+                if matches!(role, SignerRole::Provenance)
+                    && artifact_kind != "package-provenance-dsse"
+                {
+                    bail!("provenance signing requires package-provenance-dsse payloads");
+                }
             }
             (
                 Self::Pe {
