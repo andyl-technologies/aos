@@ -17,6 +17,15 @@ use sha2::{Digest as _, Sha256};
 
 use crate::assembly::{AssemblyFileKind, AssemblyFileV1, AssemblyToolV1, UnsignedImageAssemblyV1};
 
+/// Exact executable path and closed public environment verified from assembly.
+#[derive(Clone, Debug)]
+pub struct VerifiedTool {
+    /// Absolute executable path in the Nix store.
+    pub executable: PathBuf,
+    /// Explicit environment retained by the public assembly recipe.
+    pub environment: std::collections::BTreeMap<String, String>,
+}
+
 /// One no-follow regular input whose identity has been checked.
 pub struct VerifiedInput {
     path: PathBuf,
@@ -124,7 +133,7 @@ pub fn verified_tool(
     assembly: &UnsignedImageAssemblyV1,
     id: &str,
     resolve_owner_nar_hash: impl FnOnce(&str) -> Result<String>,
-) -> Result<PathBuf> {
+) -> Result<VerifiedTool> {
     let tool = assembly_tool(assembly, id)?;
     validate_tool_file(tool)?;
     let current_hash = resolve_owner_nar_hash(&tool.executable)
@@ -132,7 +141,36 @@ pub fn verified_tool(
     if current_hash != tool.owner_nar_hash {
         bail!("assembly tool owner changed after capture");
     }
-    Ok(PathBuf::from(&tool.executable))
+    Ok(VerifiedTool {
+        executable: PathBuf::from(&tool.executable),
+        environment: tool.environment.clone(),
+    })
+}
+
+/// Computes a point-in-time SHA-256 identity for one single-link regular file.
+///
+/// # Errors
+///
+/// Returns an error when the path is linked or special, I/O fails, or the file
+/// changes while it is hashed.
+pub fn digest_regular_file(path: &Path) -> Result<(u64, Sha256Digest)> {
+    let descriptor = open(
+        path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .with_context(|| format!("opening regular file {}", path.display()))?;
+    let mut file = File::from(descriptor);
+    let before = file.metadata()?;
+    if !before.is_file() || before.nlink() != 1 {
+        bail!("digest input must be a single-link regular file");
+    }
+    let (size, digest) = hash_reader(&mut file)?;
+    let after = file.metadata()?;
+    if size != before.len() || !same_snapshot(&before, &after) {
+        bail!("digest input changed while it was hashed");
+    }
+    Ok((size, digest))
 }
 
 fn assembly_file(

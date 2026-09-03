@@ -535,6 +535,7 @@
             --arg objcopy ${lib.escapeShellArg "${pkgs.binutils}/bin/objcopy"} \
             --arg signFile ${lib.escapeShellArg "${system.config.system.build.kernel.dev}/lib/modules/${system.config.system.build.kernel.version}/build/scripts/sign-file"} \
             --arg mkfsErofs ${lib.escapeShellArg "${pkgs.erofs-utils}/bin/mkfs.erofs"} \
+            --arg gccLib ${lib.escapeShellArg "${pkgs.gcc-libs}/lib"} \
             --arg fsckErofs ${lib.escapeShellArg "${pkgs.erofs-utils}/bin/fsck.erofs"} \
             --arg veritysetup ${lib.escapeShellArg "${pkgs.cryptsetup}/bin/veritysetup"} \
             --arg qemuImg ${lib.escapeShellArg "${pkgs.qemu}/bin/qemu-img"} \
@@ -599,11 +600,25 @@
                   normal_uki:$ukiFilename}},
               budgets:{root_mib:$maxRootMiB,initrd_mib:$maxInitrdMiB,
                 uki_mib:$maxUkiMiB,download_mib:$maxDownloadMiB},
-              tools:{ukify:$ukify,systemd_measure:$measure,objcopy:$objcopy,
-                sign_file:$signFile,mkfs_erofs:$mkfsErofs,fsck_erofs:$fsckErofs,
-                veritysetup:$veritysetup,qemu_img:$qemuImg,sfdisk:$sfdisk,
-                mkfs_vfat:$mkfsVfat,mcopy:$mcopy,zstd:$zstd,cpio:$cpio,tar:$tar,
-                find:$find,openssl:$openssl,sbverify:$sbverify,modinfo:$modinfo}}' \
+              tools:{
+                ukify:{executable:$ukify,environment:{}},
+                systemd_measure:{executable:$measure,environment:{}},
+                objcopy:{executable:$objcopy,environment:{}},
+                sign_file:{executable:$signFile,environment:{}},
+                mkfs_erofs:{executable:$mkfsErofs,environment:{LD_LIBRARY_PATH:$gccLib}},
+                fsck_erofs:{executable:$fsckErofs,environment:{}},
+                veritysetup:{executable:$veritysetup,environment:{}},
+                qemu_img:{executable:$qemuImg,environment:{}},
+                sfdisk:{executable:$sfdisk,environment:{}},
+                mkfs_vfat:{executable:$mkfsVfat,environment:{}},
+                mcopy:{executable:$mcopy,environment:{MTOOLS_SKIP_CHECK:"1"}},
+                zstd:{executable:$zstd,environment:{}},
+                cpio:{executable:$cpio,environment:{}},
+                tar:{executable:$tar,environment:{}},
+                find:{executable:$find,environment:{}},
+                openssl:{executable:$openssl,environment:{}},
+                sbverify:{executable:$sbverify,environment:{}},
+                modinfo:{executable:$modinfo,environment:{}}}}' \
             > "$out/assembly-recipe.json.tmp"
           recipe_size=$(stat -c %s "$out/assembly-recipe.json.tmp")
           [ "$recipe_size" -gt 1 ]

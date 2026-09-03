@@ -38,7 +38,14 @@ struct AssemblyRecipeV1 {
     signer_roles: SignerRoles,
     layout: ImageLayoutV1,
     budgets: ImageBudgetsV1,
-    tools: BTreeMap<String, String>,
+    tools: BTreeMap<String, RecipeTool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecipeTool {
+    executable: String,
+    environment: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -182,13 +189,14 @@ pub fn capture_unsigned_assembly(
     let tools = recipe
         .tools
         .into_iter()
-        .map(|(id, executable)| {
-            let owner_nar_hash = resolve_owner_nar_hash(&executable)
+        .map(|(id, tool)| {
+            let owner_nar_hash = resolve_owner_nar_hash(&tool.executable)
                 .with_context(|| format!("resolving owner NAR hash for tool {id}"))?;
             Ok(AssemblyToolV1 {
                 id,
-                executable,
+                executable: tool.executable,
                 owner_nar_hash,
+                environment: tool.environment,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -341,7 +349,7 @@ mod tests {
               "fat_volume_id":"ABCDEF01","efi_filenames":{"fallback":"BOOTX64.EFI","systemd_boot":"systemd-bootx64.efi","normal_uki":"aos-generation-0000000001+3.efi"}
             },
             "budgets":{"root_mib":512,"initrd_mib":128,"uki_mib":160,"download_mib":640},
-            "tools": {"ukify":"/nix/store/00000000000000000000000000000000-systemd/bin/ukify"}
+            "tools": {"ukify":{"executable":"/nix/store/00000000000000000000000000000000-systemd/bin/ukify","environment":{}}}
         });
         fs::write(
             temporary.path().join("assembly-recipe.json"),
