@@ -178,15 +178,17 @@
     templates = builtins.map (normalizeTemplate components) checked.urlTemplates;
     urls = builtins.map (renderTemplate components) checked.urlTemplates;
     hash = requireString "source hash" checked.hash;
+    derivation = fetchurl {inherit urls hash;};
   in {
     metadata = {
       fetcher = requireEnum "source fetcher" ["fetchurl"] checked.fetcher;
+      derivation = derivation.drvPath;
       urlTemplates = templates;
       inherit hash;
       hashMode = requireEnum "source hashMode" ["flat" "recursive"] checked.hashMode;
       allowedRedirectHosts = requireSortedStrings "allowedRedirectHosts" checked.allowedRedirectHosts;
     };
-    derivation = fetchurl {inherit urls hash;};
+    inherit derivation;
   };
 
   normalizeComponent = components: componentName: component: let
@@ -348,15 +350,27 @@ in
       components = builtins.mapAttrs (_: value: {sources = value.sourceDerivations;}) normalizedComponents;
       artifacts = builtins.mapAttrs (_: value: {inherit (value) hash;}) normalizedArtifacts;
       forPackage = memberSpec: let
-        member =
-          requireString "member"
-          (
-            assertFields "forPackage" ["member"] [] memberSpec
-          )
-          .member;
+        memberChecked = assertFields "forPackage" ["member"] ["artifacts"] memberSpec;
+        member = requireString "member" memberChecked.member;
+        artifactDerivations = memberChecked.artifacts or {};
+        expectedArtifacts = sortedNames normalizedArtifacts;
+        actualArtifacts = sortedNames artifactDerivations;
+        artifacts =
+          if expectedArtifacts != actualArtifacts
+          then throw "mkUpstream: forPackage artifacts must exactly match declared artifact slots"
+          else
+            builtins.mapAttrs (
+              name: value:
+                value
+                // {
+                  derivation = artifactDerivations.${name}.drvPath;
+                }
+            )
+            normalizedArtifacts;
       in
         normalized
         // {
+          inherit artifacts;
           members = [member];
           platforms = [platform];
         };

@@ -528,6 +528,8 @@ mod tests {
                         SourceSlotId::parse("source")?,
                         SourceSlot {
                             fetcher: SourceFetcher::Fetchurl,
+                            derivation: "/nix/store/00000000000000000000000000000000-source.drv"
+                                .to_string(),
                             url_templates: vec![UrlTemplate {
                                 scheme: UrlScheme::Https,
                                 authority: "zlib.net".to_string(),

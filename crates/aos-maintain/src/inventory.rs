@@ -447,6 +447,8 @@ pub enum VersionScheme {
 pub struct SourceSlot {
     /// AOS-local fixed-output fetcher kind.
     pub fetcher: SourceFetcher,
+    /// Exact evaluated fixed-output derivation identity.
+    pub derivation: String,
     /// Structured candidate URL templates in preference order.
     pub url_templates: Vec<UrlTemplate>,
     /// Current SRI hash literal.
@@ -467,6 +469,11 @@ impl SourceSlot {
     ) -> Result<()> {
         if self.url_templates.is_empty() {
             bail!("unit {unit_id} component {component_id} source {slot_id} has no URLs");
+        }
+        if !self.derivation.starts_with("/nix/store/") || !self.derivation.ends_with(".drv") {
+            bail!(
+                "unit {unit_id} component {component_id} source {slot_id} has invalid derivation identity"
+            );
         }
         if !self.hash.starts_with("sha256-") || self.hash.len() > 128 {
             bail!("unit {unit_id} component {component_id} source {slot_id} has invalid SRI hash");
@@ -505,6 +512,8 @@ pub struct ArtifactSlot {
     pub inputs: Vec<ArtifactInput>,
     /// Current recursive SRI hash literal.
     pub hash: String,
+    /// Exact evaluated artifact derivation identity.
+    pub derivation: String,
     /// Closed kind-specific builder parameters.
     pub materializer: ArtifactMaterializer,
     /// Optional repository outputs a materializer may replace.
@@ -778,6 +787,10 @@ fn validate_artifacts(
         }
         if !artifact.hash.starts_with("sha256-") || artifact.hash.len() > 128 {
             bail!("unit {unit_id} artifact {artifact_id} has an invalid SRI hash");
+        }
+        if !artifact.derivation.starts_with("/nix/store/") || !artifact.derivation.ends_with(".drv")
+        {
+            bail!("unit {unit_id} artifact {artifact_id} has an invalid derivation identity");
         }
         let mut previous = None;
         for input in &artifact.inputs {
@@ -1055,6 +1068,7 @@ mod tests {
                         "sources": {
                             "source": {
                                 "fetcher": "fetchurl",
+                                "derivation": "/nix/store/00000000000000000000000000000000-source.drv",
                                 "urlTemplates": [{
                                     "scheme": "https",
                                     "authority": "zlib.net",
@@ -1152,6 +1166,7 @@ mod tests {
             "goModules": {
                 "inputs": [{"kind": "source", "component": "main", "slot": "source"}],
                 "hash": "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                "derivation": "/nix/store/11111111111111111111111111111111-go-modules.drv",
                 "materializer": {
                     "kind": "go-modules",
                     "sourceRoot": ".",
@@ -1163,6 +1178,7 @@ mod tests {
             "npmModules": {
                 "inputs": [{"kind": "artifact", "artifact": "goModules"}],
                 "hash": "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
+                "derivation": "/nix/store/22222222222222222222222222222222-npm-modules.drv",
                 "materializer": {
                     "kind": "npm-deps",
                     "sourceRoot": ".",

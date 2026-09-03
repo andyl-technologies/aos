@@ -62,16 +62,20 @@ pub async fn run(cli: &Cli, args: &MaintainArgs, printer: &Printer) -> Result<Co
     match &args.command {
         None => cached_completion("home", args, None),
         Some(MaintainCommand::Inventory(command)) => {
-            let evaluated = NixRunner::new(cli.verbose, cli.quiet)
-                .and_then(|nix| inventory::evaluate(&nix, command.target.as_deref()))
-                .and_then(|envelope| {
-                    let store =
-                        state::StateStore::open_for_envelope(args.state_dir.as_deref(), &envelope)?;
-                    store.write_inventory(&envelope)?;
-                    Ok(envelope)
-                });
+            let evaluated = NixRunner::new(cli.verbose, cli.quiet).and_then(|nix| {
+                let envelope = inventory::evaluate(&nix, command.target.as_deref())?;
+                let audited = if command.check {
+                    inventory::audit_fixed_outputs(&nix, &envelope, command.target.as_deref())?
+                } else {
+                    0
+                };
+                let store =
+                    state::StateStore::open_for_envelope(args.state_dir.as_deref(), &envelope)?;
+                store.write_inventory(&envelope)?;
+                Ok((envelope, audited))
+            });
             match evaluated {
-                Ok(envelope) => {
+                Ok((envelope, audited)) => {
                     let mut values = BTreeMap::new();
                     values.insert(
                         "unitCount".to_string(),
@@ -86,6 +90,10 @@ pub async fn run(cli: &Cli, args: &MaintainArgs, printer: &Printer) -> Result<Co
                         }
                         .to_string(),
                     );
+                    if command.check {
+                        values.insert("fixedOutputsAudited".to_string(), audited.to_string());
+                        values.insert("inventoryCheck".to_string(), "true".to_string());
+                    }
                     let digest = envelope.inventory_digest.to_string();
                     completion(
                         "inventory",
@@ -2352,7 +2360,12 @@ fn render_human(result: &MaintainCommandResult, screen_reader: bool, printer: &P
             .cloned()
             .unwrap_or_else(|| envelope.inventory.units.len().to_string());
         printer.kv("Units", &unit_count);
-        if result.command == "inventory" {
+        if let Some(audited) = result.data.values.get("fixedOutputsAudited") {
+            printer.kv("Fixed outputs", &format!("{audited} associations verified"));
+        }
+        if result.command == "inventory"
+            && result.data.values.get("inventoryCheck").map(String::as_str) != Some("true")
+        {
             printer.plain("");
             for unit in &envelope.inventory.units {
                 let current = unit
