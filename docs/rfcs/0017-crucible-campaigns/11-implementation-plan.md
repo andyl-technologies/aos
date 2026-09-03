@@ -2277,9 +2277,18 @@ contract now binds the exact concrete monitor callback and private monitor
 basis into the one-shot adapter before fork. Child resource application can no
 longer substitute a runtime after descriptor mutation begins, and that retained
 callback composes all held monitor reconstruction steps through greeting. No
-command invokes this path; global child-thread registry reconstruction,
-production fork invocation, post-commit input release, and readiness bits 7 and
-8 remain open.
+command invokes this path; production fork invocation, post-commit input
+release, and readiness bits 7 and 8 remain open.
+The bounded thread and registered-`QemuMutex` registries now expose one
+coordinator-owned transaction that holds both registries across a real fork.
+It rejects in-flight `qemu_thread_create()` starts and nonquiescent registered
+mutexes, leaves the parent registry unchanged at release, and reconstructs the
+immediate child around exactly the surviving coordinator. A real-fork
+regression and locked-mutex negative control cover those outcomes. The
+transaction remains unwired to a production fork command and deliberately does
+not claim raw `pthread`/GLib lock completeness, explicit RCU fork composition,
+or the remaining subsystem dispositions, so it cannot advance readiness bit 8
+by itself.
 These are executable T-CAM-6.1 audit prerequisites, not completion of the task:
 the internal registry identifies two non-coordinator subsystem owners but has
 no safe non-coordinator child disposition. The retained AIO/BH/timer and RCU

@@ -1837,6 +1837,7 @@ in
           patch=0180-crucible-reconstruct-child-monitor-iothread.patch
           patch=0181-crucible-activate-reconstructed-child-qmp.patch
           patch=0182-crucible-bind-concrete-child-qmp-runtime.patch
+          patch=0183-crucible-reconstruct-child-thread-registry.patch
           plugin_endpoint_schema_version=4
           plugin_endpoint_source_descriptors_observed=true
           plugin_endpoint_replacement_plan_bound=false

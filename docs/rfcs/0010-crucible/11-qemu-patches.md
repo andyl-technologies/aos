@@ -3294,6 +3294,38 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   `T-CAM-6.3` remain incomplete.
 - **Risk:** F.
 
+### crucible-hot-fork-child-thread-registry — reconstruct the immediate child registry
+
+- **Patch:** `0183-crucible-reconstruct-child-thread-registry.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** an explicit coordinator-owned transaction serializes the
+  bounded QEMU thread registry and registered `QemuMutex` registry across one
+  process fork. It rejects a foreign coordinator, registry overflow, an
+  in-flight `qemu_thread_create()` start, or any registered mutex that is
+  uninitialized, ownership-invalid, locked, recursive, waiting on acquisition
+  or a condition, or crossing an unlock transition. Exact process, thread,
+  coordinator-record, and generation checks protect the parent release and
+  child reconstruction paths. The parent unlocks without changing either
+  registry. The immediate child detaches the sole surviving coordinator node,
+  makes all copied non-surviving thread records unreachable, resets its bounded
+  registry state, binds the coordinator to the child thread identity, and
+  advances the process-local generation before releasing both locks.
+- **Micro-test:** a real-fork unit test starts an additional parked QEMU thread,
+  begins the registry transaction, proves the child contains exactly its
+  coordinator, and proves the parent's generation and complete thread inventory
+  are unchanged after release. A negative test holds a registered `QemuMutex`
+  and requires pre-fork rejection, then proves the transaction succeeds only
+  after unlock. Strict patch certification pins the held-transaction APIs,
+  in-flight-start barrier, mutex quiescence predicate, child singleton rebuild,
+  and both test registrations.
+- **Inertness:** no shipped command begins this transaction or invokes
+  `fork(2)`. It covers QEMU-created threads and registered QEMU mutexes only; it
+  does not inventory raw `pthread`/GLib locks, compose QEMU's RCU fork protocol,
+  complete every subsystem disposition, pair a host continuation, release guest
+  admission, or acknowledge readiness bit 7 or 8. `T-CAM-6.1` through
+  `T-CAM-6.3` remain incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

@@ -2972,6 +2972,35 @@
         '';
       };
     }
+    {
+      patch = "0183-crucible-reconstruct-child-thread-registry.patch";
+      check = certifyExactPatch {
+        patchName = "0183-crucible-reconstruct-child-thread-registry.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-child-thread-registry";
+        liveEvidence = ''
+          grep -Fxq 'patch=0183-crucible-reconstruct-child-thread-registry.patch' "$live_result"
+          grep -Fq 'qemu_thread_hot_fork_begin_registry_transaction' \
+            ${patchDir}/0183-crucible-reconstruct-child-thread-registry.patch
+          grep -Fq 'qemu_thread_hot_fork_release_parent_registry_transaction' \
+            ${patchDir}/0183-crucible-reconstruct-child-thread-registry.patch
+          grep -Fq 'qemu_thread_hot_fork_reconstruct_child_registry' \
+            ${patchDir}/0183-crucible-reconstruct-child-thread-registry.patch
+          grep -Fq 'qemu_hot_fork_thread_starts_in_flight' \
+            ${patchDir}/0183-crucible-reconstruct-child-thread-registry.patch
+          grep -Fq '!qemu_hot_fork_registered_mutexes_quiescent()' \
+            ${patchDir}/0183-crucible-reconstruct-child-thread-registry.patch
+          grep -Fq 'qemu_hot_fork_threads = coordinator_node' \
+            ${patchDir}/0183-crucible-reconstruct-child-thread-registry.patch
+          grep -Fq '/crucible/hot-fork-child/registry-rebuild' \
+            ${patchDir}/0183-crucible-reconstruct-child-thread-registry.patch
+          grep -Fq '/crucible/hot-fork-child/registry-locked-mutex' \
+            ${patchDir}/0183-crucible-reconstruct-child-thread-registry.patch
+          grep -Fq 'rcu_disable_atfork()' \
+            ${patchDir}/0183-crucible-reconstruct-child-thread-registry.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =

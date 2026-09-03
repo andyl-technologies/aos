@@ -1256,6 +1256,23 @@ dispatcher/IOThread reconstruction, endpoint attachment, greeting, and input
 release primitives now exist, but the production fork owner does not yet invoke
 the composed callback or perform the post-commit private-stream release, and
 proof bits 7 and 8 remain clear.
+
+The QEMU thread and registered-`QemuMutex` inventories now also have an explicit
+coordinator-owned fork transaction. Beginning the transaction serializes both
+registries, rejects an in-flight `qemu_thread_create()` start, requires the
+calling thread to be the exact registered coordinator, and requires every
+bounded registered mutex to be initialized, ownership-valid, unlocked, and
+free of recursive ownership, waiters, condition waiters, and an active unlock
+transition. The parent releases the transaction only if its process, thread,
+coordinator record, and registry generation are unchanged. The immediate child
+instead reconstructs the copied thread registry around the sole surviving
+coordinator and advances its process-local generation before releasing the
+registry locks. A real-fork unit test proves the parent registry is unchanged,
+the child contains exactly that coordinator, and a locked registered mutex
+fails before fork. This transaction does not inventory raw `pthread` or GLib
+locks, compose QEMU's RCU fork protocol, choose every subsystem disposition, or
+invoke `fork(2)` from a production command. Those obligations remain part of
+the closed supported-profile registry, so readiness bit 8 stays clear.
 The version-3 child-QMP report now derives `disposition-complete` from that
 exact accepted one-shot status instead of hard-coding false. Prepared but
 unattempted, contradictory, failed, and reset adapters remain incomplete; the
