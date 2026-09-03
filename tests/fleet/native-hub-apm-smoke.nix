@@ -49,6 +49,10 @@ in {
   # well over twenty minutes in that one production-sized transaction before
   # the reboot/rollback checks begin.
   timeout = 5400;
+  # All three production-sized images boot concurrently. On a contended KVM
+  # builder, their guest clocks can advance substantially slower than wall
+  # time during initrd repartitioning, so use the same allowance as reboots.
+  bootTimeout = 600;
 
   machines = {
     consumer = {
