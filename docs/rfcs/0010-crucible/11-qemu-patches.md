@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **174 patches**. This count is checked against
+The carried series contains **175 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -3156,6 +3156,32 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   dispatcher or monitor I/O thread, invoke the production fork coordinator,
   release guest input, or acknowledge readiness bit 7 or 8. The remaining
   monitor transaction and `T-CAM-6.1` through `T-CAM-6.3` stay incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-held-child-qmp-protocol — reset inherited protocol state while held
+
+- **Patch:** `0178-crucible-reset-reconstructed-child-qmp-protocol.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** a child-incarnation-only one-shot monitor transition requires
+  the exact retained monitor, I/O-thread, dispatcher, chardev, socket, and
+  lifecycle basis. Before mutation it also requires an empty monitor named-FD
+  table, global fdset registry, output buffer and output watch, no mux/reset
+  state, an open frontend, and the complete empty request/parser inventory. It
+  consumes the held socket
+  replacement, destroys the inherited JSON parser, constructs a fresh empty
+  parser, and resets the monitor to capability negotiation with only the
+  supported I/O-thread OOB capability offered. Input remains held and no
+  greeting is emitted.
+- **Micro-test:** strict patch certification pins the child-only process check,
+  empty local-state predicates, socket transition, parser replacement,
+  capability reset, and held-input result. Patch regeneration and the Phase 6
+  live result bind the new carried patch.
+- **Inertness:** no shipped command calls this child-only primitive. It does
+  not rebuild the inherited dispatcher or monitor I/O thread, emit the QMP
+  greeting, release input, invoke the production fork coordinator, admit a
+  guest, or acknowledge readiness bit 7 or 8. The remaining monitor transaction
+  and `T-CAM-6.1` through `T-CAM-6.3` stay incomplete.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

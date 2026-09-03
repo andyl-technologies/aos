@@ -783,6 +783,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0178-crucible-reset-reconstructed-child-qmp-protocol.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
