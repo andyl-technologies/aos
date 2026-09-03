@@ -21,6 +21,8 @@ pub const SIGNED_RECEIPT_V1: &str = "aos.hub.signed-release-evidence/v1";
 pub const RECEIPT_SIGNATURE_DOMAIN: &str = "aos.hub.release-evidence-signature/v1";
 /// Schema for the independently approved release-completion decision.
 pub const COMPLETION_RECEIPT_V1: &str = "aos.release.completion-receipt/v1";
+/// Schema for an explicitly approved empty Hub registry bootstrap.
+pub const REGISTRY_BOOTSTRAP_INTENT_V1: &str = "aos.release.registry-bootstrap-intent/v1";
 
 /// Canonical Ed25519 envelope for a release evidence payload.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -165,6 +167,60 @@ impl PublicationReceiptV1 {
                 bail!("production receipt requires exact staging continuity")
             }
         }
+    }
+}
+
+/// Signed intent authorizing the first exact registry base in one Hub.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryBootstrapIntentV1 {
+    /// Exact bootstrap schema identifier.
+    pub schema_version: String,
+    /// Isolated Hub environment receiving the base.
+    pub environment: HubEnvironment,
+    /// Deployment identity frozen by the release plan.
+    pub deployment_id: String,
+    /// Canonical registry identity.
+    pub registry: String,
+    /// Exact signed registry commit installed as the empty release base.
+    pub base_commit: String,
+    /// Frozen release-plan identity requesting the bootstrap.
+    pub plan_digest: Sha256Digest,
+    /// Public approving authority identity.
+    pub authority_id: String,
+    /// RFC 3339 UTC approval time.
+    pub approved_at: String,
+}
+
+impl RegistryBootstrapIntentV1 {
+    /// Validates the closed bootstrap intent independently of a plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported schema, malformed identities,
+    /// noncanonical registry or commit identity, or non-UTC approval time.
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != REGISTRY_BOOTSTRAP_INTENT_V1 {
+            bail!("unsupported registry bootstrap intent schema");
+        }
+        require_identifier(&self.deployment_id, "bootstrap deployment id")?;
+        require_identifier(&self.authority_id, "bootstrap authority id")?;
+        if self.registry != CANONICAL_REGISTRY {
+            bail!("registry bootstrap intent names a noncanonical registry");
+        }
+        if !matches!(self.base_commit.len(), 40 | 64)
+            || !self
+                .base_commit
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            bail!("registry bootstrap commit is not lowercase Git hex");
+        }
+        if !self.approved_at.ends_with('Z') || humantime::parse_rfc3339(&self.approved_at).is_err()
+        {
+            bail!("registry bootstrap approval time must be RFC 3339 UTC");
+        }
+        Ok(())
     }
 }
 
@@ -408,5 +464,22 @@ mod tests {
         receipt.channel_receipt_digests.sort();
         receipt.operational_handoff_complete = false;
         assert!(receipt.validate().is_err());
+    }
+
+    #[test]
+    fn registry_bootstrap_intent_is_environment_and_commit_bound() {
+        let mut intent = RegistryBootstrapIntentV1 {
+            schema_version: REGISTRY_BOOTSTRAP_INTENT_V1.into(),
+            environment: HubEnvironment::Staging,
+            deployment_id: "staging-2026-09".into(),
+            registry: CANONICAL_REGISTRY.into(),
+            base_commit: "a".repeat(40),
+            plan_digest: Sha256Digest::of_bytes("plan"),
+            authority_id: "release-evidence".into(),
+            approved_at: "2026-09-03T00:00:00Z".into(),
+        };
+        assert!(intent.validate().is_ok());
+        intent.base_commit = "A".repeat(40);
+        assert!(intent.validate().is_err());
     }
 }

@@ -24,6 +24,8 @@ The current implementation provides these fail-closed operations:
   canonical staging deployment identity before and after upload, reuses the
   bounded Hub publication protocol, reads every object back anonymously, and
   writes a staging receipt plus successor journal;
+- `aos release bootstrap` installs a threshold-approved first registry base in
+  an otherwise empty staging or production Hub;
 - `aos release timestamp refresh` renews only the short-lived pointer to an
   already root-authorized immutable snapshot, including recovery after expiry;
 - `aos release timestamp publish` reserves the exact next metadata generation,
@@ -243,6 +245,39 @@ with the same publication and evidence; a different request for the reserved
 version fails closed. The coordinator then performs full anonymous public
 read-back and preserves the timestamp plus publication evidence without
 replacing an existing output.
+
+## Bootstrap the first Hub registry base
+
+A new staging or production Hub has no publication that can serve as the
+compare-and-swap parent of its first release. Do not let the first release
+self-authorize that base. Obtain identical
+`aos.release.registry-bootstrap-intent/v1` envelopes signed by exactly the
+plan's `release-evidence` threshold. The intent binds the environment,
+deployment, `andyl/main`, planned base commit, plan digest, public authority,
+and approval time.
+
+Install the reviewed base in staging first:
+
+```sh
+aos release bootstrap \
+  --plan release-plan.json \
+  --registry-surface base-registry-surface \
+  --environment staging \
+  --signed-intent approvals/staging-bootstrap-1.json \
+  --signed-intent approvals/staging-bootstrap-2.json \
+  --approval-key evidence-1=/media/keys/evidence-1.pub \
+  --approval-key evidence-2=/media/keys/evidence-2.pub \
+  --output staging-bootstrap
+```
+
+Repeat with independent production intent envelopes, the production token,
+`--environment production`, and a different output directory. The command
+refuses a destination containing any publication, requires the resulting first
+publication to have no parent, checks its default commit against the plan,
+pins the environment deployment identity before and after upload, and performs
+complete and ranged public read-back. Preserve the emitted bootstrap evidence;
+all later release publications use this base publication as their explicit
+parent. Bootstrap is not a recurring release step.
 
 ## Stage a finalized M1 bundle
 

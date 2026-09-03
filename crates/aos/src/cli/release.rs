@@ -30,6 +30,8 @@ pub enum ReleaseCommand {
     Qualify(ReleaseQualifyArgs),
     /// Import the exact qualified release into the canonical production Hub
     Promote(ReleasePromoteArgs),
+    /// Install one explicitly approved first registry base in an empty Hub
+    Bootstrap(ReleaseBootstrapArgs),
     /// Advance or complete planned production channel rollout
     Channel {
         #[command(subcommand)]
@@ -37,6 +39,37 @@ pub enum ReleaseCommand {
     },
     /// Verify a captured release bundle using only public trust inputs
     Verify(ReleaseVerifyArgs),
+}
+
+#[derive(Args)]
+pub struct ReleaseBootstrapArgs {
+    /// Canonical release plan whose registry base is being installed
+    #[arg(long)]
+    pub plan: PathBuf,
+
+    /// Complete static registry surface at the exact planned base commit
+    #[arg(long)]
+    pub registry_surface: PathBuf,
+
+    /// Isolated destination: staging or production
+    #[arg(long, value_parser = ["staging", "production"])]
+    pub environment: String,
+
+    /// Identical signed bootstrap intent; repeat to satisfy its threshold
+    #[arg(long = "signed-intent", required = true)]
+    pub signed_intents: Vec<PathBuf>,
+
+    /// Release-evidence key as KEY_ID=PATH; repeat for the planned threshold
+    #[arg(long = "approval-key", value_name = "KEY_ID=PATH", required = true)]
+    pub approval_keys: Vec<String>,
+
+    /// Short-lived environment-specific Hub access token
+    #[arg(long, env = "AOS_TOKEN", hide_env_values = true)]
+    pub token: Option<String>,
+
+    /// New bootstrap evidence directory; existing paths are never replaced
+    #[arg(long)]
+    pub output: PathBuf,
 }
 
 #[derive(Subcommand)]
