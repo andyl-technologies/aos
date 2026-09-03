@@ -70,7 +70,7 @@
   # invoke. Nix therefore computes a distinct runtime closure for every output.
   # The caller's PATH is retained solely for explicit user-supplied commands;
   # internal subprocesses always use the corresponding hermetic PATH.
-  aosRuntimeTools = [bash nix qemu-img zstd];
+  aosRuntimeTools = [bash nix qemu-img zstd] ++ lib.optionals (!isDarwinCross) [util-linux];
   aprRuntimeTools = [bash nix openssl sbsigntools mtools qemu-img zstd];
   apmPortableRuntimeTools = [bash nix openssl sbsigntools mtools qemu-img tpm2-tools zstd which];
   apmRuntimeTools =
@@ -94,6 +94,7 @@
   ];
   linuxToolEnvironment = ''
     export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
+    export AOS_UNSHARE="${util-linux}/bin/unshare"
     export AOS_SERVICE_ROOT_HELPER="${aos-service-root}/bin/aos-service-root"
     export AOS_SELINUX_RUNNER="${aos-selinux-run}/bin/aos-selinux-run"
     export AOS_VERITY_ROOT_GUARD="${aos-verity-root-guard}/bin/aos-verity-root-guard"

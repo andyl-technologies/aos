@@ -10,9 +10,16 @@ use aos_maintain::plan::{GateSpec, PackageUpdatePlanV1};
 use aos_maintain::run::{GateResult, GateResultsV1, PackageUpdateRunV1};
 use aos_maintain::workflow::{ActorClass, GateOutcome, RunState};
 
+use super::confinement::Backend;
 use super::state::{self, StateStore};
 
 const MAX_GATE_LOG_BYTES: usize = 8 * 1024 * 1024;
+
+struct ExecutedGatePlan {
+    results: Vec<GateResult>,
+    logs: Vec<(String, Vec<u8>)>,
+    confinement: aos_maintain::run::ConfinementEvidence,
+}
 
 /// Runs the immutable quick gate plan and records every result.
 ///
@@ -49,10 +56,18 @@ pub(super) fn quick(
         return Ok(record);
     }
 
+    let backend = Backend::detect().context("verifying local gate confinement")?;
+    let scratch = store.scratch_directory(run.run_id.as_str(), "quick")?;
     let mut results = Vec::with_capacity(plan.quick_gates.len());
     let mut logs = Vec::with_capacity(plan.quick_gates.len());
+    let mut confinement = None;
     for gate in &plan.quick_gates {
-        let (result, log) = execute_gate(Path::new(&run.worktree), gate)?;
+        let (result, log, evidence) =
+            execute_gate(Path::new(&run.worktree), &scratch, &backend, gate)?;
+        if confinement.as_ref().is_some_and(|prior| prior != &evidence) {
+            bail!("planned gates did not share one confinement policy");
+        }
+        confinement = Some(evidence);
         results.push(result);
         logs.push((gate.id.clone(), log));
     }
@@ -62,6 +77,8 @@ pub(super) fn quick(
         plan_id: plan.plan_id.clone(),
         phase: "quick".to_string(),
         candidate_digest: materialization.patch_digest,
+        confinement: confinement
+            .ok_or_else(|| anyhow::anyhow!("quick gate plan unexpectedly contained no gates"))?,
         results,
         completed_at_unix: state::now_unix()?,
     };
@@ -127,18 +144,26 @@ pub(super) fn final_gates(
         return Ok(record);
     }
 
-    let (results, logs) = execute_plan(Path::new(&run.worktree), &plan.final_gates)?;
+    let backend = Backend::detect().context("verifying local gate confinement")?;
+    let scratch = store.scratch_directory(run.run_id.as_str(), "final")?;
+    let executed = execute_plan(
+        Path::new(&run.worktree),
+        &scratch,
+        &backend,
+        &plan.final_gates,
+    )?;
     let record = GateResultsV1 {
         schema: PACKAGE_UPDATE_GATE_RESULTS_V1.to_string(),
         run_id: run.run_id.clone(),
         plan_id: plan.plan_id.clone(),
         phase: "final".to_string(),
         candidate_digest,
-        results,
+        confinement: executed.confinement,
+        results: executed.results,
         completed_at_unix: state::now_unix()?,
     };
     record.validate()?;
-    store.write_gate_results(&record, &logs)?;
+    store.write_gate_results(&record, &executed.logs)?;
     if record.all_succeeded() {
         store.transition(
             run,
@@ -152,44 +177,67 @@ pub(super) fn final_gates(
 
 fn execute_plan(
     root: &Path,
+    scratch: &Path,
+    backend: &Backend,
     gates: &[GateSpec],
-) -> Result<(Vec<GateResult>, Vec<(String, Vec<u8>)>)> {
+) -> Result<ExecutedGatePlan> {
     let mut results = Vec::with_capacity(gates.len());
     let mut logs = Vec::with_capacity(gates.len());
+    let mut confinement = None;
     for gate in gates {
-        let (result, log) = execute_gate(root, gate)?;
+        let (result, log, evidence) = execute_gate(root, scratch, backend, gate)?;
+        if confinement.as_ref().is_some_and(|prior| prior != &evidence) {
+            bail!("planned gates did not share one confinement policy");
+        }
+        confinement = Some(evidence);
         results.push(result);
         logs.push((gate.id.clone(), log));
     }
-    Ok((results, logs))
+    Ok(ExecutedGatePlan {
+        results,
+        logs,
+        confinement: confinement
+            .ok_or_else(|| anyhow::anyhow!("final gate plan unexpectedly contained no gates"))?,
+    })
 }
 
-fn execute_gate(root: &Path, gate: &GateSpec) -> Result<(GateResult, Vec<u8>)> {
+fn execute_gate(
+    root: &Path,
+    scratch: &Path,
+    backend: &Backend,
+    gate: &GateSpec,
+) -> Result<(GateResult, Vec<u8>, aos_maintain::run::ConfinementEvidence)> {
     let executable = std::env::current_exe().context("resolving frozen controller executable")?;
     let started = Instant::now();
-    let mut command = Command::new(executable);
+    let (mut command, confinement) = backend.command(
+        &executable,
+        &gate.argv[1..],
+        &[root.to_path_buf()],
+        &[scratch.to_path_buf()],
+    )?;
+    let home = scratch.join("home");
+    let temporary = scratch.join("tmp");
+    let cache = scratch.join("cache");
     command
-        .args(&gate.argv[1..])
         .current_dir(root)
-        .env_clear()
         .env("AOS_ROOT", root)
+        .env("HOME", &home)
+        .env("TMPDIR", &temporary)
+        .env("XDG_CACHE_HOME", &cache)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for name in [
         "PATH",
-        "HOME",
         "USER",
         "LOGNAME",
         "LANG",
         "LC_ALL",
-        "TMPDIR",
         "NIX_REMOTE",
         "NIX_CONFIG",
         "NIX_SSL_CERT_FILE",
         "SSL_CERT_FILE",
-        "XDG_CACHE_HOME",
     ] {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
@@ -240,7 +288,7 @@ fn execute_gate(root: &Path, gate: &GateSpec) -> Result<(GateResult, Vec<u8>)> {
         log_bytes: u64::try_from(log.len()).context("gate log length overflow")?,
         elapsed_ms,
     };
-    Ok((result, log))
+    Ok((result, log, confinement))
 }
 
 fn bounded_read(mut reader: impl std::io::Read) -> Result<(Vec<u8>, bool)> {

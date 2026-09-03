@@ -210,6 +210,47 @@ pub struct GateResult {
     pub elapsed_ms: u64,
 }
 
+/// Records the fail-closed local boundary used for candidate-controlled work.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConfinementEvidence {
+    /// Stable implementation and policy identity.
+    pub backend: String,
+    /// Kernel Landlock ABI observed before execution.
+    pub landlock_abi: u32,
+    /// Digest of the ordered filesystem grants supplied to the backend.
+    pub filesystem_policy_digest: Sha256Digest,
+    /// Whether a private user namespace was requested and verified.
+    pub private_user_namespace: bool,
+    /// Whether private mount, PID, IPC, and UTS namespaces were requested.
+    pub private_process_namespaces: bool,
+    /// Whether private networking and Landlock network denial were combined.
+    pub network_isolated: bool,
+    /// Whether the namespace supervisor kills the complete child tree on exit.
+    pub worker_tree_reaped: bool,
+}
+
+impl ConfinementEvidence {
+    /// Validates the minimum Linux confinement contract for maintenance work.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend identity, ABI, or mandatory isolation
+    /// properties do not satisfy the version-one contract.
+    pub fn validate(&self) -> Result<()> {
+        if self.backend != "aos.linux-userns-landlock/v1"
+            || self.landlock_abi < 4
+            || !self.private_user_namespace
+            || !self.private_process_namespaces
+            || !self.network_isolated
+            || !self.worker_tree_reaped
+        {
+            bail!("gate evidence does not satisfy the required confinement contract");
+        }
+        Ok(())
+    }
+}
+
 /// Binds a complete quick or final gate execution to one candidate patch.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -224,6 +265,8 @@ pub struct GateResultsV1 {
     pub phase: String,
     /// Candidate patch identity for pre-commit quick gates.
     pub candidate_digest: Sha256Digest,
+    /// Verified local confinement boundary shared by every gate in this set.
+    pub confinement: ConfinementEvidence,
     /// Complete planned results in plan order.
     pub results: Vec<GateResult>,
     /// Observation time in Unix seconds.
@@ -245,6 +288,7 @@ impl GateResultsV1 {
         {
             bail!("gate results header is invalid");
         }
+        self.confinement.validate()?;
         let mut ids = std::collections::BTreeSet::new();
         for result in &self.results {
             if result.gate_id.is_empty()
@@ -353,6 +397,11 @@ impl PackageUpdateEvidenceV1 {
             || self.final_gates.plan_id != self.plan_id
             || self.materialization.patch_digest != self.patch_digest
             || self.quick_gates.candidate_digest != self.patch_digest
+            || self.final_gates.candidate_digest
+                != Sha256Digest::separated(
+                    "aos.package-update-commit/v1",
+                    self.candidate_commit.value.as_bytes(),
+                )
             || self.quick_gates.phase != "quick"
             || self.final_gates.phase != "final"
             || !self.quick_gates.all_succeeded()
