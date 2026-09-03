@@ -54,15 +54,20 @@ Creation proceeds as one reconciled transaction:
 3. select a node, incarnation, and assignment epoch;
 4. atomically persist desired state, policy, complete preconditions,
    reservations, assignment, and the accepted operation before effects;
-5. create or clone private storage;
-6. resolve immutable base and package views;
-7. create broker-owned attachment slots;
-8. prepare required views and cache reservations;
-9. start the runtime;
-10. attach views into the observed payload namespace;
-11. install execution access and network policy;
-12. verify every hard enforcement and readiness condition; and
-13. publish the observed `Ready` generation.
+5. acquire the ownership-authority lease and install broker plans;
+6. arm the assignment guardian before payload start or shared external
+   endpoint activation;
+7. create or clone private storage;
+8. resolve immutable base and package views;
+9. create broker-owned attachment slots;
+10. prepare required views and cache reservations;
+11. create the pinned network namespace and install verified default-drop
+    policy while its external link remains down;
+12. start the runtime in that prepared namespace;
+13. attach views into the observed payload namespace;
+14. install execution access and raise the network link only after all hard
+    policy is observed; and
+15. publish the observed `Ready` generation.
 
 Failure compensates completed effects in reverse order and leaves durable
 evidence for reconciliation. A retry with the same idempotency key resumes or
@@ -160,10 +165,13 @@ The snapshot coordinator:
 8. seals private deltas needed by the snapshot;
 9. acquires durable ZFS holds, Nix GC roots, authoritative content/source
    leases, and every other required availability root;
-10. writes and verifies a `Prepared` manifest binding exact snapshot GUIDs,
-    closure generations, content revisions, and retention tokens;
-11. confirms every retention authority durably acknowledged its token, then
-    publishes the manifest as `Committed` and visible to restore;
+10. writes and verifies a controller `Prepared` transaction binding exact
+    snapshot GUIDs and usable retention tokens, plus a portable manifest that
+    commits closure generations, content revisions, typed claims, opaque
+    version hashes, and non-secret receipt digests;
+11. confirms every retention authority durably acknowledged the ledger token
+    committed by its receipt digest, then publishes the manifest as `Committed`
+    and visible to restore;
 12. releases transient pins while retaining the committed roots; and
 13. thaws only the runtimes that were running before the barrier when the
     caller did not request suspension.
@@ -181,6 +189,14 @@ Reconciliation may release orphan holds belonging to a never-committed
 committed manifest until every required byte has a durable availability root.
 Integrity identity without retained availability is not self-containment.
 
+Operational storage holds, content leases, Nix GC roots, service checkpoint
+tokens, and secret-retention handles live in a mutable controller retention
+ledger keyed by snapshot UID and receipt digest. The immutable manifest commits
+only typed dependency claims, immutable versions, non-secret receipt digests,
+and availability constraints. A receipt digest proves which acknowledgement
+was required; it is not a credential with which a snapshot reader can release
+or exercise that retention authority.
+
 A frozen filesystem gives stable bytes, not necessarily a Git-semantic point;
 it may preserve an index lock or an in-progress multi-file transaction. A Git
 semantic snapshot additionally requires a successful cooperative Git quiesce
@@ -197,7 +213,8 @@ dependency declarations, not silently captured data.
 A request for a self-contained snapshot fails if any required attachment is:
 
 - any external mutable live view, whether mounted read-only or read-write;
-- a service without a declared checkpoint token;
+- a service without a declared immutable checkpoint version and durable
+  controller-held retention receipt;
 - a device with mutable state;
 - an unsealed secret whose retention policy forbids capture; or
 - a backend state component outside the selected checkpoint capability.
@@ -208,6 +225,8 @@ Restore refuses when a dependency cannot satisfy it.
 Portable snapshots contain no secret bytes. A permitted sealed-secret
 reference remains an external dependency and records issuer, opaque version,
 availability/expiry constraints, and the authorization required at restore.
+The usable secret handle remains in the controller ledger and is reauthorized;
+it is never serialized into the portable object graph.
 
 ## Fork
 
@@ -251,6 +270,14 @@ Lease expiry begins draining. It does not delete a backing object until active
 kernel/open pins are reconciled. FUSE worker failure can leave an attachment
 faulted; the reconciler freezes the consumer when its required filesystem
 semantics are no longer available.
+
+An expired assignment plan authorizes only node-local containment: default-drop
+its network, freeze or kill its cgroup, detach namespace-local mounts after the
+payload is dead, and remove objects proven private to that node and assignment.
+Releasing a shared hold, destroying or mutating shared storage, rolling back a
+publication, or removing an externally reassigned endpoint requires a fresh
+controller cleanup plan subordinate to current ownership authority plus a
+compare-and-swap at that resource's authoritative fencing endpoint.
 
 ## Deletion
 

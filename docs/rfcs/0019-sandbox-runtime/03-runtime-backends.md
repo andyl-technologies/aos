@@ -38,10 +38,10 @@ snapshot does not imply process checkpointing.
 The first backend runs `systemd-nspawn` as a transient systemd service. AOS
 reuses nspawn for:
 
-- mount, PID, user, UTS, IPC, and network namespace construction;
+- mount, PID, user, UTS, and IPC namespace construction;
 - booting an AOS userspace with systemd as container PID 1;
 - capability and syscall restriction;
-- private or veth networking;
+- inheritance of the broker-prepared private network namespace;
 - integration with the host service manager and cgroup v2; and
 - orderly signal and shutdown behavior.
 
@@ -76,6 +76,10 @@ The transient service owns:
 - device and capability ceilings for nspawn itself; and
 - cleanup ordering relative to view workers and storage.
 
+It also has `BindsTo=` and ordering dependencies on the assignment guardian.
+If that guardian exits, expires, or cannot be reconstructed after reboot,
+systemd stops the nspawn service independently of the node reconciler.
+
 The nspawn backend uses one opaque, flat service name beneath
 `aos-sandboxes.slice`; it does not encode the logical ancestor path in a unit
 name or nested slice. The reconciler, not PID 1, owns incarnation replacement,
@@ -95,24 +99,63 @@ Restart=no
 CollectMode=inactive-or-failed
 KillMode=mixed
 OOMPolicy=kill
+BindsTo=aos-lease-guard-<incarnation>.service
+After=aos-lease-guard-<incarnation>.service
 TasksMax=<resolved bound>
 MemoryHigh=<resolved bound>
 MemoryMax=<resolved bound>
 CPUQuota/CPUWeight=<resolved policy>
 IOWeight/IO limits=<resolved policy>
 DevicePolicy=closed plus a typed allowlist
+CapabilityBoundingSet=<closed nspawn-supervisor set>
+RestrictAddressFamilies=<closed union required by supervisor and payload profile>
+SystemCallFilter=<closed inherited supervisor/payload ceiling>
+ProtectSystem=strict plus broker-resolved root/cgroup exceptions
+SELinuxContext=<dedicated nspawn-supervisor domain>
+NetworkNamespacePath=<broker-pinned prepared namespace>
 TimeoutStartSec/TimeoutStopSec=<bounded policy>
 ```
+
+The nspawn supervisor is itself an explicit privileged attack surface. It runs
+in a dedicated enforcing MAC domain with a golden host-filesystem allowlist:
+read-only AOS store paths and kernel API files required by the backend, the
+single broker-resolved private root, its prepared network namespace, its unit
+cgroup, journal/control sockets, and no other tenant roots. The exact
+capability, syscall, address-family, and device set is generated from the
+phase-0 trace and then closed. Unit-level seccomp and address-family filters are
+inherited, so they are ceilings over the union needed by the supervisor and
+selected payload; the pre-PID1 filter below narrows the payload further.
+Directory-backed sandboxes receive no loop, block, FUSE, module, BPF, perf, or
+ptrace access. The production MAC gate tests the nspawn supervisor separately
+from payload and brokers, including a fixed SELinux process transition for
+guest PID 1 rather than leaving it in the supervisor domain.
 
 The fixed `ExecStart` uses the absolute AOS store path of nspawn and a
 broker-resolved root. The argument profile includes `--boot`, `--quiet`,
 `--keep-unit`, `--register=no`, `--settings=no`, an opaque `--machine` label,
 `--directory` for the private root, an explicit
 `--private-users=<uid-base>:<count>` allocation,
-`--private-users-ownership=map`, `--notify-ready=yes`, and the resolved private
-network profile. It never uses `-U`, `--private-users=pick`, `auto` ownership,
-or `--volatile` for a durable root. Neither the property set nor argv is
-supplied by the public caller.
+`--private-users-ownership=map`, `--notify-ready=yes`, and a fixed
+`--selinux-context=<payload-domain>`. The service manager joins the
+broker-pinned prepared namespace before it executes nspawn; nspawn inherits the
+namespace and receives no network namespace path. This avoids nspawn's
+unpatched [259-series ordering
+failure](https://github.com/systemd/systemd/issues/36363) when its own
+`--network-namespace-path` is combined with private users, so AOS does not need
+to carry a second nspawn patch. It never asks nspawn to create a veth or raise
+an external link. It never uses `-U`,
+`--private-users=pick`, `auto` ownership, or `--volatile` for a durable root.
+Neither the property set nor argv is supplied by the public caller.
+
+Before nspawn starts, `aos-netd` creates and pins a network namespace owned by
+the host user namespace, leaves its veth down, installs default-drop,
+anti-spoof, route, egress, and endpoint state under the signed assignment plan,
+including the fixed tc-BPF `CLOCK_BOOTTIME` lease gate, and verifies the
+resulting kernel objects. Nspawn
+inherits that prepared namespace through the fixed transient-unit property.
+Netd raises the link only after runtime and policy readiness; every recovery
+path leaves an unrenewed or unknown link default-drop and down. This removes
+any boot interval in which guest code can transmit before policy exists.
 
 The payload profile computes the exact complement of the reviewed AOS boot
 allowlist across the kernel's supported capability range and passes that
@@ -131,14 +174,19 @@ capability without updating the threat analysis and fixtures. `CAP_SYS_ADMIN`,
 
 The payload also uses `--no-new-privileges=yes`, a closed nspawn
 `--system-call-filter`, and an AOS argument-aware seccomp layer inherited by
-every untrusted execution. Name filtering denies mount, unmount, new mount API,
-`pivot_root`, `setns`, `unshare`, BPF, module, perf, and ptrace operations. The
-argument filter permits ordinary `clone` only when every new user/mount/cgroup
-and other forbidden namespace flag is clear. It returns `ENOSYS` for `clone3`
-so libc falls back to inspectable `clone`; unrestricted `clone3` is never
-allowed. Tests verify threaded/process workloads still work and namespace
-creation does not. This is the nspawn analogue of an inherited
-`RestrictNamespaces` boundary, not a name-only filter claim.
+every untrusted execution. V1 installs the latter through an audited AOS nspawn
+patch in the payload child after namespace/setup syscalls and immediately
+before `execve` of guest PID 1. The profile is compiled into the exact AOS
+nspawn build and selected only by a closed broker-generated profile ID; no
+guest file or arbitrary BPF program is parsed. Name filtering denies mount,
+unmount, new mount API, `pivot_root`, `setns`, `unshare`, BPF, module, perf, and
+ptrace operations. The argument filter permits ordinary `clone` only when
+every new user/mount/cgroup and other forbidden namespace flag is clear. It
+returns `ENOSYS` for `clone3` so libc falls back to inspectable `clone`;
+unrestricted `clone3` is never allowed. Tests begin with the first guest PID
+and include independently systemd-started services, not only agent executions.
+This is the nspawn analogue of an inherited `RestrictNamespaces` boundary,
+not a name-only filter claim.
 
 The sandbox base system is built to boot without guest mount administration.
 If the exact AOS guest cannot do so, that is a failed phase-0 gate rather than
@@ -218,11 +266,15 @@ as complete admission accounting for clone/snapshot relationships. The node
 reports referenced, unique, snapshot, descendant, and pool-free dimensions
 separately.
 
-A clone inherits the origin's encryption root and key relationship. Cheap clone
-is therefore allowed only within the same disclosure and encryption domain.
-Cross-domain fork materializes a portable tree or uses a proven non-raw
-send/receive path into a new encryption root and re-verifies the result. Raw
-send that preserves the old key relationship does not establish separation.
+A clone inherits the origin's encryption root, key relationship, block
+ownership, and retention dependency. Cheap clone is therefore allowed only
+within the same disclosure, encryption, storage-accounting, and retention
+domain. The destination reserves its worst-case logical growth and retained
+origin obligation before the hold/clone transaction commits. A cross-account
+fork materializes a portable tree or uses a proven non-raw send/receive path
+into a new accounting/encryption root and re-verifies the result. A future
+shared-origin escrow would need explicit charging and deletion rights; raw send
+or a matching disclosure domain alone does not establish separation.
 
 Every origin snapshot receives a GUID-bound hold before a dependent clone is
 published. Normal lifecycle never invokes recursive destroy and never promotes
@@ -278,7 +330,7 @@ streaming protocol.
 The v1 execution data plane is OpenSSH inside the sandbox, using short-lived
 holder-bound certificates and forced-command/subsystem policy. It supplies a
 standard multi-machine transport for PTY resize, signals, exit status, flow
-control, reconnect policy, SFTP, and Git without defining another terminal
+control, disconnect policy, SFTP, and Git without defining another terminal
 framing protocol. Direct unrestricted SSH port forwarding and agent forwarding
 remain off unless separately granted.
 
@@ -288,9 +340,11 @@ to execution UID, sandbox incarnation, principal, expiry, and closed OpenSSH
 critical options; the endpoint never returns private key material. `sshd`
 accepts only the AOS execution CA, disables password and host-based login, and
 hands the certificate principal to a forced-command gate that rechecks the
-live execution record. Shell, subsystem, forwarding, and reattach rights are
-explicit certificate/profile features. A certificate cannot select an
-arbitrary account or escape to a different execution.
+live execution record. Shell, subsystem, and forwarding rights are explicit
+certificate/profile features. V1 has no PTY/stream reattachment; detached
+non-PTY execution and bounded output capture are separate execution features.
+A certificate cannot select an arbitrary account or escape to a different
+execution.
 
 Phase 0 must prove startup, namespace, certificate, forced-command, PTY,
 signal, SFTP, forwarding denial, audit, and closure-size behavior for the exact
@@ -309,8 +363,10 @@ desired state.
 
 The payload cgroup has `memory.oom.group=1` when the selected workload policy
 requires sandbox-atomic OOM. View workers, the node daemon, mount broker, and
-storage helpers are outside that cgroup. The node service never gives the
-sandbox payload a protected negative OOM score.
+storage helpers are outside that cgroup. The assignment guardian is also
+outside and receives a small measured protection sufficient to execute the
+fail-stop path. The node service never gives the sandbox payload a protected
+negative OOM score.
 
 Freeze applies to the exact delegated payload cgroup after execution admission
 is closed. `FreezeUnit` would also freeze the nspawn supervisor, so the v1 host

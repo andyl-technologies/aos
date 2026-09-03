@@ -10,7 +10,8 @@ The portable public status correlates:
 
 - portable sandbox UID and current incarnation;
 - desired and observed lifecycle phases;
-- assigned node and assignment epoch;
+- assigned node, assignment epoch, ownership lease generation/expiry, and
+  guardian state;
 - backend capability profile, root generation, and transaction state;
 - environment generation and pinned closure references;
 - attachment generations and health;
@@ -46,7 +47,8 @@ clock. Representative conditions are:
 - `Quiesced` or `Frozen`: the corresponding barrier is observed;
 - `Degraded`: an explicitly advisory feature is unavailable;
 - `Blocked`: reconciliation needs capacity, a dependency, or operator action;
-- `Fenced`: an assignment or incarnation lost authority; and
+- `Fenced`: an assignment or incarnation lost authority and its guardian has
+  contained the payload; and
 - `ResidualState`: deletion is logically complete but node-local resources
   still require reaping.
 
@@ -67,6 +69,8 @@ the consumer to infer missing authorization decisions.
 Audit events cover:
 
 - capability issue, attenuation, use, expiry, and revocation;
+- ownership lease issue/renewal/expiry, broker-plan acceptance, and guardian
+  containment;
 - create, place, start, stop, suspend, resume, fork, restore, and delete;
 - execution admission, attachment, exit, cancellation, and data-channel
   principal;
@@ -91,13 +95,16 @@ Required metric families include:
 
 - sandbox and execution counts by phase;
 - reconcile attempts, duration, conflicts, fencing failures, and residuals;
+- lease renewal margin, guardian expiry/death containment latency, and stale
+  cleanup denial;
 - create-to-ready, exec-start, freeze, snapshot, resume, and delete latency;
 - active native and FUSE attachments, replacement and detach duration;
 - FUSE requests, queue congestion, errors, forgets, open handles, registered
   backing files, fallback bytes, and worker restarts;
 - structural-index mapped bytes, resident bytes, nodes touched, and rebuilds;
-- logical cache bytes, physical resident bytes where measurable, reservations,
-  pins, duplicate avoidance, and evictions;
+- logical cache bytes, physical resident bytes where measurable, residency
+  profile, authorization leases, kernel pins, duplicate avoidance, and
+  evictions;
 - cgroup CPU, memory, swap, I/O, PID, pressure, and OOM events;
 - operation-scope CPU, memory, PIDs, I/O, network, logs, staging, cancellation,
   and output by project/class;
@@ -126,6 +133,7 @@ After daemon restart, systemd daemon-reexec, or host reboot, the node compares
 durable intent with an independently enumerated inventory:
 
 - transient units and invocation IDs from the manager;
+- assignment guardians, boot IDs, authority expiries, and lease generations;
 - cgroup IDs and payload membership;
 - live pidfds and namespace identities;
 - mount topology and unique IDs through `listmount` and `statmount`;
@@ -171,10 +179,10 @@ probe and readiness process as a fresh node.
 
 ## Backup and disaster recovery
 
-The coordinator database, portable snapshot manifests, canonical tree objects,
-and required immutable content are backed up according to their independent
-retention policies. Node-local unit names, mount IDs, FUSE indexes, and
-rebuildable caches are not backup state.
+The coordinator database, retention ledger, portable snapshot manifests,
+canonical tree objects, and required immutable content are backed up according
+to their independent retention policies. Node-local unit names, mount IDs,
+FUSE indexes, and rebuildable caches are not backup state.
 
 A restore drill must prove that held storage snapshots and external immutable
 dependencies still match their recorded identities. Missing dependencies leave

@@ -116,22 +116,32 @@ Native ZFS clones are preferred for same-pool forks. The storage lineage is
 logical and explicit; it does not rely on Git branches or overlay depth.
 
 Workspace fork has two explicit modes. The default sanitized project fork
-excludes repository administration storage, creates a fresh repository with
-`clone --no-local` over the authorized smart protocol, and overlays the
-snapshotted working files. Staged/index state is carried only through an
-explicit, validated Git-state export. A byte-exact fork clones `.git`, hooks,
-config, reflogs, and any accidentally stored credentials and therefore
-requires a distinct `inherit-repository-administration` grant. A cheap storage
-clone is never described as sanitized.
+excludes repository administration storage and creates fresh private mutable
+refs, index, hooks, configuration, and object staging. Same-node forks that
+advertise `cheap-sanitized-git-fork` attach a pinned read-only immutable pack
+generation containing the complete authorized ODB at a stable sandbox path;
+the private repository refers to it as a validated alternate while new objects
+remain private. Different disclosure or object-read audiences never share that
+generation. The compatible slow path uses `clone --no-local` over the
+authorized smart protocol and does not advertise cheap fork. Both paths overlay
+the snapshotted working files. Staged/index state is carried only through an
+explicit, validated Git-state export.
+
+A byte-exact fork clones `.git`, hooks, config, reflogs, and any accidentally
+stored credentials and therefore requires a distinct
+`inherit-repository-administration` grant. A cheap storage clone is never
+described as sanitized.
 
 This boundary follows Git's own
 [security guidance](https://git-scm.com/docs/git#_security) for obtaining a
 clean configuration and hooks boundary from an untrusted repository.
 
-A parent may attach a child's workspace read-only through an explicit live-view
-grant. Read-write sharing is exceptional and must declare an application-level
-coherency policy. A parent that wants changes normally fetches commits or
-imports a sealed snapshot instead.
+A parent may attach a child's workspace through an explicit
+`live-kernel-coupled-read` grant, which exposes socket/FIFO and lock interaction
+despite read-only mount attributes. Ordinary noninterfering inspection uses a
+filtered immutable revision. Read-write sharing is exceptional and must declare
+an application-level coherency policy. A parent that wants changes normally
+fetches commits or imports a sealed snapshot instead.
 
 ## Git is a protocol, not an isolation boundary
 
@@ -200,12 +210,13 @@ or loose objects through the filesystem-view cache while keeping mutable
 repository administration private.
 
 Git alternates that expose a host path are not portable and can become an
-authority escape. If an optimization uses alternates internally, the Git
-gateway owns and validates them, pins the exact immutable pack generation for
-the entire alternate lifetime, and exposes only a stable sandbox path. On
-same-node ZFS forks, CoW already shares Git bytes and alternates add no default
-benefit. The portable behavior remains ordinary fetch negotiation, bundles, or
-partial-clone/promisor protocol.
+authority escape. For the same-disclosure-domain cheap-fork capability, the Git
+gateway constructs a complete sanitized immutable pack generation, pins it for
+the entire repository lifetime, and exposes only a stable read-only sandbox
+path. The alternate cannot refer to a mutable object directory, another
+audience, or an incompletely reachable repository. The portable and cross-node
+behavior remains ordinary fetch negotiation, bundles, or
+partial-clone/promisor protocol; it is the compatible slow path.
 
 ## Build caches
 

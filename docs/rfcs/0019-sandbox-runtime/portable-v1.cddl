@@ -7,6 +7,7 @@ digest = bytes .size 32
 name = bytes .size (1..255)
 path = [* name]
 u64 = 0..18446744073709551615
+positive-u64 = 1..18446744073709551615
 i64 = -9223372036854775808..9223372036854775807
 feature = [namespace: text .size (1..255), major: 0..4294967295, minor: 0..4294967295]
 descriptor = [media-type: text .size (1..255), algorithm: 1, digest, encoded-size: u64]
@@ -25,7 +26,7 @@ xattr = [name: bytes, value: bytes]
 acl = [* acl-entry]
 acl-entry = [
   tag: 0..5, ; user-obj, named-user, group-obj, named-group, mask, other
-  qualifier: uint / null,
+  qualifier: 0..4294967295 / null,
   permissions: 0..7,
 ]
 
@@ -40,7 +41,7 @@ symlink-node = [kind: 2, metadata, target: bytes]
 content-layout = whole-content / sparse-content
 whole-content = [kind: 0, content: descriptor]
 sparse-content = [kind: 1, logical-size: u64, extents: [* extent]]
-extent = [offset: u64, length: u64, content: descriptor]
+extent = [offset: u64, length: positive-u64, content: descriptor]
 
 ; application/vnd.aos.sandbox.tree.v1+cbor
 tree-v1 = [version: 1, root: descriptor, required-features: [* feature]]
@@ -51,6 +52,31 @@ delta-v1 = [
   base: descriptor,
   result: descriptor,
   added-objects: [* descriptor],
+  required-features: [* feature],
+]
+
+view-source = immutable-tree-source / live-export-source
+immutable-tree-source = [kind: 0, tree: descriptor]
+live-export-source = [
+  kind: 1,
+  owner-sandbox: id,
+  export: id,
+  source-generation: u64,
+]
+view-presentation-action = view-include / view-exclude / view-present
+view-include = [kind: 0, source-prefix: path, destination: path]
+view-exclude = [kind: 1, destination: path]
+view-present = [kind: 2, destination: path, presentation-profile: feature]
+
+; application/vnd.aos.sandbox.view.v1+cbor
+view-v1 = [
+  version: 1,
+  source: view-source,
+  presentation: [* view-presentation-action],
+  consistency: 0..2, ; immutable, local-live, external-versioned
+  mutation: 0..4, ; read-only, read-write, private-cow, append-only, service
+  identity-presentation: feature,
+  disclosure: cache-domain,
   required-features: [* feature],
 ]
 
@@ -68,15 +94,29 @@ environment-v1 = [
 optimization-v1 = [version: 1, entries: [* optimization]]
 
 ; application/vnd.aos.sandbox.spec.v1+cbor
+identity-profile = private-userns-identity / host-identity
+private-userns-identity = [
+  kind: 0,
+  id-range-size: 1..4294967295,
+  unmappable-policy: 0..1, ; reject, synthesize through isolated presentation
+  required-features: [* feature],
+]
+host-identity = [kind: 1, required-features: [* feature]]
+resource-profile = [limits: [* limit]]
+network-profile = [
+  kind: 0..4, ; isolated, project, outbound, published, host
+  endpoint-ids: [* id],
+  required-features: [* feature],
+]
 sandbox-spec-v1 = [
   version: 1,
   runtime-profile: feature,
-  identity-profile: descriptor,
-  resource-profile: descriptor,
+  identity-profile,
+  resource-profile,
   environment: descriptor,
   root-view: descriptor,
   attachment-slots: [* id],
-  network-profile: descriptor / null,
+  network-profile,
   required-features: [* feature],
 ]
 
@@ -86,10 +126,11 @@ resource-kind = 0..14
 ; device, network-endpoint, ipc-service, cache-read, cache-publish,
 ; environment, attachment-slot, child-delegation
 
-operation-bits = 0..16383
+operation-bits = 0..32767
 ; bit 0 discover, 1 metadata-read, 2 content-read, 3 execute, 4 create,
 ; 5 content-write, 6 remove, 7 rename, 8 link, 9 metadata-write,
-; 10 attach, 11 lifecycle-control, 12 delegate, 13 publish
+; 10 attach, 11 lifecycle-control, 12 delegate, 13 publish,
+; 14 live-kernel-coupled-read
 
 selector = resource-selector / tree-selector / path-selector / profile-selector
 resource-selector = [kind: 0, resource: id]
@@ -137,17 +178,70 @@ policy-v1 = [
   explanation-reasons: [* reason],
 ]
 
-retention-root = [
-  kind: 0..4, ; storage hold, content lease, Nix GC root, service token, secret ref
+receipt = [algorithm: 1, digest]
+retention-claim = storage-retention / content-retention / nix-retention / service-retention / secret-retention
+storage-retention = [
+  kind: 0,
   resource: id,
-  immutable-version: descriptor / null,
-  opaque-token: bytes,
+  opaque-version: bytes .size (1..255),
+  version-sha256: digest,
+  receipt,
+]
+content-retention = [kind: 1, object: descriptor, receipt]
+nix-retention = [kind: 2, environment: descriptor, receipt]
+service-retention = [
+  kind: 3,
+  service: id,
+  checkpoint-version: bytes .size (1..255),
+  checkpoint-sha256: digest,
+  receipt,
+  available-until: i64 / null,
+]
+secret-retention = [
+  kind: 4,
+  issuer: id,
+  secret: id,
+  opaque-version: bytes .size (1..255),
+  restore-scope: id,
+  receipt,
   expires-seconds: i64 / null,
 ]
-storage-checkpoint = [backend: feature, portable-state: descriptor, roots: [* retention-root]]
+storage-checkpoint = [
+  backend: feature,
+  portable-state: descriptor,
+]
 attachment-snapshot = [view: descriptor, destination-slot: id, mode: 0..4]
-external-dependency = [kind: 0..4, resource: id, version: descriptor / null, required: bool]
-quiesce-evidence = [kind: 0..2, agent-version: feature / null, result-digest: digest / null]
+external-dependency = immutable-view-dependency / package-dependency / secret-dependency / service-dependency / network-dependency
+immutable-view-dependency = [kind: 0, view: descriptor, required: bool]
+package-dependency = [kind: 1, environment: descriptor, required: bool]
+secret-dependency = [
+  kind: 2,
+  issuer: id,
+  secret: id,
+  opaque-version: bytes .size (1..255),
+  restore-scope: id,
+  expires-seconds: i64 / null,
+  required: bool,
+]
+service-dependency = [
+  kind: 3,
+  service: id,
+  checkpoint-version: bytes .size (1..255),
+  checkpoint-sha256: digest,
+  available-until: i64 / null,
+  required: bool,
+]
+network-dependency = [
+  kind: 4,
+  endpoint: id,
+  contract-version: bytes .size (1..255),
+  available-until: i64 / null,
+  required: bool,
+]
+quiesce-evidence = no-quiesce / guest-quiesce / backend-quiesce
+no-quiesce = [kind: 0]
+guest-quiesce = [kind: 1, agent-version: feature, result-sha256: digest]
+backend-quiesce = [kind: 2, backend: feature, result-sha256: digest]
 
 ; application/vnd.aos.sandbox.snapshot.v1+cbor
 snapshot-v1 = [
@@ -157,25 +251,43 @@ snapshot-v1 = [
   ancestry: [* id],
   private-roots: [* descriptor],
   storage-checkpoints: [* storage-checkpoint],
+  retention-claims: [* retention-claim],
   environment: descriptor,
   attachments: [* attachment-snapshot],
   external-dependencies: [* external-dependency],
   consistency: 0..2,
   quiesce-evidence,
   required-restore-features: [* feature],
-  source-assignment: [sandbox: id, incarnation: id, epoch: uint],
+  source-assignment: [sandbox: id, incarnation: id, epoch: u64],
 ]
 
-; application/vnd.aos.sandbox.signature.v1+cbor
-signature-v1 = [
+key-reference = [
+  stable-key-id: text .size (1..255),
+  generation: u64,
+  public-key-sha256: digest,
+  usage: 0..3, ; policy, tree, snapshot, distribution
+]
+
+; application/vnd.aos.sandbox.trust-policy.v1+cbor
+trust-policy-v1 = [
+  version: 1,
+  trust-scope: id,
+  purpose: 0..3,
+  allowed-keys: [* key-reference],
+  required-features: [* feature],
+]
+
+signature-statement-v1 = [
   version: 1,
   subject: descriptor,
   trust-scope: id,
-  signer-key-id: text,
+  signer: key-reference,
   algorithm: 1, ; Ed25519
   purpose: 0..3,
   issued-seconds: i64,
   expires-seconds: i64 / null,
   verification-policy: descriptor,
-  signature: bytes .size 64,
 ]
+
+; application/vnd.aos.sandbox.signature.v1+cbor
+signature-v1 = [statement: signature-statement-v1, signature: bytes .size 64]

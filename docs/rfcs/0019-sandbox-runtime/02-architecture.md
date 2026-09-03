@@ -15,18 +15,15 @@ desired state, capability evaluation, scheduling, audit
                                                                aos-sandboxd
                                                        node reconciliation and
                                                             desired state
-                                               /   |    |    \
-                                              v    v    v     v
-                                      aos-viewd  hostd mountd netd
-                                          |       root fixed-function brokers
-                              +-----------+-----------+
-                              v           v           v
-                         FUSE workers  publisher  source adapters
-                              |           |           |
-                              +--- immutable backing -+
-                                          |
-                                   short-lived mount
-                                    namespace worker
+                          +----------+----------+----------+----------+----------+
+                          v          v          v          v          v          v
+                     aos-viewd     hostd     storaged    mountd      netd    guardians
+                   unprivileged    +------ root fixed-function -------+   fail-stop units
+                    /   |   \         |          |          |          |
+                FUSE publisher source systemd  storage    mount     packet
+              workers           adapters API   workers   workers     gates
+                       |
+               immutable backing
 ```
 
 The names are implementation-oriented and are not embedded in portable
@@ -55,7 +52,7 @@ The node sandbox daemon owns:
 - reconciliation of assigned sandbox generations;
 - desired transient-unit construction and unprivileged observation;
 - runtime backend lifecycle;
-- storage-backend transactions;
+- coordination of storage-backend transactions;
 - the catalog of sandbox exports and destination slots;
 - coordination of freeze, snapshot, restore, and deletion barriers;
 - node-local view and mount leases; and
@@ -67,20 +64,61 @@ It does not shell out to `systemd-run`, `systemctl`, `machinectl`, `nsenter`, or
 
 ## `aos-sandbox-hostd`
 
-The root-only host broker owns the narrow systemd and storage operations that
-AOS has not proven safe to delegate directly to an unprivileged daemon. It:
+The root-only host broker owns only the narrow systemd operations that AOS has
+not proven safe to delegate directly to an unprivileged daemon. It:
 
 - calls the typed `aos-systemd` transient-unit API;
 - verifies unit names, property sets, sandbox generation, and cgroup ancestry;
-- performs closed storage-driver operations over broker-owned datasets;
 - returns pinned observations rather than reusable host paths; and
 - has no public/network listener, source parser, or project-policy evaluator.
 
 The broker accepts a fixed operation vocabulary, not arbitrary D-Bus
-properties, unit fragments, commands, ZFS subcommands, or dataset names. If a
+properties, unit fragments, or commands. If a
 future AOS policy mechanism proves that `aos-sandboxd` can safely perform an
 operation without root, that individual verb may move out of the broker after a
 separate review.
+
+## `aos-storaged`
+
+The root-only storage broker has a separate socket, controller audience, MAC
+domain, capability set, durable fence, and failure domain from hostd. It owns
+only typed create, snapshot, hold, clone, quota, inventory, and exact-object
+destroy transactions over broker-catalogued datasets. It receives opaque
+dataset handles and immutable versions, never caller-chosen dataset names or
+ZFS option text.
+
+The v1 OpenZFS driver starts an AOS-built `zfs` binary directly with `execve`
+from a one-transaction worker; it never uses a shell or searches `PATH`. The
+broker constructs exact argv from a closed operation variant, passes a
+sanitized environment and FD set, bounds output, validates postconditions
+against dataset GUIDs and properties, and then the worker exits. Replacing
+this with a pinned library API requires a separate privilege, ABI, licensing,
+and crash-safety review rather than an in-process convenience change.
+
+## Per-assignment lease guardian
+
+Every active assignment has a small host-owned guardian unit created before
+the payload can start. It verifies the ownership-authority lease and broker
+plan, arms a `CLOCK_BOOTTIME` deadline, and is linked to the nspawn transient
+unit with systemd dependency semantics that stop the payload if the guardian
+dies or becomes inactive. Expiry independently default-drops the assignment's
+networking, attempts an early freeze, and stops the payload at the hard
+deadline; it does not depend on
+`aos-sandboxd` being alive or cooperative. Thaw and restart require a fresh
+lease and signed plan.
+
+The guardian runs under a dedicated unprivileged service identity with no
+network listener, ambient capability, mount/storage handle, or general systemd
+API. Before the safety deadline it may request the host broker's single
+assignment-freeze verb. At the deadline it exits, so the `BindsTo=` relationship
+stops the payload even if that request or the node daemon failed; the packet
+gate expires independently in kernel context.
+
+The guardian persists the authority expiry, lease generation, and host boot
+ID before acknowledging readiness. A reboot invalidates the local timer state
+and old plans; transient payload units are not resumed until current authority
+is reacquired. A restart reconstructs a deadline only from a still-valid
+authority-signed lease and never from a persisted monotonic counter alone.
 
 ## `aos-viewd`
 
@@ -105,17 +143,25 @@ The publisher is a separate, networkless service identity that alone owns the
 committed portable-object, mmap-index, and immutable-backing roots. Producers
 write only private staging. The publisher creates a new inode under its own
 root, copies or safely reflinks from a passed staging descriptor, hashes and
-validates size after the copy, fsyncs file and directory, and publishes with
-no-replace semantics. A reflink is acceptable only when later producer writes
-cannot modify the published inode.
+validates size after the copy, closes every writer, enables and verifies the
+immutability seal on that private inode, fsyncs it, and only then publishes it
+to the canonical name with no-replace semantics. It fsyncs the final parent
+after publication and commits catalog state last. A reflink is acceptable only
+when later producer writes cannot modify the published inode and source and
+destination share the same disclosure/cache-isolation domain.
 
 Neither `aos-viewd`, a source adapter, a FUSE worker, nor a sandbox receives a
 writable descriptor or directory permission for a committed inode. Read-only
 mode bits and service ownership are defense in depth, not the final
 immutability mechanism. A backend must enable
 [fs-verity](https://docs.kernel.org/filesystems/fsverity.html) on a supported
-filesystem and bind its measured digest, or expose only a read-only ZFS
-snapshot generation (or an equivalently proven immutable primitive). Live ZFS
+filesystem and bind its measured Merkle-root measurement to the independently
+verified AOS object descriptor, or expose only a read-only ZFS snapshot
+generation (or an equivalently proven immutable primitive). The two digest
+domains are not assumed equal. Recovery
+adopts a canonical-name inode only after re-verifying its exact descriptor and
+seal; otherwise it quarantines the inode. A ZFS publication similarly exposes
+only an already-created, held, read-only snapshot GUID. Live ZFS
 dataset inodes are not passthrough backing merely because the publisher owns
 them. Publication closes every staging writer before the sealed object becomes
 eligible for passthrough. The same protocol protects executable backing files
@@ -169,8 +215,11 @@ multithreaded broker process. Before namespace entry it receives a sealed plan
 and exact FD-role table, applies `close_range`, resets signals, installs a
 sanitized empty environment, and sheds unrelated capabilities. After entry it
 uses pinned target-root descriptors, `fchdir`/`chroot`, and a narrow seccomp
-profile so the old host root and cwd remain unreachable. It must exit after one
-operation.
+profile. `chroot` is path hygiene, not the confinement boundary: the boundary
+is the pre-entry MAC domain, exact FD-role set, closed syscall state machine,
+and staged capability lifecycle. Immediately after the one mount mutation the
+worker closes source and namespace descriptors, drops every capability, returns
+only the typed result channel, and exits.
 
 FUSE passthrough registration currently requires `CAP_SYS_ADMIN`. The broker
 performs the registration only for immutable, verified backing handles in the
@@ -184,6 +233,22 @@ sandbox veth creation, address/route assignment, egress policy, published
 endpoints, teardown, and inventory. It accepts typed profile handles and
 prevalidated endpoint sets, never arbitrary nftables text, interface names, or
 commands.
+
+Netd creates and pins the host-user-namespace-owned network namespace and down
+veth before nspawn starts,
+installs and verifies default-drop/anti-spoof policy, and raises the link only
+after readiness. Guardian expiry can always apply local default-drop. Removing
+or reassigning a shared external endpoint requires current ownership and an
+authoritative endpoint compare-and-swap, not an expired cleanup plan.
+
+For multi-node ownership, every packet also crosses fixed ingress and egress
+host-veth lease gates installed by netd. The gates compare the assignment epoch
+and a `CLOCK_BOOTTIME` expiry in a broker-owned map using a pre-reviewed tc-BPF
+program and `bpf_ktime_get_boot_ns()`; missing, stale, or expired entries drop
+without a userspace callback.
+Renewal updates only the matching map entry under a newer authority lease. This
+keeps suspend/resume and daemon death fail-closed before the guardian stop path
+runs; arbitrary BPF remains unavailable to the sandbox and node daemon.
 
 Every request binds sandbox UID, incarnation, assignment epoch, policy
 generation, network-namespace descriptor, and expected link identity. The
@@ -214,12 +279,12 @@ does not grow a universal request containing optional fields for every source.
 | Facility | Decision |
 | --- | --- |
 | systemd transient units and cgroup v2 | Reuse through `aos-systemd`. |
-| `systemd-nspawn` | Reuse as the initial runtime backend. |
+| `systemd-nspawn` | Reuse as the initial runtime backend, with one audited AOS pre-PID1 seccomp patch. |
 | `systemd-machined` | Optional future inventory projection; not authority. |
-| `systemd-nsresourced` | Reconsider for future unprivileged UID-range delegation; not v1. |
+| `systemd-nsresourced` | Phase 0 may compare it as a subordinate UID-range allocation engine; it is never identity authority or a v1 dependency. |
 | `systemd-mountfsd` | Reuse neither protocol nor privilege boundary for tree views. |
 | Linux new mount API and pidfds | Use directly behind a small audited Rust UAPI boundary. |
-| OpenZFS | Reuse for datasets, clones, snapshots, quotas, and holds where available. |
+| OpenZFS | Reuse through one-shot typed workers invoking the fixed AOS-built CLI; do not combine it with PID 1 authority. |
 | overlayfs | Reuse for one bounded private CoW layer over an immutable lower. |
 | FUSE protocol implementation | Prefer a maintained Rust library if the passthrough and cancellation spike passes; do not rewrite the protocol gratuitously. |
 | `aos-cache` | Reuse transport, compression, and Nix-cache concepts; build a separate lease-aware node residency engine. |
@@ -238,7 +303,7 @@ The component boundaries prevent several node-wide failure modes:
 - malformed tree data cannot directly exercise mount privilege;
 - a network parser compromise does not gain `CAP_SYS_ADMIN`;
 - a public API compromise cannot send arbitrary properties to PID 1 or commands
-  to ZFS;
+  to ZFS, and either broker compromise does not gain the other's authority;
 - one FUSE worker OOM does not abort every active view;
 - cache eviction cannot directly detach a mount;
 - sandbox payload OOM does not kill its filesystem worker; and

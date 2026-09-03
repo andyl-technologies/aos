@@ -103,6 +103,9 @@ The first implementation does not:
   and payload namespace generation; create and hibernated restore instead name
   expected absence and the resource version.
 - A stale assignment epoch or generation fails without side effects.
+- Ownership time comes only from an ownership-authority-signed lease. A
+  `CLOCK_BOOTTIME` guardian and packet gate contain the old payload without
+  relying on the unprivileged reconciler.
 - Runtime PIDs are observations, never durable identity.
 - A pidfd and verified cgroup membership pin the current payload before any
   namespace operation.
@@ -115,6 +118,9 @@ The first implementation does not:
   parent capability.
 - Child expiry cannot exceed any ancestor authority expiry.
 - Parent ancestry alone grants no filesystem access.
+- Ordinary content-read authority cannot select a native live view because
+  `ro` still shares sockets/FIFOs and inode locks; that coupling has its own
+  explicit operation.
 - A cache hit, warm page, existing mount, or possession of a lease ID never
   substitutes for authorization.
 - Authorization occurs before lookup, pinning, fetching, materialization, or
@@ -127,6 +133,8 @@ The first implementation does not:
 - The privileged broker resolves beneath pre-opened roots and attaches only to
   predeclared sandbox slots.
 - Every shared byte object is immutable after verification and publication.
+- A canonical cache name becomes visible only after the private inode is
+  sealed; catalog commit follows final-parent fsync.
 - Every writable upper, workspace, and staging tree is private to one sandbox
   or one explicitly transactional producer.
 - Logical lineage does not imply overlay nesting. Filesystem stack depth is
@@ -134,6 +142,8 @@ The first implementation does not:
 - FUSE-backed files never use another FUSE mount as their passthrough backing.
 - Native live views and remote immutable views advertise different consistency
   capabilities.
+- Strict disclosure domains share neither backing-filesystem cache identity nor
+  clone/reflink/dedup/ARC state.
 
 ### Resources and failure
 
@@ -145,6 +155,8 @@ The first implementation does not:
 - Shared physical residency and logical consumer accounting are separate.
 - A worker OOM cannot silently convert an attachment to a different backend or
   sharing mode.
+- Authorization lease expiry denies new cache use but never releases an active
+  kernel-reference pin or credits unreclaimed backing space.
 - A sandbox cannot become `Ready` until all required policy, runtime, storage,
   and attachment enforcement is observed.
 

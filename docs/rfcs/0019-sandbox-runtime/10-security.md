@@ -21,9 +21,14 @@ does not change the public authority model.
 
 No network-facing process has mount or system-manager privilege.
 
-`aos-sandbox-hostd` has the authority needed for a closed set of transient-unit
-and storage operations. It accepts no arbitrary D-Bus property, command,
-dataset name, or unit text.
+`aos-sandbox-hostd` has only the authority needed for a closed set of
+transient-unit and freeze/stop operations. It accepts no arbitrary D-Bus
+property, command, or unit text.
+
+`aos-storaged` has only typed dataset/snapshot/quota/hold authority over its
+broker catalog and invokes a fixed AOS-built storage worker. It has no PID 1,
+mount-namespace, or network authority and accepts no caller-selected dataset
+name, option, or command.
 
 `aos-mountd` has the authority needed for descriptor-based mount creation,
 namespace entry, attachment, detachment, and FUSE passthrough registration. It
@@ -41,32 +46,42 @@ configuration.
 
 The unprivileged node daemon is not the root of broker authority. Every broker
 independently verifies and persists its audience-specific controller-signed
-authorization plan, assignment tuple, policy commitment, and fail-stop lease
-before effects. Compromising the daemon can request only the closed verbs and
-bounds in an unexpired plan; it cannot mint a newer fence, change a handle's
-role, or renew authority by replay.
+authorization plan and the ownership-authority-signed lease to which it is
+subordinate. The assignment guardian independently stops a payload on expiry or
+guardian death. Compromising the daemon can request only the closed verbs and
+bounds in a matching unexpired plan/lease; it cannot mint time, change a
+handle's role, or renew authority by replay.
 
 ## Enablement blockers
 
 The initial backend is disabled until all of these gates pass:
 
-- AOS upgrades systemd 259.1 to at least 259.4, with 259.8 the current stable
-  candidate at the RFC date, rebases its patches, and proves `--settings=no` against
-  hostile host and image-adjacent `.nspawn` files;
-- transient-unit mutation is reachable only through the fixed root host daemon
-  and mount namespace mutation only through the smaller mount broker/worker;
+- AOS upgrades systemd 259.1 to at least 259.4, selects 259.8 as the maintained
+  259-series patch level at the RFC date, rebases its patches, and proves
+  `--settings=no` against hostile host and image-adjacent `.nspawn` files;
+- transient-unit, mount-namespace, and storage mutation are reachable only
+  through separate fixed-function host, mount, and storage brokers and their
+  one-shot workers;
 - every privileged component runs in a dedicated enforcing MAC or equivalent
   policy proven on a production-like labeled root—the current disabled or
   permissive SELinux posture is not sufficient;
+- the nspawn supervisor has its own enforcing MAC profile, exact capability,
+  device, address-family, syscall, and host-path allowlists, and the immutable
+  AOS argument-aware seccomp patch covers guest PID 1 before its first exec;
 - libseccomp knows every required Linux 6.18 mount/pidfd syscall or the audited
   Linux boundary installs verified numeric filters for each architecture;
 - ZFS idmaps, target/source race resistance, stale pidfd and namespace reuse,
   hard mount/FD limits, and lazy-unmount non-revocation pass exact-kernel tests;
 - untrusted Nix clients and cache publishers cannot acquire trusted-user,
   store-mutation, GC-root, substituter, key, path-disclosure, or cross-domain
-  authority; and
+  authority;
 - private networking proves address/route spoofing resistance and no general
-  device or host-network capability is delegated by a default profile.
+  device or host-network capability is delegated by a default profile; and
+- the fixed tc-BPF host-veth gate drops stale/expired epochs using
+  `CLOCK_BOOTTIME` across daemon death and host suspend/resume; and
+- the service manager's `NetworkNamespacePath=` joins the broker-pinned
+  host-owned namespace before nspawn exec, and nspawn private-user setup cannot
+  reorder or replace it.
 
 ## Path and descriptor safety
 
@@ -111,8 +126,10 @@ checks regular-file type, immutable publication state, disclosure domain,
 view/connection association, open mode, and expected digest handle.
 
 The immutable publication state includes a kernel/storage-enforced seal:
-fs-verity with the expected digest on a supported filesystem, a read-only ZFS
-snapshot generation, or an equivalently tested backend. A live inode remains
+fs-verity whose recorded Merkle-root measurement is bound to the verified AOS
+object descriptor on a supported filesystem, a read-only ZFS snapshot
+generation, or an equivalently tested backend. The fs-verity measurement and
+AOS domain-separated object digest are not conflated. A live inode remains
 ineligible while any producer alias could mutate it. Mode bits, ownership, a
 read-only descriptor, or a prior hash are not sufficient.
 
@@ -120,6 +137,12 @@ Passthrough is an authorization lifetime decision. Existing descriptors and
 memory mappings can outlive later policy change or lazy unmount. Security
 revocation stops the consuming cgroup; the API does not claim immediate
 per-open revocation.
+
+Every FUSE mount uses `allow_other + default_permissions` under a verified
+mount-user-namespace/idmap relationship. Unmappable IDs fail; ACLs require
+successful `FUSE_POSIX_ACL` conformance. Kernel DAC is defense in depth inside
+an already authorized view, while filtered view contents—not mode bits—enforce
+cross-sandbox disclosure.
 
 FUSE stack depth is explicitly bounded. Backing files on FUSE and recursive
 service dependencies are rejected. Worker binaries and control files live
@@ -131,14 +154,17 @@ Content identity is necessary but not sufficient for cache admission. The
 service verifies source authority, signature/provenance policy, digest, size,
 format, tree relationship, and disclosure domain before publication.
 
-Cache hits never bypass authorization. Strict and trust-group domains use
-separate backing inodes so they do not share page-cache timing. Public/project
-sharing acknowledges residual timing and resource-contention side channels;
-it is not advertised as complete microarchitectural isolation.
+Cache hits never bypass authorization. Strict domains use separate
+backing-filesystem cache identities and prohibit cross-domain reflink, clone,
+dedup, and shared ZFS origin/ARC state; separate inodes alone are insufficient.
+Public/project sharing acknowledges residual timing and resource-contention
+side channels; it is not advertised as complete microarchitectural isolation.
 
 Writable staging is private. Publication is separately authorized and atomic.
 A failed or canceled producer cannot leave partially verified bytes reachable
-under a committed identity.
+under a committed identity. Immutability is enabled and verified before the
+canonical name is published, the final parent is fsynced, and catalog commit is
+last; recovery re-verifies or quarantines any ambiguous final inode.
 
 ## Tree parser threats
 

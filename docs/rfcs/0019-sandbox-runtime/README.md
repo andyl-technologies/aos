@@ -63,20 +63,23 @@ snapshot views or service protocols.
    IDs are node-local implementation details.
 5. Dynamic mounts are represented by immutable view revisions and independent
    attachment objects. One view may have many attachments.
-6. Live local trees use native mounts. FUSE is used when AOS must synthesize a
-   namespace, filter it, or fetch immutable content lazily.
+6. Authorized kernel-coupled live local trees use native mounts. Noninterfering
+   inspection and synthesized, filtered, or lazily fetched immutable content
+   use FUSE or materialization.
 7. Shared bytes are immutable. Every writable upper or workspace is private;
    shared mutable caches require a transactional service interface.
 8. Authority, namespace construction, hard resource policy, and advisory
    optimization compile separately. Optimization can never expand authority.
 9. Hard enforcement that cannot be installed prevents `Ready`. Only policy
    explicitly marked advisory may degrade.
-10. Suspend, snapshot, restore, and delete are reconciliation operations over
+10. An ownership-authority lease and host-owned `CLOCK_BOOTTIME` guardian fence
+    every active assignment independently of the unprivileged reconciler.
+11. Suspend, snapshot, restore, and delete are reconciliation operations over
     durable desired state. A filesystem snapshot alone is never described as
     a complete sandbox snapshot.
-11. Tree, snapshot, policy, and RPC versions are independent compatibility
+12. Tree, view, snapshot, policy, and RPC versions are independent compatibility
     domains.
-12. Multi-node operation is designed into object identity and fencing, but v1
+13. Multi-node operation is designed into object identity and fencing, but v1
     does not claim coherent live remote POSIX mounts.
 
 ## Documents
@@ -115,8 +118,9 @@ This RFC is implemented only when:
 - identical authorized immutable files share one physical backing inode and
   backing-filesystem cache identity inside the configured disclosure domain,
   with page-cache/ARC behavior measured for the selected backend;
-- private and project-isolated cache modes demonstrably do not reuse backing
-  inodes across their isolation boundary;
+- strict cache modes demonstrably use separate backing-filesystem cache
+  identities and do not share reflinks, clones, dedup, or ZFS ARC keys across
+  their isolation boundary;
 - million-entry trees remain proportional to the touched working set in heap
   use and do not require eager inode construction;
 - hard memory, PIDs, storage, brokered mount-count, conservative FD, cache-disk,
@@ -124,6 +128,11 @@ This RFC is implemented only when:
 - FUSE worker OOM, daemon restart, node reboot, interrupted mount replacement,
   stale coordinator requests, and partial snapshot transactions reconcile to
   explicit terminal or recoverable states;
+- FUSE mounts prove `allow_other + default_permissions`, exact ID/ACL mapping,
+  and passthrough permission checks, while default descendant inspection omits
+  live socket/FIFO/lock coupling;
+- lease expiry, daemon/guardian death, host suspend, and reboot stop the old
+  payload and default-drop its network before ownership can move;
 - self-contained snapshots reject every external mutable dependency, including
   a live source mounted read-only, and restore with a new sandbox incarnation;
 - all authorization, delegation, cache, tree-parser, mount-race, snapshot, and

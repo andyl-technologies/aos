@@ -82,9 +82,13 @@ The command supports:
 - noninteractive stdin/stdout/stderr streaming;
 - PTY allocation and resize;
 - signal forwarding and explicit cancellation;
-- disconnect and reattach within the execution's lease;
 - exact exit status and terminating signal; and
 - bounded output capture as an alternative to streaming.
+
+V1 does not reattach a disconnected byte stream or PTY. By default SSH
+disconnect cancels that execution. An explicitly detached execution runs with
+no live PTY, writes bounded captured output, and is later inspected through the
+execution resource; attaching to that historical output is not stream replay.
 
 No execution data path travels through the privileged host daemon. The client
 uses the authorized OpenSSH route. The in-sandbox agent is an internal control
@@ -108,13 +112,16 @@ aos sandbox view attach \
 ```
 
 The CLI may offer a shorter `aos sandbox inspect-files` workflow, but it still
-creates a snapshot or live export plus an attachment and exposes those objects
-in status. There is no implicit host path, linked Git worktree, or privileged
-namespace traversal hidden behind the command.
+defaults to a filtered immutable snapshot view and exposes the snapshot,
+view, and attachment objects in status. There is no implicit host path, linked
+Git worktree, or privileged namespace traversal hidden behind the command.
 
-Live read-only inspection is labeled non-atomic. A snapshot provides stable
-bytes for review or audit, but not automatically a Git-semantic checkpoint: it
-may capture an index lock or partial Git transaction. Git status/diff runs
+Native live read-only inspection requires
+`live-kernel-coupled-read` and is labeled non-atomic and interfering: it may
+connect to sockets/FIFOs or participate in source inode locks despite `ro`. A
+snapshot provides stable noninterfering bytes for review or audit, but not
+automatically a Git-semantic checkpoint: it may capture an index lock or
+partial Git transaction. Git status/diff runs
 inside the child context or a fresh constrained inspection sandbox with
 sanitized repository administration. A committed ref obtained through the
 smart protocol is the stable Git-semantic interface. Read-write inspection

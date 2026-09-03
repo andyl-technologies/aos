@@ -10,14 +10,18 @@ implementation preferences.
 | Product surface | Sandboxes are generic resources; agents are ordinary clients | One lifecycle and security model serves development, CI, and automation |
 | Hierarchy | Logical ancestry is independent of runtime, cgroup, storage, Git, and mount graphs | Descendants can move nodes without changing identity or unit paths |
 | Runtime | nspawn transient units are the first backend | AOS reuses systemd supervision without exposing nspawn as the API |
-| Host authority | An unprivileged reconciler uses a root-only fixed-function host daemon | Public/network parsing never shares a root process with systemd, ZFS, or mounts |
+| Host authority | An unprivileged reconciler uses separate root-only host, storage, mount, and network brokers | Public/network parsing never shares a root process with systemd, ZFS, or mounts; PID 1 and dataset authority remain split |
+| Ownership expiry | An authority-signed lease arms a host-owned `CLOCK_BOOTTIME` guardian before start | Reconciler or guardian death and expiry stop the payload and default-drop its network before reassignment |
 | Runtime control | No machined dependency in v1 | Sandbox identity and reconciliation remain portable and AOS-owned |
+| Networking | Netd prepares a default-drop namespace and down veth; systemd joins it before nspawn exec | Guest boot has no pre-policy transmission interval and link activation follows readiness |
 | Nesting | Child sandboxes are host-managed siblings | No guest receives nspawn, mount, systemd-host, or ZFS authority |
 | Local storage | Prefer ZFS snapshots/clones when capability probes pass | Fast CoW does not make ZFS ancestry the logical tree |
 | Dynamic mount | Native descriptor-based idmapped mounts are the first usable path | FUSE is not placed on ordinary live local I/O |
+| Inspection | Immutable filtered views are the noninterfering default; native live reads require a kernel-coupling grant | Read-only mount flags do not silently grant socket/FIFO or inode-lock interaction |
 | Portable view | FUSE serves immutable, filtered, synthesized, or remote trees | AOS builds namespace semantics while kernel passthrough carries file data |
 | FUSE failure | Connections/workers are isolated per attachment or failure domain | Revocation and OOM have bounded blast radius at some mount overhead |
 | Sharing | Only immutable verified bytes cross trust boundaries | Writable workspaces, Git state, and mutable caches remain private or serviced transactionally |
+| Strict cache isolation | Separate backing-filesystem cache identities, not merely inodes | Cross-domain reflink, clone, dedup, and shared ARC keys are prohibited or placement fails |
 | Git | Each sandbox owns an independent repository and uses Git smart protocol | Git is synchronization/history, never the security or lifecycle boundary |
 | Nix | One authoritative store service per trust/disclosure domain | Sandboxes do not concurrently mutate one store with independent state databases |
 | Package changes | Advance an immutable environment generation | Existing processes retain their old environment; future execs see the new mount |

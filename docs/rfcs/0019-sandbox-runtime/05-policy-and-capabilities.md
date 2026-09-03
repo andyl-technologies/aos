@@ -45,7 +45,10 @@ list. Resource classes include:
 Each grant contains a typed operation set. File operations distinguish
 traversal, metadata read, content read, execute, create, mutate content,
 remove, rename, link, and metadata mutation. A socket is a service capability,
-not a read-write file. Devices and secrets use their own semantics.
+not a read-write file. Native live inspection additionally requires the
+`live-kernel-coupled-read` operation because it shares sockets/FIFOs and inode
+locks despite read-only mount flags. Devices and secrets use their own
+semantics.
 
 Allowlist grants default deny. Denials imposed by node or project ceilings
 cannot be overridden by a more specific child request. Two grants that produce

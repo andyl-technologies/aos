@@ -11,25 +11,34 @@ host systemd, mount, ZFS, Nix-trusted-user, or FUSE authority.
 
 Before runtime code:
 
-1. upgrade AOS systemd from 259.1 to at least 259.4, with 259.8 the current
-   stable candidate at the RFC date, and rebase its AOS patches;
-2. add and validate required kernel configuration, including FUSE passthrough;
+1. upgrade AOS systemd from 259.1 to at least 259.4, select 259.8 as the
+   maintained 259-series patch level at the RFC date, and rebase its AOS
+   patches;
+2. add and validate required kernel configuration, including FUSE passthrough
+   and `CONFIG_FS_VERITY`, and prove a default publication profile when ZFS is
+   disabled;
 3. prove the exact Linux 6.18 pidfd namespace, `openat2`, `open_tree_attr`,
    `mount_setattr`, `move_mount`, `statmount`, and `listmount` path on x86_64
    and aarch64;
-4. resolve libseccomp support for the required syscalls, using audited numeric
-   filters only if the packaged library cannot name them;
-5. prove nspawn user namespaces, fixed transient-unit properties, payload
-   leader discovery, internal reboot, and `--settings=no` in an AOS VM;
-6. prove ZFS 2.4 snapshot/hold/clone/quota/idmapped-mount behavior on the exact
+4. resolve libseccomp support for the required syscalls and implement the
+   audited nspawn pre-PID1 argument-filter patch, using audited numeric filters
+   only if the packaged library cannot name them;
+5. prove nspawn user namespaces, service-manager entry into the broker-pinned
+   prepared network namespace before nspawn exec, fixed transient-unit and
+   supervisor-MAC profiles, payload leader discovery, internal reboot, and
+   `--settings=no` in an AOS VM;
+6. prove the fixed tc-BPF host-veth lease gate uses `CLOCK_BOOTTIME` and drops
+   across daemon death and host suspend/resume before any payload packet;
+7. prove ZFS 2.4 snapshot/hold/clone/quota/idmapped-mount behavior on the exact
    AOS kernel;
-7. prove an immutable backing backend using fs-verity or read-only ZFS snapshot
+8. prove an immutable backing backend using fs-verity or read-only ZFS snapshot
    generations, including passthrough and crash recovery;
-8. prove strict physical Nix-store domains and either the untrusted-client
+9. prove strict physical Nix-store domains and either the untrusted-client
    contract or a required narrowing proxy;
-9. select and prove an enforcing host MAC boundary for every daemon/helper;
-10. benchmark native dynamic mounts and the candidate FUSE implementation; and
-11. prove the exact OpenSSH execution data plane, forced-command policy, and
+10. select and prove an enforcing host MAC boundary for every daemon/helper,
+   the nspawn supervisor, and assignment guardian;
+11. benchmark native dynamic mounts and the candidate FUSE implementation; and
+12. prove the exact OpenSSH execution data plane, forced-command policy, and
     forwarding denials; failure keeps the backend disabled pending a follow-up
     RFC for a separately versioned alternative.
 
@@ -40,9 +49,10 @@ backend; it is not papered over in later phases.
 ## Phase 1: portable model and protocols
 
 Implement resource IDs, generations, desired/observed state machines,
-capability attenuation, reservations, operations, snapshot and tree schemas,
-and public `aos.sandbox.v1` messages. Implement the bounded local broker
-protocol and descriptor-role validation without performing privileged effects.
+capability attenuation, reservations, operations, the complete tree/view/spec/
+snapshot/trust/signature schemas, and public `aos.sandbox.v1` messages.
+Implement ownership-lease generations, bounded local broker protocols, and
+descriptor-role validation without performing privileged effects.
 
 Exit criteria: model/property tests, protobuf compatibility fixtures, canonical
 format vectors, authority decoder tests, local protocol fuzzing, and simulated
@@ -52,20 +62,22 @@ portable core.
 ## Phase 2: journal, controller, and host boundary
 
 Implement the unprivileged single-node reconciler, durable desired-state
-journal, typed `aos-systemd` transport extensions, root-owned host daemon, and
-audited Linux UAPI boundary. Run fixed transient test services, reconcile them
-after process and PID 1 restarts, and inventory all residual resources.
+journal, typed `aos-systemd` transport extensions, separate root-owned
+host/storage/mount/network brokers, the assignment guardian, and the audited
+Linux UAPI boundary. Run fixed transient test services, reconcile them after
+process and PID 1 restarts, and inventory all residual resources.
 
 Exit criteria: crash injection at every record/effect boundary converges; no
 public request reaches a privileged parser; no arbitrary systemd property,
-host path, namespace ID, mount option, or subprocess command crosses the host
-protocol.
+host path, namespace ID, mount option, dataset name/option, or caller-supplied
+subprocess command crosses a broker protocol.
 
 ## Phase 3: bootable sandbox and execution
 
 Build an AOS sandbox guest root, private ZFS workspace/root, identity
 allocation, cgroup policy, private networking baseline, transient nspawn unit,
-and the selected guest execution endpoint. Keep machined disabled.
+prepared default-drop network namespace, and the selected guest execution
+endpoint. Keep machined disabled.
 
 Exit criteria: an unprivileged client creates, starts, executes in, stops, and
 deletes a user-namespaced sandbox in the AOS VM; resource/OOM and device policy
@@ -77,8 +89,9 @@ nixpkgs dependency enters the build.
 Implement source handles, broker-owned destination slots, detached idmapped
 mount construction, short-lived namespace workers, atomic attachment
 replacement, post-attach verification, leases, and explicit read-only
-descendant inspection. Add a minimal crash-consistent owned-workspace snapshot
-and manifest for stable inspection. Add child creation with attenuated
+descendant inspection, separating immutable inspection from explicitly
+kernel-coupled live reads. Add a minimal crash-consistent owned-workspace
+snapshot and manifest for stable inspection. Add child creation with attenuated
 authority and aggregate admission policy.
 
 Exit criteria: live attachment, replacement, detach, stable snapshot
@@ -90,7 +103,8 @@ pass. This is the minimum usable v1 vertical slice.
 Implement immutable project-environment generations, GC-root pinning, read-only
 store presentation, the constrained Nix build capability, cache disclosure
 domains, transactional artifact publication, and normal independent Git
-repositories with optional immutable-pack acceleration.
+repositories. Implement immutable-pack acceleration for every node advertising
+the cheap sanitized Git-fork capability.
 
 Exit criteria: a running sandbox advances its package environment atomically;
 old executions remain well-defined; concurrent sibling builds cannot corrupt
@@ -151,11 +165,13 @@ The proposed boundaries are:
 | `aos-sandbox-core` | Portable model, policy math, state machines, manifests, journal contracts, backend traits | D-Bus, syscalls, ZFS commands |
 | `aos-sandbox-linux` | Audited pidfd, namespace, path-resolution, and new-mount-API wrappers | Public parsing and policy |
 | `aos-sandbox` | Client library, unprivileged controller/node reconciler, operations, placement | Direct privileged effects |
-| `aos-sandbox-host` | Root-only fixed host protocol and typed systemd/storage/freeze verbs | Public/network listeners and arbitrary paths/options |
+| `aos-sandbox-host` | Root-only fixed host protocol and typed systemd/freeze verbs | Storage, public/network listeners, and arbitrary properties |
+| `aos-sandbox-storage` | Root-only storage protocol and one-shot typed OpenZFS workers | PID 1 authority, public parsing, and caller-supplied names/options |
 | `aos-sandbox-mount` | Root-only descriptor mount broker and one-shot namespace helper | Source parsing, network, and arbitrary paths/options |
 | `aos-sandbox-net` | Root-only typed veth, netlink, firewall, endpoint, and network-lease broker | Public policy parsing and arbitrary rule text |
+| `aos-sandbox-lease-guard` | Per-assignment `CLOCK_BOOTTIME` fail-stop and systemd coupling | Public policy, storage mutation, and lease issuance |
 | `aos-sandbox-view` | Portable-tree compiler, isolated publisher, FUSE worker, view/cache client | Sandbox lifecycle authority |
-| `aos-sandbox-agent` | In-guest readiness, exec/PTY, signal, and quiesce endpoint | Host control and mount authority |
+| `aos-sandbox-agent` | In-guest readiness, execution authorization handoff/observation, and quiesce | Public stream, host control, and mount authority |
 | `aos-systemd` | Typed D-Bus transport for transient units and unit/cgroup observations | Sandbox policy and arbitrary property maps |
 | `aos` | User-facing CLI backed by the client library | Privileged runtime closure |
 
@@ -182,16 +198,18 @@ assembly machinery into a bootable root and seed snapshot. It may factor common
 code from package-root image construction, but it does not reinterpret
 RFC-0001 package exposure sandboxes as durable development runtimes.
 
-Host daemon, view worker, guest agent, client, and CLI outputs are packaged so
-the ordinary CLI closure does not retain root-only helpers. Every dependency is
-an AOS source-built package. A FUSE userspace library selected in phase 0 is
-packaged hermetically rather than taken from the host.
+Host/storage/mount/network daemons, guardian, view worker, guest agent, client,
+and CLI outputs are packaged so the ordinary CLI closure does not retain
+root-only helpers. Every dependency is an AOS source-built package. A FUSE
+userspace library selected in phase 0 is packaged hermetically rather than
+taken from the host.
 
 ## Reuse and build ledger
 
 Reuse:
 
-- nspawn, systemd manager D-Bus, cgroup v2, networkd/resolved;
+- nspawn with one narrow pre-PID1 filter patch, systemd manager D-Bus, cgroup
+  v2, and networkd/resolved;
 - Linux namespaces, descriptor mount API, idmapped mounts, and FUSE;
 - ZFS snapshot, hold, clone, quota, and compatible send/receive;
 - Git protocol v2, upload-pack/receive-pack, bundles, and partial clone;
@@ -202,7 +220,8 @@ Reuse:
 Build:
 
 - sandbox resource model, capabilities, desired-state journal, and reconciler;
-- fixed privileged host boundary and Linux wrappers;
+- separate fixed privileged host/storage/mount/network boundaries, one-shot
+  workers, lease guardian, fixed network lease gate, and Linux wrappers;
 - filesystem-view metadata plane and immutable FUSE realization;
 - environment-generation and cache-domain integration;
 - snapshot manifests, assignment fencing, public API, CLI, and skills; and

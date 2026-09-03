@@ -92,6 +92,12 @@ This path is illustrative and is not part of the public API. Clients address
 the slots by sandbox and export handles. The broker creates and pins the actual
 destination directories before the workload starts.
 
+By default each slot is an immutable snapshot or filtered FUSE revision that
+omits sockets, FIFOs, and devices and does not share POSIX, OFD, or `flock`
+lock identity with the descendant. A live native read-only slot is visibly marked
+kernel-coupled and requires separate authority because `ro` does not prevent
+socket/FIFO communication or lock-based interference.
+
 Independent submounts are preferred to a single mutable FUSE tree because they
 provide per-edge authorization, atomic replacement, independent failure,
 bounded metadata state, and no need to invalidate an enormous shared inode

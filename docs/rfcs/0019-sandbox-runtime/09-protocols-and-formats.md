@@ -7,7 +7,8 @@ The design has four independent compatibility domains:
 1. public sandbox control API;
 2. coordinator-to-node reconciliation protocol;
 3. node-local privileged broker protocols; and
-4. portable policy, tree, delta, and snapshot formats.
+4. portable policy, tree, delta, view, environment, snapshot, and signature
+   formats.
 
 An API package version does not imply a kernel capability or data-format
 version. Every domain negotiates or identifies its own compatibility.
@@ -34,7 +35,7 @@ The initial method registry is explicit:
 
 - sandbox: create, get, list, list-children, plan/update policy, start, stop,
   suspend, resume, and delete;
-- execution: create, get, attach, cancel, and list;
+- execution: create, get, cancel, and list;
 - snapshot: create, get, list, restore, fork, and delete;
 - filesystem view: create, get, list, attach, replace, detach, and release;
 - capability: attenuate, inspect, renew, and revoke; and
@@ -78,7 +79,7 @@ concealment rules as an ordinary read of the operation.
 Execution control returns an `OpenSshAccessEndpoint` in v1: an OpenSSH route
 with a holder-bound short-lived certificate and forced policy. The endpoint
 binds execution UID, sandbox incarnation, principal, allowed stream features,
-reattach expiry, and audit UID. Host/port/socket routing is ephemeral and never
+certificate expiry, and audit UID. Host/port/socket routing is ephemeral and never
 resource identity. Admission takes a client public key and proof of possession;
 the endpoint contains the signed certificate and server identity, never the
 client private key. The execution resource remains the source of final exit
@@ -100,11 +101,17 @@ classification. Transport success means the operation was accepted, not that
 all node effects completed.
 
 Watching has two explicit modes. A bootstrap request supplies no cursor: the
-server produces one bounded list snapshot as of watermark `W`, then sends only
-events strictly after `W`. A resume request supplies the last fully applied
-cursor: the server sends only events strictly after that cursor and does not
-send a list snapshot. The cursor is opaque and monotonically ordered within
-one stream identity and epoch.
+server produces bounded snapshot chunks or pages all pinned to watermark `W`,
+emits `snapshot_complete(W)`, and only then sends events strictly after `W`.
+The client does not apply later events as a complete baseline until it has
+every chunk and the completion marker. A resume request supplies the last fully
+applied cursor: the server sends only events strictly after that cursor and
+does not send a list snapshot.
+
+The cursor is opaque but the server binds it to stream epoch, normalized query
+and filters, authenticated principal, authorization scope and revision, and
+negotiated observation schema/features. Reuse under a different binding returns
+`resync_required` rather than broadening or silently changing the stream.
 
 Each event has an increasing sequence and stable event UID. Delivery is at
 least once, so clients deduplicate event UIDs. An expired or unknown cursor,
@@ -189,12 +196,15 @@ invent strings that silently widen a known feature. A requirement names an
 exact major and permitted minor range; negotiation selects one tested version.
 
 Assignments and updates are ordered by `(assignment epoch, desired generation,
-assignment digest)`. An exact tuple replay is idempotent. A different digest at
+assignment digest)`. The digest covers immutable assignment semantics and
+explicitly excludes lease issue time, expiry, nonce, and lease generation. An
+exact semantic tuple replay is idempotent. A different assignment digest at
 the same epoch/generation is a protocol violation; a lower tuple is rejected.
 The node durably records acceptance before effects. Observations carry the
-tuple plus a monotone observation sequence and compare-and-swap the
-controller's prior observation version. Delayed reports from an old epoch are
-retained only as audit evidence and cannot change current status.
+semantic tuple, current lease generation, and a monotone observation sequence
+and compare-and-swap the controller's prior observation version. Delayed
+reports from an old epoch are retained only as audit evidence and cannot change
+current status.
 
 Capability drift during preparation aborts before publication and reports the
 observed capability generation. Reconnect starts with an inventory digest and
@@ -205,17 +215,32 @@ intent; the operation moves to its defined compensation or residual state.
 ### Exclusive ownership lease
 
 An epoch number alone cannot fence a partitioned prior owner. Every active
-assignment therefore carries an exclusive lease issued by a strongly
-consistent ownership authority. The grant contains sandbox UID, incarnation,
-epoch, assignment digest, authority-issued start/expiry, maximum clock skew,
-and renewal nonce.
+assignment therefore carries an `OwnershipLease` signed directly by a strongly
+consistent ownership authority. It contains sandbox UID, incarnation, node
+identity, assignment epoch and digest, monotonically increasing lease
+generation, authority-issued start/expiry, maximum clock skew, and renewal
+nonce. Equal lease generations with different digests fail; a renewal must
+increase the lease generation while retaining the same assignment semantics.
+A controller signature alone cannot extend ownership time.
 
-On receipt, a node converts the remaining authority duration into a local
-monotonic fail-stop deadline after subtracting the maximum skew and a fixed
-safety margin. It renews before that margin. If renewal fails, it closes new
-execution/publication/mount admission, freezes the payload before the local
-deadline, and then stops it if contact is not restored. Wall-clock movement
-cannot extend the local deadline.
+On receipt, a node validates the authority signature and converts the remaining
+duration into a local `CLOCK_BOOTTIME` fail-stop deadline after subtracting
+maximum skew and a fixed safety margin. Host suspend therefore consumes lease
+time. The node persists authority expiry, lease generation and digest, and host
+boot ID; a different boot ID or unverifiable clock provenance invalidates the
+deadline and requires current authority before effects. Renewal advances only
+the lease record, not assignment semantics.
+
+Before acknowledging the lease or starting the payload, the host arms the
+per-assignment guardian described by the runtime contract. If renewal fails,
+the guardian independently closes new admission, default-drops networking,
+requests an early freeze, and stops the payload at the local deadline.
+Guardian death also stops the systemd-bound payload. This path does not require
+the unprivileged node daemon to be live or cooperative. Fixed ingress and
+egress host-veth tc-BPF lease gates check the same epoch and
+`CLOCK_BOOTTIME` deadline through `bpf_ktime_get_boot_ns()` on every packet, so
+expiry is fail-closed even during daemon death or immediately after host
+resume.
 
 Every mutable shared storage, cache-publication, Git receive, network lease,
 and external service endpoint used during multi-node operation validates the
@@ -239,7 +264,8 @@ protocol has:
 - one bounded message per packet;
 - a closed operation tag;
 - request ID, operation digest, sandbox UID, incarnation, assignment epoch,
-  desired generation, and payload namespace generation;
+  desired generation, assignment/plan digests, ownership lease generation and
+  digest, and payload namespace generation;
 - an exact FD-role table matching SCM_RIGHTS ancillary descriptors;
 - maximum body and FD counts checked before allocation; and
 - peer-credential and service-unit verification.
@@ -257,23 +283,33 @@ different digest is rejected. Responses state which descriptors were consumed,
 returned, or closed so ownership is unambiguous across every error path.
 
 The controller also signs an audience-specific broker authorization plan for
-each host, mount, storage, and network broker. The plan binds the assignment
-tuple and digest, exact semantic verbs, opaque resource handles, argument
-bounds, policy commitment, lease interval, maximum skew, and revocation scope.
+each host, mount, storage, and network broker. The immutable semantic plan
+binds the assignment tuple and digest, exact semantic verbs, opaque resource
+handles, argument bounds, policy commitment, and revocation scope. It commits
+to the ownership-authority key and assignment identity; every use also carries
+the current `OwnershipLease`, whose node, epoch, assignment digest, and validity
+must match. The plan can attenuate that lease but cannot extend it.
 It contains no arbitrary systemd property, mount option, host path, command, or
 backend expression. Delivery through the unprivileged node daemon does not add
 authority: a broker verifies the controller signature and its own audience.
 
 Before acknowledging or performing an effect, each broker durably records its
-highest accepted assignment tuple, plan digest, and monotonic fail-stop
-deadline. It rejects caller-invented tuples, plans for another broker, expired
-plans, an equal tuple with different bytes, and every request not exactly
-authorized by the current plan. Renewals are newly signed plans and cannot
-extend the deadline merely by replay. At expiry a broker denies new effects
-and permits only the plan's closed fail-stop verbs needed to freeze, detach,
-revoke, or remove that assignment. Thus compromise or rollback of the
-unprivileged node daemon cannot resurrect broker authority that the broker's
-own durable fence has rejected.
+highest accepted semantic assignment tuple and plan digest, plus highest lease
+generation/digest, authority expiry, and host boot ID. It rejects
+caller-invented tuples, plans for another broker, an equal counter with
+different bytes, older leases, expired authority, and every request not exactly
+authorized by both plan and lease. A lease renewal may advance the lease
+generation for an unchanged plan; it cannot change verbs, handles, or bounds.
+
+At expiry a broker denies new effects. The stale plan permits only local
+containment that cannot harm a later owner: network default-drop, cgroup
+freeze/kill, namespace-local detach after stop, and removal of proven
+node-private ephemeral objects. Shared hold release, storage mutation or
+destroy, publication rollback, and external endpoint removal require a fresh
+controller cleanup plan subordinate to current ownership plus compare-and-swap
+at the authoritative resource endpoint. Thus compromise or rollback of the
+unprivileged node daemon cannot retain or resurrect broker authority that each
+broker and the guardian have rejected.
 
 This protocol is deliberately not stable for remote callers. Distributed
 standardization belongs at the public resource and portable-format layers.
@@ -309,6 +345,16 @@ The commitment is stable across node-local mmap index versions. NAR, Git, OCI,
 and native snapshots are adapters; their source digest and provenance can be
 retained without making their representation universal.
 
+## Portable view format
+
+The canonical view schema commits source revision or live export generation,
+ordered namespace presentation, consistency and mutation modes, identity
+presentation, disclosure domain, and required features. Attachments separately
+name destination slots and may narrow mutation. The closed descriptor-role and
+feature registries in the portable profile prevent implementations from
+substituting an arbitrary tree, profile, checkpoint, or trust object whose
+digest happens to parse.
+
 ## Delta format
 
 A portable writable delta commits to an exact base tree, exact result tree,
@@ -336,9 +382,12 @@ A portable sandbox snapshot envelope contains:
 - required backend capabilities; and
 - provenance and signatures.
 
-Cache residency is excluded. A backend-local process or VM checkpoint is an
-optional descriptor with exact backend, version, architecture, CPU, device,
-and compatibility identity. It is never mislabeled portable.
+Cache residency and operational retention tokens are excluded. The canonical
+object commits typed receipt digests and dependency claims while the controller
+ledger holds usable storage/content/service/secret authority. Base v1 has no
+backend-local process or VM checkpoint field; adding one requires a new
+snapshot media type with exact backend, version, architecture, CPU, device,
+kernel, and compatibility semantics. It is never mislabeled portable.
 
 V1 uses AOS content-addressed descriptor graphs for distribution. OCI may gain
 a later transport mapping, but it does not define the sandbox's tree, policy,

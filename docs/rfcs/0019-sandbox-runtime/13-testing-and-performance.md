@@ -21,11 +21,14 @@ Property and state-machine tests cover:
   subtree transactions;
 - capability attenuation and the intersection of node, project, ancestor, and
   request policy;
-- reservations, leases, pins, expiry, generation fencing, and idempotency;
+- reservations, ownership lease generations, semantic-plan identity, kernel
+  pins, expiry, guardian fail-stop, generation fencing, and idempotency;
 - concurrent operations with stale resource versions or assignment epochs;
 - public protobuf compatibility, unknown observation fields, and rejection of
   unknown authority-bearing fields; and
-- portable tree and snapshot canonicalization independent of serialization.
+- portable tree, sparse layout, view, snapshot, trust-policy, signature
+  statement, and descriptor-role canonicalization independent of
+  serialization.
 
 Fuzz targets include public RPC decoders, portable tree parsers, snapshot
 manifests, local `SOCK_SEQPACKET` frames, descriptor-role tables, path
@@ -52,29 +55,47 @@ verification, observation persistence, and acknowledgement. Every case must
 reconcile to exactly one verified generation or an explicit blocked/error
 condition.
 
+Publisher injection covers writer close, hash, seal enable/verify, private
+inode fsync, no-replace publication, final-parent fsync, and catalog commit.
+Recovery may adopt only the exact sealed object or quarantine it.
+
 ## Runtime VM tests
 
 Production-equivalent VM tests prove:
 
 - a booted nspawn sandbox with machined absent and `--register=no`;
 - hostile image and host `.nspawn` settings cannot alter the fixed launch plan;
-- user namespace maps, capability bounding, seccomp, device policy, cgroups,
-  and private networking match the admitted policy;
+- user namespace maps, capability bounding, pre-PID1 argument-aware seccomp,
+  device policy, cgroups, and private networking match the admitted policy;
+- the service manager joins the broker-pinned network namespace before nspawn
+  exec, nspawn receives no namespace path, and private-user setup cannot replace
+  or escape that namespace;
 - supervisor and payload cgroups are identified correctly;
 - guest reboot changes namespace generation and replays attachments;
 - daemon restart, systemd daemon-reexec, and host reboot reconcile desired
   state without adopting unrelated units;
-- the in-sandbox agent supports command, PTY, resize, signal, exit, reconnect,
-  and quiesce behavior without privileged-path command parsing;
-- parent read-only inspection works while child-to-parent and sibling access
-  fail; and
+- node-daemon death, every broker death, guardian death, ownership-lease
+  expiry, host suspend past expiry, boot-ID change, and stale renewal replay
+  default-drop networking and stop the old payload before reassignment;
+- OpenSSH supports command, PTY, resize, signal, exit, disconnect-cancel, and
+  detached bounded-output behavior, while the in-sandbox agent performs only
+  readiness, authorization handoff, observation, and quiesce without
+  privileged-path command parsing;
+- immutable parent inspection works while child-to-parent and sibling access
+  fail; native kernel-coupled inspection separately proves and reports
+  socket/FIFO and lock interaction; and
 - network profiles deny, route, and publish only their declared flows,
-  including spoofing and namespace exhaustion cases.
+  including a packet attempt at every prepare/start/readiness boundary,
+  spoofing, tc-BPF `CLOCK_BOOTTIME` lease expiry during host suspend/resume,
+  guardian/netd death, and namespace exhaustion cases.
 
 The security profile gate runs with the production MAC mechanism enforcing.
 It proves that sandboxd, hostd, the mount worker, view workers, guest agent, and
-payload have their declared domains. The current permissive or disabled AOS
-SELinux posture is not accepted as evidence for this gate.
+payload have their declared domains. It separately covers storaged and its
+workers, netd, the guardian, and the host-privileged nspawn supervisor with its
+exact path/device/capability/syscall/address-family allowlists. The current
+permissive or disabled AOS SELinux posture is not accepted as evidence for this
+gate.
 
 ## Storage and lifecycle tests
 
@@ -83,13 +104,19 @@ Tests exercise the production ZFS version and the real dataset layout:
 - snapshot, hold, clone, quota, refquota, and deletion at high depth/fanout;
 - logical ancestry different from ZFS origin ancestry;
 - parent deletion before child and out-of-order snapshot release;
+- same-domain but cross-account clone refusal, worst-case retained-origin
+  charging, and cross-account materialization;
+- ZFS publication exposes only an already-held read-only snapshot GUID, and
+  crash recovery never adopts a live dataset as immutable backing;
 - crash-consistent and guest-quiesced coordinated snapshots;
 - attached native and FUSE views during snapshot;
 - exclusive writable-export lease conflict and drain;
 - restore with a new incarnation after node restart;
 - suspend with verified no-progress and later thaw;
 - hibernate without claims about RAM, TCP, or open FUSE requests;
-- open-FD delayed reap, hard revocation, and interrupted cascade deletion; and
+- open-FD delayed reap, hard revocation, and interrupted cascade deletion;
+- expired-plan cleanup cannot release shared holds, destroy reassigned state,
+  roll back publication, or remove current external endpoints; and
 - storage send/receive only between endpoints whose capability profiles match.
 
 ZFS idmapped-mount behavior is a mandatory probe. Failure selects a separately
@@ -106,7 +133,8 @@ portable trees.
 
 Native tests cover nonrecursive clone behavior, idmaps, immutable mount
 attributes, atomic replacement, mount unique-ID verification, nested source
-mount exclusion, and descriptor lifetime after detach.
+mount exclusion, descriptor lifetime after detach, and the explicitly stronger
+socket/FIFO/lock semantics of kernel-coupled live inspection.
 
 FUSE tests cover:
 
@@ -114,6 +142,9 @@ FUSE tests cover:
 - stable readdir cookies and `READDIRPLUS` behavior;
 - positive and negative entry-cache lifetimes per immutable revision;
 - backing registration, concurrent opens, close races, and hard limits;
+- `allow_other + default_permissions`, supplementary groups, ACL masks,
+  unmappable IDs, user-namespace ancestry, sandbox-root DAC capabilities, and
+  passthrough open denial before backing selection;
 - passthrough read, mmap, splice/copy, sparse, compressed-backing, and
   incompressible-file behavior;
 - worker OOM, abort, restart, lazy detach, outstanding requests, and open FDs;
@@ -139,14 +170,20 @@ inside the sandbox.
 
 Cache tests inject partial writes, digest and size mismatch, concurrent
 publication, collision, quota races, process death, cache-service OOM, lease
-expiry, and GC-generation races. Cross-trust mutable cache sharing must fail.
+expiry with live opens/mappings, and GC-generation races. Strict-domain tests
+cover filesystem cache identity, reflink/clone/dedup refusal, and ZFS ARC keys;
+separate inodes alone do not pass. Cross-trust mutable cache sharing must fail.
 
 Git tests use independent repositories and ordinary smart protocol. They run
 status, diff, log, fetch, repack, commit, and receive concurrently with child
 inspection, snapshots, cache GC, and deletion. A snapshot view must remain
 stable across a child ref transaction or pack rewrite. Immutable pack
-acceleration, if implemented, must retain its exact generation until every
-alternate and open descriptor releases its lease.
+acceleration must retain its exact generation until every alternate and open
+descriptor releases its kernel pin.
+The cheap sanitized Git-fork capability additionally proves sublinear local
+setup from one complete immutable pack generation, private subsequent object
+writes, and no alternate sharing across object-read audiences. Protocol clone
+is measured and reported as the compatible slow path.
 
 ## Performance methodology
 

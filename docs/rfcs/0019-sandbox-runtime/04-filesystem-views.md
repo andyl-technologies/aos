@@ -43,6 +43,14 @@ Source mutability and view mutability are not synonyms. A private CoW view has
 an immutable source and a mutable namespace. A live read-only view has a
 mutable source but denies consumer mutation.
 
+`Live read-only` is not the noninterfering inspection tier. A native bind of a
+live filesystem shares inode locks and exposes sockets and FIFOs even when the
+mount is `ro`; a consumer can therefore block source locks or communicate with
+active endpoints. It requires an explicit `live-kernel-coupled-read` grant that
+discloses those semantics. Default cross-sandbox inspection uses an immutable
+snapshot or filtered immutable FUSE revision, omits sockets/FIFOs/devices, and
+does not share regular-file lock identity with the source.
+
 ## Native mount path
 
 Same-node live datasets and native snapshots use the Linux descriptor-based
@@ -65,6 +73,11 @@ change or remove an existing idmap in one detached operation. See the
 The default clone is non-recursive. Recursive cloning imports every source
 submount and scales with mount topology rather than file count; it requires a
 separate authority and hard mount-count admission.
+
+For a live native source, read-only mount attributes prevent file mutation but
+do not suppress IPC or lock operations. The policy compiler never maps ordinary
+`content-read` authority to this realizer. It selects the kernel-coupled grant
+above or materializes an immutable inspection revision.
 
 Source subpaths resolve beneath catalog roots with
 `RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS` and normally
@@ -180,6 +193,24 @@ the view:
 V1 uses one FUSE connection per attachment. A process may supervise several
 connections only after proving independent queue, memory, quota, abort, lease,
 and error attribution; connection sharing is not the optimization default.
+
+The v1 mount/init contract is `allow_other + default_permissions`; omitting
+either is a hard failure. The mount broker accepts a connection only when its
+mount user namespace is the consumer user namespace or a verified ancestor
+and every presented UID, GID, and ACL qualifier maps without truncation. Until
+idmapped FUSE is proven, the index compiler translates guest IDs through the
+consumer's exact idmap into the IDs interpreted by that connection and creates
+a separate presentation connection for incompatible maps. Unmappable identity
+rejects the attachment rather than becoming `nobody` or host root.
+
+The worker negotiates `FUSE_POSIX_ACL` only for a canonical ACL feature whose
+kernel behavior passed the target-userns probe; otherwise ACL-bearing views are
+rejected or materialized by a compatible backend. Kernel
+`default_permissions`, including supplementary-group and capability checks,
+enforces the presented DAC/ACL metadata before `open` reaches passthrough. AOS
+authority is still attachment-wide and evaluated before lookup: mode bits are
+not a substitute for view authorization, and sandbox root may exercise only
+the DAC-bypass capabilities explicitly present in its payload profile.
 
 Node ID 1 is the root. Other 64-bit node IDs are stable within the immutable
 connection and are never reused until the connection is destroyed. The worker

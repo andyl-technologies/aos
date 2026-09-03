@@ -30,8 +30,12 @@ A cache object belongs to one disclosure domain:
 The domain controls physical on-disk reuse, backing inode reuse, page-cache
 sharing, fetch coalescing, metadata caches, and access-profile learning.
 Sharing a digest across domains is not allowed merely because the bytes compare
-equal. Strict domains use different backing inodes and independently authorized
-fetches.
+equal. Strict domains use different backing-filesystem cache identities and
+independently authorized fetches. They prohibit cross-domain clones, reflinks,
+block deduplication, and shared ZFS origin/ARC identities even when directory
+inodes differ. A backend that cannot prove its page-cache/ARC key isolation
+uses separate datasets, filesystems, or pools, disables data caching for that
+profile, or rejects strict placement.
 
 Shared cache residency exposes timing and presence signals. Public and
 same-project sharing accept that trade; strict isolation does not. The API and
@@ -47,8 +51,9 @@ otherwise disclose another principal's state.
 Shared objects enter through a transaction owned by the isolated publisher:
 
 ```text
-reserve -> fetch/write private temporary -> verify -> fsync
-        -> atomically publish immutable -> pin or admit -> release reservation
+reserve -> fetch/write private inode -> verify -> close writers -> seal
+        -> fsync inode -> publish no-replace -> fsync final parent
+        -> commit catalog -> pin or admit -> release reservation
 ```
 
 Verification covers algorithm-tagged digest, exact size, expected media type,
@@ -59,10 +64,16 @@ sandbox.
 The producer never renames its own inode into the committed store. It closes
 writers and passes a staging descriptor; the publisher creates a new inode
 beneath a root writable only by the publisher identity, copies or safely
-reflinks, verifies the completed destination, fsyncs it and its parent, and
-publishes without replacement. It then enables and verifies fs-verity on a
-supported cache filesystem or publishes from a read-only ZFS snapshot
-generation before issuing a backing handle. Source adapters, viewd, FUSE
+reflinks only within one cache-isolation domain, verifies the completed
+destination, closes every writer, then
+enables and verifies fs-verity while the inode still has only its private name.
+Only that sealed inode is linked or renamed without replacement to the
+canonical name; the catalog binds its fs-verity measurement separately to the
+AOS object descriptor. The publisher fsyncs the final parent and commits
+catalog state afterward. Recovery adopts a final name only after re-verifying
+exact content and seal, otherwise quarantining it. A ZFS backend likewise
+publishes only an already-created, held, read-only snapshot GUID. Source
+adapters, viewd, FUSE
 workers, and sandboxes never receive a writable committed descriptor. The same
 transaction publishes portable metadata and mmap indexes. Read-only mode bits,
 rename, ownership, and the absence of a known writer alone are not treated as
@@ -87,10 +98,18 @@ These concepts remain separate:
 - residency: bytes currently present and reusable after the last pin; and
 - popularity: advisory evidence used to order unpinned eviction.
 
-An attachment lease pins the minimum metadata and backing objects needed to
-honor active opens. Lazy views need not reserve an unknowable complete closure;
-they use a hard on-demand byte window. A request unable to reserve within that
-window receives resource exhaustion before allocating or fetching.
+The expiring attachment/source authorization lease is also separate from a
+kernel-reference pin. Lease expiry denies new lookup/open and starts drain, but
+a passthrough registration, mmap, open file, or retained FUSE lookup holds a
+non-expiring kernel pin until the reference closes or the connection/consumer
+is authoritatively aborted. Unlinking an inode does not release or credit its
+physical bytes while such a reference exists.
+
+A valid attachment lease admits creation of the minimum metadata and kernel
+pins needed to honor active opens; expiry does not erase pins already held.
+Lazy views need not reserve an unknowable complete closure; they use a hard
+on-demand byte window. A request unable to reserve within that window receives
+resource exhaustion before allocating or fetching.
 
 Reservations are charged in one transaction with pin changes. Eviction cannot
 select an entry between a lookup and its pin. A crash between reservation and
@@ -181,8 +200,12 @@ aos-control.slice
   ├─ aos-viewd.service
   ├─ aos-view-publisher.service
   ├─ aos-sandbox-hostd.service
+  ├─ aos-storaged.service
   ├─ aos-mountd.service
   └─ aos-netd.service
+
+aos-assignment-guardians.slice
+  └─ lease-guard-<incarnation>.service CLOCK_BOOTTIME fail-stop owner
 ```
 
 Names are illustrative node-local projections. FUSE workers are not children
@@ -236,6 +259,29 @@ share is not claimed. Passthrough-on-ZFS profiles must measure double caching
 and reclaim before enablement. Tuning and observation are pinned to the
 [OpenZFS module-parameter contract](https://openzfs.github.io/openzfs-docs/Performance%20and%20Tuning/Module%20Parameters.html).
 
+### Residency enforcement profiles
+
+The node reports and admits one explicit residency profile rather than
+pretending the logical fair-share ledger changes kernel charging:
+
+- `payload-page-cache`: ordinary backing pages follow kernel first-touch memcg
+  charging and reclaim; a sandbox can be charged for a page later reused by a
+  peer, so equal physical attribution is not promised;
+- `domain-service-residency`: non-passthrough reads and buffers are charged to
+  a disclosure-domain view-service cgroup with a hard service bound;
+- `node-global-arc`: ZFS ARC is bounded and admitted at node scope, with no
+  per-sandbox hard ARC share; and
+- `hard-isolated-residency`: a proven separate cache identity and enforcement
+  mechanism supplies the requested tenant/domain bound.
+
+The default shared immutable passthrough profile promises node-bounded
+residency plus logical per-consumer reservations, not fair physical memcg
+charging. A policy requiring hard isolated residency selects the last profile
+or fails placement. Passthrough scans reserve a bounded declared read-working
+set or closure window before admission. ZFS profiles select and report
+`primarycache=metadata` or `primarycache=all` from measurement; they never
+silently rely on ARC outside the advertised profile.
+
 ## OOM behavior
 
 Workload OOM terminates the configured sandbox cgroup and reports a typed
@@ -277,11 +323,14 @@ queue and never evicts the proven foreground working set until policy permits.
 
 ## Cache lifecycle
 
-Every pin carries view UID, attachment UID, sandbox incarnation, assignment
-epoch, authority scope, and deadline. Reconciliation releases a leaked pin only
-after proving the corresponding incarnation or attachment is absent and its
-grace period expired. Expiry makes an object evictable; it does not require
-immediate eviction unless the retention class says so.
+Every authorization lease and associated kernel pin carries view UID,
+attachment UID, sandbox incarnation, assignment epoch, and authority scope.
+The lease has a deadline; the kernel pin does not. Reconciliation releases a
+leaked kernel pin only after proving the corresponding incarnation or
+attachment is absent and every open, mapping, lookup reference, and backing
+registration is closed or authoritatively aborted. Lease expiry starts that
+drain and makes only objects with zero kernel references evictable. Physical
+space is not credited until the backing filesystem reports it reclaimable.
 
 Snapshot manifests contain content identities and view revisions, not a promise
 that the node cache remains warm. Cache residency improves restore latency but
