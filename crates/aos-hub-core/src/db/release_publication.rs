@@ -160,6 +160,25 @@ pub struct NewReleaseChannelOperation {
     pub receipt_json: String,
 }
 
+/// Persisted compare-and-swap channel operation and signed receipt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseChannelOperationRecord {
+    /// Expected prior generation.
+    pub prior_generation: i64,
+    /// Inclusive first changed partition.
+    pub first_partition: i64,
+    /// Inclusive final changed partition.
+    pub last_partition: i64,
+    /// Release manifest selected by the operation.
+    pub manifest_digest: String,
+    /// Production receipt authorizing the operation.
+    pub production_receipt_digest: String,
+    /// Digest of the signed channel receipt.
+    pub operation_digest: String,
+    /// Canonical signed channel receipt.
+    pub receipt_json: String,
+}
+
 impl Database {
     /// Returns an admitted release bundle.
     ///
@@ -594,12 +613,14 @@ impl Database {
     ) -> Result<()> {
         validate_channel(input)?;
         if self.release_channel_operation_matches(input).await? {
-            return Ok(());
+            if self.release_channel_projection_matches(input).await? {
+                return Ok(());
+            }
+            bail!("release channel evidence exists but its public projection differs");
         }
         let new_generation = input.prior_generation + 1;
-        self.backend
-            .checked_batch(&[CheckedStatement::exact(
-                "INSERT INTO release_channel_operations
+        let mut statements = vec![CheckedStatement::exact(
+            "INSERT INTO release_channel_operations
                (registry_id, channel, prior_generation, new_generation,
                 first_partition, last_partition, manifest_digest,
                 production_receipt_digest, operation_digest, receipt_json,
@@ -615,22 +636,105 @@ impl Database {
                 AND ?3 = COALESCE((SELECT MAX(new_generation)
                     FROM release_channel_operations
                     WHERE registry_id = ?1 AND channel = ?2), 0)",
+            vals![
+                input.registry_id,
+                input.channel,
+                input.prior_generation,
+                new_generation,
+                input.first_partition,
+                input.last_partition,
+                input.manifest_digest,
+                input.production_receipt_digest,
+                input.operation_digest,
+                input.receipt_json,
+                now
+            ],
+            1,
+        )];
+        statements.push(CheckedStatement::exact(
+            "UPDATE channels
+                SET frontier = (SELECT release_id FROM release_bundles
+                    WHERE registry_id = ?1 AND manifest_digest = ?3), active = 1
+              WHERE registry_id = ?1 AND name = ?2
+                AND EXISTS (SELECT 1 FROM release_promotions promotion
+                    JOIN release_bundles bundle
+                      ON bundle.bundle_digest = promotion.bundle_digest
+                   WHERE bundle.registry_id = ?1 AND bundle.manifest_digest = ?3
+                     AND promotion.production_receipt_digest = ?4)",
+            vals![
+                input.registry_id,
+                input.channel,
+                input.manifest_digest,
+                input.production_receipt_digest
+            ],
+            1,
+        ));
+        for bucket in input.first_partition..=input.last_partition {
+            statements.push(CheckedStatement::exact(
+                "INSERT INTO channel_partitions (channel_id, bucket, release)
+                 SELECT channel.id, ?3, bundle.release_id
+                   FROM channels channel
+                   JOIN release_bundles bundle
+                     ON bundle.registry_id = channel.registry_id
+                    AND bundle.manifest_digest = ?4
+                   JOIN release_promotions promotion
+                     ON promotion.bundle_digest = bundle.bundle_digest
+                    AND promotion.production_receipt_digest = ?5
+                  WHERE channel.registry_id = ?1 AND channel.name = ?2
+                 ON CONFLICT(channel_id, bucket) DO UPDATE SET release = excluded.release",
                 vals![
                     input.registry_id,
                     input.channel,
-                    input.prior_generation,
-                    new_generation,
-                    input.first_partition,
-                    input.last_partition,
+                    bucket,
                     input.manifest_digest,
-                    input.production_receipt_digest,
-                    input.operation_digest,
-                    input.receipt_json,
-                    now
+                    input.production_receipt_digest
                 ],
                 1,
-            )])
-            .await
+            ));
+        }
+        self.backend.checked_batch(&statements).await
+    }
+
+    /// Returns a persisted channel operation at one exact new generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed identity, invalid generation, corrupt
+    /// persisted values, or storage failure.
+    pub async fn release_channel_operation(
+        &self,
+        registry_id: i64,
+        channel: &str,
+        new_generation: i64,
+    ) -> Result<Option<ReleaseChannelOperationRecord>> {
+        if registry_id <= 0
+            || new_generation <= 0
+            || !matches!(channel, "edge" | "candidate" | "stable")
+        {
+            bail!("release channel operation identity is invalid");
+        }
+        self.backend
+            .query_opt(
+                "SELECT prior_generation, first_partition, last_partition,
+                        manifest_digest, production_receipt_digest,
+                        operation_digest, receipt_json
+                   FROM release_channel_operations
+                  WHERE registry_id = ?1 AND channel = ?2 AND new_generation = ?3",
+                &vals![registry_id, channel, new_generation],
+            )
+            .await?
+            .map(|row| {
+                Ok(ReleaseChannelOperationRecord {
+                    prior_generation: row.get(0)?,
+                    first_partition: row.get(1)?,
+                    last_partition: row.get(2)?,
+                    manifest_digest: row.get(3)?,
+                    production_receipt_digest: row.get(4)?,
+                    operation_digest: row.get(5)?,
+                    receipt_json: row.get(6)?,
+                })
+            })
+            .transpose()
     }
 
     async fn release_bundle_matches(&self, input: &NewReleaseBundle) -> Result<bool> {
@@ -746,6 +850,46 @@ impl Database {
         })
         .transpose()
         .map(|matched| matched.unwrap_or(false))
+    }
+
+    /// Checks that persisted channel evidence still matches public partitions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when persisted values are corrupt or storage fails.
+    pub(crate) async fn release_channel_projection_matches(
+        &self,
+        input: &NewReleaseChannelOperation,
+    ) -> Result<bool> {
+        let expected = input.last_partition - input.first_partition + 1;
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT channel.frontier, COUNT(partition.bucket)
+                   FROM channels channel
+                   JOIN release_bundles bundle
+                     ON bundle.registry_id = channel.registry_id
+                    AND bundle.manifest_digest = ?3
+                   LEFT JOIN channel_partitions partition
+                     ON partition.channel_id = channel.id
+                    AND partition.bucket BETWEEN ?4 AND ?5
+                    AND partition.release = bundle.release_id
+                  WHERE channel.registry_id = ?1 AND channel.name = ?2
+                    AND channel.active = 1
+                  GROUP BY channel.id, channel.frontier, bundle.release_id
+                 HAVING channel.frontier = bundle.release_id",
+                &vals![
+                    input.registry_id,
+                    input.channel,
+                    input.manifest_digest,
+                    input.first_partition,
+                    input.last_partition
+                ],
+            )
+            .await?;
+        row.map(|row| Ok(row.get::<i64>(1)? == expected))
+            .transpose()
+            .map(|matched| matched.unwrap_or(false))
     }
 }
 
@@ -993,6 +1137,14 @@ mod tests {
         db.promote_release_bundle(&production, &promotion, 15)
             .await
             .unwrap();
+        db.backend
+            .execute(
+                "INSERT INTO channels (id, registry_id, name, frontier, active)
+                 VALUES (?1, ?2, ?3, NULL, 1)",
+                &vals![1_i64, registry_id, "edge"],
+            )
+            .await
+            .unwrap();
 
         let edge = NewReleaseChannelOperation {
             registry_id,
@@ -1007,9 +1159,27 @@ mod tests {
         };
         db.advance_release_channel(&edge, 16).await.unwrap();
         db.advance_release_channel(&edge, 16).await.unwrap();
+        let channels = db.list_channels(registry_id).await.unwrap();
+        let channel = channels
+            .iter()
+            .find(|channel| channel.name == "edge")
+            .unwrap();
+        assert_eq!(channel.frontier.as_deref(), Some("2026.03.0"));
+        assert!(channel.partitions[..32]
+            .iter()
+            .all(|release| release.as_deref() == Some("2026.03.0")));
+        assert!(channel.partitions[32..].iter().all(Option::is_none));
         let mut stale = edge.clone();
         stale.operation_digest = "8".repeat(64);
         assert!(db.advance_release_channel(&stale, 17).await.is_err());
+        db.backend
+            .execute(
+                "DELETE FROM channel_partitions WHERE channel_id = ?1 AND bucket = ?2",
+                &vals![1_i64, 0_i64],
+            )
+            .await
+            .unwrap();
+        assert!(db.advance_release_channel(&edge, 18).await.is_err());
     }
 
     #[tokio::test]

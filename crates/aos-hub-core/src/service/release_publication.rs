@@ -412,6 +412,44 @@ impl RpcService {
             .prior_generation
             .checked_add(1)
             .ok_or_else(|| RpcError::invalid("channel generation overflowed"))?;
+        if let Some(existing) = self
+            .db
+            .release_channel_operation(registry.id, &req.channel, new_generation)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            if existing.prior_generation != req.prior_generation
+                || existing.first_partition != req.first_partition
+                || existing.last_partition != req.last_partition
+                || existing.manifest_digest != req.manifest_digest
+                || existing.production_receipt_digest != req.production_receipt_digest
+            {
+                return Err(RpcError::FailedPrecondition(
+                    "release channel retry conflicts with the committed operation".into(),
+                ));
+            }
+            self.db
+                .advance_release_channel(
+                    &NewReleaseChannelOperation {
+                        registry_id: registry.id,
+                        channel: req.channel,
+                        prior_generation: req.prior_generation,
+                        first_partition: req.first_partition,
+                        last_partition: req.last_partition,
+                        manifest_digest: req.manifest_digest,
+                        production_receipt_digest: req.production_receipt_digest,
+                        operation_digest: existing.operation_digest.clone(),
+                        receipt_json: existing.receipt_json.clone(),
+                    },
+                    crate::clock::now_unix_secs(),
+                )
+                .await
+                .map_err(failed_precondition)?;
+            return Ok(receipt_message(
+                existing.operation_digest,
+                existing.receipt_json,
+            ));
+        }
         let receipt = ChannelReceiptV1 {
             schema_version: "aos.release.channel-receipt/v1".into(),
             channel: req.channel.clone(),
