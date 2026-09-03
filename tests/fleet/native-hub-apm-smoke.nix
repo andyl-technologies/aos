@@ -144,6 +144,7 @@ in {
       publisher.succeed("git --version")
       publisher.succeed(f"{APR} --version")
       consumer.succeed(f"{APM} --version")
+      consumer.succeed("tr --version")
 
 
       def hub_command(subcommand, token, mutation=""):
