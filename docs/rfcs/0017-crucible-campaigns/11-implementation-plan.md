@@ -2157,16 +2157,16 @@ bit 6 only under the retained exact transaction. The internal replacement and
 child-identity primitives, and the registered empty-local-state reinitializer,
 still do not satisfy mapping/descriptor bit 7 or child-reinitialization bit 8.
 Both remain clear and T-CAM-6.2 remains unchecked.
-Patched QEMU now also owns the versioned `PrepareForkTemplate`
-transaction. Its serialized OOB coordinator starts only at the exact
+Patched QEMU next added the versioned `PrepareForkTemplate` transaction. Its
+serialized OOB coordinator starts only at the exact
 paused/device-flush boundary, asynchronously closes graph-writer admission and
 acquires native all-block drain on the main AioContext, then retains the plugin
 callback, RCU, asynchronous-source, and block barriers while admitted work
 drains, and lets the
 Apache client query or abort that retained state without blocking QMP. A
-quiescent transaction is reported as `prepared`
-only when all nine readiness bits are present in the same generation. Version
-13 retains the fully drained transaction as `draining`, permitting
+Version 13 reported a quiescent transaction as `prepared` only when all nine
+readiness bits were present in the same generation and otherwise retained the
+fully drained transaction as `draining`, permitting
 branch-private ring and endpoint staging only under that exact quiescent source
 barrier, binding both stages plus the exact worker plan to that transaction,
 and acknowledging plugin-ring bit 6 only while that complete basis remains
@@ -2299,32 +2299,50 @@ read/HUP source pair and records input release. Version 7 of the child-QMP
 contract now binds the exact concrete monitor callback and private monitor
 basis into the one-shot adapter before fork. Child resource application can no
 longer substitute a runtime after descriptor mutation begins, and that retained
-callback composes all held monitor reconstruction steps through greeting. No
-command invokes this path; production fork invocation, post-commit input
-release, and readiness bits 7 and 8 remain open.
+callback composes all held monitor reconstruction steps through greeting. At
+that checkpoint no command invoked this path; production fork invocation,
+post-commit input release, and readiness bits 7 and 8 remained open.
 The bounded thread and registered-`QemuMutex` registries now expose one
 coordinator-owned transaction that holds both registries across a real fork.
 It rejects in-flight `qemu_thread_create()` starts and nonquiescent registered
 mutexes, leaves the parent registry unchanged at release, and reconstructs the
 immediate child around exactly the surviving coordinator. A real-fork
-regression and locked-mutex negative control cover those outcomes. The
-transaction remains unwired to a production fork command and deliberately does
-not claim raw `pthread`/GLib lock completeness or the remaining subsystem
-dispositions. The following retained runtime transaction closes
-reader/callback and asynchronous-source admission, preserves the parent RCU
-registry and both template barriers, and reconstructs the immediate child in
-strict phases. The registered-thread half admits only the exact coordinator,
+regression and locked-mutex negative control cover those outcomes. This
+transaction deliberately does not claim raw `pthread`/GLib lock completeness
+or the remaining subsystem dispositions. The following retained runtime
+transaction closes reader/callback and asynchronous-source admission,
+preserves the parent RCU registry and both template barriers, and reconstructs
+the immediate child in strict phases. The registered-thread half admits only the exact coordinator,
 RCU worker, and classified monitor-IOThread source profile; it rejects generic
 and other AIO workers before fork, discards the inherited workers, reconstructs
 RCU under the descriptor transaction, starts the replacement RCU worker after
 descriptor commit, and releases copied asynchronous admission before the bound
 child-QMP transaction creates its monitor replacement. A raw-notifier main-loop
-bridge now owns the actual `fork(2)` call for an internal immutable callback
-operation, but no public QMP command composes the retained runtime with that
-bridge. The transaction therefore still cannot advance readiness bit 8 by
-itself.
-These are executable T-CAM-6.1 audit prerequisites, not completion of the task:
-the internal registry now has safe RCU and internal-monitor dispositions, while
+bridge first owned the actual `fork(2)` call for an internal immutable callback
+operation.
+
+Template contract version 23 now exposes the complete supported-profile
+composition as the public `crucible-hot-fork` QMP operation. Its exact request
+binds twelve template, resource, process, runtime, descriptor, and monitor
+generations. QEMU revalidates them on the source main loop, preserves the
+parent's retained template, closes the inherited parent QMP endpoint in the
+child, commits the descriptor disposition, reconstructs runtime/plugin/private
+QMP resources, and releases block and child-QMP input in ownership order. The
+schema-version-1 parent result preserves a positive child PID across a parent
+disposition error. Template schema 23 requires the seven parent-side proofs;
+descriptor and child-reinitialization proofs remain child-only. Child-QMP
+schema 8 acknowledges readiness only after its exact plan, disposition,
+runtime, greeting, and input release complete. The Rust QMP client derives the
+twelve-field request from those typed prepared states, validates every echoed
+field and outcome, preserves the connection only for an explicit pre-fork
+command rejection, and poisons it after every fork-indeterminate failure.
+
+This is still an executable T-CAM-6.1 audit checkpoint rather than completion
+of T-CAM-6.2 or T-CAM-6.3. The daemon must next compose the command with its
+attempt process guard, direct-child reaper/quarantine owner, exact resource
+accounting, private child-channel authentication, and observation publication;
+the real QEMU flight, measurements, and failure-injection audit remain open.
+The internal registry now has safe RCU and internal-monitor dispositions, while
 other AIO owners and every generic or external thread remain unresolved. The
 retained AIO/BH/timer and RCU
 barriers now promote bits 3 and 4, but the remaining views cannot prove a

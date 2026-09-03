@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "482b17ae53ede3c410c96236daea77a170770b9a6c4bc728b4a89dfdacb281a7";
+  patchBranchBundleSha256 = "97d09453c99707d4c02f1d83e37265bcb5c1e84b4fc45e9c1815839e3d60f265";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "4ba9d89af9bcf82a60e41ed32687bb01facb493a";
+  patchBranchHeadCommit = "e6703d0919f7643f3e761cf8430142b68c40d2e4";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1845,6 +1845,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4,HFORK-22";
       capability = "a raw event-notifier bridge now lets one non-main-loop owner submit an exact fork operation without relying on blocked BH or AIO admission, executes preparation, fork, and parent disposition on the source main-loop thread, disables its copied notifier before immediate-child reconstruction, and returns a positive child PID even when parent disposition fails so ownership is not lost; no public QMP command supplies the operation yet, and parent-death containment, direct-child quarantine, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0192-crucible-fork-retained-templates-through-private-qmp.patch";
+      branchSubject = "crucible: fork retained templates through private QMP";
+      branchCommit = "e6703d0919f7643f3e761cf8430142b68c40d2e4";
+      branchTree = "a6f70a5fa14b7fa1bf39beb91433f79c9bd77ac5";
+      catalogName = "crucible-hot-fork-private-qmp-transaction";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "the public generation-bound QMP command now submits one retained template to the source main-loop coordinator, authenticates the immediate child, closes and exactly proves every inherited descriptor disposition, reconstructs the registered runtime and private plugin/QMP endpoints, releases the copied block barrier, and leaves the child paused behind a separately authenticated private-QMP readiness report; the parent preserves the exact child PID across disposition failure, while daemon direct-child quarantine, hard resource containment, modeled guest admission, and the full production flight remain open";
     }
   ];
   catalogOnlyCapabilities = [

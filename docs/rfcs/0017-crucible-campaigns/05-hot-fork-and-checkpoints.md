@@ -999,7 +999,7 @@ races and is sufficient for proof bit 3 while retained and quiescent. It does
 not choose child-side descriptor, context, coroutine, or clock disposition;
 those obligations remain separately represented by proof bits 7 and 8.
 
-The retained `PrepareForkTemplate` checkpoint is the version-17 OOB
+The retained `PrepareForkTemplate` checkpoint is the version-23 OOB
 `crucible-hot-fork-template` coordinator:
 
 ```text
@@ -1009,7 +1009,7 @@ CrucibleHotForkTemplateOutcome =
     idle | draining | blocked | prepared | aborted
 
 CrucibleHotForkTemplateResourceStageState {
-    schema-version: u32 = 7,
+    schema-version: u32 = 12,
     template-generation: u64,
     private-ring-staged: bool,
     private-ring-generation: u64,
@@ -1037,11 +1037,11 @@ CrucibleHotForkTemplateResourceStageState {
 }
 
 CrucibleHotForkTemplateState {
-    schema-version: u32 = 17,
+    schema-version: u32 = 23,
     generation: u64,
     outcome: CrucibleHotForkTemplateOutcome,
     transaction-active: bool,
-    required-proofs: u64 = 0x01ff,
+    required-proofs: u64 = 0x007f,
     acknowledged-proofs: u64,
     missing-proofs: u64,
     plugin-barrier: CrucibleHotForkPluginBarrierState,
@@ -1067,12 +1067,12 @@ is complete, the coordinator acquires the RCU
 admission barrier, the bottom-half/timer source barrier, and the plugin callback
 barrier, and retains all four while previously admitted work drains. A repeated
 `prepare` reevaluates the retained transaction. Once all four barriers are
-quiescent, QEMU reports `prepared` only when all nine required bits are present
-in the same transaction. Otherwise the version-17 report continues to report
-`draining` and retains the barriers so the host can capture and stage
-branch-private resources without releasing the source-ring barrier. Version 12
-introduced the atomic resource report. It carries the exact private-ring and
-endpoint mutation generations, the
+quiescent, QEMU reports `prepared` only when all seven parent-side template
+proofs are present in the same transaction. Otherwise the version-23 report
+continues to report `draining` and retains the barriers so the host can capture
+and stage branch-private resources without releasing the source-ring barrier.
+Version 12 introduced the atomic resource report. It carries the exact
+private-ring and endpoint mutation generations, the
 endpoint-to-ring generation edge, their originating template generation, and
 whether every retained resource is bound to the current active transaction.
 For retained endpoints it also requires the captured barrier generation and
@@ -1316,10 +1316,61 @@ positive child PID is returned even when parent disposition fails, preserving
 the caller's direct-child ownership obligation. The child callback MUST arm
 parent-death containment and authenticate the immediate child before any
 reconstruction or externally visible action. A real-fork unit test proves the
-thread ownership and returned-PID contract. No public QAPI/QMP command supplies
-an operation yet, so the bridge alone does not admit a fork, guest work, or
-readiness bit 7 or 8.
-The version-3 child-QMP report now derives `disposition-complete` from that
+thread ownership and returned-PID contract.
+
+Template contract version 23 now exposes that coordinator as the public
+`crucible-hot-fork` QMP command. The request carries the exact template,
+private-ring, diagnostics, child-QMP, plugin-endpoint, plugin-barrier,
+descriptor-table, parent-process, child-process, child-runtime, and monitor
+generations. QEMU revalidates all twelve fields on the source main loop before
+forking. The child closes the inherited parent QMP channel, commits the exact
+descriptor table, reconstructs the runtime, plugin, and private child-QMP
+resources, and releases block and QMP input only after their owning
+transactions commit. The language-neutral command contract is:
+
+```text
+crucible-hot-fork(
+    template-generation: u64,
+    private-ring-generation: u64,
+    diagnostic-generation: u64,
+    qmp-generation: u64,
+    monitor-generation: u64,
+    plugin-endpoint-generation: u64,
+    plugin-barrier-generation: u64,
+    rcu-barrier-generation: u64,
+    bh-timer-barrier-generation: u64,
+    block-barrier-generation: u64,
+    parent-process-generation: u64,
+    child-process-generation: u64,
+) -> CrucibleHotForkState
+
+CrucibleHotForkState {
+    schema-version: u32 = 1,
+    outcome: forked | parent-disposition-failed,
+    parent-status: i64,
+    child-pid: i64 > 0,
+    ...the exact twelve request generations...
+}
+```
+
+The parent response always returns
+the positive child PID once a child exists, and distinguishes a successful
+fork from a parent-disposition failure. That response is parent-only evidence:
+the host MUST retain direct-child authority and authenticate the private child
+channel before admitting the child.
+
+Child-QMP contract version 8 reports `readiness-acknowledged` only when the
+exact resource plan and descriptor disposition are committed, runtime and
+plugin reinitialization are complete, the greeting was sent, and replacement
+input was released. Explicit QMP command rejection before the fork leaves the
+parent connection reusable. Any transport, framing, echo, or response failure
+is fork-indeterminate and MUST poison the parent connection and transfer the
+attempt to direct-child reconciliation. Daemon composition with the
+attempt-owned process guard, direct-child reaper, resource accounting, private
+channel authentication, and campaign observation remains required before this
+command may serve a production campaign flight.
+
+The version-3 child-QMP report first derived `disposition-complete` from that
 exact accepted one-shot status instead of hard-coding false. Prepared but
 unattempted, contradictory, failed, and reset adapters remain incomplete; the
 accepted result must still match the retained descriptor, socket identity,
@@ -1387,22 +1438,24 @@ and its complete immutable writable-root binding remains retained by the
 quiescent block barrier. Version 19 composes plugin-ring proof bit
 6 from the exact transaction-bound frozen ring, diagnostics stream, retained
 child-QMP stream and prepared reinitializer, endpoint pair, worker plan, and
-plugin barrier. The
-resource-table binding remains
-nondestructive;
-descriptor/mapping proof bit 7 and child-reinitialization proof
-bit 8 remain clear, so a fully drained transaction stays `draining` and cannot
-advertise a usable hot-fork template.
+plugin barrier. The resource-table binding remains nondestructive. Template
+version 23 deliberately requires only bits 0 through 6: descriptor/mapping
+proof bit 7 and child-reinitialization proof bit 8 are child-only results that
+cannot truthfully exist in the retained parent template. A fully parent-bound
+transaction may therefore report `prepared`; only the private child report can
+prove the final two dispositions for a particular fork. The public command
+composes those child-only operations for the supported QEMU profile, while
+daemon-owned containment, reaping, accounting, and campaign publication remain
+outside the template contract.
 
 The standalone AioContext, AIO-handler, and block-backend responses remain
 observational. The retained asynchronous-source barrier composes the context,
 handler, coroutine, bottom-half, and timer admission classes and derives proof
 bit 3 only while they are complete and quiescent. The coordinator now composes
 the retained native block drain, graph-writer barrier, and exact immutable
-writable-root binding to derive proof bit 5. It must still compose
-descriptor/mapping, child graph/overlay reconstruction, and the remaining
-child-reinitialization proofs before a retained template can authorize
-`fork(2)`.
+writable-root binding to derive proof bit 5. It must retain the exact
+descriptor/mapping and child reconstruction plans so the fork command can
+consume them after the parent template is prepared.
 
 Patched POSIX QEMU also exposes the bounded observational mutex inventory used
 to define the process-private lock side of the child-reinitialization proof:

@@ -3,9 +3,9 @@
 use serde_json::Value;
 
 use super::{
-    QMP_HOT_FORK_REQUIRED_PROOFS, QmpHotForkBhTimerBarrierState, QmpHotForkBlockBarrierState,
-    QmpHotForkPluginBarrierState, QmpHotForkProof, QmpHotForkRcuBarrierState,
-    bh_timer_barrier::parse_hot_fork_bh_timer_barrier_state_for,
+    QMP_HOT_FORK_TEMPLATE_REQUIRED_PROOFS, QmpHotForkBhTimerBarrierState,
+    QmpHotForkBlockBarrierState, QmpHotForkPluginBarrierState, QmpHotForkProof,
+    QmpHotForkRcuBarrierState, bh_timer_barrier::parse_hot_fork_bh_timer_barrier_state_for,
     block_barrier::parse_hot_fork_block_barrier_state_for,
     plugin::parse_hot_fork_plugin_barrier_state_for,
     rcu_barrier::parse_hot_fork_rcu_barrier_state_for,
@@ -15,7 +15,7 @@ use crate::qmp::{QmpCommandKind, QmpError};
 /// QMP command name used for QEMU's retained template-preparation coordinator.
 pub const QMP_HOT_FORK_TEMPLATE_COMMAND: &str = "crucible-hot-fork-template";
 /// Version of the QEMU-owned template-preparation transaction contract.
-pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 22;
+pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 23;
 
 const QMP_HOT_FORK_AIO_PROOF: u64 = 1_u64 << 3;
 const QMP_HOT_FORK_RCU_PROOF: u64 = 1_u64 << 4;
@@ -396,7 +396,7 @@ pub(crate) fn parse_hot_fork_template_state(
         .ok_or_else(&malformed)?;
 
     let proofs_valid = schema_version == u64::from(QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION)
-        && required_proofs == QMP_HOT_FORK_REQUIRED_PROOFS
+        && required_proofs == QMP_HOT_FORK_TEMPLATE_REQUIRED_PROOFS
         && acknowledged_proofs & !required_proofs == 0
         && missing_proofs == required_proofs & !acknowledged_proofs;
     let expected_ready = outcome == QmpHotForkTemplateOutcome::Prepared

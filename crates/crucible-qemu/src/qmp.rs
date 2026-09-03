@@ -43,21 +43,21 @@ pub use hot_fork::{
     QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES, QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
     QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD,
     QMP_HOT_FORK_CHILD_QMP_COMMAND, QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION,
-    QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION, QMP_HOT_FORK_MONITOR_INVENTORY_MAX,
-    QMP_HOT_FORK_MONITOR_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_MUTEX_INVENTORY_MAX,
-    QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND,
-    QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND,
-    QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION,
+    QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION, QMP_HOT_FORK_COMMAND,
+    QMP_HOT_FORK_MONITOR_INVENTORY_MAX, QMP_HOT_FORK_MONITOR_INVENTORY_SCHEMA_VERSION,
+    QMP_HOT_FORK_MUTEX_INVENTORY_MAX, QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION,
+    QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND, QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION,
+    QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND, QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION,
     QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
     QMP_HOT_FORK_PRIVATE_RINGS_SCHEMA_VERSION, QMP_HOT_FORK_RCU_BARRIER_COMMAND,
     QMP_HOT_FORK_RCU_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_RCU_INVENTORY_MAX,
     QMP_HOT_FORK_RCU_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_READINESS_SCHEMA_VERSION,
-    QMP_HOT_FORK_REQUIRED_PROOFS, QMP_HOT_FORK_TEMPLATE_COMMAND,
-    QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION, QMP_HOT_FORK_THREAD_INVENTORY_MAX,
-    QMP_HOT_FORK_THREAD_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_THREAD_NAME_MAX_BYTES,
-    QMP_HOT_FORK_TIMER_INVENTORY_MAX, QMP_HOT_FORK_TIMER_INVENTORY_SCHEMA_VERSION,
-    QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
+    QMP_HOT_FORK_REQUIRED_PROOFS, QMP_HOT_FORK_SCHEMA_VERSION, QMP_HOT_FORK_TEMPLATE_COMMAND,
+    QMP_HOT_FORK_TEMPLATE_REQUIRED_PROOFS, QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION,
+    QMP_HOT_FORK_THREAD_INVENTORY_MAX, QMP_HOT_FORK_THREAD_INVENTORY_SCHEMA_VERSION,
+    QMP_HOT_FORK_THREAD_NAME_MAX_BYTES, QMP_HOT_FORK_TIMER_INVENTORY_MAX,
+    QMP_HOT_FORK_TIMER_INVENTORY_SCHEMA_VERSION, QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND,
+    QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_CHILD_RUNTIME_COMMAND,
     QMP_QUERY_HOT_FORK_MONITOR_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
     QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
@@ -69,10 +69,11 @@ pub use hot_fork::{
     QmpHotForkBlockSnapshotRoot, QmpHotForkBottomHalf, QmpHotForkBottomHalfInventory,
     QmpHotForkChildDiagnosticState, QmpHotForkChildQmpState, QmpHotForkChildRuntimePhase,
     QmpHotForkChildRuntimeState, QmpHotForkMonitorInventory, QmpHotForkMutex,
-    QmpHotForkMutexInventory, QmpHotForkPluginBarrierState, QmpHotForkPluginEndpointDescriptorPlan,
-    QmpHotForkPluginEndpointIdentity, QmpHotForkPluginEndpointState,
-    QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState, QmpHotForkProof,
-    QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness,
+    QmpHotForkMutexInventory, QmpHotForkOutcome, QmpHotForkPluginBarrierState,
+    QmpHotForkPluginEndpointDescriptorPlan, QmpHotForkPluginEndpointIdentity,
+    QmpHotForkPluginEndpointState, QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState,
+    QmpHotForkProof, QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader,
+    QmpHotForkReadiness, QmpHotForkRequest, QmpHotForkRequestError, QmpHotForkState,
     QmpHotForkTemplateOutcome, QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState,
     QmpHotForkThread, QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer,
     QmpHotForkTimerClock, QmpHotForkTimerInventory,
@@ -86,8 +87,8 @@ use hot_fork::{
     parse_hot_fork_mutex_inventory, parse_hot_fork_plugin_barrier_state,
     parse_hot_fork_plugin_endpoint_state, parse_hot_fork_plugin_resource_inventory,
     parse_hot_fork_private_ring_state, parse_hot_fork_rcu_barrier_state,
-    parse_hot_fork_rcu_inventory, parse_hot_fork_readiness, parse_hot_fork_template_state,
-    parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
+    parse_hot_fork_rcu_inventory, parse_hot_fork_readiness, parse_hot_fork_state,
+    parse_hot_fork_template_state, parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
 };
 pub use snapshot_tag::QmpSnapshotTag;
 pub use vmstate_control::QemuQmpVmStateControlChannel;
@@ -1361,6 +1362,38 @@ where
         self.hot_fork_template(HotForkTemplateAction::Abort, None)
     }
 
+    /// Forks one exact retained hot-fork template on QEMU's main-loop thread.
+    ///
+    /// A successful response proves that the positive direct child exists and
+    /// echoes every generation in `request`. The caller must still retain and
+    /// authenticate that direct child through its branch-private QMP endpoint
+    /// before admitting guest execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when QEMU rejects the pre-fork basis, the exchange
+    /// becomes indeterminate, or the result does not echo the exact request.
+    /// Explicit QMP command rejection creates no child and leaves the client
+    /// usable. Every other error poisons the connection because child creation
+    /// may already have occurred.
+    pub fn hot_fork(&mut self, request: QmpHotForkRequest) -> Result<QmpHotForkState, QmpError> {
+        let result = self
+            .send_command_return(QmpCommand::HotFork { request })
+            .and_then(|response| parse_hot_fork_state(&response.value, request));
+        let pre_fork_rejection = matches!(
+            &result,
+            Err(QmpError::Command {
+                command: QmpCommandKind::HotFork,
+                ..
+            })
+        );
+        if result.is_err() && !pre_fork_rejection {
+            self.poisoned = true;
+            self.stream.get_mut().poison_qmp_stream();
+        }
+        result
+    }
+
     fn hot_fork_template(
         &mut self,
         action: HotForkTemplateAction,
@@ -2173,6 +2206,8 @@ pub enum QmpCommandKind {
     HotForkBlockBarrier,
     /// QEMU-owned retained hot-fork template coordinator operation.
     HotForkTemplate,
+    /// QEMU-owned retained-template fork operation.
+    HotFork,
     /// QEMU-owned branch-private ring descriptor retention operation.
     HotForkPrivateRings,
     /// QEMU-owned branch-private plugin endpoint retention operation.
@@ -2230,6 +2265,7 @@ impl QmpCommandKind {
             Self::HotForkBhTimerBarrier => QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND,
             Self::HotForkBlockBarrier => QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
             Self::HotForkTemplate => QMP_HOT_FORK_TEMPLATE_COMMAND,
+            Self::HotFork => QMP_HOT_FORK_COMMAND,
             Self::HotForkPrivateRings => QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
             Self::HotForkPluginEndpoints => QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND,
             Self::HotForkChildDiagnostics => QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
@@ -2469,6 +2505,9 @@ enum QmpCommand<'a> {
         action: HotForkTemplateAction,
         block_snapshot_bindings: Option<&'a [QmpHotForkBlockSnapshotBinding]>,
     },
+    HotFork {
+        request: QmpHotForkRequest,
+    },
     HotForkPrivateRings {
         action: HotForkPrivateRingAction,
         name: Option<&'a QmpDescriptorName>,
@@ -2536,6 +2575,7 @@ impl QmpCommand<'_> {
             Self::HotForkBhTimerBarrier { .. } => QmpCommandKind::HotForkBhTimerBarrier,
             Self::HotForkBlockBarrier { .. } => QmpCommandKind::HotForkBlockBarrier,
             Self::HotForkTemplate { .. } => QmpCommandKind::HotForkTemplate,
+            Self::HotFork { .. } => QmpCommandKind::HotFork,
             Self::HotForkPrivateRings { .. } => QmpCommandKind::HotForkPrivateRings,
             Self::HotForkPluginEndpoints { .. } => QmpCommandKind::HotForkPluginEndpoints,
             Self::HotForkChildDiagnostics { .. } => QmpCommandKind::HotForkChildDiagnostics,
@@ -2678,6 +2718,10 @@ impl QmpCommand<'_> {
                     "arguments": Value::Object(arguments),
                 })
             }
+            Self::HotFork { request } => json!({
+                "exec-oob": QMP_HOT_FORK_COMMAND,
+                "arguments": request.wire_value(),
+            }),
             Self::HotForkPrivateRings {
                 action,
                 name,
@@ -2863,5 +2907,174 @@ fn command_error(command: QmpCommandKind, error: &Value) -> QmpError {
         command,
         class,
         description,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // crucible-lint: allow panic-shortcut -- focused protocol fixtures use exact panic messages.
+    #![allow(clippy::expect_used)]
+
+    use std::io::Cursor;
+
+    use super::*;
+
+    #[derive(Debug)]
+    struct ScriptedStream {
+        read: Cursor<Vec<u8>>,
+        written: Vec<u8>,
+    }
+
+    impl ScriptedStream {
+        fn new(lines: &[&str]) -> Self {
+            let mut bytes = lines.join("\r\n").into_bytes();
+            bytes.extend_from_slice(b"\r\n");
+            Self {
+                read: Cursor::new(bytes),
+                written: Vec::new(),
+            }
+        }
+    }
+
+    impl Read for ScriptedStream {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.read.read(buffer)
+        }
+    }
+
+    impl Write for ScriptedStream {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.written.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl QmpTimeoutStream for ScriptedStream {
+        fn set_qmp_read_timeout(&mut self, _timeout: Duration) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn set_qmp_write_timeout(&mut self, _timeout: Duration) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn hot_fork_request() -> QmpHotForkRequest {
+        QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+    }
+
+    fn hot_fork_response(qmp_generation: u64) -> String {
+        json!({
+            "return": {
+                "schema-version": 1,
+                "outcome": "forked",
+                "parent-status": 0,
+                "child-pid": 321,
+                "template-generation": 1,
+                "private-ring-generation": 2,
+                "diagnostic-generation": 3,
+                "qmp-generation": qmp_generation,
+                "monitor-generation": 5,
+                "plugin-endpoint-generation": 6,
+                "plugin-barrier-generation": 7,
+                "rcu-barrier-generation": 8,
+                "bh-timer-barrier-generation": 9,
+                "block-barrier-generation": 10,
+                "parent-process-generation": 11,
+                "child-process-generation": 12,
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn hot_fork_command_carries_every_exact_generation() {
+        let request = hot_fork_request();
+
+        assert_eq!(
+            QmpCommand::HotFork { request }.request(),
+            json!({
+                "exec-oob": "crucible-hot-fork",
+                "arguments": {
+                    "template-generation": 1,
+                    "private-ring-generation": 2,
+                    "diagnostic-generation": 3,
+                    "qmp-generation": 4,
+                    "monitor-generation": 5,
+                    "plugin-endpoint-generation": 6,
+                    "plugin-barrier-generation": 7,
+                    "rcu-barrier-generation": 8,
+                    "bh-timer-barrier-generation": 9,
+                    "block-barrier-generation": 10,
+                    "parent-process-generation": 11,
+                    "child-process-generation": 12,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn hot_fork_accepts_exact_result_and_poisons_ambiguous_mismatch() {
+        let exact = hot_fork_response(4);
+        let mut client = QmpClient::connect(ScriptedStream::new(&[
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            &exact,
+        ]))
+        .expect("scripted QMP client should connect");
+        let state = client
+            .hot_fork(hot_fork_request())
+            .expect("exact hot-fork response should succeed");
+        assert_eq!(state.child_pid(), 321);
+        assert_eq!(state.request(), hot_fork_request());
+
+        let mismatch = hot_fork_response(99);
+        let mut client = QmpClient::connect(ScriptedStream::new(&[
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            &mismatch,
+        ]))
+        .expect("scripted QMP client should connect");
+        assert!(matches!(
+            client.hot_fork(hot_fork_request()),
+            Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotFork,
+                ..
+            })
+        ));
+        assert_eq!(
+            client.hot_fork(hot_fork_request()),
+            Err(QmpError::ConnectionPoisoned)
+        );
+    }
+
+    #[test]
+    fn hot_fork_pre_fork_rejection_keeps_the_connection_usable() {
+        let exact = hot_fork_response(4);
+        let mut client = QmpClient::connect(ScriptedStream::new(&[
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            r#"{"error":{"class":"GenericError","desc":"stale generation"}}"#,
+            &exact,
+        ]))
+        .expect("scripted QMP client should connect");
+        assert!(matches!(
+            client.hot_fork(hot_fork_request()),
+            Err(QmpError::Command {
+                command: QmpCommandKind::HotFork,
+                ..
+            })
+        ));
+        assert_eq!(
+            client
+                .hot_fork(hot_fork_request())
+                .expect("explicit pre-fork rejection should remain retryable")
+                .child_pid(),
+            321
+        );
     }
 }

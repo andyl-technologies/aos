@@ -2889,14 +2889,31 @@ registries. Immediate-child reconstruction first makes the QEMU thread registry
 authoritative, then drops vanished RCU readers, rebinds the coordinator reader,
 resets the proven-empty callback state, reopens admission, and starts one fresh
 callback worker before returning. Any pre-fork acquisition failure rolls the
-outer RCU barrier back. This remains an internal, unwired prerequisite: no
-production command invokes `fork(2)`, raw/library lock disposition remains
-open, and readiness bit 8 remains clear.
+outer RCU barrier back.
+
+Template contract version 23 exposes the composed transaction through the
+public `crucible-hot-fork` QMP command. Its request binds the exact twelve
+template, resource, process, runtime, descriptor, and monitor generations.
+QEMU revalidates that basis on the source main loop, forks once, preserves the
+parent template, and completes the supported descriptor, runtime, plugin, and
+private child-QMP dispositions in the immediate child. Its schema-version-1
+parent response returns the positive child PID even when parent disposition
+fails. Child-QMP contract version 8 acknowledges readiness only after the
+resource plan, descriptor disposition, child runtime, plugin endpoints,
+greeting, and replacement input are complete. The response alone never admits
+the child: the executor MUST retain direct-child authority and authenticate the
+private child channel against the same generations before treating it as live.
+An explicit pre-fork QMP rejection is safe to retry on the parent connection;
+any other transport or response failure is fork-indeterminate and poisons that
+connection. The daemon-side process guard, resource accounting,
+direct-child/quarantine lifecycle, private-channel promotion, and campaign
+observation integration remain mandatory before the executor may report
+`hot-fork`.
 
 The driver owns selection application, stop-boundary execution, and candidate
-construction but never assignment or daemon-epoch identity. This adapter cannot
-report `hot-fork`; only the future QEMU-owned fork protocol may do so after its
-conformance gates pass.
+construction but never assignment or daemon-epoch identity. This adapter
+cannot report `hot-fork` until it is composed with the QEMU-owned protocol and
+the daemon-side lifecycle obligations above and their conformance gates pass.
 
 - **[CCOMP-20]** Capability reports MUST distinguish immutable compatibility
   facts from volatile capacity and locality hints, and consumers MUST treat
