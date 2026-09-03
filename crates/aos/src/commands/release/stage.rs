@@ -1,16 +1,19 @@
 //! Exact-byte publication to the canonical isolated staging Hub.
 
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Write as _;
 use std::path::Path;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use aos_core::output::Printer;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
-use aos_release::receipt::{HubEnvironment, PUBLICATION_RECEIPT_V1, PublicationReceiptV1};
+use aos_release::receipt::{PublicationReceiptV1, verify_signed_receipt};
 use aos_release::state::{JournalEntryV1, ReleaseState, parse_journal};
+use aos_remote::hub::HubClient;
+use aos_remote::hub::hub_rpc;
 use futures_util::StreamExt as _;
 use sha2::{Digest as _, Sha256};
 
@@ -57,25 +60,63 @@ pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()
     }
     verify_deployment(&public_client, &plan.staging_deployment_id).await?;
     read_back_publication(&public_client, &plan.registry, &publication).await?;
-
-    let committed_at = format_unix_time(publication.completed_at)?;
-    let receipt = PublicationReceiptV1 {
-        schema_version: PUBLICATION_RECEIPT_V1.to_owned(),
-        environment: HubEnvironment::Staging,
-        deployment_id: plan.staging_deployment_id,
-        registry: plan.registry,
-        release_id: summary.release_id,
-        manifest_digest: summary.manifest_digest,
-        bundle_digest: aos_release::verify::bundle_digest(
-            &captured.manifest_bytes,
-            &captured.files,
-        )?,
-        operation_id: publication.publication_id,
-        staging_receipt_digest: None,
-        committed_at,
-    };
+    let bundle_digest =
+        aos_release::verify::bundle_digest(&captured.manifest_bytes, &captured.files)?;
+    let backing_publication_id = publication.parent_publication_id.as_str();
+    if backing_publication_id.is_empty() {
+        bail!("staging release publication has no compare-and-swap base publication");
+    }
+    let token = args
+        .token
+        .as_deref()
+        .context("staging requires an access token")?;
+    let hub = HubClient::connect_with_token(STAGING_HUB, token)?;
+    hub.call_topology(
+        hub_rpc::BeginReleasePublication,
+        &aos_proto_types::BeginReleasePublicationRequest {
+            registry: plan.registry.clone(),
+            bundle_digest: bundle_digest.to_string(),
+            release_id: summary.release_id.clone(),
+            manifest_digest: summary.manifest_digest.to_string(),
+            registry_base_commit: plan.registry_base_commit.clone(),
+            staging_deployment_id: plan.staging_deployment_id.clone(),
+            production_deployment_id: plan.production_deployment_id.clone(),
+            backing_publication_id: backing_publication_id.to_owned(),
+        },
+    )
+    .await?;
+    let signed = hub
+        .call_topology(
+            hub_rpc::CommitReleasePublication,
+            &aos_proto_types::CommitReleasePublicationRequest {
+                registry: plan.registry.clone(),
+                bundle_digest: bundle_digest.to_string(),
+                environment: "staging".into(),
+                publication_id: publication.publication_id.clone(),
+                expected_deployment_id: plan.staging_deployment_id.clone(),
+                staging_receipt_digest: String::new(),
+            },
+        )
+        .await?;
+    let receipt_bytes = signed.signed_receipt_json.into_bytes();
+    if Sha256Digest::of_bytes(&receipt_bytes).to_string() != signed.receipt_digest {
+        bail!("staging Hub receipt digest does not match its signed bytes");
+    }
+    let receipt_keys = trusted_keys
+        .iter()
+        .map(|key| (key.key_id.clone(), key.public_key))
+        .collect::<BTreeMap<_, _>>();
+    let receipt: PublicationReceiptV1 = verify_signed_receipt(&receipt_bytes, &receipt_keys)?;
     receipt.validate()?;
-    let receipt_bytes = canonical::to_vec(&receipt)?;
+    if receipt.deployment_id != plan.staging_deployment_id
+        || receipt.registry != plan.registry
+        || receipt.release_id != summary.release_id
+        || receipt.manifest_digest != summary.manifest_digest
+        || receipt.bundle_digest != bundle_digest
+        || receipt.operation_id != publication.publication_id
+    {
+        bail!("staging Hub receipt does not bind the exact release publication");
+    }
     let staged_journal =
         append_staged_journal(&journal, &receipt, Sha256Digest::of_bytes(&receipt_bytes))?;
     persist_stage_tree(&args.output, &receipt_bytes, &staged_journal)?;
@@ -254,14 +295,6 @@ fn write_synced(path: &Path, bytes: &[u8]) -> Result<()> {
     file.write_all(bytes)?;
     file.sync_all()?;
     Ok(())
-}
-
-fn format_unix_time(seconds: i64) -> Result<String> {
-    let seconds = u64::try_from(seconds).context("Hub completion time precedes the Unix epoch")?;
-    Ok(
-        humantime::format_rfc3339(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds))
-            .to_string(),
-    )
 }
 
 #[cfg(test)]

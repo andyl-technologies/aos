@@ -27,6 +27,7 @@ aos-net = { workspace = true }
 aos-server = { workspace = true }
 aos-cache = { workspace = true }
 aos-remote = { workspace = true }
+aos-proto-types = { workspace = true }
 aos-doc = { workspace = true }
 aos-doc-model = { workspace = true }
 aos-package = { workspace = true }
