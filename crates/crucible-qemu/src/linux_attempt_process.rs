@@ -8,8 +8,12 @@
 //! does not claim aggregate filesystem-quota ownership and therefore cannot by
 //! itself satisfy a complete campaign attempt resource guard.
 
+use std::io::Read as _;
+use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
 
 use crate::linux_cgroup::{
     LinuxQemuAttemptProcessOwner as CgroupAttemptProcessOwner,
@@ -17,7 +21,10 @@ use crate::linux_cgroup::{
     LinuxQemuAttemptProcessOwnerStatus as CgroupAttemptProcessOwnerStatus, LinuxQemuCgroupError,
     LinuxQemuCgroupLimits, LinuxQemuCgroupRoot, MAX_LINUX_QEMU_CGROUP_TASKS,
 };
-use crate::{QemuChildProcessContract, QemuNodeChild, QemuVmRealizationError};
+use crate::{
+    QemuChildProcessContract, QemuHotForkChildProcessBasis, QemuHotForkChildProcessOwner,
+    QemuNodeChannelError, QemuNodeChild, QemuProcessIdentity, QemuVmRealizationError,
+};
 
 /// Minimum bounded wait accepted for normal process-owner cleanup.
 pub const MIN_LINUX_QEMU_PROCESS_FINISH_TIMEOUT: Duration = Duration::from_millis(10);
@@ -258,6 +265,7 @@ impl LinuxQemuAttemptProcessFactory {
             maximum_resident_bytes,
             maximum_writable_bytes,
             finish_timeout: self.config.finish_timeout,
+            hot_fork_child_retained: false,
         })
     }
 }
@@ -271,6 +279,7 @@ pub struct LinuxQemuAttemptProcessOwner {
     maximum_resident_bytes: u64,
     maximum_writable_bytes: u64,
     finish_timeout: Duration,
+    hot_fork_child_retained: bool,
 }
 
 impl LinuxQemuAttemptProcessOwner {
@@ -341,6 +350,148 @@ impl LinuxQemuAttemptProcessOwner {
     pub fn quarantine(&mut self) {
         let _ = self.owner.quarantine();
     }
+}
+
+/// Exact daemon-side kill and identity authority for one hot-fork child.
+///
+/// The source QEMU process remains the direct parent and owns `waitpid` status.
+/// This authority instead pins the live kernel process generation with a pidfd
+/// and records the identity authenticated inside the target attempt cgroup.
+/// Callers must retain it with the source child-status record and the target
+/// [`LinuxQemuAttemptProcessOwner`] until terminal reap and cgroup emptiness are
+/// both attested.
+#[derive(Debug)]
+#[must_use = "retain the hot-fork child authority until source reap and cgroup cleanup"]
+pub struct LinuxQemuHotForkChildProcessAuthority {
+    basis: QemuHotForkChildProcessBasis,
+    identity: QemuProcessIdentity,
+    pidfd: OwnedFd,
+}
+
+impl LinuxQemuHotForkChildProcessAuthority {
+    /// Returns the exact source, child, and fork-request basis.
+    #[must_use]
+    pub const fn basis(&self) -> QemuHotForkChildProcessBasis {
+        self.basis
+    }
+
+    /// Returns the authenticated Linux process-generation identity.
+    #[must_use]
+    pub const fn identity(&self) -> &QemuProcessIdentity {
+        &self.identity
+    }
+
+    /// Sends `SIGKILL` through the exact retained pidfd.
+    ///
+    /// # Errors
+    ///
+    /// Returns an executor-availability error when the kernel rejects the
+    /// pidfd signal operation. The caller must keep the attempt cgroup watcher
+    /// and source-QEMU reap authority active regardless of this result.
+    pub fn kill(&self) -> Result<(), QemuVmRealizationError> {
+        pidfd_send_signal(&self.pidfd, Signal::KILL).map_err(|source| {
+            QemuVmRealizationError::ExecutorUnavailable {
+                operation: "kill retained hot-fork child",
+                message: source.to_string(),
+            }
+        })
+    }
+}
+
+impl QemuHotForkChildProcessOwner for LinuxQemuAttemptProcessOwner {
+    type Authority = LinuxQemuHotForkChildProcessAuthority;
+
+    fn retain_hot_fork_child(
+        &mut self,
+        basis: QemuHotForkChildProcessBasis,
+    ) -> Result<Self::Authority, QemuNodeChannelError> {
+        if self.hot_fork_child_retained {
+            return Err(QemuNodeChannelError::new(
+                "retain forked child process",
+                "attempt process owner already retained one hot-fork child",
+            ));
+        }
+        let raw_process_id = i32::try_from(basis.child_process_id())
+            .ok()
+            .and_then(Pid::from_raw)
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "retain forked child process",
+                    "hot-fork child PID is outside the supported Linux range",
+                )
+            })?;
+        let pidfd = pidfd_open(raw_process_id, PidfdFlags::empty()).map_err(|source| {
+            QemuNodeChannelError::new(
+                "retain forked child process",
+                format!("open pidfd for hot-fork child: {source}"),
+            )
+        })?;
+        verify_pidfd_process_id(&pidfd, basis.child_process_id())?;
+        let identity = self
+            .owner
+            .authenticate_hot_fork_child_process(basis.child_process_id())
+            .map_err(|source| {
+                QemuNodeChannelError::new(
+                    "retain forked child process",
+                    format!("authenticate hot-fork child in attempt cgroup: {source}"),
+                )
+            })?;
+        verify_pidfd_process_id(&pidfd, basis.child_process_id())?;
+
+        self.hot_fork_child_retained = true;
+        Ok(LinuxQemuHotForkChildProcessAuthority {
+            basis,
+            identity,
+            pidfd,
+        })
+    }
+}
+
+fn verify_pidfd_process_id(
+    pidfd: &OwnedFd,
+    expected_process_id: u32,
+) -> Result<(), QemuNodeChannelError> {
+    const MAX_PIDFD_INFO_BYTES: u64 = 4096;
+
+    let path = format!("/proc/self/fdinfo/{}", pidfd.as_raw_fd());
+    let file = std::fs::File::open(&path).map_err(|source| {
+        QemuNodeChannelError::new(
+            "retain forked child process",
+            format!("open pidfd identity {path}: {source}"),
+        )
+    })?;
+    let mut bytes = Vec::new();
+    file.take(MAX_PIDFD_INFO_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|source| {
+            QemuNodeChannelError::new(
+                "retain forked child process",
+                format!("read pidfd identity {path}: {source}"),
+            )
+        })?;
+    if bytes.len() > MAX_PIDFD_INFO_BYTES as usize {
+        return Err(QemuNodeChannelError::new(
+            "retain forked child process",
+            "pidfd identity exceeded the bounded Linux fdinfo size",
+        ));
+    }
+    let text = std::str::from_utf8(&bytes).map_err(|source| {
+        QemuNodeChannelError::new(
+            "retain forked child process",
+            format!("decode pidfd identity: {source}"),
+        )
+    })?;
+    let observed = text
+        .lines()
+        .find_map(|line| line.strip_prefix("Pid:\t"))
+        .and_then(|value| value.parse::<u32>().ok());
+    if observed != Some(expected_process_id) {
+        return Err(QemuNodeChannelError::new(
+            "retain forked child process",
+            "pidfd no longer names the reported live hot-fork child",
+        ));
+    }
+    Ok(())
 }
 
 /// Narrow sticky signal for one Linux QEMU attempt process group.
@@ -501,5 +652,23 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[test]
+    fn pidfd_identity_rejects_a_reaped_process_generation() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut child = std::process::Command::new("sleep").arg("60").spawn()?;
+        let process_id = child.id();
+        let raw_process_id = i32::try_from(process_id)
+            .ok()
+            .and_then(Pid::from_raw)
+            .ok_or("test child PID is outside the supported Linux range")?;
+        let pidfd = pidfd_open(raw_process_id, PidfdFlags::empty())?;
+
+        verify_pidfd_process_id(&pidfd, process_id)?;
+        child.kill()?;
+        child.wait()?;
+        assert!(verify_pidfd_process_id(&pidfd, process_id).is_err());
+        Ok(())
     }
 }

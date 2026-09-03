@@ -601,7 +601,7 @@ pub(super) fn socket_cookie(descriptor: RawFd) -> io::Result<u64> {
     Ok(cookie)
 }
 
-fn eventfd_id(descriptor: RawFd) -> io::Result<u64> {
+pub(super) fn eventfd_id(descriptor: RawFd) -> io::Result<u64> {
     let path = format!("/proc/self/fdinfo/{descriptor}");
     let mut bytes = Vec::new();
     File::open(path)?

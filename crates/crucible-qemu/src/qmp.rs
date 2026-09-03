@@ -33,17 +33,18 @@ mod unix_socket;
 mod vmstate_control;
 
 use hot_fork::{
-    HotForkChildProcessAction, parse_hot_fork_aio_handler_inventory, parse_hot_fork_aio_inventory,
+    HotForkChildProcessAction, HotForkChildProcessContractAction,
+    parse_hot_fork_aio_handler_inventory, parse_hot_fork_aio_inventory,
     parse_hot_fork_bh_timer_barrier_state, parse_hot_fork_block_backend_inventory,
     parse_hot_fork_block_barrier_state, parse_hot_fork_bottom_half_inventory,
-    parse_hot_fork_child_diagnostic_state, parse_hot_fork_child_process_state,
-    parse_hot_fork_child_qmp_state, parse_hot_fork_child_runtime_state,
-    parse_hot_fork_monitor_inventory, parse_hot_fork_mutex_inventory,
-    parse_hot_fork_plugin_barrier_state, parse_hot_fork_plugin_endpoint_state,
-    parse_hot_fork_plugin_resource_inventory, parse_hot_fork_private_ring_state,
-    parse_hot_fork_rcu_barrier_state, parse_hot_fork_rcu_inventory, parse_hot_fork_readiness,
-    parse_hot_fork_state, parse_hot_fork_template_state, parse_hot_fork_thread_inventory,
-    parse_hot_fork_timer_inventory,
+    parse_hot_fork_child_diagnostic_state, parse_hot_fork_child_process_contract_state,
+    parse_hot_fork_child_process_state, parse_hot_fork_child_qmp_state,
+    parse_hot_fork_child_runtime_state, parse_hot_fork_monitor_inventory,
+    parse_hot_fork_mutex_inventory, parse_hot_fork_plugin_barrier_state,
+    parse_hot_fork_plugin_endpoint_state, parse_hot_fork_plugin_resource_inventory,
+    parse_hot_fork_private_ring_state, parse_hot_fork_rcu_barrier_state,
+    parse_hot_fork_rcu_inventory, parse_hot_fork_readiness, parse_hot_fork_state,
+    parse_hot_fork_template_state, parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
 };
 pub use hot_fork::{
     QMP_HOT_FORK_AIO_HANDLER_INVENTORY_MAX, QMP_HOT_FORK_AIO_HANDLER_INVENTORY_SCHEMA_VERSION,
@@ -55,7 +56,8 @@ pub use hot_fork::{
     QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX, QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION,
     QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES, QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
     QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD,
-    QMP_HOT_FORK_CHILD_PROCESS_COMMAND, QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION,
+    QMP_HOT_FORK_CHILD_PROCESS_COMMAND, QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_COMMAND,
+    QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION,
     QMP_HOT_FORK_CHILD_QMP_COMMAND, QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION,
     QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION, QMP_HOT_FORK_COMMAND,
     QMP_HOT_FORK_MONITOR_INVENTORY_MAX, QMP_HOT_FORK_MONITOR_INVENTORY_SCHEMA_VERSION,
@@ -81,7 +83,8 @@ pub use hot_fork::{
     QmpHotForkBlockBackend, QmpHotForkBlockBackendInventory, QmpHotForkBlockBarrierState,
     QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,
     QmpHotForkBlockSnapshotRoot, QmpHotForkBottomHalf, QmpHotForkBottomHalfInventory,
-    QmpHotForkChildDiagnosticState, QmpHotForkChildProcessPhase, QmpHotForkChildProcessState,
+    QmpHotForkChildDiagnosticState, QmpHotForkChildProcessContractIdentity,
+    QmpHotForkChildProcessContractState, QmpHotForkChildProcessPhase, QmpHotForkChildProcessState,
     QmpHotForkChildQmpState, QmpHotForkChildRuntimePhase, QmpHotForkChildRuntimeState,
     QmpHotForkMonitorInventory, QmpHotForkMutex, QmpHotForkMutexInventory, QmpHotForkOutcome,
     QmpHotForkPluginBarrierState, QmpHotForkPluginEndpointDescriptorPlan,
@@ -1432,6 +1435,89 @@ where
         self.hot_fork_child_process(HotForkChildProcessAction::Release, generation)
     }
 
+    /// Stages one exact target-attempt process contract for a future hot fork.
+    ///
+    /// Both descriptors must already be imported with [`Self::install_descriptor`].
+    /// QEMU independently authenticates the cgroup-v2 directory, nonblocking
+    /// cancellation eventfd, and resource ceiling before retaining duplicates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the descriptor basis is rejected, the exchange
+    /// fails, or the returned state does not match the exact staged contract.
+    pub fn stage_hot_fork_child_process_contract(
+        &mut self,
+        cgroup_name: &QmpDescriptorName,
+        cancellation_name: &QmpDescriptorName,
+        identity: QmpHotForkChildProcessContractIdentity,
+    ) -> Result<QmpHotForkChildProcessContractState, QmpError> {
+        let response = self.send_command_return(QmpCommand::HotForkChildProcessContract {
+            action: HotForkChildProcessContractAction::Stage,
+            cgroup_name: Some(cgroup_name),
+            cancellation_name: Some(cancellation_name),
+            identity: Some(identity),
+        })?;
+        let state = parse_hot_fork_child_process_contract_state(&response.value)?;
+        if !state.staged()
+            || state.consumed()
+            || state.cgroup_name() != Some(cgroup_name)
+            || state.cancellation_name() != Some(cancellation_name)
+            || state.identity() != Some(identity)
+        {
+            return Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotForkChildProcessContract,
+                response: response.value.to_string(),
+            });
+        }
+        Ok(state)
+    }
+
+    /// Observes the staged one-shot child process contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails or QEMU returns a malformed
+    /// contract state.
+    pub fn query_hot_fork_child_process_contract(
+        &mut self,
+    ) -> Result<QmpHotForkChildProcessContractState, QmpError> {
+        let response = self.send_command_return(QmpCommand::HotForkChildProcessContract {
+            action: HotForkChildProcessContractAction::Query,
+            cgroup_name: None,
+            cancellation_name: None,
+            identity: None,
+        })?;
+        parse_hot_fork_child_process_contract_state(&response.value)
+    }
+
+    /// Releases the exact retained child process contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the basis differs, a fork is active, the
+    /// exchange fails, or the released-state postcondition is malformed.
+    pub fn release_hot_fork_child_process_contract(
+        &mut self,
+        cgroup_name: &QmpDescriptorName,
+        cancellation_name: &QmpDescriptorName,
+        identity: QmpHotForkChildProcessContractIdentity,
+    ) -> Result<QmpHotForkChildProcessContractState, QmpError> {
+        let response = self.send_command_return(QmpCommand::HotForkChildProcessContract {
+            action: HotForkChildProcessContractAction::Release,
+            cgroup_name: Some(cgroup_name),
+            cancellation_name: Some(cancellation_name),
+            identity: Some(identity),
+        })?;
+        let state = parse_hot_fork_child_process_contract_state(&response.value)?;
+        if state.staged() || state.consumed() {
+            return Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotForkChildProcessContract,
+                response: response.value.to_string(),
+            });
+        }
+        Ok(state)
+    }
+
     fn hot_fork_child_process(
         &mut self,
         action: HotForkChildProcessAction,
@@ -2277,6 +2363,8 @@ pub enum QmpCommandKind {
     HotFork,
     /// Source-QEMU child-process status query or release.
     HotForkChildProcess,
+    /// One-shot target cgroup and cancellation contract operation.
+    HotForkChildProcessContract,
     /// QEMU-owned branch-private ring descriptor retention operation.
     HotForkPrivateRings,
     /// QEMU-owned branch-private plugin endpoint retention operation.
@@ -2336,6 +2424,7 @@ impl QmpCommandKind {
             Self::HotForkTemplate => QMP_HOT_FORK_TEMPLATE_COMMAND,
             Self::HotFork => QMP_HOT_FORK_COMMAND,
             Self::HotForkChildProcess => QMP_HOT_FORK_CHILD_PROCESS_COMMAND,
+            Self::HotForkChildProcessContract => QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_COMMAND,
             Self::HotForkPrivateRings => QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
             Self::HotForkPluginEndpoints => QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND,
             Self::HotForkChildDiagnostics => QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
@@ -2582,6 +2671,12 @@ enum QmpCommand<'a> {
         action: HotForkChildProcessAction,
         generation: u64,
     },
+    HotForkChildProcessContract {
+        action: HotForkChildProcessContractAction,
+        cgroup_name: Option<&'a QmpDescriptorName>,
+        cancellation_name: Option<&'a QmpDescriptorName>,
+        identity: Option<QmpHotForkChildProcessContractIdentity>,
+    },
     HotForkPrivateRings {
         action: HotForkPrivateRingAction,
         name: Option<&'a QmpDescriptorName>,
@@ -2651,6 +2746,7 @@ impl QmpCommand<'_> {
             Self::HotForkTemplate { .. } => QmpCommandKind::HotForkTemplate,
             Self::HotFork { .. } => QmpCommandKind::HotFork,
             Self::HotForkChildProcess { .. } => QmpCommandKind::HotForkChildProcess,
+            Self::HotForkChildProcessContract { .. } => QmpCommandKind::HotForkChildProcessContract,
             Self::HotForkPrivateRings { .. } => QmpCommandKind::HotForkPrivateRings,
             Self::HotForkPluginEndpoints { .. } => QmpCommandKind::HotForkPluginEndpoints,
             Self::HotForkChildDiagnostics { .. } => QmpCommandKind::HotForkChildDiagnostics,
@@ -2804,6 +2900,52 @@ impl QmpCommand<'_> {
                     "generation": generation,
                 },
             }),
+            Self::HotForkChildProcessContract {
+                action,
+                cgroup_name,
+                cancellation_name,
+                identity,
+            } => {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert(
+                    String::from("action"),
+                    Value::String(action.wire_name().to_owned()),
+                );
+                if let Some(name) = cgroup_name {
+                    arguments.insert(
+                        String::from("cgroup-fdname"),
+                        Value::String(name.as_str().to_owned()),
+                    );
+                }
+                if let Some(name) = cancellation_name {
+                    arguments.insert(
+                        String::from("cancellation-fdname"),
+                        Value::String(name.as_str().to_owned()),
+                    );
+                }
+                if let Some(identity) = identity {
+                    arguments.insert(
+                        String::from("expected-cgroup-device"),
+                        Value::from(identity.cgroup_device()),
+                    );
+                    arguments.insert(
+                        String::from("expected-cgroup-inode"),
+                        Value::from(identity.cgroup_inode()),
+                    );
+                    arguments.insert(
+                        String::from("expected-cancellation-eventfd-id"),
+                        Value::from(identity.cancellation_eventfd_id()),
+                    );
+                    arguments.insert(
+                        String::from("maximum-file-bytes"),
+                        Value::from(identity.maximum_file_bytes()),
+                    );
+                }
+                json!({
+                    "exec-oob": QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_COMMAND,
+                    "arguments": Value::Object(arguments),
+                })
+            }
             Self::HotForkPrivateRings {
                 action,
                 name,
@@ -3046,7 +3188,7 @@ mod tests {
     }
 
     fn hot_fork_request() -> QmpHotForkRequest {
-        QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+        QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
     }
 
     fn hot_fork_response(qmp_generation: u64) -> String {
@@ -3068,6 +3210,7 @@ mod tests {
                 "block-barrier-generation": 10,
                 "parent-process-generation": 11,
                 "child-process-generation": 12,
+                "child-process-contract-generation": 13,
             }
         })
         .to_string()
@@ -3095,6 +3238,11 @@ mod tests {
     #[test]
     fn hot_fork_command_carries_every_exact_generation() {
         let request = hot_fork_request();
+        let cgroup = QmpDescriptorName::new("target-cgroup").expect("valid cgroup name");
+        let cancellation =
+            QmpDescriptorName::new("target-cancellation").expect("valid cancellation name");
+        let identity = QmpHotForkChildProcessContractIdentity::new(11, 12, 13, 4096)
+            .expect("valid child process identity");
 
         assert_eq!(
             QmpCommand::HotFork { request }.request(),
@@ -3113,6 +3261,7 @@ mod tests {
                     "block-barrier-generation": 10,
                     "parent-process-generation": 11,
                     "child-process-generation": 12,
+                    "child-process-contract-generation": 13,
                 },
             })
         );
@@ -3128,6 +3277,40 @@ mod tests {
                     "action": "query",
                     "generation": 12,
                 },
+            })
+        );
+        assert_eq!(
+            QmpCommand::HotForkChildProcessContract {
+                action: HotForkChildProcessContractAction::Stage,
+                cgroup_name: Some(&cgroup),
+                cancellation_name: Some(&cancellation),
+                identity: Some(identity),
+            }
+            .request(),
+            json!({
+                "exec-oob": "crucible-hot-fork-child-process-contract",
+                "arguments": {
+                    "action": "stage",
+                    "cgroup-fdname": "target-cgroup",
+                    "cancellation-fdname": "target-cancellation",
+                    "expected-cgroup-device": 11,
+                    "expected-cgroup-inode": 12,
+                    "expected-cancellation-eventfd-id": 13,
+                    "maximum-file-bytes": 4096,
+                },
+            })
+        );
+        assert_eq!(
+            QmpCommand::HotForkChildProcessContract {
+                action: HotForkChildProcessContractAction::Query,
+                cgroup_name: None,
+                cancellation_name: None,
+                identity: None,
+            }
+            .request(),
+            json!({
+                "exec-oob": "crucible-hot-fork-child-process-contract",
+                "arguments": { "action": "query" },
             })
         );
     }

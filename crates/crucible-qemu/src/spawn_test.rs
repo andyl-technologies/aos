@@ -278,8 +278,11 @@ fn canceled_pre_exec_contract_stays_canceled_across_spawns() -> Result<(), Box<d
 fn process_contract_rejects_forged_regular_descriptors() -> Result<(), Box<dyn Error>> {
     let temporary = tempfile::tempfile()?;
     let duplicate = duplicate_cloexec_fd(temporary.as_raw_fd(), "duplicate forged contract fd")?;
+    let second_duplicate =
+        duplicate_cloexec_fd(temporary.as_raw_fd(), "duplicate forged contract directory")?;
     let credentials = valid_distinct_credentials()?;
     let error = match QemuChildProcessContract::new(
+        second_duplicate,
         temporary.into(),
         duplicate,
         1,

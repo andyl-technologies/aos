@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rustix::fs::{FileType, Mode, OFlags, fstat, fsync, open, openat};
+use rustix::fs::{FileType, Mode, OFlags, fstat, fstatfs, fsync, open, openat};
 use thiserror::Error;
 
 use crate::{
@@ -43,11 +43,11 @@ const GUARDED_IMAGE_TOOL_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 /// Owned pre-exec contract for one attempt-contained child process.
 ///
-/// The cgroup descriptor names the attempt's `cgroup.procs` file. The
-/// cancellation descriptor is a nonblocking eventfd that becomes readable
-/// once cancellation wins. Both descriptors must be opened by the supervising
-/// resource guard and remain owned by that guard independently of this
-/// per-spawn duplicate. A production contract also carries validated non-root
+/// The cgroup descriptors pin the attempt directory and its `cgroup.procs`
+/// file. The cancellation descriptor is a nonblocking eventfd that becomes
+/// readable once cancellation wins. All descriptors must be opened by the
+/// supervising resource guard and remain owned by that guard independently of
+/// this per-spawn duplicate. A production contract also carries validated non-root
 /// child credentials; pre-exec clears supplementary groups, sets
 /// `no_new_privs`, and switches every user/group identity after attaching the
 /// child to the cgroup. The contract seals the exact admitted vCPU,
@@ -58,6 +58,7 @@ const GUARDED_IMAGE_TOOL_POLL_INTERVAL: Duration = Duration::from_millis(2);
 /// to another attempt with equal numeric limits.
 #[derive(Debug)]
 pub struct QemuChildProcessContract {
+    cgroup_directory: Option<OwnedFd>,
     cgroup_procs: OwnedFd,
     cancellation_event: OwnedFd,
     maximum_vcpus: u32,
@@ -660,6 +661,7 @@ impl QemuChildProcessContract {
     ///
     /// Returns [`QemuSpawnError`] when either descriptor is invalid.
     pub(crate) fn new(
+        cgroup_directory: OwnedFd,
         cgroup_procs: OwnedFd,
         cancellation_event: OwnedFd,
         maximum_vcpus: u32,
@@ -667,9 +669,11 @@ impl QemuChildProcessContract {
         maximum_writable_bytes: u64,
         credentials: QemuChildCredentials,
     ) -> Result<Self, QemuSpawnError> {
-        validate_cgroup_procs_fd(cgroup_procs.as_raw_fd())?;
+        validate_cgroup_directory_fd(&cgroup_directory)?;
+        validate_cgroup_procs_fd(&cgroup_procs)?;
         validate_cancellation_eventfd(cancellation_event.as_raw_fd())?;
         Ok(Self {
+            cgroup_directory: Some(cgroup_directory),
             cgroup_procs,
             cancellation_event,
             maximum_vcpus,
@@ -710,6 +714,7 @@ impl QemuChildProcessContract {
         maximum_writable_bytes: u64,
     ) -> Self {
         Self {
+            cgroup_directory: None,
             cgroup_procs,
             cancellation_event,
             maximum_vcpus,
@@ -718,6 +723,38 @@ impl QemuChildProcessContract {
             credentials: None,
             attempt_binding: Arc::new(AttemptResourceBinding),
         }
+    }
+
+    pub(crate) fn duplicate_hot_fork_descriptors(
+        &self,
+    ) -> Result<(OwnedFd, OwnedFd), QemuSpawnError> {
+        let cgroup_directory = self
+            .cgroup_directory
+            .as_ref()
+            .ok_or_else(|| QemuSpawnError::Io {
+                operation: "duplicate hot-fork cgroup directory",
+                source: io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "test-only process contract has no cgroup directory",
+                ),
+            })?
+            .try_clone()
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "duplicate hot-fork cgroup directory",
+                source,
+            })?;
+        let cancellation_event =
+            self.cancellation_event
+                .try_clone()
+                .map_err(|source| QemuSpawnError::Io {
+                    operation: "duplicate hot-fork cancellation eventfd",
+                    source,
+                })?;
+        Ok((cgroup_directory, cancellation_event))
+    }
+
+    pub(crate) const fn maximum_writable_bytes(&self) -> u64 {
+        self.maximum_writable_bytes
     }
 }
 
@@ -1694,20 +1731,12 @@ fn install_child_credentials(credentials: QemuChildCredentials) -> io::Result<()
     Ok(())
 }
 
-fn validate_cgroup_procs_fd(fd: RawFd) -> Result<(), QemuSpawnError> {
-    validate_live_fd(fd, "validate child cgroup descriptor")?;
-    let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
-    let status = unsafe {
-        // SAFETY: `filesystem` points to writable storage for one statfs.
-        libc::fstatfs(fd, filesystem.as_mut_ptr())
-    };
-    if status != 0 {
-        return Err(last_io_error("inspect child cgroup filesystem"));
-    }
-    let filesystem = unsafe {
-        // SAFETY: successful fstatfs initialized the complete structure.
-        filesystem.assume_init()
-    };
+fn validate_cgroup_procs_fd(fd: &OwnedFd) -> Result<(), QemuSpawnError> {
+    validate_live_fd(fd.as_raw_fd(), "validate child cgroup descriptor")?;
+    let filesystem = fstatfs(fd).map_err(|source| QemuSpawnError::Io {
+        operation: "inspect child cgroup filesystem",
+        source: source.into(),
+    })?;
     if filesystem.f_type != libc::CGROUP2_SUPER_MAGIC {
         return Err(QemuSpawnError::Io {
             operation: "validate child cgroup filesystem",
@@ -1717,12 +1746,10 @@ fn validate_cgroup_procs_fd(fd: RawFd) -> Result<(), QemuSpawnError> {
             ),
         });
     }
-    let target =
-        fs::read_link(PathBuf::from("/proc/self/fd").join(fd.to_string())).map_err(|source| {
-            QemuSpawnError::Io {
-                operation: "resolve child cgroup descriptor",
-                source,
-            }
+    let target = fs::read_link(PathBuf::from("/proc/self/fd").join(fd.as_raw_fd().to_string()))
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "resolve child cgroup descriptor",
+            source,
         })?;
     if target.file_name().and_then(|name| name.to_str()) != Some("cgroup.procs") {
         return Err(QemuSpawnError::Io {
@@ -1730,6 +1757,32 @@ fn validate_cgroup_procs_fd(fd: RawFd) -> Result<(), QemuSpawnError> {
             source: io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "child cgroup descriptor does not name cgroup.procs",
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn validate_cgroup_directory_fd(fd: &OwnedFd) -> Result<(), QemuSpawnError> {
+    validate_live_fd(fd.as_raw_fd(), "validate child cgroup directory")?;
+    let filesystem = fstatfs(fd).map_err(|source| QemuSpawnError::Io {
+        operation: "inspect child cgroup directory filesystem",
+        source: source.into(),
+    })?;
+    let metadata = fstat(fd).map_err(|source| QemuSpawnError::Io {
+        operation: "inspect child cgroup directory",
+        source: source.into(),
+    })?;
+    if filesystem.f_type != libc::CGROUP2_SUPER_MAGIC
+        || FileType::from_raw_mode(metadata.st_mode) != FileType::Directory
+        || metadata.st_dev == 0
+        || metadata.st_ino == 0
+    {
+        return Err(QemuSpawnError::Io {
+            operation: "validate child cgroup directory",
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "child cgroup directory is not a cgroup-v2 directory",
             ),
         });
     }

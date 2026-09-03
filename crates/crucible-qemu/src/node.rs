@@ -63,6 +63,9 @@ mod hot_fork_operation;
 #[cfg(target_os = "linux")]
 #[path = "node/hot_fork_plugin_endpoints.rs"]
 mod hot_fork_plugin_endpoints;
+#[cfg(target_os = "linux")]
+#[path = "node/hot_fork_process_contract.rs"]
+mod hot_fork_process_contract;
 #[cfg(unix)]
 #[path = "node/hot_fork_ring_image.rs"]
 mod hot_fork_ring_image;
@@ -96,6 +99,10 @@ pub use hot_fork_plugin_endpoints::{
     QemuHotForkPluginEndpointStageError, QemuHotForkPluginEndpointStageProof,
     QemuHotForkPluginEndpointStageState,
 };
+#[cfg(target_os = "linux")]
+use hot_fork_process_contract::QemuHotForkChildProcessContractStage;
+#[cfg(target_os = "linux")]
+pub use hot_fork_process_contract::QemuHotForkChildProcessContractStageProof;
 #[cfg(unix)]
 pub use hot_fork_ring_image::QemuHotForkPluginRingImage;
 #[cfg(target_os = "linux")]
@@ -1098,6 +1105,62 @@ pub trait QemuQmpMachineControlChannel: Send {
         ))
     }
 
+    /// Imports and retains one target-attempt process contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when descriptor transfer fails, QEMU
+    /// rejects either exact kernel identity, or the template generation differs.
+    #[cfg(target_os = "linux")]
+    fn install_hot_fork_child_process_contract(
+        &mut self,
+        _cgroup_name: &crate::QmpDescriptorName,
+        _cgroup: BorrowedFd<'_>,
+        _cancellation_name: &crate::QmpDescriptorName,
+        _cancellation: BorrowedFd<'_>,
+        _identity: crate::QmpHotForkChildProcessContractIdentity,
+        _template_generation: u64,
+    ) -> Result<crate::QmpHotForkChildProcessContractState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "install hot-fork child process contract",
+            "hot-fork child process contract transfer is not implemented by this QMP channel",
+        ))
+    }
+
+    /// Releases one exact QEMU-owned target process contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the retained basis differs or the
+    /// source QEMU cannot release both descriptors.
+    #[cfg(target_os = "linux")]
+    fn release_hot_fork_child_process_contract(
+        &mut self,
+        _cgroup_name: &crate::QmpDescriptorName,
+        _cancellation_name: &crate::QmpDescriptorName,
+        _identity: crate::QmpHotForkChildProcessContractIdentity,
+    ) -> Result<crate::QmpHotForkChildProcessContractState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "release hot-fork child process contract",
+            "hot-fork child process contract release is not implemented by this QMP channel",
+        ))
+    }
+
+    /// Queries QEMU's retained target process contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QMP I/O or strict response
+    /// validation fails.
+    fn query_hot_fork_child_process_contract(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildProcessContractState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query hot-fork child process contract",
+            "hot-fork child process contract query is not implemented by this QMP channel",
+        ))
+    }
+
     /// Imports one held branch-private ring descriptor into the QEMU template.
     ///
     /// # Errors
@@ -1463,6 +1526,8 @@ pub struct QemuNode {
     #[cfg(target_os = "linux")]
     hot_fork_child_qmp_stage: Option<QemuHotForkChildQmpStage>,
     #[cfg(target_os = "linux")]
+    hot_fork_child_process_contract_stage: Option<QemuHotForkChildProcessContractStage>,
+    #[cfg(target_os = "linux")]
     hot_fork_plugin_endpoint_stage: Option<QemuHotForkPluginEndpointStage>,
     lifecycle_state: QemuNodeLifecycleState,
     shutdown_policy: QemuShutdownPolicy,
@@ -1658,6 +1723,8 @@ impl QemuNode {
             hot_fork_child_diagnostic_stage: None,
             #[cfg(target_os = "linux")]
             hot_fork_child_qmp_stage: None,
+            #[cfg(target_os = "linux")]
+            hot_fork_child_process_contract_stage: None,
             #[cfg(target_os = "linux")]
             hot_fork_plugin_endpoint_stage: None,
             lifecycle_state: QemuNodeLifecycleState::Running,
