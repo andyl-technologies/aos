@@ -2825,6 +2825,34 @@
         '';
       };
     }
+    {
+      patch = "0178-crucible-reset-reconstructed-child-qmp-protocol.patch";
+      check = certifyExactPatch {
+        patchName = "0178-crucible-reset-reconstructed-child-qmp-protocol.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-held-child-qmp-protocol";
+        liveEvidence = ''
+          grep -Fxq 'patch=0178-crucible-reset-reconstructed-child-qmp-protocol.patch' "$live_result"
+          grep -Fxq 'template_coordinator_schema_version=22' "$live_result"
+          grep -Fxq 'template_resource_stage_schema_version=12' "$live_result"
+          grep -Fxq 'child_qmp_schema_version=6' "$live_result"
+          grep -Fq 'monitor_hot_fork_reconstruct_child_protocol_held' \
+            ${patchDir}/0178-crucible-reset-reconstructed-child-qmp-protocol.patch
+          grep -Fq 'QLIST_EMPTY(&mon->fds)' \
+            ${patchDir}/0178-crucible-reset-reconstructed-child-qmp-protocol.patch
+          grep -Fq 'monitor_fdsets_is_empty()' \
+            ${patchDir}/0178-crucible-reset-reconstructed-child-qmp-protocol.patch
+          grep -Fq 'mon->outbuf->len == 0' \
+            ${patchDir}/0178-crucible-reset-reconstructed-child-qmp-protocol.patch
+          grep -Fq 'json_message_parser_destroy(&mon->parser)' \
+            ${patchDir}/0178-crucible-reset-reconstructed-child-qmp-protocol.patch
+          grep -Fq 'mon->commands = &qmp_cap_negotiation_commands' \
+            ${patchDir}/0178-crucible-reset-reconstructed-child-qmp-protocol.patch
+          grep -Fq 'basis->input_held = basis->socket.input_held' \
+            ${patchDir}/0178-crucible-reset-reconstructed-child-qmp-protocol.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =
