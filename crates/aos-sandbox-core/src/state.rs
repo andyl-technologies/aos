@@ -904,4 +904,58 @@ mod tests {
             serde_json::from_str::<TransitionTime>(r#"{"seconds":0,"nanoseconds":1000000000}"#);
         assert!(decoded.is_err());
     }
+
+    #[test]
+    fn fencing_acceptance_is_exact_for_generation_and_sequence_order() {
+        let reason = ReasonCode::new("property.fence")
+            .unwrap_or_else(|error| panic!("static reason failed: {error}"));
+        let time =
+            TransitionTime::new(0, 0).unwrap_or_else(|error| panic!("static time failed: {error}"));
+        let current = ObservedState::new(
+            SandboxPhase::Starting,
+            DesiredGeneration::new(7),
+            ObservationSequence::new(10),
+            reason.clone(),
+            time,
+        );
+
+        for generation in 0..=14 {
+            for sequence in 0..=20 {
+                let result = current.advance(
+                    SandboxPhase::Starting,
+                    DesiredGeneration::new(generation),
+                    ObservationSequence::new(sequence),
+                    reason.clone(),
+                    time,
+                );
+                assert_eq!(result.is_ok(), generation >= 7 && sequence > 10);
+            }
+        }
+    }
+
+    #[test]
+    fn deleted_sandbox_rejects_every_distinct_phase() {
+        let phases = [
+            SandboxPhase::Requested,
+            SandboxPhase::Preparing,
+            SandboxPhase::Starting,
+            SandboxPhase::Ready,
+            SandboxPhase::Freezing,
+            SandboxPhase::Frozen,
+            SandboxPhase::Stopping,
+            SandboxPhase::Stopped,
+            SandboxPhase::Hibernated,
+            SandboxPhase::Deleting,
+            SandboxPhase::Deleted,
+            SandboxPhase::Error,
+            SandboxPhase::Lost,
+        ];
+
+        for phase in phases {
+            assert_eq!(
+                SandboxPhase::Deleted.transition(phase).is_ok(),
+                phase == SandboxPhase::Deleted
+            );
+        }
+    }
 }

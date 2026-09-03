@@ -885,4 +885,39 @@ mod tests {
 
         assert!(matches!(decoded, Ok(Err(_))));
     }
+
+    #[test]
+    fn exhaustive_scalar_admission_preserves_ceiling_and_release_invariants() {
+        for ceiling in 0..=24 {
+            for committed in 0..=ceiling {
+                for reserved in 0..=ceiling - committed {
+                    let account = super::ResourceAccount::from_usage(
+                        bounded_memory(ceiling),
+                        memory(committed),
+                        memory(reserved),
+                    )
+                    .unwrap_or_else(|error| panic!("bounded fixture failed: {error}"));
+
+                    for requested in 0..=25 {
+                        let admitted = account.reserve(memory(requested));
+                        assert_eq!(
+                            admitted.is_ok(),
+                            committed + reserved + requested <= ceiling
+                        );
+                        if let Ok(next) = admitted {
+                            let total = next
+                                .total()
+                                .unwrap_or_else(|error| panic!("admitted total failed: {error}"));
+                            assert!(total.get(ResourceDimension::MemoryBytes) <= ceiling);
+                            let restored =
+                                next.release_reservation(memory(requested)).unwrap_or_else(
+                                    |error| panic!("reservation release failed: {error}"),
+                                );
+                            assert_eq!(restored, account);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

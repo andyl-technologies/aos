@@ -911,4 +911,39 @@ mod tests {
 
         assert_eq!(decoded.ok().and_then(Result::ok), Some(fixture.capability));
     }
+
+    #[test]
+    fn every_operation_bitmap_attenuates_iff_it_is_a_parent_subset() {
+        let fixture = fixture();
+        let parent_operations =
+            OperationSet::one(Operation::Delegate).union(OperationSet::one(Operation::ContentRead));
+
+        for bits in 1..=OperationSet::ALL.bits() {
+            let operations = OperationSet::from_bits(bits)
+                .unwrap_or_else(|error| panic!("registered bitmap failed: {error}"));
+            let mut request = child_request(&fixture);
+            request.grants = vec![
+                Grant::new(
+                    GrantId::from_bytes((u128::from(bits)).to_be_bytes()),
+                    ResourceKind::ChildDelegation,
+                    operations,
+                    Selector::Path {
+                        export: fixture.export,
+                        prefix: RelativePath::default(),
+                    },
+                    false,
+                )
+                .unwrap_or_else(|error| panic!("nonempty grant failed: {error}")),
+            ];
+
+            assert_eq!(
+                fixture
+                    .capability
+                    .attenuate(&fixture.context, request)
+                    .is_ok(),
+                operations.is_subset_of(parent_operations),
+                "bitmap 0x{bits:04x}"
+            );
+        }
+    }
 }

@@ -589,4 +589,27 @@ mod tests {
             })
         ));
     }
+
+    #[test]
+    fn every_portable_mode_round_trips_to_identical_canonical_bytes() {
+        for mode in 0..=0x0fff {
+            let metadata = FilesystemMetadata::new(
+                mode,
+                u32::from(mode) * 65_537,
+                u32::MAX - u32::from(mode),
+                i64::from(mode) - 2_048,
+                u32::from(mode) * 241_199,
+                Vec::new(),
+                None,
+            )
+            .unwrap_or_else(|error| panic!("generated metadata failed: {error}"));
+            let directory = Directory::new(metadata, Vec::new())
+                .unwrap_or_else(|error| panic!("generated directory failed: {error}"));
+            let first = encode_directory(&directory);
+            let decoded = decode_directory(&first, DecodeLimits::default())
+                .unwrap_or_else(|error| panic!("generated directory decode failed: {error}"));
+
+            assert_eq!(encode_directory(&decoded), first);
+        }
+    }
 }
