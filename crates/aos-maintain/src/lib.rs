@@ -46,6 +46,8 @@ pub const PACKAGE_UPDATE_RUN_V1: &str = "aos.package-update-run/v1";
 pub const PACKAGE_UPDATE_MATERIALIZATION_V1: &str = "aos.package-update-materialization/v1";
 /// Schema identity for one tree-bound gate execution set.
 pub const PACKAGE_UPDATE_GATE_RESULTS_V1: &str = "aos.package-update-gate-results/v1";
+/// Schema identity for the complete local candidate evidence dossier.
+pub const PACKAGE_UPDATE_EVIDENCE_V1: &str = "aos.package-update-evidence/v1";
 
 /// Schema identifier for the first durable maintenance journal event.
 pub const MAINTENANCE_JOURNAL_EVENT_V1: &str = "aos.maintain.journal-event/v1";

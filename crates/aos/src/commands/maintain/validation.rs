@@ -78,6 +78,92 @@ pub(super) fn quick(
     Ok(record)
 }
 
+/// Runs the complete exact-commit final gate plan and records every result.
+///
+/// # Errors
+///
+/// Returns an error unless the candidate is committed at the recorded head or
+/// when a planned gate cannot be executed and retained exactly.
+pub(super) fn final_gates(
+    store: &StateStore,
+    plan: &PackageUpdatePlanV1,
+    run: &mut PackageUpdateRunV1,
+) -> Result<GateResultsV1> {
+    if run.state == RunState::FinalGated {
+        return verified_existing(store, run, "final");
+    }
+    if run.state != RunState::Committed {
+        bail!("run is not at the final validation boundary");
+    }
+    let commit = run
+        .candidate_commit
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("committed run has no candidate commit identity"))?;
+    let head = git_text(
+        Path::new(&run.worktree),
+        &["rev-parse", "--verify", "HEAD^{commit}"],
+    )?;
+    let status = git(
+        Path::new(&run.worktree),
+        &["status", "--porcelain=v2", "-z"],
+    )?;
+    if head != commit.value || !status.status.success() || !status.stdout.is_empty() {
+        bail!("final gates require the exact clean recorded candidate commit");
+    }
+    let candidate_digest =
+        aos_contract::Sha256Digest::separated("aos.package-update-commit/v1", head.as_bytes());
+    if let Some(record) = store.read_gate_results(run.run_id.as_str(), "final")? {
+        if record.candidate_digest != candidate_digest {
+            bail!("stored final gates bind a different candidate commit");
+        }
+        if record.all_succeeded() {
+            store.transition(
+                run,
+                RunState::FinalGated,
+                ActorClass::Controller,
+                state::now_unix()?,
+            )?;
+        }
+        return Ok(record);
+    }
+
+    let (results, logs) = execute_plan(Path::new(&run.worktree), &plan.final_gates)?;
+    let record = GateResultsV1 {
+        schema: PACKAGE_UPDATE_GATE_RESULTS_V1.to_string(),
+        run_id: run.run_id.clone(),
+        plan_id: plan.plan_id.clone(),
+        phase: "final".to_string(),
+        candidate_digest,
+        results,
+        completed_at_unix: state::now_unix()?,
+    };
+    record.validate()?;
+    store.write_gate_results(&record, &logs)?;
+    if record.all_succeeded() {
+        store.transition(
+            run,
+            RunState::FinalGated,
+            ActorClass::Controller,
+            state::now_unix()?,
+        )?;
+    }
+    Ok(record)
+}
+
+fn execute_plan(
+    root: &Path,
+    gates: &[GateSpec],
+) -> Result<(Vec<GateResult>, Vec<(String, Vec<u8>)>)> {
+    let mut results = Vec::with_capacity(gates.len());
+    let mut logs = Vec::with_capacity(gates.len());
+    for gate in gates {
+        let (result, log) = execute_gate(root, gate)?;
+        results.push(result);
+        logs.push((gate.id.clone(), log));
+    }
+    Ok((results, logs))
+}
+
 fn execute_gate(root: &Path, gate: &GateSpec) -> Result<(GateResult, Vec<u8>)> {
     let executable = std::env::current_exe().context("resolving frozen controller executable")?;
     let started = Instant::now();
@@ -193,6 +279,27 @@ fn verified_existing(
         bail!("run state claims successful gates but retained results failed");
     }
     Ok(record)
+}
+
+fn git_text(root: &Path, arguments: &[&str]) -> Result<String> {
+    let output = git(root, arguments)?;
+    if !output.status.success() {
+        bail!("Git command failed: git {}", arguments.join(" "));
+    }
+    String::from_utf8(output.stdout)
+        .context("Git output is not UTF-8")
+        .map(|text| text.trim_end().to_string())
+}
+
+fn git(root: &Path, arguments: &[&str]) -> Result<std::process::Output> {
+    Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(arguments)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .with_context(|| format!("running git {}", arguments.join(" ")))
 }
 
 #[cfg(test)]

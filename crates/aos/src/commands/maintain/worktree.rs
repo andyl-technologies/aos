@@ -59,6 +59,9 @@ pub(super) fn ensure(
             .ok_or_else(|| anyhow::anyhow!("worktree path is not UTF-8"))?
             .to_string(),
         worktree_cleaned: false,
+        accepted_candidate: None,
+        candidate_commit: None,
+        evidence_digest: None,
         base_commit: plan.base_commit.clone(),
         attempt: 0,
         created_at_unix: now,

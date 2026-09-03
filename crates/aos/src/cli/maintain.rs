@@ -46,6 +46,16 @@ pub enum MaintainCommand {
     Abandon(MaintainRunIdentityArgs),
     /// Remove a terminal run's clean managed worktree after exact confirmation
     Clean(MaintainCleanArgs),
+    /// Record explicit maintainer acceptance of the exact quick-gated patch
+    Accept(MaintainAcceptArgs),
+    /// Commit an accepted candidate with maintainer Git identity and policy
+    Commit(MaintainCommitArgs),
+    /// Run or rerun the immutable quick or final gate plan
+    Test(MaintainTestArgs),
+    /// Generate and verify the complete local candidate evidence dossier
+    Evidence(MaintainRunIdentityArgs),
+    /// Render reviewed pull-request title, body, and publication inputs offline
+    PreparePr(MaintainRunIdentityArgs),
 }
 
 #[derive(Args)]
@@ -169,6 +179,40 @@ pub struct MaintainCleanArgs {
     /// Confirm removal by repeating the resolved run identity
     #[arg(long, value_name = "RUN")]
     pub confirm: Option<String>,
+}
+
+#[derive(Args)]
+pub struct MaintainAcceptArgs {
+    /// Exact or unambiguous local run identity
+    pub run: String,
+
+    /// Confirm the exact candidate patch digest shown by the preview
+    #[arg(long, value_name = "DIGEST")]
+    pub confirm: Option<String>,
+}
+
+#[derive(Args)]
+pub struct MaintainCommitArgs {
+    /// Exact or unambiguous local run identity
+    pub run: String,
+
+    /// Confirm commit creation by repeating the resolved run identity
+    #[arg(long, value_name = "RUN")]
+    pub confirm: Option<String>,
+}
+
+#[derive(Args)]
+pub struct MaintainTestArgs {
+    /// Exact or unambiguous local run identity
+    pub run: String,
+
+    /// Run the attempt-bound quick gate set
+    #[arg(long, conflicts_with = "final_gate")]
+    pub quick: bool,
+
+    /// Run the exact-commit final gate set
+    #[arg(long = "final", conflicts_with = "quick")]
+    pub final_gate: bool,
 }
 
 #[cfg(test)]
