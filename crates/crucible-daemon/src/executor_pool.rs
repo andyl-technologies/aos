@@ -28,17 +28,17 @@ use crucible_campaign::{
 
 use crate::executor_supervisor::{AttemptCheckpointHandoff, ExecutionCheckpointHandoff};
 use crate::{
-    AssignmentLedger, AttemptAdmissionValidator, AttemptExecutionKey,
-    AttemptResultPreparationError, AttemptResultStageOutcome, AttemptWorkerFailure,
-    AttemptWorkerReconcileError, CapturedAttemptCheckpoint, CheckpointHandoffFailure,
-    CheckpointPublicationOutcome, CheckpointResultAbortToken, CheckpointResultStageOutcome,
-    CompletionValidationFailure, ExactCheckpointStore, LocalAttemptWorker,
-    LocalExecutorCapabilityService, LocalExecutorError, LocalExecutorSupervisor,
-    PreparedAttemptCheckpoint, PreparedAttemptResult, PreparedAttemptWorkResult,
-    PreparedCheckpointResult, PublishedAttemptResult, QueuedAttempt, StagedAttemptResult,
-    abort_checkpoint_result, abort_prepared_attempt_result, abort_published_attempt_result,
-    abort_staged_attempt_result, prepare_attempt_result, publish_prepared_attempt_result,
-    publish_staged_checkpoint_result, reconcile_attempt_failure,
+    AssignmentLedger, AttemptAdmissionValidator, AttemptExecutionDisposition, AttemptExecutionKey,
+    AttemptExecutionReconciliationStep, AttemptResultPreparationError, AttemptResultStageOutcome,
+    AttemptWorkerFailure, AttemptWorkerReconcileError, CapturedAttemptCheckpoint,
+    CheckpointHandoffFailure, CheckpointPublicationOutcome, CheckpointResultAbortToken,
+    CheckpointResultStageOutcome, CompletionValidationFailure, ExactCheckpointStore,
+    LocalAttemptWorker, LocalExecutorCapabilityService, LocalExecutorError,
+    LocalExecutorSupervisor, PreparedAttemptCheckpoint, PreparedAttemptResult,
+    PreparedAttemptWorkResult, PreparedCheckpointResult, PublishedAttemptResult, QueuedAttempt,
+    StagedAttemptResult, abort_checkpoint_result, abort_prepared_attempt_result,
+    abort_published_attempt_result, abort_staged_attempt_result, prepare_attempt_result,
+    publish_prepared_attempt_result, publish_staged_checkpoint_result, reconcile_attempt_failure,
     reconcile_published_attempt_result, reconcile_published_checkpoint_result,
     retry_pending_attempt_result, retry_pending_checkpoint_result, stage_prepared_attempt_result,
     stage_prepared_checkpoint_result,
@@ -1174,10 +1174,22 @@ fn worker_loop<L, V, W>(
         let cancellation = queued.cancellation().clone();
         match catch_unwind(AssertUnwindSafe(|| worker.execute(queued))) {
             Ok(work) if cancellation.is_canceled() => {
-                let (queued, _) = work.into_parts();
+                let (queued, result) = work.into_parts();
+                let produced_result = result.is_ok();
                 reconcile_worker_failure(&shared, queued, AttemptWorkerFailure::Canceled(()));
+                if produced_result {
+                    reconcile_worker_execution(
+                        &shared,
+                        &mut worker,
+                        AttemptExecutionDisposition::Canceled,
+                    );
+                }
             }
-            Ok(work) => reconcile_work_result(&shared, &store, work),
+            Ok(work) => {
+                if let Some(disposition) = reconcile_work_result(&shared, &store, work) {
+                    reconcile_worker_execution(&shared, &mut worker, disposition);
+                }
+            }
             Err(_) => {
                 shared.poison();
                 reconcile_panicked_worker(&shared, key, execution);
@@ -1226,7 +1238,8 @@ fn reconcile_work_result<L, V, W>(
     shared: &SharedExecutor<L, V>,
     store: &CampaignExecutorStore,
     work: crate::AttemptWorkResult<W>,
-) where
+) -> Option<AttemptExecutionDisposition>
+where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
@@ -1234,7 +1247,7 @@ fn reconcile_work_result<L, V, W>(
         Ok(prepared) => prepared,
         Err(AttemptResultPreparationError::Worker { queued, failure }) => {
             reconcile_worker_failure(shared, *queued, failure);
-            return;
+            return None;
         }
         Err(AttemptResultPreparationError::Candidate {
             mut pending,
@@ -1243,12 +1256,12 @@ fn reconcile_work_result<L, V, W>(
             if pending.queued().cancellation().is_canceled() {
                 let (queued, _) = pending.into_parts();
                 reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Canceled(()));
-                return;
+                return Some(AttemptExecutionDisposition::Canceled);
             }
             if source.executor_rejection() != ExecutorRejection::UnavailableInput {
                 let (queued, _) = pending.into_parts();
                 reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Terminal(source));
-                return;
+                return Some(AttemptExecutionDisposition::Failed);
             }
             increment(&shared.counters.publication_retries);
             thread::sleep(WORKER_RETRY_INTERVAL);
@@ -1265,7 +1278,7 @@ fn reconcile_work_result<L, V, W>(
                 }
                 Err(AttemptResultPreparationError::Worker { queued, failure }) => {
                     reconcile_worker_failure(shared, *queued, failure);
-                    return;
+                    return None;
                 }
                 Err(AttemptResultPreparationError::Checkpoint { pending, source }) => {
                     let (queued, _) = pending.into_parts();
@@ -1274,7 +1287,7 @@ fn reconcile_work_result<L, V, W>(
                         queued,
                         AttemptWorkerFailure::Terminal(source),
                     );
-                    return;
+                    return Some(AttemptExecutionDisposition::Failed);
                 }
             }
         },
@@ -1285,12 +1298,12 @@ fn reconcile_work_result<L, V, W>(
             if pending.queued().cancellation().is_canceled() {
                 let (queued, _) = pending.into_parts();
                 reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Canceled(()));
-                return;
+                return Some(AttemptExecutionDisposition::Canceled);
             }
             if !source.is_retryable() {
                 let (queued, _) = pending.into_parts();
                 reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Terminal(source));
-                return;
+                return Some(AttemptExecutionDisposition::Failed);
             }
             increment(&shared.counters.publication_retries);
             thread::sleep(WORKER_RETRY_INTERVAL);
@@ -1307,7 +1320,7 @@ fn reconcile_work_result<L, V, W>(
                 }
                 Err(AttemptResultPreparationError::Worker { queued, failure }) => {
                     reconcile_worker_failure(shared, *queued, failure);
-                    return;
+                    return None;
                 }
                 Err(AttemptResultPreparationError::Candidate { pending, source }) => {
                     let (queued, _) = pending.into_parts();
@@ -1316,7 +1329,7 @@ fn reconcile_work_result<L, V, W>(
                         queued,
                         AttemptWorkerFailure::Terminal(source),
                     );
-                    return;
+                    return Some(AttemptExecutionDisposition::Failed);
                 }
             }
         },
@@ -1325,26 +1338,26 @@ fn reconcile_work_result<L, V, W>(
     let prepared = match prepared {
         PreparedAttemptWorkResult::Observation(prepared) => *prepared,
         PreparedAttemptWorkResult::ExactCheckpoint(prepared) => {
-            reconcile_checkpoint_result(shared, *prepared);
-            return;
+            return Some(reconcile_checkpoint_result(shared, *prepared));
         }
     };
 
     let staged = match stage_prepared(shared, prepared) {
         StageDisposition::Publish(staged) => staged,
-        StageDisposition::Finished => return,
+        StageDisposition::Finished(disposition) => return Some(disposition),
     };
     let published = match publish_staged(shared, store, staged) {
-        Some(published) => published,
-        None => return,
+        PublishDisposition::Published(published) => *published,
+        PublishDisposition::Finished(disposition) => return Some(disposition),
     };
-    reconcile_published(shared, published);
+    Some(reconcile_published(shared, published))
 }
 
 fn reconcile_checkpoint_result<L, V>(
     shared: &SharedExecutor<L, V>,
     mut prepared: PreparedCheckpointResult,
-) where
+) -> AttemptExecutionDisposition
+where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
@@ -1354,7 +1367,7 @@ fn reconcile_checkpoint_result<L, V>(
                 shared,
                 CheckpointResultAbortToken::Prepared(Box::new(prepared)),
             );
-            return;
+            return AttemptExecutionDisposition::Canceled;
         }
         let mut executor = lock_or_retain(shared, &prepared);
         match stage_prepared_checkpoint_result(executor.supervisor_mut(), prepared) {
@@ -1367,7 +1380,7 @@ fn reconcile_checkpoint_result<L, V>(
                 drop(executor);
                 retire_native_checkpoint_source(shared, prepared.native_retirement());
                 record_checkpoint_stage_outcome(shared, checkpoint, outcome);
-                return;
+                return checkpoint_stage_disposition(checkpoint, outcome);
             }
             Err(error) if supervisor_error_is_retryable(&error.source) => {
                 prepared = *error.prepared;
@@ -1378,7 +1391,7 @@ fn reconcile_checkpoint_result<L, V>(
             Err(error) => {
                 drop(executor);
                 abort_checkpoint(shared, CheckpointResultAbortToken::Prepared(error.prepared));
-                return;
+                return AttemptExecutionDisposition::Failed;
             }
         }
     };
@@ -1386,7 +1399,7 @@ fn reconcile_checkpoint_result<L, V>(
     let mut published = loop {
         if staged.queued().cancellation().is_canceled() {
             abort_checkpoint(shared, CheckpointResultAbortToken::Staged(staged));
-            return;
+            return AttemptExecutionDisposition::Canceled;
         }
         match publish_staged_checkpoint_result(&shared.checkpoints, *staged) {
             Ok(published) => break Box::new(published),
@@ -1397,7 +1410,7 @@ fn reconcile_checkpoint_result<L, V>(
             }
             Err(error) => {
                 abort_checkpoint(shared, CheckpointResultAbortToken::Staged(error.staged));
-                return;
+                return AttemptExecutionDisposition::Failed;
             }
         }
     };
@@ -1405,7 +1418,7 @@ fn reconcile_checkpoint_result<L, V>(
     loop {
         if published.queued().cancellation().is_canceled() {
             abort_checkpoint(shared, CheckpointResultAbortToken::Published(published));
-            return;
+            return AttemptExecutionDisposition::Canceled;
         }
         let key = AttemptExecutionKey::new(
             published.queued().request().lineage(),
@@ -1419,14 +1432,14 @@ fn reconcile_checkpoint_result<L, V>(
                 increment(&shared.counters.checkpoints_paused);
                 drop(executor);
                 if !observe_paused_checkpoint(shared, checkpoint) {
-                    return;
+                    return AttemptExecutionDisposition::ExactCheckpoint(checkpoint);
                 }
                 enqueue_paused_checkpoint_promotion(shared, key);
-                return;
+                return AttemptExecutionDisposition::ExactCheckpoint(checkpoint);
             }
             Ok(crate::CheckpointCompletionOutcome::NotCurrent) => {
                 increment(&shared.counters.checkpoints_discarded);
-                return;
+                return AttemptExecutionDisposition::Failed;
             }
             Err(error) if supervisor_error_is_retryable(&error.source) => {
                 published = error.published;
@@ -1440,9 +1453,23 @@ fn reconcile_checkpoint_result<L, V>(
                     shared,
                     CheckpointResultAbortToken::Published(error.published),
                 );
-                return;
+                return AttemptExecutionDisposition::Failed;
             }
         }
+    }
+}
+
+fn checkpoint_stage_disposition(
+    checkpoint: ExactCheckpointId,
+    outcome: CheckpointPublicationOutcome,
+) -> AttemptExecutionDisposition {
+    match outcome {
+        CheckpointPublicationOutcome::AlreadyPaused => {
+            AttemptExecutionDisposition::ExactCheckpoint(checkpoint)
+        }
+        CheckpointPublicationOutcome::NotCurrent
+        | CheckpointPublicationOutcome::Staged
+        | CheckpointPublicationOutcome::AlreadyStaged => AttemptExecutionDisposition::Failed,
     }
 }
 
@@ -1597,7 +1624,12 @@ fn observe_promoted_checkpoint<L, V>(
 
 enum StageDisposition {
     Publish(Box<StagedAttemptResult>),
-    Finished,
+    Finished(AttemptExecutionDisposition),
+}
+
+enum PublishDisposition {
+    Published(Box<PublishedAttemptResult>),
+    Finished(AttemptExecutionDisposition),
 }
 
 fn stage_prepared<L, V>(
@@ -1611,7 +1643,7 @@ where
     loop {
         if prepared.queued().cancellation().is_canceled() {
             abort_prepared(shared, prepared);
-            return StageDisposition::Finished;
+            return StageDisposition::Finished(AttemptExecutionDisposition::Canceled);
         }
         let mut executor = lock_or_retain(shared, &prepared);
         match stage_prepared_attempt_result(executor.supervisor_mut(), prepared) {
@@ -1620,7 +1652,7 @@ where
             }
             Ok(AttemptResultStageOutcome::Finished(outcome)) => {
                 record_outcome(shared, outcome);
-                return StageDisposition::Finished;
+                return StageDisposition::Finished(worker_reconcile_disposition(outcome));
             }
             Err(error) if supervisor_error_is_retryable(&error.source) => {
                 prepared = *error.prepared;
@@ -1632,7 +1664,7 @@ where
                 prepared = *error.prepared;
                 drop(executor);
                 abort_prepared(shared, prepared);
-                return StageDisposition::Finished;
+                return StageDisposition::Finished(AttemptExecutionDisposition::Failed);
             }
         }
     }
@@ -1642,7 +1674,7 @@ fn publish_staged<L, V>(
     shared: &SharedExecutor<L, V>,
     store: &CampaignExecutorStore,
     mut staged: Box<StagedAttemptResult>,
-) -> Option<PublishedAttemptResult>
+) -> PublishDisposition
 where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
@@ -1650,10 +1682,10 @@ where
     loop {
         if staged.queued().cancellation().is_canceled() {
             abort_staged(shared, staged);
-            return None;
+            return PublishDisposition::Finished(AttemptExecutionDisposition::Canceled);
         }
         match publish_prepared_attempt_result(store, staged) {
-            Ok(published) => return Some(published),
+            Ok(published) => return PublishDisposition::Published(Box::new(published)),
             Err(error)
                 if error.source.executor_rejection() == ExecutorRejection::UnavailableInput =>
             {
@@ -1663,13 +1695,16 @@ where
             }
             Err(error) => {
                 abort_staged(shared, error.staged);
-                return None;
+                return PublishDisposition::Finished(AttemptExecutionDisposition::Failed);
             }
         }
     }
 }
 
-fn reconcile_published<L, V>(shared: &SharedExecutor<L, V>, mut published: PublishedAttemptResult)
+fn reconcile_published<L, V>(
+    shared: &SharedExecutor<L, V>,
+    mut published: PublishedAttemptResult,
+) -> AttemptExecutionDisposition
 where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
@@ -1677,13 +1712,13 @@ where
     loop {
         if published.queued().cancellation().is_canceled() {
             abort_published(shared, published);
-            return;
+            return AttemptExecutionDisposition::Canceled;
         }
         let mut executor = lock_or_retain(shared, &published);
         match reconcile_published_attempt_result::<L, V, ()>(executor.supervisor_mut(), published) {
             Ok(outcome) => {
                 record_outcome(shared, outcome);
-                return;
+                return worker_reconcile_disposition(outcome);
             }
             Err(AttemptWorkerReconcileError::CompletionPending {
                 published: next,
@@ -1700,12 +1735,12 @@ where
                 published = *next;
                 drop(executor);
                 abort_published(shared, published);
-                return;
+                return AttemptExecutionDisposition::Failed;
             }
             Err(_) => {
                 drop(executor);
                 shared.poison();
-                return;
+                return AttemptExecutionDisposition::Failed;
             }
         }
     }
@@ -1898,6 +1933,55 @@ fn supervisor_error_is_retryable<E>(error: &LocalExecutorError<E>) -> bool {
                 reason: CompletionValidationFailure::UnavailableInput,
             }
     )
+}
+
+fn reconcile_worker_execution<L, V, W>(
+    shared: &SharedExecutor<L, V>,
+    worker: &mut W,
+    disposition: AttemptExecutionDisposition,
+) where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+    W: LocalAttemptWorker,
+{
+    loop {
+        match worker.reconcile_execution(disposition) {
+            Ok(AttemptExecutionReconciliationStep::Complete) => return,
+            Ok(AttemptExecutionReconciliationStep::Progressed) => thread::yield_now(),
+            Err(AttemptWorkerFailure::Retryable(_)) => {
+                increment(&shared.counters.publication_retries);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(AttemptWorkerFailure::Canceled(_) | AttemptWorkerFailure::Terminal(_)) => {
+                shared.poison();
+                return;
+            }
+        }
+    }
+}
+
+fn worker_reconcile_disposition(
+    outcome: crate::AttemptWorkerReconcileOutcome,
+) -> AttemptExecutionDisposition {
+    match outcome {
+        crate::AttemptWorkerReconcileOutcome::Reconciled {
+            observation,
+            completion:
+                crate::CompletionOutcome::Completed | crate::CompletionOutcome::AlreadyCompleted,
+        } => AttemptExecutionDisposition::Observation(observation),
+        crate::AttemptWorkerReconcileOutcome::Discarded {
+            completion: crate::CompletionOutcome::Canceled,
+            ..
+        } => AttemptExecutionDisposition::Canceled,
+        crate::AttemptWorkerReconcileOutcome::Discarded {
+            completion: crate::CompletionOutcome::NotCurrent,
+            ..
+        }
+        | crate::AttemptWorkerReconcileOutcome::Reconciled { .. }
+        | crate::AttemptWorkerReconcileOutcome::Discarded { .. } => {
+            AttemptExecutionDisposition::Failed
+        }
+    }
 }
 
 fn record_outcome<L, V>(

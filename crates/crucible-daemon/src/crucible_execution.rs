@@ -16,7 +16,8 @@ use crucible_campaign::{
 };
 
 use crate::{
-    AttemptExecutionContext, AttemptExecutionInput, AttemptExecutionModel, AttemptExecutionProduct,
+    AttemptExecutionContext, AttemptExecutionDisposition, AttemptExecutionInput,
+    AttemptExecutionModel, AttemptExecutionProduct, AttemptExecutionReconciliationStep,
     AttemptWorkerFailure, CrucibleArtifactError, ResolvedAttemptStart,
     decode_crucible_scenario_artifact,
 };
@@ -294,6 +295,28 @@ pub trait CrucibleExecutionRunner {
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
     ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>>;
+
+    /// Reconciles operational authority retained after one successful result.
+    ///
+    /// Runners without a retained process or template use the default no-op.
+    /// Hot-fork runners use this callback to bind source/target cleanup to the
+    /// repository and supervisor's durable semantic disposition.
+    /// Attempt-charged execution resources must already be stopped before the
+    /// successful result is returned; this callback owns only cleanup whose
+    /// release is ordered after semantic publication.
+    /// A runner returning an execution error must finish or quarantine its
+    /// operational owner before returning so a retry cannot overlap it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified operational failure while retaining retry or
+    /// quarantine authority according to the failure class.
+    fn reconcile_execution(
+        &mut self,
+        _disposition: AttemptExecutionDisposition,
+    ) -> Result<AttemptExecutionReconciliationStep, AttemptWorkerFailure<Self::Error>> {
+        Ok(AttemptExecutionReconciliationStep::Complete)
+    }
 }
 
 /// Execution-model adapter that authenticates artifacts before invoking a runner.
@@ -371,6 +394,15 @@ where
         let (product, materialization) = outcome.into_parts();
         self.last_materialization = Some(materialization);
         Ok(product)
+    }
+
+    fn reconcile_execution(
+        &mut self,
+        disposition: AttemptExecutionDisposition,
+    ) -> Result<AttemptExecutionReconciliationStep, AttemptWorkerFailure<Self::Error>> {
+        self.runner
+            .reconcile_execution(disposition)
+            .map_err(map_runner_failure)
     }
 }
 
