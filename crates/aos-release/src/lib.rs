@@ -14,6 +14,7 @@
 //! - [`plan`] freezes release intent before build effects begin.
 //! - [`manifest`] binds finalized artifacts to the frozen plan.
 //! - [`evidence`] records public gate and qualification results.
+//! - [`inventory`] validates the Nix-derived four-target package inventory.
 //! - [`signing`] defines role-bound signing requests and responses.
 //! - [`state`] defines the append-only release journal state machine.
 //! - [`receipt`] binds staging, production, and channel operations.
@@ -22,15 +23,19 @@
 #![forbid(unsafe_code)]
 
 pub mod artifact;
+pub mod build;
 pub mod canonical;
 pub mod digest;
 pub mod evidence;
+pub mod inventory;
 pub mod manifest;
 pub mod plan;
 pub mod platform;
 pub mod receipt;
+pub mod sbom;
 pub mod signing;
 pub mod state;
+pub mod tuf;
 pub mod verify;
 
 pub use digest::Sha256Digest;

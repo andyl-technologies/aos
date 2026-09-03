@@ -58,6 +58,21 @@
 
   # UEFI ESP partition GUID.
   espGuid = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
+  guidFrom = seed: let
+    digest = builtins.hashString "sha256" seed;
+  in "${builtins.substring 0 8 digest}-${builtins.substring 8 4 digest}-${builtins.substring 12 4 digest}-${builtins.substring 16 4 digest}-${builtins.substring 20 12 digest}";
+  identitySeed = "aos-image:${version}:${lib.system}:${name}";
+  rootfsPname = "aos-image-${name}-rootfs";
+  verityDigest = builtins.hashString "sha256" "aos-rootfs:verity:${rootfsPname}:aos-root";
+  verityUuid = "${builtins.substring 0 8 verityDigest}-${builtins.substring 8 4 verityDigest}-4${builtins.substring 13 3 verityDigest}-8${builtins.substring 17 3 verityDigest}-${builtins.substring 20 12 verityDigest}";
+  veritySalt = builtins.substring 0 64 (builtins.hashString "sha256" "aos-rootfs:salt:${rootfsPname}:aos-root");
+  diskGuid = guidFrom "${identitySeed}:disk";
+  espPartitionGuid = guidFrom "${identitySeed}:esp";
+  rootAPartitionGuid = guidFrom "${identitySeed}:root-a";
+  rootAHashPartitionGuid = guidFrom "${identitySeed}:root-a-hash";
+  rootBPartitionGuid = guidFrom "${identitySeed}:root-b";
+  rootBHashPartitionGuid = guidFrom "${identitySeed}:root-b-hash";
+  fatVolumeId = lib.toUpper (builtins.substring 0 8 (builtins.hashString "sha256" "${identitySeed}:fat"));
   # Architecture-specific Discoverable Partitions Specification types keep
   # immutable root slots in a separate matching domain from operator-created
   # linux-generic data partitions. Discovery remains disabled; AOS still
@@ -117,6 +132,12 @@
   # are Authenticode-signed with the deployment db key; otherwise the
   # image is the byte-reproducible unsigned artifact.
   sb = system.config.aos.boot.secureBoot;
+  externalFinalization = sb.externalFinalization.enable;
+  localSecureBootSigning = sb.enable && !externalFinalization;
+  dbCertificate = sb._effectiveDbCert;
+  moduleCertificate = sb.lockdown._effectiveModuleSigningCert;
+  pcrPublicKey = sb.measuredBoot._effectivePcrPublicKey;
+  enrollmentDirectory = sb._effectiveEnrollAuthDir;
 
   # dm-verity root anchoring, enabled by aos.security.verity.enable.
   # (modules/security/verity.nix, auto-loaded so the option always exists; false
@@ -154,7 +175,7 @@
             name = "install";
             script = ''
               mkdir -p $out
-              cp ${sb.dbCert} $out/active-db-certs.pem
+              cp ${dbCertificate} $out/active-db-certs.pem
               chmod u+w $out/active-db-certs.pem
               ${lib.concatMapStringsSep "\n" (certificate: ''
                   printf '\n' >> $out/active-db-certs.pem
@@ -204,12 +225,12 @@
       # the optional in-kernel roothash-signature enforcement path). The
       # roothash-on-cmdline anchoring itself is key-independent.
       secureBootKey =
-        if sb.enable
+        if localSecureBootSigning
         then sb.dbKey
         else null;
       secureBootCert =
         if sb.enable
-        then sb.dbCert
+        then dbCertificate
         else null;
     });
 
@@ -221,22 +242,22 @@
       initrd = system.config.system.build.initrd;
       osRelease = "${ukiOsRelease}/os-release";
       secureBootKey =
-        if sb.enable
+        if localSecureBootSigning
         then sb.dbKey
         else null;
       secureBootCert =
         if sb.enable
-        then sb.dbCert
+        then dbCertificate
         else null;
       # PCR-policy signing (RFC-0006 phase 3): when measured boot is on, the
       # UKI carries a signed PCR policy so TPM-sealed /var unseals across OTA.
       pcrPrivateKey =
-        if sb.measuredBoot.enable
+        if sb.measuredBoot.enable && !externalFinalization
         then sb.measuredBoot.pcrPrivateKey
         else null;
       pcrPublicKey =
-        if sb.measuredBoot.enable
-        then sb.measuredBoot.pcrPublicKey
+        if sb.measuredBoot.enable && !externalFinalization
+        then pcrPublicKey
         else null;
       # Bake `roothash=<hex>` (a build output) into the measured
       # .cmdline. `null` when verity is off, so non-verity UKIs are unchanged.
@@ -253,7 +274,7 @@
 
   recoveryCmdline = "console=ttyS0,115200 rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0";
   recoverySlotManifest =
-    if recoveryEnabled
+    if recoveryEnabled && localSecureBootSigning
     then
       pkgs.mkDerivation {
         pname = "aos-recovery-slot-manifest";
@@ -301,7 +322,7 @@
                 -out $out/slot-manifest.json.sig \
                 $out/slot-manifest.json
               ${pkgs.openssl}/bin/openssl x509 -pubkey -noout \
-                -in ${sb.dbCert} > db-public.pem
+                -in ${dbCertificate} > db-public.pem
               ${pkgs.openssl}/bin/openssl dgst -sha256 \
                 -verify db-public.pem \
                 -signature $out/slot-manifest.json.sig \
@@ -316,7 +337,7 @@
       inherit pkgs lib;
       kernel = system.config.system.build.kernel;
       loadModules = system.config.aos.boot.initrd.loadModules;
-      dbCert = sb.dbCert;
+      dbCert = dbCertificate;
       authorizedDbCerts = "${activeImageDbCerts}/active-db-certs.pem";
       slotManifest = recoverySlotManifest;
       recoveryCopy = lib.toUpper copy;
@@ -358,8 +379,14 @@
         then recoveryInitrdA
         else recoveryInitrdB;
       osRelease = "${mkRecoveryOsRelease copy}/os-release";
-      secureBootKey = sb.dbKey;
-      secureBootCert = sb.dbCert;
+      secureBootKey =
+        if localSecureBootSigning
+        then sb.dbKey
+        else null;
+      secureBootCert =
+        if localSecureBootSigning
+        then dbCertificate
+        else null;
       # Recovery is db-signed code, not an authorization to unseal normal
       # persistent state. It therefore carries neither a PCR-policy signature
       # nor a normal root hash.
@@ -420,6 +447,189 @@
     then ukiFilename
     else "aos-generation-0000000001+${toString bootCountingTries}.efi";
 
+  # Production releases stop at a deterministic, public-only assembly. The
+  # coordinator copies these inputs to a new directory, signs through
+  # role-bound external providers, and constructs the final disk bytes there.
+  # Private material is intentionally neither an argument nor an environment
+  # value of this derivation.
+  unsignedAssembly = pkgs.mkDerivation {
+    pname = "aos-image-${name}-unsigned-assembly";
+    inherit version;
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.findutils pkgs.jq pkgs.tar];
+    runtimeDeps = [];
+    propagatedDeps = [];
+    phases = [
+      {
+        name = "assemble";
+        script = ''
+          set -eu
+          mkdir -p "$out/inputs" "$out/trust" "$out/enrollment"
+          cp ${rootfs}/root.img "$out/inputs/root.img"
+          cp ${rootfs}/root.verity "$out/inputs/root.verity"
+          cp ${rootfs}/root.roothash "$out/inputs/root.roothash"
+          cp ${system.config.system.build.initrd}/initrd.img "$out/inputs/initrd.img"
+          ${lib.optionalString recoveryEnabled ''
+            cp ${recoveryInitrdA}/initrd.img "$out/inputs/recovery-initrd-a.img"
+            cp ${recoveryInitrdB}/initrd.img "$out/inputs/recovery-initrd-b.img"
+            cp ${mkRecoveryOsRelease "a"}/os-release "$out/inputs/recovery-os-release-a"
+            cp ${mkRecoveryOsRelease "b"}/os-release "$out/inputs/recovery-os-release-b"
+          ''}
+          kernel=$(find ${system.config.system.build.kernel}/boot -maxdepth 1 -type f -name 'vmlinuz-*' -print)
+          [ "$(printf '%s\n' "$kernel" | wc -l)" -eq 1 ]
+          cp "$kernel" "$out/inputs/vmlinuz"
+          cp ${pkgs.systemd}/lib/systemd/boot/efi/${efiName.systemd} "$out/inputs/systemd-boot.efi"
+          cp ${pkgs.systemd}/lib/systemd/boot/efi/linux${
+            if lib.platform.constraints.cpu == "x86_64"
+            then "x64"
+            else "aa64"
+          }.efi.stub "$out/inputs/uki-stub.efi"
+          cp ${ukiOsRelease}/os-release "$out/inputs/os-release"
+          cp ${dbCertificate} "$out/trust/secure-boot-db.crt"
+          cp ${moduleCertificate} "$out/trust/module-signing.crt"
+          cp ${pcrPublicKey} "$out/trust/pcr-public.pem"
+          for file in db.auth KEK.auth PK.auth; do
+            cp ${enrollmentDirectory}/"$file" "$out/enrollment/$file"
+          done
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+            -cf "$out/inputs/firmware-enrollment.tar" -C "$out/enrollment" .
+          rm -rf "$out/enrollment"
+
+          root_bytes=$(stat -c %s "$out/inputs/root.img")
+          initrd_bytes=$(stat -c %s "$out/inputs/initrd.img")
+          recovery_a_bytes=$(stat -c %s "$out/inputs/recovery-initrd-a.img")
+          recovery_b_bytes=$(stat -c %s "$out/inputs/recovery-initrd-b.img")
+          verity_bytes=$(stat -c %s "$out/inputs/root.verity")
+          [ "$root_bytes" -le $((${toString budgets.maxRootMiB} * 1048576)) ] || {
+            echo "unsigned root exceeds its ${toString budgets.maxRootMiB} MiB release budget" >&2
+            exit 1
+          }
+          for bytes in "$initrd_bytes" "$recovery_a_bytes" "$recovery_b_bytes"; do
+            [ "$bytes" -le $((${toString budgets.maxInitrdMiB} * 1048576)) ] || {
+              echo "unsigned initrd exceeds its ${toString budgets.maxInitrdMiB} MiB release budget" >&2
+              exit 1
+            }
+          done
+          [ "$verity_bytes" -le $((${toString budgets.maxVerityMiB} * 1048576)) ] || {
+            echo "verity tree exceeds its ${toString budgets.maxVerityMiB} MiB partition" >&2
+            exit 1
+          }
+
+          ${pkgs.jq}/bin/jq -cS -n \
+            --arg schema aos.image.assembly-recipe/v1 \
+            --arg release ${lib.escapeShellArg version} \
+            --arg platform ${lib.escapeShellArg lib.system} \
+            --arg variant ${lib.escapeShellArg name} \
+            --arg kernelRelease ${lib.escapeShellArg system.config.system.build.kernel.version} \
+            --arg kernelParams ${lib.escapeShellArg kernelParams} \
+            --arg kernelParamsB ${lib.escapeShellArg kernelParamsB} \
+            --arg recoveryCmdline ${lib.escapeShellArg recoveryCmdline} \
+            --argjson moduleAbi ${toString system.config.aos.system.moduleAbi} \
+            --argjson recoveryAbi ${toString recovery.abi} \
+            --argjson sbatGeneration ${toString system.config.aos.system.stateVersion} \
+            --arg secureBootRole ${lib.escapeShellArg sb.externalFinalization.secureBootRole} \
+            --arg moduleRole ${lib.escapeShellArg sb.externalFinalization.moduleRole} \
+            --arg pcrRole ${lib.escapeShellArg sb.externalFinalization.pcrRole} \
+            --arg ukify ${lib.escapeShellArg "${pkgs.systemd.tools}/bin/ukify"} \
+            --arg measure ${lib.escapeShellArg "${pkgs.systemd}/lib/systemd/systemd-measure"} \
+            --arg objcopy ${lib.escapeShellArg "${pkgs.binutils}/bin/objcopy"} \
+            --arg signFile ${lib.escapeShellArg "${system.config.system.build.kernel.dev}/lib/modules/${system.config.system.build.kernel.version}/build/scripts/sign-file"} \
+            --arg mkfsErofs ${lib.escapeShellArg "${pkgs.erofs-utils}/bin/mkfs.erofs"} \
+            --arg gccLib ${lib.escapeShellArg "${pkgs.gcc-libs}/lib"} \
+            --arg fsckErofs ${lib.escapeShellArg "${pkgs.erofs-utils}/bin/fsck.erofs"} \
+            --arg veritysetup ${lib.escapeShellArg "${pkgs.cryptsetup}/bin/veritysetup"} \
+            --arg qemuImg ${lib.escapeShellArg "${pkgs.qemu}/bin/qemu-img"} \
+            --arg sfdisk ${lib.escapeShellArg "${pkgs.util-linux}/sbin/sfdisk"} \
+            --arg mkfsVfat ${lib.escapeShellArg "${pkgs.dosfstools}/sbin/mkfs.vfat"} \
+            --arg mcopy ${lib.escapeShellArg "${pkgs.mtools}/bin/mcopy"} \
+            --arg zstd ${lib.escapeShellArg "${pkgs.zstd}/bin/zstd"} \
+            --arg cpio ${lib.escapeShellArg "${pkgs.cpio}/bin/cpio"} \
+            --arg tar ${lib.escapeShellArg "${pkgs.tar}/bin/tar"} \
+            --arg find ${lib.escapeShellArg "${pkgs.findutils}/bin/find"} \
+            --arg openssl ${lib.escapeShellArg "${pkgs.openssl}/bin/openssl"} \
+            --arg sbverify ${lib.escapeShellArg "${pkgs.sbsigntools}/bin/sbverify"} \
+            --arg modinfo ${lib.escapeShellArg "${pkgs.kmod}/bin/modinfo"} \
+            --arg diskGuid ${lib.escapeShellArg diskGuid} \
+            --arg espGuid ${lib.escapeShellArg espGuid} \
+            --arg rootGuid ${lib.escapeShellArg rootGuid} \
+            --arg verityGuid ${lib.escapeShellArg verityGuid} \
+            --arg espPartitionGuid ${lib.escapeShellArg espPartitionGuid} \
+            --arg rootAPartitionGuid ${lib.escapeShellArg rootAPartitionGuid} \
+            --arg rootAHashPartitionGuid ${lib.escapeShellArg rootAHashPartitionGuid} \
+            --arg rootBPartitionGuid ${lib.escapeShellArg rootBPartitionGuid} \
+            --arg rootBHashPartitionGuid ${lib.escapeShellArg rootBHashPartitionGuid} \
+            --arg fatVolumeId ${lib.escapeShellArg fatVolumeId} \
+            --arg fallbackFilename ${lib.escapeShellArg efiName.fallback} \
+            --arg systemdFilename ${lib.escapeShellArg efiName.systemd} \
+            --arg ukiFilename ${lib.escapeShellArg espUkiFilename} \
+            --arg rootFsType ${lib.escapeShellArg rootFsType} \
+            --arg rootFsUuid bdfb6fc9-0000-4000-8000-000000000001 \
+            --arg rootFsLabel aos-root \
+            --argjson erofsCompressionLevel ${toString system.config.aos.image.erofsCompressionLevel} \
+            --arg verityUuid ${lib.escapeShellArg verityUuid} \
+            --arg veritySalt ${lib.escapeShellArg veritySalt} \
+            --argjson espExtraFreeMiB ${toString system.config.aos.image.espExtraFreeMiB} \
+            --argjson sectorSize 512 \
+            --argjson alignmentSectors 2048 \
+            --argjson espStartSector ${toString espStartSector} \
+            --argjson espMiB ${toString budgets.maxEspMiB} \
+            --argjson rootMiB ${toString system.config.aos.image.rootPartitionMiB} \
+            --argjson verityMiB ${toString budgets.maxVerityMiB} \
+            --argjson maxRootMiB ${toString budgets.maxRootMiB} \
+            --argjson maxInitrdMiB ${toString budgets.maxInitrdMiB} \
+            --argjson maxUkiMiB ${toString budgets.maxUkiMiB} \
+            --argjson maxDownloadMiB ${toString budgets.maxDownloadMiB} \
+            '{schema_version:$schema, release:$release, platform:$platform,
+              system_variant:$variant, kernel_release:$kernelRelease, module_abi:$moduleAbi,
+              recovery_abi:$recoveryAbi, sbat_generation:$sbatGeneration,
+              command_lines:{slot_a:$kernelParams,slot_b:$kernelParamsB,recovery:$recoveryCmdline},
+              signer_roles:{secure_boot:$secureBootRole,module:$moduleRole,pcr:$pcrRole},
+              layout:{sector_size:$sectorSize,alignment_sectors:$alignmentSectors,
+                esp_start_sector:$espStartSector,esp_size_mib:$espMiB,
+                root_partition_mib:$rootMiB,verity_partition_mib:$verityMiB,
+                root_filesystem_type:$rootFsType,root_filesystem_uuid:$rootFsUuid,
+                root_filesystem_label:$rootFsLabel,
+                erofs_compression_level:$erofsCompressionLevel,
+                verity_uuid:$verityUuid,verity_salt:$veritySalt,
+                esp_extra_free_mib:$espExtraFreeMiB,disk_guid:$diskGuid,
+                partition_type_guids:{esp:$espGuid,root:$rootGuid,verity:$verityGuid},
+                partition_guids:{esp:$espPartitionGuid,root_a:$rootAPartitionGuid,
+                  root_a_hash:$rootAHashPartitionGuid,root_b:$rootBPartitionGuid,
+                  root_b_hash:$rootBHashPartitionGuid},fat_volume_id:$fatVolumeId,
+                efi_filenames:{fallback:$fallbackFilename,systemd_boot:$systemdFilename,
+                  normal_uki:$ukiFilename}},
+              budgets:{root_mib:$maxRootMiB,initrd_mib:$maxInitrdMiB,
+                uki_mib:$maxUkiMiB,download_mib:$maxDownloadMiB},
+              tools:{
+                ukify:{executable:$ukify,environment:{}},
+                systemd_measure:{executable:$measure,environment:{}},
+                objcopy:{executable:$objcopy,environment:{}},
+                sign_file:{executable:$signFile,environment:{}},
+                mkfs_erofs:{executable:$mkfsErofs,environment:{LD_LIBRARY_PATH:$gccLib}},
+                fsck_erofs:{executable:$fsckErofs,environment:{}},
+                veritysetup:{executable:$veritysetup,environment:{}},
+                qemu_img:{executable:$qemuImg,environment:{}},
+                sfdisk:{executable:$sfdisk,environment:{}},
+                mkfs_vfat:{executable:$mkfsVfat,environment:{}},
+                mcopy:{executable:$mcopy,environment:{MTOOLS_SKIP_CHECK:"1"}},
+                zstd:{executable:$zstd,environment:{}},
+                cpio:{executable:$cpio,environment:{}},
+                tar:{executable:$tar,environment:{}},
+                find:{executable:$find,environment:{}},
+                openssl:{executable:$openssl,environment:{}},
+                sbverify:{executable:$sbverify,environment:{}},
+                modinfo:{executable:$modinfo,environment:{}}}}' \
+            > "$out/assembly-recipe.json.tmp"
+          recipe_size=$(stat -c %s "$out/assembly-recipe.json.tmp")
+          [ "$recipe_size" -gt 1 ]
+          truncate -s $((recipe_size - 1)) "$out/assembly-recipe.json.tmp"
+          mv "$out/assembly-recipe.json.tmp" "$out/assembly-recipe.json"
+        '';
+      }
+    ];
+    meta.description = "Public-only unsigned AOS image assembly for ${lib.system}";
+  };
+
   imageDrv = pkgs.mkDerivation ({
       name = "aos-image-${name}";
       src = null;
@@ -438,7 +648,7 @@
           pkgs.zstd
           runtimeClosureAudit
         ]
-        ++ lib.optional sb.enable pkgs.sbsigntools
+        ++ lib.optional localSecureBootSigning pkgs.sbsigntools
         ++ lib.optionals recoveryEnabled [pkgs.binutils pkgs.openssl]; # recovery audit + bundle signature
 
       ROOT_IMG = "${rootfs}/root.img";
@@ -490,16 +700,16 @@
       # Secure Boot signing inputs (empty unless enabled). The UKI is
       # already signed by aos-uki; sd-boot is signed here, in place.
       SB_ENABLE =
-        if sb.enable
+        if localSecureBootSigning
         then "1"
         else "";
       SB_KEY =
-        if sb.enable
+        if localSecureBootSigning
         then sb.dbKey
         else "";
       SB_CERT =
         if sb.enable
-        then sb.dbCert
+        then dbCertificate
         else "";
 
       phases = [
@@ -977,7 +1187,7 @@
                 -out $out/recovery-bundle.json.sig \
                 $out/recovery-bundle.json
               ${pkgs.openssl}/bin/openssl x509 -pubkey -noout \
-                -in ${sb.dbCert} > recovery-bundle-public.pem
+                -in ${dbCertificate} > recovery-bundle-public.pem
               ${pkgs.openssl}/bin/openssl dgst -sha256 \
                 -verify recovery-bundle-public.pem \
                 -signature $out/recovery-bundle.json.sig \
@@ -1029,8 +1239,13 @@ in
   # passthru attribute so callers can publish or measure it directly
   # (RFC-0006 phase 4: `apr publish --image <uki>` derives Secure Boot
   # facts from this signed binary).
-  imageDrv
+  (
+    if externalFinalization
+    then unsignedAssembly
+    else imageDrv
+  )
   // {
+    inherit unsignedAssembly;
     inherit rootfs uki ukiA ukiB ukiAStoreFilename ukiBStoreFilename;
     recoveryInitrdA = recoveryInitrdA;
     recoveryInitrdB = recoveryInitrdB;

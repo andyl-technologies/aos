@@ -78,12 +78,14 @@ let
       executableExtension = "";
       supportedCpus = ["x86_64" "i686" "aarch64" "riscv64"];
       config = cpuName: "${cpuName}-unknown-linux-gnu";
-      dynamicLinker = cpuName: {
-        x86_64 = "ld-linux-x86-64.so.2";
-        i686 = "ld-linux.so.2";
-        aarch64 = "ld-linux-aarch64.so.1";
-        riscv64 = "ld-linux-riscv64-lp64d.so.1";
-      }.${cpuName};
+      dynamicLinker = cpuName:
+        {
+          x86_64 = "ld-linux-x86-64.so.2";
+          i686 = "ld-linux.so.2";
+          aarch64 = "ld-linux-aarch64.so.1";
+          riscv64 = "ld-linux-riscv64-lp64d.so.1";
+        }
+        .${cpuName};
       executableCpus = cpu: cpu.canExecute;
     };
     darwin = {
