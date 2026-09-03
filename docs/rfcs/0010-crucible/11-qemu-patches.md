@@ -3351,12 +3351,32 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   registered `call_rcu` worker. A negative test begins under an active RCU read
   section, requires rejection with the barrier fully released, then proves the
   same transaction can be acquired and released normally. The complete QEMU
-  derivation runs all 19 child-resource tests.
+  derivation runs all 20 child-resource tests.
 - **Inertness:** no shipped command invokes this transaction or `fork(2)`.
   Raw and library-owned locks, remaining subsystem child dispositions, the
   production fork coordinator, host-continuation pairing, guest admission, and
   readiness bits 7 and 8 remain open. `T-CAM-6.1` through `T-CAM-6.3` remain
   incomplete.
+- **Risk:** F.
+
+### crucible-hot-fork-rcu-thread-disposition — bind the RCU worker disposition
+
+- **Patch:** `0185-crucible-bind-rcu-worker-fork-disposition.patch`.
+- **Enforces:** [HFORK-4], [HFORK-22].
+- **Mechanism:** thread-inventory schema 3 classifies the subsystem-owned
+  `call_rcu` worker as `rcu-restart`. The registered-thread transaction now
+  requires exactly one coordinator and one such worker, rejecting generic and
+  AIO workers before fork. The child runtime discards the inherited RCU worker
+  with the vanished registry and registers exactly one fresh worker after RCU
+  reconstruction.
+- **Micro-test:** the real-fork test runs against the exact two-thread profile;
+  a new negative test adds generic and AIO workers in turn, requires `-EBUSY`,
+  and proves the registry and RCU barriers are released after each rejection.
+  Strict patch certification pins the schema, disposition, exact thread count,
+  and unsupported-worker regression.
+- **Inertness:** no shipped command invokes this transaction or `fork(2)`.
+  Raw or unregistered locks, AIO and other subsystem dispositions, production
+  fork invocation, guest admission, and readiness bits 7 and 8 remain open.
 - **Risk:** F.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

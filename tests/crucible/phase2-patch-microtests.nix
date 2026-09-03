@@ -1517,7 +1517,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-thread-ownership";
         liveEvidence = ''
-          grep -Fxq 'thread_inventory_schema_version=2' "$live_result"
+          grep -Fxq 'thread_inventory_schema_version=3' "$live_result"
           grep -Fxq 'thread_inventory_stable=true' "$live_result"
           grep -Fxq 'thread_inventory_one_coordinator=true' "$live_result"
           grep -Fxq 'thread_inventory_rcu_owner=true' "$live_result"
@@ -3025,6 +3025,29 @@
             ${patchDir}/0184-crucible-compose-rcu-fork-transaction.patch
           grep -Fq 'rcu_after.generation, ==, rcu_before.generation' \
             ${patchDir}/0184-crucible-compose-rcu-fork-transaction.patch
+        '';
+      };
+    }
+    {
+      patch = "0185-crucible-bind-rcu-worker-fork-disposition.patch";
+      check = certifyExactPatch {
+        patchName = "0185-crucible-bind-rcu-worker-fork-disposition.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-rcu-thread-disposition";
+        liveEvidence = ''
+          grep -Fxq 'patch=0185-crucible-bind-rcu-worker-fork-disposition.patch' "$live_result"
+          grep -Fq 'QEMU_THREAD_HOT_FORK_RCU_RESTART' \
+            ${patchDir}/0185-crucible-bind-rcu-worker-fork-disposition.patch
+          grep -Fq 'CRUCIBLE_HOT_FORK_THREAD_DISPOSITION_RCU_RESTART' \
+            ${patchDir}/0185-crucible-bind-rcu-worker-fork-disposition.patch
+          grep -Fq "'rcu-restart'" \
+            ${patchDir}/0185-crucible-bind-rcu-worker-fork-disposition.patch
+          grep -Fq 'report->schema_version = 3' \
+            ${patchDir}/0185-crucible-bind-rcu-worker-fork-disposition.patch
+          grep -Fq 'qemu_hot_fork_thread_count != 2' \
+            ${patchDir}/0185-crucible-bind-rcu-worker-fork-disposition.patch
+          grep -Fq '/crucible/hot-fork-child/unsupported-thread' \
+            ${patchDir}/0185-crucible-bind-rcu-worker-fork-disposition.patch
         '';
       };
     }

@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "b8df6c07e82ea707c18db1638cf2e66c8ab4e0462a461a1dd582b811d99b35d4";
+  patchBranchBundleSha256 = "e4978277525bc884ab54937c86871557616845577c7a8ddd5cba7f59ec5d8a66";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "c6633e07ba6e20ffe8b66373f5701f8c9fe1cf2e";
+  patchBranchHeadCommit = "a4be2a1b9685ebc275d063e8a506ceb941824ab7";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1775,6 +1775,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-22";
       capability = "the coordinator now composes an explicit RCU reader/callback quiescence transaction outside the registered thread and QemuMutex transaction, preserves the parent RCU registry, reconstructs the immediate child around only the surviving coordinator, reopens admission, and starts one fresh child callback worker before returning; raw or unregistered locks, remaining subsystem dispositions, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0185-crucible-bind-rcu-worker-fork-disposition.patch";
+      branchSubject = "crucible: bind RCU worker fork disposition";
+      branchCommit = "a4be2a1b9685ebc275d063e8a506ceb941824ab7";
+      branchTree = "b113bc7e23d3dc58f3e9447b0002ed73971d8b00";
+      catalogName = "crucible-hot-fork-rcu-thread-disposition";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "the registered fork transaction now admits exactly one coordinator and one subsystem-owned RCU discard-and-restart worker, rejects generic and AIO workers before fork, reports the RCU worker as classified under thread-inventory schema 3, and preserves rollback after rejection; raw or unregistered locks, AIO and remaining subsystem dispositions, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
     }
   ];
   catalogOnlyCapabilities = [
