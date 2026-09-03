@@ -257,7 +257,8 @@ At success or failure:
 
 - revoke short-lived credentials and remove temporary credential stores;
 - disconnect signing devices and verify no secret-backed process remains;
-- sign the final journal digest and copy evidence to encrypted backup;
+- threshold-authorize the exact rolling journal head, close the deterministic
+  final entry, and copy the journal plus signed evidence to encrypted backup;
 - retain required Nix roots, release bundles, source, recovery, and installer
   closures;
 - reconcile public Hub, registry, channel, timestamp, and retention state; and

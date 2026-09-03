@@ -353,6 +353,8 @@ pub struct CompletionReceiptV1 {
     pub production_receipt_digest: Sha256Digest,
     /// Sorted identities of every planned channel operation receipt.
     pub channel_receipt_digests: Vec<Sha256Digest>,
+    /// Digest of the exact rolling journal head authorized for completion.
+    pub prior_journal_entry_digest: Sha256Digest,
     /// Versioned retention policy frozen in the plan.
     pub retention_policy_id: String,
     /// Exact frozen retention-policy digest.
@@ -453,6 +455,7 @@ mod tests {
             manifest_digest: Sha256Digest::of_bytes("manifest"),
             production_receipt_digest: Sha256Digest::of_bytes("production"),
             channel_receipt_digests: digests,
+            prior_journal_entry_digest: Sha256Digest::of_bytes("journal-head"),
             retention_policy_id: "retention-v1".into(),
             retention_policy_digest: Sha256Digest::of_bytes("retention"),
             corresponding_source_retained: true,

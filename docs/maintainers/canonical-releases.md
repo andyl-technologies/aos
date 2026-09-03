@@ -664,9 +664,9 @@ After every planned range has advanced, obtain identical completion decisions
 signed by exactly the `release-evidence` threshold frozen in the plan. Each
 canonical decision uses schema `aos.release.completion-receipt/v1` and binds the
 release, plan, manifest, production receipt, the sorted digest of every channel
-receipt, the frozen retention policy, affirmative corresponding-source
-retention, affirmative operational handoff, a public authority identity, and
-an RFC 3339 UTC completion time.
+receipt, the exact rolling journal-head digest, the frozen retention policy,
+affirmative corresponding-source retention, affirmative operational handoff, a
+public authority identity, and an RFC 3339 UTC completion time.
 
 Then recheck the complete public rollout and close the journal:
 

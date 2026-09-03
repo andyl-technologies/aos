@@ -205,7 +205,7 @@ impl SignerRequirement {
 pub struct SigningRequestV1 {
     /// Exact request schema identifier.
     pub schema_version: String,
-    /// Unique request id retained in the signed journal.
+    /// Unique request id retained in the authenticated journal evidence.
     pub request_id: String,
     /// Unpredictable anti-replay nonce encoded as lowercase hexadecimal.
     pub nonce: String,
