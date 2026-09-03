@@ -60,9 +60,9 @@ they gate any affected runtime backend.
 - [x] **SBX-CORE-06** Implement complete sandbox spec, policy, ancestry,
   placement, environment, view, attachment, tree, snapshot, trust, and
   signature data models (`SBX-CORE-02`; `28073bb1c..7a3f31bbe`).
-- [ ] **SBX-CORE-07** Implement the canonical portable CBOR profile with
+- [x] **SBX-CORE-07** Implement the canonical portable CBOR profile with
   bounds, duplicate-key rejection, canonical map ordering, and domain-separated
-  digests (`SBX-CORE-06`).
+  digests (`SBX-CORE-06`; `d53ea5e7e..bfdaf2faa`).
 - [ ] **SBX-CORE-08** Implement descriptor, media-type, feature, and protocol
   registries with unknown-required-feature rejection (`SBX-CORE-06`).
 - [ ] **SBX-CORE-09** Implement signing and trust-envelope verification over
@@ -265,3 +265,6 @@ completes. The Git history remains authoritative for code details.
   signature statements, purpose/usage binding, and exact signature bytes.
 - `7a3f31bbe` — `SBX-CORE-06`: bounded ancestry, semantic placement requests,
   fenced assignments, closed mount attributes, and attachment intent/leases.
+- `d53ea5e7e`, `bfdaf2faa` — `SBX-CORE-07`: allocation-bounded deterministic
+  CBOR, canonical set/map ordering, exact codecs for every portable v1 object,
+  domain-separated descriptors, and executable root format vectors.
