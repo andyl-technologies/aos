@@ -150,10 +150,27 @@ impl From<ReasonCode> for String {
 pub struct InvalidReasonCode;
 
 /// Records a wall-clock transition time without relying on it for ordering.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct TransitionTime {
     seconds: i64,
     nanoseconds: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TransitionTimeWire {
+    seconds: i64,
+    nanoseconds: u32,
+}
+
+impl<'de> Deserialize<'de> for TransitionTime {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = TransitionTimeWire::deserialize(deserializer)?;
+        Self::new(wire.seconds, wire.nanoseconds).map_err(serde::de::Error::custom)
+    }
 }
 
 impl TransitionTime {
@@ -882,5 +899,9 @@ mod tests {
         assert!(ReasonCode::new("view..miss").is_err());
         assert!(TransitionTime::new(-1, 999_999_999).is_ok());
         assert!(TransitionTime::new(0, 1_000_000_000).is_err());
+
+        let decoded =
+            serde_json::from_str::<TransitionTime>(r#"{"seconds":0,"nanoseconds":1000000000}"#);
+        assert!(decoded.is_err());
     }
 }

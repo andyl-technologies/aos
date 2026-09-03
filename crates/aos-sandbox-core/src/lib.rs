@@ -10,6 +10,7 @@
 //! module defines monotonic counters used to reject stale work.
 
 pub mod identity;
+pub mod resources;
 pub mod state;
 pub mod version;
 
