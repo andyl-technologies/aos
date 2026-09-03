@@ -7,6 +7,8 @@
 //! descriptors through the closed role registry before privileged code sees a
 //! request.
 
+pub mod fencing;
+
 use aos_proto::aos::sandbox::local::v1::{
     ApplyGuardianRequest, ApplyGuestExecutionRequest, ApplyMountRequest, ApplyNetworkRequest,
     ApplyRuntimeRequest, ApplyStorageRequest, AssignmentFence, Audience, Descriptor, MountAction,
