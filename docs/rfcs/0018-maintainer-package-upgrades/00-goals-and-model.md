@@ -54,8 +54,9 @@ the result, and preserves enough state to resume or review the work.
 - Making every Nix expression mechanically editable.
 - Solving dependency feature regressions by disabling functionality.
 - Hiding unavailable, flaky, skipped, or inconclusive validation.
-- Requiring a background process or infrastructure beyond the maintainer's
-  normal Git, AOS, Nix, network, and agent configuration.
+- Requiring a background process or remotely operated execution environment.
+  Networked materializers, candidate evaluation, tests, and agent tools may
+  require a verified local confinement backend and fail closed without it.
 
 ## Terminology
 
@@ -72,9 +73,11 @@ major 9 are different streams.
 
 ### Update unit
 
-The atomic unit of candidate selection, source mutation, testing, worktree,
-branch, and PR. Its stable ID usually combines family and stream, such as
-`bazel-8` or `linux-6.18`.
+The smallest schedulable package-policy and source-mutation object. It owns a
+complete component vector and all package members that must agree on it. Its
+stable ID usually combines family and stream, such as `bazel-8` or
+`linux-6.18`. A campaign owns worktree, branch, validation, and PR atomicity for
+one or more units.
 
 ### Member
 
@@ -84,9 +87,11 @@ source unit.
 
 ### Component and source slot
 
-A component is an independently identified upstream input within a unit. A
-source slot is its fetch contract: URLs, hash mode, current hash, allowed
-origins, and authenticity expectations.
+A component is an independently versioned upstream input within a unit. It owns
+its current identity, discovery provider, stream policy, candidate, and source
+slots. A source slot is its fetch contract: URLs, hash mode, current hash,
+allowed origins, and assurance requirements. The unit's package version is a
+separate typed projection of one or more component identities.
 
 ### Artifact slot
 
@@ -100,11 +105,20 @@ Several otherwise separate update units that must land atomically. This is
 distinct from family membership. Concurrent major versions are normally a
 family, not a cohort.
 
+### Campaign
+
+The transaction created for one or more unit candidates. The default campaign
+contains one unit. An explicit cohort or an approved new-dependency expansion
+creates a multi-unit campaign with one plan, worktree, journal, gate set,
+branch, and PR.
+
 ### Run and attempt
 
-A run pursues one target identity for one update unit from one base commit. An
-attempt is one immutable edit/validation generation inside the run. Agent or
-human edits create new attempts rather than overwriting earlier evidence.
+A run executes one campaign from one base commit. Its target is a component-
+version vector for every included unit plus each resulting package version. An
+attempt is one reconstructible edit/validation generation inside the run.
+Agent or human edits create new attempts rather than overwriting earlier
+evidence.
 
 ## Package archetypes
 
@@ -117,7 +131,7 @@ The contract and fixture corpus must cover at least these repository shapes:
 | Concurrent majors | `bazel-7`, `bazel-8`, and `bazel-9` | Separate unit/policy per major; all may ship together |
 | Cargo input | Source hash plus Cargo vendor/dependency hash and patches | Ordered source then artifact materialization |
 | Multiple Go modules | One source plus several `fetchGoModules` inputs | All hashes updated atomically |
-| npm/composite | Local lock/manifest transformations and several upstream components | Assisted multi-component unit |
+| npm/composite | Local lock/manifest transformations and independently versioned upstream components | Component target vector plus declared generated-output CAS |
 | Platform-specific | Different source or dependency inputs by target | Explicit target-conditioned slots and all-target validation |
 | Bootstrap ladder | Intentionally retained compiler/tool versions | Explicit supported/frozen/cohort policy, never global-latest comparison |
 | Curated source collection | SDK or package with many independently pinned revisions | Manual or assisted components with a closed plan |
@@ -142,11 +156,12 @@ $ aos maintain resume <run-id>
 $ aos maintain publish-pr <run-id>
 ```
 
-`scan` and `report` are read-only. `plan` closes the intended candidate, edit
-surface, materializers, risk, and tests without changing the checkout. `run`
-creates a dedicated worktree and advances until completion, a human decision,
-or an explicit budget. `inspect` shows both human-readable and machine-readable
-state. `resume` verifies all durable preconditions before continuing.
+`scan` and `report` are read-only. `plan` closes the campaign's unit/component
+candidate vector, edit surface, materializers, risk, and tests without changing
+the checkout. `run` creates a dedicated worktree and advances until completion,
+a human decision, or an explicit budget. `inspect` shows both human-readable
+and machine-readable state. `resume` verifies all durable preconditions before
+continuing.
 `publish-pr` is a separate, explicit action that uses the maintainer's normal
 Git identity and authentication only after the maintainer reviews the exact
 branch, commit message, PR text, and evidence.
@@ -198,7 +213,7 @@ cannot satisfy a gate.
 
 Stable schemas, deterministic exit codes, explicit paths, foreground execution,
 and idempotent subcommands make the local tool useful in shell workflows and
-other orchestrated environments without changing its core semantics.
+editor integrations without changing its core semantics.
 
 ## Success criteria
 

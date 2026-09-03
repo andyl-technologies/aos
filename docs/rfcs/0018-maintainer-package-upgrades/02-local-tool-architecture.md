@@ -11,8 +11,8 @@ The architecture separates pure decisions from effects without turning either
 side into a separately operated component:
 
 ```text
-`aos-maintain` library
-  schemas / canonical bytes / policy / planner / state transitions / verifier
+shared `aos-contract` + `aos-maintain` libraries
+  canonical bytes / update schemas / policy / planner / transitions / verifier
                                 |
                                 v
 `aos maintain` command
@@ -27,6 +27,14 @@ remaining one local tool.
 
 ## Rust crate boundary
 
+### Shared contract primitives
+
+Extract the canonical JSON, digest, bounded-decoding, and primitive contract
+support already required by RFC-0017 into one small pure crate such as
+`aos-contract`. Both `aos-release` and `aos-maintain` use it. The extraction
+must preserve RFC-0017 fixtures and byte identities; update tooling does not
+create a competing canonical format implementation.
+
 ### `aos-maintain`
 
 Add a pure library crate to the existing Rust workspace. It performs no
@@ -37,7 +45,8 @@ It owns:
 
 - maintenance inventory, provider observation, candidate, plan, run, attempt,
   mutation, gate, and evidence types;
-- closed-schema decoding, limits, canonical serialization, and digests;
+- update-specific closed schemas and limits using the shared canonical/digest
+  primitives;
 - version normalization, comparison, filtering, and selection;
 - unit/member/component/artifact/cohort graph validation;
 - materialization and validation DAG construction;
@@ -92,8 +101,10 @@ contracts are strong enough.
 | Command | Effect |
 | --- | --- |
 | `aos maintain plan UNIT` | Create a closed plan without modifying source |
-| `aos maintain plan UNIT --target VERSION` | Validate and plan an explicitly selected candidate |
+| `aos maintain plan UNIT --component NAME=IDENTITY ...` | Validate and plan an explicitly selected complete component vector; `--target VERSION` is a one-component shorthand |
+| `aos maintain plan --campaign COHORT` | Close the component target vectors for an explicit multi-unit campaign |
 | `aos maintain run UNIT` | Plan if necessary, create a worktree, and advance until a gate or human decision |
+| `aos maintain run --campaign COHORT` | Plan if necessary and execute an explicit multi-unit campaign |
 | `aos maintain run UNIT --until STAGE` | Stop at a named deterministic boundary |
 | `aos maintain resume RUN` | Verify durable preconditions and continue |
 | `aos maintain test RUN [--quick | --final]` | Run or rerun the selected gate plan |
@@ -130,14 +141,25 @@ Every command resolves and records:
 - canonical repository root;
 - remote owner/name and expected canonical remote;
 - current branch, HEAD, and worktree state;
-- maintenance inventory source commit and digest;
+- repository commit/tree or dirty-content identity associated with the
+  inventory, plus its digest;
 - configured target/platform context;
 - AOS CLI and policy identity.
 
 Read-only commands can run from a dirty checkout but report which source commit
-and working-tree state they observed. Planning a write requires a committed base
-and explicit treatment of local changes. Execution never absorbs unrelated
-dirty files into an update run.
+and exact working-tree content they observed. The CLI wraps pure Nix inventory
+bytes in a repository envelope containing commit, tree, dirty-state/content
+digest, target set, inventory digest, and local-clone identity. Planning a write
+requires an envelope for a clean committed base. Execution never labels dirty
+bytes as `HEAD` or absorbs unrelated local changes into a run.
+
+The coordinator executable and dependency closure are frozen in the plan. It
+always operates on the candidate checkout through an explicit root and never
+replaces itself with `pkgs.aos` built from candidate source. An update to Rust,
+OpenSSL, Git, Nix, or `pkgs.aos` tests the candidate tool as an artifact while
+the base controller remains the journal authority. Resume under another
+controller requires explicit run-schema compatibility and records the new tool
+identity before effects continue.
 
 ## Local state layout
 
@@ -152,6 +174,8 @@ ${XDG_STATE_HOME:-$HOME/.local/state}/aos/maintain/
       plan.json
       journal.ndjson
       attempts/<attempt>/
+        patch.diff
+        files.json
         mutation.json
         gates.json
         evidence.json
@@ -170,22 +194,33 @@ ${XDG_CACHE_HOME:-$HOME/.cache}/aos/maintain/
   projections/
 ```
 
-State directories are mode `0700` or stricter. Files are written atomically,
-bounded, and validated before use. The append-only journal is authoritative;
-indexes and reports are rebuildable projections. Logs and caches have explicit
-retention and never contain authentication values.
+State directories are mode `0700` or stricter. Files are written through
+directory-relative no-symlink opens, bounded, validated, flushed, atomically
+renamed, and followed by parent-directory synchronization before a transition
+is considered durable. The append-only journal is authoritative; indexes and
+reports are rebuildable projections. Logs and caches have explicit retention
+and never contain authentication values.
 
-The repository ID binds the canonical repository identity, not only a mutable
-path, so moving a checkout does not silently create a second authority. A
-state-directory mismatch requires an explicit import/adopt operation.
+The repository key binds both canonical remote identity and the local Git common
+directory identity/path. Two clones of the same remote therefore cannot share
+locks or worktrees accidentally. Moving a clone requires an explicit state
+adoption operation that verifies the Git object database, base commits,
+worktrees, and run records before rewriting the local binding.
+
+Each attempt retains its canonical textual patch, before/after file manifest,
+and the content needed to reconstruct new text files from the retained base and
+parent attempts. Binary generated outputs are forbidden from automatic attempts
+unless a later typed format defines equivalent retention. Cleanup cannot prune
+an attempt still referenced by retained evidence.
 
 ## Journal and locking
 
 Every state-changing command acquires a local repository/run lock with a
-generation/fencing value. One run cannot update the same unit/worktree
-concurrently. A killed process leaves an intent record and temporary output;
-resume determines whether the effect committed exactly, can be repeated
-idempotently, or requires human reconciliation.
+generation/fencing value. Campaign creation atomically locks every ordered unit
+before mutating any of them, so two runs cannot overlap a unit or worktree. A
+killed process leaves an intent record and temporary output; resume determines
+whether the effect committed exactly, can be repeated idempotently, or requires
+human reconciliation.
 
 Each journal record includes:
 
@@ -196,8 +231,12 @@ Each journal record includes:
 - result/output digests and structured disposition;
 - wall-clock observation for explanation, never ordering authority.
 
-Corrupt, truncated, reordered, duplicated, or unknown journal entries fail
-closed. `inspect` explains the last verified boundary.
+The local hash chain and durable index detect accidental corruption, unexpected
+truncation relative to the recorded tip, reordering, duplication, and unknown
+entries. They do not claim cryptographic immutability against the maintainer
+account that owns the state directory. `inspect` explains the last verified
+boundary. Before replaying any remote effect, resume reconciles the observed
+remote head/PR with the last durable intent/result.
 
 ## Worktree model
 
@@ -206,13 +245,14 @@ state root unless `--worktree` selects another empty path. Branches follow the
 repository rule:
 
 ```text
-dplecki/upgrade-<unit>-<target-version>
+dplecki/upgrade-<campaign-slug>-<target-summary>
 ```
 
-Names are normalized to bounded lowercase kebab-case and gain a short plan
-digest on collision. Before every mutation, the tool checks the expected Git
-HEAD and tree. It never force-resets, force-pushes, or overwrites unrecorded
-human changes.
+A one-unit campaign uses its unit ID and target version as those fields. Names
+are normalized to bounded lowercase kebab-case and gain a short plan digest for
+multi-unit campaigns or on collision. Before every mutation, the tool checks
+the expected Git HEAD and tree. It never force-resets, force-pushes, or
+overwrites unrecorded human changes.
 
 The agent does not operate directly on Git metadata. It reads a bounded view of
 the current tree and returns a patch. The deterministic mutation gateway applies
@@ -238,9 +278,12 @@ After quick gates, `accept` and `commit` show:
 - remaining final gates;
 - special sign-off requirements.
 
-The commit uses the maintainer's configured Git author, committer, and signing
-policy. The tool adds no AI attribution, generated-by text, vendor/model name,
-agent session link, or automatic DCO sign-off.
+The commit uses the maintainer's reviewed Git author, committer, and signing
+policy through a sanitized Git configuration and an empty hooks path. If the
+maintainer relies on a local hook, they run it as a separate explicit review
+step before acceptance; candidate source never executes in a credentialed hook.
+The tool adds no AI attribution, generated-by text, vendor/model name, agent
+session link, or automatic DCO sign-off.
 
 Final gates run against that exact commit. A repair creates a new accepted
 candidate commit and invalidates prior final results. History can preserve
@@ -262,25 +305,33 @@ perform.
 
 1. requires a clean worktree and a final-gated exact head;
 2. re-verifies commit signatures, author/committer identity, branch name, base,
-   diff, contributor-authorization preconditions available locally, and PR
-   text policy;
+   diff, local contributor-identity preconditions, and PR text policy;
 3. displays the remote, branch, base, commits, title, and body;
-4. obtains explicit confirmation unless the maintainer supplied a narrowly
-   documented non-interactive approval flag;
-5. invokes the configured AOS/Git transport using the maintainer's existing
-   authentication;
+4. obtains explicit confirmation;
+5. invokes a one-shot publisher with an empty hooks path, sanitized Git
+   configuration, exact remote/refspec, expected remote head, and the
+   maintainer's explicitly selected authentication source;
 6. creates or updates only the matching PR;
 7. records public identifiers and the remote head, but never credentials.
 
 Authentication is loaded only for this final command and is not inherited by
-discovery, source builds, tests, or agent tools. A publishing failure leaves the
-tested local branch intact and is safely retryable against the expected remote
-head.
+discovery, source builds, tests, agent tools, or Git hooks. A maintainer
+credential may itself have wider repository authority; the local safety claim
+is that no untrusted process can use it and the publisher exposes only exact
+branch/PR operations. Protected-branch rules remain the independent backstop.
+A publishing failure leaves the tested local branch intact and is safely
+retryable against the expected remote head.
 
-The generated PR body contains unit/stream/current/target identity, upstream
-evidence, source/artifact changes, impact/risk, deterministic and agent repair
-summary, exact final head, gates, warnings, and local evidence digest. It does
-not claim that RFC-0017 publication has occurred.
+Local evidence records contributor authorization as `pending-remote`.
+`publish-pr` does not turn a local identity check into an authorization claim.
+A later explicit foreground status observation may record the repository's
+exact-head authorization/check/review result as `merge-eligible-observed`.
+
+The generated PR body contains campaign and unit/component current/target
+identities, upstream evidence, source/artifact changes, impact/risk,
+deterministic and agent repair summary, exact final head, gates, warnings, and
+local evidence digest. It does not claim that RFC-0017 publication has
+occurred.
 
 ## Agent adapter
 

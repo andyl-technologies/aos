@@ -31,12 +31,12 @@ interactive maintainer
         |
         v
 trusted `aos maintain` parent
-  |          |             |                 |
-  v          v             v                 v
-discovery  materializer  Nix/test runner  model client
-public net bounded net   hermetic sandbox  inference only
-  |          |             |                 |
-  +----------+-------------+-----------------+
+  |                |                              |
+  v                v                              v
+discovery      model client             local confinement backend
+public net     inference only       candidate eval/materializer/tools/tests
+  |                |                    private fs/process/net/credentials
+  +----------------+------------------------------+
                          |
                   typed bytes/results
                          |
@@ -51,8 +51,71 @@ uses maintainer Git/signing/remote authentication
 ```
 
 No untrusted child receives the maintainer's general environment or home
-directory. Network, filesystem, process, Git, and credential access are granted
-per operation rather than inherited because the overall command is trusted.
+directory. Environment filtering alone is not the boundary: candidate
+evaluation, networked materializers, agent tools, builds, and tests run inside a
+verified local confinement backend before any commit, signing, or remote-auth
+phase can begin.
+
+## Mandatory local confinement backend
+
+Environment variables, temporary directories, and selected file descriptors do
+not stop a same-UID process from opening the maintainer's files, `/proc`, user
+sockets, or sibling processes. A conforming backend therefore enforces an OS
+boundary and owns/reaps the complete worker process tree.
+
+The initial Linux backend must provide:
+
+- a separate subordinate UID plus private user, mount, PID, IPC, UTS, and
+  network namespaces;
+- a minimal read-only input view and writable scratch/output mounts with no
+  maintainer home, Git common directory, state directory, agent/signing sockets,
+  or unrelated paths;
+- a private `/proc`, no host device access except an explicitly planned KVM
+  capability, no privilege escalation, and a bounded syscall/device policy;
+- cgroup resource limits and pidfd/cgroup-based termination/reaping before any
+  privileged local phase;
+- default-deny network; networked materializers receive only a constrained
+  egress proxy/namespace whose destination and redirect policy is enforced
+  outside the worker;
+- a private Nix evaluation/build context and store/daemon boundary, optionally
+  reading a verified cache, rather than arbitrary access to the maintainer's
+  host Nix daemon socket.
+
+On Darwin, where an equivalent combination cannot be enforced for arbitrary
+upstream code, the required backend is a disposable local VM with the same
+mounted-input, egress, process, credential, and teardown contract. A platform
+without a verified backend can still run read-only trusted discovery and plan
+commands, but candidate evaluation, networked materialization, agent tools, and
+tests are action-required.
+
+The backend is a local tool capability, not a resident process. `aos maintain`
+creates it for an operation, imports only typed results, terminates/reaps it,
+and verifies teardown before enabling commit signing or remote authentication.
+
+## Candidate Nix evaluation
+
+The Nix builder sandbox begins after evaluation, so it does not protect the
+maintainer from candidate-controlled `builtins.readFile`, environment access,
+fetch-at-evaluation, or import-from-derivation behavior. Every candidate
+evaluation therefore runs inside the confinement backend with:
+
+- an empty allowlisted environment and explicit system/target values;
+- pure and restricted evaluation;
+- imports restricted to the candidate checkout and declared store inputs;
+- import from derivation disabled;
+- no public network;
+- strict time, memory, output, and evaluation-depth limits.
+
+The protected base inventory can be evaluated by the trusted parent to create a
+plan. After any candidate source edit, only the confined evaluator produces the
+candidate inventory, derivation graph, or test plan. The parent treats those
+bytes as untrusted and validates them through the closed Rust model.
+
+Networked package-manager materializers have kind-specific policies. Cargo, Go,
+and npm adapters deny lifecycle/build scripts during dependency acquisition.
+Bazel repository rules and any adapter that executes fetched logic require the
+full confinement/egress boundary and explicit output contract; an adapter that
+cannot enforce those properties remains unavailable/manual.
 
 ## Credential phases
 
@@ -87,7 +150,10 @@ signing agent or device.
 Only `aos maintain publish-pr` reads or invokes remote Git/GitHub
 authentication. It has no path for merge, tag, release, package publication, or
 RFC-0017 signing credentials. Authentication values are never written to run
-state or passed to hooks, builds, tests, or the agent.
+state or passed to hooks, builds, tests, or the agent. The one-shot publisher
+uses an empty hooks path, sanitized Git configuration, exact remote/refspec,
+expected remote head, and explicit confirmation. Repository protected-branch
+rules remain the backstop when a maintainer credential itself has wider access.
 
 Maintainers should not run the main update loop from a shell that globally
 exports sensitive credentials. The tool strips a denylist and constructs an
@@ -95,7 +161,7 @@ allowlisted environment for every child regardless.
 
 ## Environment and filesystem isolation
 
-Every child process receives:
+Every untrusted worker inside the confinement backend also receives:
 
 - an explicit executable from the AOS environment;
 - an allowlisted environment with controlled locale, temporary/state/cache
@@ -110,15 +176,16 @@ The agent's file tools operate on a bounded disposable view, not the real Git
 worktree or repository control directory. The mutation gateway applies its
 patch after validation.
 
-Nix builds use AOS's existing sandbox and declared dependencies. No package
-build reads host tools, host `/bin`/`/usr/bin`, nixpkgs, the maintainer home, or
-network. Tests needing KVM receive only the documented device capability and
-test inputs, not arbitrary host mounts or credentials.
+Nix builds use the confined private Nix context plus AOS's existing package
+sandbox and declared dependencies. No package build reads host tools, host
+`/bin`/`/usr/bin`, nixpkgs, the maintainer home, or network. Tests needing KVM
+receive only the documented device capability and test inputs, not arbitrary
+host mounts or credentials.
 
 Network-enabled source or generated-dependency preparation uses a fresh bounded
-temporary directory and an allowlisted destination set. Its output becomes a
-fixed content-addressed input for the network-disabled package build. It does
-not grant ordinary phases network access.
+worker plus an externally enforced destination/redirect policy. Its output
+becomes a fixed content-addressed input for the network-disabled package build.
+It does not grant ordinary phases network access.
 
 ## Prompt injection boundary
 
@@ -147,16 +214,22 @@ Required controls are therefore external to the prompt:
 Free-form agent output cannot alter plan state, add paths, consume more budget,
 or mark a gate successful.
 
-## Source authenticity
+## Source assurance
 
 Hashing newly downloaded bytes is necessary but does not prove that the first
-download was authentic. The trusted resolver enforces the unit's origin and
-authenticity policy before any source reaches a build or agent.
+download was authentic. The trusted resolver enforces each component's origin
+and assurance policy before any source reaches a build or agent.
 
 Record requested/mirror/final URLs, redirects, content digest/size, exact
 upstream release identity, and checksum/signature/provenance result. Quarantine
 same-identity byte changes, mirror disagreement, unexpected redirects, missing
 previously required signatures, and mapping conflicts.
+
+The recorded outcome distinguishes independently `verified-authentic` sources
+from `origin-integrity` sources that rely on an allowlisted HTTPS origin plus a
+new digest. Missing or failed required evidence is `unknown`/`failed`, not an
+authenticity pass. A unit may permit origin-integrity candidate preparation only
+with its explicit risk and human source-review gate.
 
 No agent explanation can override quarantine. A maintainer must explicitly
 accept new upstream identity/policy in a new plan generation.
@@ -165,7 +238,8 @@ accept new upstream identity/policy in a new plan generation.
 
 - Resolve the exact main checkout and Git common directory before work.
 - Create only a named update worktree under the selected local state root.
-- Validate branch names against `dplecki/upgrade-<unit>-<version>` policy.
+- Validate branch names against
+  `dplecki/upgrade-<campaign-slug>-<target-summary>` policy.
 - Record expected HEAD and tree before each mutation.
 - Never use an unresolved environment variable, broad glob, repository root, or
   home directory as a deletion target.
@@ -241,9 +315,12 @@ Before `publish-pr`, verify as much as local state permits:
 - clean final-gated head;
 - required maintainer/specialist acknowledgments represented in evidence.
 
-The authoritative contributor-authorization check still runs in the repository
-review path and fails closed. Private employee or agreement records never enter
-the checkout or update evidence.
+These are identity/signature preconditions, not contributor authorization. The
+authoritative contributor-authorization check uses private records in the
+repository review path and cannot run locally. `publish-pr` records it as
+`pending-remote`; a later foreground observation may record its exact-head
+result, and indeterminate/unavailable remains action-required. Private employee
+or agreement records never enter the checkout or update evidence.
 
 QEMU-side work additionally requires the human legal-name DCO sign-off. The
 tool does not add it automatically. It pauses for the authorized human to
@@ -273,6 +350,10 @@ protected commit under its own runbook.
 
 Before agent-assisted write mode is enabled, prove:
 
+- the Linux namespace/UID/cgroup/egress backend and Darwin local-VM backend fail
+  closed when a required isolation primitive is unavailable;
+- candidate Nix evaluation cannot read undeclared host paths/environment, fetch
+  at evaluation, or use import from derivation;
 - prompt injection in metadata, release notes, source, or logs cannot request a
   denied tool, path, secret, Git action, or successful gate;
 - agent tools cannot read `.git`, the general checkout, maintainer home,
@@ -280,6 +361,8 @@ Before agent-assisted write mode is enabled, prove:
 - Nix builds remain network-disabled and hermetic;
 - network materializers cannot reach undeclared destinations or retain
   credentials in outputs;
+- the complete worker process tree is terminated and reaped before signing or
+  remote authentication becomes available;
 - expected-value, out-of-scope, symlink, submodule, mode, binary, oversized, and
   path-traversal patches are rejected;
 - human worktree changes stop automation rather than being overwritten;
@@ -287,8 +370,8 @@ Before agent-assisted write mode is enabled, prove:
 - interrupted effects resume from verified boundaries without duplicate Git
   writes;
 - unavailable tests remain action-required;
-- `publish-pr` cannot force-push, tag, merge, release, or call publication
-  commands;
+- commit/push use an empty hooks path, and `publish-pr` cannot force-push, tag,
+  merge, release, or call publication commands;
 - contributor authorization and QEMU DCO requirements cannot be bypassed;
 - logs and final PR text contain no credentials, raw private prompts, or
   prohibited attribution.
