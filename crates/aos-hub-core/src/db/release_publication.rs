@@ -5,6 +5,7 @@
 //! whose joins prove the complete predecessor chain inside the database.
 
 use anyhow::{bail, Context, Result};
+use aos_release::digest::Sha256Digest;
 
 use crate::backend::CheckedStatement;
 
@@ -135,6 +136,10 @@ pub struct NewReleaseTimestampPublication {
     pub timestamp_digest: String,
     /// Ready generic publication containing the exact timestamp bytes.
     pub publication_id: String,
+    /// Mutable surface path containing the exact timestamp bytes.
+    pub timestamp_path: String,
+    /// Immutable surface path containing the exact snapshot bytes.
+    pub snapshot_path: String,
 }
 
 /// One compare-and-swap channel advance.
@@ -578,11 +583,23 @@ impl Database {
                (registry_id, snapshot_digest, snapshot_version,
                 timestamp_version, timestamp_digest, publication_id,
                 committed_at)
-             SELECT publication.registry_id, ?2, ?3, ?4, ?5,
+                 SELECT publication.registry_id, ?2, ?3, ?4, ?5,
                     publication.publication_id, ?7
                FROM registry_publications publication
               WHERE publication.publication_id = ?6
                 AND publication.registry_id = ?1 AND publication.state = 'ready'
+                AND EXISTS (SELECT 1 FROM registry_publication_objects declared
+                    JOIN surface_objects object ON object.id = declared.surface_object_id
+                   WHERE declared.publication_id = publication.publication_id
+                     AND object.object_key = ?8
+                     AND declared.object_kind = 'mutable_pointer'
+                     AND ('sha256:' || declared.expected_hash) = ?5)
+                AND EXISTS (SELECT 1 FROM registry_publication_objects declared
+                    JOIN surface_objects object ON object.id = declared.surface_object_id
+                   WHERE declared.publication_id = publication.publication_id
+                     AND object.object_key = ?9
+                     AND declared.object_kind = 'immutable'
+                     AND ('sha256:' || declared.expected_hash) = ?2)
                 AND ?4 = COALESCE((SELECT MAX(timestamp_version) + 1
                     FROM release_timestamp_publications WHERE registry_id = ?1), 1)",
                 vals![
@@ -592,7 +609,9 @@ impl Database {
                     input.timestamp_version,
                     input.timestamp_digest,
                     input.publication_id,
-                    now
+                    now,
+                    input.timestamp_path,
+                    input.snapshot_path
                 ],
                 1,
             )])
@@ -972,9 +991,15 @@ fn validate_timestamp(input: &NewReleaseTimestampPublication) -> Result<()> {
     if input.registry_id <= 0 || input.snapshot_version <= 0 || input.timestamp_version <= 0 {
         bail!("release timestamp publication is invalid");
     }
-    validate_key_bytes(&input.snapshot_digest, "snapshot digest", 128)?;
-    validate_key_bytes(&input.timestamp_digest, "timestamp digest", 128)?;
-    validate_key_bytes(&input.publication_id, "publication id", 64)
+    Sha256Digest::parse(&input.snapshot_digest)?;
+    Sha256Digest::parse(&input.timestamp_digest)?;
+    validate_key_bytes(&input.publication_id, "publication id", 64)?;
+    if input.timestamp_path != "tuf/timestamp.json"
+        || input.snapshot_path != format!("tuf/{}.snapshot.json", input.snapshot_version)
+    {
+        bail!("release timestamp publication paths are not canonical");
+    }
+    Ok(())
 }
 
 fn validate_channel(input: &NewReleaseChannelOperation) -> Result<()> {
@@ -1035,6 +1060,55 @@ mod tests {
             .await
             .unwrap()
             .unwrap()
+    }
+
+    async fn attach_timestamp_objects(
+        db: &Database,
+        registry_id: i64,
+        publication_id: &str,
+        snapshot_version: i64,
+        snapshot_hash: &str,
+        timestamp_hash: &str,
+    ) {
+        let snapshot_path = format!("tuf/{snapshot_version}.snapshot.json");
+        db.backend
+            .execute(
+                "INSERT INTO surface_objects
+                 (registry_id, object_key, object_kind, partition_key,
+                  content_hash, size, created_at, updated_at)
+                 VALUES (?1, ?2, 'immutable', ?3, ?4, 10, 1, 1)",
+                &vals![registry_id, snapshot_path, vec![7_u8; 32], snapshot_hash],
+            )
+            .await
+            .unwrap();
+        db.backend
+            .execute(
+                "INSERT INTO surface_objects
+                 (registry_id, object_key, object_kind, content_hash, size,
+                  mutable_publication_id, created_at, updated_at)
+                 VALUES (?1, 'tuf/timestamp.json', 'mutable_pointer', ?2, 10,
+                         ?3, 1, 1)
+                 ON CONFLICT(registry_id, object_key) DO UPDATE SET
+                   content_hash = excluded.content_hash,
+                   mutable_publication_id = excluded.mutable_publication_id,
+                   updated_at = excluded.updated_at",
+                &vals![registry_id, timestamp_hash, publication_id],
+            )
+            .await
+            .unwrap();
+        db.backend
+            .execute(
+                "INSERT INTO registry_publication_objects
+                 (publication_id, registry_id, surface_object_id, object_kind,
+                  expected_hash, expected_size)
+                 SELECT ?1, ?2, id, object_kind, content_hash, size
+                   FROM surface_objects
+                  WHERE registry_id = ?2
+                    AND object_key IN (?3, 'tuf/timestamp.json')",
+                &vals![publication_id, registry_id, snapshot_path],
+            )
+            .await
+            .unwrap();
     }
 
     fn bundle(registry_id: i64) -> NewReleaseBundle {
@@ -1378,13 +1452,24 @@ mod tests {
             &"c".repeat(64),
         )
         .await;
+        attach_timestamp_objects(
+            &db,
+            registry_id,
+            "timestamp-one",
+            1,
+            &"2".repeat(64),
+            &"3".repeat(64),
+        )
+        .await;
         let first = NewReleaseTimestampPublication {
             registry_id,
-            snapshot_digest: "2".repeat(64),
+            snapshot_digest: format!("sha256:{}", "2".repeat(64)),
             snapshot_version: 1,
             timestamp_version: 1,
-            timestamp_digest: "3".repeat(64),
+            timestamp_digest: format!("sha256:{}", "3".repeat(64)),
             publication_id: "timestamp-one".into(),
+            timestamp_path: "tuf/timestamp.json".into(),
+            snapshot_path: "tuf/1.snapshot.json".into(),
         };
         db.record_release_timestamp_publication(&first, 11)
             .await
@@ -1392,6 +1477,15 @@ mod tests {
         db.record_release_timestamp_publication(&first, 11)
             .await
             .unwrap();
+        let wrong_bytes = NewReleaseTimestampPublication {
+            timestamp_version: 2,
+            timestamp_digest: format!("sha256:{}", "4".repeat(64)),
+            ..first.clone()
+        };
+        assert!(db
+            .record_release_timestamp_publication(&wrong_bytes, 12)
+            .await
+            .is_err());
         ready_publication(
             &db,
             registry_id,
@@ -1401,13 +1495,24 @@ mod tests {
             &"d".repeat(64),
         )
         .await;
+        attach_timestamp_objects(
+            &db,
+            registry_id,
+            "timestamp-three",
+            2,
+            &"5".repeat(64),
+            &"6".repeat(64),
+        )
+        .await;
         let skipped = NewReleaseTimestampPublication {
             registry_id,
-            snapshot_digest: "5".repeat(64),
+            snapshot_digest: format!("sha256:{}", "5".repeat(64)),
             snapshot_version: 2,
             timestamp_version: 3,
-            timestamp_digest: "6".repeat(64),
+            timestamp_digest: format!("sha256:{}", "6".repeat(64)),
             publication_id: "timestamp-three".into(),
+            timestamp_path: "tuf/timestamp.json".into(),
+            snapshot_path: "tuf/2.snapshot.json".into(),
         };
         assert!(db
             .record_release_timestamp_publication(&skipped, 12)

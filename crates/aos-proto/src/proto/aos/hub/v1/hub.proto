@@ -1930,6 +1930,10 @@ message PublishReleaseTimestampRequest {
   int64 timestamp_version = 4;
   string timestamp_digest = 5;
   string publication_id = 6;
+  // Mutable registry-relative path containing the exact timestamp bytes.
+  string timestamp_path = 7;
+  // Immutable registry-relative path containing the authorized snapshot.
+  string snapshot_path = 8;
 }
 
 message ReleaseTimestampState {
