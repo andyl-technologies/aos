@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "fd14a6fd794d3d47c7c22776be7215f4520db8b2635c0072cc1b92f09f30d75a";
+  patchBranchBundleSha256 = "676332ac4ee4e7579ef66c5ba5bcc0740f7acb15d4bda6bf77e5cde735715142";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "a4429f7df88540fc5063755d8a9907f953774db6";
+  patchBranchHeadCommit = "4e09e3136bd3b980b609bf779817e9a4fdb0e3c0";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1755,6 +1755,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "child-QMP staging now binds the exact concrete held-monitor reconstruction callback and private monitor basis into the one-shot reinitializer before fork, and child resource application can no longer substitute a runtime after descriptor mutation begins; that callback composes socket, protocol, dispatcher, monitor-IOThread, and greeting reconstruction while input remains held, while global child-thread registry reconstruction, production fork invocation, post-commit input release, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0183-crucible-reconstruct-child-thread-registry.patch";
+      branchSubject = "crucible: reconstruct child thread registry";
+      branchCommit = "4e09e3136bd3b980b609bf779817e9a4fdb0e3c0";
+      branchTree = "3774955efb8b3da86e4f767e64873990af9b27cf";
+      catalogName = "crucible-hot-fork-child-thread-registry";
+      class = "F";
+      enforces = "HFORK-4,HFORK-22";
+      capability = "an explicit coordinator-owned pre-fork transaction now freezes the registered QEMU thread and QemuMutex registries, rejects in-flight thread starts and nonquiescent registered mutexes, leaves the parent registries unchanged, and reconstructs the immediate child registry around only the surviving coordinator; raw or unregistered locks, RCU composition, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
     }
   ];
   catalogOnlyCapabilities = [

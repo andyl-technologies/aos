@@ -2871,6 +2871,16 @@ accepts a substitute runtime after descriptor mutation starts. Global
 child-thread registry reconstruction, production fork invocation, post-commit
 input release, guest admission, and readiness bits 7 and 8 remain open.
 
+An explicit QEMU-internal registry transaction now supplies the thread and
+registered-`QemuMutex` part of that future fork owner. It holds both registries
+across one fork, rejects in-flight QEMU thread starts and any nonquiescent
+registered mutex, preserves the exact parent registry on release, and rebuilds
+the immediate child's registry around only the surviving coordinator. It is a
+bounded internal prerequisite, not a fork command or a complete subsystem
+barrier: raw/library locks, explicit RCU fork composition, all remaining
+subsystem reinitializers, host-continuation pairing, and guest admission remain
+required before readiness bit 8 can be acknowledged.
+
 The driver owns selection application, stop-boundary execution, and candidate
 construction but never assignment or daemon-epoch identity. This adapter cannot
 report `hot-fork`; only the future QEMU-owned fork protocol may do so after its

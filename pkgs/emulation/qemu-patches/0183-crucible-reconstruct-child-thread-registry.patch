@@ -1,0 +1,539 @@
+diff --git a/include/qemu/thread.h b/include/qemu/thread.h
+index c8c7906d9..36daac2bf 100644
+--- a/include/qemu/thread.h
++++ b/include/qemu/thread.h
+@@ -225,6 +225,24 @@ typedef struct QemuThreadHotForkInventory {
+     QemuThreadHotForkInventoryEntry *entries;
+ } QemuThreadHotForkInventory;
+ 
++/*
++ * Linear owner of the QEMU thread/mutex registry locks across one fork.
++ *
++ * The coordinator begins this transaction immediately before fork().  The
++ * parent releases its copy, while the immediate child consumes its inherited
++ * copy to discard vanished thread records and bind the surviving coordinator
++ * to the child's process-local thread ID.  The private record pointer is
++ * authenticated against the locked registry before either terminal action.
++ */
++typedef struct QemuThreadHotForkRegistryTransaction {
++    uint64_t thread_generation;
++    int64_t parent_process_id;
++    int64_t parent_thread_id;
++    void *coordinator_record;
++    bool active;
++    bool child_reconstructed;
++} QemuThreadHotForkRegistryTransaction;
++
+ /*
+  * Snapshot every active thread created through qemu_thread_create(), plus the
+  * QMP main-loop coordinator that invokes this function.  The bounded snapshot
+@@ -234,6 +252,33 @@ void qemu_thread_hot_fork_inventory(QemuThreadHotForkInventory *inventory);
+ void qemu_thread_hot_fork_inventory_destroy(
+     QemuThreadHotForkInventory *inventory);
+ 
++/*
++ * Freeze the registered QEMU thread and mutex state across one fork.
++ *
++ * The caller must be the sole registered coordinator.  All registered
++ * QemuMutex instances must be unlocked, stable, and free of waiters.  Success
++ * intentionally retains both registry locks; the caller must next fork and
++ * invoke exactly one of the parent-release or child-reconstruction operations
++ * in each resulting process.
++ */
++int qemu_thread_hot_fork_begin_registry_transaction(
++    QemuThreadHotForkRegistryTransaction *transaction);
++
++/*
++ * Release the unchanged parent copy of a registry transaction.
++ */
++int qemu_thread_hot_fork_release_parent_registry_transaction(
++    QemuThreadHotForkRegistryTransaction *transaction);
++
++/*
++ * Rebuild the immediate child's registry around the surviving coordinator.
++ *
++ * Failure leaves the inherited registry locks held and requires the fork child
++ * to terminate without entering QEMU or creating a thread.
++ */
++int qemu_thread_hot_fork_reconstruct_child_registry(
++    QemuThreadHotForkRegistryTransaction *transaction);
++
+ /*
+  * Assign the calling qemu_thread_create() thread to one known subsystem.
+  * These owner-specific unclassified values remain fork blockers until that
+diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
+index 46403df7e..37c268c20 100644
+--- a/tests/unit/test-crucible-hot-fork-child.c
++++ b/tests/unit/test-crucible-hot-fork-child.c
+@@ -11,6 +11,8 @@
+ #include <sys/socket.h>
+ 
+ #include "qemu/crucible-hot-fork-child.h"
++#include "qemu/rcu.h"
++#include "qemu/thread.h"
+ #include "system/crucible-hot-fork-plugin-child.h"
+ 
+ typedef struct EndpointVerification {
+@@ -398,6 +400,146 @@ static void wait_for_child(pid_t child)
+     g_assert_cmpint(WEXITSTATUS(status), ==, 0);
+ }
+ 
++typedef struct RegistryWorker {
++    int ready_fd;
++    int release_fd;
++} RegistryWorker;
++
++static void *registry_worker(void *opaque)
++{
++    RegistryWorker *worker = opaque;
++
++    write_child_result(worker->ready_fd, 0);
++    (void)read_child_result(worker->release_fd);
++    return NULL;
++}
++
++static void test_child_registry_rebuild_preserves_parent(void)
++{
++    QemuThreadHotForkRegistryTransaction transaction = { 0 };
++    QemuThreadHotForkInventory initial;
++    QemuThreadHotForkInventory before;
++    QemuThreadHotForkInventory after;
++    RegistryWorker worker;
++    QemuThread thread;
++    int ready[2];
++    int release[2];
++    int child_result[2];
++    size_t initial_entry_count;
++    int result = -EBUSY;
++    pid_t child;
++
++    qemu_thread_hot_fork_inventory(&initial);
++    g_assert_cmpuint(initial.overflow_count, ==, 0);
++    initial_entry_count = initial.entry_count;
++    qemu_thread_hot_fork_inventory_destroy(&initial);
++
++    g_assert_cmpint(pipe2(ready, O_CLOEXEC), ==, 0);
++    g_assert_cmpint(pipe2(release, O_CLOEXEC), ==, 0);
++    g_assert_cmpint(pipe2(child_result, O_CLOEXEC), ==, 0);
++    worker = (RegistryWorker) {
++        .ready_fd = ready[1],
++        .release_fd = release[0],
++    };
++    qemu_thread_create(&thread, "fork-registry-test", registry_worker, &worker,
++                       QEMU_THREAD_JOINABLE);
++    g_assert_cmpint(read_child_result(ready[0]), ==, 0);
++
++    qemu_thread_hot_fork_inventory(&before);
++    g_assert_cmpuint(before.entry_count, ==, initial_entry_count + 1);
++    g_assert_cmpuint(before.overflow_count, ==, 0);
++    for (unsigned int attempt = 0; attempt < 1000; attempt++) {
++        result =
++            qemu_thread_hot_fork_begin_registry_transaction(&transaction);
++        if (result != -EBUSY) {
++            break;
++        }
++        g_usleep(1000);
++    }
++    g_assert_cmpint(result, ==, 0);
++
++    /*
++     * Production system QEMU has already disabled the generic RCU atfork
++     * callback.  The future fork owner must compose RCU child reconstruction
++     * explicitly with this registry transaction.
++     */
++    rcu_disable_atfork();
++    child = fork();
++    g_assert_cmpint(child, >=, 0);
++    if (child == 0) {
++        QemuThreadHotForkInventory child_inventory;
++        int result =
++            qemu_thread_hot_fork_reconstruct_child_registry(&transaction);
++
++        if (result == 0) {
++            qemu_thread_hot_fork_inventory(&child_inventory);
++            if (child_inventory.entry_count != 1 ||
++                child_inventory.overflow_count != 0 ||
++                child_inventory.entries[0].thread_id !=
++                    qemu_get_thread_id() ||
++                child_inventory.entries[0].disposition !=
++                    QEMU_THREAD_HOT_FORK_COORDINATOR) {
++                result = -EPROTO;
++            }
++            qemu_thread_hot_fork_inventory_destroy(&child_inventory);
++        }
++        write_child_result(child_result[1], result);
++        _exit(0);
++    }
++    rcu_enable_atfork();
++
++    g_assert_cmpint(qemu_thread_hot_fork_release_parent_registry_transaction(
++                        &transaction),
++                    ==, 0);
++    close(child_result[1]);
++    g_assert_cmpint(read_child_result(child_result[0]), ==, 0);
++    wait_for_child(child);
++
++    qemu_thread_hot_fork_inventory(&after);
++    g_assert_cmpuint(after.generation, ==, before.generation);
++    g_assert_cmpuint(after.entry_count, ==, before.entry_count);
++    g_assert_cmpuint(after.overflow_count, ==, before.overflow_count);
++    for (size_t index = 0; index < before.entry_count; index++) {
++        g_assert_cmpint(after.entries[index].thread_id, ==,
++                        before.entries[index].thread_id);
++        g_assert_cmpint(after.entries[index].disposition, ==,
++                        before.entries[index].disposition);
++    }
++
++    write_child_result(release[1], 0);
++    qemu_thread_join(&thread);
++    qemu_thread_hot_fork_inventory_destroy(&after);
++    qemu_thread_hot_fork_inventory_destroy(&before);
++    close(child_result[0]);
++    close(release[0]);
++    close(release[1]);
++    close(ready[0]);
++    close(ready[1]);
++}
++
++static void test_registry_transaction_rejects_locked_mutex(void)
++{
++    QemuThreadHotForkRegistryTransaction transaction = { 0 };
++    QemuMutex mutex;
++
++    qemu_mutex_init(&mutex);
++    qemu_mutex_lock(&mutex);
++    g_assert_cmpint(qemu_thread_hot_fork_begin_registry_transaction(
++                        &transaction),
++                    ==, -EBUSY);
++    g_assert_false(transaction.active);
++    qemu_mutex_unlock(&mutex);
++
++    g_assert_cmpint(qemu_thread_hot_fork_begin_registry_transaction(
++                        &transaction),
++                    ==, 0);
++    g_assert_true(transaction.active);
++    g_assert_cmpint(qemu_thread_hot_fork_release_parent_registry_transaction(
++                        &transaction),
++                    ==, 0);
++    qemu_mutex_destroy(&mutex);
++}
++
+ static void test_immediate_child_replaces_parent_endpoints(void)
+ {
+     QemuCrucibleHotForkParentIdentity identity;
+@@ -1640,6 +1782,10 @@ static void test_invalid_shape_is_unchanged(void)
+ int main(int argc, char **argv)
+ {
+     g_test_init(&argc, &argv, NULL);
++    g_test_add_func("/crucible/hot-fork-child/registry-rebuild",
++                    test_child_registry_rebuild_preserves_parent);
++    g_test_add_func("/crucible/hot-fork-child/registry-locked-mutex",
++                    test_registry_transaction_rejects_locked_mutex);
+     g_test_add_func("/crucible/hot-fork-child/immediate-child-replacement",
+                     test_immediate_child_replaces_parent_endpoints);
+     g_test_add_func("/crucible/hot-fork-child/sealed-resource-plan",
+diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
+index 1e5adee44..72d3846f6 100644
+--- a/util/qemu-thread-posix.c
++++ b/util/qemu-thread-posix.c
+@@ -747,6 +747,7 @@ static pthread_mutex_t qemu_hot_fork_thread_lock = PTHREAD_MUTEX_INITIALIZER;
+ static GList *qemu_hot_fork_threads;
+ static size_t qemu_hot_fork_thread_count;
+ static size_t qemu_hot_fork_thread_overflow;
++static size_t qemu_hot_fork_thread_starts_in_flight;
+ static uint64_t qemu_hot_fork_thread_generation;
+ static int64_t qemu_hot_fork_coordinator_thread_id;
+ static __thread QemuHotForkThreadRecord *qemu_hot_fork_current_thread;
+@@ -786,6 +787,44 @@ static QemuHotForkThreadRecord *qemu_hot_fork_thread_register(
+     return record;
+ }
+ 
++static void qemu_hot_fork_thread_start_begin(void)
++{
++    int err = pthread_mutex_lock(&qemu_hot_fork_thread_lock);
++
++    if (err) {
++        error_exit(err, __func__);
++    }
++    if (qemu_hot_fork_thread_starts_in_flight == SIZE_MAX ||
++        qemu_hot_fork_thread_generation == UINT64_MAX) {
++        error_exit(EOVERFLOW, __func__);
++    }
++    qemu_hot_fork_thread_starts_in_flight++;
++    qemu_hot_fork_thread_generation++;
++    err = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    if (err) {
++        error_exit(err, __func__);
++    }
++}
++
++static void qemu_hot_fork_thread_start_end(void)
++{
++    int err = pthread_mutex_lock(&qemu_hot_fork_thread_lock);
++
++    if (err) {
++        error_exit(err, __func__);
++    }
++    assert(qemu_hot_fork_thread_starts_in_flight > 0);
++    if (qemu_hot_fork_thread_generation == UINT64_MAX) {
++        error_exit(EOVERFLOW, __func__);
++    }
++    qemu_hot_fork_thread_starts_in_flight--;
++    qemu_hot_fork_thread_generation++;
++    err = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    if (err) {
++        error_exit(err, __func__);
++    }
++}
++
+ void qemu_thread_hot_fork_set_current_disposition(
+     QemuThreadHotForkDisposition disposition)
+ {
+@@ -842,7 +881,7 @@ static int qemu_hot_fork_thread_entry_compare(const void *left,
+     return (a->thread_id > b->thread_id) - (a->thread_id < b->thread_id);
+ }
+ 
+-static void qemu_hot_fork_register_coordinator(void)
++static QemuHotForkThreadRecord *qemu_hot_fork_register_coordinator(void)
+ {
+     int64_t thread_id = qemu_get_thread_id();
+     GList *node;
+@@ -852,11 +891,33 @@ static void qemu_hot_fork_register_coordinator(void)
+         error_exit(err, __func__);
+     }
+     if (qemu_hot_fork_coordinator_thread_id == thread_id) {
++        QemuHotForkThreadRecord *coordinator = NULL;
++
++        for (node = qemu_hot_fork_threads; node; node = node->next) {
++            QemuHotForkThreadRecord *record = node->data;
++
++            if (record->thread_id == thread_id &&
++                record->disposition == QEMU_THREAD_HOT_FORK_COORDINATOR) {
++                if (coordinator) {
++                    coordinator = NULL;
++                    break;
++                }
++                coordinator = record;
++            }
++        }
++        qemu_hot_fork_current_thread = coordinator;
++        err = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++        if (err) {
++            error_exit(err, __func__);
++        }
++        return coordinator;
++    }
++    if (qemu_hot_fork_coordinator_thread_id != 0) {
+         err = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
+         if (err) {
+             error_exit(err, __func__);
+         }
+-        return;
++        return NULL;
+     }
+     for (node = qemu_hot_fork_threads; node; node = node->next) {
+         QemuHotForkThreadRecord *record = node->data;
+@@ -871,7 +932,8 @@ static void qemu_hot_fork_register_coordinator(void)
+             if (err) {
+                 error_exit(err, __func__);
+             }
+-            return;
++            qemu_hot_fork_current_thread = record;
++            return record;
+         }
+     }
+     qemu_hot_fork_coordinator_thread_id = thread_id;
+@@ -881,8 +943,167 @@ static void qemu_hot_fork_register_coordinator(void)
+     }
+ 
+     /* The QMP main-loop thread is process-lifetime authority. */
+-    qemu_hot_fork_thread_register("qemu-main-loop", QEMU_THREAD_DETACHED,
+-                                  QEMU_THREAD_HOT_FORK_COORDINATOR);
++    qemu_hot_fork_current_thread = qemu_hot_fork_thread_register(
++        "qemu-main-loop", QEMU_THREAD_DETACHED,
++        QEMU_THREAD_HOT_FORK_COORDINATOR);
++    return qemu_hot_fork_current_thread;
++}
++
++static bool qemu_hot_fork_registered_mutexes_quiescent(void)
++{
++    QemuMutex *mutex;
++    size_t count = 0;
++
++    for (mutex = crucible_hot_fork_mutexes; mutex;
++         mutex = mutex->crucible_hot_fork_next) {
++        if (count++ == QEMU_HOT_FORK_MUTEX_INVENTORY_MAX ||
++            !mutex->initialized ||
++            !qatomic_read(&mutex->crucible_hot_fork_ownership_valid) ||
++            qatomic_read(&mutex->crucible_hot_fork_owner_thread_id) != 0 ||
++            qatomic_read(&mutex->crucible_hot_fork_recursion_depth) != 0 ||
++            qatomic_read(&mutex->crucible_hot_fork_acquisition_waiters) != 0 ||
++            qatomic_read(&mutex->crucible_hot_fork_condition_waiters) != 0 ||
++            qatomic_read(&mutex->crucible_hot_fork_unlock_active)) {
++            return false;
++        }
++    }
++    return true;
++}
++
++int qemu_thread_hot_fork_begin_registry_transaction(
++    QemuThreadHotForkRegistryTransaction *transaction)
++{
++    QemuHotForkThreadRecord *coordinator;
++    GList *node;
++    size_t coordinator_count = 0;
++    int64_t thread_id = qemu_get_thread_id();
++    int err;
++
++    if (!transaction || transaction->active ||
++        transaction->coordinator_record || getpid() <= 1 || thread_id <= 0) {
++        return -EINVAL;
++    }
++    coordinator = qemu_hot_fork_register_coordinator();
++    if (!coordinator) {
++        return -EPERM;
++    }
++
++    crucible_hot_fork_mutex_registry_lock();
++    err = pthread_mutex_lock(&qemu_hot_fork_thread_lock);
++    if (err) {
++        error_exit(err, __func__);
++    }
++    for (node = qemu_hot_fork_threads; node; node = node->next) {
++        QemuHotForkThreadRecord *record = node->data;
++
++        if (record->disposition == QEMU_THREAD_HOT_FORK_COORDINATOR) {
++            coordinator_count++;
++        }
++    }
++    if (qemu_hot_fork_thread_overflow != 0 ||
++        qemu_hot_fork_thread_starts_in_flight != 0 ||
++        qemu_hot_fork_thread_count == 0 ||
++        coordinator_count != 1 ||
++        qemu_hot_fork_coordinator_thread_id != thread_id ||
++        qemu_hot_fork_current_thread != coordinator ||
++        coordinator->thread_id != thread_id || !coordinator->tracked ||
++        coordinator->disposition != QEMU_THREAD_HOT_FORK_COORDINATOR ||
++        !qemu_hot_fork_registered_mutexes_quiescent() ||
++        qemu_hot_fork_thread_generation == UINT64_MAX) {
++        err = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++        if (err) {
++            error_exit(err, __func__);
++        }
++        crucible_hot_fork_mutex_registry_unlock();
++        return -EBUSY;
++    }
++
++    *transaction = (QemuThreadHotForkRegistryTransaction) {
++        .thread_generation = qemu_hot_fork_thread_generation,
++        .parent_process_id = getpid(),
++        .parent_thread_id = thread_id,
++        .coordinator_record = coordinator,
++        .active = true,
++    };
++    return 0;
++}
++
++int qemu_thread_hot_fork_release_parent_registry_transaction(
++    QemuThreadHotForkRegistryTransaction *transaction)
++{
++    int err;
++
++    if (!transaction || !transaction->active ||
++        transaction->child_reconstructed ||
++        transaction->parent_process_id != getpid() ||
++        transaction->parent_thread_id != qemu_get_thread_id() ||
++        transaction->coordinator_record != qemu_hot_fork_current_thread ||
++        transaction->thread_generation != qemu_hot_fork_thread_generation) {
++        return -EPERM;
++    }
++
++    transaction->active = false;
++    err = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    if (err) {
++        error_exit(err, __func__);
++    }
++    crucible_hot_fork_mutex_registry_unlock();
++    return 0;
++}
++
++int qemu_thread_hot_fork_reconstruct_child_registry(
++    QemuThreadHotForkRegistryTransaction *transaction)
++{
++    QemuHotForkThreadRecord *coordinator;
++    GList *coordinator_node = NULL;
++    GList *node;
++    int64_t child_thread_id = qemu_get_thread_id();
++    int err;
++
++    if (!transaction || !transaction->active ||
++        transaction->child_reconstructed ||
++        transaction->parent_process_id <= 1 ||
++        transaction->parent_process_id == getpid() ||
++        transaction->parent_process_id != getppid() ||
++        transaction->parent_thread_id <= 0 || child_thread_id <= 0 ||
++        transaction->thread_generation != qemu_hot_fork_thread_generation) {
++        return -EPERM;
++    }
++    coordinator = transaction->coordinator_record;
++    for (node = qemu_hot_fork_threads; node; node = node->next) {
++        if (node->data == coordinator) {
++            if (coordinator_node) {
++                return -EPROTO;
++            }
++            coordinator_node = node;
++        }
++    }
++    if (!coordinator_node || !coordinator->tracked ||
++        coordinator->thread_id != transaction->parent_thread_id ||
++        coordinator->disposition != QEMU_THREAD_HOT_FORK_COORDINATOR ||
++        !qemu_hot_fork_registered_mutexes_quiescent()) {
++        return -EPROTO;
++    }
++
++    coordinator_node->prev = NULL;
++    coordinator_node->next = NULL;
++    coordinator->thread_id = child_thread_id;
++    qemu_hot_fork_threads = coordinator_node;
++    qemu_hot_fork_thread_count = 1;
++    qemu_hot_fork_thread_overflow = 0;
++    qemu_hot_fork_thread_starts_in_flight = 0;
++    qemu_hot_fork_coordinator_thread_id = child_thread_id;
++    qemu_hot_fork_current_thread = coordinator;
++    qemu_hot_fork_thread_generation++;
++    transaction->active = false;
++    transaction->child_reconstructed = true;
++
++    err = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    if (err) {
++        error_exit(err, __func__);
++    }
++    crucible_hot_fork_mutex_registry_unlock();
++    return 0;
+ }
+ 
+ void qemu_thread_hot_fork_inventory(QemuThreadHotForkInventory *inventory)
+@@ -962,6 +1183,7 @@ static void *qemu_thread_start(void *args)
+     hot_fork_record = qemu_hot_fork_thread_register(
+         qemu_thread_args->name, mode, QEMU_THREAD_HOT_FORK_UNCLASSIFIED);
+     qemu_hot_fork_current_thread = hot_fork_record;
++    qemu_hot_fork_thread_start_end();
+     g_free(qemu_thread_args->name);
+     g_free(qemu_thread_args);
+ 
+@@ -1024,11 +1246,14 @@ void qemu_thread_create(QemuThread *thread, const char *name,
+     qemu_thread_args->arg = arg;
+     qemu_thread_args->mode = mode;
+ 
++    qemu_hot_fork_thread_start_begin();
+     err = pthread_create(&thread->thread, &attr,
+                          qemu_thread_start, qemu_thread_args);
+ 
+-    if (err)
++    if (err) {
++        qemu_hot_fork_thread_start_end();
+         error_exit(err, __func__);
++    }
+ 
+     pthread_sigmask(SIG_SETMASK, &oldset, NULL);
+ 
