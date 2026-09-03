@@ -2360,9 +2360,16 @@ This is still an executable T-CAM-6.1 audit checkpoint rather than completion
 of T-CAM-6.2 or T-CAM-6.3. The daemon reconciliation owner now retains the
 target attempt owner, pidfd authority, source child-status record, private
 child QMP channel, and semantic publication outcome as one linear state. The
-worker still must transfer its exact reservation into that owner, install the
+worker execution context now carries the exact lineage-qualified attempt and
+process-local execution incarnation without exposing either to modeled input.
+The fixed pool retains a successful model owner across candidate/checkpoint
+preflight, immutable publication, and supervisor reconciliation; it supplies
+the resulting durable semantic disposition through bounded callback steps and
+does not reuse that worker until cleanup completes. A runner error must finish
+or quarantine its incarnation before returning, so a retry cannot overlap it.
+The concrete hot-fork runner still must construct this owner, install the
 complete private plugin and host-I/O channel set, run the modeled child, and
-publish the resulting observation through the repository owner.
+produce the repository candidate.
 Patch 0193 supplies the parent-QEMU reap half: a fixed 4,096-record
 generation table, one bounded nonblocking `waitpid` attempt per query/release,
 retained exit-or-signal status, and explicit post-reap release. It deliberately
@@ -2386,10 +2393,11 @@ outcome, and only then releases the parent status record and QEMU-owned process
 contract. Failed steps preserve their phase for exact retry; incomplete drop
 kills through the pidfd and transfers the target owner to quarantine. Focused
 tests cover running-to-reaped ordering, publication gating, retry without guest
-rerun, foreign child status, unadmitted-observation rejection, and incomplete
-drop. Worker-pool reservation transfer, the complete private plugin/host-I/O
-child channel set, modeled QEMU driving, observation publication, and a real
-fork flight remain open, so T-CAM-6.2 and T-CAM-6.3 stay unchecked.
+rerun, foreign child status, unadmitted-result rejection, incomplete drop, and
+the fixed worker's exact-runtime-basis plus repeated-disposition callback. The
+complete private plugin/host-I/O child channel set, concrete hot-fork runner,
+modeled QEMU driving, observation production, and a real fork flight remain
+open, so T-CAM-6.2 and T-CAM-6.3 stay unchecked.
 The internal registry now has safe RCU and internal-monitor dispositions, while
 other AIO owners and every generic or external thread remain unresolved. The
 retained AIO/BH/timer and RCU
