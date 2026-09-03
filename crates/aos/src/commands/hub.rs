@@ -18,7 +18,7 @@ use aos_net::{
     TransferObserver,
 };
 use aos_remote::hub_rpc as HubTopologyMethod;
-use aos_remote::{hub_types, HubClient, HubRpc, HubSurfaceRef, Placement};
+use aos_remote::{HubClient, HubRpc, HubSurfaceRef, Placement, hub_types};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -374,39 +374,47 @@ mod tests {
           }]
         }"#;
         assert_eq!(parse_pin_resolution_document(valid).unwrap().len(), 1);
-        assert!(parse_pin_resolution_document(
-            br#"{"schemaVersion":"aos.hub.pin-resolutions.v2","resolutions":[]}"#
-        )
-        .is_err());
-        assert!(parse_pin_resolution_document(
-            br#"{"schemaVersion":"aos.hub.pin-resolutions.v1","resolutions":[],"extra":true}"#
-        )
-        .is_err());
+        assert!(
+            parse_pin_resolution_document(
+                br#"{"schemaVersion":"aos.hub.pin-resolutions.v2","resolutions":[]}"#
+            )
+            .is_err()
+        );
+        assert!(
+            parse_pin_resolution_document(
+                br#"{"schemaVersion":"aos.hub.pin-resolutions.v1","resolutions":[],"extra":true}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn pin_resolution_document_rejects_malformed_duplicate_and_unsealed_actions() {
         assert!(parse_pin_resolution_document(b"not-json").is_err());
-        assert!(parse_pin_resolution_document(
-            br#"{
+        assert!(
+            parse_pin_resolution_document(
+                br#"{
               "schemaVersion":"aos.hub.pin-resolutions.v1",
               "resolutions":[
                 {"pinId":"pin:one","release":{"expectedSourceResourceVersion":"7"}},
                 {"pinId":"pin:one","release":{"expectedSourceResourceVersion":"8"}}
               ]
             }"#
-        )
-        .is_err());
-        assert!(parse_pin_resolution_document(
-            br#"{
+            )
+            .is_err()
+        );
+        assert!(
+            parse_pin_resolution_document(
+                br#"{
               "schemaVersion":"aos.hub.pin-resolutions.v1",
               "resolutions":[{
                 "pinId":"pin:one",
                 "release":{"expectedSourceResourceVersion":"0"}
               }]
             }"#
-        )
-        .is_err());
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -770,9 +778,11 @@ mod tests {
         .unwrap();
 
         let error = publication_from_root(root, "andyl/main").err().unwrap();
-        assert!(error
-            .to_string()
-            .contains("does not identify its compressed FileHash"));
+        assert!(
+            error
+                .to_string()
+                .contains("does not identify its compressed FileHash")
+        );
     }
 
     #[test]
@@ -3040,9 +3050,9 @@ async fn run_coverage_operation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-            Request = hub_types::ApplyTopologyPlanRequest,
-            Response = hub_types::OperationResponse,
-        > + Copy,
+        Request = hub_types::ApplyTopologyPlanRequest,
+        Response = hub_types::OperationResponse,
+    > + Copy,
     mutation: &HubMutationArgs,
     operation: &HubOperationArgs,
 ) -> Result<()> {
@@ -4678,9 +4688,9 @@ async fn topology_operation_mutation<PlanReq>(
     client: &HubClient,
     plan_method: impl HubRpc<Request = PlanReq, Response = hub_types::TopologyPlanResponse>,
     apply_method: impl HubRpc<
-            Request = hub_types::ApplyTopologyPlanRequest,
-            Response = hub_types::OperationResponse,
-        > + Copy,
+        Request = hub_types::ApplyTopologyPlanRequest,
+        Response = hub_types::OperationResponse,
+    > + Copy,
     plan_request: &PlanReq,
     mutation: &HubMutationArgs,
     operation: &HubOperationArgs,
@@ -4976,9 +4986,9 @@ async fn consumer_scope_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-            Request = hub_types::ApplyConsumerScopeGrantRequest,
-            Response = hub_types::ConsumerScopeGrantResponse,
-        > + Copy,
+        Request = hub_types::ApplyConsumerScopeGrantRequest,
+        Response = hub_types::ConsumerScopeGrantResponse,
+    > + Copy,
 ) -> Result<()> {
     let client = hub_client(&access.hub, access.token.as_deref())?;
     topology_mutation::<
@@ -5020,9 +5030,9 @@ async fn delete_topology_resource(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-            Request = hub_types::ApplyDeleteTopologyResourceRequest,
-            Response = hub_types::DeleteTopologyResourceResponse,
-        > + Copy,
+        Request = hub_types::ApplyDeleteTopologyResourceRequest,
+        Response = hub_types::DeleteTopologyResourceResponse,
+    > + Copy,
 ) -> Result<()> {
     let client = hub_client(&access.hub, access.token.as_deref())?;
     topology_mutation::<
@@ -6415,9 +6425,9 @@ async fn boundary_lifecycle_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-            Request = hub_types::ApplyNetworkPolicyLifecycleRequest,
-            Response = hub_types::NetworkPolicyRevisionResponse,
-        > + Copy,
+        Request = hub_types::ApplyNetworkPolicyLifecycleRequest,
+        Response = hub_types::NetworkPolicyRevisionResponse,
+    > + Copy,
 ) -> Result<()> {
     let (boundary_id, revision) =
         parse_generation_ref(boundary_revision, "network policy revision")?;
@@ -7034,7 +7044,7 @@ async fn topology_state_mutation<Resp>(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<Request = hub_types::ApplyDeleteTopologyResourceRequest, Response = Resp>
-        + Copy,
+    + Copy,
 ) -> Result<()>
 where
     Resp: DeserializeOwned + Serialize,
@@ -7331,9 +7341,9 @@ async fn gateway_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-            Request = hub_types::ApplyGatewayMutationRequest,
-            Response = hub_types::GatewayResponse,
-        > + Copy,
+        Request = hub_types::ApplyGatewayMutationRequest,
+        Response = hub_types::GatewayResponse,
+    > + Copy,
     request: hub_types::PlanGatewayMutationRequest,
     mutation: &HubMutationArgs,
 ) -> Result<()> {
@@ -7999,8 +8009,10 @@ async fn route_mutation(
         Request = hub_types::PlanRouteMutationRequest,
         Response = hub_types::TopologyPlanResponse,
     >,
-    apply_method: impl HubRpc<Request = hub_types::ApplyRouteMutationRequest, Response = hub_types::RouteResponse>
-        + Copy,
+    apply_method: impl HubRpc<
+        Request = hub_types::ApplyRouteMutationRequest,
+        Response = hub_types::RouteResponse,
+    > + Copy,
     request: hub_types::PlanRouteMutationRequest,
     mutation: &HubMutationArgs,
 ) -> Result<()> {
@@ -8184,9 +8196,9 @@ async fn apply_topology_defaults(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-            Request = hub_types::ApplySetTopologyDefaultsRequest,
-            Response = hub_types::TopologyDefaultsResponse,
-        > + Copy,
+        Request = hub_types::ApplySetTopologyDefaultsRequest,
+        Response = hub_types::TopologyDefaultsResponse,
+    > + Copy,
 ) -> Result<()> {
     if let Some(value) = binding {
         defaults.binding_id = value.clone();
@@ -9115,74 +9127,10 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
             manifest,
             root,
         } => {
-            let mut pinned = match manifest {
-                Some(manifest) => {
-                    let request = publication_manifest_request(manifest, registry)?;
-                    pinned_publication_from_root(root, request)?
-                }
-                None => publication_from_root(root, registry)?,
-            };
-            let client = publication_client(access).await?;
-            bind_publication_parent(&client, &mut pinned.request).await?;
-            let publication = begin_registry_publication_chunked(&client, &pinned.request).await?;
-            let publication_id = publication.publication_id.clone();
-            let result: Result<hub_types::RegistryPublication> = async {
-                anyhow::ensure!(
-                    publication.objects.len() == pinned.request.objects.len(),
-                    "Hub publication response changed the declared object count"
-                );
-                let objects = publication_objects_in_upload_order(&publication);
-                let pointer_start =
-                    objects.partition_point(|object| object.kind != "mutable_pointer");
-                let (immutable_objects, pointer_objects) = objects.split_at(pointer_start);
-
-                // The response is an inventory, not an execution order. The
-                // Hub independently verifies each immutable object and opens
-                // the pointer gate only after the entire class is complete.
-                upload_publication_object_class(
-                    &client,
-                    access,
-                    &publication_id,
-                    &pinned.root,
-                    &pinned.request.objects,
-                    immutable_objects,
-                    printer,
-                    "Uploading immutable publication objects",
-                )
-                .await?;
-
-                // Mutable pointers are independent paths, and the Hub has
-                // already closed their write gate over the complete immutable
-                // set, so the same bounded uploader can publish this class.
-                upload_publication_object_class(
-                    &client,
-                    access,
-                    &publication_id,
-                    &pinned.root,
-                    &pinned.request.objects,
-                    pointer_objects,
-                    printer,
-                    "Uploading publication pointers",
-                )
-                .await?;
-                publication_client(access)
-                    .await?
-                    .call_topology(
-                        HubTopologyMethod::CommitRegistryPublication,
-                        &hub_types::CommitRegistryPublicationRequest {
-                            publication_id: publication_id.to_string(),
-                        },
-                    )
-                    .await
-            }
-            .await;
-            result
-                .with_context(|| {
-                    format!(
-                        "publication {publication_id} remains resumable; rerun this exact upload or abort it explicitly"
-                    )
-                })
-                .and_then(|committed| print_topology_message(printer, &committed))
+            let committed =
+                upload_registry_publication(access, registry, manifest.as_deref(), root, printer)
+                    .await?;
+            print_topology_message(printer, &committed)
         }
         HubPublishCmd::Begin {
             access,
@@ -9240,6 +9188,77 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
             .await
         }
     }
+}
+
+/// Uploads and commits one exact registry surface without advancing a channel.
+///
+/// Release orchestration reuses this bounded publication primitive after it
+/// has independently verified the destination deployment and closed bundle.
+pub(crate) async fn upload_registry_publication(
+    access: &HubAccessArgs,
+    registry: &str,
+    manifest: Option<&std::path::Path>,
+    root: &std::path::Path,
+    printer: &Printer,
+) -> Result<hub_types::RegistryPublication> {
+    let mut pinned = match manifest {
+        Some(manifest) => {
+            let request = publication_manifest_request(manifest, registry)?;
+            pinned_publication_from_root(root, request)?
+        }
+        None => publication_from_root(root, registry)?,
+    };
+    let client = publication_client(access).await?;
+    bind_publication_parent(&client, &mut pinned.request).await?;
+    let publication = begin_registry_publication_chunked(&client, &pinned.request).await?;
+    let publication_id = publication.publication_id.clone();
+    let result: Result<hub_types::RegistryPublication> = async {
+        anyhow::ensure!(
+            publication.objects.len() == pinned.request.objects.len(),
+            "Hub publication response changed the declared object count"
+        );
+        let objects = publication_objects_in_upload_order(&publication);
+        let pointer_start = objects.partition_point(|object| object.kind != "mutable_pointer");
+        let (immutable_objects, pointer_objects) = objects.split_at(pointer_start);
+
+        upload_publication_object_class(
+            &client,
+            access,
+            &publication_id,
+            &pinned.root,
+            &pinned.request.objects,
+            immutable_objects,
+            printer,
+            "Uploading immutable publication objects",
+        )
+        .await?;
+        upload_publication_object_class(
+            &client,
+            access,
+            &publication_id,
+            &pinned.root,
+            &pinned.request.objects,
+            pointer_objects,
+            printer,
+            "Uploading publication pointers",
+        )
+        .await?;
+        publication_client(access)
+            .await?
+            .call_topology(
+                HubTopologyMethod::CommitRegistryPublication,
+                &hub_types::CommitRegistryPublicationRequest {
+                    publication_id: publication_id.to_string(),
+                },
+            )
+            .await
+    }
+    .await;
+    result.with_context(|| {
+        format!(
+            "publication {publication_id} remains resumable; rerun this exact upload or abort it explicitly"
+        )
+    })
 }
 
 /// Uploads one publication class with bounded request concurrency.
@@ -11158,9 +11177,9 @@ async fn apply_signing_key_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-            Request = hub_types::ApplyTopologyPlanRequest,
-            Response = hub_types::SigningKeyResponse,
-        > + Copy,
+        Request = hub_types::ApplyTopologyPlanRequest,
+        Response = hub_types::SigningKeyResponse,
+    > + Copy,
 ) -> Result<()> {
     let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
     let mutation = retained_apply_mutation(apply);

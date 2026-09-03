@@ -19,6 +19,7 @@ members = [
     "aos-hub",
     "aos-registry-surface",
     "aos-release",
+    "aos-image-finalizer",
     "aos-registry-spa",
     "aos-hub-worker",
     "aos-hub-console",
@@ -210,6 +211,7 @@ aos-hub-core = { path = "aos-hub-core" }
 aos-hub = { path = "aos-hub" }
 aos-registry-surface = { path = "aos-registry-surface" }
 aos-release = { path = "aos-release" }
+aos-image-finalizer = { path = "aos-image-finalizer" }
 aos-profile = { path = "aos-profile" }
 aos-systemd = { path = "aos-systemd" }
 

@@ -3,9 +3,13 @@
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::CANONICAL_REGISTRY;
 use crate::artifact::require_identifier;
 use crate::digest::Sha256Digest;
 use crate::evidence::GateResult;
+
+/// Schema for an exact Hub publication receipt.
+pub const PUBLICATION_RECEIPT_V1: &str = "aos.release.publication-receipt/v1";
 
 /// Isolated Hub environment named by a publication receipt.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -52,11 +56,19 @@ impl PublicationReceiptV1 {
     /// staging receipt that claims promotion, or a production receipt without
     /// staging continuity.
     pub fn validate(&self) -> Result<()> {
+        if self.schema_version != PUBLICATION_RECEIPT_V1 {
+            bail!("unsupported publication receipt schema");
+        }
         require_identifier(&self.deployment_id, "Hub deployment id")?;
         require_identifier(&self.release_id, "release id")?;
         require_identifier(&self.operation_id, "Hub operation id")?;
-        if self.committed_at.trim().is_empty() {
-            bail!("publication receipt timestamp cannot be empty");
+        if self.registry != CANONICAL_REGISTRY {
+            bail!("publication receipt names a noncanonical registry");
+        }
+        if !self.committed_at.ends_with('Z')
+            || humantime::parse_rfc3339(&self.committed_at).is_err()
+        {
+            bail!("publication receipt timestamp must be RFC 3339 UTC");
         }
         match (self.environment, self.staging_receipt_digest) {
             (HubEnvironment::Staging, None) | (HubEnvironment::Production, Some(_)) => Ok(()),

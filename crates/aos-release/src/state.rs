@@ -122,6 +122,32 @@ impl JournalEntryV1 {
     }
 }
 
+/// Parses a canonical, newline-terminated release journal.
+///
+/// # Errors
+///
+/// Returns an error for non-UTF-8 input, an empty line, non-canonical JSON, an
+/// invalid closed entry schema, or a missing final newline.
+pub fn parse_journal(bytes: &[u8]) -> Result<Vec<JournalEntryV1>> {
+    let text =
+        std::str::from_utf8(bytes).map_err(|_| anyhow::anyhow!("release journal is not UTF-8"))?;
+    if !text.ends_with('\n') {
+        bail!("release journal must end with a newline");
+    }
+    text.strip_suffix('\n')
+        .unwrap_or(text)
+        .split('\n')
+        .enumerate()
+        .map(|(index, line)| {
+            if line.is_empty() {
+                bail!("release journal contains an empty line at {}", index + 1);
+            }
+            crate::canonical::require_canonical(line.as_bytes(), "release journal entry")?;
+            crate::canonical::from_slice(line.as_bytes(), "release journal entry")
+        })
+        .collect()
+}
+
 fn require_unique<T>(values: &[T], label: &str) -> Result<()>
 where
     T: Ord + Clone,

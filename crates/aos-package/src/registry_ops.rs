@@ -1353,6 +1353,16 @@ fn commit_staged_registry(dir: &Path, message: &str, signing_key: Option<&str>) 
     Ok(())
 }
 
+/// Applies the deep staged-index checks shared by legacy APR commits and the
+/// canonical isolated release transaction.
+pub(crate) fn validate_canonical_release_registry_index(dir: &Path) -> Result<()> {
+    validate_staged_package_toml_provenance_requirements(dir)?;
+    if staged_package_provenance_transparency_validation_needed(dir)? {
+        validate_staged_package_provenance_transparency_log(dir)?;
+    }
+    Ok(())
+}
+
 /// Create an SSH-signed commit of the current index, attaching the armored
 /// signature in the `gpgsig-sha256` header git uses for SHA-256 repositories.
 ///
@@ -1470,7 +1480,7 @@ fn commit_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Resu
 }
 
 /// Refresh the static dumb-HTTP object indexes after refs or commits change.
-fn refresh_registry_object_store(dir: &Path) -> Result<()> {
+pub(crate) fn refresh_registry_object_store(dir: &Path) -> Result<()> {
     let _publish_lock = RegistryPublishLock::acquire_or_join_current_process(dir)?;
     objectstore::assert_sha256(dir)?;
     let releases = semver_tag_versions(dir)?;
@@ -1803,21 +1813,99 @@ pub async fn publish(
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
+    let registry_name = resolve_registry_name(config, registry)?;
+    let registry_dir = config.scope.registries_path().join(&registry_name);
+
+    publish_to_registry_directory(
+        config,
+        &registry_dir,
+        &registry_name,
+        store_path,
+        name_override,
+        version_override,
+        platform_override,
+        description,
+        homepage,
+        license,
+        maintainer,
+        sysroot,
+        previous,
+        source_drv,
+        image_payload_paths,
+        image_disk_paths,
+        image_info_paths,
+        image_formats,
+        image_uki_paths,
+        expose_manifest_path,
+        config_module_path,
+        config_base_lib_path,
+        documentation_base_lib_path,
+        config_dependencies,
+        bless,
+        no_ca,
+        no_commit,
+        message,
+        key,
+        key_id,
+        printer,
+    )
+    .await
+}
+
+/// Publishes one store output into an explicitly selected registry directory.
+///
+/// This is the package-materialization primitive used by an isolated release
+/// transaction. The ordinary CLI resolves its configured authoring clone
+/// before entering this function; release orchestration instead supplies its
+/// private clone. Callers must hold the appropriate outer transaction lock.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn publish_to_registry_directory(
+    config: &ApmConfig,
+    dir: &Path,
+    name: &str,
+    store_path: &str,
+    name_override: Option<&str>,
+    version_override: Option<&str>,
+    platform_override: Option<&str>,
+    description: Option<&str>,
+    homepage: Option<&str>,
+    license: Option<&str>,
+    maintainer: Option<&str>,
+    sysroot: bool,
+    previous: Option<&str>,
+    source_drv: Option<&str>,
+    image_payload_paths: &[String],
+    image_disk_paths: &[String],
+    image_info_paths: &[String],
+    image_formats: &[String],
+    image_uki_paths: &[String],
+    expose_manifest_path: Option<&str>,
+    config_module_path: Option<&str>,
+    config_base_lib_path: Option<&str>,
+    documentation_base_lib_path: Option<&str>,
+    config_dependencies: &[String],
+    bless: bool,
+    no_ca: bool,
+    no_commit: bool,
+    message: Option<&str>,
+    key: Option<&str>,
+    key_id: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
     let description = required_publish_metadata(description, "--description", "No description")?;
     let license = required_publish_metadata(license, "--license", "unknown")?;
     let maintainer = required_publish_metadata(maintainer, "--maintainer", "unknown")?;
 
-    let name = resolve_registry_name(config, registry)?;
-    let dir = config.scope.registries_path().join(&name);
-    ensure_writable_registry_clone(&name, &dir)?;
+    validate_registry_name(name)?;
+    ensure_writable_registry_clone(name, dir)?;
     let require_signed_ukis =
-        read_registry_toml(&dir)?.is_some_and(|root| root.registry.require_signed_ukis);
+        read_registry_toml(dir)?.is_some_and(|root| root.registry.require_signed_ukis);
     if let Some(name) = name_override {
         validate_package_name(name)?;
     }
     let signing_key = if key.is_some() || key_id.is_some() {
         Some(resolve_producer_signing_key(
-            config, &dir, &name, key, key_id,
+            config, dir, name, key, key_id,
         )?)
     } else {
         None
@@ -1897,7 +1985,7 @@ pub async fn publish(
     // Bind the exact disk, canonical per-format metadata, and paired UKI
     // before catalog construction. Committed Secure Boot policy is enforced
     // below.
-    let sb_db_cert = sb_db_cert_path(config, &name);
+    let sb_db_cert = sb_db_cert_path(config, name);
     let mut image_infos: Vec<PublishedImage> = Vec::new();
     for ((((payload_path, disk_path), info_path), img_fmt), uki_path) in image_payload_paths
         .iter()
@@ -1921,7 +2009,7 @@ pub async fn publish(
             sb_db_cert.as_deref(),
         )?);
     }
-    let sb_catalog = sb_certs::load_sb_certs_toml(&dir)?;
+    let sb_catalog = sb_certs::load_sb_certs_toml(dir)?;
     apply_publish_sb_policy(
         &mut image_infos,
         sb_catalog.as_ref(),
@@ -1965,8 +2053,8 @@ pub async fn publish(
         &documentation_declarations,
     )?;
     let provenance_signer = Some(resolve_package_provenance_signer(
-        &dir,
-        &name,
+        dir,
+        name,
         signing_key.as_ref(),
         key_id,
     )?);

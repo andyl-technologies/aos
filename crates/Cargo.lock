@@ -161,6 +161,7 @@ dependencies = [
  "aos-net",
  "aos-package",
  "aos-profile",
+ "aos-release",
  "aos-remote",
  "aos-server",
  "async-trait",
@@ -441,6 +442,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-image-finalizer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-release",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
 name = "aos-net"
 version = "0.1.0"
 dependencies = [
@@ -600,6 +614,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "ed25519-dalek",
+ "humantime",
  "semver",
  "serde",
  "serde_json",
