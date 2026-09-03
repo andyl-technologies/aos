@@ -66,8 +66,8 @@ they gate any affected runtime backend.
 - [x] **SBX-CORE-08** Implement descriptor, media-type, feature, and protocol
   registries with unknown-required-feature rejection (`SBX-CORE-06`;
   `d99883388`).
-- [ ] **SBX-CORE-09** Implement signing and trust-envelope verification over
-  canonical bytes (`SBX-CORE-07`, `SBX-CORE-08`).
+- [x] **SBX-CORE-09** Implement signing and trust-envelope verification over
+  canonical bytes (`SBX-CORE-07`, `SBX-CORE-08`; `9b0864f03`).
 - [ ] **SBX-CORE-10** Make all RFC golden vectors and negative decoder vectors
   executable tests (`SBX-CORE-07`, `SBX-CORE-09`).
 - [ ] **SBX-CORE-11** Add state-machine, attenuation, accounting, canonicality,
@@ -272,3 +272,6 @@ completes. The Git history remains authoritative for code details.
 - `d99883388` — `SBX-CORE-08`: closed media-type, descriptor-role, feature,
   signature-purpose, and independent protocol-domain registries with
   fail-closed decoding and negotiation.
+- `9b0864f03` — `SBX-CORE-09`: domain-separated Ed25519 signing and strict
+  verification bound to canonical trust-policy bytes, subject role, exact key
+  generation and fingerprint, scope, purpose, and validity interval.
