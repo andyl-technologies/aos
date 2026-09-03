@@ -80,8 +80,9 @@ they gate any affected runtime backend.
 - [x] **SBX-API-03** Add resumable watch cursors, operation resources,
   idempotency keys, and compatibility fixtures (`SBX-API-02`;
   `37dde6aee`).
-- [ ] **SBX-BPROTO-01** Define bounded, fixed local host, storage, mount,
-  network, guardian, and guest-agent protocol schemas (`SBX-CORE-08`).
+- [x] **SBX-BPROTO-01** Define bounded, fixed local host, storage, mount,
+  network, guardian, and guest-agent protocol schemas (`SBX-CORE-08`;
+  `af419c775`).
 - [ ] **SBX-BPROTO-02** Implement descriptor-role and peer-credential
   validation with malformed-message fuzz targets (`SBX-BPROTO-01`).
 - [ ] **SBX-BPROTO-03** Simulate multi-node assignment and ownership-lease
@@ -292,3 +293,6 @@ completes. The Git history remains authoritative for code details.
 - `37dde6aee` — `SBX-API-03`: operation resources, mutation idempotency and
   compare-and-swap fields, resumable watch cursor/watermark semantics, and a
   build-enforced additive v1 compatibility floor.
+- `af419c775` — `SBX-BPROTO-01`: separately versioned, fixed-function local
+  host, storage, mount, network, guardian, and guest-agent protocols with
+  authenticated envelopes, assignment fences, opaque handles, and inventory.
