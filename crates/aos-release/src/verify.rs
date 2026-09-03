@@ -276,15 +276,18 @@ mod tests {
     use base64::Engine as _;
     use ed25519_dalek::{Signer as _, SigningKey};
 
-    use crate::artifact::{ArtifactKind, ArtifactRecord, BundlePath, Compression};
+    use crate::artifact::{
+        ArtifactKind, ArtifactRecord, ArtifactRelation, ArtifactRelationship, BundlePath,
+        Compression,
+    };
     use crate::canonical;
     use crate::digest::Sha256Digest;
     use crate::manifest::{
-        FinalArtifactSet, MANIFEST_DOMAIN, MANIFEST_ENVELOPE_V1, ManifestEnvelopeV1,
+        FinalArtifactSet, ImageResult, MANIFEST_DOMAIN, MANIFEST_ENVELOPE_V1, ManifestEnvelopeV1,
         ManifestSignature, PackageResult, ReleaseManifestV1,
     };
     use crate::plan::{
-        PackagePlan, PlannedArtifact, PlannedArtifactSet, PlatformCell, ReleaseClass,
+        ImagePlan, PackagePlan, PlannedArtifact, PlannedArtifactSet, PlatformCell, ReleaseClass,
         ReleasePlanV1, RetentionPolicy, SourceIdentity,
     };
     use crate::platform::{MatrixCell, Platform};
@@ -312,29 +315,76 @@ mod tests {
         }
     }
 
-    fn matrix<T: Clone>(x86_artifact: T) -> Vec<PlatformCell<T>> {
+    fn planned(ids: &[String]) -> PlannedArtifactSet {
+        PlannedArtifactSet {
+            artifacts: ids
+                .iter()
+                .map(|id| PlannedArtifact {
+                    id: id.clone(),
+                    derivation: None,
+                    output: None,
+                    store_path: None,
+                    source_store_paths: Vec::new(),
+                })
+                .collect(),
+        }
+    }
+
+    fn final_set(ids: &[String]) -> FinalArtifactSet {
+        FinalArtifactSet {
+            artifact_ids: ids.to_vec(),
+        }
+    }
+
+    fn package_id(platform: Platform) -> String {
+        format!("package/example/{platform}")
+    }
+
+    fn image_ids(platform: Platform) -> Vec<(String, ArtifactKind)> {
         [
-            Platform::X86_64Linux,
-            Platform::Aarch64Linux,
-            Platform::X86_64Darwin,
-            Platform::Aarch64Darwin,
+            ("logical-disk", ArtifactKind::LogicalDisk),
+            ("raw", ArtifactKind::RawImage),
+            ("qcow2", ArtifactKind::Qcow2Image),
+            ("vmdk", ArtifactKind::VmdkImage),
+            ("vhd", ArtifactKind::VhdImage),
+            ("uki", ArtifactKind::Uki),
+            ("recovery-uki", ArtifactKind::RecoveryUki),
+            ("recovery-bundle", ArtifactKind::RecoveryBundle),
+            ("metadata", ArtifactKind::ImageMetadata),
         ]
         .into_iter()
-        .enumerate()
-        .map(|(index, platform)| PlatformCell {
-            platform,
-            decision: if index == 0 {
-                MatrixCell::Artifact {
-                    artifact: x86_artifact.clone(),
-                }
-            } else {
-                MatrixCell::NotApplicable {
-                    rule: "fixture-rule-v1".to_owned(),
-                    reason: "fixture package is target-specific".to_owned(),
-                }
-            },
-        })
+        .map(|(name, kind)| (format!("image/server/{platform}/{name}"), kind))
         .collect()
+    }
+
+    fn artifact(
+        id: String,
+        kind: ArtifactKind,
+        platform: Option<Platform>,
+        system_variant: Option<&str>,
+        relationships: Vec<ArtifactRelationship>,
+    ) -> anyhow::Result<(ArtifactRecord, Vec<u8>)> {
+        let bytes = format!("exact bytes for {id}").into_bytes();
+        let path = BundlePath::parse(format!("objects/{id}"))?;
+        Ok((
+            ArtifactRecord {
+                id,
+                kind,
+                platform,
+                system_variant: system_variant.map(str::to_owned),
+                path,
+                size_bytes: u64::try_from(bytes.len())?,
+                sha256: Sha256Digest::of_bytes(&bytes),
+                media_type: "application/octet-stream".to_owned(),
+                compression: Compression::None,
+                derivation: None,
+                output: None,
+                store_path: None,
+                nar_hash: None,
+                relationships,
+            },
+            bytes,
+        ))
     }
 
     struct ReleaseFixture {
@@ -345,11 +395,38 @@ mod tests {
     }
 
     fn release_fixture() -> anyhow::Result<ReleaseFixture> {
+        let package_cells: Vec<PlatformCell<PlannedArtifactSet>> = Platform::ALL
+            .into_iter()
+            .map(|platform| {
+                let ids = vec![package_id(platform)];
+                PlatformCell {
+                    platform,
+                    decision: MatrixCell::Artifact {
+                        artifact: planned(&ids),
+                    },
+                }
+            })
+            .collect();
+        let image_cells: Vec<PlatformCell<PlannedArtifactSet>> = Platform::LINUX
+            .into_iter()
+            .map(|platform| {
+                let ids = image_ids(platform)
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect::<Vec<_>>();
+                PlatformCell {
+                    platform,
+                    decision: MatrixCell::Artifact {
+                        artifact: planned(&ids),
+                    },
+                }
+            })
+            .collect();
         let plan = ReleasePlanV1 {
             schema_version: crate::RELEASE_PLAN_V1.to_owned(),
-            release_id: "release-2026.9.0-dev.20260903.1".to_owned(),
-            version: "2026.9.0-dev.20260903.1".to_owned(),
-            release_class: ReleaseClass::Edge,
+            release_id: "release-2026.9.0".to_owned(),
+            version: "2026.9.0".to_owned(),
+            release_class: ReleaseClass::Stable,
             registry: CANONICAL_REGISTRY.to_owned(),
             registry_base_commit: OID.to_owned(),
             registry_base_generation: 7,
@@ -357,7 +434,7 @@ mod tests {
                 commit: OID.to_owned(),
                 tree_digest: digest("tree"),
                 protected_branch: "master".to_owned(),
-                source_tag: "release/2026.9.0-dev.20260903.1".to_owned(),
+                source_tag: "release/2026.9.0".to_owned(),
                 contributor_authorization_digest: digest("authorization"),
             },
             packages: vec![PackagePlan {
@@ -369,21 +446,12 @@ mod tests {
                     license_expression: "Apache-2.0".to_owned(),
                     maintainers: vec!["Example Maintainer".to_owned()],
                 }),
-                platforms: matrix(PlannedArtifactSet {
-                    artifacts: vec![PlannedArtifact {
-                        id: "package/example/x86_64-linux".to_owned(),
-                        derivation: Some(
-                            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv".to_owned(),
-                        ),
-                        output: Some("out".to_owned()),
-                        store_path: Some(
-                            "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example".to_owned(),
-                        ),
-                        source_store_paths: vec![],
-                    }],
-                }),
+                platforms: package_cells.clone(),
             }],
-            images: Vec::new(),
+            images: vec![ImagePlan {
+                system_variant: "server".to_owned(),
+                platforms: image_cells.clone(),
+            }],
             gates: Vec::new(),
             staging_deployment_id: "hub-staging-v1".to_owned(),
             production_deployment_id: "hub-production-v1".to_owned(),
@@ -395,9 +463,12 @@ mod tests {
                 SignerRole::Qualification,
                 SignerRole::TufRoot,
                 SignerRole::TufTargets,
-                SignerRole::TufEdge,
+                SignerRole::TufStable,
                 SignerRole::TufSnapshot,
                 SignerRole::TufTimestamp,
+                SignerRole::SecureBootDb,
+                SignerRole::KernelModule,
+                SignerRole::PcrPolicy,
             ]
             .into_iter()
             .map(signer)
@@ -412,43 +483,63 @@ mod tests {
             restricted_operator_policy_digest: digest("operator-policy"),
         };
         let plan_bytes = canonical::to_vec(&plan)?;
-        let package_bytes = b"canonical fixture package".to_vec();
-        let artifacts = vec![
-            ArtifactRecord {
-                id: "control/release-plan".to_owned(),
-                kind: ArtifactKind::ReleasePlan,
-                platform: None,
-                system_variant: None,
-                path: BundlePath::parse("release-plan.json")?,
-                size_bytes: u64::try_from(plan_bytes.len())?,
-                sha256: Sha256Digest::of_bytes(&plan_bytes),
-                media_type: "application/json".to_owned(),
-                compression: Compression::None,
-                derivation: None,
-                output: None,
-                store_path: None,
-                nar_hash: None,
-                relationships: Vec::new(),
-            },
-            ArtifactRecord {
-                id: "package/example/x86_64-linux".to_owned(),
-                kind: ArtifactKind::PackageNar,
-                platform: Some(Platform::X86_64Linux),
-                system_variant: None,
-                path: BundlePath::parse("packages/example.nar")?,
-                size_bytes: u64::try_from(package_bytes.len())?,
-                sha256: Sha256Digest::of_bytes(&package_bytes),
-                media_type: "application/x-nix-nar".to_owned(),
-                compression: Compression::None,
-                derivation: Some(
-                    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv".to_owned(),
-                ),
-                output: Some("out".to_owned()),
-                store_path: Some("/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example".to_owned()),
-                nar_hash: Some(digest("nar")),
-                relationships: Vec::new(),
-            },
-        ];
+        let mut payloads = Vec::<(ArtifactRecord, Vec<u8>)>::new();
+        for (id, kind) in [
+            ("registry/catalog", ArtifactKind::RegistryObject),
+            ("cache/example.narinfo", ArtifactKind::NarInfo),
+            ("source/example", ArtifactKind::Source),
+            ("provenance/example", ArtifactKind::Provenance),
+            ("sbom/release", ArtifactKind::Sbom),
+            ("license/example", ArtifactKind::License),
+        ] {
+            payloads.push(artifact(id.to_owned(), kind, None, None, Vec::new())?);
+        }
+        for platform in Platform::ALL {
+            payloads.push(artifact(
+                package_id(platform),
+                ArtifactKind::PackageNar,
+                Some(platform),
+                None,
+                vec![
+                    ArtifactRelationship {
+                        relation: ArtifactRelation::CorrespondingSource,
+                        target: "source/example".to_owned(),
+                    },
+                    ArtifactRelationship {
+                        relation: ArtifactRelation::LicensedBy,
+                        target: "license/example".to_owned(),
+                    },
+                ],
+            )?);
+        }
+        for platform in Platform::LINUX {
+            for (id, kind) in image_ids(platform) {
+                payloads.push(artifact(
+                    id,
+                    kind,
+                    Some(platform),
+                    Some("server"),
+                    Vec::new(),
+                )?);
+            }
+        }
+        let mut artifacts = vec![ArtifactRecord {
+            id: "control/release-plan".to_owned(),
+            kind: ArtifactKind::ReleasePlan,
+            platform: None,
+            system_variant: None,
+            path: BundlePath::parse("release-plan.json")?,
+            size_bytes: u64::try_from(plan_bytes.len())?,
+            sha256: Sha256Digest::of_bytes(&plan_bytes),
+            media_type: "application/json".to_owned(),
+            compression: Compression::None,
+            derivation: None,
+            output: None,
+            store_path: None,
+            nar_hash: None,
+            relationships: Vec::new(),
+        }];
+        artifacts.extend(payloads.iter().map(|(record, _)| record.clone()));
         let manifest = ReleaseManifestV1 {
             schema_version: crate::RELEASE_MANIFEST_V1.to_owned(),
             release_id: plan.release_id.clone(),
@@ -459,11 +550,37 @@ mod tests {
             source_commit: plan.source.commit.clone(),
             packages: vec![PackageResult {
                 name: "example".to_owned(),
-                platforms: matrix(FinalArtifactSet {
-                    artifact_ids: vec!["package/example/x86_64-linux".to_owned()],
-                }),
+                platforms: package_cells
+                    .into_iter()
+                    .map(|cell| {
+                        let ids = vec![package_id(cell.platform)];
+                        PlatformCell {
+                            platform: cell.platform,
+                            decision: MatrixCell::Artifact {
+                                artifact: final_set(&ids),
+                            },
+                        }
+                    })
+                    .collect(),
             }],
-            images: Vec::new(),
+            images: vec![ImageResult {
+                system_variant: "server".to_owned(),
+                platforms: image_cells
+                    .into_iter()
+                    .map(|cell| {
+                        let ids = image_ids(cell.platform)
+                            .into_iter()
+                            .map(|(id, _)| id)
+                            .collect::<Vec<_>>();
+                        PlatformCell {
+                            platform: cell.platform,
+                            decision: MatrixCell::Artifact {
+                                artifact: final_set(&ids),
+                            },
+                        }
+                    })
+                    .collect(),
+            }],
             artifacts,
             evidence: Vec::new(),
         };
@@ -511,18 +628,18 @@ mod tests {
             signatures: vec![ManifestSignature { request, response }],
         };
         let envelope_bytes = canonical::to_vec(&envelope)?;
-        let files = vec![
-            CapturedFile {
-                path: BundlePath::parse("release-plan.json")?,
-                size_bytes: u64::try_from(plan_bytes.len())?,
-                sha256: Sha256Digest::of_bytes(&plan_bytes),
-            },
-            CapturedFile {
-                path: BundlePath::parse("packages/example.nar")?,
-                size_bytes: u64::try_from(package_bytes.len())?,
-                sha256: Sha256Digest::of_bytes(&package_bytes),
-            },
-        ];
+        let mut files = vec![CapturedFile {
+            path: BundlePath::parse("release-plan.json")?,
+            size_bytes: u64::try_from(plan_bytes.len())?,
+            sha256: Sha256Digest::of_bytes(&plan_bytes),
+        }];
+        for (artifact, bytes) in payloads {
+            files.push(CapturedFile {
+                path: artifact.path,
+                size_bytes: u64::try_from(bytes.len())?,
+                sha256: Sha256Digest::of_bytes(&bytes),
+            });
+        }
         let trusted_key = TrustedEd25519Key {
             key_id: "key-releaseevidence".to_owned(),
             public_key: signing_key.verifying_key().to_bytes(),
@@ -579,7 +696,7 @@ mod tests {
             &fixture.files,
             &[fixture.key],
         )?;
-        assert_eq!(summary.artifact_count, 2);
+        assert_eq!(summary.artifact_count, 29);
         assert_eq!(summary.signatures_verified, 1);
         Ok(())
     }
