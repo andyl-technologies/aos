@@ -102,6 +102,10 @@
   # integrity and boot path while scoping the larger root artifact contract to
   # these test systems.
   qualificationImage = {
+    # The full Git fixture intentionally retains its optional Python-backed
+    # helpers. Production images and unrelated fleet systems use git-minimal;
+    # this qualification workload exercises the complete publisher surface.
+    aos.image.testArtifactRoots = [pkgs.git];
     aos.image.budgets = {
       maxRuntimeClosureMiB = 912;
       maxDownloadMiB = 816;
