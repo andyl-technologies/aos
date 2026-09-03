@@ -162,6 +162,8 @@ pub enum DescriptorRole {
     SandboxEnvironment,
     /// Sandbox specification root view.
     SandboxRootView,
+    /// Generic immutable filesystem-view revision.
+    FilesystemViewRevision,
     /// Tree selector target.
     TreeSelector,
     /// Policy optimization commitment.
@@ -224,6 +226,7 @@ pub fn validate_descriptor_role(
             matches!(kind, PortableMediaType::Environment)
         }
         DescriptorRole::SandboxRootView
+        | DescriptorRole::FilesystemViewRevision
         | DescriptorRole::SnapshotAttachment
         | DescriptorRole::ImmutableViewDependency => matches!(kind, PortableMediaType::View),
         DescriptorRole::OptimizationCommitment => {

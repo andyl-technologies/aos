@@ -124,6 +124,7 @@
     "aos-registry-surface"
     "aos-remote"
     "aos-sandbox-core"
+    "aos-sandbox-protocol"
     "aos-server"
     "aos-systemd"
   ];

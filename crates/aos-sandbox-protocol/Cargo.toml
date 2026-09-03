@@ -1,0 +1,11 @@
+[package]
+name = "aos-sandbox-protocol"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-proto = { path = "../aos-proto" }
+aos-sandbox-core = { path = "../aos-sandbox-core" }
+buffa = "0.3"
+thiserror.workspace = true
