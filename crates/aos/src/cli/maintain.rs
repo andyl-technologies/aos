@@ -43,7 +43,7 @@ pub enum MaintainCommand {
     /// Inspect a durable run or immutable plan in detail
     Inspect(MaintainInspectArgs),
     /// Print the exact retained candidate patch for a run
-    Diff(MaintainRunIdentityArgs),
+    Diff(MaintainDiffArgs),
     /// Mark a run abandoned while retaining its evidence and worktree
     Abandon(MaintainRunIdentityArgs),
     /// Remove a terminal run's clean managed worktree after exact confirmation
@@ -88,6 +88,10 @@ pub struct MaintainScanArgs {
     /// Evaluate one explicit Nix target platform
     #[arg(long, visible_alias = "system", value_name = "PLATFORM")]
     pub target: Option<String>,
+
+    /// Environment variable holding an optional read-only GitHub discovery token
+    #[arg(long, default_value = "AOS_GITHUB_READ_TOKEN", value_name = "NAME")]
+    pub token_env: String,
 }
 
 #[derive(Args)]
@@ -129,6 +133,10 @@ pub struct MaintainPlanArgs {
     /// Select an exact observed target for a one-component unit
     #[arg(long, value_name = "VERSION")]
     pub target: Option<String>,
+
+    /// Select the exact observed identity for every component as NAME=IDENTITY
+    #[arg(long, value_name = "NAME=IDENTITY", conflicts_with = "target")]
+    pub component: Vec<String>,
 }
 
 #[derive(Args)]
@@ -179,6 +187,20 @@ pub struct MaintainInspectArgs {
     /// Inspect one exact immutable plan without executing it
     #[arg(long, value_name = "PLAN", required_unless_present = "run")]
     pub plan: Option<String>,
+}
+
+#[derive(Args)]
+pub struct MaintainDiffArgs {
+    /// Exact or unambiguous local run identity
+    pub run: String,
+
+    /// Print only the semantic plan and changed-field view
+    #[arg(long, conflicts_with = "patch")]
+    pub semantic: bool,
+
+    /// Print only exact unified patch bytes to standard output
+    #[arg(long, conflicts_with = "semantic")]
+    pub patch: bool,
 }
 
 #[derive(Args)]
@@ -351,6 +373,47 @@ mod tests {
                 "worktree-ready"
             ])
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn plan_accepts_complete_component_selectors_and_diff_modes_conflict() {
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "maintain",
+                "plan",
+                "compound-1",
+                "--component",
+                "server=v1",
+                "--component",
+                "client=v2",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "maintain",
+                "plan",
+                "compound-1",
+                "--target",
+                "1.2.3",
+                "--component",
+                "main=1.2.3",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "maintain",
+                "diff",
+                "run-example",
+                "--semantic",
+                "--patch",
+            ])
+            .is_err()
         );
     }
 

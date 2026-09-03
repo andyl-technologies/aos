@@ -20,13 +20,15 @@ use std::io::Write as _;
 use anyhow::{Context as _, Result};
 use aos_core::nix::NixRunner;
 use aos_core::output::Printer;
-use aos_maintain::MAINTENANCE_CLI_V1;
+use aos_maintain::identity::OperationId;
 use aos_maintain::inventory::Classification;
 use aos_maintain::presentation::{
     CommandCompletion, CommandData, CommandDisposition, Diagnostic, DiagnosticSeverity,
     EffectClass, MaintainCommandResult, NextAction, PrimaryValue, PullRequestDraft,
     escape_terminal,
 };
+use aos_maintain::workflow::{ProgressEvent, TaskStatus};
+use aos_maintain::{MAINTENANCE_CLI_V1, MAINTENANCE_PROGRESS_EVENT_V1};
 use serde::Serialize;
 
 use crate::cli::{Cli, ColorChoice, MaintainArgs, MaintainCommand, ProgressChoice};
@@ -55,6 +57,29 @@ pub async fn run(cli: &Cli, args: &MaintainArgs, printer: &Printer) -> Result<Co
             Vec::new(),
             Vec::new(),
         );
+    }
+
+    if args.jsonl {
+        let event = ProgressEvent {
+            schema: MAINTENANCE_PROGRESS_EVENT_V1.to_string(),
+            stream_sequence: 1,
+            operation: OperationId::parse(command_name(args))?,
+            run_id: None,
+            status: TaskStatus::Running,
+            message: activity_label(args)
+                .unwrap_or("Resolving local maintenance state")
+                .to_string(),
+            completed: None,
+            total: None,
+            elapsed_ms: 0,
+        };
+        event.validate()?;
+        write_json(&ProgressStreamEnvelope {
+            schema_version: "aos.maintain.stream/v1",
+            stream_sequence: 1,
+            event_type: "progress",
+            event: &event,
+        })?;
     }
 
     let _activity = activity_label(args).map(|label| printer.activity(label));
@@ -160,7 +185,7 @@ pub async fn run(cli: &Cli, args: &MaintainArgs, printer: &Printer) -> Result<Co
             };
             let store = state::StateStore::open_for_envelope(args.state_dir.as_deref(), &envelope)?;
             store.write_inventory(&envelope)?;
-            match discovery::scan(&envelope, &store, command.offline).await {
+            match discovery::scan(&envelope, &store, command.offline, &command.token_env).await {
                 Ok(outcome) => {
                     let digest = store.write_discovery(&outcome.snapshot)?;
                     scan_completion(envelope, outcome, digest)
@@ -1090,7 +1115,7 @@ fn inspect_command(
 
 fn diff_command(
     args: &MaintainArgs,
-    command: &crate::cli::MaintainRunIdentityArgs,
+    command: &crate::cli::MaintainDiffArgs,
 ) -> Result<CommandCompletion> {
     let (store, _) = current_store(args)?;
     let run = resolve_run(&store, &command.run)?;
@@ -1115,7 +1140,7 @@ fn diff_command(
         CommandData {
             plan: Some(plan),
             run: Some(run),
-            patch: Some(patch),
+            patch: (!command.semantic).then_some(patch),
             ..CommandData::default()
         },
         Vec::new(),
@@ -1521,6 +1546,41 @@ fn plan_command(
             );
         }
     }
+    if !command.component.is_empty() {
+        let selections = match parse_component_selections(&command.component) {
+            Ok(selections) => selections,
+            Err(error) => {
+                return completion(
+                    "plan",
+                    CommandDisposition::InvalidInvocation,
+                    CommandData::default(),
+                    vec![diagnostic(
+                        "maintain.invalid-component-target",
+                        DiagnosticSeverity::Error,
+                        &error.to_string(),
+                    )],
+                    Vec::new(),
+                    Vec::new(),
+                );
+            }
+        };
+        if let Err(error) =
+            select_explicit_components(&envelope, &mut snapshot, &unit_id, &selections, now)
+        {
+            return completion(
+                "plan",
+                CommandDisposition::InvalidInvocation,
+                CommandData::default(),
+                vec![diagnostic(
+                    "maintain.invalid-component-target",
+                    DiagnosticSeverity::Error,
+                    &error.to_string(),
+                )],
+                Vec::new(),
+                Vec::new(),
+            );
+        }
+    }
     let Some(discovered) = snapshot
         .units
         .iter()
@@ -1643,6 +1703,7 @@ async fn run_command(
             &crate::cli::MaintainPlanArgs {
                 unit: unit.clone(),
                 target: None,
+                component: Vec::new(),
             },
         )?;
         let Some(plan) = planned.result.data.plan.clone() else {
@@ -2090,8 +2151,6 @@ fn select_explicit_target(
     target: &str,
     now_unix: u64,
 ) -> Result<()> {
-    use aos_maintain::workflow::DiscoveryDecision;
-
     let unit = envelope
         .inventory
         .units
@@ -2105,32 +2164,87 @@ fn select_explicit_target(
         .components
         .first_key_value()
         .ok_or_else(|| anyhow::anyhow!("update unit has no components"))?;
-    let key = format!("{unit_id}/{component_id}/primary");
-    let observation = snapshot
-        .observations
-        .get(&key)
-        .ok_or_else(|| anyhow::anyhow!("primary observation is unavailable"))?;
-    let matches = observation
-        .candidates
-        .iter()
-        .filter(|candidate| candidate.raw_id == target || candidate.raw_version == target)
-        .collect::<Vec<_>>();
-    if matches.len() != 1 {
-        anyhow::bail!("explicit target must match exactly one observed candidate");
-    }
-    let matched = matches
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("explicit target disappeared during selection"))?;
-    let mut exact_observation = observation.clone();
-    exact_observation
-        .candidates
-        .retain(|candidate| candidate.raw_id == matched.raw_id);
-    let selected = aos_maintain::discovery::select_unit(
-        unit,
-        &BTreeMap::from([(component_id.to_string(), exact_observation)]),
+    select_explicit_components(
+        envelope,
+        snapshot,
+        unit_id,
+        &BTreeMap::from([(component_id.to_string(), target.to_string())]),
         now_unix,
-        24 * 60 * 60,
-    )?;
+    )
+}
+
+fn parse_component_selections(values: &[String]) -> Result<BTreeMap<String, String>> {
+    let mut output = BTreeMap::new();
+    for value in values {
+        let (name, identity) = value
+            .split_once('=')
+            .ok_or_else(|| anyhow::anyhow!("component target must use NAME=IDENTITY"))?;
+        if name.is_empty()
+            || identity.is_empty()
+            || output
+                .insert(name.to_string(), identity.to_string())
+                .is_some()
+        {
+            anyhow::bail!("component targets must be non-empty and unique");
+        }
+    }
+    Ok(output)
+}
+
+fn select_explicit_components(
+    envelope: &aos_maintain::envelope::InventoryEnvelopeV1,
+    snapshot: &mut aos_maintain::discovery::DiscoverySnapshotV1,
+    unit_id: &aos_maintain::identity::UnitId,
+    selections: &BTreeMap<String, String>,
+    now_unix: u64,
+) -> Result<()> {
+    use aos_maintain::workflow::DiscoveryDecision;
+
+    let unit = envelope
+        .inventory
+        .units
+        .iter()
+        .find(|unit| &unit.unit_id == unit_id)
+        .ok_or_else(|| anyhow::anyhow!("unknown update unit {unit_id}"))?;
+    let expected = unit
+        .components
+        .keys()
+        .map(ToString::to_string)
+        .collect::<std::collections::BTreeSet<_>>();
+    if selections
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        != expected
+    {
+        anyhow::bail!("--component must select every component in the update unit");
+    }
+    let mut observations = BTreeMap::new();
+    for (component, target) in selections {
+        let key = format!("{unit_id}/{component}/primary");
+        let observation = snapshot
+            .observations
+            .get(&key)
+            .ok_or_else(|| anyhow::anyhow!("primary observation for {component} is unavailable"))?;
+        let matches = observation
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.raw_id == *target || candidate.raw_version == *target)
+            .collect::<Vec<_>>();
+        if matches.len() != 1 {
+            anyhow::bail!("component {component} target must match exactly one observed candidate");
+        }
+        let matched = matches
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("component target disappeared during selection"))?;
+        let mut exact = observation.clone();
+        exact
+            .candidates
+            .retain(|candidate| candidate.raw_id == matched.raw_id);
+        observations.insert(component.clone(), exact);
+    }
+    let selected =
+        aos_maintain::discovery::select_unit(unit, &observations, now_unix, 24 * 60 * 60)?;
     if selected.decision != DiscoveryDecision::UpdateAvailable {
         anyhow::bail!("explicit target is not selectable under current unit policy");
     }
@@ -2164,6 +2278,13 @@ pub fn render(
     {
         return Ok(());
     }
+    if matches!(args.command, Some(MaintainCommand::Diff(ref command)) if command.patch)
+        && let Some(patch) = completion.result.data.patch.as_deref()
+    {
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(patch.as_bytes())?;
+        return Ok(());
+    }
     if cli.json {
         write_json(&completion.result)?;
         return Ok(());
@@ -2171,7 +2292,7 @@ pub fn render(
     if args.jsonl {
         write_json(&StreamEnvelope {
             schema_version: "aos.maintain.stream/v1",
-            stream_sequence: 1,
+            stream_sequence: 2,
             event_type: "result",
             result: &completion.result,
         })?;
@@ -2289,6 +2410,14 @@ fn option_conflict(cli: &Cli, args: &MaintainArgs) -> Option<String> {
         return Some("RUN cannot be combined with --active".to_string());
     }
     let machine = cli.json || args.jsonl;
+    if machine
+        && matches!(
+            args.command,
+            Some(MaintainCommand::Diff(ref command)) if command.patch
+        )
+    {
+        return Some("--patch cannot be combined with JSON or JSONL output".to_string());
+    }
     if matches!(args.command, Some(MaintainCommand::Ui(_))) {
         use std::io::IsTerminal as _;
 
@@ -2767,4 +2896,14 @@ struct StreamEnvelope<'a> {
     #[serde(rename = "type")]
     event_type: &'static str,
     result: &'a MaintainCommandResult,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProgressStreamEnvelope<'a> {
+    schema_version: &'static str,
+    stream_sequence: u64,
+    #[serde(rename = "type")]
+    event_type: &'static str,
+    event: &'a ProgressEvent,
 }
