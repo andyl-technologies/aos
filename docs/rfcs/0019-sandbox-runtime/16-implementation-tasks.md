@@ -54,8 +54,9 @@ they gate any affected runtime backend.
 - [x] **SBX-CORE-04** Implement resource ceilings, reservations, aggregate
   ancestry accounting, and overflow-safe admission math (`SBX-CORE-02`;
   `4c849dc51`).
-- [ ] **SBX-CORE-05** Implement capability verbs, selectors, attenuation,
-  delegation depth, expiry, and deny-by-default evaluation (`SBX-CORE-02`).
+- [x] **SBX-CORE-05** Implement capability verbs, selectors, attenuation,
+  delegation depth, expiry, and deny-by-default evaluation (`SBX-CORE-02`;
+  `ce67b873f`).
 - [ ] **SBX-CORE-06** Implement complete sandbox spec, policy, ancestry,
   placement, environment, view, attachment, tree, snapshot, trust, and
   signature data models (`SBX-CORE-02`).
@@ -247,3 +248,6 @@ completes. The Git history remains authoritative for code details.
 - `4c849dc51` — `SBX-CORE-04`: explicit resource dimensions and ceilings,
   checked reserve/commit/release accounting, isolated advisory capacity, and
   atomic inclusive ancestry transactions.
+- `ce67b873f` — `SBX-CORE-05`: closed resource/operation registries, portable
+  selectors, channel-bound online capability evaluation, and strict grant,
+  time, assignment, revocation, depth, fanout, and resource attenuation.
