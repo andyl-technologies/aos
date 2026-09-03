@@ -288,6 +288,10 @@ pub struct MaintainAcceptArgs {
     /// Confirm the exact candidate patch digest shown by the preview
     #[arg(long, value_name = "DIGEST")]
     pub confirm: Option<String>,
+
+    /// Adopt validated maintainer edits as a new candidate attempt
+    #[arg(long)]
+    pub adopt_worktree: bool,
 }
 
 #[derive(Args)]
@@ -499,6 +503,22 @@ mod tests {
                 "local",
                 "--adapter",
                 "/nix/store/adapter"
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn worktree_adoption_is_an_explicit_accept_mode() {
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "maintain",
+                "accept",
+                "run-fixture",
+                "--adopt-worktree",
+                "--confirm",
+                "sha256-fixture",
             ])
             .is_ok()
         );

@@ -17,7 +17,7 @@ use aos_maintain::agent::{
 use aos_maintain::envelope::GitObjectId;
 use aos_maintain::inventory::RiskLevel;
 use aos_maintain::plan::{GateKind, PackageUpdatePlanV1};
-use aos_maintain::run::{PackageUpdateRunV1, RepairAttemptV1};
+use aos_maintain::run::{AttemptOrigin, PackageUpdateRunV1, RepairAttemptV1};
 use aos_maintain::workflow::{ActorClass, GateOutcome, RunState};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -161,8 +161,9 @@ pub(super) fn accept(
         plan_id: run.plan_id.clone(),
         attempt: proposal.task.attempt,
         parent_attempt: run.attempt,
-        task_digest,
-        result_digest,
+        origin: AttemptOrigin::Agent,
+        task_digest: Some(task_digest),
+        result_digest: Some(result_digest),
         proposal_digest,
         candidate_digest: Sha256Digest::separated("aos.package-update-patch/v1", &cumulative),
         changed_paths,

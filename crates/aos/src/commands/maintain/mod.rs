@@ -232,6 +232,9 @@ fn accept_command(
 ) -> Result<CommandCompletion> {
     let (store, _) = current_store(args)?;
     let mut run = resolve_run(&store, &command.run)?;
+    if command.adopt_worktree {
+        return adopt_worktree(args, &store, run, command.confirm.as_deref());
+    }
     if run.state == aos_maintain::workflow::RunState::CandidateAccepted {
         return run_view_completion("accept", &store, run, None);
     }
@@ -285,6 +288,119 @@ fn accept_command(
         state::now_unix()?,
     )?;
     run_view_completion("accept", &store, run, None)
+}
+
+fn adopt_worktree(
+    _args: &MaintainArgs,
+    store: &state::StateStore,
+    mut run: aos_maintain::run::PackageUpdateRunV1,
+    confirmation: Option<&str>,
+) -> Result<CommandCompletion> {
+    use aos_maintain::run::{AttemptOrigin, RepairAttemptV1};
+    use aos_maintain::workflow::{ActorClass, RunState};
+
+    if run.state != RunState::QuickGated {
+        return run_view_completion(
+            "accept",
+            store,
+            run,
+            Some((
+                CommandDisposition::ActionRequired,
+                "Worktree adoption requires a previously quick-gated candidate",
+            )),
+        );
+    }
+    let plan = store
+        .read_plan(run.plan_id.as_str())?
+        .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
+    let (patch, changed_paths) =
+        materialize::adopt_candidate(std::path::Path::new(&run.worktree), &plan, 0, false)?;
+    let retained = store
+        .read_patch(run.run_id.as_str())?
+        .ok_or_else(|| anyhow::anyhow!("run has no retained candidate"))?;
+    if patch == retained {
+        return run_view_completion(
+            "accept",
+            store,
+            run,
+            Some((
+                CommandDisposition::NoChange,
+                "The worktree has no edits to adopt",
+            )),
+        );
+    }
+    let candidate_digest =
+        aos_contract::Sha256Digest::separated("aos.package-update-patch/v1", &patch);
+    let candidate_digest_text = candidate_digest.to_string();
+    if confirmation != Some(candidate_digest_text.as_str()) {
+        let mut completion = run_view_completion(
+            "accept",
+            store,
+            run.clone(),
+            Some((
+                CommandDisposition::ActionRequired,
+                "Review the changed worktree and confirm its exact candidate digest",
+            )),
+        )?;
+        completion.result.next_actions = vec![NextAction {
+            label: "Adopt these maintainer edits".to_string(),
+            argv: vec![
+                "aos".to_string(),
+                "maintain".to_string(),
+                "accept".to_string(),
+                run.run_id.to_string(),
+                "--adopt-worktree".to_string(),
+                "--confirm".to_string(),
+                candidate_digest.to_string(),
+            ],
+            reason: "adoption creates a new human attempt and invalidates prior gates".to_string(),
+            prerequisites: vec!["review `aos maintain diff --patch` output".to_string()],
+            effect_class: EffectClass::HumanDecision,
+            bound_context: Some(candidate_digest.to_string()),
+        }];
+        return CommandCompletion::new(completion.result);
+    }
+    let attempt = run
+        .attempt
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("candidate attempt counter overflow"))?;
+    let record = RepairAttemptV1 {
+        schema: aos_maintain::PACKAGE_UPDATE_REPAIR_ATTEMPT_V1.to_string(),
+        run_id: run.run_id.clone(),
+        plan_id: run.plan_id.clone(),
+        attempt,
+        parent_attempt: run.attempt,
+        origin: AttemptOrigin::Maintainer,
+        task_digest: None,
+        result_digest: None,
+        proposal_digest: candidate_digest,
+        candidate_digest,
+        changed_paths,
+        completed_at_unix: state::now_unix()?,
+    };
+    record.validate()?;
+    store.write_repair_attempt(&run, &record, &patch)?;
+    store.transition(
+        &mut run,
+        RunState::Repairing,
+        ActorClass::Maintainer,
+        state::now_unix()?,
+    )?;
+    run.attempt = attempt;
+    run.accepted_candidate = None;
+    run.candidate_commit = None;
+    run.evidence_digest = None;
+    run.updated_at_unix = state::now_unix()?;
+    store.write_run(&run)?;
+    store.transition(
+        &mut run,
+        RunState::PolicyValid,
+        ActorClass::Maintainer,
+        state::now_unix()?,
+    )?;
+    let mut completion = run_view_completion("accept", store, run, None)?;
+    completion.result.data.repair_attempt = Some(record);
+    CommandCompletion::new(completion.result)
 }
 
 fn commit_command(
@@ -1152,7 +1268,13 @@ fn diff_command(
             )),
         );
     };
-    let patch = String::from_utf8(bytes).context("retained patch is not UTF-8")?;
+    let current = materialize::worktree_patch(std::path::Path::new(&run.worktree))?;
+    let (bytes, source) = if current.is_empty() || current == bytes {
+        (bytes, "retained")
+    } else {
+        (current, "worktree")
+    };
+    let patch = String::from_utf8(bytes).context("candidate patch is not UTF-8")?;
     let plan = store
         .read_plan(run.plan_id.as_str())?
         .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
@@ -1160,6 +1282,7 @@ fn diff_command(
         "diff",
         CommandDisposition::Success,
         CommandData {
+            values: BTreeMap::from([("patchSource".to_string(), source.to_string())]),
             plan: Some(plan),
             run: Some(run),
             patch: (!command.semantic).then_some(patch),
