@@ -374,7 +374,7 @@ fn decode_reason(decoder: &mut Decoder<'_>) -> Result<ExplanationReason, Canonic
     Ok(ExplanationReason::new(code, source))
 }
 
-fn encode_set<T>(encoder: &mut Encoder, values: &[T], encode: fn(&mut Encoder, &T)) {
+pub(super) fn encode_set<T>(encoder: &mut Encoder, values: &[T], encode: fn(&mut Encoder, &T)) {
     let mut encoded_items = values
         .iter()
         .map(|value| {
@@ -390,7 +390,7 @@ fn encode_set<T>(encoder: &mut Encoder, values: &[T], encode: fn(&mut Encoder, &
     }
 }
 
-fn decode_set<T>(
+pub(super) fn decode_set<T>(
     decoder: &mut Decoder<'_>,
     decode: fn(&mut Decoder<'_>) -> Result<T, CanonicalCborError>,
 ) -> Result<Vec<T>, CanonicalCborError> {

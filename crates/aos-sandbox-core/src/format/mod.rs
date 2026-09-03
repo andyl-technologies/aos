@@ -8,8 +8,10 @@
 
 mod cbor;
 mod policy;
+mod snapshot;
 mod spec;
 mod tree;
+mod trust;
 mod view;
 
 use sha2::{Digest, Sha256};
@@ -18,9 +20,14 @@ use crate::{MediaType, ObjectDescriptor, ObjectDigest};
 
 pub use cbor::{CanonicalCborError, DecodeLimits, validate_canonical_cbor};
 pub use policy::{decode_optimization, decode_policy, encode_optimization, encode_policy};
+pub use snapshot::{decode_snapshot, encode_snapshot};
 pub use spec::{decode_sandbox_spec, encode_sandbox_spec};
 pub use tree::{
     decode_delta, decode_directory, decode_tree, encode_delta, encode_directory, encode_tree,
+};
+pub use trust::{
+    decode_signature, decode_signature_statement, decode_trust_policy, encode_signature,
+    encode_signature_statement, encode_trust_policy,
 };
 pub use view::{decode_environment, decode_view, encode_environment, encode_view};
 
