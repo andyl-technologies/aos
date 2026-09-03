@@ -271,6 +271,10 @@ pub async fn finalize_image_set(
         signing_operations,
     };
     image_set.validate(assembly)?;
+    write_new_synced(
+        &final_root.join("unsigned-image-assembly.json"),
+        &canonical::to_vec(assembly)?,
+    )?;
     let manifest = final_root.join("finalized-image-set.json");
     write_new_synced(&manifest, &canonical::to_vec(&image_set)?)?;
     fs::File::open(&final_root)?.sync_all()?;

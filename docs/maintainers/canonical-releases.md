@@ -15,6 +15,10 @@ The current implementation provides these fail-closed operations:
 - `aos release signer invoke` sends one canonical role-bound request to a
   deployment-configured external signer executable and independently verifies
   its response and public-key identity;
+- `aos release finalize-image` binds one exact Linux assembly to the frozen
+  plan, performs the complete external signing sequence, and emits one
+  verified logical disk, four equivalent download formats, signed UKIs,
+  metadata, and recovery bundle;
 - `aos release status` reconciles a captured journal without Nix or network;
 - `aos release stage` accepts only an already finalized signed bundle, pins the
   canonical staging deployment identity before and after upload, reuses the
@@ -24,7 +28,7 @@ The current implementation provides these fail-closed operations:
   offline against explicitly supplied public keys.
 
 Registry-to-bundle finalization, qualification, release-scoped Hub admission,
-production promotion, TUF freshness, image finalization, and channel commands
+production promotion, TUF freshness, and channel commands
 remain incomplete. The current staging command is therefore an M1 transport
 edge for non-production package bundles only; it is intentionally unreachable
 until another implementation has produced a valid `Finalized` journal entry.
@@ -145,6 +149,41 @@ aos release signer invoke \
 The coordinator checks the request digest, role, operation, key id, provider
 revision, public verification-material digest, and Ed25519 signature. It never
 passes a private-key path to the provider.
+
+## Finalize each Linux image
+
+Build the exact unsigned assembly named by the release plan, then invoke the
+finalizer once for each Linux target. The signer adapter path and selected key
+ids come from restricted deployment configuration; they are never stored in
+the source repository or Nix output:
+
+```sh
+aos release finalize-image \
+  --plan release-plan.json \
+  --assembly /nix/store/…-aos-image-production-unsigned-assembly-2026.9.0 \
+  --signer-executable /opt/aos-signers/bin/provider-adapter \
+  --signer-key secure-boot-db=db-2026 \
+  --signer-key kernel-module=module-2026 \
+  --signer-key pcr-policy=pcr-2026 \
+  --work /var/lib/aos-release/2026.9.0/x86_64-linux
+```
+
+The work path must be absolute and must not exist. It is created with mode
+`0700`. The command checks that the assembly store path is an exact artifact in
+the matching plan image cell, captures all public inputs without following
+links, and pins every executable to the current NAR hash of its owning AOS
+store output. Each signer request binds the plan, role, provider revision,
+public payload digest, and a fresh 256-bit nonce.
+
+Successful output is under `WORK/finalized`. It contains canonical
+`unsigned-image-assembly.json` and `finalized-image-set.json` control files plus
+the artifact directory. Disk formats are accepted only after raw, QCOW2,
+stream-optimized VMDK, and dynamic VHD independently reconstruct the same
+logical GPT bytes. A failed operation leaves no `finalized` directory; retain
+or remove the private work path according to the restricted operator policy.
+
+Repeat for `x86_64-linux` and `aarch64-linux`. Darwin targets do not run this
+command because their release matrix contains packages only.
 
 ## Stage a finalized M1 bundle
 

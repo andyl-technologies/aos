@@ -17,10 +17,39 @@ pub enum ReleaseCommand {
         #[command(subcommand)]
         command: ReleaseSignerCommand,
     },
+    /// Finalize one Linux image assembly through external signers
+    FinalizeImage(ReleaseFinalizeImageArgs),
     /// Upload an exact finalized bundle to the canonical staging Hub
     Stage(ReleaseStageArgs),
     /// Verify a captured release bundle using only public trust inputs
     Verify(ReleaseVerifyArgs),
+}
+
+#[derive(Args)]
+pub struct ReleaseFinalizeImageArgs {
+    /// Canonical release plan authorizing the image and signer policies
+    #[arg(long)]
+    pub plan: PathBuf,
+
+    /// Nix-produced public unsigned-image assembly directory
+    #[arg(long)]
+    pub assembly: PathBuf,
+
+    /// Absolute path to the deployment-configured signer executable
+    #[arg(long)]
+    pub signer_executable: PathBuf,
+
+    /// Exact role key as ROLE=KEY_ID; repeat for all three image roles
+    #[arg(long = "signer-key", value_name = "ROLE=KEY_ID", required = true)]
+    pub signer_keys: Vec<String>,
+
+    /// Maximum duration of each external signer operation in seconds
+    #[arg(long, default_value_t = 300)]
+    pub signer_timeout_seconds: u64,
+
+    /// New private finalization work directory containing the final output
+    #[arg(long)]
+    pub work: PathBuf,
 }
 
 #[derive(Args)]
@@ -176,6 +205,26 @@ mod tests {
                 "release-plan.json",
             ])
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn image_finalization_requires_explicit_role_keys() {
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "release",
+                "finalize-image",
+                "--plan",
+                "release-plan.json",
+                "--assembly",
+                "/nix/store/example-assembly",
+                "--signer-executable",
+                "/opt/aos/signer",
+                "--work",
+                "/var/lib/aos-release/work",
+            ])
+            .is_err()
         );
     }
 }
