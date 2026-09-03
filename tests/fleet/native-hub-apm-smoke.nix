@@ -142,6 +142,8 @@ in {
           add_operator_path(guest)
 
       publisher.succeed("git --version")
+      publisher.succeed(f"{APR} --version")
+      consumer.succeed(f"{APM} --version")
 
 
       def hub_command(subcommand, token, mutation=""):
