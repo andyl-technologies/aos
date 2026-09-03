@@ -1084,4 +1084,37 @@ mod tests {
         assert_eq!(selected_first, first.operation_id());
         assert_eq!(selected_second, second.operation_id());
     }
+
+    #[test]
+    fn restart_after_every_durable_boundary_converges_without_duplicate_effects() {
+        for crash_after in 0..=5 {
+            let directory = TestDirectory::new();
+            let path = directory.journal();
+            let (journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+            let mut reconciler = Reconciler::new(journal, Executor::default());
+            let plan = operation();
+            reconciler.accept(&plan).unwrap();
+
+            for _ in 0..crash_after {
+                reconciler.reconcile_once(plan.operation_id()).unwrap();
+            }
+            let executor = reconciler.executor;
+            drop(reconciler.journal);
+
+            let (journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+            let mut reconciler = Reconciler::new(journal, executor);
+            let mut terminal = false;
+            for _ in 0..16 {
+                if reconciler.reconcile_once(plan.operation_id()).unwrap()
+                    == ReconcileOutcome::Succeeded
+                {
+                    terminal = true;
+                    break;
+                }
+            }
+            assert!(terminal, "did not converge after boundary {crash_after}");
+            assert_eq!(reconciler.executor.apply_calls, 2);
+            assert_eq!(reconciler.executor.applied.len(), 2);
+        }
+    }
 }

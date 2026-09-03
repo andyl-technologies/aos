@@ -1608,4 +1608,63 @@ mod tests {
         ));
         assert_eq!(fs::metadata(path).unwrap().len(), 0);
     }
+
+    #[test]
+    fn every_transaction_frame_boundary_recovers_atomically() {
+        let records = vec![
+            JournalRecord::put(
+                RecordNamespace::DesiredState,
+                b"sandbox".to_vec(),
+                b"running".to_vec(),
+            ),
+            JournalRecord::put(
+                RecordNamespace::Operation,
+                b"operation".to_vec(),
+                b"applying".to_vec(),
+            ),
+            JournalRecord::put(
+                RecordNamespace::Effect,
+                b"effect".to_vec(),
+                b"planned".to_vec(),
+            ),
+        ];
+        let transaction = transaction(1, records);
+        let frames = encode_transaction(&transaction, 1).unwrap();
+
+        for persisted_frames in 0..=frames.len() {
+            let directory = TestDirectory::new(&format!("frame-boundary-{persisted_frames}"));
+            let path = directory.journal();
+            let (journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+            drop(journal);
+
+            let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+            for frame in frames.iter().take(persisted_frames) {
+                file.write_all(frame).unwrap();
+            }
+            file.sync_data().unwrap();
+            drop(file);
+
+            let (journal, report) = Journal::open(&path, JournalLimits::default()).unwrap();
+            if persisted_frames == frames.len() {
+                assert_eq!(report.committed_transactions, 1);
+                assert_eq!(
+                    journal.get(RecordNamespace::DesiredState, b"sandbox"),
+                    Some(b"running".as_slice())
+                );
+                assert_eq!(
+                    journal.get(RecordNamespace::Operation, b"operation"),
+                    Some(b"applying".as_slice())
+                );
+                assert_eq!(
+                    journal.get(RecordNamespace::Effect, b"effect"),
+                    Some(b"planned".as_slice())
+                );
+            } else {
+                assert_eq!(report.committed_transactions, 0);
+                assert!(report.truncated_bytes > 0 || persisted_frames == 0);
+                assert_eq!(journal.get(RecordNamespace::DesiredState, b"sandbox"), None);
+                assert_eq!(fs::metadata(path).unwrap().len(), 0);
+            }
+        }
+    }
 }
