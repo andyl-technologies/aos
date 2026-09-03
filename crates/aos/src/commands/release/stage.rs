@@ -29,6 +29,7 @@ const MAX_DEPLOYMENT_ID_BYTES: usize = 1024;
 pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()> {
     let captured = capture::bundle(&args.bundle)?;
     let trusted_keys = verify::load_trusted_keys(&args.trusted_keys)?;
+    let receipt_keys = verify::load_trusted_keys(&args.hub_receipt_keys)?;
     let summary = aos_release::verify::verify_release(
         &captured.plan_bytes,
         &captured.manifest_bytes,
@@ -102,7 +103,7 @@ pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()
     if Sha256Digest::of_bytes(&receipt_bytes).to_string() != signed.receipt_digest {
         bail!("staging Hub receipt digest does not match its signed bytes");
     }
-    let receipt_keys = trusted_keys
+    let receipt_keys = receipt_keys
         .iter()
         .map(|key| (key.key_id.clone(), key.public_key))
         .collect::<BTreeMap<_, _>>();

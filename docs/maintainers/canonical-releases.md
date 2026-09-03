@@ -229,6 +229,7 @@ aos release stage \
   --bundle release-bundle \
   --journal release-bundle/release-journal.jsonl \
   --trusted-key release-2026=/media/keys/release-2026.pub \
+  --hub-receipt-key staging-hub-2026=/media/keys/staging-hub-2026.pub \
   --output release-staging
 ```
 
@@ -236,7 +237,9 @@ Before any upload, the command verifies the complete bundle, signature
 threshold, and exact `Finalized` journal precondition. It checks the public
 deployment identity before and after upload, reads every committed object back
 anonymously through the public registry route, and compares its exact SHA-256
-and size. The new directory contains `staging-receipt.json` and a successor
+and size. The Hub receipt is verified with an independently pinned,
+environment-specific receipt key rather than a release-manifest key. The new
+directory contains `staging-receipt.json` and a successor
 `release-journal.jsonl`; existing paths are never replaced.
 
 ## Verify a captured bundle offline
