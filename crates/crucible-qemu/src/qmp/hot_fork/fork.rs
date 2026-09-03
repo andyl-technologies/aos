@@ -239,6 +239,24 @@ pub struct QmpHotForkState {
 }
 
 impl QmpHotForkState {
+    #[cfg(test)]
+    pub(crate) const fn for_test(
+        request: QmpHotForkRequest,
+        outcome: QmpHotForkOutcome,
+        child_pid: i64,
+    ) -> Self {
+        let parent_status = match outcome {
+            QmpHotForkOutcome::Forked => 0,
+            QmpHotForkOutcome::ParentDispositionFailed => -1,
+        };
+        Self {
+            request,
+            outcome,
+            parent_status,
+            child_pid,
+        }
+    }
+
     /// Returns the exact request basis echoed by QEMU.
     #[must_use]
     pub const fn request(self) -> QmpHotForkRequest {
@@ -335,6 +353,7 @@ pub(crate) fn parse_hot_fork_state(
     if unsigned("schema-version")? != u64::from(QMP_HOT_FORK_SCHEMA_VERSION)
         || echoed != request
         || child_pid <= 0
+        || child_pid > i64::from(i32::MAX)
         || !outcome_valid
     {
         return Err(malformed());
@@ -391,6 +410,10 @@ mod tests {
         let mut wrong_status = response.clone();
         wrong_status["parent-status"] = json!(-5);
         assert!(parse_hot_fork_state(&wrong_status, request()).is_err());
+
+        let mut oversized_pid = response.clone();
+        oversized_pid["child-pid"] = json!(i64::from(i32::MAX) + 1);
+        assert!(parse_hot_fork_state(&oversized_pid, request()).is_err());
 
         let mut failed = response;
         failed["outcome"] = json!("parent-disposition-failed");

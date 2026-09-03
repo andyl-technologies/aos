@@ -139,6 +139,14 @@ where
     }
 
     #[cfg(target_os = "linux")]
+    fn hot_fork(
+        &mut self,
+        request: crate::QmpHotForkRequest,
+    ) -> Result<crate::QmpHotForkState, crate::QemuHotForkCommandError> {
+        self.vmstate.hot_fork(request)
+    }
+
+    #[cfg(target_os = "linux")]
     fn install_hot_fork_private_ring_descriptor(
         &mut self,
         name: &crate::QmpDescriptorName,
