@@ -63,8 +63,9 @@ they gate any affected runtime backend.
 - [x] **SBX-CORE-07** Implement the canonical portable CBOR profile with
   bounds, duplicate-key rejection, canonical map ordering, and domain-separated
   digests (`SBX-CORE-06`; `d53ea5e7e..bfdaf2faa`).
-- [ ] **SBX-CORE-08** Implement descriptor, media-type, feature, and protocol
-  registries with unknown-required-feature rejection (`SBX-CORE-06`).
+- [x] **SBX-CORE-08** Implement descriptor, media-type, feature, and protocol
+  registries with unknown-required-feature rejection (`SBX-CORE-06`;
+  `d99883388`).
 - [ ] **SBX-CORE-09** Implement signing and trust-envelope verification over
   canonical bytes (`SBX-CORE-07`, `SBX-CORE-08`).
 - [ ] **SBX-CORE-10** Make all RFC golden vectors and negative decoder vectors
@@ -268,3 +269,6 @@ completes. The Git history remains authoritative for code details.
 - `d53ea5e7e`, `bfdaf2faa` — `SBX-CORE-07`: allocation-bounded deterministic
   CBOR, canonical set/map ordering, exact codecs for every portable v1 object,
   domain-separated descriptors, and executable root format vectors.
+- `d99883388` — `SBX-CORE-08`: closed media-type, descriptor-role, feature,
+  signature-purpose, and independent protocol-domain registries with
+  fail-closed decoding and negotiation.
