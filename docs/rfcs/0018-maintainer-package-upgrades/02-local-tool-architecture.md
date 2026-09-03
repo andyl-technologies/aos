@@ -75,6 +75,7 @@ commands/maintain/validation.rs
 commands/maintain/evidence.rs
 commands/maintain/git.rs
 commands/maintain/state.rs
+commands/maintain/presentation.rs
 ```
 
 Network transfer and SRI hashing should reuse/refactor the AOS machinery behind
@@ -83,6 +84,11 @@ operations reuse existing AOS process/repository abstractions where their
 contracts are strong enough.
 
 ## Command surface
+
+`aos maintain` with no subcommand renders a read-only home view from current
+inventory and cached observations. It does not refresh discovery or modify
+source. The complete interaction and rendering contract is defined in
+[`09-maintainer-interface.md`](09-maintainer-interface.md).
 
 ### Inventory and discovery
 
@@ -115,7 +121,8 @@ contracts are strong enough.
 | Command | Effect |
 | --- | --- |
 | `aos maintain status [RUN]` | Concise current state and next action |
-| `aos maintain inspect RUN` | Full plan, diff, attempts, gates, logs, evidence, and budget view |
+| `aos maintain inspect RUN` | Full run plan, diff, attempts, gates, logs, evidence, and budget view |
+| `aos maintain inspect --plan PLAN` | Full immutable plan, policy, impact, risk, gate, and budget view before execution |
 | `aos maintain diff RUN` | Exact worktree and semantic inventory diff |
 | `aos maintain accept RUN` | Record maintainer acceptance of the current candidate edit |
 | `aos maintain commit RUN` | Commit the accepted tree using reviewed text and maintainer Git identity |
@@ -124,11 +131,23 @@ contracts are strong enough.
 | `aos maintain publish-pr RUN` | Explicitly push the branch and create/update its PR |
 | `aos maintain abandon RUN` | Mark the run abandoned without deleting its evidence or worktree |
 | `aos maintain clean RUN` | Remove a completed/abandoned worktree after confirmation |
+| `aos maintain ui [RUN]` | Open the optional read-only full-screen cockpit when terminal capabilities permit |
 
-All commands support stable `--json` output where meaningful. Human output is a
-rendering of the same typed result. Exit codes distinguish no-change, pending
-human action, test failure, upstream unknown, quarantine, stale plan,
-infrastructure failure, and invalid invocation.
+All commands produce one typed result. Human, plain, and stable `--json` output
+render that result; mutually exclusive `--jsonl` renders typed events and one
+mandatory terminal result event for long-running consumers. Human explanation
+and progress go to stderr while requested data and primary values go to stdout.
+Machine modes never prompt or emit terminal controls. Exit codes distinguish
+no-change, pending human action, test failure, upstream unknown, quarantine,
+stale plan, infrastructure failure, and invalid invocation.
+
+The CLI extends the existing AOS `Printer`, `indicatif`, `console`, color, and
+progress-mode conventions with a maintenance-specific typed renderer. It
+centralizes terminal capability detection, removes ambient `atty` checks in
+favor of `std::io::IsTerminal`, and never derives durable state from display
+output. `--screen-reader` selects ASCII, no-color, non-animated output. An
+operation-specific prompt binds the exact plan/tree/head digest; there is no
+global approval flag.
 
 High-level commands compose these operations rather than implement alternate
 semantics. A maintainer can always stop after a stage and run the lower-level
