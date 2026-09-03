@@ -188,8 +188,97 @@ impl ReleaseManifestV1 {
         if !required_gates.is_subset(&passed_gates) {
             bail!("manifest lacks passing evidence for every selected required gate");
         }
+        if plan.release_class.requires_complete_matrix() {
+            validate_production_supply_chain(self, &artifacts)?;
+            validate_production_images(self, &artifacts)?;
+        }
         Ok(())
     }
+}
+
+fn validate_production_supply_chain(
+    manifest: &ReleaseManifestV1,
+    artifacts: &BTreeMap<&str, &ArtifactRecord>,
+) -> Result<()> {
+    for kind in [
+        ArtifactKind::RegistryObject,
+        ArtifactKind::NarInfo,
+        ArtifactKind::TufMetadata,
+        ArtifactKind::Source,
+        ArtifactKind::Provenance,
+        ArtifactKind::Sbom,
+        ArtifactKind::License,
+    ] {
+        if !manifest
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.kind == kind)
+        {
+            bail!("production release lacks required {kind:?} artifact evidence");
+        }
+    }
+    for package in manifest
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == ArtifactKind::PackageNar)
+    {
+        let has_source = package.relationships.iter().any(|relationship| {
+            relationship.relation == crate::artifact::ArtifactRelation::CorrespondingSource
+                && artifacts
+                    .get(relationship.target.as_str())
+                    .is_some_and(|target| target.kind == ArtifactKind::Source)
+        });
+        let has_license = package.relationships.iter().any(|relationship| {
+            relationship.relation == crate::artifact::ArtifactRelation::LicensedBy
+                && artifacts
+                    .get(relationship.target.as_str())
+                    .is_some_and(|target| target.kind == ArtifactKind::License)
+        });
+        if !has_source || !has_license {
+            bail!(
+                "production package {} lacks exact corresponding-source or license evidence",
+                package.id
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_production_images(
+    manifest: &ReleaseManifestV1,
+    artifacts: &BTreeMap<&str, &ArtifactRecord>,
+) -> Result<()> {
+    let required = [
+        ArtifactKind::LogicalDisk,
+        ArtifactKind::RawImage,
+        ArtifactKind::Qcow2Image,
+        ArtifactKind::VmdkImage,
+        ArtifactKind::VhdImage,
+        ArtifactKind::Uki,
+        ArtifactKind::RecoveryUki,
+        ArtifactKind::RecoveryBundle,
+        ArtifactKind::ImageMetadata,
+    ];
+    for image in &manifest.images {
+        for cell in &image.platforms {
+            let MatrixCell::Artifact { artifact } = &cell.decision else {
+                bail!("production image matrix contains a non-artifact cell");
+            };
+            let kinds = artifact
+                .artifact_ids
+                .iter()
+                .filter_map(|id| artifacts.get(id.as_str()).map(|artifact| artifact.kind))
+                .collect::<BTreeSet<_>>();
+            if required.iter().any(|kind| !kinds.contains(kind)) {
+                bail!(
+                    "production image {}/{} lacks its complete finalized format set",
+                    image.system_variant,
+                    cell.platform
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// One request and response embedded in the signed manifest envelope.
@@ -273,13 +362,24 @@ fn validate_final_cells(
                     artifact: planned_set,
                 },
             ) => {
+                let planned_ids: Vec<_> = planned_set
+                    .artifacts
+                    .iter()
+                    .map(|artifact| artifact.id.as_str())
+                    .collect();
                 if final_set.artifact_ids.is_empty()
-                    || final_set.artifact_ids != planned_set.artifact_ids
+                    || !final_set
+                        .artifact_ids
+                        .iter()
+                        .map(String::as_str)
+                        .eq(planned_ids.iter().copied())
                 {
                     bail!("final artifact ids differ from the planned cell");
                 }
                 let mut unique = BTreeSet::new();
-                for id in &final_set.artifact_ids {
+                for (id, planned_artifact) in
+                    final_set.artifact_ids.iter().zip(&planned_set.artifacts)
+                {
                     if !unique.insert(id) {
                         bail!("matrix cell contains duplicate artifact id {id}");
                     }
@@ -294,6 +394,15 @@ fn validate_final_cells(
                     }
                     if image && !artifact.kind.is_linux_image() {
                         bail!("image matrix cell references non-image artifact {id}");
+                    }
+                    if planned_artifact.derivation.is_some()
+                        && (artifact.derivation.as_deref()
+                            != planned_artifact.derivation.as_deref()
+                            || artifact.output.as_deref() != planned_artifact.output.as_deref()
+                            || artifact.store_path.as_deref()
+                                != planned_artifact.store_path.as_deref())
+                    {
+                        bail!("artifact {id} differs from its planned Nix identity");
                     }
                 }
             }

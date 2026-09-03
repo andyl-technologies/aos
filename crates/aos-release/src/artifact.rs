@@ -191,6 +191,8 @@ pub enum ArtifactRelation {
     Verifies,
     /// Artifact contains this dependency or source.
     Contains,
+    /// Artifact is distributed under the target license record.
+    LicensedBy,
     /// Artifact is corresponding source for the target.
     CorrespondingSource,
     /// Artifact documents the target.
@@ -274,11 +276,42 @@ impl ArtifactRecord {
         if nix_fields.iter().any(|present| *present) && !nix_fields.iter().all(|present| *present) {
             bail!("artifact {} has an incomplete Nix identity", self.id);
         }
+        if let (Some(derivation), Some(output), Some(store_path)) =
+            (&self.derivation, &self.output, &self.store_path)
+        {
+            require_store_path(derivation, true)?;
+            require_identifier(output, "artifact output name")?;
+            require_store_path(store_path, false)?;
+        }
         for relationship in &self.relationships {
             require_identifier(&relationship.target, "artifact relationship target")?;
         }
         Ok(())
     }
+}
+
+/// Validates one canonical Nix store path without consulting the store.
+///
+/// # Errors
+///
+/// Returns an error unless the path has an exact Nix base-32 store hash, a
+/// conservative name component, and the requested derivation suffix policy.
+pub fn require_store_path(value: &str, derivation: bool) -> Result<()> {
+    let Some(tail) = value.strip_prefix("/nix/store/") else {
+        bail!("Nix store path must begin with /nix/store/");
+    };
+    let Some((hash, name)) = tail.split_once('-') else {
+        bail!("Nix store path lacks its name separator");
+    };
+    const NIX_BASE32: &[u8] = b"0123456789abcdfghijklmnpqrsvwxyz";
+    if hash.len() != 32 || !hash.bytes().all(|byte| NIX_BASE32.contains(&byte)) {
+        bail!("Nix store path has an invalid store hash");
+    }
+    require_identifier(name, "Nix store path name")?;
+    if derivation != name.ends_with(".drv") {
+        bail!("Nix store path derivation suffix does not match its field");
+    }
+    Ok(())
 }
 
 /// Validates a stable public identifier used by the release schemas.

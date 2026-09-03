@@ -275,6 +275,32 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         return commands::image::run(command, printer).await;
     }
 
+    // Offline release verification uses captured files and public keys only.
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::Verify(args),
+    } = &cli.command
+    {
+        return commands::release::verify_offline(args, printer);
+    }
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::Status(args),
+    } = &cli.command
+    {
+        return commands::release::status_offline(args, printer);
+    }
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::Signer { command },
+    } = &cli.command
+    {
+        return commands::release::signer_offline(command, printer).await;
+    }
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::Stage(args),
+    } = &cli.command
+    {
+        return commands::release::stage_offline(args, printer).await;
+    }
+
     // Local VM runs use downloaded artifacts and host-side QEMU tools.
     if let Commands::Vm { command } = &cli.command {
         return commands::vm::run(command, printer);
@@ -365,6 +391,7 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
             *min_speed,
         ),
         Commands::Fmt { check, files } => commands::fmt::run(&nix, printer, *check, files),
+        Commands::Release { command } => commands::release::run(command, &nix, printer),
         Commands::Doc {
             source,
             path,

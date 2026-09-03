@@ -446,7 +446,8 @@ in rec {
     _aosDocType = {
       kind = "list";
       element =
-        elemType._aosDocType or {
+        elemType._aosDocType
+        or {
           kind = "opaque";
           signature = elemType.description;
         };
@@ -559,7 +560,8 @@ in rec {
     _aosDocType = {
       kind = "attrs-of";
       value =
-        elemType._aosDocType or {
+        elemType._aosDocType
+        or {
           kind = "opaque";
           signature = elemType.description;
         };
@@ -585,7 +587,8 @@ in rec {
     _aosDocType = {
       kind = "nullable";
       value =
-        elemType._aosDocType or {
+        elemType._aosDocType
+        or {
           kind = "opaque";
           signature = elemType.description;
         };
@@ -611,7 +614,8 @@ in rec {
       kind = "one-of";
       alternatives = builtins.map (
         type:
-          type._aosDocType or {
+          type._aosDocType
+          or {
             kind = "opaque";
             signature = type.description;
           }
@@ -648,7 +652,8 @@ in rec {
       alternatives =
         builtins.map (
           type:
-            type._aosDocType or {
+            type._aosDocType
+            or {
               kind = "opaque";
               signature = type.description;
             }
@@ -766,7 +771,8 @@ in rec {
     in
       toType.merge loc coerced;
     _aosDocType =
-      toType._aosDocType or {
+      toType._aosDocType
+      or {
         kind = "opaque";
         signature = toType.description;
       };
@@ -808,7 +814,8 @@ in rec {
       then elemType.merge loc [first]
       else throw "The option '${showLoc loc}' has conflicting definitions. It must have a unique value.";
     _aosDocType =
-      elemType._aosDocType or {
+      elemType._aosDocType
+      or {
         kind = "opaque";
         signature = elemType.description;
       };
