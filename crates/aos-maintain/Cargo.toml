@@ -1,0 +1,14 @@
+[package]
+name = "aos-maintain"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+aos-contract = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
