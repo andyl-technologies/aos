@@ -6,7 +6,7 @@
 //! tree to its caller-selected output. It never edits or advances a ref in the
 //! maintainer's authoring clone.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -19,6 +19,8 @@ use sha2::{Digest as _, Sha256};
 
 use super::parse::parse_registry_matching;
 use super::store::StoreMap;
+use crate::config::ApmConfig;
+use crate::provenance::ProvenanceSigner;
 use crate::types::{validate_package_name, validate_registry_name};
 
 /// Schema identifier for an atomic registry authoring request.
@@ -41,6 +43,99 @@ pub struct RegistryReleaseEntry {
     pub platform: String,
     /// Exact realized store output expected in the catalog.
     pub store_path: String,
+}
+
+/// Public catalog metadata used to author every platform entry for a package.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryPackagePublication {
+    /// Human-readable package purpose.
+    pub description: String,
+    /// Optional canonical project home page.
+    pub homepage: Option<String>,
+    /// SPDX-compatible license expression.
+    pub license_expression: String,
+    /// Nonempty public maintainer identities.
+    pub maintainers: Vec<String>,
+}
+
+/// Authors planned package entries through externally backed provenance.
+pub struct CanonicalRegistryEntryAuthor<'a> {
+    config: &'a ApmConfig,
+    registry: &'a str,
+    publications: &'a BTreeMap<String, RegistryPackagePublication>,
+    signer: &'a mut dyn ProvenanceSigner,
+    printer: &'a aos_core::output::Printer,
+}
+
+impl<'a> CanonicalRegistryEntryAuthor<'a> {
+    /// Creates an author bound to one registry and closed metadata map.
+    #[must_use]
+    pub fn new(
+        config: &'a ApmConfig,
+        registry: &'a str,
+        publications: &'a BTreeMap<String, RegistryPackagePublication>,
+        signer: &'a mut dyn ProvenanceSigner,
+        printer: &'a aos_core::output::Printer,
+    ) -> Self {
+        Self {
+            config,
+            registry,
+            publications,
+            signer,
+            printer,
+        }
+    }
+}
+
+#[async_trait]
+impl RegistryEntryAuthor for CanonicalRegistryEntryAuthor<'_> {
+    async fn author_entry(
+        &mut self,
+        isolated_registry: &Path,
+        entry: &RegistryReleaseEntry,
+    ) -> Result<()> {
+        let publication = self
+            .publications
+            .get(&entry.name)
+            .with_context(|| format!("missing publication metadata for {}", entry.name))?;
+        validate_publication(publication, &entry.name)?;
+        let maintainer = publication.maintainers.join(", ");
+        crate::registry_ops::publish_canonical_release_entry(
+            self.config,
+            isolated_registry,
+            self.registry,
+            &entry.store_path,
+            &entry.name,
+            &entry.version,
+            &entry.platform,
+            &publication.description,
+            publication.homepage.as_deref(),
+            &publication.license_expression,
+            &maintainer,
+            self.signer,
+            self.printer,
+        )
+        .await
+    }
+}
+
+fn validate_publication(publication: &RegistryPackagePublication, package: &str) -> Result<()> {
+    if publication.description.trim().is_empty()
+        || publication.license_expression.trim().is_empty()
+        || publication.maintainers.is_empty()
+        || publication.maintainers.iter().any(|maintainer| {
+            maintainer.trim().is_empty() || maintainer.chars().any(char::is_control)
+        })
+        || publication.description.chars().any(char::is_control)
+        || publication.license_expression.chars().any(char::is_control)
+        || publication.homepage.as_ref().is_some_and(|homepage| {
+            homepage.trim().is_empty() || homepage.chars().any(char::is_control)
+        })
+    {
+        bail!("invalid publication metadata for package {package}");
+    }
+    Ok(())
 }
 
 /// Digests expected after all entries have been materialized.
@@ -224,6 +319,16 @@ pub trait RegistryEntryAuthor {
         isolated_registry: &Path,
         entry: &RegistryReleaseEntry,
     ) -> Result<()>;
+}
+
+/// Verifies an independently supplied trust line against the committed roster.
+///
+/// # Errors
+///
+/// Returns an error when the key id is malformed, missing, revoked, or bound
+/// to different public key material in `keys.toml`.
+pub fn require_active_signing_key(registry: &Path, key_id: &str, trusted_key: &str) -> Result<()> {
+    crate::registry_ops::require_active_registry_key(registry, key_id, trusted_key)
 }
 
 impl RegistryReleaseTransaction {

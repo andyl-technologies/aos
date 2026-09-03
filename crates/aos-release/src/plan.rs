@@ -408,10 +408,19 @@ impl ReleasePlanV1 {
         }
 
         let mut roles = BTreeSet::new();
+        let mut signer_key_roles = std::collections::BTreeMap::new();
         for signer in &self.signers {
             signer.validate()?;
             if !roles.insert(signer.role) {
                 bail!("release plan contains duplicate signer role policy");
+            }
+            for key_id in &signer.key_ids {
+                if let Some(previous_role) = signer_key_roles.insert(key_id, signer.role) {
+                    bail!(
+                        "release signer key id {key_id} is shared by {previous_role:?} and {:?}",
+                        signer.role
+                    );
+                }
             }
         }
         for required in [

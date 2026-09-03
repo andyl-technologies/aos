@@ -8,6 +8,7 @@ mod build;
 mod capture;
 mod channel;
 mod finalize_image;
+mod finalize_registry;
 mod hub_transition;
 mod plan;
 mod promote;
@@ -36,6 +37,9 @@ pub fn run(command: &ReleaseCommand, nix: &NixRunner, printer: &Printer) -> Resu
         ReleaseCommand::Status(args) => status::run(args, printer),
         ReleaseCommand::FinalizeImage(_) => {
             anyhow::bail!("release image finalization must use the asynchronous dispatcher")
+        }
+        ReleaseCommand::FinalizeRegistry(_) => {
+            anyhow::bail!("release registry finalization must use the asynchronous dispatcher")
         }
         ReleaseCommand::Timestamp { .. } => {
             anyhow::bail!("release timestamp command must use the asynchronous offline dispatcher")
@@ -86,6 +90,19 @@ pub async fn finalize_image(
     printer: &Printer,
 ) -> Result<()> {
     finalize_image::run(args, nix, printer).await
+}
+
+/// Authors and signs one complete isolated canonical registry transaction.
+///
+/// # Errors
+///
+/// Returns an error for plan/build/transaction drift, untrusted provider
+/// output, incomplete authoring, surface mismatch, or non-atomic persistence.
+pub async fn finalize_registry(
+    args: &crate::cli::ReleaseFinalizeRegistryArgs,
+    printer: &Printer,
+) -> Result<()> {
+    finalize_registry::run(args, printer).await
 }
 
 /// Stages one finalized release without constructing a Nix environment.

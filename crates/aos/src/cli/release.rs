@@ -19,6 +19,8 @@ pub enum ReleaseCommand {
     },
     /// Finalize one Linux image assembly through external signers
     FinalizeImage(ReleaseFinalizeImageArgs),
+    /// Author and sign one isolated canonical registry release
+    FinalizeRegistry(ReleaseFinalizeRegistryArgs),
     /// Renew short-lived metadata without changing authorized content
     Timestamp {
         #[command(subcommand)]
@@ -203,6 +205,73 @@ pub struct ReleaseFinalizeImageArgs {
     /// New private finalization work directory containing the final output
     #[arg(long)]
     pub work: PathBuf,
+}
+
+#[derive(Args)]
+pub struct ReleaseFinalizeRegistryArgs {
+    /// Canonical release plan authorizing the registry transaction
+    #[arg(long)]
+    pub plan: PathBuf,
+
+    /// Validated build report containing every transaction store output
+    #[arg(long)]
+    pub build_report: PathBuf,
+
+    /// Reviewed atomic registry transaction with expected surface digests
+    #[arg(long)]
+    pub transaction: PathBuf,
+
+    /// Clean authoring registry at the exact planned base commit
+    #[arg(long)]
+    pub source_registry: PathBuf,
+
+    /// New isolated registry directory; existing paths are never replaced
+    #[arg(long)]
+    pub output: PathBuf,
+
+    /// New canonical finalization result JSON
+    #[arg(long)]
+    pub result: PathBuf,
+
+    /// Absolute path to the deployment-configured signer executable
+    #[arg(long)]
+    pub signer_executable: PathBuf,
+
+    /// Provenance roster key and public trust line as KEY_ID=PATH
+    #[arg(long, value_name = "KEY_ID=PATH")]
+    pub provenance_key: String,
+
+    /// Registry roster key and public trust line as KEY_ID=PATH
+    #[arg(long, value_name = "KEY_ID=PATH")]
+    pub registry_key: String,
+
+    /// Provider verification identity expected for provenance operations
+    #[arg(long)]
+    pub provenance_verification_identity: String,
+
+    /// Provider verification identity expected for registry operations
+    #[arg(long)]
+    pub registry_verification_identity: String,
+
+    /// Maximum duration of each external signer operation in seconds
+    #[arg(long, default_value_t = 120)]
+    pub signer_timeout_seconds: u64,
+
+    /// Public Git author and tagger name
+    #[arg(long)]
+    pub git_name: String,
+
+    /// Public Git author and tagger email
+    #[arg(long)]
+    pub git_email: String,
+
+    /// Frozen Git author and tagger time as Unix seconds
+    #[arg(long)]
+    pub git_unix_seconds: i64,
+
+    /// Frozen timezone offset in minutes east of UTC
+    #[arg(long, default_value_t = 0)]
+    pub git_offset_minutes: i32,
 }
 
 #[derive(Args)]
@@ -602,6 +671,46 @@ mod tests {
                 "/var/lib/aos-release/work",
             ])
             .is_err()
+        );
+    }
+
+    #[test]
+    fn registry_finalization_requires_both_public_role_keys() {
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "release",
+                "finalize-registry",
+                "--plan",
+                "release-plan.json",
+                "--build-report",
+                "build-report.json",
+                "--transaction",
+                "registry-transaction.json",
+                "--source-registry",
+                "registry",
+                "--output",
+                "isolated-registry",
+                "--result",
+                "registry-result.json",
+                "--signer-executable",
+                "/opt/aos/signer",
+                "--provenance-key",
+                "provenance=provenance.pub",
+                "--registry-key",
+                "registry=registry.pub",
+                "--provenance-verification-identity",
+                "provider-provenance",
+                "--registry-verification-identity",
+                "provider-registry",
+                "--git-name",
+                "AOS Release",
+                "--git-email",
+                "release@example.invalid",
+                "--git-unix-seconds",
+                "1",
+            ])
+            .is_ok()
         );
     }
 }
