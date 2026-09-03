@@ -29,6 +29,48 @@ pub struct NewReleaseBundle {
     pub production_deployment_id: String,
 }
 
+/// Persisted immutable release identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseBundleRecord {
+    /// Bundle digest.
+    pub bundle_digest: String,
+    /// Owning registry id.
+    pub registry_id: i64,
+    /// Immutable release id.
+    pub release_id: String,
+    /// Signed release-manifest digest.
+    pub manifest_digest: String,
+    /// Frozen registry base commit.
+    pub registry_base_commit: String,
+    /// Expected staging deployment.
+    pub staging_deployment_id: String,
+    /// Expected production deployment.
+    pub production_deployment_id: String,
+}
+
+/// Persisted environment-signed publication receipt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseBundlePublicationRecord {
+    /// Bundle digest.
+    pub bundle_digest: String,
+    /// Owning registry id.
+    pub registry_id: i64,
+    /// `staging` or `production`.
+    pub environment: String,
+    /// Generic registry publication id.
+    pub publication_id: String,
+    /// Deployment that issued the receipt.
+    pub deployment_id: String,
+    /// Receipt digest.
+    pub receipt_digest: String,
+    /// Canonical signed receipt JSON.
+    pub receipt_json: String,
+    /// Exact staging predecessor for production.
+    pub staging_receipt_digest: Option<String>,
+    /// Commit time as Unix seconds.
+    pub committed_at: i64,
+}
+
 /// One environment publication of an admitted bundle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewReleaseBundlePublication {
@@ -117,6 +159,78 @@ pub struct NewReleaseChannelOperation {
 }
 
 impl Database {
+    /// Returns an admitted release bundle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed identity, persisted-data corruption, or
+    /// storage failure.
+    pub async fn release_bundle(&self, bundle_digest: &str) -> Result<Option<ReleaseBundleRecord>> {
+        validate_key_bytes(bundle_digest, "release bundle digest", 128)?;
+        self.backend
+            .query_opt(
+                "SELECT bundle_digest, registry_id, release_id, manifest_digest,
+                    registry_base_commit, staging_deployment_id,
+                    production_deployment_id
+               FROM release_bundles WHERE bundle_digest = ?1",
+                &vals![bundle_digest],
+            )
+            .await?
+            .map(|row| {
+                Ok(ReleaseBundleRecord {
+                    bundle_digest: row.get(0)?,
+                    registry_id: row.get(1)?,
+                    release_id: row.get(2)?,
+                    manifest_digest: row.get(3)?,
+                    registry_base_commit: row.get(4)?,
+                    staging_deployment_id: row.get(5)?,
+                    production_deployment_id: row.get(6)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Returns one bundle's receipt for an isolated environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed identity or environment, persisted-data
+    /// corruption, or storage failure.
+    pub async fn release_bundle_publication(
+        &self,
+        bundle_digest: &str,
+        environment: &str,
+    ) -> Result<Option<ReleaseBundlePublicationRecord>> {
+        validate_key_bytes(bundle_digest, "release bundle digest", 128)?;
+        if !matches!(environment, "staging" | "production") {
+            bail!("release publication environment is invalid");
+        }
+        self.backend
+            .query_opt(
+                "SELECT bundle_digest, registry_id, environment, publication_id,
+                    deployment_id, receipt_digest, receipt_json,
+                    staging_receipt_digest, committed_at
+               FROM release_bundle_publications
+              WHERE bundle_digest = ?1 AND environment = ?2",
+                &vals![bundle_digest, environment],
+            )
+            .await?
+            .map(|row| {
+                Ok(ReleaseBundlePublicationRecord {
+                    bundle_digest: row.get(0)?,
+                    registry_id: row.get(1)?,
+                    environment: row.get(2)?,
+                    publication_id: row.get(3)?,
+                    deployment_id: row.get(4)?,
+                    receipt_digest: row.get(5)?,
+                    receipt_json: row.get(6)?,
+                    staging_receipt_digest: row.get(7)?,
+                    committed_at: row.get(8)?,
+                })
+            })
+            .transpose()
+    }
+
     /// Admits an immutable release identity backed by a ready publication.
     ///
     /// Exact retries return successfully. Any reuse of a release or digest for

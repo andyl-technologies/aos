@@ -108,6 +108,39 @@ pub struct QualificationReceiptV1 {
     pub qualified_at: String,
 }
 
+impl QualificationReceiptV1 {
+    /// Validates qualification identity, policy, result, nonce, and time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported schema, malformed identity or
+    /// nonce, a non-passing gate, or a non-UTC timestamp.
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != "aos.release.qualification-receipt/v1" {
+            bail!("unsupported qualification receipt schema");
+        }
+        require_identifier(&self.policy_id, "qualification policy id")?;
+        require_identifier(&self.authority_id, "qualification authority id")?;
+        if self.nonce.len() != 64
+            || !self
+                .nonce
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            bail!("qualification nonce must be 32 bytes of lowercase hexadecimal");
+        }
+        if self.result != GateResult::Passed {
+            bail!("qualification receipt is not passing");
+        }
+        if !self.qualified_at.ends_with('Z')
+            || humantime::parse_rfc3339(&self.qualified_at).is_err()
+        {
+            bail!("qualification timestamp must be RFC 3339 UTC");
+        }
+        Ok(())
+    }
+}
+
 /// Compare-and-swap receipt for one signed channel partition operation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
