@@ -296,6 +296,33 @@ impl SigningRequestV1 {
         self.validate()?;
         Sha256Digest::of_canonical(SIGNING_REQUEST_DOMAIN, self)
     }
+
+    /// Verifies that public payload bytes have the request's declared identity.
+    ///
+    /// Canonical release-manifest and TUF payloads use their protocol domain;
+    /// other signer payloads bind their exact raw bytes. This lets a provider
+    /// receive auditable source bytes without weakening domain separation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the bytes do not produce `payload_digest` under
+    /// the operation's required digest domain.
+    pub fn verify_payload_bytes(&self, payload: &[u8]) -> Result<()> {
+        self.validate()?;
+        let found = match &self.context {
+            SigningContext::Tuf { metadata_role, .. } => {
+                Sha256Digest::separated(&format!("aos.release.tuf-{metadata_role}/v1"), payload)
+            }
+            SigningContext::Payload { artifact_kind } if artifact_kind == "release-manifest" => {
+                Sha256Digest::separated("aos.release.manifest/v1", payload)
+            }
+            _ => Sha256Digest::of_bytes(payload),
+        };
+        if found != self.payload_digest {
+            bail!("signer payload does not match the request digest");
+        }
+        Ok(())
+    }
 }
 
 /// Public result returned by an external signing adapter.
@@ -684,5 +711,20 @@ mod tests {
 
         request.role = SignerRole::TufStable;
         assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn canonical_metadata_payloads_retain_domain_separation() -> Result<()> {
+        let mut request = request();
+        request.role = SignerRole::TufStable;
+        request.context = SigningContext::Tuf {
+            metadata_role: "stable".to_owned(),
+            metadata_version: 1,
+        };
+        request.payload_digest = Sha256Digest::separated("aos.release.tuf-stable/v1", b"metadata");
+        request.verify_payload_bytes(b"metadata")?;
+        assert!(request.verify_payload_bytes(b"changed").is_err());
+        assert_ne!(request.payload_digest, Sha256Digest::of_bytes(b"metadata"));
+        Ok(())
     }
 }
