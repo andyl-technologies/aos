@@ -1909,6 +1909,12 @@ message PromoteReleasePublicationRequest {
   string expected_deployment_id = 4;
   string staging_receipt_digest = 5;
   string qualification_digest = 6;
+  // Exact staging envelope verified against the pinned staging deployment key.
+  string signed_staging_receipt_json = 7;
+  // Canonical qualification payload carried by signed_qualification_json.
+  string qualification_receipt_json = 8;
+  // Exact qualification envelope verified against a pinned authority key.
+  string signed_qualification_json = 9;
 }
 
 message GetReleaseReceiptRequest {

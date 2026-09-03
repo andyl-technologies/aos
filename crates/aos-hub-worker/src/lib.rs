@@ -286,6 +286,8 @@ mod entry {
     const HUB_RELEASE_RECEIPT_SIGNING_SEED: &str = "HUB_RELEASE_RECEIPT_SIGNING_SEED";
     /// Stable public key id for environment receipts.
     const HUB_RELEASE_RECEIPT_KEY_ID: &str = "HUB_RELEASE_RECEIPT_KEY_ID";
+    /// JSON map of trusted Hub receipt key ids to standard-base64 public keys.
+    const HUB_RELEASE_PUBLICATION_KEYS: &str = "HUB_RELEASE_PUBLICATION_KEYS";
     /// JSON map of qualification key ids to standard-base64 public keys.
     const HUB_QUALIFICATION_KEYS: &str = "HUB_QUALIFICATION_KEYS";
     /// Staged request-execution cutover: `off`, `read`, or `on`.
@@ -648,15 +650,21 @@ mod entry {
         let release_evidence = match (
             env.secret(HUB_RELEASE_RECEIPT_SIGNING_SEED).ok(),
             env.var(HUB_RELEASE_RECEIPT_KEY_ID).ok(),
+            env.secret(HUB_RELEASE_PUBLICATION_KEYS).ok(),
             env.secret(HUB_QUALIFICATION_KEYS).ok(),
         ) {
-            (Some(seed), Some(key_id), Some(keys)) => {
+            (Some(seed), Some(key_id), Some(publication_keys), Some(qualification_keys)) => {
                 let deployment_id = env.var(HUB_DEPLOYMENT_ID).map_err(|_| {
                     worker::Error::RustError(format!(
                         "{HUB_DEPLOYMENT_ID} is required with release receipt signing"
                     ))
                 })?;
-                let keys = serde_json::from_str(&keys.to_string()).map_err(|error| {
+                let publication_keys = serde_json::from_str(&publication_keys.to_string()).map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "{HUB_RELEASE_PUBLICATION_KEYS} is invalid: {error}"
+                    ))
+                })?;
+                let qualification_keys = serde_json::from_str(&qualification_keys.to_string()).map_err(|error| {
                     worker::Error::RustError(format!(
                         "{HUB_QUALIFICATION_KEYS} is invalid: {error}"
                     ))
@@ -666,7 +674,8 @@ mod entry {
                         deployment_id.to_string(),
                         key_id.to_string(),
                         &seed.to_string(),
-                        keys,
+                        publication_keys,
+                        qualification_keys,
                     )
                     .map_err(|error| {
                         worker::Error::RustError(format!(
@@ -675,10 +684,10 @@ mod entry {
                     })?,
                 ) as Arc<dyn aos_hub_core::release_evidence::ReleaseEvidenceAuthority>)
             }
-            (None, None, None) => None,
+            (None, None, None, None) => None,
             _ => {
                 return Err(worker::Error::RustError(format!(
-                    "{HUB_RELEASE_RECEIPT_SIGNING_SEED}, {HUB_RELEASE_RECEIPT_KEY_ID}, and {HUB_QUALIFICATION_KEYS} must be configured together"
+                    "{HUB_RELEASE_RECEIPT_SIGNING_SEED}, {HUB_RELEASE_RECEIPT_KEY_ID}, {HUB_RELEASE_PUBLICATION_KEYS}, and {HUB_QUALIFICATION_KEYS} must be configured together"
                 )))
             }
         };

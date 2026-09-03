@@ -47,6 +47,26 @@ pub fn verify_signed_receipt<T>(
 where
     T: DeserializeOwned + Serialize,
 {
+    verify_signed_receipt_with_key(envelope_bytes, trusted_keys).map(|(_, receipt)| receipt)
+}
+
+/// Verifies and decodes a canonical signed receipt envelope with its key id.
+///
+/// This variant lets callers bind a receipt-level authority identity to the
+/// exact key selected by the envelope without reparsing security-sensitive
+/// bytes.
+///
+/// # Errors
+///
+/// Returns an error for noncanonical JSON, unknown keys, malformed payloads or
+/// signatures, or a failed domain-separated Ed25519 verification.
+pub fn verify_signed_receipt_with_key<T>(
+    envelope_bytes: &[u8],
+    trusted_keys: &BTreeMap<String, [u8; 32]>,
+) -> Result<(String, T)>
+where
+    T: DeserializeOwned + Serialize,
+{
     let envelope: SignedReceiptEnvelopeV1 =
         crate::canonical::from_slice(envelope_bytes, "signed release receipt")?;
     if envelope.schema_version != SIGNED_RECEIPT_V1
@@ -72,7 +92,7 @@ where
     let digest = Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, payload);
     key.verify(digest.as_bytes(), &signature)
         .context("verifying release receipt signature")?;
-    Ok(receipt)
+    Ok((envelope.key_id, receipt))
 }
 
 /// Isolated Hub environment named by a publication receipt.
@@ -105,7 +125,7 @@ pub struct PublicationReceiptV1 {
     pub bundle_digest: Sha256Digest,
     /// Hub-side publication operation id.
     pub operation_id: String,
-    /// Prior production receipt required for promoted imports.
+    /// Prior staging receipt required for promoted imports.
     pub staging_receipt_digest: Option<Sha256Digest>,
     /// RFC 3339 UTC commit time supplied by the Hub.
     pub committed_at: String,
