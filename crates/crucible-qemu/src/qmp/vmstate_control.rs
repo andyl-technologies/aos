@@ -11,10 +11,10 @@ use super::{
     QmpClient, QmpCommandComplete, QmpDescriptorName, QmpError, QmpHotForkAioHandlerInventory,
     QmpHotForkAioInventory, QmpHotForkBhTimerBarrierState, QmpHotForkBlockBackendInventory,
     QmpHotForkBlockBarrierState, QmpHotForkBlockSnapshotBinding, QmpHotForkBottomHalfInventory,
-    QmpHotForkChildRuntimeState, QmpHotForkMonitorInventory, QmpHotForkMutexInventory,
-    QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory, QmpHotForkRcuBarrierState,
-    QmpHotForkRcuInventory, QmpHotForkReadiness, QmpHotForkRequest, QmpHotForkState,
-    QmpHotForkTemplateState, QmpHotForkThreadInventory, QmpHotForkTimerInventory,
+    QmpHotForkChildProcessState, QmpHotForkChildRuntimeState, QmpHotForkMonitorInventory,
+    QmpHotForkMutexInventory, QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory,
+    QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkReadiness, QmpHotForkRequest,
+    QmpHotForkState, QmpHotForkTemplateState, QmpHotForkThreadInventory, QmpHotForkTimerInventory,
     QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 #[cfg(target_os = "linux")]
@@ -487,6 +487,35 @@ where
                 source: error.into(),
             }),
         }
+    }
+
+    /// Queries one exact source-QEMU child-process record through reap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the generation is unknown, the exchange
+    /// fails, or the response does not match the exact retained-state schema.
+    #[cfg(target_os = "linux")]
+    pub fn query_hot_fork_child_process(
+        &mut self,
+        generation: u64,
+    ) -> Result<QmpHotForkChildProcessState, QmpError> {
+        self.client.query_hot_fork_child_process(generation)
+    }
+
+    /// Releases one exact source-QEMU child-process record after reap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] while the child is running, when the generation is
+    /// unknown, when the exchange fails, or when the response does not match
+    /// the exact released-state schema.
+    #[cfg(target_os = "linux")]
+    pub fn release_hot_fork_child_process(
+        &mut self,
+        generation: u64,
+    ) -> Result<QmpHotForkChildProcessState, QmpError> {
+        self.client.release_hot_fork_child_process(generation)
     }
 
     /// Imports one held branch-private ring descriptor into the QEMU template.

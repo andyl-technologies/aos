@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "97d09453c99707d4c02f1d83e37265bcb5c1e84b4fc45e9c1815839e3d60f265";
+  patchBranchBundleSha256 = "49ae70532254007c77d59d2f44bd4c244aa2d46e578171f346d6f156ca1be9fc";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "e6703d0919f7643f3e761cf8430142b68c40d2e4";
+  patchBranchHeadCommit = "0cbc4f3d826066b5b753f641c47c691e6f9e404a";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1855,6 +1855,16 @@ let
       class = "F";
       enforces = "HFORK-3,HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "the public generation-bound QMP command now submits one retained template to the source main-loop coordinator, authenticates the immediate child, closes and exactly proves every inherited descriptor disposition, reconstructs the registered runtime and private plugin/QMP endpoints, releases the copied block barrier, and leaves the child paused behind a separately authenticated private-QMP readiness report; the parent preserves the exact child PID across disposition failure, while daemon direct-child quarantine, hard resource containment, modeled guest admission, and the full production flight remain open";
+    }
+    {
+      file = "0193-crucible-retain-hot-fork-child-status.patch";
+      branchSubject = "crucible: retain hot fork child status";
+      branchCommit = "0cbc4f3d826066b5b753f641c47c691e6f9e404a";
+      branchTree = "2bc0498d059e0b51cae61aae12745583cbdda33f";
+      catalogName = "crucible-hot-fork-parent-reap-status";
+      class = "F";
+      enforces = "HFORK-3,HFORK-4,HFORK-11,HFORK-22";
+      capability = "the source QEMU reserves one of 4096 unique child-process generations before fork, performs at most one nonblocking waitpid operation for each query or release, retains exact exit or signal status after reap, and requires explicit release before reuse so PID recycling cannot change the record; branch cgroup/pidfd transfer, daemon reconciliation, private-channel admission, and the full production flight remain open";
     }
   ];
   catalogOnlyCapabilities = [

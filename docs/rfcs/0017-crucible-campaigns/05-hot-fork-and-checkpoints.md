@@ -1359,6 +1359,43 @@ fork from a parent-disposition failure. That response is parent-only evidence:
 the host MUST retain direct-child authority and authenticate the private child
 channel before admitting the child.
 
+The source QEMU also owns the bounded parent-side reap record for each forked
+child:
+
+```text
+crucible-hot-fork-child-process(
+    action: query | release,
+    generation: u64 > 0,
+) -> CrucibleHotForkChildProcessState
+
+CrucibleHotForkChildProcessState {
+    schema-version: u32 = 1,
+    generation: u64,
+    child-pid: i64 > 0,
+    phase: running | exited | signaled,
+    status: u8,
+    retained: bool,
+}
+```
+
+Before `fork(2)`, the source reserves the request's unique nonzero
+`child-process-generation` in a fixed 4,096-record table. A duplicate
+generation or full table rejects the fork before a child exists. A successful
+fork binds the exact positive PID to that reservation. While the record is
+`running`, each `query` or `release` performs at most one EINTR-safe,
+nonblocking `waitpid(pid, WNOHANG)` operation in the source QEMU. Normal exit
+retains its exit code; signal termination retains the nonzero signal number.
+The record remains addressable after reap, so PID reuse cannot alter its
+identity or result. `release` rejects a running child and is the only operation
+that removes a reaped record; its returned state has `retained = false`.
+
+This query-driven design deliberately installs no ambient child watcher or
+callback that an immediate child could inherit during a later fork. The daemon
+uses its independently retained pidfd/cgroup authority to observe or terminate
+the process, then asks the source QEMU to reap and report the exact generation.
+The numeric PID and retained status record are evidence, not daemon-owned
+process authority.
+
 The Rust host boundary now makes that ordering linear. The node operation
 accepts an explicit child-process owner and returns a launch token only after
 that owner authenticates and retains the exact source PID, child PID, and
@@ -1371,10 +1408,10 @@ direct-child wait handle.
 
 This is an interface checkpoint, not the concrete daemon process owner. The
 forked process is a direct child of the template QEMU rather than of the daemon.
-Production composition therefore still requires parent-QEMU-owned `waitpid`
-and status reporting, a lifecycle-bound daemon cgroup/pidfd authority for the
-reported child generation, and an exact transfer into branch resource
-accounting before child admission. Until that composition exists, no
+The parent-QEMU `waitpid` and retained-status protocol now exists, but
+production composition still requires a lifecycle-bound daemon cgroup/pidfd
+authority for the reported child generation and an exact transfer into branch
+resource accounting before child admission. Until that composition exists, no
 implementation of the host owner may manufacture `std::process::Child`
 authority from the reported PID or advertise the returned launch token as a
 production campaign child.
@@ -1386,10 +1423,10 @@ input was released. Explicit QMP command rejection before the fork leaves the
 parent connection reusable. Any transport, framing, echo, or response failure
 is fork-indeterminate and MUST poison the parent connection and transfer the
 attempt to direct-child reconciliation. Daemon composition with the
-parent-owned reaper protocol, attempt-owned process guard, child-generation
-cgroup/pidfd authority, resource accounting, private channel authentication,
-and campaign observation remains required before this command may serve a
-production campaign flight.
+parent-owned retained-status query, attempt-owned process guard,
+child-generation cgroup/pidfd authority, resource accounting, private channel
+authentication, and campaign observation remains required before this command
+may serve a production campaign flight.
 
 The version-3 child-QMP report first derived `disposition-complete` from that
 exact accepted one-shot status instead of hard-coding false. Prepared but
