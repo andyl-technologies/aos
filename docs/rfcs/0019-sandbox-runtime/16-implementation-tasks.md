@@ -74,8 +74,9 @@ they gate any affected runtime backend.
   and fencing property tests (`SBX-CORE-03`..`SBX-CORE-09`; `c493178f5`).
 - [x] **SBX-API-01** Add complete `aos.sandbox.v1` protobuf resource and error
   messages to `aos-proto` (`SBX-CORE-06`; `e8ac32d7c`).
-- [ ] **SBX-API-02** Add create/get/list/update/delete, lifecycle, execution,
-  view, attachment, snapshot, and descendant RPCs (`SBX-API-01`).
+- [x] **SBX-API-02** Add create/get/list/update/delete, lifecycle, execution,
+  view, attachment, snapshot, and descendant RPCs (`SBX-API-01`;
+  `d7ac92b03`).
 - [ ] **SBX-API-03** Add resumable watch cursors, operation resources,
   idempotency keys, and compatibility fixtures (`SBX-API-02`).
 - [ ] **SBX-BPROTO-01** Define bounded, fixed local host, storage, mount,
@@ -284,3 +285,6 @@ completes. The Git history remains authoritative for code details.
 - `e8ac32d7c` — `SBX-API-01`: backend-neutral public sandbox, execution,
   view, attachment, snapshot, capability, operation, event, node-capability,
   pagination, watch, policy-plan, condition, and closed error resources.
+- `d7ac92b03` — `SBX-API-02`: complete public sandbox, descendant, policy,
+  lifecycle, execution, filesystem-view, attachment, snapshot, capability,
+  operation, watch, and node-capability RPC registry with mutation fences.
