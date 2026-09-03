@@ -40,6 +40,22 @@ Build an individual package through its `pkg-` output:
 nix build .#pkg-zlib
 ```
 
+On Intel and Apple Silicon macOS, the standard package name selects a native
+Mach-O host tool:
+
+```sh
+nix build .#aos
+nix build .#apm
+nix build .#apr
+```
+
+The repository's bootstrap root remains Linux. Building a Darwin output from
+source therefore dispatches its derivation graph to the canonical
+`x86_64-linux` cross builder. Configure that remote builder before using the
+commands above, or use a trusted binary cache containing the same outputs.
+Linux system images are not Darwin packages and still require the explicit
+Linux flake output shown above.
+
 The source-build [server tutorial](source-build-quickstart.md) exercises a
 custom image, first-boot metadata, AOS-built QEMU, and UEFI firmware. It is a
 maintainer and integration workflow, not the normal installation path.
@@ -77,6 +93,12 @@ The development environment supplies the AOS-built dependencies and embeds the
 required OpenSSL runtime path. Build and invoke the independent `aos`, `apm`,
 or `apr` program for the surface under test. On-host service commands belong to
 the private `aos-package-runtime` binary.
+
+On macOS, `nix develop` realizes the toolchain through the Linux cross builder
+and then enters a native Darwin shell. Cargo, Rust, Clang, the SDK, Nix, Git,
+and supporting commands in that shell are AOS-built Mach-O programs; incremental
+`cargo build` and `just cli-build` commands run locally on the Mac. No Apple
+Command Line Tools or nixpkgs package is used.
 
 ## Run checks
 

@@ -35,10 +35,20 @@ nix run . -- test eval
 
 Build the public command outputs independently with `nix build .#aos`,
 `nix build .#apm`, or `nix build .#apr`. The development shell exposes all
-three names. The private runtime has no public flake package.
+three names on Linux, Intel macOS, and Apple Silicon macOS. The private runtime
+has no public flake package.
 
-The current repository CLI and bootable-image workflow is supported on
-`x86_64-linux`. Package and registry tools have a broader portability model:
+Darwin packages are built from source by AOS's `x86_64-linux` cross toolchain.
+A Mac must have access to an `x86_64-linux` remote builder or a trusted cache
+that already contains the requested outputs. Once realized, the commands and
+their dependencies are native Mach-O programs. The development shell follows
+the same model: its first realization may use the remote builder, while Cargo,
+Rust, Clang, Nix, Git, and subsequent incremental builds execute locally on
+macOS.
+
+The repository CLI is supported on Linux and Darwin. Bootable AOS image builds
+still execute on an `x86_64-linux` builder. Package and registry commands have
+the following runtime model:
 
 | Operation | Non-AOS Linux | Darwin | AOS |
 | --- | --- | --- | --- |

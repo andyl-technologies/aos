@@ -1,13 +1,18 @@
 {
-  description = "ANDYL OS — immutable, minimal Linux distribution built from source";
+  description = "ANDYL OS — immutable Linux systems and cross-platform host tooling built from source";
 
   inputs = {};
 
   outputs = _: let
-    systems = [
+    linuxSystems = [
       "x86_64-linux"
       "aarch64-linux"
     ];
+    darwinSystems = [
+      "x86_64-darwin"
+      "aarch64-darwin"
+    ];
+    systems = linuxSystems ++ darwinSystems;
 
     genAttrs = names: f:
       builtins.listToAttrs (
@@ -37,7 +42,28 @@
     flattenAttrs = prefix: attrs:
       builtins.listToAttrs (flattenAttrPairs prefix attrs);
 
-    aosFor = system: import ./. {inherit system;};
+    withMainProgram = program: package:
+      package
+      // {
+        meta =
+          (package.meta or {})
+          // {
+            mainProgram = program;
+          };
+      };
+
+    isDarwinSystem = system: builtins.elem system darwinSystems;
+    aosFor = system:
+      if isDarwinSystem system
+      then
+        import ./. {
+          # The source bootstrap is Linux-only. Darwin packages are produced
+          # hermetically by the canonical Linux-hosted cross environment and
+          # execute natively after they reach the target host.
+          system = "x86_64-linux";
+          crossSystem = system;
+        }
+      else import ./. {inherit system;};
 
     # Flatten systems into flake packages:
     #   server-image-raw, server-image-qcow2, edge-image-raw, etc.
@@ -83,7 +109,7 @@
         })
         p.packageNames);
   in {
-    aosSystems = genAttrs systems (system: (aosFor system).systems);
+    aosSystems = genAttrs linuxSystems (system: (aosFor system).systems);
 
     packages = genAttrs systems (
       system: let
@@ -105,99 +131,44 @@
           ];
         };
       in
-        {
-          default = aos.pkgs.aos;
-          aos = aos.pkgs.aos;
-          apm = aos.pkgs.aos.apm;
-          apr = aos.pkgs.aos.apr;
-          all = allPackages;
-          crucible-nginx-curl-guest = import ./tests/crucible/_nginx-curl-http-200-guest.nix {
-            pkgs = aos.pkgs;
-          };
-        }
-        // systemPackages aos
+        (
+          {
+            default = withMainProgram "aos" aos.pkgs.aos;
+            aos = withMainProgram "aos" aos.pkgs.aos;
+            apm = withMainProgram "apm" aos.pkgs.aos.apm;
+            apr = withMainProgram "apr" aos.pkgs.aos.apr;
+            all = allPackages;
+          }
+          // (
+            if isDarwinSystem system
+            then {}
+            else {
+              crucible-nginx-curl-guest = import ./tests/crucible/_nginx-curl-http-200-guest.nix {
+                pkgs = aos.pkgs;
+              };
+            }
+          )
+        )
+        // (
+          if isDarwinSystem system
+          then {}
+          else systemPackages aos
+        )
         // individualPackages
     );
 
     devShells = genAttrs systems (
-      system: let
-        aos = aosFor system;
-        aosCli = aos.pkgs.aos.overrideAttrs (_: {doCheck = false;});
-        packages = [
-          aosCli
-          aosCli.apm
-          aosCli.apr
-          aos.pkgs.just
-          aos.pkgs.rust
-          aos.pkgs.rust.dev
-          aos.pkgs.cargo-nextest
-          aos.pkgs.cargo-hakari
-          aos.pkgs.bootstrapTools
-          aos.pkgs.perl
-          aos.pkgs.pkg-config
-          aos.pkgs.openssl
-          aos.pkgs.protobuf
-          # Runtime tools the aos/apm/apr binaries shell out to by bare name
-          # (see runtimeTools in pkgs/tools/aos/aos.nix), so impure cargo runs
-          # in the dev shell resolve the same AOS-built tools the hermetic build
-          # uses instead of falling back to whatever is installed on the host.
-          aos.pkgs.git
-          aos.pkgs.gnupg
-          aos.pkgs.openssh
-          aos.pkgs.sbsigntools
-          aos.pkgs.systemd
-          aos.pkgs.tar
-          aos.pkgs.zstd
-          aos.pkgs.which
-        ];
-        binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") packages);
-        # Per-target cargo rustflags env var for the dev-shell host. Used to
-        # inject an OpenSSL rpath for native `cargo build` (see shellHook)
-        # without disturbing the wasm32 rustflags in crates/.cargo/config.toml:
-        # a plain RUSTFLAGS would replace those and break the Workers build.
-        cargoHostRustflagsVar = builtins.getAttr system {
-          "x86_64-linux" = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS";
-          "aarch64-linux" = "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS";
-        };
-      in {
-        default = builtins.derivation {
-          name = "aos-dev";
+      system: {
+        default = import ./lib/flake-dev-shell.nix {
+          aos = aosFor system;
           inherit system;
-          outputs = ["out"];
-          builder = "${aos.pkgs.bash}/bin/bash";
-          args = [
-            "-c"
-            "echo 'Use nix develop, not nix build' >&2; ${aos.pkgs.coreutils}/bin/mkdir -p $out"
-          ];
-          shellHook =
-            (
-              if binPath != ""
-              then ''
-                export PATH="${binPath}''${PATH:+:$PATH}"
-              ''
-              else ""
-            )
-            + ''
-              export RUST_SRC_PATH="${aos.pkgs.rust.dev}/lib/rustlib/src/rust/library"
-              export OPENSSL_DIR="${aos.pkgs.openssl}"
-              export OPENSSL_NO_VENDOR=1
-              # OPENSSL_DIR above only lets `openssl-sys` *link* against the AOS
-              # OpenSSL; the resulting binary still records only the SONAME, so
-              # an impure `cargo build` produces a binary that cannot find
-              # libssl at runtime. Bake the OpenSSL dir into the binary's rpath
-              # at link time, so `./target/debug/{aos,apr,apm}` run directly —
-              # no patchelf, and no LD_LIBRARY_PATH that would poison the `nix`
-              # subprocess they shell out to (which needs its own, newer
-              # OpenSSL). rpath is per-binary, so each keeps its own OpenSSL.
-              export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib"
-            '';
         };
       }
     );
 
     formatter = genAttrs systems (system: (aosFor system).pkgs.alejandra);
 
-    checks = genAttrs systems (
+    checks = genAttrs linuxSystems (
       system: let
         aos = aosFor system;
       in
