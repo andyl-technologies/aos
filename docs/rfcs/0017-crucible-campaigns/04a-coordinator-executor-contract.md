@@ -2867,9 +2867,9 @@ the fork owner. Child-QMP contract version 7 now binds the exact concrete
 monitor callback and private monitor basis into the one-shot reinitializer at
 staging. That callback composes held socket, protocol, dispatcher, monitor
 IOThread, and greeting reconstruction, and the resource transaction no longer
-accepts a substitute runtime after descriptor mutation starts. Global
-child-thread registry reconstruction, production fork invocation, post-commit
-input release, guest admission, and readiness bits 7 and 8 remain open.
+accepts a substitute runtime after descriptor mutation starts. Production fork
+invocation, post-commit input release, guest admission, and readiness bits 7
+and 8 remain open.
 
 An explicit QEMU-internal registry transaction now supplies the thread and
 registered-`QemuMutex` part of that future fork owner. It holds both registries
@@ -2877,9 +2877,21 @@ across one fork, rejects in-flight QEMU thread starts and any nonquiescent
 registered mutex, preserves the exact parent registry on release, and rebuilds
 the immediate child's registry around only the surviving coordinator. It is a
 bounded internal prerequisite, not a fork command or a complete subsystem
-barrier: raw/library locks, explicit RCU fork composition, all remaining
-subsystem reinitializers, host-continuation pairing, and guest admission remain
-required before readiness bit 8 can be acknowledged.
+barrier: raw/library locks, all remaining subsystem reinitializers,
+host-continuation pairing, and guest admission remain required before readiness
+bit 8 can be acknowledged.
+
+The explicit runtime transaction now composes RCU outside that registry
+transaction. It closes new reader, callback, and reader-registry admission and
+requires the exact coordinator reader plus callback/drain state to be quiescent
+before acquiring the inner registry. Parent release preserves both exact
+registries. Immediate-child reconstruction first makes the QEMU thread registry
+authoritative, then drops vanished RCU readers, rebinds the coordinator reader,
+resets the proven-empty callback state, reopens admission, and starts one fresh
+callback worker before returning. Any pre-fork acquisition failure rolls the
+outer RCU barrier back. This remains an internal, unwired prerequisite: no
+production command invokes `fork(2)`, raw/library lock disposition remains
+open, and readiness bit 8 remains clear.
 
 The driver owns selection application, stop-boundary execution, and candidate
 construction but never assignment or daemon-epoch identity. This adapter cannot

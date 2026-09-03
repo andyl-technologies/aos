@@ -1838,6 +1838,7 @@ in
           patch=0181-crucible-activate-reconstructed-child-qmp.patch
           patch=0182-crucible-bind-concrete-child-qmp-runtime.patch
           patch=0183-crucible-reconstruct-child-thread-registry.patch
+          patch=0184-crucible-compose-rcu-fork-transaction.patch
           plugin_endpoint_schema_version=4
           plugin_endpoint_source_descriptors_observed=true
           plugin_endpoint_replacement_plan_bound=false
@@ -1867,6 +1868,10 @@ in
           rcu_barrier_released_stable=true
           rcu_barrier_hold_without_exact_boundary_rejected=true
           rcu_barrier_quiescence_proof_bound=true
+          rcu_runtime_transaction_composed=true
+          rcu_parent_registry_preserved=true
+          rcu_child_registry_reconstructed=true
+          rcu_child_callback_worker_restarted=true
           bh_timer_barrier_schema_version=2
           bh_timer_barrier_released_stable=true
           bh_timer_barrier_hold_without_exact_boundary_rejected=true
