@@ -1216,6 +1216,18 @@ exact restage; disconnect or reconnect invalidates it. QAPI exposes only
 transition must consume without removing a source, disconnecting the socket,
 reconstructing the monitor, forking, releasing input, or acknowledging proof
 bit 7 or 8.
+The following child-only checkpoint composes that exact socket replacement
+with the first monitor-owned destructive protocol transition. Immediately
+before mutation QEMU requires the retained single-monitor basis plus an empty
+named-descriptor table, global fdset registry, output buffer, output watch,
+mux/reset state, request queue, and parser. It then disposes the inherited
+socket state, installs the
+held private stream, replaces the JSON parser with a fresh empty parser, and
+returns the monitor to capability negotiation with only the supported
+I/O-thread OOB capability offered. No greeting is emitted and no input source
+is attached. This transition remains unreachable from a production command;
+dispatcher and monitor-I/O-thread reconstruction, greeting emission, input
+release, fork coordination, and readiness bits 7 and 8 remain open.
 The sealed QMP contribution now carries those exact template and child-QMP
 generations alongside its descriptor and socket identity. The immediate-child
 resource transaction requires both the plugin and QMP reinitializers to match

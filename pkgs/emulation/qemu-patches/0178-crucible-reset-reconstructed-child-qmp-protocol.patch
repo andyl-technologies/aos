@@ -1,0 +1,219 @@
+diff --git a/monitor/fds.c b/monitor/fds.c
+index 3c04d3032..e5d88ba4b 100644
+--- a/monitor/fds.c
++++ b/monitor/fds.c
+@@ -233,6 +233,13 @@ void monitor_fdsets_cleanup(void)
+     }
+ }
+ 
++static bool monitor_fdsets_is_empty(void)
++{
++    QEMU_LOCK_GUARD(&mon_fdsets_lock);
++
++    return QLIST_EMPTY(&mon_fdsets);
++}
++
+ AddfdInfo *qmp_add_fd(bool has_fdset_id, int64_t fdset_id,
+                       const char *opaque, Error **errp)
+ {
+@@ -542,4 +549,5 @@ int monitor_fd_param(Monitor *mon, const char *fdname, Error **errp)
+ static void __attribute__((__constructor__)) monitor_fds_init(void)
+ {
+     qemu_mutex_init(&mon_fdsets_lock);
++    monitor_hot_fork_register_fdsets_empty(monitor_fdsets_is_empty);
+ }
+diff --git a/monitor/monitor-internal.h b/monitor/monitor-internal.h
+index c4b8c156d..01cb72e42 100644
+--- a/monitor/monitor-internal.h
++++ b/monitor/monitor-internal.h
+@@ -183,6 +183,11 @@ typedef struct MonitorHotForkChildBasis {
+     Chardev *chardev;
+     QemuChrSocketHotForkChildBasis socket;
+     bool prepared;
++    bool attempted;
++    bool inherited_protocol_disposed;
++    bool parser_reset;
++    bool capabilities_reset;
++    bool input_held;
+ } MonitorHotForkChildBasis;
+ 
+ /**
+@@ -221,14 +226,49 @@ bool monitor_hot_fork_child_socket_resources_prepared_for(
+     const MonitorHotForkChildBasis *basis, uint64_t expected_generation);
+ bool monitor_hot_fork_child_basis_matches_current(
+     const MonitorHotForkChildBasis *basis, uint64_t expected_generation);
++
++/**
++ * monitor_hot_fork_reconstruct_child_protocol_held() - reset child QMP state
++ * @basis: exact monitor and socket ownership basis prepared before fork
++ * @replacement_fd: retained branch-private connected AF_UNIX stream
++ * @expected_socket_cookie: exact nonzero Linux SO_COOKIE for @replacement_fd
++ *
++ * Consumes the copied basis only in a different process incarnation. The
++ * operation requires one unchanged supported monitor, no named descriptors,
++ * buffered output, output watch, mux state, or pending request state. It then
++ * installs the replacement stream through the socket-owned transition and
++ * resets the JSON parser and capability negotiation state while input remains
++ * held. Dispatcher and I/O-thread reconstruction, greeting emission, and
++ * input release remain separate monitor-owned operations.
++ *
++ * Returns zero after exact held protocol reset, or a negative errno value on
++ * source-process use, stale state, or an invalid replacement endpoint. Once
++ * socket mutation begins the basis remains consumed on every later failure.
++ */
++int monitor_hot_fork_reconstruct_child_protocol_held(
++    MonitorHotForkChildBasis *basis, int replacement_fd,
++    uint64_t expected_socket_cookie);
+ void monitor_hot_fork_reset_child_basis(MonitorHotForkChildBasis *basis);
+ void monitor_fdsets_cleanup(void);
++void monitor_hot_fork_register_fdsets_empty(bool (*check)(void));
+ 
+ void qmp_send_response(MonitorQMP *mon, const QDict *rsp);
+ void monitor_data_destroy_qmp(MonitorQMP *mon);
+ void coroutine_fn monitor_qmp_dispatcher_co(void *data);
+ void qmp_dispatcher_co_wake(void);
+ 
++/**
++ * monitor_qmp_hot_fork_reset_protocol_held() - reset one held QMP frontend
++ * @mon: exact admitted monitor whose replacement input is not dispatched
++ *
++ * Replaces the inherited parser and returns the monitor to capability
++ * negotiation without sending a greeting or enabling input. The request queue
++ * must still be empty.
++ *
++ * Returns zero after reset or -EPROTO if a request became pending.
++ */
++int monitor_qmp_hot_fork_reset_protocol_held(MonitorQMP *mon);
++
+ int get_monitor_def(Monitor *mon, int64_t *pval, const char *name);
+ void handle_hmp_command(MonitorHMP *mon, const char *cmdline);
+ int hmp_compare_cmd(const char *name, const char *list);
+diff --git a/monitor/monitor.c b/monitor/monitor.c
+index ad71550f5..981f8e398 100644
+--- a/monitor/monitor.c
++++ b/monitor/monitor.c
+@@ -853,6 +853,93 @@ bool monitor_hot_fork_child_basis_matches_current(
+     return matches;
+ }
+ 
++static bool monitor_hot_fork_child_local_state_clean(MonitorQMP *qmp_mon)
++{
++    Monitor *mon = &qmp_mon->common;
++    bool clean;
++
++    qemu_mutex_lock(&mon->mon_lock);
++    clean = QLIST_EMPTY(&mon->fds) && mon->outbuf &&
++        mon->outbuf->len == 0 && mon->out_watch == 0 &&
++        mon->mux_out == 0 && mon->reset_seen == 0 &&
++        mon->chr.fe_is_open;
++    qemu_mutex_unlock(&mon->mon_lock);
++    return clean;
++}
++
++/*
++ * Global fdsets are system-emulator state, while this file is also linked
++ * into tools such as qemu-storage-daemon.  Require the system-only owner to
++ * register its exact inventory check instead of weakening non-system builds
++ * with a stub that could report a false clean state.
++ */
++static bool (*monitor_hot_fork_fdsets_empty)(void);
++
++void monitor_hot_fork_register_fdsets_empty(bool (*check)(void))
++{
++    assert(check);
++    assert(!monitor_hot_fork_fdsets_empty);
++    monitor_hot_fork_fdsets_empty = check;
++}
++
++int monitor_hot_fork_reconstruct_child_protocol_held(
++    MonitorHotForkChildBasis *basis, int replacement_fd,
++    uint64_t expected_socket_cookie)
++{
++    MonitorHotForkInventory inventory;
++    MonitorQMP *qmp_mon;
++    Monitor *mon;
++    int result;
++
++    if (!basis || !basis->prepared || !basis->monitor ||
++        !basis->iothread || !basis->dispatcher || !basis->chardev ||
++        basis->socket.source_pid <= 0) {
++        return -EINVAL;
++    }
++    if (basis->socket.source_pid == getpid() || basis->attempted ||
++        basis->socket.attempted) {
++        return -EPERM;
++    }
++
++    qemu_mutex_lock(&monitor_lock);
++    monitor_hot_fork_inventory_locked(&inventory);
++    mon = QTAILQ_FIRST(&mon_list);
++    qmp_mon = basis->monitor;
++    if (!monitor_hot_fork_inventory_is_supported(&inventory) ||
++        inventory.generation != basis->generation || !mon ||
++        QTAILQ_NEXT(mon, entry) || !monitor_is_qmp(mon) ||
++        qmp_mon != container_of(mon, MonitorQMP, common) ||
++        basis->iothread != mon_iothread ||
++        basis->dispatcher != qmp_dispatcher_co ||
++        basis->chardev != monitor_hot_fork_child_chardev(qmp_mon) ||
++        qmp_dispatcher_co_shutdown ||
++        !monitor_hot_fork_child_local_state_clean(qmp_mon) ||
++        !monitor_hot_fork_fdsets_empty ||
++        !monitor_hot_fork_fdsets_empty()) {
++        result = -ESTALE;
++        goto out;
++    }
++
++    result = qemu_chr_socket_hot_fork_reconstruct_child_held(
++        &basis->socket, replacement_fd, expected_socket_cookie);
++    if (result != 0) {
++        goto out;
++    }
++    basis->attempted = true;
++
++    result = monitor_qmp_hot_fork_reset_protocol_held(qmp_mon);
++    if (result == 0) {
++        basis->parser_reset = true;
++        basis->capabilities_reset = true;
++        basis->inherited_protocol_disposed = true;
++        basis->input_held = basis->socket.input_held;
++        result = basis->input_held ? 0 : -EPROTO;
++    }
++out:
++    qemu_mutex_unlock(&monitor_lock);
++    return result;
++}
++
+ void monitor_hot_fork_reset_child_basis(MonitorHotForkChildBasis *basis)
+ {
+     if (basis) {
+diff --git a/monitor/qmp.c b/monitor/qmp.c
+index 68426d09f..9a5720d56 100644
+--- a/monitor/qmp.c
++++ b/monitor/qmp.c
+@@ -425,6 +425,26 @@ static void handle_qmp_command(void *opaque, QObject *req, Error *err)
+     qmp_dispatcher_co_wake();
+ }
+ 
++int monitor_qmp_hot_fork_reset_protocol_held(MonitorQMP *mon)
++{
++    qemu_rec_mutex_lock(&mon->qmp_parser_lock);
++    qemu_mutex_lock(&mon->qmp_queue_lock);
++    if (!g_queue_is_empty(mon->qmp_requests)) {
++        qemu_mutex_unlock(&mon->qmp_queue_lock);
++        qemu_rec_mutex_unlock(&mon->qmp_parser_lock);
++        return -EPROTO;
++    }
++
++    json_message_parser_destroy(&mon->parser);
++    json_message_parser_init(&mon->parser, handle_qmp_command, mon, NULL);
++    mon->commands = &qmp_cap_negotiation_commands;
++    monitor_qmp_caps_reset(mon);
++
++    qemu_mutex_unlock(&mon->qmp_queue_lock);
++    qemu_rec_mutex_unlock(&mon->qmp_parser_lock);
++    return 0;
++}
++
+ static void monitor_qmp_read(void *opaque, const uint8_t *buf, int size)
+ {
+     MonitorQMP *mon = opaque;
