@@ -10,6 +10,7 @@ mod mutation;
 mod remote;
 mod repair;
 mod state;
+mod tui;
 mod validation;
 mod worktree;
 
@@ -40,7 +41,7 @@ use crate::cli::{Cli, ColorChoice, MaintainArgs, MaintainCommand, ProgressChoice
 ///
 /// Returns an error only when constructing an internally inconsistent command
 /// result, which indicates a controller bug rather than an update outcome.
-pub async fn run(cli: &Cli, args: &MaintainArgs) -> Result<CommandCompletion> {
+pub async fn run(cli: &Cli, args: &MaintainArgs, printer: &Printer) -> Result<CommandCompletion> {
     if let Some(problem) = option_conflict(cli, args) {
         return completion(
             command_name(args),
@@ -55,6 +56,8 @@ pub async fn run(cli: &Cli, args: &MaintainArgs) -> Result<CommandCompletion> {
             Vec::new(),
         );
     }
+
+    let _activity = activity_label(args).map(|label| printer.activity(label));
 
     match &args.command {
         None => cached_completion("home", args, None),
@@ -170,6 +173,7 @@ pub async fn run(cli: &Cli, args: &MaintainArgs) -> Result<CommandCompletion> {
         }
         Some(MaintainCommand::Report(command)) => cached_completion("report", args, Some(command)),
         Some(MaintainCommand::Status(command)) => status_command(args, command),
+        Some(MaintainCommand::Ui(command)) => ui_command(args, command).await,
         Some(MaintainCommand::Plan(command)) => plan_command(args, command),
         Some(MaintainCommand::Run(command)) => run_command(cli, args, command).await,
         Some(MaintainCommand::Resume(command)) => resume_command(cli, args, command).await,
@@ -978,6 +982,33 @@ fn status_command(
         CommandDisposition::Success,
         CommandData {
             values,
+            runs,
+            ..CommandData::default()
+        },
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+}
+
+async fn ui_command(
+    args: &MaintainArgs,
+    command: &crate::cli::MaintainUiArgs,
+) -> Result<CommandCompletion> {
+    let (store, _) = current_store(args)?;
+    let runs = store.list_runs()?;
+    let selected = command
+        .run
+        .as_deref()
+        .map(|query| resolve_run(&store, query).map(|run| run.run_id))
+        .transpose()?;
+    let discovery = store.read_discovery()?;
+    tui::run(runs.clone(), discovery, selected.as_ref()).await?;
+    completion(
+        "ui",
+        CommandDisposition::Success,
+        CommandData {
+            values: BTreeMap::from([("interactiveRendered".to_string(), "true".to_string())]),
             runs,
             ..CommandData::default()
         },
@@ -2116,6 +2147,15 @@ pub fn render(
     completion: &CommandCompletion,
     printer: &Printer,
 ) -> Result<()> {
+    if completion
+        .result
+        .data
+        .values
+        .get("interactiveRendered")
+        .is_some_and(|value| value == "true")
+    {
+        return Ok(());
+    }
     if cli.json {
         write_json(&completion.result)?;
         return Ok(());
@@ -2131,6 +2171,10 @@ pub fn render(
     }
 
     render_human(&completion.result, args.screen_reader, printer);
+    let mut stdout = std::io::stdout().lock();
+    for value in &completion.result.primary_values {
+        writeln!(stdout, "{}", value.value)?;
+    }
     Ok(())
 }
 
@@ -2173,6 +2217,7 @@ fn command_name(args: &MaintainArgs) -> &'static str {
         Some(MaintainCommand::Scan(_)) => "scan",
         Some(MaintainCommand::Report(_)) => "report",
         Some(MaintainCommand::Status(_)) => "status",
+        Some(MaintainCommand::Ui(_)) => "ui",
         Some(MaintainCommand::Plan(_)) => "plan",
         Some(MaintainCommand::Run(_)) => "run",
         Some(MaintainCommand::Resume(_)) => "resume",
@@ -2189,6 +2234,33 @@ fn command_name(args: &MaintainArgs) -> &'static str {
         Some(MaintainCommand::PublishPr(_)) => "publish-pr",
         Some(MaintainCommand::ObservePr(_)) => "observe-pr",
         Some(MaintainCommand::Handoff(_)) => "handoff",
+    }
+}
+
+fn activity_label(args: &MaintainArgs) -> Option<&'static str> {
+    match args.command.as_ref()? {
+        MaintainCommand::Inventory(_) => Some("Evaluating package maintenance inventory"),
+        MaintainCommand::Scan(_) => Some("Checking direct upstreams and advisory evidence"),
+        MaintainCommand::Run(_) | MaintainCommand::Resume(_) => {
+            Some("Advancing the isolated package update")
+        }
+        MaintainCommand::Test(_) => Some("Running the immutable package gate plan"),
+        MaintainCommand::Repair(_) => Some("Running the confined repair workflow"),
+        MaintainCommand::PublishPr(_) => Some("Publishing the exact candidate branch and PR"),
+        MaintainCommand::ObservePr(_) => Some("Refreshing exact-head pull-request evidence"),
+        MaintainCommand::Ui(_)
+        | MaintainCommand::Report(_)
+        | MaintainCommand::Status(_)
+        | MaintainCommand::Plan(_)
+        | MaintainCommand::Inspect(_)
+        | MaintainCommand::Diff(_)
+        | MaintainCommand::Abandon(_)
+        | MaintainCommand::Clean(_)
+        | MaintainCommand::Accept(_)
+        | MaintainCommand::Commit(_)
+        | MaintainCommand::Evidence(_)
+        | MaintainCommand::PreparePr(_)
+        | MaintainCommand::Handoff(_) => None,
     }
 }
 
@@ -2209,6 +2281,16 @@ fn option_conflict(cli: &Cli, args: &MaintainArgs) -> Option<String> {
         return Some("RUN cannot be combined with --active".to_string());
     }
     let machine = cli.json || args.jsonl;
+    if matches!(args.command, Some(MaintainCommand::Ui(_))) {
+        use std::io::IsTerminal as _;
+
+        if machine || args.screen_reader {
+            return Some("maintain ui requires human terminal output".to_string());
+        }
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            return Some("maintain ui requires interactive stdin and stdout terminals".to_string());
+        }
+    }
     if machine && !matches!(cli.progress, ProgressChoice::Auto | ProgressChoice::Off) {
         return Some("machine output requires --progress auto or --progress off".to_string());
     }
@@ -2234,6 +2316,25 @@ fn render_human(result: &MaintainCommandResult, screen_reader: bool, printer: &P
     printer.header(title);
     printer.kv("Command", &result.command);
     printer.kv("Disposition", disposition_name(result.disposition));
+    match result.disposition {
+        CommandDisposition::Success | CommandDisposition::NoChange => {
+            printer.success(if screen_reader {
+                "Complete"
+            } else {
+                "✓ Complete"
+            });
+        }
+        CommandDisposition::ActionRequired
+        | CommandDisposition::UpstreamUnknown
+        | CommandDisposition::Stale => {
+            printer.warning(if screen_reader {
+                "Maintainer action required"
+            } else {
+                "◆ Maintainer action required"
+            });
+        }
+        _ => {}
+    }
 
     if let Some(envelope) = &result.data.inventory {
         let repository_state = result
@@ -2407,6 +2508,58 @@ fn render_human(result: &MaintainCommandResult, screen_reader: bool, printer: &P
         printer.plain(&escape_multiline(&draft.body, 64 * 1024));
     }
 
+    if let Some(publication) = &result.data.publication {
+        printer.plain("");
+        printer.header("Published pull request");
+        printer.kv("URL", &publication.pull_request_url);
+        printer.kv("Remote", &publication.remote);
+        printer.kv("Branch", &publication.branch);
+        printer.kv("Base", &publication.base_branch);
+        printer.kv("Head", &publication.head.value);
+    }
+
+    if let Some(observation) = &result.data.remote_observation {
+        printer.plain("");
+        printer.header("Remote observation");
+        printer.kv("Head", &observation.head.value);
+        printer.kv(
+            "Authorization",
+            if observation.authorization_succeeded {
+                "passed"
+            } else {
+                "pending or failed"
+            },
+        );
+        printer.kv(
+            "Checks",
+            &format!(
+                "{} observed; {}",
+                observation.checks.len(),
+                if observation.checks_succeeded {
+                    "passed"
+                } else {
+                    "pending or failed"
+                }
+            ),
+        );
+        printer.kv("Approvals", &observation.approvals.to_string());
+        printer.kv(
+            "Changes requested",
+            &observation.changes_requested.to_string(),
+        );
+        printer.kv(
+            "Mergeability",
+            if observation.is_merge_eligible() {
+                "eligible"
+            } else {
+                "not yet proven"
+            },
+        );
+        if let Some(commit) = &observation.merge_commit {
+            printer.kv("Protected merge", &commit.value);
+        }
+    }
+
     for diagnostic in &result.diagnostics {
         let message = format!(
             "{}: {}",
@@ -2569,7 +2722,8 @@ mod tests {
         let Commands::Maintain(args) = &cli.command else {
             panic!("expected maintain command");
         };
-        let completion = run(&cli, args)
+        let printer = Printer::new(0, false, true);
+        let completion = run(&cli, args, &printer)
             .await
             .expect("output-mode conflict should produce a valid completion");
 
