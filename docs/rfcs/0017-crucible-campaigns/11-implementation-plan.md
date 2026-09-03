@@ -2246,10 +2246,13 @@ socket identities, and repeated attempts fail closed. A forked QEMU unit test
 proves the parent remains unchanged and the child owns only the held replacement
 socket state. The following child-only checkpoints now reset parser/capability
 state and rebuild the dispatcher and monitor I/O thread while input remains
-held. The concrete monitor transaction must still emit exactly one greeting,
-release input only after the full child transaction commits, and compose that
-result with the QEMU-owned fork coordinator. Until then no command invokes the
-primitive and readiness bits 7 and 8 remain clear.
+held. A final child-only monitor operation now synchronously enters that exact
+replacement worker, revalidates all held protocol/socket state, attaches one
+read and one HUP source, and emits exactly one greeting before returning to the
+event loop and permitting input dispatch. The production owner must still
+compose these operations with the full child transaction and QEMU-owned fork
+coordinator. Until then no command invokes the primitives and readiness bits 7
+and 8 remain clear.
 The next child-only monitor checkpoint composes that socket transition with a
 destructive inherited-protocol reset. It additionally requires the exact
 single-monitor basis to have no named QMP descriptor, global fdset, buffered
@@ -2263,9 +2266,15 @@ so QEMU disposes it through the normal coroutine exit path, and installs one
 fresh dispatcher while input remains held. The next child-only primitive binds
 the exact copied monitor IOThread identity and retained quiescent contexts,
 proves the inherited worker is absent, refreshes its initialization semaphore,
-and starts exactly one replacement worker without attaching an input source.
-No command invokes this partial transition; greeting/input release, global
-child-thread registry reconstruction, and readiness bits 7 and 8 remain open.
+and starts exactly one replacement worker without attaching an input source. A
+following one-shot operation runs on that worker, validates the exact held
+state, and emits the QMP greeting while input remains held. This is the complete
+status the child runtime reports before the whole resource transaction commits.
+A distinct post-commit operation flushes the greeting, returns `-EAGAIN`
+without mutation while output remains buffered, and only then attaches one
+read/HUP source pair and records input release. No command invokes this partial
+transition; resource-transaction composition, global child-thread registry
+reconstruction, and readiness bits 7 and 8 remain open.
 These are executable T-CAM-6.1 audit prerequisites, not completion of the task:
 the internal registry identifies two non-coordinator subsystem owners but has
 no safe non-coordinator child disposition. The retained AIO/BH/timer and RCU

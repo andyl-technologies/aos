@@ -2848,9 +2848,23 @@ installs one fresh dispatcher before any replacement input is released. This
 transition now also binds the exact source monitor-I/O-thread identity and
 contexts, proves that copied worker is absent from the child process, refreshes
 its initialization semaphore, and starts one replacement worker over the
-retained quiescent contexts. It does not yet emit the one child greeting,
-release input, reconstruct the global child-thread registry, invoke `fork(2)`,
-admit guest work, or acknowledge readiness bit 7 or 8.
+retained quiescent contexts. At that checkpoint it does not emit the one child
+greeting, release input, reconstruct the global child-thread registry, invoke
+`fork(2)`, admit guest work, or acknowledge readiness bit 7 or 8.
+
+A following pair of child-only operations now closes the greeting/input
+primitive while preserving the resource-transaction boundary. The first enters
+through a guarded synchronous bottom half on that exact replacement IOThread,
+revalidates the complete held protocol and socket basis, and emits exactly one
+QMP open event while replacement input remains held. The child runtime may then
+report its complete state with both greeting-sent and input-held asserted. Only
+after the complete child resource transaction commits may the owner invoke the
+second operation. It flushes the greeting, returns `-EAGAIN` without mutation
+while any greeting bytes remain buffered, and otherwise attaches exactly one
+read and HUP source. Input therefore cannot dispatch before the greeting has
+been accepted by the replacement socket. These operations remain unwired to
+the fork owner; global child-thread registry reconstruction, resource-plan
+composition, guest admission, and readiness bits 7 and 8 remain open.
 
 The driver owns selection application, stop-boundary execution, and candidate
 construction but never assignment or daemon-epoch identity. This adapter cannot

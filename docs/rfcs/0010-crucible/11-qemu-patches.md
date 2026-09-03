@@ -3233,6 +3233,39 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   `T-CAM-6.1` through `T-CAM-6.3` stay incomplete.
 - **Risk:** F.
 
+### crucible-hot-fork-child-qmp-activation — greet before releasing replacement input
+
+- **Patch:** `0181-crucible-activate-reconstructed-child-qmp.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** after exact held socket, protocol, dispatcher, and monitor
+  IOThread reconstruction, one child-incarnation-only main-thread operation
+  takes BH/timer admission and schedules a synchronous callback on the exact
+  replacement worker. That callback revalidates the monitor generation,
+  singleton monitor, dispatcher, thread identity, fresh negotiation/parser
+  state, empty output, and held replacement socket, then emits
+  `CHR_EVENT_OPENED` while input remains held. The normal QMP event handler
+  therefore emits exactly one greeting before the child reports its complete
+  held resource state. A distinct operation, called only after the complete
+  child resource transaction commits, flushes the greeting and returns
+  `-EAGAIN` without mutation while bytes remain buffered. Once the greeting has
+  drained, it attaches exactly one read source and one HUP source. The retained
+  basis independently records the one-shot greeting and release.
+- **Micro-test:** the socket unit test applies held reconstruction in a real
+  forked child, attaches both replacement sources exactly once, and rejects a
+  second release. Strict patch certification pins both guarded synchronous
+  IOThread entries, exact thread and held-state validation, held greeting,
+  drain-before-release behavior, source attachment, and both recorded one-shot
+  results. The complete QEMU build proves
+  the operation compiles and links in the system emulator; patch regeneration
+  and the Phase 6 live result bind the carried patch.
+- **Inertness:** no shipped command invokes this child-only operation. It does
+  not reconstruct the copied global thread registry, invoke the production fork
+  coordinator, admit guest work, or acknowledge readiness bit 7 or 8. The
+  remaining resource-transaction composition and `T-CAM-6.1` through
+  `T-CAM-6.3` stay incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
