@@ -95,6 +95,10 @@ define_counter!(
     "Identifies a runtime namespace generation within an incarnation."
 );
 define_counter!(
+    ObservationSequence,
+    "Orders node observations within one assignment and boot identity."
+);
+define_counter!(
     Revision,
     "Identifies a monotonically ordered object revision."
 );

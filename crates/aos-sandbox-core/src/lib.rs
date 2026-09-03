@@ -10,10 +10,13 @@
 //! module defines monotonic counters used to reject stale work.
 
 pub mod identity;
+pub mod state;
 pub mod version;
 
 pub use identity::{
     AttachmentId, ExecutionId, ExportId, IncarnationId, NodeId, OperationId, ProjectId, SandboxId,
     SnapshotId, ViewId,
 };
-pub use version::{AssignmentEpoch, DesiredGeneration, NamespaceGeneration, Revision};
+pub use version::{
+    AssignmentEpoch, DesiredGeneration, NamespaceGeneration, ObservationSequence, Revision,
+};
