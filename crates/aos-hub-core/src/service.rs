@@ -2176,7 +2176,7 @@ impl RouteReservationKeyring for ConfiguredRouteReservationKeyring {
 pub const MAX_UPLOAD_BYTES: usize = 20 * 1024 * 1024;
 
 /// Maximum number of objects admitted by one registry publication manifest.
-pub const MAX_REGISTRY_PUBLICATION_OBJECTS: usize = 20_000;
+pub const MAX_REGISTRY_PUBLICATION_OBJECTS: usize = 50_000;
 
 /// Maximum narinfos accepted by one cache-upload completion request.
 pub const MAX_CACHE_NARINFO_REGISTRATION_BATCH: usize = 256;

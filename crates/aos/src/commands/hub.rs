@@ -9741,11 +9741,12 @@ struct PinnedPublication {
     root: std::os::fd::OwnedFd,
 }
 
-// A complete 258-package origin plus paired narinfo/NAR cache objects is
-// currently just over ten thousand files. Keep admission bounded while
-// retaining enough headroom for normal registry growth between releases.
-const MAX_PUBLICATION_OBJECTS: usize = 20_000;
-const MAX_PUBLICATION_ENTRIES: usize = 20_000;
+// A complete package origin includes immutable Git/index objects and paired
+// narinfo/NAR cache objects. The supported catalog exceeds twenty thousand
+// files, so keep admission bounded at a capacity that leaves useful headroom
+// for catalog and history growth between releases.
+const MAX_PUBLICATION_OBJECTS: usize = 50_000;
+const MAX_PUBLICATION_ENTRIES: usize = 50_000;
 const MAX_PUBLICATION_PATH_BYTES: usize = 512;
 const MAX_PUBLICATION_DIRECTORY_DEPTH: usize = 32;
 
