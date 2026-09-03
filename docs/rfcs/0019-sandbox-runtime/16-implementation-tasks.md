@@ -77,8 +77,9 @@ they gate any affected runtime backend.
 - [x] **SBX-API-02** Add create/get/list/update/delete, lifecycle, execution,
   view, attachment, snapshot, and descendant RPCs (`SBX-API-01`;
   `d7ac92b03`).
-- [ ] **SBX-API-03** Add resumable watch cursors, operation resources,
-  idempotency keys, and compatibility fixtures (`SBX-API-02`).
+- [x] **SBX-API-03** Add resumable watch cursors, operation resources,
+  idempotency keys, and compatibility fixtures (`SBX-API-02`;
+  `37dde6aee`).
 - [ ] **SBX-BPROTO-01** Define bounded, fixed local host, storage, mount,
   network, guardian, and guest-agent protocol schemas (`SBX-CORE-08`).
 - [ ] **SBX-BPROTO-02** Implement descriptor-role and peer-credential
@@ -288,3 +289,6 @@ completes. The Git history remains authoritative for code details.
 - `d7ac92b03` — `SBX-API-02`: complete public sandbox, descendant, policy,
   lifecycle, execution, filesystem-view, attachment, snapshot, capability,
   operation, watch, and node-capability RPC registry with mutation fences.
+- `37dde6aee` — `SBX-API-03`: operation resources, mutation idempotency and
+  compare-and-swap fields, resumable watch cursor/watermark semantics, and a
+  build-enforced additive v1 compatibility floor.
