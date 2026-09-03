@@ -294,7 +294,22 @@ The mechanisms currently demonstrated are:
 - optional kernel lockdown with enforced module signing and signed kexec;
 - TPM2 sealing of `/var` to a signed PCR 11 policy and pinned PCR 7 and 12
   values;
-- dm-verity verification of the read-only EROFS root.
+- dm-verity verification of the read-only EROFS root;
+- signed-registry admission of complete Nix closures through the `store/`
+  realisation graph;
+- signed dm-verity roots for exposed package workloads; and
+- PCR-15 measurement of explicitly activated exposed packages and
+  configuration generations, with TPM quotes covering PCRs 7, 11, 12, and 15.
+
+Package files obtained after image construction are not part of the image's
+PCR-11 measurement. APM connects them to measured boot at activation through
+PCR 15, while the signed registry graph remains the authority for every NAR in
+their closure. It does not measure every object present in `/nix/store`: the
+package event stream covers explicitly activated machine-wide packages, and
+the configuration-generation event binds the exact authenticated module inputs
+consumed by evaluation. See
+[Manage packages](packages.md#understand-verification-and-attestation-boundaries)
+for the complete scope and the non-verity limitation.
 
 The bare-metal ZFS profile extends this model with native ZFS encryption. Its
 installer creates the pool under one encryption root, returns the only raw
