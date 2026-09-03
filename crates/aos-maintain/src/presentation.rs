@@ -6,6 +6,7 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::MAINTENANCE_CLI_V1;
+use crate::envelope::InventoryEnvelopeV1;
 use crate::identity::RunId;
 use crate::workflow::{DiscoveryDecision, GateOutcome, RunState, TaskStatus};
 
@@ -167,6 +168,18 @@ pub struct PrimaryValue {
     pub value: String,
 }
 
+/// Carries command-specific typed values without changing the result envelope.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CommandData {
+    /// Small command-specific scalar values.
+    #[serde(default)]
+    pub values: BTreeMap<String, String>,
+    /// Repository-bound inventory returned by the inventory command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inventory: Option<InventoryEnvelopeV1>,
+}
+
 /// Contains the single terminal result returned by a maintenance command.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -184,7 +197,7 @@ pub struct MaintainCommandResult {
     pub run_id: Option<RunId>,
     /// Typed scalar command data for machine and human renderers.
     #[serde(default)]
-    pub data: BTreeMap<String, String>,
+    pub data: CommandData,
     /// Requested primary values owned by standard output.
     #[serde(default)]
     pub primary_values: Vec<PrimaryValue>,
@@ -216,7 +229,7 @@ impl MaintainCommandResult {
         if self.command.is_empty() || self.command.len() > 96 {
             bail!("maintenance result command is empty or oversized");
         }
-        if self.data.len() > 128
+        if self.data.values.len() > 128
             || self.primary_values.len() > 32
             || self.diagnostics.len() > 128
             || self.next_actions.len() > 3
@@ -371,7 +384,7 @@ mod tests {
             disposition: CommandDisposition::ActionRequired,
             exit_code: 0,
             run_id: None,
-            data: BTreeMap::new(),
+            data: CommandData::default(),
             primary_values: Vec::new(),
             diagnostics: Vec::new(),
             next_actions: vec![action()],
