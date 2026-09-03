@@ -32,8 +32,17 @@
         "etc-overlay-setup.service"
         "initrd-switch-root.target"
       ];
-      requires = ["mount-var.service"];
-      after = ["mount-var.service"];
+      # Immutable identity and every runtime dependency resolve through the
+      # target root's /nix overlay. Merely waiting for /var leaves recovery
+      # racing nix-overlay-setup on first boot.
+      requires = [
+        "mount-var.service"
+        "nix-overlay-setup.service"
+      ];
+      after = [
+        "mount-var.service"
+        "nix-overlay-setup.service"
+      ];
       unitConfig.DefaultDependencies = "no";
       serviceConfig = {
         Type = "oneshot";

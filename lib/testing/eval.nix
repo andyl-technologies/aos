@@ -355,6 +355,16 @@
         system.config.boot.initrd.systemd.services."aos-config-seed".requires)
     then throw "the initrd config lower must wait for credential transaction recovery"
     else if
+      !(builtins.elem
+        "nix-overlay-setup.service"
+        system.config.boot.initrd.systemd.services."aos-credential-recovery".requires)
+    then throw "initrd credential recovery must require the target Nix overlay"
+    else if
+      !(builtins.elem
+        "nix-overlay-setup.service"
+        system.config.boot.initrd.systemd.services."aos-credential-recovery".after)
+    then throw "initrd credential recovery must start after the target Nix overlay"
+    else if
       builtins.elem
       "aos-seed-profiles.service"
       system.config.systemd.services.aos-firstboot-reeval.requires
