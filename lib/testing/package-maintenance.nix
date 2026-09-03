@@ -85,6 +85,15 @@
     };
   };
   upstream = pkgs.mkUpstream canarySpec;
+  fixtureArtifact =
+    upstream.components.main.sources.source
+    // {
+      passthru.aos.fixedOutput =
+        upstream.components.main.sources.source.passthru.aos.fixedOutput
+        // {
+          kind = "go-modules";
+        };
+    };
   phases = [
     {
       name = "install";
@@ -106,7 +115,7 @@
     inherit phases;
     update = upstream.forPackage {
       member = "maintenance-fixture";
-      artifacts.goModules = upstream.components.main.sources.source;
+      artifacts.goModules = fixtureArtifact;
     };
   };
   invalidContract = builtins.tryEval (

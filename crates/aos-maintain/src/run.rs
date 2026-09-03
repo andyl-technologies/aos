@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::PACKAGE_UPDATE_RUN_V1;
 use crate::envelope::GitObjectId;
-use crate::identity::{ComponentId, PlanId, RunId, SourceSlotId};
+use crate::identity::{ArtifactSlotId, ComponentId, PlanId, RunId, SourceSlotId};
 use crate::workflow::{GateOutcome, RunState};
 
 /// Projects the current durable state of one local maintenance run.
@@ -123,6 +123,20 @@ pub struct MaterializedSource {
     pub assurance: SourceAssuranceOutcome,
 }
 
+/// Records one generated fixed-output artifact resolved by its typed builder.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct MaterializedArtifact {
+    /// Stable artifact slot within the update unit.
+    pub slot: ArtifactSlotId,
+    /// Exact candidate derivation realized with the controller's fake hash.
+    pub derivation: String,
+    /// Prior hash that the immutable plan required before materialization.
+    pub expected_hash: String,
+    /// Computed recursive SRI SHA-256 hash written into the package contract.
+    pub hash: String,
+}
+
 /// Records what the trusted resolver established about source authenticity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -151,6 +165,9 @@ pub struct MaterializationRecordV1 {
     pub attempt: u32,
     /// Successfully resolved source identities.
     pub sources: Vec<MaterializedSource>,
+    /// Generated fixed-output artifacts resolved in dependency order.
+    #[serde(default)]
+    pub artifacts: Vec<MaterializedArtifact>,
     /// Digest of the canonical textual patch after formatting.
     pub patch_digest: Sha256Digest,
     /// Exact changed repository-relative paths.
@@ -192,6 +209,22 @@ impl MaterializationRecordV1 {
                 )
             {
                 bail!("materialized source identity is invalid or duplicated");
+            }
+        }
+        if self.artifacts.len() > 128 {
+            bail!("materialized artifact collection is oversized");
+        }
+        let mut artifact_slots = std::collections::BTreeSet::new();
+        for artifact in &self.artifacts {
+            if !artifact_slots.insert(&artifact.slot)
+                || !artifact.derivation.starts_with("/nix/store/")
+                || !artifact.derivation.ends_with(".drv")
+                || !artifact.expected_hash.starts_with("sha256-")
+                || !artifact.hash.starts_with("sha256-")
+                || artifact.expected_hash.len() > 128
+                || artifact.hash.len() > 128
+            {
+                bail!("materialized artifact identity is invalid or duplicated");
             }
         }
         for changed in &self.changed_paths {

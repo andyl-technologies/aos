@@ -5,15 +5,18 @@ use std::fs;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail};
 use aos_contract::Sha256Digest;
 use aos_core::nix::NixRunner;
 use aos_maintain::PACKAGE_UPDATE_MATERIALIZATION_V1;
-use aos_maintain::plan::{PackageUpdatePlanV1, SemanticMutation, SourceIntent};
+use aos_maintain::identity::ArtifactSlotId;
+use aos_maintain::plan::{ArtifactIntent, PackageUpdatePlanV1, SemanticMutation, SourceIntent};
 use aos_maintain::run::{
-    MaterializationRecordV1, MaterializedSource, PackageUpdateRunV1, SourceAssuranceOutcome,
+    MaterializationRecordV1, MaterializedArtifact, MaterializedSource, PackageUpdateRunV1,
+    SourceAssuranceOutcome,
 };
 use aos_maintain::workflow::{ActorClass, RunState};
 use base64::Engine as _;
@@ -26,6 +29,8 @@ use super::{inventory, mutation};
 
 const MAX_SOURCE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const MAX_PATCH_BYTES: usize = 32 * 1024 * 1024;
+const MAX_MATERIALIZER_LOG_BYTES: usize = 8 * 1024 * 1024;
+const FAKE_HASH: &str = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
 /// Advances a worktree-ready run through deterministic materialization.
 ///
@@ -70,11 +75,6 @@ pub(super) async fn execute(
         )?;
     }
 
-    if !plan.artifacts.is_empty() {
-        bail!(
-            "this controller build cannot execute generated artifact materializers; retain the unit as assisted/manual or install a controller with that exact typed materializer"
-        );
-    }
     let sources = resolve_sources(store, plan).await?;
     let mut mutations = plan.semantic_mutations.clone();
     for source in &sources {
@@ -100,8 +100,21 @@ pub(super) async fn execute(
             replacement: source.hash.clone(),
         });
     }
-    apply_mutations(&root, &plan.unit_id.to_string(), &mutations)?;
-    verify_post_inventory(&root, plan, verbose, quiet)?;
+    let originals = capture_owner_files(&root, &mutations)?;
+    let materialized = (|| {
+        apply_mutations(&root, plan.unit_id.as_str(), &mutations)?;
+        let artifacts = resolve_artifacts(&root, plan, verbose, quiet)?;
+        verify_post_inventory(&root, plan, verbose, quiet)?;
+        verify_post_artifacts(&root, plan, &artifacts, verbose, quiet)?;
+        Ok::<_, anyhow::Error>(artifacts)
+    })();
+    let artifacts = match materialized {
+        Ok(artifacts) => artifacts,
+        Err(error) => {
+            restore_owner_files(&originals)?;
+            return Err(error);
+        }
+    };
     let (patch, changed_paths) = checked_patch(&root, plan)?;
     let record = MaterializationRecordV1 {
         schema: PACKAGE_UPDATE_MATERIALIZATION_V1.to_string(),
@@ -109,6 +122,7 @@ pub(super) async fn execute(
         plan_id: plan.plan_id.clone(),
         attempt: 0,
         sources,
+        artifacts,
         patch_digest: Sha256Digest::separated("aos.package-update-patch/v1", &patch),
         changed_paths,
         completed_at_unix: state::now_unix()?,
@@ -122,6 +136,231 @@ pub(super) async fn execute(
         state::now_unix()?,
     )?;
     Ok(record)
+}
+
+fn resolve_artifacts(
+    root: &Path,
+    plan: &PackageUpdatePlanV1,
+    verbose: u8,
+    quiet: bool,
+) -> Result<Vec<MaterializedArtifact>> {
+    let mut output = Vec::with_capacity(plan.artifacts.len());
+    for intent in &plan.artifacts {
+        if !intent.outputs.is_empty() {
+            bail!(
+                "artifact {} declares repository outputs unsupported by this controller",
+                intent.slot
+            );
+        }
+        apply_artifact_hash(root, plan, intent, &intent.expected_hash, FAKE_HASH)?;
+        let derivation = evaluated_artifact_derivation(root, plan, &intent.slot, verbose, quiet)?;
+        if derivation == intent.expected_derivation {
+            bail!(
+                "artifact {} did not bind the updated source graph",
+                intent.slot
+            );
+        }
+        let hash = realize_artifact(&derivation)?;
+        apply_artifact_hash(root, plan, intent, FAKE_HASH, &hash)?;
+        output.push(MaterializedArtifact {
+            slot: intent.slot.clone(),
+            derivation,
+            expected_hash: intent.expected_hash.clone(),
+            hash,
+        });
+    }
+    Ok(output)
+}
+
+fn apply_artifact_hash(
+    root: &Path,
+    plan: &PackageUpdatePlanV1,
+    intent: &ArtifactIntent,
+    expected: &str,
+    replacement: &str,
+) -> Result<()> {
+    apply_mutations(
+        root,
+        plan.unit_id.as_str(),
+        &[SemanticMutation {
+            owner: mutation_owner(plan)?.to_string(),
+            field_path: vec![
+                "artifacts".to_string(),
+                intent.slot.to_string(),
+                "hash".to_string(),
+            ],
+            expected: expected.to_string(),
+            replacement: replacement.to_string(),
+        }],
+    )
+}
+
+fn evaluated_artifact_derivation(
+    root: &Path,
+    plan: &PackageUpdatePlanV1,
+    slot: &ArtifactSlotId,
+    verbose: u8,
+    quiet: bool,
+) -> Result<String> {
+    let runner = NixRunner::for_root(root, verbose, quiet)?;
+    let envelope = inventory::evaluate(&runner, None)?;
+    let unit = envelope
+        .inventory
+        .units
+        .iter()
+        .find(|unit| unit.unit_id == plan.unit_id)
+        .ok_or_else(|| anyhow::anyhow!("updated unit disappeared from inventory"))?;
+    let member = unit
+        .members
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("updated unit has no package member"))?;
+    instantiate_member(root, member.as_str())?;
+    unit.artifacts
+        .get(slot)
+        .map(|artifact| artifact.derivation.clone())
+        .ok_or_else(|| anyhow::anyhow!("updated artifact {slot} disappeared from inventory"))
+}
+
+fn instantiate_member(root: &Path, member: &str) -> Result<()> {
+    let mut command = Command::new("nix-instantiate");
+    command
+        .arg(root.join("default.nix"))
+        .args(["-A", &format!("pkgs.{member}")])
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let (status, _stdout, stderr, truncated) = bounded_output(command)?;
+    if truncated || !status.success() {
+        let detail = String::from_utf8_lossy(&stderr);
+        bail!(
+            "Nix could not instantiate artifact owner {member}: {}",
+            detail.trim()
+        );
+    }
+    Ok(())
+}
+
+fn realize_artifact(derivation: &str) -> Result<String> {
+    let mut command = Command::new("nix-store");
+    command
+        .args(["--realise", derivation])
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let (status, _stdout, stderr, truncated) = bounded_output(command)?;
+    if truncated {
+        bail!("artifact materializer diagnostics exceeded the bounded log limit");
+    }
+    if status.success() {
+        bail!("artifact materializer unexpectedly accepted the controller fake hash");
+    }
+    parse_hash_mismatch(&stderr)
+}
+
+fn parse_hash_mismatch(stderr: &[u8]) -> Result<String> {
+    let text = std::str::from_utf8(stderr)
+        .context("artifact materializer emitted non-UTF-8 diagnostics")?;
+    let hashes = text
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("got:"))
+        .map(str::trim)
+        .filter(|value| value.starts_with("sha256-") && value.len() <= 128)
+        .collect::<BTreeSet<_>>();
+    if hashes.len() != 1 {
+        bail!("artifact materializer failed without one unambiguous SRI SHA-256 mismatch");
+    }
+    hashes
+        .first()
+        .map(|value| (*value).to_string())
+        .ok_or_else(|| anyhow::anyhow!("artifact materializer hash disappeared"))
+}
+
+fn bounded_output(
+    mut command: Command,
+) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>, bool)> {
+    let mut child = command.spawn().context("spawning artifact materializer")?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("artifact stdout was not captured"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("artifact stderr was not captured"))?;
+    let stdout_reader = std::thread::spawn(move || bounded_read(stdout));
+    let stderr_reader = std::thread::spawn(move || bounded_read(stderr));
+    let status = child.wait().context("waiting for artifact materializer")?;
+    let (stdout, stdout_truncated) = stdout_reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("artifact stdout reader panicked"))??;
+    let (stderr, stderr_truncated) = stderr_reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("artifact stderr reader panicked"))??;
+    Ok((status, stdout, stderr, stdout_truncated || stderr_truncated))
+}
+
+fn bounded_read(mut reader: impl std::io::Read) -> Result<(Vec<u8>, bool)> {
+    let mut retained = Vec::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut truncated = false;
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let remaining = MAX_MATERIALIZER_LOG_BYTES.saturating_sub(retained.len());
+        let accepted = remaining.min(count);
+        retained.extend_from_slice(&buffer[..accepted]);
+        truncated |= accepted < count;
+    }
+    Ok((retained, truncated))
+}
+
+fn mutation_owner(plan: &PackageUpdatePlanV1) -> Result<&str> {
+    let owners = plan
+        .semantic_mutations
+        .iter()
+        .map(|mutation| mutation.owner.as_str())
+        .collect::<BTreeSet<_>>();
+    if owners.len() != 1 {
+        bail!("generated artifacts require exactly one package-contract owner");
+    }
+    owners
+        .first()
+        .copied()
+        .ok_or_else(|| anyhow::anyhow!("plan has no package-contract owner"))
+}
+
+fn capture_owner_files(
+    root: &Path,
+    mutations: &[SemanticMutation],
+) -> Result<Vec<(std::path::PathBuf, u32, Vec<u8>)>> {
+    let mut output = Vec::new();
+    for owner in mutations
+        .iter()
+        .map(|mutation| mutation.owner.as_str())
+        .collect::<BTreeSet<_>>()
+    {
+        let path = root.join(owner);
+        let metadata = path
+            .symlink_metadata()
+            .with_context(|| format!("inspecting package owner {owner}"))?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            bail!("package owner {owner} is not a regular non-symlink file");
+        }
+        output.push((path.clone(), metadata.permissions().mode(), fs::read(path)?));
+    }
+    Ok(output)
+}
+
+fn restore_owner_files(originals: &[(std::path::PathBuf, u32, Vec<u8>)]) -> Result<()> {
+    for (path, mode, contents) in originals {
+        replace_file(path, *mode, contents)
+            .with_context(|| format!("restoring package owner {}", path.display()))?;
+    }
+    Ok(())
 }
 
 async fn resolve_sources(
@@ -320,6 +559,39 @@ pub(super) fn verify_post_inventory(
     Ok(())
 }
 
+fn verify_post_artifacts(
+    root: &Path,
+    plan: &PackageUpdatePlanV1,
+    materialized: &[MaterializedArtifact],
+    verbose: u8,
+    quiet: bool,
+) -> Result<()> {
+    let runner = NixRunner::for_root(root, verbose, quiet)?;
+    let envelope = inventory::evaluate(&runner, None)?;
+    let unit = envelope
+        .inventory
+        .units
+        .iter()
+        .find(|unit| unit.unit_id == plan.unit_id)
+        .ok_or_else(|| anyhow::anyhow!("updated unit disappeared from maintenance inventory"))?;
+    if materialized.len() != plan.artifacts.len() {
+        bail!("materialized artifact set is incomplete");
+    }
+    for resolved in materialized {
+        let artifact = unit
+            .artifacts
+            .get(&resolved.slot)
+            .ok_or_else(|| anyhow::anyhow!("updated artifact {} disappeared", resolved.slot))?;
+        if artifact.hash != resolved.hash {
+            bail!(
+                "updated artifact {} hash does not match materialization evidence",
+                resolved.slot
+            );
+        }
+    }
+    Ok(())
+}
+
 fn checked_patch(root: &Path, plan: &PackageUpdatePlanV1) -> Result<(Vec<u8>, Vec<String>)> {
     let names = git(root, &["diff", "--name-only", "-z", "--"])?;
     if !names.status.success() {
@@ -413,6 +685,10 @@ fn git(root: &Path, arguments: &[&str]) -> Result<std::process::Output> {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Result;
+
+    use super::{FAKE_HASH, parse_hash_mismatch};
+
     #[test]
     fn redirect_allowlist_rejects_invalid_host_shapes() {
         let invalid = [".example.org", "example.org.", "EXAMPLE.org", "example/org"];
@@ -425,5 +701,25 @@ mod tests {
                     || host.ends_with('.')
             );
         }
+    }
+
+    #[test]
+    fn hash_mismatch_parser_requires_one_strict_sri_result() -> Result<()> {
+        let expected = "sha256-0123456789012345678901234567890123456789012=";
+        let diagnostic = format!(
+            "error: hash mismatch in fixed-output derivation\n  specified: {FAKE_HASH}\n  got:    {expected}\n"
+        );
+        assert_eq!(parse_hash_mismatch(diagnostic.as_bytes())?, expected);
+        assert!(parse_hash_mismatch(b"error: builder failed\n").is_err());
+        assert!(
+            parse_hash_mismatch(
+                format!(
+                    "got: {expected}\ngot: sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n"
+                )
+                .as_bytes()
+            )
+            .is_err()
+        );
+        Ok(())
     }
 }

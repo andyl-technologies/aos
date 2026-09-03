@@ -57,8 +57,7 @@ pub(super) fn apply(source: &str, unit_id: &str, mutations: &[SemanticMutation])
         .first()
         .ok_or_else(|| anyhow::anyhow!("matching mkUpstream unit disappeared"))?;
     let fields = collect_fields(set)?;
-    let mut replacements: Vec<(usize, usize, String)> =
-        Vec::with_capacity(mutations.len());
+    let mut replacements: Vec<(usize, usize, String)> = Vec::with_capacity(mutations.len());
     for mutation in mutations {
         let field_path = editable_path(*kind, &mutation.field_path)?;
         let values = fields
