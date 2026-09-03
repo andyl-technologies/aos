@@ -10,6 +10,7 @@ use anyhow::{Context as _, Result, bail};
 use aos_contract::{Sha256Digest, canonical};
 use aos_maintain::discovery::DiscoverySnapshotV1;
 use aos_maintain::envelope::InventoryEnvelopeV1;
+use aos_maintain::plan::PackageUpdatePlanV1;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -117,6 +118,41 @@ impl StateStore {
         let snapshot: DiscoverySnapshotV1 = value;
         snapshot.validate()?;
         Ok(Some(snapshot))
+    }
+
+    /// Stores one immutable plan beneath its deterministic plan identity.
+    pub(super) fn write_plan(&self, plan: &PackageUpdatePlanV1) -> Result<Sha256Digest> {
+        plan.validate()?;
+        let plans = self.repository.join("plans");
+        secure_directory(&plans)?;
+        let name = format!("{}.json", plan.plan_id);
+        write_immutable(&plans, &name, plan)?;
+        Sha256Digest::of_canonical(aos_maintain::PACKAGE_UPDATE_PLAN_V1, plan)
+    }
+
+    /// Reads an exact immutable plan identity.
+    pub(super) fn read_plan(&self, plan_id: &str) -> Result<Option<PackageUpdatePlanV1>> {
+        if plan_id.is_empty()
+            || plan_id.len() > 96
+            || !plan_id.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'+' | b':')
+            })
+        {
+            bail!("plan identity is invalid");
+        }
+        let Some(plan) = read_optional(
+            &self
+                .repository
+                .join("plans")
+                .join(format!("{plan_id}.json")),
+            "package update plan",
+        )?
+        else {
+            return Ok(None);
+        };
+        let plan: PackageUpdatePlanV1 = plan;
+        plan.validate()?;
+        Ok(Some(plan))
     }
 
     /// Records an immutable provider identity's earliest observed time.

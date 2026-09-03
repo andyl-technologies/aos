@@ -9,6 +9,7 @@ use crate::MAINTENANCE_CLI_V1;
 use crate::discovery::DiscoverySnapshotV1;
 use crate::envelope::InventoryEnvelopeV1;
 use crate::identity::RunId;
+use crate::plan::PackageUpdatePlanV1;
 use crate::workflow::{DiscoveryDecision, GateOutcome, RunState, TaskStatus};
 
 /// Classifies the outcome of the requested command independently of run state.
@@ -182,6 +183,9 @@ pub struct CommandData {
     /// Repository-bound discovery snapshot returned by scan and report commands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discovery: Option<DiscoverySnapshotV1>,
+    /// Immutable package-update plan returned by planning and inspection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<PackageUpdatePlanV1>,
 }
 
 /// Contains the single terminal result returned by a maintenance command.

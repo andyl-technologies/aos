@@ -32,6 +32,8 @@ pub enum MaintainCommand {
     Report(MaintainReportArgs),
     /// Show concise cached maintenance and active-run state
     Status(MaintainStatusArgs),
+    /// Create an immutable update plan without modifying repository source
+    Plan(MaintainPlanArgs),
 }
 
 #[derive(Args)]
@@ -79,6 +81,16 @@ pub struct MaintainStatusArgs {
     /// Show only nonterminal runs
     #[arg(long)]
     pub active: bool,
+}
+
+#[derive(Args)]
+pub struct MaintainPlanArgs {
+    /// Exact update-unit identity
+    pub unit: String,
+
+    /// Select an exact observed target for a one-component unit
+    #[arg(long, value_name = "VERSION")]
+    pub target: Option<String>,
 }
 
 #[cfg(test)]

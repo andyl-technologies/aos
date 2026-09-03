@@ -11,6 +11,7 @@
 //! - [`inventory`] defines the closed package-maintenance inventory.
 //! - [`envelope`] binds evaluated inventory to an exact local repository.
 //! - [`discovery`] models bounded provider evidence and candidate selection.
+//! - [`plan`] freezes selected updates and their permitted semantic mutations.
 //! - [`workflow`] defines legal run transitions and event contracts.
 //! - [`presentation`] defines renderer-independent command completion.
 
@@ -20,6 +21,7 @@ pub mod discovery;
 pub mod envelope;
 pub mod identity;
 pub mod inventory;
+pub mod plan;
 pub mod presentation;
 pub mod workflow;
 
@@ -34,6 +36,9 @@ pub const UPSTREAM_OBSERVATION_V1: &str = "aos.upstream-observation/v1";
 
 /// Schema identifier for one repository-bound discovery snapshot.
 pub const DISCOVERY_SNAPSHOT_V1: &str = "aos.discovery-snapshot/v1";
+
+/// Schema identifier for one immutable package-update plan.
+pub const PACKAGE_UPDATE_PLAN_V1: &str = "aos.package-update-plan/v1";
 
 /// Schema identifier for the first durable maintenance journal event.
 pub const MAINTENANCE_JOURNAL_EVENT_V1: &str = "aos.maintain.journal-event/v1";

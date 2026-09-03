@@ -2,6 +2,7 @@
 
 mod discovery;
 mod inventory;
+mod mutation;
 mod state;
 
 use std::collections::BTreeMap;
@@ -81,6 +82,7 @@ pub async fn run(cli: &Cli, args: &MaintainArgs) -> Result<CommandCompletion> {
                             values,
                             inventory: Some(envelope),
                             discovery: None,
+                            plan: None,
                         },
                         Vec::new(),
                         vec![PrimaryValue {
@@ -176,6 +178,7 @@ pub async fn run(cli: &Cli, args: &MaintainArgs) -> Result<CommandCompletion> {
             }
             cached_completion("status", args, None)
         }
+        Some(MaintainCommand::Plan(command)) => plan_command(args, command),
     }
 }
 
@@ -305,6 +308,7 @@ fn cached_completion(
             values,
             inventory: Some(inventory),
             discovery,
+            plan: None,
         },
         diagnostics,
         Vec::new(),
@@ -376,6 +380,7 @@ fn scan_completion(
             values,
             inventory: Some(envelope),
             discovery: Some(outcome.snapshot),
+            plan: None,
         },
         diagnostics,
         vec![PrimaryValue {
@@ -384,6 +389,242 @@ fn scan_completion(
         }],
         Vec::new(),
     )
+}
+
+fn plan_command(
+    args: &MaintainArgs,
+    command: &crate::cli::MaintainPlanArgs,
+) -> Result<CommandCompletion> {
+    use aos_maintain::identity::UnitId;
+    use aos_maintain::workflow::DiscoveryDecision;
+
+    let directory = std::env::current_dir().context("resolving current directory")?;
+    let coordinates = inventory::repository_coordinates(&directory)?;
+    let store = state::StateStore::open(args.state_dir.as_deref(), &coordinates)?;
+    let Some(envelope) = store.read_inventory()? else {
+        return missing_plan_input("inventory", CommandDisposition::ActionRequired);
+    };
+    if !envelope.content.permits_write_plan() {
+        return completion(
+            "plan",
+            CommandDisposition::Stale,
+            CommandData::default(),
+            vec![diagnostic(
+                "maintain.plan-dirty-base",
+                DiagnosticSeverity::Error,
+                "Write plans require an inventory evaluated from a clean committed tree",
+            )],
+            Vec::new(),
+            vec![NextAction {
+                label: "Refresh inventory from a clean tree".to_string(),
+                argv: vec![
+                    "aos".to_string(),
+                    "maintain".to_string(),
+                    "inventory".to_string(),
+                    "--check".to_string(),
+                ],
+                reason: "dirty source can be inspected but cannot become a write-plan base"
+                    .to_string(),
+                prerequisites: vec!["clean Git worktree".to_string()],
+                effect_class: EffectClass::ReadOnly,
+                bound_context: None,
+            }],
+        );
+    }
+    let Some(mut snapshot) = store.read_discovery()? else {
+        return missing_plan_input("discovery", CommandDisposition::UpstreamUnknown);
+    };
+    let unit_id = match UnitId::parse(&command.unit) {
+        Ok(unit_id) => unit_id,
+        Err(error) => {
+            return completion(
+                "plan",
+                CommandDisposition::InvalidInvocation,
+                CommandData::default(),
+                vec![diagnostic(
+                    "maintain.invalid-unit",
+                    DiagnosticSeverity::Error,
+                    &error.to_string(),
+                )],
+                Vec::new(),
+                Vec::new(),
+            );
+        }
+    };
+    let now = state::now_unix()?;
+    if let Some(target) = &command.target {
+        if let Err(error) = select_explicit_target(&envelope, &mut snapshot, &unit_id, target, now)
+        {
+            return completion(
+                "plan",
+                CommandDisposition::InvalidInvocation,
+                CommandData::default(),
+                vec![diagnostic(
+                    "maintain.invalid-target",
+                    DiagnosticSeverity::Error,
+                    &error.to_string(),
+                )],
+                Vec::new(),
+                Vec::new(),
+            );
+        }
+    }
+    let Some(discovered) = snapshot
+        .units
+        .iter()
+        .find(|unit| unit.unit_id == unit_id.as_str())
+    else {
+        return missing_plan_input("unit discovery", CommandDisposition::UpstreamUnknown);
+    };
+    match discovered.decision {
+        DiscoveryDecision::Current => {
+            return completion(
+                "plan",
+                CommandDisposition::NoChange,
+                CommandData::default(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            );
+        }
+        DiscoveryDecision::Unknown => {
+            return missing_plan_input(
+                "complete upstream evidence",
+                CommandDisposition::UpstreamUnknown,
+            );
+        }
+        DiscoveryDecision::Quarantined => {
+            return missing_plan_input(
+                "unconflicted upstream evidence",
+                CommandDisposition::Quarantined,
+            );
+        }
+        DiscoveryDecision::UpdateAvailable => {}
+    }
+    let plan = match aos_maintain::plan::create_plan(&envelope, &snapshot, &unit_id, now) {
+        Ok(plan) => plan,
+        Err(error) => {
+            return completion(
+                "plan",
+                CommandDisposition::Stale,
+                CommandData::default(),
+                vec![diagnostic(
+                    "maintain.plan-stale-input",
+                    DiagnosticSeverity::Error,
+                    &error.to_string(),
+                )],
+                Vec::new(),
+                Vec::new(),
+            );
+        }
+    };
+    let digest = store.write_plan(&plan)?;
+    completion(
+        "plan",
+        CommandDisposition::Success,
+        CommandData {
+            values: BTreeMap::new(),
+            inventory: Some(envelope),
+            discovery: Some(snapshot),
+            plan: Some(plan.clone()),
+        },
+        Vec::new(),
+        vec![PrimaryValue {
+            name: "planId".to_string(),
+            value: plan.plan_id.to_string(),
+        }],
+        vec![NextAction {
+            label: "Create the isolated update worktree".to_string(),
+            argv: vec![
+                "aos".to_string(),
+                "maintain".to_string(),
+                "run".to_string(),
+                "--plan".to_string(),
+                plan.plan_id.to_string(),
+                "--until".to_string(),
+                "worktree-ready".to_string(),
+            ],
+            reason: "the immutable plan is ready for local execution".to_string(),
+            prerequisites: Vec::new(),
+            effect_class: EffectClass::LocalMutation,
+            bound_context: Some(digest.to_string()),
+        }],
+    )
+}
+
+fn missing_plan_input(label: &str, disposition: CommandDisposition) -> Result<CommandCompletion> {
+    completion(
+        "plan",
+        disposition,
+        CommandData::default(),
+        vec![diagnostic(
+            "maintain.plan-input-unavailable",
+            DiagnosticSeverity::Error,
+            &format!("Required {label} is unavailable"),
+        )],
+        Vec::new(),
+        Vec::new(),
+    )
+}
+
+fn select_explicit_target(
+    envelope: &aos_maintain::envelope::InventoryEnvelopeV1,
+    snapshot: &mut aos_maintain::discovery::DiscoverySnapshotV1,
+    unit_id: &aos_maintain::identity::UnitId,
+    target: &str,
+    now_unix: u64,
+) -> Result<()> {
+    use aos_maintain::workflow::DiscoveryDecision;
+
+    let unit = envelope
+        .inventory
+        .units
+        .iter()
+        .find(|unit| &unit.unit_id == unit_id)
+        .ok_or_else(|| anyhow::anyhow!("unknown update unit {unit_id}"))?;
+    if unit.components.len() != 1 {
+        anyhow::bail!("--target is valid only for one-component update units");
+    }
+    let (component_id, _) = unit
+        .components
+        .first_key_value()
+        .ok_or_else(|| anyhow::anyhow!("update unit has no components"))?;
+    let key = format!("{unit_id}/{component_id}/primary");
+    let observation = snapshot
+        .observations
+        .get(&key)
+        .ok_or_else(|| anyhow::anyhow!("primary observation is unavailable"))?;
+    let matches = observation
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.raw_id == target || candidate.raw_version == target)
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        anyhow::bail!("explicit target must match exactly one observed candidate");
+    }
+    let matched = matches
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("explicit target disappeared during selection"))?;
+    let mut exact_observation = observation.clone();
+    exact_observation
+        .candidates
+        .retain(|candidate| candidate.raw_id == matched.raw_id);
+    let selected = aos_maintain::discovery::select_unit(
+        unit,
+        &BTreeMap::from([(component_id.to_string(), exact_observation)]),
+        now_unix,
+        24 * 60 * 60,
+    )?;
+    if selected.decision != DiscoveryDecision::UpdateAvailable {
+        anyhow::bail!("explicit target is not selectable under current unit policy");
+    }
+    let discovery = snapshot
+        .units
+        .iter_mut()
+        .find(|unit| unit.unit_id == unit_id.as_str())
+        .ok_or_else(|| anyhow::anyhow!("unit discovery is unavailable"))?;
+    *discovery = selected;
+    Ok(())
 }
 
 /// Renders exactly one typed completion at the process boundary.
@@ -455,6 +696,7 @@ fn command_name(args: &MaintainArgs) -> &'static str {
         Some(MaintainCommand::Scan(_)) => "scan",
         Some(MaintainCommand::Report(_)) => "report",
         Some(MaintainCommand::Status(_)) => "status",
+        Some(MaintainCommand::Plan(_)) => "plan",
     }
 }
 
@@ -555,6 +797,29 @@ fn render_human(result: &MaintainCommandResult, screen_reader: bool, printer: &P
         }
     }
 
+    if let Some(plan) = &result.data.plan {
+        printer.plain("");
+        printer.header("Plan");
+        printer.kv("ID", plan.plan_id.as_str());
+        printer.kv(
+            "Change",
+            &format!(
+                "{} -> {}",
+                escape_terminal(&plan.current_package_version, 256),
+                escape_terminal(&plan.target_package_version, 256)
+            ),
+        );
+        let owner = plan
+            .semantic_mutations
+            .first()
+            .map(|mutation| mutation.owner.as_str())
+            .unwrap_or("unknown");
+        printer.kv("Owner", &escape_terminal(owner, 4096));
+        printer.kv("Fields", &plan.semantic_mutations.len().to_string());
+        printer.kv("Sources", &plan.sources.len().to_string());
+        printer.kv("Risk", risk_name(plan.risk));
+    }
+
     for diagnostic in &result.diagnostics {
         let message = format!(
             "{}: {}",
@@ -620,6 +885,17 @@ fn discovery_name(decision: aos_maintain::workflow::DiscoveryDecision) -> &'stat
         DiscoveryDecision::UpdateAvailable => "update-available",
         DiscoveryDecision::Unknown => "unknown",
         DiscoveryDecision::Quarantined => "quarantined",
+    }
+}
+
+fn risk_name(risk: aos_maintain::inventory::RiskLevel) -> &'static str {
+    use aos_maintain::inventory::RiskLevel;
+
+    match risk {
+        RiskLevel::Low => "low",
+        RiskLevel::Normal => "normal",
+        RiskLevel::High => "high",
+        RiskLevel::Critical => "critical",
     }
 }
 
