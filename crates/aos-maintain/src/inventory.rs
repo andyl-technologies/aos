@@ -11,7 +11,7 @@ use aos_contract::limits::JsonLimits;
 use serde::{Deserialize, Serialize};
 
 use crate::MAINTENANCE_INVENTORY_V1;
-use crate::identity::{ComponentId, FamilyId, MemberId, SourceSlotId, UnitId};
+use crate::identity::{ArtifactSlotId, ComponentId, FamilyId, MemberId, SourceSlotId, UnitId};
 
 /// Resource limits for one canonical maintenance inventory.
 pub const INVENTORY_LIMITS: JsonLimits = JsonLimits {
@@ -136,6 +136,9 @@ pub struct UpdateUnit {
     pub package: Option<PackageProjection>,
     /// Independently versioned upstream components keyed by stable identity.
     pub components: BTreeMap<ComponentId, Component>,
+    /// Generated fixed-output artifacts updated after their declared inputs.
+    #[serde(default)]
+    pub artifacts: BTreeMap<ArtifactSlotId, ArtifactSlot>,
     /// Normalized repository-relative source file owning the contract.
     pub owner: String,
     /// AOS package outputs updated atomically by this unit.
@@ -226,6 +229,7 @@ impl UpdateUnit {
                 &self.components,
             )?;
         }
+        validate_artifacts(&self.artifacts, &self.components, &self.unit_id)?;
         Ok(())
     }
 }
@@ -493,6 +497,137 @@ pub enum HashMode {
     Recursive,
 }
 
+/// Describes one generated fixed-output dependency artifact.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ArtifactSlot {
+    /// Ordered source or artifact edges consumed by this materializer.
+    pub inputs: Vec<ArtifactInput>,
+    /// Current recursive SRI hash literal.
+    pub hash: String,
+    /// Closed kind-specific builder parameters.
+    pub materializer: ArtifactMaterializer,
+    /// Optional repository outputs a materializer may replace.
+    #[serde(default)]
+    pub outputs: Vec<ArtifactOutput>,
+}
+
+/// Selects one declared input edge in an artifact dependency graph.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ArtifactInput {
+    /// Reads one source slot from an upstream component.
+    Source {
+        /// Component owning the source slot.
+        component: ComponentId,
+        /// Stable source-slot identity.
+        slot: SourceSlotId,
+    },
+    /// Reads a previously materialized artifact.
+    Artifact {
+        /// Stable dependency artifact identity.
+        artifact: ArtifactSlotId,
+    },
+}
+
+/// Freezes all output-affecting parameters for a supported materializer.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ArtifactMaterializer {
+    /// Vendors dependencies using the legacy `cargo vendor` builder.
+    CargoDeps {
+        /// Source-relative Cargo package root.
+        source_root: String,
+        /// Repository-relative patches applied before vendoring.
+        patches: Vec<String>,
+        /// Frozen AOS builder contract identity.
+        builder: String,
+    },
+    /// Vendors lockfile-resolved Cargo dependencies, including Git sources.
+    CargoVendor {
+        /// Source-relative Cargo package root.
+        source_root: String,
+        /// Repository-relative patches applied before vendoring.
+        patches: Vec<String>,
+        /// Frozen AOS builder contract identity.
+        builder: String,
+    },
+    /// Downloads one or several Go module graphs.
+    GoModules {
+        /// Source-relative extraction root.
+        source_root: String,
+        /// Strictly ordered module roots within the source.
+        module_roots: Vec<String>,
+        /// Frozen AOS builder contract identity.
+        builder: String,
+    },
+    /// Installs an npm lockfile without lifecycle scripts.
+    NpmDeps {
+        /// Source-relative npm package root.
+        source_root: String,
+        /// Repository-relative package manifest path.
+        manifest: String,
+        /// Repository-relative npm lockfile path.
+        lockfile: String,
+        /// Must remain false; dependency acquisition cannot run scripts.
+        lifecycle_scripts: bool,
+        /// Frozen AOS builder contract identity.
+        builder: String,
+    },
+    /// Evaluates Bazel repository rules inside the full confinement boundary.
+    BazelDeps {
+        /// Source-relative Bazel workspace root.
+        source_root: String,
+        /// Exact Bazel target used to populate external repositories.
+        target: String,
+        /// Ordered Bazel fetch flags.
+        flags: Vec<String>,
+        /// Repository-relative patches applied before fetching.
+        patches: Vec<String>,
+        /// Frozen AOS builder contract identity.
+        builder: String,
+    },
+}
+
+/// Declares one repository file a materializer may replace.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ArtifactOutput {
+    /// Normalized repository-relative output path.
+    pub path: String,
+    /// Parsed format required before and after transformation.
+    pub format: ArtifactOutputFormat,
+    /// Exact preimage digest required before writing.
+    pub expected_preimage: String,
+    /// Closed transformation performed by the controller.
+    pub transformation: ArtifactTransformation,
+}
+
+/// Selects the parser used to validate a generated repository output.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ArtifactOutputFormat {
+    /// Parses canonical JSON data.
+    Json,
+    /// Parses TOML data.
+    Toml,
+}
+
+/// Selects a reviewed generated-output transformation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ArtifactTransformation {
+    /// Regenerates a Cargo lockfile without executing package code.
+    CargoLock,
+    /// Regenerates an npm lockfile without executing lifecycle scripts.
+    NpmLock,
+}
+
 /// Defines one URL without allowing candidate text to alter its origin.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -629,6 +764,215 @@ pub enum RiskLevel {
     Critical,
 }
 
+fn validate_artifacts(
+    artifacts: &BTreeMap<ArtifactSlotId, ArtifactSlot>,
+    components: &BTreeMap<ComponentId, Component>,
+    unit_id: &UnitId,
+) -> Result<()> {
+    if artifacts.len() > 128 {
+        bail!("unit {unit_id} has too many artifact slots");
+    }
+    for (artifact_id, artifact) in artifacts {
+        if artifact.inputs.is_empty() || artifact.inputs.len() > 128 {
+            bail!("unit {unit_id} artifact {artifact_id} has an invalid input set");
+        }
+        if !artifact.hash.starts_with("sha256-") || artifact.hash.len() > 128 {
+            bail!("unit {unit_id} artifact {artifact_id} has an invalid SRI hash");
+        }
+        let mut previous = None;
+        for input in &artifact.inputs {
+            if previous.is_some_and(|prior| prior >= input) {
+                bail!("unit {unit_id} artifact {artifact_id} inputs must be strictly ordered");
+            }
+            previous = Some(input);
+            match input {
+                ArtifactInput::Source { component, slot } => {
+                    if !components
+                        .get(component)
+                        .is_some_and(|value| value.sources.contains_key(slot))
+                    {
+                        bail!(
+                            "unit {unit_id} artifact {artifact_id} references missing source {component}/{slot}"
+                        );
+                    }
+                }
+                ArtifactInput::Artifact {
+                    artifact: dependency,
+                } => {
+                    if !artifacts.contains_key(dependency) {
+                        bail!(
+                            "unit {unit_id} artifact {artifact_id} references missing artifact {dependency}"
+                        );
+                    }
+                }
+            }
+        }
+        validate_materializer(&artifact.materializer, unit_id, artifact_id)?;
+        if artifact.outputs.len() > 32 {
+            bail!("unit {unit_id} artifact {artifact_id} has too many outputs");
+        }
+        let mut output_paths = BTreeSet::new();
+        for output in &artifact.outputs {
+            validate_repository_path(&output.path, "artifact output")?;
+            if !output_paths.insert(&output.path) {
+                bail!("unit {unit_id} artifact {artifact_id} repeats an output path");
+            }
+            if !output.expected_preimage.starts_with("sha256:")
+                || output.expected_preimage.len() != 71
+            {
+                bail!(
+                    "unit {unit_id} artifact {artifact_id} has an invalid output preimage digest"
+                );
+            }
+        }
+    }
+
+    let mut visiting = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+    for artifact_id in artifacts.keys() {
+        visit_artifact(artifact_id, artifacts, unit_id, &mut visiting, &mut visited)?;
+    }
+    Ok(())
+}
+
+fn visit_artifact<'a>(
+    artifact_id: &'a ArtifactSlotId,
+    artifacts: &'a BTreeMap<ArtifactSlotId, ArtifactSlot>,
+    unit_id: &UnitId,
+    visiting: &mut BTreeSet<&'a ArtifactSlotId>,
+    visited: &mut BTreeSet<&'a ArtifactSlotId>,
+) -> Result<()> {
+    if visited.contains(artifact_id) {
+        return Ok(());
+    }
+    if !visiting.insert(artifact_id) {
+        bail!("unit {unit_id} artifact graph contains a cycle at {artifact_id}");
+    }
+    for input in &artifacts[artifact_id].inputs {
+        if let ArtifactInput::Artifact {
+            artifact: dependency,
+        } = input
+        {
+            visit_artifact(dependency, artifacts, unit_id, visiting, visited)?;
+        }
+    }
+    visiting.remove(artifact_id);
+    visited.insert(artifact_id);
+    Ok(())
+}
+
+fn validate_materializer(
+    materializer: &ArtifactMaterializer,
+    unit_id: &UnitId,
+    artifact_id: &ArtifactSlotId,
+) -> Result<()> {
+    let (source_root, builder) = match materializer {
+        ArtifactMaterializer::CargoDeps {
+            source_root,
+            patches,
+            builder,
+        }
+        | ArtifactMaterializer::CargoVendor {
+            source_root,
+            patches,
+            builder,
+        } => {
+            for patch in patches {
+                validate_repository_path(patch, "artifact patch")?;
+            }
+            (source_root, builder)
+        }
+        ArtifactMaterializer::GoModules {
+            source_root,
+            module_roots,
+            builder,
+        } => {
+            if module_roots.is_empty() {
+                bail!("unit {unit_id} artifact {artifact_id} has no Go module roots");
+            }
+            require_strict_strings(module_roots, "Go module root", unit_id)?;
+            for root in module_roots {
+                validate_relative_path(root, "Go module root")?;
+            }
+            (source_root, builder)
+        }
+        ArtifactMaterializer::NpmDeps {
+            source_root,
+            manifest,
+            lockfile,
+            lifecycle_scripts,
+            builder,
+        } => {
+            if *lifecycle_scripts {
+                bail!("unit {unit_id} artifact {artifact_id} enables npm lifecycle scripts");
+            }
+            validate_repository_path(manifest, "npm manifest")?;
+            validate_repository_path(lockfile, "npm lockfile")?;
+            (source_root, builder)
+        }
+        ArtifactMaterializer::BazelDeps {
+            source_root,
+            target,
+            flags,
+            patches,
+            builder,
+        } => {
+            if target.is_empty()
+                || target.len() > 512
+                || target.bytes().any(|byte| byte.is_ascii_control())
+            {
+                bail!("unit {unit_id} artifact {artifact_id} has an invalid Bazel target");
+            }
+            for value in flags {
+                if value.is_empty()
+                    || value.len() > 512
+                    || value.bytes().any(|byte| byte.is_ascii_control())
+                {
+                    bail!("unit {unit_id} artifact {artifact_id} has an invalid Bazel flag");
+                }
+            }
+            for patch in patches {
+                validate_repository_path(patch, "artifact patch")?;
+            }
+            (source_root, builder)
+        }
+    };
+    validate_relative_path(source_root, "artifact source root")?;
+    if builder.is_empty()
+        || builder.len() > 128
+        || !builder.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/' | b':')
+        })
+    {
+        bail!("unit {unit_id} artifact {artifact_id} has an invalid builder identity");
+    }
+    Ok(())
+}
+
+fn validate_relative_path(path: &str, label: &str) -> Result<()> {
+    if path == "." {
+        return Ok(());
+    }
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.ends_with('/')
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        bail!("invalid {label}: {path}");
+    }
+    Ok(())
+}
+
+fn validate_repository_path(path: &str, label: &str) -> Result<()> {
+    validate_relative_path(path, label)?;
+    if path.len() > 1024 || path.bytes().any(|byte| byte.is_ascii_control()) {
+        bail!("invalid {label}: {path}");
+    }
+    Ok(())
+}
+
 fn validate_owner(owner: &str) -> Result<()> {
     if owner.is_empty()
         || owner.starts_with('/')
@@ -730,6 +1074,7 @@ mod tests {
                         }
                     }
                 },
+                "artifacts": {},
                 "owner": "pkgs/compression/zlib.nix",
                 "members": ["zlib"],
                 "platforms": ["aarch64-linux", "x86_64-linux"],
@@ -797,6 +1142,55 @@ mod tests {
         let mut escaped = canary();
         escaped["units"][0]["owner"] = json!("pkgs/../secrets.nix");
         assert!(MaintenanceInventoryV1::from_slice(&canonical::canonical_json(&escaped)?).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn artifact_graph_is_closed_acyclic_and_script_safe() -> Result<()> {
+        let mut inventory = canary();
+        inventory["units"][0]["artifacts"] = json!({
+            "goModules": {
+                "inputs": [{"kind": "source", "component": "main", "slot": "source"}],
+                "hash": "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                "materializer": {
+                    "kind": "go-modules",
+                    "sourceRoot": ".",
+                    "moduleRoots": ["."],
+                    "builder": "fetchGoModules/v1"
+                },
+                "outputs": []
+            },
+            "npmModules": {
+                "inputs": [{"kind": "artifact", "artifact": "goModules"}],
+                "hash": "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
+                "materializer": {
+                    "kind": "npm-deps",
+                    "sourceRoot": ".",
+                    "manifest": "pkgs/example/package.json",
+                    "lockfile": "pkgs/example/package-lock.json",
+                    "lifecycleScripts": false,
+                    "builder": "fetchNpmDeps/v1"
+                },
+                "outputs": []
+            }
+        });
+        assert!(
+            MaintenanceInventoryV1::from_slice(&canonical::canonical_json(&inventory)?).is_ok()
+        );
+
+        inventory["units"][0]["artifacts"]["goModules"]["inputs"] =
+            json!([{"kind": "artifact", "artifact": "npmModules"}]);
+        assert!(
+            MaintenanceInventoryV1::from_slice(&canonical::canonical_json(&inventory)?).is_err()
+        );
+
+        inventory["units"][0]["artifacts"]["goModules"]["inputs"] =
+            json!([{"kind": "source", "component": "main", "slot": "source"}]);
+        inventory["units"][0]["artifacts"]["npmModules"]["materializer"]["lifecycleScripts"] =
+            json!(true);
+        assert!(
+            MaintenanceInventoryV1::from_slice(&canonical::canonical_json(&inventory)?).is_err()
+        );
         Ok(())
     }
 

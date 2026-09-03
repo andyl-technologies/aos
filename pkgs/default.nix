@@ -1291,6 +1291,7 @@
             sources = {};
           };
         };
+      artifacts = {};
       owner = discoveredPackageOwners.${name} or "pkgs/default.nix";
       members = [name];
       platforms = [stdenv.hostPlatform.system];

@@ -15,10 +15,11 @@ use url::Url;
 use crate::PACKAGE_UPDATE_PLAN_V1;
 use crate::discovery::{DiscoverySnapshotV1, UnitDiscovery};
 use crate::envelope::{ControllerIdentity, GitObjectId, InventoryEnvelopeV1, RepositoryContent};
-use crate::identity::{ComponentId, PlanId, SourceSlotId, UnitId};
+use crate::identity::{ArtifactSlotId, ComponentId, PlanId, SourceSlotId, UnitId};
 use crate::inventory::{
-    ComponentVersion, HashMode, ProjectionField, RiskLevel, SourceFetcher, UrlPart, UrlScheme,
-    UrlSegment, UrlTemplate, VersionProjection,
+    ArtifactInput, ArtifactMaterializer, ArtifactOutput, ComponentVersion, HashMode,
+    ProjectionField, RiskLevel, SourceFetcher, UrlPart, UrlScheme, UrlSegment, UrlTemplate,
+    VersionProjection,
 };
 use crate::workflow::DiscoveryDecision;
 
@@ -44,6 +45,8 @@ pub struct SourceIntent {
     pub component: ComponentId,
     /// Source-slot identity within the component.
     pub slot: SourceSlotId,
+    /// Exact selected upstream identity bound to the downloaded bytes.
+    pub upstream_id: String,
     /// Fetcher and hash semantics frozen from inventory.
     pub fetcher: SourceFetcher,
     /// Hash mode frozen from inventory.
@@ -54,6 +57,22 @@ pub struct SourceIntent {
     pub expected_hash: String,
     /// Complete redirect-host allowlist.
     pub allowed_redirect_hosts: Vec<String>,
+}
+
+/// Describes one planned generated fixed-output artifact.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ArtifactIntent {
+    /// Stable artifact identity within the update unit.
+    pub slot: ArtifactSlotId,
+    /// Ordered source/artifact dependency edges.
+    pub inputs: Vec<ArtifactInput>,
+    /// Exact old SRI hash required at mutation time.
+    pub expected_hash: String,
+    /// Closed kind-specific builder parameters.
+    pub materializer: ArtifactMaterializer,
+    /// Complete generated repository output contract.
+    pub outputs: Vec<ArtifactOutput>,
 }
 
 /// Classifies one deterministic validation action frozen into a plan.
@@ -115,6 +134,9 @@ pub struct PackageUpdatePlanV1 {
     pub semantic_mutations: Vec<SemanticMutation>,
     /// Planned sources whose content hashes are materialized by the controller.
     pub sources: Vec<SourceIntent>,
+    /// Planned generated fixed-output artifacts in dependency order.
+    #[serde(default)]
+    pub artifacts: Vec<ArtifactIntent>,
     /// Fast deterministic checks required after every accepted attempt.
     pub quick_gates: Vec<GateSpec>,
     /// Complete repository checks required for the exact accepted commit.
@@ -170,7 +192,11 @@ impl PackageUpdatePlanV1 {
             bail!("plan source set is oversized");
         }
         for source in &self.sources {
-            if source.urls.is_empty() || source.urls.len() > 16 {
+            if source.urls.is_empty()
+                || source.urls.len() > 16
+                || source.upstream_id.is_empty()
+                || source.upstream_id.len() > 512
+            {
                 bail!("plan source URL set is empty or oversized");
             }
             for value in &source.urls {
@@ -195,6 +221,27 @@ impl PackageUpdatePlanV1 {
                     })
                 {
                     bail!("planned redirect host is invalid");
+                }
+            }
+        }
+        if self.artifacts.len() > 128 {
+            bail!("plan artifact set is oversized");
+        }
+        let mut artifact_ids = BTreeSet::new();
+        for artifact in &self.artifacts {
+            if !artifact_ids.insert(&artifact.slot)
+                || artifact.inputs.is_empty()
+                || !artifact.expected_hash.starts_with("sha256-")
+            {
+                bail!("plan contains an invalid or duplicate artifact intent");
+            }
+            for input in &artifact.inputs {
+                if let ArtifactInput::Artifact {
+                    artifact: dependency,
+                } = input
+                    && !artifact_ids.contains(dependency)
+                {
+                    bail!("plan artifacts are not ordered by their dependency graph");
                 }
             }
         }
@@ -306,6 +353,7 @@ pub fn create_plan(
             sources.push(SourceIntent {
                 component: component_id.clone(),
                 slot: slot_id.clone(),
+                upstream_id: target.upstream_id.clone(),
                 fetcher: slot.fetcher,
                 hash_mode: slot.hash_mode,
                 urls,
@@ -317,6 +365,7 @@ pub fn create_plan(
     semantic_mutations.sort_by(|left, right| left.field_path.cmp(&right.field_path));
     sources
         .sort_by(|left, right| (&left.component, &left.slot).cmp(&(&right.component, &right.slot)));
+    let artifacts = ordered_artifact_intents(unit)?;
     let discovery_snapshot_digest =
         Sha256Digest::of_canonical(crate::DISCOVERY_SNAPSHOT_V1, snapshot)?;
     let (quick_gates, final_gates) = gate_plans(unit);
@@ -345,6 +394,7 @@ pub fn create_plan(
         component_targets,
         semantic_mutations,
         sources,
+        artifacts,
         quick_gates,
         final_gates,
         risk: unit.policy.risk_floor,
@@ -354,6 +404,47 @@ pub fn create_plan(
     };
     plan.validate()?;
     Ok(plan)
+}
+
+fn ordered_artifact_intents(unit: &crate::inventory::UpdateUnit) -> Result<Vec<ArtifactIntent>> {
+    fn visit<'a>(
+        id: &'a ArtifactSlotId,
+        unit: &'a crate::inventory::UpdateUnit,
+        visited: &mut BTreeSet<&'a ArtifactSlotId>,
+        output: &mut Vec<ArtifactIntent>,
+    ) -> Result<()> {
+        if visited.contains(id) {
+            return Ok(());
+        }
+        let artifact = unit
+            .artifacts
+            .get(id)
+            .ok_or_else(|| anyhow::anyhow!("artifact dependency disappeared after validation"))?;
+        for input in &artifact.inputs {
+            if let ArtifactInput::Artifact {
+                artifact: dependency,
+            } = input
+            {
+                visit(dependency, unit, visited, output)?;
+            }
+        }
+        visited.insert(id);
+        output.push(ArtifactIntent {
+            slot: id.clone(),
+            inputs: artifact.inputs.clone(),
+            expected_hash: artifact.hash.clone(),
+            materializer: artifact.materializer.clone(),
+            outputs: artifact.outputs.clone(),
+        });
+        Ok(())
+    }
+
+    let mut visited = BTreeSet::new();
+    let mut output = Vec::with_capacity(unit.artifacts.len());
+    for id in unit.artifacts.keys() {
+        visit(id, unit, &mut visited, &mut output)?;
+    }
+    Ok(output)
 }
 
 fn gate_plans(unit: &crate::inventory::UpdateUnit) -> (Vec<GateSpec>, Vec<GateSpec>) {

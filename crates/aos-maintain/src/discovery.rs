@@ -542,6 +542,7 @@ mod tests {
                     )]),
                 },
             )]),
+            artifacts: BTreeMap::new(),
             owner: "pkgs/compression/zlib.nix".to_string(),
             members: vec![MemberId::parse("zlib")?],
             platforms: vec!["x86_64-linux".to_string()],

@@ -250,6 +250,7 @@ mod tests {
                 classification: Classification::Local,
                 package: None,
                 components: BTreeMap::new(),
+                artifacts: BTreeMap::new(),
                 owner: "pkgs/test/local-fixture.nix".to_string(),
                 members: vec![MemberId::parse("local-fixture")?],
                 platforms: vec!["x86_64-linux".to_string()],
