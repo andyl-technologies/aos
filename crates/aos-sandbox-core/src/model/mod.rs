@@ -4,10 +4,15 @@
 //! They intentionally do not define the canonical CBOR codec: [`crate`] users
 //! cannot mistake a convenient Serde representation for the signed wire form.
 
+pub mod policy;
 pub mod spec;
 pub mod tree;
 pub mod view;
 
+pub use policy::{
+    ExplanationReason, ExplanationReasonCode, InvalidPolicyModel, Optimization, OptimizationKind,
+    OptimizationProfile, Policy, PolicyViewAction, RevocationMode, RevocationPolicy,
+};
 pub use spec::{
     IdentityProfile, InvalidSpecModel, Limit, LimitDimension, LimitValue, NetworkKind,
     NetworkProfile, ResourceProfile, SandboxSpec, UnmappableIdentityPolicy,
