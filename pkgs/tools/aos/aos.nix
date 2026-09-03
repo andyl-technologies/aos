@@ -125,6 +125,7 @@
     "aos-remote"
     "aos-sandbox-core"
     "aos-sandbox-protocol"
+    "aos-sandbox"
     "aos-server"
     "aos-systemd"
   ];

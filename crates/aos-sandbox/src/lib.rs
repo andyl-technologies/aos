@@ -1,0 +1,13 @@
+//! Implements the unprivileged AOS sandbox controller.
+//!
+//! The [`journal`] module owns the append-only desired-state and operation
+//! journal. It validates and replays durable transactions before a future
+//! reconciler is allowed to issue effects. Linux syscalls and privileged
+//! broker implementations deliberately live outside this crate.
+
+pub mod journal;
+
+pub use journal::{
+    CommitResult, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalLimits,
+    JournalRecord, JournalTransaction, RecordNamespace, RecoveryReport,
+};
