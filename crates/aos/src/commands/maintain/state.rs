@@ -12,6 +12,7 @@ use aos_maintain::agent::{AgentResultV1, AgentTaskV1};
 use aos_maintain::discovery::DiscoverySnapshotV1;
 use aos_maintain::envelope::InventoryEnvelopeV1;
 use aos_maintain::plan::PackageUpdatePlanV1;
+use aos_maintain::remote::{PullRequestObservationV1, PullRequestPublicationV1};
 use aos_maintain::run::{
     GateResultsV1, MaterializationRecordV1, PackageUpdateEvidenceV1, PackageUpdateRunV1,
     RepairAttemptV1,
@@ -516,6 +517,74 @@ impl StateStore {
             bail!("package update evidence belongs to another run");
         }
         Ok(Some(evidence))
+    }
+
+    /// Stores the immutable exact branch and pull-request publication result.
+    pub(super) fn write_publication(&self, publication: &PullRequestPublicationV1) -> Result<()> {
+        publication.validate()?;
+        let run = self
+            .read_run(publication.run_id.as_str())?
+            .ok_or_else(|| anyhow::anyhow!("publication run is unavailable"))?;
+        if run.candidate_commit.as_ref() != Some(&publication.head)
+            || run.evidence_digest != Some(publication.evidence_digest)
+        {
+            bail!("publication does not match the final-gated run");
+        }
+        let directory = self.run_directory(publication.run_id.as_str())?;
+        write_immutable(&directory, "publication.json", publication)
+    }
+
+    /// Reads and validates the immutable publication result, when present.
+    pub(super) fn read_publication(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<PullRequestPublicationV1>> {
+        let path = self.run_directory(run_id)?.join("publication.json");
+        let Some(publication) = read_optional(&path, "pull-request publication")? else {
+            return Ok(None);
+        };
+        let publication: PullRequestPublicationV1 = publication;
+        publication.validate()?;
+        if publication.run_id.as_str() != run_id {
+            bail!("pull-request publication belongs to another run");
+        }
+        Ok(Some(publication))
+    }
+
+    /// Stores the latest exact-head read-only remote observation atomically.
+    pub(super) fn write_remote_observation(
+        &self,
+        observation: &PullRequestObservationV1,
+    ) -> Result<()> {
+        observation.validate()?;
+        let publication = self
+            .read_publication(observation.run_id.as_str())?
+            .ok_or_else(|| anyhow::anyhow!("remote observation has no publication"))?;
+        if publication.pull_request_number != observation.pull_request_number
+            || publication.head != observation.head
+            || publication.base_branch != observation.base_branch
+        {
+            bail!("remote observation does not match its exact publication");
+        }
+        let directory = self.run_directory(observation.run_id.as_str())?;
+        atomic_write(&directory, "remote-observation.json", observation)
+    }
+
+    /// Reads and validates the latest cached remote observation, when present.
+    pub(super) fn read_remote_observation(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<PullRequestObservationV1>> {
+        let path = self.run_directory(run_id)?.join("remote-observation.json");
+        let Some(observation) = read_optional(&path, "pull-request observation")? else {
+            return Ok(None);
+        };
+        let observation: PullRequestObservationV1 = observation;
+        observation.validate()?;
+        if observation.run_id.as_str() != run_id {
+            bail!("pull-request observation belongs to another run");
+        }
+        Ok(Some(observation))
     }
 
     /// Appends one legal transition and updates the validated run projection.

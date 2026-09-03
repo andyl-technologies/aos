@@ -25,6 +25,7 @@ pub mod identity;
 pub mod inventory;
 pub mod plan;
 pub mod presentation;
+pub mod remote;
 pub mod run;
 pub mod workflow;
 
@@ -56,6 +57,10 @@ pub const PACKAGE_UPDATE_AGENT_TASK_V1: &str = "aos.package-update-agent-task/v1
 pub const PACKAGE_UPDATE_AGENT_RESULT_V1: &str = "aos.package-update-agent-result/v1";
 /// Schema identity for one accepted repair attempt.
 pub const PACKAGE_UPDATE_REPAIR_ATTEMPT_V1: &str = "aos.package-update-repair-attempt/v1";
+/// Schema identity for one exact remote publication effect.
+pub const PACKAGE_UPDATE_PR_PUBLICATION_V1: &str = "aos.package-update-pr-publication/v1";
+/// Schema identity for one exact-head pull-request observation.
+pub const PACKAGE_UPDATE_PR_OBSERVATION_V1: &str = "aos.package-update-pr-observation/v1";
 
 /// Schema identifier for the first durable maintenance journal event.
 pub const MAINTENANCE_JOURNAL_EVENT_V1: &str = "aos.maintain.journal-event/v1";
