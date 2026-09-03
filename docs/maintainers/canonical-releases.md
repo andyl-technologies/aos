@@ -27,6 +27,9 @@ The current implementation provides these fail-closed operations:
   links, verifies the unsigned manifest as its exact closure, obtains the
   release-evidence signature threshold, verifies the finished bundle offline,
   and atomically emits the bundle plus Finalized-state journal;
+- `aos release tuf` verifies the finalized bundle and independently trusted
+  root, signs top-level targets, the release-class delegation, and snapshot
+  with their separate thresholds, and emits one immutable metadata set;
 - `aos release status` reconciles a captured journal without Nix or network;
 - `aos release stage` accepts only an already finalized signed bundle, pins the
   canonical staging deployment identity before and after upload, reuses the
@@ -44,9 +47,9 @@ The current implementation provides these fail-closed operations:
 - `aos release verify` checks a closed release bundle and optional journal
   offline against explicitly supplied public keys.
 
-Immutable TUF-set authoring and qualification executor orchestration remain
-incomplete. Production publication through this workflow remains forbidden
-until those paths and the remaining RFC-0017 launch gates are complete.
+Qualification executor orchestration remains incomplete. Production
+publication through this workflow remains forbidden until that path and the
+remaining RFC-0017 launch gates are complete.
 
 The canonical release image profile enables external Secure Boot, distinct
 module and PCR-policy roles, lockdown, measured boot, encrypted state,
@@ -297,6 +300,52 @@ snapshot, and timestamp on the registry metadata surface avoids an impossible
 self-reference in which a manifest inventories TUF bytes that themselves name
 the manifest or whole-bundle digest. Hub receipts continue to bind the separate
 exact-byte bundle digest.
+
+## Construct immutable TUF metadata
+
+Use an independently authenticated, already signed production root. When the
+root is a rotation, also supply its predecessor so both old-root and new-root
+thresholds are checked. Build the immutable per-release metadata only after the
+bundle manifest is final:
+
+```sh
+aos release tuf \
+  --plan release-plan.json \
+  --bundle finalized/bundle \
+  --manifest-key release-1=/media/trust/release-1.pub \
+  --manifest-key release-2=/media/trust/release-2.pub \
+  --root 12.root.json \
+  --trusted-root-key root-1=/media/trust/root-1.pub \
+  --trusted-root-key root-2=/media/trust/root-2.pub \
+  --trusted-root-threshold 2 \
+  --targets-key targets-1=/media/trust/targets-1.pub \
+  --delegated-key stable-1=/media/trust/stable-1.pub \
+  --delegated-key stable-2=/media/trust/stable-2.pub \
+  --snapshot-key snapshot-1=/media/trust/snapshot-1.pub \
+  --signer-executable /opt/aos-signers/bin/provider-adapter \
+  --targets-version 43 \
+  --delegated-version 19 \
+  --snapshot-version 44 \
+  --targets-expires 2027-09-03T00:00:00Z \
+  --delegated-expires 2027-09-03T00:00:00Z \
+  --snapshot-expires 2026-12-03T00:00:00Z \
+  --now 2026-09-03T14:30:00Z \
+  --output finalized-tuf
+```
+
+The command requires TUF root, targets, snapshot, timestamp, and the selected
+release-class role in every release plan. It verifies that plan key ids and
+thresholds exactly equal the trusted root policy, that each supplied public key
+matches the root bytes, and that provider revisions come from the frozen plan.
+Every signer request binds the plan, final manifest, metadata role and version,
+payload digest, operator-policy digest, and a fresh nonce. The complete set is
+verified again through the independently supplied root trust before a
+no-replace atomic rename makes it visible.
+
+The delegated target names the exact signed `release-manifest.json` envelope by
+SHA-256 and byte length. The snapshot names exact versioned root, targets, and
+delegated envelopes. Install these files under the registry `tuf/` surface,
+then create the renewable timestamp pointer with the next command.
 
 ## Refresh TUF timestamp metadata
 

@@ -18,6 +18,7 @@ mod signer;
 mod stage;
 mod status;
 mod timestamp;
+mod tuf;
 mod verify;
 
 use anyhow::Result;
@@ -47,6 +48,9 @@ pub fn run(command: &ReleaseCommand, nix: &NixRunner, printer: &Printer) -> Resu
         }
         ReleaseCommand::Timestamp { .. } => {
             anyhow::bail!("release timestamp command must use the asynchronous offline dispatcher")
+        }
+        ReleaseCommand::Tuf(_) => {
+            anyhow::bail!("release TUF command must use the asynchronous offline dispatcher")
         }
         ReleaseCommand::Signer { .. } => {
             anyhow::bail!("release signer command must use the asynchronous offline dispatcher")
@@ -80,6 +84,16 @@ pub async fn timestamp_offline(
     printer: &Printer,
 ) -> Result<()> {
     timestamp::run(command, printer).await
+}
+
+/// Constructs immutable role-separated TUF metadata for a finalized bundle.
+///
+/// # Errors
+///
+/// Returns an error for plan, bundle, root, role-policy, signer, expiry,
+/// predecessor, or atomic-output failure.
+pub async fn tuf_offline(args: &crate::cli::ReleaseTufArgs, printer: &Printer) -> Result<()> {
+    tuf::run(args, printer).await
 }
 
 /// Finalizes one public Linux image assembly through configured signers.

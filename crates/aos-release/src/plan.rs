@@ -428,7 +428,11 @@ impl ReleasePlanV1 {
             SignerRole::Cache,
             SignerRole::Provenance,
             SignerRole::ReleaseEvidence,
+            SignerRole::TufRoot,
+            SignerRole::TufTargets,
             self.release_class.tuf_role(),
+            SignerRole::TufSnapshot,
+            SignerRole::TufTimestamp,
         ] {
             if !roles.contains(&required) {
                 bail!("release plan lacks mandatory signer role {required:?}");

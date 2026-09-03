@@ -392,7 +392,11 @@ mod tests {
                 SignerRole::Cache,
                 SignerRole::Provenance,
                 SignerRole::ReleaseEvidence,
+                SignerRole::TufRoot,
+                SignerRole::TufTargets,
                 SignerRole::TufEdge,
+                SignerRole::TufSnapshot,
+                SignerRole::TufTimestamp,
             ]
             .into_iter()
             .map(signer)

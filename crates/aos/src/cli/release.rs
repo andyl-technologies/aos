@@ -28,6 +28,8 @@ pub enum ReleaseCommand {
         #[command(subcommand)]
         command: ReleaseTimestampCommand,
     },
+    /// Construct immutable role-separated TUF repository metadata
+    Tuf(ReleaseTufArgs),
     /// Upload an exact finalized bundle to the canonical staging Hub
     Stage(ReleaseStageArgs),
     /// Admit signed qualification of the exact staged public release
@@ -178,6 +180,89 @@ pub struct ReleaseTimestampRefreshArgs {
     pub expires: String,
 
     /// New canonical signed timestamp path
+    #[arg(long)]
+    pub output: PathBuf,
+}
+
+#[derive(Args)]
+pub struct ReleaseTufArgs {
+    /// Canonical release plan governing all metadata roles
+    #[arg(long)]
+    pub plan: PathBuf,
+
+    /// Finalized release bundle whose signed manifest is authorized
+    #[arg(long)]
+    pub bundle: PathBuf,
+
+    /// Manifest verification key as KEY_ID=PATH; repeat to threshold
+    #[arg(long = "manifest-key", value_name = "KEY_ID=PATH", required = true)]
+    pub manifest_keys: Vec<String>,
+
+    /// Current signed TUF root envelope
+    #[arg(long)]
+    pub root: PathBuf,
+
+    /// Previous signed root when the current root is a rotation
+    #[arg(long)]
+    pub previous_root: Option<PathBuf>,
+
+    /// Independently trusted root key as KEY_ID=PATH
+    #[arg(long = "trusted-root-key", value_name = "KEY_ID=PATH", required = true)]
+    pub trusted_root_keys: Vec<String>,
+
+    /// Required independently trusted root signature count
+    #[arg(long, default_value_t = 2)]
+    pub trusted_root_threshold: u16,
+
+    /// Top-level targets signing key as KEY_ID=PATH; repeat to threshold
+    #[arg(long = "targets-key", value_name = "KEY_ID=PATH", required = true)]
+    pub targets_keys: Vec<String>,
+
+    /// Release-class delegated signing key as KEY_ID=PATH; repeat to threshold
+    #[arg(long = "delegated-key", value_name = "KEY_ID=PATH", required = true)]
+    pub delegated_keys: Vec<String>,
+
+    /// Snapshot signing key as KEY_ID=PATH; repeat to threshold
+    #[arg(long = "snapshot-key", value_name = "KEY_ID=PATH", required = true)]
+    pub snapshot_keys: Vec<String>,
+
+    /// Absolute path to the deployment-configured signer executable
+    #[arg(long)]
+    pub signer_executable: PathBuf,
+
+    /// Maximum duration of each external signer operation in seconds
+    #[arg(long, default_value_t = 120)]
+    pub signer_timeout_seconds: u64,
+
+    /// Top-level targets metadata version
+    #[arg(long)]
+    pub targets_version: u64,
+
+    /// Release-class delegated metadata version
+    #[arg(long)]
+    pub delegated_version: u64,
+
+    /// Snapshot metadata version
+    #[arg(long)]
+    pub snapshot_version: u64,
+
+    /// RFC 3339 UTC top-level targets expiry
+    #[arg(long)]
+    pub targets_expires: String,
+
+    /// RFC 3339 UTC delegated targets expiry
+    #[arg(long)]
+    pub delegated_expires: String,
+
+    /// RFC 3339 UTC snapshot expiry
+    #[arg(long)]
+    pub snapshot_expires: String,
+
+    /// RFC 3339 UTC verification time
+    #[arg(long)]
+    pub now: String,
+
+    /// New immutable TUF metadata directory
     #[arg(long)]
     pub output: PathBuf,
 }
@@ -788,6 +873,52 @@ mod tests {
                 "2026-09-03T12:00:00Z",
                 "--output",
                 "finalized",
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn tuf_construction_requires_each_online_release_role() {
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "release",
+                "tuf",
+                "--plan",
+                "release-plan.json",
+                "--bundle",
+                "bundle",
+                "--manifest-key",
+                "release=release.pub",
+                "--root",
+                "1.root.json",
+                "--trusted-root-key",
+                "root-1=root-1.pub",
+                "--targets-key",
+                "targets-1=targets-1.pub",
+                "--delegated-key",
+                "stable-1=stable-1.pub",
+                "--snapshot-key",
+                "snapshot-1=snapshot-1.pub",
+                "--signer-executable",
+                "/opt/aos/signer",
+                "--targets-version",
+                "1",
+                "--delegated-version",
+                "1",
+                "--snapshot-version",
+                "1",
+                "--targets-expires",
+                "2027-01-01T00:00:00Z",
+                "--delegated-expires",
+                "2027-01-01T00:00:00Z",
+                "--snapshot-expires",
+                "2027-01-01T00:00:00Z",
+                "--now",
+                "2026-09-03T12:00:00Z",
+                "--output",
+                "tuf",
             ])
             .is_ok()
         );
