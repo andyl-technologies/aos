@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Write as _;
 use std::path::Path;
-use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use aos_core::output::Printer;
@@ -14,16 +13,12 @@ use aos_release::receipt::{PublicationReceiptV1, verify_signed_receipt};
 use aos_release::state::{JournalEntryV1, ReleaseState, parse_journal};
 use aos_remote::hub::HubClient;
 use aos_remote::hub::hub_rpc;
-use futures_util::StreamExt as _;
-use sha2::{Digest as _, Sha256};
 
 use crate::cli::{HubAccessArgs, ReleaseStageArgs};
 
-use super::{capture, verify};
+use super::{capture, hub_transition, verify};
 
 const STAGING_HUB: &str = "https://aos.staging.andyl.org";
-const DEPLOYMENT_ID_PATH: &str = "/.well-known/aos-deployment";
-const MAX_DEPLOYMENT_ID_BYTES: usize = 1024;
 
 /// Verifies, uploads, publicly reads back, and receipts one staging bundle.
 pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()> {
@@ -42,8 +37,9 @@ pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()
     let journal = parse_journal(&journal_bytes)?;
     require_finalized_journal(&journal, summary.plan_digest, summary.manifest_digest)?;
 
-    let public_client = public_client()?;
-    verify_deployment(&public_client, &plan.staging_deployment_id).await?;
+    let public_client = hub_transition::public_client()?;
+    hub_transition::verify_deployment(&public_client, STAGING_HUB, &plan.staging_deployment_id)
+        .await?;
     let access = HubAccessArgs {
         hub: Some(STAGING_HUB.to_owned()),
         token: args.token.clone(),
@@ -59,8 +55,15 @@ pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()
     if publication.state != "ready" || publication.completed_at <= 0 {
         bail!("staging Hub did not return a completed ready publication");
     }
-    verify_deployment(&public_client, &plan.staging_deployment_id).await?;
-    read_back_publication(&public_client, &plan.registry, &publication).await?;
+    hub_transition::verify_deployment(&public_client, STAGING_HUB, &plan.staging_deployment_id)
+        .await?;
+    hub_transition::read_back_publication(
+        &public_client,
+        STAGING_HUB,
+        &plan.registry,
+        &publication,
+    )
+    .await?;
     let bundle_digest =
         aos_release::verify::bundle_digest(&captured.manifest_bytes, &captured.files)?;
     let backing_publication_id = publication.parent_publication_id.as_str();
@@ -137,76 +140,6 @@ pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()
         "Staged and publicly verified release {} as publication {}",
         receipt.release_id, receipt.operation_id
     ));
-    Ok(())
-}
-
-fn public_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(120))
-        .build()
-        .context("building staging public read-back client")
-}
-
-async fn verify_deployment(client: &reqwest::Client, expected: &str) -> Result<()> {
-    let url = format!("{STAGING_HUB}{DEPLOYMENT_ID_PATH}");
-    let response = client.get(&url).send().await?.error_for_status()?;
-    let header = response
-        .headers()
-        .get("x-aos-deployment-id")
-        .context("staging deployment response lacks its identity header")?
-        .to_str()
-        .context("staging deployment identity header is not ASCII")?
-        .to_owned();
-    let bytes = response.bytes().await?;
-    if bytes.len() > MAX_DEPLOYMENT_ID_BYTES {
-        bail!("staging deployment identity response is oversized");
-    }
-    let body = std::str::from_utf8(&bytes)
-        .context("staging deployment identity is not UTF-8")?
-        .trim();
-    if header != expected || body != expected {
-        bail!("staging Hub deployment identity does not match the release plan");
-    }
-    Ok(())
-}
-
-async fn read_back_publication(
-    client: &reqwest::Client,
-    registry: &str,
-    publication: &aos_remote::hub_types::RegistryPublication,
-) -> Result<()> {
-    let base = url::Url::parse(&format!("{STAGING_HUB}/{registry}/"))?;
-    for object in &publication.objects {
-        if !object.verified || object.byte_size < 0 {
-            bail!("staging publication contains an unverified object");
-        }
-        aos_release::artifact::BundlePath::parse(&object.path)
-            .context("staging Hub returned an invalid publication path")?;
-        let url = base.join(&object.path)?;
-        if !url.as_str().starts_with(base.as_str()) {
-            bail!("staging Hub returned a path outside the registry surface");
-        }
-        let response = client.get(url).send().await?.error_for_status()?;
-        let mut stream = response.bytes_stream();
-        let mut digest = Sha256::new();
-        let mut size = 0_u64;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            size = size
-                .checked_add(u64::try_from(chunk.len())?)
-                .context("public read-back size overflowed")?;
-            if size > u64::try_from(object.byte_size)? {
-                bail!("public read-back object is larger than its declaration");
-            }
-            digest.update(&chunk);
-        }
-        let found = format!("{:x}", digest.finalize());
-        if size != u64::try_from(object.byte_size)? || found != object.sha256 {
-            bail!("public read-back differs for {}", object.path);
-        }
-    }
     Ok(())
 }
 

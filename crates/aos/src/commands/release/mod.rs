@@ -6,6 +6,7 @@
 mod build;
 mod capture;
 mod finalize_image;
+mod hub_transition;
 mod plan;
 mod qualify;
 mod signer;
