@@ -35,10 +35,7 @@
   # zstd-19 recompression on every iterative fleet-test image rebuild.
   aos.image.erofsCompressionLevel = 1;
   aos.image.allowTestArtifacts = true;
-  # The full Git fixture intentionally retains its optional Python-backed
-  # helpers. Production images use git-minimal; fleet tests keep the full
-  # package so they can exercise the complete publisher/admin surface.
-  aos.image.testArtifactRoots = [pkgs.binutils pkgs.git];
+  aos.image.testArtifactRoots = [pkgs.binutils];
   # The test agent, debug profile, and guest-side diagnostic tools are an
   # intentional test-image payload. Keep the production server's 512 MiB
   # root and download ratchets unchanged while sizing this dedicated fixture
