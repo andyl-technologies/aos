@@ -90,10 +90,11 @@ they gate any affected runtime backend.
 
 ## P2: durable control and privilege boundaries
 
-- [ ] **SBX-JRN-01** Implement checksummed, versioned desired-state and
-  operation journal records with atomic durability rules (`SBX-CORE-03`).
-- [ ] **SBX-JRN-02** Implement idempotency indexing, transactions, replay,
-  compaction, and bounded corruption recovery (`SBX-JRN-01`).
+- [x] **SBX-JRN-01** Implement checksummed, versioned desired-state and
+  operation journal records with atomic durability rules (`SBX-CORE-03`;
+  `addc42e92`).
+- [x] **SBX-JRN-02** Implement idempotency indexing, transactions, replay,
+  compaction, and bounded corruption recovery (`SBX-JRN-01`; `addc42e92`).
 - [ ] **SBX-CTRL-01** Implement the unprivileged single-node reconciler and
   effect ledger (`SBX-JRN-02`, `SBX-BPROTO-01`).
 - [ ] **SBX-CTRL-02** Add crash injection at every record/effect boundary and
@@ -308,3 +309,7 @@ completes. The Git history remains authoritative for code details.
   boot-bound ownership deadlines, exact renewal and stop-proof fencing, and
   atomic shared-endpoint transfer simulations covering partitions, stale
   coordinators, equivocation, reboot, and partial-transfer rollback.
+- `addc42e92` — `SBX-JRN-01`, `SBX-JRN-02`: exclusively owned, versioned and
+  checksummed transaction journal with synchronous commits, immutable
+  idempotency decisions, bounded replay/materialization, fail-closed complete
+  corruption handling, torn-tail recovery, and atomic bounded compaction.
