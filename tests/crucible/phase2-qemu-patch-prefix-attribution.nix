@@ -803,6 +803,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0183-crucible-reconstruct-child-thread-registry.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

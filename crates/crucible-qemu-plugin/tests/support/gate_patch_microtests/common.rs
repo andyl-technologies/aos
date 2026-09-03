@@ -196,6 +196,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0180-crucible-reconstruct-child-monitor-iothread.patch",
     "0181-crucible-activate-reconstructed-child-qmp.patch",
     "0182-crucible-bind-concrete-child-qmp-runtime.patch",
+    "0183-crucible-reconstruct-child-thread-registry.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each
