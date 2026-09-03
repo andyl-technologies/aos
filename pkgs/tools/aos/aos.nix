@@ -95,6 +95,7 @@
   linuxToolEnvironment = ''
     export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
     export AOS_UNSHARE="${util-linux}/bin/unshare"
+    export AOS_PRLIMIT="${util-linux}/bin/prlimit"
     export AOS_SERVICE_ROOT_HELPER="${aos-service-root}/bin/aos-service-root"
     export AOS_SELINUX_RUNNER="${aos-selinux-run}/bin/aos-selinux-run"
     export AOS_VERITY_ROOT_GUARD="${aos-verity-root-guard}/bin/aos-verity-root-guard"

@@ -8,11 +8,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 use aos_contract::{Sha256Digest, canonical};
+use aos_maintain::agent::{AgentResultV1, AgentTaskV1};
 use aos_maintain::discovery::DiscoverySnapshotV1;
 use aos_maintain::envelope::InventoryEnvelopeV1;
 use aos_maintain::plan::PackageUpdatePlanV1;
 use aos_maintain::run::{
     GateResultsV1, MaterializationRecordV1, PackageUpdateEvidenceV1, PackageUpdateRunV1,
+    RepairAttemptV1,
 };
 use aos_maintain::workflow::{
     ActorClass, EventBindings, JournalEvent, JournalPayload, RunState, verify_journal,
@@ -307,9 +309,16 @@ impl StateStore {
         Ok(Some(record))
     }
 
-    /// Reads the retained canonical patch for deterministic attempt zero.
+    /// Reads the retained cumulative canonical patch for the current attempt.
     pub(super) fn read_patch(&self, run_id: &str) -> Result<Option<Vec<u8>>> {
-        let path = self.run_directory(run_id)?.join("attempts/0/patch.diff");
+        let run = self
+            .read_run(run_id)?
+            .ok_or_else(|| anyhow::anyhow!("patch run is unavailable"))?;
+        let path = self
+            .run_directory(run_id)?
+            .join("attempts")
+            .join(run.attempt.to_string())
+            .join("patch.diff");
         match path.symlink_metadata() {
             Ok(metadata) => {
                 if !metadata.is_file()
@@ -334,7 +343,8 @@ impl StateStore {
         record.validate()?;
         let attempt = self
             .run_directory(record.run_id.as_str())?
-            .join("attempts/0");
+            .join("attempts")
+            .join(record.attempt.to_string());
         secure_directory(&attempt)?;
         let log_directory = attempt.join("logs");
         secure_directory(&log_directory)?;
@@ -364,18 +374,123 @@ impl StateStore {
         if !matches!(phase, "quick" | "final") {
             bail!("gate phase is invalid");
         }
+        let run = self
+            .read_run(run_id)?
+            .ok_or_else(|| anyhow::anyhow!("gate run is unavailable"))?;
         let path = self
             .run_directory(run_id)?
-            .join(format!("attempts/0/gates-{phase}.json"));
+            .join("attempts")
+            .join(run.attempt.to_string())
+            .join(format!("gates-{phase}.json"));
         let Some(record) = read_optional(&path, "gate results")? else {
             return Ok(None);
         };
         let record: GateResultsV1 = record;
         record.validate()?;
-        if record.run_id.as_str() != run_id || record.phase != phase {
+        if record.run_id.as_str() != run_id
+            || record.phase != phase
+            || record.attempt != run.attempt
+        {
             bail!("gate results do not match their state path");
         }
         Ok(Some(record))
+    }
+
+    /// Reads one retained bounded gate log for the current attempt.
+    pub(super) fn read_gate_log(
+        &self,
+        run_id: &str,
+        phase: &str,
+        gate_id: &str,
+    ) -> Result<Vec<u8>> {
+        if !matches!(phase, "quick" | "final") {
+            bail!("gate phase is invalid");
+        }
+        validate_state_name(gate_id, "gate")?;
+        let run = self
+            .read_run(run_id)?
+            .ok_or_else(|| anyhow::anyhow!("gate run is unavailable"))?;
+        let path = self
+            .run_directory(run_id)?
+            .join("attempts")
+            .join(run.attempt.to_string())
+            .join("logs")
+            .join(format!("{phase}-{gate_id}.log"));
+        read_bounded_regular_file(&path, 8 * 1024 * 1024, "gate log")
+    }
+
+    /// Stores one immutable untrusted adapter proposal before human acceptance.
+    pub(super) fn write_agent_proposal(
+        &self,
+        task: &AgentTaskV1,
+        result: &AgentResultV1,
+    ) -> Result<()> {
+        task.validate()?;
+        result.validate_for(task)?;
+        let run = self
+            .read_run(task.run_id.as_str())?
+            .ok_or_else(|| anyhow::anyhow!("repair run is unavailable"))?;
+        if task.plan_id != run.plan_id || task.attempt != run.attempt.saturating_add(1) {
+            bail!("repair proposal does not match the current run generation");
+        }
+        let directory = self
+            .run_directory(task.run_id.as_str())?
+            .join("proposals")
+            .join(task.attempt.to_string());
+        secure_directory(&directory)?;
+        write_immutable(&directory, "task.json", task)?;
+        write_immutable(&directory, "result.json", result)
+    }
+
+    /// Reads the pending proposal for the next attempt, when one exists.
+    pub(super) fn read_agent_proposal(
+        &self,
+        run: &PackageUpdateRunV1,
+    ) -> Result<Option<(AgentTaskV1, AgentResultV1)>> {
+        let attempt = run.attempt.saturating_add(1);
+        let directory = self
+            .run_directory(run.run_id.as_str())?
+            .join("proposals")
+            .join(attempt.to_string());
+        let Some(task) = read_optional(&directory.join("task.json"), "repair-agent task")? else {
+            return Ok(None);
+        };
+        let task: AgentTaskV1 = task;
+        task.validate()?;
+        let result: AgentResultV1 =
+            read_optional(&directory.join("result.json"), "repair-agent result")?
+                .ok_or_else(|| anyhow::anyhow!("repair proposal is missing its result"))?;
+        result.validate_for(&task)?;
+        if task.run_id != run.run_id || task.plan_id != run.plan_id || task.attempt != attempt {
+            bail!("repair proposal state path disagrees with its identity");
+        }
+        Ok(Some((task, result)))
+    }
+
+    /// Stores one accepted repair attempt and its cumulative candidate patch.
+    pub(super) fn write_repair_attempt(
+        &self,
+        run: &PackageUpdateRunV1,
+        record: &RepairAttemptV1,
+        patch: &[u8],
+    ) -> Result<()> {
+        record.validate()?;
+        if record.run_id != run.run_id
+            || record.plan_id != run.plan_id
+            || record.parent_attempt != run.attempt
+            || patch.len() as u64 > MAX_STATE_DOCUMENT_BYTES
+            || Sha256Digest::separated("aos.package-update-patch/v1", patch)
+                != record.candidate_digest
+        {
+            bail!("repair attempt does not match its run or retained candidate");
+        }
+        let directory = self
+            .run_directory(run.run_id.as_str())?
+            .join("attempts")
+            .join(record.attempt.to_string());
+        secure_directory(&directory)?;
+        write_immutable_bytes(&directory, "patch.diff", patch)?;
+        write_immutable(&directory, "repair.json", record)
     }
 
     /// Stores the immutable final local evidence dossier.
@@ -690,6 +805,16 @@ fn secure_directory(path: &Path) -> Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))
         .with_context(|| format!("protecting maintenance state directory {}", path.display()))?;
     Ok(())
+}
+
+fn read_bounded_regular_file(path: &Path, maximum: u64, label: &str) -> Result<Vec<u8>> {
+    let metadata = path
+        .symlink_metadata()
+        .with_context(|| format!("inspecting {label} {}", path.display()))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > maximum {
+        bail!("{label} is unsafe or oversized");
+    }
+    fs::read(path).with_context(|| format!("reading {label}"))
 }
 
 fn atomic_write<T>(directory: &Path, name: &str, value: &T) -> Result<()>

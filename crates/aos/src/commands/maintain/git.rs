@@ -22,20 +22,20 @@ pub(super) fn candidate_digest(
     store: &StateStore,
     run: &PackageUpdateRunV1,
 ) -> Result<Sha256Digest> {
-    let materialization = store
-        .read_materialization(run.run_id.as_str())?
-        .ok_or_else(|| anyhow::anyhow!("run has no deterministic candidate"))?;
+    let retained = store
+        .read_patch(run.run_id.as_str())?
+        .ok_or_else(|| anyhow::anyhow!("run has no retained candidate"))?;
+    let retained_digest = Sha256Digest::separated("aos.package-update-patch/v1", &retained);
     let diff = git(
         Path::new(&run.worktree),
         &["diff", "--no-ext-diff", "--full-index", "--"],
     )?;
     if !diff.status.success()
-        || Sha256Digest::separated("aos.package-update-patch/v1", &diff.stdout)
-            != materialization.patch_digest
+        || Sha256Digest::separated("aos.package-update-patch/v1", &diff.stdout) != retained_digest
     {
         bail!("worktree differs from the retained candidate patch");
     }
-    Ok(materialization.patch_digest)
+    Ok(retained_digest)
 }
 
 /// Creates or reconciles the exact accepted candidate commit.

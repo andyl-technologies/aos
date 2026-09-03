@@ -54,6 +54,8 @@ pub const PACKAGE_UPDATE_EVIDENCE_V1: &str = "aos.package-update-evidence/v1";
 pub const PACKAGE_UPDATE_AGENT_TASK_V1: &str = "aos.package-update-agent-task/v1";
 /// Schema identity for one bounded repair-agent response.
 pub const PACKAGE_UPDATE_AGENT_RESULT_V1: &str = "aos.package-update-agent-result/v1";
+/// Schema identity for one accepted repair attempt.
+pub const PACKAGE_UPDATE_REPAIR_ATTEMPT_V1: &str = "aos.package-update-repair-attempt/v1";
 
 /// Schema identifier for the first durable maintenance journal event.
 pub const MAINTENANCE_JOURNAL_EVENT_V1: &str = "aos.maintain.journal-event/v1";

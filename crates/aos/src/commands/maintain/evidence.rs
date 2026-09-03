@@ -61,6 +61,7 @@ pub(super) fn generate(
         schema: PACKAGE_UPDATE_EVIDENCE_V1.to_string(),
         run_id: run.run_id.clone(),
         plan_id: plan.plan_id.clone(),
+        attempt: run.attempt,
         plan_digest: run.plan_digest,
         base_commit: plan.base_commit.clone(),
         candidate_commit,

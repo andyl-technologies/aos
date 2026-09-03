@@ -7,6 +7,7 @@ mod git;
 mod inventory;
 mod materialize;
 mod mutation;
+mod repair;
 mod state;
 mod validation;
 mod worktree;
@@ -88,13 +89,7 @@ pub async fn run(cli: &Cli, args: &MaintainArgs) -> Result<CommandCompletion> {
                         CommandData {
                             values,
                             inventory: Some(envelope),
-                            discovery: None,
-                            plan: None,
-                            run: None,
-                            runs: Vec::new(),
-                            patch: None,
-                            evidence: None,
-                            pull_request: None,
+                            ..CommandData::default()
                         },
                         Vec::new(),
                         vec![PrimaryValue {
@@ -184,6 +179,7 @@ pub async fn run(cli: &Cli, args: &MaintainArgs) -> Result<CommandCompletion> {
         Some(MaintainCommand::Accept(command)) => accept_command(args, command),
         Some(MaintainCommand::Commit(command)) => commit_command(args, command),
         Some(MaintainCommand::Test(command)) => test_command(args, command),
+        Some(MaintainCommand::Repair(command)) => repair_command(cli, args, command).await,
         Some(MaintainCommand::Evidence(command)) => evidence_command(args, command),
         Some(MaintainCommand::PreparePr(command)) => prepare_pr_command(args, command),
     }
@@ -361,6 +357,191 @@ fn test_command(
             Some((CommandDisposition::ActionRequired, &format!("{error:#}"))),
         ),
     }
+}
+
+async fn repair_command(
+    cli: &Cli,
+    args: &MaintainArgs,
+    command: &crate::cli::MaintainRepairArgs,
+) -> Result<CommandCompletion> {
+    use crate::cli::MaintainAgentMode;
+    use aos_maintain::agent::AgentResultDisposition;
+    use aos_maintain::workflow::{ActorClass, RunState};
+
+    let (store, _) = current_store(args)?;
+    let mut run = resolve_run(&store, &command.run)?;
+    let plan = store
+        .read_plan(run.plan_id.as_str())?
+        .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
+
+    if let Some(confirmation) = command.confirm.as_deref() {
+        let Some(proposal) = repair::pending(&store, &run)? else {
+            return run_view_completion(
+                "repair",
+                &store,
+                run,
+                Some((
+                    CommandDisposition::ActionRequired,
+                    "No retained repair proposal is awaiting confirmation",
+                )),
+            );
+        };
+        let attempt = match repair::accept(
+            &store,
+            &plan,
+            &mut run,
+            &proposal,
+            confirmation,
+            cli.verbose,
+            cli.quiet,
+        ) {
+            Ok(attempt) => attempt,
+            Err(error) => {
+                return run_view_completion(
+                    "repair",
+                    &store,
+                    run,
+                    Some((CommandDisposition::ActionRequired, &format!("{error:#}"))),
+                );
+            }
+        };
+        let gates = validation::quick(&store, &plan, &mut run);
+        let failure = match gates {
+            Ok(results) if results.all_succeeded() => None,
+            Ok(_) => Some((
+                CommandDisposition::OperationFailed,
+                "The repaired candidate still fails one or more quick gates".to_string(),
+            )),
+            Err(error) => Some((
+                CommandDisposition::ActionRequired,
+                format!("The repaired candidate could not complete quick validation: {error:#}"),
+            )),
+        };
+        let mut completion = run_view_completion(
+            "repair",
+            &store,
+            run,
+            failure
+                .as_ref()
+                .map(|(disposition, message)| (*disposition, message.as_str())),
+        )?;
+        completion.result.primary_values.push(PrimaryValue {
+            name: "attempt".to_string(),
+            value: attempt.attempt.to_string(),
+        });
+        completion.result.primary_values.push(PrimaryValue {
+            name: "candidateDigest".to_string(),
+            value: attempt.candidate_digest.to_string(),
+        });
+        completion.result.data.agent_task = Some(proposal.task);
+        completion.result.data.agent_result = Some(proposal.result);
+        completion.result.data.repair_attempt = Some(attempt);
+        return CommandCompletion::new(completion.result);
+    }
+
+    let proposal = if let Some(proposal) = repair::pending(&store, &run)? {
+        proposal
+    } else if command.agent == MaintainAgentMode::None {
+        let mut completion = run_view_completion(
+            "repair",
+            &store,
+            run,
+            Some((
+                CommandDisposition::ActionRequired,
+                "Agent repair is disabled; inspect the failed gate and repair the retained worktree manually",
+            )),
+        )?;
+        completion.result.next_actions = vec![NextAction {
+            label: "Inspect the current run and failed gate".to_string(),
+            argv: vec![
+                "aos".to_string(),
+                "maintain".to_string(),
+                "inspect".to_string(),
+                command.run.clone(),
+            ],
+            reason: "--agent none never invokes an adapter or changes the candidate".to_string(),
+            prerequisites: vec!["resolve the reported package failure".to_string()],
+            effect_class: EffectClass::ReadOnly,
+            bound_context: Some(plan.plan_id.to_string()),
+        }];
+        return CommandCompletion::new(completion.result);
+    } else {
+        let adapter = command
+            .adapter
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("--agent local requires --adapter PATH"))?;
+        match repair::propose(&store, &plan, &run, adapter).await {
+            Ok(proposal) => proposal,
+            Err(error) => {
+                return run_view_completion(
+                    "repair",
+                    &store,
+                    run,
+                    Some((CommandDisposition::ActionRequired, &format!("{error:#}"))),
+                );
+            }
+        }
+    };
+
+    if run.state == RunState::PolicyValid {
+        store.transition(
+            &mut run,
+            RunState::Repairing,
+            ActorClass::Controller,
+            state::now_unix()?,
+        )?;
+    }
+    let disposition = match proposal.result.disposition {
+        AgentResultDisposition::ProposedPatch
+        | AgentResultDisposition::ScopeRequired
+        | AgentResultDisposition::MaintainerQuestion => CommandDisposition::ActionRequired,
+        AgentResultDisposition::NoProposal => CommandDisposition::OperationFailed,
+    };
+    let mut completion = run_view_completion(
+        "repair",
+        &store,
+        run.clone(),
+        Some((disposition, proposal.result.explanation.as_str())),
+    )?;
+    let task_digest = aos_contract::Sha256Digest::of_canonical(
+        aos_maintain::PACKAGE_UPDATE_AGENT_TASK_V1,
+        &proposal.task,
+    )?;
+    completion.result.data.values.insert(
+        "agentResult".to_string(),
+        agent_result_disposition_name(proposal.result.disposition).to_string(),
+    );
+    completion
+        .result
+        .data
+        .values
+        .insert("taskDigest".to_string(), task_digest.to_string());
+    completion.result.data.patch = proposal.result.patch.clone();
+    completion.result.data.agent_task = Some(proposal.task.clone());
+    completion.result.data.agent_result = Some(proposal.result.clone());
+    if let Some(digest) = proposal.proposal_digest {
+        completion.result.primary_values.push(PrimaryValue {
+            name: "proposalDigest".to_string(),
+            value: digest.to_string(),
+        });
+        completion.result.next_actions = vec![NextAction {
+            label: "Apply this exact repair proposal".to_string(),
+            argv: vec![
+                "aos".to_string(),
+                "maintain".to_string(),
+                "repair".to_string(),
+                run.run_id.to_string(),
+                "--confirm".to_string(),
+                digest.to_string(),
+            ],
+            reason: "the adapter is terminated; confirmation enters the trusted mutation gateway"
+                .to_string(),
+            prerequisites: vec!["review the complete retained patch".to_string()],
+            effect_class: EffectClass::HumanDecision,
+            bound_context: Some(digest.to_string()),
+        }];
+    }
+    CommandCompletion::new(completion.result)
 }
 
 fn evidence_command(
@@ -822,12 +1003,7 @@ fn cached_completion(
             values,
             inventory: Some(inventory),
             discovery,
-            plan: None,
-            run: None,
-            runs: Vec::new(),
-            patch: None,
-            evidence: None,
-            pull_request: None,
+            ..CommandData::default()
         },
         diagnostics,
         Vec::new(),
@@ -899,12 +1075,7 @@ fn scan_completion(
             values,
             inventory: Some(envelope),
             discovery: Some(outcome.snapshot),
-            plan: None,
-            run: None,
-            runs: Vec::new(),
-            patch: None,
-            evidence: None,
-            pull_request: None,
+            ..CommandData::default()
         },
         diagnostics,
         vec![PrimaryValue {
@@ -1047,15 +1218,10 @@ fn plan_command(
         "plan",
         CommandDisposition::Success,
         CommandData {
-            values: BTreeMap::new(),
             inventory: Some(envelope),
             discovery: Some(snapshot),
             plan: Some(plan.clone()),
-            run: None,
-            runs: Vec::new(),
-            patch: None,
-            evidence: None,
-            pull_request: None,
+            ..CommandData::default()
         },
         Vec::new(),
         vec![PrimaryValue {
@@ -1283,13 +1449,9 @@ async fn run_command(
         data: CommandData {
             values,
             inventory: Some(envelope),
-            discovery: None,
             plan: Some(plan),
             run: Some(run.clone()),
-            runs: Vec::new(),
-            patch: None,
-            evidence: None,
-            pull_request: None,
+            ..CommandData::default()
         },
         primary_values: vec![PrimaryValue {
             name: "runId".to_string(),
@@ -1338,13 +1500,9 @@ fn stopped_run_completion(
                 ("worktree".to_string(), run.worktree.clone()),
             ]),
             inventory: Some(envelope),
-            discovery: None,
             plan: Some(plan),
             run: Some(run.clone()),
-            runs: Vec::new(),
-            patch: None,
-            evidence: None,
-            pull_request: None,
+            ..CommandData::default()
         },
         primary_values: vec![PrimaryValue {
             name: "runId".to_string(),
@@ -1483,6 +1641,12 @@ fn next_actions_for_run(run: &aos_maintain::run::PackageUpdateRunV1) -> Vec<Next
             vec!["accept", run.run_id.as_str()],
             "acceptance requires the exact displayed patch digest",
             EffectClass::HumanDecision,
+        ),
+        RunState::Repairing => (
+            "Inspect the retained repair proposal",
+            vec!["repair", run.run_id.as_str()],
+            "a retained adapter result requires a maintainer decision",
+            EffectClass::ReadOnly,
         ),
         RunState::CandidateAccepted => (
             "Review and commit the candidate",
@@ -1691,6 +1855,7 @@ fn command_name(args: &MaintainArgs) -> &'static str {
         Some(MaintainCommand::Accept(_)) => "accept",
         Some(MaintainCommand::Commit(_)) => "commit",
         Some(MaintainCommand::Test(_)) => "test",
+        Some(MaintainCommand::Repair(_)) => "repair",
         Some(MaintainCommand::Evidence(_)) => "evidence",
         Some(MaintainCommand::PreparePr(_)) => "prepare-pr",
     }
@@ -1846,6 +2011,45 @@ fn render_human(result: &MaintainCommandResult, screen_reader: bool, printer: &P
         printer.plain(&escape_multiline(patch, 32 * 1024 * 1024));
     }
 
+    if let (Some(task), Some(agent_result)) = (&result.data.agent_task, &result.data.agent_result) {
+        printer.plain("");
+        printer.header("Repair proposal");
+        printer.kv("Attempt", &task.attempt.to_string());
+        printer.kv(
+            "Failure",
+            task.failure.gate_id.as_deref().unwrap_or("package repair"),
+        );
+        printer.kv(
+            "Result",
+            agent_result_disposition_name(agent_result.disposition),
+        );
+        printer.kv(
+            "Writable scope",
+            &task
+                .writable_paths
+                .iter()
+                .map(|path| escape_terminal(path, 4096))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        if !agent_result.scope_requests.is_empty() {
+            for request in &agent_result.scope_requests {
+                printer.plain(&format!(
+                    "scope requested: {} ({})",
+                    escape_terminal(&request.path, 4096),
+                    escape_terminal(&request.reason, 4096),
+                ));
+            }
+        }
+    }
+
+    if let Some(attempt) = &result.data.repair_attempt {
+        printer.plain("");
+        printer.header("Accepted repair");
+        printer.kv("Attempt", &attempt.attempt.to_string());
+        printer.kv("Candidate", &attempt.candidate_digest.to_string());
+    }
+
     if let Some(evidence) = &result.data.evidence {
         printer.plain("");
         printer.header("Evidence");
@@ -1914,6 +2118,19 @@ fn disposition_name(disposition: CommandDisposition) -> &'static str {
         CommandDisposition::Quarantined => "quarantined",
         CommandDisposition::Stale => "stale",
         CommandDisposition::Interrupted => "interrupted",
+    }
+}
+
+fn agent_result_disposition_name(
+    disposition: aos_maintain::agent::AgentResultDisposition,
+) -> &'static str {
+    use aos_maintain::agent::AgentResultDisposition;
+
+    match disposition {
+        AgentResultDisposition::ProposedPatch => "proposed-patch",
+        AgentResultDisposition::ScopeRequired => "scope-required",
+        AgentResultDisposition::MaintainerQuestion => "maintainer-question",
+        AgentResultDisposition::NoProposal => "no-proposal",
     }
 }
 

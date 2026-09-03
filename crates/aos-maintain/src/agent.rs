@@ -4,6 +4,7 @@
 //! [`AgentResultV1`] as untrusted input. Neither contract grants authority to
 //! select releases, mutate Git, accept candidates, or decide gate outcomes.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Result, bail};
@@ -11,8 +12,8 @@ use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
 use crate::envelope::GitObjectId;
-use crate::identity::{PlanId, RunId, UnitId};
-use crate::inventory::RiskLevel;
+use crate::identity::{ComponentId, FamilyId, MemberId, PlanId, RunId, UnitId};
+use crate::inventory::{Classification, ComponentVersion, Lifecycle, RiskLevel};
 
 /// Maximum UTF-8 patch bytes accepted from one agent response.
 pub const MAX_AGENT_PATCH_BYTES: usize = 4 * 1024 * 1024;
@@ -115,6 +116,18 @@ pub struct AgentTaskV1 {
     pub tree_digest: Sha256Digest,
     /// Update unit being repaired.
     pub unit_id: UnitId,
+    /// Upstream family shared by concurrent maintained streams.
+    pub family: FamilyId,
+    /// Exact maintained stream or major line.
+    pub stream: String,
+    /// Complete AOS package member set updated by the unit.
+    pub members: Vec<MemberId>,
+    /// Scheduling classification fixed by repository metadata.
+    pub classification: Classification,
+    /// Maintenance lifecycle fixed by repository metadata.
+    pub lifecycle: Lifecycle,
+    /// Complete selected component vector, including unchanged components.
+    pub component_targets: BTreeMap<ComponentId, ComponentVersion>,
     /// Already selected package target; the agent cannot change it.
     pub target_version: String,
     /// Risk floor fixed by package policy.
@@ -147,6 +160,12 @@ impl AgentTaskV1 {
             || self.attempt == 0
             || self.target_version.is_empty()
             || self.target_version.len() > 512
+            || self.stream.is_empty()
+            || self.stream.len() > 256
+            || self.members.is_empty()
+            || self.members.len() > 64
+            || self.component_targets.is_empty()
+            || self.component_targets.len() > 64
             || !self.untrusted_data
         {
             bail!("repair-agent task header is invalid");
@@ -397,6 +416,18 @@ mod tests {
             },
             tree_digest: Sha256Digest::of_bytes(b"tree"),
             unit_id: UnitId::parse("zlib-1")?,
+            family: FamilyId::parse("zlib")?,
+            stream: "1".to_string(),
+            members: vec![MemberId::parse("zlib")?],
+            classification: Classification::Automatic,
+            lifecycle: crate::inventory::Lifecycle::Supported,
+            component_targets: BTreeMap::from([(
+                ComponentId::parse("main")?,
+                ComponentVersion {
+                    upstream_id: "v1.3.2".to_string(),
+                    comparison_version: "1.3.2".to_string(),
+                },
+            )]),
             target_version: "1.3.2".to_string(),
             risk: RiskLevel::Normal,
             failure: RepairFailure {

@@ -80,6 +80,7 @@ impl RunState {
                 | (WorktreeReady, Materializing)
                 | (Materializing, PolicyValid)
                 | (PolicyValid, QuickGated)
+                | (PolicyValid, Repairing)
                 | (QuickGated, Repairing)
                 | (QuickGated, CandidateAccepted)
                 | (Repairing, PolicyValid)

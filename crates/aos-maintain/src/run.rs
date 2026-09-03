@@ -189,6 +189,72 @@ impl MaterializationRecordV1 {
     }
 }
 
+/// Records one human-authorized repair patch applied after attempt zero.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RepairAttemptV1 {
+    /// Selects the exact repair-attempt schema.
+    pub schema: String,
+    /// Run receiving the attempt.
+    pub run_id: RunId,
+    /// Immutable update plan retained as the outer authority boundary.
+    pub plan_id: PlanId,
+    /// Monotonic attempt number greater than zero.
+    pub attempt: u32,
+    /// Attempt whose candidate tree was repaired.
+    pub parent_attempt: u32,
+    /// Canonical task digest shown to the adapter.
+    pub task_digest: Sha256Digest,
+    /// Canonical untrusted result digest accepted by the maintainer.
+    pub result_digest: Sha256Digest,
+    /// Exact proposal patch digest confirmed by the maintainer.
+    pub proposal_digest: Sha256Digest,
+    /// Cumulative base-to-candidate patch digest after applying the proposal.
+    pub candidate_digest: Sha256Digest,
+    /// Exact repository-relative paths changed by the cumulative candidate.
+    pub changed_paths: Vec<String>,
+    /// Observation time in Unix seconds.
+    pub completed_at_unix: u64,
+}
+
+impl RepairAttemptV1 {
+    /// Validates identities, monotonicity, and bounded path scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an incompatible schema, a non-monotonic attempt,
+    /// or empty, oversized, duplicated, or unsafe changed paths.
+    pub fn validate(&self) -> Result<()> {
+        if self.schema != crate::PACKAGE_UPDATE_REPAIR_ATTEMPT_V1
+            || self.attempt == 0
+            || self.parent_attempt.checked_add(1) != Some(self.attempt)
+            || self.changed_paths.is_empty()
+            || self.changed_paths.len() > 64
+        {
+            bail!("repair attempt header is invalid");
+        }
+        let mut paths = std::collections::BTreeSet::new();
+        for value in &self.changed_paths {
+            let path = Path::new(value);
+            if !value.starts_with("pkgs/")
+                || path.is_absolute()
+                || path.components().any(|component| {
+                    matches!(
+                        component,
+                        std::path::Component::ParentDir
+                            | std::path::Component::CurDir
+                            | std::path::Component::RootDir
+                    )
+                })
+                || !paths.insert(value.as_str())
+            {
+                bail!("repair attempt changed path is unsafe or duplicated");
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Records one exact planned gate invocation and bounded result identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -220,6 +286,8 @@ pub struct ConfinementEvidence {
     pub landlock_abi: u32,
     /// Digest of the ordered filesystem grants supplied to the backend.
     pub filesystem_policy_digest: Sha256Digest,
+    /// Digest of the process resource ceilings supplied to the backend.
+    pub resource_limits_digest: Sha256Digest,
     /// Whether a private user namespace was requested and verified.
     pub private_user_namespace: bool,
     /// Whether private mount, PID, IPC, and UTS namespaces were requested.
@@ -228,6 +296,8 @@ pub struct ConfinementEvidence {
     pub network_isolated: bool,
     /// Whether the namespace supervisor kills the complete child tree on exit.
     pub worker_tree_reaped: bool,
+    /// Whether process, file, descriptor, address-space, and CPU ceilings apply.
+    pub resource_limited: bool,
 }
 
 impl ConfinementEvidence {
@@ -244,6 +314,7 @@ impl ConfinementEvidence {
             || !self.private_process_namespaces
             || !self.network_isolated
             || !self.worker_tree_reaped
+            || !self.resource_limited
         {
             bail!("gate evidence does not satisfy the required confinement contract");
         }
@@ -261,6 +332,8 @@ pub struct GateResultsV1 {
     pub run_id: RunId,
     /// Plan defining every gate.
     pub plan_id: PlanId,
+    /// Candidate attempt receiving these results.
+    pub attempt: u32,
     /// Either `quick` or `final`.
     pub phase: String,
     /// Candidate patch identity for pre-commit quick gates.
@@ -283,6 +356,7 @@ impl GateResultsV1 {
     pub fn validate(&self) -> Result<()> {
         if self.schema != crate::PACKAGE_UPDATE_GATE_RESULTS_V1
             || !matches!(self.phase.as_str(), "quick" | "final")
+            || self.attempt > 8
             || self.results.is_empty()
             || self.results.len() > 256
         {
@@ -353,6 +427,8 @@ pub struct PackageUpdateEvidenceV1 {
     pub run_id: RunId,
     /// Immutable plan represented by this dossier.
     pub plan_id: PlanId,
+    /// Final accepted candidate attempt.
+    pub attempt: u32,
     /// Plan digest carried by the run journal.
     pub plan_digest: Sha256Digest,
     /// Exact protected base commit.
@@ -395,7 +471,9 @@ impl PackageUpdateEvidenceV1 {
             || self.materialization.plan_id != self.plan_id
             || self.quick_gates.plan_id != self.plan_id
             || self.final_gates.plan_id != self.plan_id
-            || self.materialization.patch_digest != self.patch_digest
+            || self.quick_gates.attempt != self.attempt
+            || self.final_gates.attempt != self.attempt
+            || (self.attempt == 0 && self.materialization.patch_digest != self.patch_digest)
             || self.quick_gates.candidate_digest != self.patch_digest
             || self.final_gates.candidate_digest
                 != Sha256Digest::separated(
