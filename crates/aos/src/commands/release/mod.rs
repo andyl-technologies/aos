@@ -7,6 +7,7 @@ mod build;
 mod capture;
 mod finalize_image;
 mod plan;
+mod qualify;
 mod signer;
 mod stage;
 mod status;
@@ -40,6 +41,9 @@ pub fn run(command: &ReleaseCommand, nix: &NixRunner, printer: &Printer) -> Resu
         }
         ReleaseCommand::Stage(_) => {
             anyhow::bail!("release stage command must use the asynchronous dispatcher")
+        }
+        ReleaseCommand::Qualify(_) => {
+            anyhow::bail!("release qualify command must use the asynchronous dispatcher")
         }
         ReleaseCommand::Verify(args) => verify::run(args, printer),
     }
@@ -79,6 +83,19 @@ pub async fn finalize_image(
 /// or durable receipt persistence fails.
 pub async fn stage_offline(args: &crate::cli::ReleaseStageArgs, printer: &Printer) -> Result<()> {
     stage::run(args, printer).await
+}
+
+/// Admits signed qualification evidence for an exact staged release.
+///
+/// # Errors
+///
+/// Returns an error when any trust input, receipt binding, journal transition,
+/// Hub response, or durable evidence write fails.
+pub async fn qualify_offline(
+    args: &crate::cli::ReleaseQualifyArgs,
+    printer: &Printer,
+) -> Result<()> {
+    qualify::run(args, printer).await
 }
 
 /// Invokes an external signer without constructing a Nix environment.
