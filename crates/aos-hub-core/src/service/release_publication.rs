@@ -375,6 +375,8 @@ impl RpcService {
                     timestamp_version: req.timestamp_version,
                     timestamp_digest: req.timestamp_digest.clone(),
                     publication_id: req.publication_id,
+                    timestamp_path: req.timestamp_path,
+                    snapshot_path: req.snapshot_path,
                 },
                 crate::clock::now_unix_secs(),
             )
