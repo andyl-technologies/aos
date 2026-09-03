@@ -12,6 +12,7 @@ use super::{QmpCommandKind, QmpError};
 mod bh_timer_barrier;
 mod block_barrier;
 mod child_process;
+mod child_process_contract;
 mod child_qmp;
 mod child_runtime;
 mod diagnostics;
@@ -38,6 +39,14 @@ pub(crate) use child_process::{HotForkChildProcessAction, parse_hot_fork_child_p
 pub use child_process::{
     QMP_HOT_FORK_CHILD_PROCESS_COMMAND, QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION,
     QmpHotForkChildProcessPhase, QmpHotForkChildProcessState,
+};
+pub(crate) use child_process_contract::{
+    HotForkChildProcessContractAction, parse_hot_fork_child_process_contract_state,
+};
+pub use child_process_contract::{
+    QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_COMMAND,
+    QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_SCHEMA_VERSION, QmpHotForkChildProcessContractIdentity,
+    QmpHotForkChildProcessContractState,
 };
 pub(crate) use child_qmp::parse_hot_fork_child_qmp_state;
 pub use child_qmp::{

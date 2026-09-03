@@ -17,7 +17,8 @@ use super::quarantine::{
 };
 use super::{
     LinuxQemuCgroup, LinuxQemuCgroupCancellationSignal, LinuxQemuCgroupError,
-    LinuxQemuCgroupWatcher, QemuChildProcessContract, QemuNodeChild, WATCHER_RUNNING,
+    LinuxQemuCgroupWatcher, QemuChildProcessContract, QemuNodeChild, QemuProcessIdentity,
+    WATCHER_RUNNING,
 };
 
 /// Result of one attempt-process owner cleanup observation.
@@ -206,6 +207,48 @@ impl LinuxQemuAttemptProcessOwner {
                     authority: "configured cgroup",
                 })?;
         group.control.cancellation_signal().map_err(Into::into)
+    }
+
+    /// Authenticates one externally forked process as a live group member.
+    ///
+    /// This path is used for a hot-fork child whose direct `waitpid` authority
+    /// remains with the source QEMU process. The daemon separately retains a
+    /// pidfd before calling this method, so the returned identity can be bound
+    /// to that exact live kernel process generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxQemuAttemptProcessOwnerError`] after terminal cleanup or
+    /// when the PID identity and bounded cgroup-membership proof fail.
+    pub(crate) fn authenticate_hot_fork_child_process(
+        &mut self,
+        process_id: u32,
+    ) -> Result<QemuProcessIdentity, LinuxQemuAttemptProcessOwnerError> {
+        let group =
+            self.group
+                .as_mut()
+                .ok_or(LinuxQemuAttemptProcessOwnerError::MissingAuthority {
+                    authority: "configured cgroup",
+                })?;
+        if group
+            .control
+            .watcher_state
+            .load(std::sync::atomic::Ordering::Acquire)
+            != WATCHER_RUNNING
+        {
+            return Err(LinuxQemuCgroupError::WatcherNotRunning {
+                path: group.path.clone(),
+            }
+            .into());
+        }
+        if self.process_contract.is_none() {
+            return Err(LinuxQemuAttemptProcessOwnerError::MissingAuthority {
+                authority: "child-process contract",
+            });
+        }
+        group
+            .authenticate_process_id(process_id)
+            .map_err(Into::into)
     }
 
     /// Retains a direct child that synchronous realization cleanup could not reap.

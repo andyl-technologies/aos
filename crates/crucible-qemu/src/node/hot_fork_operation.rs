@@ -251,6 +251,25 @@ impl QemuNode {
                 ),
             });
         }
+        let process_contract = self
+            .hot_fork_child_process_contract_stage()
+            .ok_or_else(|| QemuHotForkLaunchError::Rejected {
+                source: QemuNodeChannelError::new(
+                    "fork retained hot-fork template",
+                    "source node retains no target child process contract",
+                ),
+            })?;
+        if process_contract.consumed()
+            || process_contract.generation() != request.child_process_contract_generation()
+            || process_contract.template_generation() != request.template_generation()
+        {
+            return Err(QemuHotForkLaunchError::Rejected {
+                source: QemuNodeChannelError::new(
+                    "fork retained hot-fork template",
+                    "target child process contract does not match the fork request",
+                ),
+            });
+        }
 
         let parent_state = match self.channels.qmp_machine_control.hot_fork(request) {
             Ok(state) => state,
@@ -262,6 +281,9 @@ impl QemuNode {
                 return Err(QemuHotForkLaunchError::Indeterminate { source });
             }
         };
+        if let Some(process_contract) = self.hot_fork_child_process_contract_stage.as_mut() {
+            process_contract.mark_consumed();
+        }
         if parent_state.outcome() == crate::QmpHotForkOutcome::ParentDispositionFailed {
             self.lifecycle_state = QemuNodeLifecycleState::Quarantined;
             return Err(QemuHotForkLaunchError::ParentDispositionFailed {

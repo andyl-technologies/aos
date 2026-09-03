@@ -2323,7 +2323,7 @@ operation.
 
 Template contract version 23 now exposes the complete supported-profile
 composition as the public `crucible-hot-fork` QMP operation. Its exact request
-binds twelve template, resource, process, runtime, descriptor, and monitor
+binds thirteen template, resource, process, runtime, descriptor, and monitor
 generations. QEMU revalidates them on the source main loop, preserves the
 parent's retained template, closes the inherited parent QMP endpoint in the
 child, commits the descriptor disposition, reconstructs runtime/plugin/private
@@ -2333,7 +2333,7 @@ disposition error. Template schema 23 requires the seven parent-side proofs;
 descriptor and child-reinitialization proofs remain child-only. Child-QMP
 schema 8 acknowledges readiness only after its exact plan, disposition,
 runtime, greeting, and input release complete. The Rust QMP client derives the
-twelve-field request from those typed prepared states, validates every echoed
+thirteen-field request from those typed prepared states, validates every echoed
 field and outcome, preserves the connection only for an explicit pre-fork
 command rejection, and poisons it after every fork-indeterminate failure.
 
@@ -2346,17 +2346,28 @@ endpoint loss, and process-retention failure quarantine it. Focused scripted
 regressions cover all six outcomes, including proof that a numeric child PID is
 not sufficient process authority.
 
+Patch 0194 now supplies the birth-time process contract. A generation-bound QMP
+operation authenticates and retains the target attempt's cgroup-v2 directory,
+sticky cancellation eventfd, and file-size ceiling. The source main-loop
+coordinator creates the child with `clone3(CLONE_INTO_CGROUP)`, and the child
+checks cancellation plus `RLIMIT_FSIZE` before runtime reconstruction. The Rust
+node stages those exact descriptor identities and requires the resulting
+generation in the fork request. The Linux attempt owner then opens a pidfd for
+the reported PID and brackets its bounded process-identity/cgroup-membership
+proof with checks that the pidfd still names the same live generation.
+
 This is still an executable T-CAM-6.1 audit checkpoint rather than completion
-of T-CAM-6.2 or T-CAM-6.3. The daemon must next compose the command with its
-attempt process guard, exact child-generation cgroup/pidfd authority, branch
-resource accounting, private child-channel authentication, and observation
-publication. Patch 0193 supplies the parent-QEMU half: a fixed 4,096-record
+of T-CAM-6.2 or T-CAM-6.3. The daemon must next retain the target attempt owner,
+pidfd authority, source child-status record, private child channels, branch
+resource accounting, and observation publication as one reconciliation state.
+Patch 0193 supplies the parent-QEMU reap half: a fixed 4,096-record
 generation table, one bounded nonblocking `waitpid` attempt per query/release,
 retained exit-or-signal status, and explicit post-reap release. It deliberately
 uses no ambient child watcher that could be inherited by another fork. The
 daemon must use its independent pidfd/cgroup authority to drive termination and
 readiness, query the source QEMU for exact parent-owned reap status, retain both
-authorities through reconciliation, and only then release the record. Because
+authorities through reconciliation, and only then release the process-contract
+stage and child-status record. Because
 the forked process is the template QEMU's direct child, the daemon must not
 fabricate a `std::process::Child` from its PID. The real QEMU flight,
 measurements, and failure-injection audit remain open.
