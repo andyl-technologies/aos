@@ -444,6 +444,7 @@ in
               build/tests/unit/test-aio --tap -p /aio/hot-fork/bh-timer-barrier
               build/tests/unit/test-block-backend --tap
               build/tests/unit/test-crucible-hot-fork-child --tap
+              build/tests/unit/test-crucible-hot-fork-coordinator --tap
               build/tests/unit/test-char --tap -p /char/socket/server/mainloop/unix
               build/tests/unit/test-char --tap -p /char/socket/server/wait-conn/unix
             ''

@@ -1517,7 +1517,7 @@
         liveCheck = qemuHotForkReadiness;
         evidenceName = "live-qemu-hot-fork-thread-ownership";
         liveEvidence = ''
-          grep -Fxq 'thread_inventory_schema_version=3' "$live_result"
+          grep -Fxq 'thread_inventory_schema_version=4' "$live_result"
           grep -Fxq 'thread_inventory_stable=true' "$live_result"
           grep -Fxq 'thread_inventory_one_coordinator=true' "$live_result"
           grep -Fxq 'thread_inventory_rcu_owner=true' "$live_result"
@@ -3048,6 +3048,118 @@
             ${patchDir}/0185-crucible-bind-rcu-worker-fork-disposition.patch
           grep -Fq '/crucible/hot-fork-child/unsupported-thread' \
             ${patchDir}/0185-crucible-bind-rcu-worker-fork-disposition.patch
+        '';
+      };
+    }
+    {
+      patch = "0186-crucible-bind-monitor-iothread-fork-disposition.patch";
+      check = certifyExactPatch {
+        patchName = "0186-crucible-bind-monitor-iothread-fork-disposition.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-monitor-thread-disposition";
+        liveEvidence = ''
+          grep -Fxq 'patch=0186-crucible-bind-monitor-iothread-fork-disposition.patch' "$live_result"
+          grep -Fq 'QEMU_THREAD_HOT_FORK_MONITOR_RESTART' \
+            ${patchDir}/0186-crucible-bind-monitor-iothread-fork-disposition.patch
+          grep -Fq 'CRUCIBLE_HOT_FORK_THREAD_DISPOSITION_MONITOR_RESTART' \
+            ${patchDir}/0186-crucible-bind-monitor-iothread-fork-disposition.patch
+          grep -Fq "'monitor-restart'" \
+            ${patchDir}/0186-crucible-bind-monitor-iothread-fork-disposition.patch
+          grep -Fq 'report->schema_version = 4' \
+            ${patchDir}/0186-crucible-bind-monitor-iothread-fork-disposition.patch
+          grep -Fq 'qemu_hot_fork_thread_count != 3' \
+            ${patchDir}/0186-crucible-bind-monitor-iothread-fork-disposition.patch
+          grep -Fq 'iothread_hot_fork_bind_monitor(mon_iothread)' \
+            ${patchDir}/0186-crucible-bind-monitor-iothread-fork-disposition.patch
+          grep -Fq 'monitor_registry_worker' \
+            ${patchDir}/0186-crucible-bind-monitor-iothread-fork-disposition.patch
+        '';
+      };
+    }
+    {
+      patch = "0187-crucible-defer-rcu-worker-until-fd-disposition.patch";
+      check = certifyExactPatch {
+        patchName = "0187-crucible-defer-rcu-worker-until-fd-disposition.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-rcu-worker-ordering";
+        liveEvidence = ''
+          grep -Fxq 'patch=0187-crucible-defer-rcu-worker-until-fd-disposition.patch' "$live_result"
+          grep -Fq 'qemu_rcu_hot_fork_prepare_child' \
+            ${patchDir}/0187-crucible-defer-rcu-worker-until-fd-disposition.patch
+          grep -Fq 'qemu_rcu_hot_fork_start_child_worker' \
+            ${patchDir}/0187-crucible-defer-rcu-worker-until-fd-disposition.patch
+          grep -Fq 'qemu_crucible_hot_fork_start_child_runtime' \
+            ${patchDir}/0187-crucible-defer-rcu-worker-until-fd-disposition.patch
+          grep -Fq 'qemu_crucible_hot_fork_apply_child_resource_plan' \
+            ${patchDir}/0187-crucible-defer-rcu-worker-until-fd-disposition.patch
+        '';
+      };
+    }
+    {
+      patch = "0188-crucible-borrow-retained-rcu-barrier-across-fork.patch";
+      check = certifyExactPatch {
+        patchName = "0188-crucible-borrow-retained-rcu-barrier-across-fork.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-retained-rcu-barrier";
+        liveEvidence = ''
+          grep -Fxq 'patch=0188-crucible-borrow-retained-rcu-barrier-across-fork.patch' "$live_result"
+          grep -Fq 'qemu_rcu_hot_fork_begin_retained_transaction' \
+            ${patchDir}/0188-crucible-borrow-retained-rcu-barrier-across-fork.patch
+          grep -Fq 'qemu_crucible_hot_fork_begin_retained_runtime_transaction' \
+            ${patchDir}/0188-crucible-borrow-retained-rcu-barrier-across-fork.patch
+          grep -Fq 'retained_barrier_generation' \
+            ${patchDir}/0188-crucible-borrow-retained-rcu-barrier-across-fork.patch
+        '';
+      };
+    }
+    {
+      patch = "0189-crucible-retain-async-fork-barrier-through-child-release.patch";
+      check = certifyExactPatch {
+        patchName = "0189-crucible-retain-async-fork-barrier-through-child-release.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-retained-async-barrier";
+        liveEvidence = ''
+          grep -Fxq 'patch=0189-crucible-retain-async-fork-barrier-through-child-release.patch' "$live_result"
+          grep -Fq 'qemu_bh_timer_hot_fork_begin_retained_transaction' \
+            ${patchDir}/0189-crucible-retain-async-fork-barrier-through-child-release.patch
+          grep -Fq 'qemu_bh_timer_hot_fork_release_parent_retained_transaction' \
+            ${patchDir}/0189-crucible-retain-async-fork-barrier-through-child-release.patch
+          grep -Fq 'qemu_bh_timer_hot_fork_release_child_retained_transaction' \
+            ${patchDir}/0189-crucible-retain-async-fork-barrier-through-child-release.patch
+        '';
+      };
+    }
+    {
+      patch = "0190-crucible-release-child-async-barrier-before-qmp-start.patch";
+      check = certifyExactPatch {
+        patchName = "0190-crucible-release-child-async-barrier-before-qmp-start.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-async-runtime-transaction";
+        liveEvidence = ''
+          grep -Fxq 'patch=0190-crucible-release-child-async-barrier-before-qmp-start.patch' "$live_result"
+          grep -Fq 'qemu_crucible_hot_fork_finish_child_runtime' \
+            ${patchDir}/0190-crucible-release-child-async-barrier-before-qmp-start.patch
+          grep -Fq 'qemu_bh_timer_hot_fork_release_child_retained_transaction' \
+            ${patchDir}/0190-crucible-release-child-async-barrier-before-qmp-start.patch
+          grep -Fq 'qemu_crucible_hot_fork_reinitialize_qmp_child' \
+            ${patchDir}/0190-crucible-release-child-async-barrier-before-qmp-start.patch
+        '';
+      };
+    }
+    {
+      patch = "0191-crucible-coordinate-fork-on-main-loop.patch";
+      check = certifyExactPatch {
+        patchName = "0191-crucible-coordinate-fork-on-main-loop.patch";
+        liveCheck = qemuHotForkReadiness;
+        evidenceName = "qemu-hot-fork-main-loop-coordinator";
+        liveEvidence = ''
+          grep -Fxq 'patch=0191-crucible-coordinate-fork-on-main-loop.patch' "$live_result"
+          grep -Fq 'qemu_crucible_hot_fork_main_loop_fork' \
+            ${patchDir}/0191-crucible-coordinate-fork-on-main-loop.patch
+          grep -Fq 'main_loop_poll_add_notifier' \
+            ${patchDir}/0191-crucible-coordinate-fork-on-main-loop.patch
+          grep -Fq '/crucible/hot-fork/coordinator/main-loop-owned-fork' \
+            ${patchDir}/0191-crucible-coordinate-fork-on-main-loop.patch
         '';
       };
     }

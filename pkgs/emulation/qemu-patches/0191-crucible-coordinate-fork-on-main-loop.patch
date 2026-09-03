@@ -1,0 +1,540 @@
+diff --git a/MAINTAINERS b/MAINTAINERS
+index 8c1176b67..3e1338036 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -3841,15 +3841,18 @@ F: plugins/
+ F: include/qemu/crucible-fault.h
+ F: include/qemu/crucible-hot-fork-child.h
+ F: include/qemu/crucible-hot-fork-plugin.h
++F: include/system/crucible-hot-fork-coordinator.h
+ F: include/system/crucible-hot-fork-plugin-child.h
+ F: plugins/crucible-fault-instruction.c
+ F: plugins/crucible-fault-memory.c
+ F: tests/unit/test-crucible-hot-fork-child.c
++F: tests/unit/test-crucible-hot-fork-coordinator.c
+ F: tests/tcg/plugins/crucible-instruction.c
+ F: tests/tcg/plugins/
+ F: tests/functional/test_aarch64_tcg_plugins.py
+ F: contrib/plugins/
+ F: scripts/qemu-plugin-symbols.py
++F: system/crucible-hot-fork-coordinator.c
+ F: system/crucible-hot-fork-plugin-child.c
+ F: util/crucible-hot-fork-child.c
+ 
+diff --git a/include/system/crucible-hot-fork-coordinator.h b/include/system/crucible-hot-fork-coordinator.h
+new file mode 100644
+index 000000000..77f94c86c
+--- /dev/null
++++ b/include/system/crucible-hot-fork-coordinator.h
+@@ -0,0 +1,50 @@
++/*
++ * Crucible main-loop hot-fork coordinator.
++ *
++ * Copyright (c) Andyl, Inc.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef QEMU_CRUCIBLE_HOT_FORK_COORDINATOR_H
++#define QEMU_CRUCIBLE_HOT_FORK_COORDINATOR_H
++
++#include "qapi/error.h"
++
++typedef int (*QemuCrucibleHotForkPrepare)(void *opaque);
++typedef int (*QemuCrucibleHotForkParent)(pid_t child_pid, void *opaque);
++typedef int (*QemuCrucibleHotForkChild)(void *opaque);
++
++/*
++ * Immutable callbacks for one main-loop-owned fork transaction.
++ *
++ * The opaque value and every object reachable through it must be valid in
++ * both process incarnations.  Preparation runs on the source main-loop thread
++ * and must either complete one fork-ready transaction or fail without leaving
++ * partial authority.  The parent callback receives -1 after fork failure and
++ * the positive child PID after success.  The child callback runs immediately
++ * after the coordinator wake descriptor is closed and before main-loop work
++ * resumes.  It must arm parent-death containment and authenticate the direct
++ * child before performing any reconstructive or externally visible work.
++ */
++typedef struct QemuCrucibleHotForkMainLoopOperation {
++    QemuCrucibleHotForkPrepare prepare;
++    QemuCrucibleHotForkParent parent;
++    QemuCrucibleHotForkChild child;
++    void *opaque;
++} QemuCrucibleHotForkMainLoopOperation;
++
++/* Install the single system-emulator coordinator on the main-loop thread. */
++void qemu_crucible_hot_fork_main_loop_coordinator_init(Error **errp);
++
++/*
++ * Submit one exact operation from a non-main-loop thread and wait for its
++ * parent disposition.  A successful result returns the positive direct-child
++ * PID.  An error after fork also returns that positive PID so the operation
++ * owner can retain or quarantine its direct-child authority.  The child never
++ * returns through this caller's copied stack.
++ */
++int qemu_crucible_hot_fork_main_loop_fork(
++    const QemuCrucibleHotForkMainLoopOperation *operation,
++    pid_t *child_pid);
++
++#endif
+diff --git a/system/crucible-hot-fork-coordinator.c b/system/crucible-hot-fork-coordinator.c
+new file mode 100644
+index 000000000..76c45e406
+--- /dev/null
++++ b/system/crucible-hot-fork-coordinator.c
+@@ -0,0 +1,215 @@
++/*
++ * Crucible main-loop hot-fork coordinator.
++ *
++ * Copyright (c) Andyl, Inc.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++
++#include "qemu/event_notifier.h"
++#include "qemu/main-loop.h"
++#include "qemu/notify.h"
++#include "qemu/thread.h"
++#include "system/crucible-hot-fork-coordinator.h"
++
++typedef struct QemuCrucibleHotForkCoordinator {
++    QemuMutex lock;
++    QemuCond completed_cond;
++    EventNotifier wake;
++    Notifier poll_notifier;
++    QemuCrucibleHotForkMainLoopOperation operation;
++    int64_t main_thread_id;
++    int result;
++    pid_t child_pid;
++    size_t poll_index;
++    bool initialized;
++    bool busy;
++    bool executing;
++    bool completed;
++} QemuCrucibleHotForkCoordinator;
++
++static QemuCrucibleHotForkCoordinator crucible_hot_fork_coordinator;
++
++static void crucible_hot_fork_complete_parent(
++    int result, pid_t child_pid)
++{
++    QemuCrucibleHotForkCoordinator *coordinator =
++        &crucible_hot_fork_coordinator;
++
++    qemu_mutex_lock(&coordinator->lock);
++    coordinator->result = result;
++    coordinator->child_pid = child_pid;
++    coordinator->executing = false;
++    coordinator->completed = true;
++    qemu_cond_signal(&coordinator->completed_cond);
++    qemu_mutex_unlock(&coordinator->lock);
++}
++
++static void crucible_hot_fork_execute_main_loop_request(void)
++{
++    QemuCrucibleHotForkCoordinator *coordinator =
++        &crucible_hot_fork_coordinator;
++    QemuCrucibleHotForkMainLoopOperation operation;
++    pid_t child_pid;
++    int parent_result;
++    int result;
++
++    qemu_mutex_lock(&coordinator->lock);
++    if (!coordinator->busy || coordinator->executing ||
++        coordinator->completed) {
++        qemu_mutex_unlock(&coordinator->lock);
++        return;
++    }
++    operation = coordinator->operation;
++    coordinator->executing = true;
++    qemu_mutex_unlock(&coordinator->lock);
++
++    result = operation.prepare(operation.opaque);
++    if (result != 0) {
++        crucible_hot_fork_complete_parent(result, -1);
++        return;
++    }
++
++    child_pid = fork();
++    if (child_pid == 0) {
++        /*
++         * The copied waiter and notifier are parent-only.  Close the raw wake
++         * descriptor before the child opens its exact descriptor transaction;
++         * no other thread exists and the coordinator lock was not held.
++         */
++        event_notifier_cleanup(&coordinator->wake);
++        coordinator->initialized = false;
++        coordinator->busy = false;
++        coordinator->executing = false;
++        coordinator->completed = false;
++        result = operation.child(operation.opaque);
++        if (result != 0) {
++            _exit(EXIT_FAILURE);
++        }
++        return;
++    }
++
++    if (child_pid < 0) {
++        result = -errno;
++    }
++    parent_result = operation.parent(child_pid, operation.opaque);
++    if (parent_result != 0) {
++        result = parent_result;
++    }
++    crucible_hot_fork_complete_parent(result, child_pid);
++}
++
++static void crucible_hot_fork_main_loop_poll(Notifier *notifier, void *opaque)
++{
++    QemuCrucibleHotForkCoordinator *coordinator =
++        container_of(notifier, QemuCrucibleHotForkCoordinator, poll_notifier);
++    MainLoopPoll *poll = opaque;
++    GPollFD descriptor;
++
++    if (!coordinator->initialized) {
++        return;
++    }
++    descriptor = (GPollFD) {
++        .fd = event_notifier_get_fd(&coordinator->wake),
++        .events = G_IO_IN | G_IO_ERR | G_IO_HUP,
++    };
++    switch (poll->state) {
++    case MAIN_LOOP_POLL_FILL:
++        coordinator->poll_index = poll->pollfds->len;
++        g_array_append_val(poll->pollfds, descriptor);
++        qemu_mutex_lock(&coordinator->lock);
++        if (coordinator->busy && !coordinator->completed) {
++            poll->timeout = 0;
++        }
++        qemu_mutex_unlock(&coordinator->lock);
++        break;
++    case MAIN_LOOP_POLL_OK:
++    case MAIN_LOOP_POLL_ERR:
++        descriptor = g_array_index(
++            poll->pollfds, GPollFD, coordinator->poll_index);
++        if (descriptor.revents & (G_IO_IN | G_IO_ERR | G_IO_HUP)) {
++            event_notifier_test_and_clear(&coordinator->wake);
++            crucible_hot_fork_execute_main_loop_request();
++        }
++        break;
++    default:
++        g_assert_not_reached();
++    }
++}
++
++void qemu_crucible_hot_fork_main_loop_coordinator_init(Error **errp)
++{
++    QemuCrucibleHotForkCoordinator *coordinator =
++        &crucible_hot_fork_coordinator;
++    int result;
++
++    if (coordinator->initialized) {
++        error_setg(errp, "Crucible hot-fork coordinator already initialized");
++        return;
++    }
++
++    qemu_mutex_init(&coordinator->lock);
++    qemu_cond_init(&coordinator->completed_cond);
++    result = event_notifier_init(&coordinator->wake, 0);
++    if (result != 0) {
++        qemu_cond_destroy(&coordinator->completed_cond);
++        qemu_mutex_destroy(&coordinator->lock);
++        error_setg_errno(errp, -result,
++                         "Could not create Crucible hot-fork coordinator");
++        return;
++    }
++
++    coordinator->main_thread_id = qemu_get_thread_id();
++    coordinator->poll_notifier.notify = crucible_hot_fork_main_loop_poll;
++    coordinator->initialized = true;
++    main_loop_poll_add_notifier(&coordinator->poll_notifier);
++}
++
++int qemu_crucible_hot_fork_main_loop_fork(
++    const QemuCrucibleHotForkMainLoopOperation *operation,
++    pid_t *child_pid)
++{
++    QemuCrucibleHotForkCoordinator *coordinator =
++        &crucible_hot_fork_coordinator;
++    int result;
++
++    if (!operation || !operation->prepare || !operation->parent ||
++        !operation->child || !child_pid || !coordinator->initialized ||
++        coordinator->main_thread_id == qemu_get_thread_id()) {
++        return -EINVAL;
++    }
++    *child_pid = -1;
++
++    qemu_mutex_lock(&coordinator->lock);
++    if (coordinator->busy) {
++        qemu_mutex_unlock(&coordinator->lock);
++        return -EBUSY;
++    }
++    coordinator->operation = *operation;
++    coordinator->result = -EINPROGRESS;
++    coordinator->child_pid = -1;
++    coordinator->busy = true;
++    coordinator->executing = false;
++    coordinator->completed = false;
++    result = event_notifier_set(&coordinator->wake);
++    if (result != 0) {
++        coordinator->operation =
++            (QemuCrucibleHotForkMainLoopOperation) { 0 };
++        coordinator->busy = false;
++        qemu_mutex_unlock(&coordinator->lock);
++        return result;
++    }
++    while (!coordinator->completed) {
++        qemu_cond_wait(&coordinator->completed_cond, &coordinator->lock);
++    }
++
++    result = coordinator->result;
++    *child_pid = coordinator->child_pid;
++    coordinator->operation =
++        (QemuCrucibleHotForkMainLoopOperation) { 0 };
++    coordinator->busy = false;
++    coordinator->completed = false;
++    qemu_mutex_unlock(&coordinator->lock);
++    return result;
++}
+diff --git a/system/meson.build b/system/meson.build
+index 8845527d5..907507397 100644
+--- a/system/meson.build
++++ b/system/meson.build
+@@ -37,5 +37,8 @@ system_ss.add(when: 'CONFIG_DEVICE_TREE',
+               if_true: [fdt, files('device_tree.c')],
+               if_false: files('device_tree-stub.c'))
+ if host_os == 'linux'
+-  system_ss.add(files('async-teardown.c'))
++  system_ss.add(files(
++    'async-teardown.c',
++    'crucible-hot-fork-coordinator.c',
++  ))
+ endif
+diff --git a/system/vl.c b/system/vl.c
+index 3dcf01144..230782b83 100644
+--- a/system/vl.c
++++ b/system/vl.c
+@@ -41,6 +41,7 @@
+ #include "qemu/hw-version.h"
+ #include "qemu/uuid.h"
+ #include "system/reset.h"
++#include "system/crucible-hot-fork-coordinator.h"
+ #include "system/runstate.h"
+ #include "system/runstate-action.h"
+ #include "system/seccomp.h"
+@@ -3767,6 +3768,9 @@ void qemu_init(int argc, char **argv)
+     trace_init_file();
+ 
+     qemu_init_main_loop(&error_fatal);
++#ifdef CONFIG_LINUX
++    qemu_crucible_hot_fork_main_loop_coordinator_init(&error_fatal);
++#endif
+     cpu_timers_init();
+ 
+     user_register_global_props();
+diff --git a/tests/unit/meson.build b/tests/unit/meson.build
+index d7ae96cad..935889856 100644
+--- a/tests/unit/meson.build
++++ b/tests/unit/meson.build
+@@ -145,6 +145,9 @@ if have_system
+     tests += {'test-crucible-hot-fork-child': [
+       meson.project_source_root() / 'system/crucible-hot-fork-plugin-child.c'
+     ]}
++    tests += {'test-crucible-hot-fork-coordinator': [
++      meson.project_source_root() / 'system/crucible-hot-fork-coordinator.c'
++    ]}
+   endif
+   if config_host_data.get('CONFIG_INOTIFY1')
+     tests += {'test-util-filemonitor': []}
+diff --git a/tests/unit/test-crucible-hot-fork-coordinator.c b/tests/unit/test-crucible-hot-fork-coordinator.c
+new file mode 100644
+index 000000000..2236413b6
+--- /dev/null
++++ b/tests/unit/test-crucible-hot-fork-coordinator.c
+@@ -0,0 +1,184 @@
++/*
++ * Crucible main-loop hot-fork coordinator tests.
++ *
++ * Copyright (c) Andyl, Inc.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++
++#include "qapi/error.h"
++#include "qemu/atomic.h"
++#include "qemu/main-loop.h"
++#include "qemu/notify.h"
++#include "qemu/rcu.h"
++#include "qemu/thread.h"
++#include "system/crucible-hot-fork-coordinator.h"
++
++typedef struct CoordinatorChildReport {
++    pid_t process_id;
++    int64_t thread_id;
++    unsigned int prepare_calls;
++    unsigned int parent_calls;
++    unsigned int child_calls;
++} CoordinatorChildReport;
++
++typedef struct CoordinatorTestState {
++    QemuCrucibleHotForkMainLoopOperation operation;
++    QemuThread submitter;
++    pid_t source_process_id;
++    pid_t submitted_child_pid;
++    pid_t parent_child_pid;
++    int64_t main_thread_id;
++    int64_t prepare_thread_id;
++    int64_t parent_thread_id;
++    int64_t submitter_thread_id;
++    int report_pipe[2];
++    int submit_result;
++    unsigned int prepare_calls;
++    unsigned int parent_calls;
++    unsigned int child_calls;
++    int submission_done;
++} CoordinatorTestState;
++
++static CoordinatorTestState coordinator_test;
++
++static int coordinator_prepare(void *opaque)
++{
++    CoordinatorTestState *state = opaque;
++
++    state->prepare_calls++;
++    state->prepare_thread_id = qemu_get_thread_id();
++    return 0;
++}
++
++static int coordinator_parent(pid_t child_pid, void *opaque)
++{
++    CoordinatorTestState *state = opaque;
++
++    state->parent_calls++;
++    state->parent_thread_id = qemu_get_thread_id();
++    state->parent_child_pid = child_pid;
++    return child_pid > 0 ? 0 : -ECHILD;
++}
++
++static int coordinator_child(void *opaque)
++{
++    CoordinatorTestState *state = opaque;
++    CoordinatorChildReport report;
++    ssize_t written;
++
++    state->child_calls++;
++    report = (CoordinatorChildReport) {
++        .process_id = getpid(),
++        .thread_id = qemu_get_thread_id(),
++        .prepare_calls = state->prepare_calls,
++        .parent_calls = state->parent_calls,
++        .child_calls = state->child_calls,
++    };
++    do {
++        written = write(state->report_pipe[1], &report, sizeof(report));
++    } while (written < 0 && errno == EINTR);
++    if (written != (ssize_t)sizeof(report)) {
++        _exit(EXIT_FAILURE);
++    }
++
++    /*
++     * The production callback reconstructs every main-loop dependency before
++     * returning.  This focused bridge test deliberately owns none of those
++     * subsystem transactions, so terminate after reporting the fork context
++     * rather than re-entering their copied locks.
++     */
++    _exit(EXIT_SUCCESS);
++}
++
++static void *coordinator_submit(void *opaque)
++{
++    CoordinatorTestState *state = opaque;
++
++    state->submitter_thread_id = qemu_get_thread_id();
++    state->submit_result = qemu_crucible_hot_fork_main_loop_fork(
++        &state->operation, &state->submitted_child_pid);
++    qatomic_set(&state->submission_done, 1);
++    qemu_notify_event();
++    return NULL;
++}
++
++static void test_main_loop_owns_fork(void)
++{
++    CoordinatorChildReport report;
++    int child_status;
++    ssize_t received;
++
++    coordinator_test = (CoordinatorTestState) {
++        .operation = {
++            .prepare = coordinator_prepare,
++            .parent = coordinator_parent,
++            .child = coordinator_child,
++        },
++        .source_process_id = getpid(),
++        .main_thread_id = qemu_get_thread_id(),
++        .submitted_child_pid = -1,
++        .parent_child_pid = -1,
++        .submit_result = -EINPROGRESS,
++    };
++    coordinator_test.operation.opaque = &coordinator_test;
++    g_assert_cmpint(pipe2(coordinator_test.report_pipe, O_CLOEXEC), ==, 0);
++
++    qemu_thread_create(&coordinator_test.submitter, "fork submitter",
++                       coordinator_submit, &coordinator_test,
++                       QEMU_THREAD_JOINABLE);
++    while (!qatomic_read(&coordinator_test.submission_done)) {
++        main_loop_wait(false);
++    }
++    qemu_thread_join(&coordinator_test.submitter);
++    g_assert_cmpint(coordinator_test.submit_result, ==, 0);
++    g_assert_cmpint(coordinator_test.submitted_child_pid, >, 0);
++    g_assert_cmpint(coordinator_test.parent_child_pid, ==,
++                    coordinator_test.submitted_child_pid);
++    g_assert_cmpuint(coordinator_test.prepare_calls, ==, 1);
++    g_assert_cmpuint(coordinator_test.parent_calls, ==, 1);
++    g_assert_cmpuint(coordinator_test.child_calls, ==, 0);
++    g_assert_cmpint(coordinator_test.prepare_thread_id, ==,
++                    coordinator_test.main_thread_id);
++    g_assert_cmpint(coordinator_test.parent_thread_id, ==,
++                    coordinator_test.main_thread_id);
++    g_assert_cmpint(coordinator_test.submitter_thread_id, !=,
++                    coordinator_test.main_thread_id);
++
++    do {
++        received = read(coordinator_test.report_pipe[0], &report,
++                        sizeof(report));
++    } while (received < 0 && errno == EINTR);
++    g_assert_cmpint(received, ==, (ssize_t)sizeof(report));
++    g_assert_cmpint(report.process_id, ==,
++                    coordinator_test.submitted_child_pid);
++    g_assert_cmpint(report.thread_id, ==, report.process_id);
++    g_assert_cmpuint(report.prepare_calls, ==, 1);
++    g_assert_cmpuint(report.parent_calls, ==, 0);
++    g_assert_cmpuint(report.child_calls, ==, 1);
++    g_assert_cmpint(waitpid(coordinator_test.submitted_child_pid,
++                            &child_status, 0), ==,
++                    coordinator_test.submitted_child_pid);
++    g_assert_true(WIFEXITED(child_status));
++    g_assert_cmpint(WEXITSTATUS(child_status), ==, EXIT_SUCCESS);
++
++    close(coordinator_test.report_pipe[0]);
++    close(coordinator_test.report_pipe[1]);
++}
++
++int main(int argc, char **argv)
++{
++    qemu_init_main_loop(&error_abort);
++    /*
++     * System startup disables generic pthread_atfork handling before the
++     * retained hot-fork transaction owns RCU disposition.  Reproduce that
++     * steady-state prerequisite in this focused coordinator bridge test.
++     */
++    rcu_disable_atfork();
++    qemu_crucible_hot_fork_main_loop_coordinator_init(&error_abort);
++    g_test_init(&argc, &argv, NULL);
++    g_test_add_func("/crucible/hot-fork/coordinator/main-loop-owned-fork",
++                    test_main_loop_owns_fork);
++    return g_test_run();
++}

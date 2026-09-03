@@ -1692,12 +1692,14 @@ QEMU-owned coordinator rather than weakening this fail-closed query.
 
 Patched QEMU now also owns a bounded active-thread registry. Every
 `qemu_thread_create()` start routine is bracketed by register/unregister cleanup,
-the QMP main loop is the sole coordinator, and a version-3 QMP query returns a
+the QMP main loop is the sole coordinator, and a version-4 QMP query returns a
 sorted snapshot, overflow/name completeness, exact unresolved count, and
-process-local generation. The RCU callback and AIO-context thread entry points
-assign their own `rcu-restart` and `unclassified-aio` dispositions; every other
-non-coordinator remains plain `unclassified`. The RCU worker is now a classified
-discard-and-restart owner, while AIO and generic workers stay blockers. The
+process-local generation. The RCU callback worker assigns `rcu-restart`; the
+monitor subsystem binds its exact internal IOThread to `monitor-restart`; every
+other AIO worker assigns `unclassified-aio`; and every other non-coordinator
+remains plain `unclassified`. The RCU and monitor workers are now classified
+discard-and-restart owners, while user IOThreads and generic workers stay
+blockers. The
 Apache host brackets its bounded two-pass Linux process inventory with two
 identical registry snapshots inside the exact QEMU
 readiness reports. It requires every registered thread to exist in procfs,
@@ -1722,11 +1724,27 @@ and parks rejected entrants until release. The version-16 template coordinator
 holds this barrier with the plugin callback barrier and acknowledges readiness
 bit 4 only while the complete retained RCU state is quiescent. The RCU worker
 now has an exact child disposition/reinitializer composed with the registered
-thread and mutex transaction. The immediate child discards vanished reader
-records, retains only the rebound coordinator reader, and starts one fresh
-callback worker before returning. No production fork command consumes that
-transaction and raw/library lock disposition remains open, so bit 8 remains
-clear.
+thread and mutex transaction. The retained runtime binds exact RCU and
+asynchronous-source generations. Its parent terminal action preserves both
+already-held template barriers. The immediate child discards vanished reader
+records, retains only the rebound coordinator reader, keeps inherited
+descriptor admission closed through that reconstruction, and starts one fresh
+callback worker only after descriptor disposition commits. It releases the
+copied asynchronous-source barrier after plugin reconstruction and immediately
+before child-QMP activation starts the classified replacement monitor IOThread.
+Other IOThreads remain blockers and raw/library lock disposition remains open,
+so bit 8 remains clear.
+
+Patched QEMU now also installs a Linux-only raw-notifier bridge into the system
+main loop. One non-main-loop owner can submit an immutable operation while BH
+and AIO dispatch remain parked; the source main loop alone prepares and calls
+`fork(2)`, the child disables the copied notifier before reconstruction, and the
+parent returns the positive direct-child PID even when its disposition callback
+fails. The bridge has a real-fork unit test and is deliberately not exposed by
+QAPI/QMP yet. The next production slice must bind a versioned command to the
+retained template/runtime transaction, arm parent-death containment first in
+the child, and transfer the returned PID into the daemon's nondroppable
+direct-child owner before any guest admission.
 QEMU now additionally owns a process-lifetime reversible asynchronous-source
 barrier. A race-closed two-phase admission gate covers AioContext polling and
 GLib dispatch, AioHandler lifecycle and callbacks, coroutine scheduling,
@@ -2292,15 +2310,22 @@ immediate child around exactly the surviving coordinator. A real-fork
 regression and locked-mutex negative control cover those outcomes. The
 transaction remains unwired to a production fork command and deliberately does
 not claim raw `pthread`/GLib lock completeness or the remaining subsystem
-dispositions. The following RCU transaction now closes reader/callback
-admission outside it, preserves the parent RCU registry, and reconstructs the
-immediate child around the coordinator plus one fresh callback worker. The
-registered-thread half admits only that exact two-thread source profile and
-rejects generic or AIO workers before fork. The composed transaction still
-cannot advance readiness bit 8 by itself.
+dispositions. The following retained runtime transaction closes
+reader/callback and asynchronous-source admission, preserves the parent RCU
+registry and both template barriers, and reconstructs the immediate child in
+strict phases. The registered-thread half admits only the exact coordinator,
+RCU worker, and classified monitor-IOThread source profile; it rejects generic
+and other AIO workers before fork, discards the inherited workers, reconstructs
+RCU under the descriptor transaction, starts the replacement RCU worker after
+descriptor commit, and releases copied asynchronous admission before the bound
+child-QMP transaction creates its monitor replacement. A raw-notifier main-loop
+bridge now owns the actual `fork(2)` call for an internal immutable callback
+operation, but no public QMP command composes the retained runtime with that
+bridge. The transaction therefore still cannot advance readiness bit 8 by
+itself.
 These are executable T-CAM-6.1 audit prerequisites, not completion of the task:
-the internal registry now has one safe non-coordinator RCU disposition, while
-the AIO owner and every generic or external thread remain unresolved. The
+the internal registry now has safe RCU and internal-monitor dispositions, while
+other AIO owners and every generic or external thread remain unresolved. The
 retained AIO/BH/timer and RCU
 barriers now promote bits 3 and 4, but the remaining views cannot prove a
 retained mutex barrier, block write-root boundary, process-lifetime plugin
