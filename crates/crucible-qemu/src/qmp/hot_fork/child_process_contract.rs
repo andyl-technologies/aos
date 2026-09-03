@@ -255,6 +255,9 @@ pub(crate) fn parse_hot_fork_child_process_contract_state(
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts.
+    #![allow(clippy::expect_used)]
+
     use serde_json::json;
 
     use super::*;
