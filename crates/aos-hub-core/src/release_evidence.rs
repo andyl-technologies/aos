@@ -8,9 +8,10 @@ use std::collections::BTreeMap;
 
 use anyhow::{bail, Context as _, Result};
 use aos_release::receipt::{ChannelReceiptV1, PublicationReceiptV1, QualificationReceiptV1};
+use aos_release::receipt::{SignedReceiptEnvelopeV1, RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT_V1};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::backend::BackendBounds;
 
@@ -60,18 +61,6 @@ pub trait ReleaseEvidenceAuthority: BackendBounds {
     /// Returns an error when provider policy rejects the operation or signing
     /// fails. Implementations must return canonical JSON and its exact digest.
     async fn issue_channel(&self, receipt: &ChannelReceiptV1) -> Result<SignedReleaseEvidence>;
-}
-
-const SIGNED_RECEIPT_V1: &str = "aos.hub.signed-release-evidence/v1";
-const RECEIPT_SIGNATURE_DOMAIN: &str = "aos.hub.release-evidence-signature/v1";
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct SignedReceiptEnvelope {
-    schema_version: String,
-    key_id: String,
-    payload: serde_json::Value,
-    signature_base64: String,
 }
 
 /// In-process Ed25519 adapter over deployment-injected secret material.
@@ -128,7 +117,7 @@ impl Ed25519ReleaseEvidenceAuthority {
         let digest =
             aos_release::digest::Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, &payload_bytes);
         let signature = self.signing_key.sign(digest.as_bytes());
-        let envelope = SignedReceiptEnvelope {
+        let envelope = SignedReceiptEnvelopeV1 {
             schema_version: SIGNED_RECEIPT_V1.into(),
             key_id: self.key_id.clone(),
             payload: serde_json::from_slice(&payload_bytes)?,
@@ -163,7 +152,7 @@ impl ReleaseEvidenceAuthority for Ed25519ReleaseEvidenceAuthority {
         envelope_json: &str,
     ) -> Result<()> {
         receipt.validate()?;
-        let envelope: SignedReceiptEnvelope =
+        let envelope: SignedReceiptEnvelopeV1 =
             aos_release::canonical::from_slice(envelope_json.as_bytes(), "qualification envelope")?;
         if envelope.schema_version != SIGNED_RECEIPT_V1
             || aos_release::canonical::to_vec(&envelope)? != envelope_json.as_bytes()
@@ -239,7 +228,7 @@ mod tests {
     async fn qualification_envelope_is_canonical_and_signature_bound() {
         let authority = authority();
         let receipt = qualification();
-        let mut envelope: SignedReceiptEnvelope =
+        let mut envelope: SignedReceiptEnvelopeV1 =
             serde_json::from_str(&authority.issue(&receipt).unwrap().envelope_json).unwrap();
         envelope.key_id = "qualifier".into();
         let payload = aos_release::canonical::to_vec(&receipt).unwrap();

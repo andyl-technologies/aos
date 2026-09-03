@@ -224,7 +224,7 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?;
         self.db
-            .record_release_bundle_publication(
+            .promote_release_bundle(
                 &NewReleaseBundlePublication {
                     bundle_digest: req.bundle_digest.clone(),
                     registry_id: registry.id,
@@ -235,12 +235,6 @@ impl RpcService {
                     receipt_json: signed.envelope_json.clone(),
                     staging_receipt_digest: Some(req.staging_receipt_digest.clone()),
                 },
-                now,
-            )
-            .await
-            .map_err(failed_precondition)?;
-        self.db
-            .record_release_promotion(
                 &NewReleasePromotion {
                     bundle_digest: req.bundle_digest,
                     staging_receipt_digest: req.staging_receipt_digest,

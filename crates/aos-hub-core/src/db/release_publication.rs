@@ -281,13 +281,12 @@ impl Database {
             .await
     }
 
-    /// Records an exact staging or production publication.
+    /// Records an exact staging publication.
     ///
     /// # Errors
     ///
     /// Returns an error unless the publication is ready, belongs to the
-    /// bundle registry, uses the environment's pinned deployment, and a
-    /// production publication names the bundle's exact staging receipt.
+    /// bundle registry, and uses the pinned staging deployment.
     pub async fn record_release_bundle_publication(
         &self,
         input: &NewReleaseBundlePublication,
@@ -297,18 +296,10 @@ impl Database {
         if self.release_publication_matches(input).await? {
             return Ok(());
         }
-        let expected_deployment = match input.environment.as_str() {
-            "staging" => "bundle.staging_deployment_id",
-            "production" => "bundle.production_deployment_id",
-            _ => bail!("release publication environment is invalid"),
-        };
-        let predecessor = if input.environment == "staging" {
-            "?8 IS NULL"
-        } else {
-            "?8 = (SELECT receipt_digest FROM release_bundle_publications staging WHERE staging.bundle_digest = ?1 AND staging.environment = 'staging')"
-        };
-        let sql = format!(
-            "INSERT INTO release_bundle_publications
+        if input.environment != "staging" || input.staging_receipt_digest.is_some() {
+            bail!("release publication admission is staging-only");
+        }
+        let sql = "INSERT INTO release_bundle_publications
                (bundle_digest, registry_id, environment, publication_id,
                 deployment_id, receipt_digest, receipt_json,
                 staging_receipt_digest, committed_at)
@@ -320,8 +311,7 @@ impl Database {
                 AND publication.registry_id = bundle.registry_id
               WHERE bundle.bundle_digest = ?1 AND bundle.registry_id = ?2
                 AND publication.state = 'ready'
-                AND ?5 = {expected_deployment} AND {predecessor}"
-        );
+                AND ?5 = bundle.staging_deployment_id AND ?8 IS NULL";
         self.backend
             .checked_batch(&[CheckedStatement::exact(
                 sql,
@@ -422,6 +412,92 @@ impl Database {
                 ],
                 1,
             )])
+            .await
+    }
+
+    /// Atomically admits production and its complete promotion chain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the production publication, deployment,
+    /// staging receipt, and qualification all match the same bundle exactly.
+    pub async fn promote_release_bundle(
+        &self,
+        publication: &NewReleaseBundlePublication,
+        promotion: &NewReleasePromotion,
+        now: i64,
+    ) -> Result<()> {
+        validate_publication(publication)?;
+        validate_promotion(promotion)?;
+        if publication.environment != "production"
+            || publication.bundle_digest != promotion.bundle_digest
+            || publication.staging_receipt_digest.as_deref()
+                != Some(promotion.staging_receipt_digest.as_str())
+        {
+            bail!("production publication and promotion do not match");
+        }
+        if self.release_publication_matches(publication).await?
+            && self.release_promotion_matches(promotion).await?
+        {
+            return Ok(());
+        }
+        self.backend
+            .checked_batch(&[
+                CheckedStatement::exact(
+                    "INSERT INTO release_bundle_publications
+                   (bundle_digest, registry_id, environment, publication_id,
+                    deployment_id, receipt_digest, receipt_json,
+                    staging_receipt_digest, committed_at)
+                 SELECT bundle.bundle_digest, bundle.registry_id, 'production',
+                        ?4, ?5, ?6, ?7, ?8, ?9
+                   FROM release_bundles bundle
+                   JOIN registry_publications publication
+                     ON publication.publication_id = ?4
+                    AND publication.registry_id = bundle.registry_id
+                   JOIN release_bundle_publications staging
+                     ON staging.bundle_digest = bundle.bundle_digest
+                    AND staging.environment = 'staging'
+                    AND staging.receipt_digest = ?8
+                   JOIN release_qualifications qualification
+                     ON qualification.bundle_digest = bundle.bundle_digest
+                    AND qualification.staging_receipt_digest = staging.receipt_digest
+                    AND qualification.qualification_digest = ?10
+                  WHERE bundle.bundle_digest = ?1 AND bundle.registry_id = ?2
+                    AND publication.state = 'ready'
+                    AND ?5 = bundle.production_deployment_id",
+                    vals![
+                        publication.bundle_digest,
+                        publication.registry_id,
+                        publication.environment,
+                        publication.publication_id,
+                        publication.deployment_id,
+                        publication.receipt_digest,
+                        publication.receipt_json,
+                        publication.staging_receipt_digest,
+                        now,
+                        promotion.qualification_digest
+                    ],
+                    1,
+                ),
+                CheckedStatement::exact(
+                    "INSERT INTO release_promotions
+                   (bundle_digest, staging_receipt_digest, qualification_digest,
+                    production_receipt_digest, promoted_at)
+                 SELECT ?1, ?2, ?3, ?4, ?5
+                  WHERE EXISTS (SELECT 1 FROM release_bundle_publications production
+                    WHERE production.bundle_digest = ?1 AND production.environment = 'production'
+                      AND production.receipt_digest = ?4
+                      AND production.staging_receipt_digest = ?2)",
+                    vals![
+                        promotion.bundle_digest,
+                        promotion.staging_receipt_digest,
+                        promotion.qualification_digest,
+                        promotion.production_receipt_digest,
+                        now
+                    ],
+                    1,
+                ),
+            ])
             .await
     }
 
@@ -870,16 +946,15 @@ mod tests {
             receipt_json: "{\"environment\":\"production\"}".into(),
             staging_receipt_digest: Some("3".repeat(64)),
         };
-        db.record_release_bundle_publication(&production, 14)
-            .await
-            .unwrap();
         let promotion = NewReleasePromotion {
             bundle_digest: bundle.bundle_digest.clone(),
             staging_receipt_digest: "3".repeat(64),
             qualification_digest: "4".repeat(64),
             production_receipt_digest: "6".repeat(64),
         };
-        db.record_release_promotion(&promotion, 15).await.unwrap();
+        db.promote_release_bundle(&production, &promotion, 15)
+            .await
+            .unwrap();
 
         let edge = NewReleaseChannelOperation {
             registry_id,

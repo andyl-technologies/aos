@@ -162,6 +162,7 @@ dependencies = [
  "aos-net",
  "aos-package",
  "aos-profile",
+ "aos-proto-types",
  "aos-release",
  "aos-remote",
  "aos-server",
