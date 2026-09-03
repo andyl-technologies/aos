@@ -9,6 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "src/proto/aos/auth/v1/auth.proto",
             "src/proto/aos/hub/v1/hub.proto",
             "src/proto/aos/sandbox/v1/sandbox.proto",
+            "src/proto/aos/sandbox/local/v1/brokers.proto",
         ])
         .includes(&["src/proto/"])
         .include_file("_connectrpc.rs")
