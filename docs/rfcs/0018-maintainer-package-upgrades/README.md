@@ -130,6 +130,12 @@ declared upstream + Repology advisory observation
 | [`00-goals-and-model.md`](00-goals-and-model.md) | Goals, non-goals, terminology, package archetypes, and workflow model |
 | [`01-package-contract-and-inventory.md`](01-package-contract-and-inventory.md) | `mkUpstream`, maintained streams, source/artifact slots, classification, inventory, and mutation identity |
 | [`02-local-tool-architecture.md`](02-local-tool-architecture.md) | Rust boundaries, CLI, local state, worktrees, effects, output contracts, and Git handoff |
+| [`03-discovery-and-version-policy.md`](03-discovery-and-version-policy.md) | Primary providers, Repology, candidate records, version schemes, source verification, grouping, and risk |
+| [`04-execution-and-agent-loop.md`](04-execution-and-agent-loop.md) | Deterministic transaction, state machine, failure taxonomy, agent capabilities, and recovery |
+| [`05-validation-and-evidence.md`](05-validation-and-evidence.md) | Quick/final tests, affected graph, exceptional gates, evidence, reporting, and metrics |
+| [`06-maintainer-machine-security.md`](06-maintainer-machine-security.md) | Local threat model, process isolation, credential handling, worktree protection, and publication safeguards |
+| [`07-implementation-plan.md`](07-implementation-plan.md) | Pull request sequence, migration, pilots, acceptance criteria, and rollout |
+| [`08-decisions-and-open-questions.md`](08-decisions-and-open-questions.md) | Locked decisions, rejected alternatives, and implementation-time questions |
 
 ## Relationship to RFC-0017
 
