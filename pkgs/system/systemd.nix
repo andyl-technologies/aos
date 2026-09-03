@@ -36,7 +36,7 @@
   python3-pefile,
   python3-pyelftools,
 }: let
-  version = "259.1";
+  version = "259.8";
 
   # PYTHONPATH that makes `import pefile` / `import elftools` succeed
   # when ukify runs (both also needed during meson configure — see
@@ -57,7 +57,7 @@ in
       urls = [
         "https://github.com/systemd/systemd/archive/refs/tags/v${version}.tar.gz"
       ];
-      hash = "sha256-evTzbbUSrS8PdJoPmIY3Dt6yu1EoAU/EfN9zcCx+GRE=";
+      hash = "sha256-eECOyN7Dwn6XphbzUNXFLZYBbUuflXbpv1ghHw2ZZLc=";
     };
 
     # Patches applied after unpack (via mkDerivation's built-in patch phase):
@@ -374,6 +374,33 @@ in
         # is effectively a no-op for prefix-relative targets.
         script = ''
           DESTDIR=/ ninja install
+        '';
+      }
+      {
+        name = "check";
+        script = ''
+          version_output="$($out/lib/systemd/systemd --version)"
+          version_line="$(echo "$version_output" | head -n 1)"
+          if [ "$version_line" != "systemd 259 (${version})" ]; then
+            echo "ERROR: unexpected systemd version: $version_line" >&2
+            exit 1
+          fi
+
+          for required_feature in +PAM +AUDIT +SELINUX +SECCOMP +OPENSSL \
+            +ACL +BLKID +KMOD +LIBCRYPTSETUP +TPM2; do
+            if ! echo "$version_output" | grep -F -q -- "$required_feature"; then
+              echo "ERROR: systemd lacks required feature $required_feature" >&2
+              exit 1
+            fi
+          done
+
+          for executable in systemctl systemd-analyze systemd-nspawn; do
+            if [ ! -x "$out/bin/$executable" ]; then
+              echo "ERROR: systemd did not install $executable" >&2
+              exit 1
+            fi
+            "$out/bin/$executable" --version > /dev/null
+          done
         '';
       }
       {
