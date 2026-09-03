@@ -82,13 +82,195 @@ impl TufRole {
         }
     }
 
-    fn for_release(class: ReleaseClass) -> Self {
+    /// Returns the delegated metadata role that authorizes a release class.
+    #[must_use]
+    pub const fn for_release(class: ReleaseClass) -> Self {
         match class {
             ReleaseClass::Edge => Self::Edge,
             ReleaseClass::Candidate => Self::Candidate,
             ReleaseClass::Stable | ReleaseClass::Emergency => Self::Stable,
         }
     }
+}
+
+/// Constructs canonical top-level targets metadata.
+///
+/// # Errors
+///
+/// Returns an error for a zero version or malformed/non-UTC expiry.
+pub fn canonical_targets_metadata(version: u64, expires: String) -> Result<TargetsMetadataV1> {
+    let metadata = TargetsMetadataV1 {
+        schema_version: TUF_TARGETS_V1.to_owned(),
+        spec_version: TUF_SPEC_VERSION.to_owned(),
+        registry: CANONICAL_REGISTRY.to_owned(),
+        version,
+        expires,
+        delegations: [
+            (TufRole::Stable, "releases/stable/"),
+            (TufRole::Candidate, "releases/candidate/"),
+            (TufRole::Edge, "releases/edge/"),
+        ]
+        .into_iter()
+        .map(|(role, path_prefix)| TufDelegationV1 {
+            role,
+            path_prefix: path_prefix.to_owned(),
+            terminating: true,
+        })
+        .collect(),
+    };
+    validate_targets(&metadata)?;
+    require_valid_expiry(&metadata.expires)?;
+    Ok(metadata)
+}
+
+/// Constructs one canonical delegated release authorization.
+///
+/// # Errors
+///
+/// Returns an error for malformed identity, class/path mismatch, a zero
+/// version or length, or malformed/non-UTC expiry.
+pub fn delegated_release_metadata(
+    version: u64,
+    expires: String,
+    target: TufReleaseTargetV1,
+) -> Result<DelegatedTargetsMetadataV1> {
+    let role = TufRole::for_release(target.release_class);
+    let metadata = DelegatedTargetsMetadataV1 {
+        schema_version: TUF_DELEGATED_TARGETS_V1.to_owned(),
+        spec_version: TUF_SPEC_VERSION.to_owned(),
+        registry: CANONICAL_REGISTRY.to_owned(),
+        role,
+        version,
+        expires,
+        targets: vec![target],
+    };
+    let target = &metadata.targets[0];
+    validate_delegated(
+        &metadata,
+        &target.release_id,
+        target.release_class,
+        target.manifest_digest,
+        target.bundle_digest,
+    )?;
+    require_valid_expiry(&metadata.expires)?;
+    Ok(metadata)
+}
+
+/// Constructs a snapshot over exact already-signed immutable envelopes.
+///
+/// # Errors
+///
+/// Returns an error for a zero version, malformed/non-UTC expiry, or an
+/// envelope that cannot be canonically encoded.
+pub fn immutable_snapshot_metadata(
+    version: u64,
+    expires: String,
+    root: &TufEnvelopeV1<RootMetadataV1>,
+    targets: &TufEnvelopeV1<TargetsMetadataV1>,
+    delegated: &TufEnvelopeV1<DelegatedTargetsMetadataV1>,
+) -> Result<SnapshotMetadataV1> {
+    let metadata = SnapshotMetadataV1 {
+        schema_version: TUF_SNAPSHOT_V1.to_owned(),
+        spec_version: TUF_SPEC_VERSION.to_owned(),
+        registry: CANONICAL_REGISTRY.to_owned(),
+        version,
+        expires,
+        metadata: vec![
+            metadata_description(
+                format!("{}.root.json", root.signed.version),
+                root.signed.version,
+                root,
+            )?,
+            metadata_description(
+                format!("{}.targets.json", targets.signed.version),
+                targets.signed.version,
+                targets,
+            )?,
+            metadata_description(
+                format!(
+                    "{}.{}.json",
+                    delegated.signed.version,
+                    delegated.signed.role.as_str()
+                ),
+                delegated.signed.version,
+                delegated,
+            )?,
+        ],
+    };
+    validate_common(&metadata, TUF_SNAPSHOT_V1)?;
+    require_valid_expiry(&metadata.expires)?;
+    Ok(metadata)
+}
+
+/// Constructs a short-lived timestamp over one exact signed snapshot.
+///
+/// # Errors
+///
+/// Returns an error when its version is zero, times are malformed, expiry is
+/// not after issuance, its validity exceeds 48 hours, or canonical encoding
+/// of the snapshot fails.
+pub fn timestamp_metadata(
+    version: u64,
+    issued_at: String,
+    expires: String,
+    snapshot: &TufEnvelopeV1<SnapshotMetadataV1>,
+) -> Result<TimestampMetadataV1> {
+    let metadata = TimestampMetadataV1 {
+        schema_version: TUF_TIMESTAMP_V1.to_owned(),
+        spec_version: TUF_SPEC_VERSION.to_owned(),
+        registry: CANONICAL_REGISTRY.to_owned(),
+        version,
+        issued_at,
+        expires,
+        snapshot: metadata_description(
+            format!("{}.snapshot.json", snapshot.signed.version),
+            snapshot.signed.version,
+            snapshot,
+        )?,
+    };
+    validate_common(&metadata, TUF_TIMESTAMP_V1)?;
+    let issued = parse_utc(&metadata.issued_at, "TUF timestamp issuance")?;
+    validate_timestamp_freshness(&metadata, issued)?;
+    Ok(metadata)
+}
+
+/// Validates a production-strength unsigned root policy before signing.
+///
+/// # Errors
+///
+/// Returns an error for malformed metadata, collapsed authorities, missing
+/// roles, weak thresholds, invalid keys, or malformed/non-UTC expiry.
+pub fn validate_root_metadata(root: &RootMetadataV1) -> Result<()> {
+    validate_root(root)?;
+    require_valid_expiry(&root.expires)
+}
+
+/// Computes the role-domain digest an external signer must authorize.
+///
+/// # Errors
+///
+/// Returns an error when `metadata` cannot be represented as canonical JSON.
+pub fn metadata_signing_digest(role: TufRole, metadata: &impl Serialize) -> Result<Sha256Digest> {
+    Sha256Digest::of_canonical(&format!("aos.release.tuf-{}/v1", role.as_str()), metadata)
+}
+
+/// Describes the exact canonical bytes of one signed metadata envelope.
+///
+/// # Errors
+///
+/// Returns an error for canonical encoding or length conversion failure.
+pub fn metadata_description<T: Serialize>(
+    path: String,
+    version: u64,
+    envelope: &TufEnvelopeV1<T>,
+) -> Result<TufMetadataDescriptionV1> {
+    let bytes = canonical::to_vec(envelope)?;
+    Ok(TufMetadataDescriptionV1 {
+        path,
+        version,
+        length: u64::try_from(bytes.len())?,
+        sha256: Sha256Digest::of_bytes(bytes),
+    })
 }
 
 /// One Ed25519 public key authorized by root metadata.
@@ -456,7 +638,7 @@ pub fn verify_timestamp(
     if previous_version.is_some_and(|version| timestamp.signed.version <= version) {
         bail!("TUF timestamp version did not increase");
     }
-    let expected = description(
+    let expected = metadata_description(
         format!("{}.snapshot.json", snapshot.signed.version),
         snapshot.signed.version,
         snapshot,
@@ -581,17 +763,17 @@ fn validate_delegated(
 fn validate_snapshot(set: &ImmutableTufSetV1) -> Result<()> {
     validate_common(&set.snapshot.signed, TUF_SNAPSHOT_V1)?;
     let expected = vec![
-        description(
+        metadata_description(
             format!("{}.root.json", set.root.signed.version),
             set.root.signed.version,
             &set.root,
         )?,
-        description(
+        metadata_description(
             format!("{}.targets.json", set.targets.signed.version),
             set.targets.signed.version,
             &set.targets,
         )?,
-        description(
+        metadata_description(
             format!(
                 "{}.{}.json",
                 set.delegated.signed.version,
@@ -790,18 +972,16 @@ fn policy<'a>(
         .with_context(|| format!("TUF root lacks the {} role", role.as_str()))
 }
 
-fn description<T: Serialize>(
-    path: String,
-    version: u64,
-    envelope: &TufEnvelopeV1<T>,
-) -> Result<TufMetadataDescriptionV1> {
-    let bytes = canonical::to_vec(envelope)?;
-    Ok(TufMetadataDescriptionV1 {
-        path,
-        version,
-        length: u64::try_from(bytes.len())?,
-        sha256: Sha256Digest::of_bytes(bytes),
-    })
+fn parse_utc(value: &str, label: &str) -> Result<std::time::SystemTime> {
+    if !value.ends_with('Z') {
+        bail!("{label} must be RFC 3339 UTC");
+    }
+    humantime::parse_rfc3339(value).with_context(|| format!("parsing {label}"))
+}
+
+fn require_valid_expiry(value: &str) -> Result<()> {
+    let _ = parse_utc(value, "TUF expiry")?;
+    Ok(())
 }
 
 fn require_not_expired(value: &str, now: std::time::SystemTime) -> Result<()> {
@@ -896,6 +1076,55 @@ mod tests {
         assert!(validate_targets(&targets).is_ok());
         targets.delegations[2].path_prefix = "releases/stable/".to_owned();
         assert!(validate_targets(&targets).is_err());
+    }
+
+    #[test]
+    fn authoring_constructors_bind_exact_predecessor_envelopes() -> Result<()> {
+        let targets = TufEnvelopeV1 {
+            signed: canonical_targets_metadata(4, "2030-01-01T00:00:00Z".to_owned())?,
+            signatures: vec![],
+        };
+        let root = TufEnvelopeV1 {
+            signed: production_root(),
+            signatures: vec![],
+        };
+        let delegated = TufEnvelopeV1 {
+            signed: delegated_release_metadata(
+                8,
+                "2030-01-01T00:00:00Z".to_owned(),
+                TufReleaseTargetV1 {
+                    path: "releases/stable/release-2030.1.0.json".to_owned(),
+                    release_id: "release-2030.1.0".to_owned(),
+                    release_class: ReleaseClass::Stable,
+                    manifest_digest: Sha256Digest::of_bytes("manifest"),
+                    bundle_digest: Sha256Digest::of_bytes("bundle"),
+                    length: 123,
+                },
+            )?,
+            signatures: vec![],
+        };
+        let snapshot = TufEnvelopeV1 {
+            signed: immutable_snapshot_metadata(
+                9,
+                "2030-01-01T00:00:00Z".to_owned(),
+                &root,
+                &targets,
+                &delegated,
+            )?,
+            signatures: vec![],
+        };
+        assert_eq!(snapshot.signed.metadata[0].path, "1.root.json");
+        assert_eq!(snapshot.signed.metadata[1].path, "4.targets.json");
+        assert_eq!(snapshot.signed.metadata[2].path, "8.stable.json");
+
+        let timestamp = timestamp_metadata(
+            10,
+            "2029-12-30T00:00:00Z".to_owned(),
+            "2030-01-01T00:00:00Z".to_owned(),
+            &snapshot,
+        )?;
+        assert_eq!(timestamp.snapshot.path, "9.snapshot.json");
+        Ok(())
     }
 
     #[test]
