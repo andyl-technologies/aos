@@ -3208,6 +3208,31 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   `T-CAM-6.1` through `T-CAM-6.3` stay incomplete.
 - **Risk:** F.
 
+### crucible-hot-fork-held-child-monitor-iothread — replace the inherited monitor worker while held
+
+- **Patch:** `0180-crucible-reconstruct-child-monitor-iothread.patch`.
+- **Enforces:** [HFORK-4], [HFORK-8], [HFORK-9], [HFORK-10], [HFORK-11],
+  [HFORK-12], [HFORK-21], [HFORK-22].
+- **Mechanism:** the child basis additionally retains the exact source monitor
+  IOThread's Linux thread identity and AIO/GLib contexts. After the held socket,
+  protocol, and dispatcher transitions, QEMU rejects source-process use, an
+  identity change, or a source worker still present in the child. It refreshes
+  the initialization semaphore and overwrites the vanished joinable-thread
+  handle by starting one replacement worker over the same admitted quiescent
+  contexts. No socket input source is attached during this transition.
+- **Micro-test:** strict patch certification pins exact context and thread-ID
+  retention, source-process rejection, Linux task-absence validation, semaphore
+  refresh, replacement-thread creation, and the recorded rebuilt state. The
+  complete QEMU build proves the helper compiles and links in the system
+  emulator; patch regeneration and the Phase 6 live result bind the carried
+  patch.
+- **Inertness:** no shipped command calls this child-only primitive. It does
+  not emit the QMP greeting, release input, reconstruct the copied global
+  thread registry, invoke the production fork coordinator, admit a guest, or
+  acknowledge readiness bit 7 or 8. The remaining monitor transaction and
+  `T-CAM-6.1` through `T-CAM-6.3` stay incomplete.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

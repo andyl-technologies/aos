@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "61ec9d599aa413f58b31f62b4ed915fae47c7007c06f9c6f2a5695b31f9fb468";
+  patchBranchBundleSha256 = "b8493d4be3d6080212ed0400b0ad1db07aea8a342b81c4ea192ba9dfb469bff1";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "812e87683a39db3485c3f4f153af09e0fa718744";
+  patchBranchHeadCommit = "d2ae47ca5377e22bcaf13cc285de32505e6150a4";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1725,6 +1725,16 @@ let
       class = "F";
       enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
       capability = "the child-only held QMP transition now requires the exact inherited dispatcher to be idle, wakes it once to retire through QEMU's normal coroutine disposal path, and installs one fresh dispatcher while replacement input remains held; monitor I/O-thread reconstruction, greeting emission, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
+    }
+    {
+      file = "0180-crucible-reconstruct-child-monitor-iothread.patch";
+      branchSubject = "crucible: reconstruct child monitor I/O thread";
+      branchCommit = "d2ae47ca5377e22bcaf13cc285de32505e6150a4";
+      branchTree = "0d07ab4be6cac7bfe742a9abf5fa8fe804f37f79";
+      catalogName = "crucible-hot-fork-held-child-monitor-iothread";
+      class = "F";
+      enforces = "HFORK-4,HFORK-8,HFORK-9,HFORK-10,HFORK-11,HFORK-12,HFORK-21,HFORK-22";
+      capability = "the child-only held QMP transition now binds the exact source monitor IOThread context and Linux thread identity, rejects source-process or still-live inherited-worker use, refreshes the initialization semaphore, and starts exactly one replacement worker over the retained quiescent AIO and GLib contexts while input remains held; greeting emission, input release, global child-thread registry reconstruction, production fork invocation, guest admission, and readiness bits 7 and 8 remain open";
     }
   ];
   catalogOnlyCapabilities = [
