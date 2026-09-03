@@ -23,6 +23,9 @@ The current implementation provides these fail-closed operations:
   to the validated build report, authors every package-platform entry in an
   isolated clone, obtains externally backed provenance and Git SSHSIGs, and
   creates the release's sole registry commit and annotated tag;
+- `aos release finalize-cache` generates the registry closure's static Nix
+  cache and obtains a verified external raw Ed25519 signature over every exact
+  narinfo fingerprint;
 - `aos release finalize` captures a complete payload tree without following
   links, verifies the unsigned manifest as its exact closure, obtains the
   release-evidence signature threshold, verifies the finished bundle offline,
@@ -253,6 +256,38 @@ surface digests pass does the transaction atomically install the isolated
 directory, create one signed commit and annotated tag, and generate its static
 origin surface. No authoring ref, Hub object, channel, or private key path is
 modified by this command.
+
+## Generate and sign the static cache
+
+Generate the cache from the finalized isolated registry, not the mutable
+authoring clone:
+
+```sh
+aos release finalize-cache \
+  --plan release-plan.json \
+  --build-report release-build/evidence/build-report.json \
+  --registry /var/lib/aos-release/2026.9.0/registry \
+  --cache-key cache-2026=/media/trust/cache-2026.pub \
+  --verification-identity provider-cache-slot \
+  --signer-executable /opt/aos-signers/bin/provider-adapter \
+  --priority 40 \
+  --jobs 8 \
+  --output /var/lib/aos-release/2026.9.0/cache
+```
+
+The command checks that every built package-platform output appears at its
+exact registry coordinate before reading the Nix store. It then expands the
+complete registry closure, validates blessed store-graph membership, emits
+deterministic compressed NARs and unsigned narinfos into a private temporary
+directory, and asks the Cache role to sign each canonical Nix fingerprint.
+
+Nix narinfo has a legacy raw `name:base64` Ed25519 signature field and cannot
+embed the release request. The provider still receives the complete role,
+release, plan, policy revision, payload digest, and fresh nonce; the coordinator
+independently verifies the returned raw signature over the exact fingerprint
+before appending it. The cache plan must therefore select exactly one cache key
+with threshold one. The output becomes visible only after every narinfo is
+signed, and existing output paths are never replaced.
 
 ## Close and sign the bundle
 

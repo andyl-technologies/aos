@@ -21,6 +21,7 @@ use aos_release::signing::{
     verify_response_binding,
 };
 use base64::Engine as _;
+use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::process::Command;
 
@@ -211,6 +212,47 @@ impl ExternalSigner {
             bail!("external SSHSIG does not verify against the trusted roster key");
         }
         Ok((response, signature))
+    }
+
+    /// Requests and verifies a raw Ed25519 signature over exact payload bytes.
+    ///
+    /// This mode exists for wire formats such as Nix narinfo whose signature
+    /// grammar cannot embed the release request. Provider policy still receives
+    /// and audits the complete request; the coordinator verifies the returned
+    /// raw signature against independently pinned key material.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for request drift, transformed output, provider/public
+    /// identity mismatch, malformed signature bytes, or failed verification.
+    pub(super) async fn sign_ed25519_payload(
+        &self,
+        request: &SigningRequestV1,
+        payload: &[u8],
+        trusted_key: &TrustedEd25519Key,
+        expected_verification_identity: &str,
+    ) -> Result<SignatureResponseV1> {
+        request.validate()?;
+        verify_payload_binding(request, payload)?;
+        let request_bytes = canonical::to_vec(request)?;
+        let (response_bytes, output) = self.invoke(&request_bytes, payload, 0).await?;
+        if !output.is_empty() {
+            bail!("raw Ed25519 signer returned transformed output bytes");
+        }
+        let response: SignatureResponseV1 =
+            canonical::from_slice(&response_bytes, "external payload-signature response")?;
+        verify_response_binding(request, &response)?;
+        verify_public_identity(&response, trusted_key, expected_verification_identity)?;
+        let signature_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&response.signature_base64)
+            .context("decoding raw Ed25519 payload signature")?;
+        let signature = Signature::from_slice(&signature_bytes)
+            .context("parsing raw Ed25519 payload signature")?;
+        let key = VerifyingKey::from_bytes(&trusted_key.public_key)
+            .context("parsing trusted payload-signing key")?;
+        key.verify(payload, &signature)
+            .context("verifying raw Ed25519 payload signature")?;
+        Ok(response)
     }
 
     async fn invoke(

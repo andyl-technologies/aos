@@ -8,6 +8,7 @@ mod build;
 mod capture;
 mod channel;
 mod finalize;
+mod finalize_cache;
 mod finalize_image;
 mod finalize_registry;
 mod hub_transition;
@@ -45,6 +46,9 @@ pub fn run(command: &ReleaseCommand, nix: &NixRunner, printer: &Printer) -> Resu
         }
         ReleaseCommand::Finalize(_) => {
             anyhow::bail!("release bundle finalization must use the asynchronous dispatcher")
+        }
+        ReleaseCommand::FinalizeCache(_) => {
+            anyhow::bail!("release cache finalization must use the asynchronous dispatcher")
         }
         ReleaseCommand::Timestamp { .. } => {
             anyhow::bail!("release timestamp command must use the asynchronous offline dispatcher")
@@ -131,6 +135,19 @@ pub async fn finalize_registry(
 /// or atomic-output failure.
 pub async fn finalize(args: &crate::cli::ReleaseFinalizeArgs, printer: &Printer) -> Result<()> {
     finalize::run(args, printer).await
+}
+
+/// Generates and externally signs one complete static Nix cache.
+///
+/// # Errors
+///
+/// Returns an error for plan/build/registry drift, NAR generation, signer
+/// binding, narinfo verification, or atomic-output failure.
+pub async fn finalize_cache(
+    args: &crate::cli::ReleaseFinalizeCacheArgs,
+    printer: &Printer,
+) -> Result<()> {
+    finalize_cache::run(args, printer).await
 }
 
 /// Stages one finalized release without constructing a Nix environment.

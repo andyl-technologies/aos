@@ -840,6 +840,16 @@ fn validate_materialized_entries(directory: &Path, entries: &[RegistryReleaseEnt
     Ok(())
 }
 
+/// Verifies exact package coordinates and store paths in a registry tree.
+///
+/// # Errors
+///
+/// Returns an error when a platform catalog is invalid or an expected entry
+/// is absent or bound to different bytes.
+pub fn verify_release_entries(directory: &Path, entries: &[RegistryReleaseEntry]) -> Result<()> {
+    validate_materialized_entries(directory, entries)
+}
+
 fn registry_surface_digests(directory: &Path) -> Result<RegistrySurfaceDigests> {
     Ok(RegistrySurfaceDigests {
         catalog: digest_roots(

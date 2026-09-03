@@ -60,6 +60,8 @@ pub enum SignerRole {
 pub enum SignatureAlgorithm {
     /// Ed25519 over a domain-separated request digest.
     Ed25519,
+    /// Raw Ed25519 over exact public payload bytes for legacy wire formats.
+    Ed25519Payload,
     /// SHA-256 signature verified by independently pinned public-key material.
     PublicKeySha256,
     /// Authenticode signing performed by an external provider.
@@ -262,6 +264,10 @@ impl SigningRequestV1 {
             (self.algorithm, self.operation),
             (SignatureAlgorithm::Ed25519, SigningOperation::SignPayload)
                 | (
+                    SignatureAlgorithm::Ed25519Payload,
+                    SigningOperation::SignPayload
+                )
+                | (
                     SignatureAlgorithm::PublicKeySha256,
                     SigningOperation::SignPayload
                 )
@@ -366,6 +372,9 @@ impl SigningContext {
                     && artifact_kind != "package-provenance-dsse"
                 {
                     bail!("provenance signing requires package-provenance-dsse payloads");
+                }
+                if matches!(role, SignerRole::Cache) && artifact_kind != "narinfo-fingerprint" {
+                    bail!("cache signing requires narinfo-fingerprint payloads");
                 }
             }
             (
@@ -679,6 +688,22 @@ mod tests {
             artifact_kind: "recovery-slot-manifest".to_owned(),
         };
         assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn raw_ed25519_payload_mode_is_confined_to_cache_fingerprints() {
+        let mut request = request();
+        request.role = SignerRole::Cache;
+        request.algorithm = SignatureAlgorithm::Ed25519Payload;
+        request.context = SigningContext::Payload {
+            artifact_kind: "narinfo-fingerprint".to_owned(),
+        };
+        assert!(request.validate().is_ok());
+
+        request.context = SigningContext::Payload {
+            artifact_kind: "release-manifest".to_owned(),
+        };
+        assert!(request.validate().is_err());
     }
 
     #[test]
