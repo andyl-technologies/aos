@@ -11,6 +11,10 @@ use aos_contract::{Sha256Digest, canonical};
 use aos_maintain::discovery::DiscoverySnapshotV1;
 use aos_maintain::envelope::InventoryEnvelopeV1;
 use aos_maintain::plan::PackageUpdatePlanV1;
+use aos_maintain::run::{GateResultsV1, MaterializationRecordV1, PackageUpdateRunV1};
+use aos_maintain::workflow::{
+    ActorClass, EventBindings, JournalEvent, JournalPayload, RunState, verify_journal,
+};
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -155,6 +159,290 @@ impl StateStore {
         Ok(Some(plan))
     }
 
+    /// Resolves the controller-owned path for one run's managed worktree.
+    pub(super) fn worktree_path(&self, run_id: &str) -> Result<PathBuf> {
+        validate_state_name(run_id, "run")?;
+        let worktrees = self.repository.join("worktrees");
+        secure_directory(&worktrees)?;
+        Ok(worktrees.join(run_id))
+    }
+
+    /// Creates protected run directories and stores their immutable plan copy.
+    pub(super) fn initialize_run(
+        &self,
+        run: &PackageUpdateRunV1,
+        plan: &PackageUpdatePlanV1,
+    ) -> Result<()> {
+        run.validate()?;
+        plan.validate()?;
+        if run.plan_id != plan.plan_id {
+            bail!("run and immutable plan identities disagree");
+        }
+        let runs = self.repository.join("runs");
+        secure_directory(&runs)?;
+        let directory = runs.join(run.run_id.as_str());
+        secure_directory(&directory)?;
+        secure_directory(&directory.join("attempts"))?;
+        write_immutable(&directory, "plan.json", plan)?;
+        atomic_write(&directory, "run.json", run)
+    }
+
+    /// Writes the rebuildable run projection after validating it.
+    pub(super) fn write_run(&self, run: &PackageUpdateRunV1) -> Result<()> {
+        run.validate()?;
+        let directory = self.run_directory(run.run_id.as_str())?;
+        atomic_write(&directory, "run.json", run)
+    }
+
+    /// Reads one exact run projection, when present.
+    pub(super) fn read_run(&self, run_id: &str) -> Result<Option<PackageUpdateRunV1>> {
+        validate_state_name(run_id, "run")?;
+        let path = self.repository.join("runs").join(run_id).join("run.json");
+        let Some(run) = read_optional(&path, "maintenance run")? else {
+            return Ok(None);
+        };
+        let run: PackageUpdateRunV1 = run;
+        run.validate()?;
+        if run.run_id.as_str() != run_id {
+            bail!("maintenance run identity does not match its path");
+        }
+        Ok(Some(run))
+    }
+
+    /// Lists all locally retained run projections in stable identity order.
+    pub(super) fn list_runs(&self) -> Result<Vec<PackageUpdateRunV1>> {
+        let directory = self.repository.join("runs");
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error).context("listing maintenance runs"),
+        };
+        let mut runs = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            let metadata = entry.path().symlink_metadata()?;
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                bail!("maintenance run index contains a non-directory entry");
+            }
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("maintenance run identity is not UTF-8"))?;
+            if let Some(run) = self.read_run(&name)? {
+                runs.push(run);
+            }
+        }
+        runs.sort_by(|left, right| left.run_id.cmp(&right.run_id));
+        Ok(runs)
+    }
+
+    /// Reads and verifies the complete authoritative journal prefix.
+    pub(super) fn read_journal(&self, run_id: &str) -> Result<Vec<JournalEvent>> {
+        let directory = self.run_directory(run_id)?;
+        let path = directory.join("journal.ndjson");
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error).context("reading maintenance journal"),
+        };
+        if bytes.len() as u64 > MAX_STATE_DOCUMENT_BYTES {
+            bail!("maintenance journal exceeds size limit");
+        }
+        let mut events = Vec::new();
+        for line in bytes.split(|byte| *byte == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            events.push(canonical::from_slice(line, "maintenance journal event")?);
+        }
+        if !events.is_empty() {
+            let _ = verify_journal(&events)?;
+        }
+        Ok(events)
+    }
+
+    /// Atomically stores deterministic attempt-zero patch and source evidence.
+    pub(super) fn write_materialization(
+        &self,
+        record: &MaterializationRecordV1,
+        patch: &[u8],
+    ) -> Result<()> {
+        record.validate()?;
+        if patch.len() as u64 > MAX_STATE_DOCUMENT_BYTES {
+            bail!("materialization patch exceeds size limit");
+        }
+        let run = self
+            .read_run(record.run_id.as_str())?
+            .ok_or_else(|| anyhow::anyhow!("materialization run is unavailable"))?;
+        if run.plan_id != record.plan_id || run.attempt != record.attempt {
+            bail!("materialization record does not match its run");
+        }
+        let attempt = self
+            .run_directory(record.run_id.as_str())?
+            .join("attempts")
+            .join(record.attempt.to_string());
+        secure_directory(&attempt)?;
+        atomic_write_bytes(&attempt, "patch.diff", patch)?;
+        atomic_write(&attempt, "materialization.json", record)
+    }
+
+    /// Reads deterministic materialization evidence for a run, when present.
+    pub(super) fn read_materialization(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<MaterializationRecordV1>> {
+        let path = self
+            .run_directory(run_id)?
+            .join("attempts/0/materialization.json");
+        let Some(record) = read_optional(&path, "materialization record")? else {
+            return Ok(None);
+        };
+        let record: MaterializationRecordV1 = record;
+        record.validate()?;
+        if record.run_id.as_str() != run_id {
+            bail!("materialization record belongs to another run");
+        }
+        Ok(Some(record))
+    }
+
+    /// Reads the retained canonical patch for deterministic attempt zero.
+    pub(super) fn read_patch(&self, run_id: &str) -> Result<Option<Vec<u8>>> {
+        let path = self.run_directory(run_id)?.join("attempts/0/patch.diff");
+        match path.symlink_metadata() {
+            Ok(metadata) => {
+                if !metadata.is_file()
+                    || metadata.file_type().is_symlink()
+                    || metadata.len() > MAX_STATE_DOCUMENT_BYTES
+                {
+                    bail!("retained maintenance patch is unsafe or oversized");
+                }
+                Ok(Some(fs::read(path)?))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error).context("inspecting retained maintenance patch"),
+        }
+    }
+
+    /// Stores one immutable gate set and its bounded per-gate logs.
+    pub(super) fn write_gate_results(
+        &self,
+        record: &GateResultsV1,
+        logs: &[(String, Vec<u8>)],
+    ) -> Result<()> {
+        record.validate()?;
+        let attempt = self
+            .run_directory(record.run_id.as_str())?
+            .join("attempts/0");
+        secure_directory(&attempt)?;
+        let log_directory = attempt.join("logs");
+        secure_directory(&log_directory)?;
+        if logs.len() != record.results.len() {
+            bail!("gate log set does not match result set");
+        }
+        for (name, bytes) in logs {
+            validate_state_name(name, "gate")?;
+            if bytes.len() > 8 * 1024 * 1024 {
+                bail!("gate log exceeds size limit");
+            }
+            write_immutable_bytes(&log_directory, &format!("{name}.log"), bytes)?;
+        }
+        write_immutable(&attempt, &format!("gates-{}.json", record.phase), record)
+    }
+
+    /// Reads and validates an immutable gate set for attempt zero.
+    pub(super) fn read_gate_results(
+        &self,
+        run_id: &str,
+        phase: &str,
+    ) -> Result<Option<GateResultsV1>> {
+        if !matches!(phase, "quick" | "final") {
+            bail!("gate phase is invalid");
+        }
+        let path = self
+            .run_directory(run_id)?
+            .join(format!("attempts/0/gates-{phase}.json"));
+        let Some(record) = read_optional(&path, "gate results")? else {
+            return Ok(None);
+        };
+        let record: GateResultsV1 = record;
+        record.validate()?;
+        if record.run_id.as_str() != run_id || record.phase != phase {
+            bail!("gate results do not match their state path");
+        }
+        Ok(Some(record))
+    }
+
+    /// Appends one legal transition and updates the validated run projection.
+    pub(super) fn transition(
+        &self,
+        run: &mut PackageUpdateRunV1,
+        next: RunState,
+        actor: ActorClass,
+        now_unix: u64,
+    ) -> Result<()> {
+        self.with_repository_lock(|| {
+            let events = self.read_journal(run.run_id.as_str())?;
+            if let Some(state) = (!events.is_empty())
+                .then(|| verify_journal(&events))
+                .transpose()?
+            {
+                if state != run.state {
+                    bail!("run projection disagrees with its journal");
+                }
+            } else if run.state != RunState::Observed {
+                bail!("new journal must begin in observed state");
+            }
+            if !run.state.can_transition_to(next) {
+                bail!("illegal maintenance run transition");
+            }
+            let sequence = u64::try_from(events.len())
+                .context("journal length overflow")?
+                .saturating_add(1);
+            let previous = events.last().map(|event| event.record_digest);
+            let event = JournalEvent::new(
+                sequence,
+                previous,
+                run.run_id.clone(),
+                Some(run.attempt),
+                aos_maintain::identity::OperationId::parse("state-transition")?,
+                actor,
+                EventBindings {
+                    plan: Some(run.plan_digest),
+                    tree: None,
+                    head: None,
+                },
+                JournalPayload::Transition {
+                    from: run.state,
+                    to: next,
+                },
+                format!("unix:{now_unix}"),
+            )?;
+            self.append_journal_event(run.run_id.as_str(), &event)?;
+            run.state = next;
+            run.updated_at_unix = now_unix;
+            self.write_run(run)
+        })
+    }
+
+    /// Serializes a repository-scoped effect behind an exclusive local lock.
+    pub(super) fn with_repository_lock<T>(
+        &self,
+        operation: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        let lock_path = self.repository.join("controller.lock");
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&lock_path)
+            .context("opening maintenance controller lock")?;
+        rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)
+            .context("locking maintenance repository")?;
+        operation()
+    }
+
     /// Records an immutable provider identity's earliest observed time.
     pub(super) fn record_first_observed(&self, identity: &str, observed_at: u64) -> Result<u64> {
         if identity.is_empty()
@@ -232,6 +520,37 @@ impl StateStore {
         &self.root
     }
 
+    fn run_directory(&self, run_id: &str) -> Result<PathBuf> {
+        validate_state_name(run_id, "run")?;
+        let directory = self.repository.join("runs").join(run_id);
+        let metadata = directory
+            .symlink_metadata()
+            .context("inspecting maintenance run directory")?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            bail!("maintenance run path is not a real directory");
+        }
+        Ok(directory)
+    }
+
+    fn append_journal_event(&self, run_id: &str, event: &JournalEvent) -> Result<()> {
+        event.verify()?;
+        let directory = self.run_directory(run_id)?;
+        let path = directory.join("journal.ndjson");
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&path)
+            .context("opening maintenance journal")?;
+        let bytes = canonical::to_vec(event)?;
+        file.write_all(&bytes)?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        File::open(directory)?.sync_all()?;
+        Ok(())
+    }
+
     fn with_provider_lock<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
         let lock_path = self.root.join("provider-state.lock");
         let lock = OpenOptions::new()
@@ -246,6 +565,18 @@ impl StateStore {
             .context("locking provider state")?;
         operation()
     }
+}
+
+fn validate_state_name(value: &str, label: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 96
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'+' | b':')
+        })
+    {
+        bail!("{label} identity is invalid");
+    }
+    Ok(())
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -363,6 +694,25 @@ where
         return Ok(());
     }
     atomic_write(directory, name, value)
+}
+
+fn write_immutable_bytes(directory: &Path, name: &str, bytes: &[u8]) -> Result<()> {
+    let destination = directory.join(name);
+    match destination.symlink_metadata() {
+        Ok(metadata) => {
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                bail!("immutable maintenance byte object is not a regular file");
+            }
+            if fs::read(&destination)? != bytes {
+                bail!("immutable maintenance byte object collision");
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            atomic_write_bytes(directory, name, bytes)
+        }
+        Err(error) => Err(error).context("inspecting immutable maintenance byte object"),
+    }
 }
 
 fn read_optional<T>(path: &Path, label: &str) -> Result<Option<T>>

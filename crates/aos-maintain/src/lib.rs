@@ -23,6 +23,7 @@ pub mod identity;
 pub mod inventory;
 pub mod plan;
 pub mod presentation;
+pub mod run;
 pub mod workflow;
 
 /// Schema identifier for the first maintenance inventory contract.
@@ -39,6 +40,12 @@ pub const DISCOVERY_SNAPSHOT_V1: &str = "aos.discovery-snapshot/v1";
 
 /// Schema identifier for one immutable package-update plan.
 pub const PACKAGE_UPDATE_PLAN_V1: &str = "aos.package-update-plan/v1";
+/// Schema identity for durable local execution records.
+pub const PACKAGE_UPDATE_RUN_V1: &str = "aos.package-update-run/v1";
+/// Schema identity for deterministic attempt-zero materialization evidence.
+pub const PACKAGE_UPDATE_MATERIALIZATION_V1: &str = "aos.package-update-materialization/v1";
+/// Schema identity for one tree-bound gate execution set.
+pub const PACKAGE_UPDATE_GATE_RESULTS_V1: &str = "aos.package-update-gate-results/v1";
 
 /// Schema identifier for the first durable maintenance journal event.
 pub const MAINTENANCE_JOURNAL_EVENT_V1: &str = "aos.maintain.journal-event/v1";

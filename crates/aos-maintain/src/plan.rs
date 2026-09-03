@@ -56,6 +56,37 @@ pub struct SourceIntent {
     pub allowed_redirect_hosts: Vec<String>,
 }
 
+/// Classifies one deterministic validation action frozen into a plan.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GateKind {
+    /// Verifies formatting of the exact owner path.
+    Format,
+    /// Runs package-aware static validation.
+    Lint,
+    /// Evaluates the repository and its checks without building the candidate.
+    Eval,
+    /// Builds an exact package member for one target.
+    PackageBuild,
+    /// Runs one complete repository test layer.
+    RepositoryTest,
+}
+
+/// Defines one exact local gate invocation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct GateSpec {
+    /// Stable identity within its gate plan.
+    pub id: String,
+    /// Semantic gate class.
+    pub kind: GateKind,
+    /// Exact argument vector beginning with `aos`.
+    pub argv: Vec<String>,
+    /// Target platform when the gate is platform-specific.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+}
+
 /// Freezes a single-unit package update before any worktree mutation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -84,6 +115,10 @@ pub struct PackageUpdatePlanV1 {
     pub semantic_mutations: Vec<SemanticMutation>,
     /// Planned sources whose content hashes are materialized by the controller.
     pub sources: Vec<SourceIntent>,
+    /// Fast deterministic checks required after every accepted attempt.
+    pub quick_gates: Vec<GateSpec>,
+    /// Complete repository checks required for the exact accepted commit.
+    pub final_gates: Vec<GateSpec>,
     /// Minimum deterministic risk class from package policy.
     pub risk: RiskLevel,
     /// Controller executable and policy identity frozen by the plan.
@@ -148,6 +183,34 @@ impl PackageUpdatePlanV1 {
                     bail!("planned source URL is unsafe");
                 }
             }
+            for host in &source.allowed_redirect_hosts {
+                if host.is_empty()
+                    || host.len() > 253
+                    || host.starts_with('.')
+                    || host.ends_with('.')
+                    || !host.bytes().all(|byte| {
+                        byte.is_ascii_lowercase()
+                            || byte.is_ascii_digit()
+                            || matches!(byte, b'-' | b'.')
+                    })
+                {
+                    bail!("planned redirect host is invalid");
+                }
+            }
+        }
+        validate_gates(&self.quick_gates, "quick")?;
+        validate_gates(&self.final_gates, "final")?;
+        let final_ids = self
+            .final_gates
+            .iter()
+            .map(|gate| gate.id.as_str())
+            .collect::<BTreeSet<_>>();
+        if self
+            .quick_gates
+            .iter()
+            .any(|gate| !final_ids.contains(gate.id.as_str()))
+        {
+            bail!("final gate plan does not contain every quick gate");
         }
         Ok(())
     }
@@ -256,6 +319,7 @@ pub fn create_plan(
         .sort_by(|left, right| (&left.component, &left.slot).cmp(&(&right.component, &right.slot)));
     let discovery_snapshot_digest =
         Sha256Digest::of_canonical(crate::DISCOVERY_SNAPSHOT_V1, snapshot)?;
+    let (quick_gates, final_gates) = gate_plans(unit);
     let seed = PlanSeed {
         unit_id,
         base_commit: &base_commit,
@@ -263,6 +327,8 @@ pub fn create_plan(
         inventory_envelope_digest,
         discovery_snapshot_digest,
         component_targets: &component_targets,
+        quick_gates: &quick_gates,
+        final_gates: &final_gates,
     };
     let plan_seed = Sha256Digest::of_canonical("aos.package-update-plan-seed/v1", &seed)?;
     let plan_id = PlanId::parse(format!("plan-{}", &plan_seed.hex()[..24]))?;
@@ -279,6 +345,8 @@ pub fn create_plan(
         component_targets,
         semantic_mutations,
         sources,
+        quick_gates,
+        final_gates,
         risk: unit.policy.risk_floor,
         controller: envelope.controller.clone(),
         created_at_unix,
@@ -286,6 +354,88 @@ pub fn create_plan(
     };
     plan.validate()?;
     Ok(plan)
+}
+
+fn gate_plans(unit: &crate::inventory::UpdateUnit) -> (Vec<GateSpec>, Vec<GateSpec>) {
+    let mut quick = vec![
+        GateSpec {
+            id: "format-owner".to_string(),
+            kind: GateKind::Format,
+            argv: vec![
+                "aos".to_string(),
+                "fmt".to_string(),
+                "--check".to_string(),
+                unit.owner.clone(),
+            ],
+            target: None,
+        },
+        GateSpec {
+            id: "checks-eval".to_string(),
+            kind: GateKind::Eval,
+            argv: vec!["aos".to_string(), "test".to_string(), "eval".to_string()],
+            target: None,
+        },
+    ];
+    for member in &unit.members {
+        quick.push(GateSpec {
+            id: format!("lint-{member}"),
+            kind: GateKind::Lint,
+            argv: vec!["aos".to_string(), "lint".to_string(), member.to_string()],
+            target: None,
+        });
+        for target in &unit.platforms {
+            quick.push(GateSpec {
+                id: format!("build-{member}-{target}"),
+                kind: GateKind::PackageBuild,
+                argv: vec![
+                    "aos".to_string(),
+                    "build".to_string(),
+                    member.to_string(),
+                    "--target".to_string(),
+                    target.clone(),
+                ],
+                target: Some(target.clone()),
+            });
+        }
+    }
+    quick.sort_by(|left, right| left.id.cmp(&right.id));
+    let mut final_gates = quick.clone();
+    for layer in ["rust", "build", "vm", "fleet"] {
+        final_gates.push(GateSpec {
+            id: format!("repository-{layer}"),
+            kind: GateKind::RepositoryTest,
+            argv: vec!["aos".to_string(), "test".to_string(), layer.to_string()],
+            target: None,
+        });
+    }
+    final_gates.sort_by(|left, right| left.id.cmp(&right.id));
+    (quick, final_gates)
+}
+
+fn validate_gates(gates: &[GateSpec], label: &str) -> Result<()> {
+    if gates.is_empty() || gates.len() > 256 {
+        bail!("{label} gate plan is empty or oversized");
+    }
+    let mut ids = BTreeSet::new();
+    for gate in gates {
+        if gate.id.is_empty()
+            || gate.id.len() > 128
+            || !ids.insert(gate.id.as_str())
+            || gate.argv.len() < 2
+            || gate.argv.len() > 16
+            || gate.argv.first().map(String::as_str) != Some("aos")
+            || gate.argv.iter().any(|value| {
+                value.is_empty()
+                    || value.len() > 4096
+                    || value
+                        .bytes()
+                        .any(|byte| byte == 0 || byte.is_ascii_control())
+            })
+        {
+            bail!("{label} gate plan contains an invalid gate");
+        }
+    }
+    Ok(())
 }
 
 /// Renders a structured source URL with per-segment percent encoding.
@@ -425,6 +575,8 @@ struct PlanSeed<'a> {
     inventory_envelope_digest: Sha256Digest,
     discovery_snapshot_digest: Sha256Digest,
     component_targets: &'a BTreeMap<ComponentId, ComponentVersion>,
+    quick_gates: &'a [GateSpec],
+    final_gates: &'a [GateSpec],
 }
 
 #[cfg(test)]

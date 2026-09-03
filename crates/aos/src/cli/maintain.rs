@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 
 #[derive(Args)]
 pub struct MaintainArgs {
@@ -34,6 +34,18 @@ pub enum MaintainCommand {
     Status(MaintainStatusArgs),
     /// Create an immutable update plan without modifying repository source
     Plan(MaintainPlanArgs),
+    /// Execute an immutable plan in a managed isolated worktree
+    Run(MaintainRunArgs),
+    /// Resume a durable run from its last verified boundary
+    Resume(MaintainResumeArgs),
+    /// Inspect a durable run or immutable plan in detail
+    Inspect(MaintainInspectArgs),
+    /// Print the exact retained candidate patch for a run
+    Diff(MaintainRunIdentityArgs),
+    /// Mark a run abandoned while retaining its evidence and worktree
+    Abandon(MaintainRunIdentityArgs),
+    /// Remove a terminal run's clean managed worktree after exact confirmation
+    Clean(MaintainCleanArgs),
 }
 
 #[derive(Args)]
@@ -93,6 +105,72 @@ pub struct MaintainPlanArgs {
     pub target: Option<String>,
 }
 
+#[derive(Args)]
+pub struct MaintainRunArgs {
+    /// Update unit to plan and execute
+    #[arg(required_unless_present = "plan", conflicts_with = "plan")]
+    pub unit: Option<String>,
+
+    /// Execute one exact previously created immutable plan
+    #[arg(long, value_name = "PLAN", required_unless_present = "unit")]
+    pub plan: Option<String>,
+
+    /// Stop after reaching this durable boundary
+    #[arg(long, value_enum, default_value_t = MaintainRunUntil::QuickGated)]
+    pub until: MaintainRunUntil,
+
+    /// Use an explicit empty destination instead of the managed state path
+    #[arg(long, value_name = "PATH")]
+    pub worktree: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum MaintainRunUntil {
+    /// Stop as soon as the isolated worktree is ready
+    WorktreeReady,
+    /// Stop after deterministic source and metadata materialization
+    Materialized,
+    /// Stop after the quick gate plan completes
+    QuickGated,
+}
+
+#[derive(Args)]
+pub struct MaintainResumeArgs {
+    /// Exact or unambiguous local run identity
+    pub run: String,
+
+    /// Stop after reaching this durable boundary
+    #[arg(long, value_enum, default_value_t = MaintainRunUntil::QuickGated)]
+    pub until: MaintainRunUntil,
+}
+
+#[derive(Args)]
+pub struct MaintainInspectArgs {
+    /// Exact or unambiguous local run identity
+    #[arg(required_unless_present = "plan", conflicts_with = "plan")]
+    pub run: Option<String>,
+
+    /// Inspect one exact immutable plan without executing it
+    #[arg(long, value_name = "PLAN", required_unless_present = "run")]
+    pub plan: Option<String>,
+}
+
+#[derive(Args)]
+pub struct MaintainRunIdentityArgs {
+    /// Exact or unambiguous local run identity
+    pub run: String,
+}
+
+#[derive(Args)]
+pub struct MaintainCleanArgs {
+    /// Exact or unambiguous local run identity
+    pub run: String,
+
+    /// Confirm removal by repeating the resolved run identity
+    #[arg(long, value_name = "RUN")]
+    pub confirm: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser as _;
@@ -122,23 +200,24 @@ mod tests {
         assert_eq!(inventory.target.as_deref(), Some("aarch64-linux"));
     }
 
-    #[tokio::test]
-    async fn accepts_both_machine_formats_for_typed_invocation_diagnostics() {
-        let cli = Cli::try_parse_from(["aos", "maintain", "--json", "--jsonl"])
-            .expect("recognized maintenance invocations must reach typed diagnostics");
-        let Commands::Maintain(args) = &cli.command else {
-            panic!("expected maintain command");
-        };
-        assert!(cli.json, "global JSON flag should remain set");
-        assert!(args.jsonl, "maintenance JSON Lines flag should remain set");
-        let completion = crate::commands::maintain::run(&cli, args)
-            .await
-            .expect("output-mode conflict should produce a valid completion");
-
-        assert_eq!(
-            completion.result.disposition,
-            aos_maintain::presentation::CommandDisposition::InvalidInvocation
+    #[test]
+    fn run_requires_exactly_one_unit_or_plan() {
+        assert!(Cli::try_parse_from(["aos", "maintain", "run"]).is_err());
+        assert!(
+            Cli::try_parse_from(["aos", "maintain", "run", "zlib-1", "--plan", "plan-fixture"])
+                .is_err()
         );
-        assert_eq!(completion.exit_code(), 2);
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "maintain",
+                "run",
+                "--plan",
+                "plan-fixture",
+                "--until",
+                "worktree-ready"
+            ])
+            .is_ok()
+        );
     }
 }

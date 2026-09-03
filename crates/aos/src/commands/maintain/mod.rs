@@ -2,8 +2,11 @@
 
 mod discovery;
 mod inventory;
+mod materialize;
 mod mutation;
 mod state;
+mod validation;
+mod worktree;
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -83,6 +86,9 @@ pub async fn run(cli: &Cli, args: &MaintainArgs) -> Result<CommandCompletion> {
                             inventory: Some(envelope),
                             discovery: None,
                             plan: None,
+                            run: None,
+                            runs: Vec::new(),
+                            patch: None,
                         },
                         Vec::new(),
                         vec![PrimaryValue {
@@ -161,25 +167,259 @@ pub async fn run(cli: &Cli, args: &MaintainArgs) -> Result<CommandCompletion> {
             }
         }
         Some(MaintainCommand::Report(command)) => cached_completion("report", args, Some(command)),
-        Some(MaintainCommand::Status(command)) => {
-            if command.run.is_some() {
-                return completion(
-                    "status",
-                    CommandDisposition::InvalidInvocation,
-                    CommandData::default(),
-                    vec![diagnostic(
-                        "maintain.run-not-found",
-                        DiagnosticSeverity::Error,
-                        "No durable maintenance runs have been created yet",
-                    )],
-                    Vec::new(),
-                    Vec::new(),
-                );
-            }
-            cached_completion("status", args, None)
-        }
+        Some(MaintainCommand::Status(command)) => status_command(args, command),
         Some(MaintainCommand::Plan(command)) => plan_command(args, command),
+        Some(MaintainCommand::Run(command)) => run_command(cli, args, command).await,
+        Some(MaintainCommand::Resume(command)) => resume_command(cli, args, command).await,
+        Some(MaintainCommand::Inspect(command)) => inspect_command(args, command),
+        Some(MaintainCommand::Diff(command)) => diff_command(args, command),
+        Some(MaintainCommand::Abandon(command)) => abandon_command(args, command),
+        Some(MaintainCommand::Clean(command)) => clean_command(args, command),
     }
+}
+
+fn status_command(
+    args: &MaintainArgs,
+    command: &crate::cli::MaintainStatusArgs,
+) -> Result<CommandCompletion> {
+    let (store, _) = current_store(args)?;
+    if let Some(query) = &command.run {
+        let run = resolve_run(&store, query)?;
+        return run_view_completion("status", &store, run, None);
+    }
+    let mut runs = store.list_runs()?;
+    if command.active {
+        runs.retain(|run| !run.state.is_terminal());
+    }
+    let mut values = BTreeMap::new();
+    values.insert("runCount".to_string(), runs.len().to_string());
+    values.insert(
+        "activeRunCount".to_string(),
+        runs.iter()
+            .filter(|run| !run.state.is_terminal())
+            .count()
+            .to_string(),
+    );
+    completion(
+        "status",
+        CommandDisposition::Success,
+        CommandData {
+            values,
+            runs,
+            ..CommandData::default()
+        },
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+}
+
+async fn resume_command(
+    cli: &Cli,
+    args: &MaintainArgs,
+    command: &crate::cli::MaintainResumeArgs,
+) -> Result<CommandCompletion> {
+    let (store, _) = current_store(args)?;
+    let run = resolve_run(&store, &command.run)?;
+    if run.state.is_terminal() {
+        return run_view_completion(
+            "resume",
+            &store,
+            run,
+            Some((
+                CommandDisposition::ActionRequired,
+                "Terminal runs cannot be resumed",
+            )),
+        );
+    }
+    let mut completion = run_command(
+        cli,
+        args,
+        &crate::cli::MaintainRunArgs {
+            unit: None,
+            plan: Some(run.plan_id.to_string()),
+            until: command.until,
+            worktree: Some(std::path::PathBuf::from(run.worktree)),
+        },
+    )
+    .await?;
+    completion.result.command = "resume".to_string();
+    CommandCompletion::new(completion.result)
+}
+
+fn inspect_command(
+    args: &MaintainArgs,
+    command: &crate::cli::MaintainInspectArgs,
+) -> Result<CommandCompletion> {
+    let (store, _) = current_store(args)?;
+    if let Some(plan_id) = &command.plan {
+        let Some(plan) = store.read_plan(plan_id)? else {
+            return missing_object("inspect", "immutable plan");
+        };
+        return completion(
+            "inspect",
+            CommandDisposition::Success,
+            CommandData {
+                plan: Some(plan),
+                ..CommandData::default()
+            },
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+    }
+    let query = command
+        .run
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("inspect requires a run or plan"))?;
+    let run = resolve_run(&store, query)?;
+    run_view_completion("inspect", &store, run, None)
+}
+
+fn diff_command(
+    args: &MaintainArgs,
+    command: &crate::cli::MaintainRunIdentityArgs,
+) -> Result<CommandCompletion> {
+    let (store, _) = current_store(args)?;
+    let run = resolve_run(&store, &command.run)?;
+    let Some(bytes) = store.read_patch(run.run_id.as_str())? else {
+        return run_view_completion(
+            "diff",
+            &store,
+            run,
+            Some((
+                CommandDisposition::ActionRequired,
+                "This run has no retained candidate patch yet",
+            )),
+        );
+    };
+    let patch = String::from_utf8(bytes).context("retained patch is not UTF-8")?;
+    let plan = store
+        .read_plan(run.plan_id.as_str())?
+        .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
+    completion(
+        "diff",
+        CommandDisposition::Success,
+        CommandData {
+            plan: Some(plan),
+            run: Some(run),
+            patch: Some(patch),
+            ..CommandData::default()
+        },
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+}
+
+fn abandon_command(
+    args: &MaintainArgs,
+    command: &crate::cli::MaintainRunIdentityArgs,
+) -> Result<CommandCompletion> {
+    let (store, _) = current_store(args)?;
+    let mut run = resolve_run(&store, &command.run)?;
+    if !run.state.is_terminal() {
+        store.transition(
+            &mut run,
+            aos_maintain::workflow::RunState::Abandoned,
+            aos_maintain::workflow::ActorClass::Maintainer,
+            state::now_unix()?,
+        )?;
+    }
+    run_view_completion("abandon", &store, run, None)
+}
+
+fn clean_command(
+    args: &MaintainArgs,
+    command: &crate::cli::MaintainCleanArgs,
+) -> Result<CommandCompletion> {
+    let (store, coordinates) = current_store(args)?;
+    let mut run = resolve_run(&store, &command.run)?;
+    if run.worktree_cleaned {
+        return run_view_completion("clean", &store, run, None);
+    }
+    if !run.state.is_terminal()
+        && !matches!(
+            run.state,
+            aos_maintain::workflow::RunState::ReadyForPr
+                | aos_maintain::workflow::RunState::PrPublished
+                | aos_maintain::workflow::RunState::AwaitingRemoteAuthorization
+                | aos_maintain::workflow::RunState::MergeEligibleObserved
+                | aos_maintain::workflow::RunState::MergedObserved
+        )
+    {
+        return run_view_completion(
+            "clean",
+            &store,
+            run,
+            Some((
+                CommandDisposition::ActionRequired,
+                "Only completed or abandoned runs can be cleaned",
+            )),
+        );
+    }
+    if command.confirm.as_deref() != Some(run.run_id.as_str()) {
+        let mut result = run_view_completion(
+            "clean",
+            &store,
+            run.clone(),
+            Some((
+                CommandDisposition::ActionRequired,
+                "Review the exact target and repeat its run ID with --confirm",
+            )),
+        )?;
+        result.result.next_actions = vec![NextAction {
+            label: "Remove the clean managed worktree".to_string(),
+            argv: vec![
+                "aos".to_string(),
+                "maintain".to_string(),
+                "clean".to_string(),
+                run.run_id.to_string(),
+                "--confirm".to_string(),
+                run.run_id.to_string(),
+            ],
+            reason: "cleanup retains the branch and durable evidence".to_string(),
+            prerequisites: vec!["clean managed worktree".to_string()],
+            effect_class: EffectClass::HumanDecision,
+            bound_context: Some(run.plan_digest.to_string()),
+        }];
+        return CommandCompletion::new(result.result);
+    }
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&run.worktree)
+        .args(["status", "--porcelain=v2", "-z"])
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .context("checking cleanup worktree")?;
+    if !status.status.success() || !status.stdout.is_empty() {
+        return run_view_completion(
+            "clean",
+            &store,
+            run,
+            Some((
+                CommandDisposition::ActionRequired,
+                "The managed worktree has uncommitted changes and was not removed",
+            )),
+        );
+    }
+    let removed = std::process::Command::new("git")
+        .arg("-C")
+        .arg(coordinates.root)
+        .args(["worktree", "remove"])
+        .arg(&run.worktree)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .status()
+        .context("removing managed maintenance worktree")?;
+    if !removed.success() {
+        anyhow::bail!("Git refused to remove the managed worktree");
+    }
+    run.worktree_cleaned = true;
+    run.updated_at_unix = state::now_unix()?;
+    store.write_run(&run)?;
+    run_view_completion("clean", &store, run, None)
 }
 
 fn cached_completion(
@@ -309,6 +549,9 @@ fn cached_completion(
             inventory: Some(inventory),
             discovery,
             plan: None,
+            run: None,
+            runs: Vec::new(),
+            patch: None,
         },
         diagnostics,
         Vec::new(),
@@ -381,6 +624,9 @@ fn scan_completion(
             inventory: Some(envelope),
             discovery: Some(outcome.snapshot),
             plan: None,
+            run: None,
+            runs: Vec::new(),
+            patch: None,
         },
         diagnostics,
         vec![PrimaryValue {
@@ -527,6 +773,9 @@ fn plan_command(
             inventory: Some(envelope),
             discovery: Some(snapshot),
             plan: Some(plan.clone()),
+            run: None,
+            runs: Vec::new(),
+            patch: None,
         },
         Vec::new(),
         vec![PrimaryValue {
@@ -549,6 +798,396 @@ fn plan_command(
             effect_class: EffectClass::LocalMutation,
             bound_context: Some(digest.to_string()),
         }],
+    )
+}
+
+async fn run_command(
+    cli: &Cli,
+    args: &MaintainArgs,
+    command: &crate::cli::MaintainRunArgs,
+) -> Result<CommandCompletion> {
+    use aos_contract::Sha256Digest;
+    use aos_maintain::presentation::MaintainCommandResult;
+
+    let directory = std::env::current_dir().context("resolving current directory")?;
+    let coordinates = inventory::repository_coordinates(&directory)?;
+    let store = state::StateStore::open(args.state_dir.as_deref(), &coordinates)?;
+    let plan = if let Some(plan_id) = &command.plan {
+        match store.read_plan(plan_id)? {
+            Some(plan) => plan,
+            None => {
+                return completion(
+                    "run",
+                    CommandDisposition::InvalidInvocation,
+                    CommandData::default(),
+                    vec![diagnostic(
+                        "maintain.plan-not-found",
+                        DiagnosticSeverity::Error,
+                        "The requested immutable plan does not exist in this clone's state",
+                    )],
+                    Vec::new(),
+                    Vec::new(),
+                );
+            }
+        }
+    } else {
+        let unit = command
+            .unit
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("run requires a unit or plan"))?;
+        let planned = plan_command(
+            args,
+            &crate::cli::MaintainPlanArgs {
+                unit: unit.clone(),
+                target: None,
+            },
+        )?;
+        let Some(plan) = planned.result.data.plan.clone() else {
+            let mut result = planned.result;
+            result.command = "run".to_string();
+            return CommandCompletion::new(result);
+        };
+        plan
+    };
+
+    let now = state::now_unix()?;
+    let plan_has_run = store
+        .list_runs()?
+        .iter()
+        .any(|run| run.plan_id == plan.plan_id);
+    if now >= plan.expires_at_unix && !plan_has_run {
+        return completion(
+            "run",
+            CommandDisposition::Stale,
+            CommandData::default(),
+            vec![diagnostic(
+                "maintain.plan-expired",
+                DiagnosticSeverity::Error,
+                "The immutable plan expired before execution began",
+            )],
+            Vec::new(),
+            vec![NextAction {
+                label: "Create a fresh plan".to_string(),
+                argv: vec![
+                    "aos".to_string(),
+                    "maintain".to_string(),
+                    "plan".to_string(),
+                    plan.unit_id.to_string(),
+                ],
+                reason: "execution cannot extend or reinterpret an expired plan".to_string(),
+                prerequisites: vec!["fresh discovery evidence".to_string()],
+                effect_class: EffectClass::ReadOnly,
+                bound_context: Some(plan.plan_id.to_string()),
+            }],
+        );
+    }
+    let Some(envelope) = store.read_inventory()? else {
+        return missing_plan_input("inventory", CommandDisposition::Stale);
+    };
+    let envelope_digest =
+        Sha256Digest::of_canonical(aos_maintain::MAINTENANCE_INVENTORY_ENVELOPE_V1, &envelope)?;
+    if envelope_digest != plan.inventory_envelope_digest || envelope.controller != plan.controller {
+        return completion(
+            "run",
+            CommandDisposition::Stale,
+            CommandData::default(),
+            vec![diagnostic(
+                "maintain.plan-controller-mismatch",
+                DiagnosticSeverity::Error,
+                "Cached inventory or controller identity no longer matches the immutable plan",
+            )],
+            Vec::new(),
+            Vec::new(),
+        );
+    }
+    let mut run = match worktree::ensure(
+        &store,
+        &coordinates.root,
+        &plan,
+        command.worktree.as_deref(),
+    ) {
+        Ok(run) => run,
+        Err(error) => {
+            return completion(
+                "run",
+                CommandDisposition::ActionRequired,
+                CommandData::default(),
+                vec![diagnostic(
+                    "maintain.worktree-reconciliation-required",
+                    DiagnosticSeverity::Error,
+                    &format!("{error:#}"),
+                )],
+                Vec::new(),
+                Vec::new(),
+            );
+        }
+    };
+
+    let mut values = BTreeMap::from([
+        ("branch".to_string(), run.branch.clone()),
+        ("worktree".to_string(), run.worktree.clone()),
+        ("repositoryState".to_string(), "clean".to_string()),
+    ]);
+    if command.until != crate::cli::MaintainRunUntil::WorktreeReady {
+        let materialization =
+            match materialize::execute(&store, &plan, &mut run, cli.verbose, cli.quiet).await {
+                Ok(record) => record,
+                Err(error) => {
+                    return stopped_run_completion(
+                        "run",
+                        CommandDisposition::ActionRequired,
+                        envelope,
+                        plan,
+                        run,
+                        "maintain.materialization-blocked",
+                        &format!("{error:#}"),
+                    );
+                }
+            };
+        values.insert(
+            "patchDigest".to_string(),
+            materialization.patch_digest.to_string(),
+        );
+        values.insert(
+            "downloadBytes".to_string(),
+            materialization
+                .sources
+                .iter()
+                .map(|source| source.bytes)
+                .sum::<u64>()
+                .to_string(),
+        );
+    }
+    if command.until == crate::cli::MaintainRunUntil::QuickGated {
+        let gates = match validation::quick(&store, &plan, &mut run) {
+            Ok(gates) => gates,
+            Err(error) => {
+                return stopped_run_completion(
+                    "run",
+                    CommandDisposition::ActionRequired,
+                    envelope,
+                    plan,
+                    run,
+                    "maintain.quick-gates-blocked",
+                    &format!("{error:#}"),
+                );
+            }
+        };
+        let passed = gates
+            .results
+            .iter()
+            .filter(|result| result.outcome == aos_maintain::workflow::GateOutcome::Success)
+            .count();
+        values.insert("gatesPassed".to_string(), passed.to_string());
+        values.insert("gatesTotal".to_string(), gates.results.len().to_string());
+        if !gates.all_succeeded() {
+            return stopped_run_completion(
+                "run",
+                CommandDisposition::OperationFailed,
+                envelope,
+                plan,
+                run,
+                "maintain.quick-gate-failed",
+                "One or more planned quick gates failed; retained logs are available for inspection",
+            );
+        }
+    }
+
+    let plan_digest = Sha256Digest::of_canonical(aos_maintain::PACKAGE_UPDATE_PLAN_V1, &plan)?;
+    let result = MaintainCommandResult {
+        schema_version: MAINTENANCE_CLI_V1.to_string(),
+        command: "run".to_string(),
+        disposition: CommandDisposition::Success,
+        exit_code: CommandDisposition::Success.exit_code(),
+        run_id: Some(run.run_id.clone()),
+        data: CommandData {
+            values,
+            inventory: Some(envelope),
+            discovery: None,
+            plan: Some(plan),
+            run: Some(run.clone()),
+            runs: Vec::new(),
+            patch: None,
+        },
+        primary_values: vec![PrimaryValue {
+            name: "runId".to_string(),
+            value: run.run_id.to_string(),
+        }],
+        diagnostics: Vec::new(),
+        next_actions: vec![NextAction {
+            label: "Inspect the isolated update worktree".to_string(),
+            argv: vec![
+                "aos".to_string(),
+                "maintain".to_string(),
+                "status".to_string(),
+                run.run_id.to_string(),
+            ],
+            reason: format!(
+                "the run reached {} at the requested {:?} boundary",
+                run_state_name(run.state),
+                command.until
+            ),
+            prerequisites: Vec::new(),
+            effect_class: EffectClass::ReadOnly,
+            bound_context: Some(plan_digest.to_string()),
+        }],
+    };
+    CommandCompletion::new(result)
+}
+
+fn stopped_run_completion(
+    command: &str,
+    disposition: CommandDisposition,
+    envelope: aos_maintain::envelope::InventoryEnvelopeV1,
+    plan: aos_maintain::plan::PackageUpdatePlanV1,
+    run: aos_maintain::run::PackageUpdateRunV1,
+    code: &str,
+    summary: &str,
+) -> Result<CommandCompletion> {
+    CommandCompletion::new(MaintainCommandResult {
+        schema_version: MAINTENANCE_CLI_V1.to_string(),
+        command: command.to_string(),
+        disposition,
+        exit_code: disposition.exit_code(),
+        run_id: Some(run.run_id.clone()),
+        data: CommandData {
+            values: BTreeMap::from([
+                ("branch".to_string(), run.branch.clone()),
+                ("worktree".to_string(), run.worktree.clone()),
+            ]),
+            inventory: Some(envelope),
+            discovery: None,
+            plan: Some(plan),
+            run: Some(run.clone()),
+            runs: Vec::new(),
+            patch: None,
+        },
+        primary_values: vec![PrimaryValue {
+            name: "runId".to_string(),
+            value: run.run_id.to_string(),
+        }],
+        diagnostics: vec![diagnostic(code, DiagnosticSeverity::Error, summary)],
+        next_actions: vec![NextAction {
+            label: "Inspect the stopped run".to_string(),
+            argv: vec![
+                "aos".to_string(),
+                "maintain".to_string(),
+                "status".to_string(),
+                run.run_id.to_string(),
+            ],
+            reason: "durable state identifies the last verified boundary".to_string(),
+            prerequisites: Vec::new(),
+            effect_class: EffectClass::ReadOnly,
+            bound_context: Some(run.plan_digest.to_string()),
+        }],
+    })
+}
+
+fn current_store(
+    args: &MaintainArgs,
+) -> Result<(state::StateStore, inventory::RepositoryCoordinates)> {
+    let directory = std::env::current_dir().context("resolving current directory")?;
+    let coordinates = inventory::repository_coordinates(&directory)?;
+    let store = state::StateStore::open(args.state_dir.as_deref(), &coordinates)?;
+    Ok((store, coordinates))
+}
+
+fn resolve_run(
+    store: &state::StateStore,
+    query: &str,
+) -> Result<aos_maintain::run::PackageUpdateRunV1> {
+    if let Some(run) = store.read_run(query)? {
+        return Ok(run);
+    }
+    let matches = store
+        .list_runs()?
+        .into_iter()
+        .filter(|run| run.run_id.as_str().starts_with(query))
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [run] => Ok(run.clone()),
+        [] => anyhow::bail!("no local maintenance run matches {query}"),
+        _ => anyhow::bail!("maintenance run prefix {query} is ambiguous"),
+    }
+}
+
+fn run_view_completion(
+    command: &str,
+    store: &state::StateStore,
+    run: aos_maintain::run::PackageUpdateRunV1,
+    stopped: Option<(CommandDisposition, &str)>,
+) -> Result<CommandCompletion> {
+    let events = store.read_journal(run.run_id.as_str())?;
+    let state = aos_maintain::workflow::verify_journal(&events)?;
+    if state != run.state {
+        anyhow::bail!("run projection disagrees with its verified journal");
+    }
+    let plan = store
+        .read_plan(run.plan_id.as_str())?
+        .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
+    let mut values = BTreeMap::from([
+        ("branch".to_string(), run.branch.clone()),
+        ("worktree".to_string(), run.worktree.clone()),
+        ("journalEvents".to_string(), events.len().to_string()),
+    ]);
+    if let Some(gates) = store.read_gate_results(run.run_id.as_str(), "quick")? {
+        values.insert("gatesTotal".to_string(), gates.results.len().to_string());
+        values.insert(
+            "gatesPassed".to_string(),
+            gates
+                .results
+                .iter()
+                .filter(|result| result.outcome == aos_maintain::workflow::GateOutcome::Success)
+                .count()
+                .to_string(),
+        );
+    }
+    let (disposition, diagnostics) = stopped.map_or(
+        (CommandDisposition::Success, Vec::new()),
+        |(disposition, summary)| {
+            (
+                disposition,
+                vec![diagnostic(
+                    "maintain.run-stopped",
+                    DiagnosticSeverity::Error,
+                    summary,
+                )],
+            )
+        },
+    );
+    CommandCompletion::new(MaintainCommandResult {
+        schema_version: MAINTENANCE_CLI_V1.to_string(),
+        command: command.to_string(),
+        disposition,
+        exit_code: disposition.exit_code(),
+        run_id: Some(run.run_id.clone()),
+        data: CommandData {
+            values,
+            plan: Some(plan),
+            run: Some(run.clone()),
+            ..CommandData::default()
+        },
+        primary_values: vec![PrimaryValue {
+            name: "runId".to_string(),
+            value: run.run_id.to_string(),
+        }],
+        diagnostics,
+        next_actions: Vec::new(),
+    })
+}
+
+fn missing_object(command: &str, label: &str) -> Result<CommandCompletion> {
+    completion(
+        command,
+        CommandDisposition::InvalidInvocation,
+        CommandData::default(),
+        vec![diagnostic(
+            "maintain.object-not-found",
+            DiagnosticSeverity::Error,
+            &format!("The requested {label} does not exist in this clone's state"),
+        )],
+        Vec::new(),
+        Vec::new(),
     )
 }
 
@@ -697,6 +1336,12 @@ fn command_name(args: &MaintainArgs) -> &'static str {
         Some(MaintainCommand::Report(_)) => "report",
         Some(MaintainCommand::Status(_)) => "status",
         Some(MaintainCommand::Plan(_)) => "plan",
+        Some(MaintainCommand::Run(_)) => "run",
+        Some(MaintainCommand::Resume(_)) => "resume",
+        Some(MaintainCommand::Inspect(_)) => "inspect",
+        Some(MaintainCommand::Diff(_)) => "diff",
+        Some(MaintainCommand::Abandon(_)) => "abandon",
+        Some(MaintainCommand::Clean(_)) => "clean",
     }
 }
 
@@ -820,6 +1465,34 @@ fn render_human(result: &MaintainCommandResult, screen_reader: bool, printer: &P
         printer.kv("Risk", risk_name(plan.risk));
     }
 
+    if let Some(run) = &result.data.run {
+        printer.plain("");
+        printer.header("Run");
+        printer.kv("ID", run.run_id.as_str());
+        printer.kv("State", run_state_name(run.state));
+        printer.kv("Branch", &escape_terminal(&run.branch, 256));
+        printer.kv("Worktree", &escape_terminal(&run.worktree, 4096));
+    }
+
+    if !result.data.runs.is_empty() {
+        printer.plain("");
+        printer.header("Runs");
+        for run in &result.data.runs {
+            printer.plain(&format!(
+                "{}  state={}  branch={}",
+                escape_terminal(run.run_id.as_str(), 256),
+                run_state_name(run.state),
+                escape_terminal(&run.branch, 256),
+            ));
+        }
+    }
+
+    if let Some(patch) = &result.data.patch {
+        printer.plain("");
+        printer.header("Patch");
+        printer.plain(&escape_multiline(patch, 32 * 1024 * 1024));
+    }
+
     for diagnostic in &result.diagnostics {
         let message = format!(
             "{}: {}",
@@ -865,6 +1538,37 @@ fn disposition_name(disposition: CommandDisposition) -> &'static str {
     }
 }
 
+fn run_state_name(state: aos_maintain::workflow::RunState) -> &'static str {
+    use aos_maintain::workflow::RunState;
+
+    match state {
+        RunState::Observed => "observed",
+        RunState::Selected => "selected",
+        RunState::Planned => "planned",
+        RunState::WorktreeReady => "worktree-ready",
+        RunState::Materializing => "materializing",
+        RunState::PolicyValid => "policy-valid",
+        RunState::QuickGated => "quick-gated",
+        RunState::Repairing => "repairing",
+        RunState::CandidateAccepted => "candidate-accepted",
+        RunState::Committed => "committed",
+        RunState::FinalGated => "final-gated",
+        RunState::ReadyForPr => "ready-for-pr",
+        RunState::PrPublished => "pr-published",
+        RunState::AwaitingRemoteAuthorization => "awaiting-remote-authorization",
+        RunState::MergeEligibleObserved => "merge-eligible-observed",
+        RunState::MergedObserved => "merged-observed",
+        RunState::ReleaseHandoff => "release-handoff",
+        RunState::NoChange => "no-change",
+        RunState::Superseded => "superseded",
+        RunState::BlockedHuman => "blocked-human",
+        RunState::Quarantined => "quarantined",
+        RunState::Rejected => "rejected",
+        RunState::Abandoned => "abandoned",
+        RunState::Failed => "failed",
+    }
+}
+
 fn classification_name(classification: Classification) -> &'static str {
     match classification {
         Classification::Automatic => "automatic",
@@ -907,6 +1611,46 @@ fn shell_display(argument: &str) -> String {
         escaped
     } else {
         format!("'{}'", escaped.replace('\'', "'\\''"))
+    }
+}
+
+fn escape_multiline(value: &str, maximum: usize) -> String {
+    let mut output = String::new();
+    for (index, line) in value.split('\n').enumerate() {
+        if index > 0 {
+            output.push('\n');
+        }
+        if output.len() >= maximum {
+            break;
+        }
+        output.push_str(&escape_terminal(line, maximum.saturating_sub(output.len())));
+    }
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser as _;
+
+    use super::*;
+    use crate::cli::Commands;
+
+    #[tokio::test]
+    async fn accepts_both_machine_formats_for_typed_invocation_diagnostics() {
+        let cli = Cli::try_parse_from(["aos", "maintain", "--json", "--jsonl"])
+            .expect("recognized maintenance invocations must reach typed diagnostics");
+        let Commands::Maintain(args) = &cli.command else {
+            panic!("expected maintain command");
+        };
+        let completion = run(&cli, args)
+            .await
+            .expect("output-mode conflict should produce a valid completion");
+
+        assert_eq!(
+            completion.result.disposition,
+            CommandDisposition::InvalidInvocation
+        );
+        assert_eq!(completion.exit_code(), 2);
     }
 }
 

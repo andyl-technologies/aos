@@ -274,6 +274,42 @@ struct JournalDigestInput<'a> {
 }
 
 impl JournalEvent {
+    /// Constructs and signs one journal event from an already verified prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the event fields are invalid or canonical digest
+    /// construction fails.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        journal_sequence: u64,
+        previous_record_digest: Option<Sha256Digest>,
+        run_id: RunId,
+        attempt: Option<u32>,
+        operation: OperationId,
+        actor: ActorClass,
+        bindings: EventBindings,
+        payload: JournalPayload,
+        observed_at: String,
+    ) -> Result<Self> {
+        let mut event = Self {
+            schema: MAINTENANCE_JOURNAL_EVENT_V1.to_string(),
+            journal_sequence,
+            previous_record_digest,
+            record_digest: Sha256Digest::of_bytes([]),
+            run_id,
+            attempt,
+            operation,
+            actor,
+            bindings,
+            payload,
+            observed_at,
+        };
+        event.record_digest = event.computed_digest()?;
+        event.verify()?;
+        Ok(event)
+    }
+
     /// Computes the domain-separated digest committed by `record_digest`.
     ///
     /// # Errors
