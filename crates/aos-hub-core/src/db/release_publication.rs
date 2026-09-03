@@ -587,7 +587,8 @@ impl Database {
                     publication.publication_id, ?7
                FROM registry_publications publication
               WHERE publication.publication_id = ?6
-                AND publication.registry_id = ?1 AND publication.state = 'ready'
+                AND publication.registry_id = ?1
+                AND publication.state IN ('preparing', 'writing_pointers', 'ready')
                 AND EXISTS (SELECT 1 FROM registry_publication_objects declared
                     JOIN surface_objects object ON object.id = declared.surface_object_id
                    WHERE declared.publication_id = publication.publication_id
@@ -1461,6 +1462,15 @@ mod tests {
             &"3".repeat(64),
         )
         .await;
+        db.backend
+            .execute(
+                "UPDATE registry_publications
+                    SET state = 'preparing', completed_at = NULL
+                  WHERE publication_id = 'timestamp-one'",
+                &[],
+            )
+            .await
+            .unwrap();
         let first = NewReleaseTimestampPublication {
             registry_id,
             snapshot_digest: format!("sha256:{}", "2".repeat(64)),

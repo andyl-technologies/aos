@@ -366,6 +366,7 @@ impl RpcService {
         let scope = self.registry_scope(&registry).await?;
         self.require_permission(&claims, Permission::Publish, &scope)
             .await?;
+        let publication_id = req.publication_id.clone();
         self.db
             .record_release_timestamp_publication(
                 &NewReleaseTimestampPublication {
@@ -382,6 +383,11 @@ impl RpcService {
             )
             .await
             .map_err(failed_precondition)?;
+        self.commit_registry_publication(
+            auth,
+            pb::CommitRegistryPublicationRequest { publication_id },
+        )
+        .await?;
         Ok(pb::ReleaseTimestampState {
             snapshot_digest: req.snapshot_digest,
             snapshot_version: req.snapshot_version,

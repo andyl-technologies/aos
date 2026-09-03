@@ -43,6 +43,51 @@ pub enum ReleaseCommand {
 pub enum ReleaseTimestampCommand {
     /// Sign a fresh pointer to one already-authorized snapshot
     Refresh(ReleaseTimestampRefreshArgs),
+    /// Publish and publicly verify one exact signed timestamp pointer
+    Publish(ReleaseTimestampPublishArgs),
+}
+
+#[derive(Args)]
+pub struct ReleaseTimestampPublishArgs {
+    /// Canonical release plan governing the timestamp publication
+    #[arg(long)]
+    pub plan: PathBuf,
+
+    /// Current signed TUF root envelope
+    #[arg(long)]
+    pub root: PathBuf,
+
+    /// Current signed immutable snapshot envelope
+    #[arg(long)]
+    pub snapshot: PathBuf,
+
+    /// Fresh signed timestamp envelope
+    #[arg(long)]
+    pub timestamp: PathBuf,
+
+    /// Previous timestamp version, or zero for the first publication
+    #[arg(long, default_value_t = 0)]
+    pub previous_version: u64,
+
+    /// Independently trusted root key as KEY_ID=PATH
+    #[arg(long = "trusted-root-key", value_name = "KEY_ID=PATH", required = true)]
+    pub trusted_root_keys: Vec<String>,
+
+    /// Required independently trusted root signature count
+    #[arg(long, default_value_t = 2)]
+    pub trusted_root_threshold: u16,
+
+    /// Complete registry surface containing the timestamp and snapshot paths
+    #[arg(long)]
+    pub registry_surface: PathBuf,
+
+    /// Short-lived production-only Hub access token
+    #[arg(long, env = "AOS_TOKEN", hide_env_values = true)]
+    pub token: Option<String>,
+
+    /// New timestamp publication evidence directory
+    #[arg(long)]
+    pub output: PathBuf,
 }
 
 #[derive(Args)]
