@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "aos",
+    "aos-contract",
     "aos-core",
     "aos-boot-identity",
     "aos-recovery",
@@ -194,6 +195,7 @@ tokio-rustls = "0.26"
 rcgen = "0.14"
 
 # Internal crates
+aos-contract = { path = "aos-contract" }
 crucible-cas = { path = "crucible-cas" }
 aos-core = { path = "aos-core" }
 aos-boot-identity = { path = "aos-boot-identity" }

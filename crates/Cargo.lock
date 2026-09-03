@@ -228,6 +228,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-contract"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "aos-core"
 version = "0.1.0"
 dependencies = [
@@ -615,6 +625,7 @@ name = "aos-release"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-contract",
  "base64 0.22.1",
  "ed25519-dalek",
  "humantime",
