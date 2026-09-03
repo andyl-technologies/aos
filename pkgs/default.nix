@@ -9,6 +9,10 @@
   targetPackages ? null,
 }: let
   fetchurl = lib.fetchurl;
+  mkUpstream = import ./build-support/_upstream.nix {
+    inherit lib fetchurl;
+    platform = stdenv.hostPlatform.system;
+  };
   platformSupport = import ./_platform-support.nix;
 
   # Cross package-set roles. `self` is the host package set: its outputs run
@@ -998,7 +1002,7 @@
     auto = builtins.intersectAttrs (builtins.functionArgs fn) (
       packageArgumentScope
       // {
-        inherit mkDerivation fetchurl callPackage;
+        inherit mkDerivation fetchurl mkUpstream callPackage;
       }
     );
   in
@@ -1140,11 +1144,29 @@
     builtins.mapAttrs platformSupport.annotate (
       platformSupport.selectTargetPackages targetSystem self allPackageNames
     );
+  maintenanceUnits = builtins.filter (unit: unit != null) (
+    builtins.map (
+      name: let
+        package = self.${name};
+      in
+        if
+          builtins.isAttrs package
+          && package ? passthru.aos.maintenance
+        then builtins.removeAttrs package.passthru.aos.maintenance ["schema"]
+        else null
+    )
+    packageNames
+  );
+  maintenanceInventory = {
+    schema = "aos.maintenance-inventory/v1";
+    units = builtins.sort (left: right: left.unitId < right.unitId) maintenanceUnits;
+  };
 
   self =
     {
       # --- Plumbing ---
-      inherit mkDerivation fetchurl lib packageNames allPackageNames;
+      inherit mkDerivation fetchurl mkUpstream lib packageNames allPackageNames;
+      inherit maintenanceInventory;
       inherit platformSupport targetPackageNamesFor targetPackagesFor;
       inherit mkCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
       inherit (cargoArtifactsSupport) mkCargoDummySource;
