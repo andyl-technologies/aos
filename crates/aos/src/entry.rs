@@ -308,6 +308,13 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
 
     let nix = NixRunner::new(cli.verbose, cli.quiet)?;
 
+    if let Commands::Release {
+        command: crate::cli::ReleaseCommand::FinalizeImage(args),
+    } = &cli.command
+    {
+        return commands::release::finalize_image(args, &nix, printer).await;
+    }
+
     match &cli.command {
         Commands::Build {
             package,

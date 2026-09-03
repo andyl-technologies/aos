@@ -5,6 +5,7 @@
 
 mod build;
 mod capture;
+mod finalize_image;
 mod plan;
 mod signer;
 mod stage;
@@ -27,6 +28,9 @@ pub fn run(command: &ReleaseCommand, nix: &NixRunner, printer: &Printer) -> Resu
         ReleaseCommand::Plan(args) => plan::run(args, nix, printer),
         ReleaseCommand::Build(args) => build::run(args, nix, printer),
         ReleaseCommand::Status(args) => status::run(args, printer),
+        ReleaseCommand::FinalizeImage(_) => {
+            anyhow::bail!("release image finalization must use the asynchronous dispatcher")
+        }
         ReleaseCommand::Signer { .. } => {
             anyhow::bail!("release signer command must use the asynchronous offline dispatcher")
         }
@@ -35,6 +39,20 @@ pub fn run(command: &ReleaseCommand, nix: &NixRunner, printer: &Printer) -> Resu
         }
         ReleaseCommand::Verify(args) => verify::run(args, printer),
     }
+}
+
+/// Finalizes one public Linux image assembly through configured signers.
+///
+/// # Errors
+///
+/// Returns an error when plan/assembly binding, tool identity, signing,
+/// reconstruction, or durable final output sealing fails.
+pub async fn finalize_image(
+    args: &crate::cli::ReleaseFinalizeImageArgs,
+    nix: &NixRunner,
+    printer: &Printer,
+) -> Result<()> {
+    finalize_image::run(args, nix, printer).await
 }
 
 /// Stages one finalized release without constructing a Nix environment.
