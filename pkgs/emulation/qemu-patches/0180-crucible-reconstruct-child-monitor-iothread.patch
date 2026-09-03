@@ -1,0 +1,207 @@
+diff --git a/include/chardev/char-socket.h b/include/chardev/char-socket.h
+index 2c1f981d8..2b0c09b04 100644
+--- a/include/chardev/char-socket.h
++++ b/include/chardev/char-socket.h
+@@ -150,8 +150,9 @@ bool qemu_chr_socket_hot_fork_child_basis_matches(
+  * before mutation, then destroys the child's inherited read/HUP sources and
+  * connection and installs a duplicate of @replacement_fd without attaching
+  * input sources or emitting an open event. The listener remains disabled.
+- * Monitor parser reset, greeting, input release, and dispatcher reconstruction
+- * remain a later monitor-owned transaction.
++ * The monitor-owned caller composes parser and capability reset, dispatcher
++ * replacement, and monitor-I/O-thread reconstruction around this held socket.
++ * Greeting emission and input release remain later operations.
+  *
+  * The transition is one-shot. Once destructive work begins, failure never
+  * makes the basis reusable.
+diff --git a/include/system/iothread.h b/include/system/iothread.h
+index d95c17a64..945c22934 100644
+--- a/include/system/iothread.h
++++ b/include/system/iothread.h
+@@ -58,6 +58,15 @@ IOThread *iothread_create(const char *id, Error **errp);
+ void iothread_stop(IOThread *iothread);
+ void iothread_destroy(IOThread *iothread);
+ 
++/*
++ * Replace one copied IOThread worker after fork while retaining its exact
++ * quiescent AioContext and GMainContext.  This is a Linux-only Crucible child
++ * reconstruction primitive, not a general-purpose IOThread restart API.
++ */
++int iothread_hot_fork_reconstruct_child(
++    IOThread *iothread, int64_t inherited_thread_id,
++    int64_t source_process_id, int64_t *replacement_thread_id);
++
+ /*
+  * Returns true if executing within IOThread context,
+  * false otherwise.
+diff --git a/iothread.c b/iothread.c
+index 4b48d2b2b..227946510 100644
+--- a/iothread.c
++++ b/iothread.c
+@@ -12,6 +12,9 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#ifdef CONFIG_LINUX
++#include <sys/syscall.h>
++#endif
+ #include "qom/object.h"
+ #include "qom/object_interfaces.h"
+ #include "qemu/module.h"
+@@ -399,6 +402,59 @@ void iothread_destroy(IOThread *iothread)
+     object_unparent(OBJECT(iothread));
+ }
+ 
++int iothread_hot_fork_reconstruct_child(
++    IOThread *iothread, int64_t inherited_thread_id,
++    int64_t source_process_id, int64_t *replacement_thread_id)
++{
++#ifdef CONFIG_LINUX
++    g_autofree char *thread_name = NULL;
++    int64_t current_thread_id = qemu_get_thread_id();
++    long live_thread;
++
++    if (!iothread || !replacement_thread_id || inherited_thread_id <= 0 ||
++        source_process_id <= 0) {
++        return -EINVAL;
++    }
++    *replacement_thread_id = 0;
++    if (source_process_id == getpid()) {
++        return -EPERM;
++    }
++    if (iothread->thread_id != inherited_thread_id ||
++        inherited_thread_id == current_thread_id || !iothread->ctx ||
++        !iothread->worker_context || !iothread->main_loop ||
++        iothread->stopping || !iothread->running ||
++        !qatomic_read(&iothread->run_gcontext)) {
++        return -ESTALE;
++    }
++
++    errno = 0;
++    live_thread = syscall(SYS_tgkill, getpid(), inherited_thread_id, 0);
++    if (live_thread == 0 || errno != ESRCH) {
++        return -EBUSY;
++    }
++
++    /*
++     * No caller uses the initialization semaphore after IOThread creation
++     * returns.  Recreate it rather than inheriting any implementation-private
++     * generation; the admitted fork boundary proves that it has no waiter.
++     */
++    qemu_sem_destroy(&iothread->init_done_sem);
++    qemu_sem_init(&iothread->init_done_sem, 0);
++    iothread->thread_id = -1;
++    thread_name = g_strdup_printf("IO %s",
++                                  object_get_canonical_path_component(
++                                      OBJECT(iothread)));
++    qemu_thread_create(&iothread->thread, thread_name, iothread_run,
++                       iothread, QEMU_THREAD_JOINABLE);
++    qemu_sem_wait(&iothread->init_done_sem);
++    assert(iothread->thread_id > 0);
++    *replacement_thread_id = iothread->thread_id;
++    return 0;
++#else
++    return -ENOTSUP;
++#endif
++}
++
+ /* Lookup IOThread by its id.  Only finds user-created objects, not internal
+  * iothread_create() objects. */
+ IOThread *iothread_by_id(const char *id)
+diff --git a/monitor/monitor-internal.h b/monitor/monitor-internal.h
+index b4b1f4568..3a052b9df 100644
+--- a/monitor/monitor-internal.h
++++ b/monitor/monitor-internal.h
+@@ -182,10 +182,13 @@ typedef struct MonitorHotForkChildBasis {
+     Coroutine *dispatcher;
+     Chardev *chardev;
+     QemuChrSocketHotForkChildBasis socket;
++    GMainContext *iothread_context;
++    int64_t iothread_thread_id;
+     bool prepared;
+     bool attempted;
+     bool inherited_protocol_disposed;
+     bool dispatcher_rebuilt;
++    bool iothread_rebuilt;
+     bool parser_reset;
+     bool capabilities_reset;
+     bool input_held;
+@@ -238,9 +241,10 @@ bool monitor_hot_fork_child_basis_matches_current(
+  * operation requires one unchanged supported monitor, no named descriptors,
+  * buffered output, output watch, mux state, or pending request state. It then
+  * installs the replacement stream through the socket-owned transition and
+- * resets the JSON parser and capability negotiation state while input remains
+- * held. Dispatcher and I/O-thread reconstruction, greeting emission, and
+- * input release remain separate monitor-owned operations.
++ * resets the JSON parser and capability negotiation state, replaces the idle
++ * dispatcher, and restarts the exact copied monitor I/O thread while input
++ * remains held. Greeting emission and input release remain separate
++ * monitor-owned operations.
+  *
+  * Returns zero after exact held protocol reset, or a negative errno value on
+  * source-process use, stale state, or an invalid replacement endpoint. Once
+diff --git a/monitor/monitor.c b/monitor/monitor.c
+index 4586b0e2d..2cbe19aa4 100644
+--- a/monitor/monitor.c
++++ b/monitor/monitor.c
+@@ -792,6 +792,8 @@ int monitor_hot_fork_prepare_child_basis(
+         .dispatcher = qmp_dispatcher_co,
+         .chardev = chardev,
+         .socket = socket,
++        .iothread_context = context,
++        .iothread_thread_id = mon_iothread->thread_id,
+         .prepared = true,
+     };
+ out:
+@@ -804,7 +806,8 @@ bool monitor_hot_fork_child_basis_prepared_for(
+ {
+     return basis && basis->prepared && expected_generation != 0 &&
+         basis->generation == expected_generation && basis->monitor &&
+-        basis->iothread && basis->dispatcher;
++        basis->iothread && basis->dispatcher && basis->iothread_context &&
++        basis->iothread_thread_id > 0;
+ }
+ 
+ bool monitor_hot_fork_child_disposition_prepared_for(
+@@ -844,6 +847,9 @@ bool monitor_hot_fork_child_basis_matches_current(
+         !QTAILQ_NEXT(mon, entry) && monitor_is_qmp(mon) &&
+         basis->monitor == container_of(mon, MonitorQMP, common) &&
+         basis->iothread == mon_iothread &&
++        basis->iothread_context ==
++            iothread_get_g_main_context(basis->iothread) &&
++        basis->iothread_thread_id == basis->iothread->thread_id &&
+         basis->dispatcher == qmp_dispatcher_co &&
+         basis->chardev == monitor_hot_fork_child_chardev(basis->monitor) &&
+         monitor_hot_fork_child_socket_resources_prepared_for(
+@@ -888,6 +894,7 @@ int monitor_hot_fork_reconstruct_child_protocol_held(
+ {
+     MonitorHotForkInventory inventory;
+     Coroutine *replacement_dispatcher = NULL;
++    int64_t replacement_iothread_id = 0;
+     MonitorQMP *qmp_mon;
+     Monitor *mon;
+     int result;
+@@ -911,6 +918,9 @@ int monitor_hot_fork_reconstruct_child_protocol_held(
+         QTAILQ_NEXT(mon, entry) || !monitor_is_qmp(mon) ||
+         qmp_mon != container_of(mon, MonitorQMP, common) ||
+         basis->iothread != mon_iothread ||
++        basis->iothread_context !=
++            iothread_get_g_main_context(basis->iothread) ||
++        basis->iothread_thread_id != basis->iothread->thread_id ||
+         basis->dispatcher != qmp_dispatcher_co ||
+         !monitor_qmp_hot_fork_dispatcher_is_idle(basis->dispatcher) ||
+         basis->chardev != monitor_hot_fork_child_chardev(qmp_mon) ||
+@@ -945,6 +955,13 @@ out:
+         if (result == 0) {
+             basis->dispatcher = replacement_dispatcher;
+             basis->dispatcher_rebuilt = true;
++            result = iothread_hot_fork_reconstruct_child(
++                basis->iothread, basis->iothread_thread_id,
++                basis->socket.source_pid, &replacement_iothread_id);
++            if (result == 0) {
++                basis->iothread_thread_id = replacement_iothread_id;
++                basis->iothread_rebuilt = true;
++            }
+         }
+     }
+     return result;

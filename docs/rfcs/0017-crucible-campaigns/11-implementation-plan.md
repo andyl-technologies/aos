@@ -2244,11 +2244,12 @@ keeps that replacement connected with both listener acceptance and input
 dispatch held. Source-process use, changed bases, replacement aliases, stale
 socket identities, and repeated attempts fail closed. A forked QEMU unit test
 proves the parent remains unchanged and the child owns only the held replacement
-socket state. The concrete monitor transaction must still reset parser and
-capability state, rebuild the dispatcher and monitor I/O thread, emit exactly
-one greeting, release input only after the full child transaction commits, and
-compose that result with the QEMU-owned fork coordinator. Until then no command
-invokes the primitive and readiness bits 7 and 8 remain clear.
+socket state. The following child-only checkpoints now reset parser/capability
+state and rebuild the dispatcher and monitor I/O thread while input remains
+held. The concrete monitor transaction must still emit exactly one greeting,
+release input only after the full child transaction commits, and compose that
+result with the QEMU-owned fork coordinator. Until then no command invokes the
+primitive and readiness bits 7 and 8 remain clear.
 The next child-only monitor checkpoint composes that socket transition with a
 destructive inherited-protocol reset. It additionally requires the exact
 single-monitor basis to have no named QMP descriptor, global fdset, buffered
@@ -2259,9 +2260,12 @@ parser, installs a fresh empty parser, and resets capability negotiation while
 leaving input held and emitting no greeting. A following child-only primitive
 requires the copied dispatcher to be idle, wakes it once with shutdown asserted
 so QEMU disposes it through the normal coroutine exit path, and installs one
-fresh dispatcher while input remains held. The monitor I/O thread is still
-inherited rather than reconstructed, so no command invokes this partial
-transition and readiness bits 7 and 8 remain clear.
+fresh dispatcher while input remains held. The next child-only primitive binds
+the exact copied monitor IOThread identity and retained quiescent contexts,
+proves the inherited worker is absent, refreshes its initialization semaphore,
+and starts exactly one replacement worker without attaching an input source.
+No command invokes this partial transition; greeting/input release, global
+child-thread registry reconstruction, and readiness bits 7 and 8 remain open.
 These are executable T-CAM-6.1 audit prerequisites, not completion of the task:
 the internal registry identifies two non-coordinator subsystem owners but has
 no safe non-coordinator child disposition. The retained AIO/BH/timer and RCU

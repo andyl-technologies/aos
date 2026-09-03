@@ -791,6 +791,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0180-crucible-reconstruct-child-monitor-iothread.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
