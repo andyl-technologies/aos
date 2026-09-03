@@ -2918,9 +2918,25 @@ reusable source owner, while an indeterminate exchange, a failed parent
 disposition, endpoint transfer failure, or process-retention failure
 quarantines the source. This contract deliberately has no production process
 owner yet: the forked child belongs to the template QEMU's process hierarchy,
-not the daemon's. Parent-QEMU reap/status protocol, exact child-generation
-cgroup/pidfd retention, and branch-resource transfer remain required. A daemon
-MUST NOT synthesize a direct-child wait handle from the numeric PID.
+not the daemon's.
+
+The source QEMU now reserves the request's unique nonzero child-process
+generation in a fixed 4,096-record table before forking. The version-1
+`crucible-hot-fork-child-process(query|release, generation)` protocol binds that
+generation to the exact positive child PID and reports `running`, normal exit
+plus its `u8` code, or signal termination plus its nonzero `u8` signal. Each
+operation performs at most one nonblocking `waitpid(pid, WNOHANG)` while the
+record is running. Final status remains retained and immune to PID reuse until
+explicit release; release fails while running. No ambient child watcher is
+installed or inherited across subsequent forks.
+
+The daemon MUST pair that parent-owned record with exact child-generation
+cgroup/pidfd retention before admitting the child, use the independent process
+authority to observe or terminate it, and query the source QEMU until final
+wait status is retained. Only after branch reconciliation may it release the
+reaped record. Branch-resource transfer and this daemon composition remain
+required. A daemon MUST NOT synthesize a direct-child wait handle from the
+numeric PID.
 
 The driver owns selection application, stop-boundary execution, and candidate
 construction but never assignment or daemon-epoch identity. This adapter

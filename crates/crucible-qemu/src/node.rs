@@ -1063,6 +1063,41 @@ pub trait QemuQmpMachineControlChannel: Send {
         })
     }
 
+    /// Queries one exact source-QEMU child-process record through reap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the generation is unknown, the
+    /// exchange fails, or the response violates the retained-state contract.
+    #[cfg(target_os = "linux")]
+    fn query_hot_fork_child_process(
+        &mut self,
+        _generation: u64,
+    ) -> Result<crate::QmpHotForkChildProcessState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query retained hot-fork child process",
+            "hot-fork child-process observation is not implemented by this QMP channel",
+        ))
+    }
+
+    /// Releases one exact source-QEMU child-process record after reap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] while the child is running, when the
+    /// generation is unknown, when the exchange fails, or when the released
+    /// response violates the retained-state contract.
+    #[cfg(target_os = "linux")]
+    fn release_hot_fork_child_process(
+        &mut self,
+        _generation: u64,
+    ) -> Result<crate::QmpHotForkChildProcessState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "release retained hot-fork child process",
+            "hot-fork child-process release is not implemented by this QMP channel",
+        ))
+    }
+
     /// Imports one held branch-private ring descriptor into the QEMU template.
     ///
     /// # Errors

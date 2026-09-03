@@ -147,6 +147,26 @@ where
     }
 
     #[cfg(target_os = "linux")]
+    fn query_hot_fork_child_process(
+        &mut self,
+        generation: u64,
+    ) -> Result<crate::QmpHotForkChildProcessState, crate::QemuNodeChannelError> {
+        self.vmstate
+            .query_hot_fork_child_process(generation)
+            .map_err(crate::QemuNodeChannelError::from)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn release_hot_fork_child_process(
+        &mut self,
+        generation: u64,
+    ) -> Result<crate::QmpHotForkChildProcessState, crate::QemuNodeChannelError> {
+        self.vmstate
+            .release_hot_fork_child_process(generation)
+            .map_err(crate::QemuNodeChannelError::from)
+    }
+
+    #[cfg(target_os = "linux")]
     fn install_hot_fork_private_ring_descriptor(
         &mut self,
         name: &crate::QmpDescriptorName,

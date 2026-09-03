@@ -163,6 +163,42 @@ pub enum QemuHotForkLaunchError {
 }
 
 impl QemuNode {
+    /// Queries the source QEMU's exact parent-owned process record.
+    ///
+    /// This remains available for a quarantined source after an indeterminate
+    /// fork exchange so a recovery owner can discover whether the requested
+    /// generation produced a child and whether QEMU has reaped it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the generation is unknown, the
+    /// parent channel is unavailable, or the response violates the exact
+    /// retained-state contract.
+    pub fn query_hot_fork_child_process(
+        &mut self,
+        generation: u64,
+    ) -> Result<crate::QmpHotForkChildProcessState, QemuNodeChannelError> {
+        self.channels
+            .qmp_machine_control
+            .query_hot_fork_child_process(generation)
+    }
+
+    /// Releases the source QEMU's exact process record after child reap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] while the child is running, when the
+    /// generation is unknown, when the parent channel is unavailable, or when
+    /// the response violates the exact released-state contract.
+    pub fn release_hot_fork_child_process(
+        &mut self,
+        generation: u64,
+    ) -> Result<crate::QmpHotForkChildProcessState, QemuNodeChannelError> {
+        self.channels
+            .qmp_machine_control
+            .release_hot_fork_child_process(generation)
+    }
+
     /// Forks a prepared template and transfers its private child-QMP endpoint.
     ///
     /// The caller supplies the request derived from the exact prepared template

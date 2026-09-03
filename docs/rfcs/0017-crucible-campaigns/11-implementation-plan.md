@@ -2348,12 +2348,18 @@ not sufficient process authority.
 
 This is still an executable T-CAM-6.1 audit checkpoint rather than completion
 of T-CAM-6.2 or T-CAM-6.3. The daemon must next compose the command with its
-attempt process guard, parent-QEMU-owned reap/status protocol, exact
-child-generation cgroup/pidfd authority, branch resource accounting, private
-child-channel authentication, and observation publication. Because the forked
-process is the template QEMU's direct child, the daemon must not fabricate a
-`std::process::Child` from its PID. The real QEMU flight, measurements, and
-failure-injection audit remain open.
+attempt process guard, exact child-generation cgroup/pidfd authority, branch
+resource accounting, private child-channel authentication, and observation
+publication. Patch 0193 supplies the parent-QEMU half: a fixed 4,096-record
+generation table, one bounded nonblocking `waitpid` attempt per query/release,
+retained exit-or-signal status, and explicit post-reap release. It deliberately
+uses no ambient child watcher that could be inherited by another fork. The
+daemon must use its independent pidfd/cgroup authority to drive termination and
+readiness, query the source QEMU for exact parent-owned reap status, retain both
+authorities through reconciliation, and only then release the record. Because
+the forked process is the template QEMU's direct child, the daemon must not
+fabricate a `std::process::Child` from its PID. The real QEMU flight,
+measurements, and failure-injection audit remain open.
 The internal registry now has safe RCU and internal-monitor dispositions, while
 other AIO owners and every generic or external thread remain unresolved. The
 retained AIO/BH/timer and RCU
