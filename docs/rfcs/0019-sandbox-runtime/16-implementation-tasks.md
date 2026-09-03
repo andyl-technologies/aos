@@ -42,10 +42,12 @@ they gate any affected runtime backend.
 
 ## P1: portable model and protocols
 
-- [ ] **SBX-CORE-01** Add the `aos-sandbox-core` crate with documented modules,
-  feature-independent portable dependencies, and hermetic package inclusion.
-- [ ] **SBX-CORE-02** Implement typed resource IDs, node IDs, generations,
-  assignment epochs, revisions, and incarnations (`SBX-CORE-01`).
+- [x] **SBX-CORE-01** Add the `aos-sandbox-core` crate with documented modules,
+  feature-independent portable dependencies, and hermetic package inclusion
+  (`0ddad351c`).
+- [x] **SBX-CORE-02** Implement typed resource IDs, node IDs, generations,
+  assignment epochs, revisions, and incarnations (`SBX-CORE-01`;
+  `0ddad351c`).
 - [ ] **SBX-CORE-03** Implement desired and observed sandbox, operation,
   attachment, snapshot, and assignment state machines (`SBX-CORE-02`).
 - [ ] **SBX-CORE-04** Implement resource ceilings, reservations, aggregate
@@ -235,4 +237,5 @@ they gate any affected runtime backend.
 Add one line per pushed implementation commit, listing the task identifiers it
 completes. The Git history remains authoritative for code details.
 
-- _No implementation tasks completed yet._
+- `0ddad351c` — `SBX-CORE-01`, `SBX-CORE-02`: portable crate, opaque
+  identities, exact binary/human encodings, and monotonic fencing counters.
