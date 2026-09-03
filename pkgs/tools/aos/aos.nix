@@ -123,6 +123,7 @@
     "aos-registry-spa"
     "aos-registry-surface"
     "aos-remote"
+    "aos-sandbox-core"
     "aos-server"
     "aos-systemd"
   ];

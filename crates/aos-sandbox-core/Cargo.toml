@@ -1,0 +1,17 @@
+[package]
+name = "aos-sandbox-core"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+ciborium.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

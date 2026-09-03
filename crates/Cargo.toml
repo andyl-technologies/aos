@@ -23,6 +23,7 @@ members = [
     "aos-hub-console",
     "aos-profile",
     "aos-systemd",
+    "aos-sandbox-core",
     "crucible-cas",
     "crucible-sim",
     "crucible-assert",
@@ -210,6 +211,7 @@ aos-hub = { path = "aos-hub" }
 aos-registry-surface = { path = "aos-registry-surface" }
 aos-profile = { path = "aos-profile" }
 aos-systemd = { path = "aos-systemd" }
+aos-sandbox-core = { path = "aos-sandbox-core" }
 
 [workspace.lints.clippy]
 all = "deny"
