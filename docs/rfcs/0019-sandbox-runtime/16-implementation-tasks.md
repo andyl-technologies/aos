@@ -57,9 +57,9 @@ they gate any affected runtime backend.
 - [x] **SBX-CORE-05** Implement capability verbs, selectors, attenuation,
   delegation depth, expiry, and deny-by-default evaluation (`SBX-CORE-02`;
   `ce67b873f`).
-- [ ] **SBX-CORE-06** Implement complete sandbox spec, policy, ancestry,
+- [x] **SBX-CORE-06** Implement complete sandbox spec, policy, ancestry,
   placement, environment, view, attachment, tree, snapshot, trust, and
-  signature data models (`SBX-CORE-02`).
+  signature data models (`SBX-CORE-02`; `28073bb1c..7a3f31bbe`).
 - [ ] **SBX-CORE-07** Implement the canonical portable CBOR profile with
   bounds, duplicate-key rejection, canonical map ordering, and domain-separated
   digests (`SBX-CORE-06`).
@@ -251,3 +251,17 @@ completes. The Git history remains authoritative for code details.
 - `ce67b873f` — `SBX-CORE-05`: closed resource/operation registries, portable
   selectors, channel-bound online capability evaluation, and strict grant,
   time, assignment, revocation, depth, fanout, and resource attenuation.
+- `28073bb1c` — `SBX-CORE-06`: portable metadata, ACL, xattr, sparse content,
+  directory, tree, and final-tree delta models.
+- `b78b57274` — `SBX-CORE-06`: immutable/live filesystem views, disclosure
+  domains, ordered presentation programs, and immutable environments.
+- `b9cd2260d` — `SBX-CORE-06`: closed identity, resource, network, attachment
+  slot, and complete portable sandbox specification models.
+- `9fddb1805` — `SBX-CORE-06`: normalized effective policy, delegable grant
+  subsets, enforcement limits, revocation, explanations, and optimization.
+- `37fb085f9` — `SBX-CORE-06`: execution-independent snapshots, portable
+  checkpoints, non-secret retention receipts, and typed external dependencies.
+- `bc5d4fbe8` — `SBX-CORE-06`: trust policies, immutable signer generations,
+  signature statements, purpose/usage binding, and exact signature bytes.
+- `7a3f31bbe` — `SBX-CORE-06`: bounded ancestry, semantic placement requests,
+  fenced assignments, closed mount attributes, and attachment intent/leases.
