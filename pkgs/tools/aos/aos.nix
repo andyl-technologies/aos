@@ -303,6 +303,7 @@ in
       export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
       ${lib.optionalString (!isDarwinCross) ''
         export AOS_CHECKMODULE="${checkpolicy}/bin/checkmodule"
+        export AOS_SEMODULE_PACKAGE="${semodule-utils}/bin/semodule_package"
       ''}
       APR_ENVIRONMENT
                   ;;
@@ -368,11 +369,12 @@ in
             reject_output_reference "$out" "$dependency"
           done
           # APR validates package-owned SELinux modules at publication time,
-          # so checkpolicy is an intentional APR runtime dependency. The
-          # remaining host-enforcement helpers belong only to APM/runtime.
+          # so its compiler and module packager are intentional APR runtime
+          # dependencies. The remaining host-enforcement helpers belong only
+          # to APM/runtime.
           for dependency in \
             ${tpm2-tools} ${which} \
-            ${lib.optionalString (!isDarwinCross) "${systemd} ${util-linux} ${builtins.concatStringsSep " " (map toString (lib.remove checkpolicy linuxRuntimeDeps))}"}; do
+            ${lib.optionalString (!isDarwinCross) "${systemd} ${util-linux} ${builtins.concatStringsSep " " (map toString (lib.subtractLists [checkpolicy semodule-utils] linuxRuntimeDeps))}"}; do
             reject_output_reference "$apr" "$dependency"
           done
 
