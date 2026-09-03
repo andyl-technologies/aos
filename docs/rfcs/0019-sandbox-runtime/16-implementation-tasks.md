@@ -68,8 +68,8 @@ they gate any affected runtime backend.
   `d99883388`).
 - [x] **SBX-CORE-09** Implement signing and trust-envelope verification over
   canonical bytes (`SBX-CORE-07`, `SBX-CORE-08`; `9b0864f03`).
-- [ ] **SBX-CORE-10** Make all RFC golden vectors and negative decoder vectors
-  executable tests (`SBX-CORE-07`, `SBX-CORE-09`).
+- [x] **SBX-CORE-10** Make all RFC golden vectors and negative decoder vectors
+  executable tests (`SBX-CORE-07`, `SBX-CORE-09`; `8065b4eff`).
 - [ ] **SBX-CORE-11** Add state-machine, attenuation, accounting, canonicality,
   and fencing property tests (`SBX-CORE-03`..`SBX-CORE-09`).
 - [ ] **SBX-API-01** Add complete `aos.sandbox.v1` protobuf resource and error
@@ -275,3 +275,6 @@ completes. The Git history remains authoritative for code details.
 - `9b0864f03` — `SBX-CORE-09`: domain-separated Ed25519 signing and strict
   verification bound to canonical trust-policy bytes, subject role, exact key
   generation and fingerprint, scope, purpose, and validity interval.
+- `8065b4eff` — `SBX-CORE-10`: executable raw-content, empty-directory,
+  signature-statement, preimage, and signature vectors plus deterministic-CBOR
+  rejection vectors and signed/unsigned integer extrema.
