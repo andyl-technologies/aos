@@ -317,6 +317,10 @@ mod tests {
             .unwrap_or_else(|error| panic!("test signing failed: {error}"));
 
         assert_eq!(
+            hex::encode(Sha256::digest(signature_message(signature.statement()))),
+            "5e5ec9e08a6b30742772fad729cc3bdbdaa0cd4a90c83f5e8019f04f337450a3"
+        );
+        assert_eq!(
             hex::encode(signature.signature().as_bytes()),
             "178954bd499ff335316e416d4b0f35801e04e06ee5978e7305b78b5151f6dac09b8d8520301f64cff1af6d9deecdd39439ceb0b3a48c1358f340eef7ef74e807"
         );

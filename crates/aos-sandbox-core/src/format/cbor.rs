@@ -719,14 +719,63 @@ mod tests {
     }
 
     #[test]
+    fn resource_and_text_negative_vectors_fail_closed() {
+        let too_large = DecodeLimits {
+            maximum_bytes: 0,
+            ..DecodeLimits::default()
+        };
+        assert_eq!(
+            validate_canonical_cbor(&[0], too_large),
+            Err(CanonicalCborError::ObjectTooLarge)
+        );
+
+        let short_string = DecodeLimits {
+            maximum_byte_string_bytes: 1,
+            ..DecodeLimits::default()
+        };
+        assert!(matches!(
+            validate_canonical_cbor(&[0x42, 0, 0], short_string),
+            Err(CanonicalCborError::StringTooLarge { .. })
+        ));
+        assert!(matches!(
+            validate_canonical_cbor(&[0x61, 0xff], DecodeLimits::default()),
+            Err(CanonicalCborError::InvalidUtf8 { .. })
+        ));
+
+        let shallow = DecodeLimits {
+            maximum_depth: 1,
+            ..DecodeLimits::default()
+        };
+        assert_eq!(
+            validate_canonical_cbor(&[0x81, 0x81, 0], shallow),
+            Err(CanonicalCborError::NestingTooDeep)
+        );
+
+        let few_items = DecodeLimits {
+            maximum_total_items: 2,
+            ..DecodeLimits::default()
+        };
+        assert_eq!(
+            validate_canonical_cbor(&[0x82, 0, 0], few_items),
+            Err(CanonicalCborError::ItemBudgetExceeded)
+        );
+        assert!(matches!(
+            validate_canonical_cbor(&[0x1a, 0], DecodeLimits::default()),
+            Err(CanonicalCborError::Truncated { .. })
+        ));
+    }
+
+    #[test]
     fn schema_primitives_round_trip_without_serde() {
         let mut encoder = Encoder::new();
-        encoder.array(5);
+        encoder.array(7);
         encoder.bytes(&[0xff, 0]);
         encoder.text("text");
         encoder.boolean(true);
         encoder.null();
         encoder.signed(i64::MIN);
+        encoder.signed(i64::MAX);
+        encoder.unsigned(u64::MAX);
         let encoded = encoder.finish();
 
         let mut decoder = Decoder::new(&encoded, DecodeLimits::default())
@@ -735,7 +784,7 @@ mod tests {
             decoder
                 .array_len()
                 .unwrap_or_else(|error| panic!("test array failed: {error}")),
-            5
+            7
         );
         assert_eq!(
             decoder
@@ -765,6 +814,18 @@ mod tests {
                 .signed()
                 .unwrap_or_else(|error| panic!("test integer failed: {error}")),
             i64::MIN
+        );
+        assert_eq!(
+            decoder
+                .signed()
+                .unwrap_or_else(|error| panic!("test integer failed: {error}")),
+            i64::MAX
+        );
+        assert_eq!(
+            decoder
+                .unsigned()
+                .unwrap_or_else(|error| panic!("test integer failed: {error}")),
+            u64::MAX
         );
         decoder
             .finish()

@@ -493,6 +493,7 @@ pub(super) fn semantics(object: &'static str, error: impl std::fmt::Display) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::format::descriptor_for_bytes;
 
     fn empty_metadata() -> FilesystemMetadata {
         FilesystemMetadata::new(0o755, 0, 0, 0, 0, Vec::new(), None)
@@ -506,6 +507,16 @@ mod tests {
         let encoded = encode_directory(&directory);
 
         assert_eq!(hex::encode(&encoded), "8301871901ed0000000080f680");
+        let descriptor = descriptor_for_bytes(
+            MediaType::new("application/vnd.aos.sandbox.directory.v1+cbor")
+                .unwrap_or_else(|error| panic!("test media type failed: {error}")),
+            &encoded,
+        );
+        assert_eq!(
+            descriptor.digest().to_string(),
+            "sha256:5853385fc82f12431186748ae0f949dd0c88afd3295ff9b2902bccbb3eacb69d"
+        );
+        assert_eq!(descriptor.encoded_size(), 13);
         assert_eq!(
             decode_directory(&encoded, DecodeLimits::default()),
             Ok(directory)
